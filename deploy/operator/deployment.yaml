@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bind9-operator
+  namespace: dns-system
+  labels:
+    app: bind9-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bind9-operator
+  template:
+    metadata:
+      labels:
+        app: bind9-operator
+    spec:
+      serviceAccountName: bind9-operator
+      containers:
+      - name: operator
+        image: ghcr.io/yourusername/bind9-dns-operator:latest
+        imagePullPolicy: Always
+        env:
+        - name: OPERATOR_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
