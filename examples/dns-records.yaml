@@ -1,0 +1,33 @@
+apiVersion: dns.example.com/v1alpha1
+kind: ARecord
+metadata:
+  name: www-example
+  namespace: dns-system
+spec:
+  zone: example-com
+  name: www
+  ipv4Address: "192.0.2.1"
+  ttl: 300
+---
+apiVersion: dns.example.com/v1alpha1
+kind: MXRecord
+metadata:
+  name: mail-example
+  namespace: dns-system
+spec:
+  zone: example-com
+  name: "@"
+  priority: 10
+  mailServer: mail.example.com.
+  ttl: 3600
+---
+apiVersion: dns.example.com/v1alpha1
+kind: TXTRecord
+metadata:
+  name: spf-example
+  namespace: dns-system
+spec:
+  zone: example-com
+  name: "@"
+  text: "v=spf1 include:_spf.example.com ~all"
+  ttl: 3600

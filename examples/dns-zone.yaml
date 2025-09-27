@@ -1,0 +1,17 @@
+apiVersion: dns.example.com/v1alpha1
+kind: DNSZone
+metadata:
+  name: example-com
+  namespace: dns-system
+spec:
+  zoneName: example.com
+  type: master
+  bind9InstanceRef: primary-dns
+  soaRecord:
+    primaryNS: ns1.example.com.
+    adminEmail: admin@example.com
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTTL: 86400
+  ttl: 3600

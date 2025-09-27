@@ -1,0 +1,55 @@
+# This file should contain all the CRDs created earlier
+# (Copy the content from the first artifact with all CRDs)
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: bind9instances.dns.example.com
+spec:
+  group: dns.example.com
+  names:
+    kind: Bind9Instance
+    plural: bind9instances
+    singular: bind9instance
+    shortNames:
+    - bind9
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              replicas:
+                type: integer
+                default: 1
+              version:
+                type: string
+                default: "9.18"
+              config:
+                type: object
+                properties:
+                  recursion:
+                    type: boolean
+                  allowQuery:
+                    type: array
+                    items:
+                      type: string
+                  allowTransfer:
+                    type: array
+                    items:
+                      type: string
+          status:
+            type: object
+            properties:
+              phase:
+                type: string
+              message:
+                type: string
+    subresources:
+      status: {}
+# Add remaining CRDs here...

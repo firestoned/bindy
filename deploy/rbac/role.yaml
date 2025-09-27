@@ -1,0 +1,17 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: bind9-operator-role
+rules:
+- apiGroups: ["dns.example.com"]
+  resources: ["*"]
+  verbs: ["*"]
+- apiGroups: [""]
+  resources: ["configmaps", "services", "pods", "pods/exec"]
+  verbs: ["*"]
+- apiGroups: ["apps"]
+  resources: ["statefulsets"]
+  verbs: ["*"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
