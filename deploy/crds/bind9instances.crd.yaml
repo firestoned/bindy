@@ -1,0 +1,88 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: bind9instances.dns.example.com
+spec:
+  group: dns.example.com
+  names:
+    kind: Bind9Instance
+    plural: bind9instances
+    singular: bind9instance
+    shortNames:
+      - b9
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            metadata:
+              type: object
+            spec:
+              type: object
+              properties:
+                replicas:
+                  type: integer
+                  minimum: 1
+                  default: 1
+                version:
+                  type: string
+                  default: "9.18"
+                config:
+                  type: object
+                  description: BIND9 configuration options
+                  properties:
+                    recursion:
+                      type: boolean
+                      default: false
+                    allowQuery:
+                      type: array
+                      items:
+                        type: string
+                      description: ACLs allowed to query
+                    allowTransfer:
+                      type: array
+                      items:
+                        type: string
+                      description: ACLs allowed to transfer
+                    dnssec:
+                      type: object
+                      properties:
+                        enabled:
+                          type: boolean
+                          default: false
+                        validation:
+                          type: boolean
+                          default: false
+            status:
+              type: object
+              properties:
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - "Unknown"
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                observedGeneration:
+                  type: integer
+                replicas:
+                  type: integer
+                readyReplicas:
+                  type: integer

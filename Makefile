@@ -1,9 +1,10 @@
-.PHONY: help install test lint format docker-build docker-push deploy clean
+.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup
 
 REGISTRY ?= ghcr.io
-IMAGE_NAME ?= bind9-dns-operator
+IMAGE_NAME ?= bindy-controller
 TAG ?= latest
 NAMESPACE ?= dns-system
+KIND_CLUSTER ?= bindy-test
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -12,21 +13,38 @@ help: ## Show this help message
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 install: ## Install dependencies
-	poetry install
+	@echo "Ensure Rust toolchain is installed (rustup)."
+	@rustup --version || echo "Install Rust from https://rustup.rs"
 
-test: ## Run tests
-	poetry run pytest -v
+test: ## Run unit tests
+	cargo test --all
 
-test-cov: ## Run tests with coverage
-	poetry run pytest --cov=operator --cov-report=html --cov-report=term
+test-integration: ## Run integration tests (requires Kubernetes)
+	cargo test --test simple_integration -- --ignored
 
-lint: ## Run linting
-	poetry run flake8 operator/
-	poetry run mypy operator/
+test-all: test test-integration ## Run all tests (unit + integration)
+
+test-lib: ## Run library tests only
+	cargo test --lib
+
+test-cov: ## Run tests with coverage using tarpaulin
+	@command -v cargo-tarpaulin >/dev/null 2>&1 || { echo "Installing cargo-tarpaulin..."; cargo install cargo-tarpaulin; }
+	cargo tarpaulin --out Html --output-dir coverage --exclude-files tests.rs --timeout 300
+
+test-cov-view: test-cov ## Run coverage and open report
+	@echo "Coverage report generated in coverage/tarpaulin-report.html"
+	open coverage/tarpaulin-report.html 2>/dev/null || echo "Open coverage/tarpaulin-report.html manually"
+
+test-cov-ci: ## Run coverage for CI (text output)
+	@command -v cargo-tarpaulin >/dev/null 2>&1 || { echo "Installing cargo-tarpaulin..."; cargo install cargo-tarpaulin; }
+	cargo tarpaulin --out Stdout --exclude-files tests.rs --timeout 300
+
+lint: ## Run linting and checks
+	cargo fmt -- --check
+	cargo clippy -- -D warnings
 
 format: ## Format code
-	poetry run black operator/
-	poetry run isort operator/
+	cargo fmt
 
 docker-build: ## Build Docker image
 	docker build -t $(REGISTRY)/$(IMAGE_NAME):$(TAG) .
@@ -42,18 +60,44 @@ deploy-rbac: ## Deploy RBAC resources
 	kubectl apply -f deploy/rbac/ -n $(NAMESPACE)
 
 deploy-operator: ## Deploy operator
-	kubectl apply -f deploy/operator/ -n $(NAMESPACE)
+	kubectl apply -f deploy/controller/ -n $(NAMESPACE)
 
 deploy: deploy-crds deploy-rbac deploy-operator ## Deploy everything
 
 undeploy: ## Remove operator
-	kubectl delete -f deploy/operator/ -n $(NAMESPACE) || true
+	kubectl delete -f deploy/controller/ -n $(NAMESPACE) || true
 	kubectl delete -f deploy/rbac/ -n $(NAMESPACE) || true
 	kubectl delete -f deploy/crds/ || true
 
 clean: ## Clean build artifacts
-	rm -rf dist/ build/ *.egg-info .pytest_cache .coverage htmlcov/
-	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+	cargo clean
+	rm -rf target/
 
-run-local: ## Run operator locally
-	poetry run bind9-operator
+run-local: ## Run controller locally
+	RUST_LOG=info cargo run --release
+
+# Kind cluster targets
+kind-create: ## Create Kind cluster for testing
+	kind create cluster --config deploy/kind-config.yaml --name $(KIND_CLUSTER)
+
+kind-deploy: ## Deploy to Kind cluster (creates cluster, builds, and deploys)
+	./deploy/kind-deploy.sh
+
+kind-test: ## Run tests on Kind cluster
+	./deploy/kind-test.sh
+
+kind-integration-test: ## Run full integration test suite
+	./tests/integration_test.sh
+
+kind-cleanup: ## Delete Kind cluster
+	./deploy/kind-cleanup.sh
+
+kind-logs: ## Show controller logs from Kind cluster
+	kubectl logs -n $(NAMESPACE) -l app=bindy-controller -f --context kind-$(KIND_CLUSTER)
+
+# Build targets
+build: ## Build the Rust binary
+	cargo build --release
+
+build-debug: ## Build the Rust binary in debug mode
+	cargo build

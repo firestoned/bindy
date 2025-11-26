@@ -1,38 +1,51 @@
-FROM python:3.11-slim
+# Build stage
+FROM rust:1.83 as builder
 
-LABEL org.opencontainers.image.source="https://github.com/yourusername/bind9-dns-operator"
-LABEL org.opencontainers.image.description="BIND9 DNS Operator for Kubernetes"
+WORKDIR /workspace
+
+# Copy Rust source
+COPY Cargo.toml ./
+COPY Cargo.lock* ./
+COPY src ./src
+
+# Build the controller with limited parallelism to reduce memory usage
+# -j 1 limits to single-threaded compilation
+RUN cargo build --release -j 1
+
+# Runtime stage
+FROM alpine:3.20
+
+LABEL org.opencontainers.image.source="https://github.com/firestoned/bindy"
+LABEL org.opencontainers.image.description="BIND9 DNS Controller for Kubernetes"
 LABEL org.opencontainers.image.licenses="MIT"
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    dnsutils \
+# Install BIND9 and required libraries
+RUN apk add --no-cache \
+    bind \
+    bind-tools \
+    ca-certificates \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    libgcc
 
-WORKDIR /app
+# Create bind user and directories
+RUN addgroup -S bind && adduser -S -G bind bind && \
+    mkdir -p /etc/bind/zones && \
+    mkdir -p /var/cache/bind && \
+    mkdir -p /var/lib/bind && \
+    chown -R bind:bind /etc/bind /var/cache/bind /var/lib/bind
 
-# Install Poetry
-RUN pip install poetry==1.7.1
+# Copy the built controller from builder
+COPY --from=builder /workspace/target/release/bindy /usr/local/bin/
 
-# Copy dependency files
-COPY pyproject.toml ./
+# Set permissions
+RUN chmod +x /usr/local/bin/bindy
 
-# Install dependencies without dev packages
-RUN poetry config virtualenvs.create false \
-    && poetry install --no-dev --no-interaction --no-ansi
-
-# Copy operator code
-COPY operator/ ./operator/
-
-# Create non-root user
-RUN groupadd -r operator && useradd -r -g operator operator \
-    && chown -R operator:operator /app
-
-USER operator
+# Run as bind user
+USER bind
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8080/healthz || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
 
-ENTRYPOINT ["python", "-m", "operator.main"]
+# Start the controller
+ENTRYPOINT ["/usr/local/bin/bindy"]

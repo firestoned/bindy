@@ -1,1 +1,0 @@
-"""Kubernetes resource management"""
