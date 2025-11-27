@@ -94,7 +94,7 @@ jobs:
       - name: Generate tag
         id: tag
         run: |
-          DATE=$(date +%Y-%m-%d)
+          DATE=$(date +%Y.%m.%d)
           TAG="main-${DATE}-${{ github.run_number }}"
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
 

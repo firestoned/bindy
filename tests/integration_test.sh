@@ -4,7 +4,7 @@ set -euo pipefail
 # Usage: integration_test.sh [--image IMAGE_TAG] [--skip-deploy]
 # Examples:
 #   integration_test.sh                                    # Use local deployment
-#   integration_test.sh --image main-2025-01-01-123       # Use specific image from registry
+#   integration_test.sh --image main-2025.01.01-123       # Use specific image from registry
 #   integration_test.sh --skip-deploy                      # Skip cluster/controller setup
 
 # Colors for output
@@ -47,16 +47,45 @@ if [ "$SKIP_DEPLOY" = false ]; then
     # Check if cluster exists
     if ! kind get clusters 2>/dev/null | grep -q "^${CLUSTER_NAME}$"; then
         echo -e "${YELLOW}⚠️  Cluster '${CLUSTER_NAME}' not found${NC}"
+        echo -e "${YELLOW}📦 Creating Kind cluster...${NC}"
 
-        if [ -n "$IMAGE_TAG" ]; then
-            echo -e "${RED}❌ Cannot use --image without existing cluster${NC}"
-            echo -e "${YELLOW}Please create cluster first or remove --image flag${NC}"
+        # Create cluster without deploying controller if IMAGE_TAG is specified
+        kind create cluster --name "${CLUSTER_NAME}" --config "${PROJECT_ROOT}/deploy/kind-config.yaml" || {
+            echo -e "${RED}❌ Failed to create cluster${NC}"
             exit 1
+        }
+
+        kubectl config use-context "kind-${CLUSTER_NAME}"
+
+        # Install CRDs and RBAC
+        echo -e "${GREEN}📋 Installing CRDs...${NC}"
+        kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+        kubectl apply -f "${PROJECT_ROOT}/deploy/crds/"
+
+        echo -e "${GREEN}🔐 Creating RBAC...${NC}"
+        kubectl apply -f "${PROJECT_ROOT}/deploy/rbac/"
+
+        if [ -z "$IMAGE_TAG" ]; then
+            # No image tag specified, build and deploy locally
+            echo -e "${GREEN}🏗️  Building Docker image...${NC}"
+            docker build -t bindy:latest "${PROJECT_ROOT}"
+
+            echo -e "${GREEN}📤 Loading image into Kind...${NC}"
+            kind load docker-image bindy:latest --name "${CLUSTER_NAME}"
+
+            echo -e "${GREEN}🚀 Deploying controller...${NC}"
+            kubectl apply -f "${PROJECT_ROOT}/deploy/controller/deployment.yaml"
+        else
+            # Image tag specified, pull from registry
+            echo -e "${YELLOW}📦 Deploying controller with image: ${IMAGE_TAG}${NC}"
+            sed "s|ghcr.io/firestoned/bindy:latest|ghcr.io/${GITHUB_REPOSITORY:-firestoned/bindy}:${IMAGE_TAG}|g" \
+                "${PROJECT_ROOT}/deploy/controller/deployment.yaml" | kubectl apply -f -
         fi
 
-        echo -e "${YELLOW}📦 Creating Kind cluster and deploying controller...${NC}"
-        "${PROJECT_ROOT}/deploy/kind-deploy.sh" || {
-            echo -e "${RED}❌ Failed to deploy controller${NC}"
+        echo -e "${GREEN}⏳ Waiting for controller to be ready...${NC}"
+        kubectl wait --for=condition=available --timeout=300s deployment/bindy -n "${NAMESPACE}" || {
+            echo -e "${RED}❌ Controller failed to start. Checking logs:${NC}"
+            kubectl logs -n "${NAMESPACE}" -l app=bindy --tail=50
             exit 1
         }
     else
@@ -141,18 +170,18 @@ metadata:
   namespace: ${NAMESPACE}
 spec:
   zoneName: integration.test
-  zoneType: primary
+  type: primary
   instanceSelector:
     matchLabels:
       role: primary
   soaRecord:
-    primaryNs: ns1.integration.test.
+    primaryNS: ns1.integration.test.
     adminEmail: admin@integration.test
     serial: 2024010101
     refresh: 3600
     retry: 600
     expire: 604800
-    negativeTtl: 86400
+    negativeTTL: 86400
   ttl: 3600
 EOF
 
