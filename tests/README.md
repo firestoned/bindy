@@ -165,7 +165,7 @@ Testing all DNS record types...
 **Resource Creation Fails**
 ```bash
 # Check CRDs are installed
-kubectl get crds | grep dns.example.com
+kubectl get crds | grep dns.firestoned.io
 
 # Check controller status
 kubectl get pods -n dns-system

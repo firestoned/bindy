@@ -4,12 +4,12 @@ metadata:
   name: bind9-controller-role
 rules:
   # DNSZone resources and status
-  - apiGroups: ["dns.example.com"]
+  - apiGroups: ["dns.firestoned.io"]
     resources: ["dnszones", "dnszones/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   
   # Record resources and status
-  - apiGroups: ["dns.example.com"]
+  - apiGroups: ["dns.firestoned.io"]
     resources: 
       - "arecords"
       - "arecords/status"
@@ -30,7 +30,7 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   
   # Bind9Instance resources and status
-  - apiGroups: ["dns.example.com"]
+  - apiGroups: ["dns.firestoned.io"]
     resources: ["bind9instances", "bind9instances/status"]
     verbs: ["get", "list", "watch"]
   

@@ -27,7 +27,7 @@ spec:
         runAsNonRoot: true
       containers:
         - name: controller
-          image: ghcr.io/firestoned/bindy-controller:latest
+          image: ghcr.io/firestoned/bindy:latest
           imagePullPolicy: Always
           env:
             - name: RUST_LOG
@@ -56,7 +56,7 @@ spec:
           livenessProbe:
             exec:
               command:
-                - /usr/local/bin/bindy-controller
+                - /usr/local/bin/bindy
                 - --health-check
             initialDelaySeconds: 30
             periodSeconds: 30
@@ -64,7 +64,7 @@ spec:
           readinessProbe:
             exec:
               command:
-                - /usr/local/bin/bindy-controller
+                - /usr/local/bin/bindy
                 - --ready-check
             initialDelaySeconds: 10
             periodSeconds: 10

@@ -1,20 +1,73 @@
+//! BIND9 zone file generation and management.
+//!
+//! This module provides functionality for generating and managing BIND9 zone files
+//! from Kubernetes Custom Resources. It handles:
+//!
+//! - Creating zone files with SOA records
+//! - Adding DNS records (A, AAAA, CNAME, MX, TXT, NS, SRV, CAA)
+//! - Formatting records according to BIND9 syntax
+//!
+//! # Example
+//!
+//! ```rust,no_run
+//! use bindy::bind9::Bind9Manager;
+//! use bindy::crd::SOARecord;
+//!
+//! let manager = Bind9Manager::new("/etc/bind/zones".to_string());
+//!
+//! let soa = SOARecord {
+//!     primary_ns: "ns1.example.com.".to_string(),
+//!     admin_email: "admin@example.com".to_string(),
+//!     serial: 2024010101,
+//!     refresh: 3600,
+//!     retry: 600,
+//!     expire: 604800,
+//!     negative_ttl: 86400,
+//! };
+//!
+//! // Create a zone file
+//! manager.create_zone_file("example.com", &soa, 3600).unwrap();
+//!
+//! // Add an A record
+//! manager.add_a_record("example.com", "www", "192.0.2.1", Some(300)).unwrap();
+//! ```
+
 use crate::crd::SOARecord;
 use anyhow::Result;
 use std::fs;
 use std::path::Path;
 use tracing::info;
 
-/// Helper struct for SRV record parameters
+/// Parameters for creating SRV records.
+///
+/// Contains the priority, weight, port, and target required for SRV records.
 pub struct SRVRecordData {
+    /// Priority of the target host (lower is higher priority)
     pub priority: i32,
+    /// Relative weight for records with the same priority
     pub weight: i32,
+    /// TCP or UDP port on which the service is found
     pub port: i32,
+    /// Canonical hostname of the machine providing the service
     pub target: String,
+    /// Time to live in seconds
     pub ttl: Option<i32>,
 }
 
-/// Manages BIND9 zone files and configurations
+/// Manager for BIND9 zone files and DNS records.
+///
+/// The `Bind9Manager` provides methods for creating and updating BIND9 zone files
+/// in a specified directory. All methods are designed to be idempotent.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use bindy::bind9::Bind9Manager;
+///
+/// let manager = Bind9Manager::new("/var/lib/bind".to_string());
+/// ```
 pub struct Bind9Manager {
+    /// Directory where zone files are stored
     zones_dir: String,
 }
 

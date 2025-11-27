@@ -1,9 +1,9 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: arecords.dns.example.com
+  name: arecords.dns.firestoned.io
 spec:
-  group: dns.example.com
+  group: dns.firestoned.io
   names:
     kind: ARecord
     plural: arecords
@@ -46,9 +46,18 @@ spec:
                   type: array
                   items:
                     type: object
+                    required:
+                      - type
+                      - status
                     properties:
                       type:
                         type: string
+                        enum:
+                          - Ready
+                          - Available
+                          - Progressing
+                          - Degraded
+                          - Failed
                       status:
                         type: string
                         enum:
