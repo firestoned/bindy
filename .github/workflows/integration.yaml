@@ -64,7 +64,7 @@ jobs:
       - name: Calculate Docker image tag
         id: tag
         run: |
-          DATE=$(date +%Y-%m-%d)
+          DATE=$(date +%Y.%m.%d)
           TAG="main-${DATE}-${{ github.event.workflow_run.run_number }}"
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "Using Docker image tag: ${TAG}"
