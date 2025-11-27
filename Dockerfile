@@ -3,14 +3,22 @@ FROM rust:1.83 as builder
 
 WORKDIR /workspace
 
-# Copy Rust source
+# Copy only dependency manifests first to leverage Docker layer caching
 COPY Cargo.toml ./
 COPY Cargo.lock* ./
+
+# Create a dummy src/main.rs to build dependencies
+RUN mkdir -p src && \
+    echo "fn main() {}" > src/main.rs && \
+    cargo build --release && \
+    rm -rf src
+
+# Now copy the actual source code
 COPY src ./src
 
-# Build the controller with limited parallelism to reduce memory usage
-# -j 1 limits to single-threaded compilation
-RUN cargo build --release -j 1
+# Build the actual controller
+# Touch main.rs to ensure it's rebuilt with the real code
+RUN touch src/main.rs && cargo build --release
 
 # Runtime stage
 FROM alpine:3.20

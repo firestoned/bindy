@@ -1,0 +1,318 @@
+name: Integration Tests
+
+on:
+  workflow_run:
+    workflows: ["Main Branch CI/CD"]
+    types:
+      - completed
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  NAMESPACE: dns-system
+  CLUSTER_NAME: bindy-test
+
+jobs:
+  integration-test:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-git-
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-target-
+
+      - name: Install Kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+          version: v0.20.0
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.28.0'
+
+      - name: Calculate Docker image tag
+        id: tag
+        run: |
+          DATE=$(date +%Y-%m-%d)
+          TAG="main-${DATE}-${{ github.event.workflow_run.run_number }}"
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "Using Docker image tag: ${TAG}"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create Kind cluster
+        run: |
+          kind create cluster --name ${CLUSTER_NAME} --config deploy/kind-config.yaml
+          kubectl cluster-info --context kind-${CLUSTER_NAME}
+
+      - name: Install CRDs
+        run: |
+          kubectl create namespace ${NAMESPACE} || true
+          kubectl apply -f deploy/crds/
+
+      - name: Install RBAC
+        run: kubectl apply -f deploy/rbac/
+
+      - name: Update controller deployment with specific image
+        run: |
+          IMAGE_TAG="${{ steps.tag.outputs.tag }}"
+          sed -i "s|ghcr.io/firestoned/bindy-controller:latest|ghcr.io/${{ github.repository }}:${IMAGE_TAG}|g" deploy/controller/deployment.yaml
+          cat deploy/controller/deployment.yaml
+
+      - name: Deploy controller
+        run: |
+          kubectl apply -f deploy/controller/deployment.yaml
+          kubectl wait --for=condition=available --timeout=300s deployment/bind9-controller -n ${NAMESPACE}
+
+      - name: Run Rust integration tests
+        run: |
+          cargo test --test simple_integration -- --ignored --test-threads=1 --nocapture
+
+      - name: Create test resources
+        run: |
+          # Create primary Bind9Instance
+          kubectl apply -f - <<EOF
+          apiVersion: dns.example.com/v1alpha1
+          kind: Bind9Instance
+          metadata:
+            name: integration-test-primary
+            namespace: ${NAMESPACE}
+            labels:
+              test: integration
+              role: primary
+          spec:
+            replicas: 1
+            version: "9.18"
+            config:
+              recursion: false
+              allowQuery:
+                - "0.0.0.0/0"
+              allowTransfer:
+                - "10.0.0.0/8"
+          EOF
+
+          # Create secondary Bind9Instance
+          kubectl apply -f - <<EOF
+          apiVersion: dns.example.com/v1alpha1
+          kind: Bind9Instance
+          metadata:
+            name: integration-test-secondary
+            namespace: ${NAMESPACE}
+            labels:
+              test: integration
+              role: secondary
+          spec:
+            replicas: 1
+            version: "9.18"
+            config:
+              recursion: false
+              allowQuery:
+                - "0.0.0.0/0"
+          EOF
+
+          # Create DNSZone
+          kubectl apply -f - <<EOF
+          apiVersion: dns.example.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: test-zone
+            namespace: ${NAMESPACE}
+          spec:
+            zoneName: test.example.com
+            type: primary
+            instanceSelector:
+              matchLabels:
+                test: integration
+            soaRecord:
+              primaryNS: ns1.test.example.com.
+              adminEmail: admin@test.example.com
+              serial: 2024010101
+              refresh: 3600
+              retry: 600
+              expire: 604800
+              negativeTTL: 86400
+            ttl: 3600
+          EOF
+
+          sleep 5
+
+      - name: Test DNS record types
+        run: |
+          # Test A Record
+          kubectl apply -f - <<EOF
+          apiVersion: dns.example.com/v1alpha1
+          kind: ARecord
+          metadata:
+            name: test-a
+            namespace: ${NAMESPACE}
+          spec:
+            zone: test-zone
+            name: www
+            ipv4Address: "192.0.2.1"
+            ttl: 300
+          EOF
+
+          # Test AAAA Record
+          kubectl apply -f - <<EOF
+          apiVersion: dns.example.com/v1alpha1
+          kind: AAAARecord
+          metadata:
+            name: test-aaaa
+            namespace: ${NAMESPACE}
+          spec:
+            zone: test-zone
+            name: www
+            ipv6Address: "2001:db8::1"
+            ttl: 300
+          EOF
+
+          # Test CNAME Record
+          kubectl apply -f - <<EOF
+          apiVersion: dns.example.com/v1alpha1
+          kind: CNAMERecord
+          metadata:
+            name: test-cname
+            namespace: ${NAMESPACE}
+          spec:
+            zone: test-zone
+            name: blog
+            target: www.test.example.com.
+            ttl: 300
+          EOF
+
+          # Test MX Record
+          kubectl apply -f - <<EOF
+          apiVersion: dns.example.com/v1alpha1
+          kind: MXRecord
+          metadata:
+            name: test-mx
+            namespace: ${NAMESPACE}
+          spec:
+            zone: test-zone
+            name: "@"
+            priority: 10
+            mailServer: mail.test.example.com.
+            ttl: 3600
+          EOF
+
+          # Test TXT Record
+          kubectl apply -f - <<EOF
+          apiVersion: dns.example.com/v1alpha1
+          kind: TXTRecord
+          metadata:
+            name: test-txt
+            namespace: ${NAMESPACE}
+          spec:
+            zone: test-zone
+            name: "@"
+            text:
+              - "v=spf1 include:_spf.test.example.com ~all"
+            ttl: 3600
+          EOF
+
+          # Test NS Record
+          kubectl apply -f - <<EOF
+          apiVersion: dns.example.com/v1alpha1
+          kind: NSRecord
+          metadata:
+            name: test-ns
+            namespace: ${NAMESPACE}
+          spec:
+            zone: test-zone
+            name: subdomain
+            nameserver: ns1.subdomain.test.example.com.
+            ttl: 3600
+          EOF
+
+          # Test SRV Record
+          kubectl apply -f - <<EOF
+          apiVersion: dns.example.com/v1alpha1
+          kind: SRVRecord
+          metadata:
+            name: test-srv
+            namespace: ${NAMESPACE}
+          spec:
+            zone: test-zone
+            name: _http._tcp
+            priority: 10
+            weight: 60
+            port: 80
+            target: www.test.example.com.
+            ttl: 3600
+          EOF
+
+          # Test CAA Record
+          kubectl apply -f - <<EOF
+          apiVersion: dns.example.com/v1alpha1
+          kind: CAARecord
+          metadata:
+            name: test-caa
+            namespace: ${NAMESPACE}
+          spec:
+            zone: test-zone
+            name: "@"
+            flags: 0
+            tag: issue
+            value: "letsencrypt.org"
+            ttl: 3600
+          EOF
+
+          sleep 10
+
+      - name: Verify resources created
+        run: |
+          echo "Checking Bind9Instances..."
+          kubectl get bind9instances -n ${NAMESPACE}
+
+          echo "Checking DNSZone..."
+          kubectl get dnszones -n ${NAMESPACE}
+
+          echo "Checking DNS Records..."
+          kubectl get arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords -n ${NAMESPACE}
+
+      - name: Check controller logs
+        if: always()
+        run: |
+          echo "Controller logs:"
+          kubectl logs -n ${NAMESPACE} -l app=bind9-controller --tail=100 || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          kind delete cluster --name ${CLUSTER_NAME} || true
