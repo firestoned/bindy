@@ -1,0 +1,152 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bind9-config
+  namespace: bind9
+  labels:
+    app: bind9
+data:
+  named.conf: |
+    // Bind9 Configuration for Kubernetes DNS Cluster
+    // This is a primary DNS server in a Kubernetes cluster
+    
+    acl "internal" {
+      localhost;
+      127.0.0.1;
+      ::1;
+    };
+
+    acl "pod-network" {
+      10.0.0.0/8;          // Default pod CIDR
+      172.16.0.0/12;       // Alternative pod CIDR
+      192.168.0.0/16;      // Local network
+    };
+
+    options {
+      directory "/var/cache/bind";
+      
+      // Listen on all interfaces
+      listen-on { any; };
+      listen-on-v6 { any; };
+      
+      // DNSSEC validation
+      dnssec-validation auto;
+      dnssec-enable yes;
+      
+      // Response behavior
+      auth-nxdomain no;
+      
+      // Allow recursion from internal sources
+      allow-recursion { internal; pod-network; };
+      
+      // Cache settings
+      max-cache-size 512M;
+      
+      // Logging
+      forwarders {
+        8.8.8.8;
+        8.8.4.4;
+      };
+      
+      // Query logging for troubleshooting (disable in production for performance)
+      // querylog yes;
+      
+      // Transfer settings for zone replication
+      max-transfer-time-in 120;
+      max-transfer-idle-in 60;
+    };
+
+    // RNDC Control Configuration
+    controls {
+      // localhost-only for pod-internal access
+      inet 127.0.0.1 port 953
+        allow { localhost; } keys { "rndc-key"; };
+      
+      // All interfaces for cross-pod RNDC access
+      inet 0.0.0.0 port 953
+        allow { pod-network; } keys { "rndc-key"; };
+      
+      // IPv6 support
+      inet6 ::1 port 953
+        allow { localhost; } keys { "rndc-key"; };
+    };
+
+    // RNDC Authentication Key
+    // ⚠️  SECURITY: Change this key in production!
+    key "rndc-key" {
+      algorithm hmac-sha256;
+      secret "K8s+Bind9RndcKey==";
+    };
+
+    // Standard zones included with Bind
+    zone "." {
+      type hint;
+      file "/etc/bind/db.root";
+    };
+
+    zone "localhost" {
+      type master;
+      file "/etc/bind/db.local";
+    };
+
+    zone "127.in-addr.arpa" {
+      type master;
+      file "/etc/bind/db.127";
+    };
+
+    zone "0.in-addr.arpa" {
+      type master;
+      file "/etc/bind/db.0";
+    };
+
+    zone "255.in-addr.arpa" {
+      type master;
+      file "/etc/bind/db.255";
+    };
+
+    // User-defined zones (add your zones here)
+    // Example:
+    // zone "example.com" {
+    //   type master;
+    //   file "/etc/bind/zones/example.com";
+    //   allow-update { 10.0.0.0/8; };
+    //   also-notify { 10.0.1.100; };
+    // };
+
+    // Logging configuration for debugging
+    logging {
+      channel default_file {
+        file "/var/log/bind/default.log" versions 5 size 20m;
+        severity dynamic;
+        print-time yes;
+        print-severity yes;
+        print-category yes;
+      };
+
+      category default {
+        default_file;
+      };
+
+      category lame-servers {
+        null;
+      };
+
+      category rate-limit {
+        null;
+      };
+    };
+
+  rndc.conf: |
+    // RNDC Configuration File
+    // Used for remote administration of BIND9
+    
+    key "rndc-key" {
+      algorithm hmac-sha256;
+      secret "K8s+Bind9RndcKey==";
+    };
+
+    options {
+      default-key "rndc-key";
+      default-server 127.0.0.1;
+      default-port 953;
+    };

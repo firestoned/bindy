@@ -1,0 +1,129 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: dnszones.dns.example.com
+spec:
+  group: dns.example.com
+  names:
+    kind: DNSZone
+    plural: dnszones
+    singular: dnszone
+    shortNames:
+      - dz
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            metadata:
+              type: object
+            spec:
+              type: object
+              required:
+                - zoneName
+                - instanceSelector
+                - soaRecord
+              properties:
+                zoneName:
+                  type: string
+                  description: The DNS zone name (e.g., example.com)
+                type:
+                  type: string
+                  enum:
+                    - primary
+                    - secondary
+                  default: primary
+                  description: Zone type
+                instanceSelector:
+                  type: object
+                  description: Label selector to target Bind9Instance resources
+                  properties:
+                    matchLabels:
+                      type: object
+                      additionalProperties:
+                        type: string
+                    matchExpressions:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          key:
+                            type: string
+                          operator:
+                            type: string
+                            enum:
+                              - In
+                              - NotIn
+                              - Exists
+                              - DoesNotExist
+                          values:
+                            type: array
+                            items:
+                              type: string
+                soaRecord:
+                  type: object
+                  required:
+                    - primaryNS
+                    - adminEmail
+                    - serial
+                    - refresh
+                    - retry
+                    - expire
+                    - negativeTTL
+                  properties:
+                    primaryNS:
+                      type: string
+                      description: Primary nameserver (must be FQDN with trailing dot)
+                    adminEmail:
+                      type: string
+                      description: Admin email in SOA format (admin@example.com becomes admin.example.com)
+                    serial:
+                      type: integer
+                      description: SOA serial number
+                    refresh:
+                      type: integer
+                      description: Refresh interval in seconds
+                    retry:
+                      type: integer
+                      description: Retry interval in seconds
+                    expire:
+                      type: integer
+                      description: Expire interval in seconds
+                    negativeTTL:
+                      type: integer
+                      description: Negative cache TTL in seconds
+                ttl:
+                  type: integer
+                  default: 3600
+                  description: Default TTL for zone records
+            status:
+              type: object
+              properties:
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - "Unknown"
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                observedGeneration:
+                  type: integer
+                recordCount:
+                  type: integer

@@ -1,0 +1,73 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: caarecords.dns.example.com
+spec:
+  group: dns.example.com
+  names:
+    kind: CAARecord
+    plural: caarecords
+    singular: caarecord
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            metadata:
+              type: object
+            spec:
+              type: object
+              required:
+                - zone
+                - name
+                - flags
+                - tag
+                - value
+              properties:
+                zone:
+                  type: string
+                  description: Reference to DNSZone name
+                name:
+                  type: string
+                  description: Record name (@ for apex)
+                flags:
+                  type: integer
+                  description: CAA flags
+                tag:
+                  type: string
+                  description: CAA tag (issue, issuewild, iodef)
+                value:
+                  type: string
+                  description: CAA value
+                ttl:
+                  type: integer
+                  description: Time to live in seconds
+            status:
+              type: object
+              properties:
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - "Unknown"
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                observedGeneration:
+                  type: integer

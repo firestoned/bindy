@@ -3,6 +3,9 @@ kind: Bind9Instance
 metadata:
   name: primary-dns
   namespace: dns-system
+  labels:
+    dns-role: primary
+    environment: production
 spec:
   replicas: 2
   version: "9.18"
@@ -15,3 +18,19 @@ spec:
     dnssec:
       enabled: true
       validation: true
+---
+apiVersion: dns.example.com/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: secondary-dns
+  namespace: dns-system
+  labels:
+    dns-role: secondary
+    environment: production
+spec:
+  replicas: 1
+  version: "9.18"
+  config:
+    recursion: false
+    allowQuery:
+      - "0.0.0.0/0"
