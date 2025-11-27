@@ -1,3 +1,8 @@
+//! DNS zone reconciliation logic.
+//!
+//! This module handles the creation and management of DNS zones on BIND9 servers.
+//! It supports both primary (master) and secondary (slave) zone configurations.
+
 use crate::crd::{Condition, DNSZone, DNSZoneStatus};
 use anyhow::Result;
 use chrono::Utc;
@@ -9,7 +14,42 @@ use kube::{
 use serde_json::json;
 use tracing::info;
 
-/// Reconcile a DNSZone resource
+/// Reconciles a DNSZone resource.
+///
+/// Creates or updates DNS zone files on BIND9 instances that match the zone's
+/// instance selector. Supports both primary and secondary zone types.
+///
+/// # Zone Types
+///
+/// - **Primary**: Authoritative zone with SOA record and local zone file
+/// - **Secondary**: Replica zone that transfers from primary servers
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client for finding matching Bind9Instances
+/// * `dnszone` - The DNSZone resource to reconcile
+/// * `zone_manager` - BIND9 manager for creating zone files
+///
+/// # Returns
+///
+/// * `Ok(())` - If zone was created/updated successfully
+/// * `Err(_)` - If zone creation failed or configuration is invalid
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use bindy::reconcilers::reconcile_dnszone;
+/// use bindy::crd::DNSZone;
+/// use bindy::bind9::Bind9Manager;
+/// use kube::Client;
+///
+/// async fn handle_zone(zone: DNSZone) -> anyhow::Result<()> {
+///     let client = Client::try_default().await?;
+///     let manager = Bind9Manager::new("/etc/bind/zones".to_string());
+///     reconcile_dnszone(client, zone, &manager).await?;
+///     Ok(())
+/// }
+/// ```
 pub async fn reconcile_dnszone(
     client: Client,
     dnszone: DNSZone,
@@ -121,7 +161,18 @@ pub async fn reconcile_dnszone(
     Ok(())
 }
 
-/// Delete a DNSZone resource
+/// Deletes a DNS zone and its associated zone files.
+///
+/// # Arguments
+///
+/// * `_client` - Kubernetes API client (unused, for future extensions)
+/// * `dnszone` - The DNSZone resource to delete
+/// * `zone_manager` - BIND9 manager for removing zone files
+///
+/// # Returns
+///
+/// * `Ok(())` - If zone was deleted successfully
+/// * `Err(_)` - If zone deletion failed
 pub async fn delete_dnszone(
     _client: Client,
     dnszone: DNSZone,

@@ -28,7 +28,7 @@ kubectl label bind9instance primary-dns \
 ## Create Zone
 
 ```yaml
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: example-com
@@ -51,7 +51,7 @@ spec:
 
 ### A Record
 ```yaml
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: www
@@ -64,7 +64,7 @@ spec:
 
 ### CNAME Record
 ```yaml
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: CNAMERecord
 metadata:
   name: blog
@@ -77,7 +77,7 @@ spec:
 
 ### TXT Record
 ```yaml
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: TXTRecord
 metadata:
   name: spf
@@ -91,7 +91,7 @@ spec:
 
 ### MX Record
 ```yaml
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: MXRecord
 metadata:
   name: mail
@@ -107,7 +107,7 @@ spec:
 
 ```bash
 # Check CRDs
-kubectl get crd | grep dns.example.com
+kubectl get crd | grep dns.firestoned.io
 
 # List zones
 kubectl get dnszones -n dns-system -o wide
@@ -258,7 +258,7 @@ cargo clippy
 All resources follow this pattern:
 
 ```yaml
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: <Type>
 metadata:
   name: <name>

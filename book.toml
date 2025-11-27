@@ -1,0 +1,53 @@
+[book]
+title = "Bindy - BIND9 DNS Controller for Kubernetes"
+authors = ["Erick Bourgeois"]
+description = "A high-performance Kubernetes controller written in Rust using kube-rs that manages BIND9 DNS infrastructure through Custom Resource Definitions (CRDs)."
+language = "en"
+multilingual = false
+src = "docs/book/src"
+
+[build]
+build-dir = "docs/target/book"
+create-missing = true
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+smart-punctuation = true
+mathjax-support = false
+git-repository-url = "https://github.com/firestoned/bindy"
+git-repository-icon = "fa-github"
+edit-url-template = "https://github.com/firestoned/bindy/edit/main/{path}"
+site-url = "/bindy/"
+cname = ""
+additional-css = ["docs/book/theme/custom.css"]
+additional-js = []
+no-section-label = false
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.playground]
+editable = false
+copyable = true
+copy-js = true
+line-numbers = true
+
+[output.html.search]
+enable = true
+limit-results = 30
+teaser-word-count = 30
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 1
+boost-paragraph = 1
+expand = true
+heading-split-level = 3
+
+[output.html.code.hidelines]
+python = "~"
+
+[preprocessor.links]
+
+[preprocessor.index]

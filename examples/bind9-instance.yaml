@@ -1,4 +1,4 @@
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: primary-dns
@@ -19,7 +19,7 @@ spec:
       enabled: true
       validation: true
 ---
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: secondary-dns

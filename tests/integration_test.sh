@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Usage: integration_test.sh [--image IMAGE_TAG] [--skip-deploy]
+# Examples:
+#   integration_test.sh                                    # Use local deployment
+#   integration_test.sh --image main-2025-01-01-123       # Use specific image from registry
+#   integration_test.sh --skip-deploy                      # Skip cluster/controller setup
+
 # Colors for output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -12,21 +18,74 @@ NAMESPACE="dns-system"
 CLUSTER_NAME="bindy-test"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+IMAGE_TAG=""
+SKIP_DEPLOY=false
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --image)
+            IMAGE_TAG="$2"
+            shift 2
+            ;;
+        --skip-deploy)
+            SKIP_DEPLOY=true
+            shift
+            ;;
+        *)
+            echo -e "${RED}Unknown option: $1${NC}"
+            echo "Usage: $0 [--image IMAGE_TAG] [--skip-deploy]"
+            exit 1
+            ;;
+    esac
+done
 
 echo -e "${BLUE}🧪 Running Bindy Integration Tests${NC}"
 echo ""
 
-# Check if cluster exists
-if ! kind get clusters 2>/dev/null | grep -q "^${CLUSTER_NAME}$"; then
-    echo -e "${YELLOW}⚠️  Cluster '${CLUSTER_NAME}' not found${NC}"
-    echo -e "${YELLOW}📦 Creating Kind cluster and deploying controller...${NC}"
-    "${PROJECT_ROOT}/deploy/kind-deploy.sh" || {
-        echo -e "${RED}❌ Failed to deploy controller${NC}"
+if [ "$SKIP_DEPLOY" = false ]; then
+    # Check if cluster exists
+    if ! kind get clusters 2>/dev/null | grep -q "^${CLUSTER_NAME}$"; then
+        echo -e "${YELLOW}⚠️  Cluster '${CLUSTER_NAME}' not found${NC}"
+
+        if [ -n "$IMAGE_TAG" ]; then
+            echo -e "${RED}❌ Cannot use --image without existing cluster${NC}"
+            echo -e "${YELLOW}Please create cluster first or remove --image flag${NC}"
+            exit 1
+        fi
+
+        echo -e "${YELLOW}📦 Creating Kind cluster and deploying controller...${NC}"
+        "${PROJECT_ROOT}/deploy/kind-deploy.sh" || {
+            echo -e "${RED}❌ Failed to deploy controller${NC}"
+            exit 1
+        }
+    else
+        echo -e "${GREEN}✅ Using existing cluster '${CLUSTER_NAME}'${NC}"
+        kubectl config use-context "kind-${CLUSTER_NAME}" > /dev/null
+
+        # If IMAGE_TAG is specified, update the controller deployment
+        if [ -n "$IMAGE_TAG" ]; then
+            echo -e "${YELLOW}📦 Updating controller with image: ${IMAGE_TAG}${NC}"
+
+            # Update deployment with specific image
+            kubectl set image deployment/bindy-controller \
+                bindy-controller="ghcr.io/${GITHUB_REPOSITORY:-firestoned/bindy}:${IMAGE_TAG}" \
+                -n "${NAMESPACE}"
+
+            # Wait for rollout
+            kubectl rollout status deployment/bindy-controller -n "${NAMESPACE}" --timeout=300s || {
+                echo -e "${RED}❌ Controller rollout failed${NC}"
+                kubectl logs -n "${NAMESPACE}" -l app=bindy-controller --tail=50
+                exit 1
+            }
+        fi
+    fi
+else
+    echo -e "${YELLOW}⏭️  Skipping cluster and controller deployment${NC}"
+    kubectl config use-context "kind-${CLUSTER_NAME}" > /dev/null || {
+        echo -e "${RED}❌ Cluster '${CLUSTER_NAME}' not found${NC}"
         exit 1
     }
-else
-    echo -e "${GREEN}✅ Using existing cluster '${CLUSTER_NAME}'${NC}"
-    kubectl config use-context "kind-${CLUSTER_NAME}" > /dev/null
 fi
 
 echo ""
@@ -53,7 +112,7 @@ echo -e "${GREEN}2️⃣  Running functional tests with kubectl...${NC}"
 # Test Bind9Instance creation
 echo -e "${YELLOW}Testing Bind9Instance creation...${NC}"
 kubectl apply -f - <<EOF
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: integration-test-primary
@@ -75,7 +134,7 @@ sleep 2
 # Test DNSZone creation
 echo -e "${YELLOW}Testing DNSZone creation...${NC}"
 kubectl apply -f - <<EOF
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: integration-test-zone
@@ -104,7 +163,7 @@ echo -e "${YELLOW}Testing all DNS record types...${NC}"
 
 # A Record
 kubectl apply -f - <<EOF
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: integration-a
@@ -118,7 +177,7 @@ EOF
 
 # AAAA Record
 kubectl apply -f - <<EOF
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: AAAARecord
 metadata:
   name: integration-aaaa
@@ -132,7 +191,7 @@ EOF
 
 # CNAME Record
 kubectl apply -f - <<EOF
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: CNAMERecord
 metadata:
   name: integration-cname
@@ -146,7 +205,7 @@ EOF
 
 # MX Record
 kubectl apply -f - <<EOF
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: MXRecord
 metadata:
   name: integration-mx
@@ -161,7 +220,7 @@ EOF
 
 # TXT Record
 kubectl apply -f - <<EOF
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: TXTRecord
 metadata:
   name: integration-txt
@@ -176,7 +235,7 @@ EOF
 
 # NS Record
 kubectl apply -f - <<EOF
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: NSRecord
 metadata:
   name: integration-ns
@@ -190,7 +249,7 @@ EOF
 
 # SRV Record
 kubectl apply -f - <<EOF
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: SRVRecord
 metadata:
   name: integration-srv
@@ -207,7 +266,7 @@ EOF
 
 # CAA Record
 kubectl apply -f - <<EOF
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: CAARecord
 metadata:
   name: integration-caa

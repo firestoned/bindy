@@ -6,6 +6,15 @@ authors = ["Erick Bourgeois <erick@hjeb.ca>"]
 description = "BIND9 DNS Controller for Kubernetes"
 license = "MIT"
 repository = "https://github.com/firestoned/bindy"
+documentation = "https://firestoned.github.io/bindy/"
+homepage = "https://firestoned.github.io/bindy/"
+readme = "README.md"
+keywords = ["kubernetes", "dns", "bind9", "controller", "operator"]
+categories = ["network-programming", "web-programming"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 kube = { version = "0.93", features = ["runtime", "derive", "client"] }
