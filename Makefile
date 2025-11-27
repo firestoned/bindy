@@ -1,7 +1,7 @@
 .PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup
 
 REGISTRY ?= ghcr.io
-IMAGE_NAME ?= bindy
+IMAGE_NAME ?= firestoned/bindy
 TAG ?= latest
 NAMESPACE ?= dns-system
 KIND_CLUSTER ?= bindy-test
