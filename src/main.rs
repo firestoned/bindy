@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
     let client = Client::try_default().await?;
 
     // Create BIND9 manager (zones directory - in production this should be configurable)
-    let bind9_manager = Arc::new(Bind9Manager::new("/etc/bind/zones".to_string()));
+    let bind9_manager = Arc::new(Bind9Manager::new("/etc/bind/zones".into()));
 
     info!("Starting BIND9 DNS Controller");
 
