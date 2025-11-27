@@ -1,27 +1,27 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: bind9-controller
+  name: bindy
   namespace: dns-system
   labels:
-    app: bind9-controller
+    app: bindy
     version: v1
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: bind9-controller
+      app: bindy
   template:
     metadata:
       labels:
-        app: bind9-controller
+        app: bindy
         version: v1
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "8080"
         prometheus.io/path: "/metrics"
     spec:
-      serviceAccountName: bind9-controller
+      serviceAccountName: bindy
       securityContext:
         fsGroup: 65534
         runAsNonRoot: true
@@ -89,5 +89,5 @@ spec:
                     - key: app
                       operator: In
                       values:
-                        - bind9-controller
+                        - bindy
                 topologyKey: kubernetes.io/hostname

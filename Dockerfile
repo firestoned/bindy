@@ -18,7 +18,7 @@ COPY src ./src
 
 # Build the actual controller
 # Touch main.rs to ensure it's rebuilt with the real code
-RUN touch src/main.rs && cargo build --release -j 2
+RUN touch src/main.rs && cargo build --release
 
 # Runtime stage
 FROM alpine:3.20

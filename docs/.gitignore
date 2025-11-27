@@ -1,8 +1,9 @@
 # Documentation build artifacts
 target/
 
-# mdBook build output
-book/
+# mdBook build output (not the source!)
+# Note: book source is in docs/src/ and should be tracked
+# Only ignore the build output in docs/target/
 
 # Temporary files
 *.tmp
