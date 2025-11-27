@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: bind9-dns
+  namespace: bind9
+  labels:
+    app: bind9
+    component: dns
+  annotations:
+    linkerd.io/inject: disabled  # DNS doesn't work well with service mesh sidecar
+spec:
+  type: NodePort
+  selector:
+    app: bind9
+  ports:
+  - name: dns-udp
+    port: 53
+    targetPort: dns-udp
+    protocol: UDP
+    nodePort: 30053
+  - name: dns-tcp
+    port: 53
+    targetPort: dns-tcp
+    protocol: TCP
+    nodePort: 30053
+  sessionAffinity: None

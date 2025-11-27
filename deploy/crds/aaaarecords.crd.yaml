@@ -1,0 +1,65 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: aaaarecords.dns.example.com
+spec:
+  group: dns.example.com
+  names:
+    kind: AAAARecord
+    plural: aaaarecords
+    singular: aaaarecord
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            metadata:
+              type: object
+            spec:
+              type: object
+              required:
+                - zone
+                - name
+                - ipv6Address
+              properties:
+                zone:
+                  type: string
+                  description: Reference to DNSZone name
+                name:
+                  type: string
+                  description: Record name (@ for apex)
+                ipv6Address:
+                  type: string
+                  description: IPv6 address
+                ttl:
+                  type: integer
+                  description: Time to live in seconds
+            status:
+              type: object
+              properties:
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - "Unknown"
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                observedGeneration:
+                  type: integer

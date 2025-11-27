@@ -1,17 +1,40 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: bind9-operator-role
+  name: bind9-controller-role
 rules:
-- apiGroups: ["dns.example.com"]
-  resources: ["*"]
-  verbs: ["*"]
-- apiGroups: [""]
-  resources: ["configmaps", "services", "pods", "pods/exec"]
-  verbs: ["*"]
-- apiGroups: ["apps"]
-  resources: ["statefulsets"]
-  verbs: ["*"]
-- apiGroups: [""]
-  resources: ["events"]
-  verbs: ["create", "patch"]
+  # DNSZone resources and status
+  - apiGroups: ["dns.example.com"]
+    resources: ["dnszones", "dnszones/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  
+  # Record resources and status
+  - apiGroups: ["dns.example.com"]
+    resources: 
+      - "arecords"
+      - "arecords/status"
+      - "aaaarecords"
+      - "aaaarecords/status"
+      - "txtrecords"
+      - "txtrecords/status"
+      - "cnamerecords"
+      - "cnamerecords/status"
+      - "mxrecords"
+      - "mxrecords/status"
+      - "nsrecords"
+      - "nsrecords/status"
+      - "srvrecords"
+      - "srvrecords/status"
+      - "caarecords"
+      - "caarecords/status"
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  
+  # Bind9Instance resources and status
+  - apiGroups: ["dns.example.com"]
+    resources: ["bind9instances", "bind9instances/status"]
+    verbs: ["get", "list", "watch"]
+  
+  # Events for logging
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]

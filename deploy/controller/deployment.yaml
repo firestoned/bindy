@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bind9-controller
+  namespace: dns-system
+  labels:
+    app: bind9-controller
+    version: v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bind9-controller
+  template:
+    metadata:
+      labels:
+        app: bind9-controller
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: bind9-controller
+      securityContext:
+        fsGroup: 65534
+        runAsNonRoot: true
+      containers:
+        - name: controller
+          image: ghcr.io/firestoned/bindy-controller:latest
+          imagePullPolicy: Always
+          env:
+            - name: RUST_LOG
+              value: "info"
+            - name: BIND9_ZONES_DIR
+              value: "/etc/bind/zones"
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          livenessProbe:
+            exec:
+              command:
+                - /usr/local/bin/bindy-controller
+                - --health-check
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            exec:
+              command:
+                - /usr/local/bin/bindy-controller
+                - --ready-check
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: bind-zones
+              mountPath: /etc/bind/zones
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: bind-zones
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - bind9-controller
+                topologyKey: kubernetes.io/hostname

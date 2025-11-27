@@ -1,0 +1,25 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: bindy-test
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      # DNS port for testing
+      - containerPort: 30053
+        hostPort: 30053
+        protocol: UDP
+      - containerPort: 30053
+        hostPort: 30053
+        protocol: TCP
+      # RNDC port for management
+      - containerPort: 30953
+        hostPort: 30953
+        protocol: TCP
+  - role: worker
+  - role: worker

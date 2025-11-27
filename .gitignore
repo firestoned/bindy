@@ -1,25 +1,7 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+# Rust
+/controller/target/
+**/*.rs.bk
+*.pdb
 
 # Virtual environments
 venv/
@@ -49,3 +31,32 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+# Rust
+/target/
+*.rlib
+*.rmeta
+**/*.rs.bk
+.cargo/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Build artifacts
+*.o
+*.a
+*.dylib
+*.so
+*.dll
+
+# Testing
+.coverage/
+*.prof
+
+# Environment
+.env
+.env.local

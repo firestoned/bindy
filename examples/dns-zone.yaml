@@ -5,11 +5,47 @@ metadata:
   namespace: dns-system
 spec:
   zoneName: example.com
-  type: master
-  bind9InstanceRef: primary-dns
+  type: primary
+  # Label selector to target Bind9Instance resources
+  instanceSelector:
+    matchLabels:
+      dns-role: primary
+      environment: production
   soaRecord:
     primaryNS: ns1.example.com.
     adminEmail: admin@example.com
+    serial: 2024010101
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTTL: 86400
+  ttl: 3600
+---
+apiVersion: dns.example.com/v1alpha1
+kind: DNSZone
+metadata:
+  name: internal-local
+  namespace: dns-system
+spec:
+  zoneName: internal.local
+  type: primary
+  # Use label expressions for more complex selectors
+  instanceSelector:
+    matchExpressions:
+      - key: dns-role
+        operator: In
+        values:
+          - primary
+          - secondary
+      - key: environment
+        operator: In
+        values:
+          - production
+          - staging
+  soaRecord:
+    primaryNS: ns1.internal.local.
+    adminEmail: admin@internal.local
+    serial: 2024010101
     refresh: 3600
     retry: 600
     expire: 604800
