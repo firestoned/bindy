@@ -1,5 +1,8 @@
 # BIND9 DNS Controller for Kubernetes
 
+[![Main Branch CI/CD](https://github.com/firestoned/bindy/actions/workflows/main.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/main.yaml)
+[![PR CI](https://github.com/firestoned/bindy/actions/workflows/pr.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/pr.yaml)
+[![Integration Tests](https://github.com/firestoned/bindy/actions/workflows/integration.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/integration.yaml)
 [![codecov](https://codecov.io/gh/firestoned/bindy/branch/main/graph/badge.svg)](https://codecov.io/gh/firestoned/bindy)
 
 A high-performance Kubernetes controller written in Rust using kube-rs that manages BIND9 DNS infrastructure through Custom Resource Definitions (CRDs).
@@ -44,22 +47,53 @@ The controller runs multiple reconcilers concurrently:
 
 ## Installation
 
-### 1. Install CRDs
-
-```bash
-kubectl apply -f deploy/crds/dns-crds.yaml
-```
-
-### 2. Create Namespace and RBAC
+### 1. Create Namespace
 
 ```bash
 kubectl create namespace dns-system
+```
+
+### 2. Install CRDs
+
+```bash
+kubectl apply -f deploy/crds/
+```
+
+This will install all Custom Resource Definitions:
+- `bind9instances.dns.example.com`
+- `dnszones.dns.example.com`
+- `arecords.dns.example.com`
+- `aaaarecords.dns.example.com`
+- `cnamerecords.dns.example.com`
+- `mxrecords.dns.example.com`
+- `txtrecords.dns.example.com`
+- `nsrecords.dns.example.com`
+- `srvrecords.dns.example.com`
+- `caarecords.dns.example.com`
+
+### 3. Create RBAC
+
+```bash
 kubectl apply -f deploy/rbac/
 ```
 
-### 3. Create Bind9Instance Resources
+### 4. Deploy Controller
 
-Label your BIND9 instances appropriately:
+```bash
+kubectl apply -f deploy/controller/deployment.yaml
+```
+
+Wait for the controller to be ready:
+
+```bash
+kubectl wait --for=condition=available --timeout=300s deployment/bind9-controller -n dns-system
+```
+
+### 5. Create Bind9Instance Resources
+
+After the controller is running, create your BIND9 instances.
+
+#### Primary Instance
 
 ```yaml
 apiVersion: dns.example.com/v1alpha1
@@ -70,6 +104,7 @@ metadata:
   labels:
     dns-role: primary
     environment: production
+    datacenter: us-east
 spec:
   replicas: 2
   version: "9.18"
@@ -78,13 +113,177 @@ spec:
     allowQuery:
       - "0.0.0.0/0"
     allowTransfer:
-      - "10.0.0.0/8"
+      - "10.0.0.0/8"  # Allow transfers to secondary servers
 ```
 
-### 4. Deploy Controller
+#### Secondary Instance
+
+```yaml
+apiVersion: dns.example.com/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: secondary-dns
+  namespace: dns-system
+  labels:
+    dns-role: secondary
+    environment: production
+    datacenter: us-west
+spec:
+  replicas: 2
+  version: "9.18"
+  config:
+    recursion: false
+    allowQuery:
+      - "0.0.0.0/0"
+    allowTransfer: []  # Secondaries typically don't transfer to others
+```
+
+Apply the instances:
 
 ```bash
-kubectl apply -f deploy/operator/deployment.yaml
+kubectl apply -f primary-instance.yaml
+kubectl apply -f secondary-instance.yaml
+```
+
+## Primary and Secondary DNS Architecture
+
+### How Zone Transfers Work
+
+The controller manages zone configurations on both primary and secondary BIND9 instances. Here's how they communicate:
+
+1. **Primary Instance** - Authoritative source for zone data
+   - Hosts the master copy of DNS zones
+   - Accepts dynamic updates (if configured)
+   - Allows zone transfers to secondaries via `allowTransfer` ACL
+
+2. **Secondary Instance** - Read-only replica
+   - Receives zone data via AXFR/IXFR from primary
+   - Provides redundancy and load distribution
+   - Cannot accept dynamic updates
+
+### Example: Multi-Region DNS Setup
+
+```yaml
+# Primary in US-East
+apiVersion: dns.example.com/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: primary-us-east
+  namespace: dns-system
+  labels:
+    dns-role: primary
+    region: us-east
+spec:
+  replicas: 2
+  version: "9.18"
+  config:
+    recursion: false
+    allowQuery:
+      - "0.0.0.0/0"
+    allowTransfer:
+      - "10.1.0.0/16"  # US-West secondary network
+      - "10.2.0.0/16"  # EU secondary network
+
+---
+# Secondary in US-West
+apiVersion: dns.example.com/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: secondary-us-west
+  namespace: dns-system
+  labels:
+    dns-role: secondary
+    region: us-west
+spec:
+  replicas: 2
+  version: "9.18"
+  config:
+    recursion: false
+    allowQuery:
+      - "0.0.0.0/0"
+
+---
+# Secondary in EU
+apiVersion: dns.example.com/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: secondary-eu
+  namespace: dns-system
+  labels:
+    dns-role: secondary
+    region: eu-central
+spec:
+  replicas: 2
+  version: "9.18"
+  config:
+    recursion: false
+    allowQuery:
+      - "0.0.0.0/0"
+```
+
+### Zone Distribution to Both Primary and Secondary
+
+When you create a DNSZone, you can target both primary and secondary instances using label selectors:
+
+```yaml
+apiVersion: dns.example.com/v1alpha1
+kind: DNSZone
+metadata:
+  name: example-com
+  namespace: dns-system
+spec:
+  zoneName: example.com
+  type: primary
+  # This selector matches BOTH primary and secondary instances
+  instanceSelector:
+    matchExpressions:
+      - key: dns-role
+        operator: In
+        values:
+          - primary
+          - secondary
+  soaRecord:
+    primaryNS: ns1.example.com.
+    adminEmail: admin@example.com
+    serial: 2024010101
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTTL: 86400
+  ttl: 3600
+```
+
+The controller will:
+1. Generate zone configuration for the primary instance
+2. Generate zone configuration for all matched secondary instances
+3. BIND9's built-in zone transfer mechanism handles data replication
+4. Both primary and secondary can answer queries for the zone
+
+### Target Only Primary Instances
+
+To create zones only on primary servers:
+
+```yaml
+apiVersion: dns.example.com/v1alpha1
+kind: DNSZone
+metadata:
+  name: internal-only
+  namespace: dns-system
+spec:
+  zoneName: internal.local
+  type: primary
+  instanceSelector:
+    matchLabels:
+      dns-role: primary  # Only primaries
+  soaRecord:
+    primaryNS: ns1.internal.local.
+    adminEmail: admin@internal.local
+    serial: 2024010101
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTTL: 86400
+  ttl: 3600
 ```
 
 ## Usage Examples
