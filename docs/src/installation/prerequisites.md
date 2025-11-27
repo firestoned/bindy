@@ -12,6 +12,9 @@ Before installing Bindy, ensure your environment meets these requirements.
 
 Bindy has been tested on:
 - Kubernetes (vanilla)
+- k0s
+- MKE
+- k0RDENT
 - Amazon EKS
 - Google GKE
 - Azure AKS
