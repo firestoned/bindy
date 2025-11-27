@@ -31,7 +31,7 @@ spec:
                 zoneName:
                   type: string
                   description: The DNS zone name (e.g., example.com)
-                type:
+                zoneType:
                   type: string
                   enum:
                     - primary
@@ -67,15 +67,15 @@ spec:
                 soaRecord:
                   type: object
                   required:
-                    - primaryNS
+                    - primaryNs
                     - adminEmail
                     - serial
                     - refresh
                     - retry
                     - expire
-                    - negativeTTL
+                    - negativeTtl
                   properties:
-                    primaryNS:
+                    primaryNs:
                       type: string
                       description: Primary nameserver (must be FQDN with trailing dot)
                     adminEmail:
@@ -93,7 +93,7 @@ spec:
                     expire:
                       type: integer
                       description: Expire interval in seconds
-                    negativeTTL:
+                    negativeTtl:
                       type: integer
                       description: Negative cache TTL in seconds
                 ttl:

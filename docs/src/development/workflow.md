@@ -40,7 +40,7 @@ git push origin feature/my-feature
 kind create cluster --name bindy-dev
 
 # Deploy CRDs
-kubectl apply -f deploy/crds/
+kubectl apply -k deploy/crds/
 
 # Run controller locally
 RUST_LOG=debug cargo run

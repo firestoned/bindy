@@ -216,7 +216,7 @@ async fn find_matching_instances(
 }
 
 /// Build a Kubernetes label selector string from our LabelSelector
-fn build_label_selector(selector: &crate::crd::LabelSelector) -> Option<String> {
+pub(crate) fn build_label_selector(selector: &crate::crd::LabelSelector) -> Option<String> {
     let mut parts = Vec::new();
 
     // Add match labels

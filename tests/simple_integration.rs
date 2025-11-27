@@ -79,7 +79,7 @@ async fn test_crds_installed() {
             // But don't fail if they're not there, just report
             if bindy_crds.is_empty() {
                 println!(
-                    "Warning: No Bindy CRDs found. Install with: kubectl apply -f deploy/crds/"
+                    "Warning: No Bindy CRDs found. Install with: kubectl apply -k deploy/crds/"
                 );
             }
         }
