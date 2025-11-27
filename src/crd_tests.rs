@@ -13,8 +13,8 @@ mod tests {
     #[test]
     fn test_label_selector_with_match_labels() {
         let mut labels = BTreeMap::new();
-        labels.insert("app".to_string(), "dns".to_string());
-        labels.insert("env".to_string(), "prod".to_string());
+        labels.insert("app".into(), "dns".into());
+        labels.insert("env".into(), "prod".into());
 
         let selector = LabelSelector {
             match_labels: Some(labels.clone()),
@@ -28,9 +28,9 @@ mod tests {
     #[test]
     fn test_label_selector_requirement() {
         let req = LabelSelectorRequirement {
-            key: "environment".to_string(),
-            operator: "In".to_string(),
-            values: Some(vec!["prod".to_string(), "staging".to_string()]),
+            key: "environment".into(),
+            operator: "In".into(),
+            values: Some(vec!["prod".into(), "staging".into()]),
         };
 
         assert_eq!(req.key, "environment");
@@ -42,8 +42,8 @@ mod tests {
     #[test]
     fn test_soa_record() {
         let soa = SOARecord {
-            primary_ns: "ns1.example.com.".to_string(),
-            admin_email: "admin@example.com".to_string(),
+            primary_ns: "ns1.example.com.".into(),
+            admin_email: "admin@example.com".into(),
             serial: 2024010101,
             refresh: 3600,
             retry: 600,
@@ -59,11 +59,11 @@ mod tests {
     #[test]
     fn test_condition() {
         let condition = Condition {
-            r#type: "Ready".to_string(),
-            status: "True".to_string(),
-            reason: Some("ReconcileSuccess".to_string()),
-            message: Some("Zone created successfully".to_string()),
-            last_transition_time: Some("2024-01-01T00:00:00Z".to_string()),
+            r#type: "Ready".into(),
+            status: "True".into(),
+            reason: Some("ReconcileSuccess".into()),
+            message: Some("Zone created successfully".into()),
+            last_transition_time: Some("2024-01-01T00:00:00Z".into()),
         };
 
         assert_eq!(condition.r#type, "Ready");
@@ -83,8 +83,8 @@ mod tests {
     #[test]
     fn test_secondary_zone_config() {
         let config = SecondaryZoneConfig {
-            primary_servers: vec!["10.0.1.1".to_string(), "10.0.1.2".to_string()],
-            tsig_key: Some("my-key".to_string()),
+            primary_servers: vec!["10.0.1.1".into(), "10.0.1.2".into()],
+            tsig_key: Some("my-key".into()),
         };
 
         assert_eq!(config.primary_servers.len(), 2);
@@ -95,7 +95,7 @@ mod tests {
     #[test]
     fn test_secondary_zone_config_without_tsig() {
         let config = SecondaryZoneConfig {
-            primary_servers: vec!["10.0.1.1".to_string()],
+            primary_servers: vec!["10.0.1.1".into()],
             tsig_key: None,
         };
 
@@ -106,8 +106,8 @@ mod tests {
     #[test]
     fn test_dnszone_spec_primary() {
         let soa = SOARecord {
-            primary_ns: "ns1.example.com.".to_string(),
-            admin_email: "admin@example.com".to_string(),
+            primary_ns: "ns1.example.com.".into(),
+            admin_email: "admin@example.com".into(),
             serial: 2024010101,
             refresh: 3600,
             retry: 600,
@@ -116,8 +116,8 @@ mod tests {
         };
 
         let spec = DNSZoneSpec {
-            zone_name: "example.com".to_string(),
-            zone_type: Some("primary".to_string()),
+            zone_name: "example.com".into(),
+            zone_type: Some("primary".into()),
             instance_selector: LabelSelector::default(),
             soa_record: Some(soa),
             secondary_config: None,
@@ -133,13 +133,13 @@ mod tests {
     #[test]
     fn test_dnszone_spec_secondary() {
         let config = SecondaryZoneConfig {
-            primary_servers: vec!["10.0.1.1".to_string()],
+            primary_servers: vec!["10.0.1.1".into()],
             tsig_key: None,
         };
 
         let spec = DNSZoneSpec {
-            zone_name: "example.com".to_string(),
-            zone_type: Some("secondary".to_string()),
+            zone_name: "example.com".into(),
+            zone_type: Some("secondary".into()),
             instance_selector: LabelSelector::default(),
             soa_record: None,
             secondary_config: Some(config),
@@ -155,9 +155,9 @@ mod tests {
     #[test]
     fn test_arecord_spec() {
         let spec = ARecordSpec {
-            zone: "example.com".to_string(),
-            name: "www".to_string(),
-            ipv4_address: "192.0.2.1".to_string(),
+            zone: "example.com".into(),
+            name: "www".into(),
+            ipv4_address: "192.0.2.1".into(),
             ttl: Some(300),
         };
 
@@ -170,9 +170,9 @@ mod tests {
     #[test]
     fn test_aaaarecord_spec() {
         let spec = AAAARecordSpec {
-            zone: "example.com".to_string(),
-            name: "www".to_string(),
-            ipv6_address: "2001:db8::1".to_string(),
+            zone: "example.com".into(),
+            name: "www".into(),
+            ipv6_address: "2001:db8::1".into(),
             ttl: Some(300),
         };
 
@@ -183,9 +183,9 @@ mod tests {
     #[test]
     fn test_txtrecord_spec() {
         let spec = TXTRecordSpec {
-            zone: "example.com".to_string(),
-            name: "@".to_string(),
-            text: vec!["v=spf1 mx ~all".to_string()],
+            zone: "example.com".into(),
+            name: "@".into(),
+            text: vec!["v=spf1 mx ~all".into()],
             ttl: Some(3600),
         };
 
@@ -196,9 +196,9 @@ mod tests {
     #[test]
     fn test_cnamerecord_spec() {
         let spec = CNAMERecordSpec {
-            zone: "example.com".to_string(),
-            name: "blog".to_string(),
-            target: "www.example.com.".to_string(),
+            zone: "example.com".into(),
+            name: "blog".into(),
+            target: "www.example.com.".into(),
             ttl: Some(300),
         };
 
@@ -208,10 +208,10 @@ mod tests {
     #[test]
     fn test_mxrecord_spec() {
         let spec = MXRecordSpec {
-            zone: "example.com".to_string(),
-            name: "@".to_string(),
+            zone: "example.com".into(),
+            name: "@".into(),
             priority: 10,
-            mail_server: "mail.example.com.".to_string(),
+            mail_server: "mail.example.com.".into(),
             ttl: Some(3600),
         };
 
@@ -222,9 +222,9 @@ mod tests {
     #[test]
     fn test_nsrecord_spec() {
         let spec = NSRecordSpec {
-            zone: "example.com".to_string(),
-            name: "@".to_string(),
-            nameserver: "ns1.example.com.".to_string(),
+            zone: "example.com".into(),
+            name: "@".into(),
+            nameserver: "ns1.example.com.".into(),
             ttl: Some(3600),
         };
 
@@ -234,12 +234,12 @@ mod tests {
     #[test]
     fn test_srvrecord_spec() {
         let spec = SRVRecordSpec {
-            zone: "example.com".to_string(),
-            name: "_sip._tcp".to_string(),
+            zone: "example.com".into(),
+            name: "_sip._tcp".into(),
             priority: 10,
             weight: 60,
             port: 5060,
-            target: "sipserver.example.com.".to_string(),
+            target: "sipserver.example.com.".into(),
             ttl: Some(3600),
         };
 
@@ -252,11 +252,11 @@ mod tests {
     #[test]
     fn test_caarecord_spec() {
         let spec = CAARecordSpec {
-            zone: "example.com".to_string(),
-            name: "@".to_string(),
+            zone: "example.com".into(),
+            name: "@".into(),
             flags: 0,
-            tag: "issue".to_string(),
-            value: "letsencrypt.org".to_string(),
+            tag: "issue".into(),
+            value: "letsencrypt.org".into(),
             ttl: Some(3600),
         };
 
@@ -276,15 +276,15 @@ mod tests {
     fn test_bind9_config() {
         let config = Bind9Config {
             recursion: Some(false),
-            allow_query: Some(vec!["0.0.0.0/0".to_string()]),
-            allow_transfer: Some(vec!["10.0.0.0/8".to_string()]),
+            allow_query: Some(vec!["0.0.0.0/0".into()]),
+            allow_transfer: Some(vec!["10.0.0.0/8".into()]),
             dnssec: Some(DNSSECConfig {
                 enabled: Some(true),
                 validation: Some(true),
             }),
-            forwarders: Some(vec!["8.8.8.8".to_string(), "8.8.4.4".to_string()]),
-            listen_on: Some(vec!["any".to_string()]),
-            listen_on_v6: Some(vec!["any".to_string()]),
+            forwarders: Some(vec!["8.8.8.8".into(), "8.8.4.4".into()]),
+            listen_on: Some(vec!["any".into()]),
+            listen_on_v6: Some(vec!["any".into()]),
         };
 
         assert_eq!(config.recursion, Some(false));
@@ -308,7 +308,7 @@ mod tests {
     fn test_bind9instance_spec() {
         let spec = Bind9InstanceSpec {
             replicas: Some(3),
-            version: Some("9.18".to_string()),
+            version: Some("9.18".into()),
             config: Some(Bind9Config {
                 recursion: Some(false),
                 allow_query: None,
@@ -337,8 +337,8 @@ mod tests {
     #[test]
     fn test_bind9instance_status_with_values() {
         let condition = Condition {
-            r#type: "Ready".to_string(),
-            status: "True".to_string(),
+            r#type: "Ready".into(),
+            status: "True".into(),
             reason: None,
             message: None,
             last_transition_time: None,
@@ -363,11 +363,11 @@ mod tests {
 
         for condition_type in valid_types {
             let condition = Condition {
-                r#type: condition_type.to_string(),
-                status: "True".to_string(),
-                reason: Some("Test".to_string()),
-                message: Some("Test message".to_string()),
-                last_transition_time: Some("2024-11-26T10:00:00Z".to_string()),
+                r#type: condition_type.into(),
+                status: "True".into(),
+                reason: Some("Test".into()),
+                message: Some("Test message".into()),
+                last_transition_time: Some("2024-11-26T10:00:00Z".into()),
             };
 
             assert_eq!(condition.r#type, condition_type);
@@ -386,7 +386,7 @@ mod tests {
         for status_value in valid_statuses {
             let condition = Condition {
                 r#type: "Ready".to_string(),
-                status: status_value.to_string(),
+                status: status_value.into(),
                 reason: None,
                 message: None,
                 last_transition_time: None,
@@ -399,11 +399,11 @@ mod tests {
     #[test]
     fn test_condition_with_all_fields() {
         let condition = Condition {
-            r#type: "Ready".to_string(),
-            status: "True".to_string(),
-            reason: Some("ResourceCreated".to_string()),
-            message: Some("All resources successfully created".to_string()),
-            last_transition_time: Some("2024-11-26T10:00:00Z".to_string()),
+            r#type: "Ready".into(),
+            status: "True".into(),
+            reason: Some("ResourceCreated".into()),
+            message: Some("All resources successfully created".into()),
+            last_transition_time: Some("2024-11-26T10:00:00Z".into()),
         };
 
         assert_eq!(condition.r#type, "Ready");
@@ -423,18 +423,18 @@ mod tests {
     fn test_multiple_conditions() {
         let conditions = vec![
             Condition {
-                r#type: "Ready".to_string(),
-                status: "True".to_string(),
-                reason: Some("Ready".to_string()),
-                message: Some("Resource is ready".to_string()),
-                last_transition_time: Some("2024-11-26T10:00:00Z".to_string()),
+                r#type: "Ready".into(),
+                status: "True".into(),
+                reason: Some("Ready".into()),
+                message: Some("Resource is ready".into()),
+                last_transition_time: Some("2024-11-26T10:00:00Z".into()),
             },
             Condition {
-                r#type: "Progressing".to_string(),
-                status: "False".to_string(),
-                reason: Some("Completed".to_string()),
-                message: Some("Deployment complete".to_string()),
-                last_transition_time: Some("2024-11-26T10:00:00Z".to_string()),
+                r#type: "Progressing".into(),
+                status: "False".into(),
+                reason: Some("Completed".into()),
+                message: Some("Deployment complete".into()),
+                last_transition_time: Some("2024-11-26T10:00:00Z".into()),
             },
         ];
 
@@ -453,11 +453,11 @@ mod tests {
     #[test]
     fn test_dnszone_status_with_conditions() {
         let condition = Condition {
-            r#type: "Ready".to_string(),
-            status: "True".to_string(),
-            reason: Some("ZoneCreated".to_string()),
-            message: Some("Zone file created for 2 instances".to_string()),
-            last_transition_time: Some("2024-11-26T10:00:00Z".to_string()),
+            r#type: "Ready".into(),
+            status: "True".into(),
+            reason: Some("ZoneCreated".into()),
+            message: Some("Zone file created for 2 instances".into()),
+            last_transition_time: Some("2024-11-26T10:00:00Z".into()),
         };
 
         let status = DNSZoneStatus {
@@ -474,11 +474,11 @@ mod tests {
     #[test]
     fn test_record_status_with_condition() {
         let condition = Condition {
-            r#type: "Ready".to_string(),
-            status: "True".to_string(),
-            reason: Some("RecordCreated".to_string()),
-            message: Some("DNS record added to zone".to_string()),
-            last_transition_time: Some("2024-11-26T10:00:00Z".to_string()),
+            r#type: "Ready".into(),
+            status: "True".into(),
+            reason: Some("RecordCreated".into()),
+            message: Some("DNS record added to zone".into()),
+            last_transition_time: Some("2024-11-26T10:00:00Z".into()),
         };
 
         let status = RecordStatus {
@@ -494,11 +494,11 @@ mod tests {
     #[test]
     fn test_degraded_condition() {
         let condition = Condition {
-            r#type: "Degraded".to_string(),
-            status: "True".to_string(),
-            reason: Some("SomeReplicasDown".to_string()),
-            message: Some("1 of 3 replicas is not ready".to_string()),
-            last_transition_time: Some("2024-11-26T10:00:00Z".to_string()),
+            r#type: "Degraded".into(),
+            status: "True".into(),
+            reason: Some("SomeReplicasDown".into()),
+            message: Some("1 of 3 replicas is not ready".into()),
+            last_transition_time: Some("2024-11-26T10:00:00Z".into()),
         };
 
         let status = Bind9InstanceStatus {
@@ -516,11 +516,11 @@ mod tests {
     #[test]
     fn test_failed_condition() {
         let condition = Condition {
-            r#type: "Failed".to_string(),
-            status: "True".to_string(),
-            reason: Some("ResourceCreationFailed".to_string()),
-            message: Some("Failed to create ConfigMap: permission denied".to_string()),
-            last_transition_time: Some("2024-11-26T10:00:00Z".to_string()),
+            r#type: "Failed".into(),
+            status: "True".into(),
+            reason: Some("ResourceCreationFailed".into()),
+            message: Some("Failed to create ConfigMap: permission denied".into()),
+            last_transition_time: Some("2024-11-26T10:00:00Z".into()),
         };
 
         let status = Bind9InstanceStatus {
@@ -542,11 +542,11 @@ mod tests {
     #[test]
     fn test_available_condition() {
         let condition = Condition {
-            r#type: "Available".to_string(),
-            status: "True".to_string(),
-            reason: Some("MinimumReplicasAvailable".to_string()),
-            message: Some("Deployment has minimum availability".to_string()),
-            last_transition_time: Some("2024-11-26T10:00:00Z".to_string()),
+            r#type: "Available".into(),
+            status: "True".into(),
+            reason: Some("MinimumReplicasAvailable".into()),
+            message: Some("Deployment has minimum availability".into()),
+            last_transition_time: Some("2024-11-26T10:00:00Z".into()),
         };
 
         assert_eq!(condition.r#type, "Available");
@@ -556,11 +556,11 @@ mod tests {
     #[test]
     fn test_progressing_condition() {
         let condition = Condition {
-            r#type: "Progressing".to_string(),
-            status: "True".to_string(),
-            reason: Some("NewReplicaSetCreated".to_string()),
-            message: Some("Deployment is progressing".to_string()),
-            last_transition_time: Some("2024-11-26T10:00:00Z".to_string()),
+            r#type: "Progressing".into(),
+            status: "True".into(),
+            reason: Some("NewReplicaSetCreated".into()),
+            message: Some("Deployment is progressing".into()),
+            last_transition_time: Some("2024-11-26T10:00:00Z".into()),
         };
 
         assert_eq!(condition.r#type, "Progressing");
@@ -572,11 +572,11 @@ mod tests {
         use serde_json;
 
         let condition = Condition {
-            r#type: "Ready".to_string(),
-            status: "True".to_string(),
-            reason: Some("AllGood".to_string()),
-            message: Some("Everything is working".to_string()),
-            last_transition_time: Some("2024-11-26T10:00:00Z".to_string()),
+            r#type: "Ready".into(),
+            status: "True".into(),
+            reason: Some("AllGood".into()),
+            message: Some("Everything is working".into()),
+            last_transition_time: Some("2024-11-26T10:00:00Z".into()),
         };
 
         let json = serde_json::to_string(&condition).unwrap();

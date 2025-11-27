@@ -68,14 +68,14 @@ if [ "$SKIP_DEPLOY" = false ]; then
             echo -e "${YELLOW}📦 Updating controller with image: ${IMAGE_TAG}${NC}"
 
             # Update deployment with specific image
-            kubectl set image deployment/bindy-controller \
-                bindy-controller="ghcr.io/${GITHUB_REPOSITORY:-firestoned/bindy}:${IMAGE_TAG}" \
+            kubectl set image deployment/bindy \
+                controller="ghcr.io/${GITHUB_REPOSITORY:-firestoned/bindy}:${IMAGE_TAG}" \
                 -n "${NAMESPACE}"
 
             # Wait for rollout
-            kubectl rollout status deployment/bindy-controller -n "${NAMESPACE}" --timeout=300s || {
+            kubectl rollout status deployment/bindy -n "${NAMESPACE}" --timeout=300s || {
                 echo -e "${RED}❌ Controller rollout failed${NC}"
-                kubectl logs -n "${NAMESPACE}" -l app=bindy-controller --tail=50
+                kubectl logs -n "${NAMESPACE}" -l app=bindy --tail=50
                 exit 1
             }
         fi
@@ -103,7 +103,7 @@ if [ $TEST_EXIT -eq 0 ]; then
 else
     echo -e "${RED}❌ Integration tests failed with exit code ${TEST_EXIT}${NC}"
     echo -e "${YELLOW}Checking controller logs:${NC}"
-    kubectl logs -n "${NAMESPACE}" -l app=bindy-controller --tail=50 || true
+    kubectl logs -n "${NAMESPACE}" -l app=bindy --tail=50 || true
 fi
 
 echo ""
@@ -355,6 +355,6 @@ else
     echo "  - Functional tests: $([ $ERRORS -eq 0 ] && echo 'PASSED' || echo "FAILED ($ERRORS errors)")"
     echo ""
     echo -e "${YELLOW}Controller logs (last 30 lines):${NC}"
-    kubectl logs -n "${NAMESPACE}" -l app=bindy-controller --tail=30 || true
+    kubectl logs -n "${NAMESPACE}" -l app=bindy --tail=30 || true
     exit 1
 fi

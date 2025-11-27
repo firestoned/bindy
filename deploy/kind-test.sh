@@ -22,8 +22,8 @@ fi
 kubectl config use-context "kind-${CLUSTER_NAME}" > /dev/null
 
 echo -e "${GREEN}1️⃣  Checking controller status...${NC}"
-if kubectl get deployment bindy-controller -n "${NAMESPACE}" &>/dev/null; then
-    kubectl get pods -n "${NAMESPACE}" -l app=bindy-controller
+if kubectl get deployment bindy -n "${NAMESPACE}" &>/dev/null; then
+    kubectl get pods -n "${NAMESPACE}" -l app=bindy
     echo -e "${GREEN}✅ Controller is running${NC}"
 else
     echo -e "${RED}❌ Controller not found${NC}"
@@ -145,7 +145,7 @@ kubectl get txtrecords -n "${NAMESPACE}" -o wide
 
 echo ""
 echo -e "${GREEN}6️⃣  Checking controller logs (last 20 lines)...${NC}"
-kubectl logs -n "${NAMESPACE}" -l app=bindy-controller --tail=20
+kubectl logs -n "${NAMESPACE}" -l app=bindy --tail=20
 
 echo ""
 echo -e "${GREEN}✅ Test complete!${NC}"
@@ -155,7 +155,7 @@ echo "1. Check resource details:"
 echo "   kubectl describe dnszone test-zone -n ${NAMESPACE}"
 echo ""
 echo "2. Watch controller logs:"
-echo "   kubectl logs -n ${NAMESPACE} -l app=bindy-controller -f"
+echo "   kubectl logs -n ${NAMESPACE} -l app=bindy -f"
 echo ""
 echo "3. Clean up test resources:"
 echo "   kubectl delete arecords,txtrecords,dnszones,bind9instances --all -n ${NAMESPACE}"

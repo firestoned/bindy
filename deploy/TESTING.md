@@ -79,10 +79,10 @@ This creates a 3-node cluster (1 control-plane, 2 workers) with port mappings fo
 cargo build --release
 
 # Build the Docker image
-docker build -t bindy-controller:latest .
+docker build -t bindy:latest .
 
 # Load image into Kind
-kind load docker-image bindy-controller:latest --name bindy-test
+kind load docker-image bindy:latest --name bindy-test
 ```
 
 ### Step 3: Deploy CRDs
@@ -131,7 +131,7 @@ kubectl apply -f deploy/operator/deployment.yaml
 kubectl get pods -n dns-system
 
 # Check logs
-kubectl logs -n dns-system -l app=bindy-controller -f
+kubectl logs -n dns-system -l app=bindy -f
 ```
 
 Expected log output:
@@ -207,7 +207,7 @@ kubectl describe dnszone example-com -n dns-system
 
 Look for status conditions in the controller logs:
 ```bash
-kubectl logs -n dns-system -l app=bindy-controller | grep "example-com"
+kubectl logs -n dns-system -l app=bindy | grep "example-com"
 ```
 
 ### Test 3: Add DNS Records
@@ -329,7 +329,7 @@ kubectl delete arecord www-example -n dns-system
 
 Watch the controller handle the changes:
 ```bash
-kubectl logs -n dns-system -l app=bindy-controller -f
+kubectl logs -n dns-system -l app=bindy -f
 ```
 
 ## Debugging
@@ -341,26 +341,26 @@ kubectl logs -n dns-system -l app=bindy-controller -f
 kubectl get pods -n dns-system -o wide
 
 # Detailed pod info
-kubectl describe pod -n dns-system -l app=bindy-controller
+kubectl describe pod -n dns-system -l app=bindy
 
 # Resource usage
-kubectl top pod -n dns-system -l app=bindy-controller
+kubectl top pod -n dns-system -l app=bindy
 ```
 
 ### View Logs
 
 ```bash
 # Follow logs
-kubectl logs -n dns-system -l app=bindy-controller -f
+kubectl logs -n dns-system -l app=bindy -f
 
 # Last 100 lines
-kubectl logs -n dns-system -l app=bindy-controller --tail=100
+kubectl logs -n dns-system -l app=bindy --tail=100
 
 # Search for errors
-kubectl logs -n dns-system -l app=bindy-controller | grep -i error
+kubectl logs -n dns-system -l app=bindy | grep -i error
 
 # Previous container logs (if crashed)
-kubectl logs -n dns-system -l app=bindy-controller --previous
+kubectl logs -n dns-system -l app=bindy --previous
 ```
 
 ### Check Events
@@ -387,7 +387,7 @@ kubectl run -it --rm debug --image=nicolaka/netshoot --restart=Never -- /bin/bas
 
 **Controller not starting:**
 - Check image is loaded: `docker exec -it bindy-test-control-plane crictl images | grep bindy`
-- Check RBAC permissions: `kubectl auth can-i list dnszones --as=system:serviceaccount:dns-system:bindy-controller`
+- Check RBAC permissions: `kubectl auth can-i list dnszones --as=system:serviceaccount:dns-system:bindy`
 
 **Resources not reconciling:**
 - Check controller logs for errors
@@ -422,7 +422,7 @@ done
 
 Monitor controller performance:
 ```bash
-kubectl top pod -n dns-system -l app=bindy-controller
+kubectl top pod -n dns-system -l app=bindy
 ```
 
 ### Reconciliation Speed
@@ -431,7 +431,7 @@ Time how long it takes to reconcile:
 
 ```bash
 time kubectl apply -f examples/dns-zone.yaml
-kubectl logs -n dns-system -l app=bindy-controller | grep "reconciled"
+kubectl logs -n dns-system -l app=bindy | grep "reconciled"
 ```
 
 ## Cleanup
@@ -472,8 +472,8 @@ Example GitHub Actions workflow snippet:
 
 - name: Build and Deploy
   run: |
-    docker build -t bindy-controller:test .
-    kind load docker-image bindy-controller:test --name bindy-test
+    docker build -t bindy:test .
+    kind load docker-image bindy:test --name bindy-test
     kubectl apply -f deploy/crds/
     kubectl apply -f deploy/rbac/
     kubectl apply -f deploy/operator/

@@ -92,9 +92,9 @@ jobs:
       - name: Deploy controller with specific image
         run: |
           IMAGE_TAG="${{ steps.tag.outputs.tag }}"
-          sed -i "s|ghcr.io/firestoned/bindy-controller:latest|ghcr.io/${{ github.repository }}:${IMAGE_TAG}|g" deploy/controller/deployment.yaml
+          sed -i "s|ghcr.io/firestoned/bindy:latest|ghcr.io/${{ github.repository }}:${IMAGE_TAG}|g" deploy/controller/deployment.yaml
           kubectl apply -f deploy/controller/deployment.yaml
-          kubectl wait --for=condition=available --timeout=300s deployment/bindy-controller -n ${NAMESPACE}
+          kubectl wait --for=condition=available --timeout=300s deployment/bindy -n ${NAMESPACE}
 
       - name: Run integration tests
         env:
@@ -107,7 +107,7 @@ jobs:
         if: always()
         run: |
           echo "Controller logs:"
-          kubectl logs -n ${NAMESPACE} -l app=bind9-controller --tail=100 || true
+          kubectl logs -n ${NAMESPACE} -l app=bindy --tail=100 || true
 
       - name: Cleanup
         if: always()

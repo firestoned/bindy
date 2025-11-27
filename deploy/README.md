@@ -59,7 +59,7 @@ kubectl apply -f examples/dns-zone.yaml
 kubectl apply -f examples/dns-records.yaml
 
 # Watch the controller logs
-kubectl logs -n dns-system -l app=bindy-controller -f
+kubectl logs -n dns-system -l app=bindy -f
 ```
 
 ### Cleanup
@@ -96,10 +96,10 @@ kubectl apply -f deploy/rbac/
 
 ```bash
 # Build the image
-docker build -t <your-registry>/bindy-controller:latest .
+docker build -t <your-registry>/bindy:latest .
 
 # Push to your registry
-docker push <your-registry>/bindy-controller:latest
+docker push <your-registry>/bindy:latest
 ```
 
 ### 5. Update Deployment
@@ -111,8 +111,8 @@ spec:
   template:
     spec:
       containers:
-      - name: bindy-controller
-        image: <your-registry>/bindy-controller:latest
+      - name: controller
+        image: <your-registry>/bindy:latest
 ```
 
 ### 6. Deploy Controller
@@ -125,7 +125,7 @@ kubectl apply -f deploy/operator/deployment.yaml
 
 ```bash
 kubectl get pods -n dns-system
-kubectl logs -n dns-system -l app=bindy-controller
+kubectl logs -n dns-system -l app=bindy
 ```
 
 ## Configuration
@@ -162,10 +162,10 @@ Adjust based on your needs.
 kubectl get pods -n dns-system
 
 # Check pod events
-kubectl describe pod -n dns-system -l app=bindy-controller
+kubectl describe pod -n dns-system -l app=bindy
 
 # Check logs
-kubectl logs -n dns-system -l app=bindy-controller --previous
+kubectl logs -n dns-system -l app=bindy --previous
 ```
 
 ### CRD Issues
@@ -185,10 +185,10 @@ kubectl describe crd dnszones.dns.firestoned.io
 kubectl get sa -n dns-system
 
 # Check role binding
-kubectl describe rolebinding bindy-controller -n dns-system
+kubectl describe rolebinding bindy-rolebinding -n dns-system
 
 # Check permissions
-kubectl auth can-i list dnszones --as=system:serviceaccount:dns-system:bindy-controller
+kubectl auth can-i list dnszones --as=system:serviceaccount:dns-system:bindy
 ```
 
 ### Resource Not Reconciling
@@ -199,7 +199,7 @@ kubectl get dnszones -n dns-system
 kubectl describe dnszone <name> -n dns-system
 
 # Check controller logs for errors
-kubectl logs -n dns-system -l app=bindy-controller | grep ERROR
+kubectl logs -n dns-system -l app=bindy | grep ERROR
 ```
 
 ## Upgrading
@@ -214,16 +214,16 @@ kubectl apply -k deploy/crds
 
 ```bash
 # Build new image
-docker build -t <your-registry>/bindy-controller:v1.1.0 .
-docker push <your-registry>/bindy-controller:v1.1.0
+docker build -t <your-registry>/bindy:v1.1.0 .
+docker push <your-registry>/bindy:v1.1.0
 
 # Update deployment
-kubectl set image deployment/bindy-controller \
-  bindy-controller=<your-registry>/bindy-controller:v1.1.0 \
+kubectl set image deployment/bindy \
+  controller=<your-registry>/bindy:v1.1.0 \
   -n dns-system
 
 # Watch rollout
-kubectl rollout status deployment/bindy-controller -n dns-system
+kubectl rollout status deployment/bindy -n dns-system
 ```
 
 ## Uninstall

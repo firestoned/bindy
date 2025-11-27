@@ -590,6 +590,25 @@ If migrating from the Python operator:
 - [ ] Zone validation and testing
 - [ ] Multi-cluster DNS federation
 
+## Documentation
+
+Complete documentation is available at [https://firestoned.github.io/bindy/](https://firestoned.github.io/bindy/)
+
+To build and view documentation locally:
+
+```bash
+make docs-serve
+# Navigate to http://localhost:3000
+```
+
+The documentation includes:
+- **Installation Guide** - Step-by-step setup instructions
+- **User Guide** - Creating DNS infrastructure, zones, and records
+- **Operations** - Configuration, monitoring, and troubleshooting
+- **Advanced Topics** - High availability, security, performance tuning
+- **Developer Guide** - Contributing and development workflow
+- **API Reference** - Complete CRD specifications and examples
+
 ## Contributing
 
 Contributions are welcome! Please ensure:
@@ -598,6 +617,8 @@ Contributions are welcome! Please ensure:
 2. Tests pass: `cargo test`
 3. Format code: `cargo fmt`
 4. Check with clippy: `cargo clippy`
+
+See the [Contributing Guide](https://firestoned.github.io/bindy/development/contributing.html) for more details.
 
 ## License
 

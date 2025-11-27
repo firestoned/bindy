@@ -402,8 +402,8 @@ mod tests {
 
     fn create_test_zone(manager: &Bind9Manager) {
         let soa = SOARecord {
-            primary_ns: "ns1.example.com.".to_string(),
-            admin_email: "admin@example.com".to_string(),
+            primary_ns: "ns1.example.com.".into(),
+            admin_email: "admin@example.com".into(),
             serial: 2024010101,
             refresh: 3600,
             retry: 600,
@@ -418,8 +418,8 @@ mod tests {
         let (_temp_dir, manager) = setup();
 
         let soa = SOARecord {
-            primary_ns: "ns1.example.com.".to_string(),
-            admin_email: "admin@example.com".to_string(),
+            primary_ns: "ns1.example.com.".into(),
+            admin_email: "admin@example.com".into(),
             serial: 2024010101,
             refresh: 3600,
             retry: 600,
@@ -443,7 +443,7 @@ mod tests {
     fn test_create_secondary_zone() {
         let (_temp_dir, manager) = setup();
 
-        let primary_servers = vec!["10.0.1.1".to_string(), "10.0.1.2".to_string()];
+        let primary_servers = vec!["10.0.1.1".into(), "10.0.1.2".into()];
         manager
             .create_secondary_zone("example.com", &primary_servers)
             .unwrap();
@@ -540,7 +540,7 @@ mod tests {
         let (temp_dir, manager) = setup();
         create_test_zone(&manager);
 
-        let texts = vec!["v=spf1 mx ~all".to_string()];
+        let texts = vec!["v=spf1 mx ~all".into()];
         manager
             .add_txt_record("example.com", "@", &texts, Some(3600))
             .unwrap();
@@ -554,7 +554,7 @@ mod tests {
         let (temp_dir, manager) = setup();
         create_test_zone(&manager);
 
-        let texts = vec!["part1".to_string(), "part2".to_string()];
+        let texts = vec!["part1".into(), "part2".into()];
         manager
             .add_txt_record("example.com", "_dmarc", &texts, None)
             .unwrap();
@@ -624,7 +624,7 @@ mod tests {
             priority: 10,
             weight: 60,
             port: 5060,
-            target: "sipserver.example.com.".to_string(),
+            target: "sipserver.example.com.".into(),
             ttl: Some(3600),
         };
         manager
@@ -644,7 +644,7 @@ mod tests {
             priority: 0,
             weight: 100,
             port: 389,
-            target: "ldap.example.com.".to_string(),
+            target: "ldap.example.com.".into(),
             ttl: None,
         };
         manager
@@ -757,8 +757,8 @@ mod tests {
     fn test_zone_name_with_underscores() {
         let (_temp_dir, manager) = setup();
         let soa = SOARecord {
-            primary_ns: "ns1._example.com.".to_string(),
-            admin_email: "admin@_example.com".to_string(),
+            primary_ns: "ns1._example.com.".into(),
+            admin_email: "admin@_example.com".into(),
             serial: 2024010101,
             refresh: 3600,
             retry: 600,
@@ -775,8 +775,8 @@ mod tests {
     fn test_zone_name_with_hyphens() {
         let (_temp_dir, manager) = setup();
         let soa = SOARecord {
-            primary_ns: "ns1.my-example.com.".to_string(),
-            admin_email: "admin@my-example.com".to_string(),
+            primary_ns: "ns1.my-example.com.".into(),
+            admin_email: "admin@my-example.com".into(),
             serial: 2024010101,
             refresh: 3600,
             retry: 600,
@@ -816,7 +816,7 @@ mod tests {
         let (temp_dir, manager) = setup();
         create_test_zone(&manager);
 
-        let texts = vec!["v=spf1 include:_spf.google.com ~all".to_string()];
+        let texts = vec!["v=spf1 include:_spf.google.com ~all".into()];
         manager
             .add_txt_record("example.com", "@", &texts, Some(300))
             .unwrap();
@@ -831,11 +831,7 @@ mod tests {
         let (temp_dir, manager) = setup();
         create_test_zone(&manager);
 
-        let texts = vec![
-            "part1".to_string(),
-            "part2".to_string(),
-            "part3".to_string(),
-        ];
+        let texts = vec!["part1".into(), "part2".into(), "part3".into()];
         manager
             .add_txt_record("example.com", "_dmarc", &texts, Some(3600))
             .unwrap();
@@ -849,8 +845,8 @@ mod tests {
     fn test_large_serial_number() {
         let (_temp_dir, manager) = setup();
         let soa = SOARecord {
-            primary_ns: "ns1.example.com.".to_string(),
-            admin_email: "admin@example.com".to_string(),
+            primary_ns: "ns1.example.com.".into(),
+            admin_email: "admin@example.com".into(),
             serial: 9999999999i64,
             refresh: 3600,
             retry: 600,
@@ -871,8 +867,8 @@ mod tests {
         let (_temp_dir, manager) = setup();
 
         let soa1 = SOARecord {
-            primary_ns: "ns1.example.com.".to_string(),
-            admin_email: "admin@example.com".to_string(),
+            primary_ns: "ns1.example.com.".into(),
+            admin_email: "admin@example.com".into(),
             serial: 1,
             refresh: 3600,
             retry: 600,
@@ -881,8 +877,8 @@ mod tests {
         };
 
         let soa2 = SOARecord {
-            primary_ns: "ns1.example.org.".to_string(),
-            admin_email: "hostmaster@example.org".to_string(),
+            primary_ns: "ns1.example.org.".into(),
+            admin_email: "hostmaster@example.org".into(),
             serial: 1,
             refresh: 3600,
             retry: 600,
@@ -911,8 +907,8 @@ mod tests {
         let (temp_dir, manager) = setup();
 
         let soa = SOARecord {
-            primary_ns: "ns1.example.com.".to_string(),
-            admin_email: "admin@example.com".to_string(),
+            primary_ns: "ns1.example.com.".into(),
+            admin_email: "admin@example.com".into(),
             serial: 1,
             refresh: 3600,
             retry: 600,
@@ -959,7 +955,7 @@ mod tests {
             priority: 10,
             weight: 60,
             port: 5060,
-            target: "sipserver.example.com.".to_string(),
+            target: "sipserver.example.com.".into(),
             ttl: Some(3600),
         };
         manager
@@ -1022,8 +1018,8 @@ mod tests {
         let (_temp_dir, manager) = setup();
 
         let soa = SOARecord {
-            primary_ns: "ns1.example.com.".to_string(),
-            admin_email: "admin@example.com".to_string(),
+            primary_ns: "ns1.example.com.".into(),
+            admin_email: "admin@example.com".into(),
             serial: 2024010101,
             refresh: 3600,
             retry: 600,
@@ -1068,7 +1064,7 @@ mod tests {
             priority: 10,
             weight: 60,
             port: 5060,
-            target: "sip.example.com.".to_string(),
+            target: "sip.example.com.".into(),
             ttl: Some(3600),
         };
         manager
@@ -1076,7 +1072,7 @@ mod tests {
             .unwrap();
 
         // Step 5: Add TXT records
-        let spf = vec!["v=spf1 mx ~all".to_string()];
+        let spf = vec!["v=spf1 mx ~all".into()];
         manager
             .add_txt_record("example.com", "@", &spf, Some(3600))
             .unwrap();
@@ -1095,8 +1091,8 @@ mod tests {
 
         // Create primary zone
         let soa = SOARecord {
-            primary_ns: "ns1.example.com.".to_string(),
-            admin_email: "admin@example.com".to_string(),
+            primary_ns: "ns1.example.com.".into(),
+            admin_email: "admin@example.com".into(),
             serial: 1,
             refresh: 3600,
             retry: 600,
@@ -1106,7 +1102,7 @@ mod tests {
         manager.create_zone_file("primary.com", &soa, 3600).unwrap();
 
         // Create secondary zone
-        let primary_servers = vec!["10.0.1.1".to_string(), "10.0.1.2".to_string()];
+        let primary_servers = vec!["10.0.1.1".into(), "10.0.1.2".into()];
         manager
             .create_secondary_zone("secondary.com", &primary_servers)
             .unwrap();
@@ -1123,10 +1119,10 @@ mod tests {
         let (_temp_dir, manager) = setup();
 
         let primary_servers = vec![
-            "10.0.1.1".to_string(),
-            "10.0.1.2".to_string(),
-            "10.0.1.3".to_string(),
-            "10.0.1.4".to_string(),
+            "10.0.1.1".into(),
+            "10.0.1.2".into(),
+            "10.0.1.3".into(),
+            "10.0.1.4".into(),
         ];
         manager
             .create_secondary_zone("secondary.com", &primary_servers)

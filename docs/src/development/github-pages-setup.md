@@ -144,10 +144,10 @@ Documentation is automatically deployed on every push to `main`:
 
 ```bash
 # Make changes to documentation
-vim docs/book/src/introduction.md
+vim docs/src/introduction.md
 
 # Commit and push
-git add docs/book/src/introduction.md
+git add docs/src/introduction.md
 git commit -m "Update introduction"
 git push origin main
 
@@ -201,7 +201,7 @@ To ensure documentation quality:
 
 The documentation uses a custom theme defined in:
 
-- `docs/book/theme/custom.css` - Custom styling
+- `docs/theme/custom.css` - Custom styling
 
 To customize:
 

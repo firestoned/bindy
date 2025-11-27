@@ -171,7 +171,7 @@ kubectl get crds | grep dns.firestoned.io
 kubectl get pods -n dns-system
 
 # View controller logs
-kubectl logs -n dns-system -l app=bindy-controller
+kubectl logs -n dns-system -l app=bindy
 ```
 
 ### Manual Cleanup
