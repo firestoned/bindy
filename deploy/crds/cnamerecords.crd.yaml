@@ -1,9 +1,9 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: cnamerecords.dns.example.com
+  name: cnamerecords.dns.firestoned.io
 spec:
-  group: dns.example.com
+  group: dns.firestoned.io
   names:
     kind: CNAMERecord
     plural: cnamerecords
@@ -45,9 +45,18 @@ spec:
                   type: array
                   items:
                     type: object
+                    required:
+                      - type
+                      - status
                     properties:
                       type:
                         type: string
+                        enum:
+                          - Ready
+                          - Available
+                          - Progressing
+                          - Degraded
+                          - Failed
                       status:
                         type: string
                         enum:

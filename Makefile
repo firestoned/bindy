@@ -101,3 +101,66 @@ build: ## Build the Rust binary
 
 build-debug: ## Build the Rust binary in debug mode
 	cargo build
+
+# Documentation targets
+docs: ## Build all documentation (mdBook + rustdoc)
+	@echo "Building documentation..."
+	@command -v mdbook >/dev/null 2>&1 || { echo "Installing mdbook..."; cargo install mdbook; }
+	cargo doc --no-deps --all-features
+	mdbook build
+	@echo "Combining documentation..."
+	@mkdir -p docs/target/site
+	@cp -r docs/target/book/* docs/target/site/
+	@mkdir -p docs/target/site/rustdoc
+	@cp -r target/doc/* docs/target/site/rustdoc/
+	@echo "Documentation built in docs/target/site/"
+
+docs-serve: docs ## Build and serve documentation locally
+	@echo "Serving documentation at http://localhost:3000"
+	@cd docs/target/site && python3 -m http.server 3000
+
+docs-mdbook: ## Build mdBook documentation only
+	@command -v mdbook >/dev/null 2>&1 || { echo "Installing mdbook..."; cargo install mdbook; }
+	mdbook build
+	@echo "mdBook documentation built in docs/target/book/"
+
+docs-rustdoc: ## Build rustdoc API documentation only
+	cargo doc --no-deps --all-features --open
+
+docs-clean: ## Clean documentation build artifacts
+	rm -rf docs/target/
+	rm -rf target/doc/
+
+docs-watch: ## Watch and rebuild mdBook documentation on changes
+	@command -v mdbook >/dev/null 2>&1 || { echo "Installing mdbook..."; cargo install mdbook; }
+	mdbook serve
+
+docs-github-pages: ## Build documentation for GitHub Pages deployment
+	@echo "Building documentation for GitHub Pages..."
+	@command -v mdbook >/dev/null 2>&1 || { echo "Error: mdbook not found. Install with: cargo install mdbook"; exit 1; }
+	@echo "Building rustdoc API documentation..."
+	@cargo doc --no-deps --all-features
+	@mkdir -p docs/target/rustdoc
+	@cp -r target/doc/* docs/target/rustdoc/
+	@echo "Building mdBook documentation..."
+	@mdbook build
+	@echo "Combining documentation..."
+	@mkdir -p docs/target/site
+	@cp -r docs/target/book/* docs/target/site/
+	@mkdir -p docs/target/site/rustdoc
+	@cp -r docs/target/rustdoc/* docs/target/site/rustdoc/
+	@echo "Creating rustdoc index redirect..."
+	@echo '<!DOCTYPE html>' > docs/target/site/rustdoc/index.html
+	@echo '<html>' >> docs/target/site/rustdoc/index.html
+	@echo '<head>' >> docs/target/site/rustdoc/index.html
+	@echo '    <meta charset="utf-8">' >> docs/target/site/rustdoc/index.html
+	@echo '    <title>Bindy API Documentation</title>' >> docs/target/site/rustdoc/index.html
+	@echo '    <meta http-equiv="refresh" content="0; url=bindy/index.html">' >> docs/target/site/rustdoc/index.html
+	@echo '</head>' >> docs/target/site/rustdoc/index.html
+	@echo '<body>' >> docs/target/site/rustdoc/index.html
+	@echo '    <p>Redirecting to <a href="bindy/index.html">Bindy API Documentation</a>...</p>' >> docs/target/site/rustdoc/index.html
+	@echo '</body>' >> docs/target/site/rustdoc/index.html
+	@echo '</html>' >> docs/target/site/rustdoc/index.html
+	@echo "Documentation built successfully in docs/target/site/"
+	@echo "  - User guide: docs/target/site/index.html"
+	@echo "  - API reference: docs/target/site/rustdoc/bindy/index.html"

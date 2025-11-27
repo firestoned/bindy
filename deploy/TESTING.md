@@ -94,21 +94,21 @@ kubectl apply -f deploy/crds/dns-crds.yaml
 Verify CRDs are installed:
 
 ```bash
-kubectl get crds | grep dns.example.com
+kubectl get crds | grep dns.firestoned.io
 ```
 
 Expected output:
 ```
-aaaarecords.dns.example.com
-arecords.dns.example.com
-bind9instances.dns.example.com
-caarecords.dns.example.com
-cnamerecords.dns.example.com
-dnszones.dns.example.com
-mxrecords.dns.example.com
-nsrecords.dns.example.com
-srvrecords.dns.example.com
-txtrecords.dns.example.com
+aaaarecords.dns.firestoned.io
+arecords.dns.firestoned.io
+bind9instances.dns.firestoned.io
+caarecords.dns.firestoned.io
+cnamerecords.dns.firestoned.io
+dnszones.dns.firestoned.io
+mxrecords.dns.firestoned.io
+nsrecords.dns.firestoned.io
+srvrecords.dns.firestoned.io
+txtrecords.dns.firestoned.io
 ```
 
 ### Step 4: Deploy RBAC and Controller
@@ -150,7 +150,7 @@ Create a test Bind9Instance:
 
 ```bash
 kubectl apply -f - <<EOF
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: test-primary
@@ -176,7 +176,7 @@ Create a DNS zone that targets the Bind9Instance:
 
 ```bash
 kubectl apply -f - <<EOF
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: example-com
@@ -216,7 +216,7 @@ kubectl logs -n dns-system -l app=bindy-controller | grep "example-com"
 
 ```bash
 kubectl apply -f - <<EOF
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: www-example
@@ -233,7 +233,7 @@ EOF
 
 ```bash
 kubectl apply -f - <<EOF
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: TXTRecord
 metadata:
   name: spf-example
@@ -251,7 +251,7 @@ EOF
 
 ```bash
 kubectl apply -f - <<EOF
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: CNAMERecord
 metadata:
   name: blog-example
@@ -275,7 +275,7 @@ Create a secondary instance with different labels:
 
 ```bash
 kubectl apply -f - <<EOF
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: test-secondary
@@ -290,7 +290,7 @@ Create a zone that matches both instances:
 
 ```bash
 kubectl apply -f - <<EOF
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: internal-local
@@ -406,7 +406,7 @@ Create many resources at once:
 ```bash
 for i in {1..100}; do
   kubectl apply -f - <<EOF
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: test-${i}

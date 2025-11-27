@@ -66,7 +66,7 @@ async fn test_crds_installed() {
             let bindy_crds: Vec<_> = crd_list
                 .items
                 .iter()
-                .filter(|crd| crd.spec.group.as_str().starts_with("dns.example.com"))
+                .filter(|crd| crd.spec.group.as_str().starts_with("dns.firestoned.io"))
                 .collect();
 
             println!("Found {} Bindy CRDs", bindy_crds.len());

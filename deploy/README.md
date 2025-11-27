@@ -172,10 +172,10 @@ kubectl logs -n dns-system -l app=bindy-controller --previous
 
 ```bash
 # Verify CRDs are installed
-kubectl get crd | grep dns.example.com
+kubectl get crd | grep dns.firestoned.io
 
 # Check CRD details
-kubectl describe crd dnszones.dns.example.com
+kubectl describe crd dnszones.dns.firestoned.io
 ```
 
 ### RBAC Issues

@@ -1,3 +1,84 @@
+//! Custom Resource Definitions (CRDs) for DNS management.
+//!
+//! This module defines all Kubernetes Custom Resource Definitions used by Bindy
+//! to manage BIND9 DNS infrastructure declaratively.
+//!
+//! # Resource Types
+//!
+//! ## Infrastructure
+//!
+//! - [`Bind9Instance`] - Represents a BIND9 DNS server deployment
+//!
+//! ## DNS Zones
+//!
+//! - [`DNSZone`] - Defines DNS zones with SOA records and instance targeting
+//!
+//! ## DNS Records
+//!
+//! - [`ARecord`] - IPv4 address records
+//! - [`AAAARecord`] - IPv6 address records  
+//! - [`CNAMERecord`] - Canonical name (alias) records
+//! - [`MXRecord`] - Mail exchange records
+//! - [`TXTRecord`] - Text records (SPF, DKIM, DMARC, etc.)
+//! - [`NSRecord`] - Nameserver delegation records
+//! - [`SRVRecord`] - Service location records
+//! - [`CAARecord`] - Certificate authority authorization records
+//!
+//! # Example: Creating a DNS Zone
+//!
+//! ```rust,no_run
+//! use bindy::crd::{DNSZoneSpec, SOARecord, LabelSelector};
+//! use std::collections::BTreeMap;
+//!
+//! let mut match_labels = BTreeMap::new();
+//! match_labels.insert("dns-role".to_string(), "primary".to_string());
+//!
+//! let soa = SOARecord {
+//!     primary_ns: "ns1.example.com.".to_string(),
+//!     admin_email: "admin@example.com".to_string(),
+//!     serial: 2024010101,
+//!     refresh: 3600,
+//!     retry: 600,
+//!     expire: 604800,
+//!     negative_ttl: 86400,
+//! };
+//!
+//! let spec = DNSZoneSpec {
+//!     zone_name: "example.com".to_string(),
+//!     zone_type: Some("primary".to_string()),
+//!     instance_selector: LabelSelector {
+//!         match_labels: Some(match_labels),
+//!         match_expressions: None,
+//!     },
+//!     soa_record: Some(soa),
+//!     secondary_config: None,
+//!     ttl: Some(3600),
+//! };
+//! ```
+//!
+//! # Example: Creating DNS Records
+//!
+//! ```rust,no_run
+//! use bindy::crd::{ARecordSpec, MXRecordSpec};
+//!
+//! // A Record for www.example.com
+//! let a_record = ARecordSpec {
+//!     zone: "example-com".to_string(),
+//!     name: "www".to_string(),
+//!     ipv4_address: "192.0.2.1".to_string(),
+//!     ttl: Some(300),
+//! };
+//!
+//! // MX Record for mail routing
+//! let mx_record = MXRecordSpec {
+//!     zone: "example-com".to_string(),
+//!     name: "@".to_string(),
+//!     priority: 10,
+//!     mail_server: "mail.example.com.".to_string(),
+//!     ttl: Some(3600),
+//! };
+//! ```
+
 use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -74,7 +155,7 @@ pub struct SecondaryZoneConfig {
 /// DNSZone CRD
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
-    group = "dns.example.com",
+    group = "dns.firestoned.io",
     version = "v1alpha1",
     kind = "DNSZone",
     namespaced
@@ -100,7 +181,7 @@ pub struct DNSZoneSpec {
 /// ARecord specification
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
-    group = "dns.example.com",
+    group = "dns.firestoned.io",
     version = "v1alpha1",
     kind = "ARecord",
     namespaced
@@ -118,7 +199,7 @@ pub struct ARecordSpec {
 /// AAAARecord specification
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
-    group = "dns.example.com",
+    group = "dns.firestoned.io",
     version = "v1alpha1",
     kind = "AAAARecord",
     namespaced
@@ -136,7 +217,7 @@ pub struct AAAARecordSpec {
 /// TXTRecord specification
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
-    group = "dns.example.com",
+    group = "dns.firestoned.io",
     version = "v1alpha1",
     kind = "TXTRecord",
     namespaced
@@ -154,7 +235,7 @@ pub struct TXTRecordSpec {
 /// CNAMERecord specification
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
-    group = "dns.example.com",
+    group = "dns.firestoned.io",
     version = "v1alpha1",
     kind = "CNAMERecord",
     namespaced
@@ -172,7 +253,7 @@ pub struct CNAMERecordSpec {
 /// MXRecord specification
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
-    group = "dns.example.com",
+    group = "dns.firestoned.io",
     version = "v1alpha1",
     kind = "MXRecord",
     namespaced
@@ -191,7 +272,7 @@ pub struct MXRecordSpec {
 /// NSRecord specification
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
-    group = "dns.example.com",
+    group = "dns.firestoned.io",
     version = "v1alpha1",
     kind = "NSRecord",
     namespaced
@@ -209,7 +290,7 @@ pub struct NSRecordSpec {
 /// SRVRecord specification
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
-    group = "dns.example.com",
+    group = "dns.firestoned.io",
     version = "v1alpha1",
     kind = "SRVRecord",
     namespaced
@@ -230,7 +311,7 @@ pub struct SRVRecordSpec {
 /// CAARecord specification
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
-    group = "dns.example.com",
+    group = "dns.firestoned.io",
     version = "v1alpha1",
     kind = "CAARecord",
     namespaced
@@ -287,7 +368,7 @@ pub struct DNSSECConfig {
 /// Bind9Instance specification
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
-    group = "dns.example.com",
+    group = "dns.firestoned.io",
     version = "v1alpha1",
     kind = "Bind9Instance",
     namespaced

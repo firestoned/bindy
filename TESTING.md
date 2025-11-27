@@ -269,7 +269,7 @@ kubectl logs -n dns-system -l app=bindy-controller
 **"CRDs not installed"**
 ```bash
 # Check CRDs
-kubectl get crds | grep dns.example.com
+kubectl get crds | grep dns.firestoned.io
 
 # Install
 kubectl apply -k deploy/crds
@@ -398,7 +398,7 @@ make test-cov-view
 # Create many resources
 for i in {1..100}; do
   kubectl apply -f - <<EOF
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: test-${i}

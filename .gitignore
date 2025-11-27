@@ -60,3 +60,7 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# Documentation
+/docs/target/
+/docs/book/book/

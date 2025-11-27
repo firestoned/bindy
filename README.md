@@ -60,16 +60,16 @@ kubectl apply -f deploy/crds/
 ```
 
 This will install all Custom Resource Definitions:
-- `bind9instances.dns.example.com`
-- `dnszones.dns.example.com`
-- `arecords.dns.example.com`
-- `aaaarecords.dns.example.com`
-- `cnamerecords.dns.example.com`
-- `mxrecords.dns.example.com`
-- `txtrecords.dns.example.com`
-- `nsrecords.dns.example.com`
-- `srvrecords.dns.example.com`
-- `caarecords.dns.example.com`
+- `bind9instances.dns.firestoned.io`
+- `dnszones.dns.firestoned.io`
+- `arecords.dns.firestoned.io`
+- `aaaarecords.dns.firestoned.io`
+- `cnamerecords.dns.firestoned.io`
+- `mxrecords.dns.firestoned.io`
+- `txtrecords.dns.firestoned.io`
+- `nsrecords.dns.firestoned.io`
+- `srvrecords.dns.firestoned.io`
+- `caarecords.dns.firestoned.io`
 
 ### 3. Create RBAC
 
@@ -96,7 +96,7 @@ After the controller is running, create your BIND9 instances.
 #### Primary Instance
 
 ```yaml
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: primary-dns
@@ -119,7 +119,7 @@ spec:
 #### Secondary Instance
 
 ```yaml
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: secondary-dns
@@ -165,7 +165,7 @@ The controller manages zone configurations on both primary and secondary BIND9 i
 
 ```yaml
 # Primary in US-East
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: primary-us-east
@@ -186,7 +186,7 @@ spec:
 
 ---
 # Secondary in US-West
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: secondary-us-west
@@ -204,7 +204,7 @@ spec:
 
 ---
 # Secondary in EU
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: secondary-eu
@@ -226,7 +226,7 @@ spec:
 When you create a DNSZone, you can target both primary and secondary instances using label selectors:
 
 ```yaml
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: example-com
@@ -264,7 +264,7 @@ The controller will:
 To create zones only on primary servers:
 
 ```yaml
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: internal-only
@@ -291,7 +291,7 @@ spec:
 ### Creating a Zone with Label Selector
 
 ```yaml
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: example-com
@@ -318,7 +318,7 @@ spec:
 ### Advanced Label Selection with Expressions
 
 ```yaml
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: internal-local
@@ -354,7 +354,7 @@ spec:
 
 ```yaml
 # A Record
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: www-example
@@ -367,7 +367,7 @@ spec:
 
 ---
 # CNAME Record
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: CNAMERecord
 metadata:
   name: blog-example
@@ -380,7 +380,7 @@ spec:
 
 ---
 # TXT Record
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: TXTRecord
 metadata:
   name: spf-example
@@ -394,7 +394,7 @@ spec:
 
 ---
 # MX Record
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: MXRecord
 metadata:
   name: mail-example
@@ -517,18 +517,18 @@ metadata:
   name: bind9-controller
 rules:
   # DNSZone resources
-  - apiGroups: ["dns.example.com"]
+  - apiGroups: ["dns.firestoned.io"]
     resources: ["dnszones", "dnszones/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   
   # Record resources
-  - apiGroups: ["dns.example.com"]
+  - apiGroups: ["dns.firestoned.io"]
     resources: ["arecords", "aaaarecords", "txtrecords", "cnamerecords", "mxrecords", "nsrecords", "srvrecords", "caarecords"]
     resources: ["*/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   
   # Bind9Instance resources
-  - apiGroups: ["dns.example.com"]
+  - apiGroups: ["dns.firestoned.io"]
     resources: ["bind9instances", "bind9instances/status"]
     verbs: ["get", "list", "watch"]
 ```
@@ -552,7 +552,7 @@ kubectl logs -n dns-system -l app=bind9-controller -f
 ### Verify CRDs are Installed
 
 ```bash
-kubectl get crd | grep dns.example.com
+kubectl get crd | grep dns.firestoned.io
 ```
 
 ### Check Resource Status

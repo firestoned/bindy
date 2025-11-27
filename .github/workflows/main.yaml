@@ -68,6 +68,7 @@ jobs:
         with:
           files: ./cobertura.xml
           fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
 
   docker:
     name: Docker Build and Push

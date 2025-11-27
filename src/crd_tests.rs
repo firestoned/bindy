@@ -355,4 +355,263 @@ mod tests {
         assert_eq!(status.replicas, Some(3));
         assert_eq!(status.ready_replicas, Some(2));
     }
+
+    #[test]
+    fn test_condition_types() {
+        // Test all valid condition types as defined in CRD
+        let valid_types = vec!["Ready", "Available", "Progressing", "Degraded", "Failed"];
+
+        for condition_type in valid_types {
+            let condition = Condition {
+                r#type: condition_type.to_string(),
+                status: "True".to_string(),
+                reason: Some("Test".to_string()),
+                message: Some("Test message".to_string()),
+                last_transition_time: Some("2024-11-26T10:00:00Z".to_string()),
+            };
+
+            assert_eq!(condition.r#type, condition_type);
+            assert_eq!(condition.status, "True");
+            assert!(condition.reason.is_some());
+            assert!(condition.message.is_some());
+            assert!(condition.last_transition_time.is_some());
+        }
+    }
+
+    #[test]
+    fn test_condition_status_values() {
+        // Test all valid status values
+        let valid_statuses = vec!["True", "False", "Unknown"];
+
+        for status_value in valid_statuses {
+            let condition = Condition {
+                r#type: "Ready".to_string(),
+                status: status_value.to_string(),
+                reason: None,
+                message: None,
+                last_transition_time: None,
+            };
+
+            assert_eq!(condition.status, status_value);
+        }
+    }
+
+    #[test]
+    fn test_condition_with_all_fields() {
+        let condition = Condition {
+            r#type: "Ready".to_string(),
+            status: "True".to_string(),
+            reason: Some("ResourceCreated".to_string()),
+            message: Some("All resources successfully created".to_string()),
+            last_transition_time: Some("2024-11-26T10:00:00Z".to_string()),
+        };
+
+        assert_eq!(condition.r#type, "Ready");
+        assert_eq!(condition.status, "True");
+        assert_eq!(condition.reason.as_deref(), Some("ResourceCreated"));
+        assert_eq!(
+            condition.message.as_deref(),
+            Some("All resources successfully created")
+        );
+        assert_eq!(
+            condition.last_transition_time.as_deref(),
+            Some("2024-11-26T10:00:00Z")
+        );
+    }
+
+    #[test]
+    fn test_multiple_conditions() {
+        let conditions = vec![
+            Condition {
+                r#type: "Ready".to_string(),
+                status: "True".to_string(),
+                reason: Some("Ready".to_string()),
+                message: Some("Resource is ready".to_string()),
+                last_transition_time: Some("2024-11-26T10:00:00Z".to_string()),
+            },
+            Condition {
+                r#type: "Progressing".to_string(),
+                status: "False".to_string(),
+                reason: Some("Completed".to_string()),
+                message: Some("Deployment complete".to_string()),
+                last_transition_time: Some("2024-11-26T10:00:00Z".to_string()),
+            },
+        ];
+
+        let status = Bind9InstanceStatus {
+            conditions: conditions.clone(),
+            observed_generation: Some(1),
+            replicas: Some(3),
+            ready_replicas: Some(3),
+        };
+
+        assert_eq!(status.conditions.len(), 2);
+        assert_eq!(status.conditions[0].r#type, "Ready");
+        assert_eq!(status.conditions[1].r#type, "Progressing");
+    }
+
+    #[test]
+    fn test_dnszone_status_with_conditions() {
+        let condition = Condition {
+            r#type: "Ready".to_string(),
+            status: "True".to_string(),
+            reason: Some("ZoneCreated".to_string()),
+            message: Some("Zone file created for 2 instances".to_string()),
+            last_transition_time: Some("2024-11-26T10:00:00Z".to_string()),
+        };
+
+        let status = DNSZoneStatus {
+            conditions: vec![condition],
+            observed_generation: Some(1),
+            record_count: Some(5),
+        };
+
+        assert_eq!(status.conditions.len(), 1);
+        assert_eq!(status.conditions[0].r#type, "Ready");
+        assert_eq!(status.record_count, Some(5));
+    }
+
+    #[test]
+    fn test_record_status_with_condition() {
+        let condition = Condition {
+            r#type: "Ready".to_string(),
+            status: "True".to_string(),
+            reason: Some("RecordCreated".to_string()),
+            message: Some("DNS record added to zone".to_string()),
+            last_transition_time: Some("2024-11-26T10:00:00Z".to_string()),
+        };
+
+        let status = RecordStatus {
+            conditions: vec![condition],
+            observed_generation: Some(1),
+        };
+
+        assert_eq!(status.conditions.len(), 1);
+        assert_eq!(status.conditions[0].r#type, "Ready");
+        assert_eq!(status.observed_generation, Some(1));
+    }
+
+    #[test]
+    fn test_degraded_condition() {
+        let condition = Condition {
+            r#type: "Degraded".to_string(),
+            status: "True".to_string(),
+            reason: Some("SomeReplicasDown".to_string()),
+            message: Some("1 of 3 replicas is not ready".to_string()),
+            last_transition_time: Some("2024-11-26T10:00:00Z".to_string()),
+        };
+
+        let status = Bind9InstanceStatus {
+            conditions: vec![condition],
+            observed_generation: Some(1),
+            replicas: Some(3),
+            ready_replicas: Some(2),
+        };
+
+        assert_eq!(status.conditions[0].r#type, "Degraded");
+        assert_eq!(status.conditions[0].status, "True");
+        assert_eq!(status.ready_replicas, Some(2));
+    }
+
+    #[test]
+    fn test_failed_condition() {
+        let condition = Condition {
+            r#type: "Failed".to_string(),
+            status: "True".to_string(),
+            reason: Some("ResourceCreationFailed".to_string()),
+            message: Some("Failed to create ConfigMap: permission denied".to_string()),
+            last_transition_time: Some("2024-11-26T10:00:00Z".to_string()),
+        };
+
+        let status = Bind9InstanceStatus {
+            conditions: vec![condition],
+            observed_generation: Some(1),
+            replicas: Some(0),
+            ready_replicas: Some(0),
+        };
+
+        assert_eq!(status.conditions[0].r#type, "Failed");
+        assert_eq!(status.conditions[0].status, "True");
+        assert!(status.conditions[0]
+            .message
+            .as_ref()
+            .unwrap()
+            .contains("permission denied"));
+    }
+
+    #[test]
+    fn test_available_condition() {
+        let condition = Condition {
+            r#type: "Available".to_string(),
+            status: "True".to_string(),
+            reason: Some("MinimumReplicasAvailable".to_string()),
+            message: Some("Deployment has minimum availability".to_string()),
+            last_transition_time: Some("2024-11-26T10:00:00Z".to_string()),
+        };
+
+        assert_eq!(condition.r#type, "Available");
+        assert_eq!(condition.status, "True");
+    }
+
+    #[test]
+    fn test_progressing_condition() {
+        let condition = Condition {
+            r#type: "Progressing".to_string(),
+            status: "True".to_string(),
+            reason: Some("NewReplicaSetCreated".to_string()),
+            message: Some("Deployment is progressing".to_string()),
+            last_transition_time: Some("2024-11-26T10:00:00Z".to_string()),
+        };
+
+        assert_eq!(condition.r#type, "Progressing");
+        assert_eq!(condition.status, "True");
+    }
+
+    #[test]
+    fn test_condition_serialization() {
+        use serde_json;
+
+        let condition = Condition {
+            r#type: "Ready".to_string(),
+            status: "True".to_string(),
+            reason: Some("AllGood".to_string()),
+            message: Some("Everything is working".to_string()),
+            last_transition_time: Some("2024-11-26T10:00:00Z".to_string()),
+        };
+
+        let json = serde_json::to_string(&condition).unwrap();
+        assert!(json.contains("Ready"));
+        assert!(json.contains("True"));
+        assert!(json.contains("AllGood"));
+
+        let deserialized: Condition = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.r#type, condition.r#type);
+        assert_eq!(deserialized.status, condition.status);
+    }
+
+    #[test]
+    fn test_status_with_no_conditions() {
+        let status = Bind9InstanceStatus {
+            conditions: vec![],
+            observed_generation: Some(1),
+            replicas: Some(3),
+            ready_replicas: Some(3),
+        };
+
+        assert_eq!(status.conditions.len(), 0);
+        assert!(status.observed_generation.is_some());
+    }
+
+    #[test]
+    fn test_observed_generation_tracking() {
+        let status = Bind9InstanceStatus {
+            conditions: vec![],
+            observed_generation: Some(5),
+            replicas: Some(3),
+            ready_replicas: Some(3),
+        };
+
+        // Observed generation tracks which generation of the resource was last reconciled
+        assert_eq!(status.observed_generation, Some(5));
+    }
 }

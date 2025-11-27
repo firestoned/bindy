@@ -1,6 +1,6 @@
 ---
 # A Records
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: www-example
@@ -11,7 +11,7 @@ spec:
   ipv4Address: "192.0.2.1"
   ttl: 300
 ---
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: api-example
@@ -23,7 +23,7 @@ spec:
   ttl: 300
 ---
 # MX Records
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: MXRecord
 metadata:
   name: mail-example
@@ -36,7 +36,7 @@ spec:
   ttl: 3600
 ---
 # TXT Records
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: TXTRecord
 metadata:
   name: spf-example
@@ -48,7 +48,7 @@ spec:
     - "v=spf1 include:_spf.example.com ~all"
   ttl: 3600
 ---
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: TXTRecord
 metadata:
   name: dmarc-example
@@ -61,7 +61,7 @@ spec:
   ttl: 3600
 ---
 # CNAME Records
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: CNAMERecord
 metadata:
   name: blog-example
@@ -73,7 +73,7 @@ spec:
   ttl: 300
 ---
 # Records for internal.local zone
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: db-internal
@@ -84,7 +84,7 @@ spec:
   ipv4Address: "10.0.1.10"
   ttl: 300
 ---
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: app-internal
@@ -95,7 +95,7 @@ spec:
   ipv4Address: "10.0.1.11"
   ttl: 300
 ---
-apiVersion: dns.example.com/v1alpha1
+apiVersion: dns.firestoned.io/v1alpha1
 kind: CNAMERecord
 metadata:
   name: cache-internal

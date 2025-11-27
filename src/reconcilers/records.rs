@@ -1,3 +1,8 @@
+//! DNS record reconciliation logic.
+//!
+//! This module contains reconcilers for all DNS record types supported by Bindy.
+//! Each reconciler adds or updates records in the appropriate zone file.
+
 use crate::crd::{
     AAAARecord, ARecord, CAARecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, TXTRecord,
 };
@@ -5,7 +10,31 @@ use anyhow::Result;
 use kube::{client::Client, ResourceExt};
 use tracing::info;
 
-/// Reconcile an ARecord resource
+/// Reconciles an ARecord (IPv4 address) resource.
+///
+/// Adds or updates an A record in the specified zone file.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `record` - The ARecord resource to reconcile
+/// * `zone_manager` - BIND9 manager for updating zone files
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use bindy::reconcilers::reconcile_a_record;
+/// use bindy::crd::ARecord;
+/// use bindy::bind9::Bind9Manager;
+/// use kube::Client;
+///
+/// async fn handle_a_record(record: ARecord) -> anyhow::Result<()> {
+///     let client = Client::try_default().await?;
+///     let manager = Bind9Manager::new("/etc/bind/zones".to_string());
+///     reconcile_a_record(client, record, &manager).await?;
+///     Ok(())
+/// }
+/// ```
 pub async fn reconcile_a_record(
     client: Client,
     record: ARecord,
@@ -27,7 +56,10 @@ pub async fn reconcile_a_record(
     Ok(())
 }
 
-/// Reconcile a TXTRecord resource
+/// Reconciles a TXTRecord (text) resource.
+///
+/// Adds or updates a TXT record in the specified zone file.
+/// Commonly used for SPF, DKIM, DMARC, and domain verification.
 pub async fn reconcile_txt_record(
     client: Client,
     record: TXTRecord,
@@ -49,7 +81,9 @@ pub async fn reconcile_txt_record(
     Ok(())
 }
 
-/// Reconcile an AAAARecord resource
+/// Reconciles an AAAARecord (IPv6 address) resource.
+///
+/// Adds or updates an AAAA record in the specified zone file.
 pub async fn reconcile_aaaa_record(
     client: Client,
     record: AAAARecord,
@@ -71,7 +105,9 @@ pub async fn reconcile_aaaa_record(
     Ok(())
 }
 
-/// Reconcile a CNAMERecord resource
+/// Reconciles a CNAMERecord (canonical name alias) resource.
+///
+/// Adds or updates a CNAME record in the specified zone file.
 pub async fn reconcile_cname_record(
     client: Client,
     record: CNAMERecord,
@@ -93,7 +129,10 @@ pub async fn reconcile_cname_record(
     Ok(())
 }
 
-/// Reconcile an MXRecord resource
+/// Reconciles an MXRecord (mail exchange) resource.
+///
+/// Adds or updates an MX record in the specified zone file.
+/// MX records specify mail servers for email delivery.
 pub async fn reconcile_mx_record(
     client: Client,
     record: MXRecord,
@@ -121,7 +160,10 @@ pub async fn reconcile_mx_record(
     Ok(())
 }
 
-/// Reconcile an NSRecord resource
+/// Reconciles an NSRecord (nameserver delegation) resource.
+///
+/// Adds or updates an NS record in the specified zone file.
+/// NS records delegate a subdomain to different nameservers.
 pub async fn reconcile_ns_record(
     client: Client,
     record: NSRecord,
@@ -143,7 +185,10 @@ pub async fn reconcile_ns_record(
     Ok(())
 }
 
-/// Reconcile an SRVRecord resource
+/// Reconciles an SRVRecord (service location) resource.
+///
+/// Adds or updates an SRV record in the specified zone file.
+/// SRV records specify the location of services (e.g., _ldap._tcp).
 pub async fn reconcile_srv_record(
     client: Client,
     record: SRVRecord,
@@ -172,7 +217,10 @@ pub async fn reconcile_srv_record(
     Ok(())
 }
 
-/// Reconcile a CAARecord resource
+/// Reconciles a CAARecord (certificate authority authorization) resource.
+///
+/// Adds or updates a CAA record in the specified zone file.
+/// CAA records specify which certificate authorities can issue certificates.
 pub async fn reconcile_caa_record(
     client: Client,
     record: CAARecord,
