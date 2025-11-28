@@ -15,7 +15,7 @@ preferred-dark-theme = "navy"
 smart-punctuation = true
 mathjax-support = false
 git-repository-url = "https://github.com/firestoned/bindy"
-edit-url-template = "https://github.com/firestoned/bindy/edit/main/{path}"
+edit-url-template = "https://github.com/firestoned/bindy/edit/main/docs/src/{path}"
 site-url = "/bindy/"
 cname = ""
 additional-css = ["theme/custom.css"]
@@ -23,8 +23,8 @@ additional-js = ["mermaid.min.js", "mermaid-init.js"]
 no-section-label = false
 
 [output.html.fold]
-enable = true
-level = 2
+enable = false    # whether or not to enable section folding
+level = 0         # the depth to start folding
 
 [output.html.playground]
 editable = false
@@ -49,11 +49,6 @@ python = "~"
 [preprocessor.links]
 
 [preprocessor.index]
-
-[preprocessor.toc]
-# The maximum level of headers to include in the table of contents.
-# Setting to 2 will include H1 and H2, but hide H3 and below.
-max-level = 2
 
 [preprocessor.mermaid]
 command = "mdbook-mermaid"
