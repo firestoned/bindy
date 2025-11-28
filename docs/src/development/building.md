@@ -74,12 +74,29 @@ cargo doc --no-deps --open
 
 ### mdBook (User guide)
 
+**Prerequisites:**
+
+The documentation uses Mermaid diagrams which require the `mdbook-mermaid` preprocessor:
+
+```bash
+# Install mdbook-mermaid
+cargo install mdbook-mermaid
+
+# Ensure ~/.cargo/bin is in your PATH
+export PATH="$HOME/.cargo/bin:$PATH"
+
+# Initialize Mermaid support (first time only)
+mdbook-mermaid install .
+```
+
+**Build and serve:**
+
 ```bash
 # Build book
 mdbook build
 
 # Serve locally
-mdbook serve
+mdbook serve --open
 ```
 
 ### Combined Documentation

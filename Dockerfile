@@ -10,9 +10,11 @@ WORKDIR /workspace
 COPY Cargo.toml ./
 COPY Cargo.lock* ./
 
-# Create a dummy src/main.rs to build dependencies
-RUN mkdir -p src && \
+# Create dummy source files to build dependencies
+RUN mkdir -p src/bin && \
     echo "fn main() {}" > src/main.rs && \
+    echo "fn main() {}" > src/bin/crdgen.rs && \
+    echo "fn main() {}" > src/bin/crddoc.rs && \
     cargo build --release && \
     rm -rf src
 

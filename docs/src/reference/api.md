@@ -1,169 +1,312 @@
 # API Reference
 
-Complete reference for Bindy's Kubernetes Custom Resources.
+This document describes the Custom Resource Definitions (CRDs) provided by Bindy.
 
-## Custom Resource Definitions
+> **Note**: This file is AUTO-GENERATED from `src/crd.rs`
+> DO NOT EDIT MANUALLY - Run `cargo run --bin crddoc` to regenerate
 
-Bindy provides the following CRDs:
+## Table of Contents
 
-### Core Resources
+- [Zone Management](#zone-management)
+  - [DNSZone](#dnszone)
+- [DNS Records](#dns-records)
+  - [ARecord](#arecord)
+  - [AAAARecord](#aaaarecord)
+  - [CNAMERecord](#cnamerecord)
+  - [MXRecord](#mxrecord)
+  - [NSRecord](#nsrecord)
+  - [TXTRecord](#txtrecord)
+  - [SRVRecord](#srvrecord)
+  - [CAARecord](#caarecord)
+- [Infrastructure](#infrastructure)
+  - [Bind9Cluster](#bind9cluster)
+  - [Bind9Instance](#bind9instance)
 
-#### Bind9Instance
-Manages BIND9 DNS server instances.
+## Zone Management
 
-- **Group**: bindy.firestoned.io
-- **Version**: v1alpha1
-- **Kind**: Bind9Instance
-- **Plural**: bind9instances
-- **Scope**: Namespaced
+### DNSZone
 
-[Full specification →](./bind9instance-spec.md)
+**API Version**: `bindy.firestoned.io/v1alpha1`
 
-#### DNSZone
-Defines DNS zones to be served by Bind9Instances.
+DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defines a zone (e.g., example.com) with SOA record parameters and is served by a specified Bind9Instance.
 
-- **Group**: bindy.firestoned.io
-- **Version**: v1alpha1
-- **Kind**: DNSZone
-- **Plural**: dnszones
-- **Scope**: Namespaced
+#### Spec Fields
 
-[Full specification →](./dnszone-spec.md)
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `clusterRef` | string | Yes | Reference to the `Bind9Instance` that serves this zone.  Must match the name of a `Bind9Instance` in the same namespace. The zone will be added to this instance via rndc addzone. |
+| `soaRecord` | object | Yes | SOA (Start of Authority) record - defines zone authority and refresh parameters.  The SOA record is required for all authoritative zones and contains timing information for zone transfers and caching. |
+| `ttl` | integer | No | Default TTL (Time To Live) for records in this zone, in seconds.  If not specified, individual records must specify their own TTL. Typical values: 300-86400 (5 minutes to 1 day). |
+| `zoneName` | string | Yes | DNS zone name (e.g., "example.com").  Must be a valid DNS zone name. Can be a domain or subdomain. Examples: "example.com", "internal.example.com", "10.in-addr.arpa" |
 
-### DNS Record Resources
+#### Status Fields
 
-All record resources share:
-- **Group**: bindy.firestoned.io
-- **Version**: v1alpha1
-- **Scope**: Namespaced
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `conditions` | array | No |  |
+| `observed_generation` | integer | No |  |
+| `record_count` | integer | No |  |
 
-| Resource | Kind | Purpose |
-|----------|------|---------|
-| arecords | ARecord | IPv4 address records |
-| aaaarecords | AAAARecord | IPv6 address records |
-| cnamerecords | CNAMERecord | Canonical name (alias) records |
-| mxrecords | MXRecord | Mail exchange records |
-| txtrecords | TXTRecord | Text records |
-| nsrecords | NSRecord | Name server records |
-| srvrecords | SRVRecord | Service location records |
-| caarecords | CAARecord | Certificate authority authorization |
+---
 
-[Full record specifications →](./record-specs.md)
+## DNS Records
 
-## Common Patterns
+### ARecord
 
-### Labels and Selectors
+**API Version**: `bindy.firestoned.io/v1alpha1`
 
-All resources support standard Kubernetes labels and selectors:
+ARecord maps a DNS hostname to an IPv4 address. Multiple A records for the same name enable round-robin DNS load balancing.
 
-```yaml
-metadata:
-  labels:
-    app: my-app
-    environment: production
-```
+#### Spec Fields
 
-DNSZone uses label selectors to target Bind9Instances:
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `ipv4Address` | string | Yes | IPv4 address in dotted-decimal notation.  Must be a valid IPv4 address (e.g., "192.0.2.1"). |
+| `name` | string | Yes | Record name within the zone. Use "@" for the zone apex.  Examples: "www", "mail", "ftp", "@" The full DNS name will be: {name}.{zone} |
+| `ttl` | integer | No | Time To Live in seconds. Overrides zone default TTL if specified.  Typical values: 60-86400 (1 minute to 1 day). |
+| `zone` | string | Yes | DNS zone this record belongs to (e.g., "example.com").  Must match the zoneName of an existing `DNSZone` resource. |
 
-```yaml
-spec:
-  instanceSelector:
-    matchLabels:
-      dns-role: primary
-```
+#### Status Fields
 
-### Status Conditions
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `conditions` | array | No |  |
+| `observed_generation` | integer | No |  |
 
-All resources implement standard status conditions:
+---
 
-- **Ready**: Resource is ready for use
-- **Available**: Resource is available and serving traffic
-- **Progressing**: Resource is being reconciled
-- **Degraded**: Resource is partially functional
-- **Failed**: Resource reconciliation failed
+### AAAARecord
 
-Example status:
+**API Version**: `bindy.firestoned.io/v1alpha1`
 
-```yaml
-status:
-  conditions:
-    - type: Ready
-      status: "True"
-      lastTransitionTime: "2024-01-15T10:30:00Z"
-      reason: ReconcileSuccess
-      message: "Resource reconciled successfully"
-```
+AAAARecord maps a DNS hostname to an IPv6 address. This is the IPv6 equivalent of an A record.
 
-### Owner References
+#### Spec Fields
 
-Bindy automatically sets owner references for resource cleanup:
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `ipv6Address` | string | Yes | IPv6 address in standard notation.  Examples: "`2001:db8::1`", "`fe80::1`", "`::1`" |
+| `name` | string | Yes | Record name within the zone. |
+| `ttl` | integer | No | Time To Live in seconds. |
+| `zone` | string | Yes | DNS zone this record belongs to. |
 
-```yaml
-metadata:
-  ownerReferences:
-    - apiVersion: bindy.firestoned.io/v1alpha1
-      kind: DNSZone
-      name: example-zone
-      uid: abc123
-      controller: true
-```
+#### Status Fields
 
-## API Versions
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `conditions` | array | No |  |
+| `observed_generation` | integer | No |  |
 
-### v1alpha1 (Current)
+---
 
-Current development version. API may change between releases.
+### CNAMERecord
 
-**Stability**: Alpha - Breaking changes possible
+**API Version**: `bindy.firestoned.io/v1alpha1`
 
-**Deprecation Policy**: None yet established
+CNAMERecord creates a DNS alias from one hostname to another. A CNAME cannot coexist with other record types for the same name.
 
-### Future Versions
+#### Spec Fields
 
-- **v1beta1**: Planned when API stabilizes
-- **v1**: Planned for 1.0 release
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `name` | string | Yes | Record name within the zone.  Note: CNAME records cannot be created at the zone apex (@). |
+| `target` | string | Yes | Target hostname (canonical name).  Should be a fully qualified domain name ending with a dot. Example: "example.com." or "www.example.com." |
+| `ttl` | integer | No | Time To Live in seconds. |
+| `zone` | string | Yes | DNS zone this record belongs to. |
 
-## Validation
+#### Status Fields
 
-### Schema Validation
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `conditions` | array | No |  |
+| `observed_generation` | integer | No |  |
 
-All CRDs include OpenAPI v3 schema validation:
+---
 
-- Required fields enforced
-- Field types validated
-- Pattern matching for strings
-- Range validation for numbers
+### MXRecord
 
-### Webhook Validation
+**API Version**: `bindy.firestoned.io/v1alpha1`
 
-Planned for future releases:
+MXRecord specifies mail exchange servers for a domain. Lower priority values indicate higher preference for mail delivery.
 
-- Cross-field validation
-- Business logic validation
-- Default value injection
+#### Spec Fields
 
-## API Conventions
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `mailServer` | string | Yes | Fully qualified domain name of the mail server.  Must end with a dot. Example: "mail.example.com." |
+| `name` | string | Yes | Record name within the zone. Use "@" for the zone apex. |
+| `priority` | integer | Yes | Priority (preference) of this mail server. Lower values = higher priority.  Common values: 0-100. Multiple MX records can exist with different priorities. |
+| `ttl` | integer | No | Time To Live in seconds. |
+| `zone` | string | Yes | DNS zone this record belongs to. |
 
-### Naming
+#### Status Fields
 
-- Use DNS-compatible names (lowercase, numbers, hyphens)
-- Maximum 253 characters for resource names
-- Maximum 63 characters for DNS labels
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `conditions` | array | No |  |
+| `observed_generation` | integer | No |  |
 
-### TTL Values
+---
 
-TTL (Time To Live) values in seconds:
+### NSRecord
 
-- Minimum: 60 (1 minute)
-- Maximum: 86400 (24 hours)
-- Default: 3600 (1 hour)
+**API Version**: `bindy.firestoned.io/v1alpha1`
 
-### IP Addresses
+NSRecord delegates a subdomain to authoritative nameservers. Used for subdomain delegation to different DNS providers or servers.
 
-- IPv4: Dotted decimal notation (192.0.2.1)
-- IPv6: Colon-separated hexadecimal (2001:db8::1)
-- CIDR notation supported for ACLs (10.0.0.0/8)
+#### Spec Fields
 
-## Examples
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `name` | string | Yes | Subdomain to delegate. For zone apex, use "@". |
+| `nameserver` | string | Yes | Fully qualified domain name of the nameserver.  Must end with a dot. Example: "ns1.example.com." |
+| `ttl` | integer | No | Time To Live in seconds. |
+| `zone` | string | Yes | DNS zone this record belongs to. |
 
-See the [Examples](./examples.md) section for complete configuration examples.
+#### Status Fields
+
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `conditions` | array | No |  |
+| `observed_generation` | integer | No |  |
+
+---
+
+### TXTRecord
+
+**API Version**: `bindy.firestoned.io/v1alpha1`
+
+TXTRecord stores arbitrary text data in DNS. Commonly used for SPF, DKIM, DMARC policies, and domain verification.
+
+#### Spec Fields
+
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `name` | string | Yes | Record name within the zone. |
+| `text` | array | Yes | Array of text strings. Each string can be up to 255 characters.  Multiple strings are concatenated by DNS resolvers. For long text, split into multiple strings. |
+| `ttl` | integer | No | Time To Live in seconds. |
+| `zone` | string | Yes | DNS zone this record belongs to. |
+
+#### Status Fields
+
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `conditions` | array | No |  |
+| `observed_generation` | integer | No |  |
+
+---
+
+### SRVRecord
+
+**API Version**: `bindy.firestoned.io/v1alpha1`
+
+SRVRecord specifies the hostname and port of servers for specific services. The record name follows the format _service._proto (e.g., _ldap._tcp).
+
+#### Spec Fields
+
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `name` | string | Yes | Service and protocol in the format: _service._proto  Example: "_ldap._tcp", "_sip._udp", "_http._tcp" |
+| `port` | integer | Yes | TCP or UDP port where the service is available. |
+| `priority` | integer | Yes | Priority of the target host. Lower values = higher priority. |
+| `target` | string | Yes | Fully qualified domain name of the target host.  Must end with a dot. Use "." for "service not available". |
+| `ttl` | integer | No | Time To Live in seconds. |
+| `weight` | integer | Yes | Relative weight for records with the same priority.  Higher values = higher probability of selection. |
+| `zone` | string | Yes | DNS zone this record belongs to. |
+
+#### Status Fields
+
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `conditions` | array | No |  |
+| `observed_generation` | integer | No |  |
+
+---
+
+### CAARecord
+
+**API Version**: `bindy.firestoned.io/v1alpha1`
+
+CAARecord specifies which certificate authorities are authorized to issue certificates for a domain. Enhances domain security and certificate issuance control.
+
+#### Spec Fields
+
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `flags` | integer | Yes | Flags byte. Use 0 for non-critical, 128 for critical.  Critical flag (128) means CAs must understand the tag. |
+| `name` | string | Yes | Record name within the zone. Use "@" for the zone apex. |
+| `tag` | string | Yes | Property tag. Common values: "issue", "issuewild", "iodef".  - "issue": Authorize CA to issue certificates - "issuewild": Authorize CA to issue wildcard certificates - "iodef": URL/email for violation reports |
+| `ttl` | integer | No | Time To Live in seconds. |
+| `value` | string | Yes | Property value. Format depends on the tag.  For "issue"/"issuewild": CA domain (e.g., "letsencrypt.org") For "iodef": mailto: or https: URL |
+| `zone` | string | Yes | DNS zone this record belongs to. |
+
+#### Status Fields
+
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `conditions` | array | No |  |
+| `observed_generation` | integer | No |  |
+
+---
+
+## Infrastructure
+
+### Bind9Cluster
+
+**API Version**: `bindy.firestoned.io/v1alpha1`
+
+Bind9Cluster defines a logical grouping of BIND9 DNS server instances with shared configuration. Provides centralized management of BIND9 version, container images, and common settings across multiple instances.
+
+#### Spec Fields
+
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `acls` | object | No | ACLs that can be referenced by instances |
+| `config` | object | No | Shared configuration for all instances in the cluster |
+| `configMapRefs` | object | No | `ConfigMap` references for BIND9 configuration files |
+| `image` | object | No | Container image configuration |
+| `tsigKeys` | array | No | TSIG keys for authenticated zone transfers |
+| `version` | string | No | Shared BIND9 version for the cluster |
+
+#### Status Fields
+
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `conditions` | array | No |  |
+| `instance_count` | integer | No | Number of instances in this cluster |
+| `observed_generation` | integer | No |  |
+| `ready_instances` | integer | No | Number of ready instances |
+
+---
+
+### Bind9Instance
+
+**API Version**: `bindy.firestoned.io/v1alpha1`
+
+Bind9Instance represents a BIND9 DNS server deployment in Kubernetes. Each instance creates a Deployment, Service, ConfigMap, and Secret for managing a BIND9 server with RNDC protocol communication.
+
+#### Spec Fields
+
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `clusterRef` | string | Yes | Reference to the `Bind9Cluster` this instance belongs to.  The cluster provides shared configuration and defines the logical grouping. |
+| `config` | object | No | Instance-specific BIND9 configuration overrides.  Overrides cluster-level configuration for this instance only. |
+| `configMapRefs` | object | No | `ConfigMap` references override. Inherits from cluster if not specified. |
+| `image` | object | No | Container image configuration override. Inherits from cluster if not specified. |
+| `primaryServers` | array | No | Primary server addresses for zone transfers (required for secondary instances).  List of IP addresses or hostnames of primary servers to transfer zones from. Example: `["10.0.1.10", "primary.example.com"]` |
+| `replicas` | integer | No | Number of pod replicas for high availability.  Defaults to 1 if not specified. For production, use 2+ replicas. |
+| `role` | string | Yes | Role of this instance (primary or secondary).  Primary instances are authoritative for zones. Secondary instances replicate zones from primaries via AXFR/IXFR. |
+| `version` | string | No | BIND9 version override. Inherits from cluster if not specified.  Example: "9.18", "9.16" |
+
+#### Status Fields
+
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `conditions` | array | No |  |
+| `observed_generation` | integer | No |  |
+| `ready_replicas` | integer | No |  |
+| `replicas` | integer | No |  |
+| `service_address` | string | No | IP or hostname of this instance's service |
+
+---
+
