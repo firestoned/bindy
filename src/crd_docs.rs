@@ -1,3 +1,6 @@
+// Copyright (c) 2025 Erick Bourgeois, firestoned
+// SPDX-License-Identifier: MIT
+
 //! Module-level documentation for CRD types
 //!
 //! This file contains additional doc examples that will be included in the API reference.

@@ -1,3 +1,6 @@
+// Copyright (c) 2025 Erick Bourgeois, firestoned
+// SPDX-License-Identifier: MIT
+
 //! Unit tests for bind9instance reconciler
 //!
 //! These tests focus on the logic and helper functions used by the reconciler.

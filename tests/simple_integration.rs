@@ -1,3 +1,6 @@
+// Copyright (c) 2025 Erick Bourgeois, firestoned
+// SPDX-License-Identifier: MIT
+
 // Simplified integration tests for Bindy DNS Controller
 // These tests verify the controller is working correctly in a Kubernetes cluster
 

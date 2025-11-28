@@ -87,11 +87,25 @@ jobs:
       - name: Build (release)
         run: cargo build --release --target ${{ matrix.platform.target }} --verbose
 
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx
+
+      - name: Generate SBOM
+        run: |
+          cargo cyclonedx --format json --target ${{ matrix.platform.target }} \
+            --output-pattern target/${{ matrix.platform.target }}/release/sbom.json
+
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.platform.artifact_name }}
           path: target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform.artifact_name }}-sbom
+          path: target/${{ matrix.platform.target }}/release/sbom.json
 
   docker-release:
     name: Build and Push Docker Image
@@ -137,6 +151,7 @@ jobs:
             type=raw,value=${{ steps.version.outputs.tag_name }}
 
       - name: Build and push Docker image
+        id: docker_build
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -146,11 +161,26 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
+          sbom: true
+          provenance: true
+
+      - name: Generate Docker SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/${{ github.repository }}:${{ steps.version.outputs.tag_name }}
+          format: cyclonedx-json
+          output-file: docker-sbom.json
+
+      - name: Upload Docker SBOM as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-sbom
+          path: docker-sbom.json
 
   upload-release-assets:
     name: Upload Release Assets
     runs-on: ubuntu-latest
-    needs: build-and-test
+    needs: [build-and-test, docker-release]
     permissions:
       contents: write
     steps:
@@ -163,9 +193,14 @@ jobs:
         run: |
           cd artifacts
 
-          # Process each platform
-          for dir in */; do
-            platform="${dir%/}"
+          # Process each platform binary
+          for dir in bindy-*; do
+            # Skip SBOM directories
+            if [[ "$dir" == *-sbom ]]; then
+              continue
+            fi
+
+            platform="$dir"
             echo "Processing $platform..."
             cd "$platform"
 
@@ -181,8 +216,21 @@ jobs:
             cd ..
           done
 
+          # Collect all SBOM files
+          mkdir -p sboms
+          for sbom_dir in *-sbom; do
+            if [ -d "$sbom_dir" ]; then
+              cp "$sbom_dir"/sbom.json "sboms/${sbom_dir}.json" 2>/dev/null || true
+            fi
+          done
+
+          # Copy Docker SBOM if it exists
+          if [ -f "docker-sbom/docker-sbom.json" ]; then
+            cp docker-sbom/docker-sbom.json sboms/
+          fi
+
           # Generate SHA256 checksums
-          sha256sum *.tar.gz *.zip > checksums.sha256 2>/dev/null || true
+          sha256sum *.tar.gz *.zip sboms/*.json > checksums.sha256 2>/dev/null || true
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v1
@@ -190,4 +238,5 @@ jobs:
           files: |
             artifacts/*.tar.gz
             artifacts/*.zip
+            artifacts/sboms/*.json
             artifacts/checksums.sha256

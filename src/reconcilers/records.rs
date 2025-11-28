@@ -1,3 +1,6 @@
+// Copyright (c) 2025 Erick Bourgeois, firestoned
+// SPDX-License-Identifier: MIT
+
 //! DNS record reconciliation logic.
 //!
 //! This module contains reconcilers for all DNS record types supported by Bindy.

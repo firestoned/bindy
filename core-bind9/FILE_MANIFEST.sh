@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
 
 # Quick reference for all files in this Bind9 deployment package
 

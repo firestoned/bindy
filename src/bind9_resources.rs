@@ -1,3 +1,6 @@
+// Copyright (c) 2025 Erick Bourgeois, firestoned
+// SPDX-License-Identifier: MIT
+
 //! BIND9 Kubernetes resource builders
 //!
 //! This module provides functions to build Kubernetes resources (Deployment, ConfigMap, Service)

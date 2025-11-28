@@ -1,3 +1,6 @@
+// Copyright (c) 2025 Erick Bourgeois, firestoned
+// SPDX-License-Identifier: MIT
+
 //! DNS zone reconciliation logic.
 //!
 //! This module handles the creation and management of DNS zones on BIND9 servers.

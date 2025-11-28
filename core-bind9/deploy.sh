@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
 
 # Bind9 Kubernetes Cluster - Deployment Script
 # Usage: ./deploy.sh [dev|prod]

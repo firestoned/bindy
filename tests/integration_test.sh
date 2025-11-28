@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
 set -euo pipefail
 
 # Usage: integration_test.sh [--image IMAGE_TAG] [--skip-deploy]
