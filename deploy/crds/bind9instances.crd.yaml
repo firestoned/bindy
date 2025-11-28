@@ -1,97 +1,232 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# This file is AUTO-GENERATED from src/crd.rs
+# DO NOT EDIT MANUALLY - Run `cargo run --bin crdgen` to regenerate
+#
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: bind9instances.dns.firestoned.io
+  name: bind9instances.bindy.firestoned.io
 spec:
-  group: dns.firestoned.io
+  group: bindy.firestoned.io
   names:
+    categories: []
     kind: Bind9Instance
     plural: bind9instances
+    shortNames: []
     singular: bind9instance
-    shortNames:
-      - b9
   scope: Namespaced
   versions:
-    - name: v1alpha1
-      served: true
-      storage: true
-      schema:
-        openAPIV3Schema:
-          type: object
-          properties:
-            metadata:
-              type: object
-            spec:
-              type: object
-              properties:
-                replicas:
-                  type: integer
-                  minimum: 1
-                  default: 1
-                version:
-                  type: string
-                  default: "9.18"
-                config:
-                  type: object
-                  description: BIND9 configuration options
-                  properties:
-                    recursion:
-                      type: boolean
-                      default: false
-                    allowQuery:
-                      type: array
-                      items:
-                        type: string
-                      description: ACLs allowed to query
-                    allowTransfer:
-                      type: array
-                      items:
-                        type: string
-                      description: ACLs allowed to transfer
-                    dnssec:
-                      type: object
-                      properties:
-                        enabled:
-                          type: boolean
-                          default: false
-                        validation:
-                          type: boolean
-                          default: false
-            status:
-              type: object
-              properties:
-                conditions:
-                  type: array
-                  items:
-                    type: object
-                    required:
-                      - type
-                      - status
+  - additionalPrinterColumns: []
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Bind9Instance represents a BIND9 DNS server deployment in Kubernetes. Each instance creates a Deployment, Service, ConfigMap, and Secret for managing a BIND9 server with RNDC protocol communication.
+        properties:
+          spec:
+            description: |-
+              `Bind9Instance` represents a BIND9 DNS server deployment in Kubernetes.
+
+              Each `Bind9Instance` creates a Deployment, Service, `ConfigMap`, and Secret for managing a BIND9 server. The instance communicates with the controller via RNDC protocol.
+
+              # Example
+
+              ```yaml apiVersion: dns.firestoned.io/v1alpha1 kind: Bind9Instance metadata: name: dns-primary namespace: dns-system spec: clusterRef: my-dns-cluster role: primary replicas: 2 version: "9.18" ```
+            properties:
+              clusterRef:
+                description: |-
+                  Reference to the `Bind9Cluster` this instance belongs to.
+
+                  The cluster provides shared configuration and defines the logical grouping.
+                type: string
+              config:
+                description: |-
+                  Instance-specific BIND9 configuration overrides.
+
+                  Overrides cluster-level configuration for this instance only.
+                nullable: true
+                properties:
+                  allow_query:
+                    items:
+                      type: string
+                    nullable: true
+                    type: array
+                  allow_transfer:
+                    items:
+                      type: string
+                    nullable: true
+                    type: array
+                  dnssec:
+                    description: DNSSEC configuration
+                    nullable: true
                     properties:
-                      type:
-                        type: string
-                        enum:
-                          - Ready
-                          - Available
-                          - Progressing
-                          - Degraded
-                          - Failed
-                      status:
-                        type: string
-                        enum:
-                          - "True"
-                          - "False"
-                          - "Unknown"
-                      reason:
-                        type: string
-                      message:
-                        type: string
-                      lastTransitionTime:
-                        type: string
-                        format: date-time
-                observedGeneration:
-                  type: integer
-                replicas:
-                  type: integer
-                readyReplicas:
-                  type: integer
+                      enabled:
+                        nullable: true
+                        type: boolean
+                      validation:
+                        nullable: true
+                        type: boolean
+                    type: object
+                  forwarders:
+                    items:
+                      type: string
+                    nullable: true
+                    type: array
+                  listen_on:
+                    items:
+                      type: string
+                    nullable: true
+                    type: array
+                  listen_on_v6:
+                    items:
+                      type: string
+                    nullable: true
+                    type: array
+                  recursion:
+                    nullable: true
+                    type: boolean
+                type: object
+              configMapRefs:
+                description: '`ConfigMap` references override. Inherits from cluster if not specified.'
+                nullable: true
+                properties:
+                  namedConf:
+                    description: |-
+                      `ConfigMap` containing named.conf file
+
+                      If not specified, a default configuration will be generated
+                    nullable: true
+                    type: string
+                  namedConfOptions:
+                    description: |-
+                      `ConfigMap` containing named.conf.options file
+
+                      If not specified, a default configuration will be generated
+                    nullable: true
+                    type: string
+                type: object
+              image:
+                description: Container image configuration override. Inherits from cluster if not specified.
+                nullable: true
+                properties:
+                  image:
+                    description: |-
+                      Container image repository and tag for BIND9
+
+                      Example: "internetsystemsconsortium/bind9:9.18"
+                    nullable: true
+                    type: string
+                  imagePullPolicy:
+                    description: |-
+                      Image pull policy
+
+                      Example: "`IfNotPresent`", "Always", "Never"
+                    nullable: true
+                    type: string
+                  imagePullSecrets:
+                    description: Reference to image pull secrets for private registries
+                    items:
+                      type: string
+                    nullable: true
+                    type: array
+                type: object
+              primaryServers:
+                description: |-
+                  Primary server addresses for zone transfers (required for secondary instances).
+
+                  List of IP addresses or hostnames of primary servers to transfer zones from. Example: `["10.0.1.10", "primary.example.com"]`
+                items:
+                  type: string
+                nullable: true
+                type: array
+              replicas:
+                description: |-
+                  Number of pod replicas for high availability.
+
+                  Defaults to 1 if not specified. For production, use 2+ replicas.
+                format: int32
+                maximum: 100.0
+                minimum: 0.0
+                nullable: true
+                type: integer
+              role:
+                description: |-
+                  Role of this instance (primary or secondary).
+
+                  Primary instances are authoritative for zones. Secondary instances replicate zones from primaries via AXFR/IXFR.
+                enum:
+                - primary
+                - secondary
+                type: string
+              version:
+                description: |-
+                  BIND9 version override. Inherits from cluster if not specified.
+
+                  Example: "9.18", "9.16"
+                nullable: true
+                type: string
+            required:
+            - clusterRef
+            - role
+            type: object
+          status:
+            description: '`Bind9Instance` status'
+            nullable: true
+            properties:
+              conditions:
+                default: []
+                items:
+                  description: |-
+                    Condition represents an observation of a resource's current state.
+
+                    Conditions are used in status subresources to communicate the state of a resource to users and controllers.
+                  properties:
+                    last_transition_time:
+                      description: Last time the condition transitioned from one status to another (RFC3339 format).
+                      nullable: true
+                      type: string
+                    message:
+                      description: Human-readable message indicating details about the transition.
+                      nullable: true
+                      type: string
+                    reason:
+                      description: Brief CamelCase reason for the condition's last transition.
+                      nullable: true
+                      type: string
+                    status:
+                      description: 'Status of the condition: True, False, or Unknown.'
+                      type: string
+                    type:
+                      description: 'Type of condition. Common types include: Ready, Available, Progressing, Degraded, Failed.'
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                type: array
+              observed_generation:
+                format: int64
+                nullable: true
+                type: integer
+              ready_replicas:
+                format: int32
+                nullable: true
+                type: integer
+              replicas:
+                format: int32
+                nullable: true
+                type: integer
+              service_address:
+                description: IP or hostname of this instance's service
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: Bind9Instance
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: MIT
 
-//! Unit tests for bind9_resources
+//! Unit tests for `bind9_resources`
 
 #[cfg(test)]
 mod tests {
@@ -17,8 +17,12 @@ mod tests {
                 ..Default::default()
             },
             spec: Bind9InstanceSpec {
+                cluster_ref: "test-cluster".to_string(),
+                role: crate::crd::ServerRole::Primary,
                 replicas: Some(2),
                 version: Some("9.18".into()),
+                image: None,
+                config_map_refs: None,
                 config: Some(Bind9Config {
                     recursion: Some(false),
                     allow_query: Some(vec!["0.0.0.0/0".into()]),
@@ -31,6 +35,7 @@ mod tests {
                     listen_on: None,
                     listen_on_v6: None,
                 }),
+                primary_servers: None,
             },
             status: None,
         }
@@ -48,7 +53,7 @@ mod tests {
     #[test]
     fn test_build_configmap() {
         let instance = create_test_instance("test");
-        let cm = build_configmap("test", "test-ns", &instance);
+        let cm = build_configmap("test", "test-ns", &instance, None).unwrap();
 
         assert_eq!(cm.metadata.name.as_deref(), Some("test-config"));
         assert_eq!(cm.metadata.namespace.as_deref(), Some("test-ns"));
@@ -68,7 +73,7 @@ mod tests {
     #[test]
     fn test_build_deployment() {
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "test-ns", &instance);
+        let deployment = build_deployment("test", "test-ns", &instance, None);
 
         assert_eq!(deployment.metadata.name.as_deref(), Some("test"));
         assert_eq!(deployment.metadata.namespace.as_deref(), Some("test-ns"));
@@ -77,6 +82,7 @@ mod tests {
         assert_eq!(spec.replicas, Some(2));
 
         let pod_spec = spec.template.spec.unwrap();
+        // Should have 1 container: bind9 only
         assert_eq!(pod_spec.containers.len(), 1);
 
         let container = &pod_spec.containers[0];
@@ -87,9 +93,11 @@ mod tests {
         );
 
         let ports = container.ports.as_ref().unwrap();
-        assert_eq!(ports.len(), 2);
-        assert_eq!(ports[0].container_port, 53);
-        assert_eq!(ports[1].container_port, 53);
+        // Should have 3 ports: DNS TCP, DNS UDP, and RNDC
+        assert_eq!(ports.len(), 3);
+        assert_eq!(ports[0].container_port, 53); // DNS TCP
+        assert_eq!(ports[1].container_port, 53); // DNS UDP
+        assert_eq!(ports[2].container_port, 953); // RNDC
     }
 
     #[test]
@@ -111,15 +119,16 @@ mod tests {
     #[test]
     fn test_build_pod_spec() {
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "test-ns", &instance);
+        let deployment = build_deployment("test", "test-ns", &instance, None);
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
 
         // Verify volumes
         let volumes = pod_spec.volumes.unwrap();
         assert_eq!(volumes.len(), 3);
-        assert_eq!(volumes[0].name, "config");
-        assert_eq!(volumes[1].name, "zones");
-        assert_eq!(volumes[2].name, "cache");
+        // Order: zones, cache, config (from build_volumes function)
+        assert_eq!(volumes[0].name, "zones");
+        assert_eq!(volumes[1].name, "cache");
+        assert_eq!(volumes[2].name, "config");
 
         // Verify container configuration
         let container = &pod_spec.containers[0];
@@ -142,7 +151,7 @@ mod tests {
         let mut instance = create_test_instance("test");
         instance.spec.replicas = Some(5);
 
-        let deployment = build_deployment("test", "test-ns", &instance);
+        let deployment = build_deployment("test", "test-ns", &instance, None);
         let spec = deployment.spec.unwrap();
 
         assert_eq!(spec.replicas, Some(5));
@@ -153,7 +162,7 @@ mod tests {
         let mut instance = create_test_instance("test");
         instance.spec.version = Some("9.20".into());
 
-        let deployment = build_deployment("test", "test-ns", &instance);
+        let deployment = build_deployment("test", "test-ns", &instance, None);
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let container = &pod_spec.containers[0];
 
@@ -191,7 +200,7 @@ mod tests {
     #[test]
     fn test_configmap_contains_all_files() {
         let instance = create_test_instance("test");
-        let cm = build_configmap("test", "test-ns", &instance);
+        let cm = build_configmap("test", "test-ns", &instance, None).unwrap();
 
         let data = cm.data.unwrap();
         assert!(data.contains_key("named.conf"));
@@ -217,7 +226,7 @@ mod tests {
     #[test]
     fn test_configmap_naming() {
         let instance = create_test_instance("test-instance");
-        let cm = build_configmap("test-instance", "test-ns", &instance);
+        let cm = build_configmap("test-instance", "test-ns", &instance, None).unwrap();
 
         assert_eq!(cm.metadata.name.as_deref(), Some("test-instance-config"));
         assert_eq!(cm.metadata.namespace.as_deref(), Some("test-ns"));
@@ -226,14 +235,14 @@ mod tests {
     #[test]
     fn test_deployment_selector_matches_labels() {
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "test-ns", &instance);
+        let deployment = build_deployment("test", "test-ns", &instance, None);
 
         let spec = deployment.spec.unwrap();
         let selector_labels = spec.selector.match_labels.unwrap();
         let pod_labels = spec.template.metadata.unwrap().labels.unwrap();
 
         // Verify selector matches pod labels
-        for (key, value) in selector_labels.iter() {
+        for (key, value) in &selector_labels {
             assert_eq!(pod_labels.get(key), Some(value));
         }
     }
@@ -246,7 +255,7 @@ mod tests {
         let svc_selector = service.spec.unwrap().selector.unwrap();
 
         // Verify service selector matches deployment labels
-        for (key, value) in svc_selector.iter() {
+        for (key, value) in &svc_selector {
             assert_eq!(deployment_labels.get(key), Some(value));
         }
     }

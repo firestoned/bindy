@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #[cfg(test)]
+#[allow(clippy::unreadable_literal)]
 mod tests {
     use crate::crd::*;
     use std::collections::BTreeMap;
@@ -84,30 +85,37 @@ mod tests {
     }
 
     #[test]
-    fn test_secondary_zone_config() {
-        let config = SecondaryZoneConfig {
-            primary_servers: vec!["10.0.1.1".into(), "10.0.1.2".into()],
-            tsig_key: Some("my-key".into()),
+    fn test_tsig_key() {
+        let tsig = TSIGKey {
+            name: "transfer-key".into(),
+            algorithm: "hmac-sha256".into(),
+            secret: "base64secret==".into(),
         };
 
-        assert_eq!(config.primary_servers.len(), 2);
-        assert_eq!(config.primary_servers[0], "10.0.1.1");
-        assert!(config.tsig_key.is_some());
+        assert_eq!(tsig.name, "transfer-key");
+        assert_eq!(tsig.algorithm, "hmac-sha256");
+        assert_eq!(tsig.secret, "base64secret==");
     }
 
     #[test]
-    fn test_secondary_zone_config_without_tsig() {
-        let config = SecondaryZoneConfig {
-            primary_servers: vec!["10.0.1.1".into()],
-            tsig_key: None,
-        };
+    fn test_server_role() {
+        let primary = ServerRole::Primary;
+        let secondary = ServerRole::Secondary;
 
-        assert_eq!(config.primary_servers.len(), 1);
-        assert!(config.tsig_key.is_none());
+        // Test that the enum variants exist
+        match primary {
+            ServerRole::Primary => {}
+            ServerRole::Secondary => panic!("Wrong variant"),
+        }
+
+        match secondary {
+            ServerRole::Primary => panic!("Wrong variant"),
+            ServerRole::Secondary => {}
+        }
     }
 
     #[test]
-    fn test_dnszone_spec_primary() {
+    fn test_dnszone_spec() {
         let soa = SOARecord {
             primary_ns: "ns1.example.com.".into(),
             admin_email: "admin@example.com".into(),
@@ -120,39 +128,48 @@ mod tests {
 
         let spec = DNSZoneSpec {
             zone_name: "example.com".into(),
-            zone_type: Some("primary".into()),
-            instance_selector: LabelSelector::default(),
-            soa_record: Some(soa),
-            secondary_config: None,
+            cluster_ref: "my-cluster".into(),
+            soa_record: soa,
             ttl: Some(3600),
         };
 
         assert_eq!(spec.zone_name, "example.com");
-        assert_eq!(spec.zone_type.unwrap(), "primary");
-        assert!(spec.soa_record.is_some());
-        assert!(spec.secondary_config.is_none());
+        assert_eq!(spec.cluster_ref, "my-cluster");
+        assert_eq!(spec.soa_record.primary_ns, "ns1.example.com.");
+        assert_eq!(spec.ttl.unwrap(), 3600);
     }
 
     #[test]
-    fn test_dnszone_spec_secondary() {
-        let config = SecondaryZoneConfig {
-            primary_servers: vec!["10.0.1.1".into()],
-            tsig_key: None,
+    fn test_bind9cluster_spec() {
+        let mut acls = BTreeMap::new();
+        acls.insert("trusted".into(), vec!["10.0.0.0/8".into()]);
+
+        let spec = Bind9ClusterSpec {
+            version: Some("9.18".into()),
+            image: None,
+            config_map_refs: None,
+            config: Some(Bind9Config {
+                recursion: Some(false),
+                allow_query: None,
+                allow_transfer: None,
+                dnssec: None,
+                forwarders: None,
+                listen_on: None,
+                listen_on_v6: None,
+            }),
+            tsig_keys: Some(vec![TSIGKey {
+                name: "key1".into(),
+                algorithm: "hmac-sha256".into(),
+                secret: "secret==".into(),
+            }]),
+            acls: Some(acls.clone()),
         };
 
-        let spec = DNSZoneSpec {
-            zone_name: "example.com".into(),
-            zone_type: Some("secondary".into()),
-            instance_selector: LabelSelector::default(),
-            soa_record: None,
-            secondary_config: Some(config),
-            ttl: None,
-        };
-
-        assert_eq!(spec.zone_name, "example.com");
-        assert_eq!(spec.zone_type.unwrap(), "secondary");
-        assert!(spec.soa_record.is_none());
-        assert!(spec.secondary_config.is_some());
+        assert_eq!(spec.version.unwrap(), "9.18");
+        assert!(spec.config.is_some());
+        assert_eq!(spec.tsig_keys.as_ref().unwrap().len(), 1);
+        assert!(spec.acls.is_some());
+        assert_eq!(spec.acls.unwrap().get("trusted").unwrap().len(), 1);
     }
 
     #[test]
@@ -310,8 +327,12 @@ mod tests {
     #[test]
     fn test_bind9instance_spec() {
         let spec = Bind9InstanceSpec {
+            cluster_ref: "my-cluster".into(),
+            role: ServerRole::Primary,
             replicas: Some(3),
             version: Some("9.18".into()),
+            image: None,
+            config_map_refs: None,
             config: Some(Bind9Config {
                 recursion: Some(false),
                 allow_query: None,
@@ -321,11 +342,14 @@ mod tests {
                 listen_on: None,
                 listen_on_v6: None,
             }),
+            primary_servers: None,
         };
 
+        assert_eq!(spec.cluster_ref, "my-cluster");
         assert_eq!(spec.replicas, Some(3));
         assert_eq!(spec.version.unwrap(), "9.18");
         assert!(spec.config.is_some());
+        assert!(spec.primary_servers.is_none());
     }
 
     #[test]
@@ -335,6 +359,7 @@ mod tests {
         assert!(status.observed_generation.is_none());
         assert!(status.replicas.is_none());
         assert!(status.ready_replicas.is_none());
+        assert!(status.service_address.is_none());
     }
 
     #[test]
@@ -352,11 +377,16 @@ mod tests {
             observed_generation: Some(1),
             replicas: Some(3),
             ready_replicas: Some(2),
+            service_address: Some("my-instance.dns-system.svc.cluster.local".into()),
         };
 
         assert_eq!(status.conditions.len(), 1);
         assert_eq!(status.replicas, Some(3));
         assert_eq!(status.ready_replicas, Some(2));
+        assert_eq!(
+            status.service_address.as_deref(),
+            Some("my-instance.dns-system.svc.cluster.local")
+        );
     }
 
     #[test]
@@ -446,6 +476,7 @@ mod tests {
             observed_generation: Some(1),
             replicas: Some(3),
             ready_replicas: Some(3),
+            service_address: None,
         };
 
         assert_eq!(status.conditions.len(), 2);
@@ -509,6 +540,7 @@ mod tests {
             observed_generation: Some(1),
             replicas: Some(3),
             ready_replicas: Some(2),
+            service_address: None,
         };
 
         assert_eq!(status.conditions[0].r#type, "Degraded");
@@ -531,6 +563,7 @@ mod tests {
             observed_generation: Some(1),
             replicas: Some(0),
             ready_replicas: Some(0),
+            service_address: None,
         };
 
         assert_eq!(status.conditions[0].r#type, "Failed");
@@ -599,6 +632,7 @@ mod tests {
             observed_generation: Some(1),
             replicas: Some(3),
             ready_replicas: Some(3),
+            service_address: None,
         };
 
         assert_eq!(status.conditions.len(), 0);
@@ -612,6 +646,7 @@ mod tests {
             observed_generation: Some(5),
             replicas: Some(3),
             ready_replicas: Some(3),
+            service_address: None,
         };
 
         // Observed generation tracks which generation of the resource was last reconciled

@@ -10,6 +10,7 @@ mod tests {
     #[test]
     fn test_crd_examples_struct_exists() {
         // Verify the struct is defined
+        #[allow(clippy::no_effect_underscore_binding)]
         let _examples: CRDExamples = CRDExamples;
     }
 }

@@ -18,7 +18,7 @@ Minimal viable configuration for testing:
 
 ```yaml
 # Bind9Instance
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: dns
@@ -29,7 +29,7 @@ spec:
   replicas: 1
 ---
 # DNSZone
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: example-com
@@ -49,7 +49,7 @@ spec:
     negativeTtl: 86400
 ---
 # A Record
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: www
@@ -66,7 +66,7 @@ spec:
 
 ```yaml
 # Primary
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: primary
@@ -79,7 +79,7 @@ spec:
       - "10.0.2.0/24"  # Secondary network
 ---
 # Secondary
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: secondary
@@ -89,7 +89,7 @@ spec:
   replicas: 2
 ---
 # Zone on Primary
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: example-primary
@@ -109,7 +109,7 @@ spec:
     negativeTtl: 86400
 ---
 # Zone on Secondary
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: example-secondary
@@ -128,7 +128,7 @@ spec:
 #### DNSSEC Enabled
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: dnssec-instance
@@ -140,11 +140,177 @@ spec:
       validation: true
 ```
 
+#### Custom Container Image
+
+Using a custom or private container image:
+
+```yaml
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
+metadata:
+  name: custom-image-cluster
+  namespace: dns-system
+spec:
+  # Default image for all instances in this cluster
+  image:
+    image: "my-registry.example.com/bind9:custom-9.18"
+    imagePullPolicy: "Always"
+    imagePullSecrets:
+      - my-registry-secret
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: custom-dns
+  namespace: dns-system
+spec:
+  clusterRef: custom-image-cluster
+  replicas: 2
+  # Instance inherits custom image from cluster
+```
+
+#### Instance-Specific Custom Image
+
+Override cluster image for specific instance:
+
+```yaml
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
+metadata:
+  name: prod-cluster
+  namespace: dns-system
+spec:
+  image:
+    image: "internetsystemsconsortium/bind9:9.18"
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: canary-dns
+  namespace: dns-system
+spec:
+  clusterRef: prod-cluster
+  replicas: 1
+  # Override cluster image for canary testing
+  image:
+    image: "internetsystemsconsortium/bind9:9.19"
+    imagePullPolicy: "Always"
+```
+
+#### Custom Configuration Files
+
+Using custom ConfigMaps for BIND9 configuration:
+
+```yaml
+# Create custom ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: my-custom-named-conf
+  namespace: dns-system
+data:
+  named.conf: |
+    // Custom BIND9 configuration
+    include "/etc/bind/named.conf.options";
+    include "/etc/bind/zones/named.conf.zones";
+
+    logging {
+      channel query_log {
+        file "/var/log/named/queries.log" versions 5 size 10m;
+        severity info;
+        print-time yes;
+        print-category yes;
+      };
+      category queries { query_log; };
+      category lame-servers { null; };
+    };
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: my-custom-options
+  namespace: dns-system
+data:
+  named.conf.options: |
+    options {
+      directory "/var/cache/bind";
+      recursion no;
+      allow-query { any; };
+      allow-transfer { 10.0.2.0/24; };
+      dnssec-validation auto;
+      listen-on { any; };
+      listen-on-v6 { any; };
+      max-cache-size 256M;
+      max-cache-ttl 3600;
+    };
+---
+# Reference custom ConfigMaps
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: custom-config-dns
+  namespace: dns-system
+spec:
+  replicas: 2
+  configMapRefs:
+    namedConf: "my-custom-named-conf"
+    namedConfOptions: "my-custom-options"
+```
+
+#### Cluster-Level Custom ConfigMaps
+
+Share custom configuration across all instances:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shared-options
+  namespace: dns-system
+data:
+  named.conf.options: |
+    options {
+      directory "/var/cache/bind";
+      recursion no;
+      allow-query { any; };
+      dnssec-validation auto;
+    };
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
+metadata:
+  name: shared-config-cluster
+  namespace: dns-system
+spec:
+  configMapRefs:
+    namedConfOptions: "shared-options"
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: instance-1
+  namespace: dns-system
+spec:
+  clusterRef: shared-config-cluster
+  replicas: 2
+  # Inherits configMapRefs from cluster
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: instance-2
+  namespace: dns-system
+spec:
+  clusterRef: shared-config-cluster
+  replicas: 2
+  # Also inherits same configMapRefs from cluster
+```
+
 #### Split Horizon DNS
 
 ```yaml
 # Internal DNS
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: internal-dns
@@ -156,7 +322,7 @@ spec:
       - "10.0.0.0/8"
 ---
 # External DNS
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: external-dns
@@ -221,7 +387,7 @@ name: mail-mx-primary
 ### Local Development (kind/minikube)
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: dev-dns
@@ -239,7 +405,7 @@ spec:
 ### CI/CD Testing
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: ci-dns

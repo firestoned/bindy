@@ -4,6 +4,9 @@
 // Simplified integration tests for Bindy DNS Controller
 // These tests verify the controller is working correctly in a Kubernetes cluster
 
+#![allow(clippy::items_after_statements)]
+#![allow(clippy::manual_let_else)]
+
 use kube::client::Client;
 
 // Test helper to check if running in a Kubernetes cluster
@@ -14,10 +17,7 @@ async fn get_kube_client_or_skip() -> Option<Client> {
             Some(client)
         }
         Err(e) => {
-            eprintln!(
-                "Skipping integration test: not running in Kubernetes cluster: {}",
-                e
-            );
+            eprintln!("Skipping integration test: not running in Kubernetes cluster: {e}");
             None
         }
     }
@@ -45,7 +45,7 @@ async fn test_kubernetes_connectivity() {
             // Test passes if we can list namespaces successfully
         }
         Err(e) => {
-            panic!("Failed to list namespaces: {}", e);
+            panic!("Failed to list namespaces: {e}");
         }
     }
 }
@@ -87,7 +87,7 @@ async fn test_crds_installed() {
             }
         }
         Err(e) => {
-            println!("Could not check CRDs: {}", e);
+            println!("Could not check CRDs: {e}");
             println!("This is expected if you don't have CRD permissions");
         }
     }
@@ -129,13 +129,13 @@ async fn test_create_and_cleanup_namespace() {
 
     match create_result {
         Ok(_) => {
-            println!("Successfully created test namespace: {}", test_ns_name);
+            println!("Successfully created test namespace: {test_ns_name}");
         }
         Err(kube::Error::Api(ae)) if ae.code == 409 => {
-            println!("Test namespace already exists: {}", test_ns_name);
+            println!("Test namespace already exists: {test_ns_name}");
         }
         Err(e) => {
-            panic!("Failed to create test namespace: {}", e);
+            panic!("Failed to create test namespace: {e}");
         }
     }
 
@@ -146,13 +146,13 @@ async fn test_create_and_cleanup_namespace() {
 
     match delete_result {
         Ok(_) => {
-            println!("Successfully deleted test namespace: {}", test_ns_name);
+            println!("Successfully deleted test namespace: {test_ns_name}");
         }
         Err(kube::Error::Api(ae)) if ae.code == 404 => {
-            println!("Test namespace already deleted: {}", test_ns_name);
+            println!("Test namespace already deleted: {test_ns_name}");
         }
         Err(e) => {
-            println!("Warning: Failed to delete test namespace: {}", e);
+            println!("Warning: Failed to delete test namespace: {e}");
         }
     }
 }

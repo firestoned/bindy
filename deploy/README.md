@@ -1,23 +1,36 @@
 # Deployment Guide
 
-This directory contains all the necessary files to deploy the Bindy controller to a Kubernetes cluster.
+This directory contains all the necessary files to deploy the Bindy operator to a Kubernetes cluster.
 
 ## Directory Structure
 
 ```
 deploy/
 ├── crds/
-│   └── dns-crds.yaml          # Custom Resource Definitions
+│   ├── aaaarecords.crd.yaml       # AAAA record CRD
+│   ├── arecords.crd.yaml          # A record CRD
+│   ├── bind9clusters.crd.yaml     # Bind9Cluster CRD (logical DNS cluster)
+│   ├── bind9instances.crd.yaml    # Bind9Instance CRD (physical DNS server)
+│   ├── caarecords.crd.yaml        # CAA record CRD
+│   ├── cnamerecords.crd.yaml      # CNAME record CRD
+│   ├── dnszones.crd.yaml          # DNSZone CRD
+│   ├── mxrecords.crd.yaml         # MX record CRD
+│   ├── nsrecords.crd.yaml         # NS record CRD
+│   ├── srvrecords.crd.yaml        # SRV record CRD
+│   ├── txtrecords.crd.yaml        # TXT record CRD
+│   └── kustomization.yaml         # Kustomize config for CRDs
 ├── operator/
-│   └── deployment.yaml        # Controller deployment
+│   └── deployment.yaml            # Bindy operator deployment
 ├── rbac/
-│   ├── serviceaccount.yaml    # Service account for controller
-│   ├── role.yaml              # RBAC role
-│   └── rolebinding.yaml       # RBAC role binding
-├── kind-config.yaml           # Kind cluster configuration
-├── kind-deploy.sh             # Automated Kind deployment script
-├── kind-cleanup.sh            # Kind cluster cleanup script
-└── README.md                  # This file
+│   ├── serviceaccount.yaml        # Service account for bindy operator
+│   ├── role.yaml                  # RBAC ClusterRole for bindy
+│   └── rolebinding.yaml           # RBAC ClusterRoleBinding for bindy
+├── kind-config.yaml               # Kind cluster configuration
+├── kind-deploy.sh                 # Automated Kind deployment script
+├── kind-cleanup.sh                # Kind cluster cleanup script
+├── kind-test.sh                   # Integration test script
+├── README.md                      # This file
+└── TESTING.md                     # Testing documentation
 ```
 
 ## Quick Start with Kind
@@ -42,13 +55,16 @@ This script will:
 3. Create the namespace and RBAC
 4. Build the Docker image
 5. Load the image into Kind
-6. Deploy the controller
+6. Deploy the operator
 
 ### Test
 
 After deployment, test with the examples:
 
 ```bash
+# Create a Bind9 cluster
+kubectl apply -f examples/bind9-cluster.yaml
+
 # Create a Bind9 instance
 kubectl apply -f examples/bind9-instance.yaml
 
@@ -58,7 +74,7 @@ kubectl apply -f examples/dns-zone.yaml
 # Add DNS records
 kubectl apply -f examples/dns-records.yaml
 
-# Watch the controller logs
+# Watch the operator logs
 kubectl logs -n dns-system -l app=bindy -f
 ```
 
@@ -111,11 +127,11 @@ spec:
   template:
     spec:
       containers:
-      - name: controller
+      - name: bindy
         image: <your-registry>/bindy:latest
 ```
 
-### 6. Deploy Controller
+### 6. Deploy Operator
 
 ```bash
 kubectl apply -f deploy/operator/deployment.yaml
@@ -132,10 +148,10 @@ kubectl logs -n dns-system -l app=bindy
 
 ### Environment Variables
 
-The controller supports these environment variables (set in `deployment.yaml`):
+The operator supports these environment variables (set in `deployment.yaml`):
 
 - `RUST_LOG` - Log level (default: `info`, options: `trace`, `debug`, `info`, `warn`, `error`)
-- `BIND9_ZONES_DIR` - Directory for zone files (default: `/etc/bind/zones`)
+- `POD_NAMESPACE` - Namespace where the operator is running (auto-populated from pod metadata)
 
 ### Resource Limits
 
@@ -144,18 +160,18 @@ Default resource limits in `deployment.yaml`:
 ```yaml
 resources:
   requests:
-    memory: "64Mi"
+    memory: "128Mi"
     cpu: "100m"
   limits:
-    memory: "128Mi"
-    cpu: "200m"
+    memory: "512Mi"
+    cpu: "500m"
 ```
 
 Adjust based on your needs.
 
 ## Troubleshooting
 
-### Controller Not Starting
+### Operator Not Starting
 
 ```bash
 # Check pod status
@@ -185,10 +201,11 @@ kubectl describe crd dnszones.dns.firestoned.io
 kubectl get sa -n dns-system
 
 # Check role binding
-kubectl describe rolebinding bindy-rolebinding -n dns-system
+kubectl describe clusterrolebinding bindy-rolebinding
 
 # Check permissions
 kubectl auth can-i list dnszones --as=system:serviceaccount:dns-system:bindy
+kubectl auth can-i list bind9instances --as=system:serviceaccount:dns-system:bindy
 ```
 
 ### Resource Not Reconciling
@@ -198,7 +215,7 @@ kubectl auth can-i list dnszones --as=system:serviceaccount:dns-system:bindy
 kubectl get dnszones -n dns-system
 kubectl describe dnszone <name> -n dns-system
 
-# Check controller logs for errors
+# Check operator logs for errors
 kubectl logs -n dns-system -l app=bindy | grep ERROR
 ```
 
@@ -210,7 +227,7 @@ kubectl logs -n dns-system -l app=bindy | grep ERROR
 kubectl apply -k deploy/crds
 ```
 
-### Upgrade Controller
+### Upgrade Operator
 
 ```bash
 # Build new image
@@ -219,7 +236,7 @@ docker push <your-registry>/bindy:v1.1.0
 
 # Update deployment
 kubectl set image deployment/bindy \
-  controller=<your-registry>/bindy:v1.1.0 \
+  bindy=<your-registry>/bindy:v1.1.0 \
   -n dns-system
 
 # Watch rollout
@@ -229,7 +246,7 @@ kubectl rollout status deployment/bindy -n dns-system
 ## Uninstall
 
 ```bash
-# Delete controller
+# Delete operator
 kubectl delete -f deploy/operator/deployment.yaml
 
 # Delete RBAC
@@ -244,11 +261,12 @@ kubectl delete namespace dns-system
 
 ## Security Considerations
 
-1. **Service Account** - The controller runs with minimal RBAC permissions
-2. **Non-root** - Container runs as non-root user (bind:bind)
-3. **Read-only Root** - Root filesystem is read-only where possible
-4. **Network Policies** - Consider adding network policies to restrict controller access
+1. **Service Account** - The operator runs with minimal RBAC permissions
+2. **Non-root** - Container runs as non-root user (UID 65534)
+3. **Read-only Root** - Root filesystem is read-only
+4. **Network Policies** - Consider adding network policies to restrict operator access
 5. **Image Scanning** - Scan images for vulnerabilities before deployment
+6. **Secrets Management** - TSIG keys and sensitive data should use Kubernetes Secrets
 
 ## Production Checklist
 

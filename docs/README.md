@@ -127,7 +127,7 @@ Content with `inline code` and:
 
 \`\`\`yaml
 # YAML code block
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 \`\`\`
 

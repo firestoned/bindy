@@ -1,0 +1,364 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>API Reference</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title"></h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="api-reference"><a class="header" href="#api-reference">API Reference</a></h1>
+<p>Complete reference for Bindy's Kubernetes Custom Resources.</p>
+<h2 id="custom-resource-definitions"><a class="header" href="#custom-resource-definitions">Custom Resource Definitions</a></h2>
+<p>Bindy provides the following CRDs:</p>
+<h3 id="core-resources"><a class="header" href="#core-resources">Core Resources</a></h3>
+<h4 id="bind9instance"><a class="header" href="#bind9instance">Bind9Instance</a></h4>
+<p>Manages BIND9 DNS server instances.</p>
+<ul>
+<li><strong>Group</strong>: bindy.firestoned.io</li>
+<li><strong>Version</strong>: v1alpha1</li>
+<li><strong>Kind</strong>: Bind9Instance</li>
+<li><strong>Plural</strong>: bind9instances</li>
+<li><strong>Scope</strong>: Namespaced</li>
+</ul>
+<p><a href="./bind9instance-spec.html">Full specification →</a></p>
+<h4 id="dnszone"><a class="header" href="#dnszone">DNSZone</a></h4>
+<p>Defines DNS zones to be served by Bind9Instances.</p>
+<ul>
+<li><strong>Group</strong>: bindy.firestoned.io</li>
+<li><strong>Version</strong>: v1alpha1</li>
+<li><strong>Kind</strong>: DNSZone</li>
+<li><strong>Plural</strong>: dnszones</li>
+<li><strong>Scope</strong>: Namespaced</li>
+</ul>
+<p><a href="./dnszone-spec.html">Full specification →</a></p>
+<h3 id="dns-record-resources"><a class="header" href="#dns-record-resources">DNS Record Resources</a></h3>
+<p>All record resources share:</p>
+<ul>
+<li><strong>Group</strong>: bindy.firestoned.io</li>
+<li><strong>Version</strong>: v1alpha1</li>
+<li><strong>Scope</strong>: Namespaced</li>
+</ul>
+<div class="table-wrapper"><table><thead><tr><th>Resource</th><th>Kind</th><th>Purpose</th></tr></thead><tbody>
+<tr><td>arecords</td><td>ARecord</td><td>IPv4 address records</td></tr>
+<tr><td>aaaarecords</td><td>AAAARecord</td><td>IPv6 address records</td></tr>
+<tr><td>cnamerecords</td><td>CNAMERecord</td><td>Canonical name (alias) records</td></tr>
+<tr><td>mxrecords</td><td>MXRecord</td><td>Mail exchange records</td></tr>
+<tr><td>txtrecords</td><td>TXTRecord</td><td>Text records</td></tr>
+<tr><td>nsrecords</td><td>NSRecord</td><td>Name server records</td></tr>
+<tr><td>srvrecords</td><td>SRVRecord</td><td>Service location records</td></tr>
+<tr><td>caarecords</td><td>CAARecord</td><td>Certificate authority authorization</td></tr>
+</tbody></table>
+</div>
+<p><a href="./record-specs.html">Full record specifications →</a></p>
+<h2 id="common-patterns"><a class="header" href="#common-patterns">Common Patterns</a></h2>
+<h3 id="labels-and-selectors"><a class="header" href="#labels-and-selectors">Labels and Selectors</a></h3>
+<p>All resources support standard Kubernetes labels and selectors:</p>
+<pre><code class="language-yaml">metadata:
+  labels:
+    app: my-app
+    environment: production
+</code></pre>
+<p>DNSZone uses label selectors to target Bind9Instances:</p>
+<pre><code class="language-yaml">spec:
+  instanceSelector:
+    matchLabels:
+      dns-role: primary
+</code></pre>
+<h3 id="status-conditions"><a class="header" href="#status-conditions">Status Conditions</a></h3>
+<p>All resources implement standard status conditions:</p>
+<ul>
+<li><strong>Ready</strong>: Resource is ready for use</li>
+<li><strong>Available</strong>: Resource is available and serving traffic</li>
+<li><strong>Progressing</strong>: Resource is being reconciled</li>
+<li><strong>Degraded</strong>: Resource is partially functional</li>
+<li><strong>Failed</strong>: Resource reconciliation failed</li>
+</ul>
+<p>Example status:</p>
+<pre><code class="language-yaml">status:
+  conditions:
+    - type: Ready
+      status: "True"
+      lastTransitionTime: "2024-01-15T10:30:00Z"
+      reason: ReconcileSuccess
+      message: "Resource reconciled successfully"
+</code></pre>
+<h3 id="owner-references"><a class="header" href="#owner-references">Owner References</a></h3>
+<p>Bindy automatically sets owner references for resource cleanup:</p>
+<pre><code class="language-yaml">metadata:
+  ownerReferences:
+    - apiVersion: bindy.firestoned.io/v1alpha1
+      kind: DNSZone
+      name: example-zone
+      uid: abc123
+      controller: true
+</code></pre>
+<h2 id="api-versions"><a class="header" href="#api-versions">API Versions</a></h2>
+<h3 id="v1alpha1-current"><a class="header" href="#v1alpha1-current">v1alpha1 (Current)</a></h3>
+<p>Current development version. API may change between releases.</p>
+<p><strong>Stability</strong>: Alpha - Breaking changes possible</p>
+<p><strong>Deprecation Policy</strong>: None yet established</p>
+<h3 id="future-versions"><a class="header" href="#future-versions">Future Versions</a></h3>
+<ul>
+<li><strong>v1beta1</strong>: Planned when API stabilizes</li>
+<li><strong>v1</strong>: Planned for 1.0 release</li>
+</ul>
+<h2 id="validation"><a class="header" href="#validation">Validation</a></h2>
+<h3 id="schema-validation"><a class="header" href="#schema-validation">Schema Validation</a></h3>
+<p>All CRDs include OpenAPI v3 schema validation:</p>
+<ul>
+<li>Required fields enforced</li>
+<li>Field types validated</li>
+<li>Pattern matching for strings</li>
+<li>Range validation for numbers</li>
+</ul>
+<h3 id="webhook-validation"><a class="header" href="#webhook-validation">Webhook Validation</a></h3>
+<p>Planned for future releases:</p>
+<ul>
+<li>Cross-field validation</li>
+<li>Business logic validation</li>
+<li>Default value injection</li>
+</ul>
+<h2 id="api-conventions"><a class="header" href="#api-conventions">API Conventions</a></h2>
+<h3 id="naming"><a class="header" href="#naming">Naming</a></h3>
+<ul>
+<li>Use DNS-compatible names (lowercase, numbers, hyphens)</li>
+<li>Maximum 253 characters for resource names</li>
+<li>Maximum 63 characters for DNS labels</li>
+</ul>
+<h3 id="ttl-values"><a class="header" href="#ttl-values">TTL Values</a></h3>
+<p>TTL (Time To Live) values in seconds:</p>
+<ul>
+<li>Minimum: 60 (1 minute)</li>
+<li>Maximum: 86400 (24 hours)</li>
+<li>Default: 3600 (1 hour)</li>
+</ul>
+<h3 id="ip-addresses"><a class="header" href="#ip-addresses">IP Addresses</a></h3>
+<ul>
+<li>IPv4: Dotted decimal notation (192.0.2.1)</li>
+<li>IPv6: Colon-separated hexadecimal (2001:db8::1)</li>
+<li>CIDR notation supported for ACLs (10.0.0.0/8)</li>
+</ul>
+<h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
+<p>See the <a href="./examples.html">Examples</a> section for complete configuration examples.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../development/pr-process.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../reference/bind9instance-spec.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../development/pr-process.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../reference/bind9instance-spec.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

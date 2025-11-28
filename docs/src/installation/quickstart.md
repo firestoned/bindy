@@ -9,7 +9,7 @@ Get Bindy running in 5 minutes with this quick start guide.
 kubectl create namespace dns-system
 
 # Install CRDs
-kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/crds/
+kubectl apply -k https://raw.githubusercontent.com/firestoned/bindy/main/deploy/crds/
 
 # Install RBAC
 kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/rbac/
@@ -22,21 +22,19 @@ kubectl wait --for=condition=available --timeout=300s \
   deployment/bind9-controller -n dns-system
 ```
 
-## Step 2: Create a BIND9 Instance
+## Step 2: Create a BIND9 Cluster
 
-Create a file `bind9-instance.yaml`:
+First, create a cluster configuration that defines shared settings:
+
+Create a file `bind9-cluster.yaml`:
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
-kind: Bind9Instance
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
 metadata:
-  name: primary-dns
+  name: production-dns
   namespace: dns-system
-  labels:
-    dns-role: primary
-    environment: dev
 spec:
-  replicas: 1
   version: "9.18"
   config:
     recursion: false
@@ -49,28 +47,48 @@ spec:
 Apply it:
 
 ```bash
+kubectl apply -f bind9-cluster.yaml
+```
+
+## Step 3: Create a BIND9 Instance
+
+Now create an instance that references the cluster:
+
+Create a file `bind9-instance.yaml`:
+
+```yaml
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: primary-dns
+  namespace: dns-system
+spec:
+  clusterRef: production-dns  # References the Bind9Cluster
+  replicas: 1
+```
+
+Apply it:
+
+```bash
 kubectl apply -f bind9-instance.yaml
 ```
 
-## Step 3: Create a DNS Zone
+## Step 4: Create a DNS Zone
 
 Create a file `dns-zone.yaml`:
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: example-com
   namespace: dns-system
 spec:
   zoneName: example.com
-  type: primary
-  instanceSelector:
-    matchLabels:
-      dns-role: primary
+  clusterRef: primary-dns  # References the Bind9Instance
   soaRecord:
     primaryNS: ns1.example.com.
-    adminEmail: admin@example.com
+    adminEmail: admin.example.com.  # Note: @ replaced with .
     serial: 2024010101
     refresh: 3600
     retry: 600
@@ -85,13 +103,13 @@ Apply it:
 kubectl apply -f dns-zone.yaml
 ```
 
-## Step 4: Add DNS Records
+## Step 5: Add DNS Records
 
 Create a file `dns-records.yaml`:
 
 ```yaml
 # Web server A record
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: www-example
@@ -104,7 +122,7 @@ spec:
 
 ---
 # Blog CNAME record
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: CNAMERecord
 metadata:
   name: blog-example
@@ -117,7 +135,7 @@ spec:
 
 ---
 # Mail server MX record
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: MXRecord
 metadata:
   name: mail-example
@@ -131,7 +149,7 @@ spec:
 
 ---
 # SPF TXT record
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: TXTRecord
 metadata:
   name: spf-example
@@ -150,11 +168,14 @@ Apply them:
 kubectl apply -f dns-records.yaml
 ```
 
-## Step 5: Verify Your DNS Configuration
+## Step 6: Verify Your DNS Configuration
 
 Check the status of your resources:
 
 ```bash
+# Check BIND9 cluster
+kubectl get bind9clusters -n dns-system
+
 # Check BIND9 instance
 kubectl get bind9instances -n dns-system
 
@@ -175,7 +196,7 @@ NAME          ZONE          STATUS   AGE
 example-com   example.com   Ready    1m
 ```
 
-## Step 6: Test DNS Resolution
+## Step 7: Test DNS Resolution
 
 If your BIND9 instance is exposed (via LoadBalancer or NodePort):
 
@@ -196,8 +217,8 @@ You've successfully deployed Bindy and created your first DNS zone with records!
 
 ### Learn More
 
+- [RNDC-Based Architecture](../concepts/architecture-rndc.md) - Understand the RNDC protocol architecture
 - [Architecture Overview](../concepts/architecture.md) - Understand how Bindy works
-- [Label Selectors](../guide/label-selectors.md) - Advanced instance targeting
 - [Multi-Region Setup](../guide/multi-region.md) - Deploy across multiple regions
 - [Status Conditions](../operations/status.md) - Monitor resource health
 
@@ -238,7 +259,7 @@ If something doesn't work:
 
 3. **Verify CRDs are installed**:
    ```bash
-   kubectl get crd | grep dns.firestoned.io
+   kubectl get crd | grep bindy.firestoned.io
    ```
 
 See the [Troubleshooting Guide](../operations/troubleshooting.md) for more help.

@@ -151,7 +151,7 @@ All condition types are enforced via CRD validation. Attempting to use a conditi
 ```bash
 $ kubectl apply -f invalid-condition.yaml
 Error from server (Invalid): error when creating "invalid-condition.yaml":
-Bind9Instance.dns.firestoned.io "test" is invalid:
+Bind9Instance.bindy.firestoned.io "test" is invalid:
 status.conditions[0].type: Unsupported value: "CustomType":
 supported values: "Ready", "Available", "Progressing", "Degraded", "Failed"
 ```
