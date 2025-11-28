@@ -1,0 +1,609 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Testing Guide</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title"></h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="bindy-dns-controller---testing-guide"><a class="header" href="#bindy-dns-controller---testing-guide">Bindy DNS Controller - Testing Guide</a></h1>
+<p>Complete guide for testing the Bindy DNS Controller, including unit tests and integration tests with Kind (Kubernetes in Docker).</p>
+<h2 id="quick-start"><a class="header" href="#quick-start">Quick Start</a></h2>
+<pre><code class="language-bash"># Unit tests (fast, no Kubernetes required)
+make test
+
+# Integration tests (automated with Kind cluster)
+make kind-integration-test
+
+# View results
+# Unit: 62 tests passing
+# Integration: All 8 DNS record types + infrastructure tests
+</code></pre>
+<h2 id="table-of-contents"><a class="header" href="#table-of-contents">Table of Contents</a></h2>
+<ul>
+<li><a href="#test-overview">Test Overview</a></li>
+<li><a href="#unit-tests">Unit Tests</a></li>
+<li><a href="#integration-tests">Integration Tests</a></li>
+<li><a href="#makefile-targets">Makefile Targets</a></li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
+<li><a href="#cicd-integration">CI/CD Integration</a></li>
+</ul>
+<h2 id="test-overview"><a class="header" href="#test-overview">Test Overview</a></h2>
+<h3 id="test-results"><a class="header" href="#test-results">Test Results</a></h3>
+<p><strong>Unit Tests: 62 PASSING ✅</strong></p>
+<pre><code>test result: ok. 62 passed; 0 failed; 0 ignored
+</code></pre>
+<p><strong>Integration Tests: Automated with Kind</strong></p>
+<ul>
+<li>Kubernetes connectivity ✅</li>
+<li>CRD verification ✅</li>
+<li>All 8 DNS record types ✅</li>
+<li>Resource lifecycle ✅</li>
+</ul>
+<h3 id="test-structure"><a class="header" href="#test-structure">Test Structure</a></h3>
+<pre><code>bindy/
+├── src/
+│   ├── crd_tests.rs              # CRD structure tests (28 tests)
+│   └── reconcilers/
+│       └── tests.rs              # Bind9Manager tests (34 tests)
+├── tests/
+│   ├── simple_integration.rs     # Rust integration tests
+│   ├── integration_test.sh       # Full integration test suite
+│   └── common/mod.rs            # Shared test utilities
+└── deploy/
+    ├── kind-deploy.sh           # Deploy to Kind cluster
+    ├── kind-test.sh             # Basic functional tests
+    └── kind-cleanup.sh          # Cleanup Kind cluster
+</code></pre>
+<h2 id="unit-tests"><a class="header" href="#unit-tests">Unit Tests</a></h2>
+<p>Unit tests run locally without Kubernetes (&lt; 1 second).</p>
+<h3 id="running-unit-tests"><a class="header" href="#running-unit-tests">Running Unit Tests</a></h3>
+<pre><code class="language-bash"># All unit tests
+make test
+# or
+cargo test
+
+# Specific module
+cargo test crd_tests::
+cargo test bind9::tests::
+
+# With output
+cargo test -- --nocapture
+</code></pre>
+<h3 id="unit-test-coverage-62-tests"><a class="header" href="#unit-test-coverage-62-tests">Unit Test Coverage (62 tests)</a></h3>
+<h4 id="crd-tests-28-tests"><a class="header" href="#crd-tests-28-tests">CRD Tests (28 tests)</a></h4>
+<ul>
+<li>Label selectors and matching</li>
+<li>SOA record structure</li>
+<li>DNSZone specs (primary/secondary)</li>
+<li>All DNS record types (A, AAAA, CNAME, MX, TXT, NS, SRV, CAA)</li>
+<li>Bind9Instance configurations</li>
+<li>DNSSEC settings</li>
+</ul>
+<h4 id="bind9manager-tests-34-tests"><a class="header" href="#bind9manager-tests-34-tests">Bind9Manager Tests (34 tests)</a></h4>
+<ul>
+<li>Zone file creation</li>
+<li>Email formatting for DNS</li>
+<li>All DNS record types (with/without TTL)</li>
+<li>Secondary zone configuration</li>
+<li>Zone lifecycle (create, exists, delete)</li>
+<li>Edge cases and workflows</li>
+</ul>
+<h2 id="integration-tests"><a class="header" href="#integration-tests">Integration Tests</a></h2>
+<p>Integration tests run against Kind (Kubernetes in Docker) clusters.</p>
+<h3 id="prerequisites"><a class="header" href="#prerequisites">Prerequisites</a></h3>
+<pre><code class="language-bash"># Docker
+docker --version  # 20.10+
+
+# Kind
+kind --version    # 0.20.0+
+brew install kind  # macOS
+
+# kubectl
+kubectl version --client  # 1.24+
+</code></pre>
+<h3 id="running-integration-tests"><a class="header" href="#running-integration-tests">Running Integration Tests</a></h3>
+<h4 id="full-integration-suite-recommended"><a class="header" href="#full-integration-suite-recommended">Full Integration Suite (Recommended)</a></h4>
+<pre><code class="language-bash">make kind-integration-test
+</code></pre>
+<p>This automatically:</p>
+<ol>
+<li>Creates Kind cluster (if needed)</li>
+<li>Builds and deploys controller</li>
+<li>Runs all integration tests</li>
+<li>Cleans up test resources</li>
+</ol>
+<h4 id="step-by-step"><a class="header" href="#step-by-step">Step-by-Step</a></h4>
+<pre><code class="language-bash"># 1. Deploy to Kind
+make kind-deploy
+
+# 2. Run functional tests
+make kind-test
+
+# 3. Run comprehensive integration tests
+make kind-integration-test
+
+# 4. View logs
+make kind-logs
+
+# 5. Cleanup
+make kind-cleanup
+</code></pre>
+<h3 id="integration-test-coverage"><a class="header" href="#integration-test-coverage">Integration Test Coverage</a></h3>
+<p><strong>Rust Integration Tests</strong></p>
+<ul>
+<li><code>test_kubernetes_connectivity</code> - Cluster access</li>
+<li><code>test_crds_installed</code> - CRD verification</li>
+<li><code>test_create_and_cleanup_namespace</code> - Namespace lifecycle</li>
+</ul>
+<p><strong>Full Integration Suite</strong> (<code>integration_test.sh</code>)</p>
+<ul>
+<li>Bind9Instance creation</li>
+<li>DNSZone creation</li>
+<li>A Record (IPv4)</li>
+<li>AAAA Record (IPv6)</li>
+<li>CNAME Record</li>
+<li>MX Record</li>
+<li>TXT Record</li>
+<li>NS Record</li>
+<li>SRV Record</li>
+<li>CAA Record</li>
+</ul>
+<h3 id="expected-output"><a class="header" href="#expected-output">Expected Output</a></h3>
+<pre><code>🧪 Running Bindy Integration Tests
+
+✅ Using existing cluster 'bindy-test'
+
+1️⃣  Running Rust integration tests...
+test test_kubernetes_connectivity ... ok
+test test_crds_installed ... ok
+test test_create_and_cleanup_namespace ... ok
+
+2️⃣  Running functional tests with kubectl...
+Testing Bind9Instance creation...
+Testing DNSZone creation...
+Testing all DNS record types...
+
+3️⃣  Verifying resources...
+  ✓ Bind9Instance created
+  ✓ DNSZone created
+  ✓ arecord created
+  ✓ aaaarecord created
+  ✓ cnamerecord created
+  ✓ mxrecord created
+  ✓ txtrecord created
+  ✓ nsrecord created
+  ✓ srvrecord created
+  ✓ caarecord created
+
+✅ All integration tests passed!
+</code></pre>
+<h2 id="makefile-targets"><a class="header" href="#makefile-targets">Makefile Targets</a></h2>
+<h3 id="test-targets"><a class="header" href="#test-targets">Test Targets</a></h3>
+<pre><code class="language-bash">make test                   # Run unit tests
+make test-lib              # Library tests only
+make test-integration      # Rust integration tests
+make test-all             # Unit + Rust integration tests
+make test-cov             # Coverage report (HTML)
+make test-cov-view        # Generate and open coverage
+</code></pre>
+<h3 id="kind-targets"><a class="header" href="#kind-targets">Kind Targets</a></h3>
+<pre><code class="language-bash">make kind-create          # Create Kind cluster
+make kind-deploy          # Deploy controller
+make kind-test            # Basic functional tests
+make kind-integration-test # Full integration suite
+make kind-logs            # View controller logs
+make kind-cleanup         # Delete cluster
+</code></pre>
+<h3 id="other-targets"><a class="header" href="#other-targets">Other Targets</a></h3>
+<pre><code class="language-bash">make lint                 # Run clippy and fmt check
+make format               # Format code
+make build                # Build release binary
+make docker-build         # Build Docker image
+</code></pre>
+<h2 id="troubleshooting"><a class="header" href="#troubleshooting">Troubleshooting</a></h2>
+<h3 id="unit-tests-1"><a class="header" href="#unit-tests-1">Unit Tests</a></h3>
+<p><strong>Tests fail to compile</strong></p>
+<pre><code class="language-bash">cargo clean
+cargo test
+</code></pre>
+<p><strong>Specific test fails</strong></p>
+<pre><code class="language-bash">cargo test test_name -- --nocapture
+</code></pre>
+<h3 id="integration-tests-1"><a class="header" href="#integration-tests-1">Integration Tests</a></h3>
+<p><strong>"Cluster not found"</strong></p>
+<pre><code class="language-bash"># Auto-created by integration test, or:
+./deploy/kind-deploy.sh
+</code></pre>
+<p><strong>"Controller not ready"</strong></p>
+<pre><code class="language-bash"># Check status
+kubectl get pods -n dns-system
+
+# View logs
+kubectl logs -n dns-system -l app=bindy
+
+# Redeploy
+./deploy/kind-deploy.sh
+</code></pre>
+<p><strong>"CRDs not installed"</strong></p>
+<pre><code class="language-bash"># Check CRDs
+kubectl get crds | grep bindy.firestoned.io
+
+# Install
+kubectl apply -k deploy/crds
+</code></pre>
+<p><strong>Resource creation fails</strong></p>
+<pre><code class="language-bash"># Controller logs
+kubectl logs -n dns-system -l app=bindy --tail=50
+
+# Resource status
+kubectl describe bind9instance &lt;name&gt; -n dns-system
+
+# Events
+kubectl get events -n dns-system --sort-by='.lastTimestamp'
+</code></pre>
+<h3 id="manual-cleanup"><a class="header" href="#manual-cleanup">Manual Cleanup</a></h3>
+<pre><code class="language-bash"># Delete test resources
+kubectl delete bind9instances,dnszones,arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords --all -n dns-system
+
+# Delete cluster
+kind delete cluster --name bindy-test
+
+# Clean build
+cargo clean
+</code></pre>
+<h2 id="cicd-integration"><a class="header" href="#cicd-integration">CI/CD Integration</a></h2>
+<h3 id="github-actions"><a class="header" href="#github-actions">GitHub Actions</a></h3>
+<p>Current PR workflow (<code>.github/workflows/pr.yaml</code>):</p>
+<ul>
+<li>Lint (formatting, clippy)</li>
+<li>Test (unit tests)</li>
+<li>Build (stable, beta)</li>
+<li>Docker (build and push to ghcr.io)</li>
+<li>Security audit</li>
+<li>Coverage</li>
+</ul>
+<h3 id="add-integration-tests"><a class="header" href="#add-integration-tests">Add Integration Tests</a></h3>
+<pre><code class="language-yaml">integration-tests:
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+
+    - name: Install Kind
+      run: |
+        curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64
+        chmod +x ./kind
+        sudo mv ./kind /usr/local/bin/kind
+
+    - name: Run Integration Tests
+      run: |
+        chmod +x tests/integration_test.sh
+        ./tests/integration_test.sh
+</code></pre>
+<h2 id="test-development"><a class="header" href="#test-development">Test Development</a></h2>
+<h3 id="writing-unit-tests"><a class="header" href="#writing-unit-tests">Writing Unit Tests</a></h3>
+<p>Add to <code>src/crd_tests.rs</code> or <code>src/reconcilers/tests.rs</code>:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[test]
+fn test_my_feature() {
+    // Arrange
+    let (_temp_dir, manager) = create_test_manager();
+
+    // Act
+    let result = manager.my_operation();
+
+    // Assert
+    assert!(result.is_ok());
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="writing-integration-tests"><a class="header" href="#writing-integration-tests">Writing Integration Tests</a></h3>
+<p>Add to <code>tests/simple_integration.rs</code>:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[tokio::test]
+#[ignore]  // Always mark as ignored
+async fn test_my_scenario() {
+    let client = match get_kube_client_or_skip().await {
+        Some(c) =&gt; c,
+        None =&gt; return,  // Skip if no cluster
+    };
+
+    // Test code here
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="using-test-helpers"><a class="header" href="#using-test-helpers">Using Test Helpers</a></h3>
+<p>From <code>tests/common/mod.rs</code>:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use common::*;
+
+let client = setup_dns_test_environment("my-test-ns").await?;
+create_bind9_instance(&amp;client, "ns", "dns", None).await?;
+wait_for_ready(Duration::from_secs(10)).await;
+cleanup_test_namespace(&amp;client, "ns").await?;
+<span class="boring">}</span></code></pre></pre>
+<h2 id="performance-testing"><a class="header" href="#performance-testing">Performance Testing</a></h2>
+<h3 id="coverage"><a class="header" href="#coverage">Coverage</a></h3>
+<pre><code class="language-bash">make test-cov-view
+# Opens coverage/tarpaulin-report.html
+</code></pre>
+<h3 id="load-testing"><a class="header" href="#load-testing">Load Testing</a></h3>
+<pre><code class="language-bash"># Create many resources
+for i in {1..100}; do
+  kubectl apply -f - &lt;&lt;EOF
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: ARecord
+metadata:
+  name: test-${i}
+  namespace: dns-system
+spec:
+  zone: example.com
+  name: host-${i}
+  ipv4Address: "192.0.2.${i}"
+EOF
+done
+
+# Monitor
+kubectl top pod -n dns-system
+</code></pre>
+<h2 id="best-practices"><a class="header" href="#best-practices">Best Practices</a></h2>
+<h3 id="unit-tests-2"><a class="header" href="#unit-tests-2">Unit Tests</a></h3>
+<ul>
+<li>Test one thing at a time</li>
+<li>Fast (&lt; 1s each)</li>
+<li>No external dependencies</li>
+<li>Descriptive names</li>
+</ul>
+<h3 id="integration-tests-2"><a class="header" href="#integration-tests-2">Integration Tests</a></h3>
+<ul>
+<li>Always use <code>#[ignore]</code></li>
+<li>Check cluster connectivity first</li>
+<li>Unique namespaces</li>
+<li>Always cleanup</li>
+<li>Good error messages</li>
+</ul>
+<h3 id="general"><a class="header" href="#general">General</a></h3>
+<ul>
+<li>Run <code>cargo fmt</code> before committing</li>
+<li>Run <code>cargo clippy</code> to catch issues</li>
+<li>Keep tests updated</li>
+<li>Document complex scenarios</li>
+</ul>
+<h2 id="additional-resources"><a class="header" href="#additional-resources">Additional Resources</a></h2>
+<ul>
+<li><a href="https://doc.rust-lang.org/book/ch11-00-testing.html">Rust Testing</a></li>
+<li><a href="https://github.com/kube-rs/kube/tree/main/examples">Kube-rs Examples</a></li>
+<li><a href="https://kind.sigs.k8s.io/">Kind Docs</a></li>
+<li><a href="https://bind9.readthedocs.io/">BIND9 Docs</a></li>
+<li><a href="TEST_SUMMARY.html">TEST_SUMMARY.md</a> - Quick reference</li>
+</ul>
+<h2 id="support"><a class="header" href="#support">Support</a></h2>
+<ul>
+<li>GitHub Issues: https://github.com/firestoned/bindy/issues</li>
+<li>Controller logs: <code>make kind-logs</code></li>
+<li>Test with output: <code>cargo test -- --nocapture</code></li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../development/testing.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../development/test-coverage.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../development/testing.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../development/test-coverage.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

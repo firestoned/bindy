@@ -52,9 +52,9 @@ fi
 # Set kubectl context
 kubectl config use-context "kind-${CLUSTER_NAME}"
 
-echo -e "${GREEN}📋 Installing CRDs via kubectl apply...${NC}"
-# Use kubectl kubectl apply path to apply split CRD manifests
-kubectl apply -f deploy/crds
+echo -e "${GREEN}📋 Installing CRDs via kustomize...${NC}"
+# Use kubectl apply -k to apply CRDs with kustomization
+kubectl apply -k deploy/crds
 
 echo -e "${GREEN}🔐 Creating namespace and RBAC...${NC}"
 kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -

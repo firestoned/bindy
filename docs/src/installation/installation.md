@@ -23,7 +23,7 @@ The standard installation uses kubectl to apply YAML manifests:
 kubectl create namespace dns-system
 
 # Install CRDs
-kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/crds/
+kubectl apply -k https://raw.githubusercontent.com/firestoned/bindy/main/deploy/crds/
 
 # Install RBAC
 kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/rbac/
@@ -51,17 +51,13 @@ docker build -t bindy:dev .
 kubectl apply -f deploy/
 ```
 
-### Helm Chart (Coming Soon)
-
-A Helm chart for easier installation and configuration management is planned for a future release.
-
 ## Verification
 
 After installation, verify that all components are running:
 
 ```bash
 # Check CRDs are installed
-kubectl get crd | grep dns.firestoned.io
+kubectl get crd | grep bindy.firestoned.io
 
 # Check controller is running
 kubectl get pods -n dns-system

@@ -127,7 +127,7 @@ spec:
 
 2. Check if CRDs are installed:
    ```bash
-   kubectl get crd | grep dns.firestoned.io
+   kubectl get crd | grep bindy.firestoned.io
    ```
 
 3. Check RBAC permissions:

@@ -1,4 +1,5 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
+#![allow(dead_code)]
 // SPDX-License-Identifier: MIT
 
 //! DNS zone reconciliation logic.
@@ -6,18 +7,20 @@
 //! This module handles the creation and management of DNS zones on BIND9 servers.
 //! It supports both primary (master) and secondary (slave) zone configurations.
 
+use crate::bind9::RndcKeyData;
 use crate::crd::{Condition, DNSZone, DNSZoneStatus};
-use anyhow::Result;
+use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
+use k8s_openapi::api::core::v1::{Pod, Secret};
 use kube::{
-    api::{Patch, PatchParams},
+    api::{ListParams, Patch, PatchParams},
     client::Client,
     Api, ResourceExt,
 };
 use serde_json::json;
 use tracing::info;
 
-/// Reconciles a DNSZone resource.
+/// Reconciles a `DNSZone` resource.
 ///
 /// Creates or updates DNS zone files on BIND9 instances that match the zone's
 /// instance selector. Supports both primary and secondary zone types.
@@ -29,8 +32,8 @@ use tracing::info;
 ///
 /// # Arguments
 ///
-/// * `client` - Kubernetes API client for finding matching Bind9Instances
-/// * `dnszone` - The DNSZone resource to reconcile
+/// * `client` - Kubernetes API client for finding matching `Bind9Instances`
+/// * `dnszone` - The `DNSZone` resource to reconcile
 /// * `zone_manager` - BIND9 manager for creating zone files
 ///
 /// # Returns
@@ -48,11 +51,15 @@ use tracing::info;
 ///
 /// async fn handle_zone(zone: DNSZone) -> anyhow::Result<()> {
 ///     let client = Client::try_default().await?;
-///     let manager = Bind9Manager::new("/etc/bind/zones".to_string());
+///     let manager = Bind9Manager::new();
 ///     reconcile_dnszone(client, zone, &manager).await?;
 ///     Ok(())
 /// }
 /// ```
+///
+/// # Errors
+///
+/// Returns an error if Kubernetes API operations fail or BIND9 zone operations fail.
 pub async fn reconcile_dnszone(
     client: Client,
     dnszone: DNSZone,
@@ -66,86 +73,33 @@ pub async fn reconcile_dnszone(
     // Extract spec
     let spec = &dnszone.spec;
 
-    // Find matching Bind9Instance resources using label selector
-    let instances = find_matching_instances(&client, &namespace, &spec.instance_selector).await?;
+    // Find PRIMARY instance pod from the cluster
+    let primary_pod = find_primary_pod(&client, &namespace, &spec.cluster_ref).await?;
 
-    if instances.is_empty() {
-        update_status(
-            &client,
-            &dnszone,
-            "NoMatchingInstances",
-            "Warning",
-            "No Bind9Instance resources match the instance selector",
-        )
+    info!(
+        "Found PRIMARY pod {} for cluster {}",
+        primary_pod.name, spec.cluster_ref
+    );
+
+    // Load RNDC key from instance secret
+    let key_data = load_rndc_key(&client, &namespace, &spec.cluster_ref).await?;
+
+    // Build server address (using the instance service)
+    let server = format!("{}.{}.svc.cluster.local:953", spec.cluster_ref, namespace);
+
+    // For now, we use rndc addzone to dynamically add the zone.
+    // The zone type will be "master" (primary) and we'll use a default zone file location.
+    // In production, you may want to pre-configure zones in named.conf and just reload.
+    let zone_file = format!("/var/lib/bind/{}.zone", spec.zone_name);
+
+    zone_manager
+        .add_zone(&spec.zone_name, "master", &zone_file, &server, &key_data)
         .await?;
-        return Ok(());
-    }
 
-    // Determine zone type (default to "primary")
-    let zone_type = spec.zone_type.as_deref().unwrap_or("primary");
-
-    match zone_type {
-        "primary" => {
-            // Create primary zone file
-            if let Some(soa) = &spec.soa_record {
-                zone_manager.create_zone_file(&spec.zone_name, soa, spec.ttl.unwrap_or(3600))?;
-
-                info!(
-                    "Created primary zone file for {} with {} matching instances",
-                    spec.zone_name,
-                    instances.len()
-                );
-            } else {
-                update_status(
-                    &client,
-                    &dnszone,
-                    "ConfigurationError",
-                    "False",
-                    "Primary zone requires soa_record configuration",
-                )
-                .await?;
-                return Ok(());
-            }
-        }
-        "secondary" => {
-            // Create secondary zone configuration
-            if let Some(secondary_config) = &spec.secondary_config {
-                zone_manager
-                    .create_secondary_zone(&spec.zone_name, &secondary_config.primary_servers)?;
-
-                info!(
-                    "Created secondary zone configuration for {} with {} primary servers and {} matching instances",
-                    spec.zone_name,
-                    secondary_config.primary_servers.len(),
-                    instances.len()
-                );
-            } else {
-                update_status(
-                    &client,
-                    &dnszone,
-                    "ConfigurationError",
-                    "False",
-                    "Secondary zone requires secondary_config with primary_servers",
-                )
-                .await?;
-                return Ok(());
-            }
-        }
-        _ => {
-            update_status(
-                &client,
-                &dnszone,
-                "ConfigurationError",
-                "False",
-                &format!(
-                    "Invalid zone type: {}. Must be 'primary' or 'secondary'",
-                    zone_type
-                ),
-            )
-            .await?;
-            return Ok(());
-        }
-    }
+    info!(
+        "Added zone {} on PRIMARY instance {} (cluster: {})",
+        spec.zone_name, spec.cluster_ref, spec.cluster_ref
+    );
 
     // Update status to success
     update_status(
@@ -153,11 +107,7 @@ pub async fn reconcile_dnszone(
         &dnszone,
         "Ready",
         "True",
-        &format!(
-            "{} zone created for {} instances",
-            zone_type,
-            instances.len()
-        ),
+        &format!("Zone created for cluster: {}", spec.cluster_ref),
     )
     .await?;
 
@@ -169,29 +119,56 @@ pub async fn reconcile_dnszone(
 /// # Arguments
 ///
 /// * `_client` - Kubernetes API client (unused, for future extensions)
-/// * `dnszone` - The DNSZone resource to delete
+/// * `dnszone` - The `DNSZone` resource to delete
 /// * `zone_manager` - BIND9 manager for removing zone files
 ///
 /// # Returns
 ///
 /// * `Ok(())` - If zone was deleted successfully
 /// * `Err(_)` - If zone deletion failed
+///
+/// # Errors
+///
+/// Returns an error if BIND9 zone deletion fails.
 pub async fn delete_dnszone(
-    _client: Client,
+    client: Client,
     dnszone: DNSZone,
     zone_manager: &crate::bind9::Bind9Manager,
 ) -> Result<()> {
+    let namespace = dnszone.namespace().unwrap_or_default();
     let name = dnszone.name_any();
     let spec = &dnszone.spec;
 
     info!("Deleting DNSZone: {}", name);
 
-    zone_manager.delete_zone(&spec.zone_name)?;
+    // Find PRIMARY instance pod from the cluster
+    let primary_pod = find_primary_pod(&client, &namespace, &spec.cluster_ref).await?;
+
+    info!(
+        "Found PRIMARY pod {} for cluster {}",
+        primary_pod.name, spec.cluster_ref
+    );
+
+    // Load RNDC key from instance secret
+    let key_data = load_rndc_key(&client, &namespace, &spec.cluster_ref).await?;
+
+    // Build server address
+    let server = format!("{}.{}.svc.cluster.local:953", spec.cluster_ref, namespace);
+
+    // Delete zone using rndc
+    zone_manager
+        .delete_zone(&spec.zone_name, &server, &key_data)
+        .await?;
+
+    info!(
+        "Deleted zone {} from cluster {}",
+        spec.zone_name, spec.cluster_ref
+    );
 
     Ok(())
 }
 
-/// Find Bind9Instance resources matching a label selector
+/// Find `Bind9Instance` resources matching a label selector
 async fn find_matching_instances(
     client: &Client,
     namespace: &str,
@@ -213,19 +190,23 @@ async fn find_matching_instances(
 
     let instances = api.list(&params).await?;
 
-    let instance_names: Vec<String> = instances.items.iter().map(|i| i.name_any()).collect();
+    let instance_names: Vec<String> = instances
+        .items
+        .iter()
+        .map(kube::ResourceExt::name_any)
+        .collect();
 
     Ok(instance_names)
 }
 
-/// Build a Kubernetes label selector string from our LabelSelector
+/// Build a Kubernetes label selector string from our `LabelSelector`
 pub(crate) fn build_label_selector(selector: &crate::crd::LabelSelector) -> Option<String> {
     let mut parts = Vec::new();
 
     // Add match labels
     if let Some(labels) = &selector.match_labels {
-        for (key, value) in labels.iter() {
-            parts.push(format!("{}={}", key, value));
+        for (key, value) in labels {
+            parts.push(format!("{key}={value}"));
         }
     }
 
@@ -236,7 +217,80 @@ pub(crate) fn build_label_selector(selector: &crate::crd::LabelSelector) -> Opti
     }
 }
 
-/// Update the status of a DNSZone
+/// Helper struct for pod information
+struct PodInfo {
+    name: String,
+}
+
+/// Find a PRIMARY pod for the given `Bind9Instance`
+async fn find_primary_pod(
+    client: &Client,
+    namespace: &str,
+    instance_name: &str,
+) -> Result<PodInfo> {
+    let pod_api: Api<Pod> = Api::namespaced(client.clone(), namespace);
+
+    // List pods with label selector matching the instance
+    let label_selector = format!("app=bind9,instance={instance_name}");
+    let lp = ListParams::default().labels(&label_selector);
+
+    let pods = pod_api.list(&lp).await?;
+
+    if pods.items.is_empty() {
+        return Err(anyhow!(
+            "No pods found for Bind9Instance {instance_name} in namespace {namespace}"
+        ));
+    }
+
+    // For now, just use the first pod. In the future, we could look for
+    // a pod with a specific label like "role=primary" or check if it's
+    // running and ready.
+    let pod = &pods.items[0];
+    let pod_name = pod
+        .metadata
+        .name
+        .as_ref()
+        .ok_or_else(|| anyhow!("Pod has no name"))?
+        .clone();
+
+    info!(
+        "Found pod {} for instance {} (total pods: {})",
+        pod_name,
+        instance_name,
+        pods.items.len()
+    );
+
+    Ok(PodInfo { name: pod_name })
+}
+
+/// Load RNDC key from the instance's secret
+async fn load_rndc_key(
+    client: &Client,
+    namespace: &str,
+    instance_name: &str,
+) -> Result<RndcKeyData> {
+    let secret_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
+    let secret_name = format!("{instance_name}-rndc-key");
+
+    let secret = secret_api.get(&secret_name).await.context(format!(
+        "Failed to get RNDC secret {secret_name} in namespace {namespace}"
+    ))?;
+
+    let data = secret
+        .data
+        .as_ref()
+        .ok_or_else(|| anyhow!("Secret {secret_name} has no data"))?;
+
+    // Convert ByteString to Vec<u8>
+    let mut converted_data = std::collections::BTreeMap::new();
+    for (key, value) in data {
+        converted_data.insert(key.clone(), value.0.clone());
+    }
+
+    crate::bind9::Bind9Manager::parse_rndc_secret_data(&converted_data)
+}
+
+/// Update the status of a `DNSZone`
 async fn update_status(
     client: &Client,
     dnszone: &DNSZone,

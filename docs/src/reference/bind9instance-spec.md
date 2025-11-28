@@ -5,7 +5,7 @@ Complete specification for the Bind9Instance Custom Resource Definition.
 ## Resource Definition
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: string
@@ -13,9 +13,18 @@ metadata:
   labels:
     key: value
 spec:
+  clusterRef: string          # References Bind9Cluster
+  role: primary|secondary     # Server role
   replicas: integer
-  version: string
-  config:
+  version: string             # Optional, overrides cluster version
+  image:                      # Optional, overrides cluster image
+    image: string
+    imagePullPolicy: string
+    imagePullSecrets: [string]
+  configMapRefs:              # Optional, custom config files
+    namedConf: string
+    namedConfOptions: string
+  config:                     # Optional, overrides cluster config
     recursion: boolean
     allowQuery: [string]
     allowTransfer: [string]
@@ -25,9 +34,27 @@ spec:
     forwarders: [string]
     listenOn: [string]
     listenOnV6: [string]
+  primaryServers: [string]    # Required for secondary role
 ```
 
 ## Spec Fields
+
+### clusterRef
+**Type**: string
+**Required**: Yes
+
+Name of the Bind9Cluster that this instance belongs to. The instance inherits cluster-level configuration (version, shared config, TSIG keys, ACLs) from the referenced cluster.
+
+```yaml
+spec:
+  clusterRef: production-dns  # References Bind9Cluster named "production-dns"
+```
+
+**How It Works**:
+- Instance inherits `version` from cluster unless overridden
+- Instance inherits `config` from cluster unless overridden
+- Controller uses cluster TSIG keys for zone transfers
+- Instance can override cluster settings with its own spec
 
 ### replicas
 **Type**: integer
@@ -62,6 +89,197 @@ spec:
 - "9.16" - Older stable
 - "9.18" - Current stable (recommended)
 - "9.19" - Development
+
+### image
+**Type**: object
+**Required**: No
+
+Container image configuration for the BIND9 instance. Overrides cluster-level image configuration.
+
+```yaml
+spec:
+  image:
+    image: "my-registry.example.com/bind9:custom"
+    imagePullPolicy: "Always"
+    imagePullSecrets:
+      - my-registry-secret
+```
+
+**How It Works**:
+- If not specified, inherits from `Bind9Cluster.spec.image`
+- If cluster doesn't specify, uses default image `internetsystemsconsortium/bind9:9.18`
+- Instance-level configuration takes precedence over cluster configuration
+
+#### image.image
+**Type**: string
+**Required**: No
+**Default**: "internetsystemsconsortium/bind9:9.18"
+
+Full container image reference including registry, repository, and tag.
+
+```yaml
+spec:
+  image:
+    image: "docker.io/internetsystemsconsortium/bind9:9.18"
+```
+
+**Examples**:
+- Public registry: `"internetsystemsconsortium/bind9:9.18"`
+- Private registry: `"my-registry.example.com/dns/bind9:custom"`
+- With digest: `"bind9@sha256:abc123..."`
+
+#### image.imagePullPolicy
+**Type**: string
+**Required**: No
+**Default**: "IfNotPresent"
+
+Kubernetes image pull policy.
+
+```yaml
+spec:
+  image:
+    imagePullPolicy: "Always"
+```
+
+**Valid Values**:
+- `"Always"` - Always pull the image
+- `"IfNotPresent"` - Pull only if not present locally (recommended)
+- `"Never"` - Never pull, use local image only
+
+#### image.imagePullSecrets
+**Type**: array of strings
+**Required**: No
+**Default**: []
+
+List of Kubernetes secret names for authenticating with private container registries.
+
+```yaml
+spec:
+  image:
+    imagePullSecrets:
+      - docker-registry-secret
+      - gcr-pull-secret
+```
+
+**Setup**:
+1. Create a docker-registry secret:
+   ```bash
+   kubectl create secret docker-registry my-registry-secret \
+     --docker-server=my-registry.example.com \
+     --docker-username=user \
+     --docker-password=pass \
+     --docker-email=email@example.com
+   ```
+2. Reference the secret name in `imagePullSecrets`
+
+### configMapRefs
+**Type**: object
+**Required**: No
+
+References to custom ConfigMaps containing BIND9 configuration files. Overrides cluster-level ConfigMap references.
+
+```yaml
+spec:
+  configMapRefs:
+    namedConf: "my-custom-named-conf"
+    namedConfOptions: "my-custom-options"
+```
+
+**How It Works**:
+- If specified, Bindy uses your custom ConfigMaps instead of auto-generating configuration
+- If not specified, Bindy auto-generates ConfigMaps from the `config` block
+- Instance-level references override cluster-level references
+- You can specify one or both ConfigMaps
+
+**Default Behavior**:
+- If `configMapRefs` is not set, Bindy creates a ConfigMap named `<instance-name>-config`
+- Auto-generated ConfigMap includes both `named.conf` and `named.conf.options`
+- Configuration is built from the `config` block in the spec
+
+#### configMapRefs.namedConf
+**Type**: string
+**Required**: No
+
+Name of ConfigMap containing the main `named.conf` file.
+
+```yaml
+spec:
+  configMapRefs:
+    namedConf: "my-named-conf"
+```
+
+**ConfigMap Format**:
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: my-named-conf
+  namespace: dns-system
+data:
+  named.conf: |
+    // Custom BIND9 configuration
+    include "/etc/bind/named.conf.options";
+    include "/etc/bind/zones/named.conf.zones";
+
+    logging {
+      channel custom_log {
+        file "/var/log/named/queries.log" versions 3 size 5m;
+        severity info;
+      };
+      category queries { custom_log; };
+    };
+```
+
+**File Location**: The ConfigMap data must have a key `named.conf` which will be mounted at `/etc/bind/named.conf`
+
+#### configMapRefs.namedConfOptions
+**Type**: string
+**Required**: No
+
+Name of ConfigMap containing the `named.conf.options` file.
+
+```yaml
+spec:
+  configMapRefs:
+    namedConfOptions: "my-options"
+```
+
+**ConfigMap Format**:
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: my-options
+  namespace: dns-system
+data:
+  named.conf.options: |
+    options {
+      directory "/var/cache/bind";
+      recursion no;
+      allow-query { any; };
+      dnssec-validation auto;
+    };
+```
+
+**File Location**: The ConfigMap data must have a key `named.conf.options` which will be mounted at `/etc/bind/named.conf.options`
+
+**Examples**:
+
+Using separate ConfigMaps for fine-grained control:
+```yaml
+spec:
+  configMapRefs:
+    namedConf: "prod-named-conf"
+    namedConfOptions: "prod-options"
+```
+
+Using only custom options, auto-generating main config:
+```yaml
+spec:
+  configMapRefs:
+    namedConfOptions: "my-custom-options"
+  # namedConf not specified - will be auto-generated
+```
 
 ### config
 **Type**: object
@@ -257,16 +475,13 @@ status:
 ### Primary DNS Instance
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
-kind: Bind9Instance
+# First create the Bind9Cluster
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
 metadata:
-  name: primary-dns
+  name: production-dns
   namespace: dns-system
-  labels:
-    dns-role: primary
-    environment: production
 spec:
-  replicas: 2
   version: "9.18"
   config:
     recursion: false
@@ -276,17 +491,27 @@ spec:
       - "10.0.2.0/24"
     dnssec:
       enabled: true
-      validation: false
-    listenOn:
-      - "any"
-    listenOnV6:
-      - "any"
+
+---
+# Then create the Bind9Instance referencing the cluster
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: primary-dns
+  namespace: dns-system
+  labels:
+    dns-role: primary
+    environment: production
+spec:
+  clusterRef: production-dns  # References cluster above
+  replicas: 2
+  # Inherits version and config from cluster
 ```
 
 ### Secondary DNS Instance
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: secondary-dns
@@ -295,13 +520,11 @@ metadata:
     dns-role: secondary
     environment: production
 spec:
+  clusterRef: production-dns  # References same cluster as primary
   replicas: 2
-  version: "9.18"
+  # Override config for secondary role
   config:
-    recursion: false
-    allowQuery:
-      - "0.0.0.0/0"
-    # No allowTransfer for secondary
+    allowTransfer: []  # No zone transfers from secondary
     dnssec:
       enabled: false
       validation: true
@@ -310,7 +533,27 @@ spec:
 ### Recursive Resolver
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+# Separate cluster for resolvers
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
+metadata:
+  name: resolver-cluster
+  namespace: dns-system
+spec:
+  version: "9.18"
+  config:
+    recursion: true
+    allowQuery:
+      - "10.0.0.0/8"  # Internal network only
+    forwarders:
+      - "8.8.8.8"
+      - "1.1.1.1"
+    dnssec:
+      enabled: false
+      validation: true
+
+---
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: resolver
@@ -318,18 +561,9 @@ metadata:
   labels:
     dns-role: resolver
 spec:
+  clusterRef: resolver-cluster
   replicas: 3
-  version: "9.18"
-  config:
-    recursion: true
-    allowQuery:
-      - "10.0.0.0/8"        # Internal network only
-    forwarders:
-      - "8.8.8.8"
-      - "1.1.1.1"
-    dnssec:
-      enabled: false
-      validation: true
+  # Inherits recursive config from cluster
 ```
 
 ## Related Resources

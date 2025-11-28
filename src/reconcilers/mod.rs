@@ -49,7 +49,7 @@
 //!
 //! async fn reconcile_zone(dnszone: DNSZone) -> anyhow::Result<()> {
 //!     let client = Client::try_default().await?;
-//!     let zone_manager = Bind9Manager::new("/etc/bind/zones".to_string());
+//!     let zone_manager = Bind9Manager::new();
 //!
 //!     reconcile_dnszone(client, dnszone, &zone_manager).await?;
 //!     Ok(())

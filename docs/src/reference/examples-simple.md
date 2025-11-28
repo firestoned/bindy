@@ -32,7 +32,7 @@ metadata:
 
 ---
 # Bind9Instance - Single DNS Server
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: simple-dns
@@ -56,7 +56,7 @@ spec:
 
 ---
 # DNSZone - example.com
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: example-com
@@ -79,7 +79,7 @@ spec:
 
 ---
 # A Record - Nameserver
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: ns1-a-record
@@ -92,7 +92,7 @@ spec:
 
 ---
 # A Record - Web Server
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: www-a-record
@@ -105,7 +105,7 @@ spec:
 
 ---
 # AAAA Record - Web Server (IPv6)
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: AAAARecord
 metadata:
   name: www-aaaa-record
@@ -118,7 +118,7 @@ spec:
 
 ---
 # A Record - Mail Server
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: mail-a-record
@@ -131,7 +131,7 @@ spec:
 
 ---
 # MX Record - Mail Exchange
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: MXRecord
 metadata:
   name: mx-record
@@ -145,7 +145,7 @@ spec:
 
 ---
 # TXT Record - SPF
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: TXTRecord
 metadata:
   name: spf-record
@@ -159,7 +159,7 @@ spec:
 
 ---
 # TXT Record - DMARC
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: TXTRecord
 metadata:
   name: dmarc-record
@@ -173,7 +173,7 @@ spec:
 
 ---
 # CNAME Record - API Alias
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: CNAMERecord
 metadata:
   name: api-cname-record
@@ -315,7 +315,7 @@ kubectl logs -n dns-system -l app=bindy,dns-role=primary
 
 ```bash
 cat <<EOF | kubectl apply -f -
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: app-a-record

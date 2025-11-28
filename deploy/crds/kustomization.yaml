@@ -4,6 +4,7 @@ kind: Kustomization
 resources:
   - aaaarecords.crd.yaml
   - arecords.crd.yaml
+  - bind9clusters.crd.yaml
   - bind9instances.crd.yaml
   - caarecords.crd.yaml
   - cnamerecords.crd.yaml

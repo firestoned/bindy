@@ -66,7 +66,7 @@ data:
 
 ---
 # Primary Bind9Instance
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: primary-dns
@@ -95,7 +95,7 @@ spec:
 
 ---
 # Secondary Bind9Instance
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: secondary-dns
@@ -150,7 +150,7 @@ spec:
 
 ---
 # DNSZone - Primary
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: example-com-primary
@@ -173,7 +173,7 @@ spec:
 
 ---
 # DNSZone - Secondary
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: example-com-secondary
@@ -194,7 +194,7 @@ spec:
 # Production DNS Records
 # Nameservers
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: ns1-primary
@@ -206,7 +206,7 @@ spec:
   ttl: 86400  # 24 hours for NS records
 
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: ns2-secondary
@@ -219,7 +219,7 @@ spec:
 
 ---
 # Load Balanced Web Servers (Round Robin)
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: www-lb-1
@@ -231,7 +231,7 @@ spec:
   ttl: 60  # 1 minute for load balanced IPs
 
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: www-lb-2
@@ -243,7 +243,7 @@ spec:
   ttl: 60
 
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: www-lb-3
@@ -256,7 +256,7 @@ spec:
 
 ---
 # Dual Stack for www
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: AAAARecord
 metadata:
   name: www-v6-1
@@ -268,7 +268,7 @@ spec:
   ttl: 60
 
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: AAAARecord
 metadata:
   name: www-v6-2
@@ -281,7 +281,7 @@ spec:
 
 ---
 # Mail Infrastructure
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: mail1
@@ -293,7 +293,7 @@ spec:
   ttl: 3600
 
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: mail2
@@ -306,7 +306,7 @@ spec:
 
 ---
 # MX Records - Primary and Backup
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: MXRecord
 metadata:
   name: mx-primary
@@ -319,7 +319,7 @@ spec:
   ttl: 3600
 
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: MXRecord
 metadata:
   name: mx-backup
@@ -333,7 +333,7 @@ spec:
 
 ---
 # SPF Record
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: TXTRecord
 metadata:
   name: spf
@@ -347,7 +347,7 @@ spec:
 
 ---
 # DKIM Record
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: TXTRecord
 metadata:
   name: dkim
@@ -361,7 +361,7 @@ spec:
 
 ---
 # DMARC Record
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: TXTRecord
 metadata:
   name: dmarc
@@ -375,7 +375,7 @@ spec:
 
 ---
 # CAA Records
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: CAARecord
 metadata:
   name: caa-issue
@@ -389,7 +389,7 @@ spec:
   ttl: 86400
 
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: CAARecord
 metadata:
   name: caa-issuewild
@@ -403,7 +403,7 @@ spec:
   ttl: 86400
 
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: CAARecord
 metadata:
   name: caa-iodef
@@ -418,7 +418,7 @@ spec:
 
 ---
 # Service Records
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: SRVRecord
 metadata:
   name: srv-sip-tcp
@@ -434,7 +434,7 @@ spec:
 
 ---
 # CDN CNAME
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: CNAMERecord
 metadata:
   name: cdn

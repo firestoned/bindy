@@ -6,7 +6,8 @@ Custom Resource Definitions (CRDs) extend Kubernetes with new resource types for
 
 CRDs define the schema for custom resources in Kubernetes. Bindy uses CRDs to represent:
 
-- BIND9 instances
+- BIND9 clusters (cluster-level configuration)
+- BIND9 instances (individual DNS server deployments)
 - DNS zones
 - DNS records (A, AAAA, CNAME, MX, TXT, NS, SRV, CAA)
 
@@ -15,14 +16,14 @@ CRDs define the schema for custom resources in Kubernetes. Bindy uses CRDs to re
 Install all Bindy CRDs:
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/crds/
+kubectl apply -k https://raw.githubusercontent.com/firestoned/bindy/main/deploy/crds/
 ```
 
 Or install from local files:
 
 ```bash
 cd bindy
-kubectl apply -k deploy/crds/
+kubectl apply -k deploy/crds
 ```
 
 ## Verify Installation
@@ -30,22 +31,23 @@ kubectl apply -k deploy/crds/
 Check that all CRDs are installed:
 
 ```bash
-kubectl get crd | grep dns.firestoned.io
+kubectl get crd | grep bindy.firestoned.io
 ```
 
 Expected output:
 
 ```
-aaaarecords.dns.firestoned.io         2024-01-01T00:00:00Z
-arecords.dns.firestoned.io            2024-01-01T00:00:00Z
-bind9instances.dns.firestoned.io      2024-01-01T00:00:00Z
-caarecords.dns.firestoned.io          2024-01-01T00:00:00Z
-cnamerecords.dns.firestoned.io        2024-01-01T00:00:00Z
-dnszones.dns.firestoned.io            2024-01-01T00:00:00Z
-mxrecords.dns.firestoned.io           2024-01-01T00:00:00Z
-nsrecords.dns.firestoned.io           2024-01-01T00:00:00Z
-srvrecords.dns.firestoned.io          2024-01-01T00:00:00Z
-txtrecords.dns.firestoned.io          2024-01-01T00:00:00Z
+aaaarecords.bindy.firestoned.io         2024-01-01T00:00:00Z
+arecords.bindy.firestoned.io            2024-01-01T00:00:00Z
+bind9clusters.bindy.firestoned.io       2024-01-01T00:00:00Z
+bind9instances.bindy.firestoned.io      2024-01-01T00:00:00Z
+caarecords.bindy.firestoned.io          2024-01-01T00:00:00Z
+cnamerecords.bindy.firestoned.io        2024-01-01T00:00:00Z
+dnszones.bindy.firestoned.io            2024-01-01T00:00:00Z
+mxrecords.bindy.firestoned.io           2024-01-01T00:00:00Z
+nsrecords.bindy.firestoned.io           2024-01-01T00:00:00Z
+srvrecords.bindy.firestoned.io          2024-01-01T00:00:00Z
+txtrecords.bindy.firestoned.io          2024-01-01T00:00:00Z
 ```
 
 ## CRD Details

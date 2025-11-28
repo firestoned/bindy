@@ -89,7 +89,7 @@ mod tests {
                 zone: "example.com".to_string(),
                 name: "@".to_string(),
                 priority,
-                mail_server: format!("mx{}.example.com.", priority),
+                mail_server: format!("mx{priority}.example.com."),
                 ttl: None,
             };
 

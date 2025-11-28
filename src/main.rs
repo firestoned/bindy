@@ -2,7 +2,18 @@
 // SPDX-License-Identifier: MIT
 
 use anyhow::Result;
-use bindy::{bind9::Bind9Manager, crd::*, reconcilers::*};
+use bindy::{
+    bind9::Bind9Manager,
+    crd::{
+        AAAARecord, ARecord, Bind9Instance, CAARecord, CNAMERecord, DNSZone, MXRecord, NSRecord,
+        SRVRecord, TXTRecord,
+    },
+    reconcilers::{
+        reconcile_a_record, reconcile_aaaa_record, reconcile_bind9instance, reconcile_caa_record,
+        reconcile_cname_record, reconcile_dnszone, reconcile_mx_record, reconcile_ns_record,
+        reconcile_srv_record, reconcile_txt_record,
+    },
+};
 use futures::StreamExt;
 use kube::{
     runtime::{controller::Action, watcher::Config, Controller},
@@ -29,8 +40,8 @@ async fn main() -> Result<()> {
     // Initialize Kubernetes client
     let client = Client::try_default().await?;
 
-    // Create BIND9 manager (zones directory - in production this should be configurable)
-    let bind9_manager = Arc::new(Bind9Manager::new("/etc/bind/zones".into()));
+    // Create BIND9 manager (no longer needs zones directory - uses rndc protocol)
+    let bind9_manager = Arc::new(Bind9Manager::new());
 
     info!("Starting BIND9 DNS Controller");
 
@@ -79,7 +90,7 @@ async fn main() -> Result<()> {
     }
 }
 
-/// Run the DNSZone controller
+/// Run the `DNSZone` controller
 async fn run_dnszone_controller(client: Client, bind9_manager: Arc<Bind9Manager>) -> Result<()> {
     info!("Starting DNSZone controller");
 
@@ -97,7 +108,7 @@ async fn run_dnszone_controller(client: Client, bind9_manager: Arc<Bind9Manager>
     Ok(())
 }
 
-/// Run the ARecord controller
+/// Run the `ARecord` controller
 async fn run_arecord_controller(client: Client, bind9_manager: Arc<Bind9Manager>) -> Result<()> {
     info!("Starting ARecord controller");
 
@@ -115,7 +126,7 @@ async fn run_arecord_controller(client: Client, bind9_manager: Arc<Bind9Manager>
     Ok(())
 }
 
-/// Run the TXTRecord controller
+/// Run the `TXTRecord` controller
 async fn run_txtrecord_controller(client: Client, bind9_manager: Arc<Bind9Manager>) -> Result<()> {
     info!("Starting TXTRecord controller");
 
@@ -133,7 +144,7 @@ async fn run_txtrecord_controller(client: Client, bind9_manager: Arc<Bind9Manage
     Ok(())
 }
 
-/// Run the AAAARecord controller
+/// Run the `AAAARecord` controller
 async fn run_aaaarecord_controller(client: Client, bind9_manager: Arc<Bind9Manager>) -> Result<()> {
     info!("Starting AAAARecord controller");
 
@@ -151,7 +162,7 @@ async fn run_aaaarecord_controller(client: Client, bind9_manager: Arc<Bind9Manag
     Ok(())
 }
 
-/// Run the CNAMERecord controller
+/// Run the `CNAMERecord` controller
 async fn run_cnamerecord_controller(
     client: Client,
     bind9_manager: Arc<Bind9Manager>,
@@ -172,7 +183,7 @@ async fn run_cnamerecord_controller(
     Ok(())
 }
 
-/// Run the MXRecord controller
+/// Run the `MXRecord` controller
 async fn run_mxrecord_controller(client: Client, bind9_manager: Arc<Bind9Manager>) -> Result<()> {
     info!("Starting MXRecord controller");
 
@@ -190,7 +201,7 @@ async fn run_mxrecord_controller(client: Client, bind9_manager: Arc<Bind9Manager
     Ok(())
 }
 
-/// Run the NSRecord controller
+/// Run the `NSRecord` controller
 async fn run_nsrecord_controller(client: Client, bind9_manager: Arc<Bind9Manager>) -> Result<()> {
     info!("Starting NSRecord controller");
 
@@ -208,7 +219,7 @@ async fn run_nsrecord_controller(client: Client, bind9_manager: Arc<Bind9Manager
     Ok(())
 }
 
-/// Run the SRVRecord controller
+/// Run the `SRVRecord` controller
 async fn run_srvrecord_controller(client: Client, bind9_manager: Arc<Bind9Manager>) -> Result<()> {
     info!("Starting SRVRecord controller");
 
@@ -226,7 +237,7 @@ async fn run_srvrecord_controller(client: Client, bind9_manager: Arc<Bind9Manage
     Ok(())
 }
 
-/// Run the CAARecord controller
+/// Run the `CAARecord` controller
 async fn run_caarecord_controller(client: Client, bind9_manager: Arc<Bind9Manager>) -> Result<()> {
     info!("Starting CAARecord controller");
 
@@ -244,7 +255,7 @@ async fn run_caarecord_controller(client: Client, bind9_manager: Arc<Bind9Manage
     Ok(())
 }
 
-/// Run the Bind9Instance controller
+/// Run the `Bind9Instance` controller
 async fn run_bind9instance_controller(client: Client) -> Result<()> {
     info!("Starting Bind9Instance controller");
 
@@ -262,13 +273,13 @@ async fn run_bind9instance_controller(client: Client) -> Result<()> {
     Ok(())
 }
 
-/// Reconcile wrapper for Bind9Instance
+/// Reconcile wrapper for `Bind9Instance`
 async fn reconcile_bind9instance_wrapper(
     instance: Arc<Bind9Instance>,
     ctx: Arc<Client>,
 ) -> Result<Action, ReconcileError> {
     match reconcile_bind9instance((*ctx).clone(), (*instance).clone()).await {
-        Ok(_) => {
+        Ok(()) => {
             info!(
                 "Successfully reconciled Bind9Instance: {}",
                 instance.name_any()
@@ -282,13 +293,13 @@ async fn reconcile_bind9instance_wrapper(
     }
 }
 
-/// Reconcile wrapper for DNSZone
+/// Reconcile wrapper for `DNSZone`
 async fn reconcile_dnszone_wrapper(
     dnszone: Arc<DNSZone>,
     ctx: Arc<(Client, Arc<Bind9Manager>)>,
 ) -> Result<Action, ReconcileError> {
     match reconcile_dnszone(ctx.0.clone(), (*dnszone).clone(), &ctx.1).await {
-        Ok(_) => {
+        Ok(()) => {
             info!("Successfully reconciled DNSZone: {}", dnszone.name_any());
             Ok(Action::requeue(Duration::from_secs(300)))
         }
@@ -299,13 +310,13 @@ async fn reconcile_dnszone_wrapper(
     }
 }
 
-/// Reconcile wrapper for ARecord
+/// Reconcile wrapper for `ARecord`
 async fn reconcile_arecord_wrapper(
     record: Arc<ARecord>,
     ctx: Arc<(Client, Arc<Bind9Manager>)>,
 ) -> Result<Action, ReconcileError> {
     match reconcile_a_record(ctx.0.clone(), (*record).clone(), &ctx.1).await {
-        Ok(_) => {
+        Ok(()) => {
             info!("Successfully reconciled ARecord: {}", record.name_any());
             Ok(Action::requeue(Duration::from_secs(300)))
         }
@@ -316,13 +327,13 @@ async fn reconcile_arecord_wrapper(
     }
 }
 
-/// Reconcile wrapper for TXTRecord
+/// Reconcile wrapper for `TXTRecord`
 async fn reconcile_txtrecord_wrapper(
     record: Arc<TXTRecord>,
     ctx: Arc<(Client, Arc<Bind9Manager>)>,
 ) -> Result<Action, ReconcileError> {
     match reconcile_txt_record(ctx.0.clone(), (*record).clone(), &ctx.1).await {
-        Ok(_) => {
+        Ok(()) => {
             info!("Successfully reconciled TXTRecord: {}", record.name_any());
             Ok(Action::requeue(Duration::from_secs(300)))
         }
@@ -333,13 +344,13 @@ async fn reconcile_txtrecord_wrapper(
     }
 }
 
-/// Reconcile wrapper for AAAARecord
+/// Reconcile wrapper for `AAAARecord`
 async fn reconcile_aaaarecord_wrapper(
     record: Arc<AAAARecord>,
     ctx: Arc<(Client, Arc<Bind9Manager>)>,
 ) -> Result<Action, ReconcileError> {
     match reconcile_aaaa_record(ctx.0.clone(), (*record).clone(), &ctx.1).await {
-        Ok(_) => {
+        Ok(()) => {
             info!("Successfully reconciled AAAARecord: {}", record.name_any());
             Ok(Action::requeue(Duration::from_secs(300)))
         }
@@ -350,13 +361,13 @@ async fn reconcile_aaaarecord_wrapper(
     }
 }
 
-/// Reconcile wrapper for CNAMERecord
+/// Reconcile wrapper for `CNAMERecord`
 async fn reconcile_cnamerecord_wrapper(
     record: Arc<CNAMERecord>,
     ctx: Arc<(Client, Arc<Bind9Manager>)>,
 ) -> Result<Action, ReconcileError> {
     match reconcile_cname_record(ctx.0.clone(), (*record).clone(), &ctx.1).await {
-        Ok(_) => {
+        Ok(()) => {
             info!("Successfully reconciled CNAMERecord: {}", record.name_any());
             Ok(Action::requeue(Duration::from_secs(300)))
         }
@@ -367,13 +378,13 @@ async fn reconcile_cnamerecord_wrapper(
     }
 }
 
-/// Reconcile wrapper for MXRecord
+/// Reconcile wrapper for `MXRecord`
 async fn reconcile_mxrecord_wrapper(
     record: Arc<MXRecord>,
     ctx: Arc<(Client, Arc<Bind9Manager>)>,
 ) -> Result<Action, ReconcileError> {
     match reconcile_mx_record(ctx.0.clone(), (*record).clone(), &ctx.1).await {
-        Ok(_) => {
+        Ok(()) => {
             info!("Successfully reconciled MXRecord: {}", record.name_any());
             Ok(Action::requeue(Duration::from_secs(300)))
         }
@@ -384,13 +395,13 @@ async fn reconcile_mxrecord_wrapper(
     }
 }
 
-/// Reconcile wrapper for NSRecord
+/// Reconcile wrapper for `NSRecord`
 async fn reconcile_nsrecord_wrapper(
     record: Arc<NSRecord>,
     ctx: Arc<(Client, Arc<Bind9Manager>)>,
 ) -> Result<Action, ReconcileError> {
     match reconcile_ns_record(ctx.0.clone(), (*record).clone(), &ctx.1).await {
-        Ok(_) => {
+        Ok(()) => {
             info!("Successfully reconciled NSRecord: {}", record.name_any());
             Ok(Action::requeue(Duration::from_secs(300)))
         }
@@ -401,13 +412,13 @@ async fn reconcile_nsrecord_wrapper(
     }
 }
 
-/// Reconcile wrapper for SRVRecord
+/// Reconcile wrapper for `SRVRecord`
 async fn reconcile_srvrecord_wrapper(
     record: Arc<SRVRecord>,
     ctx: Arc<(Client, Arc<Bind9Manager>)>,
 ) -> Result<Action, ReconcileError> {
     match reconcile_srv_record(ctx.0.clone(), (*record).clone(), &ctx.1).await {
-        Ok(_) => {
+        Ok(()) => {
             info!("Successfully reconciled SRVRecord: {}", record.name_any());
             Ok(Action::requeue(Duration::from_secs(300)))
         }
@@ -418,13 +429,13 @@ async fn reconcile_srvrecord_wrapper(
     }
 }
 
-/// Reconcile wrapper for CAARecord
+/// Reconcile wrapper for `CAARecord`
 async fn reconcile_caarecord_wrapper(
     record: Arc<CAARecord>,
     ctx: Arc<(Client, Arc<Bind9Manager>)>,
 ) -> Result<Action, ReconcileError> {
     match reconcile_caa_record(ctx.0.clone(), (*record).clone(), &ctx.1).await {
-        Ok(_) => {
+        Ok(()) => {
             info!("Successfully reconciled CAARecord: {}", record.name_any());
             Ok(Action::requeue(Duration::from_secs(300)))
         }
@@ -444,7 +455,7 @@ fn error_policy(
     Action::requeue(Duration::from_secs(30))
 }
 
-/// Error policy for Bind9Instance controller
+/// Error policy for `Bind9Instance` controller
 fn error_policy_instance(
     _resource: Arc<impl std::fmt::Debug>,
     _err: &ReconcileError,

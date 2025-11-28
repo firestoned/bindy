@@ -3,14 +3,23 @@ kind: ClusterRole
 metadata:
   name: bindy-role
 rules:
-  # DNSZone resources and status
-  - apiGroups: ["dns.firestoned.io"]
+  # Bind9Instance and Bind9Cluster resources - full control
+  - apiGroups: ["bindy.firestoned.io"]
+    resources: ["bind9instances", "bind9instances/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  - apiGroups: ["bindy.firestoned.io"]
+    resources: ["bind9clusters", "bind9clusters/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # DNSZone resources - full control
+  - apiGroups: ["bindy.firestoned.io"]
     resources: ["dnszones", "dnszones/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  
-  # Record resources and status
-  - apiGroups: ["dns.firestoned.io"]
-    resources: 
+
+  # Record resources - full control
+  - apiGroups: ["bindy.firestoned.io"]
+    resources:
       - "arecords"
       - "arecords/status"
       - "aaaarecords"
@@ -28,12 +37,28 @@ rules:
       - "caarecords"
       - "caarecords/status"
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  
-  # Bind9Instance resources and status
-  - apiGroups: ["dns.firestoned.io"]
-    resources: ["bind9instances", "bind9instances/status"]
+
+  # Kubernetes resources for managing BIND9 infrastructure
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  - apiGroups: [""]
+    resources: ["pods"]
     verbs: ["get", "list", "watch"]
-  
+
   # Events for logging
   - apiGroups: [""]
     resources: ["events"]

@@ -19,7 +19,7 @@ metadata:
   name: bindy-role
 rules:
   # Bindy CRDs
-  - apiGroups: ["dns.firestoned.io"]
+  - apiGroups: ["bindy.firestoned.io"]
     resources:
       - "bind9instances"
       - "bind9instances/status"
@@ -96,7 +96,7 @@ metadata:
   namespace: dns-system
 rules:
   # Same rules as ClusterRole
-  - apiGroups: ["dns.firestoned.io"]
+  - apiGroups: ["bindy.firestoned.io"]
     resources: ["bind9instances", "dnszones", "*records"]
     verbs: ["*"]
   

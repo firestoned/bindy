@@ -144,7 +144,7 @@ echo -e "${GREEN}2️⃣  Running functional tests with kubectl...${NC}"
 # Test Bind9Instance creation
 echo -e "${YELLOW}Testing Bind9Instance creation...${NC}"
 kubectl apply -f - <<EOF
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: integration-test-primary
@@ -166,7 +166,7 @@ sleep 2
 # Test DNSZone creation
 echo -e "${YELLOW}Testing DNSZone creation...${NC}"
 kubectl apply -f - <<EOF
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: integration-test-zone
@@ -195,7 +195,7 @@ echo -e "${YELLOW}Testing all DNS record types...${NC}"
 
 # A Record
 kubectl apply -f - <<EOF
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: integration-a
@@ -209,7 +209,7 @@ EOF
 
 # AAAA Record
 kubectl apply -f - <<EOF
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: AAAARecord
 metadata:
   name: integration-aaaa
@@ -223,7 +223,7 @@ EOF
 
 # CNAME Record
 kubectl apply -f - <<EOF
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: CNAMERecord
 metadata:
   name: integration-cname
@@ -237,7 +237,7 @@ EOF
 
 # MX Record
 kubectl apply -f - <<EOF
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: MXRecord
 metadata:
   name: integration-mx
@@ -252,7 +252,7 @@ EOF
 
 # TXT Record
 kubectl apply -f - <<EOF
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: TXTRecord
 metadata:
   name: integration-txt
@@ -267,7 +267,7 @@ EOF
 
 # NS Record
 kubectl apply -f - <<EOF
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: NSRecord
 metadata:
   name: integration-ns
@@ -281,7 +281,7 @@ EOF
 
 # SRV Record
 kubectl apply -f - <<EOF
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: SRVRecord
 metadata:
   name: integration-srv
@@ -298,7 +298,7 @@ EOF
 
 # CAA Record
 kubectl apply -f - <<EOF
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: CAARecord
 metadata:
   name: integration-caa

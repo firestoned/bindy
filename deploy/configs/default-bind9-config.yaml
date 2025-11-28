@@ -1,0 +1,42 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bindy-default-bind9-config
+  namespace: bindy-system
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/component: bind9-config
+    app.kubernetes.io/managed-by: bindy
+data:
+  named.conf: |
+    // BIND9 Configuration - Default configuration for bindy operator
+
+    include "/etc/bind/named.conf.options";
+    include "/etc/bind/zones/named.conf.zones";
+
+    logging {
+        channel default_log {
+            stderr;
+            severity info;
+            print-time yes;
+            print-category yes;
+            print-severity yes;
+        };
+        category default { default_log; };
+        category queries { default_log; };
+    };
+
+  named.conf.options: |
+    // BIND9 Options - Default configuration for bindy operator
+
+    options {
+        directory "/var/cache/bind";
+        dump-file "/var/cache/bind/cache_dump.db";
+        statistics-file "/var/cache/bind/named_stats.txt";
+        memstatistics-file "/var/cache/bind/named_mem_stats.txt";
+        listen-on { any; };
+        listen-on-v6 { any; };
+        recursion no;
+        allow-transfer { none; };
+    };

@@ -20,8 +20,12 @@ mod tests {
                 ..Default::default()
             },
             spec: Bind9InstanceSpec {
+                cluster_ref: "test-cluster".to_string(),
+                role: ServerRole::Primary,
                 replicas: Some(replicas),
                 version: Some(version.to_string()),
+                image: None,
+                config_map_refs: None,
                 config: Some(Bind9Config {
                     recursion: Some(false),
                     allow_query: Some(vec!["any".to_string()]),
@@ -34,6 +38,7 @@ mod tests {
                     listen_on: Some(vec!["any".to_string()]),
                     listen_on_v6: Some(vec!["any".to_string()]),
                 }),
+                primary_servers: None,
             },
             status: None,
         }
@@ -48,9 +53,14 @@ mod tests {
                 ..Default::default()
             },
             spec: Bind9InstanceSpec {
+                cluster_ref: "test-cluster".to_string(),
+                role: ServerRole::Primary,
                 replicas: None, // Should default to 1
                 version: Some("9.18".to_string()),
+                image: None,
+                config_map_refs: None,
                 config: None,
+                primary_servers: None,
             },
             status: None,
         };
@@ -68,9 +78,14 @@ mod tests {
                 ..Default::default()
             },
             spec: Bind9InstanceSpec {
+                cluster_ref: "test-cluster".to_string(),
+                role: ServerRole::Primary,
                 replicas: Some(3),
                 version: None, // Should default to "9.18"
+                image: None,
+                config_map_refs: None,
                 config: None,
+                primary_servers: None,
             },
             status: None,
         };
@@ -82,7 +97,7 @@ mod tests {
     #[test]
     fn test_configmap_creation() {
         let instance = create_test_instance("test-instance", 2, "9.18");
-        let cm = build_configmap("test-instance", "test-ns", &instance);
+        let cm = build_configmap("test-instance", "test-ns", &instance, None).unwrap();
 
         assert_eq!(cm.metadata.name.as_deref(), Some("test-instance-config"));
         assert_eq!(cm.metadata.namespace.as_deref(), Some("test-ns"));
@@ -100,7 +115,7 @@ mod tests {
     #[test]
     fn test_deployment_creation() {
         let instance = create_test_instance("test-deploy", 3, "9.20");
-        let deployment = build_deployment("test-deploy", "test-ns", &instance);
+        let deployment = build_deployment("test-deploy", "test-ns", &instance, None);
 
         assert_eq!(deployment.metadata.name.as_deref(), Some("test-deploy"));
         assert_eq!(deployment.metadata.namespace.as_deref(), Some("test-ns"));
@@ -111,6 +126,7 @@ mod tests {
         let pod_template = spec.template;
         let pod_spec = pod_template.spec.expect("Pod template should have spec");
 
+        // Should have 1 container: bind9 only
         assert_eq!(pod_spec.containers.len(), 1);
         let container = &pod_spec.containers[0];
         assert_eq!(container.name, "bind9");
@@ -142,7 +158,7 @@ mod tests {
     fn test_deployment_with_various_replica_counts() {
         for replicas in [1, 2, 3, 5, 10] {
             let instance = create_test_instance("test", replicas, "9.18");
-            let deployment = build_deployment("test", "test-ns", &instance);
+            let deployment = build_deployment("test", "test-ns", &instance, None);
 
             let spec = deployment.spec.unwrap();
             assert_eq!(spec.replicas, Some(replicas));
@@ -153,11 +169,11 @@ mod tests {
     fn test_deployment_with_various_versions() {
         for version in ["9.16", "9.18", "9.20", "latest"] {
             let instance = create_test_instance("test", 1, version);
-            let deployment = build_deployment("test", "test-ns", &instance);
+            let deployment = build_deployment("test", "test-ns", &instance, None);
 
             let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
             let container = &pod_spec.containers[0];
-            let expected_image = format!("internetsystemsconsortium/bind9:{}", version);
+            let expected_image = format!("internetsystemsconsortium/bind9:{version}");
             assert_eq!(container.image.as_deref(), Some(expected_image.as_str()));
         }
     }
@@ -171,8 +187,12 @@ mod tests {
                 ..Default::default()
             },
             spec: Bind9InstanceSpec {
+                cluster_ref: "test-cluster".to_string(),
+                role: ServerRole::Primary,
                 replicas: Some(1),
                 version: Some("9.18".to_string()),
+                image: None,
+                config_map_refs: None,
                 config: Some(Bind9Config {
                     recursion: Some(true),
                     allow_query: None,
@@ -182,12 +202,13 @@ mod tests {
                     listen_on: None,
                     listen_on_v6: None,
                 }),
+                primary_servers: None,
             },
             status: None,
         };
 
-        let cm = build_configmap("test", "test-ns", &instance);
-        let data = cm.data.unwrap();
+        let cm = build_configmap("test", "test-ns", &instance, None);
+        let data = cm.unwrap().data.unwrap();
         let options = data.get("named.conf.options").unwrap();
 
         assert!(options.contains("recursion yes"));
@@ -202,8 +223,12 @@ mod tests {
                 ..Default::default()
             },
             spec: Bind9InstanceSpec {
+                cluster_ref: "test-cluster".to_string(),
+                role: ServerRole::Primary,
                 replicas: Some(1),
                 version: Some("9.18".to_string()),
+                image: None,
+                config_map_refs: None,
                 config: Some(Bind9Config {
                     recursion: Some(false),
                     allow_query: None,
@@ -213,12 +238,13 @@ mod tests {
                     listen_on: None,
                     listen_on_v6: None,
                 }),
+                primary_servers: None,
             },
             status: None,
         };
 
-        let cm = build_configmap("test", "test-ns", &instance);
-        let data = cm.data.unwrap();
+        let cm = build_configmap("test", "test-ns", &instance, None);
+        let data = cm.unwrap().data.unwrap();
         let named_conf = data.get("named.conf").unwrap();
 
         // Verify the named.conf contains the proper includes
@@ -252,8 +278,12 @@ mod tests {
                 ..Default::default()
             },
             spec: Bind9InstanceSpec {
+                cluster_ref: "test-cluster".to_string(),
+                role: ServerRole::Primary,
                 replicas: Some(1),
                 version: Some("9.18".to_string()),
+                image: None,
+                config_map_refs: None,
                 config: Some(Bind9Config {
                     recursion: Some(false),
                     allow_query: None,
@@ -266,12 +296,13 @@ mod tests {
                     listen_on: None,
                     listen_on_v6: None,
                 }),
+                primary_servers: None,
             },
             status: None,
         };
 
-        let cm = build_configmap("test", "test-ns", &instance);
-        let data = cm.data.unwrap();
+        let cm = build_configmap("test", "test-ns", &instance, None);
+        let data = cm.unwrap().data.unwrap();
         let options = data.get("named.conf.options").unwrap();
 
         // Should not contain DNSSEC settings when disabled
@@ -282,23 +313,25 @@ mod tests {
     #[test]
     fn test_deployment_container_ports() {
         let instance = create_test_instance("port-test", 1, "9.18");
-        let deployment = build_deployment("port-test", "test-ns", &instance);
+        let deployment = build_deployment("port-test", "test-ns", &instance, None);
 
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let container = &pod_spec.containers[0];
         let ports = container.ports.as_ref().unwrap();
 
-        assert_eq!(ports.len(), 2);
+        assert_eq!(ports.len(), 3);
         assert_eq!(ports[0].container_port, 53);
         assert_eq!(ports[0].protocol.as_deref(), Some("TCP"));
         assert_eq!(ports[1].container_port, 53);
         assert_eq!(ports[1].protocol.as_deref(), Some("UDP"));
+        assert_eq!(ports[2].container_port, 953);
+        assert_eq!(ports[2].protocol.as_deref(), Some("TCP"));
     }
 
     #[test]
     fn test_deployment_has_probes() {
         let instance = create_test_instance("probe-test", 1, "9.18");
-        let deployment = build_deployment("probe-test", "test-ns", &instance);
+        let deployment = build_deployment("probe-test", "test-ns", &instance, None);
 
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let container = &pod_spec.containers[0];
@@ -318,7 +351,7 @@ mod tests {
     #[test]
     fn test_deployment_volume_mounts() {
         let instance = create_test_instance("volume-test", 1, "9.18");
-        let deployment = build_deployment("volume-test", "test-ns", &instance);
+        let deployment = build_deployment("volume-test", "test-ns", &instance, None);
 
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let container = &pod_spec.containers[0];
@@ -333,14 +366,14 @@ mod tests {
     #[test]
     fn test_service_selector_matches_deployment_labels() {
         let instance = create_test_instance("label-test", 1, "9.18");
-        let deployment = build_deployment("label-test", "test-ns", &instance);
+        let deployment = build_deployment("label-test", "test-ns", &instance, None);
         let service = build_service("label-test", "test-ns");
 
         let deploy_labels = deployment.metadata.labels.unwrap();
         let svc_selector = service.spec.unwrap().selector.unwrap();
 
         // Service selector should match deployment labels
-        for (key, value) in svc_selector.iter() {
+        for (key, value) in &svc_selector {
             assert_eq!(deploy_labels.get(key), Some(value));
         }
     }

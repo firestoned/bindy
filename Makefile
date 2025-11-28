@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 
-.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup
+.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup docs docs-serve docs-mdbook docs-rustdoc docs-clean docs-watch docs-github-pages crds
 
 REGISTRY ?= ghcr.io
 IMAGE_NAME ?= firestoned/bindy
@@ -18,6 +18,11 @@ help: ## Show this help message
 install: ## Install dependencies
 	@echo "Ensure Rust toolchain is installed (rustup)."
 	@rustup --version || echo "Install Rust from https://rustup.rs"
+
+crds: ## Generate CRD YAML files from Rust types
+	@echo "Generating CRD YAML files from src/crd.rs..."
+	@cargo run --bin crdgen
+	@echo "✓ CRD YAML files generated in deploy/crds/"
 
 test: ## Run unit tests
 	cargo test --all

@@ -1,0 +1,447 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Bind9Instance</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title"></h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="bind9instance"><a class="header" href="#bind9instance">Bind9Instance</a></h1>
+<p>The <code>Bind9Instance</code> resource represents a BIND9 DNS server deployment in Kubernetes.</p>
+<h2 id="overview"><a class="header" href="#overview">Overview</a></h2>
+<p>A Bind9Instance defines:</p>
+<ul>
+<li>Number of replicas</li>
+<li>BIND9 version and container image</li>
+<li>Configuration options (or custom ConfigMap references)</li>
+<li>Network settings</li>
+<li>Labels for targeting</li>
+<li>Optional cluster reference for inheriting shared configuration</li>
+</ul>
+<h2 id="example"><a class="header" href="#example">Example</a></h2>
+<pre><code class="language-yaml">apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: primary-dns
+  namespace: dns-system
+  labels:
+    dns-role: primary
+    environment: production
+    datacenter: us-east
+spec:
+  replicas: 2
+  version: "9.18"
+  config:
+    recursion: false
+    allowQuery:
+      - "0.0.0.0/0"
+    allowTransfer:
+      - "10.0.0.0/8"
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: Running
+      message: "2 replicas running"
+  readyReplicas: 2
+  currentVersion: "9.18"
+</code></pre>
+<h2 id="specification"><a class="header" href="#specification">Specification</a></h2>
+<h3 id="optional-fields"><a class="header" href="#optional-fields">Optional Fields</a></h3>
+<p>All fields are optional. If no <code>clusterRef</code> is specified, default values are used.</p>
+<ul>
+<li><code>spec.clusterRef</code> - Reference to a Bind9Cluster for inheriting shared configuration</li>
+<li><code>spec.replicas</code> - Number of BIND9 pods (default: 1)</li>
+<li><code>spec.version</code> - BIND9 version to deploy (default: "9.18", or inherit from cluster)</li>
+<li><code>spec.image</code> - Container image configuration (inherits from cluster if not specified)
+<ul>
+<li><code>image</code> - Full container image reference</li>
+<li><code>imagePullPolicy</code> - Image pull policy (Always, IfNotPresent, Never)</li>
+<li><code>imagePullSecrets</code> - List of secret names for private registries</li>
+</ul>
+</li>
+<li><code>spec.configMapRefs</code> - Custom ConfigMap references (inherits from cluster if not specified)
+<ul>
+<li><code>namedConf</code> - ConfigMap name containing named.conf</li>
+<li><code>namedConfOptions</code> - ConfigMap name containing named.conf.options</li>
+</ul>
+</li>
+<li><code>spec.config</code> - BIND9 configuration options (inherits from cluster if not specified)
+<ul>
+<li><code>recursion</code> - Enable/disable recursion (default: false)</li>
+<li><code>allowQuery</code> - List of CIDR ranges allowed to query</li>
+<li><code>allowTransfer</code> - List of CIDR ranges allowed to transfer zones</li>
+<li><code>dnssec</code> - DNSSEC configuration</li>
+<li><code>forwarders</code> - DNS forwarders</li>
+<li><code>listenOn</code> - IPv4 addresses to listen on</li>
+<li><code>listenOnV6</code> - IPv6 addresses to listen on</li>
+</ul>
+</li>
+</ul>
+<h3 id="configuration-inheritance"><a class="header" href="#configuration-inheritance">Configuration Inheritance</a></h3>
+<p>When a Bind9Instance references a Bind9Cluster via <code>clusterRef</code>:</p>
+<ol>
+<li>Instance-level settings take precedence</li>
+<li>If not specified at instance level, cluster settings are used</li>
+<li>If not specified at cluster level, defaults are used</li>
+</ol>
+<h2 id="labels-and-selectors"><a class="header" href="#labels-and-selectors">Labels and Selectors</a></h2>
+<p>Labels on Bind9Instance resources are used by DNSZone resources to target specific instances:</p>
+<pre><code class="language-yaml"># Instance with labels
+metadata:
+  labels:
+    dns-role: primary
+    region: us-east
+    environment: production
+
+# Zone selecting this instance
+spec:
+  instanceSelector:
+    matchLabels:
+      dns-role: primary
+      region: us-east
+</code></pre>
+<h2 id="status"><a class="header" href="#status">Status</a></h2>
+<p>The controller updates status to reflect the instance state:</p>
+<pre><code class="language-yaml">status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: Running
+  readyReplicas: 2
+  currentVersion: "9.18"
+</code></pre>
+<h2 id="use-cases"><a class="header" href="#use-cases">Use Cases</a></h2>
+<h3 id="primary-dns-instance"><a class="header" href="#primary-dns-instance">Primary DNS Instance</a></h3>
+<pre><code class="language-yaml">metadata:
+  labels:
+    dns-role: primary
+spec:
+  replicas: 2
+  config:
+    allowTransfer:
+      - "10.0.0.0/8"  # Allow secondaries to transfer
+</code></pre>
+<h3 id="secondary-dns-instance"><a class="header" href="#secondary-dns-instance">Secondary DNS Instance</a></h3>
+<pre><code class="language-yaml">metadata:
+  labels:
+    dns-role: secondary
+spec:
+  replicas: 2
+  config:
+    allowTransfer: []  # No transfers from secondary
+</code></pre>
+<h3 id="instance-with-custom-image"><a class="header" href="#instance-with-custom-image">Instance with Custom Image</a></h3>
+<pre><code class="language-yaml">apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: custom-image-dns
+  namespace: dns-system
+spec:
+  replicas: 2
+  image:
+    image: "my-registry.example.com/bind9:9.18-patched"
+    imagePullPolicy: "Always"
+    imagePullSecrets:
+      - my-registry-secret
+  config:
+    recursion: false
+    allowQuery:
+      - "0.0.0.0/0"
+</code></pre>
+<h3 id="instance-with-custom-configmaps"><a class="header" href="#instance-with-custom-configmaps">Instance with Custom ConfigMaps</a></h3>
+<pre><code class="language-yaml">apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: custom-dns-config
+  namespace: dns-system
+data:
+  named.conf.options: |
+    options {
+      directory "/var/cache/bind";
+      recursion no;
+      allow-query { any; };
+
+      # Custom rate limiting
+      rate-limit {
+        responses-per-second 10;
+      };
+    };
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: custom-config-dns
+  namespace: dns-system
+spec:
+  replicas: 2
+  configMapRefs:
+    namedConfOptions: "custom-dns-config"
+</code></pre>
+<h3 id="instance-inheriting-from-cluster"><a class="header" href="#instance-inheriting-from-cluster">Instance Inheriting from Cluster</a></h3>
+<pre><code class="language-yaml">apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
+metadata:
+  name: prod-cluster
+  namespace: dns-system
+spec:
+  version: "9.18"
+  image:
+    image: "internetsystemsconsortium/bind9:9.18"
+  config:
+    recursion: false
+    allowQuery:
+      - "0.0.0.0/0"
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: prod-instance-1
+  namespace: dns-system
+spec:
+  clusterRef: prod-cluster
+  replicas: 2
+  # Inherits version, image, and config from cluster
+</code></pre>
+<h3 id="canary-instance-with-override"><a class="header" href="#canary-instance-with-override">Canary Instance with Override</a></h3>
+<pre><code class="language-yaml">apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: canary-instance
+  namespace: dns-system
+spec:
+  clusterRef: prod-cluster  # Inherits most settings from cluster
+  replicas: 1
+  # Override image for canary testing
+  image:
+    image: "internetsystemsconsortium/bind9:9.19-beta"
+    imagePullPolicy: "Always"
+</code></pre>
+<h2 id="next-steps"><a class="header" href="#next-steps">Next Steps</a></h2>
+<ul>
+<li><a href="./dnszone.html">DNSZone</a> - Learn about DNS zones</li>
+<li><a href="../guide/primary-instance.html">Primary Instances</a> - Deploy primary DNS</li>
+<li><a href="../guide/secondary-instance.html">Secondary Instances</a> - Deploy secondary DNS</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../concepts/bind9cluster.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../concepts/dnszone.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../concepts/bind9cluster.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../concepts/dnszone.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

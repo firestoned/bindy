@@ -12,7 +12,7 @@ DNSSEC adds cryptographic signatures to DNS records, preventing:
 ## Enabling DNSSEC
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: primary-dns

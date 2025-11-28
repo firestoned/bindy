@@ -1,0 +1,209 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# This file is AUTO-GENERATED from src/crd.rs
+# DO NOT EDIT MANUALLY - Run `cargo run --bin crdgen` to regenerate
+#
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: bind9clusters.bindy.firestoned.io
+spec:
+  group: bindy.firestoned.io
+  names:
+    categories: []
+    kind: Bind9Cluster
+    plural: bind9clusters
+    shortNames: []
+    singular: bind9cluster
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns: []
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Bind9Cluster defines a logical grouping of BIND9 DNS server instances with shared configuration. Provides centralized management of BIND9 version, container images, and common settings across multiple instances.
+        properties:
+          spec:
+            description: '`BIND9Cluster` - Defines a logical DNS cluster'
+            properties:
+              acls:
+                additionalProperties:
+                  items:
+                    type: string
+                  type: array
+                description: ACLs that can be referenced by instances
+                nullable: true
+                type: object
+              config:
+                description: Shared configuration for all instances in the cluster
+                nullable: true
+                properties:
+                  allow_query:
+                    items:
+                      type: string
+                    nullable: true
+                    type: array
+                  allow_transfer:
+                    items:
+                      type: string
+                    nullable: true
+                    type: array
+                  dnssec:
+                    description: DNSSEC configuration
+                    nullable: true
+                    properties:
+                      enabled:
+                        nullable: true
+                        type: boolean
+                      validation:
+                        nullable: true
+                        type: boolean
+                    type: object
+                  forwarders:
+                    items:
+                      type: string
+                    nullable: true
+                    type: array
+                  listen_on:
+                    items:
+                      type: string
+                    nullable: true
+                    type: array
+                  listen_on_v6:
+                    items:
+                      type: string
+                    nullable: true
+                    type: array
+                  recursion:
+                    nullable: true
+                    type: boolean
+                type: object
+              configMapRefs:
+                description: '`ConfigMap` references for BIND9 configuration files'
+                nullable: true
+                properties:
+                  namedConf:
+                    description: |-
+                      `ConfigMap` containing named.conf file
+
+                      If not specified, a default configuration will be generated
+                    nullable: true
+                    type: string
+                  namedConfOptions:
+                    description: |-
+                      `ConfigMap` containing named.conf.options file
+
+                      If not specified, a default configuration will be generated
+                    nullable: true
+                    type: string
+                type: object
+              image:
+                description: Container image configuration
+                nullable: true
+                properties:
+                  image:
+                    description: |-
+                      Container image repository and tag for BIND9
+
+                      Example: "internetsystemsconsortium/bind9:9.18"
+                    nullable: true
+                    type: string
+                  imagePullPolicy:
+                    description: |-
+                      Image pull policy
+
+                      Example: "`IfNotPresent`", "Always", "Never"
+                    nullable: true
+                    type: string
+                  imagePullSecrets:
+                    description: Reference to image pull secrets for private registries
+                    items:
+                      type: string
+                    nullable: true
+                    type: array
+                type: object
+              tsigKeys:
+                description: TSIG keys for authenticated zone transfers
+                items:
+                  description: TSIG Key configuration for authenticated zone transfers
+                  properties:
+                    algorithm:
+                      description: Algorithm (e.g., "hmac-sha256")
+                      type: string
+                    name:
+                      description: Name of the TSIG key
+                      type: string
+                    secret:
+                      description: Secret key (base64 encoded) - should reference a Secret
+                      type: string
+                  required:
+                  - algorithm
+                  - name
+                  - secret
+                  type: object
+                nullable: true
+                type: array
+              version:
+                description: Shared BIND9 version for the cluster
+                nullable: true
+                type: string
+            type: object
+          status:
+            description: '`Bind9Cluster` status'
+            nullable: true
+            properties:
+              conditions:
+                default: []
+                items:
+                  description: |-
+                    Condition represents an observation of a resource's current state.
+
+                    Conditions are used in status subresources to communicate the state of a resource to users and controllers.
+                  properties:
+                    last_transition_time:
+                      description: Last time the condition transitioned from one status to another (RFC3339 format).
+                      nullable: true
+                      type: string
+                    message:
+                      description: Human-readable message indicating details about the transition.
+                      nullable: true
+                      type: string
+                    reason:
+                      description: Brief CamelCase reason for the condition's last transition.
+                      nullable: true
+                      type: string
+                    status:
+                      description: 'Status of the condition: True, False, or Unknown.'
+                      type: string
+                    type:
+                      description: 'Type of condition. Common types include: Ready, Available, Progressing, Degraded, Failed.'
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                type: array
+              instance_count:
+                description: Number of instances in this cluster
+                format: int32
+                nullable: true
+                type: integer
+              observed_generation:
+                format: int64
+                nullable: true
+                type: integer
+              ready_instances:
+                description: Number of ready instances
+                format: int32
+                nullable: true
+                type: integer
+            type: object
+        required:
+        - spec
+        title: Bind9Cluster
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

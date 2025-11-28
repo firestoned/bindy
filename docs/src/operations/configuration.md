@@ -13,12 +13,14 @@ See [Environment Variables](./env-vars.md) for details on all available configur
 Configure BIND9 instances through the `Bind9Instance` custom resource:
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: primary-dns
   namespace: dns-system
 spec:
+  clusterRef: my-cluster
+  role: primary
   replicas: 2
   version: "9.18"
   config:
@@ -33,6 +35,81 @@ spec:
 ```
 
 ### Configuration Options
+
+#### Container Image Configuration
+
+Customize the BIND9 container image and pull configuration:
+
+```yaml
+spec:
+  # At instance level (overrides cluster)
+  image:
+    image: "my-registry.example.com/bind9:custom"
+    imagePullPolicy: "Always"
+    imagePullSecrets:
+      - my-registry-secret
+```
+
+Or configure at the cluster level for all instances:
+
+```yaml
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
+metadata:
+  name: my-cluster
+spec:
+  # Default image configuration for all instances
+  image:
+    image: "internetsystemsconsortium/bind9:9.18"
+    imagePullPolicy: "IfNotPresent"
+    imagePullSecrets:
+      - shared-pull-secret
+```
+
+**Fields:**
+- `image`: Full container image reference (e.g., `registry/image:tag`)
+- `imagePullPolicy`: `Always`, `IfNotPresent`, or `Never`
+- `imagePullSecrets`: List of secret names for private registries
+
+#### Custom Configuration Files
+
+Use custom ConfigMaps for BIND9 configuration:
+
+```yaml
+spec:
+  # Reference custom ConfigMaps
+  configMapRefs:
+    namedConf: "my-custom-named-conf"
+    namedConfOptions: "my-custom-options"
+```
+
+Create your custom ConfigMap:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: my-custom-named-conf
+  namespace: dns-system
+data:
+  named.conf: |
+    // Custom BIND9 configuration
+    include "/etc/bind/named.conf.options";
+    include "/etc/bind/zones/named.conf.zones";
+
+    logging {
+      channel custom_log {
+        file "/var/log/named/queries.log" versions 3 size 5m;
+        severity info;
+      };
+      category queries { custom_log; };
+    };
+```
+
+**Default Behavior:**
+- If `configMapRefs` is not specified, Bindy auto-generates configuration from the `config` block
+- If custom ConfigMaps are provided, they take precedence
+- Default ConfigMap template is available in `deploy/configs/default-bind9-config.yaml`
 
 #### Recursion
 

@@ -1,0 +1,375 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Replication</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title"></h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="replication"><a class="header" href="#replication">Replication</a></h1>
+<p>Implement multi-region DNS replication strategies for global availability.</p>
+<h2 id="replication-models"><a class="header" href="#replication-models">Replication Models</a></h2>
+<h3 id="hub-and-spoke"><a class="header" href="#hub-and-spoke">Hub-and-Spoke</a></h3>
+<p>One central primary, multiple regional secondaries:</p>
+<pre><code>        Primary (us-east-1)
+             │
+      ┌──────┼──────┐
+      ▼      ▼      ▼
+  Secondary Secondary Secondary
+  (us-west) (eu-west) (ap-south)
+</code></pre>
+<p><strong>Pros:</strong> Simple, clear source of truth
+<strong>Cons:</strong> Single point of failure, latency for distant regions</p>
+<h3 id="multi-primary"><a class="header" href="#multi-primary">Multi-Primary</a></h3>
+<p>Multiple primaries in different regions:</p>
+<pre><code>Primary A ◀─────▶ Primary B
+(us-east)        (eu-west)
+    │                │
+    ▼                ▼
+Secondary        Secondary
+(us-west)        (ap-south)
+</code></pre>
+<p><strong>Pros:</strong> Regional updates, better latency
+<strong>Cons:</strong> Complex synchronization, conflict resolution</p>
+<h3 id="hierarchical"><a class="header" href="#hierarchical">Hierarchical</a></h3>
+<p>Tiered replication structure:</p>
+<pre><code>      Global Primary
+           │
+    ┌──────┼──────┐
+    ▼      ▼      ▼
+Regional   Regional  Regional
+Primary    Primary   Primary
+    │         │         │
+    ▼         ▼         ▼
+  Local     Local     Local
+Secondary Secondary Secondary
+</code></pre>
+<p><strong>Pros:</strong> Scales well, reduces global load
+<strong>Cons:</strong> More complex, longer propagation time</p>
+<h2 id="configuration-examples"><a class="header" href="#configuration-examples">Configuration Examples</a></h2>
+<h3 id="hub-and-spoke-setup"><a class="header" href="#hub-and-spoke-setup">Hub-and-Spoke Setup</a></h3>
+<pre><code class="language-yaml"># Central Primary (us-east-1)
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: global-primary
+  labels:
+    dns-role: primary
+    region: us-east-1
+spec:
+  replicas: 3
+  config:
+    allowTransfer:
+      - "10.0.0.0/8"  # Allow all regional networks
+---
+# Regional Secondaries
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: secondary-us-west
+  labels:
+    dns-role: secondary
+    region: us-west-2
+spec:
+  replicas: 2
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: secondary-eu-west
+  labels:
+    dns-role: secondary
+    region: eu-west-1
+spec:
+  replicas: 2
+</code></pre>
+<h2 id="replication-latency"><a class="header" href="#replication-latency">Replication Latency</a></h2>
+<h3 id="measuring-propagation-time"><a class="header" href="#measuring-propagation-time">Measuring Propagation Time</a></h3>
+<pre><code class="language-bash"># Update record on primary
+kubectl apply -f new-record.yaml
+
+# Check serial on primary
+PRIMARY_SERIAL=$(kubectl exec -n dns-system deployment/global-primary -- \
+  dig @localhost example.com SOA +short | awk '{print $3}')
+
+# Wait and check secondary
+SECONDARY_SERIAL=$(kubectl exec -n dns-system deployment/secondary-eu-west -- \
+  dig @localhost example.com SOA +short | awk '{print $3}')
+
+# Calculate lag
+echo "Primary: $PRIMARY_SERIAL, Secondary: $SECONDARY_SERIAL"
+</code></pre>
+<h3 id="optimizing-propagation"><a class="header" href="#optimizing-propagation">Optimizing Propagation</a></h3>
+<ol>
+<li><strong>Reduce refresh interval</strong> - More frequent checks</li>
+<li><strong>Enable NOTIFY</strong> - Immediate notification of changes</li>
+<li><strong>Use IXFR</strong> - Faster incremental transfers</li>
+<li><strong>Optimize network</strong> - Low-latency connections between regions</li>
+</ol>
+<h2 id="conflict-resolution"><a class="header" href="#conflict-resolution">Conflict Resolution</a></h2>
+<p>When using multi-primary setups, handle conflicts:</p>
+<h3 id="prevention"><a class="header" href="#prevention">Prevention</a></h3>
+<ul>
+<li>Separate zones per primary</li>
+<li>Use different subdomains per region</li>
+<li>Implement locking mechanism</li>
+</ul>
+<h3 id="detection"><a class="header" href="#detection">Detection</a></h3>
+<pre><code class="language-bash"># Compare zones between primaries
+diff &lt;(kubectl exec deployment/primary-us -- cat /var/lib/bind/zones/example.com.zone) \
+     &lt;(kubectl exec deployment/primary-eu -- cat /var/lib/bind/zones/example.com.zone)
+</code></pre>
+<h2 id="monitoring-replication"><a class="header" href="#monitoring-replication">Monitoring Replication</a></h2>
+<h3 id="replication-dashboard"><a class="header" href="#replication-dashboard">Replication Dashboard</a></h3>
+<p>Monitor:</p>
+<ul>
+<li>Serial number sync status</li>
+<li>Replication lag per region</li>
+<li>Transfer success/failure rate</li>
+<li>Zone size and growth</li>
+</ul>
+<h3 id="alerts"><a class="header" href="#alerts">Alerts</a></h3>
+<p>Set up alerts for:</p>
+<ul>
+<li>Serial number drift &gt; threshold</li>
+<li>Failed zone transfers</li>
+<li>Replication lag &gt; SLA</li>
+<li>Network connectivity issues</li>
+</ul>
+<h2 id="best-practices"><a class="header" href="#best-practices">Best Practices</a></h2>
+<ol>
+<li><strong>Document topology</strong> - Clear replication map</li>
+<li><strong>Monitor lag</strong> - Track propagation time</li>
+<li><strong>Test failover</strong> - Regular DR drills</li>
+<li><strong>Use consistent serials</strong> - YYYYMMDDnn format</li>
+<li><strong>Automate updates</strong> - GitOps for all regions</li>
+<li><strong>Capacity planning</strong> - Account for replication traffic</li>
+</ol>
+<h2 id="next-steps"><a class="header" href="#next-steps">Next Steps</a></h2>
+<ul>
+<li><a href="./ha.html">High Availability</a> - HA architecture</li>
+<li><a href="./zone-transfers.html">Zone Transfers</a> - Transfer configuration</li>
+<li><a href="./performance.html">Performance</a> - Optimize replication performance</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../advanced/zone-transfers.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../advanced/security.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../advanced/zone-transfers.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../advanced/security.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

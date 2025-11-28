@@ -20,7 +20,7 @@ Bindy supports all common DNS record types:
 All records share common fields:
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: <RecordType>
 metadata:
   name: <unique-name>

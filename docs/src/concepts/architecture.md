@@ -112,9 +112,9 @@ CRDs define the schema for DNS resources:
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: dnszones.dns.firestoned.io
+  name: dnszones.bindy.firestoned.io
 spec:
-  group: dns.firestoned.io
+  group: bindy.firestoned.io
   names:
     kind: DNSZone
     plural: dnszones
@@ -283,7 +283,7 @@ kind: ClusterRole
 metadata:
   name: bind9-controller
 rules:
-  - apiGroups: ["dns.firestoned.io"]
+  - apiGroups: ["bindy.firestoned.io"]
     resources: ["dnszones", "arecords", ...]
     verbs: ["get", "list", "watch", "update"]
 ```

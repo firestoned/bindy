@@ -13,7 +13,7 @@ Zone transfers replicate DNS zone data from primary to secondary servers using A
 Allow zone transfers to secondary servers:
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: primary-dns
@@ -29,7 +29,7 @@ spec:
 Configure secondary zones to transfer from primary:
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: example-com-secondary
@@ -242,7 +242,7 @@ kubectl exec -n dns-system deployment/secondary-dns -- \
 
 ```yaml
 # Primary Instance
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: primary-dns
@@ -255,7 +255,7 @@ spec:
       - "10.0.0.0/8"
 ---
 # Primary Zone
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: example-com-primary
@@ -275,7 +275,7 @@ spec:
     negativeTTL: 86400
 ---
 # Secondary Instance  
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: secondary-dns
@@ -285,7 +285,7 @@ spec:
   replicas: 2
 ---
 # Secondary Zone
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: example-com-secondary
