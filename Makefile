@@ -53,7 +53,7 @@ docker-push: ## Push Docker image
 	docker push $(REGISTRY)/$(IMAGE_NAME):$(TAG)
 
 deploy-crds: ## Deploy CRDs
-	kubectl apply -f deploy/crds/
+	kubectl apply -k deploy/crds/
 
 deploy-rbac: ## Deploy RBAC resources
 	kubectl create namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -

@@ -88,7 +88,7 @@ kind load docker-image bindy:latest --name bindy-test
 ### Step 3: Deploy CRDs
 
 ```bash
-kubectl apply -f deploy/crds/dns-crds.yaml
+kubectl apply -k deploy/crds/
 ```
 
 Verify CRDs are installed:
@@ -474,7 +474,7 @@ Example GitHub Actions workflow snippet:
   run: |
     docker build -t bindy:test .
     kind load docker-image bindy:test --name bindy-test
-    kubectl apply -f deploy/crds/
+    kubectl apply -k deploy/crds/
     kubectl apply -f deploy/rbac/
     kubectl apply -f deploy/operator/
 

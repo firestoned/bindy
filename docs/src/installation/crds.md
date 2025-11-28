@@ -22,7 +22,7 @@ Or install from local files:
 
 ```bash
 cd bindy
-kubectl apply -f deploy/crds/
+kubectl apply -k deploy/crds/
 ```
 
 ## Verify Installation

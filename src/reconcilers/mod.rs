@@ -57,6 +57,13 @@ pub mod bind9instance;
 pub mod dnszone;
 pub mod records;
 
+#[cfg(test)]
+mod bind9instance_tests;
+#[cfg(test)]
+mod dnszone_tests;
+#[cfg(test)]
+mod records_tests;
+
 pub use bind9instance::{delete_bind9instance, reconcile_bind9instance};
 pub use dnszone::{delete_dnszone, reconcile_dnszone};
 pub use records::{
