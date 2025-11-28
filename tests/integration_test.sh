@@ -77,12 +77,12 @@ if [ "$SKIP_DEPLOY" = false ]; then
             kind load docker-image bindy:latest --name "${CLUSTER_NAME}"
 
             echo -e "${GREEN}🚀 Deploying controller...${NC}"
-            kubectl apply -f "${PROJECT_ROOT}/deploy/controller/deployment.yaml"
+            kubectl apply -f "${PROJECT_ROOT}/deploy/operator/deployment.yaml"
         else
             # Image tag specified, pull from registry
             echo -e "${YELLOW}📦 Deploying controller with image: ${IMAGE_TAG}${NC}"
             sed "s|ghcr.io/firestoned/bindy:latest|ghcr.io/${GITHUB_REPOSITORY:-firestoned/bindy}:${IMAGE_TAG}|g" \
-                "${PROJECT_ROOT}/deploy/controller/deployment.yaml" | kubectl apply -f -
+                "${PROJECT_ROOT}/deploy/operator/deployment.yaml" | kubectl apply -f -
         fi
 
         echo -e "${GREEN}⏳ Waiting for controller to be ready...${NC}"

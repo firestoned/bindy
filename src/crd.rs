@@ -73,6 +73,7 @@
 //! };
 //! ```
 
+use k8s_openapi::api::core::v1::{Volume, VolumeMount};
 use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -852,6 +853,19 @@ pub struct Bind9ClusterSpec {
     /// ACLs that can be referenced by instances
     #[serde(default)]
     pub acls: Option<BTreeMap<String, Vec<String>>>,
+
+    /// Volumes that can be mounted by instances in this cluster
+    ///
+    /// These volumes are inherited by all instances unless overridden.
+    /// Common use cases include `PersistentVolumeClaims` for zone data storage.
+    #[serde(default)]
+    pub volumes: Option<Vec<Volume>>,
+
+    /// Volume mounts that specify where volumes should be mounted in containers
+    ///
+    /// These mounts are inherited by all instances unless overridden.
+    #[serde(default)]
+    pub volume_mounts: Option<Vec<VolumeMount>>,
 }
 
 /// `Bind9Cluster` status
@@ -962,6 +976,19 @@ pub struct Bind9InstanceSpec {
     /// Example: `["10.0.1.10", "primary.example.com"]`
     #[serde(default)]
     pub primary_servers: Option<Vec<String>>,
+
+    /// Volumes override for this instance. Inherits from cluster if not specified.
+    ///
+    /// These volumes override cluster-level volumes. Common use cases include
+    /// instance-specific `PersistentVolumeClaims` for zone data storage.
+    #[serde(default)]
+    pub volumes: Option<Vec<Volume>>,
+
+    /// Volume mounts override for this instance. Inherits from cluster if not specified.
+    ///
+    /// These mounts override cluster-level volume mounts.
+    #[serde(default)]
+    pub volume_mounts: Option<Vec<VolumeMount>>,
 }
 
 /// `Bind9Instance` status

@@ -36,6 +36,8 @@ mod tests {
                     listen_on_v6: None,
                 }),
                 primary_servers: None,
+                volumes: None,
+                volume_mounts: None,
             },
             status: None,
         }

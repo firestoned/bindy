@@ -68,12 +68,12 @@ deploy-rbac: ## Deploy RBAC resources
 	kubectl apply -f deploy/rbac/ -n $(NAMESPACE)
 
 deploy-operator: ## Deploy operator
-	kubectl apply -f deploy/controller/ -n $(NAMESPACE)
+	kubectl apply -f deploy/operator/ -n $(NAMESPACE)
 
 deploy: deploy-crds deploy-rbac deploy-operator ## Deploy everything
 
 undeploy: ## Remove operator
-	kubectl delete -f deploy/controller/ -n $(NAMESPACE) || true
+	kubectl delete -f deploy/operator/ -n $(NAMESPACE) || true
 	kubectl delete -f deploy/rbac/ -n $(NAMESPACE) || true
 	kubectl delete -f deploy/crds/ || true
 

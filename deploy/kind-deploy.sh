@@ -52,6 +52,39 @@ fi
 # Set kubectl context
 kubectl config use-context "kind-${CLUSTER_NAME}"
 
+echo -e "${GREEN}💾 Installing local-path storage provisioner...${NC}"
+# Install local-path provisioner for persistent storage
+kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.28/deploy/local-path-storage.yaml
+
+# Wait for local-path provisioner to be ready
+echo -e "${GREEN}⏳ Waiting for local-path provisioner to be ready...${NC}"
+kubectl wait --for=condition=available --timeout=60s deployment/local-path-provisioner -n local-path-storage || {
+    echo -e "${YELLOW}⚠️  local-path provisioner deployment not ready, continuing anyway...${NC}"
+}
+
+# Check if local-path StorageClass was created
+if kubectl get storageclass local-path &>/dev/null; then
+    # local-path exists, set it as default if no default exists
+    if ! kubectl get storageclass 2>/dev/null | grep -q "(default)"; then
+        echo -e "${GREEN}🔧 Setting local-path as default StorageClass...${NC}"
+        kubectl patch storageclass local-path -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+    fi
+else
+    # local-path doesn't exist, create a default StorageClass that uses local-path provisioner
+    echo -e "${GREEN}🔧 Creating default StorageClass for local-path...${NC}"
+    cat <<EOF | kubectl apply -f -
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: default
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: rancher.io/local-path
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
+EOF
+fi
+
 echo -e "${GREEN}📋 Installing CRDs via kustomize...${NC}"
 # Use kubectl apply -k to apply CRDs with kustomization
 kubectl apply -k deploy/crds
@@ -67,7 +100,7 @@ echo -e "${GREEN}📤 Loading image into Kind...${NC}"
 kind load docker-image bindy:latest --name "${CLUSTER_NAME}"
 
 echo -e "${GREEN}🚀 Deploying controller...${NC}"
-kubectl apply -f deploy/controller/deployment.yaml
+kubectl apply -f deploy/operator/deployment.yaml
 
 echo -e "${GREEN}⏳ Waiting for controller to be ready...${NC}"
 kubectl wait --for=condition=available --timeout=120s deployment/bindy -n "${NAMESPACE}" || {
@@ -81,8 +114,14 @@ echo ""
 echo -e "${YELLOW}📊 Cluster Status:${NC}"
 kubectl get pods -n "${NAMESPACE}"
 echo ""
+echo -e "${YELLOW}💾 Storage:${NC}"
+kubectl get storageclass
+echo ""
 echo -e "${YELLOW}📝 Next Steps:${NC}"
-echo "1. Deploy a Bind9Instance:"
+echo "1. Deploy a Bind9Cluster with persistent storage:"
+echo "   kubectl apply -f examples/bind9-cluster-persistent.yaml"
+echo ""
+echo "2. Deploy a Bind9Instance:"
 echo "   kubectl apply -f examples/bind9-instance.yaml"
 echo ""
 echo "2. Create a DNS zone:"

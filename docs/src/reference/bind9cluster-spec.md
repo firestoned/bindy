@@ -32,6 +32,8 @@ spec:
   tsigKeys: [TSIGKey]          # Optional, TSIG keys for zone transfers
   acls:                        # Optional, named ACLs
     name: [string]
+  volumes: [Volume]            # Optional, Kubernetes volumes
+  volumeMounts: [VolumeMount]  # Optional, volume mount specifications
 ```
 
 ## Overview
@@ -308,6 +310,73 @@ spec:
       - "acl:trusted"
 ```
 
+### volumes
+**Type**: array of Kubernetes Volume objects
+**Required**: No
+**Default**: []
+
+Kubernetes volumes that can be mounted by instances in this cluster.
+
+```yaml
+spec:
+  volumes:
+    - name: zone-data
+      persistentVolumeClaim:
+        claimName: dns-zone-pvc
+    - name: config-override
+      configMap:
+        name: custom-bind-config
+```
+
+**How It Works**:
+- Volumes defined at cluster level are inherited by all instances
+- Instances can override with their own volumes
+- Common use cases include:
+  - PersistentVolumeClaims for zone data persistence
+  - ConfigMaps for custom configuration files
+  - Secrets for sensitive data like TSIG keys
+  - EmptyDir for temporary storage
+
+**Volume Types**:
+Supports all Kubernetes volume types including:
+- `persistentVolumeClaim` - Persistent storage for zone data
+- `configMap` - Configuration files
+- `secret` - Sensitive data
+- `emptyDir` - Temporary storage
+- `hostPath` - Host directory (use with caution)
+- `nfs` - Network file system
+
+### volumeMounts
+**Type**: array of Kubernetes VolumeMount objects
+**Required**: No
+**Default**: []
+
+Volume mount specifications that define where volumes should be mounted in containers.
+
+```yaml
+spec:
+  volumes:
+    - name: zone-data
+      persistentVolumeClaim:
+        claimName: dns-zone-pvc
+  volumeMounts:
+    - name: zone-data
+      mountPath: /var/lib/bind
+      readOnly: false
+```
+
+**How It Works**:
+- Volume mounts must reference volumes defined in the `volumes` field
+- Each mount specifies the volume name and where to mount it
+- Instances inherit cluster-level volume mounts unless overridden
+- Mounts are applied to the BIND9 container
+
+**VolumeMount Fields**:
+- `name` (string, required) - Volume name to mount (must match a volume)
+- `mountPath` (string, required) - Path in container where volume is mounted
+- `readOnly` (boolean, optional) - Mount as read-only (default: false)
+- `subPath` (string, optional) - Sub-path within the volume
+
 ## Status Fields
 
 ### conditions
@@ -471,6 +540,50 @@ spec:
       - "10.3.0.0/24"  # EU
     monitoring:
       - "10.0.10.0/24"
+```
+
+### Cluster with Persistent Storage
+
+```yaml
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
+metadata:
+  name: persistent-dns
+  namespace: dns-system
+spec:
+  version: "9.18"
+  config:
+    recursion: false
+    allowQuery:
+      - "0.0.0.0/0"
+    dnssec:
+      enabled: true
+  # Define persistent volume for zone data
+  volumes:
+    - name: zone-data
+      persistentVolumeClaim:
+        claimName: bind-zone-storage
+  volumeMounts:
+    - name: zone-data
+      mountPath: /var/lib/bind
+      readOnly: false
+```
+
+**Prerequisites**: Create a PersistentVolumeClaim first:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bind-zone-storage
+  namespace: dns-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: fast-ssd
 ```
 
 ## Cluster Hierarchy

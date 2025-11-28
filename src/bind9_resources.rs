@@ -262,6 +262,20 @@ pub fn build_deployment(
         .or_else(|| cluster.and_then(|c| c.spec.version.as_deref()))
         .unwrap_or("9.18");
 
+    // Get volumes (instance overrides cluster)
+    let volumes = instance
+        .spec
+        .volumes
+        .as_ref()
+        .or_else(|| cluster.and_then(|c| c.spec.volumes.as_ref()));
+
+    // Get volume mounts (instance overrides cluster)
+    let volume_mounts = instance
+        .spec
+        .volume_mounts
+        .as_ref()
+        .or_else(|| cluster.and_then(|c| c.spec.volume_mounts.as_ref()));
+
     Deployment {
         metadata: ObjectMeta {
             name: Some(name.into()),
@@ -280,7 +294,14 @@ pub fn build_deployment(
                     labels: Some(labels.clone()),
                     ..Default::default()
                 }),
-                spec: Some(build_pod_spec(name, version, image_config, config_map_refs)),
+                spec: Some(build_pod_spec(
+                    name,
+                    version,
+                    image_config,
+                    config_map_refs,
+                    volumes,
+                    volume_mounts,
+                )),
             },
             ..Default::default()
         }),
@@ -294,6 +315,8 @@ fn build_pod_spec(
     version: &str,
     image_config: Option<&ImageConfig>,
     config_map_refs: Option<&ConfigMapRefs>,
+    custom_volumes: Option<&Vec<Volume>>,
+    custom_volume_mounts: Option<&Vec<VolumeMount>>,
 ) -> PodSpec {
     // Determine image to use
     let image = if let Some(img_cfg) = image_config {
@@ -340,7 +363,7 @@ fn build_pod_spec(
             value: Some("UTC".into()),
             ..Default::default()
         }]),
-        volume_mounts: Some(build_volume_mounts(config_map_refs)),
+        volume_mounts: Some(build_volume_mounts(config_map_refs, custom_volume_mounts)),
         liveness_probe: Some(Probe {
             tcp_socket: Some(TCPSocketAction {
                 port: IntOrString::Int(53),
@@ -380,14 +403,21 @@ fn build_pod_spec(
 
     PodSpec {
         containers: vec![bind9_container],
-        volumes: Some(build_volumes(instance_name, config_map_refs)),
+        volumes: Some(build_volumes(
+            instance_name,
+            config_map_refs,
+            custom_volumes,
+        )),
         image_pull_secrets,
         ..Default::default()
     }
 }
 
 /// Build volume mounts for the BIND9 container
-fn build_volume_mounts(config_map_refs: Option<&ConfigMapRefs>) -> Vec<VolumeMount> {
+fn build_volume_mounts(
+    config_map_refs: Option<&ConfigMapRefs>,
+    custom_volume_mounts: Option<&Vec<VolumeMount>>,
+) -> Vec<VolumeMount> {
     let mut mounts = vec![
         VolumeMount {
             name: "zones".into(),
@@ -452,11 +482,20 @@ fn build_volume_mounts(config_map_refs: Option<&ConfigMapRefs>) -> Vec<VolumeMou
         });
     }
 
+    // Append custom volume mounts from cluster/instance
+    if let Some(custom_mounts) = custom_volume_mounts {
+        mounts.extend(custom_mounts.iter().cloned());
+    }
+
     mounts
 }
 
 /// Build volumes for the BIND9 pod
-fn build_volumes(instance_name: &str, config_map_refs: Option<&ConfigMapRefs>) -> Vec<Volume> {
+fn build_volumes(
+    instance_name: &str,
+    config_map_refs: Option<&ConfigMapRefs>,
+    custom_volumes: Option<&Vec<Volume>>,
+) -> Vec<Volume> {
     let mut volumes = vec![
         Volume {
             name: "zones".into(),
@@ -515,6 +554,11 @@ fn build_volumes(instance_name: &str, config_map_refs: Option<&ConfigMapRefs>) -
             }),
             ..Default::default()
         });
+    }
+
+    // Append custom volumes from cluster/instance
+    if let Some(custom_vols) = custom_volumes {
+        volumes.extend(custom_vols.iter().cloned());
     }
 
     volumes

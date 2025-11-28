@@ -267,6 +267,8 @@ Bind9Cluster defines a logical grouping of BIND9 DNS server instances with share
 | `image` | object | No | Container image configuration |
 | `tsigKeys` | array | No | TSIG keys for authenticated zone transfers |
 | `version` | string | No | Shared BIND9 version for the cluster |
+| `volumeMounts` | array | No | Volume mounts that specify where volumes should be mounted in containers  These mounts are inherited by all instances unless overridden. |
+| `volumes` | array | No | Volumes that can be mounted by instances in this cluster  These volumes are inherited by all instances unless overridden. Common use cases include PersistentVolumeClaims for zone data storage. |
 
 #### Status Fields
 
@@ -297,6 +299,8 @@ Bind9Instance represents a BIND9 DNS server deployment in Kubernetes. Each insta
 | `replicas` | integer | No | Number of pod replicas for high availability.  Defaults to 1 if not specified. For production, use 2+ replicas. |
 | `role` | string | Yes | Role of this instance (primary or secondary).  Primary instances are authoritative for zones. Secondary instances replicate zones from primaries via AXFR/IXFR. |
 | `version` | string | No | BIND9 version override. Inherits from cluster if not specified.  Example: "9.18", "9.16" |
+| `volumeMounts` | array | No | Volume mounts override for this instance. Inherits from cluster if not specified.  These mounts override cluster-level volume mounts. |
+| `volumes` | array | No | Volumes override for this instance. Inherits from cluster if not specified.  These volumes override cluster-level volumes. Common use cases include instance-specific PersistentVolumeClaims for zone data storage. |
 
 #### Status Fields
 
