@@ -163,6 +163,8 @@ mod tests {
                 secret: "secret==".into(),
             }]),
             acls: Some(acls.clone()),
+            volumes: None,
+            volume_mounts: None,
         };
 
         assert_eq!(spec.version.unwrap(), "9.18");
@@ -343,6 +345,8 @@ mod tests {
                 listen_on_v6: None,
             }),
             primary_servers: None,
+            volumes: None,
+            volume_mounts: None,
         };
 
         assert_eq!(spec.cluster_ref, "my-cluster");

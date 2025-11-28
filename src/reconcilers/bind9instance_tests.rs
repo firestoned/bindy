@@ -39,6 +39,8 @@ mod tests {
                     listen_on_v6: Some(vec!["any".to_string()]),
                 }),
                 primary_servers: None,
+                volumes: None,
+                volume_mounts: None,
             },
             status: None,
         }
@@ -61,6 +63,8 @@ mod tests {
                 config_map_refs: None,
                 config: None,
                 primary_servers: None,
+                volumes: None,
+                volume_mounts: None,
             },
             status: None,
         };
@@ -86,6 +90,8 @@ mod tests {
                 config_map_refs: None,
                 config: None,
                 primary_servers: None,
+                volumes: None,
+                volume_mounts: None,
             },
             status: None,
         };
@@ -203,6 +209,8 @@ mod tests {
                     listen_on_v6: None,
                 }),
                 primary_servers: None,
+                volumes: None,
+                volume_mounts: None,
             },
             status: None,
         };
@@ -239,6 +247,8 @@ mod tests {
                     listen_on_v6: None,
                 }),
                 primary_servers: None,
+                volumes: None,
+                volume_mounts: None,
             },
             status: None,
         };
@@ -297,6 +307,8 @@ mod tests {
                     listen_on_v6: None,
                 }),
                 primary_servers: None,
+                volumes: None,
+                volume_mounts: None,
             },
             status: None,
         };

@@ -100,7 +100,7 @@ What are the trade-offs?
 
 ### After Modifying Any `.rs` File
 
-**Always run these commands in order:**
+**CRITICAL: At the end of EVERY task that modifies Rust files, ALWAYS run these commands in order:**
 
 ```bash
 # 1. Format code
@@ -116,7 +116,11 @@ cargo test
 cargo audit 2>/dev/null || true
 ```
 
-**Fix all clippy warnings before considering the task complete.**
+**IMPORTANT:**
+- This is MANDATORY at the end of every task involving Rust code changes
+- Fix ALL clippy warnings before considering the task complete
+- Do NOT skip these steps - they catch bugs and ensure code quality
+- If clippy or tests fail, the task is NOT complete
 
 ### Rust Style Guidelines
 
@@ -155,9 +159,13 @@ CRD YAML files in `/deploy/crds/` are **AUTO-GENERATED** from the Rust types. Th
    ```bash
    cargo run --bin crdgen
    ```
-3. **Verify generated YAMLs** look correct
-4. **Update CHANGELOG.md** documenting the CRD change
-5. **Deploy updated CRDs**:
+3. **Regenerate API documentation**:
+   ```bash
+   cargo run --bin crddoc > docs/src/reference/api.md
+   ```
+4. **Verify generated YAMLs** look correct
+5. **Update CHANGELOG.md** documenting the CRD change
+6. **Deploy updated CRDs**:
    ```bash
    kubectl apply -k deploy/crds/
    ```
@@ -200,16 +208,20 @@ All generated YAML files include:
 
 #### CI/CD Integration:
 
-Add this to your CI pipeline to ensure CRDs stay in sync:
+Add this to your CI pipeline to ensure CRDs and documentation stay in sync:
 
 ```bash
 # Generate CRDs
 cargo run --bin crdgen
 
+# Generate API documentation
+cargo run --bin crddoc > docs/src/reference/api.md
+
 # Check if any files changed
-if ! git diff --quiet deploy/crds/; then
-  echo "ERROR: CRD YAML files are out of sync with src/crd.rs"
+if ! git diff --quiet deploy/crds/ docs/src/reference/api.md; then
+  echo "ERROR: CRD YAML files or API documentation are out of sync with src/crd.rs"
   echo "Run: cargo run --bin crdgen"
+  echo "Run: cargo run --bin crddoc > docs/src/reference/api.md"
   exit 1
 fi
 ```
@@ -353,6 +365,9 @@ src/
 # Generate CRD YAML files from Rust types
 cargo run --bin crdgen
 
+# Generate API documentation from CRDs
+cargo run --bin crddoc > docs/src/reference/api.md
+
 # Validate generated CRD YAML files
 for file in deploy/crds/*.crd.yaml; do
   echo "Checking $file"
@@ -373,17 +388,24 @@ kubectl apply --dry-run=server -f deploy/
 
 ## 📋 PR/Commit Checklist
 
+**MANDATORY: Run this checklist at the end of EVERY task before considering it complete.**
+
 Before committing:
 
-- [ ] `cargo fmt` passes
-- [ ] `cargo clippy -- -D warnings` passes
-- [ ] `cargo test` passes
-- [ ] **If `src/crd.rs` was modified**: Run `cargo run --bin crdgen` to regenerate YAMLs
+- [ ] **If ANY `.rs` file was modified**:
+  - [ ] `cargo fmt` passes (REQUIRED)
+  - [ ] `cargo clippy -- -D warnings` passes (REQUIRED - fix ALL warnings)
+  - [ ] `cargo test` passes (REQUIRED)
+- [ ] **If `src/crd.rs` was modified**:
+  - [ ] Run `cargo run --bin crdgen` to regenerate CRD YAMLs
+  - [ ] Run `cargo run --bin crddoc > docs/src/reference/api.md` to regenerate API docs
 - [ ] CRD YAML files validate: `kubectl apply --dry-run=client -f deploy/crds/`
 - [ ] CHANGELOG.md updated
 - [ ] No secrets or sensitive data
 - [ ] Rustdoc comments on public items
 - [ ] Error handling uses proper types (no `.unwrap()`)
+
+**A task is NOT complete until all of the above items pass successfully.**
 
 ---
 
