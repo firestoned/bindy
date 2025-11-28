@@ -15,7 +15,7 @@ kubectl apply -k https://raw.githubusercontent.com/firestoned/bindy/main/deploy/
 kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/rbac/
 
 # Deploy controller
-kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/controller/deployment.yaml
+kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/operator/deployment.yaml
 
 # Wait for controller to be ready
 kubectl wait --for=condition=available --timeout=300s \

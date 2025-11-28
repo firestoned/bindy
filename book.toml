@@ -19,7 +19,7 @@ edit-url-template = "https://github.com/firestoned/bindy/edit/main/{path}"
 site-url = "/bindy/"
 cname = ""
 additional-css = ["docs/theme/custom.css"]
-additional-js = []
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
 no-section-label = false
 
 [output.html.fold]
@@ -54,3 +54,6 @@ python = "~"
 # The maximum level of headers to include in the table of contents.
 # Setting to 2 will include H1 and H2, but hide H3 and below.
 max-level = 2
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
