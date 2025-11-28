@@ -1,3 +1,6 @@
+// Copyright (c) 2025 Erick Bourgeois, firestoned
+// SPDX-License-Identifier: MIT
+
 //! Custom Resource Definitions (CRDs) for DNS management.
 //!
 //! This module defines all Kubernetes Custom Resource Definitions used by Bindy

@@ -1,3 +1,6 @@
+#!/usr/bin/env bash
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
 
 # Colors for output
 GREEN='\033[0;32m'

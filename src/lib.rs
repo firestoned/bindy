@@ -1,3 +1,6 @@
+// Copyright (c) 2025 Erick Bourgeois, firestoned
+// SPDX-License-Identifier: MIT
+
 //! # Bindy - BIND9 DNS Controller for Kubernetes
 //!
 //! Bindy is a high-performance Kubernetes controller written in Rust that manages BIND9 DNS

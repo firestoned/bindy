@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
 
 # Create placeholder files for all documentation pages
 

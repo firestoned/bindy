@@ -1,3 +1,6 @@
+// Copyright (c) 2025 Erick Bourgeois, firestoned
+// SPDX-License-Identifier: MIT
+
 //! BIND9 zone file generation and management.
 //!
 //! This module provides functionality for generating and managing BIND9 zone files

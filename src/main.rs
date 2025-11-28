@@ -1,3 +1,6 @@
+// Copyright (c) 2025 Erick Bourgeois, firestoned
+// SPDX-License-Identifier: MIT
+
 use anyhow::Result;
 use bindy::{bind9::Bind9Manager, crd::*, reconcilers::*};
 use futures::StreamExt;

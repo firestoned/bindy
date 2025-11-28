@@ -7,6 +7,12 @@ on:
       - completed
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Docker image tag to use (e.g., main-2025-01-15-123)'
+        required: false
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -18,7 +24,7 @@ jobs:
   integration-test:
     name: Integration Tests
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -64,10 +70,15 @@ jobs:
       - name: Calculate Docker image tag
         id: tag
         run: |
-          DATE=$(date +%Y.%m.%d)
-          TAG="main-${DATE}-${{ github.event.workflow_run.run_number }}"
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            TAG="${{ inputs.image_tag }}"
+            echo "Using manually specified image tag: ${TAG}"
+          else
+            DATE=$(date +%Y.%m.%d)
+            TAG="main-${DATE}-${{ github.event.workflow_run.run_number }}"
+            echo "Using auto-generated image tag: ${TAG}"
+          fi
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "Using Docker image tag: ${TAG}"
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3

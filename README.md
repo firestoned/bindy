@@ -622,7 +622,24 @@ See the [Contributing Guide](https://firestoned.github.io/bindy/development/cont
 
 ## License
 
-MIT - See LICENSE file for details
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for full details.
+
+**SPDX-License-Identifier:** MIT
+
+**Copyright (c) 2025 Erick Bourgeois, firestoned**
+
+All source code files include SPDX license identifiers for easy machine-readable license information.
+
+### What This Means
+
+- ✅ **Free to use** - Personal and commercial use permitted
+- ✅ **Modify freely** - Create derivative works and modifications
+- ✅ **Distribute** - Share the original or modified versions
+- ✅ **Private use** - Use in proprietary/closed-source projects
+- ⚠️ **No warranty** - Provided "as is" without warranty of any kind
+- ℹ️ **Attribution** - Include copyright notice in substantial portions
+
+For more information about the MIT License, visit [https://opensource.org/licenses/MIT](https://opensource.org/licenses/MIT)
 
 ## Support
 
