@@ -40,7 +40,9 @@ Bindy has been tested on:
 
 - **CPU**: 100m per controller pod
 - **Memory**: 128Mi per controller pod
-- **Storage**: Minimal (for configuration only)
+- **Storage**:
+  - Minimal for controller (configuration only)
+  - **StorageClass**: Required for persistent zone data (optional but recommended)
 
 ### Recommended for Production
 
@@ -97,6 +99,74 @@ For the DNS system namespace:
 - Create Deployments
 - Create ConfigMaps
 - Create Services
+
+## Storage Provisioner
+
+For persistent zone data storage across pod restarts, you need a StorageClass configured in your cluster.
+
+### Production Environments
+
+Use your cloud provider's StorageClass:
+
+- **AWS**: EBS (`gp3` or `gp2`)
+- **GCP**: Persistent Disk (`pd-standard` or `pd-ssd`)
+- **Azure**: Azure Disk (`managed-premium` or `managed`)
+- **On-Premises**: NFS, Ceph, or other storage solutions
+
+Verify a default StorageClass exists:
+
+```bash
+kubectl get storageclass
+```
+
+### Development/Testing (Kind, k3s, local clusters)
+
+For local development, install the local-path provisioner:
+
+```bash
+# Install local-path provisioner
+kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.28/deploy/local-path-storage.yaml
+
+# Wait for provisioner to be ready
+kubectl wait --for=condition=available --timeout=60s \
+  deployment/local-path-provisioner -n local-path-storage
+
+# Check if local-path StorageClass was created
+if kubectl get storageclass local-path &>/dev/null; then
+  # Set local-path as default if no default exists
+  kubectl patch storageclass local-path -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+else
+  # Create a default StorageClass using local-path provisioner
+  cat <<EOF | kubectl apply -f -
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: default
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: rancher.io/local-path
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
+EOF
+fi
+
+# Verify installation
+kubectl get storageclass
+```
+
+Expected output (either `local-path` or `default` will be marked as default):
+```
+NAME                   PROVISIONER             RECLAIMPOLICY   VOLUMEBINDINGMODE      ALLOWVOLUMEEXPANSION   AGE
+local-path (default)   rancher.io/local-path   Delete          WaitForFirstConsumer   false                  1m
+```
+
+Or:
+```
+NAME                PROVISIONER             RECLAIMPOLICY   VOLUMEBINDINGMODE      ALLOWVOLUMEEXPANSION   AGE
+default (default)   rancher.io/local-path   Delete          WaitForFirstConsumer   false                  1m
+```
+
+> **Note**: The local-path provisioner stores data on the node's local disk. It's **not suitable for production** but works well for development and testing.
 
 ## Optional Components
 

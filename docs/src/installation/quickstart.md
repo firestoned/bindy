@@ -2,7 +2,43 @@
 
 Get Bindy running in 5 minutes with this quick start guide.
 
-## Step 1: Install Bindy
+## Step 1: Install Storage Provisioner (Optional)
+
+For persistent zone data storage, install a storage provisioner. For Kind clusters or local development:
+
+```bash
+# Install local-path provisioner
+kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.28/deploy/local-path-storage.yaml
+
+# Wait for provisioner to be ready
+kubectl wait --for=condition=available --timeout=60s \
+  deployment/local-path-provisioner -n local-path-storage
+
+# Set as default StorageClass (or create one if it doesn't exist)
+if kubectl get storageclass local-path &>/dev/null; then
+  kubectl patch storageclass local-path -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+else
+  # Create default StorageClass if local-path wasn't created
+  cat <<EOF | kubectl apply -f -
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: default
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: rancher.io/local-path
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
+EOF
+fi
+
+# Verify StorageClass is available
+kubectl get storageclass
+```
+
+> **Note**: For production clusters, use your cloud provider's StorageClass (AWS EBS, GCP PD, Azure Disk, etc.)
+
+## Step 2: Install Bindy
 
 ```bash
 # Create namespace
@@ -22,7 +58,7 @@ kubectl wait --for=condition=available --timeout=300s \
   deployment/bind9-controller -n dns-system
 ```
 
-## Step 2: Create a BIND9 Cluster
+## Step 3: Create a BIND9 Cluster
 
 First, create a cluster configuration that defines shared settings:
 
@@ -50,7 +86,7 @@ Apply it:
 kubectl apply -f bind9-cluster.yaml
 ```
 
-## Step 3: Create a BIND9 Instance
+## Step 4: Create a BIND9 Instance
 
 Now create an instance that references the cluster:
 
@@ -73,7 +109,7 @@ Apply it:
 kubectl apply -f bind9-instance.yaml
 ```
 
-## Step 4: Create a DNS Zone
+## Step 5: Create a DNS Zone
 
 Create a file `dns-zone.yaml`:
 
@@ -103,7 +139,7 @@ Apply it:
 kubectl apply -f dns-zone.yaml
 ```
 
-## Step 5: Add DNS Records
+## Step 6: Add DNS Records
 
 Create a file `dns-records.yaml`:
 
@@ -168,7 +204,7 @@ Apply them:
 kubectl apply -f dns-records.yaml
 ```
 
-## Step 6: Verify Your DNS Configuration
+## Step 7: Verify Your DNS Configuration
 
 Check the status of your resources:
 
@@ -196,7 +232,7 @@ NAME          ZONE          STATUS   AGE
 example-com   example.com   Ready    1m
 ```
 
-## Step 7: Test DNS Resolution
+## Step 8: Test DNS Resolution
 
 If your BIND9 instance is exposed (via LoadBalancer or NodePort):
 
