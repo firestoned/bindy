@@ -1,3 +1,6 @@
+// Copyright (c) 2025 Erick Bourgeois, firestoned
+// SPDX-License-Identifier: MIT
+
 //! Unit tests for DNS record reconcilers
 //!
 //! These tests verify the logic and data structures used by record reconcilers.
