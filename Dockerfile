@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 # Build stage
-FROM rust:1.83 as builder
+FROM rust:1.87 as builder
 
 WORKDIR /workspace
 

@@ -1,0 +1,437 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Basic Concepts</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title"></h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="basic-concepts"><a class="header" href="#basic-concepts">Basic Concepts</a></h1>
+<p>This section introduces the core concepts behind Bindy and how it manages DNS infrastructure in Kubernetes.</p>
+<h2 id="the-kubernetes-way"><a class="header" href="#the-kubernetes-way">The Kubernetes Way</a></h2>
+<p>Bindy follows Kubernetes patterns and idioms:</p>
+<ul>
+<li><strong>Declarative Configuration</strong> - You declare what DNS records should exist, Bindy makes it happen</li>
+<li><strong>Custom Resources</strong> - DNS zones and records are Kubernetes resources</li>
+<li><strong>Controllers</strong> - Bindy watches resources and reconciles state</li>
+<li><strong>Labels and Selectors</strong> - Target specific BIND9 instances using labels</li>
+<li><strong>Status Subresources</strong> - Track the health and state of DNS resources</li>
+</ul>
+<h2 id="core-resources"><a class="header" href="#core-resources">Core Resources</a></h2>
+<p>Bindy introduces these Custom Resource Definitions (CRDs):</p>
+<h3 id="infrastructure-resources"><a class="header" href="#infrastructure-resources">Infrastructure Resources</a></h3>
+<ul>
+<li><strong>Bind9Cluster</strong> - Cluster-level configuration (version, shared config, TSIG keys, ACLs)</li>
+<li><strong><a href="./bind9instance.html">Bind9Instance</a></strong> - Individual BIND9 DNS server deployment (inherits from cluster)</li>
+</ul>
+<h3 id="dns-resources"><a class="header" href="#dns-resources">DNS Resources</a></h3>
+<ul>
+<li><strong><a href="./dnszone.html">DNSZone</a></strong> - Defines a DNS zone with SOA record (references a cluster)</li>
+<li><strong><a href="./records.html">DNS Records</a></strong> - Individual DNS record types:
+<ul>
+<li>ARecord (IPv4)</li>
+<li>AAAARecord (IPv6)</li>
+<li>CNAMERecord (Canonical Name)</li>
+<li>MXRecord (Mail Exchange)</li>
+<li>TXTRecord (Text)</li>
+<li>NSRecord (Name Server)</li>
+<li>SRVRecord (Service)</li>
+<li>CAARecord (Certificate Authority Authorization)</li>
+</ul>
+</li>
+</ul>
+<h2 id="how-it-works"><a class="header" href="#how-it-works">How It Works</a></h2>
+<pre><code>┌─────────────────────────────────────────────────────────────┐
+│                     Kubernetes API                          │
+│  ┌──────────┐  ┌─────────┐  ┌──────────┐  ┌──────────┐    │
+│  │  DNSZone │  │ ARecord │  │ MXRecord │  │ TXTRecord│ ...│
+│  └────┬─────┘  └────┬────┘  └────┬─────┘  └────┬─────┘    │
+│       │             │            │             │           │
+└───────┼─────────────┼────────────┼─────────────┼───────────┘
+        │             │            │             │
+        └─────────────┴────────────┴─────────────┘
+                      │
+                      ▼
+        ┌─────────────────────────────┐
+        │   Bindy Controller          │
+        │   • Watches CRDs            │
+        │   • Reconciles state        │
+        │   • RNDC client             │
+        │   • TSIG authentication     │
+        └──────────────┬──────────────┘
+                       │
+                       │ RNDC Protocol
+                       │ (Port 953/TCP)
+                       │ TSIG/HMAC-SHA256
+                       ▼
+        ┌─────────────────────────────┐
+        │   BIND9 Instances           │
+        │   • rndc daemon (port 953)  │
+        │   • Primary servers         │
+        │   • Secondary servers       │
+        │   • Dynamic zones           │
+        │   • DNS queries (port 53)   │
+        └─────────────────────────────┘
+</code></pre>
+<h3 id="reconciliation-loop"><a class="header" href="#reconciliation-loop">Reconciliation Loop</a></h3>
+<ol>
+<li><strong>Watch</strong> - Controller watches for changes to DNS resources</li>
+<li><strong>Discover</strong> - Finds BIND9 instance pods via Kubernetes API</li>
+<li><strong>Authenticate</strong> - Loads RNDC key from Kubernetes Secret</li>
+<li><strong>Execute</strong> - Sends RNDC commands to BIND9 (addzone, reload, etc.)</li>
+<li><strong>Verify</strong> - BIND9 executes command and returns success/error</li>
+<li><strong>Status</strong> - Reports success or failure via status conditions</li>
+</ol>
+<h2 id="rndc-protocol"><a class="header" href="#rndc-protocol">RNDC Protocol</a></h2>
+<p>Bindy uses the native BIND9 Remote Name Daemon Control (RNDC) protocol for managing DNS zones and servers. This provides:</p>
+<ul>
+<li><strong>Direct Control</strong> - Native BIND9 management without intermediate files</li>
+<li><strong>Real-time Operations</strong> - Immediate feedback on success or failure</li>
+<li><strong>Atomic Commands</strong> - Operations succeed or fail atomically</li>
+<li><strong>Secure Communication</strong> - TSIG authentication with HMAC-SHA256</li>
+</ul>
+<h3 id="rndc-commands"><a class="header" href="#rndc-commands">RNDC Commands</a></h3>
+<p>Common RNDC operations used by Bindy:</p>
+<ul>
+<li><code>addzone &lt;zone&gt;</code> - Dynamically add a new zone</li>
+<li><code>delzone &lt;zone&gt;</code> - Remove a zone</li>
+<li><code>reload &lt;zone&gt;</code> - Reload zone data</li>
+<li><code>notify &lt;zone&gt;</code> - Trigger zone transfer to secondaries</li>
+<li><code>zonestatus &lt;zone&gt;</code> - Query zone status</li>
+<li><code>retransfer &lt;zone&gt;</code> - Force zone transfer from primary</li>
+</ul>
+<h3 id="tsig-authentication"><a class="header" href="#tsig-authentication">TSIG Authentication</a></h3>
+<p>All RNDC communication is secured using TSIG (Transaction Signature):</p>
+<ul>
+<li><strong>Authentication</strong> - Verifies command source is authorized</li>
+<li><strong>Integrity</strong> - Prevents command tampering</li>
+<li><strong>Replay Protection</strong> - Timestamp validation prevents replay attacks</li>
+<li><strong>Key Storage</strong> - RNDC keys stored in Kubernetes Secrets</li>
+<li><strong>Per-Instance Keys</strong> - Each BIND9 instance has unique HMAC-SHA256 key</li>
+</ul>
+<h2 id="cluster-references"><a class="header" href="#cluster-references">Cluster References</a></h2>
+<p>Instead of label selectors, zones now reference a specific BIND9 cluster:</p>
+<pre><code class="language-yaml"># DNS Zone references a cluster
+spec:
+  zoneName: example.com
+  clusterRef: my-dns-cluster  # References Bind9Instance name
+</code></pre>
+<p>This simplifies:</p>
+<ul>
+<li><strong>Zone placement</strong> - Direct reference to cluster</li>
+<li><strong>Pod discovery</strong> - Find instances by cluster name</li>
+<li><strong>RNDC key lookup</strong> - Keys named <code>{clusterRef}-rndc-key</code></li>
+</ul>
+<h2 id="resource-relationships"><a class="header" href="#resource-relationships">Resource Relationships</a></h2>
+<pre><code>Bind9Cluster (cluster config)
+    ↑
+    │ referenced by clusterRef
+    │
+Bind9Instance (has clusterRef)
+    ↑
+    │ zone.spec.cluster_ref references instance
+    │
+DNSZone (has clusterRef)
+    ↑
+    │ referenced by zone field
+    │
+DNS Records (A, CNAME, MX, etc.)
+</code></pre>
+<h3 id="three-tier-hierarchy"><a class="header" href="#three-tier-hierarchy">Three-Tier Hierarchy</a></h3>
+<ol>
+<li>
+<p><strong>Bind9Cluster</strong> - Cluster-level configuration</p>
+<ul>
+<li>Shared BIND9 version</li>
+<li>Common config (recursion, DNSSEC, forwarders)</li>
+<li>TSIG keys for zone transfers</li>
+<li>ACL definitions</li>
+</ul>
+</li>
+<li>
+<p><strong>Bind9Instance</strong> - Instance deployment</p>
+<ul>
+<li>References a Bind9Cluster via <code>cluster_ref</code></li>
+<li>Can override cluster config</li>
+<li>Has RNDC key for management</li>
+<li>Manages pods and services</li>
+</ul>
+</li>
+<li>
+<p><strong>DNSZone</strong> - DNS zone definition</p>
+<ul>
+<li>References a Bind9Instance via <code>cluster_ref</code></li>
+<li>Contains SOA record</li>
+<li>Applied to instance via RNDC</li>
+</ul>
+</li>
+<li>
+<p><strong>DNS Records</strong> - Individual records</p>
+<ul>
+<li>Reference a DNSZone by name</li>
+<li>Added to zone via RNDC (planned: nsupdate)</li>
+</ul>
+</li>
+</ol>
+<h3 id="rndc-key-secret-relationship"><a class="header" href="#rndc-key-secret-relationship">RNDC Key Secret Relationship</a></h3>
+<pre><code>Bind9Instance: my-dns-instance
+    ↓
+    creates/expects
+    ↓
+Secret: my-dns-instance-rndc-key
+    data:
+      key-name: my-dns-instance
+      algorithm: hmac-sha256
+      secret: &lt;base64-encoded-key&gt;
+</code></pre>
+<p>The controller uses this Secret to authenticate RNDC commands to the BIND9 instance.</p>
+<h2 id="status-and-conditions"><a class="header" href="#status-and-conditions">Status and Conditions</a></h2>
+<p>All resources report their status:</p>
+<pre><code class="language-yaml">status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: Synchronized
+      message: Zone created for 2 instances
+      lastTransitionTime: 2024-01-01T00:00:00Z
+  observedGeneration: 1
+  matchedInstances: 2
+</code></pre>
+<p>Status conditions follow Kubernetes conventions:</p>
+<ul>
+<li><strong>Type</strong> - What aspect (Ready, Synced, etc.)</li>
+<li><strong>Status</strong> - True, False, or Unknown</li>
+<li><strong>Reason</strong> - Machine-readable reason code</li>
+<li><strong>Message</strong> - Human-readable description</li>
+</ul>
+<h2 id="next-steps"><a class="header" href="#next-steps">Next Steps</a></h2>
+<ul>
+<li><a href="./architecture-rndc.html">RNDC-Based Architecture</a> - Learn about the RNDC protocol architecture</li>
+<li><a href="./architecture.html">Architecture Overview</a> - Deep dive into Bindy's architecture</li>
+<li><a href="./crds.html">Custom Resource Definitions</a> - Detailed CRD specifications</li>
+<li><a href="./bind9instance.html">Bind9Instance</a> - Learn about BIND9 instance resources</li>
+<li><a href="./dnszone.html">DNSZone</a> - Learn about DNS zone resources</li>
+<li><a href="./records.html">DNS Records</a> - Learn about DNS record types</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../installation/controller.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../concepts/architecture.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../installation/controller.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../concepts/architecture.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

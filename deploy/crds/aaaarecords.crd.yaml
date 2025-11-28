@@ -1,74 +1,108 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# This file is AUTO-GENERATED from src/crd.rs
+# DO NOT EDIT MANUALLY - Run `cargo run --bin crdgen` to regenerate
+#
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: aaaarecords.dns.firestoned.io
+  name: aaaarecords.bindy.firestoned.io
 spec:
-  group: dns.firestoned.io
+  group: bindy.firestoned.io
   names:
+    categories: []
     kind: AAAARecord
     plural: aaaarecords
+    shortNames: []
     singular: aaaarecord
   scope: Namespaced
   versions:
-    - name: v1alpha1
-      served: true
-      storage: true
-      schema:
-        openAPIV3Schema:
-          type: object
-          properties:
-            metadata:
-              type: object
-            spec:
-              type: object
-              required:
-                - zone
-                - name
-                - ipv6Address
-              properties:
-                zone:
-                  type: string
-                  description: Reference to DNSZone name
-                name:
-                  type: string
-                  description: Record name (@ for apex)
-                ipv6Address:
-                  type: string
-                  description: IPv6 address
-                ttl:
-                  type: integer
-                  description: Time to live in seconds
-            status:
-              type: object
-              properties:
-                conditions:
-                  type: array
-                  items:
-                    type: object
-                    required:
-                      - type
-                      - status
-                    properties:
-                      type:
-                        type: string
-                        enum:
-                          - Ready
-                          - Available
-                          - Progressing
-                          - Degraded
-                          - Failed
-                      status:
-                        type: string
-                        enum:
-                          - "True"
-                          - "False"
-                          - "Unknown"
-                      reason:
-                        type: string
-                      message:
-                        type: string
-                      lastTransitionTime:
-                        type: string
-                        format: date-time
-                observedGeneration:
-                  type: integer
+  - additionalPrinterColumns: []
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: AAAARecord maps a DNS hostname to an IPv6 address. This is the IPv6 equivalent of an A record.
+        properties:
+          spec:
+            description: |-
+              `AAAARecord` maps a DNS name to an IPv6 address.
+
+              AAAA records are the IPv6 equivalent of A records, mapping hostnames to IPv6 addresses.
+
+              # Example
+
+              ```yaml apiVersion: dns.firestoned.io/v1alpha1 kind: AAAARecord metadata: name: www-example-com-ipv6 spec: zone: example.com name: www ipv6Address: "2001:db8::1" ttl: 300 ```
+            properties:
+              ipv6Address:
+                description: |-
+                  IPv6 address in standard notation.
+
+                  Examples: "`2001:db8::1`", "`fe80::1`", "`::1`"
+                type: string
+              name:
+                description: Record name within the zone.
+                type: string
+              ttl:
+                description: Time To Live in seconds.
+                format: int32
+                maximum: 2147483647.0
+                minimum: 0.0
+                nullable: true
+                type: integer
+              zone:
+                description: DNS zone this record belongs to.
+                type: string
+            required:
+            - ipv6Address
+            - name
+            - zone
+            type: object
+          status:
+            description: Generic record status
+            nullable: true
+            properties:
+              conditions:
+                default: []
+                items:
+                  description: |-
+                    Condition represents an observation of a resource's current state.
+
+                    Conditions are used in status subresources to communicate the state of a resource to users and controllers.
+                  properties:
+                    last_transition_time:
+                      description: Last time the condition transitioned from one status to another (RFC3339 format).
+                      nullable: true
+                      type: string
+                    message:
+                      description: Human-readable message indicating details about the transition.
+                      nullable: true
+                      type: string
+                    reason:
+                      description: Brief CamelCase reason for the condition's last transition.
+                      nullable: true
+                      type: string
+                    status:
+                      description: 'Status of the condition: True, False, or Unknown.'
+                      type: string
+                    type:
+                      description: 'Type of condition. Common types include: Ready, Available, Progressing, Degraded, Failed.'
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                type: array
+              observed_generation:
+                format: int64
+                nullable: true
+                type: integer
+            type: object
+        required:
+        - spec
+        title: AAAARecord
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

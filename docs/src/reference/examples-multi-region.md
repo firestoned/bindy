@@ -53,7 +53,7 @@ metadata:
 
 ---
 # Primary Bind9Instance
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: primary-us-east-1
@@ -97,7 +97,7 @@ spec:
 
 ---
 # Primary DNSZone
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: example-com-primary
@@ -121,7 +121,7 @@ spec:
 
 ---
 # Nameserver Records
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: ns1-us-east-1
@@ -133,7 +133,7 @@ spec:
   ttl: 86400
 
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: ns2-us-west-2
@@ -145,7 +145,7 @@ spec:
   ttl: 86400
 
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: ns3-eu-west-1
@@ -158,7 +158,7 @@ spec:
 
 ---
 # Regional Web Servers
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: www-us-east-1
@@ -170,7 +170,7 @@ spec:
   ttl: 60
 
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: www-us-west-2
@@ -182,7 +182,7 @@ spec:
   ttl: 60
 
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: www-eu-west-1
@@ -195,7 +195,7 @@ spec:
 
 ---
 # GeoDNS using SRV records for service discovery
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: SRVRecord
 metadata:
   name: srv-web-us-east
@@ -227,7 +227,7 @@ metadata:
 
 ---
 # Secondary Bind9Instance
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: secondary-us-west-2
@@ -268,7 +268,7 @@ spec:
 
 ---
 # Secondary DNSZone
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: example-com-secondary
@@ -304,7 +304,7 @@ metadata:
 
 ---
 # Secondary Bind9Instance
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: secondary-eu-west-1
@@ -345,7 +345,7 @@ spec:
 
 ---
 # Secondary DNSZone
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: example-com-secondary
@@ -592,7 +592,7 @@ spec:
 
 ```yaml
 # EU-specific zone for GDPR compliance
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: eu-example-com

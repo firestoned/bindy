@@ -7,7 +7,7 @@ Primary DNS instances are authoritative DNS servers that host the master copies 
 Here's a basic example of a primary DNS instance:
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: primary-dns

@@ -14,13 +14,14 @@ Bindy watches for DNS-related Custom Resources in your Kubernetes cluster and au
 ### Key Features
 
 - **High Performance** - Native Rust implementation with async/await and zero-copy operations
+- **RNDC Protocol** - Native BIND9 management via Remote Name Daemon Control (RNDC) with TSIG authentication
 - **Label Selectors** - Target specific BIND9 instances using Kubernetes label selectors
-- **Dynamic Zone Management** - Automatically create and manage DNS zones
+- **Dynamic Zone Management** - Automatically create and manage DNS zones using RNDC commands
 - **Multi-Record Types** - Support for A, AAAA, CNAME, MX, TXT, NS, SRV, and CAA records
 - **Declarative DNS** - Manage DNS as Kubernetes resources with full GitOps support
-- **Security First** - Non-root containers, RBAC-ready, secure by default
+- **Security First** - TSIG-authenticated RNDC communication, non-root containers, RBAC-ready
 - **Status Tracking** - Complete status subresources for all resources
-- **Primary/Secondary Support** - Built-in support for primary and secondary DNS architectures
+- **Primary/Secondary Support** - Built-in support for primary and secondary DNS architectures with zone transfers
 
 ## Why Bindy?
 
@@ -34,10 +35,10 @@ Traditional DNS management involves:
 Bindy transforms this by:
 - Managing DNS as Kubernetes resources
 - Full GitOps workflow support
-- Automatic zone file generation
+- Native RNDC protocol for direct BIND9 control
 - Built-in audit trail via Kubernetes events
 - Simple disaster recovery (backup your CRDs)
-- Seamless multi-region DNS distribution
+- Seamless multi-region DNS distribution with zone transfers
 
 ## Who Should Use Bindy?
 
@@ -54,7 +55,7 @@ Here's how simple it is to create a DNS zone with records:
 
 ```yaml
 # Create a DNS zone
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: example-com
@@ -71,7 +72,7 @@ spec:
 
 ---
 # Add an A record
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: www-example
@@ -89,15 +90,16 @@ kubectl apply -f dns-config.yaml
 ```
 
 Bindy automatically:
-1. Finds matching BIND9 instances
-2. Generates zone files
-3. Updates BIND9 configuration
-4. Tracks status and conditions
+1. Finds matching BIND9 instances using pod discovery
+2. Connects to BIND9 via RNDC protocol (port 953)
+3. Creates zones and records using native RNDC commands
+4. Tracks status and conditions in real-time
 
 ## Next Steps
 
 - [Installation](./installation/installation.md) - Get started with Bindy
 - [Quick Start](./installation/quickstart.md) - Deploy your first DNS zone
+- [RNDC-Based Architecture](./concepts/architecture-rndc.md) - Learn about the RNDC protocol architecture
 - [Architecture Overview](./concepts/architecture.md) - Understand how Bindy works
 - [API Reference](./reference/api.md) - Complete API documentation
 
@@ -105,8 +107,9 @@ Bindy automatically:
 
 - **Startup Time**: <1 second
 - **Memory Usage**: ~50MB baseline
-- **Zone Creation Latency**: <100ms per zone
-- **Record Addition Latency**: <50ms per record
+- **Zone Creation Latency**: <500ms per zone (via RNDC)
+- **Record Addition Latency**: <200ms per record (via RNDC)
+- **RNDC Command Execution**: <100ms typical
 - **Controller Overhead**: Negligible CPU when idle
 
 ## Project Status

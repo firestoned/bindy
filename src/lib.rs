@@ -1,6 +1,8 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: MIT
 
+#![allow(unexpected_cfgs)]
+
 //! # Bindy - BIND9 DNS Controller for Kubernetes
 //!
 //! Bindy is a high-performance Kubernetes controller written in Rust that manages BIND9 DNS
@@ -25,13 +27,9 @@
 //! ## Example
 //!
 //! ```rust,no_run
-//! use bindy::crd::{DNSZone, DNSZoneSpec, SOARecord, LabelSelector};
-//! use std::collections::BTreeMap;
+//! use bindy::crd::{DNSZone, DNSZoneSpec, SOARecord};
 //!
-//! // Create a DNS zone specification for a primary zone
-//! let mut match_labels = BTreeMap::new();
-//! match_labels.insert("dns-role".to_string(), "primary".to_string());
-//!
+//! // Create a DNS zone specification
 //! let soa = SOARecord {
 //!     primary_ns: "ns1.example.com.".to_string(),
 //!     admin_email: "admin@example.com".to_string(),
@@ -44,13 +42,8 @@
 //!
 //! let zone_spec = DNSZoneSpec {
 //!     zone_name: "example.com".to_string(),
-//!     zone_type: Some("primary".to_string()),
-//!     instance_selector: LabelSelector {
-//!         match_labels: Some(match_labels),
-//!         match_expressions: None,
-//!     },
-//!     soa_record: Some(soa),
-//!     secondary_config: None,
+//!     cluster_ref: "my-dns-cluster".to_string(),
+//!     soa_record: soa,
 //!     ttl: Some(3600),
 //! };
 //! ```

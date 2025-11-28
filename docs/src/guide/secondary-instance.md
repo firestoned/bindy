@@ -5,7 +5,7 @@ Secondary DNS instances receive zone data from primary servers via zone transfer
 ## Creating a Secondary Instance
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: secondary-dns
@@ -59,7 +59,7 @@ metadata:
 When creating a DNSZone resource for secondary zones, use the `secondary` type and specify primary servers:
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: example-com-secondary

@@ -1,0 +1,408 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Multi-Region Setup</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title"></h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="multi-region-setup"><a class="header" href="#multi-region-setup">Multi-Region Setup</a></h1>
+<p>Distribute your DNS infrastructure across multiple regions or availability zones for maximum availability and performance.</p>
+<h2 id="architecture-overview"><a class="header" href="#architecture-overview">Architecture Overview</a></h2>
+<p>A multi-region DNS setup typically includes:</p>
+<ul>
+<li><strong>Primary instances</strong> in one or more regions</li>
+<li><strong>Secondary instances</strong> in multiple geographic locations</li>
+<li><strong>Zone distribution</strong> across all instances using label selectors</li>
+</ul>
+<h2 id="creating-regional-instances"><a class="header" href="#creating-regional-instances">Creating Regional Instances</a></h2>
+<h3 id="primary-in-region-1"><a class="header" href="#primary-in-region-1">Primary in Region 1</a></h3>
+<pre><code class="language-yaml">apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: primary-us-east
+  namespace: dns-system
+  labels:
+    dns-role: primary
+    region: us-east-1
+    environment: production
+spec:
+  replicas: 2
+  version: "9.18"
+  config:
+    recursion: false
+    allowQuery:
+      - "0.0.0.0/0"
+    allowTransfer:
+      - "10.0.0.0/8"
+    dnssec:
+      enabled: true
+</code></pre>
+<h3 id="secondary-in-region-2"><a class="header" href="#secondary-in-region-2">Secondary in Region 2</a></h3>
+<pre><code class="language-yaml">apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: secondary-us-west
+  namespace: dns-system
+  labels:
+    dns-role: secondary
+    region: us-west-2
+    environment: production
+spec:
+  replicas: 1
+  version: "9.18"
+  config:
+    recursion: false
+    allowQuery:
+      - "0.0.0.0/0"
+</code></pre>
+<h3 id="secondary-in-region-3"><a class="header" href="#secondary-in-region-3">Secondary in Region 3</a></h3>
+<pre><code class="language-yaml">apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: secondary-eu-west
+  namespace: dns-system
+  labels:
+    dns-role: secondary
+    region: eu-west-1
+    environment: production
+spec:
+  replicas: 1
+  version: "9.18"
+  config:
+    recursion: false
+    allowQuery:
+      - "0.0.0.0/0"
+</code></pre>
+<h2 id="distributing-zones-across-regions"><a class="header" href="#distributing-zones-across-regions">Distributing Zones Across Regions</a></h2>
+<p>Create zones that target all regions:</p>
+<pre><code class="language-yaml">apiVersion: bindy.firestoned.io/v1alpha1
+kind: DNSZone
+metadata:
+  name: example-com
+  namespace: dns-system
+spec:
+  zoneName: example.com
+  type: primary
+  instanceSelector:
+    matchExpressions:
+      - key: environment
+        operator: In
+        values:
+          - production
+      - key: dns-role
+        operator: In
+        values:
+          - primary
+          - secondary
+  soaRecord:
+    primaryNS: ns1.example.com.
+    adminEmail: admin@example.com
+    serial: 2024010101
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTTL: 86400
+</code></pre>
+<p>This zone will be deployed to all instances matching the selector (all production primary and secondary instances).</p>
+<h2 id="deployment-strategy"><a class="header" href="#deployment-strategy">Deployment Strategy</a></h2>
+<h3 id="option-1-primary-secondary-model"><a class="header" href="#option-1-primary-secondary-model">Option 1: Primary-Secondary Model</a></h3>
+<ul>
+<li>One region hosts primary instances</li>
+<li>All other regions host secondary instances</li>
+<li>Zone transfers flow from primary to secondaries</li>
+</ul>
+<pre><code> Region 1 (us-east-1)         Region 2 (us-west-2)        Region 3 (eu-west-1)
+┌─────────────────────┐      ┌─────────────────────┐     ┌─────────────────────┐
+│  Primary Instances  │──────│ Secondary Instances │─────│ Secondary Instances │
+│   (Master zones)    │      │  (Slave zones)      │     │  (Slave zones)      │
+└─────────────────────┘      └─────────────────────┘     └─────────────────────┘
+</code></pre>
+<h3 id="option-2-multi-primary-model"><a class="header" href="#option-2-multi-primary-model">Option 2: Multi-Primary Model</a></h3>
+<ul>
+<li>Multiple regions host primary instances</li>
+<li>Different zones can have primaries in different regions</li>
+<li>Use careful labeling to route zones to appropriate primaries</li>
+</ul>
+<h2 id="network-considerations"><a class="header" href="#network-considerations">Network Considerations</a></h2>
+<h3 id="zone-transfer-network"><a class="header" href="#zone-transfer-network">Zone Transfer Network</a></h3>
+<p>Ensure network connectivity for zone transfers:</p>
+<ul>
+<li>Primaries must reach secondaries on TCP port 53</li>
+<li>Use VPN, peering, or allow public transfer with IP restrictions</li>
+</ul>
+<h3 id="client-query-routing"><a class="header" href="#client-query-routing">Client Query Routing</a></h3>
+<p>Use one of:</p>
+<ul>
+<li><strong>GeoDNS</strong> - Route clients to nearest regional instance</li>
+<li><strong>Anycast</strong> - Same IP announced from multiple locations</li>
+<li><strong>Load Balancer</strong> - Distribute across regional endpoints</li>
+</ul>
+<h2 id="failover-strategy"><a class="header" href="#failover-strategy">Failover Strategy</a></h2>
+<h3 id="automatic-failover"><a class="header" href="#automatic-failover">Automatic Failover</a></h3>
+<p>Kubernetes handles pod-level failures automatically:</p>
+<pre><code class="language-yaml">spec:
+  replicas: 2  # Multiple replicas for pod-level HA
+</code></pre>
+<h3 id="regional-failover"><a class="header" href="#regional-failover">Regional Failover</a></h3>
+<p>For regional failures:</p>
+<ol>
+<li>Clients automatically query secondary instances in other regions</li>
+<li>Zone data remains available via zone transfers</li>
+<li>Updates queue until primary region recovers</li>
+</ol>
+<h3 id="manual-failover"><a class="header" href="#manual-failover">Manual Failover</a></h3>
+<p>To manually promote a secondary to primary:</p>
+<ol>
+<li>Update DNSZone to change primary servers</li>
+<li>Update instance labels if needed</li>
+<li>Verify zone transfers are working correctly</li>
+</ol>
+<h2 id="monitoring-multi-region-setup"><a class="header" href="#monitoring-multi-region-setup">Monitoring Multi-Region Setup</a></h2>
+<p>Check instance distribution:</p>
+<pre><code class="language-bash"># View all instances and their regions
+kubectl get bind9instances -n dns-system -L region
+
+# Check zone distribution
+kubectl describe dnszone example-com -n dns-system
+</code></pre>
+<p>Monitor zone transfers:</p>
+<pre><code class="language-bash"># Check transfer logs on secondaries
+kubectl logs -n dns-system -l dns-role=secondary | grep "transfer of"
+</code></pre>
+<h2 id="best-practices"><a class="header" href="#best-practices">Best Practices</a></h2>
+<ol>
+<li><strong>Use Odd Number of Regions</strong>: 3 or 5 regions for better quorum</li>
+<li><strong>Distribute Replicas</strong>: Spread replicas across availability zones</li>
+<li><strong>Monitor Latency</strong>: Watch zone transfer times between regions</li>
+<li><strong>Test Failover</strong>: Regularly test regional failover scenarios</li>
+<li><strong>Automate Updates</strong>: Use GitOps for consistent multi-region deployments</li>
+</ol>
+<h2 id="next-steps"><a class="header" href="#next-steps">Next Steps</a></h2>
+<ul>
+<li><a href="../operations/monitoring.html">Configure Monitoring</a> for multi-region health</li>
+<li><a href="./zone-config.html">Set Up DNSSEC</a> across all regions</li>
+<li><a href="../operations/troubleshooting.html">Implement Disaster Recovery</a> procedures</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../guide/secondary-instance.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../guide/zones.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../guide/secondary-instance.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../guide/zones.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

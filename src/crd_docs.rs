@@ -10,11 +10,7 @@
 /// ## Creating a DNS Zone
 ///
 /// ```rust,no_run
-/// use bindy::crd::{DNSZone, DNSZoneSpec, SOARecord, LabelSelector};
-/// use std::collections::BTreeMap;
-///
-/// let mut match_labels = BTreeMap::new();
-/// match_labels.insert("dns-role".to_string(), "primary".to_string());
+/// use bindy::crd::{DNSZone, DNSZoneSpec, SOARecord};
 ///
 /// let soa = SOARecord {
 ///     primary_ns: "ns1.example.com.".to_string(),
@@ -28,13 +24,8 @@
 ///
 /// let spec = DNSZoneSpec {
 ///     zone_name: "example.com".to_string(),
-///     zone_type: Some("primary".to_string()),
-///     instance_selector: LabelSelector {
-///         match_labels: Some(match_labels),
-///         match_expressions: None,
-///     },
-///     soa_record: Some(soa),
-///     secondary_config: None,
+///     cluster_ref: "my-dns-cluster".to_string(),
+///     soa_record: soa,
 ///     ttl: Some(3600),
 /// };
 /// ```

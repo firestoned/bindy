@@ -11,7 +11,7 @@ Bindy provides the following CRDs:
 #### Bind9Instance
 Manages BIND9 DNS server instances.
 
-- **Group**: dns.firestoned.io
+- **Group**: bindy.firestoned.io
 - **Version**: v1alpha1
 - **Kind**: Bind9Instance
 - **Plural**: bind9instances
@@ -22,7 +22,7 @@ Manages BIND9 DNS server instances.
 #### DNSZone
 Defines DNS zones to be served by Bind9Instances.
 
-- **Group**: dns.firestoned.io
+- **Group**: bindy.firestoned.io
 - **Version**: v1alpha1
 - **Kind**: DNSZone
 - **Plural**: dnszones
@@ -33,7 +33,7 @@ Defines DNS zones to be served by Bind9Instances.
 ### DNS Record Resources
 
 All record resources share:
-- **Group**: dns.firestoned.io
+- **Group**: bindy.firestoned.io
 - **Version**: v1alpha1
 - **Scope**: Namespaced
 
@@ -101,7 +101,7 @@ Bindy automatically sets owner references for resource cleanup:
 ```yaml
 metadata:
   ownerReferences:
-    - apiVersion: dns.firestoned.io/v1alpha1
+    - apiVersion: bindy.firestoned.io/v1alpha1
       kind: DNSZone
       name: example-zone
       uid: abc123

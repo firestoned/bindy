@@ -50,7 +50,7 @@ Maps hostnames to IPv4 addresses.
 ### Resource Definition
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: www-example-com
@@ -79,7 +79,7 @@ spec:
 
 ```yaml
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: www-example-com-1
@@ -88,7 +88,7 @@ spec:
   name: "www"
   ipv4Address: "192.0.2.1"
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: www-example-com-2
@@ -107,7 +107,7 @@ Maps hostnames to IPv6 addresses.
 ### Resource Definition
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: AAAARecord
 metadata:
   name: www-example-com-v6
@@ -140,7 +140,7 @@ spec:
 
 ```yaml
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: www-v4
@@ -149,7 +149,7 @@ spec:
   name: "www"
   ipv4Address: "192.0.2.1"
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: AAAARecord
 metadata:
   name: www-v6
@@ -168,7 +168,7 @@ Creates an alias from one hostname to another.
 ### Resource Definition
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: CNAMERecord
 metadata:
   name: www-alias
@@ -202,7 +202,7 @@ spec:
 ### Example: CDN Alias
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: CNAMERecord
 metadata:
   name: cdn-alias
@@ -221,7 +221,7 @@ Specifies mail servers for the domain.
 ### Resource Definition
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: MXRecord
 metadata:
   name: mail-primary
@@ -263,7 +263,7 @@ spec:
 
 ```yaml
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: MXRecord
 metadata:
   name: mail-primary
@@ -273,7 +273,7 @@ spec:
   priority: 10
   mailServer: "mail1.example.com."
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: MXRecord
 metadata:
   name: mail-backup
@@ -293,7 +293,7 @@ Stores arbitrary text data, commonly used for verification and policies.
 ### Resource Definition
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: TXTRecord
 metadata:
   name: spf-record
@@ -325,7 +325,7 @@ spec:
 ```yaml
 ---
 # SPF Record
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: TXTRecord
 metadata:
   name: spf
@@ -336,7 +336,7 @@ spec:
     - "v=spf1 mx include:_spf.google.com ~all"
 ---
 # DKIM Record
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: TXTRecord
 metadata:
   name: dkim
@@ -347,7 +347,7 @@ spec:
     - "v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC..."
 ---
 # DMARC Record
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: TXTRecord
 metadata:
   name: dmarc
@@ -367,7 +367,7 @@ Delegates a subdomain to different nameservers.
 ### Resource Definition
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: NSRecord
 metadata:
   name: subdomain-delegation
@@ -396,7 +396,7 @@ spec:
 
 ```yaml
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: NSRecord
 metadata:
   name: sub-ns1
@@ -405,7 +405,7 @@ spec:
   name: "subdomain"
   nameserver: "ns1.subdomain.example.com."
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: NSRecord
 metadata:
   name: sub-ns2
@@ -424,7 +424,7 @@ Specifies location of services.
 ### Resource Definition
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: SRVRecord
 metadata:
   name: sip-service
@@ -490,7 +490,7 @@ spec:
 
 ```yaml
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: SRVRecord
 metadata:
   name: srv-primary
@@ -502,7 +502,7 @@ spec:
   port: 8080
   target: "server1.example.com."
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: SRVRecord
 metadata:
   name: srv-secondary
@@ -524,7 +524,7 @@ Restricts which CAs can issue certificates for the domain.
 ### Resource Definition
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: CAARecord
 metadata:
   name: caa-letsencrypt
@@ -583,7 +583,7 @@ spec:
 ```yaml
 ---
 # Allow Let's Encrypt for regular certs
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: CAARecord
 metadata:
   name: caa-issue
@@ -595,7 +595,7 @@ spec:
   value: "letsencrypt.org"
 ---
 # Allow Let's Encrypt for wildcard certs
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: CAARecord
 metadata:
   name: caa-issuewild
@@ -607,7 +607,7 @@ spec:
   value: "letsencrypt.org"
 ---
 # Violation reporting
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: CAARecord
 metadata:
   name: caa-iodef

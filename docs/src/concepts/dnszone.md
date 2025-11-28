@@ -1,33 +1,31 @@
 # DNSZone
 
-The `DNSZone` resource defines a DNS zone with its SOA record and targets BIND9 instances using label selectors.
+The `DNSZone` resource defines a DNS zone with its SOA record and references a specific BIND9 cluster.
 
 ## Overview
 
 A DNSZone represents:
 - Zone name (e.g., example.com)
 - SOA (Start of Authority) record
-- Instance selector for targeting BIND9 instances
+- Cluster reference to a Bind9Instance
 - Default TTL for records
+
+The zone is created on the referenced BIND9 cluster using the RNDC protocol.
 
 ## Example
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: example-com
   namespace: dns-system
 spec:
   zoneName: example.com
-  type: primary
-  instanceSelector:
-    matchLabels:
-      dns-role: primary
-      environment: production
+  clusterRef: my-dns-cluster  # References Bind9Instance name
   soaRecord:
     primaryNS: ns1.example.com.
-    adminEmail: admin@example.com
+    adminEmail: admin.example.com.  # Note: @ replaced with .
     serial: 2024010101
     refresh: 3600
     retry: 600
@@ -39,9 +37,8 @@ status:
     - type: Ready
       status: "True"
       reason: Synchronized
-      message: "Zone created for 2 instances"
+      message: "Zone created for cluster: my-dns-cluster"
   observedGeneration: 1
-  matchedInstances: 2
 ```
 
 ## Specification
@@ -49,51 +46,66 @@ status:
 ### Required Fields
 
 - `spec.zoneName` - The DNS zone name (e.g., example.com)
-- `spec.instanceSelector` - Label selector for targeting BIND9 instances
+- `spec.clusterRef` - Name of the Bind9Instance to host this zone
 - `spec.soaRecord` - Start of Authority record configuration
 
 ### SOA Record Fields
 
-- `primaryNS` - Primary nameserver (must end with .)
-- `adminEmail` - Zone administrator email
-- `serial` - Zone serial number
-- `refresh` - Refresh interval in seconds
-- `retry` - Retry interval in seconds
-- `expire` - Expiry time in seconds
-- `negativeTTL` - Negative caching TTL
+- `primaryNS` - Primary nameserver (must end with `.`)
+- `adminEmail` - Zone administrator email (@ replaced with `.`, must end with `.`)
+- `serial` - Zone serial number (typically YYYYMMDDNN format)
+- `refresh` - Refresh interval in seconds (how often secondaries check for updates)
+- `retry` - Retry interval in seconds (retry delay after failed refresh)
+- `expire` - Expiry time in seconds (when to stop serving if primary unreachable)
+- `negativeTTL` - Negative caching TTL (cache duration for NXDOMAIN responses)
 
 ### Optional Fields
 
-- `spec.type` - Zone type (primary or secondary, default: primary)
-- `spec.ttl` - Default TTL for records (default: 3600)
+- `spec.ttl` - Default TTL for records in seconds (default: 3600)
 
-## Instance Selectors
+## How Zones Are Created
 
-Target specific BIND9 instances using label selectors:
+When you create a DNSZone resource:
 
-### Match Labels
+1. **Controller discovers pods** - Finds BIND9 pods with label `instance={clusterRef}`
+2. **Loads RNDC key** - Retrieves Secret named `{clusterRef}-rndc-key`
+3. **Connects via RNDC** - Establishes connection to `{clusterRef}.{namespace}.svc.cluster.local:953`
+4. **Executes addzone** - Runs `rndc addzone` command with zone configuration
+5. **BIND9 creates zone** - BIND9 creates the zone file and starts serving the zone
+6. **Updates status** - Controller updates DNSZone status to Ready
+
+## Cluster References
+
+Zones reference a specific BIND9 cluster by name:
 
 ```yaml
-instanceSelector:
-  matchLabels:
-    dns-role: primary
-    datacenter: us-east
+spec:
+  clusterRef: my-dns-cluster
 ```
 
-### Match Expressions
+This references a Bind9Instance resource:
 
 ```yaml
-instanceSelector:
-  matchExpressions:
-    - key: dns-role
-      operator: In
-      values:
-        - primary
-        - secondary
-    - key: environment
-      operator: NotIn
-      values:
-        - development
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: my-dns-cluster  # Referenced by DNSZone
+  namespace: dns-system
+spec:
+  role: primary
+  replicas: 2
+```
+
+### RNDC Key Discovery
+
+The controller automatically finds the RNDC key using the cluster reference:
+
+```
+DNSZone.spec.clusterRef = "my-dns-cluster"
+    ↓
+Secret name = "my-dns-cluster-rndc-key"
+    ↓
+RNDC authentication to: my-dns-cluster.dns-system.svc.cluster.local:953
 ```
 
 ## Status
@@ -106,45 +118,63 @@ status:
     - type: Ready
       status: "True"
       reason: Synchronized
-      message: "Zone created for 2 instances"
-  matchedInstances: 2
+      message: "Zone created for cluster: my-dns-cluster"
+  observedGeneration: 1
   recordCount: 5
 ```
+
+Possible status conditions:
+
+- **Ready/True** - Zone created and serving on BIND9 cluster
+- **Ready/False** - Zone creation failed or RNDC error
+- **Ready/Unknown** - Controller hasn't reconciled yet
 
 ## Use Cases
 
 ### Simple Zone
 
 ```yaml
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: DNSZone
+metadata:
+  name: simple-com
 spec:
   zoneName: simple.com
-  instanceSelector:
-    matchLabels:
-      dns-role: primary
+  clusterRef: primary-dns
   soaRecord:
     primaryNS: ns1.simple.com.
-    adminEmail: admin@simple.com
+    adminEmail: admin.simple.com.
+    serial: 2024010101
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTTL: 86400
 ```
 
-### Multi-Region Zone
+### Production Zone with Custom TTL
 
 ```yaml
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: DNSZone
+metadata:
+  name: api-example-com
 spec:
-  zoneName: global.com
-  instanceSelector:
-    matchExpressions:
-      - key: dns-role
-        operator: In
-        values:
-          - primary
-          - secondary
+  zoneName: api.example.com
+  clusterRef: production-dns
+  ttl: 300  # 5 minute default TTL for faster updates
   soaRecord:
-    primaryNS: ns1.global.com.
-    adminEmail: admin@global.com
+    primaryNS: ns1.api.example.com.
+    adminEmail: ops.example.com.
+    serial: 2024010101
+    refresh: 1800   # Check every 30 minutes
+    retry: 300      # Retry after 5 minutes
+    expire: 604800
+    negativeTTL: 300  # Short negative cache
 ```
 
 ## Next Steps
 
 - [DNS Records](./records.md) - Add records to zones
-- [Label Selectors](../guide/label-selectors.md) - Advanced targeting
+- [RNDC-Based Architecture](./architecture-rndc.md) - Learn how RNDC protocol works
+- [Bind9Instance](./bind9instance.md) - Learn about BIND9 instance resources
 - [Creating Zones](../guide/creating-zones.md) - Zone management guide

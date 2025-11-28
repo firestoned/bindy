@@ -1,0 +1,442 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>GitHub Pages Setup</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title"></h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="github-pages-setup-guide"><a class="header" href="#github-pages-setup-guide">GitHub Pages Setup Guide</a></h1>
+<p>This guide explains how to enable GitHub Pages for the Bindy documentation.</p>
+<h2 id="prerequisites"><a class="header" href="#prerequisites">Prerequisites</a></h2>
+<ul>
+<li>Repository must be pushed to GitHub</li>
+<li>You must have admin access to the repository</li>
+<li>The <code>.github/workflows/docs.yaml</code> workflow file must be present</li>
+</ul>
+<h2 id="setup-steps"><a class="header" href="#setup-steps">Setup Steps</a></h2>
+<h3 id="1-enable-github-pages"><a class="header" href="#1-enable-github-pages">1. Enable GitHub Pages</a></h3>
+<ol>
+<li>Go to your repository on GitHub: https://github.com/firestoned/bindy</li>
+<li>Click <strong>Settings</strong> (in the repository menu)</li>
+<li>Scroll down to the <strong>Pages</strong> section in the left sidebar</li>
+<li>Click on <strong>Pages</strong></li>
+</ol>
+<h3 id="2-configure-source"><a class="header" href="#2-configure-source">2. Configure Source</a></h3>
+<p>Under "Build and deployment":</p>
+<ol>
+<li><strong>Source</strong>: Select "GitHub Actions"</li>
+<li>This will use the workflow in <code>.github/workflows/docs.yaml</code></li>
+</ol>
+<p>That's it! GitHub will automatically use the workflow.</p>
+<h3 id="3-trigger-the-first-build"><a class="header" href="#3-trigger-the-first-build">3. Trigger the First Build</a></h3>
+<p>The documentation will be built and deployed automatically when you push to the <code>main</code> branch.</p>
+<p>To trigger the first build:</p>
+<ol>
+<li>
+<p>Push any change to <code>main</code>:</p>
+<pre><code class="language-bash">git push origin main
+</code></pre>
+</li>
+<li>
+<p>Or manually trigger the workflow:</p>
+<ul>
+<li>Go to <strong>Actions</strong> tab</li>
+<li>Click on "Documentation" workflow</li>
+<li>Click "Run workflow"</li>
+<li>Select <code>main</code> branch</li>
+<li>Click "Run workflow"</li>
+</ul>
+</li>
+</ol>
+<h3 id="4-monitor-the-build"><a class="header" href="#4-monitor-the-build">4. Monitor the Build</a></h3>
+<ol>
+<li>Go to the <strong>Actions</strong> tab in your repository</li>
+<li>Click on the "Documentation" workflow run</li>
+<li>Watch the build progress</li>
+<li>Once complete, the "deploy" job will show the URL</li>
+</ol>
+<h3 id="5-access-your-documentation"><a class="header" href="#5-access-your-documentation">5. Access Your Documentation</a></h3>
+<p>Once deployed, your documentation will be available at:</p>
+<p><strong>https://firestoned.github.io/bindy/</strong></p>
+<h2 id="verification"><a class="header" href="#verification">Verification</a></h2>
+<h3 id="check-deployment-status"><a class="header" href="#check-deployment-status">Check Deployment Status</a></h3>
+<ol>
+<li>Go to <strong>Settings</strong> → <strong>Pages</strong></li>
+<li>You should see: "Your site is live at https://firestoned.github.io/bindy/"</li>
+<li>Click "Visit site" to view the documentation</li>
+</ol>
+<h3 id="verify-documentation-structure"><a class="header" href="#verify-documentation-structure">Verify Documentation Structure</a></h3>
+<p>Your deployed site should have:</p>
+<ul>
+<li>Main documentation (mdBook): https://firestoned.github.io/bindy/</li>
+<li>API reference (rustdoc): https://firestoned.github.io/bindy/rustdoc/</li>
+</ul>
+<h2 id="troubleshooting"><a class="header" href="#troubleshooting">Troubleshooting</a></h2>
+<h3 id="build-fails"><a class="header" href="#build-fails">Build Fails</a></h3>
+<p><strong>Check workflow logs:</strong></p>
+<ol>
+<li>Go to <strong>Actions</strong> tab</li>
+<li>Click on the failed workflow run</li>
+<li>Expand the failed step to see the error</li>
+<li>Common issues:
+<ul>
+<li>Rust compilation errors</li>
+<li>mdBook build errors</li>
+<li>Missing files</li>
+</ul>
+</li>
+</ol>
+<p><strong>Fix and retry:</strong></p>
+<ol>
+<li>Fix the issue locally</li>
+<li>Test with <code>make docs</code></li>
+<li>Push the fix to <code>main</code></li>
+<li>GitHub Actions will automatically retry</li>
+</ol>
+<h3 id="pages-not-showing"><a class="header" href="#pages-not-showing">Pages Not Showing</a></h3>
+<p><strong>Verify GitHub Pages is enabled:</strong></p>
+<ol>
+<li>Go to <strong>Settings</strong> → <strong>Pages</strong></li>
+<li>Ensure source is set to "GitHub Actions"</li>
+<li>Check that at least one successful deployment has completed</li>
+</ol>
+<p><strong>Check permissions:</strong></p>
+<p>The workflow needs these permissions (already configured in <code>docs.yaml</code>):</p>
+<pre><code class="language-yaml">permissions:
+  contents: read
+  pages: write
+  id-token: write
+</code></pre>
+<h3 id="404-errors-on-subpages"><a class="header" href="#404-errors-on-subpages">404 Errors on Subpages</a></h3>
+<p><strong>Check base URL configuration:</strong></p>
+<p>The <code>book.toml</code> has:</p>
+<pre><code class="language-toml">site-url = "/bindy/"
+</code></pre>
+<p>This must match your repository name. If your repository is named differently, update this value.</p>
+<h3 id="custom-domain-optional"><a class="header" href="#custom-domain-optional">Custom Domain (Optional)</a></h3>
+<p>To use a custom domain:</p>
+<ol>
+<li>Go to <strong>Settings</strong> → <strong>Pages</strong></li>
+<li>Under "Custom domain", enter your domain</li>
+<li>Update the <code>CNAME</code> field in <code>book.toml</code>:
+<pre><code class="language-toml">cname = "docs.yourdomain.com"
+</code></pre>
+</li>
+<li>Configure DNS:
+<ul>
+<li>Add a CNAME record pointing to <code>firestoned.github.io</code></li>
+<li>Or A records pointing to GitHub Pages IPs</li>
+</ul>
+</li>
+</ol>
+<h2 id="updating-documentation"><a class="header" href="#updating-documentation">Updating Documentation</a></h2>
+<p>Documentation is automatically deployed on every push to <code>main</code>:</p>
+<pre><code class="language-bash"># Make changes to documentation
+vim docs/src/introduction.md
+
+# Commit and push
+git add docs/src/introduction.md
+git commit -m "Update introduction"
+git push origin main
+
+# GitHub Actions will automatically build and deploy
+</code></pre>
+<h2 id="local-preview"><a class="header" href="#local-preview">Local Preview</a></h2>
+<p>Before pushing, preview your changes locally:</p>
+<pre><code class="language-bash"># Build and serve documentation
+make docs-serve
+
+# Or watch for changes
+make docs-watch
+
+# Open http://localhost:3000 in your browser
+</code></pre>
+<h2 id="workflow-details"><a class="header" href="#workflow-details">Workflow Details</a></h2>
+<p>The GitHub Actions workflow (<code>.github/workflows/docs.yaml</code>):</p>
+<ol>
+<li>
+<p><strong>Build</strong> job:</p>
+<ul>
+<li>Checks out the repository</li>
+<li>Sets up Rust toolchain</li>
+<li>Installs mdBook</li>
+<li>Builds rustdoc API documentation</li>
+<li>Builds mdBook user documentation</li>
+<li>Combines both into a single site</li>
+<li>Uploads artifact to GitHub Pages</li>
+</ul>
+</li>
+<li>
+<p><strong>Deploy</strong> job (only on <code>main</code>):</p>
+<ul>
+<li>Deploys the artifact to GitHub Pages</li>
+<li>Updates the live site</li>
+</ul>
+</li>
+</ol>
+<h2 id="branch-protection-recommended"><a class="header" href="#branch-protection-recommended">Branch Protection (Recommended)</a></h2>
+<p>To ensure documentation quality:</p>
+<ol>
+<li>Go to <strong>Settings</strong> → <strong>Branches</strong></li>
+<li>Add a branch protection rule for <code>main</code>:
+<ul>
+<li>Require pull request reviews</li>
+<li>Require status checks (include "Documentation / Build Documentation")</li>
+<li>This ensures the documentation builds before merging</li>
+</ul>
+</li>
+</ol>
+<h2 id="additional-configuration"><a class="header" href="#additional-configuration">Additional Configuration</a></h2>
+<h3 id="custom-theme"><a class="header" href="#custom-theme">Custom Theme</a></h3>
+<p>The documentation uses a custom theme defined in:</p>
+<ul>
+<li><code>docs/theme/custom.css</code> - Custom styling</li>
+</ul>
+<p>To customize:</p>
+<ol>
+<li>Edit the CSS file</li>
+<li>Test locally with <code>make docs-watch</code></li>
+<li>Push to <code>main</code></li>
+</ol>
+<h3 id="search-configuration"><a class="header" href="#search-configuration">Search Configuration</a></h3>
+<p>Search is configured in <code>book.toml</code>:</p>
+<pre><code class="language-toml">[output.html.search]
+enable = true
+limit-results = 30
+</code></pre>
+<p>Adjust as needed for your use case.</p>
+<h2 id="support"><a class="header" href="#support">Support</a></h2>
+<p>For issues with GitHub Pages deployment:</p>
+<ul>
+<li><strong>GitHub Pages Status</strong>: https://www.githubstatus.com/</li>
+<li><strong>GitHub Actions Documentation</strong>: https://docs.github.com/en/actions</li>
+<li><strong>GitHub Pages Documentation</strong>: https://docs.github.com/en/pages</li>
+</ul>
+<p>For issues with the documentation content:</p>
+<ul>
+<li>Create an issue: https://github.com/firestoned/bindy/issues</li>
+<li>Start a discussion: https://github.com/firestoned/bindy/discussions</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../development/workflow.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../development/architecture-deep-dive.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../development/workflow.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../development/architecture-deep-dive.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

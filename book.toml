@@ -3,7 +3,6 @@ title = "Bindy - BIND9 DNS Controller for Kubernetes"
 authors = ["Erick Bourgeois"]
 description = "A high-performance Kubernetes controller written in Rust using kube-rs that manages BIND9 DNS infrastructure through Custom Resource Definitions (CRDs)."
 language = "en"
-multilingual = false
 src = "docs/src"
 
 [build]
@@ -16,7 +15,6 @@ preferred-dark-theme = "navy"
 smart-punctuation = true
 mathjax-support = false
 git-repository-url = "https://github.com/firestoned/bindy"
-git-repository-icon = "fa-github"
 edit-url-template = "https://github.com/firestoned/bindy/edit/main/{path}"
 site-url = "/bindy/"
 cname = ""
@@ -26,7 +24,7 @@ no-section-label = false
 
 [output.html.fold]
 enable = true
-level = 1
+level = 2
 
 [output.html.playground]
 editable = false
@@ -43,7 +41,7 @@ boost-title = 2
 boost-hierarchy = 1
 boost-paragraph = 1
 expand = true
-heading-split-level = 3
+heading-split-level = 0
 
 [output.html.code.hidelines]
 python = "~"
@@ -51,3 +49,8 @@ python = "~"
 [preprocessor.links]
 
 [preprocessor.index]
+
+[preprocessor.toc]
+# The maximum level of headers to include in the table of contents.
+# Setting to 2 will include H1 and H2, but hide H3 and below.
+max-level = 2

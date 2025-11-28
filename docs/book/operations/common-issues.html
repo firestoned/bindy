@@ -1,0 +1,426 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Common Issues</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title"></h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="common-issues"><a class="header" href="#common-issues">Common Issues</a></h1>
+<p>Solutions to frequently encountered problems.</p>
+<h2 id="bind9instance-issues"><a class="header" href="#bind9instance-issues">Bind9Instance Issues</a></h2>
+<h3 id="pods-not-starting"><a class="header" href="#pods-not-starting">Pods Not Starting</a></h3>
+<p><strong>Symptom:</strong> Bind9Instance created but pods not running</p>
+<p><strong>Diagnosis:</strong></p>
+<pre><code class="language-bash">kubectl get pods -n dns-system -l instance=primary-dns
+kubectl describe pod -n dns-system &lt;pod-name&gt;
+</code></pre>
+<p><strong>Common Causes:</strong></p>
+<ol>
+<li><strong>Image pull errors</strong> - Check image name and registry access</li>
+<li><strong>Resource limits</strong> - Insufficient CPU/memory on nodes</li>
+<li><strong>RBAC issues</strong> - ServiceAccount lacks permissions</li>
+</ol>
+<p><strong>Solution:</strong></p>
+<pre><code class="language-bash"># Check events
+kubectl get events -n dns-system
+
+# Fix resource limits
+kubectl edit bind9instance primary-dns -n dns-system
+# Increase resources.requests and resources.limits
+
+# Verify RBAC
+kubectl auth can-i create deployments \
+  --as=system:serviceaccount:dns-system:bindy
+</code></pre>
+<h3 id="configmap-not-created"><a class="header" href="#configmap-not-created">ConfigMap Not Created</a></h3>
+<p><strong>Symptom:</strong> ConfigMap missing for Bind9Instance</p>
+<p><strong>Diagnosis:</strong></p>
+<pre><code class="language-bash">kubectl get configmap -n dns-system
+kubectl logs -n dns-system deployment/bindy | grep ConfigMap
+</code></pre>
+<p><strong>Solution:</strong></p>
+<pre><code class="language-bash"># Check controller logs for errors
+kubectl logs -n dns-system deployment/bindy --tail=50
+
+# Delete and recreate instance
+kubectl delete bind9instance primary-dns -n dns-system
+kubectl apply -f instance.yaml
+</code></pre>
+<h2 id="dnszone-issues"><a class="header" href="#dnszone-issues">DNSZone Issues</a></h2>
+<h3 id="no-instances-match-selector"><a class="header" href="#no-instances-match-selector">No Instances Match Selector</a></h3>
+<p><strong>Symptom:</strong> DNSZone status shows "No Bind9Instances matched selector"</p>
+<p><strong>Diagnosis:</strong></p>
+<pre><code class="language-bash">kubectl get bind9instances -n dns-system --show-labels
+kubectl get dnszone example-com -n dns-system -o yaml | yq '.spec.instanceSelector'
+</code></pre>
+<p><strong>Solution:</strong></p>
+<pre><code class="language-bash"># Verify labels on instances
+kubectl label bind9instance primary-dns dns-role=primary -n dns-system
+
+# Or update zone selector
+kubectl edit dnszone example-com -n dns-system
+</code></pre>
+<h3 id="zone-file-not-created"><a class="header" href="#zone-file-not-created">Zone File Not Created</a></h3>
+<p><strong>Symptom:</strong> Zone exists but no zone file in BIND9</p>
+<p><strong>Diagnosis:</strong></p>
+<pre><code class="language-bash">kubectl exec -n dns-system deployment/primary-dns -- ls -la /var/lib/bind/zones/
+kubectl logs -n dns-system deployment/bindy | grep "example-com"
+</code></pre>
+<p><strong>Solution:</strong></p>
+<pre><code class="language-bash"># Check if zone reconciliation succeeded
+kubectl describe dnszone example-com -n dns-system
+
+# Trigger reconciliation by updating zone
+kubectl annotate dnszone example-com reconcile=true -n dns-system
+</code></pre>
+<h2 id="dns-record-issues"><a class="header" href="#dns-record-issues">DNS Record Issues</a></h2>
+<h3 id="record-not-appearing-in-zone"><a class="header" href="#record-not-appearing-in-zone">Record Not Appearing in Zone</a></h3>
+<p><strong>Symptom:</strong> ARecord created but not in zone file</p>
+<p><strong>Diagnosis:</strong></p>
+<pre><code class="language-bash"># Check record status
+kubectl get arecord www-example -n dns-system -o yaml
+
+# Check zone file
+kubectl exec -n dns-system deployment/primary-dns -- cat /var/lib/bind/zones/example.com.zone
+</code></pre>
+<p><strong>Solution:</strong></p>
+<pre><code class="language-bash"># Verify zone reference is correct
+kubectl get arecord www-example -n dns-system -o jsonpath='{.spec.zone}'
+
+# Should match DNSZone resource name
+kubectl get dnszones -n dns-system
+
+# Update if incorrect
+kubectl edit arecord www-example -n dns-system
+</code></pre>
+<h3 id="dns-query-not-resolving"><a class="header" href="#dns-query-not-resolving">DNS Query Not Resolving</a></h3>
+<p><strong>Symptom:</strong> dig/nslookup fails to resolve</p>
+<p><strong>Diagnosis:</strong></p>
+<pre><code class="language-bash"># Get DNS service IP
+SERVICE_IP=$(kubectl get svc primary-dns -n dns-system -o jsonpath='{.spec.clusterIP}')
+
+# Test query
+dig @$SERVICE_IP www.example.com
+
+# Check BIND9 logs
+kubectl logs -n dns-system -l instance=primary-dns | tail -20
+</code></pre>
+<p><strong>Solutions:</strong></p>
+<ol>
+<li><strong>Record doesn't exist:</strong></li>
+</ol>
+<pre><code class="language-bash">kubectl get arecords -n dns-system
+kubectl apply -f record.yaml
+</code></pre>
+<ol start="2">
+<li><strong>Zone not loaded:</strong></li>
+</ol>
+<pre><code class="language-bash">kubectl logs -n dns-system -l instance=primary-dns | grep "loaded serial"
+</code></pre>
+<ol start="3">
+<li><strong>Network policy blocking:</strong></li>
+</ol>
+<pre><code class="language-bash">kubectl get networkpolicies -n dns-system
+</code></pre>
+<h2 id="zone-transfer-issues"><a class="header" href="#zone-transfer-issues">Zone Transfer Issues</a></h2>
+<h3 id="secondary-not-receiving-transfers"><a class="header" href="#secondary-not-receiving-transfers">Secondary Not Receiving Transfers</a></h3>
+<p><strong>Symptom:</strong> Secondary instance not getting zone updates</p>
+<p><strong>Diagnosis:</strong></p>
+<pre><code class="language-bash"># Check secondary logs
+kubectl logs -n dns-system -l dns-role=secondary | grep transfer
+
+# Check primary allows transfers
+kubectl get bind9instance primary-dns -n dns-system -o jsonpath='{.spec.config.allowTransfer}'
+</code></pre>
+<p><strong>Solution:</strong></p>
+<pre><code class="language-bash"># Update primary to allow transfers
+kubectl edit bind9instance primary-dns -n dns-system
+
+# Add secondary network to allowTransfer:
+spec:
+  config:
+    allowTransfer:
+      - "10.0.0.0/8"
+
+# Verify network connectivity
+kubectl exec -n dns-system deployment/secondary-dns -- dig @primary-dns-service AXFR example.com
+</code></pre>
+<h2 id="performance-issues"><a class="header" href="#performance-issues">Performance Issues</a></h2>
+<h3 id="high-query-latency"><a class="header" href="#high-query-latency">High Query Latency</a></h3>
+<p><strong>Symptom:</strong> DNS queries taking too long</p>
+<p><strong>Diagnosis:</strong></p>
+<pre><code class="language-bash"># Test query time
+time dig @$SERVICE_IP example.com
+
+# Check resource usage
+kubectl top pods -n dns-system -l instance=primary-dns
+</code></pre>
+<p><strong>Solutions:</strong></p>
+<ol>
+<li><strong>Increase resources:</strong></li>
+</ol>
+<pre><code class="language-yaml">spec:
+  resources:
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+</code></pre>
+<ol start="2">
+<li><strong>Add more replicas:</strong></li>
+</ol>
+<pre><code class="language-yaml">spec:
+  replicas: 3
+</code></pre>
+<ol start="3">
+<li><strong>Enable caching</strong> (if appropriate for your use case)</li>
+</ol>
+<h2 id="rbac-issues"><a class="header" href="#rbac-issues">RBAC Issues</a></h2>
+<h3 id="forbidden-errors-in-logs"><a class="header" href="#forbidden-errors-in-logs">Forbidden Errors in Logs</a></h3>
+<p><strong>Symptom:</strong> Controller logs show "Forbidden" errors</p>
+<p><strong>Diagnosis:</strong></p>
+<pre><code class="language-bash">kubectl logs -n dns-system deployment/bindy | grep Forbidden
+
+# Check permissions
+kubectl auth can-i create deployments \
+  --as=system:serviceaccount:dns-system:bindy \
+  -n dns-system
+</code></pre>
+<p><strong>Solution:</strong></p>
+<pre><code class="language-bash"># Reapply RBAC
+kubectl apply -f deploy/rbac/
+
+# Verify ClusterRoleBinding
+kubectl get clusterrolebinding bindy-rolebinding -o yaml
+
+# Restart controller
+kubectl rollout restart deployment/bindy -n dns-system
+</code></pre>
+<h2 id="next-steps"><a class="header" href="#next-steps">Next Steps</a></h2>
+<ul>
+<li><a href="./debugging.html">Debugging Guide</a> - Detailed debugging procedures</li>
+<li><a href="./faq.html">FAQ</a> - Frequently asked questions</li>
+<li><a href="./logging.html">Logging</a> - Log analysis</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../operations/troubleshooting.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../operations/debugging.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../operations/troubleshooting.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../operations/debugging.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

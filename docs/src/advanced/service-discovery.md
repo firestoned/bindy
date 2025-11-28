@@ -21,7 +21,7 @@ spec:
   - port: 80
 ---
 # Create corresponding DNS record
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: myapp

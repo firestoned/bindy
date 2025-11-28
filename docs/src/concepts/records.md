@@ -30,7 +30,7 @@ spec:
 ## ARecord (IPv4)
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: www-example
@@ -46,7 +46,7 @@ spec:
 ## AAAARecord (IPv6)
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: AAAARecord
 metadata:
   name: www-example-ipv6
@@ -62,7 +62,7 @@ spec:
 ## CNAMERecord (Alias)
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: CNAMERecord
 metadata:
   name: blog-example
@@ -78,7 +78,7 @@ spec:
 ## MXRecord (Mail Exchange)
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: MXRecord
 metadata:
   name: mail-example
@@ -95,7 +95,7 @@ spec:
 ## TXTRecord (Text)
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: TXTRecord
 metadata:
   name: spf-example
@@ -112,7 +112,7 @@ spec:
 ## NSRecord (Nameserver)
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: NSRecord
 metadata:
   name: delegate-subdomain
@@ -128,7 +128,7 @@ spec:
 ## SRVRecord (Service)
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: SRVRecord
 metadata:
   name: sip-service
@@ -147,7 +147,7 @@ spec:
 ## CAARecord (Certificate Authority)
 
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: CAARecord
 metadata:
   name: letsencrypt-caa
