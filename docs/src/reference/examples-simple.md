@@ -190,7 +190,7 @@ spec:
 ### 1. Install CRDs
 
 ```bash
-kubectl apply -f deploy/crds/
+kubectl apply -k deploy/crds/
 ```
 
 ### 2. Deploy Bindy Operator

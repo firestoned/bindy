@@ -107,6 +107,7 @@ pub struct LabelSelectorRequirement {
 
 /// SOA Record specification
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct SOARecord {
     pub primary_ns: String,
     pub admin_email: String,
