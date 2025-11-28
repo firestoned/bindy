@@ -3,10 +3,10 @@ title = "Bindy - BIND9 DNS Controller for Kubernetes"
 authors = ["Erick Bourgeois"]
 description = "A high-performance Kubernetes controller written in Rust using kube-rs that manages BIND9 DNS infrastructure through Custom Resource Definitions (CRDs)."
 language = "en"
-src = "docs/src"
+src = "src"
 
 [build]
-build-dir = "docs/target"
+build-dir = "target"
 create-missing = true
 
 [output.html]
@@ -18,7 +18,7 @@ git-repository-url = "https://github.com/firestoned/bindy"
 edit-url-template = "https://github.com/firestoned/bindy/edit/main/{path}"
 site-url = "/bindy/"
 cname = ""
-additional-css = ["docs/theme/custom.css"]
+additional-css = ["theme/custom.css"]
 additional-js = ["mermaid.min.js", "mermaid-init.js"]
 no-section-label = false
 
@@ -57,3 +57,5 @@ max-level = 2
 
 [preprocessor.mermaid]
 command = "mdbook-mermaid"
+renderer = ["html"]
+optional = true
