@@ -13,6 +13,7 @@
   - [Architecture Overview](./concepts/architecture.md)
   - [Technical Architecture](./concepts/architecture-technical.md)
   - [RNDC-Based Architecture](./concepts/architecture-rndc.md)
+  - [Architecture Diagrams](./concepts/architecture-diagrams.md)
   - [Custom Resource Definitions](./concepts/crds.md)
   - [Bind9Cluster](./concepts/bind9cluster.md)
   - [Bind9Instance](./concepts/bind9instance.md)
@@ -90,6 +91,7 @@
 # Reference
 
 - [API Reference](./reference/api.md)
+  - [Bind9Cluster Spec](./reference/bind9cluster-spec.md)
   - [Bind9Instance Spec](./reference/bind9instance-spec.md)
   - [DNSZone Spec](./reference/dnszone-spec.md)
   - [Record Specs](./reference/record-specs.md)

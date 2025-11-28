@@ -111,9 +111,11 @@ build-debug: ## Build the Rust binary in debug mode
 	cargo build
 
 # Documentation targets
-docs: ## Build all documentation (mdBook + rustdoc)
+docs: ## Build all documentation (mdBook + rustdoc + CRD API reference)
 	@echo "Building documentation..."
 	@command -v mdbook >/dev/null 2>&1 || { echo "Installing mdbook..."; cargo install mdbook; }
+	@echo "Generating CRD API reference documentation..."
+	@cargo run --bin crddoc > docs/src/reference/api.md
 	@echo "Building rustdoc API documentation..."
 	@cargo doc --no-deps --all-features
 	@echo "Building mdBook documentation..."
@@ -123,7 +125,8 @@ docs: ## Build all documentation (mdBook + rustdoc)
 	@cp -r target/doc/* docs/target/rustdoc/
 	@echo "Documentation built in docs/target/"
 	@echo "  - User guide: docs/target/index.html"
-	@echo "  - API reference: docs/target/rustdoc/bindy/index.html"
+	@echo "  - CRD API reference: docs/target/reference/api.html"
+	@echo "  - Rustdoc: docs/target/rustdoc/bindy/index.html"
 
 docs-serve: docs ## Build and serve documentation locally
 	@echo "Serving documentation at http://localhost:3000"
@@ -148,6 +151,8 @@ docs-watch: ## Watch and rebuild mdBook documentation on changes
 docs-github-pages: ## Build documentation for GitHub Pages deployment
 	@echo "Building documentation for GitHub Pages..."
 	@command -v mdbook >/dev/null 2>&1 || { echo "Error: mdbook not found. Install with: cargo install mdbook"; exit 1; }
+	@echo "Generating CRD API reference documentation..."
+	@cargo run --bin crddoc > docs/src/reference/api.md
 	@echo "Building rustdoc API documentation..."
 	@cargo doc --no-deps --all-features
 	@echo "Building mdBook documentation..."
