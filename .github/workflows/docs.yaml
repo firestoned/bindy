@@ -35,14 +35,14 @@ jobs:
       - name: Install mdBook and preprocessors
         run: |
           mkdir -p ~/bin
-          curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.4.40/mdbook-v0.4.40-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C ~/bin
+          curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.5.1/mdbook-v0.5.1-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C ~/bin
           echo "$HOME/bin" >> $GITHUB_PATH
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          cargo install mdbook-mermaid
-          cargo install mdbook-toc
+          cargo install mdbook-mermaid --version 0.17.0
+          cargo install mdbook-toc --version 0.15.1
 
       - name: Build documentation
-        run: make docs-github-pages
+        run: make docs
 
       - name: Setup Pages
         if: github.ref == 'refs/heads/main'

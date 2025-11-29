@@ -397,7 +397,7 @@ pub struct AAAARecordSpec {
 
     /// IPv6 address in standard notation.
     ///
-    /// Examples: "`2001:db8::1`", "`fe80::1`", "`::1`"
+    /// Examples: `2001:db8::1`, `fe80::1`, `::1`
     pub ipv6_address: String,
 
     /// Time To Live in seconds.
@@ -792,7 +792,7 @@ pub struct ImageConfig {
 
     /// Image pull policy
     ///
-    /// Example: "`IfNotPresent`", "Always", "Never"
+    /// Example: `IfNotPresent`, `Always`, `Never`
     #[serde(default)]
     pub image_pull_policy: Option<String>,
 

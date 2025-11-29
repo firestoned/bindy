@@ -34,7 +34,7 @@ DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defi
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
-| `clusterRef` | string | Yes | Reference to the `Bind9Instance` that serves this zone.  Must match the name of a `Bind9Instance` in the same namespace. The zone will be added to this instance via rndc addzone. |
+| `clusterRef` | string | Yes | Reference to the \`Bind9Instance\` that serves this zone.  Must match the name of a \`Bind9Instance\` in the same namespace. The zone will be added to this instance via rndc addzone. |
 | `soaRecord` | object | Yes | SOA (Start of Authority) record - defines zone authority and refresh parameters.  The SOA record is required for all authoritative zones and contains timing information for zone transfers and caching. |
 | `ttl` | integer | No | Default TTL (Time To Live) for records in this zone, in seconds.  If not specified, individual records must specify their own TTL. Typical values: 300-86400 (5 minutes to 1 day). |
 | `zoneName` | string | Yes | DNS zone name (e.g., "example.com").  Must be a valid DNS zone name. Can be a domain or subdomain. Examples: "example.com", "internal.example.com", "10.in-addr.arpa" |
@@ -64,7 +64,7 @@ ARecord maps a DNS hostname to an IPv4 address. Multiple A records for the same 
 | `ipv4Address` | string | Yes | IPv4 address in dotted-decimal notation.  Must be a valid IPv4 address (e.g., "192.0.2.1"). |
 | `name` | string | Yes | Record name within the zone. Use "@" for the zone apex.  Examples: "www", "mail", "ftp", "@" The full DNS name will be: {name}.{zone} |
 | `ttl` | integer | No | Time To Live in seconds. Overrides zone default TTL if specified.  Typical values: 60-86400 (1 minute to 1 day). |
-| `zone` | string | Yes | DNS zone this record belongs to (e.g., "example.com").  Must match the zoneName of an existing `DNSZone` resource. |
+| `zone` | string | Yes | DNS zone this record belongs to (e.g., "example.com").  Must match the zoneName of an existing \`DNSZone\` resource. |
 
 #### Status Fields
 
@@ -85,7 +85,7 @@ AAAARecord maps a DNS hostname to an IPv6 address. This is the IPv6 equivalent o
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
-| `ipv6Address` | string | Yes | IPv6 address in standard notation.  Examples: "`2001:db8::1`", "`fe80::1`", "`::1`" |
+| `ipv6Address` | string | Yes | IPv6 address in standard notation.  Examples: \`2001:db8::1\`, \`fe80::1\`, \`::1\` |
 | `name` | string | Yes | Record name within the zone. |
 | `ttl` | integer | No | Time To Live in seconds. |
 | `zone` | string | Yes | DNS zone this record belongs to. |
@@ -263,12 +263,12 @@ Bind9Cluster defines a logical grouping of BIND9 DNS server instances with share
 | ----- | ---- | -------- | ----------- |
 | `acls` | object | No | ACLs that can be referenced by instances |
 | `config` | object | No | Shared configuration for all instances in the cluster |
-| `configMapRefs` | object | No | `ConfigMap` references for BIND9 configuration files |
+| `configMapRefs` | object | No | \`ConfigMap\` references for BIND9 configuration files |
 | `image` | object | No | Container image configuration |
 | `tsigKeys` | array | No | TSIG keys for authenticated zone transfers |
 | `version` | string | No | Shared BIND9 version for the cluster |
 | `volumeMounts` | array | No | Volume mounts that specify where volumes should be mounted in containers  These mounts are inherited by all instances unless overridden. |
-| `volumes` | array | No | Volumes that can be mounted by instances in this cluster  These volumes are inherited by all instances unless overridden. Common use cases include PersistentVolumeClaims for zone data storage. |
+| `volumes` | array | No | Volumes that can be mounted by instances in this cluster  These volumes are inherited by all instances unless overridden. Common use cases include \`PersistentVolumeClaims\` for zone data storage. |
 
 #### Status Fields
 
@@ -291,16 +291,16 @@ Bind9Instance represents a BIND9 DNS server deployment in Kubernetes. Each insta
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
-| `clusterRef` | string | Yes | Reference to the `Bind9Cluster` this instance belongs to.  The cluster provides shared configuration and defines the logical grouping. |
+| `clusterRef` | string | Yes | Reference to the \`Bind9Cluster\` this instance belongs to.  The cluster provides shared configuration and defines the logical grouping. |
 | `config` | object | No | Instance-specific BIND9 configuration overrides.  Overrides cluster-level configuration for this instance only. |
-| `configMapRefs` | object | No | `ConfigMap` references override. Inherits from cluster if not specified. |
+| `configMapRefs` | object | No | \`ConfigMap\` references override. Inherits from cluster if not specified. |
 | `image` | object | No | Container image configuration override. Inherits from cluster if not specified. |
-| `primaryServers` | array | No | Primary server addresses for zone transfers (required for secondary instances).  List of IP addresses or hostnames of primary servers to transfer zones from. Example: `["10.0.1.10", "primary.example.com"]` |
+| `primaryServers` | array | No | Primary server addresses for zone transfers (required for secondary instances).  List of IP addresses or hostnames of primary servers to transfer zones from. Example: \`["10.0.1.10", "primary.example.com"]\` |
 | `replicas` | integer | No | Number of pod replicas for high availability.  Defaults to 1 if not specified. For production, use 2+ replicas. |
 | `role` | string | Yes | Role of this instance (primary or secondary).  Primary instances are authoritative for zones. Secondary instances replicate zones from primaries via AXFR/IXFR. |
 | `version` | string | No | BIND9 version override. Inherits from cluster if not specified.  Example: "9.18", "9.16" |
 | `volumeMounts` | array | No | Volume mounts override for this instance. Inherits from cluster if not specified.  These mounts override cluster-level volume mounts. |
-| `volumes` | array | No | Volumes override for this instance. Inherits from cluster if not specified.  These volumes override cluster-level volumes. Common use cases include instance-specific PersistentVolumeClaims for zone data storage. |
+| `volumes` | array | No | Volumes override for this instance. Inherits from cluster if not specified.  These volumes override cluster-level volumes. Common use cases include instance-specific \`PersistentVolumeClaims\` for zone data storage. |
 
 #### Status Fields
 
