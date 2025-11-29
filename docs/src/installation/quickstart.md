@@ -86,6 +86,77 @@ Apply it:
 kubectl apply -f bind9-cluster.yaml
 ```
 
+### Optional: Add Persistent Storage
+
+To persist zone data across pod restarts, you can add PersistentVolumeClaims to your Bind9Cluster or Bind9Instance.
+
+First, create a PVC for zone data storage:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bind9-zones-pvc
+  namespace: dns-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  # Uses default StorageClass if not specified
+  # storageClassName: local-path
+```
+
+Then update your Bind9Cluster to use the PVC:
+
+```yaml
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
+metadata:
+  name: production-dns
+  namespace: dns-system
+spec:
+  version: "9.18"
+  config:
+    recursion: false
+    allowQuery:
+      - "0.0.0.0/0"
+    allowTransfer:
+      - "10.0.0.0/8"
+  # Add persistent storage for zones
+  volumes:
+    - name: zones
+      persistentVolumeClaim:
+        claimName: bind9-zones-pvc
+  volumeMounts:
+    - name: zones
+      mountPath: /var/cache/bind
+```
+
+Or add storage to a specific Bind9Instance:
+
+```yaml
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: primary-dns
+  namespace: dns-system
+spec:
+  clusterRef: production-dns
+  replicas: 1
+  # Instance-specific storage (overrides cluster-level)
+  volumes:
+    - name: zones
+      persistentVolumeClaim:
+        claimName: bind9-primary-zones-pvc
+  volumeMounts:
+    - name: zones
+      mountPath: /var/cache/bind
+```
+
+> **Note**: When using PVCs with `accessMode: ReadWriteOnce`, each replica needs its own PVC since the volume can only be mounted by one pod at a time. For multi-replica setups, use `ReadWriteMany` if your storage class supports it, or create separate PVCs per instance.
+
 ## Step 4: Create a BIND9 Instance
 
 Now create an instance that references the cluster:

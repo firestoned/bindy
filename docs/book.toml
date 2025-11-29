@@ -15,11 +15,11 @@ preferred-dark-theme = "navy"
 smart-punctuation = true
 mathjax-support = false
 git-repository-url = "https://github.com/firestoned/bindy"
-edit-url-template = "https://github.com/firestoned/bindy/edit/main/docs/src/{path}"
+edit-url-template = "https://github.com/firestoned/bindy/edit/main/docs/{path}"
 site-url = "/bindy/"
 cname = ""
 additional-css = ["theme/custom.css"]
-additional-js = ["mermaid.min.js", "mermaid-init.js"]
+additional-js = ["mermaid.min.js", "mermaid-init.js", "theme/page-toc.js"]
 no-section-label = false
 
 [output.html.fold]

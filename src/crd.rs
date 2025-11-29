@@ -100,6 +100,7 @@ pub struct LabelSelector {
 /// A label selector requirement is a selector that contains values, a key, and an operator
 /// that relates the key and values.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct LabelSelectorRequirement {
     /// The label key that the selector applies to.
     pub key: String,
@@ -194,6 +195,7 @@ pub struct SOARecord {
 /// Conditions are used in status subresources to communicate the state of
 /// a resource to users and controllers.
 #[derive(Clone, Debug, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Condition {
     /// Type of condition. Common types include: Ready, Available, Progressing, Degraded, Failed.
     pub r#type: String,
@@ -216,6 +218,7 @@ pub struct Condition {
 
 /// `DNSZone` status
 #[derive(Clone, Debug, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct DNSZoneStatus {
     #[serde(default)]
     pub conditions: Vec<Condition>,
@@ -733,6 +736,7 @@ pub struct CAARecordSpec {
 
 /// Generic record status
 #[derive(Clone, Debug, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct RecordStatus {
     #[serde(default)]
     pub conditions: Vec<Condition>,
@@ -754,6 +758,7 @@ pub struct TSIGKey {
 
 /// `Bind9Config` options
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Bind9Config {
     #[serde(default)]
     pub recursion: Option<bool>,
@@ -773,6 +778,7 @@ pub struct Bind9Config {
 
 /// DNSSEC configuration
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct DNSSECConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
@@ -870,6 +876,7 @@ pub struct Bind9ClusterSpec {
 
 /// `Bind9Cluster` status
 #[derive(Clone, Debug, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Bind9ClusterStatus {
     #[serde(default)]
     pub conditions: Vec<Condition>,
@@ -993,6 +1000,7 @@ pub struct Bind9InstanceSpec {
 
 /// `Bind9Instance` status
 #[derive(Clone, Debug, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Bind9InstanceStatus {
     #[serde(default)]
     pub conditions: Vec<Condition>,

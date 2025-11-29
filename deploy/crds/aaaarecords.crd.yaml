@@ -38,7 +38,7 @@ spec:
                 description: |-
                   IPv6 address in standard notation.
 
-                  Examples: "`2001:db8::1`", "`fe80::1`", "`::1`"
+                  Examples: `2001:db8::1`, `fe80::1`, `::1`
                 type: string
               name:
                 description: Record name within the zone.
@@ -70,7 +70,7 @@ spec:
 
                     Conditions are used in status subresources to communicate the state of a resource to users and controllers.
                   properties:
-                    last_transition_time:
+                    lastTransitionTime:
                       description: Last time the condition transitioned from one status to another (RFC3339 format).
                       nullable: true
                       type: string
@@ -93,7 +93,7 @@ spec:
                   - type
                   type: object
                 type: array
-              observed_generation:
+              observedGeneration:
                 format: int64
                 nullable: true
                 type: integer

@@ -16,9 +16,18 @@ The Rust types in `src/crd.rs` are the **source of truth**. CRD YAML files in `/
 **Workflow:**
 1. Edit Rust types in `src/crd.rs`
 2. Run `cargo run --bin crdgen` to regenerate YAML files
-3. Deploy with `kubectl apply -k deploy/crds/`
+3. Run `cargo run --bin crddoc > docs/src/reference/api.md` to regenerate API docs
+4. **CRITICAL**: Update examples in `/examples/` to match new schema
+5. **CRITICAL**: Update documentation in `/docs/src/` that references the CRDs
+6. Validate all examples: `kubectl apply --dry-run=client -f examples/`
+7. Deploy with `kubectl apply -k deploy/crds/`
 
 See **CRD Development - Rust as Source of Truth** section below for details.
+
+⚠️ **IMPORTANT**: Examples and documentation MUST stay in sync with CRD schemas. After ANY CRD change, you MUST update:
+- `/examples/*.yaml` - Ensure all examples can be applied successfully
+- `/docs/src/` - Update any documentation that references the CRD fields
+- Quickstart guide - Verify all YAML snippets are valid
 
 ---
 
@@ -399,6 +408,9 @@ Before committing:
 - [ ] **If `src/crd.rs` was modified**:
   - [ ] Run `cargo run --bin crdgen` to regenerate CRD YAMLs
   - [ ] Run `cargo run --bin crddoc > docs/src/reference/api.md` to regenerate API docs
+  - [ ] **Update `/examples/*.yaml` to match new schema** (CRITICAL)
+  - [ ] **Update `/docs/src/` documentation** that references the CRDs (CRITICAL)
+  - [ ] Run `./scripts/validate-examples.sh` to verify all examples are valid (REQUIRED)
 - [ ] CRD YAML files validate: `kubectl apply --dry-run=client -f deploy/crds/`
 - [ ] CHANGELOG.md updated
 - [ ] No secrets or sensitive data

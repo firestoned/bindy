@@ -47,12 +47,12 @@ spec:
                   Overrides cluster-level configuration for this instance only.
                 nullable: true
                 properties:
-                  allow_query:
+                  allowQuery:
                     items:
                       type: string
                     nullable: true
                     type: array
-                  allow_transfer:
+                  allowTransfer:
                     items:
                       type: string
                     nullable: true
@@ -73,12 +73,12 @@ spec:
                       type: string
                     nullable: true
                     type: array
-                  listen_on:
+                  listenOn:
                     items:
                       type: string
                     nullable: true
                     type: array
-                  listen_on_v6:
+                  listenOnV6:
                     items:
                       type: string
                     nullable: true
@@ -121,7 +121,7 @@ spec:
                     description: |-
                       Image pull policy
 
-                      Example: "`IfNotPresent`", "Always", "Never"
+                      Example: `IfNotPresent`, `Always`, `Never`
                     nullable: true
                     type: string
                   imagePullSecrets:
@@ -202,7 +202,7 @@ spec:
                 description: |-
                   Volumes override for this instance. Inherits from cluster if not specified.
 
-                  These volumes override cluster-level volumes. Common use cases include instance-specific PersistentVolumeClaims for zone data storage.
+                  These volumes override cluster-level volumes. Common use cases include instance-specific `PersistentVolumeClaims` for zone data storage.
                 items:
                   description: Volume represents a named volume in a pod that may be accessed by any container in the pod.
                   properties:
@@ -1294,7 +1294,7 @@ spec:
 
                     Conditions are used in status subresources to communicate the state of a resource to users and controllers.
                   properties:
-                    last_transition_time:
+                    lastTransitionTime:
                       description: Last time the condition transitioned from one status to another (RFC3339 format).
                       nullable: true
                       type: string
@@ -1317,11 +1317,11 @@ spec:
                   - type
                   type: object
                 type: array
-              observed_generation:
+              observedGeneration:
                 format: int64
                 nullable: true
                 type: integer
-              ready_replicas:
+              readyReplicas:
                 format: int32
                 nullable: true
                 type: integer
@@ -1329,7 +1329,7 @@ spec:
                 format: int32
                 nullable: true
                 type: integer
-              service_address:
+              serviceAddress:
                 description: IP or hostname of this instance's service
                 nullable: true
                 type: string
