@@ -39,7 +39,6 @@ jobs:
           echo "$HOME/bin" >> $GITHUB_PATH
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           cargo install mdbook-mermaid --version 0.17.0
-          cargo install mdbook-toc --version 0.15.1
 
       - name: Build documentation
         run: make docs
