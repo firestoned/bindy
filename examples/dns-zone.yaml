@@ -1,53 +1,39 @@
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: example-com
   namespace: dns-system
 spec:
   zoneName: example.com
-  type: primary
-  # Label selector to target Bind9Instance resources
-  instanceSelector:
-    matchLabels:
-      dns-role: primary
-      environment: production
+  # Reference to the Bind9Cluster that manages this zone
+  # This must match the Bind9Cluster name, NOT the Bind9Instance name
+  clusterRef: production-dns
   soaRecord:
-    primaryNS: ns1.example.com.
-    adminEmail: admin@example.com
+    primaryNs: ns1.example.com.
+    adminEmail: admin.example.com.  # Note: @ replaced with .
     serial: 2024010101
     refresh: 3600
     retry: 600
     expire: 604800
-    negativeTTL: 86400
+    negativeTtl: 86400
   ttl: 3600
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
   name: internal-local
   namespace: dns-system
 spec:
   zoneName: internal.local
-  type: primary
-  # Use label expressions for more complex selectors
-  instanceSelector:
-    matchExpressions:
-      - key: dns-role
-        operator: In
-        values:
-          - primary
-          - secondary
-      - key: environment
-        operator: In
-        values:
-          - production
-          - staging
+  # Reference to the Bind9Cluster that manages this zone
+  # This must match the Bind9Cluster name, NOT the Bind9Instance name
+  clusterRef: production-dns
   soaRecord:
-    primaryNS: ns1.internal.local.
-    adminEmail: admin@internal.local
+    primaryNs: ns1.internal.local.
+    adminEmail: admin.internal.local.  # Note: @ replaced with .
     serial: 2024010101
     refresh: 3600
     retry: 600
     expire: 604800
-    negativeTTL: 86400
+    negativeTtl: 86400
   ttl: 3600

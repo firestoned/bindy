@@ -134,7 +134,7 @@ Bind9Cluster (cluster config)
     │
 Bind9Instance (has clusterRef)
     ↑
-    │ zone.spec.cluster_ref references instance
+    │ zone.spec.clusterRef references instance
     │
 DNSZone (has clusterRef)
     ↑
@@ -152,13 +152,13 @@ DNS Records (A, CNAME, MX, etc.)
    - ACL definitions
 
 2. **Bind9Instance** - Instance deployment
-   - References a Bind9Cluster via `cluster_ref`
+   - References a Bind9Cluster via `clusterRef`
    - Can override cluster config
    - Has RNDC key for management
    - Manages pods and services
 
 3. **DNSZone** - DNS zone definition
-   - References a Bind9Instance via `cluster_ref`
+   - References a Bind9Instance via `clusterRef`
    - Contains SOA record
    - Applied to instance via RNDC
 

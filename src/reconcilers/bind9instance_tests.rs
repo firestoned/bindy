@@ -103,7 +103,7 @@ mod tests {
     #[test]
     fn test_configmap_creation() {
         let instance = create_test_instance("test-instance", 2, "9.18");
-        let cm = build_configmap("test-instance", "test-ns", &instance, None).unwrap();
+        let cm = build_configmap("test-instance", "test-ns", &instance, None, None).unwrap();
 
         assert_eq!(cm.metadata.name.as_deref(), Some("test-instance-config"));
         assert_eq!(cm.metadata.namespace.as_deref(), Some("test-ns"));
@@ -115,7 +115,7 @@ mod tests {
         let options = data.get("named.conf.options").unwrap();
         assert!(options.contains("recursion no"));
         assert!(options.contains("allow-query { any; }"));
-        assert!(options.contains("dnssec-enable yes"));
+        // Note: dnssec-enable removed in BIND 9.15+, DNSSEC is always enabled
     }
 
     #[test]
@@ -144,7 +144,7 @@ mod tests {
 
     #[test]
     fn test_service_creation() {
-        let service = build_service("test-svc", "test-ns");
+        let service = build_service("test-svc", "test-ns", None);
 
         assert_eq!(service.metadata.name.as_deref(), Some("test-svc"));
         assert_eq!(service.metadata.namespace.as_deref(), Some("test-ns"));
@@ -215,7 +215,7 @@ mod tests {
             status: None,
         };
 
-        let cm = build_configmap("test", "test-ns", &instance, None);
+        let cm = build_configmap("test", "test-ns", &instance, None, None);
         let data = cm.unwrap().data.unwrap();
         let options = data.get("named.conf.options").unwrap();
 
@@ -253,13 +253,14 @@ mod tests {
             status: None,
         };
 
-        let cm = build_configmap("test", "test-ns", &instance, None);
+        let cm = build_configmap("test", "test-ns", &instance, None, None);
         let data = cm.unwrap().data.unwrap();
         let named_conf = data.get("named.conf").unwrap();
 
         // Verify the named.conf contains the proper includes
         assert!(named_conf.contains("include \"/etc/bind/named.conf.options\""));
-        assert!(named_conf.contains("include \"/etc/bind/zones/named.conf.zones\""));
+        // Zones include should NOT be present unless user provides namedConfZones ConfigMap
+        assert!(!named_conf.contains("include \"/etc/bind/named.conf.zones\""));
     }
 
     #[test]
@@ -313,12 +314,12 @@ mod tests {
             status: None,
         };
 
-        let cm = build_configmap("test", "test-ns", &instance, None);
+        let cm = build_configmap("test", "test-ns", &instance, None, None);
         let data = cm.unwrap().data.unwrap();
         let options = data.get("named.conf.options").unwrap();
 
         // Should not contain DNSSEC settings when disabled
-        assert!(!options.contains("dnssec-enable yes"));
+        // Note: dnssec-enable removed in BIND 9.15+, DNSSEC is always enabled
         assert!(!options.contains("dnssec-validation yes"));
     }
 
@@ -369,6 +370,7 @@ mod tests {
         let container = &pod_spec.containers[0];
         let mounts = container.volume_mounts.as_ref().unwrap();
 
+        // No zones file mount unless user provides namedConfZones ConfigMap
         assert_eq!(mounts.len(), 4);
         assert!(mounts.iter().any(|m| m.name == "config"));
         assert!(mounts.iter().any(|m| m.name == "zones"));
@@ -379,7 +381,7 @@ mod tests {
     fn test_service_selector_matches_deployment_labels() {
         let instance = create_test_instance("label-test", 1, "9.18");
         let deployment = build_deployment("label-test", "test-ns", &instance, None);
-        let service = build_service("label-test", "test-ns");
+        let service = build_service("label-test", "test-ns", None);
 
         let deploy_labels = deployment.metadata.labels.unwrap();
         let svc_selector = service.spec.unwrap().selector.unwrap();

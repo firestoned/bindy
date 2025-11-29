@@ -14,11 +14,25 @@ spec:
     categories: []
     kind: Bind9Instance
     plural: bind9instances
-    shortNames: []
+    shortNames:
+    - b9
+    - b9s
     singular: bind9instance
   scope: Namespaced
   versions:
-  - additionalPrinterColumns: []
+  - additionalPrinterColumns:
+    - jsonPath: .spec.clusterRef
+      name: Cluster
+      type: string
+    - jsonPath: .spec.role
+      name: Role
+      type: string
+    - jsonPath: .spec.replicas
+      name: Replicas
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -47,43 +61,112 @@ spec:
                   Overrides cluster-level configuration for this instance only.
                 nullable: true
                 properties:
-                  allow_query:
+                  allowQuery:
+                    description: |-
+                      Access control list for DNS queries
+
+                      Specifies which IP addresses or networks are allowed to query this DNS server. Supports CIDR notation and special keywords.
+
+                      Default: Not set (BIND9 defaults to localhost only)
+
+                      Examples: - `["0.0.0.0/0"]` - Allow queries from any IPv4 address - `["10.0.0.0/8", "172.16.0.0/12"]` - Allow queries from private networks - `["any"]` - Allow queries from any IP (IPv4 and IPv6) - `["none"]` - Deny all queries - `["localhost"]` - Allow only from localhost
                     items:
                       type: string
                     nullable: true
                     type: array
-                  allow_transfer:
+                  allowTransfer:
+                    description: |-
+                      Access control list for zone transfers (AXFR/IXFR)
+
+                      Specifies which IP addresses or networks are allowed to perform zone transfers from this server. Zone transfers are used for replication between primary and secondary DNS servers.
+
+                      Default: Auto-detected cluster Pod CIDRs (e.g., `["10.42.0.0/16"]`)
+
+                      Examples: - `["10.42.0.0/16"]` - Allow transfers from specific Pod network - `["10.0.0.0/8"]` - Allow transfers from entire private network - `[]` - Deny all zone transfers (empty list means "none") - `["any"]` - Allow transfers from any IP (not recommended for production)
+
+                      Can be overridden at cluster level via `spec.primary.allowTransfer` or `spec.secondary.allowTransfer` for role-specific ACLs.
                     items:
                       type: string
                     nullable: true
                     type: array
                   dnssec:
-                    description: DNSSEC configuration
+                    description: |-
+                      DNSSEC (DNS Security Extensions) configuration
+
+                      Configures DNSSEC signing and validation. DNSSEC provides cryptographic authentication of DNS data to prevent spoofing and cache poisoning attacks.
+
+                      See `DNSSECConfig` for detailed options.
                     nullable: true
                     properties:
                       enabled:
+                        description: |-
+                          Enable DNSSEC signing of zones
+
+                          **Note**: This field is deprecated in BIND 9.15+ as DNSSEC is always enabled. Kept for backwards compatibility but has no effect on modern BIND versions.
+
+                          Default: `true` (implicitly enabled in BIND 9.15+)
                         nullable: true
                         type: boolean
                       validation:
+                        description: |-
+                          Enable DNSSEC validation of responses
+
+                          When enabled, BIND will validate DNSSEC signatures on responses from other nameservers. Invalid or missing signatures will cause queries to fail.
+
+                          Default: `false`
+
+                          **Important**: Requires valid DNSSEC trust anchors and proper network connectivity to root DNS servers. May cause resolution failures if DNSSEC is broken upstream.
                         nullable: true
                         type: boolean
                     type: object
                   forwarders:
+                    description: |-
+                      DNS forwarders for recursive resolution
+
+                      List of upstream DNS servers to forward queries to when recursion is enabled. Used for hybrid authoritative/recursive configurations.
+
+                      Only relevant when `recursion: true`.
+
+                      Examples: - `["8.8.8.8", "8.8.4.4"]` - Google Public DNS - `["1.1.1.1", "1.0.0.1"]` - Cloudflare DNS - `["10.0.0.53"]` - Internal corporate DNS resolver
                     items:
                       type: string
                     nullable: true
                     type: array
-                  listen_on:
+                  listenOn:
+                    description: |-
+                      IPv4 addresses to listen on for DNS queries
+
+                      Specifies which IPv4 interfaces and ports the DNS server should bind to.
+
+                      Default: All IPv4 interfaces on port 53
+
+                      Examples: - `["any"]` - Listen on all IPv4 interfaces - `["127.0.0.1"]` - Listen only on localhost - `["10.0.0.1"]` - Listen on specific IP address
                     items:
                       type: string
                     nullable: true
                     type: array
-                  listen_on_v6:
+                  listenOnV6:
+                    description: |-
+                      IPv6 addresses to listen on for DNS queries
+
+                      Specifies which IPv6 interfaces and ports the DNS server should bind to.
+
+                      Default: All IPv6 interfaces on port 53 (if IPv6 is available)
+
+                      Examples: - `["any"]` - Listen on all IPv6 interfaces - `["::1"]` - Listen only on IPv6 localhost - `["none"]` - Disable IPv6 listening
                     items:
                       type: string
                     nullable: true
                     type: array
                   recursion:
+                    description: |-
+                      Enable or disable recursive DNS queries
+
+                      When enabled (`true`), the DNS server will recursively resolve queries by contacting other authoritative nameservers. When disabled (`false`), the server only answers for zones it is authoritative for.
+
+                      Default: `false` (authoritative-only mode)
+
+                      **Important**: Recursive resolvers should not be publicly accessible due to security risks (DNS amplification attacks, cache poisoning).
                     nullable: true
                     type: boolean
                 type: object
@@ -105,6 +188,13 @@ spec:
                       If not specified, a default configuration will be generated
                     nullable: true
                     type: string
+                  namedConfZones:
+                    description: |-
+                      `ConfigMap` containing named.conf.zones file
+
+                      Optional. If specified, the zones file from this `ConfigMap` will be included in named.conf. If not specified, no zones file will be included (zones can be added dynamically via RNDC). Use this for pre-configured zones or to import existing BIND9 zone configurations.
+                    nullable: true
+                    type: string
                 type: object
               image:
                 description: Container image configuration override. Inherits from cluster if not specified.
@@ -121,7 +211,7 @@ spec:
                     description: |-
                       Image pull policy
 
-                      Example: "`IfNotPresent`", "Always", "Never"
+                      Example: `IfNotPresent`, `Always`, `Never`
                     nullable: true
                     type: string
                   imagePullSecrets:
@@ -202,7 +292,7 @@ spec:
                 description: |-
                   Volumes override for this instance. Inherits from cluster if not specified.
 
-                  These volumes override cluster-level volumes. Common use cases include instance-specific PersistentVolumeClaims for zone data storage.
+                  These volumes override cluster-level volumes. Common use cases include instance-specific `PersistentVolumeClaims` for zone data storage.
                 items:
                   description: Volume represents a named volume in a pod that may be accessed by any container in the pod.
                   properties:
@@ -1294,7 +1384,7 @@ spec:
 
                     Conditions are used in status subresources to communicate the state of a resource to users and controllers.
                   properties:
-                    last_transition_time:
+                    lastTransitionTime:
                       description: Last time the condition transitioned from one status to another (RFC3339 format).
                       nullable: true
                       type: string
@@ -1317,11 +1407,11 @@ spec:
                   - type
                   type: object
                 type: array
-              observed_generation:
+              observedGeneration:
                 format: int64
                 nullable: true
                 type: integer
-              ready_replicas:
+              readyReplicas:
                 format: int32
                 nullable: true
                 type: integer
@@ -1329,7 +1419,7 @@ spec:
                 format: int32
                 nullable: true
                 type: integer
-              service_address:
+              serviceAddress:
                 description: IP or hostname of this instance's service
                 nullable: true
                 type: string

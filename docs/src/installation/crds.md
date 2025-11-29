@@ -16,14 +16,14 @@ CRDs define the schema for custom resources in Kubernetes. Bindy uses CRDs to re
 Install all Bindy CRDs:
 
 ```bash
-kubectl apply -k https://raw.githubusercontent.com/firestoned/bindy/main/deploy/crds/
+kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/crds/
 ```
 
 Or install from local files:
 
 ```bash
 cd bindy
-kubectl apply -k deploy/crds
+kubectl apply -f deploy/crds/
 ```
 
 ## Verify Installation

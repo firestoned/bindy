@@ -81,6 +81,7 @@ spec:
   configMapRefs:
     namedConf: "my-custom-named-conf"
     namedConfOptions: "my-custom-options"
+    namedConfZones: "my-custom-zones"  # Optional: for zone definitions
 ```
 
 Create your custom ConfigMap:
@@ -106,10 +107,43 @@ data:
     };
 ```
 
+**Zones Configuration File:**
+
+If you need to provide a custom zones file (e.g., for pre-configured zones), create a ConfigMap with `named.conf.zones`:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: my-custom-zones
+  namespace: dns-system
+data:
+  named.conf.zones: |
+    // Zone definitions
+    zone "example.com" {
+      type primary;
+      file "/etc/bind/zones/example.com.zone";
+    };
+
+    zone "internal.local" {
+      type primary;
+      file "/etc/bind/zones/internal.local.zone";
+    };
+```
+
+Then reference it in your `Bind9Instance`:
+
+```yaml
+spec:
+  configMapRefs:
+    namedConfZones: "my-custom-zones"
+```
+
 **Default Behavior:**
 - If `configMapRefs` is not specified, Bindy auto-generates configuration from the `config` block
 - If custom ConfigMaps are provided, they take precedence
-- Default ConfigMap template is available in `deploy/configs/default-bind9-config.yaml`
+- The `namedConfZones` ConfigMap is optional - only include it if you need to pre-configure zones
+- If no `namedConfZones` is provided, no zones file will be included (zones can be added dynamically via RNDC)
 
 #### Recursion
 

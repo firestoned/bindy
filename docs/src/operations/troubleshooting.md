@@ -31,6 +31,13 @@ kubectl get dnszone example-com -n dns-system -o yaml | yq '.status'
 
 See [Common Issues](./common-issues.md) for frequently encountered problems and solutions.
 
+### DNS Record Zone Reference Issues
+
+If you're seeing "DNSZone not found" errors:
+- Records can use `zone` (matches `DNSZone.spec.zoneName`) or `zoneRef` (matches `DNSZone.metadata.name`)
+- Common mistake: Using `zone: internal-local` when the zone name is `internal.local`
+- See [DNS Record Issues - DNSZone Not Found](./common-issues.md#dnszone-not-found) for detailed troubleshooting
+
 ## Debugging Steps
 
 See [Debugging Guide](./debugging.md) for detailed debugging procedures.

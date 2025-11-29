@@ -114,7 +114,7 @@ spec:
     dnssec:
       enabled: true
       validation: true
-  tsigKeys:
+  rndcSecretRefs:
     - name: transfer-key
       algorithm: hmac-sha256
       secret: <base64-encoded-secret>

@@ -218,6 +218,25 @@ kubectl rollout restart deployment/bindy -n dns-system
 kubectl logs -n dns-system deployment/bindy -f
 ```
 
+### Enable JSON Logging
+
+For easier parsing and integration with log aggregation tools:
+
+```bash
+# Set JSON format
+kubectl set env deployment/bindy RUST_LOG_FORMAT=json -n dns-system
+
+# Or patch deployment for both debug level and JSON format
+kubectl patch deployment bindy -n dns-system \
+  -p '{"spec":{"template":{"spec":{"containers":[{"name":"controller","env":[{"name":"RUST_LOG","value":"debug"},{"name":"RUST_LOG_FORMAT","value":"json"}]}]}}}}'
+
+# Restart controller
+kubectl rollout restart deployment/bindy -n dns-system
+
+# View JSON logs (can be piped to jq for parsing)
+kubectl logs -n dns-system deployment/bindy -f | jq .
+```
+
 ### BIND9 Debug Logging
 
 ```bash

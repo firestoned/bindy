@@ -1,0 +1,85 @@
+# Example: Using Custom Zones ConfigMap
+#
+# This example demonstrates how to provide a custom zones configuration file
+# using the namedConfZones ConfigMapRef field.
+#
+# Use this when you need to:
+# - Pre-configure zones that aren't managed by Bindy CRDs
+# - Import existing BIND9 zone configurations
+# - Manually manage zone definitions
+#
+# PREREQUISITE: This example requires a Bind9Cluster named 'production-dns' to exist.
+# See bind9-cluster.yaml or complete-setup.yaml for how to create a Bind9Cluster.
+
+---
+# ConfigMap containing custom zones file
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: custom-zones-config
+  namespace: dns-system
+data:
+  named.conf.zones: |
+    // Custom zone definitions
+    // These zones are not managed by Bindy CRDs
+
+    zone "legacy.example.com" {
+      type primary;
+      file "/etc/bind/zones/legacy.example.com.zone";
+      allow-transfer { 10.0.2.0/24; };
+    };
+
+    zone "internal.corp" {
+      type primary;
+      file "/etc/bind/zones/internal.corp.zone";
+      allow-transfer { none; };
+    };
+
+    zone "test.local" {
+      type secondary;
+      file "/etc/bind/zones/test.local.zone";
+      primaries { 192.168.1.10; };
+    };
+
+---
+# Bind9Instance using the custom zones ConfigMap
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: dns-with-custom-zones
+  namespace: dns-system
+  labels:
+    app: dns
+    role: primary
+spec:
+  clusterRef: production-dns  # Reference to a Bind9Cluster
+  role: primary
+  replicas: 2
+  version: "9.18"
+
+  # Reference the custom zones ConfigMap
+  configMapRefs:
+    namedConfZones: "custom-zones-config"
+
+  # Standard BIND9 configuration
+  config:
+    recursion: false
+    allowQuery:
+      - "0.0.0.0/0"
+    allowTransfer:
+      - "10.0.2.0/24"
+    dnssec:
+      enabled: true
+      validation: true
+
+---
+# Note: You can also provide custom named.conf and named.conf.options
+# alongside namedConfZones for complete control:
+#
+# configMapRefs:
+#   namedConf: "my-custom-named-conf"
+#   namedConfOptions: "my-custom-options"
+#   namedConfZones: "custom-zones-config"
+#
+# If you only need custom zones but want Bindy to generate the rest,
+# just specify namedConfZones as shown above.

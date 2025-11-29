@@ -20,6 +20,8 @@
 //!
 //! ## Infrastructure
 //!
+//! - [`reconcile_bind9cluster`] - Manages BIND9 cluster status and instance tracking
+//! - [`delete_bind9cluster`] - Cleans up BIND9 cluster resources
 //! - [`reconcile_bind9instance`] - Creates/updates BIND9 server deployments
 //! - [`delete_bind9instance`] - Cleans up BIND9 server resources
 //!
@@ -56,10 +58,13 @@
 //! }
 //! ```
 
+pub mod bind9cluster;
 pub mod bind9instance;
 pub mod dnszone;
 pub mod records;
 
+#[cfg(test)]
+mod bind9cluster_tests;
 #[cfg(test)]
 mod bind9instance_tests;
 #[cfg(test)]
@@ -67,6 +72,7 @@ mod dnszone_tests;
 #[cfg(test)]
 mod records_tests;
 
+pub use bind9cluster::{delete_bind9cluster, reconcile_bind9cluster};
 pub use bind9instance::{delete_bind9instance, reconcile_bind9instance};
 pub use dnszone::{delete_dnszone, reconcile_dnszone};
 pub use records::{

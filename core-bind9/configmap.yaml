@@ -31,7 +31,6 @@ data:
       
       // DNSSEC validation
       dnssec-validation auto;
-      dnssec-enable yes;
       
       // Response behavior
       auth-nxdomain no;

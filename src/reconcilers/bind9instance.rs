@@ -22,7 +22,7 @@ use kube::{
     Api, ResourceExt,
 };
 use serde_json::json;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Reconciles a `Bind9Instance` resource.
 ///
@@ -63,10 +63,24 @@ pub async fn reconcile_bind9instance(client: Client, instance: Bind9Instance) ->
     let name = instance.name_any();
 
     info!("Reconciling Bind9Instance: {}/{}", namespace, name);
+    debug!(
+        namespace = %namespace,
+        name = %name,
+        generation = ?instance.metadata.generation,
+        "Starting Bind9Instance reconciliation"
+    );
 
     let spec = &instance.spec;
     let replicas = spec.replicas.unwrap_or(1);
     let version = spec.version.as_deref().unwrap_or("9.18");
+
+    debug!(
+        cluster_ref = %spec.cluster_ref,
+        replicas,
+        version = %version,
+        role = ?spec.role,
+        "Instance configuration"
+    );
 
     info!(
         "Bind9Instance {} configured with {} replicas, version {}",
@@ -81,17 +95,8 @@ pub async fn reconcile_bind9instance(client: Client, instance: Bind9Instance) ->
                 namespace, name
             );
 
-            // Update status to show it's ready
-            update_status(
-                &client,
-                &instance,
-                "Ready",
-                "True",
-                &format!("Bind9Instance configured with {replicas} replicas"),
-                replicas,
-                replicas,
-            )
-            .await?;
+            // Update status based on actual deployment state
+            update_status_from_deployment(&client, &namespace, &name, &instance, replicas).await?;
         }
         Err(e) => {
             error!(
@@ -125,13 +130,25 @@ async fn create_or_update_resources(
     name: &str,
     instance: &Bind9Instance,
 ) -> Result<()> {
+    debug!(
+        namespace = %namespace,
+        name = %name,
+        "Creating or updating Kubernetes resources"
+    );
+
     // Fetch the Bind9Cluster if referenced
     let cluster = if instance.spec.cluster_ref.is_empty() {
+        debug!("No cluster reference, proceeding with standalone instance");
         None
     } else {
+        debug!(cluster_ref = %instance.spec.cluster_ref, "Fetching Bind9Cluster");
         let cluster_api: Api<Bind9Cluster> = Api::namespaced(client.clone(), namespace);
         match cluster_api.get(&instance.spec.cluster_ref).await {
             Ok(cluster) => {
+                debug!(
+                    cluster_name = %instance.spec.cluster_ref,
+                    "Successfully fetched Bind9Cluster"
+                );
                 info!(
                     "Found Bind9Cluster: {}/{}",
                     namespace, instance.spec.cluster_ref
@@ -149,17 +166,22 @@ async fn create_or_update_resources(
     };
 
     // 1. Create/update RNDC Secret (must be first, as deployment will mount it)
+    debug!("Step 1: Creating/updating RNDC Secret");
     create_or_update_rndc_secret(client, namespace, name, instance).await?;
 
     // 2. Create/update ConfigMap
+    debug!("Step 2: Creating/updating ConfigMap");
     create_or_update_configmap(client, namespace, name, instance, cluster.as_ref()).await?;
 
     // 3. Create/update Deployment
+    debug!("Step 3: Creating/updating Deployment");
     create_or_update_deployment(client, namespace, name, instance, cluster.as_ref()).await?;
 
     // 4. Create/update Service
-    create_or_update_service(client, namespace, name).await?;
+    debug!("Step 4: Creating/updating Service");
+    create_or_update_service(client, namespace, name, instance, cluster.as_ref()).await?;
 
+    debug!("Successfully created/updated all resources");
     Ok(())
 }
 
@@ -260,8 +282,24 @@ async fn create_or_update_configmap(
     instance: &Bind9Instance,
     cluster: Option<&Bind9Cluster>,
 ) -> Result<()> {
+    // Get role-specific allow-transfer override from cluster config
+    let role_allow_transfer = cluster.and_then(|c| match instance.spec.role {
+        crate::crd::ServerRole::Primary => c
+            .spec
+            .primary
+            .as_ref()
+            .and_then(|p| p.allow_transfer.as_ref()),
+        crate::crd::ServerRole::Secondary => c
+            .spec
+            .secondary
+            .as_ref()
+            .and_then(|s| s.allow_transfer.as_ref()),
+    });
+
     // build_configmap returns None if custom ConfigMaps are referenced
-    if let Some(configmap) = build_configmap(name, namespace, instance, cluster) {
+    if let Some(configmap) =
+        build_configmap(name, namespace, instance, cluster, role_allow_transfer)
+    {
         let cm_api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
         let cm_name = format!("{name}-config");
 
@@ -315,8 +353,22 @@ async fn create_or_update_deployment(
 }
 
 /// Create or update the Service for BIND9
-async fn create_or_update_service(client: &Client, namespace: &str, name: &str) -> Result<()> {
-    let service = build_service(name, namespace);
+async fn create_or_update_service(
+    client: &Client,
+    namespace: &str,
+    name: &str,
+    instance: &Bind9Instance,
+    cluster: Option<&Bind9Cluster>,
+) -> Result<()> {
+    // Get custom service spec based on instance role from cluster
+    let custom_spec = cluster.and_then(|c| match instance.spec.role {
+        crate::crd::ServerRole::Primary => c.spec.primary.as_ref().and_then(|p| p.service.as_ref()),
+        crate::crd::ServerRole::Secondary => {
+            c.spec.secondary.as_ref().and_then(|s| s.service.as_ref())
+        }
+    });
+
+    let service = build_service(name, namespace, custom_spec);
     let svc_api: Api<Service> = Api::namespaced(client.clone(), namespace);
 
     if let Ok(existing) = svc_api.get(name).await {
@@ -418,6 +470,100 @@ async fn delete_resources(client: &Client, namespace: &str, name: &str) -> Resul
     Ok(())
 }
 
+/// Update status based on actual Deployment readiness
+async fn update_status_from_deployment(
+    client: &Client,
+    namespace: &str,
+    name: &str,
+    instance: &Bind9Instance,
+    expected_replicas: i32,
+) -> Result<()> {
+    let deploy_api: Api<Deployment> = Api::namespaced(client.clone(), namespace);
+    match deploy_api.get(name).await {
+        Ok(deployment) => {
+            let actual_replicas = deployment
+                .spec
+                .as_ref()
+                .and_then(|spec| spec.replicas)
+                .unwrap_or(0);
+
+            let ready_replicas = deployment
+                .status
+                .as_ref()
+                .and_then(|status| status.ready_replicas)
+                .unwrap_or(0);
+
+            let available_replicas = deployment
+                .status
+                .as_ref()
+                .and_then(|status| status.available_replicas)
+                .unwrap_or(0);
+
+            // Determine if the deployment is actually ready
+            let is_ready = ready_replicas > 0
+                && ready_replicas == actual_replicas
+                && available_replicas == actual_replicas;
+
+            if is_ready {
+                // Deployment is fully ready
+                update_status(
+                    client,
+                    instance,
+                    "Ready",
+                    "True",
+                    &format!("All {ready_replicas} replicas are ready"),
+                    actual_replicas,
+                    ready_replicas,
+                )
+                .await?;
+            } else if ready_replicas > 0 {
+                // Deployment is progressing but not fully ready
+                update_status(
+                    client,
+                    instance,
+                    "Ready",
+                    "False",
+                    &format!("Progressing: {ready_replicas}/{actual_replicas} replicas ready"),
+                    actual_replicas,
+                    ready_replicas,
+                )
+                .await?;
+            } else {
+                // No replicas ready yet
+                update_status(
+                    client,
+                    instance,
+                    "Ready",
+                    "False",
+                    "Waiting for pods to become ready",
+                    actual_replicas,
+                    0,
+                )
+                .await?;
+            }
+        }
+        Err(e) => {
+            warn!(
+                "Failed to get Deployment status for {}/{}: {}",
+                namespace, name, e
+            );
+            // Set status as progressing if we can't check deployment
+            update_status(
+                client,
+                instance,
+                "Ready",
+                "Unknown",
+                "Unable to determine deployment status",
+                expected_replicas,
+                0,
+            )
+            .await?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Update the status of a `Bind9Instance`
 async fn update_status(
     client: &Client,
@@ -431,6 +577,31 @@ async fn update_status(
     let api: Api<Bind9Instance> =
         Api::namespaced(client.clone(), &instance.namespace().unwrap_or_default());
 
+    // Check if status has actually changed
+    let current_status = &instance.status;
+    let status_changed = if let Some(current) = current_status {
+        // Check if replicas changed
+        if current.replicas != Some(replicas) || current.ready_replicas != Some(ready_replicas) {
+            true
+        } else if let Some(current_condition) = current.conditions.first() {
+            // Check if condition changed
+            current_condition.r#type != condition_type
+                || current_condition.status != status
+                || current_condition.message.as_deref() != Some(message)
+        } else {
+            // No conditions exist, need to update
+            true
+        }
+    } else {
+        // No status exists, need to update
+        true
+    };
+
+    // Only update if status has changed
+    if !status_changed {
+        return Ok(());
+    }
+
     let condition = Condition {
         r#type: condition_type.to_string(),
         status: status.to_string(),
@@ -439,7 +610,7 @@ async fn update_status(
         last_transition_time: Some(Utc::now().to_rfc3339()),
     };
 
-    let status = Bind9InstanceStatus {
+    let new_status = Bind9InstanceStatus {
         conditions: vec![condition],
         observed_generation: instance.metadata.generation,
         replicas: Some(replicas),
@@ -447,7 +618,7 @@ async fn update_status(
         service_address: None, // Will be populated when service is ready
     };
 
-    let patch = json!({ "status": status });
+    let patch = json!({ "status": new_status });
     api.patch_status(
         &instance.name_any(),
         &PatchParams::default(),

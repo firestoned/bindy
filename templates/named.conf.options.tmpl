@@ -1,0 +1,8 @@
+options {
+    directory "/var/cache/bind";
+    dump-file "/var/cache/bind/cache_dump.db";
+    statistics-file "/var/cache/bind/named_stats.txt";
+    memstatistics-file "/var/cache/bind/named_mem_stats.txt";
+    listen-on { any; };
+    listen-on-v6 { any; };
+{{RECURSION}}{{ALLOW_QUERY}}{{ALLOW_TRANSFER}}{{DNSSEC_VALIDATE}}};

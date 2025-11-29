@@ -160,13 +160,9 @@ fn get_type_string(schema: &JSONSchemaProps) -> String {
     // Check for type field
     if let Some(type_str) = &schema.type_ {
         if type_str == "array" {
-            // Array type - items can be a schema or an array of schemas
-            if schema.items.is_some() {
-                // items is JSONSchemaPropsOrArray which can be Schema or SchemaArray
-                // For simplicity, just return "array" for now
-                // TODO: Extract item type if needed
-                return "array".to_string();
-            }
+            // Array type - for now just return "array"
+            // Extracting item type would require complex type introspection
+            // due to JSONSchemaPropsOrArray not implementing AsRef
             return "array".to_string();
         }
         return type_str.clone();

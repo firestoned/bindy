@@ -23,7 +23,7 @@ The standard installation uses kubectl to apply YAML manifests:
 kubectl create namespace dns-system
 
 # Install CRDs
-kubectl apply -k https://raw.githubusercontent.com/firestoned/bindy/main/deploy/crds/
+kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/crds/
 
 # Install RBAC
 kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/rbac/

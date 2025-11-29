@@ -19,17 +19,17 @@ spec:
   configMapRefs:               # Optional, custom config files
     namedConf: string
     namedConfOptions: string
-  config:                      # Optional, shared BIND9 config
+  global:                      # Optional, global BIND9 config for all instances
     recursion: boolean
-    allowQuery: [string]
-    allowTransfer: [string]
+    allowQuery: [string]       # ⚠️ NO DEFAULT - must be explicitly set
+    allowTransfer: [string]    # ⚠️ NO DEFAULT - must be explicitly set
     dnssec:
       enabled: boolean
       validation: boolean
     forwarders: [string]
     listenOn: [string]
     listenOnV6: [string]
-  tsigKeys: [TSIGKey]          # Optional, TSIG keys for zone transfers
+  rndcSecretRefs: [RndcSecretRef]  # Optional, refs to Secrets with RNDC/TSIG keys
   acls:                        # Optional, named ACLs
     name: [string]
   volumes: [Volume]            # Optional, Kubernetes volumes
@@ -155,15 +155,17 @@ Name of ConfigMap containing the main `named.conf` file.
 
 Name of ConfigMap containing the `named.conf.options` file.
 
-### config
+### global
 **Type**: object
 **Required**: No
 
-Shared BIND9 configuration for all instances in the cluster.
+Global BIND9 configuration shared across all instances in the cluster.
+
+> **⚠️ Warning**: There are NO defaults for `allowQuery` and `allowTransfer`. If not specified, BIND9's default behavior applies (no queries or transfers allowed). Always explicitly configure these fields for your security requirements.
 
 ```yaml
 spec:
-  config:
+  global:
     recursion: false
     allowQuery:
       - "0.0.0.0/0"
@@ -175,52 +177,57 @@ spec:
 ```
 
 **How It Works**:
-- All instances inherit cluster configuration
+- All instances inherit global configuration
 - Instances can override specific settings
-- Changes propagate to all instances using cluster config
+- Role-specific configuration (primary/secondary) can override global settings
+- Changes propagate to all instances using global config
 
-#### config.recursion
+#### global.recursion
 **Type**: boolean
 **Required**: No
 **Default**: false
 
 Enable recursive DNS queries.
 
-#### config.allowQuery
+#### global.allowQuery
 **Type**: array of strings
 **Required**: No
-**Default**: ["0.0.0.0/0"]
+**Default**: None (BIND9 default: no queries allowed)
 
 IP addresses or CIDR blocks allowed to query servers in this cluster.
 
-#### config.allowTransfer
+> **⚠️ Warning**: No default value is provided. You must explicitly configure this field or queries will be denied.
+
+#### global.allowTransfer
 **Type**: array of strings
 **Required**: No
-**Default**: []
+**Default**: None (BIND9 default: no transfers allowed)
 
 IP addresses or CIDR blocks allowed to perform zone transfers.
 
-#### config.dnssec
+> **⚠️ Warning**: No default value is provided. You must explicitly configure this field or zone transfers will be denied.
+
+#### global.dnssec
 **Type**: object
 **Required**: No
 
 DNSSEC configuration for the cluster.
 
-##### config.dnssec.enabled
+##### global.dnssec.enabled
 **Type**: boolean
 **Required**: No
 **Default**: false
 
 Enable DNSSEC signing for zones.
 
-##### config.dnssec.validation
+##### global.dnssec.validation
 **Type**: boolean
 **Required**: No
 **Default**: false
 
 Enable DNSSEC validation for recursive queries.
 
-#### config.forwarders
+#### global.forwarders
 **Type**: array of strings
 **Required**: No
 **Default**: []
@@ -236,44 +243,58 @@ spec:
       - "1.1.1.1"
 ```
 
-#### config.listenOn
+#### global.listenOn
 **Type**: array of strings
 **Required**: No
 **Default**: ["any"]
 
 IPv4 addresses to listen on.
 
-#### config.listenOnV6
+#### global.listenOnV6
 **Type**: array of strings
 **Required**: No
 **Default**: ["any"]
 
 IPv6 addresses to listen on.
 
-### tsigKeys
-**Type**: array of TSIGKey objects
+### rndcSecretRefs
+**Type**: array of RndcSecretRef objects
 **Required**: No
 **Default**: []
 
-TSIG (Transaction Signature) keys for authenticated zone transfers between primary and secondary servers.
+References to Kubernetes Secrets containing RNDC/TSIG keys for authenticated zone transfers and RNDC communication.
 
 ```yaml
+# 1. Create Secret with credentials
+apiVersion: v1
+kind: Secret
+metadata:
+  name: transfer-key-secret
+type: Opaque
+stringData:
+  key-name: transfer-key
+  secret: base64-encoded-hmac-key
+
+---
+# 2. Reference in Bind9Cluster
 spec:
-  tsigKeys:
-    - name: transfer-key
-      algorithm: hmac-sha256
-      secret: base64-encoded-secret
+  rndcSecretRefs:
+    - name: transfer-key-secret
+      algorithm: hmac-sha256  # Algorithm specified in CRD
 ```
 
 **How It Works**:
-- TSIG keys authenticate zone transfers
-- Keys are shared across all instances
-- Used for secure primary-to-secondary replication
+- RNDC/TSIG keys authenticate zone transfers and RNDC commands
+- Keys stored securely in Kubernetes Secrets
+- Algorithm specified in CRD for type safety
+- Keys are shared across all instances in the cluster
 
-**TSIGKey Fields**:
-- `name` (string, required) - Key identifier
-- `algorithm` (string, required) - HMAC algorithm (e.g., "hmac-sha256")
-- `secret` (string, required) - Base64-encoded shared secret
+**RndcSecretRef Fields**:
+- `name` (string, required) - Name of the Kubernetes Secret
+- `algorithm` (RndcAlgorithm, optional) - HMAC algorithm (defaults to hmac-sha256)
+  - Supported: `hmac-md5`, `hmac-sha1`, `hmac-sha224`, `hmac-sha256`, `hmac-sha384`, `hmac-sha512`
+- `keyNameKey` (string, optional) - Key in secret for key name (defaults to "key-name")
+- `secretKey` (string, optional) - Key in secret for secret value (defaults to "secret")
 
 ### acls
 **Type**: object (map of string arrays)
@@ -450,10 +471,9 @@ spec:
     dnssec:
       enabled: true
       validation: auto
-  tsigKeys:
-    - name: transfer-key
+  rndcSecretRefs:
+    - name: transfer-key-secret
       algorithm: hmac-sha256
-      secret: "K9x7..." # Base64-encoded
 ```
 
 ### Cluster with Custom Image
@@ -523,16 +543,13 @@ spec:
       - "acl:secondary-servers"
     dnssec:
       enabled: true
-  tsigKeys:
-    - name: us-east-transfer
+  rndcSecretRefs:
+    - name: us-east-transfer-secret
       algorithm: hmac-sha256
-      secret: "east-secret-base64"
-    - name: us-west-transfer
+    - name: us-west-transfer-secret
       algorithm: hmac-sha256
-      secret: "west-secret-base64"
-    - name: eu-transfer
-      algorithm: hmac-sha256
-      secret: "eu-secret-base64"
+    - name: eu-transfer-secret
+      algorithm: hmac-sha512  # Different algorithm for EU
   acls:
     secondary-servers:
       - "10.1.0.0/24"  # US East

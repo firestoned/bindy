@@ -56,7 +56,7 @@ kubectl create namespace dns-system
 ### 2. Install CRDs
 
 ```bash
-kubectl apply -k deploy/crds/
+kubectl apply -f deploy/crds/
 ```
 
 This will install all Custom Resource Definitions:

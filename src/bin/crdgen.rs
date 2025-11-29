@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Successfully generated CRD YAML files in deploy/crds/");
     println!("\nNext steps:");
     println!("  1. Review the generated files");
-    println!("  2. Deploy with: kubectl apply -k deploy/crds/");
+    println!("  2. Deploy with: kubectl apply -f deploy/crds/");
 
     Ok(())
 }

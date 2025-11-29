@@ -45,7 +45,7 @@ kubectl get storageclass
 kubectl create namespace dns-system
 
 # Install CRDs
-kubectl apply -k https://raw.githubusercontent.com/firestoned/bindy/main/deploy/crds/
+kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/crds/
 
 # Install RBAC
 kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/rbac/
@@ -72,7 +72,7 @@ metadata:
   namespace: dns-system
 spec:
   version: "9.18"
-  config:
+  global:
     recursion: false
     allowQuery:
       - "0.0.0.0/0"
@@ -80,11 +80,84 @@ spec:
       - "10.0.0.0/8"
 ```
 
+> **⚠️ Warning**: There are NO defaults for `allowQuery` and `allowTransfer`. If you don't specify these fields, BIND9's default behavior applies (no queries or transfers allowed). Always explicitly configure these fields for your security requirements.
+
 Apply it:
 
 ```bash
 kubectl apply -f bind9-cluster.yaml
 ```
+
+### Optional: Add Persistent Storage
+
+To persist zone data across pod restarts, you can add PersistentVolumeClaims to your Bind9Cluster or Bind9Instance.
+
+First, create a PVC for zone data storage:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bind9-zones-pvc
+  namespace: dns-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  # Uses default StorageClass if not specified
+  # storageClassName: local-path
+```
+
+Then update your Bind9Cluster to use the PVC:
+
+```yaml
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
+metadata:
+  name: production-dns
+  namespace: dns-system
+spec:
+  version: "9.18"
+  config:
+    recursion: false
+    allowQuery:
+      - "0.0.0.0/0"
+    allowTransfer:
+      - "10.0.0.0/8"
+  # Add persistent storage for zones
+  volumes:
+    - name: zones
+      persistentVolumeClaim:
+        claimName: bind9-zones-pvc
+  volumeMounts:
+    - name: zones
+      mountPath: /var/cache/bind
+```
+
+Or add storage to a specific Bind9Instance:
+
+```yaml
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: primary-dns
+  namespace: dns-system
+spec:
+  clusterRef: production-dns
+  replicas: 1
+  # Instance-specific storage (overrides cluster-level)
+  volumes:
+    - name: zones
+      persistentVolumeClaim:
+        claimName: bind9-primary-zones-pvc
+  volumeMounts:
+    - name: zones
+      mountPath: /var/cache/bind
+```
+
+> **Note**: When using PVCs with `accessMode: ReadWriteOnce`, each replica needs its own PVC since the volume can only be mounted by one pod at a time. For multi-replica setups, use `ReadWriteMany` if your storage class supports it, or create separate PVCs per instance.
 
 ## Step 4: Create a BIND9 Instance
 
@@ -143,28 +216,32 @@ kubectl apply -f dns-zone.yaml
 
 Create a file `dns-records.yaml`:
 
+> **Note**: DNS records can reference zones using either:
+> - `zone`: The actual DNS zone name (e.g., `example.com`) - searches for a DNSZone with matching `spec.zoneName`
+> - `zoneRef`: The Kubernetes resource name (e.g., `example-com`) - directly references the DNSZone by `metadata.name` (more efficient)
+
 ```yaml
-# Web server A record
+# Web server A record (using zone field - matches against DNSZone spec.zoneName)
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: www-example
   namespace: dns-system
 spec:
-  zone: example-com
+  zone: example.com
   name: www
   ipv4Address: "192.0.2.1"
   ttl: 300
 
 ---
-# Blog CNAME record
+# Blog CNAME record (using zoneRef - direct reference to DNSZone metadata.name)
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: CNAMERecord
 metadata:
   name: blog-example
   namespace: dns-system
 spec:
-  zone: example-com
+  zoneRef: example-com
   name: blog
   target: www.example.com.
   ttl: 300
@@ -177,7 +254,7 @@ metadata:
   name: mail-example
   namespace: dns-system
 spec:
-  zone: example-com
+  zone: example.com
   name: "@"
   priority: 10
   mailServer: mail.example.com.
@@ -191,7 +268,7 @@ metadata:
   name: spf-example
   namespace: dns-system
 spec:
-  zone: example-com
+  zoneRef: example-com
   name: "@"
   text:
     - "v=spf1 include:_spf.example.com ~all"

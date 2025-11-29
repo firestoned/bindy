@@ -14,11 +14,25 @@ spec:
     categories: []
     kind: DNSZone
     plural: dnszones
-    shortNames: []
+    shortNames:
+    - zone
+    - zones
     singular: dnszone
   scope: Namespaced
   versions:
-  - additionalPrinterColumns: []
+  - additionalPrinterColumns:
+    - jsonPath: .spec.zoneName
+      name: Zone
+      type: string
+    - jsonPath: .spec.clusterRef
+      name: Cluster
+      type: string
+    - jsonPath: .spec.ttl
+      name: TTL
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -148,7 +162,7 @@ spec:
 
                     Conditions are used in status subresources to communicate the state of a resource to users and controllers.
                   properties:
-                    last_transition_time:
+                    lastTransitionTime:
                       description: Last time the condition transitioned from one status to another (RFC3339 format).
                       nullable: true
                       type: string
@@ -171,11 +185,11 @@ spec:
                   - type
                   type: object
                 type: array
-              observed_generation:
+              observedGeneration:
                 format: int64
                 nullable: true
                 type: integer
-              record_count:
+              recordCount:
                 format: int32
                 nullable: true
                 type: integer
