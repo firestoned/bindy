@@ -182,8 +182,12 @@ fn get_type_string(schema: &JSONSchemaProps) -> String {
 
 fn get_description(schema: &JSONSchemaProps) -> String {
     if let Some(desc) = &schema.description {
-        // Escape pipe characters in descriptions for markdown tables
-        return desc.replace('|', "\\|").replace('\n', " ");
+        // Escape pipe characters and backticks in descriptions for markdown tables
+        // Backticks in table cells can confuse markdown preprocessors like mdbook-mermaid
+        return desc
+            .replace('|', "\\|")
+            .replace('\n', " ")
+            .replace('`', "\\`");
     }
     String::new()
 }
