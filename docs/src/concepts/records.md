@@ -22,9 +22,61 @@ metadata:
   name: record-name
   namespace: dns-system
 spec:
-  zone: zone-resource-name  # References DNSZone
+  # Zone reference (use ONE of these):
+  zone: example.com          # Match against DNSZone spec.zoneName
+  # OR
+  zoneRef: example-com       # Direct reference to DNSZone metadata.name
+
   name: record-name          # DNS name (@ for zone apex)
   ttl: 300                   # Time to live (optional)
+```
+
+### Zone Referencing
+
+DNS records can reference their parent zone using **two different methods**:
+
+1. **`zone` field** - Searches for a DNSZone by matching `spec.zoneName`
+   - Value: The actual DNS zone name (e.g., `example.com`)
+   - The controller searches all DNSZones in the namespace for matching `spec.zoneName`
+   - More intuitive but requires a list operation
+
+2. **`zoneRef` field** - Direct reference to a DNSZone resource
+   - Value: The Kubernetes resource name (e.g., `example-com`)
+   - The controller directly retrieves the DNSZone by `metadata.name`
+   - More efficient (no search required)
+   - **Recommended for production use**
+
+**Important**: You must specify **exactly one** of `zone` or `zoneRef` (not both).
+
+#### Example: Zone vs ZoneRef
+
+Given this DNSZone:
+```yaml
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: DNSZone
+metadata:
+  name: example-com        # Kubernetes resource name
+  namespace: dns-system
+spec:
+  zoneName: example.com    # Actual DNS zone name
+  clusterRef: primary-dns
+  # ... soa_record, etc.
+```
+
+You can reference it using either method:
+
+**Method 1: Using `zone` (matches spec.zoneName)**
+```yaml
+spec:
+  zone: example.com  # Matches DNSZone spec.zoneName
+  name: www
+```
+
+**Method 2: Using `zoneRef` (matches metadata.name)**
+```yaml
+spec:
+  zoneRef: example-com  # Matches DNSZone metadata.name
+  name: www
 ```
 
 ## ARecord (IPv4)

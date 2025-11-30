@@ -165,20 +165,34 @@ spec:
 
 ### TSIG Authentication
 
-Use TSIG keys for authenticated transfers (future enhancement):
+Use TSIG keys for authenticated transfers:
 
 ```yaml
-# Primary config
-key "transfer-key" {
-  algorithm hmac-sha256;
-  secret "base64-encoded-secret";
-};
+# 1. Create a Kubernetes Secret with RNDC/TSIG credentials
+apiVersion: v1
+kind: Secret
+metadata:
+  name: transfer-key-secret
+  namespace: dns-system
+type: Opaque
+stringData:
+  key-name: transfer-key
+  secret: K2xkajflkajsdf09asdfjlaksjdf==  # base64-encoded HMAC key
 
-# Allow transfers using key
-allow-transfer {
-  key transfer-key;
-};
+---
+# 2. Reference the secret in Bind9Cluster
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
+metadata:
+  name: production-dns
+  namespace: dns-system
+spec:
+  rndcSecretRefs:
+    - name: transfer-key-secret
+      algorithm: hmac-sha256  # Algorithm for this key
 ```
+
+The secret will be used for authenticated zone transfers between primary and secondary servers.
 
 ## Troubleshooting
 

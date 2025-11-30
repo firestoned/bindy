@@ -16,9 +16,21 @@ The Rust types in `src/crd.rs` are the **source of truth**. CRD YAML files in `/
 **Workflow:**
 1. Edit Rust types in `src/crd.rs`
 2. Run `cargo run --bin crdgen` to regenerate YAML files
-3. Deploy with `kubectl apply -k deploy/crds/`
+3. **CRITICAL**: Update examples in `/examples/` to match new schema
+4. **CRITICAL**: Update documentation in `/docs/src/` that references the CRDs
+5. Validate all examples: `kubectl apply --dry-run=client -f examples/`
+6. Run `cargo fmt`, `cargo clippy`, and `cargo test` to ensure code quality
+7. **CRITICAL**: Run `cargo run --bin crddoc > docs/src/reference/api.md` to regenerate API docs **AFTER** all changes are complete and validated
+8. Deploy with `kubectl apply -f deploy/crds/`
+
+⚠️ **IMPORTANT**: Always run `crddoc` **LAST** after all CRD changes, example updates, and validations are complete. This ensures the API documentation reflects the final, validated state of the CRDs.
 
 See **CRD Development - Rust as Source of Truth** section below for details.
+
+⚠️ **IMPORTANT**: Examples and documentation MUST stay in sync with CRD schemas. After ANY CRD change, you MUST update:
+- `/examples/*.yaml` - Ensure all examples can be applied successfully
+- `/docs/src/` - Update any documentation that references the CRD fields
+- Quickstart guide - Verify all YAML snippets are valid
 
 ---
 
@@ -40,7 +52,7 @@ This codebase operates in a **regulated banking environment**. All changes must 
 
 ### Mandatory: Update Changelog on Every Code Change
 
-After **ANY** code modification, update `/docs/CHANGELOG.md` with the following format:
+After **ANY** code modification, update `CHANGELOG.md` with the following format:
 
 ```markdown
 ## [YYYY-MM-DD HH:MM] - Brief Title
@@ -122,6 +134,68 @@ cargo audit 2>/dev/null || true
 - Do NOT skip these steps - they catch bugs and ensure code quality
 - If clippy or tests fail, the task is NOT complete
 
+**CRITICAL: After ANY Rust code modification, you MUST verify:**
+
+1. **Function documentation is accurate**:
+   - Check rustdoc comments match what the function actually does
+   - Verify all `# Arguments` match the actual parameters
+   - Verify `# Returns` matches the actual return type
+   - Verify `# Errors` describes all error cases
+   - Update examples in doc comments if behavior changed
+
+2. **Unit tests are accurate and passing**:
+   - Check test assertions match the new behavior
+   - Update test expectations if behavior changed
+   - Ensure all tests compile and run successfully
+   - Add new tests for new behavior/edge cases
+
+3. **End-user documentation is updated**:
+   - Update relevant files in `docs/` directory
+   - Update examples in `examples/` directory
+   - Ensure `CHANGELOG.md` reflects the changes
+   - Verify example YAML files validate successfully
+
+### Unit Testing Requirements
+
+**CRITICAL: When modifying ANY Rust code, you MUST update, add, or delete unit tests accordingly:**
+
+1. **Adding New Functions/Methods:**
+   - MUST add unit tests for ALL new public functions
+   - Test both success and failure scenarios
+   - Include edge cases and boundary conditions
+
+2. **Modifying Existing Functions:**
+   - MUST update existing tests to reflect changes
+   - Add new tests if new behavior or code paths are introduced
+   - Ensure ALL existing tests still pass
+
+3. **Deleting Functions:**
+   - MUST delete corresponding unit tests
+   - Remove or update integration tests that depended on deleted code
+
+4. **Refactoring Code:**
+   - Update test names and assertions to match refactored code
+   - Verify test coverage remains the same or improves
+   - If refactoring changes function signatures, update ALL tests
+
+5. **Test Quality Standards:**
+   - Use descriptive test names (e.g., `test_reconcile_creates_zone_when_missing`)
+   - Follow the Arrange-Act-Assert pattern
+   - Mock external dependencies (k8s API, external services)
+   - Test error conditions, not just happy paths
+   - Ensure tests are deterministic (no flaky tests)
+
+**VERIFICATION:**
+- After ANY Rust code change, run `cargo test` in the modified file's crate
+- ALL tests MUST pass before the task is considered complete
+- If you add code but cannot write a test, document WHY in the code comments
+
+**Example:**
+If you modify `src/reconcilers/records.rs`:
+1. Update/add tests in the `#[cfg(test)]` module at the bottom of the same file
+2. Run `cargo test --lib reconcilers::records` to verify
+3. Ensure ALL tests pass before moving on
+
 ### Rust Style Guidelines
 
 - Use `thiserror` for error types, not string errors
@@ -136,7 +210,7 @@ Before adding a new dependency:
 1. Check if existing deps solve the problem
 2. Verify the crate is actively maintained (commits in last 6 months)
 3. Prefer crates from well-known authors or the Rust ecosystem
-4. Document why the dependency was added in CHANGELOG.md
+4. Document why the dependency was added in `CHANGELOG.md`
 
 ---
 
@@ -164,10 +238,10 @@ CRD YAML files in `/deploy/crds/` are **AUTO-GENERATED** from the Rust types. Th
    cargo run --bin crddoc > docs/src/reference/api.md
    ```
 4. **Verify generated YAMLs** look correct
-5. **Update CHANGELOG.md** documenting the CRD change
+5. **Update `CHANGELOG.md`** documenting the CRD change
 6. **Deploy updated CRDs**:
    ```bash
-   kubectl apply -k deploy/crds/
+   kubectl apply -f deploy/crds/
    ```
 
 #### Generated YAML Format:
@@ -293,7 +367,7 @@ clusters/
 When modifying HelmRelease manifests:
 1. Bump the chart version or values checksum
 2. Add suspend annotation for breaking changes
-3. Document rollback procedure in CHANGELOG.md
+3. Document rollback procedure in `CHANGELOG.md`
 
 ---
 
@@ -301,7 +375,9 @@ When modifying HelmRelease manifests:
 
 ### Unit Tests
 
-Every public function should have tests:
+**MANDATORY: Every public function MUST have corresponding unit tests.**
+
+Place unit tests in a `#[cfg(test)]` module at the bottom of the same file:
 
 ```rust
 #[cfg(test)]
@@ -312,15 +388,46 @@ mod tests {
     async fn test_reconcile_creates_zone() {
         // Arrange
         let (client, _mock) = mock_client().await;
-        
+        let zone = create_test_zone("example.com");
+        let ctx = create_test_context(client);
+
         // Act
         let result = reconcile(zone, ctx).await;
-        
+
         // Assert
         assert!(result.is_ok());
+        assert_eq!(result.unwrap().requeue_after, Some(Duration::from_secs(300)));
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_handles_api_error() {
+        // Arrange
+        let (client, mock) = mock_client_with_error().await;
+        let zone = create_test_zone("example.com");
+        let ctx = create_test_context(client);
+
+        // Act
+        let result = reconcile(zone, ctx).await;
+
+        // Assert
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ReconcileError::ApiError(_)));
     }
 }
 ```
+
+**Test Coverage Requirements:**
+- **Success path:** Test the primary expected behavior
+- **Failure paths:** Test error handling for each possible error type
+- **Edge cases:** Empty strings, null values, boundary conditions
+- **State changes:** Verify correct state transitions
+- **Async operations:** Test timeouts, retries, and cancellation
+
+**When to Update Tests:**
+- **ALWAYS** when adding new functions → Add new tests
+- **ALWAYS** when modifying functions → Update existing tests
+- **ALWAYS** when deleting functions → Delete corresponding tests
+- **ALWAYS** when refactoring → Verify tests still cover the same behavior
 
 ### Integration Tests
 
@@ -328,6 +435,27 @@ Place in `/tests/` directory:
 - Use `k8s-openapi` test fixtures
 - Mock external services (BIND API, etc.)
 - Test failure scenarios, not just happy path
+- Test end-to-end workflows (create → update → delete)
+- Verify finalizers and cleanup logic
+
+### Test Execution
+
+**Before committing ANY Rust changes:**
+```bash
+# Run all tests
+cargo test
+
+# Run tests for a specific file
+cargo test --lib <module_path>
+
+# Run tests with output
+cargo test -- --nocapture
+
+# Run tests with coverage (if tarpaulin installed)
+cargo tarpaulin --out Html
+```
+
+**ALL tests MUST pass before code is considered complete.**
 
 ---
 
@@ -393,14 +521,22 @@ kubectl apply --dry-run=server -f deploy/
 Before committing:
 
 - [ ] **If ANY `.rs` file was modified**:
+  - [ ] **Unit tests updated/added/deleted** to match code changes (REQUIRED)
+  - [ ] All new public functions have corresponding tests (REQUIRED)
+  - [ ] All modified functions have updated tests (REQUIRED)
+  - [ ] All deleted functions have tests removed (REQUIRED)
   - [ ] `cargo fmt` passes (REQUIRED)
   - [ ] `cargo clippy -- -D warnings` passes (REQUIRED - fix ALL warnings)
-  - [ ] `cargo test` passes (REQUIRED)
+  - [ ] `cargo test` passes (REQUIRED - ALL tests must pass)
 - [ ] **If `src/crd.rs` was modified**:
   - [ ] Run `cargo run --bin crdgen` to regenerate CRD YAMLs
-  - [ ] Run `cargo run --bin crddoc > docs/src/reference/api.md` to regenerate API docs
+  - [ ] **Update `/examples/*.yaml` to match new schema** (CRITICAL)
+  - [ ] **Update `/docs/src/` documentation** that references the CRDs (CRITICAL)
+  - [ ] Run `./scripts/validate-examples.sh` to verify all examples are valid (REQUIRED)
+  - [ ] Run `cargo fmt`, `cargo clippy`, and `cargo test` to ensure everything passes
+  - [ ] **LAST STEP**: Run `cargo run --bin crddoc > docs/src/reference/api.md` to regenerate API docs **AFTER** all validations pass
 - [ ] CRD YAML files validate: `kubectl apply --dry-run=client -f deploy/crds/`
-- [ ] CHANGELOG.md updated
+- [ ] `CHANGELOG.md` updated
 - [ ] No secrets or sensitive data
 - [ ] Rustdoc comments on public items
 - [ ] Error handling uses proper types (no `.unwrap()`)

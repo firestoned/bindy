@@ -14,7 +14,8 @@ spec:
     categories: []
     kind: CAARecord
     plural: caarecords
-    shortNames: []
+    shortNames:
+    - caa
     singular: caarecord
   scope: Namespaced
   versions:
@@ -66,14 +67,24 @@ spec:
                   For "issue"/"issuewild": CA domain (e.g., "letsencrypt.org") For "iodef": mailto: or https: URL
                 type: string
               zone:
-                description: DNS zone this record belongs to.
+                description: |-
+                  DNS zone this record belongs to (e.g., "example.com").
+
+                  Must match the zoneName of an existing `DNSZone` resource in the same namespace. Either `zone` or `zoneRef` must be specified (not both).
+                nullable: true
+                type: string
+              zoneRef:
+                description: |-
+                  Reference to a `DNSZone` resource by metadata.name.
+
+                  Either `zone` or `zoneRef` must be specified (not both).
+                nullable: true
                 type: string
             required:
             - flags
             - name
             - tag
             - value
-            - zone
             type: object
           status:
             description: Generic record status
@@ -87,7 +98,7 @@ spec:
 
                     Conditions are used in status subresources to communicate the state of a resource to users and controllers.
                   properties:
-                    last_transition_time:
+                    lastTransitionTime:
                       description: Last time the condition transitioned from one status to another (RFC3339 format).
                       nullable: true
                       type: string
@@ -110,7 +121,7 @@ spec:
                   - type
                   type: object
                 type: array
-              observed_generation:
+              observedGeneration:
                 format: int64
                 nullable: true
                 type: integer

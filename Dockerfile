@@ -20,6 +20,7 @@ RUN mkdir -p src/bin && \
 
 # Now copy the actual source code
 COPY src ./src
+COPY templates ./templates
 
 # Build the actual controller
 # Touch main.rs to ensure it's rebuilt with the real code

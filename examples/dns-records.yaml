@@ -1,107 +1,110 @@
 ---
 # A Records
-apiVersion: dns.firestoned.io/v1alpha1
+
+# Method 1: Using 'zone' field - matches against DNSZone spec.zoneName
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: www-example
   namespace: dns-system
 spec:
-  zone: example-com
+  zone: example.com  # Matches DNSZone spec.zoneName
   name: www
   ipv4Address: "192.0.2.1"
   ttl: 300
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+# Method 2: Using 'zoneRef' field - references DNSZone by metadata.name (more efficient)
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: api-example
   namespace: dns-system
 spec:
-  zone: example-com
+  zoneRef: example-com  # References DNSZone metadata.name directly
   name: api
   ipv4Address: "192.0.2.2"
   ttl: 300
 ---
 # MX Records
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: MXRecord
 metadata:
   name: mail-example
   namespace: dns-system
 spec:
-  zone: example-com
+  zone: example.com
   name: "@"
   priority: 10
   mailServer: mail.example.com.
   ttl: 3600
 ---
 # TXT Records
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: TXTRecord
 metadata:
   name: spf-example
   namespace: dns-system
 spec:
-  zone: example-com
+  zone: example.com
   name: "@"
   text:
     - "v=spf1 include:_spf.example.com ~all"
   ttl: 3600
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: TXTRecord
 metadata:
   name: dmarc-example
   namespace: dns-system
 spec:
-  zone: example-com
+  zoneRef: example-com
   name: "_dmarc"
   text:
     - "v=DMARC1; p=reject; rua=mailto:admin@example.com"
   ttl: 3600
 ---
 # CNAME Records
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: CNAMERecord
 metadata:
   name: blog-example
   namespace: dns-system
 spec:
-  zone: example-com
+  zoneRef: example-com
   name: blog
   target: www.example.com.
   ttl: 300
 ---
 # Records for internal.local zone
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: db-internal
   namespace: dns-system
 spec:
-  zone: internal-local
+  zone: internal.local  # Using zoneName lookup
   name: db
   ipv4Address: "10.0.1.10"
   ttl: 300
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: app-internal
   namespace: dns-system
 spec:
-  zone: internal-local
+  zoneRef: internal-local  # Using direct reference (recommended)
   name: app
   ipv4Address: "10.0.1.11"
   ttl: 300
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: CNAMERecord
 metadata:
   name: cache-internal
   namespace: dns-system
 spec:
-  zone: internal-local
+  zoneRef: internal-local
   name: cache
   target: db.internal.local.
   ttl: 300

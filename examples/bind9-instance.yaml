@@ -1,4 +1,4 @@
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: primary-dns
@@ -7,19 +7,11 @@ metadata:
     dns-role: primary
     environment: production
 spec:
+  clusterRef: production-dns
+  role: primary
   replicas: 2
-  version: "9.18"
-  config:
-    recursion: false
-    allowQuery:
-      - "0.0.0.0/0"
-    allowTransfer:
-      - "10.0.0.0/8"
-    dnssec:
-      enabled: true
-      validation: true
 ---
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
   name: secondary-dns
@@ -28,9 +20,9 @@ metadata:
     dns-role: secondary
     environment: production
 spec:
+  clusterRef: production-dns
+  role: secondary
   replicas: 1
-  version: "9.18"
-  config:
-    recursion: false
-    allowQuery:
-      - "0.0.0.0/0"
+  # For secondary instances, specify primary servers for zone transfers
+  primaryServers:
+    - "10.0.1.10"  # IP of primary-dns service

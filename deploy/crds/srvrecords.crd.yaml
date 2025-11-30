@@ -14,7 +14,8 @@ spec:
     categories: []
     kind: SRVRecord
     plural: srvrecords
-    shortNames: []
+    shortNames:
+    - srv
     singular: srvrecord
   scope: Namespaced
   versions:
@@ -75,7 +76,18 @@ spec:
                 minimum: 0.0
                 type: integer
               zone:
-                description: DNS zone this record belongs to.
+                description: |-
+                  DNS zone this record belongs to (e.g., "example.com").
+
+                  Must match the zoneName of an existing `DNSZone` resource in the same namespace. Either `zone` or `zoneRef` must be specified (not both).
+                nullable: true
+                type: string
+              zoneRef:
+                description: |-
+                  Reference to a `DNSZone` resource by metadata.name.
+
+                  Either `zone` or `zoneRef` must be specified (not both).
+                nullable: true
                 type: string
             required:
             - name
@@ -83,7 +95,6 @@ spec:
             - priority
             - target
             - weight
-            - zone
             type: object
           status:
             description: Generic record status
@@ -97,7 +108,7 @@ spec:
 
                     Conditions are used in status subresources to communicate the state of a resource to users and controllers.
                   properties:
-                    last_transition_time:
+                    lastTransitionTime:
                       description: Last time the condition transitioned from one status to another (RFC3339 format).
                       nullable: true
                       type: string
@@ -120,7 +131,7 @@ spec:
                   - type
                   type: object
                 type: array
-              observed_generation:
+              observedGeneration:
                 format: int64
                 nullable: true
                 type: integer

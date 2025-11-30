@@ -14,7 +14,8 @@ spec:
     categories: []
     kind: ARecord
     plural: arecords
-    shortNames: []
+    shortNames:
+    - a
     singular: arecord
   scope: Namespaced
   versions:
@@ -61,12 +62,19 @@ spec:
                 description: |-
                   DNS zone this record belongs to (e.g., "example.com").
 
-                  Must match the zoneName of an existing `DNSZone` resource.
+                  Must match the zoneName of an existing `DNSZone` resource in the same namespace. The controller will search for a `DNSZone` with matching `spec.zoneName`. Either `zone` or `zoneRef` must be specified (not both).
+                nullable: true
+                type: string
+              zoneRef:
+                description: |-
+                  Reference to a `DNSZone` resource by metadata.name.
+
+                  Directly references a `DNSZone` resource by its Kubernetes name for more efficient lookup. Either `zone` or `zoneRef` must be specified (not both).
+                nullable: true
                 type: string
             required:
             - ipv4Address
             - name
-            - zone
             type: object
           status:
             description: Generic record status
@@ -80,7 +88,7 @@ spec:
 
                     Conditions are used in status subresources to communicate the state of a resource to users and controllers.
                   properties:
-                    last_transition_time:
+                    lastTransitionTime:
                       description: Last time the condition transitioned from one status to another (RFC3339 format).
                       nullable: true
                       type: string
@@ -103,7 +111,7 @@ spec:
                   - type
                   type: object
                 type: array
-              observed_generation:
+              observedGeneration:
                 format: int64
                 nullable: true
                 type: integer

@@ -1,0 +1,201 @@
+# Complete Bindy DNS Setup Example
+#
+# This example demonstrates the correct relationship between:
+# - Bind9Cluster (defines shared configuration)
+# - Bind9Instance (actual DNS server pods)
+# - DNSZone (DNS zones to serve)
+# - DNS Records (A, CNAME, MX, etc.)
+#
+# IMPORTANT: The clusterRef must match across resources:
+#   DNSZone.spec.clusterRef → Bind9Cluster.metadata.name
+#   Bind9Instance.spec.clusterRef → Bind9Cluster.metadata.name
+
+---
+# Step 1: Create the Bind9Cluster
+# This defines shared configuration for all instances in the cluster
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
+metadata:
+  name: production-dns  # ← This is the cluster name referenced by others
+  namespace: dns-system
+  labels:
+    environment: production
+spec:
+  version: "9.18"
+  # Primary instance configuration
+  primary:
+    # Default number of replicas for primary instances (can be overridden per instance)
+    replicas: 2
+  # Secondary instance configuration
+  secondary:
+    # Default number of replicas for secondary instances (can be overridden per instance)
+    replicas: 3
+  global:
+    recursion: false
+    allowQuery:
+      - "0.0.0.0/0"
+    allowTransfer:
+      - "10.0.0.0/8"
+    dnssec:
+      enabled: true
+      validation: true
+
+---
+# Step 2: Create Bind9Instances
+# These are the actual DNS server pods
+
+# Primary DNS instance (accepts zone updates)
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: primary-dns  # ← Instance name (can be anything)
+  namespace: dns-system
+  labels:
+    dns-role: primary
+    environment: production
+spec:
+  clusterRef: production-dns  # ← Must match Bind9Cluster name above
+  role: primary
+  replicas: 2  # Run 2 pods for high availability
+
+---
+# Secondary DNS instance (pulls zones from primary)
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: secondary-dns  # ← Instance name (can be anything)
+  namespace: dns-system
+  labels:
+    dns-role: secondary
+    environment: production
+spec:
+  clusterRef: production-dns  # ← Must match Bind9Cluster name above
+  role: secondary
+  replicas: 1
+
+---
+# Step 3: Create DNS Zones
+# These define which zones the cluster will serve
+
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: DNSZone
+metadata:
+  name: example-com  # ← Zone resource name (can be anything)
+  namespace: dns-system
+spec:
+  zoneName: example.com  # ← Actual DNS zone name
+  clusterRef: production-dns  # ← Must match Bind9Cluster name (NOT instance name!)
+  soaRecord:
+    primaryNs: ns1.example.com.
+    adminEmail: admin.example.com.
+    serial: 2024010101
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTtl: 86400
+  ttl: 3600
+
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: DNSZone
+metadata:
+  name: internal-local
+  namespace: dns-system
+spec:
+  zoneName: internal.local
+  clusterRef: production-dns  # ← Must match Bind9Cluster name
+  soaRecord:
+    primaryNs: ns1.internal.local.
+    adminEmail: admin.internal.local.
+    serial: 2024010101
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTtl: 86400
+  ttl: 3600
+
+---
+# Step 4: Create DNS Records
+# These reference zones by the zone resource name (not zoneName)
+
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: ARecord
+metadata:
+  name: www-example-com
+  namespace: dns-system
+spec:
+  zoneRef: example-com  # ← References DNSZone.metadata.name
+  name: www  # Creates www.example.com
+  ipv4Address: 192.168.1.10
+  ttl: 300
+
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: ARecord
+metadata:
+  name: api-example-com
+  namespace: dns-system
+spec:
+  zoneRef: example-com
+  name: api  # Creates api.example.com
+  ipv4Address: 192.168.1.20
+  ttl: 300
+
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: CNAMERecord
+metadata:
+  name: blog-example-com
+  namespace: dns-system
+spec:
+  zoneRef: example-com
+  name: blog  # Creates blog.example.com
+  target: www.example.com.  # Must end with .
+  ttl: 300
+
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: MXRecord
+metadata:
+  name: mail-example-com
+  namespace: dns-system
+spec:
+  zoneRef: example-com
+  name: "@"  # @ means zone apex (example.com)
+  priority: 10
+  mailServer: mail.example.com.  # Must end with .
+  ttl: 300
+
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: TXTRecord
+metadata:
+  name: spf-example-com
+  namespace: dns-system
+spec:
+  zoneRef: example-com
+  name: "@"
+  text:
+    - "v=spf1 mx -all"
+  ttl: 300
+
+---
+# How the relationships work:
+#
+# 1. Bind9Cluster "production-dns"
+#    ↓
+# 2. Bind9Instance "primary-dns" (clusterRef: production-dns)
+#    Bind9Instance "secondary-dns" (clusterRef: production-dns)
+#    ↓
+# 3. DNSZone "example-com" (clusterRef: production-dns)
+#    DNSZone "internal-local" (clusterRef: production-dns)
+#    ↓
+# 4. ARecord "www-example-com" (zoneRef: example-com)
+#    CNAMERecord "blog-example-com" (zoneRef: example-com)
+#
+# When a record is created:
+# - Controller looks up DNSZone by zoneRef
+# - Gets the clusterRef from the DNSZone
+# - Searches for Bind9Instances with matching clusterRef
+# - Finds "primary-dns" and "secondary-dns"
+# - Updates the primary instance

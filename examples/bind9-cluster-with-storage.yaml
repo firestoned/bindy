@@ -1,0 +1,106 @@
+# Example Bind9Cluster with persistent storage using PersistentVolumeClaims
+#
+# This example shows how to configure persistent storage for BIND9 zone data
+# using PersistentVolumeClaims. The volumes are defined at the cluster level
+# and inherited by all instances.
+#
+# Prerequisites:
+# 1. A StorageClass must be available in your cluster
+# 2. Apply the PVC first: kubectl apply -f storage-pvc.yaml
+# 3. Then apply this cluster: kubectl apply -f bind9-cluster-with-storage.yaml
+
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
+metadata:
+  name: production-dns
+  namespace: dns-system
+  labels:
+    environment: production
+spec:
+  version: "9.18"
+
+  # Primary instance configuration
+  primary:
+    # Default number of replicas for primary instances (can be overridden per instance)
+    replicas: 2
+
+  # Secondary instance configuration
+  secondary:
+    # Default number of replicas for secondary instances (can be overridden per instance)
+    replicas: 3
+
+  # Global configuration for all instances in this cluster
+  global:
+    recursion: false
+    allowQuery:
+      - "0.0.0.0/0"
+    allowTransfer:
+      - "10.0.0.0/8"
+      - "172.16.0.0/12"
+    dnssec:
+      enabled: true
+      validation: true
+
+  # Persistent storage configuration
+  # These volumes will be inherited by all instances in this cluster
+  # unless overridden at the instance level
+  volumes:
+    - name: zones
+      persistentVolumeClaim:
+        claimName: bind9-zones-pvc
+
+  volumeMounts:
+    - name: zones
+      mountPath: /var/cache/bind
+      # This is where BIND9 stores zone files
+
+---
+# Alternative: Instance-specific storage override
+# Use this pattern when different instances need different storage
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: primary-dns
+  namespace: dns-system
+  labels:
+    dns-role: primary
+    environment: production
+spec:
+  clusterRef: production-dns
+  role: primary
+  replicas: 1
+
+  # Instance-specific storage (overrides cluster-level volumes)
+  # This is useful when you need separate storage per instance
+  volumes:
+    - name: zones
+      persistentVolumeClaim:
+        claimName: bind9-primary-zones-pvc
+
+  volumeMounts:
+    - name: zones
+      mountPath: /var/cache/bind
+
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: secondary-dns
+  namespace: dns-system
+  labels:
+    dns-role: secondary
+    environment: production
+spec:
+  clusterRef: production-dns
+  role: secondary
+  replicas: 1
+
+  # Instance-specific storage for secondary
+  volumes:
+    - name: zones
+      persistentVolumeClaim:
+        claimName: bind9-secondary-zones-pvc
+
+  volumeMounts:
+    - name: zones
+      mountPath: /var/cache/bind

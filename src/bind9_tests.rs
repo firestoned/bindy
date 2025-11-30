@@ -32,7 +32,7 @@ mod tests {
         let key = Bind9Manager::generate_rndc_key();
 
         // Verify key has correct algorithm
-        assert_eq!(key.algorithm, "hmac-sha256");
+        assert_eq!(key.algorithm, crate::crd::RndcAlgorithm::HmacSha256);
 
         // Verify secret is base64 encoded
         assert!(!key.secret.is_empty());
@@ -56,7 +56,7 @@ mod tests {
     fn test_create_rndc_secret_data() {
         let key = RndcKeyData {
             name: "test-instance".to_string(),
-            algorithm: "hmac-sha256".to_string(),
+            algorithm: crate::crd::RndcAlgorithm::HmacSha256,
             secret: "dGVzdHNlY3JldA==".to_string(),
         };
 
@@ -88,7 +88,7 @@ mod tests {
         let key = Bind9Manager::parse_rndc_secret_data(&data).unwrap();
 
         assert_eq!(key.name, "bind9-primary");
-        assert_eq!(key.algorithm, "hmac-sha256");
+        assert_eq!(key.algorithm, crate::crd::RndcAlgorithm::HmacSha256);
         assert_eq!(key.secret, "dGVzdHNlY3JldA==");
     }
 
@@ -144,7 +144,7 @@ mod tests {
     fn test_rndc_key_data_clone() {
         let key = RndcKeyData {
             name: "test".to_string(),
-            algorithm: "hmac-sha256".to_string(),
+            algorithm: crate::crd::RndcAlgorithm::HmacSha256,
             secret: "dGVzdA==".to_string(),
         };
 
@@ -159,7 +159,7 @@ mod tests {
     fn test_rndc_key_data_debug() {
         let key = RndcKeyData {
             name: "test".to_string(),
-            algorithm: "hmac-sha512".to_string(),
+            algorithm: crate::crd::RndcAlgorithm::HmacSha512,
             secret: "c2VjcmV0".to_string(),
         };
 
@@ -167,7 +167,7 @@ mod tests {
 
         // Verify debug output contains all fields
         assert!(debug_str.contains("test"));
-        assert!(debug_str.contains("hmac-sha512"));
+        assert!(debug_str.contains("HmacSha512")); // Enum variant name in debug output
         assert!(debug_str.contains("c2VjcmV0"));
     }
 
@@ -252,7 +252,7 @@ mod tests {
     #[test]
     fn test_hmac_sha256_algorithm() {
         let key = Bind9Manager::generate_rndc_key();
-        assert_eq!(key.algorithm, "hmac-sha256");
+        assert_eq!(key.algorithm, crate::crd::RndcAlgorithm::HmacSha256);
     }
 
     #[test]
@@ -299,12 +299,17 @@ mod tests {
 
     #[test]
     fn test_rndc_key_data_with_different_algorithms() {
-        let algorithms = vec!["hmac-sha256", "hmac-sha512", "hmac-md5"];
+        use crate::crd::RndcAlgorithm;
+        let algorithms = vec![
+            RndcAlgorithm::HmacSha256,
+            RndcAlgorithm::HmacSha512,
+            RndcAlgorithm::HmacMd5,
+        ];
 
         for algorithm in algorithms {
             let key = RndcKeyData {
                 name: "test".to_string(),
-                algorithm: algorithm.to_string(),
+                algorithm: algorithm.clone(),
                 secret: "dGVzdA==".to_string(),
             };
 
@@ -330,7 +335,7 @@ mod tests {
     fn test_secret_data_btreemap_ordering() {
         let key = RndcKeyData {
             name: "instance".to_string(),
-            algorithm: "hmac-sha256".to_string(),
+            algorithm: crate::crd::RndcAlgorithm::HmacSha256,
             secret: "c2VjcmV0".to_string(),
         };
 
@@ -339,6 +344,559 @@ mod tests {
         // BTreeMap should have keys in sorted order
         let keys: Vec<&String> = data.keys().collect();
         assert_eq!(keys, vec!["algorithm", "key-name", "secret"]);
+    }
+
+    // =====================================================
+    // Comprehensive Edge-Case Tests for Missing Coverage
+    // =====================================================
+
+    // Tests for all supported RNDC algorithms
+    #[test]
+    fn test_parse_rndc_secret_data_all_algorithms() {
+        use crate::crd::RndcAlgorithm;
+
+        let algorithms = vec![
+            ("hmac-md5", RndcAlgorithm::HmacMd5),
+            ("hmac-sha1", RndcAlgorithm::HmacSha1),
+            ("hmac-sha224", RndcAlgorithm::HmacSha224),
+            ("hmac-sha256", RndcAlgorithm::HmacSha256),
+            ("hmac-sha384", RndcAlgorithm::HmacSha384),
+            ("hmac-sha512", RndcAlgorithm::HmacSha512),
+        ];
+
+        for (algo_str, expected_algo) in algorithms {
+            let mut data = BTreeMap::new();
+            data.insert("key-name".to_string(), b"test-key".to_vec());
+            data.insert("algorithm".to_string(), algo_str.as_bytes().to_vec());
+            data.insert("secret".to_string(), b"dGVzdHNlY3JldA==".to_vec());
+
+            let key = Bind9Manager::parse_rndc_secret_data(&data).unwrap();
+
+            assert_eq!(key.algorithm, expected_algo);
+            assert_eq!(key.name, "test-key");
+            assert_eq!(key.secret, "dGVzdHNlY3JldA==");
+        }
+    }
+
+    #[test]
+    fn test_parse_rndc_secret_data_unsupported_algorithm() {
+        let mut data = BTreeMap::new();
+        data.insert("key-name".to_string(), b"test-key".to_vec());
+        data.insert("algorithm".to_string(), b"hmac-unsupported".to_vec());
+        data.insert("secret".to_string(), b"dGVzdHNlY3JldA==".to_vec());
+
+        let result = Bind9Manager::parse_rndc_secret_data(&data);
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("Unsupported RNDC algorithm"));
+        assert!(err_msg.contains("hmac-unsupported"));
+    }
+
+    #[test]
+    fn test_parse_rndc_secret_data_invalid_utf8_in_algorithm() {
+        let mut data = BTreeMap::new();
+        data.insert("key-name".to_string(), b"test-key".to_vec());
+        data.insert("algorithm".to_string(), vec![0xFF, 0xFE, 0xFD]); // Invalid UTF-8
+        data.insert("secret".to_string(), b"dGVzdHNlY3JldA==".to_vec());
+
+        let result = Bind9Manager::parse_rndc_secret_data(&data);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_rndc_secret_data_invalid_utf8_in_secret() {
+        let mut data = BTreeMap::new();
+        data.insert("key-name".to_string(), b"test-key".to_vec());
+        data.insert("algorithm".to_string(), b"hmac-sha256".to_vec());
+        data.insert("secret".to_string(), vec![0xFF, 0xFE, 0xFD]); // Invalid UTF-8
+
+        let result = Bind9Manager::parse_rndc_secret_data(&data);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_rndc_secret_data_empty_key_name() {
+        let mut data = BTreeMap::new();
+        data.insert("key-name".to_string(), b"".to_vec()); // Empty key name
+        data.insert("algorithm".to_string(), b"hmac-sha256".to_vec());
+        data.insert("secret".to_string(), b"dGVzdHNlY3JldA==".to_vec());
+
+        let key = Bind9Manager::parse_rndc_secret_data(&data).unwrap();
+
+        assert_eq!(key.name, "");
+    }
+
+    #[test]
+    fn test_parse_rndc_secret_data_empty_secret() {
+        let mut data = BTreeMap::new();
+        data.insert("key-name".to_string(), b"test-key".to_vec());
+        data.insert("algorithm".to_string(), b"hmac-sha256".to_vec());
+        data.insert("secret".to_string(), b"".to_vec()); // Empty secret
+
+        let key = Bind9Manager::parse_rndc_secret_data(&data).unwrap();
+
+        assert_eq!(key.secret, "");
+    }
+
+    #[test]
+    fn test_create_rndc_secret_data_all_algorithms() {
+        use crate::crd::RndcAlgorithm;
+
+        let algorithms = vec![
+            (RndcAlgorithm::HmacMd5, "hmac-md5"),
+            (RndcAlgorithm::HmacSha1, "hmac-sha1"),
+            (RndcAlgorithm::HmacSha224, "hmac-sha224"),
+            (RndcAlgorithm::HmacSha256, "hmac-sha256"),
+            (RndcAlgorithm::HmacSha384, "hmac-sha384"),
+            (RndcAlgorithm::HmacSha512, "hmac-sha512"),
+        ];
+
+        for (algorithm, expected_str) in algorithms {
+            let key = RndcKeyData {
+                name: "test-instance".to_string(),
+                algorithm: algorithm.clone(),
+                secret: "dGVzdHNlY3JldA==".to_string(),
+            };
+
+            let secret_data = Bind9Manager::create_rndc_secret_data(&key);
+
+            assert_eq!(
+                secret_data.get("algorithm"),
+                Some(&expected_str.to_string())
+            );
+            assert_eq!(
+                secret_data.get("key-name"),
+                Some(&"test-instance".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn test_generate_rndc_key_produces_valid_base64() {
+        for _ in 0..10 {
+            let key = Bind9Manager::generate_rndc_key();
+
+            // Verify secret is valid base64
+            let decoded = BASE64.decode(&key.secret).expect("Should be valid base64");
+
+            // Verify it's exactly 32 bytes
+            assert_eq!(decoded.len(), 32);
+
+            // Verify it doesn't contain only zeros (extremely unlikely but possible)
+            assert!(decoded.iter().any(|&b| b != 0));
+        }
+    }
+
+    #[test]
+    fn test_rndc_key_data_name_with_special_characters() {
+        let key = RndcKeyData {
+            name: "bind9-primary_01.example-cluster".to_string(),
+            algorithm: crate::crd::RndcAlgorithm::HmacSha256,
+            secret: "dGVzdA==".to_string(),
+        };
+
+        let secret_data = Bind9Manager::create_rndc_secret_data(&key);
+        let mut byte_data = BTreeMap::new();
+        for (k, v) in secret_data {
+            byte_data.insert(k, v.into_bytes());
+        }
+
+        let parsed = Bind9Manager::parse_rndc_secret_data(&byte_data).unwrap();
+
+        assert_eq!(parsed.name, "bind9-primary_01.example-cluster");
+    }
+
+    #[test]
+    fn test_rndc_key_data_very_long_name() {
+        let long_name = "a".repeat(253); // DNS label max length
+        let key = RndcKeyData {
+            name: long_name.clone(),
+            algorithm: crate::crd::RndcAlgorithm::HmacSha512,
+            secret: "dGVzdA==".to_string(),
+        };
+
+        let secret_data = Bind9Manager::create_rndc_secret_data(&key);
+        let mut byte_data = BTreeMap::new();
+        for (k, v) in secret_data {
+            byte_data.insert(k, v.into_bytes());
+        }
+
+        let parsed = Bind9Manager::parse_rndc_secret_data(&byte_data).unwrap();
+
+        assert_eq!(parsed.name, long_name);
+    }
+
+    #[test]
+    fn test_srv_record_data_edge_case_values() {
+        // Test minimum values
+        let srv_min = SRVRecordData {
+            priority: 0,
+            weight: 0,
+            port: 0,
+            target: ".".to_string(), // Root domain
+            ttl: Some(0),
+        };
+        assert_eq!(srv_min.priority, 0);
+        assert_eq!(srv_min.weight, 0);
+        assert_eq!(srv_min.port, 0);
+
+        // Test maximum reasonable values
+        let srv_max = SRVRecordData {
+            priority: 65535,
+            weight: 65535,
+            port: 65535,
+            target: "very.long.subdomain.example.com.".to_string(),
+            ttl: Some(2147483647), // Max i32
+        };
+        assert_eq!(srv_max.priority, 65535);
+        assert_eq!(srv_max.weight, 65535);
+        assert_eq!(srv_max.port, 65535);
+        assert_eq!(srv_max.ttl, Some(2147483647));
+    }
+
+    #[test]
+    fn test_srv_record_data_negative_values() {
+        // Test negative priority (should be allowed by type but semantically invalid)
+        let srv = SRVRecordData {
+            priority: -1,
+            weight: -1,
+            port: -1,
+            target: "server.example.com.".to_string(),
+            ttl: Some(-1),
+        };
+        assert_eq!(srv.priority, -1);
+        assert_eq!(srv.weight, -1);
+        assert_eq!(srv.port, -1);
+        assert_eq!(srv.ttl, Some(-1));
+    }
+
+    #[test]
+    fn test_rndc_key_data_unicode_in_name() {
+        let key = RndcKeyData {
+            name: "bind9-主要".to_string(), // Chinese characters
+            algorithm: crate::crd::RndcAlgorithm::HmacSha256,
+            secret: "dGVzdA==".to_string(),
+        };
+
+        let secret_data = Bind9Manager::create_rndc_secret_data(&key);
+        let mut byte_data = BTreeMap::new();
+        for (k, v) in secret_data {
+            byte_data.insert(k, v.into_bytes());
+        }
+
+        let parsed = Bind9Manager::parse_rndc_secret_data(&byte_data).unwrap();
+
+        assert_eq!(parsed.name, "bind9-主要");
+    }
+
+    #[test]
+    fn test_round_trip_all_algorithms() {
+        use crate::crd::RndcAlgorithm;
+
+        let algorithms = vec![
+            RndcAlgorithm::HmacMd5,
+            RndcAlgorithm::HmacSha1,
+            RndcAlgorithm::HmacSha224,
+            RndcAlgorithm::HmacSha256,
+            RndcAlgorithm::HmacSha384,
+            RndcAlgorithm::HmacSha512,
+        ];
+
+        for algorithm in algorithms {
+            let original_key = RndcKeyData {
+                name: "test-instance".to_string(),
+                algorithm: algorithm.clone(),
+                secret: "dGVzdHNlY3JldA==".to_string(),
+            };
+
+            let secret_data = Bind9Manager::create_rndc_secret_data(&original_key);
+            let mut byte_data = BTreeMap::new();
+            for (k, v) in secret_data {
+                byte_data.insert(k, v.into_bytes());
+            }
+
+            let parsed_key = Bind9Manager::parse_rndc_secret_data(&byte_data).unwrap();
+
+            assert_eq!(original_key.name, parsed_key.name);
+            assert_eq!(original_key.algorithm, parsed_key.algorithm);
+            assert_eq!(original_key.secret, parsed_key.secret);
+        }
+    }
+
+    #[test]
+    fn test_parse_rndc_secret_data_with_extra_fields() {
+        let mut data = BTreeMap::new();
+        data.insert("key-name".to_string(), b"test-key".to_vec());
+        data.insert("algorithm".to_string(), b"hmac-sha256".to_vec());
+        data.insert("secret".to_string(), b"dGVzdHNlY3JldA==".to_vec());
+        data.insert("extra-field".to_string(), b"should-be-ignored".to_vec());
+        data.insert("another-extra".to_string(), b"also-ignored".to_vec());
+
+        // Should succeed and ignore extra fields
+        let key = Bind9Manager::parse_rndc_secret_data(&data).unwrap();
+
+        assert_eq!(key.name, "test-key");
+        assert_eq!(key.algorithm, crate::crd::RndcAlgorithm::HmacSha256);
+        assert_eq!(key.secret, "dGVzdHNlY3JldA==");
+    }
+
+    #[test]
+    fn test_generate_rndc_key_no_name_by_default() {
+        let key = Bind9Manager::generate_rndc_key();
+
+        // Generated keys should have empty name by default
+        assert_eq!(key.name, "");
+    }
+
+    #[test]
+    fn test_srv_record_target_trailing_dot() {
+        let srv_with_dot = SRVRecordData {
+            priority: 10,
+            weight: 50,
+            port: 443,
+            target: "server.example.com.".to_string(), // With trailing dot
+            ttl: None,
+        };
+
+        let srv_without_dot = SRVRecordData {
+            priority: 10,
+            weight: 50,
+            port: 443,
+            target: "server.example.com".to_string(), // Without trailing dot
+            ttl: None,
+        };
+
+        assert!(srv_with_dot.target.ends_with('.'));
+        assert!(!srv_without_dot.target.ends_with('.'));
+    }
+
+    #[test]
+    fn test_rndc_secret_with_special_base64_characters() {
+        // Test secrets with all valid base64 characters including +, /, and =
+        let special_secrets = vec![
+            "AAAA++++////====",
+            "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6",
+            "dGVzdC90ZXN0K3Rlc3Q9dGVzdA==",
+        ];
+
+        for secret in special_secrets {
+            let key = RndcKeyData {
+                name: "test".to_string(),
+                algorithm: crate::crd::RndcAlgorithm::HmacSha256,
+                secret: secret.to_string(),
+            };
+
+            let secret_data = Bind9Manager::create_rndc_secret_data(&key);
+            let mut byte_data = BTreeMap::new();
+            for (k, v) in secret_data {
+                byte_data.insert(k, v.into_bytes());
+            }
+
+            let parsed = Bind9Manager::parse_rndc_secret_data(&byte_data).unwrap();
+
+            assert_eq!(parsed.secret, secret);
+        }
+    }
+
+    // Async method tests - placeholders since actual implementation requires mocking
+
+    #[tokio::test]
+    async fn test_add_a_record_placeholder() {
+        let manager = Bind9Manager::new();
+        let key_data = RndcKeyData {
+            name: "test".to_string(),
+            algorithm: crate::crd::RndcAlgorithm::HmacSha256,
+            secret: "dGVzdA==".to_string(),
+        };
+
+        // Should succeed (placeholder implementation always returns Ok)
+        let result = manager
+            .add_a_record(
+                "example.com",
+                "www",
+                "192.0.2.1",
+                Some(300),
+                "localhost:953",
+                &key_data,
+            )
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_add_aaaa_record_placeholder() {
+        let manager = Bind9Manager::new();
+        let key_data = RndcKeyData {
+            name: "test".to_string(),
+            algorithm: crate::crd::RndcAlgorithm::HmacSha256,
+            secret: "dGVzdA==".to_string(),
+        };
+
+        let result = manager
+            .add_aaaa_record(
+                "example.com",
+                "www",
+                "2001:db8::1",
+                Some(300),
+                "localhost:953",
+                &key_data,
+            )
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_add_cname_record_placeholder() {
+        let manager = Bind9Manager::new();
+        let key_data = RndcKeyData {
+            name: "test".to_string(),
+            algorithm: crate::crd::RndcAlgorithm::HmacSha256,
+            secret: "dGVzdA==".to_string(),
+        };
+
+        let result = manager
+            .add_cname_record(
+                "example.com",
+                "blog",
+                "www.example.com.",
+                Some(300),
+                "localhost:953",
+                &key_data,
+            )
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_add_txt_record_placeholder() {
+        let manager = Bind9Manager::new();
+        let key_data = RndcKeyData {
+            name: "test".to_string(),
+            algorithm: crate::crd::RndcAlgorithm::HmacSha256,
+            secret: "dGVzdA==".to_string(),
+        };
+
+        let texts = vec!["v=spf1 mx ~all".to_string()];
+        let result = manager
+            .add_txt_record(
+                "example.com",
+                "@",
+                &texts,
+                Some(3600),
+                "localhost:953",
+                &key_data,
+            )
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_add_mx_record_placeholder() {
+        let manager = Bind9Manager::new();
+        let key_data = RndcKeyData {
+            name: "test".to_string(),
+            algorithm: crate::crd::RndcAlgorithm::HmacSha256,
+            secret: "dGVzdA==".to_string(),
+        };
+
+        let result = manager
+            .add_mx_record(
+                "example.com",
+                "@",
+                10,
+                "mail.example.com.",
+                Some(3600),
+                "localhost:953",
+                &key_data,
+            )
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_add_ns_record_placeholder() {
+        let manager = Bind9Manager::new();
+        let key_data = RndcKeyData {
+            name: "test".to_string(),
+            algorithm: crate::crd::RndcAlgorithm::HmacSha256,
+            secret: "dGVzdA==".to_string(),
+        };
+
+        let result = manager
+            .add_ns_record(
+                "example.com",
+                "@",
+                "ns1.example.com.",
+                Some(3600),
+                "localhost:953",
+                &key_data,
+            )
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_add_srv_record_placeholder() {
+        let manager = Bind9Manager::new();
+        let key_data = RndcKeyData {
+            name: "test".to_string(),
+            algorithm: crate::crd::RndcAlgorithm::HmacSha256,
+            secret: "dGVzdA==".to_string(),
+        };
+
+        let srv_data = SRVRecordData {
+            priority: 10,
+            weight: 60,
+            port: 5060,
+            target: "sip.example.com.".to_string(),
+            ttl: Some(3600),
+        };
+
+        let result = manager
+            .add_srv_record(
+                "example.com",
+                "_sip._tcp",
+                &srv_data,
+                "localhost:953",
+                &key_data,
+            )
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_add_caa_record_placeholder() {
+        let manager = Bind9Manager::new();
+        let key_data = RndcKeyData {
+            name: "test".to_string(),
+            algorithm: crate::crd::RndcAlgorithm::HmacSha256,
+            secret: "dGVzdA==".to_string(),
+        };
+
+        let result = manager
+            .add_caa_record(
+                "example.com",
+                "@",
+                0,
+                "issue",
+                "letsencrypt.org",
+                Some(3600),
+                "localhost:953",
+                &key_data,
+            )
+            .await;
+
+        assert!(result.is_ok());
     }
 }
 

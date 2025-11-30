@@ -27,7 +27,7 @@ spec:
       - "0.0.0.0/0"
     allowTransfer:
       - "10.0.0.0/8"
-  tsigKeys:
+  rndcSecretRefs:
     - name: transfer-key
       algorithm: hmac-sha256
       secret: "base64-encoded-secret"
@@ -115,7 +115,7 @@ TSIG (Transaction SIGnature) keys provide authenticated zone transfers:
 
 ```yaml
 spec:
-  tsigKeys:
+  rndcSecretRefs:
     - name: primary-secondary-key
       algorithm: hmac-sha256
       secret: "K8x...base64...=="
@@ -196,7 +196,7 @@ spec:
     dnssec:
       enabled: true
       validation: true
-  tsigKeys:
+  rndcSecretRefs:
     - name: region-sync-key
       algorithm: hmac-sha256
       secret: "..."

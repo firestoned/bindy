@@ -51,6 +51,7 @@
   - [Logging](./operations/logging.md)
   - [Metrics](./operations/metrics.md)
 - [Troubleshooting](./operations/troubleshooting.md)
+  - [Error Handling & Retry Logic](./operations/error-handling.md)
   - [Common Issues](./operations/common-issues.md)
   - [Debugging](./operations/debugging.md)
   - [FAQ](./operations/faq.md)

@@ -1,0 +1,95 @@
+# PersistentVolumeClaims for BIND9 zone data storage
+#
+# This file creates PVCs for persistent storage of BIND9 zone data.
+# Apply this before creating Bind9Cluster or Bind9Instance resources.
+#
+# Usage:
+#   kubectl apply -f storage-pvc.yaml
+#
+# Notes:
+# - Uses default StorageClass if not specified
+# - ReadWriteOnce: Volume can only be mounted by one pod at a time
+# - For multi-replica with shared storage, use ReadWriteMany if available
+# - Adjust storage size based on your zone data requirements
+
+---
+# Shared storage for cluster-level configuration
+# Use this when all instances can share the same storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bind9-zones-pvc
+  namespace: dns-system
+  labels:
+    app: bind9
+    component: storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  # Uncomment to use a specific StorageClass
+  # storageClassName: local-path
+
+---
+# Instance-specific storage for primary DNS
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bind9-primary-zones-pvc
+  namespace: dns-system
+  labels:
+    app: bind9
+    component: storage
+    dns-role: primary
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  # Uncomment to use a specific StorageClass
+  # storageClassName: fast-ssd
+
+---
+# Instance-specific storage for secondary DNS
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bind9-secondary-zones-pvc
+  namespace: dns-system
+  labels:
+    app: bind9
+    component: storage
+    dns-role: secondary
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  # Uncomment to use a specific StorageClass
+  # storageClassName: standard
+
+---
+# Example: Using ReadWriteMany for shared storage across replicas
+# Note: Not all storage providers support ReadWriteMany
+# Common providers that support it: NFS, CephFS, GlusterFS, Azure Files
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bind9-shared-zones-pvc
+  namespace: dns-system
+  labels:
+    app: bind9
+    component: storage
+    storage-type: shared
+spec:
+  accessModes:
+    - ReadWriteMany  # Allows multiple pods to mount the volume
+  resources:
+    requests:
+      storage: 50Gi
+  # Must use a StorageClass that supports ReadWriteMany
+  # storageClassName: nfs-client

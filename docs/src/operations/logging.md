@@ -14,6 +14,27 @@ env:
     value: "info"  # error, warn, info, debug, trace
 ```
 
+### Log Format
+
+Set log output format via RUST_LOG_FORMAT environment variable:
+
+```yaml
+env:
+  - name: RUST_LOG_FORMAT
+    value: "json"  # text or json (default: text)
+```
+
+**Text format (default):**
+- Human-readable compact format
+- Ideal for development and local debugging
+- Includes timestamps, file locations, and line numbers
+
+**JSON format:**
+- Structured JSON output
+- Recommended for production Kubernetes deployments
+- Easy integration with log aggregation tools (Loki, ELK, Splunk)
+- Enables programmatic log parsing and analysis
+
 ### Viewing Controller Logs
 
 ```bash
@@ -31,6 +52,17 @@ kubectl logs -n dns-system deployment/bindy | grep "example-com"
 ```
 
 ## BIND9 Instance Logging
+
+BIND9 instances are configured by default to log to stderr, making logs available through standard Kubernetes logging commands.
+
+### Default Logging Configuration
+
+Bindy automatically configures BIND9 with the following logging channels:
+
+- **stderr_log**: All logs directed to stderr for container-native logging
+- **Severity**: Info level by default (configurable)
+- **Categories**: Default, queries, security, zone transfers (xfer-in/xfer-out)
+- **Format**: Includes timestamps, categories, and severity levels
 
 ### Viewing BIND9 Logs
 
@@ -87,15 +119,35 @@ Store and query logs with Grafana Loki:
 
 ## Structured Logging
 
-Controller logs use structured format:
+### JSON Format
+
+Enable JSON logging with `RUST_LOG_FORMAT=json`:
+
+```yaml
+env:
+  - name: RUST_LOG_FORMAT
+    value: "json"
+```
+
+**Example JSON output:**
 
 ```json
 {
-  "timestamp": "2024-11-26T10:00:00Z",
+  "timestamp": "2025-11-30T10:00:00.123456Z",
   "level": "INFO",
-  "target": "bindy::reconcilers::dnszone",
-  "message": "Reconciling DNSZone: dns-system/example-com"
+  "message": "Reconciling DNSZone: dns-system/example-com",
+  "file": "dnszone.rs",
+  "line": 142,
+  "threadName": "bindy-controller"
 }
+```
+
+### Text Format
+
+Default human-readable format (RUST_LOG_FORMAT=text or unset):
+
+```
+2025-11-30T10:00:00.123456Z dnszone.rs:142 INFO bindy-controller Reconciling DNSZone: dns-system/example-com
 ```
 
 ## Log Retention
@@ -129,7 +181,29 @@ kubectl logs -n dns-system deployment/bindy | grep "Creating\|Updating"
 ## Best Practices
 
 1. **Use appropriate log levels** - info for production, debug for troubleshooting
-2. **Centralize logs** - Use log aggregation for easier analysis
-3. **Set up log rotation** - Prevent disk space issues
-4. **Create alerts** - Alert on ERROR level logs
-5. **Regular review** - Periodically review logs for issues
+2. **Use JSON format in production** - Enable structured logging for better integration with log aggregation tools
+3. **Use text format for development** - More readable for local debugging and development
+4. **Centralize logs** - Use log aggregation for easier analysis
+5. **Set up log rotation** - Prevent disk space issues
+6. **Create alerts** - Alert on ERROR level logs
+7. **Regular review** - Periodically review logs for issues
+
+### Example Production Configuration
+
+```yaml
+env:
+  - name: RUST_LOG
+    value: "info"
+  - name: RUST_LOG_FORMAT
+    value: "json"
+```
+
+### Example Development Configuration
+
+```yaml
+env:
+  - name: RUST_LOG
+    value: "debug"
+  - name: RUST_LOG_FORMAT
+    value: "text"
+```

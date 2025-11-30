@@ -26,7 +26,7 @@ Kubernetes resource builder tests:
 - Health and readiness probes
 - BIND9 configuration options:
   - Recursion settings
-  - ACL configuration (allow_query, allow_transfer)
+  - ACL configuration (allowQuery, allowTransfer)
   - DNSSEC configuration
   - Multiple ACL entries
 - Resource naming conventions

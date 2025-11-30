@@ -119,7 +119,7 @@ spec:
       - any
     allowTransfer:
       - 10.0.0.0/8
-  tsigKeys:
+  rndcSecretRefs:
     - name: transfer-key
       algorithm: hmac-sha256
       secret: base64-encoded-key

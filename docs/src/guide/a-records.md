@@ -11,7 +11,7 @@ metadata:
   name: www-example
   namespace: dns-system
 spec:
-  zone: example-com
+  zoneRef: example-com  # References DNSZone metadata.name (recommended)
   name: www
   ipv4Address: "192.0.2.1"
   ttl: 300
@@ -19,13 +19,15 @@ spec:
 
 This creates `www.example.com -> 192.0.2.1`.
 
+**Note:** You can also use `zone: example.com` (matching `DNSZone.spec.zoneName`) instead of `zoneRef`. See [Referencing DNS Zones](./records-guide.md#referencing-dns-zones) for details on choosing between `zone` and `zoneRef`.
+
 ## Root Record
 
 For the zone apex (example.com):
 
 ```yaml
 spec:
-  zone: example-com
+  zoneRef: example-com
   name: "@"
   ipv4Address: "192.0.2.1"
 ```
@@ -41,7 +43,7 @@ kind: ARecord
 metadata:
   name: www-1
 spec:
-  zone: example-com
+  zoneRef: example-com
   name: www
   ipv4Address: "192.0.2.1"
 ---
@@ -50,6 +52,6 @@ kind: ARecord
 metadata:
   name: www-2
 spec:
-  zone: example-com
+  zoneRef: example-com
   name: www
   ipv4Address: "192.0.2.2"

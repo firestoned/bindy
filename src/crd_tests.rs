@@ -88,12 +88,12 @@ mod tests {
     fn test_tsig_key() {
         let tsig = TSIGKey {
             name: "transfer-key".into(),
-            algorithm: "hmac-sha256".into(),
+            algorithm: RndcAlgorithm::HmacSha256,
             secret: "base64secret==".into(),
         };
 
         assert_eq!(tsig.name, "transfer-key");
-        assert_eq!(tsig.algorithm, "hmac-sha256");
+        assert_eq!(tsig.algorithm, RndcAlgorithm::HmacSha256);
         assert_eq!(tsig.secret, "base64secret==");
     }
 
@@ -148,7 +148,7 @@ mod tests {
             version: Some("9.18".into()),
             image: None,
             config_map_refs: None,
-            config: Some(Bind9Config {
+            global: Some(Bind9Config {
                 recursion: Some(false),
                 allow_query: None,
                 allow_transfer: None,
@@ -157,10 +157,13 @@ mod tests {
                 listen_on: None,
                 listen_on_v6: None,
             }),
-            tsig_keys: Some(vec![TSIGKey {
-                name: "key1".into(),
-                algorithm: "hmac-sha256".into(),
-                secret: "secret==".into(),
+            primary: None,
+            secondary: None,
+            rndc_secret_refs: Some(vec![RndcSecretRef {
+                name: "rndc-key-secret".into(),
+                algorithm: RndcAlgorithm::HmacSha256,
+                key_name_key: "key-name".into(),
+                secret_key: "secret".into(),
             }]),
             acls: Some(acls.clone()),
             volumes: None,
@@ -168,8 +171,8 @@ mod tests {
         };
 
         assert_eq!(spec.version.unwrap(), "9.18");
-        assert!(spec.config.is_some());
-        assert_eq!(spec.tsig_keys.as_ref().unwrap().len(), 1);
+        assert!(spec.global.is_some());
+        assert_eq!(spec.rndc_secret_refs.as_ref().unwrap().len(), 1);
         assert!(spec.acls.is_some());
         assert_eq!(spec.acls.unwrap().get("trusted").unwrap().len(), 1);
     }
@@ -177,13 +180,14 @@ mod tests {
     #[test]
     fn test_arecord_spec() {
         let spec = ARecordSpec {
-            zone: "example.com".into(),
+            zone: Some("example.com".to_string()),
+            zone_ref: None,
             name: "www".into(),
             ipv4_address: "192.0.2.1".into(),
             ttl: Some(300),
         };
 
-        assert_eq!(spec.zone, "example.com");
+        assert_eq!(spec.zone, Some("example.com".to_string()));
         assert_eq!(spec.name, "www");
         assert_eq!(spec.ipv4_address, "192.0.2.1");
         assert_eq!(spec.ttl.unwrap(), 300);
@@ -192,20 +196,22 @@ mod tests {
     #[test]
     fn test_aaaarecord_spec() {
         let spec = AAAARecordSpec {
-            zone: "example.com".into(),
+            zone: Some("example.com".to_string()),
+            zone_ref: None,
             name: "www".into(),
             ipv6_address: "2001:db8::1".into(),
             ttl: Some(300),
         };
 
-        assert_eq!(spec.zone, "example.com");
+        assert_eq!(spec.zone, Some("example.com".to_string()));
         assert_eq!(spec.ipv6_address, "2001:db8::1");
     }
 
     #[test]
     fn test_txtrecord_spec() {
         let spec = TXTRecordSpec {
-            zone: "example.com".into(),
+            zone: Some("example.com".to_string()),
+            zone_ref: None,
             name: "@".into(),
             text: vec!["v=spf1 mx ~all".into()],
             ttl: Some(3600),
@@ -218,7 +224,8 @@ mod tests {
     #[test]
     fn test_cnamerecord_spec() {
         let spec = CNAMERecordSpec {
-            zone: "example.com".into(),
+            zone: Some("example.com".to_string()),
+            zone_ref: None,
             name: "blog".into(),
             target: "www.example.com.".into(),
             ttl: Some(300),
@@ -230,7 +237,8 @@ mod tests {
     #[test]
     fn test_mxrecord_spec() {
         let spec = MXRecordSpec {
-            zone: "example.com".into(),
+            zone: Some("example.com".to_string()),
+            zone_ref: None,
             name: "@".into(),
             priority: 10,
             mail_server: "mail.example.com.".into(),
@@ -244,7 +252,8 @@ mod tests {
     #[test]
     fn test_nsrecord_spec() {
         let spec = NSRecordSpec {
-            zone: "example.com".into(),
+            zone: Some("example.com".to_string()),
+            zone_ref: None,
             name: "@".into(),
             nameserver: "ns1.example.com.".into(),
             ttl: Some(3600),
@@ -256,7 +265,8 @@ mod tests {
     #[test]
     fn test_srvrecord_spec() {
         let spec = SRVRecordSpec {
-            zone: "example.com".into(),
+            zone: Some("example.com".to_string()),
+            zone_ref: None,
             name: "_sip._tcp".into(),
             priority: 10,
             weight: 60,
@@ -274,7 +284,8 @@ mod tests {
     #[test]
     fn test_caarecord_spec() {
         let spec = CAARecordSpec {
-            zone: "example.com".into(),
+            zone: Some("example.com".to_string()),
+            zone_ref: None,
             name: "@".into(),
             flags: 0,
             tag: "issue".into(),
@@ -655,5 +666,285 @@ mod tests {
 
         // Observed generation tracks which generation of the resource was last reconciled
         assert_eq!(status.observed_generation, Some(5));
+    }
+
+    // ========================================================================
+    // Algorithm Tests - as_str() and as_rndc_str()
+    // ========================================================================
+
+    #[test]
+    fn test_rndc_algorithm_as_str_all_variants() {
+        // Test that as_str() returns the BIND9 format with "hmac-" prefix
+        assert_eq!(RndcAlgorithm::HmacMd5.as_str(), "hmac-md5");
+        assert_eq!(RndcAlgorithm::HmacSha1.as_str(), "hmac-sha1");
+        assert_eq!(RndcAlgorithm::HmacSha224.as_str(), "hmac-sha224");
+        assert_eq!(RndcAlgorithm::HmacSha256.as_str(), "hmac-sha256");
+        assert_eq!(RndcAlgorithm::HmacSha384.as_str(), "hmac-sha384");
+        assert_eq!(RndcAlgorithm::HmacSha512.as_str(), "hmac-sha512");
+    }
+
+    #[test]
+    fn test_rndc_algorithm_as_rndc_str_all_variants() {
+        // Test that as_rndc_str() returns the format expected by rndc crate (no "hmac-" prefix)
+        assert_eq!(RndcAlgorithm::HmacMd5.as_rndc_str(), "md5");
+        assert_eq!(RndcAlgorithm::HmacSha1.as_rndc_str(), "sha1");
+        assert_eq!(RndcAlgorithm::HmacSha224.as_rndc_str(), "sha224");
+        assert_eq!(RndcAlgorithm::HmacSha256.as_rndc_str(), "sha256");
+        assert_eq!(RndcAlgorithm::HmacSha384.as_rndc_str(), "sha384");
+        assert_eq!(RndcAlgorithm::HmacSha512.as_rndc_str(), "sha512");
+    }
+
+    #[test]
+    fn test_rndc_algorithm_default() {
+        // Test that the default algorithm is HmacSha256
+        let default_alg = RndcAlgorithm::default();
+        assert_eq!(default_alg, RndcAlgorithm::HmacSha256);
+        assert_eq!(default_alg.as_str(), "hmac-sha256");
+        assert_eq!(default_alg.as_rndc_str(), "sha256");
+    }
+
+    #[test]
+    fn test_rndc_algorithm_format_consistency() {
+        // Verify that as_str() always has "hmac-" prefix and as_rndc_str() doesn't
+        let algorithms = vec![
+            RndcAlgorithm::HmacMd5,
+            RndcAlgorithm::HmacSha1,
+            RndcAlgorithm::HmacSha224,
+            RndcAlgorithm::HmacSha256,
+            RndcAlgorithm::HmacSha384,
+            RndcAlgorithm::HmacSha512,
+        ];
+
+        for algo in algorithms {
+            let bind9_format = algo.as_str();
+            let rndc_format = algo.as_rndc_str();
+
+            // BIND9 format should have "hmac-" prefix
+            assert!(
+                bind9_format.starts_with("hmac-"),
+                "BIND9 format should start with 'hmac-': {}",
+                bind9_format
+            );
+
+            // RNDC format should NOT have "hmac-" prefix
+            assert!(
+                !rndc_format.starts_with("hmac-"),
+                "RNDC format should NOT start with 'hmac-': {}",
+                rndc_format
+            );
+
+            // RNDC format should be the BIND9 format without the "hmac-" prefix
+            assert_eq!(
+                bind9_format.strip_prefix("hmac-").unwrap(),
+                rndc_format,
+                "RNDC format should be BIND9 format without 'hmac-' prefix"
+            );
+        }
+    }
+
+    #[test]
+    fn test_rndc_algorithm_clone_and_partial_eq() {
+        let algo = RndcAlgorithm::HmacSha256;
+        let cloned = algo.clone();
+
+        assert_eq!(algo, cloned);
+        assert_eq!(algo.as_str(), cloned.as_str());
+        assert_eq!(algo.as_rndc_str(), cloned.as_rndc_str());
+    }
+
+    #[test]
+    fn test_rndc_algorithm_debug_format() {
+        // Test that Debug format is reasonable
+        let algo = RndcAlgorithm::HmacSha256;
+        let debug_str = format!("{:?}", algo);
+        assert!(debug_str.contains("HmacSha256"));
+    }
+
+    #[test]
+    fn test_rndc_algorithm_serialization() {
+        use serde_json;
+
+        // RndcAlgorithm uses serde(rename_all = "kebab-case")
+        // So it should serialize to "hmac-sha256" format
+        let algo = RndcAlgorithm::HmacSha256;
+        let json = serde_json::to_string(&algo).unwrap();
+        assert_eq!(json, "\"hmac-sha256\"");
+
+        let algo = RndcAlgorithm::HmacMd5;
+        let json = serde_json::to_string(&algo).unwrap();
+        assert_eq!(json, "\"hmac-md5\"");
+    }
+
+    #[test]
+    fn test_rndc_algorithm_deserialization_success() {
+        use serde_json;
+
+        // Test successful deserialization with kebab-case
+        let json = "\"hmac-sha256\"";
+        let algo: RndcAlgorithm = serde_json::from_str(json).unwrap();
+        assert_eq!(algo, RndcAlgorithm::HmacSha256);
+
+        let json = "\"hmac-sha512\"";
+        let algo: RndcAlgorithm = serde_json::from_str(json).unwrap();
+        assert_eq!(algo, RndcAlgorithm::HmacSha512);
+
+        let json = "\"hmac-md5\"";
+        let algo: RndcAlgorithm = serde_json::from_str(json).unwrap();
+        assert_eq!(algo, RndcAlgorithm::HmacMd5);
+    }
+
+    #[test]
+    fn test_rndc_algorithm_deserialization_failure_camel_case() {
+        use serde_json;
+
+        // Test that camelCase fails (we expect kebab-case)
+        let json = "\"hmacSha256\"";
+        let result: Result<RndcAlgorithm, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "Deserialization should fail for camelCase: hmacSha256"
+        );
+    }
+
+    #[test]
+    fn test_rndc_algorithm_deserialization_failure_uppercase() {
+        use serde_json;
+
+        // Test that uppercase fails
+        let json = "\"HMAC-SHA256\"";
+        let result: Result<RndcAlgorithm, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "Deserialization should fail for uppercase: HMAC-SHA256"
+        );
+    }
+
+    #[test]
+    fn test_rndc_algorithm_deserialization_failure_no_prefix() {
+        use serde_json;
+
+        // Test that algorithm strings without "hmac-" prefix fail during deserialization
+        let json = "\"sha256\"";
+        let result: Result<RndcAlgorithm, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "Deserialization should fail for algorithm without 'hmac-' prefix: sha256"
+        );
+
+        let json = "\"md5\"";
+        let result: Result<RndcAlgorithm, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "Deserialization should fail for algorithm without 'hmac-' prefix: md5"
+        );
+    }
+
+    #[test]
+    fn test_rndc_algorithm_deserialization_failure_misspelled() {
+        use serde_json;
+
+        // Test various misspellings
+        let invalid_values = vec![
+            "\"hmac-sha-256\"", // Extra hyphen
+            "\"hmac_sha256\"",  // Underscore instead of hyphen
+            "\"hmac-sha 256\"", // Space instead of hyphen
+            "\"hmac-sha25\"",   // Truncated
+            "\"hmac-sha2566\"", // Extra digit
+            "\"hmac-shaa256\"", // Extra 'a'
+            "\"mac-sha256\"",   // Missing 'h'
+            "\"sha256-hmac\"",  // Reversed
+        ];
+
+        for invalid_json in invalid_values {
+            let result: Result<RndcAlgorithm, _> = serde_json::from_str(invalid_json);
+            assert!(
+                result.is_err(),
+                "Deserialization should fail for invalid value: {}",
+                invalid_json
+            );
+        }
+    }
+
+    #[test]
+    fn test_rndc_algorithm_deserialization_failure_unknown_algorithm() {
+        use serde_json;
+
+        // Test unknown algorithm names
+        let invalid_algorithms = vec![
+            "\"hmac-sha3\"",
+            "\"hmac-blake2\"",
+            "\"hmac-sha128\"",
+            "\"hmac-md4\"",
+            "\"hmac-ripemd160\"",
+        ];
+
+        for invalid_json in invalid_algorithms {
+            let result: Result<RndcAlgorithm, _> = serde_json::from_str(invalid_json);
+            assert!(
+                result.is_err(),
+                "Deserialization should fail for unknown algorithm: {}",
+                invalid_json
+            );
+        }
+    }
+
+    #[test]
+    fn test_rndc_algorithm_roundtrip() {
+        use serde_json;
+
+        // Test that serialization and deserialization roundtrip correctly
+        let algorithms = vec![
+            RndcAlgorithm::HmacMd5,
+            RndcAlgorithm::HmacSha1,
+            RndcAlgorithm::HmacSha224,
+            RndcAlgorithm::HmacSha256,
+            RndcAlgorithm::HmacSha384,
+            RndcAlgorithm::HmacSha512,
+        ];
+
+        for original in algorithms {
+            let json = serde_json::to_string(&original).unwrap();
+            let deserialized: RndcAlgorithm = serde_json::from_str(&json).unwrap();
+            assert_eq!(original, deserialized);
+            assert_eq!(original.as_str(), deserialized.as_str());
+            assert_eq!(original.as_rndc_str(), deserialized.as_rndc_str());
+        }
+    }
+
+    #[test]
+    fn test_rndc_secret_ref_with_algorithm() {
+        // Test that RndcSecretRef correctly uses the algorithm
+        let secret_ref = RndcSecretRef {
+            name: "my-rndc-key".into(),
+            algorithm: RndcAlgorithm::HmacSha256,
+            key_name_key: "key-name".into(),
+            secret_key: "secret".into(),
+        };
+
+        assert_eq!(secret_ref.algorithm, RndcAlgorithm::HmacSha256);
+        assert_eq!(secret_ref.algorithm.as_str(), "hmac-sha256");
+        assert_eq!(secret_ref.algorithm.as_rndc_str(), "sha256");
+    }
+
+    #[test]
+    fn test_tsig_key_with_different_algorithms() {
+        // Test TSIGKey with different algorithms
+        let algorithms = vec![
+            RndcAlgorithm::HmacSha256,
+            RndcAlgorithm::HmacSha512,
+            RndcAlgorithm::HmacMd5,
+        ];
+
+        for algo in algorithms {
+            let tsig = TSIGKey {
+                name: "transfer-key".into(),
+                algorithm: algo.clone(),
+                secret: "base64secret==".into(),
+            };
+
+            assert_eq!(tsig.algorithm, algo);
+            assert_eq!(tsig.algorithm.as_str(), algo.as_str());
+            assert_eq!(tsig.algorithm.as_rndc_str(), algo.as_rndc_str());
+        }
     }
 }

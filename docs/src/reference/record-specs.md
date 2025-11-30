@@ -6,16 +6,27 @@ Complete specifications for all DNS record types.
 
 All DNS record types share these common fields:
 
-### zone
+### zone / zoneRef
 **Type**: string
-**Required**: Yes
+**Required**: Exactly one of `zone` or `zoneRef` must be specified
 
-Reference to the DNSZone resource name (not the zone domain name).
+Reference to the parent DNSZone resource. Use **one** of the following:
 
+**`zone` field** - Matches against `DNSZone.spec.zoneName` (the actual DNS zone name):
 ```yaml
 spec:
-  zone: "example-com"  # Name of DNSZone resource
+  zone: "example.com"  # Matches DNSZone with spec.zoneName: example.com
 ```
+
+**`zoneRef` field** - Direct reference to `DNSZone.metadata.name` (the Kubernetes resource name, recommended for production):
+```yaml
+spec:
+  zoneRef: "example-com"  # Matches DNSZone with metadata.name: example-com
+```
+
+**Important**: You must specify **exactly one** of `zone` or `zoneRef` - not both, not neither.
+
+See [Referencing DNS Zones](../guide/records-guide.md#referencing-dns-zones) for detailed comparison and best practices.
 
 ### name
 **Type**: string
@@ -56,7 +67,7 @@ metadata:
   name: www-example-com
   namespace: dns-system
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "www"
   ipv4Address: "192.0.2.1"
   ttl: 300
@@ -84,7 +95,7 @@ kind: ARecord
 metadata:
   name: www-example-com-1
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "www"
   ipv4Address: "192.0.2.1"
 ---
@@ -93,7 +104,7 @@ kind: ARecord
 metadata:
   name: www-example-com-2
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "www"
   ipv4Address: "192.0.2.2"
 ```
@@ -113,7 +124,7 @@ metadata:
   name: www-example-com-v6
   namespace: dns-system
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "www"
   ipv6Address: "2001:db8::1"
   ttl: 300
@@ -145,7 +156,7 @@ kind: ARecord
 metadata:
   name: www-v4
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "www"
   ipv4Address: "192.0.2.1"
 ---
@@ -154,7 +165,7 @@ kind: AAAARecord
 metadata:
   name: www-v6
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "www"
   ipv6Address: "2001:db8::1"
 ```
@@ -174,7 +185,7 @@ metadata:
   name: www-alias
   namespace: dns-system
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "www"
   target: "server.example.com."
   ttl: 3600
@@ -207,7 +218,7 @@ kind: CNAMERecord
 metadata:
   name: cdn-alias
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "cdn"
   target: "d123456.cloudfront.net."
 ```
@@ -227,7 +238,7 @@ metadata:
   name: mail-primary
   namespace: dns-system
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "@"
   priority: 10
   mailServer: "mail.example.com."
@@ -268,7 +279,7 @@ kind: MXRecord
 metadata:
   name: mail-primary
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "@"
   priority: 10
   mailServer: "mail1.example.com."
@@ -278,7 +289,7 @@ kind: MXRecord
 metadata:
   name: mail-backup
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "@"
   priority: 20
   mailServer: "mail2.example.com."
@@ -299,7 +310,7 @@ metadata:
   name: spf-record
   namespace: dns-system
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "@"
   text:
     - "v=spf1 mx -all"
@@ -330,7 +341,7 @@ kind: TXTRecord
 metadata:
   name: spf
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "@"
   text:
     - "v=spf1 mx include:_spf.google.com ~all"
@@ -341,7 +352,7 @@ kind: TXTRecord
 metadata:
   name: dkim
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "default._domainkey"
   text:
     - "v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC..."
@@ -352,7 +363,7 @@ kind: TXTRecord
 metadata:
   name: dmarc
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "_dmarc"
   text:
     - "v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com"
@@ -373,7 +384,7 @@ metadata:
   name: subdomain-delegation
   namespace: dns-system
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "subdomain"
   nameserver: "ns1.subdomain.example.com."
   ttl: 3600
@@ -401,7 +412,7 @@ kind: NSRecord
 metadata:
   name: sub-ns1
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "subdomain"
   nameserver: "ns1.subdomain.example.com."
 ---
@@ -410,7 +421,7 @@ kind: NSRecord
 metadata:
   name: sub-ns2
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "subdomain"
   nameserver: "ns2.subdomain.example.com."
 ```
@@ -430,7 +441,7 @@ metadata:
   name: sip-service
   namespace: dns-system
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "_sip._tcp"
   priority: 10
   weight: 60
@@ -495,7 +506,7 @@ kind: SRVRecord
 metadata:
   name: srv-primary
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "_service._tcp"
   priority: 10
   weight: 60
@@ -507,7 +518,7 @@ kind: SRVRecord
 metadata:
   name: srv-secondary
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "_service._tcp"
   priority: 10
   weight: 40
@@ -530,7 +541,7 @@ metadata:
   name: caa-letsencrypt
   namespace: dns-system
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "@"
   flags: 0
   tag: "issue"
@@ -588,7 +599,7 @@ kind: CAARecord
 metadata:
   name: caa-issue
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "@"
   flags: 0
   tag: "issue"
@@ -600,7 +611,7 @@ kind: CAARecord
 metadata:
   name: caa-issuewild
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "@"
   flags: 0
   tag: "issuewild"
@@ -612,7 +623,7 @@ kind: CAARecord
 metadata:
   name: caa-iodef
 spec:
-  zone: "example-com"
+  zoneRef: "example-com"
   name: "@"
   flags: 0
   tag: "iodef"

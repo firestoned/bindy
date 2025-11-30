@@ -95,6 +95,98 @@ kubectl annotate dnszone example-com reconcile=true -n dns-system
 
 ## DNS Record Issues
 
+### DNSZone Not Found
+
+**Symptom:** Controller logs show "DNSZone not found" errors for a zone that exists
+
+**Example Error:**
+```
+ERROR Failed to find DNSZone for zone 'internal-local' in namespace 'dns-system'
+```
+
+**Root Cause:** Mismatch between how the record references the zone and the actual DNSZone fields.
+
+**Diagnosis:**
+```bash
+# Check what the record is trying to reference
+kubectl get arecord www-example -n dns-system -o yaml | grep -A2 spec:
+
+# Check available DNSZones
+kubectl get dnszones -n dns-system
+
+# Check the DNSZone details
+kubectl get dnszone example-com -n dns-system -o yaml
+```
+
+**Understanding the Problem:**
+
+DNS records can reference zones using **two different fields**:
+
+1. **`zone` field** - Matches against `DNSZone.spec.zoneName` (the actual DNS zone name like `example.com`)
+2. **`zoneRef` field** - Matches against `DNSZone.metadata.name` (the Kubernetes resource name like `example-com`)
+
+Common mistakes:
+- Using `zone: internal-local` when `spec.zoneName: internal.local` (dots vs dashes)
+- Using `zone: example-com` when it should be `zone: example.com`
+- Using `zoneRef: example.com` when it should be `zoneRef: example-com`
+
+**Solution:**
+
+**Option 1: Use `zone` field with the actual DNS zone name**
+```yaml
+spec:
+  zone: example.com  # Must match DNSZone spec.zoneName
+  name: www
+```
+
+**Option 2: Use `zoneRef` field with the resource name (recommended)**
+```yaml
+spec:
+  zoneRef: example-com  # Must match DNSZone metadata.name
+  name: www
+```
+
+**Example Fix:**
+
+Given this DNSZone:
+```yaml
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: DNSZone
+metadata:
+  name: internal-local      # ← Resource name
+  namespace: dns-system
+spec:
+  zoneName: internal.local  # ← Actual zone name
+```
+
+**Wrong:**
+```yaml
+spec:
+  zone: internal-local  # ✗ This looks for spec.zoneName = "internal-local"
+```
+
+**Correct:**
+```yaml
+# Method 1: Use actual zone name
+spec:
+  zone: internal.local  # ✓ Matches spec.zoneName
+
+# Method 2: Use resource name (more efficient)
+spec:
+  zoneRef: internal-local  # ✓ Matches metadata.name
+```
+
+**Verification:**
+```bash
+# After fixing, check the record reconciles
+kubectl describe arecord www-example -n dns-system
+
+# Should see no errors in events
+kubectl get events -n dns-system --sort-by='.lastTimestamp' | tail -10
+```
+
+See [Records Guide - Referencing DNS Zones](../guide/records-guide.md#referencing-dns-zones) for more details.
+
 ### Record Not Appearing in Zone
 
 **Symptom:** ARecord created but not in zone file
@@ -110,13 +202,13 @@ kubectl exec -n dns-system deployment/primary-dns -- cat /var/lib/bind/zones/exa
 
 **Solution:**
 ```bash
-# Verify zone reference is correct
-kubectl get arecord www-example -n dns-system -o jsonpath='{.spec.zone}'
+# Verify zone reference is correct (use zone or zoneRef)
+kubectl get arecord www-example -n dns-system -o yaml | grep -E 'zone:|zoneRef:'
 
-# Should match DNSZone resource name
+# Check available DNSZones
 kubectl get dnszones -n dns-system
 
-# Update if incorrect
+# Update if incorrect - use zone (matches spec.zoneName) or zoneRef (matches metadata.name)
 kubectl edit arecord www-example -n dns-system
 ```
 

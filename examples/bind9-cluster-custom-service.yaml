@@ -1,0 +1,62 @@
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
+metadata:
+  name: production-dns
+  namespace: dns-system
+spec:
+  # Primary instance configuration
+  primary:
+    # Use NodePort for primary instances (external DNS access)
+    service:
+      type: NodePort
+      externalTrafficPolicy: Local
+
+  # Secondary instance configuration
+  secondary:
+    # Use ClusterIP for secondary instances (internal only)
+    service:
+      type: ClusterIP
+      sessionAffinity: ClientIP
+
+  version: "9.18"
+
+  global:
+    recursion: false
+    allowQuery:
+      - "0.0.0.0/0"
+    allowTransfer:
+      - "10.0.0.0/8"
+    dnssec:
+      enabled: true
+      validation: true
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
+metadata:
+  name: cloud-dns
+  namespace: dns-system
+spec:
+  # Primary instance configuration
+  primary:
+    # Use LoadBalancer for primary instances (cloud environments)
+    service:
+      type: LoadBalancer
+      loadBalancerIP: "203.0.113.10"  # Optional: specify IP
+      externalTrafficPolicy: Local
+
+  # Secondary instance configuration
+  secondary:
+    # Secondaries also use LoadBalancer for high availability
+    service:
+      type: LoadBalancer
+      externalTrafficPolicy: Cluster
+
+  version: "9.20"
+
+  global:
+    recursion: false
+    allowQuery:
+      - "any"
+    dnssec:
+      enabled: true
+      validation: true
