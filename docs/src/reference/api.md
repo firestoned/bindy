@@ -270,8 +270,8 @@ Bind9Cluster defines a logical grouping of BIND9 DNS server instances with share
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
 | `acls` | object | No | ACLs that can be referenced by instances |
-| `config` | object | No | Shared configuration for all instances in the cluster |
 | `configMapRefs` | object | No | \`ConfigMap\` references for BIND9 configuration files |
+| `global` | object | No | Global configuration shared by all instances in the cluster  This configuration applies to all instances (both primary and secondary) unless overridden at the instance level or by role-specific configuration. |
 | `image` | object | No | Container image configuration |
 | `primary` | object | No | Primary instance configuration  Configuration specific to primary (authoritative) DNS instances, including replica count and service specifications. |
 | `rndcSecretRefs` | array | No | References to Kubernetes Secrets containing RNDC/TSIG keys for authenticated zone transfers.  Each secret should contain the key name, algorithm, and base64-encoded secret value. These secrets are used for secure communication with BIND9 instances via RNDC and for authenticated zone transfers (AXFR/IXFR) between primary and secondary servers. |
@@ -308,6 +308,7 @@ Bind9Instance represents a BIND9 DNS server deployment in Kubernetes. Each insta
 | `image` | object | No | Container image configuration override. Inherits from cluster if not specified. |
 | `primaryServers` | array | No | Primary server addresses for zone transfers (required for secondary instances).  List of IP addresses or hostnames of primary servers to transfer zones from. Example: \`["10.0.1.10", "primary.example.com"]\` |
 | `replicas` | integer | No | Number of pod replicas for high availability.  Defaults to 1 if not specified. For production, use 2+ replicas. |
+| `rndcSecretRef` | object | No | Reference to an existing Kubernetes Secret containing RNDC key.  If specified, uses this existing Secret instead of auto-generating one. The Secret must contain the keys specified in the reference (defaults: "key-name", "algorithm", "secret", "rndc.key"). This allows sharing RNDC keys across instances or using externally managed secrets.  If not specified, a Secret will be auto-generated for this instance. |
 | `role` | string | Yes | Role of this instance (primary or secondary).  Primary instances are authoritative for zones. Secondary instances replicate zones from primaries via AXFR/IXFR. |
 | `version` | string | No | BIND9 version override. Inherits from cluster if not specified.  Example: "9.18", "9.16" |
 | `volumeMounts` | array | No | Volume mounts override for this instance. Inherits from cluster if not specified.  These mounts override cluster-level volume mounts. |

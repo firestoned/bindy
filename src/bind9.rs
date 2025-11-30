@@ -40,11 +40,22 @@
 //! # }
 //! ```
 
+use crate::constants::{DEFAULT_DNS_RECORD_TTL_SECS, TSIG_FUDGE_TIME_SECS};
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use hickory_client::client::{Client, SyncClient};
+use hickory_client::op::ResponseCode;
+use hickory_client::rr::rdata;
+use hickory_client::rr::rdata::tsig::TsigAlgorithm;
+use hickory_client::rr::{DNSClass, Name, RData, Record};
+use hickory_client::udp::UdpClientConnection;
+use hickory_proto::rr::dnssec::tsig::TSigner;
 use rand::Rng;
 use std::collections::BTreeMap;
+use std::net::{Ipv4Addr, Ipv6Addr};
+use std::str::FromStr;
 use tracing::{debug, error, info};
+use url::Url;
 
 /// RNDC key data for authentication.
 #[derive(Debug, Clone)]
@@ -55,6 +66,66 @@ pub struct RndcKeyData {
     pub algorithm: crate::crd::RndcAlgorithm,
     /// Base64-encoded secret key
     pub secret: String,
+}
+
+/// RNDC command error with structured information.
+///
+/// Parses BIND9 RNDC error responses in the format:
+/// ```text
+/// rndc: 'command' failed: error_type
+/// error details
+/// ```
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("RNDC command '{command}' failed: {error}")]
+pub struct RndcError {
+    /// The RNDC command that failed (e.g., "zonestatus", "addzone")
+    pub command: String,
+    /// The error type (e.g., "not found", "already exists")
+    pub error: String,
+    /// Additional error details from BIND9
+    pub details: Option<String>,
+}
+
+impl RndcError {
+    /// Parse an RNDC error response.
+    ///
+    /// Expected format:
+    /// ```text
+    /// rndc: 'zonestatus' failed: not found
+    /// no matching zone 'example.com' in any view
+    /// ```
+    #[must_use]
+    pub fn parse(response: &str) -> Option<Self> {
+        // Parse first line: rndc: 'command' failed: error
+        let lines: Vec<&str> = response.lines().collect();
+        let first_line = lines.first()?;
+
+        if !first_line.starts_with("rndc:") {
+            return None;
+        }
+
+        // Extract command from 'command'
+        let command_start = first_line.find('\'')?;
+        let command_end = first_line[command_start + 1..].find('\'')?;
+        let command = first_line[command_start + 1..command_start + 1 + command_end].to_string();
+
+        // Extract error after "failed: "
+        let failed_pos = first_line.find("failed:")?;
+        let error = first_line[failed_pos + 7..].trim().to_string();
+
+        // Remaining lines are details
+        let details = if lines.len() > 1 {
+            Some(lines[1..].join("\n").trim().to_string())
+        } else {
+            None
+        };
+
+        Some(Self {
+            command,
+            error,
+            details,
+        })
+    }
 }
 
 /// Parameters for creating SRV records.
@@ -124,26 +195,109 @@ impl Bind9Manager {
             key_data.algorithm.as_str().to_string(),
         );
         data.insert("secret".to_string(), key_data.secret.clone());
+
+        // Add rndc.key file content for BIND9 to use
+        let rndc_key_content = format!(
+            "key \"{}\" {{\n    algorithm {};\n    secret \"{}\";\n}};\n",
+            key_data.name,
+            key_data.algorithm.as_str(),
+            key_data.secret
+        );
+        data.insert("rndc.key".to_string(), rndc_key_content);
+
         data
     }
 
     /// Parse RNDC key data from a Kubernetes Secret.
     ///
+    /// Supports two Secret formats:
+    /// 1. **Operator-generated** (all 4 fields): `key-name`, `algorithm`, `secret`, `rndc.key`
+    /// 2. **External/user-managed** (minimal): `rndc.key` only - parses the BIND9 key file
+    ///
     /// # Errors
     ///
-    /// Returns an error if the secret data is missing required keys (`key-name`, `algorithm`, `secret`)
-    /// or if the values are not valid UTF-8 strings.
+    /// Returns an error if:
+    /// - Neither the metadata fields nor `rndc.key` are present
+    /// - The `rndc.key` file cannot be parsed
+    /// - Values are not valid UTF-8 strings
     pub fn parse_rndc_secret_data(data: &BTreeMap<String, Vec<u8>>) -> Result<RndcKeyData> {
-        let name =
-            std::str::from_utf8(data.get("key-name").context("Missing key-name in secret")?)?
-                .to_string();
+        // Try the operator-generated format first (has all metadata fields)
+        if let (Some(name_bytes), Some(algo_bytes), Some(secret_bytes)) = (
+            data.get("key-name"),
+            data.get("algorithm"),
+            data.get("secret"),
+        ) {
+            let name = std::str::from_utf8(name_bytes)?.to_string();
+            let algorithm_str = std::str::from_utf8(algo_bytes)?;
+            let secret = std::str::from_utf8(secret_bytes)?.to_string();
 
-        let algorithm_str = std::str::from_utf8(
-            data.get("algorithm")
-                .context("Missing algorithm in secret")?,
-        )?;
+            let algorithm = match algorithm_str {
+                "hmac-md5" => crate::crd::RndcAlgorithm::HmacMd5,
+                "hmac-sha1" => crate::crd::RndcAlgorithm::HmacSha1,
+                "hmac-sha224" => crate::crd::RndcAlgorithm::HmacSha224,
+                "hmac-sha256" => crate::crd::RndcAlgorithm::HmacSha256,
+                "hmac-sha384" => crate::crd::RndcAlgorithm::HmacSha384,
+                "hmac-sha512" => crate::crd::RndcAlgorithm::HmacSha512,
+                _ => anyhow::bail!("Unsupported RNDC algorithm '{algorithm_str}'. Supported algorithms: hmac-md5, hmac-sha1, hmac-sha224, hmac-sha256, hmac-sha384, hmac-sha512"),
+            };
 
-        // Parse algorithm string to enum
+            return Ok(RndcKeyData {
+                name,
+                algorithm,
+                secret,
+            });
+        }
+
+        // Fall back to parsing the rndc.key file (external Secret format)
+        if let Some(rndc_key_bytes) = data.get("rndc.key") {
+            let rndc_key_content = std::str::from_utf8(rndc_key_bytes)?;
+            return Self::parse_rndc_key_file(rndc_key_content);
+        }
+
+        anyhow::bail!(
+            "Secret must contain either (key-name, algorithm, secret) or rndc.key field. \
+             For external secrets, provide only 'rndc.key' with the BIND9 key file content."
+        )
+    }
+
+    /// Parse a BIND9 key file (rndc.key format) to extract key metadata.
+    ///
+    /// Expected format:
+    /// ```text
+    /// key "key-name" {
+    ///     algorithm hmac-sha256;
+    ///     secret "base64secret==";
+    /// };
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file format is invalid or required fields are missing.
+    fn parse_rndc_key_file(content: &str) -> Result<RndcKeyData> {
+        // Simple regex-based parser for BIND9 key file format
+        // Format: key "name" { algorithm algo; secret "secret"; };
+
+        // Extract key name
+        let name = content
+            .lines()
+            .find(|line| line.contains("key"))
+            .and_then(|line| {
+                line.split('"').nth(1) // Get the text between first pair of quotes
+            })
+            .context("Failed to parse key name from rndc.key file")?
+            .to_string();
+
+        // Extract algorithm
+        let algorithm_str = content
+            .lines()
+            .find(|line| line.contains("algorithm"))
+            .and_then(|line| {
+                line.split_whitespace()
+                    .nth(1) // After "algorithm"
+                    .map(|s| s.trim_end_matches(';'))
+            })
+            .context("Failed to parse algorithm from rndc.key file")?;
+
         let algorithm = match algorithm_str {
             "hmac-md5" => crate::crd::RndcAlgorithm::HmacMd5,
             "hmac-sha1" => crate::crd::RndcAlgorithm::HmacSha1,
@@ -151,10 +305,17 @@ impl Bind9Manager {
             "hmac-sha256" => crate::crd::RndcAlgorithm::HmacSha256,
             "hmac-sha384" => crate::crd::RndcAlgorithm::HmacSha384,
             "hmac-sha512" => crate::crd::RndcAlgorithm::HmacSha512,
-            _ => anyhow::bail!("Unsupported RNDC algorithm '{algorithm_str}'. Supported algorithms: hmac-md5, hmac-sha1, hmac-sha224, hmac-sha256, hmac-sha384, hmac-sha512"),
+            _ => anyhow::bail!("Unsupported algorithm '{algorithm_str}' in rndc.key file"),
         };
 
-        let secret = std::str::from_utf8(data.get("secret").context("Missing secret in secret")?)?
+        // Extract secret
+        let secret = content
+            .lines()
+            .find(|line| line.contains("secret"))
+            .and_then(|line| {
+                line.split('"').nth(1) // Get the text between first pair of quotes
+            })
+            .context("Failed to parse secret from rndc.key file")?
             .to_string();
 
         Ok(RndcKeyData {
@@ -198,7 +359,7 @@ impl Bind9Manager {
         let command = command.to_string();
         let command_for_logging = command.clone();
 
-        let result = tokio::task::spawn_blocking(move || {
+        let result: rndc::RndcResult = tokio::task::spawn_blocking(move || {
             // Wrap in catch_unwind to handle panics from the rndc crate
             std::panic::catch_unwind(|| {
                 // Create rndc client (API: new(server_url, algorithm, secret_key_b64))
@@ -252,6 +413,50 @@ impl Bind9Manager {
             error_msg
         })?;
 
+        // Log the complete RNDC response for debugging
+        debug!(
+            server = %server_name,
+            command = %command_for_logging,
+            result = %result.result,
+            text = ?result.text,
+            err = ?result.err,
+            "RNDC command response"
+        );
+
+        // Check RndcResult.result field first - if false, the command failed
+        if !result.result {
+            // Try to get error from RndcResult.err field
+            let error_text = result.err.as_deref().unwrap_or("unknown error");
+
+            // Try to parse structured error from the text field
+            if let Some(ref text) = result.text {
+                if let Some(rndc_error) = RndcError::parse(text) {
+                    error!(
+                        server = %server_name,
+                        command = %rndc_error.command,
+                        error = %rndc_error.error,
+                        details = ?rndc_error.details,
+                        rndc_err_field = %error_text,
+                        "RNDC command failed with structured error"
+                    );
+                    return Err(rndc_error.into());
+                }
+            }
+
+            // Fallback: return error from err field
+            let error_msg =
+                anyhow::anyhow!("RNDC command '{command_for_logging}' failed: {error_text}");
+            error!(
+                server = %server_name,
+                command = %command_for_logging,
+                error = %error_text,
+                text = ?result.text,
+                "RNDC command failed"
+            );
+            return Err(error_msg);
+        }
+
+        // Command succeeded, return the text
         Ok(result.text.unwrap_or_default())
     }
 
@@ -389,6 +594,12 @@ impl Bind9Manager {
     }
 
     /// Check if a zone exists by trying to get its status.
+    ///
+    /// Returns `true` if the zone exists and can be queried, `false` otherwise.
+    ///
+    /// This method relies on `exec_rndc_command` to properly detect error messages
+    /// in the BIND9 response (such as "not found" or "does not exist") and return
+    /// them as `Err` rather than `Ok`.
     pub async fn zone_exists(&self, zone_name: &str, server: &str, key_data: &RndcKeyData) -> bool {
         self.zone_status(zone_name, server, key_data).await.is_ok()
     }
@@ -412,7 +623,18 @@ impl Bind9Manager {
     /// This operation is idempotent - if the zone already exists, it returns success
     /// without attempting to re-add it.
     ///
-    /// Note: This requires dynamic zone configuration to be enabled in named.conf.
+    /// The zone is created with `allow-update` enabled for the TSIG key used by the operator.
+    /// This allows dynamic DNS updates (RFC 2136) to add/update/delete records in the zone.
+    ///
+    /// # Arguments
+    /// * `zone_name` - Name of the zone (e.g., "example.com")
+    /// * `zone_type` - Zone type ("master" for primary, "slave" for secondary)
+    /// * `zone_file` - Path to the zone file on the BIND9 server
+    /// * `server` - Server address (e.g., "bind9-primary.dns-system.svc.cluster.local:953")
+    /// * `key_data` - RNDC authentication key (also used for allow-update)
+    ///
+    /// # Note
+    /// This requires `allow-new-zones yes;` in named.conf.options.
     ///
     /// # Errors
     ///
@@ -431,14 +653,24 @@ impl Bind9Manager {
             return Ok(());
         }
 
-        let command =
-            format!(r#"addzone {zone_name} '{{ type {zone_type}; file "{zone_file}"; }};'"#);
+        // TODO: Create a separate TSIG key for zone updates (different from RNDC control key)
+        // For now, we reuse the bindy-operator key for both RNDC control and zone updates.
+        // Best practice is to have separate keys:
+        // - bindy-operator (RNDC control) - for rndc commands (addzone, reload, etc.)
+        // - bindy-zone-update (DNS updates) - for nsupdate/dynamic DNS (add/update/delete records)
+        let update_key_name = &key_data.name;
+
+        // Create zone with allow-update enabled for dynamic DNS updates
+        // Format: addzone zone { type master; file "path"; allow-update { key "keyname"; }; };
+        let command = format!(
+            r#"addzone {zone_name} {{ type {zone_type}; file "{zone_file}"; allow-update {{ key "{update_key_name}"; }}; }};"#
+        );
 
         self.exec_rndc_command(server, key_data, &command)
             .await
             .context("Failed to add zone")?;
 
-        info!("Added zone {zone_name} on {server}");
+        info!("Added zone {zone_name} on {server} with allow-update for key {update_key_name}");
         Ok(())
     }
 
@@ -497,12 +729,52 @@ impl Bind9Manager {
     // For now, these methods are placeholders that will need implementation
     // based on the chosen approach.
 
-    /// Placeholder: Add an A record (requires nsupdate or zone file manipulation).
+    /// Create a TSIG signer from RNDC key data.
     ///
     /// # Errors
     ///
-    /// This is currently a placeholder and always returns `Ok(())`.
-    #[allow(clippy::unused_async)]
+    /// Returns an error if the algorithm is unsupported or key data is invalid.
+    fn create_tsig_signer(key_data: &RndcKeyData) -> Result<TSigner> {
+        // Map RndcAlgorithm to hickory TsigAlgorithm
+        let algorithm = match key_data.algorithm {
+            crate::crd::RndcAlgorithm::HmacMd5 => TsigAlgorithm::HmacMd5,
+            crate::crd::RndcAlgorithm::HmacSha1 => TsigAlgorithm::HmacSha1,
+            crate::crd::RndcAlgorithm::HmacSha224 => TsigAlgorithm::HmacSha224,
+            crate::crd::RndcAlgorithm::HmacSha256 => TsigAlgorithm::HmacSha256,
+            crate::crd::RndcAlgorithm::HmacSha384 => TsigAlgorithm::HmacSha384,
+            crate::crd::RndcAlgorithm::HmacSha512 => TsigAlgorithm::HmacSha512,
+        };
+
+        // Decode the base64 key
+        let key_bytes = BASE64
+            .decode(&key_data.secret)
+            .context("Failed to decode TSIG key")?;
+
+        // Create TSIG signer
+        let signer = TSigner::new(
+            key_bytes,
+            algorithm,
+            Name::from_str(&key_data.name).context("Invalid TSIG key name")?,
+            u16::try_from(TSIG_FUDGE_TIME_SECS).unwrap_or(300),
+        )
+        .context("Failed to create TSIG signer")?;
+
+        Ok(signer)
+    }
+
+    /// Add an A record using dynamic DNS update (RFC 2136).
+    ///
+    /// # Arguments
+    /// * `zone_name` - DNS zone name (e.g., "example.com")
+    /// * `name` - Record name (e.g., "www" for www.example.com, or "@" for apex)
+    /// * `ipv4` - IPv4 address
+    /// * `ttl` - Time to live in seconds (None = use zone default)
+    /// * `server` - DNS server address with port (e.g., "10.0.0.1:53")
+    /// * `key_data` - TSIG key for authentication
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the DNS update fails or the server rejects it.
     #[allow(clippy::too_many_arguments)]
     pub async fn add_a_record(
         &self,
@@ -511,20 +783,85 @@ impl Bind9Manager {
         ipv4: &str,
         ttl: Option<i32>,
         server: &str,
-        _key_data: &RndcKeyData,
+        key_data: &RndcKeyData,
     ) -> Result<()> {
-        // TODO: Implement using nsupdate protocol or zone file + reload
-        info!("Would add A record: {name}.{zone_name} -> {ipv4} (TTL: {ttl:?}) on {server}");
-        // For now, just return success to allow compilation
-        Ok(())
+        let zone_name_str = zone_name.to_string();
+        let name_str = name.to_string();
+        let ipv4_str = ipv4.to_string();
+        let server_str = server.to_string();
+        let ttl_value = u32::try_from(ttl.unwrap_or(DEFAULT_DNS_RECORD_TTL_SECS))
+            .unwrap_or(u32::try_from(DEFAULT_DNS_RECORD_TTL_SECS).unwrap_or(300));
+
+        // Clone key_data for the blocking task
+        let key_data = key_data.clone();
+
+        // Execute DNS update in blocking thread (hickory-client is sync)
+        tokio::task::spawn_blocking(move || {
+            // Parse server address
+            let server_addr = server_str
+                .parse::<std::net::SocketAddr>()
+                .with_context(|| format!("Invalid server address: {server_str}"))?;
+
+            // Create UDP connection
+            let conn =
+                UdpClientConnection::new(server_addr).context("Failed to create UDP connection")?;
+
+            // Create TSIG signer
+            let signer = Self::create_tsig_signer(&key_data)?;
+
+            // Create client with TSIG
+            let client = SyncClient::with_tsigner(conn, signer);
+
+            // Parse zone name
+            let zone = Name::from_str(&zone_name_str)
+                .with_context(|| format!("Invalid zone name: {zone_name_str}"))?;
+
+            // Build full record name
+            let fqdn = if name_str == "@" || name_str.is_empty() {
+                zone.clone()
+            } else {
+                Name::from_str(&format!("{name_str}.{zone_name_str}"))
+                    .with_context(|| format!("Invalid record name: {name_str}.{zone_name_str}"))?
+            };
+
+            // Parse IPv4 address
+            let ipv4_addr = Ipv4Addr::from_str(&ipv4_str)
+                .with_context(|| format!("Invalid IPv4 address: {ipv4_str}"))?;
+
+            // Create A record
+            let mut record =
+                Record::from_rdata(fqdn.clone(), ttl_value, RData::A(ipv4_addr.into()));
+            record.set_dns_class(DNSClass::IN);
+
+            // Send update
+            info!(
+                "Adding A record: {} -> {} (TTL: {})",
+                fqdn, ipv4_str, ttl_value
+            );
+            let response = client
+                .create(record, zone.clone())
+                .with_context(|| format!("Failed to add A record for {fqdn}"))?;
+
+            // Check response code
+            match response.response_code() {
+                ResponseCode::NoError => {
+                    info!("Successfully added A record: {} -> {}", name_str, ipv4_str);
+                    Ok(())
+                }
+                code => Err(anyhow::anyhow!(
+                    "DNS update failed with response code: {code:?}"
+                )),
+            }
+        })
+        .await
+        .context("DNS update task failed")?
     }
 
-    /// Placeholder: Add a CNAME record.
+    /// Add a CNAME record using dynamic DNS update (RFC 2136).
     ///
     /// # Errors
     ///
-    /// This is currently a placeholder and always returns `Ok(())`.
-    #[allow(clippy::unused_async)]
+    /// Returns an error if the DNS update fails or the server rejects it.
     #[allow(clippy::too_many_arguments)]
     pub async fn add_cname_record(
         &self,
@@ -533,18 +870,64 @@ impl Bind9Manager {
         target: &str,
         ttl: Option<i32>,
         server: &str,
-        _key_data: &RndcKeyData,
+        key_data: &RndcKeyData,
     ) -> Result<()> {
-        info!("Would add CNAME record: {name}.{zone_name} -> {target} (TTL: {ttl:?}) on {server}");
-        Ok(())
+        use hickory_client::rr::rdata;
+        let zone_name_str = zone_name.to_string();
+        let name_str = name.to_string();
+        let target_str = target.to_string();
+        let server_str = server.to_string();
+        let ttl_value = u32::try_from(ttl.unwrap_or(DEFAULT_DNS_RECORD_TTL_SECS))
+            .unwrap_or(u32::try_from(DEFAULT_DNS_RECORD_TTL_SECS).unwrap_or(300));
+        let key_data = key_data.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let server_addr = server_str.parse::<std::net::SocketAddr>()?;
+            let conn = UdpClientConnection::new(server_addr)?;
+            let signer = Self::create_tsig_signer(&key_data)?;
+            let client = SyncClient::with_tsigner(conn, signer);
+
+            let zone = Name::from_str(&zone_name_str)?;
+            let fqdn = if name_str == "@" || name_str.is_empty() {
+                zone.clone()
+            } else {
+                Name::from_str(&format!("{name_str}.{zone_name_str}"))?
+            };
+
+            let target_name = Name::from_str(&target_str)?;
+            let cname_rdata = rdata::CNAME(target_name);
+            let mut record = Record::from_rdata(fqdn.clone(), ttl_value, RData::CNAME(cname_rdata));
+            record.set_dns_class(DNSClass::IN);
+
+            info!(
+                "Adding CNAME record: {} -> {} (TTL: {})",
+                record.name(),
+                target_str,
+                ttl_value
+            );
+            let response = client.create(record, zone)?;
+
+            match response.response_code() {
+                ResponseCode::NoError => {
+                    info!(
+                        "Successfully added CNAME record: {} -> {}",
+                        name_str, target_str
+                    );
+                    Ok(())
+                }
+                code => Err(anyhow::anyhow!(
+                    "DNS update failed with response code: {code:?}"
+                )),
+            }
+        })
+        .await?
     }
 
-    /// Placeholder: Add a TXT record.
+    /// Add a TXT record using dynamic DNS update (RFC 2136).
     ///
     /// # Errors
     ///
-    /// This is currently a placeholder and always returns `Ok(())`.
-    #[allow(clippy::unused_async)]
+    /// Returns an error if the DNS update fails or the server rejects it.
     #[allow(clippy::too_many_arguments)]
     pub async fn add_txt_record(
         &self,
@@ -553,18 +936,60 @@ impl Bind9Manager {
         texts: &[String],
         ttl: Option<i32>,
         server: &str,
-        _key_data: &RndcKeyData,
+        key_data: &RndcKeyData,
     ) -> Result<()> {
-        info!("Would add TXT record: {name}.{zone_name} -> {texts:?} (TTL: {ttl:?}) on {server}");
-        Ok(())
+        use hickory_client::rr::rdata;
+        let zone_name_str = zone_name.to_string();
+        let name_str = name.to_string();
+        let texts_vec: Vec<String> = texts.to_vec();
+        let server_str = server.to_string();
+        let ttl_value = u32::try_from(ttl.unwrap_or(DEFAULT_DNS_RECORD_TTL_SECS))
+            .unwrap_or(u32::try_from(DEFAULT_DNS_RECORD_TTL_SECS).unwrap_or(300));
+        let key_data = key_data.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let server_addr = server_str.parse::<std::net::SocketAddr>()?;
+            let conn = UdpClientConnection::new(server_addr)?;
+            let signer = Self::create_tsig_signer(&key_data)?;
+            let client = SyncClient::with_tsigner(conn, signer);
+
+            let zone = Name::from_str(&zone_name_str)?;
+            let fqdn = if name_str == "@" || name_str.is_empty() {
+                zone.clone()
+            } else {
+                Name::from_str(&format!("{name_str}.{zone_name_str}"))?
+            };
+
+            let txt_rdata = rdata::TXT::new(texts_vec.clone());
+            let mut record = Record::from_rdata(fqdn.clone(), ttl_value, RData::TXT(txt_rdata));
+            record.set_dns_class(DNSClass::IN);
+
+            info!(
+                "Adding TXT record: {} -> {:?} (TTL: {})",
+                record.name(),
+                texts_vec,
+                ttl_value
+            );
+            let response = client.create(record, zone)?;
+
+            match response.response_code() {
+                ResponseCode::NoError => {
+                    info!("Successfully added TXT record: {}", name_str);
+                    Ok(())
+                }
+                code => Err(anyhow::anyhow!(
+                    "DNS update failed with response code: {code:?}"
+                )),
+            }
+        })
+        .await?
     }
 
-    /// Placeholder: Add an AAAA record.
+    /// Add an AAAA record using dynamic DNS update (RFC 2136).
     ///
     /// # Errors
     ///
-    /// This is currently a placeholder and always returns `Ok(())`.
-    #[allow(clippy::unused_async)]
+    /// Returns an error if the DNS update fails or the server rejects it.
     #[allow(clippy::too_many_arguments)]
     pub async fn add_aaaa_record(
         &self,
@@ -573,18 +998,70 @@ impl Bind9Manager {
         ipv6: &str,
         ttl: Option<i32>,
         server: &str,
-        _key_data: &RndcKeyData,
+        key_data: &RndcKeyData,
     ) -> Result<()> {
-        info!("Would add AAAA record: {name}.{zone_name} -> {ipv6} (TTL: {ttl:?}) on {server}");
-        Ok(())
+        let zone_name_str = zone_name.to_string();
+        let name_str = name.to_string();
+        let ipv6_str = ipv6.to_string();
+        let server_str = server.to_string();
+        let ttl_value = u32::try_from(ttl.unwrap_or(DEFAULT_DNS_RECORD_TTL_SECS))
+            .unwrap_or(u32::try_from(DEFAULT_DNS_RECORD_TTL_SECS).unwrap_or(300));
+        let key_data = key_data.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let server_addr = server_str
+                .parse::<std::net::SocketAddr>()
+                .with_context(|| format!("Invalid server address: {server_str}"))?;
+            let conn =
+                UdpClientConnection::new(server_addr).context("Failed to create UDP connection")?;
+            let signer = Self::create_tsig_signer(&key_data)?;
+            let client = SyncClient::with_tsigner(conn, signer);
+
+            let zone = Name::from_str(&zone_name_str)
+                .with_context(|| format!("Invalid zone name: {zone_name_str}"))?;
+            let fqdn = if name_str == "@" || name_str.is_empty() {
+                zone.clone()
+            } else {
+                Name::from_str(&format!("{name_str}.{zone_name_str}"))
+                    .with_context(|| format!("Invalid record name: {name_str}.{zone_name_str}"))?
+            };
+
+            let ipv6_addr = Ipv6Addr::from_str(&ipv6_str)
+                .with_context(|| format!("Invalid IPv6 address: {ipv6_str}"))?;
+            let mut record =
+                Record::from_rdata(fqdn.clone(), ttl_value, RData::AAAA(ipv6_addr.into()));
+            record.set_dns_class(DNSClass::IN);
+
+            info!(
+                "Adding AAAA record: {} -> {} (TTL: {})",
+                fqdn, ipv6_str, ttl_value
+            );
+            let response = client
+                .create(record, zone.clone())
+                .with_context(|| format!("Failed to add AAAA record for {fqdn}"))?;
+
+            match response.response_code() {
+                ResponseCode::NoError => {
+                    info!(
+                        "Successfully added AAAA record: {} -> {}",
+                        name_str, ipv6_str
+                    );
+                    Ok(())
+                }
+                code => Err(anyhow::anyhow!(
+                    "DNS update failed with response code: {code:?}"
+                )),
+            }
+        })
+        .await
+        .context("DNS update task failed")?
     }
 
-    /// Placeholder: Add an MX record.
+    /// Add an MX record using dynamic DNS update (RFC 2136).
     ///
     /// # Errors
     ///
-    /// This is currently a placeholder and always returns `Ok(())`.
-    #[allow(clippy::unused_async)]
+    /// Returns an error if the DNS update fails or the server rejects it.
     #[allow(clippy::too_many_arguments)]
     pub async fn add_mx_record(
         &self,
@@ -594,20 +1071,63 @@ impl Bind9Manager {
         mail_server: &str,
         ttl: Option<i32>,
         server: &str,
-        _key_data: &RndcKeyData,
+        key_data: &RndcKeyData,
     ) -> Result<()> {
-        info!(
-            "Would add MX record: {name}.{zone_name} -> {mail_server} (priority: {priority}, TTL: {ttl:?}) on {server}"
-        );
-        Ok(())
+        use hickory_client::rr::rdata;
+        let zone_name_str = zone_name.to_string();
+        let name_str = name.to_string();
+        let mail_server_str = mail_server.to_string();
+        let server_str = server.to_string();
+        let ttl_value = u32::try_from(ttl.unwrap_or(DEFAULT_DNS_RECORD_TTL_SECS))
+            .unwrap_or(u32::try_from(DEFAULT_DNS_RECORD_TTL_SECS).unwrap_or(300));
+        let priority_u16 = u16::try_from(priority).unwrap_or(10);
+        let key_data = key_data.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let server_addr = server_str.parse::<std::net::SocketAddr>()?;
+            let conn = UdpClientConnection::new(server_addr)?;
+            let signer = Self::create_tsig_signer(&key_data)?;
+            let client = SyncClient::with_tsigner(conn, signer);
+
+            let zone = Name::from_str(&zone_name_str)?;
+            let fqdn = if name_str == "@" || name_str.is_empty() {
+                zone.clone()
+            } else {
+                Name::from_str(&format!("{name_str}.{zone_name_str}"))?
+            };
+
+            let mx_name = Name::from_str(&mail_server_str)?;
+            let mx_rdata = rdata::MX::new(priority_u16, mx_name);
+            let mut record = Record::from_rdata(fqdn.clone(), ttl_value, RData::MX(mx_rdata));
+            record.set_dns_class(DNSClass::IN);
+
+            info!(
+                "Adding MX record: {} -> {} (priority: {}, TTL: {})",
+                fqdn, mail_server_str, priority_u16, ttl_value
+            );
+            let response = client.create(record, zone)?;
+
+            match response.response_code() {
+                ResponseCode::NoError => {
+                    info!(
+                        "Successfully added MX record: {} -> {}",
+                        name_str, mail_server_str
+                    );
+                    Ok(())
+                }
+                code => Err(anyhow::anyhow!(
+                    "DNS update failed with response code: {code:?}"
+                )),
+            }
+        })
+        .await?
     }
 
-    /// Placeholder: Add an NS record.
+    /// Add an NS record using dynamic DNS update (RFC 2136).
     ///
     /// # Errors
     ///
-    /// This is currently a placeholder and always returns `Ok(())`.
-    #[allow(clippy::unused_async)]
+    /// Returns an error if the DNS update fails or the server rejects it.
     #[allow(clippy::too_many_arguments)]
     pub async fn add_ns_record(
         &self,
@@ -616,18 +1136,65 @@ impl Bind9Manager {
         nameserver: &str,
         ttl: Option<i32>,
         server: &str,
-        _key_data: &RndcKeyData,
+        key_data: &RndcKeyData,
     ) -> Result<()> {
-        info!("Would add NS record: {name}.{zone_name} -> {nameserver} (TTL: {ttl:?}) on {server}");
-        Ok(())
+        let zone_name_str = zone_name.to_string();
+        let name_str = name.to_string();
+        let nameserver_str = nameserver.to_string();
+        let server_str = server.to_string();
+        let ttl_value = u32::try_from(ttl.unwrap_or(DEFAULT_DNS_RECORD_TTL_SECS))
+            .unwrap_or(u32::try_from(DEFAULT_DNS_RECORD_TTL_SECS).unwrap_or(300));
+        let key_data = key_data.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let server_addr = server_str.parse::<std::net::SocketAddr>()?;
+            let conn = UdpClientConnection::new(server_addr)?;
+            let signer = Self::create_tsig_signer(&key_data)?;
+            let client = SyncClient::with_tsigner(conn, signer);
+
+            let zone = Name::from_str(&zone_name_str)?;
+            let fqdn = if name_str == "@" || name_str.is_empty() {
+                zone.clone()
+            } else {
+                Name::from_str(&format!("{name_str}.{zone_name_str}"))?
+            };
+
+            let ns_name = Name::from_str(&nameserver_str)?;
+            let mut record =
+                Record::from_rdata(fqdn.clone(), ttl_value, RData::NS(rdata::NS(ns_name)));
+            record.set_dns_class(DNSClass::IN);
+
+            info!(
+                "Adding NS record: {} -> {} (TTL: {})",
+                fqdn, nameserver_str, ttl_value
+            );
+            let response = client.create(record, zone)?;
+
+            match response.response_code() {
+                ResponseCode::NoError => {
+                    info!(
+                        "Successfully added NS record: {} -> {}",
+                        name_str, nameserver_str
+                    );
+                    Ok(())
+                }
+                code => Err(anyhow::anyhow!(
+                    "DNS update failed with response code: {code:?}"
+                )),
+            }
+        })
+        .await?
     }
 
-    /// Placeholder: Add an SRV record.
+    /// Add an SRV record using dynamic DNS update (RFC 2136).
     ///
     /// # Errors
     ///
-    /// This is currently a placeholder and always returns `Ok(())`.
-    #[allow(clippy::unused_async)]
+    /// Returns an error if:
+    /// - DNS server connection fails
+    /// - TSIG signer creation fails
+    /// - DNS update is rejected by the server
+    /// - Invalid domain name or target
     #[allow(clippy::too_many_arguments)]
     pub async fn add_srv_record(
         &self,
@@ -635,25 +1202,98 @@ impl Bind9Manager {
         name: &str,
         srv_data: &SRVRecordData,
         server: &str,
-        _key_data: &RndcKeyData,
+        key_data: &RndcKeyData,
     ) -> Result<()> {
-        let target = &srv_data.target;
+        use hickory_client::rr::rdata;
+        use std::str::FromStr;
+
+        let zone_name_str = zone_name.to_string();
+        let name_str = name.to_string();
+        let target_str = srv_data.target.clone();
         let port = srv_data.port;
         let priority = srv_data.priority;
         let weight = srv_data.weight;
         let ttl = srv_data.ttl;
-        info!(
-            "Would add SRV record: {name}.{zone_name} -> {target}:{port} (priority: {priority}, weight: {weight}, TTL: {ttl:?}) on {server}"
-        );
+        let server_str = server.to_string();
+        let key_data = key_data.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let server_addr = server_str.parse::<std::net::SocketAddr>().context(format!(
+                "Invalid server address for SRV record update: {server_str}"
+            ))?;
+
+            let conn = UdpClientConnection::new(server_addr)
+                .context("Failed to create UDP connection for SRV record")?;
+
+            let signer = Self::create_tsig_signer(&key_data)
+                .context("Failed to create TSIG signer for SRV record")?;
+
+            let client = SyncClient::with_tsigner(conn, signer);
+
+            let fqdn_str = if name_str.is_empty() || name_str == "@" {
+                zone_name_str.clone()
+            } else {
+                format!("{name_str}.{zone_name_str}")
+            };
+
+            let fqdn = Name::from_str(&fqdn_str)
+                .context(format!("Invalid FQDN for SRV record: {fqdn_str}"))?;
+
+            let zone = Name::from_str(&zone_name_str)
+                .context(format!("Invalid zone name for SRV: {zone_name_str}"))?;
+
+            let target_name = Name::from_str(&target_str)
+                .context(format!("Invalid target for SRV record: {target_str}"))?;
+
+            let ttl_value = u32::try_from(ttl.unwrap_or(DEFAULT_DNS_RECORD_TTL_SECS))
+                .unwrap_or(u32::try_from(DEFAULT_DNS_RECORD_TTL_SECS).unwrap_or(300));
+
+            // Convert i32 to u16 for SRV record parameters
+            let priority_u16 =
+                u16::try_from(priority).context(format!("Invalid SRV priority: {priority}"))?;
+            let weight_u16 =
+                u16::try_from(weight).context(format!("Invalid SRV weight: {weight}"))?;
+            let port_u16 = u16::try_from(port).context(format!("Invalid SRV port: {port}"))?;
+
+            let record_data = rdata::SRV::new(priority_u16, weight_u16, port_u16, target_name);
+
+            let mut record = Record::from_rdata(fqdn.clone(), ttl_value, RData::SRV(record_data));
+            record.set_dns_class(DNSClass::IN);
+
+            let response = client
+                .create(record, zone.clone())
+                .context(format!("Failed to send SRV record update for {fqdn_str}"))?;
+
+            if response.response_code() != ResponseCode::NoError {
+                anyhow::bail!(
+                    "DNS server rejected SRV record update for {}: {:?}",
+                    fqdn_str,
+                    response.response_code()
+                );
+            }
+
+            info!(
+                "Successfully added SRV record: {} -> {}:{} (priority: {}, weight: {}, TTL: {})",
+                fqdn_str, target_str, port, priority, weight, ttl_value
+            );
+
+            Ok(())
+        })
+        .await
+        .context("SRV record update task panicked")??;
+
         Ok(())
     }
 
-    /// Placeholder: Add a CAA record.
+    /// Add a CAA record using dynamic DNS update (RFC 2136).
     ///
     /// # Errors
     ///
-    /// This is currently a placeholder and always returns `Ok(())`.
-    #[allow(clippy::unused_async)]
+    /// Returns an error if:
+    /// - DNS server connection fails
+    /// - TSIG signer creation fails
+    /// - DNS update is rejected by the server
+    /// - Invalid domain name, flags, tag, or value
     #[allow(clippy::too_many_arguments)]
     pub async fn add_caa_record(
         &self,
@@ -664,11 +1304,109 @@ impl Bind9Manager {
         value: &str,
         ttl: Option<i32>,
         server: &str,
-        _key_data: &RndcKeyData,
+        key_data: &RndcKeyData,
     ) -> Result<()> {
-        info!(
-            "Would add CAA record: {name}.{zone_name} -> {flags} {tag} \"{value}\" (TTL: {ttl:?}) on {server}"
-        );
+        use hickory_client::rr::rdata;
+        use std::str::FromStr;
+
+        let zone_name_str = zone_name.to_string();
+        let name_str = name.to_string();
+        let tag_str = tag.to_string();
+        let value_str = value.to_string();
+        let server_str = server.to_string();
+        let key_data = key_data.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let server_addr = server_str.parse::<std::net::SocketAddr>().context(format!(
+                "Invalid server address for CAA record update: {server_str}"
+            ))?;
+
+            let conn = UdpClientConnection::new(server_addr)
+                .context("Failed to create UDP connection for CAA record")?;
+
+            let signer = Self::create_tsig_signer(&key_data)
+                .context("Failed to create TSIG signer for CAA record")?;
+
+            let client = SyncClient::with_tsigner(conn, signer);
+
+            let fqdn_str = if name_str.is_empty() || name_str == "@" {
+                zone_name_str.clone()
+            } else {
+                format!("{name_str}.{zone_name_str}")
+            };
+
+            let fqdn = Name::from_str(&fqdn_str)
+                .context(format!("Invalid FQDN for CAA record: {fqdn_str}"))?;
+
+            let zone = Name::from_str(&zone_name_str)
+                .context(format!("Invalid zone name for CAA: {zone_name_str}"))?;
+
+            let ttl_value = u32::try_from(ttl.unwrap_or(DEFAULT_DNS_RECORD_TTL_SECS))
+                .unwrap_or(u32::try_from(DEFAULT_DNS_RECORD_TTL_SECS).unwrap_or(300));
+
+            // CAA flags: 0 = not critical, 128 = critical
+            let issuer_critical = flags != 0;
+
+            // Create CAA record based on tag type
+            let record_data = match tag_str.as_str() {
+                "issue" => {
+                    // Parse value as domain name
+                    let ca_name = if value_str.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            Name::from_str(&value_str)
+                                .context(format!("Invalid CA domain name: {value_str}"))?,
+                        )
+                    };
+                    rdata::CAA::new_issue(issuer_critical, ca_name, Vec::new())
+                }
+                "issuewild" => {
+                    let ca_name = if value_str.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            Name::from_str(&value_str)
+                                .context(format!("Invalid CA domain name: {value_str}"))?,
+                        )
+                    };
+                    rdata::CAA::new_issuewild(issuer_critical, ca_name, Vec::new())
+                }
+                "iodef" => {
+                    let url = Url::parse(&value_str)
+                        .context(format!("Invalid iodef URL: {value_str}"))?;
+                    rdata::CAA::new_iodef(issuer_critical, url)
+                }
+                _ => anyhow::bail!(
+                    "Unsupported CAA tag: {tag_str}. Supported tags: issue, issuewild, iodef"
+                ),
+            };
+
+            let mut record = Record::from_rdata(fqdn.clone(), ttl_value, RData::CAA(record_data));
+            record.set_dns_class(DNSClass::IN);
+
+            let response = client
+                .create(record, zone.clone())
+                .context(format!("Failed to send CAA record update for {fqdn_str}"))?;
+
+            if response.response_code() != ResponseCode::NoError {
+                anyhow::bail!(
+                    "DNS server rejected CAA record update for {}: {:?}",
+                    fqdn_str,
+                    response.response_code()
+                );
+            }
+
+            info!(
+                "Successfully added CAA record: {} -> {} {} \"{}\" (TTL: {})",
+                fqdn_str, flags, tag_str, value_str, ttl_value
+            );
+
+            Ok(())
+        })
+        .await
+        .context("CAA record update task panicked")??;
+
         Ok(())
     }
 }

@@ -7,6 +7,10 @@ metadata:
     app: bindy
     version: v1
 spec:
+  # Number of controller replicas
+  # For high availability, set to 2 or 3
+  # Leader election ensures only one instance is active at a time
+  # Non-leader instances stand by for automatic failover (~15s)
   replicas: 1
   selector:
     matchLabels:
@@ -27,15 +31,30 @@ spec:
         runAsNonRoot: true
       containers:
         - name: bindy
-          image: ghcr.io/firestoned/bindy:v0.1.0
-          imagePullPolicy: Always
+          image: firestoned/bindy:latest
+          imagePullPolicy: Never
           env:
             - name: RUST_LOG
-              value: "info"
+              value: "debug"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            # Leader election configuration
+            - name: BINDY_ENABLE_LEADER_ELECTION
+              value: "true"
+            - name: BINDY_LEASE_NAME
+              value: "bindy-leader"
+            - name: BINDY_LEASE_DURATION_SECONDS
+              value: "15"
+            - name: BINDY_LEASE_RENEW_DEADLINE_SECONDS
+              value: "10"
+            - name: BINDY_LEASE_RETRY_PERIOD_SECONDS
+              value: "2"
           ports:
             - name: metrics
               containerPort: 8080

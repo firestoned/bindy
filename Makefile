@@ -60,6 +60,10 @@ docker-build: ## Build Docker image
 docker-push: ## Push Docker image
 	docker push $(REGISTRY)/$(IMAGE_NAME):$(TAG)
 
+docker-push-kind: docker-build ## Push Docker image to local kind
+	docker tag $(REGISTRY)/$(IMAGE_NAME):$(TAG) $(IMAGE_NAME):$(TAG)
+	kind load docker-image $(IMAGE_NAME):$(TAG) --name $(KIND_CLUSTER)
+
 deploy-crds: ## Deploy CRDs
 	kubectl apply -k deploy/crds/
 

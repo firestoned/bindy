@@ -8,7 +8,9 @@
 
 use crate::bind9::Bind9Manager;
 use crate::bind9_resources::{build_configmap, build_deployment, build_service};
+use crate::constants::DEFAULT_BIND9_VERSION;
 use crate::crd::{Bind9Cluster, Bind9Instance, Bind9InstanceStatus, Condition};
+use crate::labels::{BINDY_MANAGED_BY_LABEL, FINALIZER_BIND9_INSTANCE};
 use anyhow::Result;
 use chrono::Utc;
 use k8s_openapi::api::{
@@ -58,9 +60,134 @@ use tracing::{debug, error, info, warn};
 /// # Errors
 ///
 /// Returns an error if Kubernetes API operations fail or resource creation/update fails.
+///
+/// Handle deletion of a `Bind9Instance`, including cleanup and finalizer removal
+async fn handle_deletion(
+    client: &Client,
+    api: &Api<Bind9Instance>,
+    instance: &Bind9Instance,
+    namespace: &str,
+    name: &str,
+) -> Result<()> {
+    info!("Bind9Instance {}/{} is being deleted", namespace, name);
+
+    // Check if our finalizer is present
+    if instance
+        .metadata
+        .finalizers
+        .as_ref()
+        .is_some_and(|f| f.contains(&FINALIZER_BIND9_INSTANCE.to_string()))
+    {
+        // Check if this instance is managed by a Bind9Cluster
+        let is_managed: bool = instance
+            .metadata
+            .labels
+            .as_ref()
+            .and_then(|labels| labels.get(BINDY_MANAGED_BY_LABEL))
+            .is_some();
+
+        if is_managed {
+            info!(
+                "Bind9Instance {}/{} is managed by a Bind9Cluster, skipping resource cleanup (cluster will handle it)",
+                namespace, name
+            );
+        } else {
+            info!(
+                "Running cleanup for standalone Bind9Instance {}/{}",
+                namespace, name
+            );
+
+            // Delete all resources created by this instance
+            if let Err(e) = delete_resources(client, namespace, name).await {
+                error!(
+                    "Failed to delete resources for instance {}/{}: {}",
+                    namespace, name, e
+                );
+                return Err(e);
+            }
+        }
+
+        // Remove our finalizer
+        info!(
+            "Removing finalizer from Bind9Instance {}/{}",
+            namespace, name
+        );
+        let mut finalizers = instance.metadata.finalizers.clone().unwrap_or_default();
+        finalizers.retain(|f| f != FINALIZER_BIND9_INSTANCE);
+
+        let patch = json!({
+            "metadata": {
+                "finalizers": finalizers
+            }
+        });
+
+        api.patch(name, &PatchParams::default(), &Patch::Merge(&patch))
+            .await?;
+
+        info!(
+            "Successfully removed finalizer from Bind9Instance {}/{}",
+            namespace, name
+        );
+    }
+
+    Ok(())
+}
+
+/// Add finalizer to a `Bind9Instance` if not present
+async fn ensure_finalizer(
+    api: &Api<Bind9Instance>,
+    instance: &Bind9Instance,
+    namespace: &str,
+    name: &str,
+) -> Result<()> {
+    if instance
+        .metadata
+        .finalizers
+        .as_ref()
+        .is_none_or(|f| !f.contains(&FINALIZER_BIND9_INSTANCE.to_string()))
+    {
+        info!("Adding finalizer to Bind9Instance {}/{}", namespace, name);
+
+        let mut finalizers = instance.metadata.finalizers.clone().unwrap_or_default();
+        finalizers.push(FINALIZER_BIND9_INSTANCE.to_string());
+
+        let patch = json!({
+            "metadata": {
+                "finalizers": finalizers
+            }
+        });
+
+        api.patch(name, &PatchParams::default(), &Patch::Merge(&patch))
+            .await?;
+
+        info!(
+            "Successfully added finalizer to Bind9Instance {}/{}",
+            namespace, name
+        );
+    }
+
+    Ok(())
+}
+
+/// Reconcile a `Bind9Instance` custom resource
+///
+/// Creates or updates all Kubernetes resources needed to run a BIND9 DNS server:
+/// - `ConfigMap` with BIND9 configuration files
+/// - Deployment with BIND9 container pods
+/// - Service for DNS traffic (TCP/UDP port 53)
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `instance` - The `Bind9Instance` resource to reconcile
+///
+/// # Errors
+///
+/// Returns an error if Kubernetes API operations fail or resource creation/update fails.
 pub async fn reconcile_bind9instance(client: Client, instance: Bind9Instance) -> Result<()> {
     let namespace = instance.namespace().unwrap_or_default();
     let name = instance.name_any();
+    let api: Api<Bind9Instance> = Api::namespaced(client.clone(), &namespace);
 
     info!("Reconciling Bind9Instance: {}/{}", namespace, name);
     debug!(
@@ -70,9 +197,18 @@ pub async fn reconcile_bind9instance(client: Client, instance: Bind9Instance) ->
         "Starting Bind9Instance reconciliation"
     );
 
+    // Check if the instance is being deleted
+    if instance.metadata.deletion_timestamp.is_some() {
+        handle_deletion(&client, &api, &instance, &namespace, &name).await?;
+        return Ok(());
+    }
+
+    // Add finalizer if not present
+    ensure_finalizer(&api, &instance, &namespace, &name).await?;
+
     let spec = &instance.spec;
     let replicas = spec.replicas.unwrap_or(1);
-    let version = spec.version.as_deref().unwrap_or("9.18");
+    let version = spec.version.as_deref().unwrap_or(DEFAULT_BIND9_VERSION);
 
     debug!(
         cluster_ref = %spec.cluster_ref,
@@ -240,7 +376,7 @@ async fn create_or_update_rndc_secret(
 
     // Generate new RNDC key
     let mut key_data = Bind9Manager::generate_rndc_key();
-    key_data.name = name.to_string();
+    key_data.name = "bindy-operator".to_string();
 
     // Create Secret data
     let secret_data = Bind9Manager::create_rndc_secret_data(&key_data);
@@ -275,6 +411,10 @@ async fn create_or_update_rndc_secret(
 }
 
 /// Create or update the `ConfigMap` for BIND9 configuration
+///
+/// **Note:** If the instance belongs to a cluster (has `spec.clusterRef`), this function
+/// does NOT create an instance-specific `ConfigMap`. Instead, the instance will use the
+/// cluster-level shared `ConfigMap` created by the `Bind9Cluster` reconciler.
 async fn create_or_update_configmap(
     client: &Client,
     namespace: &str,
@@ -282,6 +422,22 @@ async fn create_or_update_configmap(
     instance: &Bind9Instance,
     cluster: Option<&Bind9Cluster>,
 ) -> Result<()> {
+    // If instance belongs to a cluster, skip ConfigMap creation
+    // The cluster creates a shared ConfigMap that all instances use
+    if !instance.spec.cluster_ref.is_empty() {
+        debug!(
+            "Instance {}/{} belongs to cluster '{}', using cluster ConfigMap",
+            namespace, name, instance.spec.cluster_ref
+        );
+        return Ok(());
+    }
+
+    // Instance is standalone (no clusterRef), create instance-specific ConfigMap
+    info!(
+        "Instance {}/{} is standalone, creating instance-specific ConfigMap",
+        namespace, name
+    );
+
     // Get role-specific allow-transfer override from cluster config
     let role_allow_transfer = cluster.and_then(|c| match instance.spec.role {
         crate::crd::ServerRole::Primary => c
@@ -368,7 +524,7 @@ async fn create_or_update_service(
         }
     });
 
-    let service = build_service(name, namespace, custom_spec);
+    let service = build_service(name, namespace, instance, custom_spec);
     let svc_api: Api<Service> = Api::namespaced(client.clone(), namespace);
 
     if let Ok(existing) = svc_api.get(name).await {

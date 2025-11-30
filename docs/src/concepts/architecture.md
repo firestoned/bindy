@@ -11,22 +11,22 @@ This page provides a detailed overview of Bindy's architecture and design princi
 │  ┌────────────────────────────────────────────────────────┐ │
 │  │            Custom Resource Definitions (CRDs)          │ │
 │  │  • Bind9Instance  • DNSZone  • ARecord  • MXRecord ... │ │
-│  └────────────────────────────────────────────────────────┘ │
-│                             │                                │
-│                             │ watches                        │
-│                             ▼                                │
+│  └──────────────────────┬─────────────────────────────────┘ │
+│                         │                                    │
+│                         │ watches                            │
+│                         ▼                                    │
 │  ┌────────────────────────────────────────────────────────┐ │
 │  │              Bindy Controller (Rust)                   │ │
 │  │                                                        │ │
 │  │  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐ │ │
-│  │  │  Bind9Instance│  │   DNSZone    │  │   Records   │ │ │
+│  │  │ Bind9Instance│  │   DNSZone    │  │   Records   │ │ │
 │  │  │  Reconciler  │  │  Reconciler  │  │  Reconciler │ │ │
 │  │  └──────────────┘  └──────────────┘  └─────────────┘ │ │
 │  │                                                        │ │
 │  │  ┌──────────────────────────────────────────────────┐ │ │
 │  │  │         Zone File Generator                      │ │ │
 │  │  └──────────────────────────────────────────────────┘ │ │
-│  └────────────────────────────────────────────────────────┘ │
+│  └──────────────────────────┬─────────────────────────────┘ │
 │                             │                                │
 │                             │ configures                     │
 │                             ▼                                │
@@ -36,10 +36,12 @@ This page provides a detailed overview of Bindy's architecture and design princi
 │  │  ┌──────────┐      ┌──────────┐      ┌──────────┐    │ │
 │  │  │ Primary  │ AXFR │Secondary │ AXFR │Secondary │    │ │
 │  │  │   DNS    │─────▶│   DNS    │─────▶│   DNS    │    │ │
-│  │  │  (us-east)│     │ (us-west)│     │  (eu)    │    │ │
-│  │  └──────────┘      └──────────┘      └──────────┘    │ │
-│  └────────────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────────┘
+│  │  │(us-east) │      │(us-west) │      │   (eu)   │    │ │
+│  │  └────┬─────┘      └────┬─────┘      └────┬─────┘    │ │
+│  └───────┼─────────────────┼─────────────────┼───────────┘ │
+└──────────┼─────────────────┼─────────────────┼─────────────┘
+           │                 │                 │
+           └─────────────────┴─────────────────┘
                              │
                              │ DNS queries (UDP/TCP 53)
                              ▼
@@ -65,6 +67,12 @@ Each reconciler handles a specific resource type:
   - Creates StatefulSets for BIND9 pods
   - Configures services and networking
   - Updates instance status
+
+- **Bind9Cluster Reconciler** - Manages cluster-level configuration
+  - Manages finalizers for cascade deletion
+  - Creates and reconciles managed instances
+  - Propagates global configuration to instances
+  - Tracks cluster-wide status
 
 - **DNSZone Reconciler** - Manages DNS zones
   - Evaluates label selectors
@@ -171,6 +179,111 @@ BIND9 servers managed by Bindy:
    ```rust
    // Report success
    update_status(&zone, conditions, matched_instances).await?;
+   ```
+
+### Managed Instance Creation Flow
+
+When a Bind9Cluster specifies replica counts, the controller automatically creates instances:
+
+```mermaid
+flowchart TD
+    A[Bind9Cluster Created] --> B{Has primary.replicas?}
+    B -->|Yes| C[Create primary-0, primary-1, ...]
+    B -->|No| D{Has secondary.replicas?}
+    C --> D
+    D -->|Yes| E[Create secondary-0, secondary-1, ...]
+    D -->|No| F[No instances created]
+    E --> G[Add management labels]
+    G --> H[Instances inherit cluster config]
+```
+
+1. **User creates Bind9Cluster with replicas**
+   ```yaml
+   apiVersion: bindy.firestoned.io/v1alpha1
+   kind: Bind9Cluster
+   metadata:
+     name: production-dns
+   spec:
+     primary:
+       replicas: 2
+     secondary:
+       replicas: 3
+   ```
+
+2. **Bind9Cluster reconciler evaluates replica counts**
+   ```rust
+   let primary_replicas = cluster.spec.primary.as_ref()
+       .and_then(|p| p.replicas).unwrap_or(0);
+   ```
+
+3. **Create missing instances with management labels**
+   ```rust
+   let mut labels = BTreeMap::new();
+   labels.insert("bindy.firestoned.io/managed-by", "Bind9Cluster");
+   labels.insert("bindy.firestoned.io/cluster", &cluster_name);
+   labels.insert("bindy.firestoned.io/role", "primary");
+   ```
+
+4. **Instances inherit cluster configuration**
+   ```rust
+   let instance_spec = Bind9InstanceSpec {
+       cluster_ref: cluster_name.clone(),
+       version: cluster.spec.version.clone(),
+       config: None,  // Inherit from cluster
+       // ...
+   };
+   ```
+
+5. **Self-healing: Recreate deleted instances**
+   - Controller detects missing managed instances
+   - Automatically recreates them with same configuration
+
+### Cascade Deletion Flow
+
+When a Bind9Cluster is deleted, all its instances are automatically cleaned up:
+
+```mermaid
+flowchart TD
+    A[kubectl delete bind9cluster] --> B[Deletion timestamp set]
+    B --> C{Finalizer present?}
+    C -->|Yes| D[Controller detects deletion]
+    D --> E[Find all instances with clusterRef]
+    E --> F[Delete each instance]
+    F --> G{All deleted?}
+    G -->|Yes| H[Remove finalizer]
+    G -->|No| I[Retry deletion]
+    H --> J[Cluster deleted]
+    I --> F
+```
+
+1. **User deletes Bind9Cluster**
+   ```bash
+   kubectl delete bind9cluster production-dns
+   ```
+
+2. **Finalizer prevents immediate deletion**
+   ```rust
+   if cluster.metadata.deletion_timestamp.is_some() {
+       // Cleanup before allowing deletion
+       delete_cluster_instances(&client, &namespace, &name).await?;
+   }
+   ```
+
+3. **Find and delete all referencing instances**
+   ```rust
+   let instances: Vec<_> = all_instances.into_iter()
+       .filter(|i| i.spec.cluster_ref == cluster_name)
+       .collect();
+
+   for instance in instances {
+       api.delete(&instance_name, &DeleteParams::default()).await?;
+   }
+   ```
+
+4. **Remove finalizer once cleanup complete**
+   ```rust
+   let mut finalizers = cluster.metadata.finalizers.unwrap_or_default();
+   finalizers.retain(|f| f != FINALIZER_NAME);
    ```
 
 ### Record Addition Flow
@@ -321,19 +434,61 @@ spec:
 
 ## Scalability
 
-### Horizontal Scaling
+### Horizontal Scaling - Operator Leader Election
 
-Multiple controller replicas with leader election:
+Multiple controller replicas use Kubernetes Lease-based leader election for high availability:
+
+```mermaid
+sequenceDiagram
+    participant O1 as Operator Instance 1
+    participant O2 as Operator Instance 2
+    participant L as Kubernetes Lease
+    participant K as Kubernetes API
+
+    O1->>L: Acquire lease
+    L-->>O1: Lease granted
+    O1->>K: Start reconciliation
+    O2->>L: Try acquire lease
+    L-->>O2: Lease already held
+    O2->>O2: Wait in standby
+
+    Note over O1: Instance fails
+    O2->>L: Acquire lease
+    L-->>O2: Lease granted
+    O2->>K: Start reconciliation
+```
+
+**Implementation:**
 
 ```rust
-let lease_lock = LeaseLock::new(
-    client,
-    "dns-system",
-    "bind9-controller-leader",
-);
+// Create lease manager with configuration
+let lease_manager = LeaseManagerBuilder::new(client.clone(), &lease_name)
+    .with_namespace(&lease_namespace)
+    .with_identity(&identity)
+    .with_duration(Duration::from_secs(15))
+    .with_grace(Duration::from_secs(2))
+    .build()
+    .await?;
 
-run_with_lease(lease_lock, reconcile_loop).await?;
+// Watch leadership status
+let (leader_rx, lease_handle) = lease_manager.watch().await;
+
+// Run controllers with leader monitoring
+tokio::select! {
+    result = monitor_leadership(leader_rx) => {
+        warn!("Leadership lost! Stopping all controllers...");
+    }
+    result = run_all_controllers() => {
+        // Normal controller execution
+    }
+}
 ```
+
+**Failover characteristics:**
+- **Lease duration:** 15 seconds (configurable)
+- **Automatic failover:** ~15 seconds if leader fails
+- **Zero data loss:** New leader resumes from Kubernetes state
+- **Multiple replicas:** Support for 2-5+ operator instances
 
 ### Resource Limits
 

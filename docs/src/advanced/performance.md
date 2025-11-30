@@ -9,6 +9,31 @@ Key metrics to monitor:
 - **Throughput** - Queries per second (QPS)
 - **Resource usage** - CPU and memory utilization
 - **Cache hit ratio** - Percentage of cached responses
+- **Reconciliation loops** - Unnecessary status updates
+
+## Controller Performance
+
+### Status Update Optimization
+
+The Bindy operator implements status change detection in all reconcilers to prevent tight reconciliation loops. This optimization:
+
+- **Reduces Kubernetes API calls** by skipping unnecessary status updates
+- **Prevents reconciliation storms** that can occur when status updates trigger new reconciliations
+- **Improves overall system performance** by reducing CPU and network overhead
+
+All reconcilers check if the status has actually changed before updating the status subresource. Status updates only occur when:
+- Condition type changes
+- Status value changes
+- Message changes
+- Status doesn't exist yet
+
+This optimization is implemented across all resource types:
+- Bind9Cluster
+- Bind9Instance
+- DNSZone
+- All DNS record types (A, AAAA, CNAME, MX, NS, SRV, TXT, CAA)
+
+For more details, see the [Reconciliation Logic](../development/reconciliation.md#status-update-optimization) documentation.
 
 ## Optimization Strategies
 

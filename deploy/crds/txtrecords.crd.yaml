@@ -29,11 +29,23 @@ spec:
             description: |-
               `TXTRecord` holds arbitrary text data.
 
-              TXT records are commonly used for SPF, DKIM, DMARC, domain verification, and other text-based metadata.
+              TXT records are commonly used for SPF, DKIM, DMARC, domain verification,
+              and other text-based metadata.
 
               # Example
 
-              ```yaml apiVersion: dns.firestoned.io/v1alpha1 kind: TXTRecord metadata: name: spf-example-com spec: zone: example.com name: "@" text: - "v=spf1 include:_spf.google.com ~all" ttl: 3600 ```
+              ```yaml
+              apiVersion: dns.firestoned.io/v1alpha1
+              kind: TXTRecord
+              metadata:
+                name: spf-example-com
+              spec:
+                zone: example.com
+                name: "@"
+                text:
+                  - "v=spf1 include:_spf.google.com ~all"
+                ttl: 3600
+              ```
             properties:
               name:
                 description: Record name within the zone.
@@ -42,7 +54,8 @@ spec:
                 description: |-
                   Array of text strings. Each string can be up to 255 characters.
 
-                  Multiple strings are concatenated by DNS resolvers. For long text, split into multiple strings.
+                  Multiple strings are concatenated by DNS resolvers.
+                  For long text, split into multiple strings.
                 items:
                   type: string
                 type: array
@@ -57,7 +70,8 @@ spec:
                 description: |-
                   DNS zone this record belongs to (e.g., "example.com").
 
-                  Must match the zoneName of an existing `DNSZone` resource in the same namespace. Either `zone` or `zoneRef` must be specified (not both).
+                  Must match the zoneName of an existing `DNSZone` resource in the same namespace.
+                  Either `zone` or `zoneRef` must be specified (not both).
                 nullable: true
                 type: string
               zoneRef:
@@ -81,7 +95,8 @@ spec:
                   description: |-
                     Condition represents an observation of a resource's current state.
 
-                    Conditions are used in status subresources to communicate the state of a resource to users and controllers.
+                    Conditions are used in status subresources to communicate the state of
+                    a resource to users and controllers.
                   properties:
                     lastTransitionTime:
                       description: Last time the condition transitioned from one status to another (RFC3339 format).
