@@ -37,7 +37,8 @@
 ///
 /// // A Record
 /// let a_record = ARecordSpec {
-///     zone: "example-com".to_string(),
+///     zone: Some("example.com".to_string()),
+///     zone_ref: None,
 ///     name: "www".to_string(),
 ///     ipv4_address: "192.0.2.1".to_string(),
 ///     ttl: Some(300),
@@ -45,7 +46,8 @@
 ///
 /// // MX Record
 /// let mx_record = MXRecordSpec {
-///     zone: "example-com".to_string(),
+///     zone: None,
+///     zone_ref: Some("example-com".to_string()),
 ///     name: "@".to_string(),
 ///     priority: 10,
 ///     mail_server: "mail.example.com.".to_string(),
@@ -54,7 +56,8 @@
 ///
 /// // TXT Record (SPF)
 /// let txt_record = TXTRecordSpec {
-///     zone: "example-com".to_string(),
+///     zone: Some("example.com".to_string()),
+///     zone_ref: None,
 ///     name: "@".to_string(),
 ///     text: vec!["v=spf1 include:_spf.example.com ~all".to_string()],
 ///     ttl: Some(3600),

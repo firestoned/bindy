@@ -44,15 +44,15 @@ use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use rand::Rng;
 use std::collections::BTreeMap;
-use tracing::info;
+use tracing::{debug, error, info};
 
 /// RNDC key data for authentication.
 #[derive(Debug, Clone)]
 pub struct RndcKeyData {
     /// Key name (typically the instance name)
     pub name: String,
-    /// HMAC algorithm (e.g., "hmac-sha256", "hmac-sha512")
-    pub algorithm: String,
+    /// HMAC algorithm
+    pub algorithm: crate::crd::RndcAlgorithm,
     /// Base64-encoded secret key
     pub secret: String,
 }
@@ -107,7 +107,7 @@ impl Bind9Manager {
 
         RndcKeyData {
             name: String::new(), // Will be set by caller
-            algorithm: "hmac-sha256".to_string(),
+            algorithm: crate::crd::RndcAlgorithm::HmacSha256,
             secret: BASE64.encode(key_bytes),
         }
     }
@@ -119,7 +119,10 @@ impl Bind9Manager {
     pub fn create_rndc_secret_data(key_data: &RndcKeyData) -> BTreeMap<String, String> {
         let mut data = BTreeMap::new();
         data.insert("key-name".to_string(), key_data.name.clone());
-        data.insert("algorithm".to_string(), key_data.algorithm.clone());
+        data.insert(
+            "algorithm".to_string(),
+            key_data.algorithm.as_str().to_string(),
+        );
         data.insert("secret".to_string(), key_data.secret.clone());
         data
     }
@@ -135,11 +138,21 @@ impl Bind9Manager {
             std::str::from_utf8(data.get("key-name").context("Missing key-name in secret")?)?
                 .to_string();
 
-        let algorithm = std::str::from_utf8(
+        let algorithm_str = std::str::from_utf8(
             data.get("algorithm")
                 .context("Missing algorithm in secret")?,
-        )?
-        .to_string();
+        )?;
+
+        // Parse algorithm string to enum
+        let algorithm = match algorithm_str {
+            "hmac-md5" => crate::crd::RndcAlgorithm::HmacMd5,
+            "hmac-sha1" => crate::crd::RndcAlgorithm::HmacSha1,
+            "hmac-sha224" => crate::crd::RndcAlgorithm::HmacSha224,
+            "hmac-sha256" => crate::crd::RndcAlgorithm::HmacSha256,
+            "hmac-sha384" => crate::crd::RndcAlgorithm::HmacSha384,
+            "hmac-sha512" => crate::crd::RndcAlgorithm::HmacSha512,
+            _ => anyhow::bail!("Unsupported RNDC algorithm '{algorithm_str}'. Supported algorithms: hmac-md5, hmac-sha1, hmac-sha224, hmac-sha256, hmac-sha384, hmac-sha512"),
+        };
 
         let secret = std::str::from_utf8(data.get("secret").context("Missing secret in secret")?)?
             .to_string();
@@ -167,20 +180,85 @@ impl Bind9Manager {
         key_data: &RndcKeyData,
         command: &str,
     ) -> Result<String> {
-        // Create rndc client (API: new(server_url, algorithm, secret_key_b64))
-        let client = rndc::RndcClient::new(server, &key_data.algorithm, &key_data.secret);
+        // Log the rndc command being executed (without the secret)
+        debug!(
+            server = %server,
+            command = %command,
+            algorithm = %key_data.algorithm.as_rndc_str(),
+            key_name = %key_data.name,
+            "Executing rndc command"
+        );
 
-        // Execute command (synchronous, so use spawn_blocking)
+        // Execute command in spawn_blocking and catch panics from the rndc crate
+        // The rndc library can panic on DNS resolution failures
+        let server_name = server.to_string();
+        let server_name_for_closure = server_name.clone();
+        let algorithm = key_data.algorithm.as_rndc_str().to_string();
+        let secret = key_data.secret.clone();
         let command = command.to_string();
-        let result = tokio::task::spawn_blocking(move || client.rndc_command(&command))
-            .await
-            .context("Task join failed")?
-            .map_err(|e| anyhow::anyhow!("RNDC command failed: {e}"))?;
+        let command_for_logging = command.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            // Wrap in catch_unwind to handle panics from the rndc crate
+            std::panic::catch_unwind(|| {
+                // Create rndc client (API: new(server_url, algorithm, secret_key_b64))
+                // Note: The rndc crate expects algorithm strings without "hmac-" prefix
+                let client = rndc::RndcClient::new(&server_name_for_closure, &algorithm, &secret);
+
+                // Execute command
+                client.rndc_command(&command)
+            })
+        })
+        .await
+        .context("Task join failed")?
+        .map_err(|panic_err| {
+            // Convert panic to error
+            let error_msg = if let Some(msg) = panic_err.downcast_ref::<String>() {
+                anyhow::anyhow!(
+                    "RNDC panic when connecting to {server_name}: {msg}. \
+                    Verify the BIND9 service '{server_name}' exists and is reachable."
+                )
+            } else if let Some(msg) = panic_err.downcast_ref::<&str>() {
+                anyhow::anyhow!(
+                    "RNDC panic when connecting to {server_name}: {msg}. \
+                    Verify the BIND9 service '{server_name}' exists and is reachable."
+                )
+            } else {
+                anyhow::anyhow!(
+                    "RNDC panic when connecting to {server_name}. \
+                    Verify the BIND9 service '{server_name}' exists and is reachable. \
+                    This often indicates DNS resolution failure."
+                )
+            };
+            error!(
+                server = %server_name,
+                command = %command_for_logging,
+                error = %error_msg,
+                "RNDC connection panic - check service availability and DNS resolution"
+            );
+            error_msg
+        })?
+        .map_err(|e| {
+            let error_msg = anyhow::anyhow!(
+                "RNDC command failed on {server_name}: {e}. \
+                Check that the BIND9 service is running and authentication is correct."
+            );
+            error!(
+                server = %server_name,
+                command = %command_for_logging,
+                error = %e,
+                "RNDC command execution failed - check service status and authentication"
+            );
+            error_msg
+        })?;
 
         Ok(result.text.unwrap_or_default())
     }
 
     /// Reload a specific zone using rndc.
+    ///
+    /// This operation is idempotent - if the zone doesn't exist, it returns an error
+    /// with a clear message indicating the zone was not found.
     ///
     /// # Arguments
     /// * `zone_name` - Name of the zone to reload
@@ -197,12 +275,23 @@ impl Bind9Manager {
         key_data: &RndcKeyData,
     ) -> Result<()> {
         let command = format!("reload {zone_name}");
-        self.exec_rndc_command(server, key_data, &command)
-            .await
-            .context("Failed to reload zone")?;
+        let result = self.exec_rndc_command(server, key_data, &command).await;
 
-        info!("Reloaded zone {zone_name} on {server}");
-        Ok(())
+        match result {
+            Ok(_) => {
+                info!("Reloaded zone {zone_name} on {server}");
+                Ok(())
+            }
+            Err(e) => {
+                let err_msg = e.to_string();
+                // Make reload idempotent - if zone doesn't exist, that's ok for some operations
+                if err_msg.contains("not found") || err_msg.contains("does not exist") {
+                    Err(anyhow::anyhow!("Zone {zone_name} not found on {server}"))
+                } else {
+                    Err(e).context("Failed to reload zone")
+                }
+            }
+        }
     }
 
     /// Reload all zones using rndc.
@@ -320,6 +409,9 @@ impl Bind9Manager {
 
     /// Add a new zone using rndc addzone.
     ///
+    /// This operation is idempotent - if the zone already exists, it returns success
+    /// without attempting to re-add it.
+    ///
     /// Note: This requires dynamic zone configuration to be enabled in named.conf.
     ///
     /// # Errors
@@ -333,6 +425,12 @@ impl Bind9Manager {
         server: &str,
         key_data: &RndcKeyData,
     ) -> Result<()> {
+        // Check if zone already exists (idempotent)
+        if self.zone_exists(zone_name, server, key_data).await {
+            info!("Zone {zone_name} already exists on {server}, skipping add");
+            return Ok(());
+        }
+
         let command =
             format!(r#"addzone {zone_name} '{{ type {zone_type}; file "{zone_file}"; }};'"#);
 

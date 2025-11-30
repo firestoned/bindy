@@ -75,6 +75,36 @@ The **bindy-controller** runs as a sidecar container alongside each BIND9 pod. I
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## Zone Management via RNDC
+
+Bindy manages DNS zones dynamically using BIND9's RNDC (Remote Name Daemon Control) protocol, rather than static zone file configuration.
+
+### How It Works
+
+1. **Startup Configuration**:
+   - BIND9 starts with `named.conf` that includes `/etc/bind/zones/named.conf.zones` with the `optional` keyword
+   - The `optional` keyword prevents BIND9 from failing if the file doesn't exist on first startup
+   - No init containers or external dependencies required
+
+2. **Dynamic Zone Addition**:
+   - When a `DNSZone` resource is created, the controller uses RNDC to add the zone
+   - BIND9 automatically creates/updates `named.conf.zones` in the writable `/etc/bind/zones/` directory
+   - The file is managed entirely by BIND9 via RNDC commands
+   - No restart required - zones are loaded dynamically
+
+3. **File Locations**:
+   - Zone files: `/etc/bind/zones/` (writable emptyDir volume)
+   - Configuration files: `/etc/bind/named.conf`, `/etc/bind/named.conf.options` (read-only from ConfigMap)
+   - Zone index: `/etc/bind/zones/named.conf.zones` (created and managed by BIND9)
+
+### Benefits
+
+- **No restarts**: Zones added/updated without restarting BIND9
+- **Dynamic configuration**: Changes take effect immediately
+- **Kubernetes-native**: Uses standard emptyDir volumes for writable data
+- **No external dependencies**: Uses BIND9's `optional` include directive - no init containers or busybox needed
+- **Airgap-friendly**: Works in airgapped environments without additional images
+
 ## Resource Hierarchy
 
 ```yaml
@@ -166,6 +196,11 @@ spec:
       # BIND9 DNS server
       - name: bind9
         image: internetsystemsconsortium/bind9:9.18
+        command: ["named"]
+        args:
+        - "-c"
+        - "/etc/bind/named.conf"
+        - "-g"  # Run in foreground (required for containers)
         volumeMounts:
         - name: zones
           mountPath: /etc/bind/zones

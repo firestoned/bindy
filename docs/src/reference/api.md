@@ -44,8 +44,8 @@ DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defi
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
-| `observed_generation` | integer | No |  |
-| `record_count` | integer | No |  |
+| `observedGeneration` | integer | No |  |
+| `recordCount` | integer | No |  |
 
 ---
 
@@ -64,14 +64,15 @@ ARecord maps a DNS hostname to an IPv4 address. Multiple A records for the same 
 | `ipv4Address` | string | Yes | IPv4 address in dotted-decimal notation.  Must be a valid IPv4 address (e.g., "192.0.2.1"). |
 | `name` | string | Yes | Record name within the zone. Use "@" for the zone apex.  Examples: "www", "mail", "ftp", "@" The full DNS name will be: {name}.{zone} |
 | `ttl` | integer | No | Time To Live in seconds. Overrides zone default TTL if specified.  Typical values: 60-86400 (1 minute to 1 day). |
-| `zone` | string | Yes | DNS zone this record belongs to (e.g., "example.com").  Must match the zoneName of an existing \`DNSZone\` resource. |
+| `zone` | string | No | DNS zone this record belongs to (e.g., "example.com").  Must match the zoneName of an existing \`DNSZone\` resource in the same namespace. The controller will search for a \`DNSZone\` with matching \`spec.zoneName\`. Either \`zone\` or \`zoneRef\` must be specified (not both). |
+| `zoneRef` | string | No | Reference to a \`DNSZone\` resource by metadata.name.  Directly references a \`DNSZone\` resource by its Kubernetes name for more efficient lookup. Either \`zone\` or \`zoneRef\` must be specified (not both). |
 
 #### Status Fields
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
-| `observed_generation` | integer | No |  |
+| `observedGeneration` | integer | No |  |
 
 ---
 
@@ -88,14 +89,15 @@ AAAARecord maps a DNS hostname to an IPv6 address. This is the IPv6 equivalent o
 | `ipv6Address` | string | Yes | IPv6 address in standard notation.  Examples: \`2001:db8::1\`, \`fe80::1\`, \`::1\` |
 | `name` | string | Yes | Record name within the zone. |
 | `ttl` | integer | No | Time To Live in seconds. |
-| `zone` | string | Yes | DNS zone this record belongs to. |
+| `zone` | string | No | DNS zone this record belongs to (e.g., "example.com").  Must match the zoneName of an existing \`DNSZone\` resource in the same namespace. Either \`zone\` or \`zoneRef\` must be specified (not both). |
+| `zoneRef` | string | No | Reference to a \`DNSZone\` resource by metadata.name.  Either \`zone\` or \`zoneRef\` must be specified (not both). |
 
 #### Status Fields
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
-| `observed_generation` | integer | No |  |
+| `observedGeneration` | integer | No |  |
 
 ---
 
@@ -112,14 +114,15 @@ CNAMERecord creates a DNS alias from one hostname to another. A CNAME cannot coe
 | `name` | string | Yes | Record name within the zone.  Note: CNAME records cannot be created at the zone apex (@). |
 | `target` | string | Yes | Target hostname (canonical name).  Should be a fully qualified domain name ending with a dot. Example: "example.com." or "www.example.com." |
 | `ttl` | integer | No | Time To Live in seconds. |
-| `zone` | string | Yes | DNS zone this record belongs to. |
+| `zone` | string | No | DNS zone this record belongs to (e.g., "example.com").  Must match the zoneName of an existing \`DNSZone\` resource in the same namespace. Either \`zone\` or \`zoneRef\` must be specified (not both). |
+| `zoneRef` | string | No | Reference to a \`DNSZone\` resource by metadata.name.  Either \`zone\` or \`zoneRef\` must be specified (not both). |
 
 #### Status Fields
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
-| `observed_generation` | integer | No |  |
+| `observedGeneration` | integer | No |  |
 
 ---
 
@@ -137,14 +140,15 @@ MXRecord specifies mail exchange servers for a domain. Lower priority values ind
 | `name` | string | Yes | Record name within the zone. Use "@" for the zone apex. |
 | `priority` | integer | Yes | Priority (preference) of this mail server. Lower values = higher priority.  Common values: 0-100. Multiple MX records can exist with different priorities. |
 | `ttl` | integer | No | Time To Live in seconds. |
-| `zone` | string | Yes | DNS zone this record belongs to. |
+| `zone` | string | No | DNS zone this record belongs to (e.g., "example.com").  Must match the zoneName of an existing \`DNSZone\` resource in the same namespace. Either \`zone\` or \`zoneRef\` must be specified (not both). |
+| `zoneRef` | string | No | Reference to a \`DNSZone\` resource by metadata.name.  Either \`zone\` or \`zoneRef\` must be specified (not both). |
 
 #### Status Fields
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
-| `observed_generation` | integer | No |  |
+| `observedGeneration` | integer | No |  |
 
 ---
 
@@ -161,14 +165,15 @@ NSRecord delegates a subdomain to authoritative nameservers. Used for subdomain 
 | `name` | string | Yes | Subdomain to delegate. For zone apex, use "@". |
 | `nameserver` | string | Yes | Fully qualified domain name of the nameserver.  Must end with a dot. Example: "ns1.example.com." |
 | `ttl` | integer | No | Time To Live in seconds. |
-| `zone` | string | Yes | DNS zone this record belongs to. |
+| `zone` | string | No | DNS zone this record belongs to (e.g., "example.com").  Must match the zoneName of an existing \`DNSZone\` resource in the same namespace. Either \`zone\` or \`zoneRef\` must be specified (not both). |
+| `zoneRef` | string | No | Reference to a \`DNSZone\` resource by metadata.name.  Either \`zone\` or \`zoneRef\` must be specified (not both). |
 
 #### Status Fields
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
-| `observed_generation` | integer | No |  |
+| `observedGeneration` | integer | No |  |
 
 ---
 
@@ -185,14 +190,15 @@ TXTRecord stores arbitrary text data in DNS. Commonly used for SPF, DKIM, DMARC 
 | `name` | string | Yes | Record name within the zone. |
 | `text` | array | Yes | Array of text strings. Each string can be up to 255 characters.  Multiple strings are concatenated by DNS resolvers. For long text, split into multiple strings. |
 | `ttl` | integer | No | Time To Live in seconds. |
-| `zone` | string | Yes | DNS zone this record belongs to. |
+| `zone` | string | No | DNS zone this record belongs to (e.g., "example.com").  Must match the zoneName of an existing \`DNSZone\` resource in the same namespace. Either \`zone\` or \`zoneRef\` must be specified (not both). |
+| `zoneRef` | string | No | Reference to a \`DNSZone\` resource by metadata.name.  Either \`zone\` or \`zoneRef\` must be specified (not both). |
 
 #### Status Fields
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
-| `observed_generation` | integer | No |  |
+| `observedGeneration` | integer | No |  |
 
 ---
 
@@ -212,14 +218,15 @@ SRVRecord specifies the hostname and port of servers for specific services. The 
 | `target` | string | Yes | Fully qualified domain name of the target host.  Must end with a dot. Use "." for "service not available". |
 | `ttl` | integer | No | Time To Live in seconds. |
 | `weight` | integer | Yes | Relative weight for records with the same priority.  Higher values = higher probability of selection. |
-| `zone` | string | Yes | DNS zone this record belongs to. |
+| `zone` | string | No | DNS zone this record belongs to (e.g., "example.com").  Must match the zoneName of an existing \`DNSZone\` resource in the same namespace. Either \`zone\` or \`zoneRef\` must be specified (not both). |
+| `zoneRef` | string | No | Reference to a \`DNSZone\` resource by metadata.name.  Either \`zone\` or \`zoneRef\` must be specified (not both). |
 
 #### Status Fields
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
-| `observed_generation` | integer | No |  |
+| `observedGeneration` | integer | No |  |
 
 ---
 
@@ -238,14 +245,15 @@ CAARecord specifies which certificate authorities are authorized to issue certif
 | `tag` | string | Yes | Property tag. Common values: "issue", "issuewild", "iodef".  - "issue": Authorize CA to issue certificates - "issuewild": Authorize CA to issue wildcard certificates - "iodef": URL/email for violation reports |
 | `ttl` | integer | No | Time To Live in seconds. |
 | `value` | string | Yes | Property value. Format depends on the tag.  For "issue"/"issuewild": CA domain (e.g., "letsencrypt.org") For "iodef": mailto: or https: URL |
-| `zone` | string | Yes | DNS zone this record belongs to. |
+| `zone` | string | No | DNS zone this record belongs to (e.g., "example.com").  Must match the zoneName of an existing \`DNSZone\` resource in the same namespace. Either \`zone\` or \`zoneRef\` must be specified (not both). |
+| `zoneRef` | string | No | Reference to a \`DNSZone\` resource by metadata.name.  Either \`zone\` or \`zoneRef\` must be specified (not both). |
 
 #### Status Fields
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
-| `observed_generation` | integer | No |  |
+| `observedGeneration` | integer | No |  |
 
 ---
 
@@ -265,7 +273,9 @@ Bind9Cluster defines a logical grouping of BIND9 DNS server instances with share
 | `config` | object | No | Shared configuration for all instances in the cluster |
 | `configMapRefs` | object | No | \`ConfigMap\` references for BIND9 configuration files |
 | `image` | object | No | Container image configuration |
-| `tsigKeys` | array | No | TSIG keys for authenticated zone transfers |
+| `primary` | object | No | Primary instance configuration  Configuration specific to primary (authoritative) DNS instances, including replica count and service specifications. |
+| `rndcSecretRefs` | array | No | References to Kubernetes Secrets containing RNDC/TSIG keys for authenticated zone transfers.  Each secret should contain the key name, algorithm, and base64-encoded secret value. These secrets are used for secure communication with BIND9 instances via RNDC and for authenticated zone transfers (AXFR/IXFR) between primary and secondary servers. |
+| `secondary` | object | No | Secondary instance configuration  Configuration specific to secondary (replica) DNS instances, including replica count and service specifications. |
 | `version` | string | No | Shared BIND9 version for the cluster |
 | `volumeMounts` | array | No | Volume mounts that specify where volumes should be mounted in containers  These mounts are inherited by all instances unless overridden. |
 | `volumes` | array | No | Volumes that can be mounted by instances in this cluster  These volumes are inherited by all instances unless overridden. Common use cases include \`PersistentVolumeClaims\` for zone data storage. |
@@ -274,10 +284,11 @@ Bind9Cluster defines a logical grouping of BIND9 DNS server instances with share
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
-| `conditions` | array | No |  |
-| `instance_count` | integer | No | Number of instances in this cluster |
-| `observed_generation` | integer | No |  |
-| `ready_instances` | integer | No | Number of ready instances |
+| `conditions` | array | No | Status conditions for this cluster |
+| `instanceCount` | integer | No | Number of instances in this cluster |
+| `instances` | array | No | Names of \`Bind9Instance\` resources created for this cluster |
+| `observedGeneration` | integer | No | Observed generation for optimistic concurrency |
+| `readyInstances` | integer | No | Number of ready instances |
 
 ---
 
@@ -307,10 +318,10 @@ Bind9Instance represents a BIND9 DNS server deployment in Kubernetes. Each insta
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
-| `observed_generation` | integer | No |  |
-| `ready_replicas` | integer | No |  |
+| `observedGeneration` | integer | No |  |
+| `readyReplicas` | integer | No |  |
 | `replicas` | integer | No |  |
-| `service_address` | string | No | IP or hostname of this instance's service |
+| `serviceAddress` | string | No | IP or hostname of this instance's service |
 
 ---
 

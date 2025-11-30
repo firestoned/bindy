@@ -1,0 +1,27 @@
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
+metadata:
+  name: production-dns
+  namespace: dns-system
+  labels:
+    environment: production
+spec:
+  version: "9.18"
+  # Primary instance configuration
+  primary:
+    # Default number of replicas for primary instances (can be overridden per instance)
+    replicas: 2
+  # Secondary instance configuration
+  secondary:
+    # Default number of replicas for secondary instances (can be overridden per instance)
+    replicas: 3
+  global:
+    recursion: false
+    allowQuery:
+      - "0.0.0.0/0"
+    allowTransfer:
+      - "10.0.0.0/8"
+    dnssec:
+      enabled: true
+      validation: true

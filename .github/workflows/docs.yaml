@@ -36,8 +36,8 @@ jobs:
         run: |
           mkdir -p ~/bin
           curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.5.1/mdbook-v0.5.1-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C ~/bin
-          echo "$HOME/bin" >> $GITHUB_PATH
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           cargo install mdbook-mermaid --version 0.17.0
 
       - name: Build documentation
