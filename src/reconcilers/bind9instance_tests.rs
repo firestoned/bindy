@@ -31,16 +31,17 @@ mod tests {
                     allow_query: Some(vec!["any".to_string()]),
                     allow_transfer: Some(vec!["10.0.0.0/8".to_string()]),
                     dnssec: Some(DNSSECConfig {
-                        enabled: Some(true),
                         validation: Some(true),
                     }),
                     forwarders: Some(vec!["8.8.8.8".to_string()]),
                     listen_on: Some(vec!["any".to_string()]),
                     listen_on_v6: Some(vec!["any".to_string()]),
+                    rndc_secret_ref: None,
                 }),
                 primary_servers: None,
                 volumes: None,
                 volume_mounts: None,
+                rndc_secret_ref: None,
             },
             status: None,
         }
@@ -65,6 +66,7 @@ mod tests {
                 primary_servers: None,
                 volumes: None,
                 volume_mounts: None,
+                rndc_secret_ref: None,
             },
             status: None,
         };
@@ -92,6 +94,7 @@ mod tests {
                 primary_servers: None,
                 volumes: None,
                 volume_mounts: None,
+                rndc_secret_ref: None,
             },
             status: None,
         };
@@ -144,7 +147,8 @@ mod tests {
 
     #[test]
     fn test_service_creation() {
-        let service = build_service("test-svc", "test-ns", None);
+        let instance = create_test_instance("test-svc", 1, "9.18");
+        let service = build_service("test-svc", "test-ns", &instance, None);
 
         assert_eq!(service.metadata.name.as_deref(), Some("test-svc"));
         assert_eq!(service.metadata.namespace.as_deref(), Some("test-ns"));
@@ -153,11 +157,12 @@ mod tests {
         assert_eq!(spec.type_.as_deref(), Some("ClusterIP"));
 
         let ports = spec.ports.expect("Service should have ports");
-        assert_eq!(ports.len(), 2);
+        assert_eq!(ports.len(), 3);
 
-        // Verify TCP and UDP ports
+        // Verify TCP, UDP, and RNDC ports
         assert!(ports.iter().any(|p| p.name.as_deref() == Some("dns-tcp")));
         assert!(ports.iter().any(|p| p.name.as_deref() == Some("dns-udp")));
+        assert!(ports.iter().any(|p| p.name.as_deref() == Some("rndc")));
     }
 
     #[test]
@@ -207,10 +212,12 @@ mod tests {
                     forwarders: None,
                     listen_on: None,
                     listen_on_v6: None,
+                    rndc_secret_ref: None,
                 }),
                 primary_servers: None,
                 volumes: None,
                 volume_mounts: None,
+                rndc_secret_ref: None,
             },
             status: None,
         };
@@ -245,10 +252,12 @@ mod tests {
                     forwarders: Some(vec!["8.8.8.8".to_string(), "8.8.4.4".to_string()]),
                     listen_on: None,
                     listen_on_v6: None,
+                    rndc_secret_ref: None,
                 }),
                 primary_servers: None,
                 volumes: None,
                 volume_mounts: None,
+                rndc_secret_ref: None,
             },
             status: None,
         };
@@ -300,16 +309,17 @@ mod tests {
                     allow_query: None,
                     allow_transfer: None,
                     dnssec: Some(DNSSECConfig {
-                        enabled: Some(false),
                         validation: Some(false),
                     }),
                     forwarders: None,
                     listen_on: None,
                     listen_on_v6: None,
+                    rndc_secret_ref: None,
                 }),
                 primary_servers: None,
                 volumes: None,
                 volume_mounts: None,
+                rndc_secret_ref: None,
             },
             status: None,
         };
@@ -370,18 +380,19 @@ mod tests {
         let container = &pod_spec.containers[0];
         let mounts = container.volume_mounts.as_ref().unwrap();
 
-        // No zones file mount unless user provides namedConfZones ConfigMap
-        assert_eq!(mounts.len(), 4);
+        // Volume mounts: zones, cache, rndc-key, named.conf, named.conf.options, rndc.conf
+        assert_eq!(mounts.len(), 6);
         assert!(mounts.iter().any(|m| m.name == "config"));
         assert!(mounts.iter().any(|m| m.name == "zones"));
         assert!(mounts.iter().any(|m| m.name == "cache"));
+        assert!(mounts.iter().any(|m| m.name == "rndc-key"));
     }
 
     #[test]
     fn test_service_selector_matches_deployment_labels() {
         let instance = create_test_instance("label-test", 1, "9.18");
         let deployment = build_deployment("label-test", "test-ns", &instance, None);
-        let service = build_service("label-test", "test-ns", None);
+        let service = build_service("label-test", "test-ns", &instance, None);
 
         let deploy_labels = deployment.metadata.labels.unwrap();
         let svc_selector = service.spec.unwrap().selector.unwrap();

@@ -156,6 +156,7 @@ mod tests {
                 forwarders: None,
                 listen_on: None,
                 listen_on_v6: None,
+                rndc_secret_ref: None,
             }),
             primary: None,
             secondary: None,
@@ -312,12 +313,12 @@ mod tests {
             allow_query: Some(vec!["0.0.0.0/0".into()]),
             allow_transfer: Some(vec!["10.0.0.0/8".into()]),
             dnssec: Some(DNSSECConfig {
-                enabled: Some(true),
                 validation: Some(true),
             }),
             forwarders: Some(vec!["8.8.8.8".into(), "8.8.4.4".into()]),
             listen_on: Some(vec!["any".into()]),
             listen_on_v6: Some(vec!["any".into()]),
+            rndc_secret_ref: None,
         };
 
         assert_eq!(config.recursion, Some(false));
@@ -329,11 +330,9 @@ mod tests {
     #[test]
     fn test_dnssec_config() {
         let config = DNSSECConfig {
-            enabled: Some(true),
             validation: Some(false),
         };
 
-        assert_eq!(config.enabled, Some(true));
         assert_eq!(config.validation, Some(false));
     }
 
@@ -354,10 +353,12 @@ mod tests {
                 forwarders: None,
                 listen_on: None,
                 listen_on_v6: None,
+                rndc_secret_ref: None,
             }),
             primary_servers: None,
             volumes: None,
             volume_mounts: None,
+            rndc_secret_ref: None,
         };
 
         assert_eq!(spec.cluster_ref, "my-cluster");
@@ -722,15 +723,13 @@ mod tests {
             // BIND9 format should have "hmac-" prefix
             assert!(
                 bind9_format.starts_with("hmac-"),
-                "BIND9 format should start with 'hmac-': {}",
-                bind9_format
+                "BIND9 format should start with 'hmac-': {bind9_format}"
             );
 
             // RNDC format should NOT have "hmac-" prefix
             assert!(
                 !rndc_format.starts_with("hmac-"),
-                "RNDC format should NOT start with 'hmac-': {}",
-                rndc_format
+                "RNDC format should NOT start with 'hmac-': {rndc_format}"
             );
 
             // RNDC format should be the BIND9 format without the "hmac-" prefix
@@ -756,7 +755,7 @@ mod tests {
     fn test_rndc_algorithm_debug_format() {
         // Test that Debug format is reasonable
         let algo = RndcAlgorithm::HmacSha256;
-        let debug_str = format!("{:?}", algo);
+        let debug_str = format!("{algo:?}");
         assert!(debug_str.contains("HmacSha256"));
     }
 
@@ -859,8 +858,7 @@ mod tests {
             let result: Result<RndcAlgorithm, _> = serde_json::from_str(invalid_json);
             assert!(
                 result.is_err(),
-                "Deserialization should fail for invalid value: {}",
-                invalid_json
+                "Deserialization should fail for invalid value: {invalid_json}"
             );
         }
     }
@@ -882,8 +880,7 @@ mod tests {
             let result: Result<RndcAlgorithm, _> = serde_json::from_str(invalid_json);
             assert!(
                 result.is_err(),
-                "Deserialization should fail for unknown algorithm: {}",
-                invalid_json
+                "Deserialization should fail for unknown algorithm: {invalid_json}"
             );
         }
     }

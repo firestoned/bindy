@@ -48,13 +48,13 @@ The **bindy-controller** runs as a sidecar container alongside each BIND9 pod. I
 │  │              bindy-operator                         │    │
 │  │  - Watches Bind9Instance CRDs                       │    │
 │  │  - Creates Deployments, Services, ConfigMaps        │    │
-│  └────────────────────────────────────────────────────┘    │
-│                          │                                   │
-│                          │ creates                           │
-│                          ▼                                   │
+│  └──────────────────────┬─────────────────────────────┘    │
+│                         │                                   │
+│                         │ creates                           │
+│                         ▼                                   │
 └─────────────────────────────────────────────────────────────┘
-                           │
-                           ▼
+                          │
+                          ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                  Namespace Level (per instance)             │
 │                                                              │
@@ -66,11 +66,11 @@ The **bindy-controller** runs as a sidecar container alongside each BIND9 pod. I
 │  │  │                │     │ - Watches Records       │  │  │
 │  │  │ - Serves DNS   │◄────┤ - Writes zone files     │  │  │
 │  │  │ - Reads zones  │     │                         │  │  │
-│  │  └────────────────┘     └─────────────────────────┘  │  │
-│  │           │                        │                   │  │
-│  │           └────────────────────────┘                   │  │
-│  │              Shared Volume                             │  │
-│  │              /etc/bind/zones                           │  │
+│  │  └────────┬───────┘     └───────────┬─────────────┘  │  │
+│  │           │                         │                 │  │
+│  │           └─────────────────────────┘                 │  │
+│  │              Shared Volume                            │  │
+│  │              /etc/bind/zones                          │  │
 │  └──────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
 ```

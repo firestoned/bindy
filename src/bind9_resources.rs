@@ -6,7 +6,18 @@
 //! This module provides functions to build Kubernetes resources (`Deployment`, `ConfigMap`, `Service`)
 //! for BIND9 instances. All functions are pure and easily testable.
 
+use crate::constants::{
+    API_GROUP_VERSION, DEFAULT_BIND9_VERSION, DNS_PORT, KIND_BIND9_INSTANCE,
+    LIVENESS_FAILURE_THRESHOLD, LIVENESS_INITIAL_DELAY_SECS, LIVENESS_PERIOD_SECS,
+    LIVENESS_TIMEOUT_SECS, READINESS_FAILURE_THRESHOLD, READINESS_INITIAL_DELAY_SECS,
+    READINESS_PERIOD_SECS, READINESS_TIMEOUT_SECS, RNDC_PORT,
+};
 use crate::crd::{Bind9Cluster, Bind9Instance, ConfigMapRefs, ImageConfig};
+use crate::labels::{
+    APP_NAME_BIND9, COMPONENT_DNS_CLUSTER, COMPONENT_DNS_SERVER, K8S_COMPONENT, K8S_INSTANCE,
+    K8S_MANAGED_BY, K8S_NAME, K8S_PART_OF, MANAGED_BY_BIND9_CLUSTER, MANAGED_BY_BIND9_INSTANCE,
+    PART_OF_BINDY,
+};
 use k8s_openapi::api::{
     apps::v1::{Deployment, DeploymentSpec},
     core::v1::{
@@ -15,20 +26,46 @@ use k8s_openapi::api::{
     },
 };
 use k8s_openapi::apimachinery::pkg::{
-    apis::meta::v1::{LabelSelector, ObjectMeta},
+    apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference},
     util::intstr::IntOrString,
 };
+use kube::ResourceExt;
 use std::collections::BTreeMap;
 use tracing::debug;
 
 // Embed configuration templates at compile time
 const NAMED_CONF_TEMPLATE: &str = include_str!("../templates/named.conf.tmpl");
 const NAMED_CONF_OPTIONS_TEMPLATE: &str = include_str!("../templates/named.conf.options.tmpl");
+const RNDC_CONF_TEMPLATE: &str = include_str!("../templates/rndc.conf.tmpl");
 
-/// Builds standardized Kubernetes labels for BIND9 resources.
+// BIND configuration file paths and mount points
+const BIND_ZONES_PATH: &str = "/etc/bind/zones";
+const BIND_CACHE_PATH: &str = "/var/cache/bind";
+const BIND_KEYS_PATH: &str = "/etc/bind/keys";
+const BIND_NAMED_CONF_PATH: &str = "/etc/bind/named.conf";
+const BIND_NAMED_CONF_OPTIONS_PATH: &str = "/etc/bind/named.conf.options";
+const BIND_NAMED_CONF_ZONES_PATH: &str = "/etc/bind/named.conf.zones";
+const BIND_RNDC_CONF_PATH: &str = "/etc/bind/rndc.conf";
+
+// BIND configuration file names
+const NAMED_CONF_FILENAME: &str = "named.conf";
+const NAMED_CONF_OPTIONS_FILENAME: &str = "named.conf.options";
+const NAMED_CONF_ZONES_FILENAME: &str = "named.conf.zones";
+const RNDC_CONF_FILENAME: &str = "rndc.conf";
+
+// Volume mount names
+const VOLUME_ZONES: &str = "zones";
+const VOLUME_CACHE: &str = "cache";
+const VOLUME_RNDC_KEY: &str = "rndc-key";
+const VOLUME_CONFIG: &str = "config";
+const VOLUME_NAMED_CONF: &str = "named-conf";
+const VOLUME_NAMED_CONF_OPTIONS: &str = "named-conf-options";
+const VOLUME_NAMED_CONF_ZONES: &str = "named-conf-zones";
+
+/// Builds standardized Kubernetes labels for BIND9 instance resources.
 ///
-/// Creates a consistent set of labels following Kubernetes best practices,
-/// including recommended `app.kubernetes.io/*` labels.
+/// Creates labels for resources managed by `Bind9Instance` controller.
+/// Use `build_cluster_labels()` for resources managed by `Bind9Cluster`.
 ///
 /// # Arguments
 ///
@@ -50,13 +87,112 @@ const NAMED_CONF_OPTIONS_TEMPLATE: &str = include_str!("../templates/named.conf.
 #[must_use]
 pub fn build_labels(instance_name: &str) -> BTreeMap<String, String> {
     let mut labels = BTreeMap::new();
-    labels.insert("app".into(), "bind9".into());
+    labels.insert("app".into(), APP_NAME_BIND9.into());
     labels.insert("instance".into(), instance_name.into());
-    labels.insert("app.kubernetes.io/name".into(), "bind9".into());
-    labels.insert("app.kubernetes.io/instance".into(), instance_name.into());
-    labels.insert("app.kubernetes.io/component".into(), "dns-server".into());
-    labels.insert("app.kubernetes.io/managed-by".into(), "bindy".into());
+    labels.insert(K8S_NAME.into(), APP_NAME_BIND9.into());
+    labels.insert(K8S_INSTANCE.into(), instance_name.into());
+    labels.insert(K8S_COMPONENT.into(), COMPONENT_DNS_SERVER.into());
+    labels.insert(K8S_MANAGED_BY.into(), MANAGED_BY_BIND9_INSTANCE.into());
+    labels.insert(K8S_PART_OF.into(), PART_OF_BINDY.into());
     labels
+}
+
+/// Builds standardized Kubernetes labels for BIND9 cluster resources.
+///
+/// Creates labels for resources managed by `Bind9Cluster` controller.
+/// Use `build_labels()` for resources managed by `Bind9Instance`.
+///
+/// # Arguments
+///
+/// * `cluster_name` - Name of the `Bind9Cluster` resource
+///
+/// # Returns
+///
+/// A `BTreeMap` of label key-value pairs
+#[must_use]
+pub fn build_cluster_labels(cluster_name: &str) -> BTreeMap<String, String> {
+    let mut labels = BTreeMap::new();
+    labels.insert("app".into(), APP_NAME_BIND9.into());
+    labels.insert("cluster".into(), cluster_name.into());
+    labels.insert(K8S_NAME.into(), APP_NAME_BIND9.into());
+    labels.insert(K8S_INSTANCE.into(), cluster_name.into());
+    labels.insert(K8S_COMPONENT.into(), COMPONENT_DNS_CLUSTER.into());
+    labels.insert(K8S_MANAGED_BY.into(), MANAGED_BY_BIND9_CLUSTER.into());
+    labels.insert(K8S_PART_OF.into(), PART_OF_BINDY.into());
+    labels
+}
+
+/// Builds standardized Kubernetes labels for BIND9 instance resources,
+/// propagating the `managed-by` label from the `Bind9Instance` if it exists.
+///
+/// This function checks if the instance has a `bindy.firestoned.io/managed-by` label.
+/// If it does (indicating the instance is managed by a `Bind9Cluster`), that label
+/// value is propagated to the `app.kubernetes.io/managed-by` label. Otherwise,
+/// it defaults to `Bind9Instance`.
+///
+/// This ensures that when a `Bind9Cluster` creates a `Bind9Instance` with
+/// `managed-by: Bind9Cluster`, all child resources (Deployments, Services) also
+/// get `managed-by: Bind9Cluster`.
+///
+/// # Arguments
+///
+/// * `instance_name` - Name of the `Bind9Instance` resource
+/// * `instance` - The `Bind9Instance` resource to check for management labels
+///
+/// # Returns
+///
+/// A `BTreeMap` of label key-value pairs
+#[must_use]
+pub fn build_labels_from_instance(
+    instance_name: &str,
+    instance: &Bind9Instance,
+) -> BTreeMap<String, String> {
+    use crate::labels::BINDY_MANAGED_BY_LABEL;
+
+    let mut labels = BTreeMap::new();
+    labels.insert("app".into(), APP_NAME_BIND9.into());
+    labels.insert("instance".into(), instance_name.into());
+    labels.insert(K8S_NAME.into(), APP_NAME_BIND9.into());
+    labels.insert(K8S_INSTANCE.into(), instance_name.into());
+    labels.insert(K8S_COMPONENT.into(), COMPONENT_DNS_SERVER.into());
+    labels.insert(K8S_PART_OF.into(), PART_OF_BINDY.into());
+
+    // Check if instance has bindy.firestoned.io/managed-by label
+    // If it does, propagate it to app.kubernetes.io/managed-by
+    let managed_by = instance
+        .metadata
+        .labels
+        .as_ref()
+        .and_then(|labels| labels.get(BINDY_MANAGED_BY_LABEL))
+        .map_or(MANAGED_BY_BIND9_INSTANCE, String::as_str);
+
+    labels.insert(K8S_MANAGED_BY.into(), managed_by.into());
+
+    labels
+}
+
+/// Builds owner references for a resource owned by a `Bind9Instance`
+///
+/// Sets up cascade deletion so that when the `Bind9Instance` is deleted,
+/// all its child resources (`Deployment`, `Service`, `ConfigMap`) are automatically deleted.
+///
+/// # Arguments
+///
+/// * `instance` - The `Bind9Instance` that owns this resource
+///
+/// # Returns
+///
+/// A vector containing a single `OwnerReference` pointing to the instance
+#[must_use]
+pub fn build_owner_references(instance: &Bind9Instance) -> Vec<OwnerReference> {
+    vec![OwnerReference {
+        api_version: API_GROUP_VERSION.to_string(),
+        kind: KIND_BIND9_INSTANCE.to_string(),
+        name: instance.name_any(),
+        uid: instance.metadata.uid.clone().unwrap_or_default(),
+        controller: Some(true),
+        block_owner_deletion: Some(true),
+    }]
 }
 
 /// Builds a Kubernetes `ConfigMap` containing BIND9 configuration files.
@@ -118,18 +254,81 @@ pub fn build_configmap(
 
     // Build named.conf
     let named_conf = build_named_conf(instance, cluster);
-    data.insert("named.conf".into(), named_conf);
+    data.insert(NAMED_CONF_FILENAME.into(), named_conf);
 
     // Build named.conf.options
-    let options_conf = build_options_conf(instance, role_allow_transfer);
-    data.insert("named.conf.options".into(), options_conf);
+    let options_conf = build_options_conf(instance, cluster, role_allow_transfer);
+    data.insert(NAMED_CONF_OPTIONS_FILENAME.into(), options_conf);
+
+    // Build rndc.conf (references key file mounted from Secret)
+    data.insert(RNDC_CONF_FILENAME.into(), RNDC_CONF_TEMPLATE.to_string());
 
     // Note: We do NOT auto-generate named.conf.zones anymore.
     // Users must explicitly provide a namedConfZones ConfigMap if they want zones support.
 
+    let owner_refs = build_owner_references(instance);
+
     Some(ConfigMap {
         metadata: ObjectMeta {
             name: Some(format!("{name}-config")),
+            namespace: Some(namespace.into()),
+            labels: Some(labels),
+            owner_references: Some(owner_refs),
+            ..Default::default()
+        },
+        data: Some(data),
+        ..Default::default()
+    })
+}
+
+/// Builds a cluster-level shared `ConfigMap` containing BIND9 configuration files.
+///
+/// This `ConfigMap` is shared across all instances in a cluster, containing configuration
+/// from `spec.global`. This eliminates the need for per-instance `ConfigMaps` when all
+/// instances share the same configuration.
+///
+/// # Arguments
+///
+/// * `cluster_name` - Name of the cluster (used for `ConfigMap` naming)
+/// * `namespace` - Kubernetes namespace
+/// * `cluster` - `Bind9Cluster` containing shared configuration
+///
+/// # Returns
+///
+/// A Kubernetes `ConfigMap` resource ready for creation/update
+///
+/// # Errors
+///
+/// Returns an error if configuration generation fails
+pub fn build_cluster_configmap(
+    cluster_name: &str,
+    namespace: &str,
+    cluster: &Bind9Cluster,
+) -> Result<ConfigMap, anyhow::Error> {
+    debug!(
+        cluster_name = %cluster_name,
+        namespace = %namespace,
+        "Building cluster-level shared ConfigMap"
+    );
+
+    // Generate default configuration from cluster spec
+    let mut data = BTreeMap::new();
+    let labels = build_cluster_labels(cluster_name);
+
+    // Build named.conf from cluster
+    let named_conf = build_cluster_named_conf(cluster);
+    data.insert(NAMED_CONF_FILENAME.into(), named_conf);
+
+    // Build named.conf.options from cluster.spec.global
+    let options_conf = build_cluster_options_conf(cluster);
+    data.insert(NAMED_CONF_OPTIONS_FILENAME.into(), options_conf);
+
+    // Build rndc.conf (references key file mounted from Secret)
+    data.insert(RNDC_CONF_FILENAME.into(), RNDC_CONF_TEMPLATE.to_string());
+
+    Ok(ConfigMap {
+        metadata: ObjectMeta {
+            name: Some(format!("{cluster_name}-config")),
             namespace: Some(namespace.into()),
             labels: Some(labels),
             ..Default::default()
@@ -173,7 +372,16 @@ fn build_named_conf(instance: &Bind9Instance, cluster: Option<&Bind9Cluster>) ->
         String::new()
     };
 
-    NAMED_CONF_TEMPLATE.replace("{{ZONES_INCLUDE}}", &zones_include)
+    // Build RNDC key includes and key names for controls block
+    // For now, we support a single key per instance (bindy-operator)
+    // Future enhancement: support multiple keys from spec
+    let rndc_key_includes = "include \"/etc/bind/keys/rndc.key\";";
+    let rndc_key_names = "\"bindy-operator\"";
+
+    NAMED_CONF_TEMPLATE
+        .replace("{{ZONES_INCLUDE}}", &zones_include)
+        .replace("{{RNDC_KEY_INCLUDES}}", rndc_key_includes)
+        .replace("{{RNDC_KEY_NAMES}}", rndc_key_names)
 }
 
 /// Build the named.conf.options configuration from template
@@ -181,17 +389,25 @@ fn build_named_conf(instance: &Bind9Instance, cluster: Option<&Bind9Cluster>) ->
 /// Generates the BIND9 options configuration file from the instance's config spec.
 /// Includes settings for recursion, ACLs (allow-query, allow-transfer), and DNSSEC.
 ///
+/// Priority for configuration values (highest to lowest):
+/// 1. Instance-level settings (`instance.spec.config`)
+/// 2. Role-specific settings (`role_allow_transfer` from cluster primary/secondary spec)
+/// 3. Global cluster settings (`cluster.spec.global`)
+/// 4. Defaults (BIND9 defaults or no setting)
+///
 /// # Arguments
 ///
 /// * `instance` - `Bind9Instance` spec containing the BIND9 configuration
-/// * `pod_cidrs` - Pod CIDR ranges from the cluster nodes, used for default allow-transfer
+/// * `cluster` - Optional `Bind9Cluster` containing global configuration
 /// * `role_allow_transfer` - Role-specific allow-transfer override from cluster spec (primary/secondary)
 ///
 /// # Returns
 ///
 /// A string containing the complete named.conf.options configuration
+#[allow(clippy::too_many_lines)]
 fn build_options_conf(
     instance: &Bind9Instance,
+    cluster: Option<&Bind9Cluster>,
     role_allow_transfer: Option<&Vec<String>>,
 ) -> String {
     let recursion;
@@ -199,24 +415,44 @@ fn build_options_conf(
     let allow_transfer;
     let mut dnssec_validate = String::new();
 
+    // Get global config from cluster if available
+    let global_config = cluster.and_then(|c| c.spec.global.as_ref());
+
     if let Some(config) = &instance.spec.config {
-        // Recursion setting
-        let recursion_value = if config.recursion.unwrap_or(false) {
-            "yes"
+        // Recursion setting - instance overrides global
+        let recursion_value = if let Some(rec) = config.recursion {
+            if rec {
+                "yes"
+            } else {
+                "no"
+            }
+        } else if let Some(global) = global_config {
+            if global.recursion.unwrap_or(false) {
+                "yes"
+            } else {
+                "no"
+            }
         } else {
             "no"
         };
-        recursion = format!("\n    recursion {recursion_value};");
+        recursion = format!("recursion {recursion_value};");
 
-        // Allow-query ACL
+        // Allow-query ACL - instance overrides global
         if let Some(acls) = &config.allow_query {
             if !acls.is_empty() {
                 let acl_list = acls.join("; ");
-                allow_query = format!("\n    allow-query {{ {acl_list}; }};");
+                allow_query = format!("allow-query {{ {acl_list}; }};");
+            }
+        } else if let Some(global) = global_config {
+            if let Some(global_acls) = &global.allow_query {
+                if !global_acls.is_empty() {
+                    let acl_list = global_acls.join("; ");
+                    allow_query = format!("allow-query {{ {acl_list}; }};");
+                }
             }
         }
 
-        // Allow-transfer ACL - priority: instance config > role-specific > no default (use BIND9's default)
+        // Allow-transfer ACL - priority: instance config > role-specific > global > no default
         if let Some(acls) = &config.allow_transfer {
             // Instance-level config takes highest priority
             let acl_list = if acls.is_empty() {
@@ -224,7 +460,7 @@ fn build_options_conf(
             } else {
                 acls.join("; ")
             };
-            allow_transfer = format!("\n    allow-transfer {{ {acl_list}; }};");
+            allow_transfer = format!("allow-transfer {{ {acl_list}; }};");
         } else if let Some(role_acls) = role_allow_transfer {
             // Role-specific override from cluster config (primary/secondary)
             let acl_list = if role_acls.is_empty() {
@@ -232,28 +468,203 @@ fn build_options_conf(
             } else {
                 role_acls.join("; ")
             };
-            allow_transfer = format!("\n    allow-transfer {{ {acl_list}; }};");
+            allow_transfer = format!("allow-transfer {{ {acl_list}; }};");
+        } else if let Some(global) = global_config {
+            // Global cluster settings
+            if let Some(global_acls) = &global.allow_transfer {
+                let acl_list = if global_acls.is_empty() {
+                    "none".to_string()
+                } else {
+                    global_acls.join("; ")
+                };
+                allow_transfer = format!("allow-transfer {{ {acl_list}; }};");
+            } else {
+                allow_transfer = String::new();
+            }
         } else {
             // No default - let BIND9 use its own defaults (none)
             allow_transfer = String::new();
         }
 
-        // DNSSEC configuration
+        // DNSSEC configuration - instance overrides global
         // Note: dnssec-enable was removed in BIND 9.15+ (DNSSEC is always enabled)
         // Only dnssec-validation is configurable now
         if let Some(dnssec) = &config.dnssec {
             if dnssec.validation.unwrap_or(false) {
-                dnssec_validate = "\n    dnssec-validation yes;".to_string();
+                dnssec_validate = "dnssec-validation yes;".to_string();
+            } else {
+                dnssec_validate = "dnssec-validation no;".to_string();
+            }
+        } else if let Some(global) = global_config {
+            if let Some(global_dnssec) = &global.dnssec {
+                if global_dnssec.validation.unwrap_or(false) {
+                    dnssec_validate = "dnssec-validation yes;".to_string();
+                } else {
+                    dnssec_validate = "dnssec-validation no;".to_string();
+                }
             }
         }
     } else {
-        // Defaults when no config is specified
-        recursion = "\n    recursion no;".to_string();
-        // No default for allow-transfer - let BIND9 use its own defaults (none)
-        allow_transfer = String::new();
+        // No instance config - use global config if available, otherwise defaults
+        if let Some(global) = global_config {
+            // Recursion from global
+            let recursion_value = if global.recursion.unwrap_or(false) {
+                "yes"
+            } else {
+                "no"
+            };
+            recursion = format!("recursion {recursion_value};");
+
+            // Allow-query from global
+            if let Some(acls) = &global.allow_query {
+                if !acls.is_empty() {
+                    let acl_list = acls.join("; ");
+                    allow_query = format!("allow-query {{ {acl_list}; }};");
+                }
+            }
+
+            // Allow-transfer - priority: role-specific > global > no default
+            if let Some(role_acls) = role_allow_transfer {
+                let acl_list = if role_acls.is_empty() {
+                    "none".to_string()
+                } else {
+                    role_acls.join("; ")
+                };
+                allow_transfer = format!("allow-transfer {{ {acl_list}; }};");
+            } else if let Some(global_acls) = &global.allow_transfer {
+                let acl_list = if global_acls.is_empty() {
+                    "none".to_string()
+                } else {
+                    global_acls.join("; ")
+                };
+                allow_transfer = format!("allow-transfer {{ {acl_list}; }};");
+            } else {
+                allow_transfer = String::new();
+            }
+
+            // DNSSEC from global
+            if let Some(dnssec) = &global.dnssec {
+                if dnssec.validation.unwrap_or(false) {
+                    dnssec_validate = "dnssec-validation yes;".to_string();
+                }
+            }
+        } else {
+            // Defaults when no config is specified
+            recursion = "recursion no;".to_string();
+            // No default for allow-transfer - let BIND9 use its own defaults (none)
+            allow_transfer = String::new();
+        }
     }
 
     // Perform template substitutions
+    NAMED_CONF_OPTIONS_TEMPLATE
+        .replace("{{RECURSION}}", &recursion)
+        .replace("{{ALLOW_QUERY}}", &allow_query)
+        .replace("{{ALLOW_TRANSFER}}", &allow_transfer)
+        .replace("{{DNSSEC_VALIDATE}}", &dnssec_validate)
+}
+
+/// Build the main named.conf configuration for a cluster from template
+///
+/// Generates the main BIND9 configuration file with conditional zones include.
+/// The zones include directive is only added if the user provides a `namedConfZones` `ConfigMap`.
+///
+/// # Arguments
+///
+/// * `cluster` - `Bind9Cluster` spec (checked for config refs)
+///
+/// # Returns
+///
+/// A string containing the complete named.conf configuration
+fn build_cluster_named_conf(cluster: &Bind9Cluster) -> String {
+    // Check if user provided a custom zones ConfigMap
+    let zones_include = if let Some(refs) = &cluster.spec.config_map_refs {
+        if refs.named_conf_zones.is_some() {
+            // User provided custom zones file, include it from custom ConfigMap location
+            "\n// Include zones file from user-provided ConfigMap\ninclude \"/etc/bind/named.conf.zones\";\n".to_string()
+        } else {
+            // No zones ConfigMap provided, don't include zones file
+            String::new()
+        }
+    } else {
+        // No config refs at all, don't include zones file
+        String::new()
+    };
+
+    // Build RNDC key includes and key names for controls block
+    // For now, we support a single key per instance (bindy-operator)
+    // Future enhancement: support multiple keys from spec
+    let rndc_key_includes = "include \"/etc/bind/keys/rndc.key\";";
+    let rndc_key_names = "\"bindy-operator\"";
+
+    NAMED_CONF_TEMPLATE
+        .replace("{{ZONES_INCLUDE}}", &zones_include)
+        .replace("{{RNDC_KEY_INCLUDES}}", rndc_key_includes)
+        .replace("{{RNDC_KEY_NAMES}}", rndc_key_names)
+}
+
+/// Build the named.conf.options configuration for a cluster from template
+///
+/// Generates the BIND9 options configuration file from the cluster's `spec.global` config.
+/// Includes settings for recursion, ACLs (allow-query, allow-transfer), and DNSSEC.
+///
+/// # Arguments
+///
+/// * `cluster` - `Bind9Cluster` containing global configuration
+///
+/// # Returns
+///
+/// A string containing the complete named.conf.options configuration
+#[allow(clippy::too_many_lines)]
+fn build_cluster_options_conf(cluster: &Bind9Cluster) -> String {
+    let recursion;
+    let mut allow_query = String::new();
+    let mut allow_transfer = String::new();
+    let mut dnssec_validate = String::new();
+
+    // Use cluster global config
+    if let Some(global) = &cluster.spec.global {
+        // Recursion setting
+        let recursion_value = if global.recursion.unwrap_or(false) {
+            "yes"
+        } else {
+            "no"
+        };
+        recursion = format!("recursion {recursion_value};");
+
+        // allow-query ACL
+        if let Some(aq) = &global.allow_query {
+            if !aq.is_empty() {
+                allow_query = format!(
+                    "allow-query {{ {}; }};",
+                    aq.iter().map(String::as_str).collect::<Vec<_>>().join("; ")
+                );
+            }
+        }
+
+        // allow-transfer ACL
+        if let Some(at) = &global.allow_transfer {
+            if !at.is_empty() {
+                allow_transfer = format!(
+                    "allow-transfer {{ {}; }};",
+                    at.iter().map(String::as_str).collect::<Vec<_>>().join("; ")
+                );
+            }
+        }
+
+        // DNSSEC validation
+        if let Some(dnssec) = &global.dnssec {
+            if dnssec.validation.unwrap_or(false) {
+                dnssec_validate = "dnssec-validation yes;".to_string();
+            } else {
+                dnssec_validate = "dnssec-validation no;".to_string();
+            }
+        }
+    } else {
+        // No global config, use defaults
+        recursion = "recursion no;".to_string();
+    }
+
     NAMED_CONF_OPTIONS_TEMPLATE
         .replace("{{RECURSION}}", &recursion)
         .replace("{{ALLOW_QUERY}}", &allow_query)
@@ -281,23 +692,22 @@ fn build_options_conf(
 ///
 /// A Kubernetes Deployment resource ready for creation/update
 #[must_use]
-pub fn build_deployment(
+/// Helper struct to hold resolved configuration for a `Bind9Instance` deployment
+struct DeploymentConfig<'a> {
+    image_config: Option<&'a ImageConfig>,
+    config_map_refs: Option<&'a ConfigMapRefs>,
+    version: &'a str,
+    volumes: Option<&'a Vec<Volume>>,
+    volume_mounts: Option<&'a Vec<VolumeMount>>,
+    configmap_name: String,
+}
+
+/// Extract and resolve deployment configuration from instance and cluster
+fn resolve_deployment_config<'a>(
     name: &str,
-    namespace: &str,
-    instance: &Bind9Instance,
-    cluster: Option<&Bind9Cluster>,
-) -> Deployment {
-    debug!(
-        name = %name,
-        namespace = %namespace,
-        has_cluster = cluster.is_some(),
-        "Building Deployment for Bind9Instance"
-    );
-
-    let labels = build_labels(name);
-    let replicas = instance.spec.replicas.unwrap_or(1);
-    debug!(replicas, "Deployment replica count");
-
+    instance: &'a Bind9Instance,
+    cluster: Option<&'a Bind9Cluster>,
+) -> DeploymentConfig<'a> {
     // Get image config (instance overrides cluster)
     let image_config = instance
         .spec
@@ -318,7 +728,7 @@ pub fn build_deployment(
         .version
         .as_deref()
         .or_else(|| cluster.and_then(|c| c.spec.version.as_deref()))
-        .unwrap_or("9.18");
+        .unwrap_or(DEFAULT_BIND9_VERSION);
 
     // Get volumes (instance overrides cluster)
     let volumes = instance
@@ -334,11 +744,53 @@ pub fn build_deployment(
         .as_ref()
         .or_else(|| cluster.and_then(|c| c.spec.volume_mounts.as_ref()));
 
+    // Determine ConfigMap name: use cluster ConfigMap if instance belongs to a cluster
+    let configmap_name = if instance.spec.cluster_ref.is_empty() {
+        // Use instance-specific ConfigMap
+        format!("{name}-config")
+    } else {
+        // Use cluster-level shared ConfigMap
+        format!("{}-config", instance.spec.cluster_ref)
+    };
+
+    DeploymentConfig {
+        image_config,
+        config_map_refs,
+        version,
+        volumes,
+        volume_mounts,
+        configmap_name,
+    }
+}
+
+pub fn build_deployment(
+    name: &str,
+    namespace: &str,
+    instance: &Bind9Instance,
+    cluster: Option<&Bind9Cluster>,
+) -> Deployment {
+    debug!(
+        name = %name,
+        namespace = %namespace,
+        has_cluster = cluster.is_some(),
+        "Building Deployment for Bind9Instance"
+    );
+
+    // Build labels, checking if instance is managed by a cluster
+    let labels = build_labels_from_instance(name, instance);
+    let replicas = instance.spec.replicas.unwrap_or(1);
+    debug!(replicas, "Deployment replica count");
+
+    let config = resolve_deployment_config(name, instance, cluster);
+
+    let owner_refs = build_owner_references(instance);
+
     Deployment {
         metadata: ObjectMeta {
             name: Some(name.into()),
             namespace: Some(namespace.into()),
             labels: Some(labels.clone()),
+            owner_references: Some(owner_refs),
             ..Default::default()
         },
         spec: Some(DeploymentSpec {
@@ -353,12 +805,13 @@ pub fn build_deployment(
                     ..Default::default()
                 }),
                 spec: Some(build_pod_spec(
-                    name,
-                    version,
-                    image_config,
-                    config_map_refs,
-                    volumes,
-                    volume_mounts,
+                    &config.configmap_name,
+                    &format!("{name}-rndc-key"),
+                    config.version,
+                    config.image_config,
+                    config.config_map_refs,
+                    config.volumes,
+                    config.volume_mounts,
                 )),
             },
             ..Default::default()
@@ -368,8 +821,18 @@ pub fn build_deployment(
 }
 
 /// Build the `PodSpec` for BIND9
+///
+/// # Arguments
+///
+/// * `configmap_name` - Name of the `ConfigMap` to mount (can be instance or cluster `ConfigMap`)
+/// * `version` - BIND9 version
+/// * `image_config` - Optional custom image configuration
+/// * `config_map_refs` - Optional custom `ConfigMap` references
+/// * `custom_volumes` - Optional additional volumes to mount
+/// * `custom_volume_mounts` - Optional additional volume mounts
 fn build_pod_spec(
-    instance_name: &str,
+    configmap_name: &str,
+    rndc_secret_name: &str,
     version: &str,
     image_config: Option<&ImageConfig>,
     config_map_refs: Option<&ConfigMapRefs>,
@@ -399,25 +862,25 @@ fn build_pod_spec(
         command: Some(vec!["named".into()]),
         args: Some(vec![
             "-c".into(),
-            "/etc/bind/named.conf".into(),
+            BIND_NAMED_CONF_PATH.into(),
             "-g".into(), // Run in foreground (required for containers)
         ]),
         ports: Some(vec![
             ContainerPort {
                 name: Some("dns-tcp".into()),
-                container_port: 53,
+                container_port: i32::from(DNS_PORT),
                 protocol: Some("TCP".into()),
                 ..Default::default()
             },
             ContainerPort {
                 name: Some("dns-udp".into()),
-                container_port: 53,
+                container_port: i32::from(DNS_PORT),
                 protocol: Some("UDP".into()),
                 ..Default::default()
             },
             ContainerPort {
                 name: Some("rndc".into()),
-                container_port: 953,
+                container_port: i32::from(RNDC_PORT),
                 protocol: Some("TCP".into()),
                 ..Default::default()
             },
@@ -430,24 +893,24 @@ fn build_pod_spec(
         volume_mounts: Some(build_volume_mounts(config_map_refs, custom_volume_mounts)),
         liveness_probe: Some(Probe {
             tcp_socket: Some(TCPSocketAction {
-                port: IntOrString::Int(53),
+                port: IntOrString::Int(i32::from(DNS_PORT)),
                 ..Default::default()
             }),
-            initial_delay_seconds: Some(30),
-            period_seconds: Some(10),
-            timeout_seconds: Some(5),
-            failure_threshold: Some(3),
+            initial_delay_seconds: Some(LIVENESS_INITIAL_DELAY_SECS),
+            period_seconds: Some(LIVENESS_PERIOD_SECS),
+            timeout_seconds: Some(LIVENESS_TIMEOUT_SECS),
+            failure_threshold: Some(LIVENESS_FAILURE_THRESHOLD),
             ..Default::default()
         }),
         readiness_probe: Some(Probe {
             tcp_socket: Some(TCPSocketAction {
-                port: IntOrString::Int(53),
+                port: IntOrString::Int(i32::from(DNS_PORT)),
                 ..Default::default()
             }),
-            initial_delay_seconds: Some(10),
-            period_seconds: Some(5),
-            timeout_seconds: Some(3),
-            failure_threshold: Some(3),
+            initial_delay_seconds: Some(READINESS_INITIAL_DELAY_SECS),
+            period_seconds: Some(READINESS_PERIOD_SECS),
+            timeout_seconds: Some(READINESS_TIMEOUT_SECS),
+            failure_threshold: Some(READINESS_FAILURE_THRESHOLD),
             ..Default::default()
         }),
         ..Default::default()
@@ -458,9 +921,7 @@ fn build_pod_spec(
         cfg.image_pull_secrets.as_ref().map(|secrets| {
             secrets
                 .iter()
-                .map(|s| k8s_openapi::api::core::v1::LocalObjectReference {
-                    name: Some(s.clone()),
-                })
+                .map(|s| k8s_openapi::api::core::v1::LocalObjectReference { name: s.clone() })
                 .collect()
         })
     });
@@ -468,7 +929,8 @@ fn build_pod_spec(
     PodSpec {
         containers: vec![bind9_container],
         volumes: Some(build_volumes(
-            instance_name,
+            configmap_name,
+            rndc_secret_name,
             config_map_refs,
             custom_volumes,
         )),
@@ -500,13 +962,19 @@ fn build_volume_mounts(
 ) -> Vec<VolumeMount> {
     let mut mounts = vec![
         VolumeMount {
-            name: "zones".into(),
-            mount_path: "/etc/bind/zones".into(),
+            name: VOLUME_ZONES.into(),
+            mount_path: BIND_ZONES_PATH.into(),
             ..Default::default()
         },
         VolumeMount {
-            name: "cache".into(),
-            mount_path: "/var/cache/bind".into(),
+            name: VOLUME_CACHE.into(),
+            mount_path: BIND_CACHE_PATH.into(),
+            ..Default::default()
+        },
+        VolumeMount {
+            name: VOLUME_RNDC_KEY.into(),
+            mount_path: BIND_KEYS_PATH.into(),
+            read_only: Some(true),
             ..Default::default()
         },
     ];
@@ -515,34 +983,34 @@ fn build_volume_mounts(
     if let Some(refs) = config_map_refs {
         if let Some(_configmap_name) = &refs.named_conf {
             mounts.push(VolumeMount {
-                name: "named-conf".into(),
-                mount_path: "/etc/bind/named.conf".into(),
-                sub_path: Some("named.conf".into()),
+                name: VOLUME_NAMED_CONF.into(),
+                mount_path: BIND_NAMED_CONF_PATH.into(),
+                sub_path: Some(NAMED_CONF_FILENAME.into()),
                 ..Default::default()
             });
         } else {
             // Use default generated ConfigMap
             mounts.push(VolumeMount {
-                name: "config".into(),
-                mount_path: "/etc/bind/named.conf".into(),
-                sub_path: Some("named.conf".into()),
+                name: VOLUME_CONFIG.into(),
+                mount_path: BIND_NAMED_CONF_PATH.into(),
+                sub_path: Some(NAMED_CONF_FILENAME.into()),
                 ..Default::default()
             });
         }
 
         if let Some(_configmap_name) = &refs.named_conf_options {
             mounts.push(VolumeMount {
-                name: "named-conf-options".into(),
-                mount_path: "/etc/bind/named.conf.options".into(),
-                sub_path: Some("named.conf.options".into()),
+                name: VOLUME_NAMED_CONF_OPTIONS.into(),
+                mount_path: BIND_NAMED_CONF_OPTIONS_PATH.into(),
+                sub_path: Some(NAMED_CONF_OPTIONS_FILENAME.into()),
                 ..Default::default()
             });
         } else {
             // Use default generated ConfigMap
             mounts.push(VolumeMount {
-                name: "config".into(),
-                mount_path: "/etc/bind/named.conf.options".into(),
-                sub_path: Some("named.conf.options".into()),
+                name: VOLUME_CONFIG.into(),
+                mount_path: BIND_NAMED_CONF_OPTIONS_PATH.into(),
+                sub_path: Some(NAMED_CONF_OPTIONS_FILENAME.into()),
                 ..Default::default()
             });
         }
@@ -550,9 +1018,9 @@ fn build_volume_mounts(
         // Add zones file mount only if user provided a ConfigMap
         if let Some(_configmap_name) = &refs.named_conf_zones {
             mounts.push(VolumeMount {
-                name: "named-conf-zones".into(),
-                mount_path: "/etc/bind/named.conf.zones".into(),
-                sub_path: Some("named.conf.zones".into()),
+                name: VOLUME_NAMED_CONF_ZONES.into(),
+                mount_path: BIND_NAMED_CONF_ZONES_PATH.into(),
+                sub_path: Some(NAMED_CONF_ZONES_FILENAME.into()),
                 ..Default::default()
             });
         }
@@ -560,19 +1028,27 @@ fn build_volume_mounts(
     } else {
         // No custom ConfigMaps, use default
         mounts.push(VolumeMount {
-            name: "config".into(),
-            mount_path: "/etc/bind/named.conf".into(),
-            sub_path: Some("named.conf".into()),
+            name: VOLUME_CONFIG.into(),
+            mount_path: BIND_NAMED_CONF_PATH.into(),
+            sub_path: Some(NAMED_CONF_FILENAME.into()),
             ..Default::default()
         });
         mounts.push(VolumeMount {
-            name: "config".into(),
-            mount_path: "/etc/bind/named.conf.options".into(),
-            sub_path: Some("named.conf.options".into()),
+            name: VOLUME_CONFIG.into(),
+            mount_path: BIND_NAMED_CONF_OPTIONS_PATH.into(),
+            sub_path: Some(NAMED_CONF_OPTIONS_FILENAME.into()),
             ..Default::default()
         });
         // Note: No zones mount - users must explicitly provide namedConfZones ConfigMap
     }
+
+    // Always add rndc.conf mount from default ConfigMap (contains rndc.conf)
+    mounts.push(VolumeMount {
+        name: VOLUME_CONFIG.into(),
+        mount_path: BIND_RNDC_CONF_PATH.into(),
+        sub_path: Some(RNDC_CONF_FILENAME.into()),
+        ..Default::default()
+    });
 
     // Append custom volume mounts from cluster/instance
     if let Some(custom_mounts) = custom_volume_mounts {
@@ -585,9 +1061,9 @@ fn build_volume_mounts(
 /// Build volumes for the BIND9 pod
 ///
 /// Creates volumes for:
-/// - `zones` - `EmptyDir` for zone files
-/// - `cache` - `EmptyDir` for BIND9 cache
-/// - `ConfigMap` volumes (custom or default generated)
+/// - `zones` (`EmptyDir`) - Zone files storage
+/// - `cache` (`EmptyDir`) - BIND9 cache
+/// - `ConfigMap` volumes (custom or default generated - can be instance or cluster `ConfigMap`)
 ///
 /// If custom `ConfigMaps` are specified via `config_map_refs`, individual volumes are created
 /// for each custom `ConfigMap`. If `namedConfZones` is not specified, no zones `ConfigMap` volume
@@ -595,7 +1071,7 @@ fn build_volume_mounts(
 ///
 /// # Arguments
 ///
-/// * `instance_name` - Name of the instance (used for default `ConfigMap` name)
+/// * `configmap_name` - Name of the `ConfigMap` to mount (instance or cluster `ConfigMap`)
 /// * `config_map_refs` - Optional references to custom `ConfigMaps`
 /// * `custom_volumes` - Optional additional volumes from instance/cluster spec
 ///
@@ -603,19 +1079,28 @@ fn build_volume_mounts(
 ///
 /// A vector of `Volume` objects for the pod spec
 fn build_volumes(
-    instance_name: &str,
+    configmap_name: &str,
+    rndc_secret_name: &str,
     config_map_refs: Option<&ConfigMapRefs>,
     custom_volumes: Option<&Vec<Volume>>,
 ) -> Vec<Volume> {
     let mut volumes = vec![
         Volume {
-            name: "zones".into(),
+            name: VOLUME_ZONES.into(),
             empty_dir: Some(k8s_openapi::api::core::v1::EmptyDirVolumeSource::default()),
             ..Default::default()
         },
         Volume {
-            name: "cache".into(),
+            name: VOLUME_CACHE.into(),
             empty_dir: Some(k8s_openapi::api::core::v1::EmptyDirVolumeSource::default()),
+            ..Default::default()
+        },
+        Volume {
+            name: VOLUME_RNDC_KEY.into(),
+            secret: Some(k8s_openapi::api::core::v1::SecretVolumeSource {
+                secret_name: Some(rndc_secret_name.to_string()),
+                ..Default::default()
+            }),
             ..Default::default()
         },
     ];
@@ -624,9 +1109,9 @@ fn build_volumes(
     if let Some(refs) = config_map_refs {
         if let Some(configmap_name) = &refs.named_conf {
             volumes.push(Volume {
-                name: "named-conf".into(),
+                name: VOLUME_NAMED_CONF.into(),
                 config_map: Some(k8s_openapi::api::core::v1::ConfigMapVolumeSource {
-                    name: Some(configmap_name.clone()),
+                    name: configmap_name.clone(),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -635,9 +1120,9 @@ fn build_volumes(
 
         if let Some(configmap_name) = &refs.named_conf_options {
             volumes.push(Volume {
-                name: "named-conf-options".into(),
+                name: VOLUME_NAMED_CONF_OPTIONS.into(),
                 config_map: Some(k8s_openapi::api::core::v1::ConfigMapVolumeSource {
-                    name: Some(configmap_name.clone()),
+                    name: configmap_name.clone(),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -646,9 +1131,9 @@ fn build_volumes(
 
         if let Some(configmap_name) = &refs.named_conf_zones {
             volumes.push(Volume {
-                name: "named-conf-zones".into(),
+                name: VOLUME_NAMED_CONF_ZONES.into(),
                 config_map: Some(k8s_openapi::api::core::v1::ConfigMapVolumeSource {
-                    name: Some(configmap_name.clone()),
+                    name: configmap_name.clone(),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -659,20 +1144,20 @@ fn build_volumes(
         // This ensures volume mounts have a corresponding volume
         if refs.named_conf.is_none() || refs.named_conf_options.is_none() {
             volumes.push(Volume {
-                name: "config".into(),
+                name: VOLUME_CONFIG.into(),
                 config_map: Some(k8s_openapi::api::core::v1::ConfigMapVolumeSource {
-                    name: Some(format!("{instance_name}-config")),
+                    name: configmap_name.to_string(),
                     ..Default::default()
                 }),
                 ..Default::default()
             });
         }
     } else {
-        // No custom ConfigMaps, use default generated one
+        // No custom ConfigMaps, use default generated one (cluster or instance ConfigMap)
         volumes.push(Volume {
-            name: "config".into(),
+            name: VOLUME_CONFIG.into(),
             config_map: Some(k8s_openapi::api::core::v1::ConfigMapVolumeSource {
-                name: Some(format!("{instance_name}-config")),
+                name: configmap_name.to_string(),
                 ..Default::default()
             }),
             ..Default::default()
@@ -706,8 +1191,15 @@ fn build_volumes(
 ///
 /// A Kubernetes Service resource ready for creation/update
 #[must_use]
-pub fn build_service(name: &str, namespace: &str, custom_spec: Option<&ServiceSpec>) -> Service {
-    let labels = build_labels(name);
+pub fn build_service(
+    name: &str,
+    namespace: &str,
+    instance: &Bind9Instance,
+    custom_spec: Option<&ServiceSpec>,
+) -> Service {
+    // Build labels, checking if instance is managed by a cluster
+    let labels = build_labels_from_instance(name, instance);
+    let owner_refs = build_owner_references(instance);
 
     // Build default service spec
     let mut default_spec = ServiceSpec {
@@ -715,16 +1207,23 @@ pub fn build_service(name: &str, namespace: &str, custom_spec: Option<&ServiceSp
         ports: Some(vec![
             ServicePort {
                 name: Some("dns-tcp".into()),
-                port: 53,
-                target_port: Some(IntOrString::Int(53)),
+                port: i32::from(DNS_PORT),
+                target_port: Some(IntOrString::Int(i32::from(DNS_PORT))),
                 protocol: Some("TCP".into()),
                 ..Default::default()
             },
             ServicePort {
                 name: Some("dns-udp".into()),
-                port: 53,
-                target_port: Some(IntOrString::Int(53)),
+                port: i32::from(DNS_PORT),
+                target_port: Some(IntOrString::Int(i32::from(DNS_PORT))),
                 protocol: Some("UDP".into()),
+                ..Default::default()
+            },
+            ServicePort {
+                name: Some("rndc".into()),
+                port: i32::from(RNDC_PORT),
+                target_port: Some(IntOrString::Int(i32::from(RNDC_PORT))),
+                protocol: Some("TCP".into()),
                 ..Default::default()
             },
         ]),
@@ -742,6 +1241,7 @@ pub fn build_service(name: &str, namespace: &str, custom_spec: Option<&ServiceSp
             name: Some(name.into()),
             namespace: Some(namespace.into()),
             labels: Some(labels),
+            owner_references: Some(owner_refs),
             ..Default::default()
         },
         spec: Some(default_spec),

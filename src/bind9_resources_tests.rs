@@ -5,10 +5,15 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::bind9_resources::{build_configmap, build_deployment, build_labels, build_service};
+    use crate::bind9_resources::{
+        build_configmap, build_deployment, build_labels, build_labels_from_instance, build_service,
+    };
+    use crate::constants::KIND_BIND9_CLUSTER;
     use crate::crd::{Bind9Config, Bind9Instance, Bind9InstanceSpec, DNSSECConfig};
+    use crate::labels::BINDY_MANAGED_BY_LABEL;
     use k8s_openapi::api::core::v1::ServiceSpec;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+    use std::collections::BTreeMap;
 
     fn create_test_instance(name: &str) -> Bind9Instance {
         Bind9Instance {
@@ -29,16 +34,17 @@ mod tests {
                     allow_query: Some(vec!["0.0.0.0/0".into()]),
                     allow_transfer: Some(vec!["10.0.0.0/8".into()]),
                     dnssec: Some(DNSSECConfig {
-                        enabled: Some(true),
                         validation: Some(true),
                     }),
                     forwarders: None,
                     listen_on: None,
                     listen_on_v6: None,
+                    rndc_secret_ref: None,
                 }),
                 primary_servers: None,
                 volumes: None,
                 volume_mounts: None,
+                rndc_secret_ref: None,
             },
             status: None,
         }
@@ -50,7 +56,93 @@ mod tests {
         assert_eq!(labels.get("app").unwrap(), "bind9");
         assert_eq!(labels.get("instance").unwrap(), "test-instance");
         assert_eq!(labels.get("app.kubernetes.io/name").unwrap(), "bind9");
-        assert_eq!(labels.get("app.kubernetes.io/managed-by").unwrap(), "bindy");
+        assert_eq!(
+            labels.get("app.kubernetes.io/managed-by").unwrap(),
+            "Bind9Instance"
+        );
+        assert_eq!(labels.get("app.kubernetes.io/part-of").unwrap(), "bindy");
+    }
+
+    #[test]
+    fn test_build_labels_from_instance_standalone() {
+        // Test standalone instance (no managed-by label)
+        let instance = create_test_instance("test-instance");
+        let labels = build_labels_from_instance("test-instance", &instance);
+
+        assert_eq!(labels.get("app").unwrap(), "bind9");
+        assert_eq!(labels.get("instance").unwrap(), "test-instance");
+        assert_eq!(labels.get("app.kubernetes.io/name").unwrap(), "bind9");
+        assert_eq!(
+            labels.get("app.kubernetes.io/managed-by").unwrap(),
+            "Bind9Instance"
+        );
+        assert_eq!(labels.get("app.kubernetes.io/part-of").unwrap(), "bindy");
+    }
+
+    #[test]
+    fn test_build_labels_from_instance_cluster_managed() {
+        // Test instance managed by a cluster
+        let mut instance = create_test_instance("test-instance");
+        let mut instance_labels = BTreeMap::new();
+        instance_labels.insert(
+            BINDY_MANAGED_BY_LABEL.to_string(),
+            KIND_BIND9_CLUSTER.to_string(),
+        );
+        instance.metadata.labels = Some(instance_labels);
+
+        let labels = build_labels_from_instance("test-instance", &instance);
+
+        assert_eq!(labels.get("app").unwrap(), "bind9");
+        assert_eq!(labels.get("instance").unwrap(), "test-instance");
+        assert_eq!(labels.get("app.kubernetes.io/name").unwrap(), "bind9");
+        // IMPORTANT: Should propagate Bind9Cluster from instance labels
+        assert_eq!(
+            labels.get("app.kubernetes.io/managed-by").unwrap(),
+            KIND_BIND9_CLUSTER
+        );
+        assert_eq!(labels.get("app.kubernetes.io/part-of").unwrap(), "bindy");
+    }
+
+    #[test]
+    fn test_build_deployment_propagates_managed_by_label() {
+        // Test that deployment propagates managed-by label from cluster-managed instance
+        let mut instance = create_test_instance("test-instance");
+        let mut instance_labels = BTreeMap::new();
+        instance_labels.insert(
+            BINDY_MANAGED_BY_LABEL.to_string(),
+            KIND_BIND9_CLUSTER.to_string(),
+        );
+        instance.metadata.labels = Some(instance_labels);
+
+        let deployment = build_deployment("test-instance", "test-ns", &instance, None);
+
+        let labels = deployment.metadata.labels.as_ref().unwrap();
+        assert_eq!(
+            labels.get("app.kubernetes.io/managed-by").unwrap(),
+            KIND_BIND9_CLUSTER,
+            "Deployment should propagate managed-by label from instance"
+        );
+    }
+
+    #[test]
+    fn test_build_service_propagates_managed_by_label() {
+        // Test that service propagates managed-by label from cluster-managed instance
+        let mut instance = create_test_instance("test-instance");
+        let mut instance_labels = BTreeMap::new();
+        instance_labels.insert(
+            BINDY_MANAGED_BY_LABEL.to_string(),
+            KIND_BIND9_CLUSTER.to_string(),
+        );
+        instance.metadata.labels = Some(instance_labels);
+
+        let service = build_service("test-instance", "test-ns", &instance, None);
+
+        let labels = service.metadata.labels.as_ref().unwrap();
+        assert_eq!(
+            labels.get("app.kubernetes.io/managed-by").unwrap(),
+            KIND_BIND9_CLUSTER,
+            "Service should propagate managed-by label from instance"
+        );
     }
 
     #[test]
@@ -104,7 +196,8 @@ mod tests {
 
     #[test]
     fn test_build_service() {
-        let service = build_service("test", "test-ns", None);
+        let instance = create_test_instance("test");
+        let service = build_service("test", "test-ns", &instance, None);
 
         assert_eq!(service.metadata.name.as_deref(), Some("test"));
         assert_eq!(service.metadata.namespace.as_deref(), Some("test-ns"));
@@ -113,9 +206,10 @@ mod tests {
         assert_eq!(spec.type_.as_deref(), Some("ClusterIP"));
 
         let ports = spec.ports.unwrap();
-        assert_eq!(ports.len(), 2);
-        assert_eq!(ports[0].port, 53);
-        assert_eq!(ports[1].port, 53);
+        assert_eq!(ports.len(), 3);
+        assert_eq!(ports[0].port, 53); // dns-tcp
+        assert_eq!(ports[1].port, 53); // dns-udp
+        assert_eq!(ports[2].port, 953); // rndc
     }
 
     #[test]
@@ -126,22 +220,24 @@ mod tests {
 
         // Verify volumes
         let volumes = pod_spec.volumes.unwrap();
-        assert_eq!(volumes.len(), 3);
-        // Order: zones, cache, config (from build_volumes function)
+        assert_eq!(volumes.len(), 4);
+        // Order: zones, cache, rndc-key, config (from build_volumes function)
         assert_eq!(volumes[0].name, "zones");
         assert_eq!(volumes[1].name, "cache");
-        assert_eq!(volumes[2].name, "config");
+        assert_eq!(volumes[2].name, "rndc-key");
+        assert_eq!(volumes[3].name, "config");
 
         // Verify container configuration
         let container = &pod_spec.containers[0];
         assert_eq!(container.name, "bind9");
 
-        // Verify volume mounts (no zones mount unless user provides ConfigMap)
+        // Verify volume mounts
         let mounts = container.volume_mounts.as_ref().unwrap();
-        assert_eq!(mounts.len(), 4); // zones, cache, named.conf, named.conf.options
+        assert_eq!(mounts.len(), 6); // zones, cache, rndc-key, named.conf, named.conf.options, rndc.conf
         assert!(mounts.iter().any(|m| m.name == "config"));
         assert!(mounts.iter().any(|m| m.name == "zones"));
         assert!(mounts.iter().any(|m| m.name == "cache"));
+        assert!(mounts.iter().any(|m| m.name == "rndc-key"));
 
         // Verify probes
         assert!(container.liveness_probe.is_some());
@@ -176,11 +272,13 @@ mod tests {
 
     #[test]
     fn test_build_service_ports() {
-        let service = build_service("test", "test-ns", None);
+        let instance = create_test_instance("test");
+
+        let service = build_service("test", "test-ns", &instance, None);
         let spec = service.spec.unwrap();
         let ports = spec.ports.unwrap();
 
-        assert_eq!(ports.len(), 2);
+        assert_eq!(ports.len(), 3);
 
         // Check TCP port
         let tcp_port = ports
@@ -197,6 +295,14 @@ mod tests {
             .unwrap();
         assert_eq!(udp_port.port, 53);
         assert_eq!(udp_port.protocol.as_deref(), Some("UDP"));
+
+        // Check RNDC port
+        let rndc_port = ports
+            .iter()
+            .find(|p| p.name.as_deref() == Some("rndc"))
+            .unwrap();
+        assert_eq!(rndc_port.port, 953);
+        assert_eq!(rndc_port.protocol.as_deref(), Some("TCP"));
     }
 
     #[test]
@@ -251,7 +357,9 @@ mod tests {
 
     #[test]
     fn test_service_selector_matches_deployment() {
-        let service = build_service("test", "test-ns", None);
+        let instance = create_test_instance("test");
+
+        let service = build_service("test", "test-ns", &instance, None);
         let deployment_labels = build_labels("test");
 
         let svc_selector = service.spec.unwrap().selector.unwrap();
@@ -372,48 +480,44 @@ mod tests {
     }
 
     #[test]
-    fn test_configmap_with_dnssec_disabled() {
+    fn test_configmap_with_dnssec_validation_disabled() {
         let mut instance = create_test_instance("test");
         instance.spec.config.as_mut().unwrap().dnssec = Some(DNSSECConfig {
-            enabled: Some(false),
             validation: Some(false),
         });
 
         let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
-        // Should not contain DNSSEC directives when disabled
+        // Should contain dnssec-validation no when disabled
+        assert!(options.contains("dnssec-validation no"));
         assert!(!options.contains("dnssec-validation yes"));
     }
 
     #[test]
-    fn test_configmap_with_dnssec_enabled_but_no_validation() {
+    fn test_configmap_with_dnssec_validation_enabled() {
         let mut instance = create_test_instance("test");
         instance.spec.config.as_mut().unwrap().dnssec = Some(DNSSECConfig {
-            enabled: Some(true),
-            validation: Some(false),
-        });
-
-        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
-        let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
-
-        // Note: dnssec-enable removed in BIND 9.15+, DNSSEC is always enabled
-        assert!(!options.contains("dnssec-validation yes"));
-    }
-
-    #[test]
-    fn test_configmap_with_dnssec_validation_but_not_enabled() {
-        let mut instance = create_test_instance("test");
-        instance.spec.config.as_mut().unwrap().dnssec = Some(DNSSECConfig {
-            enabled: Some(false),
             validation: Some(true),
         });
 
         let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
-        // Note: dnssec-enable removed in BIND 9.15+, DNSSEC is always enabled
+        // DNSSEC is always enabled in BIND 9.15+, only validation can be configured
         assert!(options.contains("dnssec-validation yes"));
+    }
+
+    #[test]
+    fn test_configmap_without_dnssec_config() {
+        let mut instance = create_test_instance("test");
+        instance.spec.config.as_mut().unwrap().dnssec = None;
+
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
+        let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
+
+        // Default behavior when no DNSSEC config is provided
+        assert!(!options.contains("dnssec-validation yes"));
     }
 
     #[test]
@@ -453,8 +557,8 @@ mod tests {
 
         let secrets = pod_spec.image_pull_secrets.unwrap();
         assert_eq!(secrets.len(), 2);
-        assert_eq!(secrets[0].name.as_deref(), Some("secret1"));
-        assert_eq!(secrets[1].name.as_deref(), Some("secret2"));
+        assert_eq!(secrets[0].name.as_str(), "secret1");
+        assert_eq!(secrets[1].name.as_str(), "secret2");
     }
 
     #[test]
@@ -578,20 +682,29 @@ mod tests {
 
     #[test]
     fn test_service_has_correct_type() {
-        let service = build_service("test", "test-ns", None);
+        let instance = create_test_instance("test");
+
+        let service = build_service("test", "test-ns", &instance, None);
 
         assert_eq!(service.spec.unwrap().type_.as_deref(), Some("ClusterIP"));
     }
 
     #[test]
     fn test_service_port_target_ports() {
-        let service = build_service("test", "test-ns", None);
+        let instance = create_test_instance("test");
+
+        let service = build_service("test", "test-ns", &instance, None);
         let ports = service.spec.unwrap().ports.unwrap();
 
-        for port in ports {
+        for port in &ports {
+            let expected_port = if port.name.as_deref() == Some("rndc") {
+                953
+            } else {
+                53
+            };
             assert_eq!(
                 port.target_port,
-                Some(k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(53))
+                Some(k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(expected_port))
             );
         }
     }
@@ -647,7 +760,8 @@ mod tests {
 
     #[test]
     fn test_service_with_custom_namespace() {
-        let service = build_service("test", "custom-namespace", None);
+        let instance = create_test_instance("test");
+        let service = build_service("test", "custom-namespace", &instance, None);
 
         assert_eq!(
             service.metadata.namespace.as_deref(),
@@ -731,11 +845,12 @@ mod tests {
 
     #[test]
     fn test_build_service_with_nodeport_type() {
+        let instance = create_test_instance("test");
         let custom_spec = ServiceSpec {
             type_: Some("NodePort".into()),
             ..Default::default()
         };
-        let service = build_service("test", "test-ns", Some(&custom_spec));
+        let service = build_service("test", "test-ns", &instance, Some(&custom_spec));
 
         assert_eq!(service.metadata.name.as_deref(), Some("test"));
         assert_eq!(service.spec.unwrap().type_.as_deref(), Some("NodePort"));
@@ -743,12 +858,13 @@ mod tests {
 
     #[test]
     fn test_build_service_with_loadbalancer_type() {
+        let instance = create_test_instance("test");
         let custom_spec = ServiceSpec {
             type_: Some("LoadBalancer".into()),
             load_balancer_ip: Some("192.168.1.100".into()),
             ..Default::default()
         };
-        let service = build_service("test", "test-ns", Some(&custom_spec));
+        let service = build_service("test", "test-ns", &instance, Some(&custom_spec));
 
         let spec = service.spec.unwrap();
         assert_eq!(spec.type_.as_deref(), Some("LoadBalancer"));
@@ -757,11 +873,12 @@ mod tests {
 
     #[test]
     fn test_build_service_with_session_affinity() {
+        let instance = create_test_instance("test");
         let custom_spec = ServiceSpec {
             session_affinity: Some("ClientIP".into()),
             ..Default::default()
         };
-        let service = build_service("test", "test-ns", Some(&custom_spec));
+        let service = build_service("test", "test-ns", &instance, Some(&custom_spec));
 
         let spec = service.spec.unwrap();
         assert_eq!(spec.session_affinity.as_deref(), Some("ClientIP"));
@@ -771,12 +888,13 @@ mod tests {
 
     #[test]
     fn test_build_service_defaults_to_clusterip() {
-        let service_none = build_service("test", "test-ns", None);
+        let instance = create_test_instance("test");
+        let service_none = build_service("test", "test-ns", &instance, None);
         let custom_spec = ServiceSpec {
             type_: Some("ClusterIP".into()),
             ..Default::default()
         };
-        let service_clusterip = build_service("test", "test-ns", Some(&custom_spec));
+        let service_clusterip = build_service("test", "test-ns", &instance, Some(&custom_spec));
 
         assert_eq!(
             service_none.spec.as_ref().unwrap().type_,
@@ -786,17 +904,106 @@ mod tests {
 
     #[test]
     fn test_build_service_partial_spec_merge() {
+        let instance = create_test_instance("test");
         let custom_spec = ServiceSpec {
             type_: Some("NodePort".into()),
             external_traffic_policy: Some("Local".into()),
             ..Default::default()
         };
-        let service = build_service("test", "test-ns", Some(&custom_spec));
+        let service = build_service("test", "test-ns", &instance, Some(&custom_spec));
 
         let spec = service.spec.unwrap();
         assert_eq!(spec.type_.as_deref(), Some("NodePort"));
         assert_eq!(spec.external_traffic_policy.as_deref(), Some("Local"));
         // Ports should still be default (not affected by custom spec)
-        assert_eq!(spec.ports.as_ref().unwrap().len(), 2);
+        assert_eq!(spec.ports.as_ref().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn test_deployment_rndc_conf_volume_mount() {
+        let instance = create_test_instance("rndc-test");
+        let deployment = build_deployment("rndc-test", "test-ns", &instance, None);
+
+        let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
+        let container = &pod_spec.containers[0];
+        let mounts = container.volume_mounts.as_ref().unwrap();
+
+        // Verify rndc.conf is mounted from the config ConfigMap
+        let rndc_conf_mount = mounts
+            .iter()
+            .find(|m| m.mount_path == "/etc/bind/rndc.conf");
+        assert!(rndc_conf_mount.is_some(), "rndc.conf mount not found");
+
+        let mount = rndc_conf_mount.unwrap();
+        assert_eq!(mount.name, "config");
+        assert_eq!(mount.sub_path.as_deref(), Some("rndc.conf"));
+        assert_eq!(mount.mount_path, "/etc/bind/rndc.conf");
+    }
+
+    #[test]
+    fn test_configmap_contains_rndc_conf() {
+        let instance = create_test_instance("rndc-test");
+        let configmap = build_configmap("rndc-test", "test-ns", &instance, None, None);
+
+        assert!(configmap.is_some());
+        let cm = configmap.unwrap();
+        let data = cm.data.unwrap();
+
+        // Verify rndc.conf is present in ConfigMap
+        assert!(
+            data.contains_key("rndc.conf"),
+            "rndc.conf not found in ConfigMap"
+        );
+
+        // Verify rndc.conf content includes key file include
+        let rndc_conf = data.get("rndc.conf").unwrap();
+        assert!(
+            rndc_conf.contains("include \"/etc/bind/keys/rndc.key\""),
+            "rndc.conf should include the rndc.key file"
+        );
+    }
+
+    #[test]
+    fn test_rndc_key_volume_mount() {
+        let instance = create_test_instance("rndc-test");
+        let deployment = build_deployment("rndc-test", "test-ns", &instance, None);
+
+        let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
+        let container = &pod_spec.containers[0];
+        let mounts = container.volume_mounts.as_ref().unwrap();
+
+        // Verify rndc key directory is mounted from Secret
+        let rndc_key_mount = mounts.iter().find(|m| m.mount_path == "/etc/bind/keys");
+        assert!(rndc_key_mount.is_some(), "rndc key mount not found");
+
+        let mount = rndc_key_mount.unwrap();
+        assert_eq!(mount.name, "rndc-key");
+        assert_eq!(mount.mount_path, "/etc/bind/keys");
+        assert_eq!(mount.read_only, Some(true));
+    }
+
+    #[test]
+    fn test_rndc_key_volume_source() {
+        let instance = create_test_instance("rndc-test");
+        let deployment = build_deployment("rndc-test", "test-ns", &instance, None);
+
+        let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
+        let volumes = pod_spec.volumes.unwrap();
+
+        // Verify rndc-key volume is backed by a Secret
+        let rndc_key_volume = volumes.iter().find(|v| v.name == "rndc-key");
+        assert!(rndc_key_volume.is_some(), "rndc-key volume not found");
+
+        let volume = rndc_key_volume.unwrap();
+        assert!(
+            volume.secret.is_some(),
+            "rndc-key volume should be a Secret"
+        );
+
+        let secret_source = volume.secret.as_ref().unwrap();
+        assert_eq!(
+            secret_source.secret_name.as_deref(),
+            Some("rndc-test-rndc-key")
+        );
     }
 }

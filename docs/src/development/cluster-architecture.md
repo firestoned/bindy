@@ -43,56 +43,55 @@ DNS Records (A, AAAA, CNAME, MX, TXT, NS, SRV, CAA)
 │  - Manages BIND9 Deployments/Services/ConfigMaps           │
 │  - Updates zone files on PRIMARY instances only            │
 │  - Configures zone transfers for secondaries               │
-└────────────────────────────────────────────────────────────┘
-                          │
-                          │ manages
-                          ▼
+└──────────────────────┬─────────────────────────────────────┘
+                       │
+                       │ manages
+                       ▼
     ┌──────────────────────────────────────────────┐
     │         Bind9Cluster: production-dns         │
     │  - version: "9.18"                           │
     │  - TSIG keys for authenticated transfers     │
     │  - Shared ACLs                               │
-    └──────────────────────────────────────────────┘
-                │                 │
-        ┌───────┴────────┐       └────────┬────────────┐
-        │                │                 │            │
-        ▼                ▼                 ▼            ▼
-┌─────────────────┐  ┌─────────────────┐  ┌───────────────┐  ┌───────────────┐
-│ Bind9Instance   │  │ Bind9Instance   │  │ Bind9Instance │  │ Bind9Instance │
-│  primary-dns-1  │  │  primary-dns-2  │  │secondary-dns-1│  │secondary-dns-2│
-│  role: primary  │  │  role: primary  │  │role: secondary│  │role: secondary│
-│  replicas: 2    │  │  replicas: 2    │  │  replicas: 2  │  │  replicas: 2  │
-└─────────────────┘  └─────────────────┘  └───────────────┘  └───────────────┘
-        │                    │                     │                  │
-        ▼                    ▼                     │                  │
-┌─────────────┐      ┌─────────────┐              │                  │
-│   BIND9     │      │   BIND9     │              │                  │
-│   Pod(s)    │      │   Pod(s)    │              │                  │
-│             │      │             │              │                  │
-│ - Serves    │      │ - Serves    │              │                  │
-│   DNS       │      │   DNS       │              │                  │
-│ - Zone      │      │ - Zone      │              │                  │
-│   files     │      │   files     │              │                  │
-│   managed   │      │   managed   │              │                  │
-│   by        │      │   by        │              │                  │
-│   operator  │      │   operator  │              │                  │
-└─────────────┘      └─────────────┘              │                  │
-        │                    │                     │                  │
-        │                    │                     │                  │
-        └────────────────────┴─────────────────────┴──────────────────┘
-                             │
-                             │ AXFR/IXFR zone transfers
-                             │ (BIND9 native replication)
-                             ▼
-                   ┌─────────────┐      ┌─────────────┐
-                   │   BIND9     │      │   BIND9     │
-                   │   Pod(s)    │      │   Pod(s)    │
-                   │             │      │             │
-                   │ - Transfers │      │ - Transfers │
-                   │   zones     │      │   zones     │
-                   │   from      │      │   from      │
-                   │   primaries │      │   primaries │
-                   └─────────────┘      └─────────────┘
+    └─────────────┬────────────────────────────────┘
+                  │
+        ┌─────────┼─────────┐
+        │         │         │
+        ▼         ▼         ▼         ▼
+┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+│Bind9Instance│  │Bind9Instance│  │Bind9Instance│  │Bind9Instance│
+│primary-dns-1│  │primary-dns-2│  │secondary-1  │  │secondary-2  │
+│role: primary│  │role: primary│  │role: sec    │  │role: sec    │
+│replicas: 2  │  │replicas: 2  │  │replicas: 2  │  │replicas: 2  │
+└──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘
+       │                │                │                │
+       ▼                ▼                │                │
+┌─────────────┐  ┌─────────────┐        │                │
+│   BIND9     │  │   BIND9     │        │                │
+│   Pod(s)    │  │   Pod(s)    │        │                │
+│             │  │             │        │                │
+│ - Serves    │  │ - Serves    │        │                │
+│   DNS       │  │   DNS       │        │                │
+│ - Zone      │  │ - Zone      │        │                │
+│   files     │  │   files     │        │                │
+│   managed   │  │   managed   │        │                │
+│   by        │  │   by        │        │                │
+│   operator  │  │   operator  │        │                │
+└──────┬──────┘  └──────┬──────┘        │                │
+       │                │                │                │
+       └────────────────┴────────────────┴────────────────┘
+                        │
+                        │ AXFR/IXFR zone transfers
+                        │ (BIND9 native replication)
+                        ▼
+              ┌─────────────┐      ┌─────────────┐
+              │   BIND9     │      │   BIND9     │
+              │   Pod(s)    │      │   Pod(s)    │
+              │             │      │             │
+              │ - Transfers │      │ - Transfers │
+              │   zones     │      │   zones     │
+              │   from      │      │   from      │
+              │   primaries │      │   primaries │
+              └─────────────┘      └─────────────┘
 ```
 
 ## How It Works

@@ -3,6 +3,14 @@
 include "/etc/bind/named.conf.options";
 {{ZONES_INCLUDE}}
 
+// Include RNDC key files mounted from Secrets
+{{RNDC_KEY_INCLUDES}}
+
+// RNDC Controls - listen on all interfaces for Kubernetes network access
+controls {
+    inet * port 953 allow { any; } keys { {{RNDC_KEY_NAMES}}; };
+};
+
 logging {
     channel default_stderr {
         stderr;

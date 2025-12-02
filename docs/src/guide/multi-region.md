@@ -124,11 +124,11 @@ This zone will be deployed to all instances matching the selector (all productio
 - Zone transfers flow from primary to secondaries
 
 ```
- Region 1 (us-east-1)         Region 2 (us-west-2)        Region 3 (eu-west-1)
-┌─────────────────────┐      ┌─────────────────────┐     ┌─────────────────────┐
-│  Primary Instances  │──────│ Secondary Instances │─────│ Secondary Instances │
-│   (Master zones)    │      │  (Slave zones)      │     │  (Slave zones)      │
-└─────────────────────┘      └─────────────────────┘     └─────────────────────┘
+Region 1 (us-east-1)         Region 2 (us-west-2)         Region 3 (eu-west-1)
+┌─────────────────────┐      ┌─────────────────────┐      ┌─────────────────────┐
+│  Primary Instances  │─────▶│ Secondary Instances │─────▶│ Secondary Instances │
+│   (Master zones)    │      │  (Slave zones)      │      │  (Slave zones)      │
+└─────────────────────┘      └─────────────────────┘      └─────────────────────┘
 ```
 
 ### Option 2: Multi-Primary Model

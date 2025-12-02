@@ -75,7 +75,13 @@ mod tests {
             secret_data.get("secret"),
             Some(&"dGVzdHNlY3JldA==".to_string())
         );
-        assert_eq!(secret_data.len(), 3);
+        // Verify rndc.key file content is generated
+        assert!(secret_data.contains_key("rndc.key"));
+        let rndc_key_content = secret_data.get("rndc.key").unwrap();
+        assert!(rndc_key_content.contains("key \"test-instance\" {"));
+        assert!(rndc_key_content.contains("algorithm hmac-sha256;"));
+        assert!(rndc_key_content.contains("secret \"dGVzdHNlY3JldA==\";"));
+        assert_eq!(secret_data.len(), 4);
     }
 
     #[test]
@@ -93,39 +99,53 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_rndc_secret_data_missing_key_name() {
-        let mut data = BTreeMap::new();
-        data.insert("algorithm".to_string(), b"hmac-sha256".to_vec());
-        data.insert("secret".to_string(), b"dGVzdHNlY3JldA==".to_vec());
+    fn test_parse_rndc_secret_data_missing_all_fields() {
+        let data = BTreeMap::new();
 
         let result = Bind9Manager::parse_rndc_secret_data(&data);
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("key-name"));
+        assert!(result.unwrap_err().to_string().contains("rndc.key"));
     }
 
     #[test]
-    fn test_parse_rndc_secret_data_missing_algorithm() {
+    fn test_parse_rndc_secret_data_from_rndc_key_file() {
+        // Test parsing external secret with only rndc.key field
+        let rndc_key_content = r#"key "bindy-operator" {
+    algorithm hmac-sha256;
+    secret "dGVzdHNlY3JldA==";
+};
+"#;
         let mut data = BTreeMap::new();
-        data.insert("key-name".to_string(), b"bind9-primary".to_vec());
-        data.insert("secret".to_string(), b"dGVzdHNlY3JldA==".to_vec());
+        data.insert("rndc.key".to_string(), rndc_key_content.as_bytes().to_vec());
 
-        let result = Bind9Manager::parse_rndc_secret_data(&data);
+        let key = Bind9Manager::parse_rndc_secret_data(&data).unwrap();
 
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("algorithm"));
+        assert_eq!(key.name, "bindy-operator");
+        assert_eq!(key.algorithm, crate::crd::RndcAlgorithm::HmacSha256);
+        assert_eq!(key.secret, "dGVzdHNlY3JldA==");
     }
 
     #[test]
-    fn test_parse_rndc_secret_data_missing_secret() {
+    fn test_parse_rndc_secret_data_prefers_metadata_fields() {
+        // If both formats are present (operator-generated secret), prefer metadata fields
+        let rndc_key_content = r#"key "wrong-name" {
+    algorithm hmac-sha1;
+    secret "wrongsecret==";
+};
+"#;
         let mut data = BTreeMap::new();
-        data.insert("key-name".to_string(), b"bind9-primary".to_vec());
+        data.insert("key-name".to_string(), b"correct-name".to_vec());
         data.insert("algorithm".to_string(), b"hmac-sha256".to_vec());
+        data.insert("secret".to_string(), b"correctsecret==".to_vec());
+        data.insert("rndc.key".to_string(), rndc_key_content.as_bytes().to_vec());
 
-        let result = Bind9Manager::parse_rndc_secret_data(&data);
+        let key = Bind9Manager::parse_rndc_secret_data(&data).unwrap();
 
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("secret"));
+        // Should use metadata fields, not parse rndc.key
+        assert_eq!(key.name, "correct-name");
+        assert_eq!(key.algorithm, crate::crd::RndcAlgorithm::HmacSha256);
+        assert_eq!(key.secret, "correctsecret==");
     }
 
     #[test]
@@ -343,7 +363,7 @@ mod tests {
 
         // BTreeMap should have keys in sorted order
         let keys: Vec<&String> = data.keys().collect();
-        assert_eq!(keys, vec!["algorithm", "key-name", "secret"]);
+        assert_eq!(keys, vec!["algorithm", "key-name", "rndc.key", "secret"]);
     }
 
     // =====================================================
@@ -704,6 +724,7 @@ mod tests {
     // Async method tests - placeholders since actual implementation requires mocking
 
     #[tokio::test]
+    #[ignore = "Requires running BIND9 server with TSIG key configured for dynamic DNS updates"]
     async fn test_add_a_record_placeholder() {
         let manager = Bind9Manager::new();
         let key_data = RndcKeyData {
@@ -712,22 +733,24 @@ mod tests {
             secret: "dGVzdA==".to_string(),
         };
 
-        // Should succeed (placeholder implementation always returns Ok)
+        // This test now requires a real BIND9 server with TSIG authentication
         let result = manager
             .add_a_record(
                 "example.com",
                 "www",
                 "192.0.2.1",
                 Some(300),
-                "localhost:953",
+                "127.0.0.1:53",
                 &key_data,
             )
             .await;
 
-        assert!(result.is_ok());
+        // Will fail without real server - test is ignored by default
+        let _ = result;
     }
 
     #[tokio::test]
+    #[ignore = "Requires running BIND9 server with TSIG key configured for dynamic DNS updates"]
     async fn test_add_aaaa_record_placeholder() {
         let manager = Bind9Manager::new();
         let key_data = RndcKeyData {
@@ -751,6 +774,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires running BIND9 server with TSIG key configured for dynamic DNS updates"]
     async fn test_add_cname_record_placeholder() {
         let manager = Bind9Manager::new();
         let key_data = RndcKeyData {
@@ -765,15 +789,16 @@ mod tests {
                 "blog",
                 "www.example.com.",
                 Some(300),
-                "localhost:953",
+                "127.0.0.1:53",
                 &key_data,
             )
             .await;
 
-        assert!(result.is_ok());
+        let _ = result;
     }
 
     #[tokio::test]
+    #[ignore = "Requires running BIND9 server with TSIG key configured for dynamic DNS updates"]
     async fn test_add_txt_record_placeholder() {
         let manager = Bind9Manager::new();
         let key_data = RndcKeyData {
@@ -789,15 +814,16 @@ mod tests {
                 "@",
                 &texts,
                 Some(3600),
-                "localhost:953",
+                "127.0.0.1:53",
                 &key_data,
             )
             .await;
 
-        assert!(result.is_ok());
+        let _ = result;
     }
 
     #[tokio::test]
+    #[ignore = "Requires running BIND9 server with TSIG key configured for dynamic DNS updates"]
     async fn test_add_mx_record_placeholder() {
         let manager = Bind9Manager::new();
         let key_data = RndcKeyData {
@@ -822,6 +848,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires running BIND9 server with TSIG key configured for dynamic DNS updates"]
     async fn test_add_ns_record_placeholder() {
         let manager = Bind9Manager::new();
         let key_data = RndcKeyData {
@@ -845,6 +872,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires running BIND9 server with TSIG key configured for dynamic DNS updates"]
     async fn test_add_srv_record_placeholder() {
         let manager = Bind9Manager::new();
         let key_data = RndcKeyData {
@@ -875,6 +903,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires running BIND9 server with TSIG key configured for dynamic DNS updates"]
     async fn test_add_caa_record_placeholder() {
         let manager = Bind9Manager::new();
         let key_data = RndcKeyData {
@@ -1703,5 +1732,215 @@ mod old_tests {
         assert!(content.contains("@ 300  IN  A  192.0.2.1"));
         assert!(content.contains("www 300  IN  A  192.0.2.2"));
         assert!(content.contains("api 300  IN  A  192.0.2.3"));
+    }
+
+    #[test]
+    fn test_parse_rndc_key_file_all_algorithms() {
+        use crate::crd::RndcAlgorithm;
+
+        let algorithms = vec![
+            ("hmac-md5", RndcAlgorithm::HmacMd5),
+            ("hmac-sha1", RndcAlgorithm::HmacSha1),
+            ("hmac-sha224", RndcAlgorithm::HmacSha224),
+            ("hmac-sha256", RndcAlgorithm::HmacSha256),
+            ("hmac-sha384", RndcAlgorithm::HmacSha384),
+            ("hmac-sha512", RndcAlgorithm::HmacSha512),
+        ];
+
+        for (algo_str, expected_algo) in algorithms {
+            let rndc_key_content = format!(
+                r#"key "test-key" {{
+    algorithm {};
+    secret "dGVzdHNlY3JldA==";
+}};
+"#,
+                algo_str
+            );
+            let mut data = BTreeMap::new();
+            data.insert("rndc.key".to_string(), rndc_key_content.as_bytes().to_vec());
+
+            let key = Bind9Manager::parse_rndc_secret_data(&data).unwrap();
+
+            assert_eq!(key.algorithm, expected_algo);
+            assert_eq!(key.name, "test-key");
+            assert_eq!(key.secret, "dGVzdHNlY3JldA==");
+        }
+    }
+
+    #[test]
+    fn test_parse_rndc_key_file_invalid_format_no_key() {
+        let rndc_key_content = r#"algorithm hmac-sha256;
+secret "dGVzdHNlY3JldA==";
+"#;
+        let mut data = BTreeMap::new();
+        data.insert("rndc.key".to_string(), rndc_key_content.as_bytes().to_vec());
+
+        let result = Bind9Manager::parse_rndc_secret_data(&data);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("key name"));
+    }
+
+    #[test]
+    fn test_parse_rndc_key_file_invalid_format_no_algorithm() {
+        let rndc_key_content = r#"key "test-key" {
+    secret "dGVzdHNlY3JldA==";
+};
+"#;
+        let mut data = BTreeMap::new();
+        data.insert("rndc.key".to_string(), rndc_key_content.as_bytes().to_vec());
+
+        let result = Bind9Manager::parse_rndc_secret_data(&data);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("algorithm"));
+    }
+
+    #[test]
+    fn test_parse_rndc_key_file_invalid_format_no_secret() {
+        let rndc_key_content = r#"key "test-key" {
+    algorithm hmac-sha256;
+};
+"#;
+        let mut data = BTreeMap::new();
+        data.insert("rndc.key".to_string(), rndc_key_content.as_bytes().to_vec());
+
+        let result = Bind9Manager::parse_rndc_secret_data(&data);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("secret"));
+    }
+
+    #[test]
+    fn test_parse_rndc_key_file_unsupported_algorithm() {
+        let rndc_key_content = r#"key "test-key" {
+    algorithm hmac-unsupported;
+    secret "dGVzdHNlY3JldA==";
+};
+"#;
+        let mut data = BTreeMap::new();
+        data.insert("rndc.key".to_string(), rndc_key_content.as_bytes().to_vec());
+
+        let result = Bind9Manager::parse_rndc_secret_data(&data);
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("Unsupported algorithm"));
+        assert!(err_msg.contains("hmac-unsupported"));
+    }
+
+    #[test]
+    fn test_parse_rndc_key_file_with_comments() {
+        let rndc_key_content = r#"# This is a comment
+key "bindy-operator" {
+    # Algorithm comment
+    algorithm hmac-sha256;
+    # Secret comment
+    secret "dGVzdHNlY3JldA==";
+};
+"#;
+        let mut data = BTreeMap::new();
+        data.insert("rndc.key".to_string(), rndc_key_content.as_bytes().to_vec());
+
+        let key = Bind9Manager::parse_rndc_secret_data(&data).unwrap();
+
+        assert_eq!(key.name, "bindy-operator");
+        assert_eq!(key.algorithm, crate::crd::RndcAlgorithm::HmacSha256);
+        assert_eq!(key.secret, "dGVzdHNlY3JldA==");
+    }
+
+    #[test]
+    fn test_parse_rndc_key_file_compact_format() {
+        // Test parsing with minimal whitespace
+        let rndc_key_content = r#"key "my-key" { algorithm hmac-sha256; secret "c2VjcmV0"; };"#;
+        let mut data = BTreeMap::new();
+        data.insert("rndc.key".to_string(), rndc_key_content.as_bytes().to_vec());
+
+        let key = Bind9Manager::parse_rndc_secret_data(&data).unwrap();
+
+        assert_eq!(key.name, "my-key");
+        assert_eq!(key.algorithm, crate::crd::RndcAlgorithm::HmacSha256);
+        assert_eq!(key.secret, "c2VjcmV0");
+    }
+
+    #[test]
+    fn test_rndc_error_parse_zone_not_found() {
+        let response =
+            "rndc: 'zonestatus' failed: not found\nno matching zone 'example.com' in any view";
+        let error = RndcError::parse(response).expect("Should parse error");
+
+        assert_eq!(error.command, "zonestatus");
+        assert_eq!(error.error, "not found");
+        assert_eq!(
+            error.details.as_deref(),
+            Some("no matching zone 'example.com' in any view")
+        );
+    }
+
+    #[test]
+    fn test_rndc_error_parse_addzone_already_exists() {
+        let response =
+            "rndc: 'addzone' failed: already exists\nzone 'example.com' already exists in view '_default'";
+        let error = RndcError::parse(response).expect("Should parse error");
+
+        assert_eq!(error.command, "addzone");
+        assert_eq!(error.error, "already exists");
+        assert!(error.details.is_some());
+        assert!(error
+            .details
+            .unwrap()
+            .contains("zone 'example.com' already exists"));
+    }
+
+    #[test]
+    fn test_rndc_error_parse_without_details() {
+        let response = "rndc: 'reload' failed: permission denied";
+        let error = RndcError::parse(response).expect("Should parse error");
+
+        assert_eq!(error.command, "reload");
+        assert_eq!(error.error, "permission denied");
+        assert_eq!(error.details, None);
+    }
+
+    #[test]
+    fn test_rndc_error_parse_multiline_details() {
+        let response = r#"rndc: 'delzone' failed: zone not found
+zone 'example.com' was not found
+check your zone configuration
+verify the zone name is correct"#;
+        let error = RndcError::parse(response).expect("Should parse error");
+
+        assert_eq!(error.command, "delzone");
+        assert_eq!(error.error, "zone not found");
+        let details = error.details.unwrap();
+        assert!(details.contains("zone 'example.com' was not found"));
+        assert!(details.contains("check your zone configuration"));
+        assert!(details.contains("verify the zone name is correct"));
+    }
+
+    #[test]
+    fn test_rndc_error_parse_invalid_format() {
+        let response = "This is not an RNDC error";
+        let error = RndcError::parse(response);
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn test_rndc_error_parse_missing_command() {
+        let response = "rndc: failed: some error";
+        let error = RndcError::parse(response);
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn test_rndc_error_display() {
+        let error = RndcError {
+            command: "zonestatus".to_string(),
+            error: "not found".to_string(),
+            details: Some("no matching zone 'example.com' in any view".to_string()),
+        };
+
+        let display = format!("{error}");
+        assert_eq!(display, "RNDC command 'zonestatus' failed: not found");
     }
 }

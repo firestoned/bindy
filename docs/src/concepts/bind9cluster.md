@@ -21,7 +21,7 @@ metadata:
   namespace: dns-system
 spec:
   version: "9.18"
-  config:
+  global:
     recursion: false
     allowQuery:
       - "0.0.0.0/0"
@@ -59,7 +59,7 @@ status:
 - `spec.configMapRefs` - Custom ConfigMap references for BIND9 configuration
   - `namedConf` - Name of ConfigMap containing named.conf
   - `namedConfOptions` - Name of ConfigMap containing named.conf.options
-- `spec.config` - Shared BIND9 configuration
+- `spec.global` - Shared BIND9 configuration
   - `recursion` - Enable/disable recursion globally
   - `allowQuery` - List of CIDR ranges allowed to query
   - `allowTransfer` - List of CIDR ranges allowed zone transfers
@@ -67,6 +67,10 @@ status:
   - `forwarders` - DNS forwarders
   - `listenOn` - IPv4 addresses to listen on
   - `listenOnV6` - IPv6 addresses to listen on
+- `spec.primary` - Primary instance configuration
+  - `replicas` - Number of primary instances to create (managed instances)
+- `spec.secondary` - Secondary instance configuration
+  - `replicas` - Number of secondary instances to create (managed instances)
 - `spec.tsigKeys` - TSIG keys for authenticated zone transfers
   - `name` - Key name
   - `algorithm` - HMAC algorithm (hmac-sha256, hmac-sha512, etc.)
@@ -85,7 +89,7 @@ metadata:
   name: prod-cluster
 spec:
   version: "9.18"
-  config:
+  global:
     recursion: false
   acls:
     internal:
@@ -180,6 +184,237 @@ status:
   observedGeneration: 1
 ```
 
+## Managed Instances
+
+Bind9Cluster can automatically create and manage Bind9Instance resources based on the `spec.primary.replicas` and `spec.secondary.replicas` fields.
+
+### Automatic Scaling
+
+The operator automatically scales instances up and down based on the replica counts in the cluster spec:
+
+**Scale-Up**: When you increase replica counts, the operator creates missing instances
+**Scale-Down**: When you decrease replica counts, the operator deletes excess instances (highest-indexed first)
+
+When you specify replica counts in the cluster spec, the operator automatically creates the corresponding instances:
+
+```yaml
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
+metadata:
+  name: production-dns
+  namespace: dns-system
+spec:
+  version: "9.18"
+  primary:
+    replicas: 2  # Creates 2 primary instances
+  secondary:
+    replicas: 3  # Creates 3 secondary instances
+  global:
+    recursion: false
+    allowQuery:
+      - "0.0.0.0/0"
+```
+
+This cluster definition will automatically create 5 Bind9Instance resources:
+- `production-dns-primary-0`
+- `production-dns-primary-1`
+- `production-dns-secondary-0`
+- `production-dns-secondary-1`
+- `production-dns-secondary-2`
+
+### Management Labels
+
+All managed instances are labeled with:
+- `bindy.firestoned.io/managed-by: "Bind9Cluster"` - Identifies cluster-managed instances
+- `bindy.firestoned.io/cluster: "<cluster-name>"` - Links instance to parent cluster
+- `bindy.firestoned.io/role: "primary"|"secondary"` - Indicates instance role
+
+And annotated with:
+- `bindy.firestoned.io/instance-index: "<index>"` - Sequential index for the instance
+
+Example of a managed instance:
+
+```yaml
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: production-dns-primary-0
+  namespace: dns-system
+  labels:
+    bindy.firestoned.io/managed-by: "Bind9Cluster"
+    bindy.firestoned.io/cluster: "production-dns"
+    bindy.firestoned.io/role: "primary"
+  annotations:
+    bindy.firestoned.io/instance-index: "0"
+spec:
+  clusterRef: production-dns
+  role: Primary
+  replicas: 1
+  version: "9.18"
+  # Configuration inherited from cluster's spec.global
+```
+
+### Configuration Inheritance
+
+Managed instances automatically inherit configuration from the cluster:
+- BIND9 version (`spec.version`)
+- Container image (`spec.image`)
+- ConfigMap references (`spec.configMapRefs`)
+- Volumes and volume mounts
+- Global configuration (`spec.global`)
+
+### Self-Healing
+
+The Bind9Cluster controller provides comprehensive self-healing for managed instances:
+
+**Instance-Level Self-Healing:**
+- If a managed instance (Bind9Instance CRD) is deleted (manually or accidentally), the controller automatically recreates it during the next reconciliation cycle
+
+**Resource-Level Self-Healing:**
+- If any child resource is deleted, the controller automatically triggers recreation:
+  - **ConfigMap** - BIND9 configuration files
+  - **Secret** - RNDC key for remote control
+  - **Service** - DNS traffic routing (TCP/UDP port 53)
+  - **Deployment** - BIND9 pods
+
+This ensures complete desired state is maintained even if individual Kubernetes resources are manually deleted or corrupted.
+
+**Example self-healing scenario:**
+```bash
+# Manually delete a ConfigMap
+kubectl delete configmap production-dns-primary-0-config -n dns-system
+
+# During next reconciliation (~10 seconds), the controller:
+# 1. Detects missing ConfigMap
+# 2. Triggers Bind9Instance reconciliation
+# 3. Recreates ConfigMap with correct configuration
+# 4. BIND9 pod automatically remounts updated ConfigMap
+```
+
+**Example scaling scenario:**
+```bash
+# Initial cluster with 2 primary instances
+kubectl apply -f - <<EOF
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
+metadata:
+  name: production-dns
+  namespace: dns-system
+spec:
+  primary:
+    replicas: 2
+EOF
+
+# Controller creates: production-dns-primary-0, production-dns-primary-1
+
+# Scale up to 4 primaries
+kubectl patch bind9cluster production-dns -n dns-system --type=merge -p '{"spec":{"primary":{"replicas":4}}}'
+
+# Controller creates: production-dns-primary-2, production-dns-primary-3
+
+# Scale down to 3 primaries
+kubectl patch bind9cluster production-dns -n dns-system --type=merge -p '{"spec":{"primary":{"replicas":3}}}'
+
+# Controller deletes: production-dns-primary-3 (highest index first)
+```
+
+### Manual vs Managed Instances
+
+You can mix managed and manual instances:
+
+```yaml
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
+metadata:
+  name: mixed-cluster
+spec:
+  version: "9.18"
+  primary:
+    replicas: 2  # Managed instances
+  # No secondary replicas - create manually
+---
+# Manual instance with custom configuration
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: custom-secondary
+spec:
+  clusterRef: mixed-cluster
+  role: Secondary
+  replicas: 1
+  # Custom configuration overrides
+  config:
+    allowQuery:
+      - "192.168.1.0/24"
+```
+
+## Lifecycle Management
+
+### Cascade Deletion
+
+When a Bind9Cluster is deleted, the operator automatically deletes all instances that reference it via `spec.clusterRef`. This ensures clean removal of all cluster resources.
+
+**Finalizer:** `bindy.firestoned.io/bind9cluster-finalizer`
+
+The cluster resource uses a finalizer to ensure proper cleanup before deletion:
+
+```bash
+# Delete the cluster
+kubectl delete bind9cluster production-dns
+
+# The operator will:
+# 1. Detect deletion timestamp
+# 2. Find all instances with clusterRef: production-dns
+# 3. Delete each instance
+# 4. Remove finalizer
+# 5. Allow cluster deletion to complete
+```
+
+**Example deletion logs:**
+
+```
+INFO Deleting Bind9Cluster production-dns
+INFO Found 5 instances to delete
+INFO Deleted instance production-dns-primary-0
+INFO Deleted instance production-dns-primary-1
+INFO Deleted instance production-dns-secondary-0
+INFO Deleted instance production-dns-secondary-1
+INFO Deleted instance production-dns-secondary-2
+INFO Removed finalizer from cluster
+INFO Cluster deletion complete
+```
+
+### Important Warnings
+
+⚠️ **Deleting a Bind9Cluster will delete ALL instances that reference it**, including:
+- Managed instances (created by `spec.primary.replicas` and `spec.secondary.replicas`)
+- Manual instances (created separately but referencing the cluster via `spec.clusterRef`)
+
+To preserve instances during cluster deletion, remove the `spec.clusterRef` field from instances first:
+
+```bash
+# Remove clusterRef from an instance to preserve it
+kubectl patch bind9instance my-instance --type=json -p='[{"op": "remove", "path": "/spec/clusterRef"}]'
+
+# Now safe to delete the cluster without affecting this instance
+kubectl delete bind9cluster production-dns
+```
+
+### Troubleshooting Stuck Deletions
+
+If a cluster is stuck in `Terminating` state:
+
+```bash
+# Check for finalizers
+kubectl get bind9cluster production-dns -o jsonpath='{.metadata.finalizers}'
+
+# Check operator logs
+kubectl logs -n dns-system deployment/bindy -f
+
+# If operator is not running, manually remove finalizer (last resort)
+kubectl patch bind9cluster production-dns -p '{"metadata":{"finalizers":null}}' --type=merge
+```
+
 ## Use Cases
 
 ### Multi-Region DNS Cluster
@@ -191,7 +426,7 @@ metadata:
   name: global-dns
 spec:
   version: "9.18"
-  config:
+  global:
     recursion: false
     dnssec:
       enabled: true
@@ -219,7 +454,7 @@ metadata:
   namespace: dns-system
 spec:
   version: "9.18"
-  config:
+  global:
     recursion: true  # Allow recursion for dev
     allowQuery:
       - "0.0.0.0/0"
@@ -249,7 +484,7 @@ spec:
     imagePullPolicy: "IfNotPresent"
     imagePullSecrets:
       - docker-registry-secret
-  config:
+  global:
     recursion: false
     allowQuery:
       - "0.0.0.0/0"

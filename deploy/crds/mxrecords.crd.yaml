@@ -29,11 +29,23 @@ spec:
             description: |-
               `MXRecord` specifies mail servers for a domain.
 
-              MX (Mail Exchange) records specify the mail servers responsible for accepting email for a domain. Lower priority values indicate higher preference.
+              MX (Mail Exchange) records specify the mail servers responsible for accepting email
+              for a domain. Lower priority values indicate higher preference.
 
               # Example
 
-              ```yaml apiVersion: dns.firestoned.io/v1alpha1 kind: MXRecord metadata: name: mail-example-com spec: zone: example.com name: "@" priority: 10 mailServer: mail.example.com. ttl: 3600 ```
+              ```yaml
+              apiVersion: dns.firestoned.io/v1alpha1
+              kind: MXRecord
+              metadata:
+                name: mail-example-com
+              spec:
+                zone: example.com
+                name: "@"
+                priority: 10
+                mailServer: mail.example.com.
+                ttl: 3600
+              ```
             properties:
               mailServer:
                 description: |-
@@ -64,7 +76,8 @@ spec:
                 description: |-
                   DNS zone this record belongs to (e.g., "example.com").
 
-                  Must match the zoneName of an existing `DNSZone` resource in the same namespace. Either `zone` or `zoneRef` must be specified (not both).
+                  Must match the zoneName of an existing `DNSZone` resource in the same namespace.
+                  Either `zone` or `zoneRef` must be specified (not both).
                 nullable: true
                 type: string
               zoneRef:
@@ -89,7 +102,8 @@ spec:
                   description: |-
                     Condition represents an observation of a resource's current state.
 
-                    Conditions are used in status subresources to communicate the state of a resource to users and controllers.
+                    Conditions are used in status subresources to communicate the state of
+                    a resource to users and controllers.
                   properties:
                     lastTransitionTime:
                       description: Last time the condition transitioned from one status to another (RFC3339 format).

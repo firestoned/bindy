@@ -18,7 +18,7 @@ use kube::{
     Api, ResourceExt,
 };
 use serde_json::json;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
 /// Reconciles a `DNSZone` resource.
 ///
@@ -110,8 +110,9 @@ pub async fn reconcile_dnszone(
 
     // For now, we use rndc addzone to dynamically add the zone.
     // The zone type will be "master" (primary) and we'll use a default zone file location.
-    // In production, you may want to pre-configure zones in named.conf and just reload.
-    let zone_file = format!("/var/lib/bind/{}.zone", spec.zone_name);
+    // BIND9 will create the zone file in /var/cache/bind when records are added via dynamic updates.
+    // This directory is mounted as an EmptyDir volume (or PVC for persistence).
+    let zone_file = format!("/var/cache/bind/{}.zone", spec.zone_name);
 
     // Add zone via Service endpoint (not individual pods)
     // This approach works best with shared storage (ReadWriteMany PVC):
@@ -149,41 +150,16 @@ pub async fn reconcile_dnszone(
         spec.zone_name, service_endpoint
     );
 
-    // Reload ALL pods to ensure they pick up the zone from shared storage
-    // This is necessary because BIND9 doesn't automatically detect new zone files
-    for pod in &primary_pods {
-        let pod_server = format!("{}:953", pod.ip);
-
-        // Reload the specific zone (or use `rndc reconfig` to reload all zones)
-        let reload_result = zone_manager
-            .reload_zone(&spec.zone_name, &pod_server, &key_data)
-            .await;
-
-        match reload_result {
-            Ok(()) => {
-                info!(
-                    "Reloaded zone {} on pod {} (IP: {})",
-                    spec.zone_name, pod.name, pod.ip
-                );
-            }
-            Err(e) => {
-                // Log error but don't fail - the zone was created, reload might fail if pod is starting
-                error!(
-                    zone = %spec.zone_name,
-                    pod = %pod.name,
-                    ip = %pod.ip,
-                    error = %e,
-                    "Failed to reload zone on pod - zone was created but pod may be starting or unreachable"
-                );
-            }
-        }
-    }
+    // Note: We don't need to reload after addzone because:
+    // 1. rndc addzone immediately adds the zone to BIND9's running config
+    // 2. The zone file will be created automatically when records are added via dynamic updates
+    // 3. Reloading would fail if the zone file doesn't exist yet
 
     info!(
-        "Successfully added zone {} and reloaded on {} pod(s) in cluster {}",
+        "Successfully added zone {} to cluster {} ({} primary pod(s))",
         spec.zone_name,
-        primary_pods.len(),
-        spec.cluster_ref
+        spec.cluster_ref,
+        primary_pods.len()
     );
 
     // Update status to success
@@ -270,40 +246,13 @@ pub async fn delete_dnszone(
         .await?;
 
     info!(
-        "Deleted zone {} via service endpoint {}",
-        spec.zone_name, service_endpoint
+        "Successfully deleted zone {} from cluster {} via service endpoint {}",
+        spec.zone_name, spec.cluster_ref, service_endpoint
     );
 
-    // Optional: reload other pods to ensure they drop the zone from memory
-    // BIND9 should handle this automatically when the zone file is deleted
-    for pod in &primary_pods {
-        let pod_server = format!("{}:953", pod.ip);
-
-        match zone_manager
-            .reload_zone(&spec.zone_name, &pod_server, &key_data)
-            .await
-        {
-            Ok(()) => {
-                info!("Reloaded pod {} after zone deletion", pod.name);
-            }
-            Err(e) => {
-                // Log error but don't fail - zone is already deleted, reload might fail
-                error!(
-                    zone = %spec.zone_name,
-                    pod = %pod.name,
-                    error = %e,
-                    "Failed to reload zone on pod after deletion - pod will detect zone deletion on next reload"
-                );
-            }
-        }
-    }
-
-    info!(
-        "Successfully deleted zone {} from cluster {} ({} pods)",
-        spec.zone_name,
-        spec.cluster_ref,
-        primary_pods.len()
-    );
+    // Note: We don't need to reload after delzone because:
+    // 1. rndc delzone immediately removes the zone from BIND9's running config
+    // 2. BIND9 will clean up the zone file and journal files automatically
 
     Ok(())
 }
@@ -532,6 +481,45 @@ async fn update_status(
     let api: Api<DNSZone> =
         Api::namespaced(client.clone(), &dnszone.namespace().unwrap_or_default());
 
+    // Check if status has actually changed
+    let current_status = &dnszone.status;
+    let status_changed = if let Some(current) = current_status {
+        if let Some(current_condition) = current.conditions.first() {
+            // Check if condition changed
+            current_condition.r#type != condition_type
+                || current_condition.status != status
+                || current_condition.message.as_deref() != Some(message)
+        } else {
+            // No conditions exist, need to update
+            true
+        }
+    } else {
+        // No status exists, need to update
+        true
+    };
+
+    // Only update if status has changed
+    if !status_changed {
+        debug!(
+            namespace = %dnszone.namespace().unwrap_or_default(),
+            name = %dnszone.name_any(),
+            "Status unchanged, skipping update"
+        );
+        info!(
+            "DNSZone {}/{} status unchanged, skipping update",
+            dnszone.namespace().unwrap_or_default(),
+            dnszone.name_any()
+        );
+        return Ok(());
+    }
+
+    debug!(
+        condition_type = %condition_type,
+        status = %status,
+        message = %message,
+        "Preparing status update"
+    );
+
     let condition = Condition {
         r#type: condition_type.to_string(),
         status: status.to_string(),
@@ -540,13 +528,19 @@ async fn update_status(
         last_transition_time: Some(Utc::now().to_rfc3339()),
     };
 
-    let status = DNSZoneStatus {
+    let new_status = DNSZoneStatus {
         conditions: vec![condition],
         observed_generation: dnszone.metadata.generation,
         record_count: None,
     };
 
-    let patch = json!({ "status": status });
+    info!(
+        "Updating DNSZone {}/{} status",
+        dnszone.namespace().unwrap_or_default(),
+        dnszone.name_any()
+    );
+
+    let patch = json!({ "status": new_status });
     api.patch_status(
         &dnszone.name_any(),
         &PatchParams::default(),

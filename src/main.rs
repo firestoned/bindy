@@ -4,6 +4,10 @@
 use anyhow::Result;
 use bindy::{
     bind9::Bind9Manager,
+    constants::{
+        DEFAULT_LEASE_DURATION_SECS, DEFAULT_LEASE_RENEW_DEADLINE_SECS,
+        DEFAULT_LEASE_RETRY_PERIOD_SECS, ERROR_REQUEUE_DURATION_SECS, TOKIO_WORKER_THREADS,
+    },
     crd::{
         AAAARecord, ARecord, Bind9Cluster, Bind9Instance, CAARecord, CNAMERecord, DNSZone,
         MXRecord, NSRecord, SRVRecord, TXTRecord,
@@ -19,9 +23,10 @@ use kube::{
     runtime::{controller::Action, watcher::Config, Controller},
     Api, Client, ResourceExt,
 };
+use kube_lease_manager::{LeaseManager, LeaseManagerBuilder};
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
@@ -30,7 +35,7 @@ struct ReconcileError(#[from] anyhow::Error);
 fn main() -> Result<()> {
     // Build Tokio runtime with custom thread names
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(4)
+        .worker_threads(TOKIO_WORKER_THREADS)
         .thread_name("bindy-controller")
         .enable_all()
         .build()?;
@@ -38,16 +43,11 @@ fn main() -> Result<()> {
     runtime.block_on(async_main())
 }
 
-async fn async_main() -> Result<()> {
-    // Initialize logging with custom format
-    // Format: timestamp file:line LEVEL message
-    // Example: 2025-11-29T23:45:00.123456Z main.rs:49 INFO Starting BIND9 DNS Controller
-    //
-    // Respects RUST_LOG environment variable if set, otherwise defaults to INFO level
-    // Example: RUST_LOG=debug cargo run
-    //
-    // Respects RUST_LOG_FORMAT environment variable for output format
-    // Example: RUST_LOG_FORMAT=json cargo run
+/// Initialize logging with custom format
+///
+/// Respects `RUST_LOG` environment variable if set, otherwise defaults to INFO level.
+/// Respects `RUST_LOG_FORMAT` environment variable for output format (json or text).
+fn initialize_logging() {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
@@ -79,21 +79,244 @@ async fn async_main() -> Result<()> {
 
     info!("Starting BIND9 DNS Controller");
     debug!("Logging initialized with file and line number tracking");
+}
 
-    // Initialize Kubernetes client
+/// Initialize Kubernetes client and BIND9 manager
+async fn initialize_services() -> Result<(Client, Arc<Bind9Manager>)> {
     debug!("Initializing Kubernetes client");
     let client = Client::try_default().await?;
     debug!("Kubernetes client initialized successfully");
 
-    // Create BIND9 manager (no longer needs zones directory - uses rndc protocol)
     debug!("Creating BIND9 manager");
     let bind9_manager = Arc::new(Bind9Manager::new());
     debug!("BIND9 manager created");
 
-    info!("Starting all controllers");
+    Ok((client, bind9_manager))
+}
 
-    // Run controllers concurrently
+/// Leader election configuration
+struct LeaderElectionConfig {
+    enabled: bool,
+    lease_name: String,
+    lease_namespace: String,
+    identity: String,
+    lease_duration: u64,
+    renew_deadline: u64,
+    retry_period: u64,
+}
+
+/// Load leader election configuration from environment variables
+fn load_leader_election_config() -> LeaderElectionConfig {
+    let enabled = std::env::var("BINDY_ENABLE_LEADER_ELECTION")
+        .unwrap_or_else(|_| "true".to_string())
+        .parse::<bool>()
+        .unwrap_or(true);
+
+    let lease_name =
+        std::env::var("BINDY_LEASE_NAME").unwrap_or_else(|_| "bindy-leader".to_string());
+
+    let lease_namespace = std::env::var("BINDY_LEASE_NAMESPACE")
+        .or_else(|_| std::env::var("POD_NAMESPACE"))
+        .unwrap_or_else(|_| "dns-system".to_string());
+
+    let lease_duration = std::env::var("BINDY_LEASE_DURATION_SECONDS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_LEASE_DURATION_SECS);
+
+    let renew_deadline = std::env::var("BINDY_LEASE_RENEW_DEADLINE_SECONDS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_LEASE_RENEW_DEADLINE_SECS);
+
+    let retry_period = std::env::var("BINDY_LEASE_RETRY_PERIOD_SECONDS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_LEASE_RETRY_PERIOD_SECS);
+
+    let identity = std::env::var("POD_NAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| format!("bindy-{}", rand::random::<u32>()));
+
+    LeaderElectionConfig {
+        enabled,
+        lease_name,
+        lease_namespace,
+        identity,
+        lease_duration,
+        renew_deadline,
+        retry_period,
+    }
+}
+
+/// Run all controllers without leader election, with signal handling
+async fn run_controllers_without_leader_election(
+    client: Client,
+    bind9_manager: Arc<Bind9Manager>,
+) -> Result<()> {
+    warn!("Leader election DISABLED - running without high availability");
+    info!("Starting all controllers with signal handling");
+
+    // Run controllers concurrently with signal handling
     // Controllers should never exit - if one fails, we log it and exit the main process
+    let shutdown_result: Result<()> = tokio::select! {
+        // Monitor for SIGINT (Ctrl+C)
+        result = tokio::signal::ctrl_c() => {
+            info!("Received SIGINT (Ctrl+C), initiating graceful shutdown...");
+            info!("Stopping all controllers...");
+            result.map_err(anyhow::Error::from)
+        }
+
+        // Monitor for SIGTERM (Kubernetes sends this when deleting pods)
+        result = async {
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{signal, SignalKind};
+                let mut sigterm = signal(SignalKind::terminate())?;
+                sigterm.recv().await;
+                Ok::<(), anyhow::Error>(())
+            }
+            #[cfg(not(unix))]
+            {
+                // On non-Unix platforms, just wait forever
+                std::future::pending::<()>().await;
+                Ok::<(), anyhow::Error>(())
+            }
+        } => {
+            info!("Received SIGTERM (pod termination), initiating graceful shutdown...");
+            info!("Stopping all controllers...");
+            result
+        }
+
+        result = run_bind9cluster_controller(client.clone()) => {
+            error!("CRITICAL: Bind9Cluster controller exited unexpectedly: {:?}", result);
+            result?;
+            anyhow::bail!("Bind9Cluster controller exited unexpectedly without error")
+        }
+        result = run_bind9instance_controller(client.clone()) => {
+            error!("CRITICAL: Bind9Instance controller exited unexpectedly: {:?}", result);
+            result?;
+            anyhow::bail!("Bind9Instance controller exited unexpectedly without error")
+        }
+        result = run_dnszone_controller(client.clone(), bind9_manager.clone()) => {
+            error!("CRITICAL: DNSZone controller exited unexpectedly: {:?}", result);
+            result?;
+            anyhow::bail!("DNSZone controller exited unexpectedly without error")
+        }
+        result = run_arecord_controller(client.clone(), bind9_manager.clone()) => {
+            error!("CRITICAL: ARecord controller exited unexpectedly: {:?}", result);
+            result?;
+            anyhow::bail!("ARecord controller exited unexpectedly without error")
+        }
+        result = run_aaaarecord_controller(client.clone(), bind9_manager.clone()) => {
+            error!("CRITICAL: AAAARecord controller exited unexpectedly: {:?}", result);
+            result?;
+            anyhow::bail!("AAAARecord controller exited unexpectedly without error")
+        }
+        result = run_txtrecord_controller(client.clone(), bind9_manager.clone()) => {
+            error!("CRITICAL: TXTRecord controller exited unexpectedly: {:?}", result);
+            result?;
+            anyhow::bail!("TXTRecord controller exited unexpectedly without error")
+        }
+        result = run_cnamerecord_controller(client.clone(), bind9_manager.clone()) => {
+            error!("CRITICAL: CNAMERecord controller exited unexpectedly: {:?}", result);
+            result?;
+            anyhow::bail!("CNAMERecord controller exited unexpectedly without error")
+        }
+        result = run_mxrecord_controller(client.clone(), bind9_manager.clone()) => {
+            error!("CRITICAL: MXRecord controller exited unexpectedly: {:?}", result);
+            result?;
+            anyhow::bail!("MXRecord controller exited unexpectedly without error")
+        }
+        result = run_nsrecord_controller(client.clone(), bind9_manager.clone()) => {
+            error!("CRITICAL: NSRecord controller exited unexpectedly: {:?}", result);
+            result?;
+            anyhow::bail!("NSRecord controller exited unexpectedly without error")
+        }
+        result = run_srvrecord_controller(client.clone(), bind9_manager.clone()) => {
+            error!("CRITICAL: SRVRecord controller exited unexpectedly: {:?}", result);
+            result?;
+            anyhow::bail!("SRVRecord controller exited unexpectedly without error")
+        }
+        result = run_caarecord_controller(client.clone(), bind9_manager.clone()) => {
+            error!("CRITICAL: CAARecord controller exited unexpectedly: {:?}", result);
+            result?;
+            anyhow::bail!("CAARecord controller exited unexpectedly without error")
+        }
+    };
+
+    // Handle shutdown result
+    shutdown_result?;
+    info!("Graceful shutdown completed successfully");
+
+    Ok(())
+}
+
+async fn async_main() -> Result<()> {
+    initialize_logging();
+
+    let (client, bind9_manager) = initialize_services().await?;
+
+    let config = load_leader_election_config();
+
+    if config.enabled {
+        info!(
+            lease_name = %config.lease_name,
+            lease_namespace = %config.lease_namespace,
+            identity = %config.identity,
+            lease_duration_secs = config.lease_duration,
+            renew_deadline_secs = config.renew_deadline,
+            "Leader election enabled"
+        );
+
+        // Create and start lease manager for leader election
+        // The manager returns a watch receiver (to monitor leadership status)
+        // and a join handle (to monitor the lease renewal task)
+        info!("Starting leader election, waiting to acquire leadership...");
+
+        let lease_manager = LeaseManagerBuilder::new(client.clone(), &config.lease_name)
+            .with_namespace(&config.lease_namespace)
+            .with_identity(&config.identity)
+            .with_duration(config.lease_duration)
+            .with_grace(config.retry_period)
+            .build()
+            .await?;
+
+        let (leader_rx, lease_handle) = lease_manager.watch().await;
+
+        // Wait until we become leader
+        let mut rx = leader_rx.clone();
+        while !*rx.borrow_and_update() {
+            rx.changed().await?;
+        }
+
+        info!("🎉 Leadership acquired! Starting controllers...");
+
+        // Run controllers with leader election monitoring and signal handling
+        run_controllers_with_leader_election(client, bind9_manager, leader_rx, lease_handle)
+            .await?;
+    } else {
+        run_controllers_without_leader_election(client, bind9_manager).await?;
+    }
+
+    Ok(())
+}
+
+/// Monitor leadership status - returns when leadership is lost or an error occurs
+async fn monitor_leadership(
+    mut leader_rx: tokio::sync::watch::Receiver<bool>,
+) -> Result<(), anyhow::Error> {
+    loop {
+        leader_rx.changed().await?;
+        if !*leader_rx.borrow() {
+            // Leadership lost
+            return Ok(());
+        }
+    }
+}
+
+/// Run all DNS record controllers
+async fn run_all_controllers(client: Client, bind9_manager: Arc<Bind9Manager>) -> Result<()> {
     tokio::select! {
         result = run_bind9cluster_controller(client.clone()) => {
             error!("CRITICAL: Bind9Cluster controller exited unexpectedly: {:?}", result);
@@ -151,6 +374,76 @@ async fn async_main() -> Result<()> {
             anyhow::bail!("CAARecord controller exited unexpectedly without error")
         }
     }
+}
+
+/// Run controllers with leader election
+///
+/// This function runs all controllers while monitoring leadership status and handling signals.
+/// If leadership is lost or SIGTERM/SIGINT is received, all controllers are stopped and the process exits gracefully.
+async fn run_controllers_with_leader_election(
+    client: Client,
+    bind9_manager: Arc<Bind9Manager>,
+    leader_rx: tokio::sync::watch::Receiver<bool>,
+    _lease_handle: tokio::task::JoinHandle<
+        Result<LeaseManager, kube_lease_manager::LeaseManagerError>,
+    >,
+) -> Result<()> {
+    info!("Running controllers with leader election and signal handling");
+
+    // Run controllers concurrently with leadership monitoring and signal handling
+    let shutdown_result: Result<()> = tokio::select! {
+        // Monitor for SIGINT (Ctrl+C)
+        result = tokio::signal::ctrl_c() => {
+            info!("Received SIGINT (Ctrl+C), initiating graceful shutdown...");
+            info!("Stopping all controllers and releasing leader election lease...");
+            result.map_err(anyhow::Error::from)
+        }
+
+        // Monitor for SIGTERM (Kubernetes sends this when deleting pods)
+        result = async {
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{signal, SignalKind};
+                let mut sigterm = signal(SignalKind::terminate())?;
+                sigterm.recv().await;
+                Ok::<(), anyhow::Error>(())
+            }
+            #[cfg(not(unix))]
+            {
+                // On non-Unix platforms, just wait forever
+                std::future::pending::<()>().await;
+                Ok::<(), anyhow::Error>(())
+            }
+        } => {
+            info!("Received SIGTERM (pod termination), initiating graceful shutdown...");
+            info!("Stopping all controllers and releasing leader election lease...");
+            result
+        }
+
+        // Monitor leadership - if lost, stop all controllers
+        result = monitor_leadership(leader_rx) => {
+            match result {
+                Ok(()) => {
+                    warn!("Leadership lost! Stopping all controllers...");
+                    anyhow::bail!("Leadership lost - stepping down")
+                }
+                Err(e) => {
+                    error!("Leadership monitor error: {:?}", e);
+                    anyhow::bail!("Leadership monitoring failed: {e}")
+                }
+            }
+        }
+
+        // Run all controllers
+        result = run_all_controllers(client, bind9_manager) => {
+            result
+        }
+    };
+
+    // Handle shutdown result
+    shutdown_result?;
+    info!("Graceful shutdown completed successfully, leader election lease released");
+    Ok(())
 }
 
 /// Run the `DNSZone` controller
@@ -719,7 +1012,7 @@ fn error_policy(
     _err: &ReconcileError,
     _ctx: Arc<(Client, Arc<Bind9Manager>)>,
 ) -> Action {
-    Action::requeue(Duration::from_secs(30))
+    Action::requeue(Duration::from_secs(ERROR_REQUEUE_DURATION_SECS))
 }
 
 /// Error policy for `Bind9Cluster` controller
@@ -728,7 +1021,7 @@ fn error_policy_cluster(
     _err: &ReconcileError,
     _ctx: Arc<Client>,
 ) -> Action {
-    Action::requeue(Duration::from_secs(30))
+    Action::requeue(Duration::from_secs(ERROR_REQUEUE_DURATION_SECS))
 }
 
 /// Error policy for `Bind9Instance` controller
@@ -737,5 +1030,9 @@ fn error_policy_instance(
     _err: &ReconcileError,
     _ctx: Arc<Client>,
 ) -> Action {
-    Action::requeue(Duration::from_secs(30))
+    Action::requeue(Duration::from_secs(ERROR_REQUEUE_DURATION_SECS))
 }
+
+// Tests are in main_tests.rs
+#[cfg(test)]
+mod main_tests;

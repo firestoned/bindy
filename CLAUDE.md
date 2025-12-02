@@ -7,6 +7,52 @@
 
 ## 🚨 Critical TODOs
 
+### Code Quality: Use Global Constants for Repeated Strings
+**Status:** 🔄 Ongoing
+**Impact:** Code maintainability and consistency
+
+When a string literal appears in multiple places across the codebase, it MUST be defined as a global constant and referenced consistently.
+
+**Why:**
+- **Single Source of Truth**: Changes only need to be made in one place
+- **Consistency**: Prevents typos and inconsistencies across the codebase
+- **Maintainability**: Easier to refactor and update values
+- **Type Safety**: Compiler catches usage errors
+
+**When to Create a Global Constant:**
+- String appears 2+ times in the same file
+- String appears in multiple files
+- String represents a configuration value (paths, filenames, keys, etc.)
+- String is part of an API contract or protocol
+
+**Examples:**
+```rust
+// ✅ GOOD - Use constants
+const BIND_NAMED_CONF_PATH: &str = "/etc/bind/named.conf";
+const NAMED_CONF_FILENAME: &str = "named.conf";
+
+fn build_configmap() {
+    data.insert(NAMED_CONF_FILENAME.into(), named_conf);
+}
+
+// ❌ BAD - Hardcoded strings
+fn build_configmap() {
+    data.insert("named.conf".into(), named_conf);
+}
+```
+
+**Where to Define Constants:**
+- Module-level constants: At the top of the file for file-specific use
+- Crate-level constants: In a dedicated module (e.g., `src/constants.rs`) for cross-module use
+- Group related constants together with documentation
+
+**Verification:**
+Before committing, search for repeated string literals:
+```bash
+# Find potential duplicate strings in Rust files
+grep -rn '"[^"]\{5,\}"' src/ | sort | uniq -d
+```
+
 ### High Priority: CRD Code Generation
 **Status:** ✅ Implemented
 **Impact:** Automated - CRD YAMLs are generated from Rust types
@@ -50,12 +96,112 @@ This codebase operates in a **regulated banking environment**. All changes must 
 
 ## 📝 Documentation Requirements
 
+### Mandatory: Documentation Updates for Code Changes
+
+**CRITICAL: After ANY code change in the `src/` directory, you MUST update all relevant documentation.**
+
+This is a **mandatory step** that must be completed before considering any task complete. Documentation must always reflect the current state of the code.
+
+#### Documentation Update Workflow
+
+When adding, removing, or changing any feature in the Rust source code:
+
+1. **Analyze the Change**:
+   - What functionality was added/removed/changed?
+   - What are the user-facing impacts?
+   - What are the architectural implications?
+   - Are there new APIs, configuration options, or behaviors?
+
+2. **Update Documentation** (in this order):
+   - **`CHANGELOG.md`** - Document the change (see format below)
+   - **`docs/src/`** - Update all affected documentation pages:
+     - User guides that reference the changed functionality
+     - Quickstart guides with examples of the changed code
+     - Configuration references for new/changed options
+     - Troubleshooting guides if behavior changed
+   - **`examples/`** - Update YAML examples to reflect changes
+   - **Architecture diagrams** - Update if structure/flow changed
+   - **API documentation** - Regenerate if CRDs changed (`cargo run --bin crddoc`)
+   - **README.md** - Update if getting started steps or features changed
+
+3. **Verify Documentation Accuracy**:
+   - Read through updated docs as if you're a new user
+   - Ensure all code examples compile and run
+   - Verify all YAML examples validate: `kubectl apply --dry-run=client -f examples/`
+   - Check that diagrams match current architecture
+   - Confirm API docs reflect current CRD schemas
+
+4. **Add Missing Documentation**:
+   - If architecture changed, add/update architecture diagrams
+   - If new public APIs were added, document them
+   - If new configuration options exist, document them with examples
+   - If new error conditions exist, document troubleshooting steps
+   - If new dependencies were added, document version requirements
+
+#### What Documentation to Update
+
+**For Controller/Reconciler Changes** (`src/reconcilers/`):
+- Update reconciliation flow diagrams
+- Document new behaviors in user guides
+- Update troubleshooting guides for new error conditions
+- Add examples showing the new functionality
+
+**For CRD Changes** (`src/crd.rs`):
+- Run `cargo run --bin crdgen` to regenerate CRD YAMLs
+- Run `cargo run --bin crddoc > docs/src/reference/api.md` to regenerate API docs
+- Update ALL examples in `/examples/` that use the changed CRD
+- Update quickstart guides with new field examples
+- Update configuration reference documentation
+
+**For Core Logic Changes** (`src/bind9.rs`, `src/bind9_resources.rs`, etc.):
+- Update architecture documentation explaining the change
+- Update API documentation if public interfaces changed
+- Add code examples for new public functions
+- Update troubleshooting guides for new behaviors
+
+**For New Features**:
+- Add feature documentation to `/docs/src/features/`
+- Update feature list in README.md
+- Add usage examples
+- Create architecture diagrams showing how the feature works
+- Document configuration options
+- Add troubleshooting section
+
+**For Bug Fixes**:
+- Update troubleshooting guides with the fix
+- Document workarounds (if applicable) in known issues
+- Update behavior documentation if expectations changed
+
+#### Documentation Quality Standards
+
+- **Completeness**: All user-visible changes must be documented
+- **Accuracy**: Documentation must match the actual code behavior
+- **Examples**: Include working examples for all features
+- **Clarity**: Write for users who haven't seen the code
+- **Diagrams**: Use Mermaid diagrams for complex flows
+- **Versioning**: Date all changes in CHANGELOG.md
+
+#### Validation Checklist
+
+Before considering a task complete, verify:
+- [ ] CHANGELOG.md updated with change details
+- [ ] All affected documentation pages updated
+- [ ] All YAML examples validate successfully
+- [ ] API documentation regenerated (if CRDs changed)
+- [ ] Architecture diagrams updated (if structure changed)
+- [ ] Code examples compile and run
+- [ ] README.md updated (if getting started or features changed)
+- [ ] No broken links in documentation
+- [ ] Documentation reviewed as if reading for the first time
+
 ### Mandatory: Update Changelog on Every Code Change
 
 After **ANY** code modification, update `CHANGELOG.md` with the following format:
 
 ```markdown
 ## [YYYY-MM-DD HH:MM] - Brief Title
+
+**Author:** [Author Name]
 
 ### Changed
 - `path/to/file.rs`: Description of the change
@@ -69,6 +215,13 @@ Brief explanation of the business or technical reason.
 - [ ] Config change only
 - [ ] Documentation only
 ```
+
+**CRITICAL REQUIREMENT**:
+- The `**Author:**` line is **MANDATORY** for ALL changelog entries
+- This is required for auditing and accountability in a regulated environment
+- The author field should contain the name of the person who requested or approved the change
+- **NO exceptions** - every changelog entry must have an author attribution
+- If the author is unknown, use "Unknown" but investigate to identify the proper author
 
 ### Code Comments
 
@@ -185,6 +338,11 @@ cargo audit 2>/dev/null || true
    - Test error conditions, not just happy paths
    - Ensure tests are deterministic (no flaky tests)
 
+6. **Test File Organization:**
+   - **CRITICAL**: ALWAYS place tests in separate `_tests.rs` files (see Testing Requirements section below)
+   - NEVER embed large test modules directly in source files
+   - Follow the pattern: `foo.rs` → `foo_tests.rs`
+
 **VERIFICATION:**
 - After ANY Rust code change, run `cargo test` in the modified file's crate
 - ALL tests MUST pass before the task is considered complete
@@ -192,9 +350,10 @@ cargo audit 2>/dev/null || true
 
 **Example:**
 If you modify `src/reconcilers/records.rs`:
-1. Update/add tests in the `#[cfg(test)]` module at the bottom of the same file
-2. Run `cargo test --lib reconcilers::records` to verify
-3. Ensure ALL tests pass before moving on
+1. Update/add tests in `src/reconcilers/records_tests.rs` (separate file)
+2. Ensure `src/reconcilers/records.rs` has: `#[cfg(test)] mod records_tests;`
+3. Run `cargo test --lib reconcilers::records` to verify
+4. Ensure ALL tests pass before moving on
 
 ### Rust Style Guidelines
 
@@ -203,6 +362,108 @@ If you modify `src/reconcilers/records.rs`:
 - Use `tracing` for logging, not `println!` or `log`
 - Async functions should use `tokio`
 - All k8s API calls must have timeout and retry logic
+- **No magic numbers**: Any numeric literal other than `0` or `1` MUST be declared as a named constant
+
+#### Magic Numbers Rule
+
+**CRITICAL: Eliminate all magic numbers from the codebase.**
+
+A "magic number" is any numeric literal (other than `0` or `1`) that appears directly in code without explanation.
+
+**Why:**
+- **Readability**: Named constants make code self-documenting
+- **Maintainability**: Change the value in one place, not scattered throughout
+- **Semantic Meaning**: The constant name explains *why* the value matters
+- **Type Safety**: Constants prevent accidental typos in numeric values
+
+**Rules:**
+- **`0` and `1` are allowed** - These are ubiquitous and self-explanatory (empty, none, first item, etc.)
+- **All other numbers MUST be named constants** - No exceptions
+- Use descriptive names that explain the *purpose*, not just the value
+
+**Examples:**
+
+```rust
+// ✅ GOOD - Named constants
+const DEFAULT_ZONE_TTL: u32 = 3600;
+const MAX_RETRY_ATTEMPTS: u8 = 3;
+const RECONCILE_INTERVAL_SECS: u64 = 300;
+const DNS_PORT: u16 = 53;
+
+fn build_zone(ttl: Option<u32>) -> Zone {
+    Zone {
+        ttl: ttl.unwrap_or(DEFAULT_ZONE_TTL),
+        ..
+    }
+}
+
+fn reconcile() -> Action {
+    Action::requeue(Duration::from_secs(RECONCILE_INTERVAL_SECS))
+}
+
+// ❌ BAD - Magic numbers
+fn build_zone(ttl: Option<u32>) -> Zone {
+    Zone {
+        ttl: ttl.unwrap_or(3600),  // What does 3600 mean? Why this value?
+        ..
+    }
+}
+
+fn reconcile() -> Action {
+    Action::requeue(Duration::from_secs(300))  // Why 300?
+}
+```
+
+**Special Cases:**
+
+- **Unit conversions**: Still need constants
+  ```rust
+  // ✅ GOOD
+  const MILLISECONDS_PER_SECOND: u64 = 1000;
+  const SECONDS_PER_HOUR: u64 = 3600;
+
+  // ❌ BAD
+  Duration::from_millis(timeout_secs * 1000)
+  ```
+
+- **Array sizes/indexing**: Use constants if size is meaningful
+  ```rust
+  // ✅ GOOD
+  const MAX_DNS_LABELS: usize = 127;
+  let labels = vec![String::new(); MAX_DNS_LABELS];
+
+  // ✅ ACCEPTABLE - indexing with 0 or 1
+  let first = items[0];
+  let second = items[1];
+
+  // ❌ BAD - other index values
+  let third = items[2];  // Should be named if it has semantic meaning
+  ```
+
+- **Buffer sizes**: Always use named constants
+  ```rust
+  // ✅ GOOD
+  const READ_BUFFER_SIZE: usize = 8192;
+  let mut buf = vec![0u8; READ_BUFFER_SIZE];
+
+  // ❌ BAD
+  let mut buf = vec![0u8; 8192];
+  ```
+
+**Where to Define Constants:**
+- Module-level: For constants used only within one file
+- Crate-level (`src/constants.rs`): For constants used across modules
+- Group related constants together with documentation
+
+**Test Files Exception:**
+Test files (`*_tests.rs`) may use literal values for test data when it improves readability and the values are only used once. However, if the same test value appears multiple times or represents a meaningful configuration value, it should still use the global constants.
+
+**Verification:**
+Before committing, manually scan code for numeric literals:
+```bash
+# Find numeric literals other than 0 and 1 in Rust files (excludes test files)
+grep -Ern '\b[2-9][0-9]*\b' src/ --include="*.rs" --exclude="*_tests.rs" | grep -v '^[^:]*:[^:]*://.*$'
+```
 
 ### Dependency Management
 
@@ -377,44 +638,76 @@ When modifying HelmRelease manifests:
 
 **MANDATORY: Every public function MUST have corresponding unit tests.**
 
-Place unit tests in a `#[cfg(test)]` module at the bottom of the same file:
+#### Test File Organization
 
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
+**CRITICAL: ALWAYS place unit tests in separate `_tests.rs` files, NOT embedded in the source file.**
 
-    #[tokio::test]
-    async fn test_reconcile_creates_zone() {
-        // Arrange
-        let (client, _mock) = mock_client().await;
-        let zone = create_test_zone("example.com");
-        let ctx = create_test_context(client);
+This is the **required pattern** for this codebase. Do NOT embed tests directly in source files.
 
-        // Act
-        let result = reconcile(zone, ctx).await;
+**Correct Pattern:**
 
-        // Assert
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().requeue_after, Some(Duration::from_secs(300)));
-    }
+For a source file `src/foo.rs`:
+1. Create a separate test file `src/foo_tests.rs`
+2. In `src/foo.rs`, add at the bottom:
+   ```rust
+   #[cfg(test)]
+   mod foo_tests;
+   ```
+3. In `src/foo_tests.rs`, write all tests:
+   ```rust
+   // Copyright (c) 2025 Erick Bourgeois, firestoned
+   // SPDX-License-Identifier: MIT
 
-    #[tokio::test]
-    async fn test_reconcile_handles_api_error() {
-        // Arrange
-        let (client, mock) = mock_client_with_error().await;
-        let zone = create_test_zone("example.com");
-        let ctx = create_test_context(client);
+   //! Unit tests for `foo.rs`
 
-        // Act
-        let result = reconcile(zone, ctx).await;
+   #[cfg(test)]
+   mod tests {
+       use super::super::*;  // Import from parent module
 
-        // Assert
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ReconcileError::ApiError(_)));
-    }
-}
-```
+       #[tokio::test]
+       async fn test_reconcile_creates_zone() {
+           // Arrange
+           let (client, _mock) = mock_client().await;
+           let zone = create_test_zone("example.com");
+           let ctx = create_test_context(client);
+
+           // Act
+           let result = reconcile(zone, ctx).await;
+
+           // Assert
+           assert!(result.is_ok());
+           assert_eq!(result.unwrap().requeue_after, Some(Duration::from_secs(300)));
+       }
+
+       #[tokio::test]
+       async fn test_reconcile_handles_api_error() {
+           // Arrange
+           let (client, mock) = mock_client_with_error().await;
+           let zone = create_test_zone("example.com");
+           let ctx = create_test_context(client);
+
+           // Act
+           let result = reconcile(zone, ctx).await;
+
+           // Assert
+           assert!(result.is_err());
+           assert!(matches!(result.unwrap_err(), ReconcileError::ApiError(_)));
+       }
+   }
+   ```
+
+**Why Separate Test Files?**
+1. **Faster Compilation**: Tests only compile when running `cargo test`
+2. **Better Organization**: Clear separation between production and test code
+3. **Easier Maintenance**: All tests for a module in one dedicated file
+4. **Cleaner Code**: Main source files remain focused on production logic
+
+**Examples in This Codebase:**
+- `src/main.rs` → `src/main_tests.rs`
+- `src/bind9.rs` → `src/bind9_tests.rs`
+- `src/crd.rs` → `src/crd_tests.rs`
+- `src/bind9_resources.rs` → `src/bind9_resources_tests.rs`
+- `src/reconcilers/bind9cluster.rs` → `src/reconcilers/bind9cluster_tests.rs`
 
 **Test Coverage Requirements:**
 - **Success path:** Test the primary expected behavior
@@ -463,17 +756,38 @@ cargo tarpaulin --out Html
 
 ```
 src/
-├── main.rs           # Entry point, CLI setup
-├── lib.rs            # Library exports
-├── controller/       # Reconciliation logic
-│   ├── mod.rs
-│   └── bindzone.rs
-├── crd/              # Custom Resource definitions
-│   ├── mod.rs
-│   └── types.rs
-├── error.rs          # Error types
-└── metrics.rs        # Prometheus metrics
+├── main.rs                  # Entry point, CLI setup
+├── main_tests.rs            # Tests for main.rs
+├── lib.rs                   # Library exports
+├── bind9.rs                 # BIND9 zone file generation
+├── bind9_tests.rs           # Tests for bind9.rs
+├── bind9_resources.rs       # BIND9 Kubernetes resource builders
+├── bind9_resources_tests.rs # Tests for bind9_resources.rs
+├── crd.rs                   # Custom Resource Definitions
+├── crd_tests.rs             # Tests for crd.rs
+├── crd_docs.rs              # CRD documentation helpers
+├── crd_docs_tests.rs        # Tests for crd_docs.rs
+├── labels.rs                # Standard Kubernetes labels
+├── reconcilers/             # Reconciliation logic
+│   ├── mod.rs               # Module exports
+│   ├── bind9cluster.rs      # Bind9Cluster reconciler
+│   ├── bind9cluster_tests.rs # Tests for bind9cluster.rs
+│   ├── bind9instance.rs     # Bind9Instance reconciler
+│   ├── bind9instance_tests.rs # Tests for bind9instance.rs
+│   ├── dnszone.rs           # DNSZone reconciler
+│   ├── dnszone_tests.rs     # Tests for dnszone.rs
+│   ├── records.rs           # DNS record reconcilers
+│   └── records_tests.rs     # Tests for records.rs
+└── bin/
+    ├── crdgen.rs            # CRD YAML generator
+    └── crddoc.rs            # CRD documentation generator
 ```
+
+**Test File Pattern:**
+- Every `foo.rs` has a corresponding `foo_tests.rs`
+- Test files are in the same directory as the source file
+- Source file declares: `#[cfg(test)] mod foo_tests;`
+- Test file contains: `#[cfg(test)] mod tests { ... }`
 
 ---
 
@@ -528,6 +842,13 @@ Before committing:
   - [ ] `cargo fmt` passes (REQUIRED)
   - [ ] `cargo clippy -- -D warnings` passes (REQUIRED - fix ALL warnings)
   - [ ] `cargo test` passes (REQUIRED - ALL tests must pass)
+  - [ ] **Documentation updated** for code changes (REQUIRED - see Documentation Requirements section):
+    - [ ] Rustdoc comments on ALL public items (functions, types, modules)
+    - [ ] Function documentation matches actual behavior (parameters, returns, errors)
+    - [ ] `/docs/src/` updated for user-facing changes
+    - [ ] Architecture diagrams updated if structure changed
+    - [ ] Examples added for new features
+    - [ ] Troubleshooting docs updated for new error conditions
 - [ ] **If `src/crd.rs` was modified**:
   - [ ] Run `cargo run --bin crdgen` to regenerate CRD YAMLs
   - [ ] **Update `/examples/*.yaml` to match new schema** (CRITICAL)
@@ -535,13 +856,29 @@ Before committing:
   - [ ] Run `./scripts/validate-examples.sh` to verify all examples are valid (REQUIRED)
   - [ ] Run `cargo fmt`, `cargo clippy`, and `cargo test` to ensure everything passes
   - [ ] **LAST STEP**: Run `cargo run --bin crddoc > docs/src/reference/api.md` to regenerate API docs **AFTER** all validations pass
+- [ ] **If `src/reconcilers/` was modified**:
+  - [ ] Update reconciliation flow diagrams in `/docs/src/architecture/`
+  - [ ] Document new behaviors in user guides
+  - [ ] Update troubleshooting guides for new error conditions
+  - [ ] Add examples showing the new functionality
+  - [ ] Verify all examples still work with the changes
+- [ ] **Documentation verification** (CRITICAL):
+  - [ ] `CHANGELOG.md` updated with detailed change description **AND author attribution** (REQUIRED)
+  - [ ] Author name included in changelog entry (e.g., `**Author:** Erick Bourgeois`)
+  - [ ] All affected documentation pages reviewed and updated
+  - [ ] All YAML examples validate: `kubectl apply --dry-run=client -f examples/`
+  - [ ] Code examples in docs compile and run
+  - [ ] Architecture diagrams match current implementation
+  - [ ] API documentation reflects current CRD schemas
+  - [ ] README.md updated if getting started or features changed
+  - [ ] No broken links in documentation
 - [ ] CRD YAML files validate: `kubectl apply --dry-run=client -f deploy/crds/`
-- [ ] `CHANGELOG.md` updated
 - [ ] No secrets or sensitive data
-- [ ] Rustdoc comments on public items
 - [ ] Error handling uses proper types (no `.unwrap()`)
 
 **A task is NOT complete until all of the above items pass successfully.**
+
+**Documentation is NOT optional** - it is a critical requirement equal in importance to the code itself.
 
 ---
 

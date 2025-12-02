@@ -11,6 +11,7 @@ use crate::crd::{
     AAAARecord, ARecord, CAARecord, CNAMERecord, Condition, DNSZone, MXRecord, NSRecord,
     RecordStatus, SRVRecord, TXTRecord,
 };
+use crate::labels::{BINDY_CLUSTER_ANNOTATION, BINDY_INSTANCE_ANNOTATION, BINDY_ZONE_ANNOTATION};
 use anyhow::{anyhow, Context, Result};
 use k8s_openapi::api::core::v1::{Event, ObjectReference, Secret};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
@@ -100,7 +101,7 @@ macro_rules! get_instance_and_key {
         // Build server address using the instance name
         let server = format!("{}.{}.svc.cluster.local:953", instance_name, $namespace);
 
-        (key_data, server)
+        (instance_name, key_data, server)
     }};
 }
 
@@ -146,6 +147,59 @@ macro_rules! handle_record_operation {
             }
         }
     };
+}
+
+/// Adds tracking annotations to a DNS record resource.
+///
+/// Annotations are added to help track which `Bind9Cluster`, `Bind9Instance`, and `DNSZone`
+/// this record is associated with. This aids in debugging and resource management.
+///
+/// # Arguments
+///
+/// * `_client` - Kubernetes API client (unused, reserved for future use)
+/// * `api` - API client for the specific record type
+/// * `record_name` - Name of the record resource
+/// * `cluster_ref` - Name of the `Bind9Cluster`
+/// * `instance_name` - Name of the `Bind9Instance` being used
+/// * `zone_name` - Name of the DNS zone
+///
+/// # Errors
+///
+/// Returns an error if the Kubernetes API patch operation fails.
+async fn add_record_annotations<T>(
+    _client: &Client,
+    api: &Api<T>,
+    record_name: &str,
+    cluster_ref: &str,
+    instance_name: &str,
+    zone_name: &str,
+) -> Result<()>
+where
+    T: Resource + Clone + std::fmt::Debug + serde::de::DeserializeOwned + serde::Serialize,
+{
+    let patch = json!({
+        "metadata": {
+            "annotations": {
+                BINDY_CLUSTER_ANNOTATION: cluster_ref,
+                BINDY_INSTANCE_ANNOTATION: instance_name,
+                BINDY_ZONE_ANNOTATION: zone_name,
+            }
+        }
+    });
+
+    api.patch(record_name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await
+        .context("Failed to add annotations to record")?;
+
+    debug!(
+        record = record_name,
+        cluster = cluster_ref,
+        instance = instance_name,
+        zone = zone_name,
+        "Added tracking annotations to DNS record"
+    );
+
+    Ok(())
 }
 
 /// Reconciles an `ARecord` (IPv4 address) resource.
@@ -210,7 +264,20 @@ pub async fn reconcile_a_record(
     debug!(cluster_ref = %cluster_ref, zone_name = %zone_name, "Found DNSZone");
 
     // Find primary instance and get RNDC key + server address
-    let (key_data, server) = get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
+    let (instance_name, key_data, server) =
+        get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
+
+    // Add tracking annotations
+    let api: Api<ARecord> = Api::namespaced(client.clone(), &namespace);
+    add_record_annotations(
+        &client,
+        &api,
+        &name,
+        &cluster_ref,
+        &instance_name,
+        &zone_name,
+    )
+    .await?;
 
     // Add the record to the zone
     let result = zone_manager
@@ -255,7 +322,20 @@ pub async fn reconcile_txt_record(
 
     let (cluster_ref, zone_name) =
         get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
-    let (key_data, server) = get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
+    let (instance_name, key_data, server) =
+        get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
+
+    // Add tracking annotations
+    let api: Api<TXTRecord> = Api::namespaced(client.clone(), &namespace);
+    add_record_annotations(
+        &client,
+        &api,
+        &name,
+        &cluster_ref,
+        &instance_name,
+        &zone_name,
+    )
+    .await?;
 
     let result = zone_manager
         .add_txt_record(
@@ -296,7 +376,20 @@ pub async fn reconcile_aaaa_record(
 
     let (cluster_ref, zone_name) =
         get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
-    let (key_data, server) = get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
+    let (instance_name, key_data, server) =
+        get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
+
+    // Add tracking annotations
+    let api: Api<AAAARecord> = Api::namespaced(client.clone(), &namespace);
+    add_record_annotations(
+        &client,
+        &api,
+        &name,
+        &cluster_ref,
+        &instance_name,
+        &zone_name,
+    )
+    .await?;
 
     let result = zone_manager
         .add_aaaa_record(
@@ -342,7 +435,20 @@ pub async fn reconcile_cname_record(
 
     let (cluster_ref, zone_name) =
         get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
-    let (key_data, server) = get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
+    let (instance_name, key_data, server) =
+        get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
+
+    // Add tracking annotations
+    let api: Api<CNAMERecord> = Api::namespaced(client.clone(), &namespace);
+    add_record_annotations(
+        &client,
+        &api,
+        &name,
+        &cluster_ref,
+        &instance_name,
+        &zone_name,
+    )
+    .await?;
 
     let result = zone_manager
         .add_cname_record(
@@ -389,7 +495,20 @@ pub async fn reconcile_mx_record(
 
     let (cluster_ref, zone_name) =
         get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
-    let (key_data, server) = get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
+    let (instance_name, key_data, server) =
+        get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
+
+    // Add tracking annotations
+    let api: Api<MXRecord> = Api::namespaced(client.clone(), &namespace);
+    add_record_annotations(
+        &client,
+        &api,
+        &name,
+        &cluster_ref,
+        &instance_name,
+        &zone_name,
+    )
+    .await?;
 
     let result = zone_manager
         .add_mx_record(
@@ -434,7 +553,20 @@ pub async fn reconcile_ns_record(
 
     let (cluster_ref, zone_name) =
         get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
-    let (key_data, server) = get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
+    let (instance_name, key_data, server) =
+        get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
+
+    // Add tracking annotations
+    let api: Api<NSRecord> = Api::namespaced(client.clone(), &namespace);
+    add_record_annotations(
+        &client,
+        &api,
+        &name,
+        &cluster_ref,
+        &instance_name,
+        &zone_name,
+    )
+    .await?;
 
     let result = zone_manager
         .add_ns_record(
@@ -478,7 +610,20 @@ pub async fn reconcile_srv_record(
 
     let (cluster_ref, zone_name) =
         get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
-    let (key_data, server) = get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
+    let (instance_name, key_data, server) =
+        get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
+
+    // Add tracking annotations
+    let api: Api<SRVRecord> = Api::namespaced(client.clone(), &namespace);
+    add_record_annotations(
+        &client,
+        &api,
+        &name,
+        &cluster_ref,
+        &instance_name,
+        &zone_name,
+    )
+    .await?;
 
     let srv_data = crate::bind9::SRVRecordData {
         priority: spec.priority,
@@ -526,7 +671,20 @@ pub async fn reconcile_caa_record(
 
     let (cluster_ref, zone_name) =
         get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
-    let (key_data, server) = get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
+    let (instance_name, key_data, server) =
+        get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
+
+    // Add tracking annotations
+    let api: Api<CAARecord> = Api::namespaced(client.clone(), &namespace);
+    add_record_annotations(
+        &client,
+        &api,
+        &name,
+        &cluster_ref,
+        &instance_name,
+        &zone_name,
+    )
+    .await?;
 
     let result = zone_manager
         .add_caa_record(
