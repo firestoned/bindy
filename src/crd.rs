@@ -276,6 +276,8 @@ pub struct SecondaryZoneConfig {
     namespaced,
     shortname = "zone",
     shortname = "zones",
+    shortname = "dz",
+    shortname = "dzs",
     doc = "DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defines a zone (e.g., example.com) with SOA record parameters and is served by a specified Bind9Instance.",
     printcolumn = r#"{"name":"Zone","type":"string","jsonPath":".spec.zoneName"}"#,
     printcolumn = r#"{"name":"Cluster","type":"string","jsonPath":".spec.clusterRef"}"#,
@@ -895,44 +897,82 @@ impl RndcAlgorithm {
 
 /// Reference to a Kubernetes Secret containing RNDC/TSIG credentials.
 ///
-/// This allows you to store sensitive RNDC authentication data in Kubernetes Secrets
-/// rather than directly in the CRD. The secret should contain the key name and
-/// base64-encoded secret value. The algorithm is specified in the CRD, not in the secret.
+/// This allows you to use an existing external Secret for RNDC authentication instead
+/// of having the operator auto-generate one. The Secret is mounted as a directory at
+/// `/etc/bind/keys/` in the BIND9 container, and BIND9 uses the `rndc.key` file.
 ///
-/// # Example
+/// # External (User-Managed) Secrets
 ///
-/// ```yaml
-/// # In the Bind9Cluster CRD:
-/// spec:
-///   rndcSecretRefs:
-///     - name: rndc-key
-///       algorithm: hmac-sha256  # Algorithm specified here
+/// For external secrets, you ONLY need to provide the `rndc.key` field containing
+/// the complete BIND9 key file content. The other fields (`key-name`, `algorithm`,
+/// `secret`) are optional metadata used by operator-generated secrets.
 ///
-/// ---
-/// # Corresponding Secret:
-/// apiVersion: v1
-/// kind: Secret
-/// metadata:
-///   name: rndc-key
-/// type: Opaque
-/// data:
-///   key-name: dHJhbnNmZXIta2V5        # base64: "transfer-key"
-///   secret: YmFzZTY0ZW5jb2RlZHZhbHVlPT0=  # base64-encoded key material
-/// ```
-///
-/// Note: When using `stringData` instead of `data`, Kubernetes automatically
-/// base64-encodes the values:
+/// ## Minimal External Secret Example
 ///
 /// ```yaml
 /// apiVersion: v1
 /// kind: Secret
 /// metadata:
-///   name: rndc-key
+///   name: my-rndc-key
+///   namespace: dns-system
 /// type: Opaque
 /// stringData:
-///   key-name: transfer-key
-///   secret: base64encodedvalue==  # Already base64-encoded key material
+///   rndc.key: |
+///     key "bindy-operator" {
+///         algorithm hmac-sha256;
+///         secret "base64EncodedSecretKeyMaterial==";
+///     };
 /// ```
+///
+/// # Auto-Generated (Operator-Managed) Secrets
+///
+/// When the operator auto-generates a Secret (no `rndcSecretRef` specified), it
+/// creates a Secret with all 4 fields for internal metadata tracking:
+///
+/// ```yaml
+/// apiVersion: v1
+/// kind: Secret
+/// metadata:
+///   name: bind9-instance-rndc
+///   namespace: dns-system
+/// type: Opaque
+/// stringData:
+///   key-name: "bindy-operator"     # Operator metadata
+///   algorithm: "hmac-sha256"       # Operator metadata
+///   secret: "randomBase64Key=="    # Operator metadata
+///   rndc.key: |                    # Used by BIND9
+///     key "bindy-operator" {
+///         algorithm hmac-sha256;
+///         secret "randomBase64Key==";
+///     };
+/// ```
+///
+/// # Using with `Bind9Instance`
+///
+/// ```yaml
+/// apiVersion: bindy.firestoned.io/v1alpha1
+/// kind: Bind9Instance
+/// metadata:
+///   name: production-dns-primary-0
+/// spec:
+///   clusterRef: production-dns
+///   role: primary
+///   rndcSecretRef:
+///     name: my-rndc-key
+///     algorithm: hmac-sha256
+/// ```
+///
+/// # How It Works
+///
+/// When the Secret is mounted at `/etc/bind/keys/`, Kubernetes creates individual
+/// files for each Secret key:
+/// - `/etc/bind/keys/rndc.key` (the BIND9 key file) ← **This is what BIND9 uses**
+/// - `/etc/bind/keys/key-name` (optional metadata for operator-generated secrets)
+/// - `/etc/bind/keys/algorithm` (optional metadata for operator-generated secrets)
+/// - `/etc/bind/keys/secret` (optional metadata for operator-generated secrets)
+///
+/// The `rndc.conf` file includes `/etc/bind/keys/rndc.key`, so BIND9 only needs
+/// that one file to exist
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RndcSecretRef {
@@ -1075,6 +1115,22 @@ pub struct Bind9Config {
     /// - `["none"]` - Disable IPv6 listening
     #[serde(default)]
     pub listen_on_v6: Option<Vec<String>>,
+
+    /// Reference to an existing Kubernetes Secret containing RNDC key.
+    ///
+    /// If specified at the global config level, all instances in the cluster will use
+    /// this existing Secret instead of auto-generating individual secrets, unless
+    /// overridden at the role (primary/secondary) or instance level.
+    ///
+    /// This allows centralized RNDC key management for the entire cluster.
+    ///
+    /// Precedence order (highest to lowest):
+    /// 1. Instance level (`spec.rndcSecretRef`)
+    /// 2. Role level (`spec.primary.rndcSecretRef` or `spec.secondary.rndcSecretRef`)
+    /// 3. Global level (`spec.global.rndcSecretRef`)
+    /// 4. Auto-generated (default)
+    #[serde(default)]
+    pub rndc_secret_ref: Option<RndcSecretRef>,
 }
 
 /// DNSSEC (DNS Security Extensions) configuration
@@ -1083,15 +1139,6 @@ pub struct Bind9Config {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DNSSECConfig {
-    /// Enable DNSSEC signing of zones
-    ///
-    /// **Note**: This field is deprecated in BIND 9.15+ as DNSSEC is always enabled.
-    /// Kept for backwards compatibility but has no effect on modern BIND versions.
-    ///
-    /// Default: `true` (implicitly enabled in BIND 9.15+)
-    #[serde(default)]
-    pub enabled: Option<bool>,
-
     /// Enable DNSSEC validation of responses
     ///
     /// When enabled, BIND will validate DNSSEC signatures on responses from other
@@ -1200,6 +1247,16 @@ pub struct PrimaryConfig {
     /// Can be overridden at the instance level via `spec.config.allowTransfer`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_transfer: Option<Vec<String>>,
+
+    /// Reference to an existing Kubernetes Secret containing RNDC key for all primary instances.
+    ///
+    /// If specified, all primary instances in this cluster will use this existing Secret
+    /// instead of auto-generating individual secrets. This allows sharing the same RNDC key
+    /// across all primary instances.
+    ///
+    /// Can be overridden at the instance level via `spec.rndcSecretRef`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rndc_secret_ref: Option<RndcSecretRef>,
 }
 
 /// Secondary instance configuration
@@ -1244,6 +1301,16 @@ pub struct SecondaryConfig {
     /// Can be overridden at the instance level via `spec.config.allowTransfer`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_transfer: Option<Vec<String>>,
+
+    /// Reference to an existing Kubernetes Secret containing RNDC key for all secondary instances.
+    ///
+    /// If specified, all secondary instances in this cluster will use this existing Secret
+    /// instead of auto-generating individual secrets. This allows sharing the same RNDC key
+    /// across all secondary instances.
+    ///
+    /// Can be overridden at the instance level via `spec.rndcSecretRef`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rndc_secret_ref: Option<RndcSecretRef>,
 }
 
 /// `BIND9Cluster` - Defines a logical DNS cluster
@@ -1460,6 +1527,16 @@ pub struct Bind9InstanceSpec {
     /// These mounts override cluster-level volume mounts.
     #[serde(default)]
     pub volume_mounts: Option<Vec<VolumeMount>>,
+
+    /// Reference to an existing Kubernetes Secret containing RNDC key.
+    ///
+    /// If specified, uses this existing Secret instead of auto-generating one.
+    /// The Secret must contain the keys specified in the reference (defaults: "key-name", "algorithm", "secret", "rndc.key").
+    /// This allows sharing RNDC keys across instances or using externally managed secrets.
+    ///
+    /// If not specified, a Secret will be auto-generated for this instance.
+    #[serde(default)]
+    pub rndc_secret_ref: Option<RndcSecretRef>,
 }
 
 /// `Bind9Instance` status

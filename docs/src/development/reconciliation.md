@@ -2,6 +2,22 @@
 
 Detailed reconciliation logic for each resource type.
 
+## Status Update Optimization
+
+All reconcilers implement status change detection to prevent tight reconciliation loops. Before updating the status subresource, each reconciler checks if the status has actually changed. This prevents unnecessary API calls and reconciliation cycles.
+
+**Status is only updated when:**
+- Condition type changes
+- Status value changes
+- Message changes
+- Status doesn't exist yet
+
+This optimization is implemented in:
+- `Bind9Cluster` reconciler ([src/reconcilers/bind9cluster.rs:394-430](../../../src/reconcilers/bind9cluster.rs#L394-L430))
+- `Bind9Instance` reconciler ([src/reconcilers/bind9instance.rs:736-758](../../../src/reconcilers/bind9instance.rs#L736-L758))
+- `DNSZone` reconciler ([src/reconcilers/dnszone.rs:535-565](../../../src/reconcilers/dnszone.rs#L535-L565))
+- All record reconcilers ([src/reconcilers/records.rs:1032-1072](../../../src/reconcilers/records.rs#L1032-L1072))
+
 ## Bind9Instance Reconciliation
 
 ```rust

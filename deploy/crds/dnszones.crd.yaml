@@ -17,6 +17,8 @@ spec:
     shortNames:
     - zone
     - zones
+    - dz
+    - dzs
     singular: dnszone
   scope: Namespaced
   versions:
@@ -42,23 +44,45 @@ spec:
             description: |-
               `DNSZone` defines a DNS zone to be managed by BIND9.
 
-              A `DNSZone` represents an authoritative DNS zone (e.g., example.com) that will be served by a BIND9 cluster. The zone includes SOA record information and will be synchronized to all instances in the referenced cluster via AXFR/IXFR.
+              A `DNSZone` represents an authoritative DNS zone (e.g., example.com) that will be
+              served by a BIND9 cluster. The zone includes SOA record information and will be
+              synchronized to all instances in the referenced cluster via AXFR/IXFR.
 
               # Example
 
-              ```yaml apiVersion: dns.firestoned.io/v1alpha1 kind: DNSZone metadata: name: example-com namespace: dns-system spec: zoneName: example.com clusterRef: my-dns-cluster soa_record: primaryNs: ns1.example.com. adminEmail: admin.example.com. serial: 2024010101 refresh: 3600 retry: 600 expire: 604800 negativeTtl: 86400 ttl: 3600 ```
+              ```yaml
+              apiVersion: dns.firestoned.io/v1alpha1
+              kind: DNSZone
+              metadata:
+                name: example-com
+                namespace: dns-system
+              spec:
+                zoneName: example.com
+                clusterRef: my-dns-cluster
+                soa_record:
+                  primaryNs: ns1.example.com.
+                  adminEmail: admin.example.com.
+                  serial: 2024010101
+                  refresh: 3600
+                  retry: 600
+                  expire: 604800
+                  negativeTtl: 86400
+                ttl: 3600
+              ```
             properties:
               clusterRef:
                 description: |-
                   Reference to the `Bind9Instance` that serves this zone.
 
-                  Must match the name of a `Bind9Instance` in the same namespace. The zone will be added to this instance via rndc addzone.
+                  Must match the name of a `Bind9Instance` in the same namespace.
+                  The zone will be added to this instance via rndc addzone.
                 type: string
               soaRecord:
                 description: |-
                   SOA (Start of Authority) record - defines zone authority and refresh parameters.
 
-                  The SOA record is required for all authoritative zones and contains timing information for zone transfers and caching.
+                  The SOA record is required for all authoritative zones and contains
+                  timing information for zone transfers and caching.
                 properties:
                   adminEmail:
                     description: |-
@@ -69,7 +93,8 @@ spec:
                     type: string
                   expire:
                     description: |-
-                      Expire time in seconds. After this time, secondaries stop serving the zone if they can't contact the primary.
+                      Expire time in seconds. After this time, secondaries stop serving the zone
+                      if they can't contact the primary.
 
                       Should be much larger than refresh+retry. Typical values: 604800-2419200 (1-4 weeks).
                     format: int32
@@ -112,9 +137,11 @@ spec:
                     type: integer
                   serial:
                     description: |-
-                      Serial number for this zone. Typically in YYYYMMDDNN format. Secondaries use this to determine if they need to update.
+                      Serial number for this zone. Typically in YYYYMMDDNN format.
+                      Secondaries use this to determine if they need to update.
 
-                      Must be a 32-bit unsigned integer (0 to 4294967295). The field is i64 to accommodate the full u32 range.
+                      Must be a 32-bit unsigned integer (0 to 4294967295).
+                      The field is i64 to accommodate the full u32 range.
                     format: int64
                     maximum: 4294967295.0
                     minimum: 0.0
@@ -132,7 +159,8 @@ spec:
                 description: |-
                   Default TTL (Time To Live) for records in this zone, in seconds.
 
-                  If not specified, individual records must specify their own TTL. Typical values: 300-86400 (5 minutes to 1 day).
+                  If not specified, individual records must specify their own TTL.
+                  Typical values: 300-86400 (5 minutes to 1 day).
                 format: int32
                 maximum: 2147483647.0
                 minimum: 0.0
@@ -142,7 +170,8 @@ spec:
                 description: |-
                   DNS zone name (e.g., "example.com").
 
-                  Must be a valid DNS zone name. Can be a domain or subdomain. Examples: "example.com", "internal.example.com", "10.in-addr.arpa"
+                  Must be a valid DNS zone name. Can be a domain or subdomain.
+                  Examples: "example.com", "internal.example.com", "10.in-addr.arpa"
                 pattern: ^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$
                 type: string
             required:
@@ -160,7 +189,8 @@ spec:
                   description: |-
                     Condition represents an observation of a resource's current state.
 
-                    Conditions are used in status subresources to communicate the state of a resource to users and controllers.
+                    Conditions are used in status subresources to communicate the state of
+                    a resource to users and controllers.
                   properties:
                     lastTransitionTime:
                       description: Last time the condition transitioned from one status to another (RFC3339 format).

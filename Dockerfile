@@ -4,27 +4,50 @@
 # Build stage
 FROM rust:1.87 as builder
 
+# Accept version as build argument (e.g., 1.0.0)
+ARG VERSION=0.1.0
+
 WORKDIR /workspace
+
+# Install musl target and cross-compilation tools for static linking
+RUN rustup target add aarch64-unknown-linux-musl x86_64-unknown-linux-musl && \
+    apt-get update && \
+    apt-get install -y musl-tools && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy only dependency manifests first to leverage Docker layer caching
 COPY Cargo.toml ./
 COPY Cargo.lock* ./
+
+# Update version in Cargo.toml if VERSION arg is provided
+RUN sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
+
+# Determine the musl target based on architecture
+RUN ARCH=$(uname -m) && \
+    if [ "$ARCH" = "aarch64" ]; then \
+        echo "aarch64-unknown-linux-musl" > /tmp/target; \
+    else \
+        echo "x86_64-unknown-linux-musl" > /tmp/target; \
+    fi
 
 # Create dummy source files to build dependencies
 RUN mkdir -p src/bin && \
     echo "fn main() {}" > src/main.rs && \
     echo "fn main() {}" > src/bin/crdgen.rs && \
     echo "fn main() {}" > src/bin/crddoc.rs && \
-    cargo build --release && \
+    cargo build --release --target $(cat /tmp/target) && \
     rm -rf src
 
 # Now copy the actual source code
 COPY src ./src
 COPY templates ./templates
 
-# Build the actual controller
+# Build the actual controller with musl for static linking
 # Touch main.rs to ensure it's rebuilt with the real code
-RUN touch src/main.rs && cargo build --release
+RUN touch src/main.rs && \
+    TARGET=$(cat /tmp/target) && \
+    cargo build --release --target $TARGET && \
+    cp target/$TARGET/release/bindy target/release/bindy
 
 # Runtime stage
 FROM alpine:3.20
@@ -34,19 +57,20 @@ LABEL org.opencontainers.image.description="BIND9 DNS Controller for Kubernetes"
 LABEL org.opencontainers.image.licenses="MIT"
 
 # Install BIND9 and required libraries
+# Binary is statically linked with musl, so no glibc needed
 RUN apk add --no-cache \
     bind \
     bind-tools \
     ca-certificates \
-    curl \
-    libgcc
+    curl
 
-# Create bind user and directories
-RUN addgroup -S bind && adduser -S -G bind bind && \
+# Create bindy user and directories
+RUN addgroup -S bindy && adduser -S -G bindy bindy && \
     mkdir -p /etc/bind/zones && \
     mkdir -p /var/cache/bind && \
     mkdir -p /var/lib/bind && \
-    chown -R bind:bind /etc/bind /var/cache/bind /var/lib/bind
+    mkdir -p /run/named && \
+    chown -R bindy:bindy /etc/bind /var/cache/bind /var/lib/bind /run/named
 
 # Copy the built controller from builder
 COPY --from=builder /workspace/target/release/bindy /usr/local/bin/
@@ -55,7 +79,7 @@ COPY --from=builder /workspace/target/release/bindy /usr/local/bin/
 RUN chmod +x /usr/local/bin/bindy
 
 # Run as bind user
-USER bind
+USER bindy
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

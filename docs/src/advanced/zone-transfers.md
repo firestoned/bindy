@@ -75,7 +75,7 @@ Primary Updates Zone
       ├──NOTIFY──▶ Secondary 1
       ├──NOTIFY──▶ Secondary 2
       └──NOTIFY──▶ Secondary 3
-      
+
 Secondaries initiate IXFR/AXFR
 ```
 

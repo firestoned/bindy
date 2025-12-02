@@ -59,8 +59,10 @@
 
 pub mod bind9;
 pub mod bind9_resources;
+pub mod constants;
 pub mod crd;
 pub mod crd_docs;
+pub mod labels;
 pub mod reconcilers;
 
 #[cfg(test)]
