@@ -40,39 +40,32 @@ The **bindy-controller** runs as a sidecar container alongside each BIND9 pod. I
 
 ## Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Cluster Level                           │
-│                                                              │
-│  ┌────────────────────────────────────────────────────┐    │
-│  │              bindy-operator                         │    │
-│  │  - Watches Bind9Instance CRDs                       │    │
-│  │  - Creates Deployments, Services, ConfigMaps        │    │
-│  └──────────────────────┬─────────────────────────────┘    │
-│                         │                                   │
-│                         │ creates                           │
-│                         ▼                                   │
-└─────────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│                  Namespace Level (per instance)             │
-│                                                              │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │                   BIND9 Pod                           │  │
-│  │  ┌────────────────┐     ┌─────────────────────────┐  │  │
-│  │  │ BIND9          │     │ bindy-controller        │  │  │
-│  │  │ Container      │     │ - Watches DNSZone       │  │  │
-│  │  │                │     │ - Watches Records       │  │  │
-│  │  │ - Serves DNS   │◄────┤ - Writes zone files     │  │  │
-│  │  │ - Reads zones  │     │                         │  │  │
-│  │  └────────┬───────┘     └───────────┬─────────────┘  │  │
-│  │           │                         │                 │  │
-│  │           └─────────────────────────┘                 │  │
-│  │              Shared Volume                            │  │
-│  │              /etc/bind/zones                          │  │
-│  └──────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph cluster["Cluster Level"]
+        operator["bindy-operator<br/>- Watches Bind9Instance CRDs<br/>- Creates Deployments, Services, ConfigMaps"]
+    end
+
+    subgraph namespace["Namespace Level (per instance)"]
+        subgraph pod["BIND9 Pod"]
+            bind9["BIND9 Container<br/>- Serves DNS<br/>- Reads zones"]
+            controller["bindy-controller<br/>- Watches DNSZone<br/>- Watches Records<br/>- Writes zone files"]
+            volume["Shared Volume<br/>/etc/bind/zones"]
+
+            controller -->|writes| volume
+            volume -->|reads| bind9
+        end
+    end
+
+    operator -->|creates| pod
+
+    style cluster fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style namespace fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    style pod fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    style operator fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style bind9 fill:#ffe0b2,stroke:#e65100,stroke-width:2px
+    style controller fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style volume fill:#fce4ec,stroke:#880e4f,stroke-width:2px
 ```
 
 ## Zone Management via RNDC

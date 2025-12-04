@@ -112,15 +112,23 @@ spec:
 
 One active primary, multiple passive secondaries:
 
-```
-┌──────────────┐         ┌──────────────┐         ┌──────────────┐
-│   Primary    │────────▶│  Secondary   │────────▶│  Secondary   │
-│  (Active)    │  AXFR   │  (Passive)   │  AXFR   │  (Passive)   │
-│  us-east-1   │         │  us-west-2   │         │  eu-west-1   │
-└──────┬───────┘         └──────┬───────┘         └──────┬───────┘
-       │                        │                        │
-       └────────────────────────┴────────────────────────┘
-                       Clients query any
+```mermaid
+graph LR
+    primary["Primary<br/>(Active)<br/>us-east-1"]
+    sec1["Secondary<br/>(Passive)<br/>us-west-2"]
+    sec2["Secondary<br/>(Passive)<br/>eu-west-1"]
+    clients["Clients query any"]
+
+    primary -->|AXFR| sec1
+    sec1 -->|AXFR| sec2
+    primary --> clients
+    sec1 --> clients
+    sec2 --> clients
+
+    style primary fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style sec1 fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style sec2 fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style clients fill:#fff9c4,stroke:#f57f17,stroke-width:2px
 ```
 
 - Updates go to primary only
@@ -131,12 +139,15 @@ One active primary, multiple passive secondaries:
 
 Multiple primaries in different regions:
 
-```
-┌──────────────┐         ┌──────────────┐
-│   Primary    │◀───────▶│   Primary    │
-│  (zone-a)    │  Sync   │  (zone-b)    │
-│  us-east-1   │         │  eu-west-1   │
-└──────────────┘         └──────────────┘
+```mermaid
+graph LR
+    primary1["Primary<br/>(zone-a)<br/>us-east-1"]
+    primary2["Primary<br/>(zone-b)<br/>eu-west-1"]
+
+    primary1 <-->|Sync| primary2
+
+    style primary1 fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style primary2 fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
 ```
 
 - Different zones on different primaries
@@ -147,15 +158,21 @@ Multiple primaries in different regions:
 
 Same IP announced from multiple locations:
 
-```
-       Client Query (192.0.2.53)
-                 │
-         ┌───────┼───────┐
-         ▼       ▼       ▼
-      ┌────┐  ┌────┐  ┌────┐
-      │DNS │  │DNS │  │DNS │
-      │US  │  │EU  │  │APAC│
-      └────┘  └────┘  └────┘
+```mermaid
+graph TB
+    client["Client Query (192.0.2.53)"]
+    dns_us["DNS<br/>US"]
+    dns_eu["DNS<br/>EU"]
+    dns_apac["DNS<br/>APAC"]
+
+    client --> dns_us
+    client --> dns_eu
+    client --> dns_apac
+
+    style client fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    style dns_us fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style dns_eu fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style dns_apac fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
 ```
 
 - Requires BGP routing
@@ -301,19 +318,21 @@ The Bindy operator itself can run in high availability mode with automatic leade
 
 Multiple operator instances use Kubernetes Lease objects for distributed leader election:
 
-```
-┌──────────────┐         ┌──────────────┐         ┌──────────────┐
-│  Operator    │         │  Operator    │         │  Operator    │
-│  Instance 1  │         │  Instance 2  │         │  Instance 3  │
-│   (Leader)   │         │  (Standby)   │         │  (Standby)   │
-└──────┬───────┘         └──────┬───────┘         └──────┬───────┘
-       │                        │                        │
-       └────────────────────────┼────────────────────────┘
-                                │
-                        ┌───────▼────────┐
-                        │ Kubernetes API │
-                        │  Lease Object  │
-                        └────────────────┘
+```mermaid
+graph TB
+    op1["Operator<br/>Instance 1<br/>(Leader)"]
+    op2["Operator<br/>Instance 2<br/>(Standby)"]
+    op3["Operator<br/>Instance 3<br/>(Standby)"]
+    lease["Kubernetes API<br/>Lease Object"]
+
+    op1 --> lease
+    op2 --> lease
+    op3 --> lease
+
+    style op1 fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style op2 fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style op3 fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style lease fill:#fff9c4,stroke:#f57f17,stroke-width:2px
 ```
 
 **How it works:**

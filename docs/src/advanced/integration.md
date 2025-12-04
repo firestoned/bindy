@@ -27,12 +27,13 @@ Use Bindy alongside CoreDNS:
 # Bindy for custom domains
 ```
 
-### Service Mesh
+### Linkerd Service Mesh
 
-Integrate with Istio, Linkerd:
-- Custom DNS resolution
-- Service discovery
-- Traffic routing
+Integrate with Linkerd:
+- Custom DNS resolution for internal services
+- Service discovery integration
+- Traffic routing with DNS-based endpoints
+- mTLS-secured management communication (RNDC API)
 
 ## Next Steps
 

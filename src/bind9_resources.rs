@@ -699,6 +699,7 @@ struct DeploymentConfig<'a> {
     version: &'a str,
     volumes: Option<&'a Vec<Volume>>,
     volume_mounts: Option<&'a Vec<VolumeMount>>,
+    bindcar_config: Option<&'a crate::crd::BindcarConfig>,
     configmap_name: String,
 }
 
@@ -744,6 +745,16 @@ fn resolve_deployment_config<'a>(
         .as_ref()
         .or_else(|| cluster.and_then(|c| c.spec.volume_mounts.as_ref()));
 
+    // Get bindcar_config (instance overrides cluster global config)
+    let bindcar_config = instance.spec.bindcar_config.as_ref().or_else(|| {
+        cluster.and_then(|c| {
+            c.spec
+                .global
+                .as_ref()
+                .and_then(|g| g.bindcar_config.as_ref())
+        })
+    });
+
     // Determine ConfigMap name: use cluster ConfigMap if instance belongs to a cluster
     let configmap_name = if instance.spec.cluster_ref.is_empty() {
         // Use instance-specific ConfigMap
@@ -759,6 +770,7 @@ fn resolve_deployment_config<'a>(
         version,
         volumes,
         volume_mounts,
+        bindcar_config,
         configmap_name,
     }
 }
@@ -812,6 +824,7 @@ pub fn build_deployment(
                     config.config_map_refs,
                     config.volumes,
                     config.volume_mounts,
+                    config.bindcar_config,
                 )),
             },
             ..Default::default()
@@ -820,16 +833,18 @@ pub fn build_deployment(
     }
 }
 
-/// Build the `PodSpec` for BIND9
+/// Builds pod specification with BIND9 container and API sidecar
 ///
 /// # Arguments
-///
-/// * `configmap_name` - Name of the `ConfigMap` to mount (can be instance or cluster `ConfigMap`)
-/// * `version` - BIND9 version
+/// * `configmap_name` - Name of the `ConfigMap` with BIND9 configuration
+/// * `rndc_secret_name` - Name of the Secret with RNDC keys
+/// * `version` - BIND9 version tag
 /// * `image_config` - Optional custom image configuration
 /// * `config_map_refs` - Optional custom `ConfigMap` references
-/// * `custom_volumes` - Optional additional volumes to mount
-/// * `custom_volume_mounts` - Optional additional volume mounts
+/// * `custom_volumes` - Optional custom volumes to add
+/// * `custom_volume_mounts` - Optional custom volume mounts to add
+/// * `bindcar_config` - Optional API sidecar configuration
+#[allow(clippy::too_many_arguments)]
 fn build_pod_spec(
     configmap_name: &str,
     rndc_secret_name: &str,
@@ -838,6 +853,7 @@ fn build_pod_spec(
     config_map_refs: Option<&ConfigMapRefs>,
     custom_volumes: Option<&Vec<Volume>>,
     custom_volume_mounts: Option<&Vec<VolumeMount>>,
+    bindcar_config: Option<&crate::crd::BindcarConfig>,
 ) -> PodSpec {
     // Determine image to use
     let image = if let Some(img_cfg) = image_config {
@@ -927,7 +943,11 @@ fn build_pod_spec(
     });
 
     PodSpec {
-        containers: vec![bind9_container],
+        containers: {
+            let mut containers = vec![bind9_container];
+            containers.push(build_api_sidecar_container(bindcar_config));
+            containers
+        },
         volumes: Some(build_volumes(
             configmap_name,
             rndc_secret_name,
@@ -935,6 +955,85 @@ fn build_pod_spec(
             custom_volumes,
         )),
         image_pull_secrets,
+        ..Default::default()
+    }
+}
+
+/// Build the API sidecar container
+///
+/// # Arguments
+///
+/// * `bindcar_config` - Optional Bindcar container configuration from the instance spec
+/// * `rndc_secret_name` - Name of the Secret containing the RNDC key
+///
+/// Build the Bindcar sidecar container
+///
+/// # Arguments
+///
+/// * `bindcar_config` - Optional Bindcar container configuration from the instance spec
+///
+/// # Returns
+///
+/// A `Container` configured to run the Bindcar RNDC API sidecar
+fn build_api_sidecar_container(bindcar_config: Option<&crate::crd::BindcarConfig>) -> Container {
+    // Use defaults if bindcar_config is not provided
+    let image = bindcar_config
+        .and_then(|c| c.image.clone())
+        .unwrap_or_else(|| "ghcr.io/firestoned/bindcar:latest".to_string());
+
+    let image_pull_policy = bindcar_config
+        .and_then(|c| c.image_pull_policy.clone())
+        .unwrap_or_else(|| "IfNotPresent".to_string());
+
+    let port = bindcar_config.and_then(|c| c.port).unwrap_or(8080);
+
+    let log_level = bindcar_config
+        .and_then(|c| c.log_level.clone())
+        .unwrap_or_else(|| "info".to_string());
+
+    let resources = bindcar_config.and_then(|c| c.resources.clone());
+
+    Container {
+        name: "api".into(),
+        image: Some(image),
+        image_pull_policy: Some(image_pull_policy),
+        ports: Some(vec![ContainerPort {
+            name: Some("http".into()),
+            container_port: port,
+            protocol: Some("TCP".into()),
+            ..Default::default()
+        }]),
+        env: Some(vec![
+            EnvVar {
+                name: "BIND_ZONE_DIR".into(),
+                value: Some(BIND_CACHE_PATH.into()),
+                ..Default::default()
+            },
+            EnvVar {
+                name: "API_PORT".into(),
+                value: Some(port.to_string()),
+                ..Default::default()
+            },
+            EnvVar {
+                name: "RUST_LOG".into(),
+                value: Some(log_level),
+                ..Default::default()
+            },
+        ]),
+        volume_mounts: Some(vec![
+            VolumeMount {
+                name: "cache".into(),
+                mount_path: BIND_CACHE_PATH.into(),
+                ..Default::default()
+            },
+            VolumeMount {
+                name: "rndc-key".into(),
+                mount_path: BIND_KEYS_PATH.into(),
+                read_only: Some(true),
+                ..Default::default()
+            },
+        ]),
+        resources,
         ..Default::default()
     }
 }
@@ -1201,6 +1300,14 @@ pub fn build_service(
     let labels = build_labels_from_instance(name, instance);
     let owner_refs = build_owner_references(instance);
 
+    // Get API port from instance spec, default to 8080
+    let api_port = instance
+        .spec
+        .bindcar_config
+        .as_ref()
+        .and_then(|c| c.port)
+        .unwrap_or(8080);
+
     // Build default service spec
     let mut default_spec = ServiceSpec {
         selector: Some(labels.clone()),
@@ -1220,9 +1327,9 @@ pub fn build_service(
                 ..Default::default()
             },
             ServicePort {
-                name: Some("rndc".into()),
-                port: i32::from(RNDC_PORT),
-                target_port: Some(IntOrString::Int(i32::from(RNDC_PORT))),
+                name: Some("http".into()),
+                port: 80,
+                target_port: Some(IntOrString::Int(api_port)),
                 protocol: Some("TCP".into()),
                 ..Default::default()
             },

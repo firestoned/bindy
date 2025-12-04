@@ -157,6 +157,7 @@ mod tests {
                 listen_on: None,
                 listen_on_v6: None,
                 rndc_secret_ref: None,
+                bindcar_config: None,
             }),
             primary: None,
             secondary: None,
@@ -319,6 +320,7 @@ mod tests {
             listen_on: Some(vec!["any".into()]),
             listen_on_v6: Some(vec!["any".into()]),
             rndc_secret_ref: None,
+            bindcar_config: None,
         };
 
         assert_eq!(config.recursion, Some(false));
@@ -354,11 +356,14 @@ mod tests {
                 listen_on: None,
                 listen_on_v6: None,
                 rndc_secret_ref: None,
+                bindcar_config: None,
             }),
             primary_servers: None,
             volumes: None,
             volume_mounts: None,
             rndc_secret_ref: None,
+            storage: None,
+            bindcar_config: None,
         };
 
         assert_eq!(spec.cluster_ref, "my-cluster");

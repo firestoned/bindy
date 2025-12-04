@@ -123,12 +123,18 @@ This zone will be deployed to all instances matching the selector (all productio
 - All other regions host secondary instances
 - Zone transfers flow from primary to secondaries
 
-```
-Region 1 (us-east-1)         Region 2 (us-west-2)         Region 3 (eu-west-1)
-┌─────────────────────┐      ┌─────────────────────┐      ┌─────────────────────┐
-│  Primary Instances  │─────▶│ Secondary Instances │─────▶│ Secondary Instances │
-│   (Master zones)    │      │  (Slave zones)      │      │  (Slave zones)      │
-└─────────────────────┘      └─────────────────────┘      └─────────────────────┘
+```mermaid
+graph LR
+    region1["Region 1 (us-east-1)<br/>Primary Instances<br/>(Master zones)"]
+    region2["Region 2 (us-west-2)<br/>Secondary Instances<br/>(Slave zones)"]
+    region3["Region 3 (eu-west-1)<br/>Secondary Instances<br/>(Slave zones)"]
+
+    region1 -->|Zone Transfer| region2
+    region2 -->|Zone Transfer| region3
+
+    style region1 fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style region2 fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style region3 fill:#e1f5ff,stroke:#01579b,stroke-width:2px
 ```
 
 ### Option 2: Multi-Primary Model

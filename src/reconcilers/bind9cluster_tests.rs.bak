@@ -105,8 +105,6 @@ mod tests {
                 volumes: None,
                 volume_mounts: None,
                 rndc_secret_ref: None,
-                storage: None,
-                bindcar_config: None,
             },
             status,
         }
@@ -367,8 +365,6 @@ mod tests {
                 volumes: None,
                 volume_mounts: None,
                 rndc_secret_ref: None,
-                storage: None,
-                bindcar_config: None,
             },
             status: None, // No status set
         };
@@ -405,8 +401,6 @@ mod tests {
                 volumes: None,
                 volume_mounts: None,
                 rndc_secret_ref: None,
-                storage: None,
-                bindcar_config: None,
             },
             status: Some(Bind9InstanceStatus {
                 conditions: vec![Condition {

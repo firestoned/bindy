@@ -1,81 +1,69 @@
-# RNDC-Based Architecture
+# HTTP API Sidecar Architecture
 
-This page provides a detailed overview of Bindy's new RNDC-based architecture that uses the native BIND9 Remote Name Daemon Control protocol for managing DNS zones and records.
+This page provides a detailed overview of Bindy's architecture that uses an HTTP API sidecar (bindcar) to manage BIND9 instances. The sidecar executes RNDC commands locally within the pod, providing a modern RESTful interface for DNS management.
 
 ## High-Level Architecture
 
-```
-┌───────────────────────────────────────────────────────────────────────────┐
-│                         Kubernetes Cluster                                │
-│                                                                           │
-│  ┌─────────────────────────────────────────────────────────────────────┐ │
-│  │               Custom Resource Definitions (CRDs)                    │ │
-│  │                                                                     │ │
-│  │  Bind9Cluster (cluster config) → Bind9Instance → DNSZone           │ │
-│  │  DNSZone → ARecord, AAAARecord, TXTRecord, MXRecord, etc.          │ │
-│  └─────────────────────────────────────────────────────────────────────┘ │
-│                                  │                                        │
-│                                  │ watches (Kubernetes API)               │
-│                                  ▼                                        │
-│  ┌─────────────────────────────────────────────────────────────────────┐ │
-│  │                    Bindy Controller (Rust)                          │ │
-│  │                                                                     │ │
-│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐ │ │
-│  │  │ Bind9Cluster │  │ Bind9Instance│  │      DNSZone             │ │ │
-│  │  │  Reconciler  │  │  Reconciler  │  │     Reconciler           │ │ │
-│  │  └──────────────┘  └──────────────┘  └──────────────────────────┘ │ │
-│  │                                                                     │ │
-│  │  ┌──────────────────────────────────────────────────────────────┐  │ │
-│  │  │         DNS Record Reconcilers (A, AAAA, TXT, etc.)          │  │ │
-│  │  └──────────────────────────────────────────────────────────────┘  │ │
-│  │                                                                     │ │
-│  │  ┌──────────────────────────────────────────────────────────────┐  │ │
-│  │  │              Bind9Manager (RNDC Client)                      │  │ │
-│  │  │  • add_zone()     • reload_zone()    • notify_zone()        │  │ │
-│  │  │  • delete_zone()  • freeze_zone()    • retransfer_zone()    │  │ │
-│  │  │  • zone_status()  • thaw_zone()      • server_status()      │  │ │
-│  │  └──────────────────────────────────────────────────────────────┘  │ │
-│  └─────────────────────────────────────────────────────────────────────┘ │
-│                                  │                                        │
-│                                  │ RNDC Protocol (TSIG/HMAC-SHA256)       │
-│                                  │ Port 953 / TCP                         │
-│                                  ▼                                        │
-│  ┌─────────────────────────────────────────────────────────────────────┐ │
-│  │                    BIND9 Instances (Pods)                           │ │
-│  │                                                                     │ │
-│  │  ┌────────────────────┐        ┌────────────────────┐              │ │
-│  │  │  Primary Instance  │  AXFR  │ Secondary Instance │              │ │
-│  │  │  (bind9-primary)   │───────▶│  (bind9-secondary) │              │ │
-│  │  │                    │  IXFR  │                    │              │ │
-│  │  │  • rndc daemon     │◀───────│  • rndc daemon     │              │ │
-│  │  │  • Port 953 (rndc) │        │  • Port 953 (rndc) │              │ │
-│  │  │  • Port 53 (DNS)   │        │  • Port 53 (DNS)   │              │ │
-│  │  │                    │        │                    │              │ │
-│  │  │  Dynamic zones:    │        │  Transferred zones:│              │ │
-│  │  │  - example.com     │        │  - example.com     │              │ │
-│  │  │  - internal.local  │        │  - internal.local  │              │ │
-│  │  └────────────────────┘        └────────────────────┘              │ │
-│  │           │                              │                          │ │
-│  │           └──────────────┬───────────────┘                          │ │
-│  │                          │                                          │ │
-│  └──────────────────────────┼──────────────────────────────────────────┘ │
-│                             │                                            │
-│  ┌──────────────────────────┼──────────────────────────────────────────┐ │
-│  │        RNDC Keys (Kubernetes Secrets)                               │ │
-│  │  • bind9-primary-rndc-key (HMAC-SHA256)                            │ │
-│  │  • bind9-secondary-rndc-key (HMAC-SHA256)                          │ │
-│  └─────────────────────────────────────────────────────────────────────┘ │
-│                             │                                            │
-└─────────────────────────────┼────────────────────────────────────────────┘
-                              │
-                              │ DNS Queries (UDP/TCP 53)
-                              ▼
-                   ┌────────────────────┐
-                   │   DNS Clients      │
-                   │  • Applications    │
-                   │  • Services        │
-                   │  • External users  │
-                   └────────────────────┘
+```mermaid
+graph TB
+    subgraph k8s["Kubernetes Cluster"]
+        subgraph crds["Custom Resource Definitions (CRDs)"]
+            cluster["Bind9Cluster<br/>(cluster config)"]
+            instance["Bind9Instance"]
+            zone["DNSZone"]
+            records["ARecord, AAAARecord,<br/>TXTRecord, MXRecord, etc."]
+
+            cluster --> instance
+            instance --> zone
+            zone --> records
+        end
+
+        subgraph controller["Bindy Controller (Rust)"]
+            rec1["Bind9Cluster<br/>Reconciler"]
+            rec2["Bind9Instance<br/>Reconciler"]
+            rec3["DNSZone<br/>Reconciler"]
+            rec4["DNS Record<br/>Reconcilers"]
+            manager["Bind9Manager (RNDC Client)<br/>• add_zone() • reload_zone()<br/>• delete_zone() • notify_zone()<br/>• zone_status() • freeze_zone()"]
+        end
+
+        subgraph bind9["BIND9 Instances (Pods)"]
+            subgraph primary_pod["Primary Pod (bind9-primary)"]
+                primary_bind["BIND9 Container<br/>• rndc daemon (localhost:953)<br/>• DNS (port 53)<br/>Dynamic zones:<br/>- example.com<br/>- internal.local"]
+                primary_api["Bindcar API Sidecar<br/>• HTTP API (port 80→8080)<br/>• ServiceAccount auth<br/>• Local RNDC client<br/>• Zone file management"]
+
+                primary_api -->|"rndc localhost:953"| primary_bind
+            end
+
+            subgraph secondary_pod["Secondary Pod (bind9-secondary)"]
+                secondary_bind["BIND9 Container<br/>• rndc daemon (localhost:953)<br/>• DNS (port 53)<br/>Transferred zones:<br/>- example.com<br/>- internal.local"]
+                secondary_api["Bindcar API Sidecar<br/>• HTTP API (port 80→8080)<br/>• ServiceAccount auth<br/>• Local RNDC client"]
+
+                secondary_api -->|"rndc localhost:953"| secondary_bind
+            end
+        end
+
+        secrets["RNDC Keys (Secrets)<br/>• bind9-primary-rndc-key<br/>• bind9-secondary-rndc-key<br/>(HMAC-SHA256)"]
+        volumes["Shared Volumes<br/>• /var/cache/bind (zone files)<br/>• /etc/bind/keys (RNDC keys, read-only for API)"]
+    end
+
+    clients["DNS Clients<br/>• Applications<br/>• Services<br/>• External users"]
+
+    crds -->|"watches<br/>(Kubernetes API)"| controller
+    controller -->|"HTTP API<br/>(REST/JSON)<br/>Port 80/TCP"| bind9
+    volumes -.->|"mounts"| primary_pod
+    volumes -.->|"mounts"| secondary_pod
+    primary_bind -->|"AXFR/IXFR"| secondary_bind
+    secondary_bind -.->|"IXFR"| primary_bind
+    bind9 -->|"DNS Queries<br/>(UDP/TCP 53)"| clients
+    secrets -.->|"authenticates"| primary_api
+    secrets -.->|"authenticates"| secondary_api
+
+    style k8s fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style crds fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    style controller fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    style bind9 fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style secrets fill:#ffe0b2,stroke:#e65100,stroke-width:2px
+    style clients fill:#fce4ec,stroke:#880e4f,stroke-width:2px
 ```
 
 ## Key Architectural Changes from File-Based Approach

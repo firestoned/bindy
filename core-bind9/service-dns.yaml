@@ -7,7 +7,7 @@ metadata:
     app: bind9
     component: dns
   annotations:
-    linkerd.io/inject: disabled  # DNS doesn't work well with service mesh sidecar
+    linkerd.io/inject: disabled  # DNS doesn't work well with Linkerd sidecar
 spec:
   type: NodePort
   selector:

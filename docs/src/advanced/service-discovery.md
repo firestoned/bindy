@@ -33,17 +33,21 @@ spec:
 
 ### Service Discovery Pattern
 
-```
-Application Query: myapp.production.internal.local
-                           │
-                           ▼
-                    Bindy DNS Server
-                           │
-                           ▼
-                   Returns: 10.100.5.10
-                           │
-                           ▼
-                  Kubernetes Service
+```mermaid
+graph TB
+    app["Application Query:<br/>myapp.production.internal.local"]
+    dns["Bindy DNS Server"]
+    result["Returns: 10.100.5.10"]
+    svc["Kubernetes Service"]
+
+    app --> dns
+    dns --> result
+    result --> svc
+
+    style app fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    style dns fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style result fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style svc fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
 ```
 
 ## Dynamic Updates

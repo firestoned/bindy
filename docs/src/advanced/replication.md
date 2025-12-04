@@ -8,13 +8,21 @@ Implement multi-region DNS replication strategies for global availability.
 
 One central primary, multiple regional secondaries:
 
-```
-        Primary (us-east-1)
-             │
-      ┌──────┼──────┐
-      ▼      ▼      ▼
-  Secondary Secondary Secondary
-  (us-west) (eu-west) (ap-south)
+```mermaid
+graph TB
+    primary["Primary (us-east-1)"]
+    sec1["Secondary<br/>(us-west)"]
+    sec2["Secondary<br/>(eu-west)"]
+    sec3["Secondary<br/>(ap-south)"]
+
+    primary --> sec1
+    primary --> sec2
+    primary --> sec3
+
+    style primary fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style sec1 fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style sec2 fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style sec3 fill:#e1f5ff,stroke:#01579b,stroke-width:2px
 ```
 
 **Pros:** Simple, clear source of truth
@@ -24,13 +32,21 @@ One central primary, multiple regional secondaries:
 
 Multiple primaries in different regions:
 
-```
-Primary A ◀─────▶ Primary B
-(us-east)        (eu-west)
-    │                │
-    ▼                ▼
-Secondary        Secondary
-(us-west)        (ap-south)
+```mermaid
+graph TB
+    primaryA["Primary A<br/>(us-east)"]
+    primaryB["Primary B<br/>(eu-west)"]
+    sec1["Secondary<br/>(us-west)"]
+    sec2["Secondary<br/>(ap-south)"]
+
+    primaryA <-->|Sync| primaryB
+    primaryA --> sec1
+    primaryB --> sec2
+
+    style primaryA fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style primaryB fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style sec1 fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style sec2 fill:#e1f5ff,stroke:#01579b,stroke-width:2px
 ```
 
 **Pros:** Regional updates, better latency
@@ -40,17 +56,30 @@ Secondary        Secondary
 
 Tiered replication structure:
 
-```
-      Global Primary
-           │
-    ┌──────┼──────┐
-    ▼      ▼      ▼
-Regional   Regional  Regional
-Primary    Primary   Primary
-    │         │         │
-    ▼         ▼         ▼
-  Local     Local     Local
-Secondary Secondary Secondary
+```mermaid
+graph TB
+    global["Global Primary"]
+    reg1["Regional<br/>Primary"]
+    reg2["Regional<br/>Primary"]
+    reg3["Regional<br/>Primary"]
+    local1["Local<br/>Secondary"]
+    local2["Local<br/>Secondary"]
+    local3["Local<br/>Secondary"]
+
+    global --> reg1
+    global --> reg2
+    global --> reg3
+    reg1 --> local1
+    reg2 --> local2
+    reg3 --> local3
+
+    style global fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    style reg1 fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style reg2 fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style reg3 fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style local1 fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style local2 fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style local3 fill:#e1f5ff,stroke:#01579b,stroke-width:2px
 ```
 
 **Pros:** Scales well, reduces global load

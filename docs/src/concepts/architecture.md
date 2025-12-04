@@ -4,53 +4,42 @@ This page provides a detailed overview of Bindy's architecture and design princi
 
 ## High-Level Architecture
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│                    Kubernetes Cluster                        │
-│                                                              │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │            Custom Resource Definitions (CRDs)          │ │
-│  │  • Bind9Instance  • DNSZone  • ARecord  • MXRecord ... │ │
-│  └──────────────────────┬─────────────────────────────────┘ │
-│                         │                                    │
-│                         │ watches                            │
-│                         ▼                                    │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │              Bindy Controller (Rust)                   │ │
-│  │                                                        │ │
-│  │  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐ │ │
-│  │  │ Bind9Instance│  │   DNSZone    │  │   Records   │ │ │
-│  │  │  Reconciler  │  │  Reconciler  │  │  Reconciler │ │ │
-│  │  └──────────────┘  └──────────────┘  └─────────────┘ │ │
-│  │                                                        │ │
-│  │  ┌──────────────────────────────────────────────────┐ │ │
-│  │  │         Zone File Generator                      │ │ │
-│  │  └──────────────────────────────────────────────────┘ │ │
-│  └──────────────────────────┬─────────────────────────────┘ │
-│                             │                                │
-│                             │ configures                     │
-│                             ▼                                │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │              BIND9 Instances                           │ │
-│  │                                                        │ │
-│  │  ┌──────────┐      ┌──────────┐      ┌──────────┐    │ │
-│  │  │ Primary  │ AXFR │Secondary │ AXFR │Secondary │    │ │
-│  │  │   DNS    │─────▶│   DNS    │─────▶│   DNS    │    │ │
-│  │  │(us-east) │      │(us-west) │      │   (eu)   │    │ │
-│  │  └────┬─────┘      └────┬─────┘      └────┬─────┘    │ │
-│  └───────┼─────────────────┼─────────────────┼───────────┘ │
-└──────────┼─────────────────┼─────────────────┼─────────────┘
-           │                 │                 │
-           └─────────────────┴─────────────────┘
-                             │
-                             │ DNS queries (UDP/TCP 53)
-                             ▼
-                    ┌─────────────────┐
-                    │     Clients     │
-                    │  • Apps         │
-                    │  • Services     │
-                    │  • External     │
-                    └─────────────────┘
+```mermaid
+graph TB
+    subgraph k8s["Kubernetes Cluster"]
+        subgraph crds["Custom Resource Definitions"]
+            crd1["Bind9Instance"]
+            crd2["DNSZone"]
+            crd3["ARecord, MXRecord, ..."]
+        end
+
+        subgraph controller["Bindy Controller (Rust)"]
+            reconciler1["Instance<br/>Reconciler"]
+            reconciler2["Zone<br/>Reconciler"]
+            reconciler3["Records<br/>Reconciler"]
+            zonegen["Zone File Generator"]
+        end
+
+        subgraph bind9["BIND9 Instances"]
+            primary["Primary DNS<br/>(us-east)"]
+            secondary1["Secondary DNS<br/>(us-west)"]
+            secondary2["Secondary DNS<br/>(eu)"]
+        end
+    end
+
+    clients["Clients<br/>• Apps<br/>• Services<br/>• External"]
+
+    crds -->|watches| controller
+    controller -->|configures| bind9
+    primary -->|AXFR| secondary1
+    secondary1 -->|AXFR| secondary2
+    bind9 -->|"DNS queries<br/>(UDP/TCP 53)"| clients
+
+    style k8s fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style crds fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    style controller fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    style bind9 fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style clients fill:#fce4ec,stroke:#880e4f,stroke-width:2px
 ```
 
 ## Components

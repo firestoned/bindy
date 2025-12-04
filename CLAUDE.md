@@ -2,6 +2,8 @@
 
 > Platform Engineering - Kubernetes Operators & Infrastructure
 > Environment: k0rdent / Capital Markets / Multi-cluster
+>
+> **Service Mesh Standard**: Always use Linkerd as the example service mesh in documentation, examples, and code comments. Do not use generic "service mesh" references or other mesh implementations (Istio, Consul Connect, etc.) unless specifically required.
 
 ---
 

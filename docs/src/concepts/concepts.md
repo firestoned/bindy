@@ -36,38 +36,31 @@ Bindy introduces these Custom Resource Definitions (CRDs):
 
 ## How It Works
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Kubernetes API                          │
-│  ┌──────────┐  ┌─────────┐  ┌──────────┐  ┌──────────┐    │
-│  │  DNSZone │  │ ARecord │  │ MXRecord │  │ TXTRecord│ ...│
-│  └────┬─────┘  └────┬────┘  └────┬─────┘  └────┬─────┘    │
-│       │             │            │             │           │
-└───────┼─────────────┼────────────┼─────────────┼───────────┘
-        │             │            │             │
-        └─────────────┴────────────┴─────────────┘
-                      │
-                      ▼
-        ┌─────────────────────────────┐
-        │   Bindy Controller          │
-        │   • Watches CRDs            │
-        │   • Reconciles state        │
-        │   • RNDC client             │
-        │   • TSIG authentication     │
-        └──────────────┬──────────────┘
-                       │
-                       │ RNDC Protocol
-                       │ (Port 953/TCP)
-                       │ TSIG/HMAC-SHA256
-                       ▼
-        ┌─────────────────────────────┐
-        │   BIND9 Instances           │
-        │   • rndc daemon (port 953)  │
-        │   • Primary servers         │
-        │   • Secondary servers       │
-        │   • Dynamic zones           │
-        │   • DNS queries (port 53)   │
-        └─────────────────────────────┘
+```mermaid
+graph TB
+    subgraph k8s["Kubernetes API"]
+        zone["DNSZone"]
+        arecord["ARecord"]
+        mx["MXRecord"]
+        txt["TXTRecord"]
+        more["..."]
+    end
+
+    controller["Bindy Controller<br/>• Watches CRDs<br/>• Reconciles state<br/>• RNDC client<br/>• TSIG authentication"]
+
+    bind9["BIND9 Instances<br/>• rndc daemon (port 953)<br/>• Primary servers<br/>• Secondary servers<br/>• Dynamic zones<br/>• DNS queries (port 53)"]
+
+    zone --> controller
+    arecord --> controller
+    mx --> controller
+    txt --> controller
+    more --> controller
+
+    controller -->|"RNDC Protocol<br/>(Port 953/TCP)<br/>TSIG/HMAC-SHA256"| bind9
+
+    style k8s fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style controller fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    style bind9 fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
 ```
 
 ### Reconciliation Loop
@@ -127,20 +120,21 @@ This simplifies:
 
 ## Resource Relationships
 
-```
-Bind9Cluster (cluster config)
-    ↑
-    │ referenced by clusterRef
-    │
-Bind9Instance (has clusterRef)
-    ↑
-    │ zone.spec.clusterRef references instance
-    │
-DNSZone (has clusterRef)
-    ↑
-    │ referenced by zone field
-    │
-DNS Records (A, CNAME, MX, etc.)
+```mermaid
+graph BT
+    records["DNS Records<br/>(A, CNAME, MX, etc.)"]
+    zone["DNSZone<br/>(has clusterRef)"]
+    instance["Bind9Instance<br/>(has clusterRef)"]
+    cluster["Bind9Cluster<br/>(cluster config)"]
+
+    records -->|"references<br/>zone field"| zone
+    zone -->|"references<br/>clusterRef"| instance
+    instance -->|"references<br/>clusterRef"| cluster
+
+    style records fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    style zone fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style instance fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    style cluster fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
 ```
 
 ### Three-Tier Hierarchy
@@ -168,16 +162,18 @@ DNS Records (A, CNAME, MX, etc.)
 
 ### RNDC Key Secret Relationship
 
-```
-Bind9Instance: my-dns-instance
-    ↓
-    creates/expects
-    ↓
-Secret: my-dns-instance-rndc-key
-    data:
-      key-name: my-dns-instance
-      algorithm: hmac-sha256
-      secret: <base64-encoded-key>
+```mermaid
+graph TD
+    instance["Bind9Instance:<br/>my-dns-instance"]
+    secret["Secret:<br/>my-dns-instance-rndc-key"]
+    data["data:<br/>key-name: my-dns-instance<br/>algorithm: hmac-sha256<br/>secret: base64-encoded-key"]
+
+    instance -->|creates/expects| secret
+    secret --> data
+
+    style instance fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    style secret fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    style data fill:#fce4ec,stroke:#880e4f,stroke-width:2px
 ```
 
 The controller uses this Secret to authenticate RNDC commands to the BIND9 instance.

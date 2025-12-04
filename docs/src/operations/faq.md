@@ -265,9 +265,9 @@ Zone transfers occur over TCP and can be restricted by IP address using `allowTr
 
 Bindy manages internal DNS infrastructure. external-dns manages external DNS providers. They serve different purposes and can coexist.
 
-### Does Bindy work with service meshes?
+### Does Bindy work with Linkerd?
 
-Yes, Bindy DNS servers can be used by service mesh for internal DNS resolution.
+Yes, Bindy DNS servers can be used by Linkerd for internal DNS resolution. The DNS service has Linkerd injection disabled (DNS doesn't work well with mesh sidecars), while management services can be Linkerd-injected for secure mTLS communication.
 
 ### Can I integrate with existing DNS infrastructure?
 

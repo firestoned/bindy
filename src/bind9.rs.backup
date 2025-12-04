@@ -16,7 +16,7 @@
 //!
 //! The `Bind9Manager` communicates with BIND9 instances via an HTTP API sidecar
 //! running in the same pod. The sidecar executes rndc commands locally and manages
-//! zone files. Authentication uses Kubernetes `ServiceAccount` tokens.
+//! zone files. Authentication uses Kubernetes ServiceAccount tokens.
 //!
 //! # Example
 //!
@@ -131,7 +131,7 @@ impl RndcError {
     }
 }
 
-/// Path to the `ServiceAccount` token file in Kubernetes pods
+/// Path to the ServiceAccount token file in Kubernetes pods
 const SERVICE_ACCOUNT_TOKEN_PATH: &str = "/var/run/secrets/kubernetes.io/serviceaccount/token";
 
 /// Request to create a zone via the API
@@ -178,7 +178,7 @@ pub struct SRVRecordData {
 ///
 /// The `Bind9Manager` provides methods for managing BIND9 servers running in Kubernetes
 /// pods via an HTTP API sidecar. The API sidecar executes rndc commands locally and
-/// manages zone files. Authentication uses Kubernetes `ServiceAccount` tokens.
+/// manages zone files. Authentication uses Kubernetes ServiceAccount tokens.
 ///
 /// # Examples
 ///
@@ -191,22 +191,19 @@ pub struct SRVRecordData {
 pub struct Bind9Manager {
     /// HTTP client for API requests
     client: Arc<HttpClient>,
-    /// `ServiceAccount` token for authentication
+    /// ServiceAccount token for authentication
     token: Arc<String>,
 }
 
 impl Bind9Manager {
     /// Create a new `Bind9Manager`.
     ///
-    /// Reads the `ServiceAccount` token from the default location and creates
+    /// Reads the ServiceAccount token from the default location and creates
     /// an HTTP client for API requests.
     #[must_use]
     pub fn new() -> Self {
         let token = Self::read_service_account_token().unwrap_or_else(|e| {
-            warn!(
-                "Failed to read ServiceAccount token: {}. Using empty token.",
-                e
-            );
+            warn!("Failed to read ServiceAccount token: {}. Using empty token.", e);
             String::new()
         });
 
@@ -216,7 +213,7 @@ impl Bind9Manager {
         }
     }
 
-    /// Read the `ServiceAccount` token from the mounted secret
+    /// Read the ServiceAccount token from the mounted secret
     fn read_service_account_token() -> Result<String> {
         std::fs::read_to_string(SERVICE_ACCOUNT_TOKEN_PATH)
             .context("Failed to read ServiceAccount token file")
@@ -225,12 +222,12 @@ impl Bind9Manager {
     /// Build the API base URL from a server address
     ///
     /// Converts "service-name.namespace.svc.cluster.local:8080" or "service-name:8080"
-    /// to `<http://service-name.namespace.svc.cluster.local:8080>` or `<http://service-name:8080>`
+    /// to "http://service-name.namespace.svc.cluster.local:8080" or "http://service-name:8080"
     fn build_api_url(server: &str) -> String {
         if server.starts_with("http://") || server.starts_with("https://") {
             server.to_string()
         } else {
-            format!("http://{server}")
+            format!("http://{}", server)
         }
     }
 
@@ -392,188 +389,139 @@ impl Bind9Manager {
         })
     }
 
-    /// Execute an RNDC command via the HTTP API sidecar.
-    ///
-    /// This function maps the old rndc command string to HTTP API calls.
+    /// Connect to an rndc server and execute a command.
     ///
     /// # Arguments
-    /// * `server` - API endpoint (e.g., "bind9-primary-api:8080")
-    /// * `key_data` - RNDC authentication key (used as updateKeyName)
+    /// * `server` - Server address in format "host:port" (e.g., "bind9-primary.dns-system.svc.cluster.local:953")
+    /// * `key_data` - RNDC authentication key
     /// * `command` - RNDC command to execute (e.g., "status", "reload zone")
     ///
     /// # Errors
     ///
-    /// Returns an error if the HTTP request fails or the API returns an error.
-    ///
-    /// # Complexity
-    /// This function is intentionally long as it maps all RNDC commands to HTTP endpoints.
-    #[allow(clippy::too_many_lines)]
+    /// Returns an error if the RNDC connection fails, authentication fails, or the command execution fails.
     async fn exec_rndc_command(
         &self,
         server: &str,
-        _key_data: &RndcKeyData,
+        key_data: &RndcKeyData,
         command: &str,
     ) -> Result<String> {
+        // Log the rndc command being executed (without the secret)
         debug!(
             server = %server,
             command = %command,
-            "Executing command via HTTP API"
+            algorithm = %key_data.algorithm.as_rndc_str(),
+            key_name = %key_data.name,
+            "Executing rndc command"
         );
 
-        // Parse the command to determine the API endpoint
-        let parts: Vec<&str> = command.split_whitespace().collect();
+        // Execute command in spawn_blocking and catch panics from the rndc crate
+        // The rndc library can panic on DNS resolution failures
+        let server_name = server.to_string();
+        let server_name_for_closure = server_name.clone();
+        let algorithm = key_data.algorithm.as_rndc_str().to_string();
+        let secret = key_data.secret.clone();
+        let command = command.to_string();
+        let command_for_logging = command.clone();
 
-        if parts.is_empty() {
-            anyhow::bail!("Empty command");
-        }
+        let result: rndc::RndcResult = tokio::task::spawn_blocking(move || {
+            // Wrap in catch_unwind to handle panics from the rndc crate
+            std::panic::catch_unwind(|| {
+                // Create rndc client (API: new(server_url, algorithm, secret_key_b64))
+                // Note: The rndc crate expects algorithm strings without "hmac-" prefix
+                let client = rndc::RndcClient::new(&server_name_for_closure, &algorithm, &secret);
 
-        let base_url = Self::build_api_url(server);
-        let (method, url, body): (String, String, Option<serde_json::Value>) =
-            match parts.first().copied() {
-                Some("reload") if parts.len() == 1 => (
-                    "POST".to_string(),
-                    format!("{base_url}/api/v1/server/reload"),
-                    None,
-                ),
-                Some("reload") => {
-                    let zone_name = parts[1];
-                    (
-                        "POST".to_string(),
-                        format!("{base_url}/api/v1/zones/{zone_name}/reload"),
-                        None,
-                    )
-                }
-                Some("freeze") => {
-                    if parts.len() < 2 {
-                        anyhow::bail!("freeze command requires zone name");
-                    }
-                    let zone_name = parts[1];
-                    (
-                        "POST".to_string(),
-                        format!("{base_url}/api/v1/zones/{zone_name}/freeze"),
-                        None,
-                    )
-                }
-                Some("thaw") => {
-                    if parts.len() < 2 {
-                        anyhow::bail!("thaw command requires zone name");
-                    }
-                    let zone_name = parts[1];
-                    (
-                        "POST".to_string(),
-                        format!("{base_url}/api/v1/zones/{zone_name}/thaw"),
-                        None,
-                    )
-                }
-                Some("notify") => {
-                    if parts.len() < 2 {
-                        anyhow::bail!("notify command requires zone name");
-                    }
-                    let zone_name = parts[1];
-                    (
-                        "POST".to_string(),
-                        format!("{base_url}/api/v1/zones/{zone_name}/notify"),
-                        None,
-                    )
-                }
-                Some("retransfer") => {
-                    if parts.len() < 2 {
-                        anyhow::bail!("retransfer command requires zone name");
-                    }
-                    let zone_name = parts[1];
-                    (
-                        "POST".to_string(),
-                        format!("{base_url}/api/v1/zones/{zone_name}/retransfer"),
-                        None,
-                    )
-                }
-                Some("delzone") => {
-                    if parts.len() < 2 {
-                        anyhow::bail!("delzone command requires zone name");
-                    }
-                    let zone_name = parts[1];
-                    (
-                        "DELETE".to_string(),
-                        format!("{base_url}/api/v1/zones/{zone_name}"),
-                        None,
-                    )
-                }
-                Some("status") if parts.len() == 1 => (
-                    "GET".to_string(),
-                    format!("{base_url}/api/v1/server/status"),
-                    None,
-                ),
-                Some("status") => {
-                    let zone_name = parts[1];
-                    (
-                        "GET".to_string(),
-                        format!("{base_url}/api/v1/zones/{zone_name}/status"),
-                        None,
-                    )
-                }
-                _ => {
-                    let cmd = parts.first().unwrap_or(&"<empty>");
-                    anyhow::bail!("Unsupported command via HTTP API: {cmd}");
-                }
+                // Execute command
+                client.rndc_command(&command)
+            })
+        })
+        .await
+        .context("Task join failed")?
+        .map_err(|panic_err| {
+            // Convert panic to error
+            let error_msg = if let Some(msg) = panic_err.downcast_ref::<String>() {
+                anyhow::anyhow!(
+                    "RNDC panic when connecting to {server_name}: {msg}. \
+                    Verify the BIND9 service '{server_name}' exists and is reachable."
+                )
+            } else if let Some(msg) = panic_err.downcast_ref::<&str>() {
+                anyhow::anyhow!(
+                    "RNDC panic when connecting to {server_name}: {msg}. \
+                    Verify the BIND9 service '{server_name}' exists and is reachable."
+                )
+            } else {
+                anyhow::anyhow!(
+                    "RNDC panic when connecting to {server_name}. \
+                    Verify the BIND9 service '{server_name}' exists and is reachable. \
+                    This often indicates DNS resolution failure."
+                )
             };
-
-        // Execute HTTP request
-        let request = match method.as_str() {
-            "GET" => self.client.get(&url),
-            "POST" => {
-                let mut req = self.client.post(&url);
-                if let Some(body_content) = body {
-                    req = req.json(&body_content);
-                }
-                req
-            }
-            "DELETE" => self.client.delete(&url),
-            _ => anyhow::bail!("Unsupported HTTP method: {method}"),
-        };
-
-        let response = request
-            .header("Authorization", format!("Bearer {}", &*self.token))
-            .send()
-            .await
-            .context(format!("Failed to send HTTP request to {url}"))?;
-
-        let status = response.status();
-
-        if !status.is_success() {
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
             error!(
-                server = %server,
-                command = %command,
-                status = %status,
-                error = %error_text,
-                "HTTP API command failed"
+                server = %server_name,
+                command = %command_for_logging,
+                error = %error_msg,
+                "RNDC connection panic - check service availability and DNS resolution"
             );
-            anyhow::bail!("HTTP API command '{command}' failed with status {status}: {error_text}");
-        }
+            error_msg
+        })?
+        .map_err(|e| {
+            let error_msg = anyhow::anyhow!(
+                "RNDC command failed on {server_name}: {e}. \
+                Check that the BIND9 service is running and authentication is correct."
+            );
+            error!(
+                server = %server_name,
+                command = %command_for_logging,
+                error = %e,
+                "RNDC command execution failed - check service status and authentication"
+            );
+            error_msg
+        })?;
 
-        // Try to parse as ZoneResponse
-        let text = response
-            .text()
-            .await
-            .context("Failed to read response body")?;
+        // Log the complete RNDC response for debugging
+        debug!(
+            server = %server_name,
+            command = %command_for_logging,
+            result = %result.result,
+            text = ?result.text,
+            err = ?result.err,
+            "RNDC command response"
+        );
 
-        if let Ok(result) = serde_json::from_str::<ZoneResponse>(&text) {
-            if !result.success {
-                anyhow::bail!("API command '{}' failed: {}", command, result.message);
+        // Check RndcResult.result field first - if false, the command failed
+        if !result.result {
+            // Try to get error from RndcResult.err field
+            let error_text = result.err.as_deref().unwrap_or("unknown error");
+
+            // Try to parse structured error from the text field
+            if let Some(ref text) = result.text {
+                if let Some(rndc_error) = RndcError::parse(text) {
+                    error!(
+                        server = %server_name,
+                        command = %rndc_error.command,
+                        error = %rndc_error.error,
+                        details = ?rndc_error.details,
+                        rndc_err_field = %error_text,
+                        "RNDC command failed with structured error"
+                    );
+                    return Err(rndc_error.into());
+                }
             }
-            return Ok(result.details.unwrap_or(result.message));
+
+            // Fallback: return error from err field
+            let error_msg =
+                anyhow::anyhow!("RNDC command '{command_for_logging}' failed: {error_text}");
+            error!(
+                server = %server_name,
+                command = %command_for_logging,
+                error = %error_text,
+                text = ?result.text,
+                "RNDC command failed"
+            );
+            return Err(error_msg);
         }
 
-        // Try to parse as ServerStatusResponse
-        if let Ok(status_result) = serde_json::from_str::<ServerStatusResponse>(&text) {
-            return Ok(status_result.status);
-        }
-
-        // Fallback: return the raw text
-        Ok(text)
+        // Command succeeded, return the text
+        Ok(result.text.unwrap_or_default())
     }
 
     /// Reload a specific zone using rndc.
@@ -787,101 +735,6 @@ impl Bind9Manager {
             .context("Failed to add zone")?;
 
         info!("Added zone {zone_name} on {server} with allow-update for key {update_key_name}");
-        Ok(())
-    }
-
-    /// Create a zone via HTTP API with structured configuration.
-    ///
-    /// This method sends a POST request to the API sidecar to create a zone with
-    /// the full zone file content generated from structured configuration.
-    ///
-    /// # Arguments
-    /// * `zone_name` - Name of the zone (e.g., "example.com")
-    /// * `zone_type` - Zone type ("master" or "slave")
-    /// * `zone_content` - Complete zone file content
-    /// * `server` - API endpoint (e.g., "bind9-primary-api:8080")
-    /// * `key_data` - RNDC authentication key (used as updateKeyName)
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the HTTP request fails or the zone cannot be created.
-    pub async fn create_zone_http(
-        &self,
-        zone_name: &str,
-        zone_type: &str,
-        zone_content: &str,
-        server: &str,
-        key_data: &RndcKeyData,
-    ) -> Result<()> {
-        let base_url = Self::build_api_url(server);
-        let url = format!("{base_url}/api/v1/zones");
-
-        let request = CreateZoneRequest {
-            zone_name: zone_name.to_string(),
-            zone_type: zone_type.to_string(),
-            zone_content: zone_content.to_string(),
-            update_key_name: Some(key_data.name.clone()),
-        };
-
-        debug!(
-            zone_name = %zone_name,
-            zone_type = %zone_type,
-            server = %server,
-            "Creating zone via HTTP API"
-        );
-
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", &*self.token))
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await
-            .context(format!("Failed to send HTTP request to {url}"))?;
-
-        let status = response.status();
-
-        if !status.is_success() {
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            error!(
-                zone_name = %zone_name,
-                server = %server,
-                status = %status,
-                error = %error_text,
-                "Failed to create zone via HTTP API"
-            );
-            anyhow::bail!(
-                "Failed to create zone '{zone_name}' via HTTP API: {status} - {error_text}"
-            );
-        }
-
-        let result: ZoneResponse = response
-            .json()
-            .await
-            .context("Failed to parse API response")?;
-
-        if !result.success {
-            error!(
-                zone_name = %zone_name,
-                server = %server,
-                message = %result.message,
-                details = ?result.details,
-                "API returned error when creating zone"
-            );
-            anyhow::bail!("Failed to create zone '{}': {}", zone_name, result.message);
-        }
-
-        info!(
-            zone_name = %zone_name,
-            server = %server,
-            message = %result.message,
-            "Zone created successfully via HTTP API"
-        );
-
         Ok(())
     }
 

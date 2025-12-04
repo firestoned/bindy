@@ -69,14 +69,26 @@ Transfers only changes since last serial:
 
 Primary sends NOTIFY when zone changes:
 
-```
-Primary Updates Zone
-      │
-      ├──NOTIFY──▶ Secondary 1
-      ├──NOTIFY──▶ Secondary 2
-      └──NOTIFY──▶ Secondary 3
+```mermaid
+graph TB
+    primary["Primary Updates Zone"]
+    sec1["Secondary 1"]
+    sec2["Secondary 2"]
+    sec3["Secondary 3"]
+    transfer["Secondaries initiate IXFR/AXFR"]
 
-Secondaries initiate IXFR/AXFR
+    primary -->|NOTIFY| sec1
+    primary -->|NOTIFY| sec2
+    primary -->|NOTIFY| sec3
+    sec1 --> transfer
+    sec2 --> transfer
+    sec3 --> transfer
+
+    style primary fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style sec1 fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style sec2 fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style sec3 fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style transfer fill:#fff9c4,stroke:#f57f17,stroke-width:2px
 ```
 
 ### Refresh Timer
