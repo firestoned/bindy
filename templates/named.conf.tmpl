@@ -6,9 +6,9 @@ include "/etc/bind/named.conf.options";
 // Include RNDC key files mounted from Secrets
 {{RNDC_KEY_INCLUDES}}
 
-// RNDC Controls - listen on all interfaces for Kubernetes network access
+// RNDC Controls - listen on localhost only (API sidecar handles external access)
 controls {
-    inet * port 953 allow { any; } keys { {{RNDC_KEY_NAMES}}; };
+    inet 127.0.0.1 port 953 allow { localhost; } keys { {{RNDC_KEY_NAMES}}; };
 };
 
 logging {

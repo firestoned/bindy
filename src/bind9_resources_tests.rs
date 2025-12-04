@@ -40,11 +40,14 @@ mod tests {
                     listen_on: None,
                     listen_on_v6: None,
                     rndc_secret_ref: None,
+                    bindcar_config: None,
                 }),
                 primary_servers: None,
                 volumes: None,
                 volume_mounts: None,
                 rndc_secret_ref: None,
+                storage: None,
+                bindcar_config: None,
             },
             status: None,
         }
@@ -176,8 +179,8 @@ mod tests {
         assert_eq!(spec.replicas, Some(2));
 
         let pod_spec = spec.template.spec.unwrap();
-        // Should have 1 container: bind9 only
-        assert_eq!(pod_spec.containers.len(), 1);
+        // Should have 2 containers: bind9 + api sidecar
+        assert_eq!(pod_spec.containers.len(), 2);
 
         let container = &pod_spec.containers[0];
         assert_eq!(container.name, "bind9");
@@ -209,7 +212,7 @@ mod tests {
         assert_eq!(ports.len(), 3);
         assert_eq!(ports[0].port, 53); // dns-tcp
         assert_eq!(ports[1].port, 53); // dns-udp
-        assert_eq!(ports[2].port, 953); // rndc
+        assert_eq!(ports[2].port, 80); // http api
     }
 
     #[test]
@@ -278,9 +281,10 @@ mod tests {
         let spec = service.spec.unwrap();
         let ports = spec.ports.unwrap();
 
+        // Service should expose DNS (TCP/UDP) and HTTP API (not RNDC)
         assert_eq!(ports.len(), 3);
 
-        // Check TCP port
+        // Check DNS TCP port
         let tcp_port = ports
             .iter()
             .find(|p| p.name.as_deref() == Some("dns-tcp"))
@@ -288,7 +292,7 @@ mod tests {
         assert_eq!(tcp_port.port, 53);
         assert_eq!(tcp_port.protocol.as_deref(), Some("TCP"));
 
-        // Check UDP port
+        // Check DNS UDP port
         let udp_port = ports
             .iter()
             .find(|p| p.name.as_deref() == Some("dns-udp"))
@@ -296,13 +300,19 @@ mod tests {
         assert_eq!(udp_port.port, 53);
         assert_eq!(udp_port.protocol.as_deref(), Some("UDP"));
 
-        // Check RNDC port
-        let rndc_port = ports
+        // Check HTTP API port (not RNDC)
+        let http_port = ports
             .iter()
-            .find(|p| p.name.as_deref() == Some("rndc"))
+            .find(|p| p.name.as_deref() == Some("http"))
             .unwrap();
-        assert_eq!(rndc_port.port, 953);
-        assert_eq!(rndc_port.protocol.as_deref(), Some("TCP"));
+        assert_eq!(http_port.port, 80, "HTTP API should be exposed on port 80");
+        assert_eq!(http_port.protocol.as_deref(), Some("TCP"));
+
+        // Verify RNDC port is NOT exposed
+        assert!(
+            ports.iter().all(|p| p.name.as_deref() != Some("rndc")),
+            "RNDC port should not be exposed in Service (localhost only)"
+        );
     }
 
     #[test]
@@ -697,8 +707,8 @@ mod tests {
         let ports = service.spec.unwrap().ports.unwrap();
 
         for port in &ports {
-            let expected_port = if port.name.as_deref() == Some("rndc") {
-                953
+            let expected_port = if port.name.as_deref() == Some("http") {
+                8080
             } else {
                 53
             };
@@ -1004,6 +1014,144 @@ mod tests {
         assert_eq!(
             secret_source.secret_name.as_deref(),
             Some("rndc-test-rndc-key")
+        );
+    }
+
+    #[test]
+    fn test_service_api_port_default() {
+        // Test default API port (8080) when no bindcar_config is specified
+        let instance = create_test_instance("test");
+
+        let service = build_service("test", "test-ns", &instance, None);
+        let ports = service.spec.unwrap().ports.unwrap();
+
+        let http_port = ports
+            .iter()
+            .find(|p| p.name.as_deref() == Some("http"))
+            .unwrap();
+
+        assert_eq!(http_port.port, 80, "External port should be 80");
+        // Target port should be 8080 (default)
+        assert_eq!(
+            http_port.target_port.as_ref().map(|p| match p {
+                k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(i) => i,
+                _ => &0,
+            }),
+            Some(&8080),
+            "Default target port should be 8080"
+        );
+    }
+
+    #[test]
+    fn test_service_api_port_custom() {
+        // Test custom API port via bindcar_config
+        let mut instance = create_test_instance("test");
+        instance.spec.bindcar_config = Some(crate::crd::BindcarConfig {
+            image: None,
+            image_pull_policy: None,
+            resources: None,
+            port: Some(9090),
+            env_vars: None,
+            volumes: None,
+            volume_mounts: None,
+            log_level: None,
+        });
+
+        let service = build_service("test", "test-ns", &instance, None);
+        let ports = service.spec.unwrap().ports.unwrap();
+
+        let http_port = ports
+            .iter()
+            .find(|p| p.name.as_deref() == Some("http"))
+            .unwrap();
+
+        assert_eq!(http_port.port, 80, "External port should always be 80");
+        // Target port should be custom value
+        assert_eq!(
+            http_port.target_port.as_ref().map(|p| match p {
+                k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(i) => i,
+                _ => &0,
+            }),
+            Some(&9090),
+            "Custom target port should be 9090"
+        );
+    }
+
+    #[test]
+    fn test_deployment_includes_api_sidecar() {
+        // Test that deployment includes the API sidecar container
+        let instance = create_test_instance("test");
+
+        let deployment = build_deployment("test", "test-ns", &instance, None);
+        let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
+        let containers = pod_spec.containers;
+
+        assert_eq!(
+            containers.len(),
+            2,
+            "Should have 2 containers: BIND9 and API sidecar"
+        );
+
+        // Check BIND9 container
+        let bind9_container = containers.iter().find(|c| c.name == "bind9");
+        assert!(bind9_container.is_some(), "BIND9 container should exist");
+
+        // Check API sidecar container
+        let api_container = containers.iter().find(|c| c.name == "api");
+        assert!(
+            api_container.is_some(),
+            "API sidecar container should exist"
+        );
+
+        let api = api_container.unwrap();
+        assert!(
+            api.image.as_ref().unwrap().contains("bindcar"),
+            "API container should use bindcar image"
+        );
+
+        // Verify API container has correct port
+        let api_ports = api.ports.as_ref().unwrap();
+        assert_eq!(api_ports.len(), 1);
+        assert_eq!(api_ports[0].name.as_deref(), Some("http"));
+        assert_eq!(
+            api_ports[0].container_port, 8080,
+            "API container port should be 8080"
+        );
+    }
+
+    #[test]
+    fn test_api_sidecar_shares_volumes() {
+        // Test that API sidecar mounts the same volumes as BIND9
+        let instance = create_test_instance("test");
+
+        let deployment = build_deployment("test", "test-ns", &instance, None);
+        let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
+        let containers = pod_spec.containers;
+
+        let api_container = containers.iter().find(|c| c.name == "api").unwrap();
+        let volume_mounts = api_container.volume_mounts.as_ref().unwrap();
+
+        // Verify cache volume is mounted
+        let cache_mount = volume_mounts.iter().find(|m| m.name == "cache");
+        assert!(cache_mount.is_some(), "API should mount cache volume");
+        assert_eq!(
+            cache_mount.unwrap().mount_path,
+            "/var/cache/bind",
+            "Cache should be mounted at /var/cache/bind"
+        );
+
+        // Verify rndc-key volume is mounted (read-only)
+        let key_mount = volume_mounts.iter().find(|m| m.name == "rndc-key");
+        assert!(key_mount.is_some(), "API should mount rndc-key volume");
+        assert_eq!(
+            key_mount.unwrap().mount_path,
+            "/etc/bind/keys",
+            "RNDC keys should be mounted at /etc/bind/keys"
+        );
+        assert_eq!(
+            key_mount.unwrap().read_only,
+            Some(true),
+            "RNDC key volume should be read-only for API"
         );
     }
 }

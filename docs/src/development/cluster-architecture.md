@@ -36,62 +36,49 @@ DNS Records (A, AAAA, CNAME, MX, TXT, NS, SRV, CAA)
 
 ### Single Centralized Operator
 
-```
-┌────────────────────────────────────────────────────────────┐
-│            Bindy Operator (Single Instance)                │
-│  - Watches all CRDs cluster-wide                           │
-│  - Manages BIND9 Deployments/Services/ConfigMaps           │
-│  - Updates zone files on PRIMARY instances only            │
-│  - Configures zone transfers for secondaries               │
-└──────────────────────┬─────────────────────────────────────┘
-                       │
-                       │ manages
-                       ▼
-    ┌──────────────────────────────────────────────┐
-    │         Bind9Cluster: production-dns         │
-    │  - version: "9.18"                           │
-    │  - TSIG keys for authenticated transfers     │
-    │  - Shared ACLs                               │
-    └─────────────┬────────────────────────────────┘
-                  │
-        ┌─────────┼─────────┐
-        │         │         │
-        ▼         ▼         ▼         ▼
-┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-│Bind9Instance│  │Bind9Instance│  │Bind9Instance│  │Bind9Instance│
-│primary-dns-1│  │primary-dns-2│  │secondary-1  │  │secondary-2  │
-│role: primary│  │role: primary│  │role: sec    │  │role: sec    │
-│replicas: 2  │  │replicas: 2  │  │replicas: 2  │  │replicas: 2  │
-└──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘
-       │                │                │                │
-       ▼                ▼                │                │
-┌─────────────┐  ┌─────────────┐        │                │
-│   BIND9     │  │   BIND9     │        │                │
-│   Pod(s)    │  │   Pod(s)    │        │                │
-│             │  │             │        │                │
-│ - Serves    │  │ - Serves    │        │                │
-│   DNS       │  │   DNS       │        │                │
-│ - Zone      │  │ - Zone      │        │                │
-│   files     │  │   files     │        │                │
-│   managed   │  │   managed   │        │                │
-│   by        │  │   by        │        │                │
-│   operator  │  │   operator  │        │                │
-└──────┬──────┘  └──────┬──────┘        │                │
-       │                │                │                │
-       └────────────────┴────────────────┴────────────────┘
-                        │
-                        │ AXFR/IXFR zone transfers
-                        │ (BIND9 native replication)
-                        ▼
-              ┌─────────────┐      ┌─────────────┐
-              │   BIND9     │      │   BIND9     │
-              │   Pod(s)    │      │   Pod(s)    │
-              │             │      │             │
-              │ - Transfers │      │ - Transfers │
-              │   zones     │      │   zones     │
-              │   from      │      │   from      │
-              │   primaries │      │   primaries │
-              └─────────────┘      └─────────────┘
+```mermaid
+graph TB
+    operator["Bindy Operator (Single Instance)<br/>- Watches all CRDs cluster-wide<br/>- Manages BIND9 Deployments/Services/ConfigMaps<br/>- Updates zone files on PRIMARY instances only<br/>- Configures zone transfers for secondaries"]
+
+    cluster["Bind9Cluster: production-dns<br/>- version: 9.18<br/>- TSIG keys for authenticated transfers<br/>- Shared ACLs"]
+
+    inst1["Bind9Instance<br/>primary-dns-1<br/>role: primary<br/>replicas: 2"]
+    inst2["Bind9Instance<br/>primary-dns-2<br/>role: primary<br/>replicas: 2"]
+    inst3["Bind9Instance<br/>secondary-1<br/>role: sec<br/>replicas: 2"]
+    inst4["Bind9Instance<br/>secondary-2<br/>role: sec<br/>replicas: 2"]
+
+    pod1["BIND9 Pod(s)<br/>- Serves DNS<br/>- Zone files managed by operator"]
+    pod2["BIND9 Pod(s)<br/>- Serves DNS<br/>- Zone files managed by operator"]
+
+    sec_pod1["BIND9 Pod(s)<br/>- Transfers zones from primaries"]
+    sec_pod2["BIND9 Pod(s)<br/>- Transfers zones from primaries"]
+
+    operator -->|manages| cluster
+    cluster --> inst1
+    cluster --> inst2
+    cluster --> inst3
+    cluster --> inst4
+
+    inst1 --> pod1
+    inst2 --> pod2
+    inst3 --> sec_pod1
+    inst4 --> sec_pod2
+
+    pod1 -->|AXFR/IXFR| sec_pod1
+    pod2 -->|AXFR/IXFR| sec_pod1
+    pod1 -->|AXFR/IXFR| sec_pod2
+    pod2 -->|AXFR/IXFR| sec_pod2
+
+    style operator fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style cluster fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style inst1 fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    style inst2 fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    style inst3 fill:#ffe0b2,stroke:#e65100,stroke-width:2px
+    style inst4 fill:#ffe0b2,stroke:#e65100,stroke-width:2px
+    style pod1 fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    style pod2 fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    style sec_pod1 fill:#fce4ec,stroke:#880e4f,stroke-width:2px
+    style sec_pod2 fill:#fce4ec,stroke:#880e4f,stroke-width:2px
 ```
 
 ## How It Works

@@ -37,14 +37,11 @@ mod tests {
                     listen_on: Some(vec!["any".to_string()]),
                     listen_on_v6: Some(vec!["any".to_string()]),
                     rndc_secret_ref: None,
-                    bindcar_config: None,
                 }),
                 primary_servers: None,
                 volumes: None,
                 volume_mounts: None,
                 rndc_secret_ref: None,
-                storage: None,
-                bindcar_config: None,
             },
             status: None,
         }
@@ -70,8 +67,6 @@ mod tests {
                 volumes: None,
                 volume_mounts: None,
                 rndc_secret_ref: None,
-                storage: None,
-                bindcar_config: None,
             },
             status: None,
         };
@@ -100,8 +95,6 @@ mod tests {
                 volumes: None,
                 volume_mounts: None,
                 rndc_secret_ref: None,
-                storage: None,
-                bindcar_config: None,
             },
             status: None,
         };
@@ -142,8 +135,8 @@ mod tests {
         let pod_template = spec.template;
         let pod_spec = pod_template.spec.expect("Pod template should have spec");
 
-        // Should have 2 containers: bind9 + api sidecar
-        assert_eq!(pod_spec.containers.len(), 2);
+        // Should have 1 container: bind9 only
+        assert_eq!(pod_spec.containers.len(), 1);
         let container = &pod_spec.containers[0];
         assert_eq!(container.name, "bind9");
         assert_eq!(
@@ -166,10 +159,10 @@ mod tests {
         let ports = spec.ports.expect("Service should have ports");
         assert_eq!(ports.len(), 3);
 
-        // Verify TCP, UDP, and HTTP API ports
+        // Verify TCP, UDP, and RNDC ports
         assert!(ports.iter().any(|p| p.name.as_deref() == Some("dns-tcp")));
         assert!(ports.iter().any(|p| p.name.as_deref() == Some("dns-udp")));
-        assert!(ports.iter().any(|p| p.name.as_deref() == Some("http")));
+        assert!(ports.iter().any(|p| p.name.as_deref() == Some("rndc")));
     }
 
     #[test]
@@ -220,14 +213,11 @@ mod tests {
                     listen_on: None,
                     listen_on_v6: None,
                     rndc_secret_ref: None,
-                    bindcar_config: None,
                 }),
                 primary_servers: None,
                 volumes: None,
                 volume_mounts: None,
                 rndc_secret_ref: None,
-                storage: None,
-                bindcar_config: None,
             },
             status: None,
         };
@@ -263,14 +253,11 @@ mod tests {
                     listen_on: None,
                     listen_on_v6: None,
                     rndc_secret_ref: None,
-                    bindcar_config: None,
                 }),
                 primary_servers: None,
                 volumes: None,
                 volume_mounts: None,
                 rndc_secret_ref: None,
-                storage: None,
-                bindcar_config: None,
             },
             status: None,
         };
@@ -328,14 +315,11 @@ mod tests {
                     listen_on: None,
                     listen_on_v6: None,
                     rndc_secret_ref: None,
-                    bindcar_config: None,
                 }),
                 primary_servers: None,
                 volumes: None,
                 volume_mounts: None,
                 rndc_secret_ref: None,
-                storage: None,
-                bindcar_config: None,
             },
             status: None,
         };

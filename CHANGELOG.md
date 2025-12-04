@@ -2,6 +2,216 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-03 23:15] - Add Automatic NOTIFY to Secondaries for Zone Updates
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/reconcilers/records.rs`: Automatic NOTIFY after every DNS record operation
+  - Modified `handle_record_operation!` macro to call `notify_zone()` after successful record additions
+  - All record types (A, AAAA, TXT, CNAME, MX, NS, SRV, CAA) now trigger NOTIFY automatically
+  - NOTIFY failures are logged as warnings and don't fail the record operation
+- `src/reconcilers/dnszone.rs`: Automatic NOTIFY after zone creation
+  - Added `notify_zone()` call after `create_zone_http()` completes successfully
+  - Ensures secondaries receive immediate AXFR after zone is created on primary
+  - Added `warn` to tracing imports for notification failure logging
+
+### Changed
+- `src/reconcilers/records.rs`: Updated `handle_record_operation!` macro signature
+  - Added parameters: `$zone_name`, `$key_data`, `$zone_manager`
+  - All 7 record reconcilers updated to pass new parameters
+  - Macro now handles both record status updates AND secondary notifications
+
+### Technical Details
+
+**Why This Was Needed:**
+- BIND9's dynamic updates (nsupdate protocol) don't trigger NOTIFY by default
+- Without explicit NOTIFY, secondaries only sync via SOA refresh timer (can be hours)
+- This caused stale data on secondary servers in multi-primary or primary/secondary setups
+
+**How It Works:**
+1. Record is successfully added to primary via nsupdate
+2. `notify_zone()` sends RFC 1996 DNS NOTIFY packets to secondaries
+3. Secondaries respond by initiating IXFR (incremental zone transfer) from primary
+4. Updates propagate to secondaries within seconds instead of hours
+
+**NOTIFY Behavior:**
+- NOTIFY is sent via HTTP API: `POST /api/v1/zones/{name}/notify`
+- Bindcar API sidecar executes `rndc notify {zone}` locally on primary
+- BIND9 reads zone configuration for `also-notify` and `allow-transfer` ACLs
+- BIND9 sends NOTIFY packets to all configured secondaries
+- If NOTIFY fails (network issue, API timeout), operation still succeeds
+  - Warning logged: "Failed to notify secondaries for zone X. Secondaries will sync via SOA refresh timer."
+  - Ensures record operations are atomic and don't fail due to transient notification issues
+
+**Affected Operations:**
+- `reconcile_a_record()` - A record additions
+- `reconcile_aaaa_record()` - AAAA record additions
+- `reconcile_txt_record()` - TXT record additions
+- `reconcile_cname_record()` - CNAME record additions
+- `reconcile_mx_record()` - MX record additions
+- `reconcile_ns_record()` - NS record additions
+- `reconcile_srv_record()` - SRV record additions
+- `reconcile_caa_record()` - CAA record additions
+- `create_zone()` in DNSZone reconciler - New zone creation
+
+### Why
+- **Real-time replication**: Secondaries receive updates immediately instead of waiting for SOA refresh
+- **Consistency**: Eliminates stale data windows between primary and secondary servers
+- **RFC compliance**: Proper implementation of DNS NOTIFY (RFC 1996) for zone change notifications
+- **Production readiness**: Essential for any primary/secondary DNS architecture
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Behavioral change - secondaries now notified automatically
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
+## [2025-12-03 22:40] - Standardize on Linkerd Service Mesh References
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `CLAUDE.md`: Added service mesh standard - always use Linkerd as the example
+- `docs/src/operations/faq.md`: Updated "service meshes" question to specifically reference Linkerd
+  - Added details about Linkerd injection being disabled for DNS services
+- `docs/src/advanced/integration.md`: Changed "Service Mesh" section to "Linkerd Service Mesh"
+  - Removed generic Istio reference, kept Linkerd as the standard
+  - Added Linkerd-specific integration details (mTLS, service discovery)
+- `core-bind9/service-dns.yaml`: Updated comment from "service mesh sidecar" to "Linkerd sidecar"
+
+### Why
+- Consistency: All documentation and examples now use Linkerd as the service mesh standard
+- Clarity: Specific examples are more helpful than generic "service mesh" references
+- Project standard: Linkerd is the service mesh used in the k0rdent environment
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
+## [2025-12-03 21:40] - Rename apiConfig to bindcarConfig and Add Volume Support
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/crd.rs`: Renamed `ApiContainerConfig` to `BindcarConfig`
+  - Renamed struct to better reflect its purpose as the Bindcar sidecar configuration
+- `src/crd.rs`: Renamed field `api_config` to `bindcar_config`
+  - In `Bind9InstanceSpec` - instance-level Bindcar configuration
+  - In `Bind9Config` - cluster-level Bindcar configuration (inherited by all instances)
+- All code and test references updated to use `bindcar_config` consistently
+
+### Added
+- `src/crd.rs`: Added volume and environment support to `BindcarConfig`
+  - `env_vars: Option<Vec<EnvVar>>` - Environment variables for the Bindcar container
+  - `volumes: Option<Vec<Volume>>` - Volumes that can be mounted by the Bindcar container
+  - `volume_mounts: Option<Vec<VolumeMount>>` - Volume mounts for the Bindcar container
+
+### Fixed
+- `src/bind9_resources.rs`: Fixed `bindcarConfig` inheritance from cluster to instances
+  - Added `bindcar_config` field to `DeploymentConfig` struct
+  - Updated `resolve_deployment_config()` to resolve `bindcar_config` from cluster global config
+  - Instance-level `bindcarConfig` now correctly overrides cluster-level configuration
+  - `build_pod_spec()` now receives resolved `bindcar_config` instead of only instance-level config
+  - Fixes issue where `bind9cluster.spec.global.bindcarConfig.image` was not being honored
+- `Cargo.toml`: Switched from native TLS (OpenSSL) to rustls for HTTP client
+  - Changed `reqwest` to use `rustls-tls` feature instead of default native-tls
+  - Eliminates OpenSSL dependency, enabling clean musl static builds
+  - Docker builds now succeed without OpenSSL build dependencies
+- `Dockerfile`: Simplified build process by removing OpenSSL dependencies
+  - Removed unnecessary packages: `pkg-config`, `libssl-dev`, `musl-dev`, `make`, `perl`
+  - Pure Rust TLS stack (rustls) works perfectly with musl static linking
+
+### Impact
+- [x] Breaking change - Field name changed from `apiConfig` to `bindcarConfig` in CRDs
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+### Why
+- Improved naming consistency: "bindcar" better represents the sidecar's purpose
+- Added flexibility: Users can now customize environment variables and mount volumes in the Bindcar sidecar
+- Docker builds: rustls (pure Rust TLS) ensures reliable static builds across all platforms without C dependencies
+
+---
+
+## [2025-12-03 11:45] - Integrate HTTP API Sidecar (bindcar) for BIND9 Management
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/bind9.rs`: New HTTP API integration for all RNDC operations
+  - Added `create_zone_http()` method for zone creation via API
+  - Converted `exec_rndc_command()` to use HTTP endpoints instead of RNDC protocol
+  - Added `HttpClient` and ServiceAccount token authentication
+  - Added request/response types: `CreateZoneRequest`, `ZoneResponse`, `ServerStatusResponse`
+- `src/bind9_resources.rs`: API sidecar container deployment
+  - Added `build_api_sidecar_container()` function to create API sidecar
+  - Modified `build_pod_spec()` to include API sidecar alongside BIND9 container
+  - Updated `build_service()` to expose API on port 80 (maps to container port 8080)
+- `src/crd.rs`: New `BindcarConfig` struct for API sidecar configuration
+  - Added `bindcar_config` field to `Bind9InstanceSpec` and `Bind9Config`
+  - Configurable: image, imagePullPolicy, resources, port, logLevel
+- `Cargo.toml`: Added `reqwest` dependency for HTTP client
+
+### Changed
+- `templates/named.conf.tmpl`: RNDC now listens only on localhost (127.0.0.1)
+  - Changed from `inet * port 953 allow { any; }` to `inet 127.0.0.1 port 953 allow { localhost; }`
+  - API sidecar now handles all external RNDC access via HTTP
+- `src/bind9_resources.rs`: Service port configuration
+  - **Removed:** RNDC port 953 from Service (no longer exposed externally)
+  - **Added:** HTTP port 80 → API sidecar port (default 8080, configurable)
+  - Service now exposes: DNS (53 TCP/UDP) and API (80 HTTP)
+
+### Why
+**Architecture Migration:** Moved from direct RNDC protocol access to HTTP API sidecar pattern for better:
+- **Security**: RNDC no longer exposed to network, only accessible via localhost
+- **Flexibility**: RESTful API is easier to integrate with modern tooling
+- **Standardization**: HTTP on port 80 follows standard conventions
+- **Scalability**: API sidecar can handle authentication, rate limiting, etc.
+
+The `bindcar` sidecar runs alongside BIND9 in the same pod, sharing volumes for zone files and RNDC keys.
+
+### Impact
+- [x] Breaking change (RNDC port no longer exposed, all management via HTTP API)
+- [x] Requires cluster rollout (new pod template with sidecar container)
+- [x] Config change (new `bindcar_config` CRD field)
+- [ ] Documentation only
+
+### Technical Details
+
+**HTTP API Endpoints** (in `bindcar` sidecar):
+- `POST /api/v1/zones` - Create zone
+- `POST /api/v1/zones/:name/reload` - Reload zone
+- `DELETE /api/v1/zones/:name` - Delete zone
+- `POST /api/v1/zones/:name/freeze` - Freeze zone
+- `POST /api/v1/zones/:name/thaw` - Thaw zone
+- `POST /api/v1/zones/:name/notify` - Notify secondaries
+- `GET /api/v1/zones/:name/status` - Zone status
+- `GET /api/v1/server/status` - Server status
+
+**Default Sidecar Configuration:**
+```yaml
+apiConfig:
+  image: ghcr.io/firestoned/bindcar:latest
+  imagePullPolicy: IfNotPresent
+  port: 8080
+  logLevel: info
+```
+
+**Authentication:** Uses Kubernetes ServiceAccount tokens mounted at `/var/run/secrets/kubernetes.io/serviceaccount/token`
+
+**Shared Volumes:**
+- `/var/cache/bind` - Zone files (shared between BIND9 and API)
+- `/etc/bind/keys` - RNDC keys (shared, read-only for API)
+
 ## [2025-12-02 14:30] - Fix RNDC addzone Command Quoting
 
 **Author:** Erick Bourgeois
