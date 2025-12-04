@@ -75,7 +75,7 @@
 //! };
 //! ```
 
-use k8s_openapi::api::core::v1::{ServiceSpec, Volume, VolumeMount};
+use k8s_openapi::api::core::v1::{EnvVar, ServiceSpec, Volume, VolumeMount};
 use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -1131,6 +1131,13 @@ pub struct Bind9Config {
     /// 4. Auto-generated (default)
     #[serde(default)]
     pub rndc_secret_ref: Option<RndcSecretRef>,
+
+    /// Bindcar RNDC API sidecar container configuration.
+    ///
+    /// The API container provides an HTTP interface for managing zones via rndc.
+    /// This configuration is inherited by all instances unless overridden.
+    #[serde(default)]
+    pub bindcar_config: Option<BindcarConfig>,
 }
 
 /// DNSSEC (DNS Security Extensions) configuration
@@ -1537,6 +1544,20 @@ pub struct Bind9InstanceSpec {
     /// If not specified, a Secret will be auto-generated for this instance.
     #[serde(default)]
     pub rndc_secret_ref: Option<RndcSecretRef>,
+
+    /// Storage configuration for zone files.
+    ///
+    /// Specifies how zone files should be stored. Defaults to emptyDir (ephemeral storage).
+    /// For persistent storage, use persistentVolumeClaim.
+    #[serde(default)]
+    pub storage: Option<StorageConfig>,
+
+    /// Bindcar RNDC API sidecar container configuration.
+    ///
+    /// The API container provides an HTTP interface for managing zones via rndc.
+    /// If not specified, uses default configuration.
+    #[serde(default)]
+    pub bindcar_config: Option<BindcarConfig>,
 }
 
 /// `Bind9Instance` status
@@ -1554,4 +1575,95 @@ pub struct Bind9InstanceStatus {
     /// IP or hostname of this instance's service
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_address: Option<String>,
+}
+
+/// Storage configuration for zone files
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageConfig {
+    /// Storage type (emptyDir or persistentVolumeClaim)
+    #[serde(default = "default_storage_type")]
+    pub storage_type: StorageType,
+
+    /// `EmptyDir` configuration (used when storageType is emptyDir)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub empty_dir: Option<k8s_openapi::api::core::v1::EmptyDirVolumeSource>,
+
+    /// `PersistentVolumeClaim` configuration (used when storageType is persistentVolumeClaim)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persistent_volume_claim: Option<PersistentVolumeClaimConfig>,
+}
+
+fn default_storage_type() -> StorageType {
+    StorageType::EmptyDir
+}
+
+/// Storage type for zone files
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum StorageType {
+    /// Ephemeral storage (default) - data is lost when pod restarts
+    EmptyDir,
+    /// Persistent storage - data survives pod restarts
+    PersistentVolumeClaim,
+}
+
+/// `PersistentVolumeClaim` configuration
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistentVolumeClaimConfig {
+    /// Name of an existing PVC to use
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claim_name: Option<String>,
+
+    /// Storage class name for dynamic provisioning
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_class_name: Option<String>,
+
+    /// Storage size (e.g., "10Gi", "1Ti")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<String>,
+
+    /// Access modes (`ReadWriteOnce`, `ReadOnlyMany`, `ReadWriteMany`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_modes: Option<Vec<String>>,
+}
+
+/// Bindcar container configuration
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BindcarConfig {
+    /// Container image for the RNDC API sidecar
+    ///
+    /// Example: "ghcr.io/firestoned/bindcar:latest"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+
+    /// Image pull policy (`Always`, `IfNotPresent`, `Never`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_pull_policy: Option<String>,
+
+    /// Resource requirements for the Bindcar container
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resources: Option<k8s_openapi::api::core::v1::ResourceRequirements>,
+
+    /// API server port (default: 8080)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<i32>,
+
+    /// Log level for the Bindcar container (`debug`, `info`, `warn`, `error`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_level: Option<String>,
+
+    /// Environment variables for the Bindcar container
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env_vars: Option<Vec<EnvVar>>,
+
+    /// Volumes that can be mounted by the Bindcar container
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volumes: Option<Vec<Volume>>,
+
+    /// Volume mounts for the Bindcar container
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volume_mounts: Option<Vec<VolumeMount>>,
 }

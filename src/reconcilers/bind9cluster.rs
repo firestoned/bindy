@@ -852,6 +852,8 @@ async fn create_managed_instance(
         volumes: cluster.spec.volumes.clone(),
         volume_mounts: cluster.spec.volume_mounts.clone(),
         rndc_secret_ref: None, // Inherit from cluster/role config
+        storage: None,         // Use default (emptyDir)
+        bindcar_config: None,  // Use default Bindcar configuration
     };
 
     let instance = Bind9Instance {

@@ -2,70 +2,59 @@
 
 ## System Overview
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Kubernetes Cluster                       │
-├─────────────────────────────────────────────────────────────┤
-│                                                               │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │           DNS System Namespace (dns-system)           │   │
-│  ├──────────────────────────────────────────────────────┤   │
-│  │                                                        │   │
-│  │  ┌─────────────────────────────────────────────────┐ │   │
-│  │  │    Rust Controller Pod                          │ │   │
-│  │  ├─────────────────────────────────────────────────┤ │   │
-│  │  │                                                 │ │   │
-│  │  │  ┌────────────────────────────────────────┐   │ │   │
-│  │  │  │  Main Event Loop                       │   │ │   │
-│  │  │  ├────────────────────────────────────────┤   │ │   │
-│  │  │  │  • DNSZone Controller                  │   │ │   │
-│  │  │  │  • ARecord Controller                  │   │ │   │
-│  │  │  │  • TXTRecord Controller                │   │ │   │
-│  │  │  │  • CNAMERecord Controller              │   │ │   │
-│  │  │  │  (runs concurrently via Tokio)        │   │ │   │
-│  │  │  └────────────────────────────────────────┘   │ │   │
-│  │  │                                                 │ │   │
-│  │  │  ┌────────────────────────────────────────┐   │ │   │
-│  │  │  │  Reconcilers                           │   │ │   │
-│  │  │  ├────────────────────────────────────────┤   │ │   │
-│  │  │  │  • reconcile_dnszone()                 │   │ │   │
-│  │  │  │  • reconcile_a_record()                │   │ │   │
-│  │  │  │  • reconcile_txt_record()              │   │ │   │
-│  │  │  │  • reconcile_cname_record()            │   │ │   │
-│  │  │  └────────────────────────────────────────┘   │ │   │
-│  │  │                                                 │ │   │
-│  │  │  ┌────────────────────────────────────────┐   │ │   │
-│  │  │  │  BIND9 Manager                         │   │ │   │
-│  │  │  ├────────────────────────────────────────┤   │ │   │
-│  │  │  │  • create_zone_file()                  │   │ │   │
-│  │  │  │  • add_a_record()                      │   │ │   │
-│  │  │  │  • add_txt_record()                    │   │ │   │
-│  │  │  │  • delete_zone()                       │   │ │   │
-│  │  │  └────────────────────────────────────────┘   │ │   │
-│  │  │                                                 │ │   │
-│  │  └─────────────────────────────────────────────────┘ │   │
-│  │                                                        │   │
-│  │  ┌─────────────────────────────────────────────────┐ │   │
-│  │  │    BIND9 Instance Pods (scaled)                │ │   │
-│  │  ├─────────────────────────────────────────────────┤ │   │
-│  │  │  /etc/bind/zones/db.example.com                │ │   │
-│  │  │  /etc/bind/zones/db.internal.local             │ │   │
-│  │  │  ...                                            │ │   │
-│  │  └─────────────────────────────────────────────────┘ │   │
-│  │                                                        │   │
-│  └────────────────────────────────────────────────────────┘   │
-│                                                               │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │        Custom Resources (in etcd)                     │   │
-│  ├──────────────────────────────────────────────────────┤   │
-│  │  • Bind9Instance (primary-dns, secondary-dns)       │   │
-│  │  • DNSZone (example-com, internal-local)            │   │
-│  │  • ARecord (www, api, db, ...)                      │   │
-│  │  • TXTRecord (spf, dmarc, ...)                      │   │
-│  │  • CNAMERecord (blog, cache, ...)                   │   │
-│  └──────────────────────────────────────────────────────┘   │
-│                                                               │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph k8s["Kubernetes Cluster"]
+        subgraph namespace["DNS System Namespace (dns-system)"]
+            subgraph controller["Rust Controller Pod"]
+                subgraph eventloop["Main Event Loop<br/>(runs concurrently via Tokio)"]
+                    dnszone_ctrl["DNSZone Controller"]
+                    arecord_ctrl["ARecord Controller"]
+                    txt_ctrl["TXTRecord Controller"]
+                    cname_ctrl["CNAMERecord Controller"]
+                end
+
+                subgraph reconcilers["Reconcilers"]
+                    rec_dnszone["reconcile_dnszone()"]
+                    rec_a["reconcile_a_record()"]
+                    rec_txt["reconcile_txt_record()"]
+                    rec_cname["reconcile_cname_record()"]
+                end
+
+                subgraph manager["BIND9 Manager"]
+                    create_zone["create_zone_file()"]
+                    add_a["add_a_record()"]
+                    add_txt["add_txt_record()"]
+                    delete_zone["delete_zone()"]
+                end
+            end
+
+            subgraph bind9["BIND9 Instance Pods (scaled)"]
+                zones["/etc/bind/zones/db.example.com<br/>/etc/bind/zones/db.internal.local<br/>..."]
+            end
+        end
+
+        subgraph etcd["Custom Resources (in etcd)"]
+            instances["• Bind9Instance (primary-dns, secondary-dns)"]
+            dnszones["• DNSZone (example-com, internal-local)"]
+            arecords["• ARecord (www, api, db, ...)"]
+            txtrecords["• TXTRecord (spf, dmarc, ...)"]
+            cnamerecords["• CNAMERecord (blog, cache, ...)"]
+        end
+    end
+
+    eventloop --> reconcilers
+    reconcilers --> manager
+    manager --> bind9
+
+    style k8s fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style namespace fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    style controller fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    style eventloop fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style reconcilers fill:#fce4ec,stroke:#880e4f,stroke-width:2px
+    style manager fill:#ffe0b2,stroke:#e65100,stroke-width:2px
+    style bind9 fill:#f1f8e9,stroke:#33691e,stroke-width:2px
+    style etcd fill:#e0f2f1,stroke:#004d40,stroke-width:2px
 ```
 
 ## Control Flow
@@ -122,35 +111,27 @@ Done, requeue after 5 minutes
 
 ## Concurrency Model
 
-```
-┌─────────────────────────────────────┐
-│    Main Tokio Runtime                │
-├─────────────────────────────────────┤
-│                                     │
-│  ┌─────────────────────────────┐   │
-│  │ DNSZone Controller Task     │   │
-│  │ (watches DNSZone resources) │   │
-│  └─────────────────────────────┘   │
-│              ↓                      │
-│          ┌──────────────────────┐  │
-│          │ ARecord Controller   │  │
-│          │ Task (concurrent)    │  │
-│          └──────────────────────┘  │
-│              ↓                      │
-│          ┌──────────────────────┐  │
-│          │ TXTRecord Controller │  │
-│          │ Task (concurrent)    │  │
-│          └──────────────────────┘  │
-│              ↓                      │
-│          ┌──────────────────────┐  │
-│          │ CNAME Controller     │  │
-│          │ Task (concurrent)    │  │
-│          └──────────────────────┘  │
-│                                     │
-└─────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph runtime["Main Tokio Runtime"]
+        dnszone_task["DNSZone Controller Task<br/>(watches DNSZone resources)"]
+        arecord_task["ARecord Controller Task<br/>(concurrent)"]
+        txt_task["TXTRecord Controller Task<br/>(concurrent)"]
+        cname_task["CNAME Controller Task<br/>(concurrent)"]
 
-All tasks run concurrently via Tokio's
-thread pool without blocking each other.
+        dnszone_task --> arecord_task
+        arecord_task --> txt_task
+        txt_task --> cname_task
+    end
+
+    note["All tasks run concurrently via Tokio's<br/>thread pool without blocking each other."]
+
+    style runtime fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    style dnszone_task fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style arecord_task fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style txt_task fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    style cname_task fill:#fce4ec,stroke:#880e4f,stroke-width:2px
+    style note fill:#fffde7,stroke:#f57f17,stroke-width:1px
 ```
 
 ## Data Structures

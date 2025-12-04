@@ -106,10 +106,14 @@ macro_rules! get_instance_and_key {
 }
 
 /// Helper macro to handle record operation failures with proper error reporting
+///
+/// After successfully adding a record, this macro automatically triggers a NOTIFY
+/// to secondary servers so they can initiate zone transfers (IXFR) to receive the update.
 macro_rules! handle_record_operation {
-    ($result:expr, $client:expr, $record:expr, $server:expr, $success_msg:expr) => {
+    ($result:expr, $client:expr, $record:expr, $zone_name:expr, $server:expr, $key_data:expr, $zone_manager:expr, $success_msg:expr) => {
         match $result {
             Ok(()) => {
+                // Update record status
                 update_record_status(
                     $client,
                     $record,
@@ -119,6 +123,22 @@ macro_rules! handle_record_operation {
                     $success_msg,
                 )
                 .await?;
+
+                // Notify secondaries about the zone change
+                // This triggers IXFR (incremental zone transfer) from primary to secondaries
+                info!(
+                    "Notifying secondaries about zone {} update after record operation",
+                    $zone_name
+                );
+                if let Err(e) = $zone_manager.notify_zone($zone_name, $server, $key_data).await {
+                    // Don't fail the entire operation if NOTIFY fails - log and continue
+                    // The record was successfully added, secondaries will eventually catch up via SOA refresh
+                    warn!(
+                        "Failed to notify secondaries for zone {}: {}. Secondaries will sync via SOA refresh timer.",
+                        $zone_name, e
+                    );
+                }
+
                 Ok(())
             }
             Err(e) => {
@@ -295,7 +315,10 @@ pub async fn reconcile_a_record(
         result,
         &client,
         &record,
+        &zone_name,
         &server,
+        &key_data,
+        zone_manager,
         &format!("A record {}.{} created successfully", spec.name, zone_name)
     )
 }
@@ -347,7 +370,10 @@ pub async fn reconcile_txt_record(
         result,
         &client,
         &record,
+        &zone_name,
         &server,
+        &key_data,
+        zone_manager,
         &format!(
             "TXT record {}.{} created successfully",
             spec.name, zone_name
@@ -406,7 +432,10 @@ pub async fn reconcile_aaaa_record(
         result,
         &client,
         &record,
+        &zone_name,
         &server,
+        &key_data,
+        zone_manager,
         &format!(
             "AAAA record {}.{} created successfully",
             spec.name, zone_name
@@ -465,7 +494,10 @@ pub async fn reconcile_cname_record(
         result,
         &client,
         &record,
+        &zone_name,
         &server,
+        &key_data,
+        zone_manager,
         &format!(
             "CNAME record {}.{} created successfully",
             spec.name, zone_name
@@ -526,7 +558,10 @@ pub async fn reconcile_mx_record(
         result,
         &client,
         &record,
+        &zone_name,
         &server,
+        &key_data,
+        zone_manager,
         &format!("MX record {}.{} created successfully", spec.name, zone_name)
     )
 }
@@ -583,7 +618,10 @@ pub async fn reconcile_ns_record(
         result,
         &client,
         &record,
+        &zone_name,
         &server,
+        &key_data,
+        zone_manager,
         &format!("NS record {}.{} created successfully", spec.name, zone_name)
     )
 }
@@ -641,7 +679,10 @@ pub async fn reconcile_srv_record(
         result,
         &client,
         &record,
+        &zone_name,
         &server,
+        &key_data,
+        zone_manager,
         &format!(
             "SRV record {}.{} created successfully",
             spec.name, zone_name
@@ -703,7 +744,10 @@ pub async fn reconcile_caa_record(
         result,
         &client,
         &record,
+        &zone_name,
         &server,
+        &key_data,
+        zone_manager,
         &format!(
             "CAA record {}.{} created successfully",
             spec.name, zone_name

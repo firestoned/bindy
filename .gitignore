@@ -65,3 +65,6 @@ coverage/
 # Documentation
 /docs/target/
 /docs/book/
+
+# bind9-rndc-api
+bind9-rndc-api/target/

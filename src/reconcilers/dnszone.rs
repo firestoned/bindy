@@ -18,7 +18,7 @@ use kube::{
     Api, ResourceExt,
 };
 use serde_json::json;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Reconciles a `DNSZone` resource.
 ///
@@ -154,6 +154,24 @@ pub async fn reconcile_dnszone(
     // 1. rndc addzone immediately adds the zone to BIND9's running config
     // 2. The zone file will be created automatically when records are added via dynamic updates
     // 3. Reloading would fail if the zone file doesn't exist yet
+
+    // Notify secondaries about the new zone
+    // This triggers zone transfer (AXFR) from primary to secondaries
+    info!(
+        "Notifying secondaries about new zone {} for cluster {}",
+        spec.zone_name, spec.cluster_ref
+    );
+    if let Err(e) = zone_manager
+        .notify_zone(&spec.zone_name, &service_endpoint, &key_data)
+        .await
+    {
+        // Don't fail if NOTIFY fails - the zone was successfully created
+        // Secondaries will sync via SOA refresh timer
+        warn!(
+            "Failed to notify secondaries for zone {}: {}. Secondaries will sync via SOA refresh timer.",
+            spec.zone_name, e
+        );
+    }
 
     info!(
         "Successfully added zone {} to cluster {} ({} primary pod(s))",
