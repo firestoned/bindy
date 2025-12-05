@@ -39,6 +39,7 @@ rand = "0.8"
 hickory-client = { version = "0.24", features = ["dnssec"] }
 hickory-proto = { version = "0.24", features = ["dnssec"] }
 url = "2.5.7"
+bindcar = "0.2"
 
 [dev-dependencies]
 tokio-test = "0.4"

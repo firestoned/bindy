@@ -38,6 +38,7 @@
 use crate::constants::{DEFAULT_DNS_RECORD_TTL_SECS, TSIG_FUDGE_TIME_SECS};
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use bindcar::{CreateZoneRequest, SoaRecord, ZoneConfig, ZoneResponse};
 use hickory_client::client::{Client, SyncClient};
 use hickory_client::op::ResponseCode;
 use hickory_client::rr::rdata;
@@ -47,7 +48,7 @@ use hickory_client::udp::UdpClientConnection;
 use hickory_proto::rr::dnssec::tsig::TSigner;
 use rand::Rng;
 use reqwest::Client as HttpClient;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
@@ -128,41 +129,6 @@ impl RndcError {
 
 /// Path to the `ServiceAccount` token file in Kubernetes pods
 const SERVICE_ACCOUNT_TOKEN_PATH: &str = "/var/run/secrets/kubernetes.io/serviceaccount/token";
-
-/// Request to create a zone via the bindcar HTTP API.
-///
-/// **Note**: This struct matches the bindcar HTTP API JSON format (accepts raw zone file content),
-/// which differs from the bindcar Rust library's `ZoneConfig` type (structured configuration).
-/// The HTTP API accepts `zoneContent` as a raw BIND9 zone file string for backwards compatibility
-/// and flexibility, while the Rust library uses structured types for type safety.
-///
-/// We use this local definition to match the HTTP API contract until bindcar provides
-/// an HTTP API client library or a way to send raw zone file content.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CreateZoneRequest {
-    /// Name of the DNS zone (e.g., "example.com")
-    zone_name: String,
-    /// Type of zone ("master" or "slave")
-    zone_type: String,
-    /// Complete BIND9 zone file content as a string
-    zone_content: String,
-    /// Optional TSIG key name for dynamic updates
-    update_key_name: Option<String>,
-}
-
-/// Response from bindcar HTTP API zone operations.
-///
-/// This struct matches the JSON format returned by the bindcar HTTP API.
-#[derive(Debug, Deserialize)]
-struct ZoneResponse {
-    /// Whether the operation succeeded
-    success: bool,
-    /// Human-readable message describing the result
-    message: String,
-    /// Optional additional details about the operation
-    details: Option<String>,
-}
 
 /// Parameters for creating SRV records.
 ///
@@ -652,15 +618,31 @@ impl Bind9Manager {
             return Ok(());
         }
 
-        // Use the HTTP API to create an empty zone
-        // The bindcar API will handle zone file path and allow-update configuration
+        // Use the HTTP API to create a minimal zone
+        // The bindcar API will handle zone file generation and allow-update configuration
         let base_url = Self::build_api_url(server);
         let url = format!("{base_url}/api/v1/zones");
+
+        // Create minimal zone configuration with basic SOA record
+        let zone_config = ZoneConfig {
+            ttl: DEFAULT_DNS_RECORD_TTL_SECS as u32,
+            soa: SoaRecord {
+                primary_ns: format!("ns.{zone_name}."),
+                admin_email: format!("admin.{zone_name}."),
+                serial: 1,
+                refresh: 3600,
+                retry: 600,
+                expire: 604_800,
+                negative_ttl: 86400,
+            },
+            name_servers: vec![format!("ns.{zone_name}.")],
+            records: vec![],
+        };
 
         let request = CreateZoneRequest {
             zone_name: zone_name.to_string(),
             zone_type: zone_type.to_string(),
-            zone_content: String::new(), // Empty zone content
+            zone_config,
             update_key_name: Some(key_data.name.clone()),
         };
 
@@ -677,13 +659,13 @@ impl Bind9Manager {
 
     /// Create a zone via HTTP API with structured configuration.
     ///
-    /// This method sends a POST request to the API sidecar to create a zone with
-    /// the full zone file content generated from structured configuration.
+    /// This method sends a POST request to the API sidecar to create a zone using
+    /// structured zone configuration from the bindcar library.
     ///
     /// # Arguments
     /// * `zone_name` - Name of the zone (e.g., "example.com")
     /// * `zone_type` - Zone type ("master" or "slave")
-    /// * `zone_content` - Complete zone file content
+    /// * `zone_config` - Structured zone configuration (converted to zone file by bindcar)
     /// * `server` - API endpoint (e.g., "bind9-primary-api:8080")
     /// * `key_data` - RNDC authentication key (used as updateKeyName)
     ///
@@ -694,7 +676,7 @@ impl Bind9Manager {
         &self,
         zone_name: &str,
         zone_type: &str,
-        zone_content: &str,
+        zone_config: ZoneConfig,
         server: &str,
         key_data: &RndcKeyData,
     ) -> Result<()> {
@@ -704,7 +686,7 @@ impl Bind9Manager {
         let request = CreateZoneRequest {
             zone_name: zone_name.to_string(),
             zone_type: zone_type.to_string(),
-            zone_content: zone_content.to_string(),
+            zone_config,
             update_key_name: Some(key_data.name.clone()),
         };
 

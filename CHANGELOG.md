@@ -2,51 +2,64 @@
 
 All notable changes to this project will be documented in this file.
 
-## [2025-12-05] - Document bindcar API Compatibility
+## [2025-12-05] - Integrate bindcar Library for Type-Safe API Communication
 
 **Author:** Erick Bourgeois
 
 ### Changed
-- `src/bind9.rs`: Enhanced documentation for local `CreateZoneRequest` and `ZoneResponse` structs
-  - Clarified that these structs match the bindcar **HTTP API** JSON format (not the Rust library)
-  - bindcar HTTP API accepts `zoneContent` as raw BIND9 zone file string
-  - bindcar Rust library v0.2+ uses structured `ZoneConfig` type with separate fields (ttl, soa, records)
-  - Local structs will remain until bindcar provides HTTP API client library or raw content support
+- `Cargo.toml`: Added `bindcar = "0.2"` dependency
+- `src/bind9.rs`: Replaced local struct definitions with types from the bindcar library
+  - Now uses `bindcar::CreateZoneRequest` with structured `ZoneConfig`
+  - Now uses `bindcar::ZoneResponse` for HTTP API responses
+  - Now uses `bindcar::SoaRecord` for SOA record configuration
+  - Removed local `CreateZoneRequest` and `ZoneResponse` struct definitions
+  - Updated `create_zone_http()` to accept `ZoneConfig` instead of raw zone file string
+  - Updated `add_zone()` to create structured `ZoneConfig` with minimal SOA/NS records
 
 ### Why
-- **API mismatch**: bindcar v0.2.0 Rust library uses structured configuration, incompatible with our raw zone file workflow
-- **HTTP API compatibility**: The bindcar HTTP server still accepts raw zone content via JSON (for flexibility)
-- **Clear documentation**: Developers understand why we use local types instead of importing from bindcar crate
-- **Future migration path**: When bindcar adds HTTP client support or raw content conversion, we can migrate
+- **Type safety**: Share type definitions between bindy and bindcar, preventing drift
+- **Single source of truth**: bindcar library maintains canonical API types
+- **Better maintainability**: No need to duplicate and sync struct definitions
+- **Structured configuration**: Use typed configuration instead of error-prone string manipulation
+- **Consistency**: Both server (bindcar) and client (bindy) use the same types
 
 ### Technical Details
 
-**bindcar HTTP API (what we use)**:
-```json
-{
-  "zoneName": "example.com",
-  "zoneType": "master",
-  "zoneContent": "$TTL 3600\n@ IN SOA ...",  // Raw BIND9 zone file
-  "updateKeyName": "bind9-key"
-}
-```
-
-**bindcar Rust library v0.2.0 (incompatible)**:
+**Before (local definitions)**:
 ```rust
-pub struct ZoneConfig {
-    pub ttl: u32,
-    pub soa: SoaRecord,
-    pub name_servers: Vec<String>,
-    pub records: Vec<DnsRecord>,
+struct CreateZoneRequest {
+    zone_name: String,
+    zone_type: String,
+    zone_content: String,  // Raw zone file string
+    update_key_name: Option<String>,
 }
 ```
 
-**Decision**: Continue using local struct definitions that match the HTTP API JSON contract.
+**After (bindcar library)**:
+```rust
+use bindcar::{CreateZoneRequest, SoaRecord, ZoneConfig, ZoneResponse};
+
+let zone_config = ZoneConfig {
+    ttl: 3600,
+    soa: SoaRecord { /* structured fields */ },
+    name_servers: vec![],
+    records: vec![],
+};
+
+let request = CreateZoneRequest {
+    zone_name: "example.com".into(),
+    zone_type: "master".into(),
+    zone_config,  // Structured configuration
+    update_key_name: Some("bind9-key".into()),
+};
+```
+
+The bindcar API server will convert the `ZoneConfig` to a zone file using `zone_config.to_zone_file()`.
 
 ### Impact
-- [ ] Breaking change
+- [x] API change - `create_zone_http()` signature changed to accept `ZoneConfig`
+- [ ] Breaking change - internal change only, no user-facing impact
 - [ ] Requires cluster rollout
-- [x] Documentation improvement - clarifies architecture
 - [ ] Config change only
 - [ ] Documentation only
 
