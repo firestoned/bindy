@@ -2,6 +2,98 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-05] - Document bindcar API Compatibility
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/bind9.rs`: Enhanced documentation for local `CreateZoneRequest` and `ZoneResponse` structs
+  - Clarified that these structs match the bindcar **HTTP API** JSON format (not the Rust library)
+  - bindcar HTTP API accepts `zoneContent` as raw BIND9 zone file string
+  - bindcar Rust library v0.2+ uses structured `ZoneConfig` type with separate fields (ttl, soa, records)
+  - Local structs will remain until bindcar provides HTTP API client library or raw content support
+
+### Why
+- **API mismatch**: bindcar v0.2.0 Rust library uses structured configuration, incompatible with our raw zone file workflow
+- **HTTP API compatibility**: The bindcar HTTP server still accepts raw zone content via JSON (for flexibility)
+- **Clear documentation**: Developers understand why we use local types instead of importing from bindcar crate
+- **Future migration path**: When bindcar adds HTTP client support or raw content conversion, we can migrate
+
+### Technical Details
+
+**bindcar HTTP API (what we use)**:
+```json
+{
+  "zoneName": "example.com",
+  "zoneType": "master",
+  "zoneContent": "$TTL 3600\n@ IN SOA ...",  // Raw BIND9 zone file
+  "updateKeyName": "bind9-key"
+}
+```
+
+**bindcar Rust library v0.2.0 (incompatible)**:
+```rust
+pub struct ZoneConfig {
+    pub ttl: u32,
+    pub soa: SoaRecord,
+    pub name_servers: Vec<String>,
+    pub records: Vec<DnsRecord>,
+}
+```
+
+**Decision**: Continue using local struct definitions that match the HTTP API JSON contract.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Documentation improvement - clarifies architecture
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
+## [2025-12-05] - Fix Docker Build Version Injection
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `Dockerfile`: Moved version update to occur AFTER copying actual source code
+  - **Before**: Version was updated in the cached dependency layer, then overwritten by COPY
+  - **After**: Version is updated immediately before building the final binary
+  - Ensures `cargo build` uses the correct version from the GitHub release tag
+  - Binary and package metadata now correctly reflect the release version
+
+### Why
+- **Correct version metadata**: The built binary must report the actual release version, not the dev version
+- **Docker layer caching bug**: The previous sed command ran too early and was overwritten
+- **Release integrity**: Users can verify the binary version matches the release tag
+
+### Technical Details
+
+**Build Flow**:
+1. GitHub release created with tag (e.g., `v1.2.3`)
+2. Workflow extracts version: `1.2.3` from `github.event.release.tag_name`
+3. Docker build receives: `--build-arg VERSION=1.2.3`
+4. Dockerfile updates `Cargo.toml`: `version = "1.2.3"` (line 44)
+5. Cargo builds binary with correct version metadata
+6. Binary reports: `bindy 1.2.3` (matches release tag)
+
+**Verification**:
+```bash
+# In the container
+/usr/local/bin/bindy --version
+# Should output: bindy 1.2.3 (not bindy 0.1.0)
+```
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Build fix - ensures version metadata is correct
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2025-12-03 23:15] - Add Automatic NOTIFY to Secondaries for Zone Updates
 
 **Author:** Erick Bourgeois

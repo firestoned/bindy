@@ -19,9 +19,6 @@ RUN rustup target add aarch64-unknown-linux-musl x86_64-unknown-linux-musl && \
 COPY Cargo.toml ./
 COPY Cargo.lock* ./
 
-# Update version in Cargo.toml if VERSION arg is provided
-RUN sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
-
 # Determine the musl target based on architecture
 RUN ARCH=$(uname -m) && \
     if [ "$ARCH" = "aarch64" ]; then \
@@ -41,6 +38,10 @@ RUN mkdir -p src/bin && \
 # Now copy the actual source code
 COPY src ./src
 COPY templates ./templates
+
+# Update version in Cargo.toml using the VERSION build argument
+# This ensures the final binary has the correct version from the release tag
+RUN sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
 
 # Build the actual controller with musl for static linking
 # Touch main.rs to ensure it's rebuilt with the real code
