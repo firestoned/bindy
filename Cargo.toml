@@ -2,6 +2,7 @@
 name = "bindy"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.85"
 authors = ["Erick Bourgeois <erick@hjeb.ca>"]
 description = "BIND9 DNS Controller for Kubernetes"
 license = "MIT"
@@ -29,9 +30,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 anyhow = "1"
 thiserror = "1"
-async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
-tempfile = "3"
 k8s-openapi = { version = "0.26", features = ["v1_32", "schemars"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 base64 = "0.22"
@@ -39,11 +38,10 @@ rand = "0.8"
 hickory-client = { version = "0.24", features = ["dnssec"] }
 hickory-proto = { version = "0.24", features = ["dnssec"] }
 url = "2.5.7"
-bindcar = "0.2"
+bindcar = "0.2.2"
 
 [dev-dependencies]
-tokio-test = "0.4"
-mdbook-toc = "0.14.2"
+tempfile = "3"
 
 [profile.release]
 opt-level = 3
