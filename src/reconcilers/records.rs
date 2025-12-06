@@ -130,7 +130,7 @@ macro_rules! handle_record_operation {
                     "Notifying secondaries about zone {} update after record operation",
                     $zone_name
                 );
-                if let Err(e) = $zone_manager.notify_zone($zone_name, $server, $key_data).await {
+                if let Err(e) = $zone_manager.notify_zone($zone_name, $server).await {
                     // Don't fail the entire operation if NOTIFY fails - log and continue
                     // The record was successfully added, secondaries will eventually catch up via SOA refresh
                     warn!(

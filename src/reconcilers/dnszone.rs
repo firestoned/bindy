@@ -108,11 +108,10 @@ pub async fn reconcile_dnszone(
 
     let key_data = load_rndc_key(&client, &namespace, first_instance_name).await?;
 
-    // For now, we use rndc addzone to dynamically add the zone.
-    // The zone type will be "master" (primary) and we'll use a default zone file location.
+    // For now, we use the HTTP API to dynamically add the zone.
+    // The zone type will be "master" (primary).
     // BIND9 will create the zone file in /var/cache/bind when records are added via dynamic updates.
     // This directory is mounted as an EmptyDir volume (or PVC for persistence).
-    let zone_file = format!("/var/cache/bind/{}.zone", spec.zone_name);
 
     // Add zone via Service endpoint (not individual pods)
     // This approach works best with shared storage (ReadWriteMany PVC):
@@ -136,13 +135,7 @@ pub async fn reconcile_dnszone(
     };
 
     zone_manager
-        .add_zone(
-            &spec.zone_name,
-            "master",
-            &zone_file,
-            &service_endpoint,
-            &key_data,
-        )
+        .add_zone(&spec.zone_name, "master", &service_endpoint, &key_data)
         .await?;
 
     info!(
@@ -162,7 +155,7 @@ pub async fn reconcile_dnszone(
         spec.zone_name, spec.cluster_ref
     );
     if let Err(e) = zone_manager
-        .notify_zone(&spec.zone_name, &service_endpoint, &key_data)
+        .notify_zone(&spec.zone_name, &service_endpoint)
         .await
     {
         // Don't fail if NOTIFY fails - the zone was successfully created
@@ -241,8 +234,6 @@ pub async fn delete_dnszone(
         })?
         .instance_name;
 
-    let key_data = load_rndc_key(&client, &namespace, first_instance_name).await?;
-
     // Delete zone via Service endpoint
     // With shared storage, we delete from one pod and the file is removed from shared storage
     // Use the instance name (not cluster name) as each instance has its own service
@@ -260,7 +251,7 @@ pub async fn delete_dnszone(
     };
 
     zone_manager
-        .delete_zone(&spec.zone_name, &service_endpoint, &key_data)
+        .delete_zone(&spec.zone_name, &service_endpoint)
         .await?;
 
     info!(
