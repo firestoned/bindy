@@ -26,15 +26,10 @@
 //! # async fn example() -> anyhow::Result<()> {
 //! let manager = Bind9Manager::new();
 //!
-//! // Generate an RNDC key for a new instance
-//! let mut key_data = Bind9Manager::generate_rndc_key();
-//! key_data.name = "bind9-primary".to_string();
-//!
 //! // Manage zones via HTTP API
 //! manager.reload_zone(
 //!     "example.com",
-//!     "bind9-primary-api.dns-system.svc.cluster.local:8080",
-//!     &key_data
+//!     "bind9-primary-api.dns-system.svc.cluster.local:8080"
 //! ).await?;
 //! # Ok(())
 //! # }
@@ -43,6 +38,7 @@
 use crate::constants::{DEFAULT_DNS_RECORD_TTL_SECS, TSIG_FUDGE_TIME_SECS};
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use bindcar::{CreateZoneRequest, SoaRecord, ZoneConfig, ZoneResponse};
 use hickory_client::client::{Client, SyncClient};
 use hickory_client::op::ResponseCode;
 use hickory_client::rr::rdata;
@@ -52,7 +48,7 @@ use hickory_client::udp::UdpClientConnection;
 use hickory_proto::rr::dnssec::tsig::TSigner;
 use rand::Rng;
 use reqwest::Client as HttpClient;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
@@ -134,30 +130,6 @@ impl RndcError {
 /// Path to the `ServiceAccount` token file in Kubernetes pods
 const SERVICE_ACCOUNT_TOKEN_PATH: &str = "/var/run/secrets/kubernetes.io/serviceaccount/token";
 
-/// Request to create a zone via the API
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CreateZoneRequest {
-    zone_name: String,
-    zone_type: String,
-    zone_content: String,
-    update_key_name: Option<String>,
-}
-
-/// Response from zone API operations
-#[derive(Debug, Deserialize)]
-struct ZoneResponse {
-    success: bool,
-    message: String,
-    details: Option<String>,
-}
-
-/// Server status response
-#[derive(Debug, Deserialize)]
-struct ServerStatusResponse {
-    status: String,
-}
-
 /// Parameters for creating SRV records.
 ///
 /// Contains the priority, weight, port, and target required for SRV records.
@@ -226,11 +198,11 @@ impl Bind9Manager {
     ///
     /// Converts "service-name.namespace.svc.cluster.local:8080" or "service-name:8080"
     /// to `<http://service-name.namespace.svc.cluster.local:8080>` or `<http://service-name:8080>`
-    fn build_api_url(server: &str) -> String {
+    pub(crate) fn build_api_url(server: &str) -> String {
         if server.starts_with("http://") || server.starts_with("https://") {
-            server.to_string()
+            server.trim_end_matches('/').to_string()
         } else {
-            format!("http://{server}")
+            format!("http://{}", server.trim_end_matches('/'))
         }
     }
 
@@ -392,145 +364,48 @@ impl Bind9Manager {
         })
     }
 
-    /// Execute an RNDC command via the HTTP API sidecar.
+    /// Execute a request to the bindcar API.
     ///
-    /// This function maps the old rndc command string to HTTP API calls.
+    /// Low-level helper that handles authentication, logging, and error handling
+    /// for all communication with the bindcar HTTP API sidecar.
     ///
     /// # Arguments
-    /// * `server` - API endpoint (e.g., "bind9-primary-api:8080")
-    /// * `key_data` - RNDC authentication key (used as updateKeyName)
-    /// * `command` - RNDC command to execute (e.g., "status", "reload zone")
+    /// * `method` - HTTP method (GET, POST, DELETE)
+    /// * `url` - Full URL to the bindcar API endpoint
+    /// * `body` - Optional JSON body for POST requests
     ///
     /// # Errors
     ///
     /// Returns an error if the HTTP request fails or the API returns an error.
-    ///
-    /// # Complexity
-    /// This function is intentionally long as it maps all RNDC commands to HTTP endpoints.
-    #[allow(clippy::too_many_lines)]
-    async fn exec_rndc_command(
+    async fn bindcar_request<T: Serialize + std::fmt::Debug>(
         &self,
-        server: &str,
-        _key_data: &RndcKeyData,
-        command: &str,
+        method: &str,
+        url: &str,
+        body: Option<&T>,
     ) -> Result<String> {
-        debug!(
-            server = %server,
-            command = %command,
-            "Executing command via HTTP API"
+        // Log the HTTP request
+        info!(
+            method = %method,
+            url = %url,
+            body = ?body,
+            "HTTP API request to bindcar"
         );
 
-        // Parse the command to determine the API endpoint
-        let parts: Vec<&str> = command.split_whitespace().collect();
-
-        if parts.is_empty() {
-            anyhow::bail!("Empty command");
-        }
-
-        let base_url = Self::build_api_url(server);
-        let (method, url, body): (String, String, Option<serde_json::Value>) =
-            match parts.first().copied() {
-                Some("reload") if parts.len() == 1 => (
-                    "POST".to_string(),
-                    format!("{base_url}/api/v1/server/reload"),
-                    None,
-                ),
-                Some("reload") => {
-                    let zone_name = parts[1];
-                    (
-                        "POST".to_string(),
-                        format!("{base_url}/api/v1/zones/{zone_name}/reload"),
-                        None,
-                    )
-                }
-                Some("freeze") => {
-                    if parts.len() < 2 {
-                        anyhow::bail!("freeze command requires zone name");
-                    }
-                    let zone_name = parts[1];
-                    (
-                        "POST".to_string(),
-                        format!("{base_url}/api/v1/zones/{zone_name}/freeze"),
-                        None,
-                    )
-                }
-                Some("thaw") => {
-                    if parts.len() < 2 {
-                        anyhow::bail!("thaw command requires zone name");
-                    }
-                    let zone_name = parts[1];
-                    (
-                        "POST".to_string(),
-                        format!("{base_url}/api/v1/zones/{zone_name}/thaw"),
-                        None,
-                    )
-                }
-                Some("notify") => {
-                    if parts.len() < 2 {
-                        anyhow::bail!("notify command requires zone name");
-                    }
-                    let zone_name = parts[1];
-                    (
-                        "POST".to_string(),
-                        format!("{base_url}/api/v1/zones/{zone_name}/notify"),
-                        None,
-                    )
-                }
-                Some("retransfer") => {
-                    if parts.len() < 2 {
-                        anyhow::bail!("retransfer command requires zone name");
-                    }
-                    let zone_name = parts[1];
-                    (
-                        "POST".to_string(),
-                        format!("{base_url}/api/v1/zones/{zone_name}/retransfer"),
-                        None,
-                    )
-                }
-                Some("delzone") => {
-                    if parts.len() < 2 {
-                        anyhow::bail!("delzone command requires zone name");
-                    }
-                    let zone_name = parts[1];
-                    (
-                        "DELETE".to_string(),
-                        format!("{base_url}/api/v1/zones/{zone_name}"),
-                        None,
-                    )
-                }
-                Some("status") if parts.len() == 1 => (
-                    "GET".to_string(),
-                    format!("{base_url}/api/v1/server/status"),
-                    None,
-                ),
-                Some("status") => {
-                    let zone_name = parts[1];
-                    (
-                        "GET".to_string(),
-                        format!("{base_url}/api/v1/zones/{zone_name}/status"),
-                        None,
-                    )
-                }
-                _ => {
-                    let cmd = parts.first().unwrap_or(&"<empty>");
-                    anyhow::bail!("Unsupported command via HTTP API: {cmd}");
-                }
-            };
-
-        // Execute HTTP request
-        let request = match method.as_str() {
-            "GET" => self.client.get(&url),
+        // Build the HTTP request
+        let request = match method {
+            "GET" => self.client.get(url),
             "POST" => {
-                let mut req = self.client.post(&url);
-                if let Some(body_content) = body {
-                    req = req.json(&body_content);
+                let mut req = self.client.post(url);
+                if let Some(body_data) = body {
+                    req = req.json(body_data);
                 }
                 req
             }
-            "DELETE" => self.client.delete(&url),
+            "DELETE" => self.client.delete(url),
             _ => anyhow::bail!("Unsupported HTTP method: {method}"),
         };
 
+        // Execute the request
         let response = request
             .header("Authorization", format!("Bearer {}", &*self.token))
             .send()
@@ -539,73 +414,63 @@ impl Bind9Manager {
 
         let status = response.status();
 
+        // Handle error responses
         if !status.is_success() {
             let error_text = response
                 .text()
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
             error!(
-                server = %server,
-                command = %command,
+                method = %method,
+                url = %url,
                 status = %status,
                 error = %error_text,
-                "HTTP API command failed"
+                "HTTP API request failed"
             );
-            anyhow::bail!("HTTP API command '{command}' failed with status {status}: {error_text}");
+            anyhow::bail!(
+                "HTTP request '{method} {url}' failed with status {status}: {error_text}"
+            );
         }
 
-        // Try to parse as ZoneResponse
+        // Read response body
         let text = response
             .text()
             .await
             .context("Failed to read response body")?;
 
-        if let Ok(result) = serde_json::from_str::<ZoneResponse>(&text) {
-            if !result.success {
-                anyhow::bail!("API command '{}' failed: {}", command, result.message);
-            }
-            return Ok(result.details.unwrap_or(result.message));
-        }
+        info!(
+            method = %method,
+            url = %url,
+            status = %status,
+            response_len = text.len(),
+            "HTTP API request successful"
+        );
 
-        // Try to parse as ServerStatusResponse
-        if let Ok(status_result) = serde_json::from_str::<ServerStatusResponse>(&text) {
-            return Ok(status_result.status);
-        }
-
-        // Fallback: return the raw text
         Ok(text)
     }
 
-    /// Reload a specific zone using rndc.
+    /// Reload a specific zone via HTTP API.
     ///
     /// This operation is idempotent - if the zone doesn't exist, it returns an error
     /// with a clear message indicating the zone was not found.
     ///
     /// # Arguments
     /// * `zone_name` - Name of the zone to reload
-    /// * `server` - Server address (e.g., "bind9-primary.dns-system.svc.cluster.local:953")
-    /// * `key_data` - RNDC authentication key
+    /// * `server` - API server address (e.g., "bind9-primary-api:8080")
     ///
     /// # Errors
     ///
-    /// Returns an error if the RNDC command fails or the zone cannot be reloaded.
-    pub async fn reload_zone(
-        &self,
-        zone_name: &str,
-        server: &str,
-        key_data: &RndcKeyData,
-    ) -> Result<()> {
-        let command = format!("reload {zone_name}");
-        let result = self.exec_rndc_command(server, key_data, &command).await;
+    /// Returns an error if the HTTP request fails or the zone cannot be reloaded.
+    pub async fn reload_zone(&self, zone_name: &str, server: &str) -> Result<()> {
+        let base_url = Self::build_api_url(server);
+        let url = format!("{base_url}/api/v1/zones/{zone_name}/reload");
+
+        let result = self.bindcar_request("POST", &url, None::<&()>).await;
 
         match result {
-            Ok(_) => {
-                info!("Reloaded zone {zone_name} on {server}");
-                Ok(())
-            }
+            Ok(_) => Ok(()),
             Err(e) => {
                 let err_msg = e.to_string();
-                // Make reload idempotent - if zone doesn't exist, that's ok for some operations
                 if err_msg.contains("not found") || err_msg.contains("does not exist") {
                     Err(anyhow::anyhow!("Zone {zone_name} not found on {server}"))
                 } else {
@@ -615,94 +480,81 @@ impl Bind9Manager {
         }
     }
 
-    /// Reload all zones using rndc.
+    /// Reload all zones via HTTP API.
     ///
     /// # Errors
     ///
-    /// Returns an error if the RNDC command fails.
-    pub async fn reload_all_zones(&self, server: &str, key_data: &RndcKeyData) -> Result<()> {
-        self.exec_rndc_command(server, key_data, "reload")
+    /// Returns an error if the HTTP request fails.
+    pub async fn reload_all_zones(&self, server: &str) -> Result<()> {
+        let base_url = Self::build_api_url(server);
+        let url = format!("{base_url}/api/v1/server/reload");
+
+        self.bindcar_request("POST", &url, None::<&()>)
             .await
             .context("Failed to reload all zones")?;
 
-        info!("Reloaded all zones on {server}");
         Ok(())
     }
 
-    /// Trigger zone transfer using rndc.
+    /// Trigger zone transfer via HTTP API.
     ///
     /// # Errors
     ///
-    /// Returns an error if the RNDC command fails or the zone transfer cannot be initiated.
-    pub async fn retransfer_zone(
-        &self,
-        zone_name: &str,
-        server: &str,
-        key_data: &RndcKeyData,
-    ) -> Result<()> {
-        let command = format!("retransfer {zone_name}");
-        self.exec_rndc_command(server, key_data, &command)
+    /// Returns an error if the HTTP request fails or the zone transfer cannot be initiated.
+    pub async fn retransfer_zone(&self, zone_name: &str, server: &str) -> Result<()> {
+        let base_url = Self::build_api_url(server);
+        let url = format!("{base_url}/api/v1/zones/{zone_name}/retransfer");
+
+        self.bindcar_request("POST", &url, None::<&()>)
             .await
             .context("Failed to retransfer zone")?;
 
-        info!("Triggered zone transfer for {zone_name} on {server}");
         Ok(())
     }
 
-    /// Freeze a zone to prevent dynamic updates.
+    /// Freeze a zone to prevent dynamic updates via HTTP API.
     ///
     /// # Errors
     ///
-    /// Returns an error if the RNDC command fails or the zone cannot be frozen.
-    pub async fn freeze_zone(
-        &self,
-        zone_name: &str,
-        server: &str,
-        key_data: &RndcKeyData,
-    ) -> Result<()> {
-        let command = format!("freeze {zone_name}");
-        self.exec_rndc_command(server, key_data, &command)
+    /// Returns an error if the HTTP request fails or the zone cannot be frozen.
+    pub async fn freeze_zone(&self, zone_name: &str, server: &str) -> Result<()> {
+        let base_url = Self::build_api_url(server);
+        let url = format!("{base_url}/api/v1/zones/{zone_name}/freeze");
+
+        self.bindcar_request("POST", &url, None::<&()>)
             .await
             .context("Failed to freeze zone")?;
 
-        info!("Froze zone {zone_name} on {server}");
         Ok(())
     }
 
-    /// Thaw a frozen zone to allow dynamic updates.
+    /// Thaw a frozen zone to allow dynamic updates via HTTP API.
     ///
     /// # Errors
     ///
-    /// Returns an error if the RNDC command fails or the zone cannot be thawed.
-    pub async fn thaw_zone(
-        &self,
-        zone_name: &str,
-        server: &str,
-        key_data: &RndcKeyData,
-    ) -> Result<()> {
-        let command = format!("thaw {zone_name}");
-        self.exec_rndc_command(server, key_data, &command)
+    /// Returns an error if the HTTP request fails or the zone cannot be thawed.
+    pub async fn thaw_zone(&self, zone_name: &str, server: &str) -> Result<()> {
+        let base_url = Self::build_api_url(server);
+        let url = format!("{base_url}/api/v1/zones/{zone_name}/thaw");
+
+        self.bindcar_request("POST", &url, None::<&()>)
             .await
             .context("Failed to thaw zone")?;
 
-        info!("Thawed zone {zone_name} on {server}");
         Ok(())
     }
 
-    /// Get zone status using rndc.
+    /// Get zone status via HTTP API.
     ///
     /// # Errors
     ///
-    /// Returns an error if the RNDC command fails or the zone status cannot be retrieved.
-    pub async fn zone_status(
-        &self,
-        zone_name: &str,
-        server: &str,
-        key_data: &RndcKeyData,
-    ) -> Result<String> {
-        let command = format!("zonestatus {zone_name}");
+    /// Returns an error if the HTTP request fails or the zone status cannot be retrieved.
+    pub async fn zone_status(&self, zone_name: &str, server: &str) -> Result<String> {
+        let base_url = Self::build_api_url(server);
+        let url = format!("{base_url}/api/v1/zones/{zone_name}/status");
+
         let status = self
-            .exec_rndc_command(server, key_data, &command)
+            .bindcar_request("GET", &url, None::<&()>)
             .await
             .context("Failed to get zone status")?;
 
@@ -712,29 +564,28 @@ impl Bind9Manager {
     /// Check if a zone exists by trying to get its status.
     ///
     /// Returns `true` if the zone exists and can be queried, `false` otherwise.
-    ///
-    /// This method relies on `exec_rndc_command` to properly detect error messages
-    /// in the BIND9 response (such as "not found" or "does not exist") and return
-    /// them as `Err` rather than `Ok`.
-    pub async fn zone_exists(&self, zone_name: &str, server: &str, key_data: &RndcKeyData) -> bool {
-        self.zone_status(zone_name, server, key_data).await.is_ok()
+    pub async fn zone_exists(&self, zone_name: &str, server: &str) -> bool {
+        self.zone_status(zone_name, server).await.is_ok()
     }
 
-    /// Get server status using rndc.
+    /// Get server status via HTTP API.
     ///
     /// # Errors
     ///
-    /// Returns an error if the RNDC command fails or the server status cannot be retrieved.
-    pub async fn server_status(&self, server: &str, key_data: &RndcKeyData) -> Result<String> {
+    /// Returns an error if the HTTP request fails or the server status cannot be retrieved.
+    pub async fn server_status(&self, server: &str) -> Result<String> {
+        let base_url = Self::build_api_url(server);
+        let url = format!("{base_url}/api/v1/server/status");
+
         let status = self
-            .exec_rndc_command(server, key_data, "status")
+            .bindcar_request("GET", &url, None::<&()>)
             .await
             .context("Failed to get server status")?;
 
         Ok(status)
     }
 
-    /// Add a new zone using rndc addzone.
+    /// Add a new zone via HTTP API.
     ///
     /// This operation is idempotent - if the zone already exists, it returns success
     /// without attempting to re-add it.
@@ -742,63 +593,79 @@ impl Bind9Manager {
     /// The zone is created with `allow-update` enabled for the TSIG key used by the operator.
     /// This allows dynamic DNS updates (RFC 2136) to add/update/delete records in the zone.
     ///
+    /// **Note:** This method creates a zone without initial content. For creating zones with
+    /// initial SOA/NS records, use `create_zone_http()` instead.
+    ///
     /// # Arguments
     /// * `zone_name` - Name of the zone (e.g., "example.com")
     /// * `zone_type` - Zone type ("master" for primary, "slave" for secondary)
-    /// * `zone_file` - Path to the zone file on the BIND9 server
-    /// * `server` - Server address (e.g., "bind9-primary.dns-system.svc.cluster.local:953")
-    /// * `key_data` - RNDC authentication key (also used for allow-update)
-    ///
-    /// # Note
-    /// This requires `allow-new-zones yes;` in named.conf.options.
+    /// * `server` - API endpoint (e.g., "bind9-primary-api:8080")
+    /// * `key_data` - RNDC key data (used for allow-update configuration)
     ///
     /// # Errors
     ///
-    /// Returns an error if the RNDC command fails or the zone cannot be added.
+    /// Returns an error if the HTTP request fails or the zone cannot be added.
     pub async fn add_zone(
         &self,
         zone_name: &str,
         zone_type: &str,
-        zone_file: &str,
         server: &str,
         key_data: &RndcKeyData,
     ) -> Result<()> {
         // Check if zone already exists (idempotent)
-        if self.zone_exists(zone_name, server, key_data).await {
+        if self.zone_exists(zone_name, server).await {
             info!("Zone {zone_name} already exists on {server}, skipping add");
             return Ok(());
         }
 
-        // TODO: Create a separate TSIG key for zone updates (different from RNDC control key)
-        // For now, we reuse the bindy-operator key for both RNDC control and zone updates.
-        // Best practice is to have separate keys:
-        // - bindy-operator (RNDC control) - for rndc commands (addzone, reload, etc.)
-        // - bindy-zone-update (DNS updates) - for nsupdate/dynamic DNS (add/update/delete records)
-        let update_key_name = &key_data.name;
+        // Use the HTTP API to create a minimal zone
+        // The bindcar API will handle zone file generation and allow-update configuration
+        let base_url = Self::build_api_url(server);
+        let url = format!("{base_url}/api/v1/zones");
 
-        // Create zone with allow-update enabled for dynamic DNS updates
-        // Format: addzone zone { type master; file "path"; allow-update { key "keyname"; }; };
-        let command = format!(
-            r#"addzone {zone_name} {{ type {zone_type}; file "{zone_file}"; allow-update {{ key "{update_key_name}"; }}; }};"#
-        );
+        // Create minimal zone configuration with basic SOA record
+        let zone_config = ZoneConfig {
+            ttl: DEFAULT_DNS_RECORD_TTL_SECS as u32,
+            soa: SoaRecord {
+                primary_ns: format!("ns.{zone_name}."),
+                admin_email: format!("admin.{zone_name}."),
+                serial: 1,
+                refresh: 3600,
+                retry: 600,
+                expire: 604_800,
+                negative_ttl: 86400,
+            },
+            name_servers: vec![format!("ns.{zone_name}.")],
+            records: vec![],
+        };
 
-        self.exec_rndc_command(server, key_data, &command)
+        let request = CreateZoneRequest {
+            zone_name: zone_name.to_string(),
+            zone_type: zone_type.to_string(),
+            zone_config,
+            update_key_name: Some(key_data.name.clone()),
+        };
+
+        self.bindcar_request("POST", &url, Some(&request))
             .await
             .context("Failed to add zone")?;
 
-        info!("Added zone {zone_name} on {server} with allow-update for key {update_key_name}");
+        info!(
+            "Added zone {zone_name} on {server} with allow-update for key {}",
+            key_data.name
+        );
         Ok(())
     }
 
     /// Create a zone via HTTP API with structured configuration.
     ///
-    /// This method sends a POST request to the API sidecar to create a zone with
-    /// the full zone file content generated from structured configuration.
+    /// This method sends a POST request to the API sidecar to create a zone using
+    /// structured zone configuration from the bindcar library.
     ///
     /// # Arguments
     /// * `zone_name` - Name of the zone (e.g., "example.com")
     /// * `zone_type` - Zone type ("master" or "slave")
-    /// * `zone_content` - Complete zone file content
+    /// * `zone_config` - Structured zone configuration (converted to zone file by bindcar)
     /// * `server` - API endpoint (e.g., "bind9-primary-api:8080")
     /// * `key_data` - RNDC authentication key (used as updateKeyName)
     ///
@@ -809,7 +676,7 @@ impl Bind9Manager {
         &self,
         zone_name: &str,
         zone_type: &str,
-        zone_content: &str,
+        zone_config: ZoneConfig,
         server: &str,
         key_data: &RndcKeyData,
     ) -> Result<()> {
@@ -819,7 +686,7 @@ impl Bind9Manager {
         let request = CreateZoneRequest {
             zone_name: zone_name.to_string(),
             zone_type: zone_type.to_string(),
-            zone_content: zone_content.to_string(),
+            zone_config,
             update_key_name: Some(key_data.name.clone()),
         };
 
@@ -885,22 +752,19 @@ impl Bind9Manager {
         Ok(())
     }
 
-    /// Delete a zone using rndc delzone.
+    /// Delete a zone via HTTP API.
     ///
     /// # Errors
     ///
-    /// Returns an error if the RNDC command fails or the zone cannot be deleted.
-    pub async fn delete_zone(
-        &self,
-        zone_name: &str,
-        server: &str,
-        key_data: &RndcKeyData,
-    ) -> Result<()> {
+    /// Returns an error if the HTTP request fails or the zone cannot be deleted.
+    pub async fn delete_zone(&self, zone_name: &str, server: &str) -> Result<()> {
         // First freeze the zone to prevent updates
-        let _ = self.freeze_zone(zone_name, server, key_data).await;
+        let _ = self.freeze_zone(zone_name, server).await;
 
-        let command = format!("delzone {zone_name}");
-        self.exec_rndc_command(server, key_data, &command)
+        let base_url = Self::build_api_url(server);
+        let url = format!("{base_url}/api/v1/zones/{zone_name}");
+
+        self.bindcar_request("DELETE", &url, None::<&()>)
             .await
             .context("Failed to delete zone")?;
 
@@ -908,19 +772,16 @@ impl Bind9Manager {
         Ok(())
     }
 
-    /// Notify secondaries about zone changes.
+    /// Notify secondaries about zone changes via HTTP API.
     ///
     /// # Errors
     ///
-    /// Returns an error if the RNDC command fails or the notification cannot be sent.
-    pub async fn notify_zone(
-        &self,
-        zone_name: &str,
-        server: &str,
-        key_data: &RndcKeyData,
-    ) -> Result<()> {
-        let command = format!("notify {zone_name}");
-        self.exec_rndc_command(server, key_data, &command)
+    /// Returns an error if the HTTP request fails or the notification cannot be sent.
+    pub async fn notify_zone(&self, zone_name: &str, server: &str) -> Result<()> {
+        let base_url = Self::build_api_url(server);
+        let url = format!("{base_url}/api/v1/zones/{zone_name}/notify");
+
+        self.bindcar_request("POST", &url, None::<&()>)
             .await
             .context("Failed to notify zone")?;
 
