@@ -1,0 +1,7 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
+[toolchain]
+channel = "1.91"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

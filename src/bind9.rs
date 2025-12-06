@@ -198,11 +198,11 @@ impl Bind9Manager {
     ///
     /// Converts "service-name.namespace.svc.cluster.local:8080" or "service-name:8080"
     /// to `<http://service-name.namespace.svc.cluster.local:8080>` or `<http://service-name:8080>`
-    fn build_api_url(server: &str) -> String {
+    pub(crate) fn build_api_url(server: &str) -> String {
         if server.starts_with("http://") || server.starts_with("https://") {
-            server.to_string()
+            server.trim_end_matches('/').to_string()
         } else {
-            format!("http://{server}")
+            format!("http://{}", server.trim_end_matches('/'))
         }
     }
 

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 # Build stage
-FROM rust:1.87.0 as builder
+FROM rust:1.91.0 as builder
 
 # Accept version as build argument (e.g., 1.0.0)
 ARG VERSION=0.1.0
