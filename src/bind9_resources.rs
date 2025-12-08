@@ -21,8 +21,8 @@ use crate::labels::{
 use k8s_openapi::api::{
     apps::v1::{Deployment, DeploymentSpec},
     core::v1::{
-        ConfigMap, Container, ContainerPort, EnvVar, PodSpec, PodTemplateSpec, Probe, Service,
-        ServicePort, ServiceSpec, TCPSocketAction, Volume, VolumeMount,
+        ConfigMap, Container, ContainerPort, EnvVar, EnvVarSource, PodSpec, PodTemplateSpec, Probe,
+        SecretKeySelector, Service, ServicePort, ServiceSpec, TCPSocketAction, Volume, VolumeMount,
     },
 };
 use k8s_openapi::apimachinery::pkg::{
@@ -945,7 +945,10 @@ fn build_pod_spec(
     PodSpec {
         containers: {
             let mut containers = vec![bind9_container];
-            containers.push(build_api_sidecar_container(bindcar_config));
+            containers.push(build_api_sidecar_container(
+                bindcar_config,
+                rndc_secret_name,
+            ));
             containers
         },
         volumes: Some(build_volumes(
@@ -959,23 +962,20 @@ fn build_pod_spec(
     }
 }
 
-/// Build the API sidecar container
+/// Build the Bindcar API sidecar container
 ///
 /// # Arguments
 ///
 /// * `bindcar_config` - Optional Bindcar container configuration from the instance spec
 /// * `rndc_secret_name` - Name of the Secret containing the RNDC key
 ///
-/// Build the Bindcar sidecar container
-///
-/// # Arguments
-///
-/// * `bindcar_config` - Optional Bindcar container configuration from the instance spec
-///
 /// # Returns
 ///
 /// A `Container` configured to run the Bindcar RNDC API sidecar
-fn build_api_sidecar_container(bindcar_config: Option<&crate::crd::BindcarConfig>) -> Container {
+fn build_api_sidecar_container(
+    bindcar_config: Option<&crate::crd::BindcarConfig>,
+    rndc_secret_name: &str,
+) -> Container {
     // Use defaults if bindcar_config is not provided
     let image = bindcar_config
         .and_then(|c| c.image.clone())
@@ -993,6 +993,56 @@ fn build_api_sidecar_container(bindcar_config: Option<&crate::crd::BindcarConfig
 
     let resources = bindcar_config.and_then(|c| c.resources.clone());
 
+    // Build required environment variables
+    let mut env_vars = vec![
+        EnvVar {
+            name: "BIND_ZONE_DIR".into(),
+            value: Some(BIND_CACHE_PATH.into()),
+            ..Default::default()
+        },
+        EnvVar {
+            name: "API_PORT".into(),
+            value: Some(port.to_string()),
+            ..Default::default()
+        },
+        EnvVar {
+            name: "RUST_LOG".into(),
+            value: Some(log_level),
+            ..Default::default()
+        },
+        EnvVar {
+            name: "RNDC_SECRET".into(),
+            value_from: Some(EnvVarSource {
+                secret_key_ref: Some(SecretKeySelector {
+                    name: rndc_secret_name.to_string(),
+                    key: "secret".to_string(),
+                    optional: Some(false),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        EnvVar {
+            name: "RNDC_ALGORITHM".into(),
+            value_from: Some(EnvVarSource {
+                secret_key_ref: Some(SecretKeySelector {
+                    name: rndc_secret_name.to_string(),
+                    key: "algorithm".to_string(),
+                    optional: Some(false),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    ];
+
+    // Add user-provided environment variables if any
+    if let Some(config) = bindcar_config {
+        if let Some(user_env_vars) = &config.env_vars {
+            env_vars.extend(user_env_vars.clone());
+        }
+    }
+
     Container {
         name: "api".into(),
         image: Some(image),
@@ -1003,23 +1053,7 @@ fn build_api_sidecar_container(bindcar_config: Option<&crate::crd::BindcarConfig
             protocol: Some("TCP".into()),
             ..Default::default()
         }]),
-        env: Some(vec![
-            EnvVar {
-                name: "BIND_ZONE_DIR".into(),
-                value: Some(BIND_CACHE_PATH.into()),
-                ..Default::default()
-            },
-            EnvVar {
-                name: "API_PORT".into(),
-                value: Some(port.to_string()),
-                ..Default::default()
-            },
-            EnvVar {
-                name: "RUST_LOG".into(),
-                value: Some(log_level),
-                ..Default::default()
-            },
-        ]),
+        env: Some(env_vars),
         volume_mounts: Some(vec![
             VolumeMount {
                 name: "cache".into(),
@@ -1030,6 +1064,12 @@ fn build_api_sidecar_container(bindcar_config: Option<&crate::crd::BindcarConfig
                 name: "rndc-key".into(),
                 mount_path: BIND_KEYS_PATH.into(),
                 read_only: Some(true),
+                ..Default::default()
+            },
+            VolumeMount {
+                name: VOLUME_CONFIG.into(),
+                mount_path: BIND_RNDC_CONF_PATH.into(),
+                sub_path: Some(RNDC_CONF_FILENAME.into()),
                 ..Default::default()
             },
         ]),

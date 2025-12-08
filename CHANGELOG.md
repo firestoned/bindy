@@ -2,6 +2,596 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-08] - Use bindcar Zone Type Constants
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/bind9.rs`: Updated documentation to reference `ZONE_TYPE_PRIMARY` and `ZONE_TYPE_SECONDARY` constants
+  - `add_zone()` docstring: Now documents using constants instead of string literals
+  - `create_zone_http()` docstring: Now documents using constants instead of string literals
+- `src/reconcilers/dnszone.rs`: Updated to use `ZONE_TYPE_PRIMARY` constant
+  - Added import: `use bindcar::ZONE_TYPE_PRIMARY;`
+  - Changed `add_zone()` call from string literal `"primary"` to constant `ZONE_TYPE_PRIMARY`
+  - Updated comment to reference constant instead of string literal
+- `src/bind9_tests.rs`: Updated all tests to use `ZONE_TYPE_PRIMARY` constant
+  - Added import: `use bindcar::ZONE_TYPE_PRIMARY;`
+  - `test_add_zone_duplicate`: Both `add_zone()` calls use constant
+  - `test_create_zone_request_serialization`: CreateZoneRequest and assertion use constant
+
+### Why
+Bindcar 0.2.4 introduced `ZONE_TYPE_PRIMARY` and `ZONE_TYPE_SECONDARY` constants to replace hardcoded string literals for zone types. Using these constants provides:
+- Type safety and prevents typos
+- Single source of truth for zone type values
+- Better IDE autocomplete and refactoring support
+- Alignment with bindcar library best practices
+
+### Technical Details
+**Constants from bindcar 0.2.4:**
+```rust
+pub const ZONE_TYPE_PRIMARY: &str = "primary";
+pub const ZONE_TYPE_SECONDARY: &str = "secondary";
+```
+
+**Before:**
+```rust
+zone_manager.add_zone(&spec.zone_name, "primary", &endpoint, &key, &soa, ips)
+```
+
+**After:**
+```rust
+zone_manager.add_zone(&spec.zone_name, ZONE_TYPE_PRIMARY, &endpoint, &key, &soa, ips)
+```
+
+### Quality
+- ✅ All tests pass (245 passed, 16 ignored)
+- ✅ Clippy passes with strict warnings
+- ✅ No functional changes - constants have same values as previous literals
+- ✅ Tests updated to use constants
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Code improvement only
+- [ ] Documentation only
+
+**Notes:**
+- This is a code quality improvement with no functional impact
+- Zone type values remain unchanged ("primary" and "secondary")
+- Using constants from the bindcar library ensures compatibility with future versions
+- Reduces risk of typos in zone type strings
+
+## [2025-12-08] - Upgrade bindcar to 0.2.4
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: Upgraded `bindcar` dependency from `0.2.3` to `0.2.4`
+
+### Why
+Keep bindcar library up to date with latest bug fixes and improvements. The bindcar library provides type-safe API communication with BIND9 HTTP API.
+
+### Quality
+- ✅ `cargo build` - Successfully compiles with bindcar 0.2.4
+- ✅ `cargo fmt` - Code formatted
+- ✅ `cargo clippy -- -D warnings -W clippy::pedantic` - No warnings
+- ✅ `cargo test` - All 252 tests passing (245 unit + 7 integration, 16 ignored)
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (dependency version bump)
+- [ ] Documentation only
+
+---
+
+## [2025-12-07 15:00] - Design: RNDC Secret Change Detection and Hot Reload
+
+**Author:** Erick Bourgeois
+
+### Added
+- **Architecture Decision Record**: [ADR-0001: RNDC Secret Reload](docs/adr/0001-rndc-secret-reload.md)
+  - Comprehensive design for automatic RNDC secret change detection
+  - Proposed solution: Track secret `resourceVersion` in status, send SIGHUP to pods on change
+  - Evaluated alternatives: rolling restart, sidecar watcher, RNDC reconfig command
+  - Implementation plan with 4 phases (MVP, Secret Watch, Observability, Advanced)
+- **GitHub Issue Template**: [feature-rndc-secret-reload.md](.github/ISSUE_TEMPLATE/feature-rndc-secret-reload.md)
+  - Detailed implementation checklist
+  - Testing plan and success criteria
+  - Security considerations for `pods/exec` RBAC permission
+
+### Why
+**Problem:** When RNDC secrets are updated (manual rotation or external secret manager), BIND9 continues using the old key. This prevents:
+- Security best practices (regular key rotation)
+- Integration with external secret managers (Vault, sealed-secrets)
+- Zero-downtime secret updates
+
+**Solution:** Automatically detect secret changes via `resourceVersion` tracking and send SIGHUP signal to affected pods only, enabling hot reload without pod restart.
+
+### Impact
+- [ ] Breaking change: **No** - This is a design document for future implementation
+- [x] Documentation: ADR and issue template created
+- [x] Future enhancement: Enables secure, automated key rotation
+
+### Next Steps
+Implementation tracked in issue (to be created) and ADR-0001. Priority phases:
+1. **Phase 1 (MVP)**: Add `rndc_secret_version` to status, implement SIGHUP logic
+2. **Phase 2**: Add Secret watcher for automatic reconciliation
+3. **Phase 3**: Observability (metrics, events, status conditions)
+4. **Phase 4**: Advanced features (validation, rate limiting)
+
+---
+
+## [2025-12-07] - Replace master/slave Terminology with primary/secondary
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/bind9.rs`: Updated documentation to use "primary" and "secondary" instead of "master" and "slave"
+  - Updated `add_zone()` docstring: "primary" or "secondary" instead of "master" for primary, "slave" for secondary
+  - Updated `create_zone_http()` docstring: "primary" or "secondary" instead of "master" or "slave"
+- `src/reconcilers/dnszone.rs`: Updated zone type from "master" to "primary"
+  - Changed comment from `The zone type will be "master" (primary)` to `The zone type will be "primary"`
+  - Changed `add_zone()` call to pass "primary" instead of "master"
+  - Updated module docstring to remove "(master)" and "(slave)" parenthetical references
+- `src/bind9_tests.rs`: Updated all test zone types from "master" to "primary"
+  - `test_add_zone_duplicate`: Changed both `add_zone()` calls to use "primary"
+  - `test_create_zone_request_serialization`: Changed CreateZoneRequest zone_type to "primary" and assertion
+- `src/crd.rs`: Updated ServerRole enum documentation
+  - Removed "(master)" from Primary variant doc comment
+  - Removed "(slave)" from Secondary variant doc comment
+
+### Why
+The terms "master" and "slave" are outdated and potentially offensive. The DNS community and BIND9 documentation now use "primary" and "secondary" as the standard terminology. This change aligns the codebase with modern inclusive language standards and current DNS best practices.
+
+### Technical Details
+**Zone Type Values:**
+- Old: `"master"` and `"slave"`
+- New: `"primary"` and `"secondary"`
+
+**Note:** BIND9 and bindcar both support the new terminology. The zone type string is passed directly to bindcar's API, which handles both old and new terminology for backward compatibility.
+
+### Quality
+- ✅ All tests pass (245 passed, 16 ignored)
+- ✅ Clippy passes with strict warnings
+- ✅ No functional changes - only terminology updates
+- ✅ Tests updated to reflect new terminology
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Terminology update only
+- [ ] Documentation only
+
+**Notes:**
+- This is a terminology-only change with no functional impact
+- Bindcar 0.2.3 supports both "master/slave" and "primary/secondary" terminology
+- All code, comments, and tests now use inclusive language
+- Aligns with IETF draft-knodel-terminology-02 and DNS community standards
+
+## [2025-12-07] - Use DNSZone SOA Record Instead of Hardcoded Values
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/bind9.rs`: Updated `add_zone()` method to accept and use SOA record from DNSZone CRD spec
+  - Added `soa_record: &crate::crd::SOARecord` parameter to `add_zone()` signature
+  - Changed zone creation to use `soa_record.primary_ns` instead of hardcoded `ns.{zone_name}.`
+  - Changed zone creation to use `soa_record.admin_email` instead of hardcoded `admin.{zone_name}.`
+  - Use all SOA record fields from spec: `serial`, `refresh`, `retry`, `expire`, `negative_ttl`
+  - Updated `name_servers` to use `soa_record.primary_ns` instead of hardcoded value
+  - Added clippy allow annotations for safe integer casts (CRD schema validates ranges)
+- `src/reconcilers/dnszone.rs`: Updated `reconcile_dnszone()` to pass `spec.soa_record` to `add_zone()`
+- `src/bind9_tests.rs`: Updated test to create and pass SOA record to `add_zone()`
+
+### Why
+The `add_zone()` method was creating zones with hardcoded SOA record values (`ns.{zone_name}.`, `admin.{zone_name}.`, etc.) instead of using the SOA record specified in the DNSZone CRD. This meant users couldn't control critical DNS zone parameters like the primary nameserver, admin email, serial number, and timing values.
+
+### Technical Details
+**Before:**
+```rust
+soa: SoaRecord {
+    primary_ns: format!("ns.{zone_name}."),
+    admin_email: format!("admin.{zone_name}."),
+    serial: 1,
+    refresh: 3600,
+    // ... hardcoded values
+}
+```
+
+**After:**
+```rust
+soa: SoaRecord {
+    primary_ns: soa_record.primary_ns.clone(),
+    admin_email: soa_record.admin_email.clone(),
+    serial: soa_record.serial as u32,
+    refresh: soa_record.refresh as u32,
+    // ... values from DNSZone spec
+}
+```
+
+**Type Conversions:**
+- `serial`: `i64` → `u32` (CRD schema validates 0-4294967295 range)
+- `refresh`, `retry`, `expire`, `negative_ttl`: `i32` → `u32` (CRD schema validates positive ranges)
+
+### Quality
+- ✅ All tests pass (245 passed, 16 ignored)
+- ✅ Clippy passes with strict warnings
+- ✅ Safe integer casts with schema validation
+- ✅ Test updated to verify SOA record usage
+
+### Impact
+- [x] Breaking change - Existing zones may have different SOA records
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+**Notes:**
+- Users can now fully control SOA record parameters via DNSZone CRD
+- The primary nameserver in the SOA record is also used as the zone's nameserver
+- This fixes the issue where bindcar was always using `ns.{zone_name}.` regardless of user configuration
+- Integer casts are safe because Kubernetes API server validates field ranges based on CRD schema
+
+## [2025-12-07] - Add Finalizer Support for DNSZone Deletion
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/main.rs`: Added finalizer support to `reconcile_dnszone_wrapper()` to ensure proper cleanup when DNSZone resources are deleted
+  - Added imports for `delete_dnszone` function and `finalizer` from kube-runtime
+  - Rewrote wrapper to use `finalizer()` with Apply and Cleanup events
+  - On Apply event: calls `reconcile_dnszone()` for create/update operations
+  - On Cleanup event: calls `delete_dnszone()` for deletion operations
+  - Implements proper error conversion from `finalizer::Error<ReconcileError>` to `ReconcileError`
+  - Uses finalizer name: `dns.firestoned.io/dnszone`
+
+### Why
+When a DNSZone resource is deleted from Kubernetes, the zone must also be removed from the BIND9 server via bindcar's API. Without a finalizer, the resource would be deleted immediately from Kubernetes, but the zone would remain in BIND9, causing orphaned resources.
+
+### Technical Details
+**Deletion Flow:**
+1. User deletes DNSZone resource
+2. Kubernetes adds `deletionTimestamp` but waits for finalizer to complete
+3. Controller receives Cleanup event
+4. Calls `delete_dnszone()` which calls `zone_manager.delete_zone()`
+5. `Bind9Manager::delete_zone()` sends DELETE request to bindcar API at `/api/v1/zones/{zone_name}`
+6. Finalizer is removed, Kubernetes completes resource deletion
+
+**Error Handling:**
+- ApplyFailed/CleanupFailed: Returns the original `ReconcileError`
+- AddFinalizer/RemoveFinalizer: Wraps Kubernetes API error in `ReconcileError`
+- UnnamedObject: Returns error if DNSZone has no name
+- InvalidFinalizer: Returns error if finalizer name is invalid
+
+### Quality
+- ✅ All tests pass (245 passed, 16 ignored)
+- ✅ Clippy passes with strict warnings
+- ✅ Proper error handling for all finalizer error cases
+- ✅ Requeue intervals based on zone ready status (30s not ready, 5m ready)
+
+### Impact
+- [x] Breaking change - DNSZone resources will have finalizer added automatically
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+**Notes:**
+- Existing DNSZone resources will have the finalizer added on next reconciliation
+- Deletion logic already existed in `delete_dnszone()` and `Bind9Manager::delete_zone()`, this change ensures it's called
+- The finalizer prevents accidental deletion of zones from Kubernetes without cleanup
+- Users who delete DNSZone resources will now see proper cleanup in bindcar/BIND9
+
+## [2025-12-06 16:00] - Fix Integration Test for New Cluster-Based Architecture
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `tests/integration_test.sh`: Updated integration tests to use Bind9Cluster
+  - Added Bind9Cluster creation before Bind9Instance
+  - Updated Bind9Instance to reference cluster with `clusterRef` and `role: PRIMARY`
+  - Updated DNSZone to use `clusterRef` instead of deprecated `type` and `instanceSelector`
+  - Fixed SOA record field names: `primaryNS` → `primaryNs`, `negativeTTL` → `negativeTtl`
+  - Added Bind9Cluster verification and cleanup steps
+  - Updated resource status display to show clusters
+
+### Why
+The integration test was using the old standalone Bind9Instance schema, which is no longer valid. Bind9Instances now require `clusterRef` and `role` fields and must be part of a Bind9Cluster. The test needed to be updated to match the current CRD schema.
+
+### Technical Details
+- **Previous**: Standalone Bind9Instance with inline config
+- **Current**: Bind9Cluster with referenced Bind9Instances
+- **Schema Changes**:
+  - Bind9Instance now requires: `clusterRef`, `role`
+  - DNSZone now uses: `clusterRef` instead of `type` + `instanceSelector`
+  - SOA record uses camelCase: `primaryNs`, `negativeTtl`
+
+### Quality
+- ✅ Integration test now matches current CRD schema
+- ✅ Test creates Bind9Cluster before instances
+- ✅ Proper cleanup of all resources including cluster
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Test update only
+
+**Notes:**
+- Integration tests now properly test the cluster-based architecture
+- Tests create: Bind9Cluster → Bind9Instance → DNSZone → DNS Records
+- All resource types (cluster, instance, zone, 8 record types) are verified
+
+## [2025-12-06 15:45] - Regenerate CRDs and API Documentation
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `deploy/crds/*.crd.yaml`: Regenerated all CRD YAML files with updated descriptions
+  - Updated `logLevel` description in Bind9Instance and Bind9Cluster CRDs
+  - Included `nameServerIps` field in DNSZone CRD
+- `docs/src/reference/api.md`: Regenerated API documentation
+  - All CRD fields now have current descriptions
+  - Includes new `nameServerIps` field documentation
+
+### Why
+After updating the `log_level` description in the Rust source code, the CRD YAML files and API documentation needed to be regenerated to reflect the updated field descriptions.
+
+### Quality
+- ✅ `cargo run --bin crdgen` - CRD YAMLs regenerated successfully
+- ✅ `cargo run --bin crddoc` - API documentation regenerated successfully
+- ✅ `cargo fmt` - Code formatted
+- ✅ `cargo clippy -- -D warnings -W clippy::pedantic` - No warnings
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Documentation update only
+- [ ] Config change only
+
+**Notes:**
+- CRD YAMLs reflect the latest field descriptions from Rust code
+- API documentation is up to date with all CRD changes
+
+## [2025-12-06 15:30] - Add nameServerIps Field to DNSZone CRD for Glue Records
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/crd.rs`: Added `name_server_ips` field to `DNSZoneSpec`
+  - Added `HashMap` import: `use std::collections::{BTreeMap, HashMap}`
+  - New optional field: `pub name_server_ips: Option<HashMap<String, String>>`
+  - Allows users to specify glue record IP addresses for in-zone nameservers
+  - Updated doctests in `lib.rs`, `crd.rs`, and `crd_docs.rs` to include the field
+- `src/bind9.rs`: Updated `add_zone()` method to accept `name_server_ips` parameter
+  - Added new parameter: `name_server_ips: Option<&HashMap<String, String>>`
+  - Passes nameserver IPs to bindcar's `ZoneConfig` struct
+  - Updated docstring to document the new parameter
+- `src/bind9_tests.rs`: Updated test to pass `None` for `name_server_ips`
+- `src/crd_tests.rs`: Updated `DNSZoneSpec` test to include `name_server_ips: None`
+- `src/reconcilers/dnszone.rs`: Pass `spec.name_server_ips` to `add_zone()` call
+- `deploy/crds/dnszones.crd.yaml`: Regenerated with new `nameServerIps` field
+
+### Why
+Users need the ability to configure DNS glue records when delegating subdomains where the nameserver hostname is within the delegated zone itself. For example, when delegating `sub.example.com` with nameserver `ns1.sub.example.com`, the parent zone must include the IP address of `ns1.sub.example.com` as a glue record to break the circular dependency.
+
+### Technical Details
+- **CRD Field**: `nameServerIps` (camelCase in YAML)
+  - Type: `map[string]string` (HashMap in Rust)
+  - Optional field (defaults to none)
+  - Maps nameserver FQDNs to IP addresses
+  - Example: `{"ns1.example.com.": "192.0.2.1", "ns2.example.com.": "192.0.2.2"}`
+- **Implementation Flow**:
+  1. User specifies `nameServerIps` in DNSZone CR
+  2. DNSZone reconciler passes map to `Bind9Manager::add_zone()`
+  3. Bind9Manager includes IPs in bindcar's `ZoneConfig`
+  4. bindcar generates glue (A) records in the zone file
+- **Usage Example**:
+  ```yaml
+  apiVersion: dns.firestoned.io/v1alpha1
+  kind: DNSZone
+  spec:
+    zoneName: example.com
+    clusterRef: my-cluster
+    nameServerIps:
+      ns1.sub.example.com.: "192.0.2.10"
+      ns2.sub.example.com.: "192.0.2.11"
+  ```
+
+### Quality
+- ✅ `cargo fmt` - Code formatted
+- ✅ `cargo clippy -- -D warnings -W clippy::pedantic` - No warnings
+- ✅ `cargo test` - All 252 tests passing (245 unit + 7 integration, 16 ignored)
+- ✅ `cargo run --bin crdgen` - CRD YAML regenerated successfully
+
+### Impact
+- [ ] Breaking change (field is optional, backwards compatible)
+- [ ] Requires cluster rollout
+- [x] Config change only (new optional CRD field)
+- [ ] Documentation only
+
+**Notes:**
+- The field is optional and backwards compatible
+- Users only need to set this when using in-zone nameservers for delegations
+- Most zones will leave this field unset (no glue records needed)
+
+## [2025-12-06 15:00] - Upgrade bindcar to 0.2.3
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: Upgraded `bindcar` dependency from `0.2.2` to `0.2.3`
+- `src/bind9.rs`: Added `HashMap` import and `name_server_ips` field support
+  - Added `use std::collections::HashMap` alongside existing `BTreeMap` import
+  - Added `name_server_ips: HashMap::new()` to `ZoneConfig` initialization in `add_zone()`
+- `src/bind9_tests.rs`: Updated all test `ZoneConfig` initializations
+  - Added `use std::collections::HashMap` to four test functions
+  - Added `name_server_ips: HashMap::new()` to all `ZoneConfig` test structs
+
+### Why
+bindcar 0.2.3 introduces support for DNS glue records via the new required `name_server_ips` field in `ZoneConfig`. Glue records provide IP addresses for nameservers within the zone's own domain, which is necessary for delegating subdomains.
+
+### Technical Details
+- **New Field**: `name_server_ips: HashMap<String, String>` in `bindcar::ZoneConfig`
+  - Maps nameserver hostnames to IP addresses
+  - Used to generate glue (A) records for in-zone nameservers
+  - Empty HashMap means no glue records (sufficient for most zones)
+- **Updated Functions**:
+  - `Bind9Manager::add_zone()` - Sets `name_server_ips: HashMap::new()`
+  - Four test functions in `bind9_tests.rs` - All updated with empty HashMap
+- **New Dependencies** (transitive from bindcar 0.2.3):
+  - `byteorder v1.5.0`
+  - `hmac v0.12.1`
+  - `md-5 v0.10.6`
+  - `rndc v0.1.3`
+  - `sha1 v0.10.6`
+
+### Quality
+- ✅ `cargo fmt` - Code formatted
+- ✅ `cargo clippy -- -D warnings -W clippy::pedantic` - No warnings
+- ✅ `cargo test` - All 252 tests passing (245 unit + 7 integration, 16 ignored)
+- ✅ `cargo update -p bindcar` - Successfully updated to 0.2.3
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Dependency update only
+- [ ] Documentation only
+
+**Notes:**
+- The `name_server_ips` field is now exposed via the DNSZone CRD (see next changelog entry)
+- Glue records are needed for scenarios like delegating `sub.example.com` with nameserver `ns1.sub.example.com`
+
+## [2025-12-06 14:00] - Revert: Keep logLevel Field in BindcarConfig
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/crd.rs`: Restored `log_level` field to `BindcarConfig` struct
+  - Added back `pub log_level: Option<String>` field at line 1654-1656
+  - Field provides easier API for users to set bindcar logging level
+- `src/bind9_resources.rs`: Restored RUST_LOG environment variable setting in bindcar sidecar
+  - Re-added `log_level` variable extraction from config (lines 990-992)
+  - Re-added RUST_LOG environment variable to env_vars list (lines 1008-1012)
+  - Default value: "info" if not specified
+
+### Why
+The `logLevel` field in the CRD provides a simpler, more user-friendly API than requiring users to set `envVars` manually. While `envVars` provides more flexibility, `logLevel` is the easier approach for the common case of adjusting log verbosity.
+
+### Technical Details
+- **Previous State**: Had removed `log_level` field in favor of users setting RUST_LOG via `envVars`
+- **Current State**: Restored `log_level` field while keeping `envVars` for advanced use cases
+- **Default**: "info" (standard logging level)
+- **User Override**: Users can set `logLevel` in `global.bindcarConfig` spec
+- **Advanced Override**: Users can still use `envVars` to set RUST_LOG or other environment variables
+
+### Quality
+- ✅ `cargo fmt` - Code formatted
+- ✅ `cargo clippy -- -D warnings -W clippy::pedantic` - No warnings
+- ✅ `cargo test` - All 252 tests passing (245 unit + 7 integration, 16 ignored)
+- ✅ `cargo run --bin crdgen` - CRDs regenerated successfully
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (CRD field restored)
+- [ ] Documentation only
+
+**Notes:**
+- This reverts the previous attempt to remove `logLevel` in favor of `envVars`
+- Both `logLevel` and `envVars` are now available for users
+- `logLevel` is the recommended approach for simple log level changes
+- `envVars` is available for advanced configuration needs
+
+## [2025-12-06 14:30] - Add RNDC Environment Variables and Volume Mount to bindcar API Sidecar
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/bind9_resources.rs`: Added RNDC credentials and configuration to bindcar API sidecar container
+  - Added `RNDC_SECRET` environment variable sourced from Secret key `secret`
+  - Added `RNDC_ALGORITHM` environment variable sourced from Secret key `algorithm`
+  - Added rndc.conf volume mount at `/etc/bind/rndc.conf` from `config` ConfigMap
+  - Updated `build_api_sidecar_container()` function signature to accept `rndc_secret_name` parameter
+  - Added imports: `EnvVarSource`, `SecretKeySelector`
+
+### Why
+The bindcar API sidecar requires access to RNDC credentials to authenticate with the BIND9 server for zone management operations. The credentials are stored in a Kubernetes Secret and must be mounted as environment variables. Additionally, the rndc.conf file is needed for RNDC protocol configuration.
+
+### Technical Details
+- **Environment Variables**:
+  - `RNDC_SECRET`: Sourced from Secret field `secret` (the base64-encoded TSIG key)
+  - `RNDC_ALGORITHM`: Sourced from Secret field `algorithm` (e.g., "hmac-sha256")
+  - Both use `valueFrom.secretKeyRef` to reference the RNDC Secret
+- **Volume Mount**:
+  - **Volume Name**: `config` (existing ConfigMap volume)
+  - **Mount Path**: `/etc/bind/rndc.conf`
+  - **SubPath**: `rndc.conf` (specific file from ConfigMap)
+- **Implementation**:
+  - Updated `build_api_sidecar_container(bindcar_config, rndc_secret_name)` signature
+  - Updated call site in `build_pod_spec()` to pass `rndc_secret_name`
+  - Environment variables reference the Secret using Kubernetes `secretKeyRef` mechanism
+
+### Quality
+- ✅ `cargo fmt` - Code formatted
+- ✅ `cargo clippy -- -D warnings -W clippy::pedantic` - No warnings
+- ✅ `cargo test` - All 252 tests passing (245 unit + 7 integration, 16 ignored)
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (pods need to be recreated with new environment variables and volume mount)
+- [ ] Config change only
+- [ ] Documentation only
+
+**Migration Notes:**
+- Existing bindcar API sidecars will not have the RNDC credentials or rndc.conf mount until pods are recreated
+- No configuration changes required - the environment variables and mount are added automatically
+- The Secret and ConfigMap already contain the required data, so this only adds the references
+
+## [2025-12-05 17:30] - Fix bindcar API Port with Dynamic Service Lookup
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/dnszone.rs`: Implemented dynamic service port lookup for bindcar API endpoint
+  - Added `get_service_port()` helper function to query Kubernetes Service for port named "http"
+  - Updated zone creation and deletion to use dynamically looked up port instead of hardcoded value
+- `src/reconcilers/records.rs`: Implemented dynamic service port lookup for bindcar API endpoint
+  - Added `get_service_port()` helper function
+  - Updated `get_instance_and_key!` macro to lookup service port dynamically
+
+### Why
+The controller was incorrectly using port 953 (RNDC port) to connect to the bindcar HTTP API. The bindcar API uses HTTP protocol and should connect via the Kubernetes Service port named "http". Instead of hardcoding any port number, the controller now queries the Kubernetes Service object to get the actual port number, making it flexible and correct.
+
+### Technical Details
+- **Before**: Hardcoded port 953 (RNDC protocol port - WRONG!)
+- **After**: Dynamic service lookup for port named "http"
+- **Implementation**:
+  - New helper function: `get_service_port(client, service_name, namespace, port_name) -> Result<i32>`
+  - Queries the Kubernetes Service API to find the service
+  - Searches service ports for the port with name matching "http"
+  - Returns the port number or error if not found
+- **Architecture**:
+  - The bindcar API sidecar listens on port 8080 (container port)
+  - The Kubernetes Service exposes this as port 80 (service port) with name "http"
+  - Controller dynamically discovers the port 80 value at runtime
+
+### Quality
+- ✅ `cargo build` - Successfully compiles
+- ✅ `cargo clippy -- -D warnings -W clippy::pedantic` - No warnings
+- ✅ `cargo test` - All 252 tests passing (245 unit + 7 integration, 16 ignored)
+- ✅ Fixed clippy warnings: `needless_borrow` and `unnecessary_map_or`
+
+### Impact
+- [x] Breaking change (API endpoint changed from port 953 to proper HTTP service port)
+- [x] Requires cluster rollout (existing deployments using wrong port)
+- [ ] Config change only
+- [ ] Documentation only
+
+**Migration Notes:**
+- Existing clusters will fail to connect to bindcar API until pods are restarted with the new controller version
+- The controller will now correctly connect to the HTTP API port (80) instead of RNDC port (953)
+- No configuration changes required - the port is discovered automatically
+
 ## [2025-12-05 17:20] - Upgrade bindcar to 0.2.2
 
 **Author:** Erick Bourgeois

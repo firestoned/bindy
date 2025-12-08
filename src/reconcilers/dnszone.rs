@@ -5,13 +5,14 @@
 //! DNS zone reconciliation logic.
 //!
 //! This module handles the creation and management of DNS zones on BIND9 servers.
-//! It supports both primary (master) and secondary (slave) zone configurations.
+//! It supports both primary and secondary zone configurations.
 
 use crate::bind9::RndcKeyData;
 use crate::crd::{Condition, DNSZone, DNSZoneStatus};
 use anyhow::{anyhow, Context, Result};
+use bindcar::ZONE_TYPE_PRIMARY;
 use chrono::Utc;
-use k8s_openapi::api::core::v1::{Pod, Secret};
+use k8s_openapi::api::core::v1::{Pod, Secret, Service};
 use kube::{
     api::{ListParams, Patch, PatchParams},
     client::Client,
@@ -109,7 +110,7 @@ pub async fn reconcile_dnszone(
     let key_data = load_rndc_key(&client, &namespace, first_instance_name).await?;
 
     // For now, we use the HTTP API to dynamically add the zone.
-    // The zone type will be "master" (primary).
+    // The zone type will be ZONE_TYPE_PRIMARY.
     // BIND9 will create the zone file in /var/cache/bind when records are added via dynamic updates.
     // This directory is mounted as an EmptyDir volume (or PVC for persistence).
 
@@ -121,21 +122,31 @@ pub async fn reconcile_dnszone(
     // This avoids concurrent writes and file locking issues across pods
     // Use the instance name (not cluster name) as each instance has its own service
     //
+    // Lookup the service port for "http" (bindcar API)
+    let http_port = get_service_port(&client, first_instance_name, &namespace, "http").await?;
+
     // When running outside the cluster (e.g., local development with kubectl port-forward),
     // use the pod IP directly since service DNS won't resolve
     let service_endpoint = if is_running_in_cluster() {
-        format!("{first_instance_name}.{namespace}.svc.cluster.local:953")
+        format!("{first_instance_name}.{namespace}.svc.cluster.local:{http_port}")
     } else {
         // Running outside cluster - use first pod IP directly
         let first_pod_ip = &primary_pods
             .first()
             .ok_or_else(|| anyhow!("No PRIMARY pods found for cluster {}", spec.cluster_ref))?
             .ip;
-        format!("{first_pod_ip}:953")
+        format!("{first_pod_ip}:{http_port}")
     };
 
     zone_manager
-        .add_zone(&spec.zone_name, "master", &service_endpoint, &key_data)
+        .add_zone(
+            &spec.zone_name,
+            ZONE_TYPE_PRIMARY,
+            &service_endpoint,
+            &key_data,
+            &spec.soa_record,
+            spec.name_server_ips.as_ref(),
+        )
         .await?;
 
     info!(
@@ -238,16 +249,19 @@ pub async fn delete_dnszone(
     // With shared storage, we delete from one pod and the file is removed from shared storage
     // Use the instance name (not cluster name) as each instance has its own service
     //
+    // Lookup the service port for "http" (bindcar API)
+    let http_port = get_service_port(&client, first_instance_name, &namespace, "http").await?;
+
     // When running outside the cluster, use the pod IP directly since service DNS won't resolve
     let service_endpoint = if is_running_in_cluster() {
-        format!("{first_instance_name}.{namespace}.svc.cluster.local:953")
+        format!("{first_instance_name}.{namespace}.svc.cluster.local:{http_port}")
     } else {
         // Running outside cluster - use first pod IP directly
         let first_pod_ip = &primary_pods
             .first()
             .ok_or_else(|| anyhow!("No PRIMARY pods found for cluster {}", spec.cluster_ref))?
             .ip;
-        format!("{first_pod_ip}:953")
+        format!("{first_pod_ip}:{http_port}")
     };
 
     zone_manager
@@ -558,4 +572,44 @@ async fn update_status(
     .await?;
 
     Ok(())
+}
+
+/// Get the service port number by port name
+///
+/// Looks up the Kubernetes Service and finds the port number for the specified port name.
+///
+/// # Arguments
+/// * `client` - Kubernetes API client
+/// * `service_name` - Name of the service
+/// * `namespace` - Namespace of the service
+/// * `port_name` - Name of the port to lookup (e.g., "http")
+///
+/// # Returns
+/// Port number if found, or error if service or port doesn't exist
+async fn get_service_port(
+    client: &Client,
+    service_name: &str,
+    namespace: &str,
+    port_name: &str,
+) -> Result<i32> {
+    let service_api: Api<Service> = Api::namespaced(client.clone(), namespace);
+    let service = service_api
+        .get(service_name)
+        .await
+        .context(format!("Failed to get service {service_name}"))?;
+
+    let port = service
+        .spec
+        .and_then(|spec| spec.ports)
+        .and_then(|ports| {
+            ports
+                .iter()
+                .find(|p| p.name.as_ref().is_some_and(|name| name == port_name))
+                .map(|p| p.port)
+        })
+        .ok_or_else(|| {
+            anyhow!("Service {service_name} does not have a port named '{port_name}'")
+        })?;
+
+    Ok(port)
 }
