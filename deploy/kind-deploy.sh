@@ -87,7 +87,7 @@ fi
 
 echo -e "${GREEN}📋 Installing CRDs via kustomize...${NC}"
 # Use kubectl apply -k to apply CRDs with kustomization
-kubectl apply -k deploy/crds
+kubectl apply -f deploy/crds
 
 echo -e "${GREEN}🔐 Creating namespace and RBAC...${NC}"
 kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -

@@ -3054,7 +3054,7 @@ spec:
                 nullable: true
                 properties:
                   emptyDir:
-                    description: EmptyDir configuration (used when storageType is emptyDir)
+                    description: '`EmptyDir` configuration (used when storageType is emptyDir)'
                     nullable: true
                     properties:
                       medium:
@@ -3065,7 +3065,7 @@ spec:
                         type: string
                     type: object
                   persistentVolumeClaim:
-                    description: PersistentVolumeClaim configuration (used when storageType is persistentVolumeClaim)
+                    description: '`PersistentVolumeClaim` configuration (used when storageType is persistentVolumeClaim)'
                     nullable: true
                     properties:
                       accessModes:

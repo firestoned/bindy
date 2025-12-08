@@ -9,6 +9,8 @@ spec:
   # Reference to the Bind9Cluster that manages this zone
   # This must match the Bind9Cluster name, NOT the Bind9Instance name
   clusterRef: production-dns
+  nameServerIps:
+    ns1.example.com.: 192.168.0.60
   soaRecord:
     primaryNs: ns1.example.com.
     adminEmail: admin.example.com.  # Note: @ replaced with .
@@ -29,6 +31,8 @@ spec:
   # Reference to the Bind9Cluster that manages this zone
   # This must match the Bind9Cluster name, NOT the Bind9Instance name
   clusterRef: production-dns
+  nameServerIps:
+    ns1.internal.local.: 192.168.0.60
   soaRecord:
     primaryNs: ns1.internal.local.
     adminEmail: admin.internal.local.  # Note: @ replaced with .

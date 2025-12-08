@@ -131,6 +131,7 @@ mod tests {
             cluster_ref: "my-cluster".into(),
             soa_record: soa,
             ttl: Some(3600),
+            name_server_ips: None,
         };
 
         assert_eq!(spec.zone_name, "example.com");
