@@ -257,23 +257,70 @@ kubectl get networkpolicies -n dns-system
 # Check secondary logs
 kubectl logs -n dns-system -l dns-role=secondary | grep transfer
 
-# Check primary allows transfers
-kubectl get bind9instance primary-dns -n dns-system -o jsonpath='{.spec.config.allowTransfer}'
+# Check if zone has secondary IPs configured
+kubectl get dnszone example-com -n dns-system -o jsonpath='{.status.secondaryIps}'
+
+# Check if secondaries are discovered
+kubectl get bind9instance -n dns-system -l role=secondary -o jsonpath='{.items[*].status.podIP}'
 ```
 
-**Solution:**
+**Automatic Configuration:**
+
+As of v0.1.0, Bindy **automatically discovers secondary IPs** and configures zone transfers:
+- Secondary pods are discovered via Kubernetes API using label selectors (`role=secondary`)
+- Primary zones are configured with `also-notify` and `allow-transfer` directives
+- Secondary IPs are stored in `DNSZone.status.secondaryIps` for tracking
+- When secondary pods restart/reschedule and get new IPs, zones are automatically updated
+
+**Manual Verification:**
 ```bash
-# Update primary to allow transfers
-kubectl edit bind9instance primary-dns -n dns-system
+# Check if zone has secondary IPs in status
+kubectl get dnszone example-com -n dns-system -o yaml | yq '.status.secondaryIps'
 
-# Add secondary network to allowTransfer:
-spec:
-  config:
-    allowTransfer:
-      - "10.0.0.0/8"
+# Expected output: List of secondary pod IPs
+# - 10.244.1.5
+# - 10.244.2.8
 
-# Verify network connectivity
-kubectl exec -n dns-system deployment/secondary-dns -- dig @primary-dns-service AXFR example.com
+# Verify zone configuration on primary
+kubectl exec -n dns-system deployment/primary-dns -- \
+  curl -s localhost:8080/api/zones/example.com | jq '.alsoNotify, .allowTransfer'
+```
+
+**If Automatic Configuration Fails:**
+
+1. **Verify secondary instances are labeled correctly:**
+   ```bash
+   kubectl get bind9instance -n dns-system -o yaml | yq '.items[].metadata.labels'
+
+   # Expected labels for secondaries:
+   # role: secondary
+   # cluster: <cluster-name>
+   ```
+
+2. **Check DNSZone reconciler logs:**
+   ```bash
+   kubectl logs -n dns-system deployment/bindy | grep "secondary"
+   ```
+
+3. **Verify network connectivity:**
+   ```bash
+   # Test AXFR from secondary to primary
+   kubectl exec -n dns-system deployment/secondary-dns -- \
+     dig @primary-dns-service AXFR example.com
+   ```
+
+**Recovery After Secondary Pod Restart:**
+
+When secondary pods are rescheduled and get new IPs:
+1. **Detection:** Reconciler automatically detects IP change within 5-10 minutes (next reconciliation)
+2. **Update:** Zones are deleted and recreated with new secondary IPs
+3. **Transfer:** Zone transfers resume automatically with new IPs
+
+**Manual Trigger (if needed):**
+```bash
+# Force reconciliation by updating zone annotation
+kubectl annotate dnszone example-com -n dns-system \
+  reconcile.bindy.firestoned.io/trigger="$(date +%s)" --overwrite
 ```
 
 ## Performance Issues

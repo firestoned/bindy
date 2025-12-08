@@ -49,7 +49,7 @@ use hickory_proto::rr::dnssec::tsig::TSigner;
 use rand::Rng;
 use reqwest::Client as HttpClient;
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -133,6 +133,7 @@ const SERVICE_ACCOUNT_TOKEN_PATH: &str = "/var/run/secrets/kubernetes.io/service
 /// Parameters for creating SRV records.
 ///
 /// Contains the priority, weight, port, and target required for SRV records.
+#[derive(Clone)]
 pub struct SRVRecordData {
     /// Priority of the target host (lower is higher priority)
     pub priority: i32,
@@ -565,7 +566,16 @@ impl Bind9Manager {
     ///
     /// Returns `true` if the zone exists and can be queried, `false` otherwise.
     pub async fn zone_exists(&self, zone_name: &str, server: &str) -> bool {
-        self.zone_status(zone_name, server).await.is_ok()
+        match self.zone_status(zone_name, server).await {
+            Ok(_) => {
+                debug!("Zone {zone_name} exists on {server}");
+                true
+            }
+            Err(e) => {
+                debug!("Zone {zone_name} does not exist on {server}: {e}");
+                false
+            }
+        }
     }
 
     /// Get server status via HTTP API.
@@ -598,19 +608,29 @@ impl Bind9Manager {
     ///
     /// # Arguments
     /// * `zone_name` - Name of the zone (e.g., "example.com")
-    /// * `zone_type` - Zone type ("master" for primary, "slave" for secondary)
+    /// * `zone_type` - Zone type (use `ZONE_TYPE_PRIMARY` or `ZONE_TYPE_SECONDARY` constants)
     /// * `server` - API endpoint (e.g., "bind9-primary-api:8080")
     /// * `key_data` - RNDC key data (used for allow-update configuration)
+    /// * `name_server_ips` - Optional map of nameserver hostnames to IP addresses for glue records
+    /// * `secondary_ips` - Optional list of secondary server IPs for also-notify and allow-transfer
     ///
     /// # Errors
     ///
     /// Returns an error if the HTTP request fails or the zone cannot be added.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::too_many_arguments
+    )]
     pub async fn add_zone(
         &self,
         zone_name: &str,
         zone_type: &str,
         server: &str,
         key_data: &RndcKeyData,
+        soa_record: &crate::crd::SOARecord,
+        name_server_ips: Option<&HashMap<String, String>>,
+        secondary_ips: Option<&[String]>,
     ) -> Result<()> {
         // Check if zone already exists (idempotent)
         if self.zone_exists(zone_name, server).await {
@@ -623,20 +643,24 @@ impl Bind9Manager {
         let base_url = Self::build_api_url(server);
         let url = format!("{base_url}/api/v1/zones");
 
-        // Create minimal zone configuration with basic SOA record
+        // Create zone configuration using SOA record from DNSZone spec
         let zone_config = ZoneConfig {
             ttl: DEFAULT_DNS_RECORD_TTL_SECS as u32,
             soa: SoaRecord {
-                primary_ns: format!("ns.{zone_name}."),
-                admin_email: format!("admin.{zone_name}."),
-                serial: 1,
-                refresh: 3600,
-                retry: 600,
-                expire: 604_800,
-                negative_ttl: 86400,
+                primary_ns: soa_record.primary_ns.clone(),
+                admin_email: soa_record.admin_email.clone(),
+                serial: soa_record.serial as u32,
+                refresh: soa_record.refresh as u32,
+                retry: soa_record.retry as u32,
+                expire: soa_record.expire as u32,
+                negative_ttl: soa_record.negative_ttl as u32,
             },
-            name_servers: vec![format!("ns.{zone_name}.")],
+            name_servers: vec![soa_record.primary_ns.clone()],
+            name_server_ips: name_server_ips.cloned().unwrap_or_default(),
             records: vec![],
+            // Configure zone transfers to secondary servers
+            also_notify: secondary_ips.map(<[String]>::to_vec),
+            allow_transfer: secondary_ips.map(<[String]>::to_vec),
         };
 
         let request = CreateZoneRequest {
@@ -646,15 +670,41 @@ impl Bind9Manager {
             update_key_name: Some(key_data.name.clone()),
         };
 
-        self.bindcar_request("POST", &url, Some(&request))
-            .await
-            .context("Failed to add zone")?;
-
-        info!(
-            "Added zone {zone_name} on {server} with allow-update for key {}",
-            key_data.name
-        );
-        Ok(())
+        match self.bindcar_request("POST", &url, Some(&request)).await {
+            Ok(_) => {
+                if let Some(ips) = secondary_ips {
+                    info!(
+                        "Added zone {zone_name} on {server} with allow-update for key {} and zone transfers configured for {} secondary server(s): {:?}",
+                        key_data.name, ips.len(), ips
+                    );
+                } else {
+                    info!(
+                        "Added zone {zone_name} on {server} with allow-update for key {} (no secondary servers)",
+                        key_data.name
+                    );
+                }
+                Ok(())
+            }
+            Err(e) => {
+                let err_msg = e.to_string().to_lowercase();
+                // Handle "zone already exists" errors as success (idempotent)
+                // BIND9 can return various messages for duplicate zones:
+                // - "already exists"
+                // - "already serves the given zone"
+                // - "duplicate zone"
+                // HTTP 409 Conflict is also used for resource conflicts
+                if err_msg.contains("already exists")
+                    || err_msg.contains("already serves")
+                    || err_msg.contains("duplicate zone")
+                    || err_msg.contains("409")
+                {
+                    info!("Zone {zone_name} already exists on {server} (detected via API error), treating as success");
+                    Ok(())
+                } else {
+                    Err(e).context("Failed to add zone")
+                }
+            }
+        }
     }
 
     /// Create a zone via HTTP API with structured configuration.
@@ -664,7 +714,7 @@ impl Bind9Manager {
     ///
     /// # Arguments
     /// * `zone_name` - Name of the zone (e.g., "example.com")
-    /// * `zone_type` - Zone type ("master" or "slave")
+    /// * `zone_type` - Zone type (use `ZONE_TYPE_PRIMARY` or `ZONE_TYPE_SECONDARY` constants)
     /// * `zone_config` - Structured zone configuration (converted to zone file by bindcar)
     /// * `server` - API endpoint (e.g., "bind9-primary-api:8080")
     /// * `key_data` - RNDC authentication key (used as updateKeyName)
@@ -905,13 +955,15 @@ impl Bind9Manager {
                 Record::from_rdata(fqdn.clone(), ttl_value, RData::A(ipv4_addr.into()));
             record.set_dns_class(DNSClass::IN);
 
-            // Send update
+            // Send update using append for idempotent operation
+            // append() adds the record to the RRset, or creates a new RRset if none exists
+            // must_exist=false means no prerequisite check - truly idempotent
             info!(
                 "Adding A record: {} -> {} (TTL: {})",
                 fqdn, ipv4_str, ttl_value
             );
             let response = client
-                .create(record, zone.clone())
+                .append(record, zone.clone(), false)
                 .with_context(|| format!("Failed to add A record for {fqdn}"))?;
 
             // Check response code
@@ -977,7 +1029,8 @@ impl Bind9Manager {
                 target_str,
                 ttl_value
             );
-            let response = client.create(record, zone)?;
+            // Use append for idempotent operation (must_exist=false for no prerequisites)
+            let response = client.append(record, zone, false)?;
 
             match response.response_code() {
                 ResponseCode::NoError => {
@@ -1042,7 +1095,8 @@ impl Bind9Manager {
                 texts_vec,
                 ttl_value
             );
-            let response = client.create(record, zone)?;
+            // Use append for idempotent operation (must_exist=false for no prerequisites)
+            let response = client.append(record, zone, false)?;
 
             match response.response_code() {
                 ResponseCode::NoError => {
@@ -1104,12 +1158,13 @@ impl Bind9Manager {
                 Record::from_rdata(fqdn.clone(), ttl_value, RData::AAAA(ipv6_addr.into()));
             record.set_dns_class(DNSClass::IN);
 
+            // Use append for idempotent operation (must_exist=false for no prerequisites)
             info!(
                 "Adding AAAA record: {} -> {} (TTL: {})",
                 fqdn, ipv6_str, ttl_value
             );
             let response = client
-                .create(record, zone.clone())
+                .append(record, zone.clone(), false)
                 .with_context(|| format!("Failed to add AAAA record for {fqdn}"))?;
 
             match response.response_code() {
@@ -1173,11 +1228,12 @@ impl Bind9Manager {
             let mut record = Record::from_rdata(fqdn.clone(), ttl_value, RData::MX(mx_rdata));
             record.set_dns_class(DNSClass::IN);
 
+            // Use append for idempotent operation (must_exist=false for no prerequisites)
             info!(
                 "Adding MX record: {} -> {} (priority: {}, TTL: {})",
                 fqdn, mail_server_str, priority_u16, ttl_value
             );
-            let response = client.create(record, zone)?;
+            let response = client.append(record, zone, false)?;
 
             match response.response_code() {
                 ResponseCode::NoError => {
@@ -1236,11 +1292,12 @@ impl Bind9Manager {
                 Record::from_rdata(fqdn.clone(), ttl_value, RData::NS(rdata::NS(ns_name)));
             record.set_dns_class(DNSClass::IN);
 
+            // Use append for idempotent operation (must_exist=false for no prerequisites)
             info!(
                 "Adding NS record: {} -> {} (TTL: {})",
                 fqdn, nameserver_str, ttl_value
             );
-            let response = client.create(record, zone)?;
+            let response = client.append(record, zone, false)?;
 
             match response.response_code() {
                 ResponseCode::NoError => {
@@ -1332,22 +1389,22 @@ impl Bind9Manager {
             let mut record = Record::from_rdata(fqdn.clone(), ttl_value, RData::SRV(record_data));
             record.set_dns_class(DNSClass::IN);
 
+            // Use append for idempotent operation
             let response = client
-                .create(record, zone.clone())
+                .append(record, zone.clone(), false)
                 .context(format!("Failed to send SRV record update for {fqdn_str}"))?;
 
-            if response.response_code() != ResponseCode::NoError {
-                anyhow::bail!(
-                    "DNS server rejected SRV record update for {}: {:?}",
-                    fqdn_str,
-                    response.response_code()
-                );
+            match response.response_code() {
+                ResponseCode::NoError => {
+                    info!(
+                        "Successfully added SRV record: {} -> {}:{} (priority: {}, weight: {}, TTL: {})",
+                        fqdn_str, target_str, port, priority, weight, ttl_value
+                    );
+                }
+                code => {
+                    anyhow::bail!("DNS server rejected SRV record update for {fqdn_str}: {code:?}");
+                }
             }
-
-            info!(
-                "Successfully added SRV record: {} -> {}:{} (priority: {}, weight: {}, TTL: {})",
-                fqdn_str, target_str, port, priority, weight, ttl_value
-            );
 
             Ok(())
         })
@@ -1457,22 +1514,22 @@ impl Bind9Manager {
             let mut record = Record::from_rdata(fqdn.clone(), ttl_value, RData::CAA(record_data));
             record.set_dns_class(DNSClass::IN);
 
+            // Use append for idempotent operation
             let response = client
-                .create(record, zone.clone())
+                .append(record, zone.clone(), false)
                 .context(format!("Failed to send CAA record update for {fqdn_str}"))?;
 
-            if response.response_code() != ResponseCode::NoError {
-                anyhow::bail!(
-                    "DNS server rejected CAA record update for {}: {:?}",
-                    fqdn_str,
-                    response.response_code()
-                );
+            match response.response_code() {
+                ResponseCode::NoError => {
+                    info!(
+                        "Successfully added CAA record: {} -> {} {} \"{}\" (TTL: {})",
+                        fqdn_str, flags, tag_str, value_str, ttl_value
+                    );
+                }
+                code => {
+                    anyhow::bail!("DNS server rejected CAA record update for {fqdn_str}: {code:?}");
+                }
             }
-
-            info!(
-                "Successfully added CAA record: {} -> {} {} \"{}\" (TTL: {})",
-                fqdn_str, flags, tag_str, value_str, ttl_value
-            );
 
             Ok(())
         })

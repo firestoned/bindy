@@ -59,6 +59,10 @@ rules:
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
 
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get", "list", "watch"]
+
   # Events for logging
   - apiGroups: [""]
     resources: ["events"]

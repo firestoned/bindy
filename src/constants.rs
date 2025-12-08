@@ -62,6 +62,9 @@ pub const DNS_PORT: u16 = 53;
 /// Standard RNDC control port
 pub const RNDC_PORT: u16 = 953;
 
+/// Default bindcar HTTP API port
+pub const BINDCAR_API_PORT: u16 = 8080;
+
 /// Default TTL for DNS records (5 minutes)
 pub const DEFAULT_DNS_RECORD_TTL_SECS: i32 = 300;
 

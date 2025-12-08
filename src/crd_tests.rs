@@ -131,6 +131,7 @@ mod tests {
             cluster_ref: "my-cluster".into(),
             soa_record: soa,
             ttl: Some(3600),
+            name_server_ips: None,
         };
 
         assert_eq!(spec.zone_name, "example.com");
@@ -519,6 +520,7 @@ mod tests {
             conditions: vec![condition],
             observed_generation: Some(1),
             record_count: Some(5),
+            secondary_ips: None,
         };
 
         assert_eq!(status.conditions.len(), 1);

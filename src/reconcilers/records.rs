@@ -13,7 +13,7 @@ use crate::crd::{
 };
 use crate::labels::{BINDY_CLUSTER_ANNOTATION, BINDY_INSTANCE_ANNOTATION, BINDY_ZONE_ANNOTATION};
 use anyhow::{anyhow, Context, Result};
-use k8s_openapi::api::core::v1::{Event, ObjectReference, Secret};
+use k8s_openapi::api::core::v1::{Event, ObjectReference};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use k8s_openapi::chrono::Utc;
 use kube::{
@@ -22,8 +22,6 @@ use kube::{
     Api, Resource, ResourceExt,
 };
 use serde_json::json;
-use std::env;
-use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 /// Helper macro to handle zone lookup with proper error reporting
@@ -49,121 +47,6 @@ macro_rules! get_zone_or_fail {
                 )
                 .await?;
                 return Err(anyhow!(error_msg));
-            }
-        }
-    };
-}
-
-/// Helper macro to find primary instance and load RNDC key
-macro_rules! get_instance_and_key {
-    ($client:expr, $namespace:expr, $cluster_ref:expr, $record:expr) => {{
-        // Find an available instance (primary preferred, secondary fallback)
-        let instance_name = match find_available_instance($client, $namespace, $cluster_ref).await {
-            Ok(name) => name,
-            Err(e) => {
-                let error_msg = format!(
-                    "Failed to find available instance for cluster {}: {}",
-                    $cluster_ref, e
-                );
-                error!("{}", error_msg);
-                update_record_status(
-                    $client,
-                    $record,
-                    "Ready",
-                    "False",
-                    "NoAvailableInstance",
-                    &error_msg,
-                )
-                .await?;
-                return Err(anyhow!(error_msg));
-            }
-        };
-
-        // Load RNDC key
-        let key_data = match load_rndc_key($client, $namespace, &instance_name).await {
-            Ok(key) => key,
-            Err(e) => {
-                let error_msg = format!("Failed to load RNDC key: {}", e);
-                error!("{}", error_msg);
-                update_record_status(
-                    $client,
-                    $record,
-                    "Ready",
-                    "False",
-                    "RndcKeyLoadFailed",
-                    &error_msg,
-                )
-                .await?;
-                return Err(anyhow!(error_msg));
-            }
-        };
-
-        // Build server address using the instance name
-        let server = format!("{}.{}.svc.cluster.local:953", instance_name, $namespace);
-
-        (instance_name, key_data, server)
-    }};
-}
-
-/// Helper macro to handle record operation failures with proper error reporting
-///
-/// After successfully adding a record, this macro automatically triggers a NOTIFY
-/// to secondary servers so they can initiate zone transfers (IXFR) to receive the update.
-macro_rules! handle_record_operation {
-    ($result:expr, $client:expr, $record:expr, $zone_name:expr, $server:expr, $key_data:expr, $zone_manager:expr, $success_msg:expr) => {
-        match $result {
-            Ok(()) => {
-                // Update record status
-                update_record_status(
-                    $client,
-                    $record,
-                    "Ready",
-                    "True",
-                    "RecordCreated",
-                    $success_msg,
-                )
-                .await?;
-
-                // Notify secondaries about the zone change
-                // This triggers IXFR (incremental zone transfer) from primary to secondaries
-                info!(
-                    "Notifying secondaries about zone {} update after record operation",
-                    $zone_name
-                );
-                if let Err(e) = $zone_manager.notify_zone($zone_name, $server).await {
-                    // Don't fail the entire operation if NOTIFY fails - log and continue
-                    // The record was successfully added, secondaries will eventually catch up via SOA refresh
-                    warn!(
-                        "Failed to notify secondaries for zone {}: {}. Secondaries will sync via SOA refresh timer.",
-                        $zone_name, e
-                    );
-                }
-
-                Ok(())
-            }
-            Err(e) => {
-                let error_msg =
-                    if e.to_string().contains("connection") || e.to_string().contains("connect") {
-                        format!(
-                            "Cannot connect to BIND9 server at {}: {}. Will retry in {:?}",
-                            $server,
-                            e,
-                            get_retry_interval()
-                        )
-                    } else {
-                        format!("Failed to add DNS record: {}", e)
-                    };
-                error!("{}", error_msg);
-                update_record_status(
-                    $client,
-                    $record,
-                    "Ready",
-                    "False",
-                    "RecordAddFailed",
-                    &error_msg,
-                )
-                .await?;
-                Err(anyhow!(error_msg))
             }
         }
     };
@@ -218,6 +101,138 @@ where
         zone = zone_name,
         "Added tracking annotations to DNS record"
     );
+
+    Ok(())
+}
+
+/// Generic helper to add a DNS record to ALL primary pods across ALL instances.
+///
+/// This function handles the common pattern of:
+/// 1. Getting the zone info
+/// 2. Iterating through all primary endpoints
+/// 3. Calling a record-specific add operation for each endpoint
+/// 4. Updating status and annotations
+/// 5. Notifying secondaries
+///
+/// # Type Parameters
+///
+/// * `R` - The record type (`ARecord`, `TXTRecord`, etc.)
+/// * `F` - Async function type for the record-specific add operation
+/// * `Fut` - Future returned by the add operation
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `record` - The record resource to reconcile
+/// * `zone_manager` - BIND9 manager for DNS operations
+/// * `record_type_name` - Human-readable record type name (e.g., "A", "TXT")
+/// * `add_operation` - Async closure that adds the record to a single endpoint
+///   - Arguments: `(zone_manager, zone_name, pod_endpoint, key_data)`
+///   - Returns: `Result<String>` where String is a description of what was added
+///
+/// # Returns
+///
+/// Returns `Ok(())` if the record was successfully added to all endpoints
+///
+/// # Errors
+///
+/// Returns error if any endpoint operation fails
+async fn add_record_to_all_endpoints<R, F, Fut>(
+    client: &Client,
+    record: &R,
+    zone_manager: &crate::bind9::Bind9Manager,
+    record_type_name: &str,
+    cluster_ref: &str,
+    zone_name: &str,
+    add_operation: F,
+) -> Result<()>
+where
+    R: Resource<DynamicType = (), Scope = k8s_openapi::NamespaceResourceScope>
+        + Clone
+        + std::fmt::Debug
+        + serde::de::DeserializeOwned
+        + serde::Serialize,
+    F: Fn(crate::bind9::Bind9Manager, String, String, RndcKeyData) -> Fut + Clone,
+    Fut: std::future::Future<Output = Result<String>>,
+{
+    let namespace = record.namespace().unwrap_or_default();
+
+    // Add the record to ALL primary pods across ALL instances
+    // With EmptyDir storage, each pod maintains its own zone files
+    let zone_name_clone = zone_name.to_string();
+    let zone_manager_clone = zone_manager.clone();
+
+    let (first_endpoint, total_endpoints) = super::dnszone::for_each_primary_endpoint(
+        client,
+        &namespace,
+        cluster_ref,
+        true, // with_rndc_key = true for record operations
+        |pod_endpoint, instance_name, rndc_key| {
+            let zone_name = zone_name_clone.clone();
+            let zone_manager = zone_manager_clone.clone();
+            let add_op = add_operation.clone();
+            let pod_endpoint_clone = pod_endpoint.clone();
+            let record_type = record_type_name.to_string();
+
+            async move {
+                // SAFETY: RNDC key is guaranteed to be Some when with_rndc_key=true
+                let key_data = rndc_key.expect("RNDC key should be loaded");
+
+                info!(
+                    "Adding {} record to zone {} at endpoint {} (instance: {})",
+                    record_type, zone_name, pod_endpoint, instance_name
+                );
+
+                let description = add_op(
+                    zone_manager,
+                    zone_name.clone(),
+                    pod_endpoint.clone(),
+                    key_data,
+                )
+                .await
+                .context(format!(
+                    "Failed to add {record_type} record to zone {zone_name} at endpoint {pod_endpoint}"
+                ))?;
+
+                debug!(
+                    "Successfully added {} record to zone {} at endpoint {}: {}",
+                    record_type, zone_name, pod_endpoint_clone, description
+                );
+
+                Ok(())
+            }
+        },
+    )
+    .await?;
+
+    info!(
+        "Successfully added {} record to zone {} at {} endpoint(s) for cluster {}",
+        record_type_name, zone_name, total_endpoints, cluster_ref
+    );
+
+    // Notify secondaries about the record change via the first endpoint
+    if let Some(first_pod_endpoint) = first_endpoint {
+        if let Err(e) = zone_manager
+            .notify_zone(zone_name, &first_pod_endpoint)
+            .await
+        {
+            warn!(
+                "Failed to notify secondaries for zone {}: {}. Secondaries will sync via SOA refresh timer.",
+                zone_name, e
+            );
+        }
+    }
+
+    // Update status to success
+    update_record_status(
+        client,
+        record,
+        "Ready",
+        "True",
+        "ReconcileSucceeded",
+        &format!("{record_type_name} record in zone {zone_name} created successfully"),
+    )
+    .await?;
 
     Ok(())
 }
@@ -283,10 +298,6 @@ pub async fn reconcile_a_record(
         get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
     debug!(cluster_ref = %cluster_ref, zone_name = %zone_name, "Found DNSZone");
 
-    // Find primary instance and get RNDC key + server address
-    let (instance_name, key_data, server) =
-        get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
-
     // Add tracking annotations
     let api: Api<ARecord> = Api::namespaced(client.clone(), &namespace);
     add_record_annotations(
@@ -294,33 +305,42 @@ pub async fn reconcile_a_record(
         &api,
         &name,
         &cluster_ref,
-        &instance_name,
+        &cluster_ref, // Use cluster_ref since we update all instances
         &zone_name,
     )
     .await?;
 
-    // Add the record to the zone
-    let result = zone_manager
-        .add_a_record(
-            &zone_name,
-            &spec.name,
-            &spec.ipv4_address,
-            spec.ttl,
-            &server,
-            &key_data,
-        )
-        .await;
+    // Add the record to all primary pods using the generic helper
+    let record_name = spec.name.clone();
+    let ipv4_address = spec.ipv4_address.clone();
+    let ttl = spec.ttl;
 
-    handle_record_operation!(
-        result,
+    add_record_to_all_endpoints(
         &client,
         &record,
-        &zone_name,
-        &server,
-        &key_data,
         zone_manager,
-        &format!("A record {}.{} created successfully", spec.name, zone_name)
+        "A",
+        &cluster_ref,
+        &zone_name,
+        move |zone_manager, zone_name, pod_endpoint, key_data| {
+            let record_name = record_name.clone();
+            let ipv4_address = ipv4_address.clone();
+            async move {
+                zone_manager
+                    .add_a_record(
+                        &zone_name,
+                        &record_name,
+                        &ipv4_address,
+                        ttl,
+                        &pod_endpoint,
+                        &key_data,
+                    )
+                    .await?;
+                Ok(format!("{record_name}.{zone_name} -> {ipv4_address}"))
+            }
+        },
     )
+    .await
 }
 
 /// Reconciles a `TXTRecord` (text) resource.
@@ -345,8 +365,6 @@ pub async fn reconcile_txt_record(
 
     let (cluster_ref, zone_name) =
         get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
-    let (instance_name, key_data, server) =
-        get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
 
     // Add tracking annotations
     let api: Api<TXTRecord> = Api::namespaced(client.clone(), &namespace);
@@ -355,30 +373,45 @@ pub async fn reconcile_txt_record(
         &api,
         &name,
         &cluster_ref,
-        &instance_name,
+        "bindy-instance-0", // Placeholder instance name
         &zone_name,
     )
     .await?;
 
-    let result = zone_manager
-        .add_txt_record(
-            &zone_name, &spec.name, &spec.text, spec.ttl, &server, &key_data,
-        )
-        .await;
+    // Add record to all primary endpoints
+    let record_name = spec.name.clone();
+    let text_value = spec.text.clone();
+    let ttl = spec.ttl;
 
-    handle_record_operation!(
-        result,
+    add_record_to_all_endpoints(
         &client,
         &record,
-        &zone_name,
-        &server,
-        &key_data,
         zone_manager,
-        &format!(
-            "TXT record {}.{} created successfully",
-            spec.name, zone_name
-        )
+        "TXT",
+        &cluster_ref,
+        &zone_name,
+        move |zone_manager, zone_name, pod_endpoint, key_data| {
+            let record_name = record_name.clone();
+            let text_value = text_value.clone();
+            async move {
+                zone_manager
+                    .add_txt_record(
+                        &zone_name,
+                        &record_name,
+                        &text_value,
+                        ttl,
+                        &pod_endpoint,
+                        &key_data,
+                    )
+                    .await?;
+                Ok(format!(
+                    "{record_name}.{zone_name} TXT \"{}\"",
+                    text_value.join(" ")
+                ))
+            }
+        },
     )
+    .await
 }
 
 /// Reconciles an `AAAARecord` (IPv6 address) resource.
@@ -402,8 +435,6 @@ pub async fn reconcile_aaaa_record(
 
     let (cluster_ref, zone_name) =
         get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
-    let (instance_name, key_data, server) =
-        get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
 
     // Add tracking annotations
     let api: Api<AAAARecord> = Api::namespaced(client.clone(), &namespace);
@@ -412,35 +443,42 @@ pub async fn reconcile_aaaa_record(
         &api,
         &name,
         &cluster_ref,
-        &instance_name,
+        "bindy-instance-0", // Placeholder instance name
         &zone_name,
     )
     .await?;
 
-    let result = zone_manager
-        .add_aaaa_record(
-            &zone_name,
-            &spec.name,
-            &spec.ipv6_address,
-            spec.ttl,
-            &server,
-            &key_data,
-        )
-        .await;
+    // Add record to all primary endpoints
+    let record_name = spec.name.clone();
+    let ipv6_address = spec.ipv6_address.clone();
+    let ttl = spec.ttl;
 
-    handle_record_operation!(
-        result,
+    add_record_to_all_endpoints(
         &client,
         &record,
-        &zone_name,
-        &server,
-        &key_data,
         zone_manager,
-        &format!(
-            "AAAA record {}.{} created successfully",
-            spec.name, zone_name
-        )
+        "AAAA",
+        &cluster_ref,
+        &zone_name,
+        move |zone_manager, zone_name, pod_endpoint, key_data| {
+            let record_name = record_name.clone();
+            let ipv6_address = ipv6_address.clone();
+            async move {
+                zone_manager
+                    .add_aaaa_record(
+                        &zone_name,
+                        &record_name,
+                        &ipv6_address,
+                        ttl,
+                        &pod_endpoint,
+                        &key_data,
+                    )
+                    .await?;
+                Ok(format!("{record_name}.{zone_name} -> {ipv6_address}"))
+            }
+        },
     )
+    .await
 }
 
 /// Reconciles a `CNAMERecord` (canonical name alias) resource.
@@ -464,8 +502,6 @@ pub async fn reconcile_cname_record(
 
     let (cluster_ref, zone_name) =
         get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
-    let (instance_name, key_data, server) =
-        get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
 
     // Add tracking annotations
     let api: Api<CNAMERecord> = Api::namespaced(client.clone(), &namespace);
@@ -474,35 +510,42 @@ pub async fn reconcile_cname_record(
         &api,
         &name,
         &cluster_ref,
-        &instance_name,
+        "bindy-instance-0", // Placeholder instance name
         &zone_name,
     )
     .await?;
 
-    let result = zone_manager
-        .add_cname_record(
-            &zone_name,
-            &spec.name,
-            &spec.target,
-            spec.ttl,
-            &server,
-            &key_data,
-        )
-        .await;
+    // Add record to all primary endpoints
+    let record_name = spec.name.clone();
+    let target = spec.target.clone();
+    let ttl = spec.ttl;
 
-    handle_record_operation!(
-        result,
+    add_record_to_all_endpoints(
         &client,
         &record,
-        &zone_name,
-        &server,
-        &key_data,
         zone_manager,
-        &format!(
-            "CNAME record {}.{} created successfully",
-            spec.name, zone_name
-        )
+        "CNAME",
+        &cluster_ref,
+        &zone_name,
+        move |zone_manager, zone_name, pod_endpoint, key_data| {
+            let record_name = record_name.clone();
+            let target = target.clone();
+            async move {
+                zone_manager
+                    .add_cname_record(
+                        &zone_name,
+                        &record_name,
+                        &target,
+                        ttl,
+                        &pod_endpoint,
+                        &key_data,
+                    )
+                    .await?;
+                Ok(format!("{record_name}.{zone_name} -> {target}"))
+            }
+        },
     )
+    .await
 }
 
 /// Reconciles an `MXRecord` (mail exchange) resource.
@@ -527,8 +570,6 @@ pub async fn reconcile_mx_record(
 
     let (cluster_ref, zone_name) =
         get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
-    let (instance_name, key_data, server) =
-        get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
 
     // Add tracking annotations
     let api: Api<MXRecord> = Api::namespaced(client.clone(), &namespace);
@@ -537,33 +578,46 @@ pub async fn reconcile_mx_record(
         &api,
         &name,
         &cluster_ref,
-        &instance_name,
+        "bindy-instance-0", // Placeholder instance name
         &zone_name,
     )
     .await?;
 
-    let result = zone_manager
-        .add_mx_record(
-            &zone_name,
-            &spec.name,
-            spec.priority,
-            &spec.mail_server,
-            spec.ttl,
-            &server,
-            &key_data,
-        )
-        .await;
+    // Add record to all primary endpoints
+    let record_name = spec.name.clone();
+    let priority = spec.priority;
+    let mail_server = spec.mail_server.clone();
+    let ttl = spec.ttl;
 
-    handle_record_operation!(
-        result,
+    add_record_to_all_endpoints(
         &client,
         &record,
-        &zone_name,
-        &server,
-        &key_data,
         zone_manager,
-        &format!("MX record {}.{} created successfully", spec.name, zone_name)
+        "MX",
+        &cluster_ref,
+        &zone_name,
+        move |zone_manager, zone_name, pod_endpoint, key_data| {
+            let record_name = record_name.clone();
+            let mail_server = mail_server.clone();
+            async move {
+                zone_manager
+                    .add_mx_record(
+                        &zone_name,
+                        &record_name,
+                        priority,
+                        &mail_server,
+                        ttl,
+                        &pod_endpoint,
+                        &key_data,
+                    )
+                    .await?;
+                Ok(format!(
+                    "{record_name}.{zone_name} MX {priority} {mail_server}"
+                ))
+            }
+        },
     )
+    .await
 }
 
 /// Reconciles an `NSRecord` (nameserver delegation) resource.
@@ -588,8 +642,6 @@ pub async fn reconcile_ns_record(
 
     let (cluster_ref, zone_name) =
         get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
-    let (instance_name, key_data, server) =
-        get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
 
     // Add tracking annotations
     let api: Api<NSRecord> = Api::namespaced(client.clone(), &namespace);
@@ -598,32 +650,42 @@ pub async fn reconcile_ns_record(
         &api,
         &name,
         &cluster_ref,
-        &instance_name,
+        "bindy-instance-0", // Placeholder instance name
         &zone_name,
     )
     .await?;
 
-    let result = zone_manager
-        .add_ns_record(
-            &zone_name,
-            &spec.name,
-            &spec.nameserver,
-            spec.ttl,
-            &server,
-            &key_data,
-        )
-        .await;
+    // Add record to all primary endpoints
+    let record_name = spec.name.clone();
+    let nameserver = spec.nameserver.clone();
+    let ttl = spec.ttl;
 
-    handle_record_operation!(
-        result,
+    add_record_to_all_endpoints(
         &client,
         &record,
-        &zone_name,
-        &server,
-        &key_data,
         zone_manager,
-        &format!("NS record {}.{} created successfully", spec.name, zone_name)
+        "NS",
+        &cluster_ref,
+        &zone_name,
+        move |zone_manager, zone_name, pod_endpoint, key_data| {
+            let record_name = record_name.clone();
+            let nameserver = nameserver.clone();
+            async move {
+                zone_manager
+                    .add_ns_record(
+                        &zone_name,
+                        &record_name,
+                        &nameserver,
+                        ttl,
+                        &pod_endpoint,
+                        &key_data,
+                    )
+                    .await?;
+                Ok(format!("{record_name}.{zone_name} NS {nameserver}"))
+            }
+        },
     )
+    .await
 }
 
 /// Reconciles an `SRVRecord` (service location) resource.
@@ -648,8 +710,6 @@ pub async fn reconcile_srv_record(
 
     let (cluster_ref, zone_name) =
         get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
-    let (instance_name, key_data, server) =
-        get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
 
     // Add tracking annotations
     let api: Api<SRVRecord> = Api::namespaced(client.clone(), &namespace);
@@ -658,11 +718,13 @@ pub async fn reconcile_srv_record(
         &api,
         &name,
         &cluster_ref,
-        &instance_name,
+        "bindy-instance-0", // Placeholder instance name
         &zone_name,
     )
     .await?;
 
+    // Add record to all primary endpoints
+    let record_name = spec.name.clone();
     let srv_data = crate::bind9::SRVRecordData {
         priority: spec.priority,
         weight: spec.weight,
@@ -671,23 +733,34 @@ pub async fn reconcile_srv_record(
         ttl: spec.ttl,
     };
 
-    let result = zone_manager
-        .add_srv_record(&zone_name, &spec.name, &srv_data, &server, &key_data)
-        .await;
-
-    handle_record_operation!(
-        result,
+    add_record_to_all_endpoints(
         &client,
         &record,
-        &zone_name,
-        &server,
-        &key_data,
         zone_manager,
-        &format!(
-            "SRV record {}.{} created successfully",
-            spec.name, zone_name
-        )
+        "SRV",
+        &cluster_ref,
+        &zone_name,
+        move |zone_manager, zone_name, pod_endpoint, key_data| {
+            let record_name = record_name.clone();
+            let srv_data = srv_data.clone();
+            async move {
+                zone_manager
+                    .add_srv_record(
+                        &zone_name,
+                        &record_name,
+                        &srv_data,
+                        &pod_endpoint,
+                        &key_data,
+                    )
+                    .await?;
+                Ok(format!(
+                    "{record_name}.{zone_name} SRV {} {} {} {}",
+                    srv_data.priority, srv_data.weight, srv_data.port, srv_data.target
+                ))
+            }
+        },
     )
+    .await
 }
 
 /// Reconciles a `CAARecord` (certificate authority authorization) resource.
@@ -712,8 +785,6 @@ pub async fn reconcile_caa_record(
 
     let (cluster_ref, zone_name) =
         get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
-    let (instance_name, key_data, server) =
-        get_instance_and_key!(&client, &namespace, &cluster_ref, &record);
 
     // Add tracking annotations
     let api: Api<CAARecord> = Api::namespaced(client.clone(), &namespace);
@@ -722,37 +793,49 @@ pub async fn reconcile_caa_record(
         &api,
         &name,
         &cluster_ref,
-        &instance_name,
+        "bindy-instance-0", // Placeholder instance name
         &zone_name,
     )
     .await?;
 
-    let result = zone_manager
-        .add_caa_record(
-            &zone_name,
-            &spec.name,
-            spec.flags,
-            &spec.tag,
-            &spec.value,
-            spec.ttl,
-            &server,
-            &key_data,
-        )
-        .await;
+    // Add record to all primary endpoints
+    let record_name = spec.name.clone();
+    let flags = spec.flags;
+    let tag = spec.tag.clone();
+    let value = spec.value.clone();
+    let ttl = spec.ttl;
 
-    handle_record_operation!(
-        result,
+    add_record_to_all_endpoints(
         &client,
         &record,
-        &zone_name,
-        &server,
-        &key_data,
         zone_manager,
-        &format!(
-            "CAA record {}.{} created successfully",
-            spec.name, zone_name
-        )
+        "CAA",
+        &cluster_ref,
+        &zone_name,
+        move |zone_manager, zone_name, pod_endpoint, key_data| {
+            let record_name = record_name.clone();
+            let tag = tag.clone();
+            let value = value.clone();
+            async move {
+                zone_manager
+                    .add_caa_record(
+                        &zone_name,
+                        &record_name,
+                        flags,
+                        &tag,
+                        &value,
+                        ttl,
+                        &pod_endpoint,
+                        &key_data,
+                    )
+                    .await?;
+                Ok(format!(
+                    "{record_name}.{zone_name} CAA {flags} {tag} \"{value}\""
+                ))
+            }
+        },
     )
+    .await
 }
 
 /// Retrieves zone information (`cluster_ref` and `zone_name`) for a DNS record.
@@ -820,163 +903,6 @@ async fn get_zone_info(
             "Must specify either 'zone' or 'zoneRef' to identify the DNS zone"
         )),
     }
-}
-
-/// Finds an available `Bind9Instance` for a given cluster.
-///
-/// Searches for `Bind9Instances` with matching `clusterRef`. Prefers primary instances
-/// but falls back to secondary instances if no primary is available. This allows DNS
-/// updates to continue even when the primary instance is down. Secondary instances will
-/// sync changes back to the primary via zone transfers when it comes back up.
-///
-/// # Arguments
-///
-/// * `client` - Kubernetes API client
-/// * `namespace` - Namespace to search in
-/// * `cluster_ref` - Name of the `Bind9Cluster`
-///
-/// # Returns
-///
-/// The name of an available `Bind9Instance` (primary if available, otherwise secondary)
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - No instances found for the cluster
-/// - Neither primary nor secondary instances are found
-async fn find_available_instance(
-    client: &Client,
-    namespace: &str,
-    cluster_ref: &str,
-) -> Result<String> {
-    use crate::crd::{Bind9Instance, ServerRole};
-    let instance_api: Api<Bind9Instance> = Api::namespaced(client.clone(), namespace);
-
-    let instances = instance_api.list(&ListParams::default()).await?;
-
-    info!(
-        "Searching for Bind9Instance with clusterRef='{}' in namespace '{}' (found {} total instances)",
-        cluster_ref,
-        namespace,
-        instances.items.len()
-    );
-
-    let mut primary_instance: Option<String> = None;
-    let mut secondary_instance: Option<String> = None;
-
-    // Find both primary and secondary instances
-    for instance in instances.items {
-        let instance_name = instance.metadata.name.unwrap_or_default();
-        let instance_cluster_ref = &instance.spec.cluster_ref;
-        let instance_role = &instance.spec.role;
-
-        info!(
-            "Found Bind9Instance '{}' with clusterRef='{}' and role={:?}",
-            instance_name, instance_cluster_ref, instance_role
-        );
-
-        if instance_cluster_ref == cluster_ref {
-            match instance_role {
-                ServerRole::Primary => {
-                    primary_instance = Some(instance_name.clone());
-                    info!(
-                        "Matched primary instance '{}' for cluster '{}'",
-                        instance_name, cluster_ref
-                    );
-                }
-                ServerRole::Secondary => {
-                    if secondary_instance.is_none() {
-                        secondary_instance = Some(instance_name.clone());
-                        info!(
-                            "Matched secondary instance '{}' for cluster '{}'",
-                            instance_name, cluster_ref
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    // Prefer primary, fall back to secondary
-    if let Some(primary) = primary_instance {
-        info!("Using primary instance '{primary}' for cluster '{cluster_ref}'");
-        Ok(primary)
-    } else if let Some(secondary) = secondary_instance {
-        warn!(
-            "Primary instance not available for cluster '{cluster_ref}', \
-            using secondary instance '{secondary}'. Changes will sync to primary when it returns."
-        );
-        Ok(secondary)
-    } else {
-        Err(anyhow!(
-            "No available Bind9Instance (primary or secondary) found for cluster '{cluster_ref}' in namespace '{namespace}'. \
-            Check that a Bind9Instance exists with spec.clusterRef='{cluster_ref}'"
-        ))
-    }
-}
-
-/// Loads RNDC key data from the instance's Kubernetes Secret.
-///
-/// Retrieves the Secret named `{instance_name}-rndc-key` from the specified
-/// namespace and parses it into an `RndcKeyData` structure for authenticating
-/// RNDC protocol connections.
-///
-/// # Arguments
-///
-/// * `client` - Kubernetes API client
-/// * `namespace` - Namespace containing the Secret
-/// * `instance_name` - Name of the `Bind9Instance` (used to construct Secret name)
-///
-/// # Returns
-///
-/// The parsed RNDC key data containing name, algorithm, and secret
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - The Secret does not exist
-/// - The Secret has no data field
-/// - Required fields (key-name, algorithm, secret) are missing
-/// - Field values contain invalid UTF-8
-async fn load_rndc_key(
-    client: &Client,
-    namespace: &str,
-    instance_name: &str,
-) -> Result<RndcKeyData> {
-    let secret_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
-    let secret_name = format!("{instance_name}-rndc-key");
-
-    let secret = secret_api.get(&secret_name).await.context(format!(
-        "Failed to get RNDC secret {secret_name} in namespace {namespace}"
-    ))?;
-
-    let data = secret
-        .data
-        .as_ref()
-        .ok_or_else(|| anyhow!("Secret {secret_name} has no data"))?;
-
-    // Convert ByteString to Vec<u8>
-    let mut converted_data = std::collections::BTreeMap::new();
-    for (key, value) in data {
-        converted_data.insert(key.clone(), value.0.clone());
-    }
-
-    crate::bind9::Bind9Manager::parse_rndc_secret_data(&converted_data)
-}
-
-/// Get the retry interval from environment variable or use default.
-///
-/// Reads the `BINDY_RECORD_RETRY_SECONDS` environment variable to determine
-/// how long to wait before retrying failed record reconciliations.
-///
-/// Default: 30 seconds
-fn get_retry_interval() -> Duration {
-    let default_seconds = 30;
-    let seconds = env::var("BINDY_RECORD_RETRY_SECONDS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(default_seconds);
-    Duration::from_secs(seconds)
 }
 
 /// Create a Kubernetes Event for a DNS record.

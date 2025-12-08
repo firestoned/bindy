@@ -11,6 +11,7 @@
 mod tests {
     use crate::bind9::{Bind9Manager, RndcKeyData, SRVRecordData};
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+    use bindcar::ZONE_TYPE_PRIMARY;
     use std::collections::BTreeMap;
 
     #[test]
@@ -1046,15 +1047,41 @@ mod tests {
             secret: "dGVzdHNlY3JldA==".to_string(),
         };
 
+        let soa_record = crate::crd::SOARecord {
+            primary_ns: "ns1.example.com.".to_string(),
+            admin_email: "admin.example.com.".to_string(),
+            serial: 2024010101,
+            refresh: 3600,
+            retry: 600,
+            expire: 604_800,
+            negative_ttl: 86400,
+        };
+
         // First add should succeed
         let result1 = manager
-            .add_zone("example.com", "master", "localhost:8080", &key_data)
+            .add_zone(
+                "example.com",
+                ZONE_TYPE_PRIMARY,
+                "localhost:8080",
+                &key_data,
+                &soa_record,
+                None,
+                None, // no secondary IPs
+            )
             .await;
         assert!(result1.is_ok());
 
         // Second add of same zone should be idempotent (no error)
         let result2 = manager
-            .add_zone("example.com", "master", "localhost:8080", &key_data)
+            .add_zone(
+                "example.com",
+                ZONE_TYPE_PRIMARY,
+                "localhost:8080",
+                &key_data,
+                &soa_record,
+                None,
+                None, // no secondary IPs
+            )
             .await;
         assert!(result2.is_ok());
     }
@@ -1187,6 +1214,7 @@ mod tests {
     #[test]
     fn test_zone_config_to_zone_file_basic() {
         use bindcar::{SoaRecord, ZoneConfig};
+        use std::collections::HashMap;
 
         let zone_config = ZoneConfig {
             ttl: 3600,
@@ -1200,7 +1228,10 @@ mod tests {
                 negative_ttl: 86400,
             },
             name_servers: vec!["ns1.example.com.".to_string()],
+            name_server_ips: HashMap::new(),
             records: vec![],
+            also_notify: None,
+            allow_transfer: None,
         };
 
         let zone_file = zone_config.to_zone_file();
@@ -1214,6 +1245,7 @@ mod tests {
     #[test]
     fn test_zone_config_with_dns_records() {
         use bindcar::{DnsRecord, SoaRecord, ZoneConfig};
+        use std::collections::HashMap;
 
         let zone_config = ZoneConfig {
             ttl: 3600,
@@ -1227,6 +1259,7 @@ mod tests {
                 negative_ttl: 86400,
             },
             name_servers: vec!["ns1.example.com.".to_string()],
+            name_server_ips: HashMap::new(),
             records: vec![
                 DnsRecord {
                     name: "@".to_string(),
@@ -1243,6 +1276,8 @@ mod tests {
                     priority: None,
                 },
             ],
+            also_notify: None,
+            allow_transfer: None,
         };
 
         let zone_file = zone_config.to_zone_file();
@@ -1254,6 +1289,7 @@ mod tests {
     #[test]
     fn test_zone_config_minimal() {
         use bindcar::{SoaRecord, ZoneConfig};
+        use std::collections::HashMap;
 
         let zone_config = ZoneConfig {
             ttl: 300,
@@ -1267,7 +1303,10 @@ mod tests {
                 negative_ttl: 86400,
             },
             name_servers: vec![],
+            name_server_ips: HashMap::new(),
             records: vec![],
+            also_notify: None,
+            allow_transfer: None,
         };
 
         let zone_file = zone_config.to_zone_file();
@@ -1279,6 +1318,7 @@ mod tests {
     #[test]
     fn test_create_zone_request_serialization() {
         use bindcar::{CreateZoneRequest, SoaRecord, ZoneConfig};
+        use std::collections::HashMap;
 
         let zone_config = ZoneConfig {
             ttl: 3600,
@@ -1292,12 +1332,15 @@ mod tests {
                 negative_ttl: 86400,
             },
             name_servers: vec!["ns1.example.com.".to_string()],
+            name_server_ips: HashMap::new(),
             records: vec![],
+            also_notify: None,
+            allow_transfer: None,
         };
 
         let request = CreateZoneRequest {
             zone_name: "example.com".to_string(),
-            zone_type: "master".to_string(),
+            zone_type: ZONE_TYPE_PRIMARY.to_string(),
             zone_config,
             update_key_name: Some("bind9-key".to_string()),
         };
@@ -1310,7 +1353,7 @@ mod tests {
         assert!(json_str.contains("zoneName"));
         assert!(json_str.contains("example.com"));
         assert!(json_str.contains("zoneType"));
-        assert!(json_str.contains("master"));
+        assert!(json_str.contains(ZONE_TYPE_PRIMARY));
         assert!(json_str.contains("zoneConfig"));
         assert!(json_str.contains("updateKeyName"));
         assert!(json_str.contains("bind9-key"));

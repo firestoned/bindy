@@ -141,7 +141,29 @@ fi
 echo ""
 echo -e "${GREEN}2️⃣  Running functional tests with kubectl...${NC}"
 
-# Test Bind9Instance creation
+# Test Bind9Cluster creation
+echo -e "${YELLOW}Testing Bind9Cluster creation...${NC}"
+kubectl apply -f - <<EOF
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
+metadata:
+  name: integration-test-cluster
+  namespace: ${NAMESPACE}
+  labels:
+    test: integration
+spec:
+  version: "9.18"
+  primary:
+    replicas: 1
+  config:
+    recursion: false
+    allowQuery:
+      - "0.0.0.0/0"
+EOF
+
+sleep 2
+
+# Test Bind9Instance creation (managed by cluster)
 echo -e "${YELLOW}Testing Bind9Instance creation...${NC}"
 kubectl apply -f - <<EOF
 apiVersion: bindy.firestoned.io/v1alpha1
@@ -153,12 +175,9 @@ metadata:
     test: integration
     role: primary
 spec:
+  clusterRef: integration-test-cluster
+  role: PRIMARY
   replicas: 1
-  version: "9.18"
-  config:
-    recursion: false
-    allowQuery:
-      - "0.0.0.0/0"
 EOF
 
 sleep 2
@@ -173,18 +192,15 @@ metadata:
   namespace: ${NAMESPACE}
 spec:
   zoneName: integration.test
-  type: primary
-  instanceSelector:
-    matchLabels:
-      role: primary
+  clusterRef: integration-test-cluster
   soaRecord:
-    primaryNS: ns1.integration.test.
+    primaryNs: ns1.integration.test.
     adminEmail: admin@integration.test
     serial: 2024010101
     refresh: 3600
     retry: 600
     expire: 604800
-    negativeTTL: 86400
+    negativeTtl: 86400
   ttl: 3600
 EOF
 
@@ -321,6 +337,13 @@ echo -e "${GREEN}3️⃣  Verifying resources...${NC}"
 # Check if resources were created
 ERRORS=0
 
+if kubectl get bind9cluster integration-test-cluster -n "${NAMESPACE}" &>/dev/null; then
+    echo -e "  ${GREEN}✓${NC} Bind9Cluster created"
+else
+    echo -e "  ${RED}✗${NC} Bind9Cluster not found"
+    ERRORS=$((ERRORS + 1))
+fi
+
 if kubectl get bind9instance integration-test-primary -n "${NAMESPACE}" &>/dev/null; then
     echo -e "  ${GREEN}✓${NC} Bind9Instance created"
 else
@@ -350,6 +373,10 @@ done
 
 echo ""
 echo -e "${GREEN}4️⃣  Resource Status:${NC}"
+echo -e "${BLUE}Bind9Clusters:${NC}"
+kubectl get bind9clusters -n "${NAMESPACE}" -l test=integration 2>/dev/null || echo "  No Bind9Clusters found"
+
+echo ""
 echo -e "${BLUE}Bind9Instances:${NC}"
 kubectl get bind9instances -n "${NAMESPACE}" -l test=integration 2>/dev/null || echo "  No Bind9Instances found"
 
@@ -365,6 +392,7 @@ echo "  No DNS records found"
 
 echo ""
 echo -e "${GREEN}5️⃣  Cleanup test resources...${NC}"
+kubectl delete bind9cluster integration-test-cluster -n "${NAMESPACE}" --ignore-not-found=true
 kubectl delete bind9instance integration-test-primary -n "${NAMESPACE}" --ignore-not-found=true
 kubectl delete dnszone integration-test-zone -n "${NAMESPACE}" --ignore-not-found=true
 kubectl delete arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords -l test=integration -n "${NAMESPACE}" --ignore-not-found=true 2>/dev/null || true

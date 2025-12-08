@@ -20,7 +20,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 kube = { version = "2.0", features = ["runtime", "derive", "client"] }
 kube-lease-manager = "0.10"
-tokio = { version = "1", features = ["full"] }
+# Only include needed tokio features for faster compilation
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
@@ -35,10 +36,10 @@ k8s-openapi = { version = "0.26", features = ["v1_32", "schemars"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 base64 = "0.22"
 rand = "0.8"
-hickory-client = { version = "0.24", features = ["dnssec"] }
-hickory-proto = { version = "0.24", features = ["dnssec"] }
+hickory-client = { version = "0.24", features = ["dnssec", "dnssec-ring"] }
+hickory-proto = { version = "0.24", features = ["dnssec", "dnssec-ring"] }
 url = "2.5.7"
-bindcar = "0.2.1"
+bindcar = "0.2.5"
 
 [dev-dependencies]
 tempfile = "3"
@@ -52,6 +53,29 @@ strip = true
 [profile.dev]
 opt-level = 0
 debug = true
+# Faster builds: use fewer codegen units and shared generics
+codegen-units = 256
+# Incremental compilation (default, but explicit)
+incremental = true
+
+# Optimize dependencies in dev builds for better runtime performance
+[profile.dev.package."*"]
+opt-level = 1
+# Keep debug info minimal for dependencies
+debug = false
+
+# Fast check profile - for cargo check and IDE support
+[profile.dev-fast]
+inherits = "dev"
+opt-level = 0
+debug = false
+incremental = true
+
+# Test profile optimizations
+[profile.test]
+inherits = "dev"
+# Optimize tests slightly for faster execution
+opt-level = 1
 
 [[bin]]
 name = "crdgen"

@@ -153,6 +153,36 @@ echo "Primary: $PRIMARY_SERIAL, Secondary: $SECONDARY_SERIAL"
 3. **Use IXFR** - Faster incremental transfers
 4. **Optimize network** - Low-latency connections between regions
 
+### Automatic Zone Transfer Configuration
+
+> **New in v0.1.0:** Bindy automatically configures zone transfers between primary and secondary instances.
+
+When you create a `DNSZone` resource, Bindy automatically:
+1. **Discovers secondary instances** - Finds all `Bind9Instance` resources labeled with `role=secondary` in the cluster
+2. **Configures zone transfers** - Adds `also-notify` and `allow-transfer` directives with secondary IP addresses
+3. **Tracks secondary IPs** - Stores current secondary IPs in `DNSZone.status.secondaryIps`
+4. **Detects IP changes** - Monitors for secondary pod IP changes (due to restarts, rescheduling, scaling)
+5. **Auto-updates zones** - Automatically reconfigures zones when secondary IPs change
+
+**Example:**
+```bash
+# Check automatically configured secondary IPs
+kubectl get dnszone example-com -n dns-system -o jsonpath='{.status.secondaryIps}'
+# Output: ["10.244.1.5","10.244.2.8"]
+
+# Verify zone configuration on primary
+kubectl exec -n dns-system deployment/primary-dns -- \
+  curl -s localhost:8080/api/zones/example.com | jq '.alsoNotify, .allowTransfer'
+```
+
+**Self-Healing:**
+When secondary pods are rescheduled and get new IPs:
+- Detection happens within 5-10 minutes (next reconciliation cycle)
+- Zones are automatically updated with new secondary IPs
+- Zone transfers resume automatically with no manual intervention
+
+**No manual configuration needed!** The old approach of manually configuring `allowTransfer` networks is no longer required for Kubernetes-managed instances.
+
 ## Conflict Resolution
 
 When using multi-primary setups, handle conflicts:

@@ -27,6 +27,7 @@
 ///     cluster_ref: "my-dns-cluster".to_string(),
 ///     soa_record: soa,
 ///     ttl: Some(3600),
+///     name_server_ips: None,
 /// };
 /// ```
 ///

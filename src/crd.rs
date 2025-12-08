@@ -19,7 +19,7 @@
 //! ## DNS Records
 //!
 //! - [`ARecord`] - IPv4 address records
-//! - [`AAAARecord`] - IPv6 address records  
+//! - [`AAAARecord`] - IPv6 address records
 //! - [`CNAMERecord`] - Canonical name (alias) records
 //! - [`MXRecord`] - Mail exchange records
 //! - [`TXTRecord`] - Text records (SPF, DKIM, DMARC, etc.)
@@ -47,6 +47,7 @@
 //!     cluster_ref: "my-dns-cluster".to_string(),
 //!     soa_record: soa,
 //!     ttl: Some(3600),
+//!     name_server_ips: None,
 //! };
 //! ```
 //!
@@ -79,7 +80,7 @@ use k8s_openapi::api::core::v1::{EnvVar, ServiceSpec, Volume, VolumeMount};
 use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Label selector to match Kubernetes resources.
 ///
@@ -228,6 +229,10 @@ pub struct DNSZoneStatus {
     pub observed_generation: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub record_count: Option<i32>,
+    /// IP addresses of secondary servers configured for zone transfers.
+    /// Used to detect when secondary IPs change and zones need updating.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secondary_ips: Option<Vec<String>>,
 }
 
 /// Secondary Zone configuration
@@ -315,6 +320,21 @@ pub struct DNSZoneSpec {
     #[serde(default)]
     #[schemars(range(min = 0, max = 2_147_483_647))]
     pub ttl: Option<i32>,
+
+    /// Map of nameserver hostnames to IP addresses for glue records.
+    ///
+    /// Glue records provide IP addresses for nameservers within the zone's own domain.
+    /// This is necessary when delegating subdomains where the nameserver is within the
+    /// delegated zone itself.
+    ///
+    /// Example: When delegating `sub.example.com` with nameserver `ns1.sub.example.com`,
+    /// you must provide the IP address of `ns1.sub.example.com` as a glue record.
+    ///
+    /// Format: `{"ns1.example.com.": "192.0.2.1", "ns2.example.com.": "192.0.2.2"}`
+    ///
+    /// Note: Nameserver hostnames should end with a dot (.) for FQDN.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_server_ips: Option<HashMap<String, String>>,
 }
 
 /// `ARecord` maps a DNS name to an IPv4 address.
@@ -1428,13 +1448,13 @@ pub struct Bind9ClusterStatus {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ServerRole {
-    /// Primary (master) DNS server - authoritative source for zones.
+    /// Primary DNS server - authoritative source for zones.
     ///
     /// Primary servers hold the original zone data and process dynamic updates.
     /// Changes to zones are made on primaries and transferred to secondaries.
     Primary,
 
-    /// Secondary (slave) DNS server - replicates zones from primary servers.
+    /// Secondary DNS server - replicates zones from primary servers.
     ///
     /// Secondary servers receive zone data via AXFR (full) or IXFR (incremental)
     /// zone transfers. They provide redundancy and geographic distribution.
