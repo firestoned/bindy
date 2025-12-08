@@ -5,7 +5,7 @@
 
 REGISTRY ?= ghcr.io
 IMAGE_NAME ?= firestoned/bindy
-TAG ?= latest
+IMAGE_TAG ?= latest
 NAMESPACE ?= dns-system
 KIND_CLUSTER ?= bindy-test
 
@@ -55,14 +55,14 @@ format: ## Format code
 	cargo fmt
 
 docker-build: ## Build Docker image
-	docker build -t $(REGISTRY)/$(IMAGE_NAME):$(TAG) .
+	docker build -t $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG) .
 
 docker-push: ## Push Docker image
-	docker push $(REGISTRY)/$(IMAGE_NAME):$(TAG)
+	docker push $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
 
 docker-push-kind: docker-build ## Push Docker image to local kind
-	docker tag $(REGISTRY)/$(IMAGE_NAME):$(TAG) $(IMAGE_NAME):$(TAG)
-	kind load docker-image $(IMAGE_NAME):$(TAG) --name $(KIND_CLUSTER)
+	docker tag $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG) $(IMAGE_NAME):$(IMAGE_TAG)
+	kind load docker-image $(IMAGE_NAME):$(IMAGE_TAG) --name $(KIND_CLUSTER)
 
 deploy-crds: ## Deploy CRDs
 	kubectl apply -k deploy/crds/

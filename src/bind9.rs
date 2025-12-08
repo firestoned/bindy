@@ -49,7 +49,7 @@ use hickory_proto::rr::dnssec::tsig::TSigner;
 use rand::Rng;
 use reqwest::Client as HttpClient;
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -598,19 +598,23 @@ impl Bind9Manager {
     ///
     /// # Arguments
     /// * `zone_name` - Name of the zone (e.g., "example.com")
-    /// * `zone_type` - Zone type ("master" for primary, "slave" for secondary)
+    /// * `zone_type` - Zone type (use `ZONE_TYPE_PRIMARY` or `ZONE_TYPE_SECONDARY` constants)
     /// * `server` - API endpoint (e.g., "bind9-primary-api:8080")
     /// * `key_data` - RNDC key data (used for allow-update configuration)
+    /// * `name_server_ips` - Optional map of nameserver hostnames to IP addresses for glue records
     ///
     /// # Errors
     ///
     /// Returns an error if the HTTP request fails or the zone cannot be added.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub async fn add_zone(
         &self,
         zone_name: &str,
         zone_type: &str,
         server: &str,
         key_data: &RndcKeyData,
+        soa_record: &crate::crd::SOARecord,
+        name_server_ips: Option<&HashMap<String, String>>,
     ) -> Result<()> {
         // Check if zone already exists (idempotent)
         if self.zone_exists(zone_name, server).await {
@@ -623,19 +627,20 @@ impl Bind9Manager {
         let base_url = Self::build_api_url(server);
         let url = format!("{base_url}/api/v1/zones");
 
-        // Create minimal zone configuration with basic SOA record
+        // Create zone configuration using SOA record from DNSZone spec
         let zone_config = ZoneConfig {
             ttl: DEFAULT_DNS_RECORD_TTL_SECS as u32,
             soa: SoaRecord {
-                primary_ns: format!("ns.{zone_name}."),
-                admin_email: format!("admin.{zone_name}."),
-                serial: 1,
-                refresh: 3600,
-                retry: 600,
-                expire: 604_800,
-                negative_ttl: 86400,
+                primary_ns: soa_record.primary_ns.clone(),
+                admin_email: soa_record.admin_email.clone(),
+                serial: soa_record.serial as u32,
+                refresh: soa_record.refresh as u32,
+                retry: soa_record.retry as u32,
+                expire: soa_record.expire as u32,
+                negative_ttl: soa_record.negative_ttl as u32,
             },
-            name_servers: vec![format!("ns.{zone_name}.")],
+            name_servers: vec![soa_record.primary_ns.clone()],
+            name_server_ips: name_server_ips.cloned().unwrap_or_default(),
             records: vec![],
         };
 
@@ -664,7 +669,7 @@ impl Bind9Manager {
     ///
     /// # Arguments
     /// * `zone_name` - Name of the zone (e.g., "example.com")
-    /// * `zone_type` - Zone type ("master" or "slave")
+    /// * `zone_type` - Zone type (use `ZONE_TYPE_PRIMARY` or `ZONE_TYPE_SECONDARY` constants)
     /// * `zone_config` - Structured zone configuration (converted to zone file by bindcar)
     /// * `server` - API endpoint (e.g., "bind9-primary-api:8080")
     /// * `key_data` - RNDC authentication key (used as updateKeyName)

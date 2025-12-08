@@ -77,6 +77,24 @@ spec:
                   Must match the name of a `Bind9Instance` in the same namespace.
                   The zone will be added to this instance via rndc addzone.
                 type: string
+              nameServerIps:
+                additionalProperties:
+                  type: string
+                description: |-
+                  Map of nameserver hostnames to IP addresses for glue records.
+
+                  Glue records provide IP addresses for nameservers within the zone's own domain.
+                  This is necessary when delegating subdomains where the nameserver is within the
+                  delegated zone itself.
+
+                  Example: When delegating `sub.example.com` with nameserver `ns1.sub.example.com`,
+                  you must provide the IP address of `ns1.sub.example.com` as a glue record.
+
+                  Format: `{"ns1.example.com.": "192.0.2.1", "ns2.example.com.": "192.0.2.2"}`
+
+                  Note: Nameserver hostnames should end with a dot (.) for FQDN.
+                nullable: true
+                type: object
               soaRecord:
                 description: |-
                   SOA (Start of Authority) record - defines zone authority and refresh parameters.

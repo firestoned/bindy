@@ -13,14 +13,14 @@ use bindy::{
         MXRecord, NSRecord, SRVRecord, TXTRecord,
     },
     reconcilers::{
-        reconcile_a_record, reconcile_aaaa_record, reconcile_bind9cluster, reconcile_bind9instance,
-        reconcile_caa_record, reconcile_cname_record, reconcile_dnszone, reconcile_mx_record,
-        reconcile_ns_record, reconcile_srv_record, reconcile_txt_record,
+        delete_dnszone, reconcile_a_record, reconcile_aaaa_record, reconcile_bind9cluster,
+        reconcile_bind9instance, reconcile_caa_record, reconcile_cname_record, reconcile_dnszone,
+        reconcile_mx_record, reconcile_ns_record, reconcile_srv_record, reconcile_txt_record,
     },
 };
 use futures::StreamExt;
 use kube::{
-    runtime::{controller::Action, watcher::Config, Controller},
+    runtime::{controller::Action, finalizer, watcher::Config, Controller},
     Api, Client, ResourceExt,
 };
 use kube_lease_manager::{LeaseManager, LeaseManagerBuilder};
@@ -732,30 +732,66 @@ async fn reconcile_dnszone_wrapper(
     dnszone: Arc<DNSZone>,
     ctx: Arc<(Client, Arc<Bind9Manager>)>,
 ) -> Result<Action, ReconcileError> {
-    match reconcile_dnszone(ctx.0.clone(), (*dnszone).clone(), &ctx.1).await {
-        Ok(()) => {
-            info!("Successfully reconciled DNSZone: {}", dnszone.name_any());
+    const FINALIZER_NAME: &str = "dns.firestoned.io/dnszone";
 
-            // Check if zone is ready to determine requeue interval
-            let is_ready = dnszone
-                .status
-                .as_ref()
-                .and_then(|status| status.conditions.first())
-                .is_some_and(|condition| condition.r#type == "Ready" && condition.status == "True");
+    let client = ctx.0.clone();
+    let bind9_manager = ctx.1.clone();
+    let namespace = dnszone.namespace().unwrap_or_default();
+    let api: Api<DNSZone> = Api::namespaced(client.clone(), &namespace);
 
-            if is_ready {
-                // Zone is ready, check less frequently (5 minutes)
-                Ok(Action::requeue(Duration::from_secs(300)))
-            } else {
-                // Zone is not ready, check more frequently (30 seconds)
-                Ok(Action::requeue(Duration::from_secs(30)))
+    // Handle deletion with finalizer
+    finalizer(&api, FINALIZER_NAME, dnszone.clone(), |event| async {
+        match event {
+            finalizer::Event::Apply(zone) => {
+                // Create or update the zone
+                reconcile_dnszone(client.clone(), (*zone).clone(), &bind9_manager)
+                    .await
+                    .map_err(ReconcileError::from)?;
+                info!("Successfully reconciled DNSZone: {}", zone.name_any());
+
+                // Check if zone is ready to determine requeue interval
+                let is_ready = zone
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.first())
+                    .is_some_and(|condition| {
+                        condition.r#type == "Ready" && condition.status == "True"
+                    });
+
+                if is_ready {
+                    // Zone is ready, check less frequently (5 minutes)
+                    Ok(Action::requeue(Duration::from_secs(300)))
+                } else {
+                    // Zone is not ready, check more frequently (30 seconds)
+                    Ok(Action::requeue(Duration::from_secs(30)))
+                }
+            }
+            finalizer::Event::Cleanup(zone) => {
+                // Delete the zone
+                delete_dnszone(client.clone(), (*zone).clone(), &bind9_manager)
+                    .await
+                    .map_err(ReconcileError::from)?;
+                info!(
+                    "Successfully deleted DNSZone from bindcar: {}",
+                    zone.name_any()
+                );
+                Ok(Action::await_change())
             }
         }
-        Err(e) => {
-            error!("Failed to reconcile DNSZone: {}", e);
-            Err(e.into())
+    })
+    .await
+    .map_err(|e: finalizer::Error<ReconcileError>| match e {
+        finalizer::Error::ApplyFailed(err) | finalizer::Error::CleanupFailed(err) => err,
+        finalizer::Error::AddFinalizer(err) | finalizer::Error::RemoveFinalizer(err) => {
+            ReconcileError::from(anyhow::anyhow!("Finalizer error: {err}"))
         }
-    }
+        finalizer::Error::UnnamedObject => {
+            ReconcileError::from(anyhow::anyhow!("DNSZone has no name"))
+        }
+        finalizer::Error::InvalidFinalizer => {
+            ReconcileError::from(anyhow::anyhow!("Invalid finalizer name"))
+        }
+    })
 }
 
 /// Reconcile wrapper for `ARecord`

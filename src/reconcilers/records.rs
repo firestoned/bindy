@@ -13,7 +13,7 @@ use crate::crd::{
 };
 use crate::labels::{BINDY_CLUSTER_ANNOTATION, BINDY_INSTANCE_ANNOTATION, BINDY_ZONE_ANNOTATION};
 use anyhow::{anyhow, Context, Result};
-use k8s_openapi::api::core::v1::{Event, ObjectReference, Secret};
+use k8s_openapi::api::core::v1::{Event, ObjectReference, Secret, Service};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use k8s_openapi::chrono::Utc;
 use kube::{
@@ -99,7 +99,29 @@ macro_rules! get_instance_and_key {
         };
 
         // Build server address using the instance name
-        let server = format!("{}.{}.svc.cluster.local:953", instance_name, $namespace);
+        // Lookup the service port for "http" (bindcar API)
+        let http_port = match get_service_port($client, &instance_name, $namespace, "http").await {
+            Ok(port) => port,
+            Err(e) => {
+                let error_msg =
+                    format!("Failed to lookup service port for {}: {}", instance_name, e);
+                error!("{}", error_msg);
+                update_record_status(
+                    $client,
+                    $record,
+                    "Ready",
+                    "False",
+                    "ServicePortLookupFailed",
+                    &error_msg,
+                )
+                .await?;
+                return Err(anyhow!(error_msg));
+            }
+        };
+        let server = format!(
+            "{}.{}.svc.cluster.local:{}",
+            instance_name, $namespace, http_port
+        );
 
         (instance_name, key_data, server)
     }};
@@ -1175,4 +1197,44 @@ where
     create_event(client, record, event_type, reason, message).await?;
 
     Ok(())
+}
+
+/// Get the service port number by port name
+///
+/// Looks up the Kubernetes Service and finds the port number for the specified port name.
+///
+/// # Arguments
+/// * `client` - Kubernetes API client
+/// * `service_name` - Name of the service
+/// * `namespace` - Namespace of the service
+/// * `port_name` - Name of the port to lookup (e.g., "http")
+///
+/// # Returns
+/// Port number if found, or error if service or port doesn't exist
+async fn get_service_port(
+    client: &Client,
+    service_name: &str,
+    namespace: &str,
+    port_name: &str,
+) -> Result<i32> {
+    let service_api: Api<Service> = Api::namespaced(client.clone(), namespace);
+    let service = service_api
+        .get(service_name)
+        .await
+        .context(format!("Failed to get service {service_name}"))?;
+
+    let port = service
+        .spec
+        .and_then(|spec| spec.ports)
+        .and_then(|ports| {
+            ports
+                .iter()
+                .find(|p| p.name.as_ref().is_some_and(|name| name == port_name))
+                .map(|p| p.port)
+        })
+        .ok_or_else(|| {
+            anyhow!("Service {service_name} does not have a port named '{port_name}'")
+        })?;
+
+    Ok(port)
 }
