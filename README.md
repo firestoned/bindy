@@ -404,7 +404,20 @@ bindy/
 │   ├── main.rs            # Entry point with leader election
 │   ├── lib.rs             # Library exports
 │   ├── crd.rs             # CRD type definitions
-│   ├── bind9.rs           # BIND9 management and RNDC client
+│   ├── bind9/             # BIND9 management modules
+│   │   ├── mod.rs         # Main exports and Bind9Manager
+│   │   ├── types.rs       # Shared types (RndcKeyData, RndcError, etc.)
+│   │   ├── rndc.rs        # RNDC key generation and management
+│   │   ├── zone_ops.rs    # Zone HTTP API operations
+│   │   └── records/       # Record-specific operations
+│   │       ├── mod.rs     # Generic record query/update logic
+│   │       ├── a.rs       # A and AAAA record operations
+│   │       ├── cname.rs   # CNAME record operations
+│   │       ├── txt.rs     # TXT record operations
+│   │       ├── mx.rs      # MX record operations
+│   │       ├── ns.rs      # NS record operations
+│   │       ├── srv.rs     # SRV record operations
+│   │       └── caa.rs     # CAA record operations
 │   ├── bind9_resources.rs # Kubernetes resource generation
 │   └── reconcilers/
 │       ├── mod.rs         # Reconciler module

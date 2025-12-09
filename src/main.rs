@@ -452,6 +452,12 @@ async fn run_dnszone_controller(client: Client, bind9_manager: Arc<Bind9Manager>
 
     let api = Api::<DNSZone>::all(client.clone());
 
+    // The DNSZone reconciler is idempotent and will automatically update secondary zones
+    // with current primary IPs on every reconciliation. Combined with periodic reconciliation,
+    // this ensures secondary zones stay in sync even when primary pods restart or scale.
+    //
+    // Future enhancement: Add explicit watch on Bind9Instance to trigger immediate reconciliation
+    // when primary instances change, instead of waiting for the next periodic reconciliation.
     Controller::new(api, Config::default())
         .run(
             reconcile_dnszone_wrapper,

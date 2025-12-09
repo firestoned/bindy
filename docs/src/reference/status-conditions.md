@@ -72,18 +72,41 @@ status:
   - `replicas`: Total number of replicas
   - `readyReplicas`: Number of ready replicas
 
+### Bind9Cluster
+- Uses `Ready` condition type with granular reasons
+- Condition reasons:
+  - `AllInstancesReady`: All instances in the cluster are ready
+  - `SomeInstancesNotReady`: Some instances are not ready (cluster partially functional)
+  - `NoInstancesReady`: No instances are ready (cluster not functional)
+- Additional status fields:
+  - `instanceCount`: Total number of instances
+  - `readyInstances`: Number of ready instances
+  - `instances`: List of instance names
+
 ### DNSZone
-- Uses `Ready` condition type
-- Status `True` when zone file is created and instances are matched
-- Status `False` when zone creation fails
+- Uses `Progressing`, `Degraded`, and `Ready` condition types with granular reasons
+- **Reconciliation Flow**:
+  1. `Progressing/PrimaryReconciling`: Before configuring primary instances
+  2. `Progressing/PrimaryReconciled`: After successful primary configuration
+  3. `Progressing/SecondaryReconciling`: Before configuring secondary instances
+  4. `Progressing/SecondaryReconciled`: After successful secondary configuration
+  5. `Ready/ReconcileSucceeded`: When all phases complete successfully
+- **Error Conditions**:
+  - `Degraded/PrimaryFailed`: Primary reconciliation failed (fatal error)
+  - `Degraded/SecondaryFailed`: Secondary reconciliation failed (primaries still work, non-fatal)
 - Additional status fields:
   - `recordCount`: Number of records in the zone
+  - `secondaryIps`: IP addresses of configured secondary servers
   - `observedGeneration`: Last observed generation
 
 ### DNS Records (A, AAAA, CNAME, MX, TXT, NS, SRV, CAA)
-- All use `Ready` condition type
-- Status `True` when record is successfully added to zone
-- Status `False` when record creation fails
+- Use `Progressing`, `Degraded`, and `Ready` condition types with granular reasons
+- **Reconciliation Flow**:
+  1. `Progressing/RecordReconciling`: Before configuring record on endpoints
+  2. `Ready/ReconcileSucceeded`: When record is successfully configured on all endpoints
+- **Error Conditions**:
+  - `Degraded/RecordFailed`: Record configuration failed (includes error details)
+- Status message includes count of configured endpoints (e.g., "Record configured on 3 endpoint(s)")
 - Additional status fields:
   - `observedGeneration`: Last observed generation
 
@@ -112,36 +135,133 @@ status:
   readyReplicas: 2
 ```
 
-### Failed DNSZone
-```yaml
-status:
-  conditions:
-    - type: Ready
-      status: "False"
-      reason: Failed
-      message: "No Bind9Instances matched selector"
-      lastTransitionTime: "2024-11-26T10:00:00Z"
-  observedGeneration: 1
-  recordCount: 0
-```
-
-### Progressing Deployment
+### DNSZone - Progressing (Primary Reconciliation)
 ```yaml
 status:
   conditions:
     - type: Progressing
       status: "True"
-      reason: Progressing
-      message: "Deployment is rolling out"
+      reason: PrimaryReconciling
+      message: "Configuring zone on primary instances"
       lastTransitionTime: "2024-11-26T10:00:00Z"
+  observedGeneration: 1
+  recordCount: 0
+```
+
+### DNSZone - Progressing (Secondary Reconciliation)
+```yaml
+status:
+  conditions:
+    - type: Progressing
+      status: "True"
+      reason: SecondaryReconciling
+      message: "Configured on 2 primary server(s), now configuring secondaries"
+      lastTransitionTime: "2024-11-26T10:00:01Z"
+  observedGeneration: 1
+  recordCount: 0
+  secondaryIps:
+    - "10.42.0.5"
+    - "10.42.0.6"
+```
+
+### DNSZone - Successfully Reconciled
+```yaml
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: ReconcileSucceeded
+      message: "Configured on 2 primary server(s) and 3 secondary server(s)"
+      lastTransitionTime: "2024-11-26T10:00:02Z"
+  observedGeneration: 1
+  recordCount: 5
+  secondaryIps:
+    - "10.42.0.5"
+    - "10.42.0.6"
+    - "10.42.0.7"
+```
+
+### DNSZone - Degraded (Secondary Failure)
+```yaml
+status:
+  conditions:
+    - type: Degraded
+      status: "True"
+      reason: SecondaryFailed
+      message: "Configured on 2 primary server(s), but secondary configuration failed: connection timeout"
+      lastTransitionTime: "2024-11-26T10:00:02Z"
+  observedGeneration: 1
+  recordCount: 5
+  secondaryIps:
+    - "10.42.0.5"
+    - "10.42.0.6"
+```
+
+### DNSZone - Failed (Primary Failure)
+```yaml
+status:
+  conditions:
+    - type: Degraded
+      status: "True"
+      reason: PrimaryFailed
+      message: "Failed to configure zone on primaries: No Bind9Instances matched selector"
+      lastTransitionTime: "2024-11-26T10:00:00Z"
+  observedGeneration: 1
+  recordCount: 0
+```
+
+### DNS Record - Progressing
+```yaml
+status:
+  conditions:
+    - type: Progressing
+      status: "True"
+      reason: RecordReconciling
+      message: "Configuring A record on zone endpoints"
+      lastTransitionTime: "2024-11-26T10:00:00Z"
+  observedGeneration: 1
+```
+
+### DNS Record - Successfully Configured
+```yaml
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: ReconcileSucceeded
+      message: "Record configured on 3 endpoint(s)"
+      lastTransitionTime: "2024-11-26T10:00:01Z"
+  observedGeneration: 1
+```
+
+### DNS Record - Failed
+```yaml
+status:
+  conditions:
+    - type: Degraded
+      status: "True"
+      reason: RecordFailed
+      message: "Failed to configure record: Zone not found on primary servers"
+      lastTransitionTime: "2024-11-26T10:00:01Z"
+  observedGeneration: 1
+```
+
+### Bind9Cluster - Partially Ready
+```yaml
+status:
+  conditions:
     - type: Ready
       status: "False"
-      reason: Progressing
-      message: "Waiting for deployment to complete"
+      reason: SomeInstancesNotReady
+      message: "2/3 instances ready"
       lastTransitionTime: "2024-11-26T10:00:00Z"
-  observedGeneration: 2
-  replicas: 2
-  readyReplicas: 1
+  observedGeneration: 1
+  instanceCount: 3
+  readyInstances: 2
+  instances:
+    - production-dns-primary-0
+    - production-dns-primary-1
+    - production-dns-secondary-0
 ```
 
 ## Validation

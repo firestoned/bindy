@@ -141,6 +141,9 @@ pub const DEFAULT_LEASE_RETRY_PERIOD_SECS: u64 = 2;
 /// Default BIND9 version tag
 pub const DEFAULT_BIND9_VERSION: &str = "9.18";
 
+/// `ServiceAccount` name for BIND9 pods
+pub const BIND9_SERVICE_ACCOUNT: &str = "bind9";
+
 // ============================================================================
 // Runtime Constants
 // ============================================================================

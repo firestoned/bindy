@@ -79,3 +79,49 @@ pub use records::{
     reconcile_a_record, reconcile_aaaa_record, reconcile_caa_record, reconcile_cname_record,
     reconcile_mx_record, reconcile_ns_record, reconcile_srv_record, reconcile_txt_record,
 };
+
+/// Check if a resource's spec has changed by comparing generation with `observed_generation`.
+///
+/// This is the standard Kubernetes pattern for determining if reconciliation is needed.
+/// The `metadata.generation` field is incremented by Kubernetes only when the spec changes,
+/// while `status.observed_generation` is set by the controller after processing a spec.
+///
+/// # Arguments
+///
+/// * `current_generation` - The resource's current `metadata.generation`
+/// * `observed_generation` - The controller's last `status.observed_generation`
+///
+/// # Returns
+///
+/// * `true` - Reconciliation is needed (spec changed or first reconciliation)
+/// * `false` - No reconciliation needed (spec unchanged, status-only update)
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use bindy::reconcilers::should_reconcile;
+///
+/// fn check_if_reconcile_needed(resource: &MyResource) -> bool {
+///     let current = resource.metadata.generation;
+///     let observed = resource.status.as_ref()
+///         .and_then(|s| s.observed_generation);
+///
+///     should_reconcile(current, observed)
+/// }
+/// ```
+///
+/// # Kubernetes Generation Semantics
+///
+/// - **`metadata.generation`**: Incremented by Kubernetes API server when spec changes
+/// - **`status.observed_generation`**: Set by controller to match `metadata.generation` after reconciliation
+/// - When they match: spec hasn't changed since last reconciliation → skip work
+/// - When they differ: spec has changed → reconcile
+/// - When `observed_generation` is None: first reconciliation → reconcile
+#[must_use]
+pub fn should_reconcile(current_generation: Option<i64>, observed_generation: Option<i64>) -> bool {
+    match (current_generation, observed_generation) {
+        (Some(current), Some(observed)) => current != observed,
+        (Some(_), None) => true, // First reconciliation
+        _ => false,              // No generation tracking available
+    }
+}

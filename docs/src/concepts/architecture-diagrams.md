@@ -147,10 +147,10 @@ graph TB
         RECON_REC[records.rs]
     end
 
-    subgraph "BIND9 Management (src/bind9.rs)"
+    subgraph "BIND9 Management (src/bind9/)"
         BM_MGR[Bind9Manager]
         BM_KEY[RndcKeyData]
-        BM_CMD[RNDC Commands<br/>addzone, delzone,<br/>reload, freeze,<br/>thaw, notify]
+        BM_CMD[Zone Operations<br/>HTTP API & RNDC<br/>addzone, delzone,<br/>reload, freeze,<br/>thaw, notify]
     end
 
     subgraph "Resource Builders (src/bind9_resources.rs)"

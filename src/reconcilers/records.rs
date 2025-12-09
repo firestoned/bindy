@@ -132,7 +132,7 @@ where
 ///
 /// # Returns
 ///
-/// Returns `Ok(())` if the record was successfully added to all endpoints
+/// Returns `Ok(usize)` with the number of endpoints successfully configured
 ///
 /// # Errors
 ///
@@ -145,7 +145,7 @@ async fn add_record_to_all_endpoints<R, F, Fut>(
     cluster_ref: &str,
     zone_name: &str,
     add_operation: F,
-) -> Result<()>
+) -> Result<usize>
 where
     R: Resource<DynamicType = (), Scope = k8s_openapi::NamespaceResourceScope>
         + Clone
@@ -167,6 +167,7 @@ where
         &namespace,
         cluster_ref,
         true, // with_rndc_key = true for record operations
+        "dns-tcp", // Use DNS TCP port for dynamic DNS updates (RFC 2136)
         |pod_endpoint, instance_name, rndc_key| {
             let zone_name = zone_name_clone.clone();
             let zone_manager = zone_manager_clone.clone();
@@ -179,7 +180,7 @@ where
                 let key_data = rndc_key.expect("RNDC key should be loaded");
 
                 info!(
-                    "Adding {} record to zone {} at endpoint {} (instance: {})",
+                    "Reconciling {} record in zone {} at endpoint {} (instance: {})",
                     record_type, zone_name, pod_endpoint, instance_name
                 );
 
@@ -191,11 +192,11 @@ where
                 )
                 .await
                 .context(format!(
-                    "Failed to add {record_type} record to zone {zone_name} at endpoint {pod_endpoint}"
+                    "Failed to reconcile {record_type} record in zone {zone_name} at endpoint {pod_endpoint}"
                 ))?;
 
                 debug!(
-                    "Successfully added {} record to zone {} at endpoint {}: {}",
+                    "Successfully reconciled {} record in zone {} at endpoint {}: {}",
                     record_type, zone_name, pod_endpoint_clone, description
                 );
 
@@ -206,7 +207,7 @@ where
     .await?;
 
     info!(
-        "Successfully added {} record to zone {} at {} endpoint(s) for cluster {}",
+        "Successfully reconciled {} record in zone {} at {} endpoint(s) for cluster {}",
         record_type_name, zone_name, total_endpoints, cluster_ref
     );
 
@@ -223,18 +224,7 @@ where
         }
     }
 
-    // Update status to success
-    update_record_status(
-        client,
-        record,
-        "Ready",
-        "True",
-        "ReconcileSucceeded",
-        &format!("{record_type_name} record in zone {zone_name} created successfully"),
-    )
-    .await?;
-
-    Ok(())
+    Ok(total_endpoints)
 }
 
 /// Reconciles an `ARecord` (IPv4 address) resource.
@@ -292,6 +282,17 @@ pub async fn reconcile_a_record(
         "ARecord configuration"
     );
 
+    // Set initial Progressing status
+    update_record_status(
+        &client,
+        &record,
+        "Progressing",
+        "True",
+        "RecordReconciling",
+        "Configuring A record on primary servers",
+    )
+    .await?;
+
     // Find the cluster and zone name for this zone
     debug!("Looking up DNSZone");
     let (cluster_ref, zone_name) =
@@ -315,7 +316,7 @@ pub async fn reconcile_a_record(
     let ipv4_address = spec.ipv4_address.clone();
     let ttl = spec.ttl;
 
-    add_record_to_all_endpoints(
+    let endpoint_count = match add_record_to_all_endpoints(
         &client,
         &record,
         zone_manager,
@@ -341,6 +342,37 @@ pub async fn reconcile_a_record(
         },
     )
     .await
+    {
+        Ok(count) => count,
+        Err(e) => {
+            update_record_status(
+                &client,
+                &record,
+                "Degraded",
+                "True",
+                "RecordFailed",
+                &format!("Failed to configure A record: {e}"),
+            )
+            .await?;
+            return Err(e);
+        }
+    };
+
+    // All done - set Ready status
+    update_record_status(
+        &client,
+        &record,
+        "Ready",
+        "True",
+        "ReconcileSucceeded",
+        &format!(
+            "A record {} in zone {} configured on {} endpoint(s)",
+            spec.name, zone_name, endpoint_count
+        ),
+    )
+    .await?;
+
+    Ok(())
 }
 
 /// Reconciles a `TXTRecord` (text) resource.
@@ -363,6 +395,17 @@ pub async fn reconcile_txt_record(
 
     let spec = &record.spec;
 
+    // Set initial Progressing status
+    update_record_status(
+        &client,
+        &record,
+        "Progressing",
+        "True",
+        "RecordReconciling",
+        "Configuring TXT record on primary servers",
+    )
+    .await?;
+
     let (cluster_ref, zone_name) =
         get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
 
@@ -383,7 +426,7 @@ pub async fn reconcile_txt_record(
     let text_value = spec.text.clone();
     let ttl = spec.ttl;
 
-    add_record_to_all_endpoints(
+    let endpoint_count = match add_record_to_all_endpoints(
         &client,
         &record,
         zone_manager,
@@ -412,6 +455,37 @@ pub async fn reconcile_txt_record(
         },
     )
     .await
+    {
+        Ok(count) => count,
+        Err(e) => {
+            update_record_status(
+                &client,
+                &record,
+                "Degraded",
+                "True",
+                "RecordFailed",
+                &format!("Failed to configure TXT record: {e}"),
+            )
+            .await?;
+            return Err(e);
+        }
+    };
+
+    // All done - set Ready status
+    update_record_status(
+        &client,
+        &record,
+        "Ready",
+        "True",
+        "ReconcileSucceeded",
+        &format!(
+            "TXT record {} in zone {} configured on {} endpoint(s)",
+            spec.name, zone_name, endpoint_count
+        ),
+    )
+    .await?;
+
+    Ok(())
 }
 
 /// Reconciles an `AAAARecord` (IPv6 address) resource.
@@ -433,6 +507,17 @@ pub async fn reconcile_aaaa_record(
 
     let spec = &record.spec;
 
+    // Set initial Progressing status
+    update_record_status(
+        &client,
+        &record,
+        "Progressing",
+        "True",
+        "RecordReconciling",
+        "Configuring AAAA record on primary servers",
+    )
+    .await?;
+
     let (cluster_ref, zone_name) =
         get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
 
@@ -453,7 +538,7 @@ pub async fn reconcile_aaaa_record(
     let ipv6_address = spec.ipv6_address.clone();
     let ttl = spec.ttl;
 
-    add_record_to_all_endpoints(
+    let endpoint_count = match add_record_to_all_endpoints(
         &client,
         &record,
         zone_manager,
@@ -479,6 +564,37 @@ pub async fn reconcile_aaaa_record(
         },
     )
     .await
+    {
+        Ok(count) => count,
+        Err(e) => {
+            update_record_status(
+                &client,
+                &record,
+                "Degraded",
+                "True",
+                "RecordFailed",
+                &format!("Failed to configure AAAA record: {e}"),
+            )
+            .await?;
+            return Err(e);
+        }
+    };
+
+    // All done - set Ready status
+    update_record_status(
+        &client,
+        &record,
+        "Ready",
+        "True",
+        "ReconcileSucceeded",
+        &format!(
+            "AAAA record {} in zone {} configured on {} endpoint(s)",
+            spec.name, zone_name, endpoint_count
+        ),
+    )
+    .await?;
+
+    Ok(())
 }
 
 /// Reconciles a `CNAMERecord` (canonical name alias) resource.
@@ -500,6 +616,17 @@ pub async fn reconcile_cname_record(
 
     let spec = &record.spec;
 
+    // Set initial Progressing status
+    update_record_status(
+        &client,
+        &record,
+        "Progressing",
+        "True",
+        "RecordReconciling",
+        "Configuring CNAME record on primary servers",
+    )
+    .await?;
+
     let (cluster_ref, zone_name) =
         get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
 
@@ -520,7 +647,7 @@ pub async fn reconcile_cname_record(
     let target = spec.target.clone();
     let ttl = spec.ttl;
 
-    add_record_to_all_endpoints(
+    let endpoint_count = match add_record_to_all_endpoints(
         &client,
         &record,
         zone_manager,
@@ -546,6 +673,37 @@ pub async fn reconcile_cname_record(
         },
     )
     .await
+    {
+        Ok(count) => count,
+        Err(e) => {
+            update_record_status(
+                &client,
+                &record,
+                "Degraded",
+                "True",
+                "RecordFailed",
+                &format!("Failed to configure CNAME record: {e}"),
+            )
+            .await?;
+            return Err(e);
+        }
+    };
+
+    // All done - set Ready status
+    update_record_status(
+        &client,
+        &record,
+        "Ready",
+        "True",
+        "ReconcileSucceeded",
+        &format!(
+            "CNAME record {} in zone {} configured on {} endpoint(s)",
+            spec.name, zone_name, endpoint_count
+        ),
+    )
+    .await?;
+
+    Ok(())
 }
 
 /// Reconciles an `MXRecord` (mail exchange) resource.
@@ -568,6 +726,17 @@ pub async fn reconcile_mx_record(
 
     let spec = &record.spec;
 
+    // Set initial Progressing status
+    update_record_status(
+        &client,
+        &record,
+        "Progressing",
+        "True",
+        "RecordReconciling",
+        "Configuring MX record on primary servers",
+    )
+    .await?;
+
     let (cluster_ref, zone_name) =
         get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
 
@@ -589,7 +758,7 @@ pub async fn reconcile_mx_record(
     let mail_server = spec.mail_server.clone();
     let ttl = spec.ttl;
 
-    add_record_to_all_endpoints(
+    let endpoint_count = match add_record_to_all_endpoints(
         &client,
         &record,
         zone_manager,
@@ -618,6 +787,37 @@ pub async fn reconcile_mx_record(
         },
     )
     .await
+    {
+        Ok(count) => count,
+        Err(e) => {
+            update_record_status(
+                &client,
+                &record,
+                "Degraded",
+                "True",
+                "RecordFailed",
+                &format!("Failed to configure MX record: {e}"),
+            )
+            .await?;
+            return Err(e);
+        }
+    };
+
+    // All done - set Ready status
+    update_record_status(
+        &client,
+        &record,
+        "Ready",
+        "True",
+        "ReconcileSucceeded",
+        &format!(
+            "MX record {} in zone {} configured on {} endpoint(s)",
+            spec.name, zone_name, endpoint_count
+        ),
+    )
+    .await?;
+
+    Ok(())
 }
 
 /// Reconciles an `NSRecord` (nameserver delegation) resource.
@@ -640,6 +840,17 @@ pub async fn reconcile_ns_record(
 
     let spec = &record.spec;
 
+    // Set initial Progressing status
+    update_record_status(
+        &client,
+        &record,
+        "Progressing",
+        "True",
+        "RecordReconciling",
+        "Configuring NS record on primary servers",
+    )
+    .await?;
+
     let (cluster_ref, zone_name) =
         get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
 
@@ -660,7 +871,7 @@ pub async fn reconcile_ns_record(
     let nameserver = spec.nameserver.clone();
     let ttl = spec.ttl;
 
-    add_record_to_all_endpoints(
+    let endpoint_count = match add_record_to_all_endpoints(
         &client,
         &record,
         zone_manager,
@@ -686,6 +897,37 @@ pub async fn reconcile_ns_record(
         },
     )
     .await
+    {
+        Ok(count) => count,
+        Err(e) => {
+            update_record_status(
+                &client,
+                &record,
+                "Degraded",
+                "True",
+                "RecordFailed",
+                &format!("Failed to configure NS record: {e}"),
+            )
+            .await?;
+            return Err(e);
+        }
+    };
+
+    // All done - set Ready status
+    update_record_status(
+        &client,
+        &record,
+        "Ready",
+        "True",
+        "ReconcileSucceeded",
+        &format!(
+            "NS record {} in zone {} configured on {} endpoint(s)",
+            spec.name, zone_name, endpoint_count
+        ),
+    )
+    .await?;
+
+    Ok(())
 }
 
 /// Reconciles an `SRVRecord` (service location) resource.
@@ -707,6 +949,17 @@ pub async fn reconcile_srv_record(
     info!("Reconciling SRVRecord: {}/{}", namespace, name);
 
     let spec = &record.spec;
+
+    // Set initial Progressing status
+    update_record_status(
+        &client,
+        &record,
+        "Progressing",
+        "True",
+        "RecordReconciling",
+        "Configuring SRV record on primary servers",
+    )
+    .await?;
 
     let (cluster_ref, zone_name) =
         get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
@@ -733,7 +986,7 @@ pub async fn reconcile_srv_record(
         ttl: spec.ttl,
     };
 
-    add_record_to_all_endpoints(
+    let endpoint_count = match add_record_to_all_endpoints(
         &client,
         &record,
         zone_manager,
@@ -761,6 +1014,37 @@ pub async fn reconcile_srv_record(
         },
     )
     .await
+    {
+        Ok(count) => count,
+        Err(e) => {
+            update_record_status(
+                &client,
+                &record,
+                "Degraded",
+                "True",
+                "RecordFailed",
+                &format!("Failed to configure SRV record: {e}"),
+            )
+            .await?;
+            return Err(e);
+        }
+    };
+
+    // All done - set Ready status
+    update_record_status(
+        &client,
+        &record,
+        "Ready",
+        "True",
+        "ReconcileSucceeded",
+        &format!(
+            "SRV record {} in zone {} configured on {} endpoint(s)",
+            spec.name, zone_name, endpoint_count
+        ),
+    )
+    .await?;
+
+    Ok(())
 }
 
 /// Reconciles a `CAARecord` (certificate authority authorization) resource.
@@ -782,6 +1066,17 @@ pub async fn reconcile_caa_record(
     info!("Reconciling CAARecord: {}/{}", namespace, name);
 
     let spec = &record.spec;
+
+    // Set initial Progressing status
+    update_record_status(
+        &client,
+        &record,
+        "Progressing",
+        "True",
+        "RecordReconciling",
+        "Configuring CAA record on primary servers",
+    )
+    .await?;
 
     let (cluster_ref, zone_name) =
         get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
@@ -805,7 +1100,7 @@ pub async fn reconcile_caa_record(
     let value = spec.value.clone();
     let ttl = spec.ttl;
 
-    add_record_to_all_endpoints(
+    let endpoint_count = match add_record_to_all_endpoints(
         &client,
         &record,
         zone_manager,
@@ -836,6 +1131,37 @@ pub async fn reconcile_caa_record(
         },
     )
     .await
+    {
+        Ok(count) => count,
+        Err(e) => {
+            update_record_status(
+                &client,
+                &record,
+                "Degraded",
+                "True",
+                "RecordFailed",
+                &format!("Failed to configure CAA record: {e}"),
+            )
+            .await?;
+            return Err(e);
+        }
+    };
+
+    // All done - set Ready status
+    update_record_status(
+        &client,
+        &record,
+        "Ready",
+        "True",
+        "ReconcileSucceeded",
+        &format!(
+            "CAA record {} in zone {} configured on {} endpoint(s)",
+            spec.name, zone_name, endpoint_count
+        ),
+    )
+    .await?;
+
+    Ok(())
 }
 
 /// Retrieves zone information (`cluster_ref` and `zone_name`) for a DNS record.

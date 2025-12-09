@@ -10,7 +10,7 @@
 use crate::bind9::RndcKeyData;
 use crate::crd::{Condition, DNSZone, DNSZoneStatus};
 use anyhow::{anyhow, Context, Result};
-use bindcar::ZONE_TYPE_PRIMARY;
+use bindcar::{ZONE_TYPE_PRIMARY, ZONE_TYPE_SECONDARY};
 use chrono::Utc;
 use k8s_openapi::api::core::v1::{Endpoints, Pod, Secret};
 use kube::{
@@ -61,6 +61,7 @@ use tracing::{debug, info, warn};
 /// # Errors
 ///
 /// Returns an error if Kubernetes API operations fail or BIND9 zone operations fail.
+#[allow(clippy::too_many_lines)]
 pub async fn reconcile_dnszone(
     client: Client,
     dnszone: DNSZone,
@@ -85,53 +86,187 @@ pub async fn reconcile_dnszone(
         "DNSZone configuration"
     );
 
-    // Find current secondary IPs
-    let current_secondary_ips =
-        find_all_secondary_pod_ips(&client, &namespace, &spec.cluster_ref).await?;
+    // Determine if this is the first reconciliation or if spec has changed
+    let current_generation = dnszone.metadata.generation;
+    let observed_generation = dnszone.status.as_ref().and_then(|s| s.observed_generation);
 
-    // Check if secondary IPs have changed
-    let status_secondary_ips = dnszone
-        .status
-        .as_ref()
-        .and_then(|s| s.secondary_ips.as_ref());
-    let secondaries_changed = match status_secondary_ips {
-        Some(stored_ips) => {
-            // Sort both for comparison
-            let mut stored = stored_ips.clone();
-            let mut current = current_secondary_ips.clone();
-            stored.sort();
-            current.sort();
-            stored != current
-        }
-        None => !current_secondary_ips.is_empty(), // Changed if we now have secondaries but didn't before
-    };
+    let first_reconciliation = observed_generation.is_none();
+    let spec_changed =
+        crate::reconcilers::should_reconcile(current_generation, observed_generation);
 
-    if secondaries_changed {
-        info!(
-            "Secondary IPs changed for zone {} - old: {:?}, new: {:?}. Recreating zone configuration.",
-            spec.zone_name,
-            status_secondary_ips,
-            current_secondary_ips
+    // Early return if nothing to do
+    if !first_reconciliation && !spec_changed {
+        debug!(
+            "Spec unchanged (generation={:?}), skipping reconciliation",
+            current_generation
         );
-
-        // Delete existing zone from all primaries
-        delete_dnszone(client.clone(), dnszone.clone(), zone_manager).await?;
-
-        // Add zone with new secondary IPs
-        add_dnszone(client.clone(), dnszone.clone(), zone_manager).await?;
-    } else {
-        // Add zone to all primary instances (idempotent - will skip if exists)
-        add_dnszone(client.clone(), dnszone.clone(), zone_manager).await?;
+        return Ok(());
     }
 
-    // Update status with current secondary IPs
+    info!(
+        "Reconciling zone {} (first_reconciliation={}, spec_changed={})",
+        spec.zone_name, first_reconciliation, spec_changed
+    );
+
+    // Set initial Progressing status
+    update_condition(
+        &client,
+        &dnszone,
+        "Progressing",
+        "True",
+        "PrimaryReconciling",
+        "Configuring zone on primary servers",
+    )
+    .await?;
+
+    // Get current primary IPs for secondary zone configuration
+    let primary_ips = match find_all_primary_pod_ips(&client, &namespace, &spec.cluster_ref).await {
+        Ok(ips) if !ips.is_empty() => {
+            info!(
+                "Found {} primary server(s) for cluster {}: {:?}",
+                ips.len(),
+                spec.cluster_ref,
+                ips
+            );
+            ips
+        }
+        Ok(_) => {
+            update_condition(
+                &client,
+                &dnszone,
+                "Degraded",
+                "True",
+                "PrimaryFailed",
+                &format!("No primary servers found for cluster {}", spec.cluster_ref),
+            )
+            .await?;
+            return Err(anyhow!(
+                "No primary servers found for cluster {} - cannot configure zones",
+                spec.cluster_ref
+            ));
+        }
+        Err(e) => {
+            update_condition(
+                &client,
+                &dnszone,
+                "Degraded",
+                "True",
+                "PrimaryFailed",
+                &format!("Failed to find primary servers: {e}"),
+            )
+            .await?;
+            return Err(e);
+        }
+    };
+
+    // Add/update zone on all primary instances
+    let primary_count = match add_dnszone(client.clone(), dnszone.clone(), zone_manager).await {
+        Ok(count) => {
+            // Update status after successful primary reconciliation
+            update_condition(
+                &client,
+                &dnszone,
+                "Progressing",
+                "True",
+                "PrimaryReconciled",
+                &format!(
+                    "Zone {} configured on {} primary server(s)",
+                    spec.zone_name, count
+                ),
+            )
+            .await?;
+            count
+        }
+        Err(e) => {
+            update_condition(
+                &client,
+                &dnszone,
+                "Degraded",
+                "True",
+                "PrimaryFailed",
+                &format!("Failed to configure zone on primary servers: {e}"),
+            )
+            .await?;
+            return Err(e);
+        }
+    };
+
+    // Update to secondary reconciliation phase
+    update_condition(
+        &client,
+        &dnszone,
+        "Progressing",
+        "True",
+        "SecondaryReconciling",
+        "Configuring zone on secondary servers",
+    )
+    .await?;
+
+    // Add/update zone on all secondary instances with primaries configured
+    let secondary_count = match add_dnszone_to_secondaries(
+        client.clone(),
+        dnszone.clone(),
+        zone_manager,
+        &primary_ips,
+    )
+    .await
+    {
+        Ok(count) => {
+            // Update status after successful secondary reconciliation
+            if count > 0 {
+                update_condition(
+                    &client,
+                    &dnszone,
+                    "Progressing",
+                    "True",
+                    "SecondaryReconciled",
+                    &format!(
+                        "Zone {} configured on {} secondary server(s)",
+                        spec.zone_name, count
+                    ),
+                )
+                .await?;
+            }
+            count
+        }
+        Err(e) => {
+            // Secondary failure is non-fatal - primaries still work
+            warn!(
+                "Failed to configure zone on secondary servers: {}. Primary servers are still operational.",
+                e
+            );
+            update_condition(
+                &client,
+                &dnszone,
+                "Degraded",
+                "True",
+                "SecondaryFailed",
+                &format!(
+                    "Zone configured on {primary_count} primary server(s) but secondary configuration failed: {e}"
+                ),
+            )
+            .await?;
+            0
+        }
+    };
+
+    // Re-fetch secondary IPs to store in status
+    let secondary_ips = find_all_secondary_pod_ips(&client, &namespace, &spec.cluster_ref)
+        .await
+        .unwrap_or_default();
+
+    // All reconciliation complete - set Ready status
     update_status_with_secondaries(
         &client,
         &dnszone,
         "Ready",
         "True",
-        &format!("Zone configured for cluster: {}", spec.cluster_ref),
-        current_secondary_ips,
+        "ReconcileSucceeded",
+        &format!(
+            "Zone {} configured on {} primary and {} secondary server(s) for cluster {}",
+            spec.zone_name, primary_count, secondary_count, spec.cluster_ref
+        ),
+        secondary_ips,
     )
     .await?;
 
@@ -148,7 +283,7 @@ pub async fn reconcile_dnszone(
 ///
 /// # Returns
 ///
-/// * `Ok(())` - If zone was added successfully to all instances
+/// * `Ok(usize)` - Number of primary endpoints successfully configured
 /// * `Err(_)` - If zone addition failed
 ///
 /// # Errors
@@ -162,7 +297,7 @@ pub async fn add_dnszone(
     client: Client,
     dnszone: DNSZone,
     zone_manager: &crate::bind9::Bind9Manager,
-) -> Result<()> {
+) -> Result<usize> {
     let namespace = dnszone.namespace().unwrap_or_default();
     let name = dnszone.name_any();
     let spec = &dnszone.spec;
@@ -188,11 +323,13 @@ pub async fn add_dnszone(
 
     // Use the common helper to iterate through all endpoints
     // Load RNDC key (true) since zone addition requires it
+    // Use "http" port for HTTP API operations
     let (first_endpoint, total_endpoints) = for_each_primary_endpoint(
         &client,
         &namespace,
         &spec.cluster_ref,
         true, // with_rndc_key = true for zone addition
+        "http", // Use HTTP API port for zone addition via bindcar API
         |pod_endpoint, instance_name, rndc_key| {
             let zone_name = spec.zone_name.clone();
             let soa_record = spec.soa_record.clone();
@@ -205,11 +342,6 @@ pub async fn add_dnszone(
                 // The for_each_primary_endpoint helper loads the key when with_rndc_key=true
                 let key_data = rndc_key.expect("RNDC key should be loaded when with_rndc_key=true");
 
-                info!(
-                    "Adding zone {} to endpoint {} (instance: {})",
-                    zone_name, pod_endpoint, instance_name
-                );
-
                 // Pass secondary IPs for zone transfer configuration
                 let secondary_ips_ref = if secondary_ips_clone.is_empty() {
                     None
@@ -217,25 +349,28 @@ pub async fn add_dnszone(
                     Some(secondary_ips_clone.as_slice())
                 };
 
-                zone_manager
-                    .add_zone(
+                let was_added = zone_manager
+                    .add_zones(
                         &zone_name,
                         ZONE_TYPE_PRIMARY,
                         &pod_endpoint,
                         &key_data,
-                        &soa_record,
+                        Some(&soa_record),
                         name_server_ips.as_ref(),
                         secondary_ips_ref,
+                        None, // primary_ips only for secondary zones
                     )
                     .await
                     .context(format!(
                         "Failed to add zone {zone_name} to endpoint {pod_endpoint} (instance: {instance_name})"
                     ))?;
 
-                debug!(
-                    "Successfully added zone {} to endpoint {} (instance: {})",
-                    zone_name, pod_endpoint, instance_name
-                );
+                if was_added {
+                    info!(
+                        "Successfully added zone {} to endpoint {} (instance: {})",
+                        zone_name, pod_endpoint, instance_name
+                    );
+                }
 
                 Ok(())
             }
@@ -278,7 +413,156 @@ pub async fn add_dnszone(
         );
     }
 
-    Ok(())
+    Ok(total_endpoints)
+}
+
+/// Adds a DNS zone to all secondary instances in the cluster with primaries configured.
+///
+/// Creates secondary zones on all secondary instances, configuring them to transfer
+/// from the provided primary server IPs. If a zone already exists on a secondary,
+/// it checks if the primaries list matches and updates it if necessary.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `dnszone` - The `DNSZone` resource
+/// * `zone_manager` - BIND9 manager for adding zone
+/// * `primary_ips` - List of primary server IPs to configure in the primaries field
+///
+/// # Returns
+///
+/// * `Ok(usize)` - Number of secondary endpoints successfully configured
+/// * `Err(_)` - If zone addition failed
+///
+/// # Errors
+///
+/// Returns an error if BIND9 zone addition fails on any secondary instance.
+pub async fn add_dnszone_to_secondaries(
+    client: Client,
+    dnszone: DNSZone,
+    zone_manager: &crate::bind9::Bind9Manager,
+    primary_ips: &[String],
+) -> Result<usize> {
+    let namespace = dnszone.namespace().unwrap_or_default();
+    let name = dnszone.name_any();
+    let spec = &dnszone.spec;
+
+    if primary_ips.is_empty() {
+        warn!(
+            "No primary IPs provided for secondary zone {} - skipping secondary configuration",
+            spec.zone_name
+        );
+        return Ok(0);
+    }
+
+    info!(
+        "Adding DNSZone {} to secondary instances with primaries: {:?}",
+        name, primary_ips
+    );
+
+    // Find all secondary pods
+    let secondary_pods = find_all_secondary_pods(&client, &namespace, &spec.cluster_ref).await?;
+
+    if secondary_pods.is_empty() {
+        info!(
+            "No secondary servers found for cluster {} - skipping secondary zone configuration",
+            spec.cluster_ref
+        );
+        return Ok(0);
+    }
+
+    info!(
+        "Found {} secondary pod(s) for cluster {}",
+        secondary_pods.len(),
+        spec.cluster_ref
+    );
+
+    // Get unique instance names from secondary pods
+    let mut instance_names: Vec<String> = secondary_pods
+        .iter()
+        .map(|pod| pod.instance_name.clone())
+        .collect();
+    instance_names.sort();
+    instance_names.dedup();
+
+    // Load RNDC key from the first secondary instance
+    let key_data = if let Some(first_instance) = instance_names.first() {
+        load_rndc_key(&client, &namespace, first_instance).await?
+    } else {
+        return Err(anyhow!(
+            "No secondary instances found for cluster {}",
+            spec.cluster_ref
+        ));
+    };
+
+    let mut total_endpoints = 0;
+
+    // Iterate through each secondary instance and add zone to all its endpoints
+    for instance_name in &instance_names {
+        info!(
+            "Processing secondary instance {} for zone {}",
+            instance_name, spec.zone_name
+        );
+
+        // Get all endpoints for this secondary instance
+        let endpoints = get_endpoint(&client, &namespace, instance_name, "http").await?;
+
+        info!(
+            "Found {} endpoint(s) for secondary instance {}",
+            endpoints.len(),
+            instance_name
+        );
+
+        for endpoint in &endpoints {
+            let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
+
+            info!(
+                "Adding secondary zone {} to endpoint {} (instance: {}) with primaries: {:?}",
+                spec.zone_name, pod_endpoint, instance_name, primary_ips
+            );
+
+            let was_added = zone_manager
+                .add_zones(
+                    &spec.zone_name,
+                    ZONE_TYPE_SECONDARY,
+                    &pod_endpoint,
+                    &key_data,
+                    None, // No SOA record for secondary zones
+                    None, // No name_server_ips for secondary zones
+                    None, // No secondary_ips for secondary zones
+                    Some(primary_ips),
+                )
+                .await
+                .context(format!(
+                    "Failed to add secondary zone {} to endpoint {} (instance: {})",
+                    spec.zone_name, pod_endpoint, instance_name
+                ))?;
+
+            if was_added {
+                info!(
+                    "Successfully added secondary zone {} to endpoint {} (instance: {})",
+                    spec.zone_name, pod_endpoint, instance_name
+                );
+            } else {
+                info!(
+                    "Secondary zone {} already exists on endpoint {} (instance: {})",
+                    spec.zone_name, pod_endpoint, instance_name
+                );
+            }
+
+            total_endpoints += 1;
+        }
+    }
+
+    info!(
+        "Successfully configured secondary zone {} on {} endpoint(s) across {} instance(s) for cluster {}",
+        spec.zone_name,
+        total_endpoints,
+        instance_names.len(),
+        spec.cluster_ref
+    );
+
+    Ok(total_endpoints)
 }
 
 /// Deletes a DNS zone and its associated zone files.
@@ -310,11 +594,13 @@ pub async fn delete_dnszone(
 
     // Use the common helper to iterate through all endpoints
     // Don't load RNDC key (false) since zone deletion doesn't require it
+    // Use "http" port for HTTP API operations
     let (_first_endpoint, total_endpoints) = for_each_primary_endpoint(
         &client,
         &namespace,
         &spec.cluster_ref,
         false, // with_rndc_key = false for zone deletion
+        "http", // Use HTTP API port for zone deletion via bindcar API
         |pod_endpoint, instance_name, _rndc_key| {
             let zone_name = spec.zone_name.clone();
             let zone_manager = zone_manager.clone();
@@ -344,9 +630,57 @@ pub async fn delete_dnszone(
     .await?;
 
     info!(
-        "Successfully deleted zone {} from {} endpoint(s) for cluster {}",
+        "Successfully deleted zone {} from {} primary endpoint(s) for cluster {}",
         spec.zone_name, total_endpoints, spec.cluster_ref
     );
+
+    // Delete from all secondary instances
+    let secondary_pods = find_all_secondary_pods(&client, &namespace, &spec.cluster_ref).await?;
+
+    if !secondary_pods.is_empty() {
+        // Get unique instance names
+        let mut instance_names: Vec<String> = secondary_pods
+            .iter()
+            .map(|pod| pod.instance_name.clone())
+            .collect();
+        instance_names.sort();
+        instance_names.dedup();
+
+        let mut secondary_endpoints_deleted = 0;
+
+        for instance_name in &instance_names {
+            let endpoints = get_endpoint(&client, &namespace, instance_name, "http").await?;
+
+            for endpoint in &endpoints {
+                let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
+
+                info!(
+                    "Deleting zone {} from secondary endpoint {} (instance: {})",
+                    spec.zone_name, pod_endpoint, instance_name
+                );
+
+                zone_manager
+                    .delete_zone(&spec.zone_name, &pod_endpoint)
+                    .await
+                    .context(format!(
+                        "Failed to delete zone {} from secondary endpoint {} (instance: {})",
+                        spec.zone_name, pod_endpoint, instance_name
+                    ))?;
+
+                debug!(
+                    "Successfully deleted zone {} from secondary endpoint {} (instance: {})",
+                    spec.zone_name, pod_endpoint, instance_name
+                );
+
+                secondary_endpoints_deleted += 1;
+            }
+        }
+
+        info!(
+            "Successfully deleted zone {} from {} secondary endpoint(s) for cluster {}",
+            spec.zone_name, secondary_endpoints_deleted, spec.cluster_ref
+        );
+    }
 
     // Note: We don't need to reload after delzone because:
     // 1. rndc delzone immediately removes the zone from BIND9's running config
@@ -627,6 +961,136 @@ async fn find_all_secondary_pod_ips(
     Ok(secondary_ips)
 }
 
+/// Find all PRIMARY pod IPs for a given cluster.
+///
+/// Returns IP addresses of all running primary pods in the cluster.
+/// These IPs are used for configuring primaries on secondary zones.
+async fn find_all_primary_pod_ips(
+    client: &Client,
+    namespace: &str,
+    cluster_name: &str,
+) -> Result<Vec<String>> {
+    info!("Finding PRIMARY pod IPs for cluster {}", cluster_name);
+
+    let primary_pods = find_all_primary_pods(client, namespace, cluster_name).await?;
+
+    let primary_ips: Vec<String> = primary_pods.iter().map(|pod| pod.ip.clone()).collect();
+
+    info!(
+        "Found {} running PRIMARY pod IP(s) for cluster {}: {:?}",
+        primary_ips.len(),
+        cluster_name,
+        primary_ips
+    );
+
+    Ok(primary_ips)
+}
+
+/// Find all SECONDARY pods for a given cluster.
+///
+/// Returns structured pod information including IP, name, and instance name.
+/// Similar to `find_all_primary_pods` but for secondary instances.
+async fn find_all_secondary_pods(
+    client: &Client,
+    namespace: &str,
+    cluster_name: &str,
+) -> Result<Vec<PodInfo>> {
+    use crate::crd::{Bind9Instance, ServerRole};
+
+    // Find all Bind9Instance resources with role=SECONDARY for this cluster
+    let instance_api: Api<Bind9Instance> = Api::namespaced(client.clone(), namespace);
+    let instances = instance_api.list(&ListParams::default()).await?;
+
+    let mut secondary_instances = Vec::new();
+    for instance in instances.items {
+        if instance.spec.cluster_ref == cluster_name && instance.spec.role == ServerRole::Secondary
+        {
+            if let Some(name) = instance.metadata.name {
+                secondary_instances.push(name);
+            }
+        }
+    }
+
+    if secondary_instances.is_empty() {
+        info!("No SECONDARY instances found for cluster {cluster_name}");
+        return Ok(Vec::new());
+    }
+
+    info!(
+        "Found {} SECONDARY instance(s) for cluster {}: {:?}",
+        secondary_instances.len(),
+        cluster_name,
+        secondary_instances
+    );
+
+    // Find all pods for these secondary instances
+    let pod_api: Api<Pod> = Api::namespaced(client.clone(), namespace);
+    let mut all_pod_infos = Vec::new();
+
+    for instance_name in &secondary_instances {
+        let label_selector = format!("app=bind9,instance={instance_name}");
+        let lp = ListParams::default().labels(&label_selector);
+
+        let pods = pod_api.list(&lp).await?;
+
+        debug!(
+            "Found {} pod(s) for SECONDARY instance {}",
+            pods.items.len(),
+            instance_name
+        );
+
+        for pod in &pods.items {
+            let pod_name = pod
+                .metadata
+                .name
+                .as_ref()
+                .ok_or_else(|| anyhow!("Pod has no name"))?
+                .clone();
+
+            // Get pod IP
+            let pod_ip = pod
+                .status
+                .as_ref()
+                .and_then(|s| s.pod_ip.as_ref())
+                .ok_or_else(|| anyhow!("Pod {pod_name} has no IP address"))?
+                .clone();
+
+            // Check if pod is running
+            let phase = pod
+                .status
+                .as_ref()
+                .and_then(|s| s.phase.as_ref())
+                .map(String::as_str);
+
+            if phase == Some("Running") {
+                all_pod_infos.push(PodInfo {
+                    name: pod_name.clone(),
+                    ip: pod_ip.clone(),
+                    instance_name: instance_name.clone(),
+                });
+                debug!(
+                    "Found running secondary pod {} with IP {}",
+                    pod_name, pod_ip
+                );
+            } else {
+                debug!(
+                    "Skipping secondary pod {} (phase: {:?}, not running)",
+                    pod_name, phase
+                );
+            }
+        }
+    }
+
+    info!(
+        "Found {} running SECONDARY pod(s) across {} instance(s) for cluster {}",
+        all_pod_infos.len(),
+        secondary_instances.len(),
+        cluster_name
+    );
+
+    Ok(all_pod_infos)
+}
+
 /// Load RNDC key from the instance's secret
 async fn load_rndc_key(
     client: &Client,
@@ -664,12 +1128,70 @@ fn is_running_in_cluster() -> bool {
     std::path::Path::new("/var/run/secrets/kubernetes.io/serviceaccount/token").exists()
 }
 
+/// Update a single condition on the `DNSZone` status
+///
+/// This is a lightweight status update that only modifies the conditions field.
+/// Use this for intermediate status updates during reconciliation.
+async fn update_condition(
+    client: &Client,
+    dnszone: &DNSZone,
+    condition_type: &str,
+    status: &str,
+    reason: &str,
+    message: &str,
+) -> Result<()> {
+    let api: Api<DNSZone> =
+        Api::namespaced(client.clone(), &dnszone.namespace().unwrap_or_default());
+
+    let condition = Condition {
+        r#type: condition_type.to_string(),
+        status: status.to_string(),
+        last_transition_time: Some(Utc::now().to_rfc3339()),
+        reason: Some(reason.to_string()),
+        message: Some(message.to_string()),
+    };
+
+    // Preserve existing status fields, only update conditions
+    let current_status = dnszone.status.as_ref();
+    let new_status = DNSZoneStatus {
+        conditions: vec![condition],
+        observed_generation: current_status
+            .and_then(|s| s.observed_generation)
+            .or(dnszone.metadata.generation),
+        record_count: current_status.and_then(|s| s.record_count),
+        secondary_ips: current_status.and_then(|s| s.secondary_ips.clone()),
+    };
+
+    let patch = json!({
+        "status": new_status
+    });
+
+    api.patch_status(
+        &dnszone.name_any(),
+        &PatchParams::default(),
+        &Patch::Merge(&patch),
+    )
+    .await?;
+
+    debug!(
+        "Updated DNSZone {}/{} condition: type={}, status={}, reason={}",
+        dnszone.namespace().unwrap_or_default(),
+        dnszone.name_any(),
+        condition_type,
+        status,
+        reason
+    );
+
+    Ok(())
+}
+
 /// Update `DNSZone` status including secondary IPs
 async fn update_status_with_secondaries(
     client: &Client,
     dnszone: &DNSZone,
     condition_type: &str,
     status: &str,
+    reason: &str,
     message: &str,
     secondary_ips: Vec<String>,
 ) -> Result<()> {
@@ -680,7 +1202,7 @@ async fn update_status_with_secondaries(
         r#type: condition_type.to_string(),
         status: status.to_string(),
         last_transition_time: Some(Utc::now().to_rfc3339()),
-        reason: Some("ReconcileSucceeded".to_string()),
+        reason: Some(reason.to_string()),
         message: Some(message.to_string()),
     };
 
@@ -844,6 +1366,7 @@ pub async fn for_each_primary_endpoint<F, Fut>(
     namespace: &str,
     cluster_ref: &str,
     with_rndc_key: bool,
+    port_name: &str,
     operation: F,
 ) -> Result<(Option<String>, usize)>
 where
@@ -902,7 +1425,7 @@ where
 
         // Get all endpoints for this instance's service
         // The Endpoints API gives us pod IPs with their container ports (not service ports)
-        let endpoints = get_endpoint(client, namespace, instance_name, "http").await?;
+        let endpoints = get_endpoint(client, namespace, instance_name, port_name).await?;
 
         info!(
             "Found {} endpoint(s) for instance {}",

@@ -45,41 +45,141 @@ async fn reconcile_bind9instance(instance: Bind9Instance) -> Result<()> {
 
 ## DNSZone Reconciliation
 
+DNSZone reconciliation uses granular status updates to provide real-time progress visibility and better error reporting. The reconciliation follows a multi-phase approach with status updates at each phase.
+
+### Reconciliation Flow
+
 ```rust
 async fn reconcile_dnszone(zone: DNSZone) -> Result<()> {
-    // 1. Find matching Bind9Instances
-    let instances = find_instances(&zone.spec.instance_selector).await?;
-    
-    // 2. Generate zone file content
-    let zone_content = generate_zone_file(&zone)?;
-    
-    // 3. Update zone on each instance
-    for instance in instances {
-        update_zone_on_instance(&instance, &zone_content).await?;
+    // Phase 1: Set Progressing status before primary reconciliation
+    update_condition(&zone, "Progressing", "True", "PrimaryReconciling",
+                     "Configuring zone on primary instances").await?;
+
+    // Phase 2: Configure zone on primary instances
+    let primary_count = add_dnszone(client, &zone, zone_manager).await
+        .map_err(|e| {
+            // On failure: Set Degraded status (primary failure is fatal)
+            update_condition(&zone, "Degraded", "True", "PrimaryFailed",
+                           &format!("Failed to configure zone on primaries: {}", e)).await?;
+            e
+        })?;
+
+    // Phase 3: Set Progressing status after primary success
+    update_condition(&zone, "Progressing", "True", "PrimaryReconciled",
+                     &format!("Configured on {} primary server(s)", primary_count)).await?;
+
+    // Phase 4: Set Progressing status before secondary reconciliation
+    let secondary_msg = format!("Configured on {} primary server(s), now configuring secondaries", primary_count);
+    update_condition(&zone, "Progressing", "True", "SecondaryReconciling", &secondary_msg).await?;
+
+    // Phase 5: Configure zone on secondary instances (non-fatal if fails)
+    match add_dnszone_to_secondaries(client, &zone, zone_manager).await {
+        Ok(secondary_count) => {
+            // Phase 6: Success - Set Ready status
+            let msg = format!("Configured on {} primary server(s) and {} secondary server(s)",
+                            primary_count, secondary_count);
+            update_status_with_secondaries(&zone, "Ready", "True", "ReconcileSucceeded",
+                                          &msg, secondary_ips).await?;
+        }
+        Err(e) => {
+            // Phase 6: Partial success - Set Degraded status (primaries work, secondaries failed)
+            let msg = format!("Configured on {} primary server(s), but secondary configuration failed: {}",
+                            primary_count, e);
+            update_status_with_secondaries(&zone, "Degraded", "True", "SecondaryFailed",
+                                          &msg, secondary_ips).await?;
+        }
     }
-    
-    // 4. Update status
-    update_zone_status(&zone, instances.len()).await?;
-    
+
     Ok(())
 }
 ```
+
+### Status Conditions
+
+DNSZone reconciliation uses three condition types:
+
+- **`Progressing`** - During reconciliation phases
+  - Reason: `PrimaryReconciling` - Before primary configuration
+  - Reason: `PrimaryReconciled` - After primary configuration succeeds
+  - Reason: `SecondaryReconciling` - Before secondary configuration
+  - Reason: `SecondaryReconciled` - After secondary configuration succeeds
+
+- **`Ready`** - Successful reconciliation
+  - Reason: `ReconcileSucceeded` - All phases completed successfully
+
+- **`Degraded`** - Partial or complete failure
+  - Reason: `PrimaryFailed` - Primary configuration failed (fatal, reconciliation aborts)
+  - Reason: `SecondaryFailed` - Secondary configuration failed (non-fatal, primaries still work)
+
+### Benefits
+
+1. **Real-time progress visibility** - Users can see which phase is running
+2. **Better error reporting** - Know exactly which phase failed (primary vs secondary)
+3. **Graceful degradation** - Secondary failures don't break the zone (primaries still work)
+4. **Accurate status** - Endpoint counts reflect actual configured servers
 
 ## Record Reconciliation
 
-All record types follow similar pattern:
+All record types (A, AAAA, CNAME, MX, TXT, NS, SRV, CAA) follow a consistent pattern with granular status updates for better observability.
+
+### Reconciliation Flow
 
 ```rust
 async fn reconcile_record(record: Record) -> Result<()> {
-    // 1. Get zone
+    // Phase 1: Set Progressing status before configuration
+    update_record_status(&record, "Progressing", "True", "RecordReconciling",
+                        "Configuring A record on zone endpoints").await?;
+
+    // Phase 2: Get zone and configure record on all endpoints
     let zone = get_zone(&record.spec.zone).await?;
-    
-    // 2. Add record to zone
-    zone_manager.add_record(&zone, &record)?;
-    
-    // 3. Update status
-    update_record_status(&record, "Ready").await?;
-    
+
+    match add_record_to_all_endpoints(&zone, &record).await {
+        Ok(endpoint_count) => {
+            // Phase 3: Success - Set Ready status with endpoint count
+            let msg = format!("Record configured on {} endpoint(s)", endpoint_count);
+            update_record_status(&record, "Ready", "True", "ReconcileSucceeded", &msg).await?;
+        }
+        Err(e) => {
+            // Phase 3: Failure - Set Degraded status with error details
+            let msg = format!("Failed to configure record: {}", e);
+            update_record_status(&record, "Degraded", "True", "RecordFailed", &msg).await?;
+            return Err(e);
+        }
+    }
+
     Ok(())
 }
 ```
+
+### Status Conditions
+
+All DNS record types use three condition types:
+
+- **`Progressing`** - During record configuration
+  - Reason: `RecordReconciling` - Before adding record to zone endpoints
+
+- **`Ready`** - Successful configuration
+  - Reason: `ReconcileSucceeded` - Record configured on all endpoints
+  - Message includes count of configured endpoints (e.g., "Record configured on 3 endpoint(s)")
+
+- **`Degraded`** - Configuration failure
+  - Reason: `RecordFailed` - Failed to configure record (includes error details)
+
+### Benefits
+
+1. **Real-time progress** - See when records are being configured
+2. **Better debugging** - Know immediately if/why a record failed
+3. **Accurate reporting** - Status shows exact number of endpoints configured
+4. **Consistent with zones** - Same status pattern as DNSZone reconciliation
+
+### Supported Record Types
+
+All 8 record types use this granular status approach:
+- **A** - IPv4 address records
+- **AAAA** - IPv6 address records
+- **CNAME** - Canonical name (alias) records
+- **MX** - Mail exchange records
+- **TXT** - Text records (SPF, DKIM, DMARC, etc.)
+- **NS** - Nameserver delegation records
+- **SRV** - Service location records
+- **CAA** - Certificate authority authorization records
