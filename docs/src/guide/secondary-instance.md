@@ -46,13 +46,16 @@ Secondaries receive zone data from primaries and cannot be updated directly. All
 
 ### Label for Selection
 
-Use the `dns-role: secondary` label to distinguish from primary instances:
+Use the `role: secondary` label to enable automatic zone transfer configuration:
 
 ```yaml
 metadata:
   labels:
-    dns-role: secondary
+    role: secondary      # Required for automatic discovery
+    cluster: production  # Required - must match cluster name
 ```
+
+> **Important:** The `role: secondary` label is **required** for Bindy to automatically discover secondary instances and configure zone transfers on primary zones.
 
 ## Configuring Secondary Zones
 
@@ -76,6 +79,60 @@ spec:
       - "10.0.1.11"  # Additional primary for redundancy
 ```
 
+## Automatic Zone Transfer Configuration
+
+> **New in v0.1.0:** Bindy automatically configures zone transfers from primaries to secondaries!
+
+When you create primary `DNSZone` resources, Bindy automatically:
+1. **Discovers secondary instances** using the `role=secondary` label
+2. **Configures zone transfers** on primary zones with `also-notify` and `allow-transfer`
+3. **Tracks secondary IPs** in `DNSZone.status.secondaryIps`
+4. **Detects IP changes** when secondary pods restart or are rescheduled
+5. **Auto-updates zones** when secondary IPs change (within 5-10 minutes)
+
+**Example:**
+```bash
+# Create secondary instance with proper labels
+cat <<EOF | kubectl apply -f -
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Instance
+metadata:
+  name: secondary-dns
+  namespace: dns-system
+  labels:
+    role: secondary          # Required for discovery
+    cluster: production      # Must match cluster name
+spec:
+  replicas: 2
+  version: "9.18"
+  config:
+    recursion: false
+EOF
+
+# Create primary zone - zone transfers auto-configured!
+cat <<EOF | kubectl apply -f -
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: DNSZone
+metadata:
+  name: example-com
+  namespace: dns-system
+spec:
+  zoneName: example.com
+  clusterRef: production  # Matches cluster label
+  # ... other config ...
+EOF
+
+# Verify automatic configuration
+kubectl get dnszone example-com -n dns-system -o jsonpath='{.status.secondaryIps}'
+# Output: ["10.244.1.5","10.244.2.8"]
+```
+
+**Self-Healing:**
+When secondary pods restart and get new IPs:
+- Bindy detects the change within one reconciliation cycle (~5-10 minutes)
+- Primary zones are automatically updated with new secondary IPs
+- Zone transfers resume automatically with no manual intervention
+
 ## Verifying Zone Transfers
 
 Check that zones are being transferred:
@@ -86,6 +143,9 @@ kubectl exec -n dns-system deployment/secondary-dns -- ls -la /var/lib/bind/zone
 
 # Check BIND9 logs for transfer messages
 kubectl logs -n dns-system -l instance=secondary-dns | grep "transfer of"
+
+# Verify secondary IPs are configured on primary zones
+kubectl get dnszone -n dns-system -o yaml | yq '.items[].status.secondaryIps'
 ```
 
 ## Best Practices

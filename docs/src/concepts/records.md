@@ -214,6 +214,69 @@ spec:
 
 [Learn more about CAA Records](../guide/caa-records.md)
 
+## Record Status
+
+All DNS record types use granular status conditions to provide real-time visibility into the record configuration process.
+
+### Status During Configuration
+
+```yaml
+status:
+  conditions:
+    - type: Progressing
+      status: "True"
+      reason: RecordReconciling
+      message: "Configuring A record on zone endpoints"
+      lastTransitionTime: "2024-11-26T10:00:00Z"
+  observedGeneration: 1
+```
+
+### Status After Successful Configuration
+
+```yaml
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: ReconcileSucceeded
+      message: "Record configured on 3 endpoint(s)"
+      lastTransitionTime: "2024-11-26T10:00:01Z"
+  observedGeneration: 1
+```
+
+### Status After Failure
+
+```yaml
+status:
+  conditions:
+    - type: Degraded
+      status: "True"
+      reason: RecordFailed
+      message: "Failed to configure record: Zone not found on primary servers"
+      lastTransitionTime: "2024-11-26T10:00:01Z"
+  observedGeneration: 1
+```
+
+### Condition Types
+
+All DNS record types use the following condition types:
+
+- **Progressing** - Record is being configured
+  - `RecordReconciling`: Before adding record to zone endpoints
+
+- **Ready** - Record successfully configured
+  - `ReconcileSucceeded`: Record configured on all endpoints (message includes endpoint count)
+
+- **Degraded** - Configuration failure
+  - `RecordFailed`: Failed to configure record (includes error details)
+
+### Benefits
+
+1. **Real-time progress** - See when records are being configured
+2. **Better debugging** - Know immediately if/why a record failed
+3. **Accurate reporting** - Status shows exact number of endpoints configured
+4. **Consistent across types** - All 8 record types use the same status pattern
+
 ## Record Management
 
 ### Referencing Zones

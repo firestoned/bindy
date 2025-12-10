@@ -23,7 +23,7 @@ graph TB
             rec2["Bind9Instance<br/>Reconciler"]
             rec3["DNSZone<br/>Reconciler"]
             rec4["DNS Record<br/>Reconcilers"]
-            manager["Bind9Manager (HTTP Client)<br/>• add_zone() • reload_zone()<br/>• delete_zone() • notify_zone()<br/>• zone_status() • freeze_zone()"]
+            manager["Bind9Manager (HTTP Client)<br/>• add_zones() • add_primary_zone()<br/>• add_secondary_zone() • reload_zone()<br/>• delete_zone() • notify_zone()<br/>• zone_status() • freeze_zone()"]
         end
 
         subgraph bind9pod["BIND9 Pod"]
@@ -182,7 +182,8 @@ graph TB
 │                                                                │
 │  • Checks Authorization header exists                         │
 │  • Validates Bearer token format                              │
-│  • TODO: Validate token with Kubernetes TokenReview API      │
+│  • Validates token ServiceAccount matches allowed list        │
+│    (BIND_ALLOWED_SERVICE_ACCOUNTS env var = "bind9")         │
 │  • Executes rndc command if authorized                        │
 │  • Returns JSON response                                      │
 └────────────────────────────────────────────────────────────────┘
@@ -228,20 +229,24 @@ User creates DNSZone resource
     ▼
 ┌─────────────────────────────────────────────────────────┐
 │ Execute HTTP API request                                │
-│   zone_manager.add_zone(                                │
+│   zone_manager.add_zones(                               │
 │       zone_name: "example.com",                         │
-│       zone_type: "master",                              │
-│       zone_content: "$TTL 3600\n...",                   │
-│       server: "bind9-primary:8080"                      │
+│       zone_type: ZONE_TYPE_PRIMARY,                     │
+│       server: "bind9-primary:8080",                     │
+│       key_data: &key_data,                              │
+│       soa_record: Some(&soa_record),                    │
+│       name_server_ips: None,                            │
+│       secondary_ips: None,                              │
+│       primary_ips: None                                 │
 │   )                                                     │
 │                                                         │
 │   POST http://bind9-primary:8080/api/v1/zones          │
 │   Authorization: Bearer <token>                         │
 │   {                                                     │
 │     "zoneName": "example.com",                          │
-│     "zoneType": "master",                               │
-│     "zoneContent": "$TTL 3600\n...",                    │
-│     "updateKeyName": "bindcar-operator"                   │
+│     "zoneType": "primary",                              │
+│     "zoneConfig": { ... },                              │
+│     "updateKeyName": "bind9-key"                        │
 │   }                                                     │
 └─────────────────────────────────────────────────────────┘
     │
@@ -343,31 +348,52 @@ impl Bind9Manager {
     }
 
     // Zone management via HTTP API
-    pub async fn add_zone(
+
+    /// Centralized zone addition - dispatches to primary or secondary based on type
+    pub async fn add_zones(
         &self,
         zone_name: &str,
         zone_type: &str,
-        zone_content: &str,
         server: &str,
-    ) -> Result<()> {
-        let url = format!("http://{}/api/v1/zones", server);
-        let body = serde_json::json!({
-            "zoneName": zone_name,
-            "zoneType": zone_type,
-            "zoneContent": zone_content,
-            "updateKeyName": "bindcar-operator"
-        });
-
-        let response = self.client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.token))
-            .json(&body)
-            .send()
-            .await?;
-
-        response.error_for_status()?;
-        Ok(())
+        key_data: &RndcKeyData,
+        soa_record: Option<&SOARecord>,
+        name_server_ips: Option<&HashMap<String, String>>,
+        secondary_ips: Option<&[String]>,
+        primary_ips: Option<&[String]>,
+    ) -> Result<bool> {
+        // Dispatches to add_primary_zone or add_secondary_zone based on zone_type
+        match zone_type {
+            ZONE_TYPE_PRIMARY => {
+                self.add_primary_zone(zone_name, server, key_data,
+                    soa_record.unwrap(), name_server_ips, secondary_ips).await
+            }
+            ZONE_TYPE_SECONDARY => {
+                self.add_secondary_zone(zone_name, server, key_data,
+                    primary_ips.unwrap()).await
+            }
+            _ => Err(anyhow!("Invalid zone type"))
+        }
     }
+
+    /// Add a primary zone via HTTP API
+    pub async fn add_primary_zone(
+        &self,
+        zone_name: &str,
+        server: &str,
+        key_data: &RndcKeyData,
+        soa_record: &SOARecord,
+        name_server_ips: Option<&HashMap<String, String>>,
+        secondary_ips: Option<&[String]>,
+    ) -> Result<bool> { ... }
+
+    /// Add a secondary zone via HTTP API
+    pub async fn add_secondary_zone(
+        &self,
+        zone_name: &str,
+        server: &str,
+        key_data: &RndcKeyData,
+        primary_ips: &[String],
+    ) -> Result<bool> { ... }
 
     pub async fn delete_zone(&self, zone_name: &str, server: &str) -> Result<()> { ... }
     pub async fn reload_zone(&self, zone_name: &str, server: &str) -> Result<()> { ... }
@@ -424,6 +450,7 @@ kind: Pod
 metadata:
   name: bind9-primary
 spec:
+  serviceAccountName: bind9
   containers:
   - name: bind9
     image: internetsystemsconsortium/bind9:9.18
@@ -453,6 +480,8 @@ spec:
       value: "8080"
     - name: RUST_LOG
       value: info
+    - name: BIND_ALLOWED_SERVICE_ACCOUNTS
+      value: bind9
     volumeMounts:
     - name: cache
       mountPath: /var/cache/bind

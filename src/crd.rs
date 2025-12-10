@@ -229,6 +229,10 @@ pub struct DNSZoneStatus {
     pub observed_generation: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub record_count: Option<i32>,
+    /// IP addresses of secondary servers configured for zone transfers.
+    /// Used to detect when secondary IPs change and zones need updating.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secondary_ips: Option<Vec<String>>,
 }
 
 /// Secondary Zone configuration

@@ -47,6 +47,7 @@ DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defi
 | `conditions` | array | No |  |
 | `observedGeneration` | integer | No |  |
 | `recordCount` | integer | No |  |
+| `secondaryIps` | array | No | IP addresses of secondary servers configured for zone transfers. Used to detect when secondary IPs change and zones need updating. |
 
 ---
 

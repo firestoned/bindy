@@ -241,6 +241,14 @@ spec:
                 format: int32
                 nullable: true
                 type: integer
+              secondaryIps:
+                description: |-
+                  IP addresses of secondary servers configured for zone transfers.
+                  Used to detect when secondary IPs change and zones need updating.
+                items:
+                  type: string
+                nullable: true
+                type: array
             type: object
         required:
         - spec
