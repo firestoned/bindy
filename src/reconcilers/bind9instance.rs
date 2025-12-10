@@ -7,7 +7,9 @@
 //! It creates and manages Deployments, `ConfigMaps`, and Services for each `Bind9Instance`.
 
 use crate::bind9::Bind9Manager;
-use crate::bind9_resources::{build_configmap, build_deployment, build_service};
+use crate::bind9_resources::{
+    build_configmap, build_deployment, build_service, build_service_account,
+};
 use crate::constants::DEFAULT_BIND9_VERSION;
 use crate::crd::{Bind9Cluster, Bind9Instance, Bind9InstanceStatus, Condition};
 use crate::labels::{BINDY_MANAGED_BY_LABEL, FINALIZER_BIND9_INSTANCE};
@@ -15,7 +17,7 @@ use anyhow::Result;
 use chrono::Utc;
 use k8s_openapi::api::{
     apps::v1::Deployment,
-    core::v1::{ConfigMap, Secret, Service},
+    core::v1::{ConfigMap, Secret, Service, ServiceAccount},
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::{
@@ -223,6 +225,40 @@ pub async fn reconcile_bind9instance(client: Client, instance: Bind9Instance) ->
         name, replicas, version
     );
 
+    // Check if spec has changed using the standard generation check
+    let current_generation = instance.metadata.generation;
+    let observed_generation = instance.status.as_ref().and_then(|s| s.observed_generation);
+
+    // Check if resources actually exist (drift detection)
+    let deployment_exists = {
+        let deployment_api: Api<Deployment> = Api::namespaced(client.clone(), &namespace);
+        deployment_api.get(&name).await.is_ok()
+    };
+
+    // Only reconcile if:
+    // 1. Spec changed (generation mismatch), OR
+    // 2. We haven't processed this resource yet (no observed_generation), OR
+    // 3. Resources are missing (drift detected)
+    let should_reconcile =
+        crate::reconcilers::should_reconcile(current_generation, observed_generation);
+
+    if !should_reconcile && deployment_exists {
+        debug!(
+            "Spec unchanged (generation={:?}) and resources exist, skipping reconciliation",
+            current_generation
+        );
+        return Ok(());
+    }
+
+    if !should_reconcile && !deployment_exists {
+        info!("Spec unchanged but Deployment missing - drift detected, reconciling resources");
+    }
+
+    debug!(
+        "Reconciliation needed: current_generation={:?}, observed_generation={:?}",
+        current_generation, observed_generation
+    );
+
     // Create or update resources
     match create_or_update_resources(&client, &namespace, &name, &instance).await {
         Ok(()) => {
@@ -301,23 +337,74 @@ async fn create_or_update_resources(
         }
     };
 
-    // 1. Create/update RNDC Secret (must be first, as deployment will mount it)
-    debug!("Step 1: Creating/updating RNDC Secret");
+    // 1. Create/update ServiceAccount (must be first, as deployment will reference it)
+    debug!("Step 1: Creating/updating ServiceAccount");
+    create_or_update_service_account(client, namespace, instance).await?;
+
+    // 2. Create/update RNDC Secret (must be before deployment, as it will be mounted)
+    debug!("Step 2: Creating/updating RNDC Secret");
     create_or_update_rndc_secret(client, namespace, name, instance).await?;
 
-    // 2. Create/update ConfigMap
-    debug!("Step 2: Creating/updating ConfigMap");
+    // 3. Create/update ConfigMap
+    debug!("Step 3: Creating/updating ConfigMap");
     create_or_update_configmap(client, namespace, name, instance, cluster.as_ref()).await?;
 
-    // 3. Create/update Deployment
-    debug!("Step 3: Creating/updating Deployment");
+    // 4. Create/update Deployment
+    debug!("Step 4: Creating/updating Deployment");
     create_or_update_deployment(client, namespace, name, instance, cluster.as_ref()).await?;
 
-    // 4. Create/update Service
-    debug!("Step 4: Creating/updating Service");
+    // 5. Create/update Service
+    debug!("Step 5: Creating/updating Service");
     create_or_update_service(client, namespace, name, instance, cluster.as_ref()).await?;
 
     debug!("Successfully created/updated all resources");
+    Ok(())
+}
+
+/// Create or update the `ServiceAccount` for BIND9 pods
+async fn create_or_update_service_account(
+    client: &Client,
+    namespace: &str,
+    instance: &Bind9Instance,
+) -> Result<()> {
+    let service_account_api: Api<ServiceAccount> = Api::namespaced(client.clone(), namespace);
+    let service_account = build_service_account(namespace, instance);
+    let sa_name = service_account
+        .metadata
+        .name
+        .as_ref()
+        .expect("ServiceAccount must have a name");
+
+    debug!(
+        namespace = %namespace,
+        name = %sa_name,
+        "Creating or updating ServiceAccount"
+    );
+
+    if service_account_api.get(sa_name).await.is_ok() {
+        debug!(
+            "ServiceAccount {}/{} already exists, updating",
+            namespace, sa_name
+        );
+        service_account_api
+            .patch(
+                sa_name,
+                &PatchParams::apply("bindy-controller"),
+                &Patch::Apply(&service_account),
+            )
+            .await?;
+        info!("Updated ServiceAccount {}/{}", namespace, sa_name);
+    } else {
+        debug!(
+            "ServiceAccount {}/{} does not exist, creating",
+            namespace, sa_name
+        );
+        service_account_api
+            .create(&PostParams::default(), &service_account)
+            .await?;
+        info!("Created ServiceAccount {}/{}", namespace, sa_name);
+    }
+
     Ok(())
 }
 
@@ -621,6 +708,41 @@ async fn delete_resources(client: &Client, namespace: &str, name: &str) -> Resul
             "Failed to delete Secret {}/{}: {}",
             namespace, secret_name, e
         ),
+    }
+
+    // 5. Delete ServiceAccount (if it exists and is owned by this instance)
+    let sa_api: Api<ServiceAccount> = Api::namespaced(client.clone(), namespace);
+    let sa_name = crate::constants::BIND9_SERVICE_ACCOUNT;
+    match sa_api.get(sa_name).await {
+        Ok(sa) => {
+            // Check if this instance owns the ServiceAccount
+            let is_owner = sa
+                .metadata
+                .owner_references
+                .as_ref()
+                .is_some_and(|owners| owners.iter().any(|owner| owner.name == name));
+
+            if is_owner {
+                match sa_api.delete(sa_name, &delete_params).await {
+                    Ok(_) => info!("Deleted ServiceAccount {}/{}", namespace, sa_name),
+                    Err(e) => warn!(
+                        "Failed to delete ServiceAccount {}/{}: {}",
+                        namespace, sa_name, e
+                    ),
+                }
+            } else {
+                debug!(
+                    "ServiceAccount {}/{} is not owned by this instance, skipping deletion",
+                    namespace, sa_name
+                );
+            }
+        }
+        Err(e) => {
+            debug!(
+                "ServiceAccount {}/{} does not exist or cannot be retrieved: {}",
+                namespace, sa_name, e
+            );
+        }
     }
 
     Ok(())

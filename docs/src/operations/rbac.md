@@ -6,7 +6,7 @@ Configure Kubernetes RBAC for the Bindy controller.
 
 The Bindy controller needs permissions to:
 - Manage Bind9Instance, DNSZone, and DNS record resources
-- Create and manage Deployments, Services, and ConfigMaps
+- Create and manage Deployments, Services, ConfigMaps, and ServiceAccounts
 - Update resource status fields
 - Create events for logging
 
@@ -47,11 +47,11 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  
+
   - apiGroups: [""]
-    resources: ["services", "configmaps"]
+    resources: ["services", "configmaps", "serviceaccounts"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  
+
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]

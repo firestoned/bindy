@@ -183,6 +183,33 @@ When adding, removing, or changing any feature in the Rust source code:
 - **Diagrams**: Use Mermaid diagrams for complex flows
 - **Versioning**: Date all changes in CHANGELOG.md
 
+#### Building Documentation
+
+**CRITICAL: Always use the Makefile target to build documentation.**
+
+```bash
+# Build all documentation (mdBook + rustdoc + CRD API reference)
+make docs
+```
+
+**What `make docs` does:**
+1. Generates CRD API reference: `cargo run --bin crddoc > docs/src/reference/api.md`
+2. Builds rustdoc API documentation: `cargo doc --no-deps --all-features`
+3. Installs mermaid assets and builds mdBook: `cd docs && mdbook-mermaid install && mdbook build`
+4. Copies rustdoc into documentation output directory
+5. Creates index redirects for easy navigation
+
+**DO NOT:**
+- Run `mdbook build` directly in the `docs/` directory
+- Build documentation components separately
+- Skip the `make docs` target
+
+**Why:**
+- The Makefile ensures all documentation components are built in the correct order
+- Automatically regenerates CRD API docs from latest schemas
+- Sets up proper PATH for cargo binaries
+- Validates that required tools (mdbook, mdbook-mermaid) are installed
+
 #### Validation Checklist
 
 Before considering a task complete, verify:
@@ -195,6 +222,7 @@ Before considering a task complete, verify:
 - [ ] README.md updated (if getting started or features changed)
 - [ ] No broken links in documentation
 - [ ] Documentation reviewed as if reading for the first time
+- [ ] **Documentation builds successfully: `make docs`**
 
 ### Mandatory: Update Changelog on Every Code Change
 
@@ -365,6 +393,133 @@ If you modify `src/reconcilers/records.rs`:
 - Async functions should use `tokio`
 - All k8s API calls must have timeout and retry logic
 - **No magic numbers**: Any numeric literal other than `0` or `1` MUST be declared as a named constant
+- **Use early returns/guard clauses**: Minimize nesting by handling edge cases early and returning
+
+#### Early Return / Guard Clause Pattern
+
+**CRITICAL: Prefer early returns over nested if-else statements.**
+
+The "early return" or "guard clause" coding style emphasizes minimizing nested if-else statements and promoting clearer, more linear code flow. This is achieved by handling error conditions or special cases at the beginning of a function and exiting early if those conditions are met. The remaining code then focuses on the "happy path" or main logic.
+
+**Key Principles:**
+
+1. **Handle preconditions first**: Validate input parameters and other preconditions at the start of a function. If a condition is not met, return immediately (e.g., `return Err(...)`, `return None`, or `return Ok(())`). This prevents the main logic from executing with invalid data.
+
+   ```rust
+   // ✅ GOOD - Early return for validation
+   pub async fn reconcile_dnszone(
+       client: Client,
+       dnszone: DNSZone,
+       zone_manager: &Bind9Manager,
+   ) -> Result<()> {
+       // Guard clause: Check if work is needed
+       if !needs_reconciliation {
+           debug!("Spec unchanged, skipping reconciliation");
+           return Ok(());  // Early return - no work needed
+       }
+
+       // Main logic continues here (happy path)
+       let secondary_ips = find_all_secondary_pod_ips(&client, &namespace, &cluster_ref).await?;
+       add_dnszone(client, dnszone, zone_manager).await?;
+       Ok(())
+   }
+
+   // ❌ BAD - Nested if-else
+   pub async fn reconcile_dnszone(
+       client: Client,
+       dnszone: DNSZone,
+       zone_manager: &Bind9Manager,
+   ) -> Result<()> {
+       if needs_reconciliation {
+           let secondary_ips = find_all_secondary_pod_ips(&client, &namespace, &cluster_ref).await?;
+           add_dnszone(client, dnszone, zone_manager).await?;
+           Ok(())
+       } else {
+           debug!("Spec unchanged, skipping reconciliation");
+           Ok(())
+       }
+   }
+   ```
+
+2. **Minimize else statements**: Instead of using if-else for mutually exclusive conditions, use early returns within if blocks. If a condition is met and an action is performed, return the result. The code after the if block then implicitly handles the "else" case.
+
+   ```rust
+   // ✅ GOOD - No else needed
+   fn calculate_discount(price: f64, is_premium_member: bool) -> f64 {
+       if is_premium_member {
+           return price * 0.90;  // Apply 10% discount and return
+       }
+       // No 'else' needed; non-premium members are handled here
+       price * 0.95  // Apply 5% discount
+   }
+
+   // ❌ BAD - Unnecessary else
+   fn calculate_discount(price: f64, is_premium_member: bool) -> f64 {
+       if is_premium_member {
+           price * 0.90
+       } else {
+           price * 0.95
+       }
+   }
+   ```
+
+3. **Prioritize readability and clarity**: The goal is to make the code easier to understand by reducing indentation levels and keeping related logic together. When a reader encounters an early return, they know that specific branch of execution has concluded.
+
+4. **Use `?` for error propagation**: Rust's `?` operator is a form of early return for errors. Use it liberally to keep the happy path unindented.
+
+   ```rust
+   // ✅ GOOD - Early error returns with ?
+   pub async fn add_dnszone(client: Client, dnszone: DNSZone) -> Result<()> {
+       let namespace = dnszone.namespace().ok_or_else(|| anyhow!("No namespace"))?;
+       let instances = find_instances(&client, &namespace).await?;
+
+       if instances.is_empty() {
+           return Err(anyhow!("No instances found"));
+       }
+
+       for instance in instances {
+           add_zone_to_instance(&instance).await?;
+       }
+
+       Ok(())
+   }
+
+   // ❌ BAD - Nested match/if
+   pub async fn add_dnszone(client: Client, dnszone: DNSZone) -> Result<()> {
+       match dnszone.namespace() {
+           Some(namespace) => {
+               match find_instances(&client, &namespace).await {
+                   Ok(instances) => {
+                       if !instances.is_empty() {
+                           for instance in instances {
+                               add_zone_to_instance(&instance).await?;
+                           }
+                           Ok(())
+                       } else {
+                           Err(anyhow!("No instances found"))
+                       }
+                   }
+                   Err(e) => Err(e),
+               }
+           }
+           None => Err(anyhow!("No namespace")),
+       }
+   }
+   ```
+
+**Benefits:**
+- **Reduced nesting**: Improves readability and reduces cognitive load
+- **Clearer code flow**: The main logic is less cluttered by error handling
+- **Easier to test**: Each condition can be tested in isolation
+- **Fail-fast approach**: Catches invalid states or inputs early in the execution
+- **More maintainable**: Changes to edge cases don't affect the main logic
+
+**When to Use:**
+- Input validation at function start
+- Checking preconditions before expensive operations
+- Handling special cases before the general case
+- Error handling in async functions
+- State validation in reconciliation loops
 
 #### Magic Numbers Rule
 

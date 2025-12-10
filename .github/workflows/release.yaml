@@ -56,29 +56,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
         with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-git-
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-${{ matrix.platform.target }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.platform.target }}-cargo-build-target-
+          key: ${{ matrix.platform.target }}
 
       - name: Run tests (native targets only)
         if: matrix.platform.target != 'aarch64-unknown-linux-gnu'
@@ -87,7 +68,15 @@ jobs:
       - name: Build (release)
         run: cargo build --release --target ${{ matrix.platform.target }} --verbose
 
+      - name: Cache cargo-cyclonedx
+        id: cache-cyclonedx
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-cyclonedx
+          key: ${{ runner.os }}-cargo-cyclonedx-${{ hashFiles('**/Cargo.lock') }}
+
       - name: Install cargo-cyclonedx
+        if: steps.cache-cyclonedx.outputs.cache-hit != 'true'
         run: cargo install cargo-cyclonedx
 
       - name: Generate SBOM
@@ -100,12 +89,14 @@ jobs:
         with:
           name: ${{ matrix.platform.artifact_name }}
           path: target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}
+          retention-days: 1
 
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.platform.artifact_name }}-sbom
           path: target/${{ matrix.platform.target }}/release/sbom.json
+          retention-days: 1
 
   docker-release:
     name: Build and Push Docker Image
@@ -135,8 +126,8 @@ jobs:
           TAG_NAME="${{ github.event.release.tag_name }}"
           # Remove 'v' prefix if present
           VERSION="${TAG_NAME#v}"
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Extract metadata
         id: meta
@@ -166,18 +157,6 @@ jobs:
           sbom: true
           provenance: true
 
-      - name: Generate Docker SBOM
-        uses: anchore/sbom-action@v0
-        with:
-          image: ghcr.io/${{ github.repository }}:${{ steps.version.outputs.tag_name }}
-          format: cyclonedx-json
-          output-file: docker-sbom.json
-
-      - name: Upload Docker SBOM as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-sbom
-          path: docker-sbom.json
 
   upload-release-assets:
     name: Upload Release Assets
@@ -226,16 +205,11 @@ jobs:
             fi
           done
 
-          # Copy Docker SBOM if it exists
-          if [ -f "docker-sbom/docker-sbom.json" ]; then
-            cp docker-sbom/docker-sbom.json sboms/
-          fi
-
           # Generate SHA256 checksums
-          sha256sum *.tar.gz *.zip sboms/*.json > checksums.sha256 2>/dev/null || true
+          sha256sum ./*.tar.gz ./*.zip sboms/*.json > checksums.sha256 2>/dev/null || true
 
       - name: Upload release assets
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             artifacts/*.tar.gz

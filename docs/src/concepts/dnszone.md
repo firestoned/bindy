@@ -110,24 +110,93 @@ RNDC authentication to: my-dns-cluster.dns-system.svc.cluster.local:953
 
 ## Status
 
-The controller reports zone status:
+The controller reports zone status with granular condition types that provide real-time visibility into the reconciliation process.
+
+### Status During Reconciliation
+
+```yaml
+# Phase 1: Configuring primary instances
+status:
+  conditions:
+    - type: Progressing
+      status: "True"
+      reason: PrimaryReconciling
+      message: "Configuring zone on primary instances"
+      lastTransitionTime: "2024-11-26T10:00:00Z"
+  observedGeneration: 1
+
+# Phase 2: Primary success, configuring secondaries
+status:
+  conditions:
+    - type: Progressing
+      status: "True"
+      reason: SecondaryReconciling
+      message: "Configured on 2 primary server(s), now configuring secondaries"
+      lastTransitionTime: "2024-11-26T10:00:01Z"
+  observedGeneration: 1
+  secondaryIps:
+    - "10.42.0.5"
+    - "10.42.0.6"
+```
+
+### Status After Successful Reconciliation
 
 ```yaml
 status:
   conditions:
     - type: Ready
       status: "True"
-      reason: Synchronized
-      message: "Zone created for cluster: my-dns-cluster"
+      reason: ReconcileSucceeded
+      message: "Configured on 2 primary server(s) and 3 secondary server(s)"
+      lastTransitionTime: "2024-11-26T10:00:02Z"
   observedGeneration: 1
   recordCount: 5
+  secondaryIps:
+    - "10.42.0.5"
+    - "10.42.0.6"
+    - "10.42.0.7"
 ```
 
-Possible status conditions:
+### Status After Partial Failure (Degraded)
 
-- **Ready/True** - Zone created and serving on BIND9 cluster
-- **Ready/False** - Zone creation failed or RNDC error
-- **Ready/Unknown** - Controller hasn't reconciled yet
+```yaml
+status:
+  conditions:
+    - type: Degraded
+      status: "True"
+      reason: SecondaryFailed
+      message: "Configured on 2 primary server(s), but secondary configuration failed: connection timeout"
+      lastTransitionTime: "2024-11-26T10:00:02Z"
+  observedGeneration: 1
+  recordCount: 5
+  secondaryIps:
+    - "10.42.0.5"
+    - "10.42.0.6"
+```
+
+### Condition Types
+
+DNSZone uses the following condition types:
+
+- **Progressing** - Zone is being configured
+  - `PrimaryReconciling`: Configuring on primary instances
+  - `PrimaryReconciled`: Primary configuration successful
+  - `SecondaryReconciling`: Configuring on secondary instances
+  - `SecondaryReconciled`: Secondary configuration successful
+
+- **Ready** - Zone fully configured and operational
+  - `ReconcileSucceeded`: All primaries and secondaries configured successfully
+
+- **Degraded** - Partial or complete failure
+  - `PrimaryFailed`: Primary configuration failed (zone not functional)
+  - `SecondaryFailed`: Secondary configuration failed (primaries work, but secondaries unavailable)
+
+### Benefits of Granular Status
+
+1. **Real-time visibility** - See which reconciliation phase is running
+2. **Better debugging** - Know exactly which phase failed (primary vs secondary)
+3. **Graceful degradation** - Secondary failures don't break the zone (primaries still work)
+4. **Accurate counts** - Status shows exact number of configured servers
 
 ## Use Cases
 

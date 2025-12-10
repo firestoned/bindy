@@ -85,26 +85,6 @@ jobs:
           make docs
           find docs -name '*toc*'
 
-      - name: Setup Pages
-        uses: actions/configure-pages@v4
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: docs/target
-
-  docs_deploy:
-    name: Deploy to GitHub Pages
-    needs: docs
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
-
   build:
     name: Build
     runs-on: ubuntu-latest

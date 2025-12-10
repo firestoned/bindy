@@ -284,6 +284,93 @@ flowchart TD
 5. **Reload BIND9 configuration**
 6. **Update record status**
 
+### Zone Transfer Configuration Flow
+
+For primary/secondary DNS architectures, zones must be configured with zone transfer settings:
+
+```mermaid
+flowchart TD
+    A[DNSZone Reconciliation] --> B[Discover Secondary Pods]
+    B --> C{Secondary IPs Found?}
+    C -->|Yes| D[Configure zone with<br/>also-notify & allow-transfer]
+    C -->|No| E[Configure zone<br/>without transfers]
+    D --> F[Store IPs in<br/>DNSZone.status.secondaryIps]
+    E --> F
+    F --> G[Next Reconciliation]
+    G --> H[Compare Current vs Stored IPs]
+    H --> I{IPs Changed?}
+    I -->|Yes| J[Delete & Recreate Zones]
+    I -->|No| K[No Action]
+    J --> B
+    K --> G
+```
+
+**Implementation Details:**
+
+1. **Secondary Discovery** - On every reconciliation:
+   ```rust
+   // Find all Bind9Instance resources with role=secondary for this cluster
+   let instance_api: Api<Bind9Instance> = Api::namespaced(client.clone(), namespace);
+   let lp = ListParams::default().labels(&format!("cluster={cluster_name},role=secondary"));
+   let instances = instance_api.list(&lp).await?;
+
+   // Collect IPs from running pods
+   for instance in instances {
+       let pod_ips = get_pod_ips(&client, namespace, &instance).await?;
+       secondary_ips.extend(pod_ips);
+   }
+   ```
+
+2. **Zone Transfer Configuration** - Pass secondary IPs to zone creation:
+   ```rust
+   let zone_config = ZoneConfig {
+       // ... other fields ...
+       also_notify: Some(secondary_ips.clone()),
+       allow_transfer: Some(secondary_ips.clone()),
+   };
+   ```
+
+3. **Change Detection** - Compare IPs on each reconciliation:
+   ```rust
+   // Get stored IPs from status
+   let stored_ips = dnszone.status.as_ref()
+       .and_then(|s| s.secondary_ips.as_ref());
+
+   // Compare sorted lists
+   let secondaries_changed = match stored_ips {
+       Some(stored) => {
+           let mut stored = stored.clone();
+           let mut current = current_secondary_ips.clone();
+           stored.sort();
+           current.sort();
+           stored != current
+       }
+       None => !current_secondary_ips.is_empty(),
+   };
+
+   // Recreate zones if IPs changed
+   if secondaries_changed {
+       delete_dnszone(client.clone(), dnszone.clone(), zone_manager).await?;
+       add_dnszone(client.clone(), dnszone.clone(), zone_manager).await?;
+   }
+   ```
+
+4. **Status Tracking** - Store current IPs for future comparison:
+   ```rust
+   let new_status = DNSZoneStatus {
+       conditions: vec![ready_condition],
+       observed_generation: dnszone.metadata.generation,
+       record_count: Some(total_records),
+       secondary_ips: Some(current_secondary_ips),  // Store for next reconciliation
+   };
+   ```
+
+**Why This Matters:**
+- **Self-healing**: When secondary pods are rescheduled/restarted and get new IPs, zones automatically update
+- **No manual intervention**: Primary zones always have correct secondary IPs for zone transfers
+- **Automatic recovery**: Zone transfers resume within one reconciliation period (~5-10 minutes) after IP changes
+- **Minimal overhead**: Leverages existing reconciliation loop, no additional watchers needed
+
 ## Concurrency Model
 
 Bindy uses Rust's async/await with Tokio runtime:

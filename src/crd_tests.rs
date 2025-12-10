@@ -520,6 +520,7 @@ mod tests {
             conditions: vec![condition],
             observed_generation: Some(1),
             record_count: Some(5),
+            secondary_ips: None,
         };
 
         assert_eq!(status.conditions.len(), 1);

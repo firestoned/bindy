@@ -75,6 +75,24 @@ pub async fn reconcile_bind9cluster(client: Client, cluster: Bind9Cluster) -> Re
     // Ensure finalizer is present
     ensure_finalizer(&client, &cluster, &namespace, &name).await?;
 
+    // Check if spec has changed using the standard generation check
+    let current_generation = cluster.metadata.generation;
+    let observed_generation = cluster.status.as_ref().and_then(|s| s.observed_generation);
+
+    // Only reconcile if spec changed or we haven't processed this resource yet
+    if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
+        debug!(
+            "Spec unchanged (generation={:?}), skipping cluster updates",
+            current_generation
+        );
+        return Ok(());
+    }
+
+    debug!(
+        "Reconciliation needed: current_generation={:?}, observed_generation={:?}",
+        current_generation, observed_generation
+    );
+
     // Create or update shared cluster ConfigMap
     create_or_update_cluster_configmap(&client, &cluster).await?;
 

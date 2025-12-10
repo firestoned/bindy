@@ -188,9 +188,9 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bindcar"
-version = "0.2.4"
+version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e76a7d5b3c3835b6e58c196979ad09261d9baf88ced237662b62ed2b25eaa57c"
+checksum = "2b3e5a727e069ce155a15968d9de7b7138e7eb9ee80e6d1ec3248c9abe435329"
 dependencies = [
  "anyhow",
  "axum",
@@ -800,6 +800,7 @@ dependencies = [
  "ipnet",
  "once_cell",
  "rand 0.8.5",
+ "ring",
  "thiserror 1.0.69",
  "tinyvec",
  "tokio",

@@ -7,7 +7,7 @@
 //! for BIND9 instances. All functions are pure and easily testable.
 
 use crate::constants::{
-    API_GROUP_VERSION, DEFAULT_BIND9_VERSION, DNS_PORT, KIND_BIND9_INSTANCE,
+    API_GROUP_VERSION, BIND9_SERVICE_ACCOUNT, DEFAULT_BIND9_VERSION, DNS_PORT, KIND_BIND9_INSTANCE,
     LIVENESS_FAILURE_THRESHOLD, LIVENESS_INITIAL_DELAY_SECS, LIVENESS_PERIOD_SECS,
     LIVENESS_TIMEOUT_SECS, READINESS_FAILURE_THRESHOLD, READINESS_INITIAL_DELAY_SECS,
     READINESS_PERIOD_SECS, READINESS_TIMEOUT_SECS, RNDC_PORT,
@@ -22,7 +22,8 @@ use k8s_openapi::api::{
     apps::v1::{Deployment, DeploymentSpec},
     core::v1::{
         ConfigMap, Container, ContainerPort, EnvVar, EnvVarSource, PodSpec, PodTemplateSpec, Probe,
-        SecretKeySelector, Service, ServicePort, ServiceSpec, TCPSocketAction, Volume, VolumeMount,
+        SecretKeySelector, Service, ServiceAccount, ServicePort, ServiceSpec, TCPSocketAction,
+        Volume, VolumeMount,
     },
 };
 use k8s_openapi::apimachinery::pkg::{
@@ -958,6 +959,7 @@ fn build_pod_spec(
             custom_volumes,
         )),
         image_pull_secrets,
+        service_account_name: Some(BIND9_SERVICE_ACCOUNT.into()),
         ..Default::default()
     }
 }
@@ -1008,6 +1010,11 @@ fn build_api_sidecar_container(
         EnvVar {
             name: "RUST_LOG".into(),
             value: Some(log_level),
+            ..Default::default()
+        },
+        EnvVar {
+            name: "BIND_ALLOWED_SERVICE_ACCOUNTS".into(),
+            value: Some(BIND9_SERVICE_ACCOUNT.into()),
             ..Default::default()
         },
         EnvVar {
@@ -1392,6 +1399,51 @@ pub fn build_service(
             ..Default::default()
         },
         spec: Some(default_spec),
+        ..Default::default()
+    }
+}
+
+/// Builds a Kubernetes `ServiceAccount` for BIND9 pods.
+///
+/// Creates a `ServiceAccount` that will be used by BIND9 pods for authentication
+/// to the bindcar API sidecar. This enables service-to-service authentication
+/// using Kubernetes service account tokens.
+///
+/// # Arguments
+///
+/// * `namespace` - The namespace where the `ServiceAccount` will be created
+/// * `instance` - The `Bind9Instance` that owns this `ServiceAccount`
+///
+/// # Returns
+///
+/// A `ServiceAccount` configured for BIND9 pods
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use bindy::bind9_resources::build_service_account;
+/// use bindy::crd::Bind9Instance;
+///
+/// # fn example(instance: Bind9Instance) {
+/// let service_account = build_service_account("dns-system", &instance);
+/// assert_eq!(service_account.metadata.name, Some("bind9".to_string()));
+/// # }
+/// ```
+#[must_use]
+pub fn build_service_account(namespace: &str, instance: &Bind9Instance) -> ServiceAccount {
+    let labels = build_labels_from_instance(BIND9_SERVICE_ACCOUNT, instance);
+    // IMPORTANT: ServiceAccount is SHARED across all Bind9Instance resources in the namespace.
+    // Do NOT set ownerReferences, as multiple instances would conflict (only one can have Controller=true).
+    // The ServiceAccount will be cleaned up manually or via namespace deletion.
+
+    ServiceAccount {
+        metadata: ObjectMeta {
+            name: Some(BIND9_SERVICE_ACCOUNT.into()),
+            namespace: Some(namespace.into()),
+            labels: Some(labels),
+            owner_references: None, // Shared resource - no owner
+            ..Default::default()
+        },
         ..Default::default()
     }
 }

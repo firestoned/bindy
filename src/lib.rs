@@ -69,8 +69,6 @@ pub mod reconcilers;
 #[cfg(test)]
 mod bind9_resources_tests;
 #[cfg(test)]
-mod bind9_tests;
-#[cfg(test)]
 mod crd_docs_tests;
 #[cfg(test)]
 mod crd_tests;

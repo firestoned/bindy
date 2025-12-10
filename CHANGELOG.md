@@ -2,6 +2,2394 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-10 23:00] - Update Documentation for Granular Status Conditions
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/reference/status-conditions.md`:
+  - Updated "Current Usage" section with granular status information for all resources
+  - Added detailed Bind9Cluster status reasons (AllInstancesReady, SomeInstancesNotReady, NoInstancesReady)
+  - Documented DNSZone reconciliation flow with Progressing, Ready, and Degraded conditions
+  - Documented DNS Record reconciliation flow with all 8 record types
+  - Replaced all examples with realistic granular status examples showing:
+    - DNSZone progressing through primary and secondary reconciliation phases
+    - DNS records showing Progressing → Ready or Degraded states
+    - Bind9Cluster showing partial readiness
+- `docs/src/development/reconciliation.md`:
+  - Completely rewrote DNSZone Reconciliation section with detailed multi-phase flow
+  - Added Status Conditions subsection documenting all condition types and reasons
+  - Added Benefits subsection explaining advantages of granular status
+  - Completely rewrote Record Reconciliation section with granular status flow
+  - Added documentation for all 8 record types
+- `docs/src/concepts/dnszone.md`:
+  - Completely rewrote Status section with granular condition examples
+  - Added "Status During Reconciliation" showing Progressing states
+  - Added "Status After Successful Reconciliation" showing Ready state
+  - Added "Status After Partial Failure" showing Degraded state
+  - Added "Condition Types" section documenting all reasons
+  - Added "Benefits of Granular Status" subsection
+
+### Why
+Documentation was out of sync with the new granular status implementation from 2025-12-10 changes. Users needed comprehensive documentation showing:
+- How to interpret Progressing, Ready, and Degraded condition types
+- What each status reason means (PrimaryReconciling, SecondaryFailed, RecordFailed, etc.)
+- Real-world examples of status during each reconciliation phase
+- Benefits of the new granular status approach
+
+### Impact
+- [x] Documentation only
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+
+**Benefits:**
+1. **Users can now understand status conditions** - Clear documentation of all condition types and reasons
+2. **Better troubleshooting** - Examples show what each failure state looks like
+3. **Reconciliation visibility** - Documentation explains the multi-phase reconciliation flow
+4. **Consistency** - All documentation now reflects the actual reconciler implementation
+
+---
+
+## [2025-12-10 22:00] - Implement Granular Status Updates for DNS Records
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/records.rs`:
+  - Modified `add_record_to_all_endpoints()` to return `usize` (count of configured endpoints)
+  - Updated ALL 8 record reconcilers (A, TXT, AAAA, CNAME, MX, NS, SRV, CAA) to use granular status updates:
+    - Set `Progressing/RecordReconciling` status before record configuration
+    - Set `Degraded/RecordFailed` status on errors with specific error messages
+    - Set `Ready/ReconcileSucceeded` status on success with endpoint count
+
+### Why
+DNS record reconciliation previously had a single status update at the end, making it impossible to track progress or identify which phase failed.
+
+**New Architecture:**
+- **Incremental status updates** - Users see `Progressing` status while records are being configured
+- **Better failure visibility** - `Degraded/RecordFailed` status shows exactly what failed
+- **Accurate endpoint counts** - Status message includes number of endpoints successfully configured
+- **Kubernetes-native conditions** - Proper use of `Progressing`/`Ready`/`Degraded` types
+
+**Status Flow:**
+```
+Progressing/RecordReconciling (before work)
+  ↓
+Ready/ReconcileSucceeded (on success with count)
+
+OR
+
+Progressing/RecordReconciling
+  ↓
+Degraded/RecordFailed (on failure with error details)
+```
+
+### Impact
+- [x] Enhancement - Better observability for DNS record operations
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+**Benefits:**
+1. **Real-time progress** - See when records are being configured
+2. **Better debugging** - Know immediately if/why a record failed
+3. **Accurate reporting** - Status shows exact number of endpoints configured
+4. **Consistent with zones** - Same status pattern as DNSZone reconciliation
+
+**Testing:**
+- All 270 unit tests pass
+- All clippy checks pass
+- cargo fmt applied
+- All 8 record types tested (A, TXT, AAAA, CNAME, MX, NS, SRV, CAA)
+
+---
+
+## [2025-12-10 21:00] - Implement Granular DNSZone Status Updates with Progressing/Degraded Conditions
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/dnszone.rs`:
+  - **Complete redesign of status update architecture** for better observability and failure visibility
+  - Modified `add_dnszone()` to return `usize` (count of configured primary endpoints)
+  - Modified `add_dnszone_to_secondaries()` to return `usize` (count of configured secondary endpoints)
+  - Added `update_condition()` helper for incremental status updates during reconciliation
+  - Modified `update_status_with_secondaries()` to accept a `reason` parameter
+  - Modified `reconcile_dnszone()` to:
+    - Set `Progressing` status with reason `PrimaryReconciling` before primary configuration
+    - Set `Progressing` status with reason `PrimaryReconciled` after successful primary configuration
+    - Set `Progressing` status with reason `SecondaryReconciling` before secondary configuration
+    - Set `Progressing` status with reason `SecondaryReconciled` after successful secondary configuration
+    - Set `Ready` status with reason `ReconcileSucceeded` when all phases complete successfully
+    - Set `Degraded` status with specific reason on failures:
+      - `PrimaryFailed` - Primary reconciliation failed (fatal)
+      - `SecondaryFailed` - Secondary reconciliation failed (non-fatal, primaries still work)
+  - Secondary failures are now non-fatal and result in `Degraded` status instead of failing reconciliation
+
+### Why
+The previous implementation had several problems:
+
+1. **Single status update at the end** - If reconciliation failed partway through, status didn't reflect partial progress
+2. **Re-fetching was wasteful** - Extra API call to get information we already had
+3. **Lack of granularity** - Couldn't tell if primaries succeeded but secondaries failed
+4. **Poor observability** - Users couldn't see reconciliation progress
+5. **Inaccurate secondary count** - Status showed "0 secondary server(s)" even when secondaries were configured
+
+**New Architecture:**
+
+- **Incremental status updates** - Status reflects actual progress as each phase completes
+- **Better failure visibility** - Can see which phase failed (primary vs secondary reconciliation)
+- **Kubernetes-native conditions** - Uses proper condition types (`Progressing`, `Ready`, `Degraded`)
+- **No wasted API calls** - Status is updated with counts returned from add functions
+- **Graceful degradation** - Secondary failures don't break the zone (primaries still work)
+
+**Condition Flow:**
+
+```
+Progressing/PrimaryReconciling
+  → Progressing/PrimaryReconciled (on success)
+  → Progressing/SecondaryReconciling
+  → Progressing/SecondaryReconciled (on success)
+  → Ready/ReconcileSucceeded (all complete)
+
+OR
+
+Progressing/PrimaryReconciling
+  → Degraded/PrimaryFailed (on primary failure - fatal)
+
+OR
+
+Progressing/SecondaryReconciling
+  → Degraded/SecondaryFailed (on secondary failure - non-fatal)
+```
+
+### Impact
+- [x] Enhancement - Better observability and failure handling
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+**Benefits:**
+1. **Real-time progress visibility** - Users can see exactly where reconciliation is in the process
+2. **Partial success handling** - Primaries can work even if secondaries fail
+3. **Better debugging** - Clear indication of which component failed
+4. **Accurate counts** - Status reflects actual number of configured endpoints
+5. **Graceful degradation** - DNS service continues even with secondary failures
+
+**Testing:**
+- All unit tests pass (270 passed)
+- All clippy checks pass
+- cargo fmt applied
+- Verified status conditions update correctly through each phase
+
+---
+
+## [2025-12-10 20:30] - Fix DNSZone Status to Reflect Actual Secondary Count
+
+**Author:** Erick Bourgeois
+
+**NOTE: This change was superseded by the granular status update implementation above (2025-12-10 21:00).**
+
+---
+
+## [2025-12-10 16:12] - Fix ServiceAccount OwnerReference Conflict
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/bind9_resources.rs`:
+  - Modified `build_service_account()` to NOT set `ownerReferences` on the `bind9` ServiceAccount
+  - ServiceAccount is now a shared resource across all Bind9Instance resources in the namespace
+
+### Why
+Multiple Bind9Instance resources (primary and secondary) in the same namespace were trying to create the same ServiceAccount named "bind9", each setting themselves as the controller owner (`Controller: true` in ownerReferences).
+
+**Kubernetes Constraint:**
+Only ONE ownerReference can have `Controller: true`. When multiple instances tried to claim controller ownership, Kubernetes rejected the updates with error:
+```
+ServiceAccount "bind9" is invalid: metadata.ownerReferences: Only one reference can have Controller set to true
+```
+
+**Root Cause:**
+The `build_service_account()` function called `build_owner_references(instance)`, which always sets `controller: Some(true)`. Since all instances in a namespace share the same ServiceAccount name ("bind9"), this caused ownership conflicts.
+
+**Solution:**
+ServiceAccount is now created **without ownerReferences** (`owner_references: None`). This is the correct pattern for shared resources in Kubernetes:
+- Each Bind9Instance has its own Deployment, ConfigMap, Secret (owned by that instance)
+- ServiceAccount is shared across all instances in the namespace (no owner)
+- ServiceAccount will be cleaned up manually or via namespace deletion
+
+### Impact
+- [x] Bug fix - No breaking changes
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+**Testing:**
+- Tested with multiple Bind9Instance resources (primary-0, primary-1, secondary-0)
+- ServiceAccount created successfully without ownerReferences
+- All instances reconcile successfully without conflicts
+
+---
+
+## [2025-12-10 20:00] - Fix Reconciliation to Detect Missing Resources (Drift Detection)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/bind9instance.rs`:
+  - Added drift detection to reconciliation logic
+  - Now checks if Deployment exists before skipping reconciliation
+  - Reconciles resources even when spec unchanged if resources are missing
+  - Prevents reconciliation from being permanently stuck when initial creation fails due to RBAC or other errors
+
+### Why
+The reconciler was incorrectly skipping resource creation when the spec hadn't changed (generation unchanged), even though actual Kubernetes resources (Deployment, Service, ConfigMap, ServiceAccount) might not exist in the cluster.
+
+**Problem Scenario:**
+1. User creates a `Bind9Instance` resource
+2. Reconciler attempts to create resources but fails due to RBAC permissions issue (e.g., missing `serviceaccounts` permissions)
+3. User fixes RBAC by applying updated ClusterRole
+4. Reconciler runs again but sees `current_generation == observed_generation` and **skips resource creation**
+5. Resources are never created, operator is permanently stuck
+
+**Root Cause:**
+The `should_reconcile()` function only checked generation, assuming that if `observed_generation` was set, reconciliation had succeeded. This assumption is invalid because:
+- `observed_generation` might be set even if reconciliation failed partway through
+- External factors (deletion, RBAC changes, API server issues) can cause resources to be missing
+- Kubernetes operators must implement drift detection to maintain desired state
+
+**Solution:**
+Added resource existence check (drift detection):
+1. Check if spec changed (generation-based)
+2. Check if Deployment exists in cluster
+3. Only skip reconciliation if BOTH:
+   - Spec hasn't changed (generation match)
+   - AND resources exist (no drift)
+4. If resources are missing, reconcile regardless of generation
+
+This follows Kubernetes operator best practices where controllers continuously reconcile toward desired state, not just on spec changes.
+
+### Impact
+- [x] Bug fix - No breaking changes
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+**Testing:**
+- All existing tests pass (`cargo test`)
+- Clippy passes with strict warnings
+- Manually tested scenario:
+  1. Created `Bind9Instance` with RBAC issue
+  2. Fixed RBAC by applying correct ClusterRole
+  3. Reconciler now detects missing Deployment and creates all resources
+
+## [2025-12-10 19:30] - Make Zone Deletion Idempotent
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/bind9/zone_ops.rs`:
+  - Modified `delete_zone()` to handle non-existent zones gracefully
+  - Changed freeze error handling from silent ignore to debug logging
+  - Made DELETE operation idempotent by treating "not found" and 404 errors as success
+  - Added proper error context for actual failure cases
+- `src/constants.rs`:
+  - Fixed rustdoc formatting for `ServiceAccount` (backticks for proper rendering)
+- `src/reconcilers/bind9instance.rs`:
+  - Fixed rustdoc formatting for `ServiceAccount` (backticks for proper rendering)
+  - Refactored `create_or_update_service_account()` from `match` to `if let` for better readability
+
+### Why
+Zone deletion was failing with ERROR logs when attempting to delete zones that don't exist on secondary servers. This is a common scenario during cleanup operations where:
+1. A zone might not have been successfully transferred to a secondary yet
+2. A secondary server is being cleaned up after a zone was already removed
+3. Reconciliation is retrying a failed deletion operation
+
+The freeze operation before deletion would fail with "not found" and log an ERROR even though the error was being ignored. This created noise in logs and made it difficult to distinguish real errors from expected conditions.
+
+Making the deletion operation idempotent follows Kubernetes operator best practices where repeated delete operations should succeed if the resource is already gone.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+## [2025-12-10 18:45] - Add ServiceAccount and Authentication for BIND9 Pods
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/constants.rs`:
+  - Added `BIND9_SERVICE_ACCOUNT` constant for the `bind9` ServiceAccount name
+- `src/bind9_resources.rs`:
+  - Added `build_service_account()` function to create ServiceAccount for BIND9 pods
+  - Updated `build_pod_spec()` to set `service_account_name` to `bind9`
+  - Added `BIND_ALLOWED_SERVICE_ACCOUNTS` environment variable to bindcar container
+  - Imported `ServiceAccount` from `k8s_openapi::api::core::v1`
+- `src/reconcilers/bind9instance.rs`:
+  - Added `create_or_update_service_account()` function to manage ServiceAccount lifecycle
+  - Updated `create_or_update_resources()` to create ServiceAccount as the first step
+  - Updated `delete_resources()` to delete ServiceAccount when owned by the instance
+  - Imported `build_service_account` and `ServiceAccount`
+
+### Why
+To enable secure service-to-service authentication between the bindy controller and the bindcar API sidecar using Kubernetes service account tokens. This improves security by:
+- Authenticating requests using Kubernetes-native mechanisms instead of external secrets
+- Restricting access to the bindcar API to only authorized service accounts
+- Following Kubernetes best practices for pod identity and authentication
+
+The `BIND_ALLOWED_SERVICE_ACCOUNTS` environment variable configures bindcar to accept connections from pods using the `bind9` service account, enabling the bindy controller to manage DNS zones securely.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+## [2025-12-10 16:30] - Centralize Zone Addition Logic
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/bind9/zone_ops.rs`:
+  - Renamed `add_zone()` to `add_primary_zone()` for clarity
+  - Removed `zone_type` parameter from `add_primary_zone()` - always uses `ZONE_TYPE_PRIMARY`
+  - Added centralized `add_zones()` function that dispatches to `add_primary_zone()` or `add_secondary_zone()` based on zone type
+- `src/bind9/mod.rs`:
+  - Updated `Bind9Manager::add_zone()` to `add_zones()` with unified signature
+  - Added `Bind9Manager::add_primary_zone()` for direct primary zone creation
+  - Both methods now use the centralized `add_zones()` dispatcher
+- `src/reconcilers/dnszone.rs`:
+  - Updated primary zone reconciliation to use `add_zones()` with `ZONE_TYPE_PRIMARY`
+  - Updated secondary zone reconciliation to use `add_zones()` with `ZONE_TYPE_SECONDARY`
+  - Added `ZONE_TYPE_SECONDARY` import from bindcar
+- `src/bind9/zone_ops_tests.rs`:
+  - Updated test documentation to reflect new function names
+  - Updated `test_add_zone_duplicate()` to use `add_zones()` instead of `add_zone()`
+- `docs/src/concepts/architecture-http-api.md`:
+  - Updated Bind9Manager method list to show `add_zones()`, `add_primary_zone()`, `add_secondary_zone()`
+  - Updated data flow diagram to use `add_zones()` with correct parameters
+  - Updated code examples to show centralized dispatcher pattern
+- `docs/src/operations/error-handling.md`:
+  - Updated idempotent operations section to document all three zone addition functions
+  - Clarified that `add_zones()` is the centralized dispatcher
+- `docs/src/reference/api.md`:
+  - Regenerated API documentation to reflect latest CRD schemas
+- `CLAUDE.md`:
+  - Added "Building Documentation" section with `make docs` instructions
+  - Documented the complete documentation build workflow
+  - Added requirement to always use `make docs` instead of building components separately
+  - Updated validation checklist to include documentation build verification
+
+### Why
+The zone addition logic had two separate methods (`add_zone()` for primary and `add_secondary_zone()` for secondary), which led to:
+- Code duplication in reconcilers (separate code paths for primary vs secondary)
+- Lack of a single entry point for zone creation
+- Zone type parameter on `add_zone()` that was unused (always passed `ZONE_TYPE_PRIMARY`)
+
+This refactoring creates a cleaner architecture:
+- **`add_zones()`**: Single entry point that handles both zone types by dispatching to the appropriate function
+- **`add_primary_zone()`**: Specialized function for primary zones (no `zone_type` parameter needed)
+- **`add_secondary_zone()`**: Specialized function for secondary zones (already existed)
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Refactoring only (internal API changes, no behavior changes)
+
+**Code Quality Improvements:**
+- Single entry point for all zone additions via `add_zones()`
+- Clearer separation of concerns (primary vs secondary logic)
+- Reduced parameter count on `add_primary_zone()` (removed unused `zone_type`)
+- Better type safety through centralized dispatch logic
+
+## [2025-12-10 00:00] - Implement Secondary Zone Synchronization
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/reconcilers/dnszone.rs`: Added secondary zone synchronization logic
+  - `find_all_primary_pod_ips()`: Find all primary server IPs for configuring secondaries
+  - `find_all_secondary_pods()`: Find all secondary pods in a cluster
+  - `add_dnszone_to_secondaries()`: Create secondary zones with primaries configured
+  - Updated `reconcile_dnszone()` to create zones on both primary AND secondary instances
+  - Updated `delete_dnszone()` to delete zones from both primary AND secondary instances
+- `src/bind9/mod.rs`: Added `add_secondary_zone()` method to Bind9Manager
+- `src/bind9/zone_ops.rs`: Added `add_secondary_zone()` function to create secondary zones with primaries
+
+### Changed
+- `Cargo.toml`: Updated bindcar dependency from `0.2.7` to `0.2.8`
+- `src/bind9/zone_ops.rs`: Updated `add_zone()` to include `primaries: None` for primary zones
+- `src/bind9/zone_ops_tests.rs`: Updated all test ZoneConfig initializations to include `primaries` field
+
+### Why
+The DNSZone reconciler was only creating zones on PRIMARY instances, never on SECONDARY instances. This meant secondary servers had no knowledge of zones and couldn't perform zone transfers from primaries.
+
+For BIND9 zone transfers to work properly:
+- **Primary zones** need: `also-notify` and `allow-transfer` configured with secondary IPs ✅ (already implemented)
+- **Secondary zones** need: Zone definition with `primaries` field listing primary server IPs ❌ (was missing)
+
+Bindcar 0.2.8 added support for the `primaries` field in `ZoneConfig`, enabling the controller to create properly configured secondary zones that will automatically transfer from their configured primary servers.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (to get new secondary zone configurations)
+- [ ] Config change only
+- [ ] Documentation only
+
+**Behavior Changes:**
+- DNSZone reconciliation now creates zones on BOTH primary and secondary instances
+- Secondary zones are created with `primaries` field pointing to all running primary pod IPs
+- Zone deletion now removes zones from BOTH primary and secondary instances
+- Status messages now show counts for both primary and secondary servers
+
+**Zone Transfer Flow:**
+1. Controller finds all primary pod IPs in the cluster
+2. Controller creates primary zones with `also-notify` and `allow-transfer` for secondary IPs
+3. Controller creates secondary zones with `primaries` configured to primary IPs
+4. BIND9 secondary servers automatically initiate zone transfers (AXFR) from configured primaries
+5. Primaries send NOTIFY messages to secondaries when zones change
+6. Secondaries respond by requesting fresh zone data via IXFR/AXFR
+
+**Example Status Message:**
+```
+Zone example.com configured on 2 primary and 1 secondary server(s) for cluster production-dns
+```
+
+**Testing:**
+All 277 tests pass (270 library + 7 main tests).
+
+**Automatic Primaries Updates:**
+The DNSZone reconciler is fully idempotent - every reconciliation fetches current primary IPs and creates/updates secondary zones. Combined with periodic reconciliation (default: every 5 minutes), secondary zones will automatically sync with current primary IPs when:
+- Primary pods restart (new IPs assigned)
+- Primary instances scale up/down
+- New primary instances are added to the cluster
+
+**Current Limitations:**
+- Secondary zone updates wait for periodic reconciliation instead of immediate watch-based updates
+- Bindcar 0.2.8 doesn't support updating existing zones, so primaries are only set at creation
+- To update primaries on existing secondary zones, manually delete and let controller recreate them
+
+**Future Enhancements:**
+- Add explicit Kubernetes watch on Bind9Instance resources to trigger immediate DNSZone reconciliation when primary instances change
+- Add zone update API to bindcar to support in-place primary IP updates without zone deletion
+- Add unit tests for secondary zone synchronization logic
+
+## [2025-12-09 20:35] - Fix Confusing Record Reconciliation Log Messages
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/records.rs`: Changed log messages from "Successfully added" to "Successfully reconciled"
+  - Line 182-184: Changed "Adding" to "Reconciling" in INFO log
+  - Line 195: Changed error context from "Failed to add" to "Failed to reconcile"
+  - Line 198-200: Changed DEBUG log from "Successfully added" to "Successfully reconciled"
+  - Line 209-212: Changed INFO log from "Successfully added" to "Successfully reconciled"
+
+### Why
+The previous log messages were confusing because they stated "Successfully added X record" even when the record already existed with the correct value and no changes were made. The controller's declarative reconciliation pattern (implemented in `should_update_record`) correctly skips updates when records match the desired state, logging "already exists with correct value - no changes needed". However, the reconciler's log messages incorrectly implied that an add operation always occurred.
+
+The new "reconciled" terminology accurately reflects that reconciliation can result in:
+- Creating a new record (if it doesn't exist)
+- Updating an existing record (if it has different values)
+- Skipping changes (if the record already matches desired state)
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Logging/observability improvement only
+
+Example log output after fix:
+```
+INFO  A record api already exists with correct value - no changes needed
+DEBUG Successfully reconciled A record in zone example.com at endpoint 10.244.1.132:53: api.example.com -> 192.0.2.2
+```
+
+## [2025-12-09 19:30] - Upgrade bindcar to 0.2.7
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: Updated bindcar dependency from `0.2.5` to `0.2.7`
+
+### Why
+Keep dependencies up to date with the latest bugfixes and improvements from the bindcar HTTP REST API library for managing BIND9 zones.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Dependency update only
+
+All tests pass successfully (277 total: 270 library tests + 7 main tests).
+
+## [2025-12-09 17:45] - Split bind9 Tests into Per-Module Files
+
+**Author:** Erick Bourgeois
+
+### Changed
+- Split monolithic `src/bind9/mod_tests.rs` (1,454 lines, 80 tests) into 11 separate test files
+- Created dedicated test files matching the module structure:
+  - `mod_tests.rs` (28 lines, 2 tests) - `Bind9Manager` tests
+  - `types_tests.rs` (14 tests) - `RndcKeyData`, `RndcError`, `SRVRecordData` tests
+  - `rndc_tests.rs` (28 tests) - RNDC key generation and parsing tests
+  - `zone_ops_tests.rs` (28 tests) - Zone operation tests
+  - `records/a_tests.rs` (2 tests) - A and AAAA record tests
+  - `records/cname_tests.rs` (1 test) - CNAME record tests
+  - `records/txt_tests.rs` (1 test) - TXT record tests
+  - `records/mx_tests.rs` (1 test) - MX record tests
+  - `records/ns_tests.rs` (1 test) - NS record tests
+  - `records/srv_tests.rs` (1 test) - SRV record tests
+  - `records/caa_tests.rs` (1 test) - CAA record tests
+- Added test module declarations to each source file (e.g., `#[cfg(test)] mod a_tests;`)
+
+### Why
+The monolithic test file didn't match the modular code structure, making it:
+- Hard to find tests for specific functionality
+- Difficult to understand which tests belong to which module
+- Unclear where to add new tests
+- Not following the project's pattern of separate `*_tests.rs` files
+
+Co-locating tests with their corresponding modules provides:
+- **Better discoverability**: Tests are next to the code they test
+- **Clearer organization**: Each test file has a focused purpose
+- **Easier maintenance**: Changes to a module and its tests happen together
+- **Consistency**: Matches existing patterns (e.g., `reconcilers/*_tests.rs`)
+
+### Impact
+- **All 80 tests preserved**: No tests lost in reorganization
+- **All tests pass**: 270 library tests passed, 0 failed (16 ignored as expected)
+- **98% reduction** in `mod_tests.rs`: From 1,454 lines to 28 lines
+- **Better test organization**: Each module's tests are in a dedicated file
+- **Improved maintainability**: Tests co-located with code they verify
+
+### Technical Details
+
+**Test File Distribution:**
+```
+src/bind9/
+├── mod_tests.rs               (2 tests)   - Bind9Manager
+├── rndc_tests.rs              (28 tests)  - RNDC operations
+├── types_tests.rs             (14 tests)  - Type definitions
+├── zone_ops_tests.rs          (28 tests)  - Zone management
+└── records/
+    ├── a_tests.rs             (2 tests)   - A/AAAA records
+    ├── cname_tests.rs         (1 test)    - CNAME records
+    ├── txt_tests.rs           (1 test)    - TXT records
+    ├── mx_tests.rs            (1 test)    - MX records
+    ├── ns_tests.rs            (1 test)    - NS records
+    ├── srv_tests.rs           (1 test)    - SRV records
+    └── caa_tests.rs           (1 test)    - CAA records
+```
+
+**Module Declaration Pattern:**
+Each source file now declares its test module at the end:
+```rust
+// src/bind9/rndc.rs
+#[cfg(test)]
+#[path = "rndc_tests.rs"]
+mod rndc_tests;
+```
+
+This keeps tests separate but discoverable, following Rust best practices.
+
+---
+
+## [2025-12-09 17:30] - Refactor bind9.rs into Modular Structure
+
+**Author:** Erick Bourgeois
+
+### Changed
+- Refactored monolithic `src/bind9.rs` (1,942 lines) into modular structure across 13 files
+- Created `src/bind9/` directory with organized submodules:
+  - `mod.rs` (511 lines) - Main exports and `Bind9Manager` struct
+  - `types.rs` (95 lines) - Shared types: `RndcKeyData`, `RndcError`, `SRVRecordData`
+  - `rndc.rs` (207 lines) - RNDC key generation and management functions
+  - `zone_ops.rs` (565 lines) - Zone HTTP API operations
+  - `records/mod.rs` (161 lines) - Generic `query_dns_record()` and `should_update_record()`
+  - `records/a.rs` (244 lines) - A and AAAA record operations
+  - `records/cname.rs` (108 lines) - CNAME record operations
+  - `records/txt.rs` (110 lines) - TXT record operations
+  - `records/mx.rs` (110 lines) - MX record operations
+  - `records/ns.rs` (106 lines) - NS record operations
+  - `records/srv.rs` (146 lines) - SRV record operations
+  - `records/caa.rs` (186 lines) - CAA record operations
+- Split tests into per-module files (see separate changelog entry above)
+
+### Why
+The `bind9.rs` file had grown to nearly 2,000 lines, making it difficult to:
+- Navigate and find specific functionality
+- Make changes without merge conflicts in team environments
+- Understand the separation of concerns between zone operations and record operations
+- Add new record types without editing a massive file
+
+A modular structure provides:
+- **Better organization**: Each file has a single, clear responsibility
+- **Easier maintenance**: Smaller files are easier to understand and modify
+- **Improved collaboration**: Multiple developers can work on different modules simultaneously
+- **Clear boundaries**: Separation between types, RNDC operations, zone operations, and record types
+
+### Impact
+- **Zero breaking changes**: All public types and functions re-exported through `mod.rs`
+- **100% backward compatibility**: Existing code using `use bindy::bind9::*` continues to work
+- **All tests pass**: 291 tests passed, 0 failed (20 ignored as expected)
+- **Better code organization**: Each module is <600 lines (most are <200 lines)
+- **Improved maintainability**: Clear separation of concerns makes future changes easier
+
+### Technical Details
+
+**New Directory Structure:**
+```
+src/bind9/
+├── mod.rs              # Main exports, Bind9Manager, re-exports all public API
+├── types.rs            # Core data structures and constants
+├── rndc.rs             # RNDC key operations
+├── zone_ops.rs         # Zone management via HTTP API
+├── mod_tests.rs        # Unit tests (moved from bind9_tests.rs)
+└── records/
+    ├── mod.rs          # Generic helpers for all record types
+    ├── a.rs            # A/AAAA records
+    ├── cname.rs        # CNAME records
+    ├── txt.rs          # TXT records
+    ├── mx.rs           # MX records
+    ├── ns.rs           # NS records
+    ├── srv.rs          # SRV records
+    └── caa.rs          # CAA records
+```
+
+**Re-export Pattern in `mod.rs`:**
+```rust
+// Module declarations
+pub mod types;
+pub mod rndc;
+pub mod zone_ops;
+pub mod records;
+
+// Re-export all public types and functions
+pub use types::{RndcKeyData, RndcError, SRVRecordData, SERVICE_ACCOUNT_TOKEN_PATH};
+pub use rndc::{generate_rndc_key, create_rndc_secret_data, parse_rndc_secret_data};
+pub use zone_ops::{add_dnszone, delete_dnszone, zone_exists, reload_zone};
+pub use records::*;  // All record operation functions
+```
+
+This ensures that existing code like:
+```rust
+use bindy::bind9::{Bind9Manager, RndcKeyData, add_a_record};
+```
+continues to work without any changes.
+
+---
+
+## [2025-12-09 17:00] - Implement Generic Declarative Reconciliation for All DNS Record Types
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/bind9.rs`: Added generic `query_dns_record()` function (lines 910-957)
+  - Queries DNS server for any record type using hickory-client
+  - Returns matching Record objects from DNS responses
+  - Shared by all record types to eliminate code duplication
+  - Replaces type-specific query functions like `query_a_record()`
+
+- `src/bind9.rs`: Added generic `should_update_record()` helper (lines 982-1028)
+  - Implements observe→diff→act pattern for all record types
+  - Takes callback function for type-specific value comparison
+  - Logs clear messages: "already exists", "creating", or "updating"
+  - Returns `true` if update needed, `false` if record already correct
+
+- `src/bind9.rs`: Refactored all record functions to use declarative reconciliation:
+  - `add_a_record()` - A records (IPv4 addresses)
+  - `add_aaaa_record()` - AAAA records (IPv6 addresses)
+  - `add_cname_record()` - CNAME records (aliases)
+  - `add_txt_record()` - TXT records (text data)
+  - `add_mx_record()` - MX records (mail exchangers with priority)
+  - `add_ns_record()` - NS records (nameserver delegation)
+  - `add_srv_record()` - SRV records (service location with port/weight/priority)
+  - `add_caa_record()` - CAA records (certificate authority authorization)
+
+### Why
+The previous implementation only had declarative reconciliation for A records. All other record types were still sending DNS UPDATEs blindly on every reconciliation, even when records already matched desired state. This violated Kubernetes controller best practices.
+
+**Problems with imperative approach:**
+- Every reconciliation sent a DNS UPDATE, even when record was already correct
+- Unnecessary network traffic and server load
+- Error logs for operations that should be no-ops
+- Code duplication across all record types
+- Violated observe→diff→act pattern
+
+**Declarative reconciliation benefits:**
+- **Idempotent**: Multiple reconciliations with same spec = no-op after first
+- **Efficient**: Only sends DNS UPDATE when value differs or record missing
+- **Clear**: Logs explain exactly what action is being taken and why
+- **Correct**: Follows standard Kubernetes controller pattern
+- **Maintainable**: Generic abstraction eliminates code duplication
+
+### Impact
+- **All record types** now follow declarative reconciliation pattern
+- **Zero** unnecessary DNS UPDATEs for records that already match
+- **Reduced** DNS server load and network traffic
+- **Clearer** logs showing actual vs. desired state differences
+- **Type-safe** comparison logic using callbacks for each record type
+- **Maintainable** abstraction makes future record types easy to add
+
+### Technical Details
+
+**Generic Abstraction:**
+```rust
+// Generic query function - works for ANY record type
+async fn query_dns_record(
+    zone_name: &str,
+    name: &str,
+    record_type: RecordType,
+    server: &str,
+) -> Result<Vec<Record>> {
+    // Query DNS and return matching records
+}
+
+// Generic reconciliation helper with callback for comparison
+async fn should_update_record<F>(
+    &self,
+    zone_name: &str,
+    name: &str,
+    record_type: RecordType,
+    record_type_name: &str,
+    server: &str,
+    compare_fn: F,  // Type-specific comparison
+) -> Result<bool>
+where
+    F: FnOnce(&[Record]) -> bool,
+{
+    // 1. Query existing records
+    match query_dns_record(...).await {
+        Ok(records) if !records.is_empty() => {
+            // 2. Compare using callback
+            if compare_fn(&records) {
+                info!("Record already correct");
+                Ok(false)  // ✅ Skip update
+            } else {
+                info!("Record differs, updating");
+                Ok(true)   // 🔄 Update needed
+            }
+        }
+        Ok(_) => {
+            info!("Record missing, creating");
+            Ok(true)  // ➕ Create needed
+        }
+        Err(e) => {
+            warn!("Query failed: {}", e);
+            Ok(true)  // 🤷 Try update anyway
+        }
+    }
+}
+```
+
+**Example: A Record with Callback**
+```rust
+pub async fn add_a_record(...) -> Result<()> {
+    let should_update = self.should_update_record(
+        zone_name,
+        name,
+        RecordType::A,
+        "A",
+        server,
+        |existing_records| {
+            // Type-specific comparison logic
+            if existing_records.len() == 1 {
+                if let Some(RData::A(existing_ip)) = existing_records[0].data() {
+                    return existing_ip.to_string() == ipv4;
+                }
+            }
+            false
+        },
+    ).await?;
+
+    if !should_update {
+        return Ok(());  // Already correct!
+    }
+
+    // Only send DNS UPDATE if needed
+    ...
+}
+```
+
+**Example: MX Record Comparison (Multi-Field)**
+```rust
+|existing_records| {
+    if existing_records.len() == 1 {
+        if let Some(RData::MX(existing_mx)) = existing_records[0].data() {
+            return existing_mx.preference() == priority
+                && existing_mx.exchange().to_string() == mail_server;
+        }
+    }
+    false
+}
+```
+
+This implements the **reconciliation loop pattern** for all record types:
+1. **Observe**: Query current DNS state
+2. **Diff**: Compare with desired state (via callback)
+3. **Act**: Only send UPDATE if they differ
+
+---
+
+## [2025-12-09 16:30] - Add Declarative Reconciliation for A Records
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/bind9.rs`: Added `query_a_record()` function (replaced by generic implementation)
+- `src/bind9.rs`: Updated `add_a_record()` with declarative reconciliation
+
+### Why
+Initial implementation of declarative reconciliation for A records only. This was the prototype that was later generalized to all record types in the next change.
+
+---
+
+## [2025-12-09 16:00] - Improve DNS UPDATE Error Logging
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/bind9.rs`: Enhanced error logging for DNS UPDATE operations (lines 966-992)
+  - Added detailed error logging when DNS UPDATE is rejected by server
+  - Improved context messages to distinguish between send failures and server rejections
+  - Better error messages for debugging DNS UPDATE issues
+
+### Why
+DNS UPDATE operations were reporting generic errors without enough context to debug issues. When a DNS UPDATE failed, the logs didn't clearly indicate:
+- Whether the UPDATE message was sent successfully
+- Whether the server rejected the UPDATE with a specific response code
+- Whether there was a message ID mismatch or TSIG validation failure
+
+The improved logging helps diagnose issues like:
+- Message ID mismatches (receiving response with wrong ID)
+- TSIG signature validation failures
+- Server-side policy rejections (e.g., record already exists)
+
+### Impact
+- **Debugging**: Easier to diagnose DNS UPDATE failures
+- **Observability**: Clear distinction between client-side and server-side errors
+- **Error Messages**: More actionable error messages for operators
+
+---
+
+## [2025-12-09 15:30] - Fix DNS Record Updates Using Wrong Port
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/dnszone.rs`: Added `port_name` parameter to `for_each_primary_endpoint()` (line 850)
+  - Allows callers to specify which port to use ("http" or "dns-tcp")
+  - HTTP API operations use "http" port (8080)
+  - DNS UPDATE operations use "dns-tcp" port (53)
+  - Updated add_dnszone to use "http" port (line 203)
+  - Updated delete_dnszone to use "http" port (line 324)
+- `src/reconcilers/records.rs`: Updated to use "dns-tcp" port for DNS updates (line 170)
+  - DNS UPDATE messages (RFC 2136) now go to port 53 instead of port 8080
+  - Fixes timeout errors when adding DNS records
+
+### Why
+The record reconcilers were sending DNS UPDATE messages to the wrong port. The `for_each_primary_endpoint` function was always querying for the "http" port (8080), which is the bindcar HTTP API port.
+
+This caused DNS UPDATE operations (which use the DNS protocol, not HTTP) to fail with timeouts:
+```
+DEBUG signing message: Message { ... }
+DEBUG created socket successfully
+ERROR Failed to reconcile ARecord: Failed to add A record (5 second timeout)
+```
+
+The DNS UPDATE messages were being sent to `10.244.2.100:8080`, but BIND9 listens for DNS protocol messages on port 53, not 8080!
+
+### Impact
+- **Correctness**: DNS record operations now use the correct protocol and port
+- **Functionality**: DNS record creation (A, AAAA, TXT, MX, etc.) now works
+- **Separation of Concerns**: HTTP API operations use HTTP port, DNS protocol operations use DNS port
+- **Flexibility**: `for_each_primary_endpoint` can now be used for different operation types
+
+### Technical Details
+
+**Before:**
+```rust
+for_each_primary_endpoint(...) {
+    // Always used "http" port → 10.244.2.100:8080
+    zone_manager.add_a_record(..., &pod_endpoint, ...).await?;
+    // ❌ Sends DNS UPDATE to HTTP port - timeout!
+}
+```
+
+**After:**
+```rust
+// Zone operations (HTTP API)
+for_each_primary_endpoint(..., "http", ...) {
+    zone_manager.add_zone(..., &pod_endpoint, ...).await?;
+    // ✅ HTTP API to 10.244.2.100:8080
+}
+
+// Record operations (DNS UPDATE protocol)
+for_each_primary_endpoint(..., "dns-tcp", ...) {
+    zone_manager.add_a_record(..., &pod_endpoint, ...).await?;
+    // ✅ DNS UPDATE to 10.244.2.100:53
+}
+```
+
+The function now queries Kubernetes Endpoints API for the specified port name:
+- `"http"` → queries for the bindcar sidecar API port (8080)
+- `"dns-tcp"` → queries for the BIND9 DNS TCP port (53)
+
+---
+
+## [2025-12-09 15:00] - Simplify DNSZone Reconciliation Logic
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/dnszone.rs`: Complete rewrite of reconciliation logic (lines 88-140)
+  - Simplified from complex multi-branch logic to simple two-state reconciliation
+  - Removed complex secondary IP change detection logic
+  - Reconciliation now only checks: first time or spec changed?
+  - Relies on `add_zone()` idempotency instead of manual duplicate checking
+  - Eliminated ~50 lines of complex conditional logic
+
+### Why
+The previous reconciliation logic was overly complex with multiple branches:
+- Check if first reconciliation
+- Check if spec changed
+- Check if secondary IPs changed
+- Multiple nested conditionals deciding when to update status
+- Trying to manually detect when zone already exists
+
+This complexity led to:
+- Reconciliation loops from missed edge cases
+- Hard-to-debug behavior
+- Unnecessary secondary IP queries even when no work needed
+- Risk of status updates triggering more reconciliations
+
+The new logic follows standard Kubernetes controller patterns:
+1. **First reconciliation** (`observed_generation == None`)? → Do work, update status
+2. **Spec changed** (`generation != observed_generation`)? → Do work, update status
+3. **Otherwise** → Early return, do nothing
+
+### Impact
+- **Simplicity**: Reduced from ~100 lines to ~50 lines
+- **Correctness**: Simpler logic = fewer bugs
+- **Performance**: No unnecessary secondary IP queries when skipping reconciliation
+- **Maintainability**: Easy to understand and modify
+- **Idempotency**: Relies on `add_zone()` being idempotent (which it already is)
+
+### Technical Details
+
+**Before (Complex):**
+```rust
+// Check spec changed
+let spec_changed = should_reconcile(...);
+// Check if needs reconciliation based on secondary_ips status
+let needs_reconciliation = spec_changed || secondary_ips.is_none();
+if !needs_reconciliation { return Ok(()); }
+
+// Query secondary IPs
+let current_secondary_ips = find_all_secondary_pod_ips(...).await?;
+
+// Check if secondaries changed
+let secondaries_changed = /* complex comparison logic */;
+
+if secondaries_changed {
+    delete_dnszone(...).await?;
+    add_dnszone(...).await?;
+    update_status(...).await?;
+} else if spec_changed || first_reconciliation {
+    add_dnszone(...).await?;
+    update_status(...).await?;
+} else {
+    debug!("No work needed");
+}
+```
+
+**After (Simple):**
+```rust
+let first_reconciliation = observed_generation.is_none();
+let spec_changed = should_reconcile(current_generation, observed_generation);
+
+// Early return if nothing to do
+if !first_reconciliation && !spec_changed {
+    debug!("Spec unchanged, skipping");
+    return Ok(());
+}
+
+// Do the work
+let secondary_ips = find_all_secondary_pod_ips(...).await?;
+add_dnszone(...).await?;  // Idempotent - handles existing zones
+update_status(...).await?;
+```
+
+The new logic is clearer, shorter, and follows the standard Kubernetes reconciliation pattern.
+
+---
+
+## [2025-12-09 14:30] - Fix DNSZone Reconciliation Loop from Unconditional Status Updates
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/dnszone.rs`: Fixed reconciliation loop caused by unconditional status updates (lines 137-188)
+  - Moved `update_status_with_secondaries()` call inside the conditional blocks
+  - Status now only updates when actual work is performed (zone added or secondaries changed)
+  - Added else branch with debug log when no reconciliation is needed
+  - Prevents status-only updates from triggering unnecessary reconciliations
+
+### Why
+The DNSZone reconciler had a critical bug: it was **always** calling `update_status_with_secondaries()` at the end of reconciliation, even when:
+- Spec hadn't changed (`spec_changed == false`)
+- Secondaries hadn't changed (`secondaries_changed == false`)
+- It was not the first reconciliation (`first_reconciliation == false`)
+
+This meant the reconciler would:
+1. Check generation → spec unchanged, skip early return (because secondary_ips might be None)
+2. Query secondary IPs from Kubernetes
+3. Determine no work needed (spec and secondaries unchanged)
+4. **Still update status** with `observed_generation` ← THIS TRIGGERED ANOTHER RECONCILIATION
+5. Loop back to step 1
+
+The status update itself was triggering the reconciliation loop, even though no actual work was being done.
+
+### Impact
+- **Performance**: Eliminates continuous reconciliation loop for DNSZone resources
+- **API Load**: Drastically reduces unnecessary Kubernetes API status updates
+- **Correctness**: Status updates now accurately reflect when work was performed
+- **Stability**: Prevents operator from constantly reconciling unchanged resources
+
+### Technical Details
+**Before:**
+```rust
+if secondaries_changed { /* update zone */ }
+else if spec_changed || first_reconciliation { /* add zone */ }
+// ALWAYS update status here ← BUG!
+update_status_with_secondaries(...).await?;
+```
+
+**After:**
+```rust
+if secondaries_changed {
+    /* update zone */
+    update_status_with_secondaries(...).await?;  // ✅ Only when work done
+} else if spec_changed || first_reconciliation {
+    /* add zone */
+    update_status_with_secondaries(...).await?;  // ✅ Only when work done
+} else {
+    debug!("No reconciliation needed");  // ✅ No status update
+}
+```
+
+Now status updates only happen when we actually perform work, preventing spurious reconciliation triggers.
+
+---
+
+## [2025-12-09 14:00] - Fix Misleading "Successfully Added Zone" Log Messages
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/bind9.rs`: Modified `add_zone()` function to return `bool` instead of `()` (lines 598-712)
+  - Returns `Ok(true)` when zone was actually added
+  - Returns `Ok(false)` when zone already exists (idempotent case)
+  - Updated documentation to reflect new return type
+- `src/reconcilers/dnszone.rs`: Updated zone addition logic (lines 249-269)
+  - Captures return value from `add_zone()` in `was_added` variable
+  - Only logs "Successfully added zone" at INFO level when `was_added == true`
+  - Removed misleading DEBUG log that appeared even when zone already existed
+- `src/bind9_tests.rs`: Enhanced idempotency test (lines 1060-1088)
+  - First add now verifies return value is `true` (zone was added)
+  - Second add now verifies return value is `false` (zone already exists)
+  - Better test coverage for the new boolean return type
+
+### Why
+The reconciler was logging "Successfully added zone" (DEBUG level) even when the zone already existed and wasn't actually added. This created misleading log output:
+
+```
+INFO  Zone internal.local already exists on 10.244.2.100:8080, skipping add
+DEBUG Successfully added zone internal.local to endpoint 10.244.2.100:8080
+```
+
+The DEBUG message was technically a lie - the zone wasn't "added", it was skipped because it already existed.
+
+### Impact
+- **Log Accuracy**: Log messages now accurately reflect what actually happened
+- **Debugging**: Easier to understand what the operator is doing from logs
+- **Observability**: INFO-level logs only appear when zones are actually created
+- **API Clarity**: `add_zone()` callers can now determine if a zone was created vs. already existed
+- **Testing**: Better test coverage for idempotency behavior
+
+### Technical Details
+The `add_zone()` function now returns `Result<bool>`:
+- `Ok(true)` - Zone was created (new zone added to BIND9)
+- `Ok(false)` - Zone already existed (idempotent success, no changes made)
+- `Err(...)` - Failed to add zone (non-idempotent error)
+
+This follows the standard Rust pattern for idempotent operations that need to report whether work was performed.
+
+---
+
+## [2025-12-09 13:30] - Consolidate Generation Check Logic Across All Reconcilers
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/mod.rs`: Created `should_reconcile()` helper function (lines 83-130)
+  - Centralizes the generation check logic used across all reconcilers
+  - Takes `current_generation` and `observed_generation` as parameters
+  - Returns `true` if reconciliation needed, `false` if spec unchanged
+  - Comprehensive documentation with Kubernetes generation semantics
+  - Marked as `#[must_use]` to ensure return value is checked
+- `src/reconcilers/dnszone.rs`: Updated to use `should_reconcile()` helper (lines 88-117)
+  - Replaced inline match expression with function call
+  - Simplified reconciliation logic
+- `src/reconcilers/bind9instance.rs`: Updated to use `should_reconcile()` helper (lines 226-242)
+  - Replaced inline match expression with function call
+  - Consistent with other reconcilers
+- `src/reconcilers/bind9cluster.rs`: Updated to use `should_reconcile()` helper (lines 78-94)
+  - Replaced inline match expression with function call
+  - Consistent with other reconcilers
+
+### Why
+Previously, the generation check logic was duplicated across three reconcilers (DNSZone, Bind9Instance, Bind9Cluster). Each reconciler had identical match expressions:
+
+```rust
+match (current_generation, observed_generation) {
+    (Some(current), Some(observed)) => current != observed,
+    (Some(_), None) => true,
+    _ => false,
+}
+```
+
+This duplication:
+- Made the code harder to maintain (changes needed in 3 places)
+- Increased risk of inconsistencies between reconcilers
+- Lacked centralized documentation of the pattern
+- Violated DRY (Don't Repeat Yourself) principle
+
+### Impact
+- **Maintainability**: Single function to update if logic needs to change
+- **Consistency**: All reconcilers use the exact same generation check logic
+- **Documentation**: Comprehensive explanation of Kubernetes generation semantics in one place
+- **Code Quality**: Reduces duplication from ~12 lines to 3 per reconciler
+- **Type Safety**: `#[must_use]` attribute ensures return value is always checked
+
+### Technical Details
+The `should_reconcile()` function implements the standard Kubernetes controller pattern:
+- `metadata.generation`: Incremented by K8s API server when spec changes
+- `status.observed_generation`: Set by controller after processing spec
+- When they match: spec unchanged → skip reconciliation
+- When they differ: spec changed → reconcile
+- When `observed_generation` is None: first reconciliation → reconcile
+
+---
+
+## [2025-12-09 12:00] - Fix Tight Reconciliation Loops in Bind9Instance and Bind9Cluster
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/bind9instance.rs`: Added generation-based change detection (lines 226-251)
+  - Checks `metadata.generation` vs `status.observed_generation` before reconciling
+  - Skips resource updates (ConfigMap, Deployment, Service, Secret) when spec unchanged
+  - Only performs reconciliation on first run or when spec changes
+  - Early returns to prevent cascading reconciliations
+- `src/reconcilers/bind9cluster.rs`: Added generation-based change detection (lines 78-103)
+  - Checks `metadata.generation` vs `status.observed_generation` before reconciling
+  - Skips cluster ConfigMap updates and instance reconciliation when spec unchanged
+  - Only performs reconciliation on first run or when spec changes
+  - Early returns to prevent status-only updates from triggering full reconciliation
+
+### Why
+The tight reconciliation loop was not just in DNSZone - it was happening across **all three main reconcilers**:
+
+1. **Bind9Instance**: Every status update triggered full reconciliation:
+   - Recreate/update ConfigMap
+   - Recreate/update Deployment (causing pod restarts!)
+   - Recreate/update Service
+   - Recreate/update RNDC Secret
+   - Update status → trigger another reconciliation
+
+2. **Bind9Cluster**: Every status update triggered full reconciliation:
+   - Recreate cluster ConfigMap
+   - Reconcile all managed instances (which triggers Bind9Instance reconciliations!)
+   - Update status → trigger another reconciliation
+
+This created a **cascading loop**:
+- DNSZone status update → triggers DNSZone reconciliation
+- Bind9Cluster status update → triggers Bind9Cluster reconciliation → triggers Bind9Instance reconciliations
+- Bind9Instance status update → triggers Bind9Instance reconciliation → updates Deployment → Kubernetes updates pod status → triggers more reconciliations
+
+**Root Cause**: None of the reconcilers distinguished between spec changes (user edits) and status changes (operator updates). They all performed full reconciliation on every trigger.
+
+### Impact
+- **Performance**: Eliminates three separate reconciliation loops
+- **Stability**: Prevents unnecessary pod restarts from Deployment updates
+- **API Load**: Drastically reduces Kubernetes API calls across all reconcilers
+- **Resource Usage**: Reduces CPU and memory usage from constant reconciliation
+- **Cascading Prevention**: Breaks the chain reaction of reconciliations across resources
+
+### Technical Details
+
+All three reconcilers now use the same pattern:
+```rust
+let current_generation = resource.metadata.generation;
+let observed_generation = resource.status.as_ref()
+    .and_then(|s| s.observed_generation);
+
+let spec_changed = match (current_generation, observed_generation) {
+    (Some(current), Some(observed)) => current != observed,
+    (Some(_), None) => true, // First reconciliation
+    _ => false,
+};
+
+if !spec_changed {
+    debug!("Spec unchanged, skipping reconciliation");
+    return Ok(());
+}
+```
+
+This ensures reconciliation **only happens when the user makes changes**, not when the operator updates status.
+
+## [2025-12-09 11:45] - Add Early Return/Guard Clause Coding Style Guidelines
+
+**Author:** Erick Bourgeois
+
+### Added
+- `CLAUDE.md`: Added comprehensive "Early Return / Guard Clause Pattern" section (lines 370-495)
+  - Explains the early return coding style and its benefits
+  - Provides Rust-specific examples with ✅ GOOD and ❌ BAD patterns
+  - Demonstrates how to minimize nested if-else statements
+  - Shows proper use of `?` operator for error propagation
+  - Includes real-world examples from the codebase (reconciliation patterns)
+  - Documents when and why to use early returns
+
+### Why
+The codebase has been using early return patterns effectively (as seen in the DNSZone reconciliation loop fix), but this pattern wasn't formally documented in the coding standards. Adding it to CLAUDE.md ensures:
+- Consistent application of the pattern across all code
+- New contributors understand the preferred coding style
+- Code reviews can reference the documented standard
+- The pattern used to fix the reconciliation loop is now the documented best practice
+
+This pattern is particularly important for:
+- Kubernetes reconciliation loops (checking if work is needed before doing it)
+- Input validation (failing fast on invalid inputs)
+- Error handling (keeping the happy path clean and readable)
+
+### Impact
+- **Code Quality**: Establishes a clear, documented standard for control flow
+- **Readability**: Reduces cognitive load by minimizing nesting
+- **Maintainability**: Makes it easier to understand and modify control flow logic
+- **Consistency**: All future code will follow the same pattern
+- **Education**: Provides clear examples for contributors to follow
+
+## [2025-12-09 11:30] - Fix Tight Reconciliation Loop for DNSZone with Secondaries
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/dnszone.rs`: Added generation-based change detection to prevent unnecessary reconciliations (lines 88-162)
+  - Now checks if `metadata.generation` matches `status.observed_generation`
+  - Skips expensive secondary IP discovery when spec hasn't changed
+  - Skips primary instance queries and zone addition when nothing has changed
+  - Only performs full reconciliation when spec changes or on first reconciliation
+  - Early returns when no work is needed, preventing tight reconciliation loops
+  - Conditional zone addition: only calls `add_dnszone()` when secondaries change, spec changes, or first reconciliation
+
+### Why
+The DNSZone reconciler was running in a **tight loop** every time the status was updated. Every reconciliation would:
+1. Query Kubernetes API for all primary `Bind9Instance` resources
+2. Query Kubernetes API for all secondary `Bind9Instance` resources
+3. Query pod endpoints for each primary instance
+4. Query pod endpoints for each secondary instance
+5. Call `add_dnszone()` which queries BIND9 pods again
+6. Update the status with secondary IPs
+7. **Trigger another reconciliation due to status change**
+8. Repeat indefinitely
+
+This happened because the reconciler didn't distinguish between **spec changes** (which require work) and **status changes** (which don't). In Kubernetes, `metadata.generation` only increments when the spec changes, while status updates don't change it.
+
+The reconciler was calling `add_dnszone()` unconditionally, even when nothing had changed, causing repeated queries to the Kubernetes API for primary instances and their pods.
+
+**Before**: Every status update → full reconciliation → query primaries + secondaries → add zone → update status → infinite loop
+**After**: Status update → check generation → skip if unchanged → no loop
+
+### Impact
+- **Performance**: Eliminates unnecessary reconciliation loops (reduces from continuous to only when needed)
+- **API Load**: Drastically reduces Kubernetes API calls:
+  - No repeated queries for primary `Bind9Instance` resources
+  - No repeated queries for secondary `Bind9Instance` resources
+  - No repeated queries for primary pod endpoints
+  - No repeated queries for secondary pod endpoints
+  - No repeated calls to `add_dnszone()` when nothing changed
+- **Efficiency**: Full reconciliation (including zone addition) only happens when:
+  - The DNSZone spec changes (zone name, cluster ref, etc.)
+  - Secondary IPs change (new secondaries added/removed)
+  - First reconciliation (zone not yet configured)
+- **Stability**: Prevents resource exhaustion from tight loops
+- **Cost**: Reduces cloud provider API costs in managed Kubernetes environments
+
+### Technical Details
+
+**Generation-based Change Detection**:
+```rust
+let current_generation = dnszone.metadata.generation;
+let observed_generation = dnszone.status.as_ref()
+    .and_then(|s| s.observed_generation);
+
+let spec_changed = match (current_generation, observed_generation) {
+    (Some(current), Some(observed)) => current != observed,
+    (Some(_), None) => true, // First reconciliation
+    _ => false,
+};
+```
+
+**Early Return Pattern**:
+```rust
+if !needs_secondary_check {
+    debug!("Spec unchanged, skipping expensive operations");
+    return Ok(());
+}
+```
+
+This follows the standard Kubernetes operator pattern of comparing generation values to determine if reconciliation work is actually needed.
+
+## [2025-12-08 15:50] - Remove Unused get_service_port Functions
+
+**Author:** Erick Bourgeois
+
+### Removed
+- `src/reconcilers/dnszone.rs`: Removed unused `get_service_port()` function (previously lines 1003-1041)
+- `src/reconcilers/dnszone.rs`: Removed unused import `Service` from `k8s_openapi::api::core::v1` (line 15)
+- `src/reconcilers/records.rs`: Removed duplicate unused `get_service_port()` function (previously lines 1106-1144)
+
+### Changed
+- `src/reconcilers/dnszone.rs`: Updated documentation for `get_pod_service_port()` to remove reference to the deleted function (line 936)
+
+### Why
+The `get_service_port()` function appeared in both `dnszone.rs` and `records.rs` but was never called anywhere in the codebase, causing dead code warnings during compilation. These functions were originally meant to look up a service's external port by port name, but the codebase uses `get_pod_service_port()` instead, which returns container ports from the Endpoints object (the actual ports needed for direct pod-to-pod communication).
+
+Having duplicate implementations of the same unused function in two different files indicated incomplete refactoring.
+
+### Impact
+- **Code Quality**: Eliminates dead code warnings from Rust compiler (`-D dead-code`)
+- **Maintainability**: Removes 78 lines of duplicate unused code (39 lines × 2 files)
+- **Clarity**: Simplifies the codebase by removing unused functionality and eliminating duplication
+- **Build**: Clean compilation with no warnings (`cargo clippy -- -D warnings` passes)
+
+## [2025-12-08 19:30] - Automatic Detection and Update of Secondary Server IP Changes
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/crd.rs`: Added `secondary_ips` field to `DNSZoneStatus` (line 242)
+  - Stores current secondary server IP addresses for change detection
+  - Enables comparison of previous vs current secondary configurations
+  - Serialized as `Option<Vec<String>>` (skipped if None)
+- `src/reconcilers/dnszone.rs`: Enhanced `reconcile_dnszone()` with secondary IP change detection (lines 90-130)
+  - Discovers current secondary IPs on every reconciliation loop
+  - Compares discovered IPs with stored IPs in `DNSZoneStatus.secondary_ips`
+  - Triggers zone recreation when secondary IPs change
+  - Updates status with current secondary IPs after successful reconciliation
+- `src/reconcilers/dnszone.rs`: Added `update_status_with_secondaries()` function (lines 667-715)
+  - Updates `DNSZone` status including secondary IP tracking
+  - Stores secondary IPs in status for future comparison
+- `src/reconcilers/dnszone.rs`: Updated `update_status()` to preserve secondary IPs (line 778)
+  - Ensures secondary IP list isn't lost during status updates
+- `src/crd_tests.rs`: Updated test to initialize `secondary_ips` field (line 523)
+- `deploy/crds/dnszones.crd.yaml`: Regenerated with new `secondaryIps` status field
+
+### Added
+- **Automatic secondary IP change detection**: Reconciler detects when secondary pod IPs change
+- **Automatic zone reconfiguration**: Zones automatically updated with new secondary IPs
+- **Status tracking**: Current secondary IPs stored in `DNSZone` status for comparison
+
+### Why
+When secondary BIND9 pods are rescheduled, restarted, or scaled, their IP addresses change. Without this change:
+- Primary zones continued using old (stale) secondary IPs
+- Zone transfers failed because primaries sent NOTIFY to dead IPs
+- Manual intervention required to update zone transfer configurations
+
+**Before**: Pod restart → Zone transfers stop working → Manual fix required
+**After**: Pod restart → Automatic detection → Automatic zone update → Zone transfers resume
+
+### Technical Details
+
+**Change Detection Algorithm**:
+```rust
+// On each reconciliation:
+1. Discover current secondary IPs via Kubernetes API
+2. Retrieve stored secondary IPs from DNSZone.status.secondary_ips
+3. Sort both lists for accurate comparison
+4. If lists differ:
+   - Delete existing zones from all primaries
+   - Recreate zones with new secondary IPs
+   - Update status with new secondary IPs
+```
+
+**IP Comparison Logic**:
+```rust
+let secondaries_changed = match status_secondary_ips {
+    Some(stored_ips) => {
+        let mut stored = stored_ips.clone();
+        let mut current = current_secondary_ips.clone();
+        stored.sort();
+        current.sort();
+        stored != current
+    }
+    None => !current_secondary_ips.is_empty(),
+};
+```
+
+**Reconciliation Frequency**: Standard Kubernetes reconciliation loop (typically every 5-10 minutes)
+- Changes detected automatically within one reconciliation period
+- No additional watchers or resources required
+- Works seamlessly with existing reconciliation infrastructure
+
+### Impact
+- ✅ **No manual intervention required** for pod IP changes
+- ✅ **Self-healing**: System automatically recovers from pod restarts/rescheduling
+- ✅ **Zero downtime**: Zone transfers resume automatically after IP changes
+- ⚠️ **Transient downtime**: Brief period (~5-10 min) between IP change and detection
+- ⚠️ **Zone recreation overhead**: Deletes and recreates zones (not updates in place)
+
+### Future Enhancements
+- Implement `update_zone()` API in bindcar for in-place zone updates (avoid delete/recreate)
+- Add faster change detection via pod watcher (reduce detection latency)
+- Add metrics to track secondary IP change frequency
+
+## [2025-12-08 15:45] - Optimize GitHub Actions Release Workflow
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/release.yaml`: Optimized CI/CD performance and resource usage
+  - Replaced three separate cargo cache steps with `Swatinem/rust-cache@v2` (lines 59-62)
+  - Added caching for `cargo-cyclonedx` binary installation (lines 71-80)
+  - Added 1-day artifact retention policy to binary and SBOM uploads (lines 84, 91)
+  - Removed duplicate Docker SBOM generation via `anchore/sbom-action` (previously lines 169-180)
+  - Updated `softprops/action-gh-release` from v1 to v2 (line 212)
+  - Fixed shellcheck warnings by quoting `$GITHUB_OUTPUT` variable (lines 129-130)
+  - Fixed shellcheck warnings in checksum generation with proper globbing (line 209)
+
+### Removed
+- Duplicate SBOM generation: Docker Buildx already generates SBOMs with `sbom: true` flag
+- Docker SBOM artifact upload and download steps (no longer needed)
+- Redundant cargo cache configurations (consolidated into single rust-cache action)
+
+### Why
+The release workflow had multiple redundancies that increased execution time and GitHub Actions storage costs:
+- **Duplicate SBOM generation**: Docker SBOM was generated twice (once by buildx, once by anchore)
+- **Inefficient caching**: Three separate cache actions instead of one optimized action
+- **No tool caching**: `cargo-cyclonedx` was re-installed on every platform build (5 times per release)
+- **Indefinite artifact retention**: Artifacts stored forever even though only needed until release upload
+
+### Impact
+- **Performance**: Estimated 30-60 seconds faster workflow execution per release
+- **Cost**: Reduced GitHub Actions storage usage (artifacts deleted after 1 day instead of indefinitely)
+- **Reliability**: Fewer moving parts, less chance of cache conflicts
+- **Maintenance**: Simpler workflow with fewer steps to maintain
+
+### Technical Details
+
+**Before - Cargo Caching (3 separate steps)**:
+```yaml
+- uses: actions/cache@v4  # ~/.cargo/registry
+- uses: actions/cache@v4  # ~/.cargo/git
+- uses: actions/cache@v4  # target/
+```
+
+**After - Unified Rust Caching (1 optimized step)**:
+```yaml
+- uses: Swatinem/rust-cache@v2
+  with:
+    key: ${{ matrix.platform.target }}
+```
+
+**cargo-cyclonedx Caching**:
+- Previously: Installed 5 times per release (once per platform)
+- Now: Installed once, cached across all platforms
+- Cache key: Based on OS and Cargo.lock for stability
+
+**SBOM Consolidation**:
+- Docker SBOM is now only generated once via `docker/build-push-action` with `sbom: true`
+- SBOM is attached to the container image as an attestation (standard practice)
+- No need for separate artifact upload/download
+
+**Artifact Retention**:
+- Binary and SBOM artifacts now deleted after 1 day (only needed until `upload-release-assets` job completes)
+- Reduces storage costs while maintaining functionality
+
+## [2025-12-08] - Implement Automatic Zone Transfer Configuration for Secondary Servers
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: Upgraded `bindcar` dependency from `0.2.4` to `0.2.5` for zone transfer support
+- `src/bind9.rs`: Enhanced `add_zone()` to accept secondary server IPs (lines 621-630)
+  - Added parameter `secondary_ips: Option<&[String]>` for secondary server configuration
+  - Zone configuration now includes `also_notify` and `allow_transfer` fields
+  - Added detailed logging showing which secondary servers are configured
+- `src/reconcilers/dnszone.rs`: Added `find_all_secondary_pod_ips()` function (lines 471-566)
+  - Discovers all running secondary pods in the cluster using label selectors
+  - Queries Kubernetes API for `Bind9Instance` resources with `role=secondary`
+  - Collects IP addresses from running secondary pods
+- `src/reconcilers/dnszone.rs`: Updated `add_dnszone()` to configure zone transfers (lines 135-191)
+  - Calls `find_all_secondary_pod_ips()` before adding zones to primaries
+  - Passes secondary IPs to `add_zone()` for each primary pod
+- `src/bind9_tests.rs`: Updated all tests for new `add_zone()` signature
+
+### Added
+- **Automatic secondary discovery**: Operator now automatically finds all secondary servers
+- **Zone transfer configuration**: Primary zones include `also-notify` and `allow-transfer` directives
+- **Per-cluster configuration**: Each cluster's zones are configured with that cluster's secondaries
+
+### Why
+Secondary BIND9 servers were not receiving zone transfers because primary servers didn't know where the secondaries were located. Primary zones were created without `also-notify` and `allow-transfer` directives.
+
+**Before**: Zones created without transfer configuration → secondaries never received zones
+**After**: Operator discovers secondaries and configures zone transfers automatically
+
+### Technical Details
+
+**Zone Configuration Generated**:
+```bind
+zone "example.com" {
+    type primary;
+    file "/var/cache/bind/example.com.zone";
+    allow-update { key "bindy-operator"; };
+    also-notify { 10.244.2.101; 10.244.2.102; };      // ← Automatically configured
+    allow-transfer { 10.244.2.101; 10.244.2.102; };   // ← Automatically configured
+};
+```
+
+**Discovery Process**:
+1. Query Kubernetes for `Bind9Instance` resources with `role=secondary` label
+2. Find all pods for those instances
+3. Collect IP addresses from running pods
+4. Pass IPs to bindcar when creating zones
+
+**Graceful Degradation**: If no secondaries exist, zones are created without transfer configuration (primary-only deployments continue to work)
+
+### Quality
+- ✅ All tests pass (245 passed, 16 ignored)
+- ✅ Clippy passes with strict warnings
+- ✅ `cargo fmt` - Code formatted
+- ✅ Upgraded bindcar to v0.2.5
+- ✅ Updated all test ZoneConfig initializers
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (critical feature - enables zone transfers)
+- [ ] Config change only
+- [ ] Documentation only
+
+**Notes:**
+- **Critical feature** - Enables DNS high availability with secondary servers
+- Zone transfers now work automatically without manual configuration
+- Requires bindcar v0.2.5+ (includes `also_notify` and `allow_transfer` fields)
+- Operator automatically discovers secondary servers using Kubernetes labels
+- Works with any number of secondary servers (0 to N)
+
+**Verification**:
+```bash
+# Check zone configuration on primary
+kubectl exec -it bind9-primary-0 -n dns-system -- \
+  rndc showzone example.com | grep -E "also-notify|allow-transfer"
+
+# Check zone exists on secondary
+kubectl exec -it bind9-secondary-0 -n dns-system -- \
+  rndc zonestatus example.com
+```
+
+---
+
+## [2025-12-08] - Fix DNS Record Updates to Target All Primary Pods
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/dnszone.rs` (line 627): Made `for_each_primary_endpoint()` public for reuse in records.rs
+- `src/reconcilers/records.rs` (lines 111-233): Created generic helper function `add_record_to_all_endpoints()` to eliminate code duplication
+- `src/reconcilers/records.rs`: Refactored all 8 record reconcilers to use the generic helper:
+  - **A records** (lines 235-332): Now updates all primary pods
+  - **TXT records** (lines 334-393): Now updates all primary pods
+  - **AAAA records** (lines 395-452): Now updates all primary pods
+  - **CNAME records** (lines 454-511): Now updates all primary pods
+  - **MX records** (lines 513-572): Now updates all primary pods
+  - **NS records** (lines 574-633): Now updates all primary pods
+  - **SRV records** (lines 635-701): Now updates all primary pods
+  - **CAA records** (lines 703-767): Now updates all primary pods
+- `src/bind9.rs` (line 136): Added `#[derive(Clone)]` to `SRVRecordData` to support closure cloning
+- Removed unused helper macros and functions: `get_instance_and_key!`, `handle_record_operation!`
+
+### Why
+**Root Cause:** Previous implementation only updated DNS records on the FIRST primary pod because `get_instance_and_key!` macro only returned the first endpoint. This caused records to be created on only one pod instead of all primary pods.
+
+**Why This Matters:**
+- BIND9 primary pods use **emptyDir storage** (non-shared, per-pod storage)
+- Each primary pod maintains its own independent zone files
+- Updates to one pod don't automatically sync to other primary pods
+- **CRITICAL:** For zone transfers to work, ALL primary pods must have the same records
+
+**User Feedback:** "ok, yes, this worked, but ONLY on the second primary bind instance. it seems to be skipping the other primary bind instance. this call needs to be against ALL primaries, sequentially"
+
+**Solution Design:**
+1. Reuse existing `for_each_primary_endpoint()` from dnszone.rs - already handles:
+   - Finding all PRIMARY instances in the cluster
+   - Loading RNDC keys for each instance
+   - Getting endpoints (pod IP + port) for each instance
+   - Executing operations sequentially across all endpoints
+2. Create generic helper `add_record_to_all_endpoints()` that:
+   - Accepts a closure for the DNS record addition operation
+   - Calls `for_each_primary_endpoint()` to iterate through all pods
+   - Updates record status and sends NOTIFY to secondaries
+   - Reduces code duplication from ~90 lines per record type to ~30 lines
+3. Refactor all 8 record reconcilers to use the helper - eliminates 500+ lines of duplicated code
+
+**Benefits:**
+- **Correctness:** Records are now created on ALL primary pods, not just one
+- **Consistency:** All primary pods have identical zone data
+- **Code Quality:** ~65% reduction in code (from ~720 lines to ~260 lines for record operations)
+- **Maintainability:** Single implementation of multi-endpoint logic
+- **High Availability:** Zone transfers work correctly because all primaries have complete data
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout - **DNS records will now be created on all primary pods**
+- [ ] Config change only
+- [ ] Documentation only
+
+**CRITICAL:** This fixes a critical bug where DNS records were only created on one primary pod. After deploying this fix:
+- All primary pods will receive record updates
+- Zone transfers from any primary to secondaries will work correctly
+- High availability is properly supported
+
+**Testing:**
+- Verify records exist on all primary pods: `for pod in $(kubectl get pods -l role=primary -o name); do kubectl exec $pod -- dig @localhost <record-name>; done`
+- All primary pods should return the same DNS records
+
+---
+
+## [2025-12-09] - Fix DNS Record Creation - Use append() with must_exist=false
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/bind9.rs`: Fixed `client.append()` calls to use `must_exist=false` for truly idempotent operations
+  - **A records** (line 949): `append(record, zone, false)` instead of `true`
+  - **AAAA records** (line 1150): `append(record, zone, false)` instead of `true`
+  - **CNAME records** (line 1016): `append(record, zone, false)` instead of `true`
+  - **TXT records** (line 1082): `append(record, zone, false)` instead of `true`
+  - **MX records** (line 1219): `append(record, zone, false)` instead of `true`
+  - **NS records** (line 1283): `append(record, zone, false)` instead of `true`
+  - **SRV records** (line 1377): `append(record, zone, false)` instead of `true`
+  - **CAA records** (line 1505): `append(record, zone, false)` instead of `true`
+- All record operations now only succeed on `NoError` response code (no YXRRSet handling)
+
+### Why
+**Root Cause Analysis - Deep Dive into YXRRSet Errors:**
+
+The error `DNS update failed with response code: YXRRSet` was caused by **DNS UPDATE prerequisite checks**.
+
+**Discovery Process:**
+1. **First attempt (WRONG):** Assumed `YXRRSet` meant record exists, treated as success
+2. **User testing revealed:** Records NOT in BIND9 despite success logs (`dig` showed `NXDOMAIN`)
+3. **Second attempt (STILL WRONG):** Changed from `create()` to `append()` but used `append(record, zone, true)`
+4. **Log analysis showed:** DNS UPDATE message had prerequisite: `api.example.com. 0 NONE A`
+5. **Root cause found:** The third parameter `must_exist: bool` controls prerequisite behavior
+
+**hickory-client append() Method Signature:**
+```rust
+fn append(&self, record: Record, zone_origin: Name, must_exist: bool)
+```
+
+**The `must_exist` Parameter (RFC 2136 Section 2.4.1):**
+- `must_exist=true`: Adds prerequisite "RRset Exists (Value Independent)"
+  - Requires at least one RR with specified NAME and TYPE to already exist
+  - Used when you want atomic append-only operations
+  - Fails with `YXRRSet` if prerequisites not met
+- `must_exist=false`: **No prerequisite checks**
+  - Truly idempotent - creates OR appends
+  - Perfect for Kubernetes operators that reconcile state
+  - DNS server will create new RRset or add to existing one
+
+**Why `must_exist=false` is Correct:**
+- Kubernetes operators must be idempotent - applying the same resource multiple times should succeed
+- We don't care if the record exists or not - we want it to exist with the correct value
+- No prerequisite checks means no `YXRRSet` errors
+- BIND9 handles duplicates gracefully - adding the same record twice has no effect
+
+**Comparison of DNS UPDATE Methods:**
+- `create(record, zone)`: Prerequisite = "RRset must NOT exist" → Fails if any record of that type exists
+- `append(record, zone, true)`: Prerequisite = "RRset MUST exist" → Fails if no records of that type exist
+- `append(record, zone, false)`: **No prerequisite** → Always succeeds (idempotent)
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout - **DNS records will now be properly created**
+- [ ] Config change only
+- [ ] Documentation only
+
+**CRITICAL:** This fixes a major bug where DNS records were NOT being created despite success logs. After deploying this fix, all DNS records will be properly written to BIND9.
+
+**Testing:** Verify with `dig @<pod-ip> <record-type> <record-name>` to confirm records exist in BIND9.
+
+**Evidence:** User's debug log showed DNS UPDATE message with prerequisite check:
+```
+; query
+;; example.com. IN SOA          ← Prerequisite check
+; answers 1
+api.example.com. 0 NONE A       ← "api.example.com must NOT have an A record"
+; nameservers 1
+api.example.com. 300 IN A 192.0.2.2  ← Trying to ADD the A record
+```
+
+This prerequisite was added by `must_exist=true`. Now using `must_exist=false` to remove prerequisites.
+
+---
+
+## [2025-12-09] - SUPERSEDED - Make DNS Record Additions Idempotent (INCORRECT FIX)
+
+**Author:** Erick Bourgeois
+
+**STATUS:** This change was INCORRECT and has been superseded by the fix above.
+
+### What Was Wrong
+- Treated `YXRRSet` errors as success to make operations appear idempotent
+- Records were NOT actually being created in BIND9
+- Error masking prevented detection of the real problem
+- User testing showed records didn't exist despite success logs
+
+### The Real Issue
+- `client.create()` has a prerequisite that no RRset exists
+- Should have used `client.append()` for idempotent operations
+- See the fix above for the correct solution
+
+---
+
+## [2025-12-09] - Enable DNSSEC Cryptographic Features for TSIG Authentication
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: Added `dnssec-ring` feature to hickory dependencies (lines 38-39)
+  - **Before:** `hickory-client = { version = "0.24", features = ["dnssec"] }`
+  - **After:** `hickory-client = { version = "0.24", features = ["dnssec", "dnssec-ring"] }`
+  - **Also updated:** `hickory-proto` with the same feature addition
+
+### Why
+**Fix Runtime Panic in TSIG Authentication:**
+- Error: `panic at .../hickory-proto-0.24.4/.../tsig.rs:530:9: not implemented: one of dnssec-ring or dnssec-openssl features must be enabled`
+- The `dnssec` feature alone is not sufficient - it requires a cryptographic backend
+- TSIG (Transaction Signature) is used to authenticate DNS updates with RNDC keys
+- Without a crypto backend, TSIG signature generation/verification panics at runtime
+
+**Why `dnssec-ring` Instead of `dnssec-openssl`:**
+- **ring** is a pure Rust cryptography library (safer, more maintainable)
+- **OpenSSL** would add a C library dependency and platform-specific build requirements
+- ring is the recommended choice for Rust applications
+- Consistent with existing use of rustls-tls (also uses ring)
+
+**Technical Details:**
+- hickory-proto uses the `ring` crate for HMAC-SHA256/SHA512 operations
+- These are required for TSIG signature computation
+- The `dnssec` feature enables TSIG support, but the crypto backend must be chosen separately
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout - **Controller image must be rebuilt with new dependencies**
+- [ ] Config change only
+- [ ] Documentation only / Refactoring
+
+**Note:** This fixes a critical runtime panic that prevents DNS record updates from working.
+
+---
+
+## [2025-12-09] - Fix DNS Records Reconciler to Use Endpoints API
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/records.rs`: Refactored `get_instance_and_key!` macro to use Endpoints API (lines 57-133)
+  - **Before:** Constructed service addresses like `{instance}.{namespace}.svc.cluster.local:{port}`
+  - **After:** Uses `get_endpoint()` to query Kubernetes Endpoints API for pod IPs and container ports
+  - **Server format:** Changed from service DNS to pod endpoint: `{pod_ip}:{container_port}`
+  - **Port lookup:** Queries "dns-tcp" port from Endpoints instead of Services
+  - **Error handling:** Changed from "ServicePortLookupFailed" to "EndpointLookupFailed" status reason
+- `src/reconcilers/records.rs`: Removed `get_service_port()` function (was at lines 1207-1244)
+  - **Why removed:** No longer needed since we're using Endpoints API instead of Services
+  - **Removed imports:** Removed `Service` from `k8s_openapi::api::core::v1` imports (line 16)
+- `src/reconcilers/dnszone.rs`: Made `get_endpoint()` function public (line 739)
+  - **Why:** Now reused by records.rs for endpoint lookups
+  - **Usage:** Both dnszone and records reconcilers share the same endpoint discovery logic
+
+### Why
+**Fix Service Address Error:**
+- Error log showed: `Invalid server address: production-dns-primary-1.dns-system.svc.cluster.local:53`
+- The records reconciler was still using service addresses instead of pod endpoints
+- Service addresses don't work with per-pod EmptyDir storage (bindcar API needs pod-specific access)
+
+**Consistency with DNSZone Reconciler:**
+- The dnszone reconciler was already using Endpoints API correctly
+- Records reconciler needed the same pattern for consistency
+- Both reconcilers now share the same `get_endpoint()` helper function
+
+**Pod-Specific Communication:**
+- bindcar HTTP API runs per-pod, not load-balanced
+- DNS record updates must target specific pod IP addresses
+- Kubernetes Endpoints API provides pod IPs and container ports
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only / Refactoring - **Fixes runtime error without requiring config changes**
+
+---
+
+## [2025-12-08] - Add Endpoints Permissions to RBAC
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `deploy/rbac/role.yaml`: Added permissions for `endpoints` resource (lines 62-64)
+  - **New rule:** `get`, `list`, `watch` verbs for `endpoints` in core API group
+  - **Why needed:** The `for_each_primary_endpoint()` function queries Kubernetes Endpoints API
+  - **Usage:** Discovers pod IPs and container ports for zone operations
+
+### Why
+**Required for Endpoints API Access:**
+- The refactored code now uses the Kubernetes Endpoints API to discover pod IPs and ports
+- Without this permission, the operator would fail with RBAC errors when trying to access endpoints
+- This is a critical permission for the per-instance iteration pattern
+
+**Security:**
+- Read-only access (`get`, `list`, `watch`) - no modification permissions needed
+- Scoped to the core API group (`apiGroups: [""]`)
+- Follows principle of least privilege
+
+### Impact
+- [x] Breaking change - **Clusters must update RBAC before deploying this version**
+- [x] Requires cluster rollout - **Apply updated RBAC first: `kubectl apply -f deploy/rbac/`**
+- [ ] Config change only
+- [ ] Documentation only / Refactoring
+
+---
+
+## [2025-12-08] - Refactor: Move RNDC Key Loading into Helper Function
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/dnszone.rs`: Enhanced `for_each_primary_endpoint()` to optionally load RNDC key (lines 604-720)
+  - **New parameter:** `with_rndc_key: bool` - controls whether to load RNDC key from first instance
+  - **Closure signature changed:** Now passes `Option<RndcKeyData>` to the closure
+  - **RNDC key loading:** Moved inside the helper function, loaded once if requested
+  - **Benefits:** Eliminates the need for callers to manually load RNDC key before calling the helper
+- `src/reconcilers/dnszone.rs`: Simplified `add_dnszone()` function (lines 124-196)
+  - **Before:** Had to manually call `find_all_primary_pods()` and `load_rndc_key()`
+  - **After:** Just calls `for_each_primary_endpoint(..., true, ...)` to load key automatically
+  - **Removed duplication:** Eliminates RNDC key loading boilerplate from caller
+- `src/reconcilers/dnszone.rs`: Updated `delete_dnszone()` function (lines 236-285)
+  - **Changed:** Now passes `false` for `with_rndc_key` parameter since deletion doesn't need RNDC key
+  - **Unchanged:** Function size and logic remain the same, just updated closure signature
+
+### Why
+**Further Elimination of Duplication:**
+- The pattern of "find primary pods → load RNDC key from first pod" was still duplicated in `add_dnszone()`
+- This refactoring moves that logic into the helper function where it belongs
+- `add_dnszone()` no longer needs to know HOW to get the RNDC key, just that it needs one
+
+**Benefits:**
+- **Even Simpler Callers:** `add_dnszone()` is now even shorter and clearer
+- **Conditional Loading:** RNDC key is only loaded when needed (true for add, false for delete)
+- **Single Responsibility:** The helper function handles ALL aspects of endpoint iteration including setup
+- **Reduced Coupling:** Callers don't need to know about `find_all_primary_pods()` or `load_rndc_key()`
+- **Better Encapsulation:** RNDC key loading logic is hidden inside the helper
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only / Refactoring
+
+---
+
+## [2025-12-08] - Refactor: Extract Common Endpoint Iteration Logic
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/dnszone.rs`: Created new `for_each_primary_endpoint()` helper function (lines 680-779)
+  - **Purpose:** Extract common pattern of iterating through all primary instances and their endpoints
+  - **Signature:** `async fn for_each_primary_endpoint<F, Fut>(client: &Client, namespace: &str, cluster_ref: &str, operation: F) -> Result<(Option<String>, usize)>`
+  - **How it works:**
+    1. Finds all primary pods for the cluster
+    2. Collects unique instance names
+    3. Gets endpoints for each instance
+    4. Executes provided closure on each endpoint
+    5. Returns first endpoint (for NOTIFY) and total count
+  - **Generic closure:** Accepts any async operation that takes `(pod_endpoint: String, instance_name: String) -> Result<()>`
+- `src/reconcilers/dnszone.rs`: Refactored `add_dnszone()` to use `for_each_primary_endpoint()` (lines 120-227)
+  - **Before:** 105 lines with manual endpoint iteration logic
+  - **After:** 68 lines using shared helper function
+  - **Removed duplication:** No longer manually iterates through instances and endpoints
+  - **Closure captures:** zone_name, key_data, soa_record, name_server_ips, zone_manager
+- `src/reconcilers/dnszone.rs`: Refactored `delete_dnszone()` to use `for_each_primary_endpoint()` (lines 246-303)
+  - **Before:** 75 lines with manual endpoint iteration logic
+  - **After:** 48 lines using shared helper function
+  - **Removed duplication:** No longer manually iterates through instances and endpoints
+  - **Closure captures:** zone_name, zone_manager
+  - **Simplified:** No need to track first_endpoint since it's not used for deletion
+
+### Why
+**DRY Principle (Don't Repeat Yourself):**
+- Both `add_dnszone()` and `delete_dnszone()` had identical logic for:
+  - Finding primary pods
+  - Collecting unique instance names
+  - Getting endpoints for each instance
+  - Iterating through all endpoints
+- This duplication violated DRY and made maintenance harder
+
+**Benefits:**
+- **Single Source of Truth:** Instance/endpoint iteration logic exists in one place
+- **Easier Maintenance:** Changes to iteration logic only need to be made once
+- **Reduced Code:** Eliminated ~80 lines of duplicated code
+- **Better Testability:** Can test endpoint iteration logic independently
+- **Flexibility:** The generic closure allows any operation to be performed on endpoints
+- **Consistency:** Both add and delete operations use identical iteration patterns
+
+**Pattern:**
+- Higher-order function accepting async closures
+- Closures capture necessary data from outer scope
+- Returns both first endpoint (for NOTIFY) and total count (for logging)
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only / Refactoring
+
+---
+
+## [2025-12-08] - Refactor: Extract Zone Addition Logic to Separate Function
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/dnszone.rs`: Created new `add_dnszone()` function (lines 120-269)
+  - **Extracted from:** Zone addition logic previously embedded in `reconcile_dnszone()`
+  - **Purpose:** Separate zone addition logic into its own function for better code organization
+  - **Signature:** `pub async fn add_dnszone(client: Client, dnszone: DNSZone, zone_manager: &Bind9Manager) -> Result<()>`
+  - **Functionality:** Handles all zone addition logic including finding primary pods, loading RNDC key, iterating through instances, and notifying secondaries
+  - Added `#[allow(clippy::too_many_lines)]` attribute
+- `src/reconcilers/dnszone.rs`: Simplified `reconcile_dnszone()` to orchestration function (lines 64-102)
+  - **Before:** Combined orchestration and zone addition logic (125+ lines)
+  - **After:** Simplified to just orchestrate by calling `add_dnszone()` (38 lines)
+  - **Pattern:** Now mirrors the structure with `delete_dnszone()` - one orchestrator, two specialized functions
+  - Removed `#[allow(clippy::too_many_lines)]` from `reconcile_dnszone()` as it's no longer needed
+
+### Why
+**Code Organization and Maintainability:**
+- Creates symmetry between zone addition and deletion (both have dedicated functions)
+- Separates concerns: `reconcile_dnszone()` orchestrates, `add_dnszone()` implements
+- Makes the code easier to understand and maintain
+- Follows the single responsibility principle
+
+**Benefits:**
+- **Clearer Intent:** Function names clearly indicate what each does
+- **Easier Testing:** Can test zone addition logic independently
+- **Better Readability:** Shorter functions are easier to understand
+- **Consistency:** Matches the pattern already established with `delete_dnszone()`
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only / Refactoring
+
+---
+
+## [2025-12-08] - Use Kubernetes Endpoints API with Per-Instance Iteration
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/dnszone.rs`: Implemented `get_endpoint()` function to use Kubernetes Endpoints API (lines 620-669)
+  - **New approach:** Query Endpoints API to get pod IPs with their container ports
+  - **Why Endpoints API:** Provides the actual container ports, not service external ports
+  - Returns `Vec<EndpointAddress>` with pod IP and container port pairs
+  - Handles multiple endpoint subsets and ready addresses
+  - Comprehensive error handling for missing endpoints or ports
+- `src/reconcilers/dnszone.rs`: Updated `reconcile_dnszone()` to loop through instances (lines 64-235)
+  - **Before:** Manually iterated over pods using hardcoded `BINDCAR_API_PORT` constant
+  - **After:** Loops through each primary instance, gets endpoints for each, processes all endpoints
+  - **Pattern:** Outer loop over instances → inner loop over endpoints per instance
+  - Ensures ALL pods across ALL primary instances receive zone updates
+  - Added `#[allow(clippy::too_many_lines)]` attribute
+- `src/reconcilers/dnszone.rs`: Updated `delete_dnszone()` to loop through instances (lines 254-340)
+  - **Before:** Manually iterated over pods using hardcoded `BINDCAR_API_PORT` constant
+  - **After:** Loops through each primary instance, gets endpoints for each, deletes from all
+  - **Pattern:** Outer loop over instances → inner loop over endpoints per instance
+  - Ensures complete cleanup across all instances and all pods
+- `src/reconcilers/dnszone.rs`: Added `EndpointAddress` struct (lines 620-627)
+  - Simple data structure holding pod IP and container port
+  - Used as return type from `get_endpoint()`
+  - Derives `Debug` and `Clone` for debugging and flexibility
+- `src/reconcilers/dnszone.rs`: Added import for `Endpoints` from `k8s_openapi::api::core::v1` (line 15)
+  - Required to query Kubernetes Endpoints API
+
+### Why
+The Kubernetes **Endpoints API** is the correct way to discover pod IPs and their container ports. Additionally, looping through **each instance separately** ensures that zones are added to all pods across all instances, which is critical when:
+1. A cluster has multiple primary instances
+2. Each instance has multiple replica pods
+3. Storage is per-pod (EmptyDir)
+
+**The Correct Architecture:**
+- **Service** → Defines the external port (e.g., 80) and routes traffic
+- **Endpoints** → Automatically maintained by Kubernetes, contains pod IPs and container ports
+- **Instance-level iteration** → Ensures all instances and all their replicas get updated
+
+**Why This Matters:**
+- **Dynamic Port Discovery:** Container ports are discovered at runtime, not hardcoded
+- **Kubernetes Native:** Leverages Kubernetes' built-in service discovery
+- **Multi-Instance Support:** Correctly handles clusters with multiple primary instances
+- **Complete Coverage:** Every pod of every instance receives zone updates
+- **Resilience:** Only returns ready endpoints (pods that have passed health checks)
+
+**What Changed:**
+```rust
+// ❌ BEFORE: Manual pod lookup + hardcoded port
+let pods = find_all_primary_pods(&client, &namespace, &cluster_ref).await?;
+let bindcar_port = crate::constants::BINDCAR_API_PORT;  // Hardcoded 8080
+for pod in &pods {
+    let endpoint = format!("{}:{}", pod.ip, bindcar_port);
+    zone_manager.add_zone(..., &endpoint, ...).await?;
+}
+
+// ✅ AFTER: Loop through instances, get endpoints for each
+// Extract unique instance names
+let mut instance_names: Vec<String> = primary_pods
+    .iter()
+    .map(|pod| pod.instance_name.clone())
+    .collect();
+instance_names.dedup();
+
+// Loop through each instance
+for instance_name in &instance_names {
+    // Get endpoints for this specific instance
+    let endpoints = get_endpoint(&client, &namespace, instance_name, "http").await?;
+
+    // Process all endpoints (pods) for this instance
+    for endpoint in &endpoints {
+        let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
+        zone_manager.add_zone(..., &pod_endpoint, ...).await?;
+    }
+}
+```
+
+### Technical Details
+
+**Endpoints API Structure:**
+Kubernetes maintains an Endpoints object for each Service, organized into subsets:
+```yaml
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: bind9-primary-instance
+subsets:
+- addresses:           # List of ready pod IPs
+  - ip: 10.244.1.5
+  - ip: 10.244.2.10
+  ports:               # Container ports (NOT service ports)
+  - name: http
+    port: 8080         # Actual container port
+    protocol: TCP
+```
+
+**How `get_endpoint()` Works:**
+1. Queries Endpoints API: `GET /api/v1/namespaces/{ns}/endpoints/{service_name}`
+2. Iterates through all subsets (usually one, but can be multiple)
+3. Finds the port with matching `port_name` (e.g., "http")
+4. Extracts all ready pod IPs from `addresses` field
+5. Returns `Vec<EndpointAddress>` with IP:port pairs
+
+**Why Not Use Services Directly:**
+- Services define **external ports** for routing (e.g., 80)
+- Endpoints define **container ports** where apps listen (e.g., 8080)
+- When connecting directly to pod IPs, we bypass the service routing
+- Therefore, we must use the container port from Endpoints, not the service port
+
+**Benefits:**
+- **No hardcoded ports:** Reads from Kubernetes metadata
+- **Automatic discovery:** Kubernetes updates Endpoints when pods change
+- **Health awareness:** Only returns ready endpoints
+- **Standard practice:** This is how Kubernetes-native applications discover backends
+
+### Quality
+- ✅ All tests pass (245 passed, 16 ignored)
+- ✅ Clippy passes with strict warnings
+- ✅ `cargo fmt` - Code formatted
+- ✅ Comprehensive rustdoc comments on `get_endpoint()` function
+- ✅ Error handling for missing endpoints or ports
+- ✅ Cleaner, more maintainable code
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Code quality improvement - Uses Kubernetes API correctly
+- [ ] Config change only
+- [ ] Documentation only
+
+**Notes:**
+- This is a **refactoring** that improves code quality without changing behavior
+- The Endpoints API approach is the "Kubernetes way" of discovering pod backends
+- Eliminates dependency on hardcoded `BINDCAR_API_PORT` constant for zone operations
+- Makes the code more flexible if container ports change in the future
+- Aligns with Kubernetes best practices for service discovery
+
+---
+
+## [2025-12-08] - Improve Zone Creation Idempotency with Better Error Handling
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/bind9.rs`: Enhanced `zone_exists()` with debug logging
+  - Added debug log when zone exists: `"Zone {zone_name} exists on {server}"`
+  - Added debug log when zone doesn't exist: `"Zone {zone_name} does not exist on {server}: {error}"`
+  - Helps diagnose zone existence check failures
+- `src/bind9.rs`: Improved `add_zone()` error handling for duplicate zones (lines 671-690)
+  - **Before:** Failed hard on any API error when zone creation failed
+  - **After:** Treats "already exists" errors from BIND9 as success (idempotent)
+  - Detects multiple BIND9 error patterns:
+    - "already exists"
+    - "already serves the given zone"
+    - "duplicate zone"
+    - HTTP 409 Conflict status code
+  - Logs: `"Zone {zone_name} already exists on {server} (detected via API error), treating as success"`
+
+### Why
+The DNSZone reconciler was experiencing repeated reconciliation errors when zones already existed. The problem occurred when:
+1. `zone_exists()` check returns `false` (could be transient network issue, API unavailability, etc.)
+2. `add_zone()` attempts to create the zone
+3. BIND9's `rndc addzone` command fails because zone already exists
+4. Bindcar returns the RNDC error to bindy
+5. Controller treats this as a failure and retries indefinitely
+
+This change makes zone creation fully idempotent by:
+- Catching BIND9's "zone already exists" error messages
+- Treating them as success rather than failure
+- Preventing unnecessary reconciliation retry loops
+
+### Technical Details
+
+**Two-Layer Idempotency:**
+1. **Primary check (line 628):** `zone_exists()` queries `/api/v1/zones/{name}/status`
+   - If bindcar returns 200 OK → zone exists, skip creation
+   - If bindcar returns 404 Not Found → zone doesn't exist, proceed with creation
+   - If bindcar returns other error → status check failed, proceed with creation (fallback will handle duplicates)
+2. **Fallback check (lines 671-690):** Handle RNDC errors from zone creation attempt
+   - If RNDC error contains duplicate zone messages → treat as success
+   - Otherwise → return error for real failures (permissions, invalid config, etc.)
+
+**BIND9 Error Messages:**
+When `rndc addzone` is called on an existing zone, BIND9 can return various error messages:
+- "already exists" - Generic duplicate zone error
+- "already serves the given zone" - Zone is already configured
+- "duplicate zone" - Zone name conflicts with existing zone
+
+**Why Two Layers?**
+- The primary check (`zone_exists()`) can fail due to transient network issues or API unavailability
+- The fallback ensures we don't fail reconciliation if the zone actually exists but status check failed
+- This makes the operator resilient to temporary API issues and eventually consistent
+
+### Quality
+- ✅ All tests pass (245 passed, 16 ignored)
+- ✅ Clippy passes with strict warnings
+- ✅ `cargo fmt` - Code formatted
+- ✅ Debug logging improves troubleshooting
+- ✅ No functional changes to successful case (zone creation still works)
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Bug fix - eliminates infinite reconciliation loops
+- [ ] Config change only
+- [ ] Documentation only
+
+**Notes:**
+- This fixes the issue where zones were being repeatedly created even though they already existed
+- The enhanced logging helps diagnose why `zone_exists()` might return false
+- Idempotency is critical for Kubernetes operators to prevent resource churn
+- The fallback handles all known BIND9 duplicate zone error messages
+- The operator now handles transient API failures gracefully
+
+---
+
+## [2025-12-08] - Fix DNS Record Updates to Use DNS-TCP Port Instead of HTTP API Port
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/records.rs`: Fixed `get_instance_and_key!` macro to use DNS-TCP port instead of HTTP port
+  - **Before:** Looked up "http" port and connected to bindcar HTTP API
+  - **After:** Looks up "dns-tcp" port and connects to BIND9 DNS service over TCP
+  - Updated macro at lines 101-132: Changed from `get_service_port(..., "http")` to `get_service_port(..., "dns-tcp")`
+  - Updated variable name from `http_port` to `dns_tcp_port` for clarity
+  - Updated error messages to reference "DNS TCP service port"
+  - Added RFC 2136 reference explaining TCP requirement for dynamic updates with TSIG
+
+### Why
+DNS record updates are performed via `nsupdate`, which uses the DNS protocol (RFC 2136) and must connect to port 53 on the BIND9 server **over TCP**. The code was incorrectly looking up the "http" port and attempting to send DNS updates to the bindcar HTTP API, which cannot process nsupdate requests.
+
+**Why TCP and not UDP?**
+RFC 2136 (Dynamic Updates in the Domain Name System) recommends TCP for dynamic updates, especially when using TSIG authentication, because:
+- **Reliability**: TCP ensures delivery confirmation
+- **TSIG signatures**: Large signature payloads work better over TCP
+- **Message size**: Dynamic updates with TSIG can exceed UDP packet limits (512 bytes)
+- **Connection-oriented**: Better for authenticated transactions
+
+This caused all DNS record creation (A, AAAA, CNAME, MX, TXT, NS, SRV, CAA records) to fail with connection errors because:
+- The HTTP API (bindcar) is for zone management, not record updates
+- DNS dynamic updates (nsupdate) require the DNS protocol on port 53 over TCP
+- TSIG authentication (RNDC keys) work with DNS protocol, not HTTP
+- Kubernetes services expose separate ports for "dns-tcp" and "dns-udp"
+
+### Technical Details
+
+**Before (Incorrect - HTTP Port):**
+```rust
+let http_port = match get_service_port($client, &instance_name, $namespace, "http").await {
+    Ok(port) => port,
+    Err(e) => { /* error */ }
+};
+let server = format!("{}.{}.svc.cluster.local:{}", instance_name, $namespace, http_port);
+zone_manager.add_a_record(&zone_name, &name, &ip, ttl, &server, &key_data).await;
+```
+
+**After (Correct - DNS-TCP Port):**
+```rust
+// DNS record updates via nsupdate use TCP for reliability and TSIG authentication
+// RFC 2136 recommends TCP for dynamic updates, especially with TSIG signatures
+let dns_tcp_port = match get_service_port($client, &instance_name, $namespace, "dns-tcp").await {
+    Ok(port) => port,
+    Err(e) => { /* error */ }
+};
+let server = format!("{}.{}.svc.cluster.local:{}", instance_name, $namespace, dns_tcp_port);
+zone_manager.add_a_record(&zone_name, &name, &ip, ttl, &server, &key_data).await;
+```
+
+**Impact on All Record Types:**
+This fix applies to all DNS record reconcilers that use the `get_instance_and_key!` macro:
+- `reconcile_a_record()` - A records (IPv4)
+- `reconcile_aaaa_record()` - AAAA records (IPv6)
+- `reconcile_cname_record()` - CNAME records
+- `reconcile_mx_record()` - MX records
+- `reconcile_txt_record()` - TXT records
+- `reconcile_ns_record()` - NS records
+- `reconcile_srv_record()` - SRV records
+- `reconcile_caa_record()` - CAA records
+
+### Quality
+- ✅ All tests pass (245 passed, 16 ignored)
+- ✅ Clippy passes with strict warnings
+- ✅ `cargo fmt` - Code formatted
+- ✅ Single macro change fixes all record types
+- ✅ RFC 2136 compliance documented in code comments
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (critical bug fix - record creation was broken)
+- [ ] Config change only
+- [ ] Documentation only
+
+**Notes:**
+- **Critical bug fix** - DNS record creation was completely broken before this change
+- All record types (A, AAAA, CNAME, MX, TXT, NS, SRV, CAA) are now fixed
+- The bindcar HTTP API is still used for zone management (add_zone, delete_zone)
+- DNS record updates correctly use the DNS protocol over TCP with TSIG authentication
+- Kubernetes Service must expose a port named "dns-tcp" (typically port 53/TCP)
+- The service should have separate port definitions for "dns-tcp" and "dns-udp"
+
+## [2025-12-08] - Propagate DNS Zones to All Primary Replicas
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/dnszone.rs`: Updated `reconcile_dnszone()` to add zones to ALL primary pods
+  - **Before:** Used service endpoint which load-balanced to a single pod
+  - **After:** Iterates over all primary pods and adds zone to each pod individually
+  - Updated zone creation logic (lines 112-190): Loop through all pods with error context
+  - Added detailed logging for each pod operation
+  - Better error messages indicating which pod failed
+- `src/reconcilers/dnszone.rs`: Updated `delete_dnszone()` to delete from ALL primary pods
+  - **Before:** Used service endpoint which load-balanced to a single pod
+  - **After:** Iterates over all primary pods and deletes zone from each pod individually
+  - Updated zone deletion logic (lines 253-298): Loop through all pods with error context
+  - Ensures complete cleanup across all replicas
+
+### Why
+With EmptyDir storage (per-pod, non-shared), each primary pod maintains its own zone files. Previously, when creating or deleting a DNS zone, the operator would use the Kubernetes service endpoint, which load-balances requests to one pod. This meant:
+- Only one primary pod would receive the zone configuration
+- Other primary replicas would be missing the zone
+- DNS queries could fail depending on which pod received the request
+- Zone inconsistency across replicas
+
+This change ensures all primary pods have identical zone configurations, regardless of storage type (EmptyDir or ReadWriteMany PVC).
+
+### Technical Details
+
+**Before (Service Endpoint Approach):**
+```rust
+// Service load balancer routes to one pod
+let service_endpoint = format!("{instance}.{ns}.svc.cluster.local:{port}");
+zone_manager.add_zone(&zone_name, ZONE_TYPE_PRIMARY, &service_endpoint, ...).await?;
+```
+
+**After (All Pods Approach):**
+```rust
+// Add zone to ALL primary pods
+for pod in &primary_pods {
+    let pod_endpoint = format!("{}:{}", pod.ip, http_port);
+    zone_manager.add_zone(&zone_name, ZONE_TYPE_PRIMARY, &pod_endpoint, ...).await
+        .context(format!("Failed to add zone {} to pod {}", zone_name, pod.name))?;
+}
+```
+
+**Benefits:**
+- ✅ Zone consistency across all primary replicas
+- ✅ Works with both EmptyDir and ReadWriteMany PVC storage
+- ✅ Direct pod communication bypasses load balancer
+- ✅ Better error reporting (identifies which pod failed)
+- ✅ Improved observability with per-pod logging
+
+### Quality
+- ✅ All tests pass (245 passed, 16 ignored)
+- ✅ Clippy passes with strict warnings
+- ✅ `cargo fmt` - Code formatted
+- ✅ Added detailed logging for troubleshooting
+- ✅ Error context includes pod name for easier debugging
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (behavior change for multi-replica primaries)
+- [ ] Config change only
+- [ ] Documentation only
+
+**Notes:**
+- This fixes a critical bug where only one primary pod would have the zone
+- Operators using multi-replica primary instances should redeploy to get consistent behavior
+- Single-replica deployments are unaffected (same behavior as before)
+- The `find_all_primary_pods()` function was already collecting all pods, but they weren't being used
+
 ## [2025-12-08] - Use bindcar Zone Type Constants
 
 **Author:** Erick Bourgeois

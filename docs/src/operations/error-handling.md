@@ -241,10 +241,12 @@ histogram_quantile(0.95, bindy_reconcile_duration_seconds_bucket{resource="AReco
 
 All BIND9 operations are idempotent, making them safe for controller retries:
 
-### add_zone
-- Checks if zone exists before attempting to add
-- Returns success if zone already exists
-- Safe to call multiple times
+### add_zones / add_primary_zone / add_secondary_zone
+- **add_zones**: Centralized dispatcher that routes to `add_primary_zone` or `add_secondary_zone` based on zone type
+- **add_primary_zone**: Checks if zone exists before attempting to add primary zone
+- **add_secondary_zone**: Checks if zone exists before attempting to add secondary zone
+- All functions return success if zone already exists
+- Safe to call multiple times (idempotent)
 
 ### reload_zone
 - Returns clear error if zone doesn't exist
