@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-10 15:15] - Use Kubernetes API v1.30 for Broader Compatibility
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: Changed k8s-openapi feature from `v1_32` to `v1_30`
+- `Cargo.lock`: Updated k8s-openapi from v0.26.0 to v0.26.1
+
+### Why
+Using `v1_32` limited the operator to only the newest Kubernetes clusters (1.32+, released December 2024). By using `v1_30` instead:
+- Supports Kubernetes 1.30+ clusters (broader compatibility)
+- Works with most production clusters currently deployed (1.30-1.31)
+- Aligns with ecosystem standards and bindcar's approach
+- More stable API - v1.30 has been in production longer
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] CI/CD workflow fix
+
+---
+
 ## [2025-12-10 15:00] - Align Release Workflow with bindcar
 
 **Author:** Erick Bourgeois
@@ -18,7 +41,6 @@ All notable changes to this project will be documented in this file.
   - Added Docker SBOM generation using `anchore/sbom-action@v0`
   - Updated `upload-release-assets` to collect Docker SBOM
   - Added `permissions: packages: write` at workflow level
-  - Added `K8S_OPENAPI_ENABLED_VERSION: "1.30"` environment variable
   - Added `cache-on-failure: true` to Rust cache
   - Renamed `build-and-test` job to `build` (no tests in release)
   - Updated job dependencies: `docker-release` needs `[extract-version, build]`
@@ -33,6 +55,8 @@ The bindy release workflow was out of sync with the proven bindcar workflow. Ali
 - Comprehensive SBOM coverage (binary + Docker image)
 
 The original workflow also had an issue with `cargo-cyclonedx` using the unsupported `--output-pattern` flag.
+
+**Note:** Removed `K8S_OPENAPI_ENABLED_VERSION: "1.30"` from workflow env vars because bindy uses `k8s-openapi` v0.26 with `v1_32` feature (configured in Cargo.toml), while bindcar uses v0.23 with `v1_30` feature. The env var would conflict with the Cargo.toml feature selection.
 
 ### Impact
 - [x] Breaking change - macOS and Windows releases removed
