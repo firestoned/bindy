@@ -44,8 +44,8 @@ kubectl get storageclass
 # Create namespace
 kubectl create namespace dns-system
 
-# Install CRDs
-kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/crds/
+# Install CRDs (use kubectl create to avoid annotation size limits)
+kubectl create -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/crds/
 
 # Install RBAC
 kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/rbac/

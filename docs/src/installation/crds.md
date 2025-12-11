@@ -16,15 +16,27 @@ CRDs define the schema for custom resources in Kubernetes. Bindy uses CRDs to re
 Install all Bindy CRDs:
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/crds/
+kubectl create -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/crds/
 ```
 
 Or install from local files:
 
 ```bash
 cd bindy
-kubectl apply -f deploy/crds/
+kubectl create -f deploy/crds/
 ```
+
+**Important**: Use `kubectl create` instead of `kubectl apply` to avoid the 256KB annotation size limit that can occur with large CRDs like `Bind9Instance`.
+
+### Updating Existing CRDs
+
+To update CRDs that are already installed:
+
+```bash
+kubectl replace --force -f deploy/crds/
+```
+
+The `--force` flag deletes and recreates the CRDs, which is necessary to avoid annotation size limits.
 
 ## Verify Installation
 

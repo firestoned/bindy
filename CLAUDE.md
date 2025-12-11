@@ -69,7 +69,9 @@ The Rust types in `src/crd.rs` are the **source of truth**. CRD YAML files in `/
 5. Validate all examples: `kubectl apply --dry-run=client -f examples/`
 6. Run `cargo fmt`, `cargo clippy`, and `cargo test` to ensure code quality
 7. **CRITICAL**: Run `cargo run --bin crddoc > docs/src/reference/api.md` to regenerate API docs **AFTER** all changes are complete and validated
-8. Deploy with `kubectl apply -f deploy/crds/`
+8. Deploy with `kubectl replace --force -f deploy/crds/` (or `kubectl create -f deploy/crds/` for first install)
+
+   **IMPORTANT**: Use `kubectl create` or `kubectl replace --force` instead of `kubectl apply` to avoid the 256KB annotation size limit. The `Bind9Instance` CRD is ~393KB, which causes `kubectl apply` to fail when storing the full CRD in the `last-applied-configuration` annotation.
 
 ⚠️ **IMPORTANT**: Always run `crddoc` **LAST** after all CRD changes, example updates, and validations are complete. This ensures the API documentation reflects the final, validated state of the CRDs.
 
@@ -659,7 +661,10 @@ CRD YAML files in `/deploy/crds/` are **AUTO-GENERATED** from the Rust types. Th
 5. **Update `CHANGELOG.md`** documenting the CRD change
 6. **Deploy updated CRDs**:
    ```bash
-   kubectl apply -f deploy/crds/
+   # Use replace --force to avoid annotation size limits
+   kubectl replace --force -f deploy/crds/
+   # Or for first install:
+   kubectl create -f deploy/crds/
    ```
 
 #### Generated YAML Format:

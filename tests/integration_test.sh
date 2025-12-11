@@ -63,7 +63,8 @@ if [ "$SKIP_DEPLOY" = false ]; then
         # Install CRDs and RBAC
         echo -e "${GREEN}📋 Installing CRDs...${NC}"
         kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
-        kubectl apply -f "${PROJECT_ROOT}/deploy/crds/"
+        # Use 'kubectl replace --force' to avoid annotation size limits with large CRDs
+        kubectl replace --force -f "${PROJECT_ROOT}/deploy/crds/" 2>/dev/null || kubectl create -f "${PROJECT_ROOT}/deploy/crds/"
 
         echo -e "${GREEN}🔐 Creating RBAC...${NC}"
         kubectl apply -f "${PROJECT_ROOT}/deploy/rbac/"
