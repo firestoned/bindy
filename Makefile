@@ -123,8 +123,8 @@ docs: ## Build all documentation (mdBook + rustdoc + CRD API reference)
 	@cargo run --bin crddoc > docs/src/reference/api.md
 	@echo "Building rustdoc API documentation..."
 	@cargo doc --no-deps --all-features
-	@echo "Install mermaid assets and build mdBook documentation..."
-	@cd docs && mdbook-mermaid install && mdbook build
+	@echo "Build mdBook documentation..."
+	@cd docs && mdbook build
 	@echo "Copying rustdoc into documentation..."
 	@mkdir -p docs/target/rustdoc
 	@cp -r target/doc/* docs/target/rustdoc/

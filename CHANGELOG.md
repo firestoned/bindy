@@ -2,6 +2,103 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-11 01:36] - Fix Mermaid Diagram Zoom/Pan JavaScript Error
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/mermaid-init.js`: Added null checks before calling `addEventListener()` on theme switcher buttons to prevent JavaScript errors when elements don't exist
+
+### Why
+The mermaid-init.js script was attempting to add event listeners to theme switcher elements without checking if they exist first. This caused a JavaScript error: "can't access property 'addEventListener', document.getElementById(...) is null". The error prevented zoom and pan functionality from working on Mermaid diagrams in the generated documentation.
+
+### Impact
+- [x] Documentation only
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+
+**Benefits:**
+1. **Zoom and pan now works** - Mermaid diagrams are now interactive without JavaScript errors
+2. **Better error handling** - Script safely handles missing theme switcher elements
+3. **Improved UX** - Users can zoom and pan large architecture diagrams
+
+## [2025-12-11 01:30] - Complete DNS Record Type Guide Documentation
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/src/guide/aaaa-records.md`: Comprehensive guide for IPv6 AAAA records
+  - Dual-stack configuration examples (IPv4 + IPv6)
+  - IPv6 address format variations
+  - Load balancing with multiple AAAA records
+  - Common use cases (web servers, API endpoints, mail servers)
+  - Best practices and troubleshooting
+- `docs/src/guide/mx-records.md`: Complete MX (Mail Exchange) records guide
+  - Priority-based failover configuration
+  - Load balancing with equal priorities
+  - Google Workspace and Microsoft 365 configurations
+  - Self-hosted mail server setup
+  - FQDN requirements and common mistakes
+  - Mail delivery testing procedures
+- `docs/src/guide/txt-records.md`: Detailed TXT records guide
+  - SPF (Sender Policy Framework) configuration
+  - DKIM (DomainKeys Identified Mail) setup
+  - DMARC (Domain-based Message Authentication) policies
+  - Domain verification for various services (Google, Microsoft, Atlassian, Stripe)
+  - Multiple TXT values and string formatting
+  - Online validation tools and testing
+- `docs/src/guide/ns-records.md`: NS (Name Server) delegation guide
+  - Subdomain delegation to external nameservers
+  - Multi-cloud delegation examples (AWS Route 53)
+  - Environment separation (production, staging)
+  - Glue records for in-zone nameservers
+  - FQDN requirements and best practices
+- `docs/src/guide/srv-records.md`: SRV (Service Location) records guide
+  - Service discovery for XMPP, SIP, LDAP, Minecraft
+  - Priority and weight-based load balancing
+  - Protocol-specific examples (TCP and UDP)
+  - Failover configuration
+  - Required supporting A/AAAA records
+- `docs/src/guide/caa-records.md`: CAA (Certificate Authority Authorization) guide
+  - Certificate issuance authorization
+  - Let's Encrypt, DigiCert, AWS ACM configurations
+  - Wildcard certificate authorization (`issuewild` tag)
+  - Incident reporting (`iodef` tag)
+  - Multi-CA authorization
+  - Security benefits and compliance
+
+### Why
+All DNS record type guide documentation pages were marked as "under construction" with placeholder content. Users needed comprehensive, production-ready documentation for:
+- IPv6 deployment with AAAA records
+- Email infrastructure with MX and TXT records (SPF, DKIM, DMARC)
+- Subdomain delegation with NS records
+- Service discovery with SRV records
+- Certificate security with CAA records
+
+### Impact
+- [x] Documentation only
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+
+**Benefits:**
+1. **Complete documentation coverage** - All 8 DNS record types now have comprehensive guides
+2. **Production-ready examples** - Real-world configurations for common services (Google, Microsoft, AWS)
+3. **Security guidance** - Email authentication (SPF/DKIM/DMARC) and certificate control (CAA)
+4. **Better onboarding** - New users can find complete examples for any record type
+5. **Troubleshooting support** - Each guide includes testing procedures and common issues
+
+**Documentation Structure:**
+- Creating records with YAML examples
+- Common use cases and configurations
+- Best practices and recommendations
+- Status monitoring with granular conditions
+- Troubleshooting with testing commands
+- Cross-references to related guides
+
+---
+
 ## [2025-12-10 23:00] - Update Documentation for Granular Status Conditions
 
 **Author:** Erick Bourgeois
