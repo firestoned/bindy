@@ -87,7 +87,14 @@ kubectl create namespace dns-system
 ### 2. Install CRDs
 
 ```bash
-kubectl apply -f deploy/crds/
+# Use kubectl create to avoid annotation size limits
+kubectl create -f deploy/crds/
+```
+
+**Note**: Use `kubectl create` instead of `kubectl apply` to avoid the 256KB annotation limit with large CRDs. To update existing CRDs:
+
+```bash
+kubectl replace --force -f deploy/crds/
 ```
 
 This will install all Custom Resource Definitions:

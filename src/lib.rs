@@ -64,6 +64,7 @@ pub mod constants;
 pub mod crd;
 pub mod crd_docs;
 pub mod labels;
+pub mod metrics;
 pub mod reconcilers;
 
 #[cfg(test)]

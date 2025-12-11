@@ -160,3 +160,16 @@ pub const MIN_TEST_REPLICAS: i32 = 2;
 
 /// Maximum reasonable number of replicas for testing
 pub const MAX_TEST_REPLICAS: i32 = 10;
+
+// ============================================================================
+// Metrics Server Constants
+// ============================================================================
+
+/// Port for Prometheus metrics HTTP server
+pub const METRICS_SERVER_PORT: u16 = 8080;
+
+/// Path for Prometheus metrics endpoint
+pub const METRICS_SERVER_PATH: &str = "/metrics";
+
+/// Bind address for metrics HTTP server
+pub const METRICS_SERVER_BIND_ADDRESS: &str = "0.0.0.0";
