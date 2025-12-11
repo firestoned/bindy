@@ -2,6 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-10 15:25] - Add Comprehensive CNAME Records Documentation
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/guide/cname-records.md`: Added complete CNAME records documentation with examples and best practices
+
+### Added
+- Basic CNAME record creation examples
+- Important CNAME RFC rules (no zone apex, no mixed record types, FQDN requirements)
+- Common use cases (CDN aliasing, subdomain aliases, internal service discovery, www redirects)
+- Field reference table
+- TTL behavior documentation
+- Troubleshooting section (CNAME loops, missing trailing dot)
+- Cross-references to related documentation
+
+### Why
+The CNAME records documentation page was empty (only had a title and one-line description). Users need comprehensive documentation covering:
+- How to create CNAME records
+- DNS RFC restrictions specific to CNAMEs
+- Common pitfalls (missing trailing dots, zone apex restriction)
+- Practical examples for typical use cases
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
 ## [2025-12-10 15:20] - Fix Protobuf Security Vulnerability
 
 **Author:** Erick Bourgeois
