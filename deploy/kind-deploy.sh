@@ -85,9 +85,9 @@ reclaimPolicy: Delete
 EOF
 fi
 
-echo -e "${GREEN}📋 Installing CRDs via kustomize...${NC}"
-# Use kubectl apply -k to apply CRDs with kustomization
-kubectl apply -f deploy/crds
+echo -e "${GREEN}📋 Installing CRDs...${NC}"
+# Use 'kubectl replace --force' to avoid annotation size limits with large CRDs
+kubectl replace --force -f deploy/crds 2>/dev/null || kubectl create -f deploy/crds
 
 echo -e "${GREEN}🔐 Creating namespace and RBAC...${NC}"
 kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -

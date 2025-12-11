@@ -2,16 +2,38 @@ name: Release
 
 on:
   release:
-    types: [created, published]
+    types:
+      - published
+
+permissions:
+  packages: write
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  K8S_OPENAPI_ENABLED_VERSION: "1.30"
 
 jobs:
-  build-and-test:
-    name: Build and Test - ${{ matrix.platform.name }}
+  extract-version:
+    name: Extract Version from Tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag_name: ${{ steps.version.outputs.tag_name }}
+    steps:
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG_NAME="${{ github.event.release.tag_name }}"
+          VERSION="${TAG_NAME#v}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "Extracted version: ${VERSION} from tag: ${TAG_NAME}"
+
+  build:
+    name: Build - ${{ matrix.platform.name }}
     runs-on: ${{ matrix.platform.os }}
+    needs: extract-version
     strategy:
       fail-fast: false
       matrix:
@@ -26,88 +48,99 @@ jobs:
             target: aarch64-unknown-linux-gnu
             artifact_name: bindy-linux-arm64
             binary_name: bindy
-          - name: macOS x86_64 (Intel)
-            os: macos-latest
-            target: x86_64-apple-darwin
-            artifact_name: bindy-macos-amd64
-            binary_name: bindy
-          - name: macOS ARM64 (Apple Silicon)
-            os: macos-latest
-            target: aarch64-apple-darwin
-            artifact_name: bindy-macos-arm64
-            binary_name: bindy
-          - name: Windows x86_64
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact_name: bindy-windows-amd64
-            binary_name: bindy.exe
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Update Cargo.toml version
+        run: |
+          sed -i 's/^version = ".*"/version = "${{ needs.extract-version.outputs.version }}"/' Cargo.toml
+          echo "Updated Cargo.toml to version ${{ needs.extract-version.outputs.version }}"
+          grep '^version = ' Cargo.toml
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.platform.target }}
 
-      - name: Install cross-compilation tools (Linux ARM64)
-        if: matrix.platform.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.platform.target }}
+          cache-on-failure: true
 
-      - name: Run tests (native targets only)
-        if: matrix.platform.target != 'aarch64-unknown-linux-gnu'
-        run: cargo test --target ${{ matrix.platform.target }} --verbose
+      - name: Cache cross binary
+        if: matrix.platform.target == 'aarch64-unknown-linux-gnu'
+        id: cache-cross
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cross
+          key: ${{ runner.os }}-cross-v0.2.5
+          restore-keys: |
+            ${{ runner.os }}-cross-
 
-      - name: Build (release)
+      - name: Install cross for ARM64 builds
+        if: matrix.platform.target == 'aarch64-unknown-linux-gnu' && steps.cache-cross.outputs.cache-hit != 'true'
+        run: |
+          cargo install cross --git https://github.com/cross-rs/cross --tag v0.2.5
+          cross --version
+
+      - name: Verify Docker for cross (ARM64)
+        if: matrix.platform.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          docker --version
+          docker info
+
+      - name: Build (release) - x86_64
+        if: matrix.platform.target == 'x86_64-unknown-linux-gnu'
         run: cargo build --release --target ${{ matrix.platform.target }} --verbose
+
+      - name: Build (release) - ARM64 with cross
+        if: matrix.platform.target == 'aarch64-unknown-linux-gnu'
+        run: cross build --release --target ${{ matrix.platform.target }} --verbose
 
       - name: Cache cargo-cyclonedx
         id: cache-cyclonedx
         uses: actions/cache@v4
         with:
           path: ~/.cargo/bin/cargo-cyclonedx
-          key: ${{ runner.os }}-cargo-cyclonedx-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-cyclonedx-0.5.7
+          restore-keys: |
+            ${{ runner.os }}-cargo-cyclonedx-
 
       - name: Install cargo-cyclonedx
         if: steps.cache-cyclonedx.outputs.cache-hit != 'true'
-        run: cargo install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --version 0.5.7
 
       - name: Generate SBOM
         run: |
-          cargo cyclonedx --format json --target ${{ matrix.platform.target }} \
-            --output-pattern target/${{ matrix.platform.target }}/release/sbom.json
+          cargo cyclonedx --format json --target ${{ matrix.platform.target }} --override-filename sbom
+          mv sbom.json target/${{ matrix.platform.target }}/release/sbom.json
 
-      - name: Upload binary artifact
+      - name: Upload binary and SBOM artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.platform.artifact_name }}
-          path: target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}
-          retention-days: 1
-
-      - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.platform.artifact_name }}-sbom
-          path: target/${{ matrix.platform.target }}/release/sbom.json
-          retention-days: 1
+          path: |
+            target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}
+            target/${{ matrix.platform.target }}/release/sbom.json
 
   docker-release:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest
-    needs: build-and-test
+    needs: [extract-version, build]
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Update Cargo.toml version
+        run: |
+          sed -i 's/^version = ".*"/version = "${{ needs.extract-version.outputs.version }}"/' Cargo.toml
+          echo "Updated Cargo.toml to version ${{ needs.extract-version.outputs.version }}"
+          grep '^version = ' Cargo.toml
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -119,27 +152,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version from tag
-        id: version
-        run: |
-          # Get the tag name (e.g., v1.0.0 or 1.0.0)
-          TAG_NAME="${{ github.event.release.tag_name }}"
-          # Remove 'v' prefix if present
-          VERSION="${TAG_NAME#v}"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
-
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=semver,pattern={{version}},value=${{ steps.version.outputs.version }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.version }}
-            type=semver,pattern={{major}},value=${{ steps.version.outputs.version }}
+            type=semver,pattern={{version}},value=${{ needs.extract-version.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.extract-version.outputs.version }}
+            type=semver,pattern={{major}},value=${{ needs.extract-version.outputs.version }}
             type=raw,value=latest
-            type=raw,value=${{ steps.version.outputs.tag_name }}
+            type=raw,value=${{ needs.extract-version.outputs.tag_name }}
 
       - name: Build and push Docker image
         id: docker_build
@@ -150,18 +173,30 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ steps.version.outputs.version }}
+            VERSION=${{ needs.extract-version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
           sbom: true
           provenance: true
 
+      - name: Generate Docker SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/${{ github.repository }}:${{ needs.extract-version.outputs.tag_name }}
+          format: cyclonedx-json
+          output-file: docker-sbom.json
+
+      - name: Upload Docker SBOM as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-sbom
+          path: docker-sbom.json
 
   upload-release-assets:
     name: Upload Release Assets
     runs-on: ubuntu-latest
-    needs: [build-and-test, docker-release]
+    needs: [build, docker-release]
     permissions:
       contents: write
     steps:
@@ -176,22 +211,14 @@ jobs:
 
           # Process each platform binary
           for dir in bindy-*; do
-            # Skip SBOM directories
-            if [[ "$dir" == *-sbom ]]; then
-              continue
-            fi
-
             platform="$dir"
             echo "Processing $platform..."
             cd "$platform"
 
-            # Make binary executable (Unix-like systems)
+            # Make binary executable and create tarball
             if [ -f "bindy" ]; then
               chmod +x bindy
               tar czf "../${platform}.tar.gz" bindy
-            # Windows
-            elif [ -f "bindy.exe" ]; then
-              zip "../${platform}.zip" bindy.exe
             fi
 
             cd ..
@@ -199,20 +226,24 @@ jobs:
 
           # Collect all SBOM files
           mkdir -p sboms
-          for sbom_dir in *-sbom; do
-            if [ -d "$sbom_dir" ]; then
-              cp "$sbom_dir"/sbom.json "sboms/${sbom_dir}.json" 2>/dev/null || true
+          for dir in bindy-*; do
+            if [ -f "$dir/sbom.json" ]; then
+              cp "$dir/sbom.json" "sboms/${dir}-sbom.json"
             fi
           done
 
+          # Copy Docker SBOM if it exists
+          if [ -f "docker-sbom/docker-sbom.json" ]; then
+            cp docker-sbom/docker-sbom.json sboms/
+          fi
+
           # Generate SHA256 checksums
-          sha256sum ./*.tar.gz ./*.zip sboms/*.json > checksums.sha256 2>/dev/null || true
+          sha256sum *.tar.gz sboms/*.json > checksums.sha256 2>/dev/null || true
 
       - name: Upload release assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v1
         with:
           files: |
             artifacts/*.tar.gz
-            artifacts/*.zip
             artifacts/sboms/*.json
             artifacts/checksums.sha256

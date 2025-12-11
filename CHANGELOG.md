@@ -2,6 +2,139 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-10 15:00] - Align Release Workflow with bindcar
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/release.yaml`: Complete rewrite to match bindcar release workflow structure
+  - Added `extract-version` job to extract and share version across all jobs
+  - Removed macOS (x86_64, ARM64) and Windows targets - Linux only (matching bindcar)
+  - Replaced `gcc-aarch64-linux-gnu` with `cross` for ARM64 builds
+  - Added `Update Cargo.toml version` step to all jobs using version
+  - Pinned `cargo-cyclonedx` to version 0.5.7 (matching bindcar)
+  - Fixed SBOM generation: use `--override-filename sbom` (not `sbom.json`)
+  - Consolidated artifact uploads: binary + SBOM in single upload (no separate `-sbom` artifacts)
+  - Added Docker SBOM generation using `anchore/sbom-action@v0`
+  - Updated `upload-release-assets` to collect Docker SBOM
+  - Added `permissions: packages: write` at workflow level
+  - Added `K8S_OPENAPI_ENABLED_VERSION: "1.30"` environment variable
+  - Added `cache-on-failure: true` to Rust cache
+  - Renamed `build-and-test` job to `build` (no tests in release)
+  - Updated job dependencies: `docker-release` needs `[extract-version, build]`
+
+### Why
+The bindy release workflow was out of sync with the proven bindcar workflow. Aligning them ensures:
+- Consistent release process across projects
+- Better caching strategy with versioned dependencies
+- Proper version injection into Cargo.toml during release
+- Simplified artifact structure (no separate SBOM artifacts)
+- Use of `cross` for reliable ARM64 cross-compilation
+- Comprehensive SBOM coverage (binary + Docker image)
+
+The original workflow also had an issue with `cargo-cyclonedx` using the unsupported `--output-pattern` flag.
+
+### Impact
+- [x] Breaking change - macOS and Windows releases removed
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] CI/CD workflow restructure
+
+---
+
+## [2025-12-10 14:30] - Fix CRD Annotation Size Limit in CI
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/integration.yaml`: Changed CRD installation from `kubectl apply` to `kubectl replace --force` with fallback to `kubectl create`
+- `tests/integration_test.sh`: Updated CRD installation to use `kubectl replace --force` with fallback
+- `deploy/kind-deploy.sh`: Updated CRD installation to use `kubectl replace --force` with fallback
+- `README.md`: Updated installation instructions to use `kubectl create` and documented `kubectl replace --force` for updates
+- `docs/src/installation/crds.md`: Added detailed explanation about annotation size limits and how to install/update CRDs
+- `docs/src/installation/quickstart.md`: Updated to use `kubectl create` instead of `kubectl apply`
+- `docs/src/installation/installation.md`: Updated to use `kubectl create` instead of `kubectl apply`
+- `CLAUDE.md`: Updated CRD deployment workflow instructions to use `kubectl replace --force` or `kubectl create`
+
+### Why
+The `Bind9Instance` CRD is 393KB, which causes `kubectl apply` to fail when storing the entire CRD in the `kubectl.kubernetes.io/last-applied-configuration` annotation (256KB limit). Using `kubectl replace --force` or `kubectl create` avoids creating this annotation.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] CI/CD workflow fix
+
+---
+
+## [2025-12-10 HH:MM] - Add Comprehensive Prometheus Metrics
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/metrics.rs`: Comprehensive Prometheus metrics system with namespace prefix "bindy.firestoned.io"
+  - Reconciliation metrics: total counters, duration histograms, requeue tracking
+  - Resource lifecycle metrics: created, updated, deleted, active gauge
+  - Error metrics: error counters by resource type and error category
+  - Leader election metrics: election events and current leader status
+  - Performance metrics: generation observation lag tracking
+  - Helper functions for recording all metric types
+  - Full rustdoc documentation with examples
+  - Unit tests for all metric recording functions
+- `src/constants.rs`: Metrics server configuration constants
+  - `METRICS_SERVER_PORT`: 8080 (matches deployment.yaml)
+  - `METRICS_SERVER_PATH`: "/metrics"
+  - `METRICS_SERVER_BIND_ADDRESS`: "0.0.0.0"
+- `src/main.rs`: HTTP metrics server using Axum
+  - Metrics endpoint at http://0.0.0.0:8080/metrics
+  - Async server running concurrently with controllers
+  - Instrumented Bind9Cluster reconciler wrapper (example implementation)
+- `Cargo.toml`: New dependencies
+  - `prometheus = "0.13"`: Prometheus client library
+  - `axum = "0.7"`: HTTP server for metrics endpoint
+
+### Why
+The operator lacked observability into its operations. Without metrics, it was impossible to:
+- Monitor reconciliation performance and success rates
+- Track resource lifecycle events
+- Identify error patterns and failure modes
+- Observe leader election behavior in HA deployments
+- Measure controller lag and responsiveness
+
+The deployment manifest already had Prometheus scrape annotations configured on port 8080, but no metrics server was implemented.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] New feature (opt-in)
+
+**Benefits:**
+1. **Full Observability** - Prometheus-compatible metrics for all controller operations
+2. **Performance Monitoring** - Track reconciliation duration and identify slow operations
+3. **Error Tracking** - Categorized error metrics for debugging and alerting
+4. **HA Monitoring** - Leader election status and failover events visible
+5. **Production Ready** - Metrics infrastructure matches Kubernetes operator best practices
+6. **Pre-configured** - Works with existing Prometheus scrape annotations in deployment
+
+**Metrics Available:**
+- `bindy_firestoned_io_reconciliations_total{resource_type, status}` - Reconciliation outcomes
+- `bindy_firestoned_io_reconciliation_duration_seconds{resource_type}` - Performance tracking
+- `bindy_firestoned_io_resources_created_total{resource_type}` - Resource creation events
+- `bindy_firestoned_io_resources_updated_total{resource_type}` - Resource update events
+- `bindy_firestoned_io_resources_deleted_total{resource_type}` - Resource deletion events
+- `bindy_firestoned_io_resources_active{resource_type}` - Currently active resources (gauge)
+- `bindy_firestoned_io_errors_total{resource_type, error_type}` - Error categorization
+- `bindy_firestoned_io_leader_elections_total{status}` - Leader election events
+- `bindy_firestoned_io_leader_status{pod_name}` - Current leader status (gauge, 1=leader, 0=follower)
+- `bindy_firestoned_io_generation_observation_lag_seconds{resource_type}` - Controller responsiveness
+- `bindy_firestoned_io_requeues_total{resource_type, reason}` - Requeue event tracking
+
+**Next Steps:**
+- Instrument remaining reconciler wrappers (Bind9Instance, DNSZone, all record types)
+- Update `/docs/src/operations/metrics.md` with actual metrics documentation
+- Add Grafana dashboard examples
+
 ## [2025-12-11 01:36] - Fix Mermaid Diagram Zoom/Pan JavaScript Error
 
 **Author:** Erick Bourgeois

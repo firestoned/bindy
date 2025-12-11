@@ -2,16 +2,19 @@
 // SPDX-License-Identifier: MIT
 
 use anyhow::Result;
+use axum::{routing::get, Router};
 use bindy::{
     bind9::Bind9Manager,
     constants::{
         DEFAULT_LEASE_DURATION_SECS, DEFAULT_LEASE_RENEW_DEADLINE_SECS,
-        DEFAULT_LEASE_RETRY_PERIOD_SECS, ERROR_REQUEUE_DURATION_SECS, TOKIO_WORKER_THREADS,
+        DEFAULT_LEASE_RETRY_PERIOD_SECS, ERROR_REQUEUE_DURATION_SECS, METRICS_SERVER_BIND_ADDRESS,
+        METRICS_SERVER_PATH, METRICS_SERVER_PORT, TOKIO_WORKER_THREADS,
     },
     crd::{
         AAAARecord, ARecord, Bind9Cluster, Bind9Instance, CAARecord, CNAMERecord, DNSZone,
         MXRecord, NSRecord, SRVRecord, TXTRecord,
     },
+    metrics,
     reconcilers::{
         delete_dnszone, reconcile_a_record, reconcile_aaaa_record, reconcile_bind9cluster,
         reconcile_bind9instance, reconcile_caa_record, reconcile_cname_record, reconcile_dnszone,
@@ -92,6 +95,54 @@ async fn initialize_services() -> Result<(Client, Arc<Bind9Manager>)> {
     debug!("BIND9 manager created");
 
     Ok((client, bind9_manager))
+}
+
+/// Start the Prometheus metrics HTTP server
+///
+/// Serves metrics on the configured port and path (default: 0.0.0.0:8080/metrics)
+///
+/// # Returns
+/// A `JoinHandle` that can be used to monitor the server task
+fn start_metrics_server() -> tokio::task::JoinHandle<()> {
+    info!(
+        bind_address = METRICS_SERVER_BIND_ADDRESS,
+        port = METRICS_SERVER_PORT,
+        path = METRICS_SERVER_PATH,
+        "Starting Prometheus metrics HTTP server"
+    );
+
+    tokio::spawn(async move {
+        // Define the metrics endpoint handler
+        async fn metrics_handler() -> String {
+            match metrics::gather_metrics() {
+                Ok(metrics_text) => metrics_text,
+                Err(e) => {
+                    error!("Failed to gather metrics: {}", e);
+                    String::from("# Error gathering metrics\n")
+                }
+            }
+        }
+
+        // Build the router with the metrics endpoint
+        let app = Router::new().route(METRICS_SERVER_PATH, get(metrics_handler));
+
+        // Bind to the configured address and port
+        let bind_addr = format!("{METRICS_SERVER_BIND_ADDRESS}:{METRICS_SERVER_PORT}");
+        let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
+            Ok(listener) => listener,
+            Err(e) => {
+                error!("Failed to bind metrics server to {bind_addr}: {e}");
+                return;
+            }
+        };
+
+        info!("Metrics server listening on http://{bind_addr}{METRICS_SERVER_PATH}");
+
+        // Run the server
+        if let Err(e) = axum::serve(listener, app).await {
+            error!("Metrics server error: {e}");
+        }
+    })
 }
 
 /// Leader election configuration
@@ -256,6 +307,9 @@ async fn async_main() -> Result<()> {
     initialize_logging();
 
     let (client, bind9_manager) = initialize_services().await?;
+
+    // Start the metrics HTTP server
+    let _metrics_handle = start_metrics_server();
 
     let config = load_leader_election_config();
 
@@ -642,18 +696,25 @@ async fn reconcile_bind9cluster_wrapper(
     cluster: Arc<Bind9Cluster>,
     ctx: Arc<Client>,
 ) -> Result<Action, ReconcileError> {
+    use bindy::constants::KIND_BIND9_CLUSTER;
+    let start = std::time::Instant::now();
+
     debug!(
         cluster_name = %cluster.name_any(),
         namespace = ?cluster.namespace(),
         "Reconcile wrapper called for Bind9Cluster"
     );
 
-    match reconcile_bind9cluster((*ctx).clone(), (*cluster).clone()).await {
+    let result = reconcile_bind9cluster((*ctx).clone(), (*cluster).clone()).await;
+    let duration = start.elapsed();
+
+    match result {
         Ok(()) => {
             info!(
                 "Successfully reconciled Bind9Cluster: {}",
                 cluster.name_any()
             );
+            metrics::record_reconciliation_success(KIND_BIND9_CLUSTER, duration);
 
             // Check if cluster is ready to determine requeue interval
             let is_ready = cluster
@@ -675,6 +736,8 @@ async fn reconcile_bind9cluster_wrapper(
         }
         Err(e) => {
             error!("Failed to reconcile Bind9Cluster: {}", e);
+            metrics::record_reconciliation_error(KIND_BIND9_CLUSTER, duration);
+            metrics::record_error(KIND_BIND9_CLUSTER, "reconcile_error");
             Err(e.into())
         }
     }
@@ -703,12 +766,19 @@ async fn reconcile_bind9instance_wrapper(
     instance: Arc<Bind9Instance>,
     ctx: Arc<Client>,
 ) -> Result<Action, ReconcileError> {
-    match reconcile_bind9instance((*ctx).clone(), (*instance).clone()).await {
+    use bindy::constants::KIND_BIND9_INSTANCE;
+    let start = std::time::Instant::now();
+
+    let result = reconcile_bind9instance((*ctx).clone(), (*instance).clone()).await;
+    let duration = start.elapsed();
+
+    match result {
         Ok(()) => {
             info!(
                 "Successfully reconciled Bind9Instance: {}",
                 instance.name_any()
             );
+            metrics::record_reconciliation_success(KIND_BIND9_INSTANCE, duration);
 
             // Check if instance is ready to determine requeue interval
             let is_ready = instance
@@ -728,6 +798,8 @@ async fn reconcile_bind9instance_wrapper(
         }
         Err(e) => {
             error!("Failed to reconcile Bind9Instance: {}", e);
+            metrics::record_reconciliation_error(KIND_BIND9_INSTANCE, duration);
+            metrics::record_error(KIND_BIND9_INSTANCE, "reconcile_error");
             Err(e.into())
         }
     }
@@ -738,7 +810,9 @@ async fn reconcile_dnszone_wrapper(
     dnszone: Arc<DNSZone>,
     ctx: Arc<(Client, Arc<Bind9Manager>)>,
 ) -> Result<Action, ReconcileError> {
+    use bindy::constants::KIND_DNS_ZONE;
     const FINALIZER_NAME: &str = "dns.firestoned.io/dnszone";
+    let start = std::time::Instant::now();
 
     let client = ctx.0.clone();
     let bind9_manager = ctx.1.clone();
@@ -746,7 +820,7 @@ async fn reconcile_dnszone_wrapper(
     let api: Api<DNSZone> = Api::namespaced(client.clone(), &namespace);
 
     // Handle deletion with finalizer
-    finalizer(&api, FINALIZER_NAME, dnszone.clone(), |event| async {
+    let result = finalizer(&api, FINALIZER_NAME, dnszone.clone(), |event| async {
         match event {
             finalizer::Event::Apply(zone) => {
                 // Create or update the zone
@@ -781,12 +855,22 @@ async fn reconcile_dnszone_wrapper(
                     "Successfully deleted DNSZone from bindcar: {}",
                     zone.name_any()
                 );
+                metrics::record_resource_deleted(KIND_DNS_ZONE);
                 Ok(Action::await_change())
             }
         }
     })
-    .await
-    .map_err(|e: finalizer::Error<ReconcileError>| match e {
+    .await;
+
+    let duration = start.elapsed();
+    if result.is_ok() {
+        metrics::record_reconciliation_success(KIND_DNS_ZONE, duration);
+    } else {
+        metrics::record_reconciliation_error(KIND_DNS_ZONE, duration);
+        metrics::record_error(KIND_DNS_ZONE, "reconcile_error");
+    }
+
+    result.map_err(|e: finalizer::Error<ReconcileError>| match e {
         finalizer::Error::ApplyFailed(err) | finalizer::Error::CleanupFailed(err) => err,
         finalizer::Error::AddFinalizer(err) | finalizer::Error::RemoveFinalizer(err) => {
             ReconcileError::from(anyhow::anyhow!("Finalizer error: {err}"))
@@ -805,9 +889,16 @@ async fn reconcile_arecord_wrapper(
     record: Arc<ARecord>,
     ctx: Arc<(Client, Arc<Bind9Manager>)>,
 ) -> Result<Action, ReconcileError> {
-    match reconcile_a_record(ctx.0.clone(), (*record).clone(), &ctx.1).await {
+    use bindy::constants::KIND_A_RECORD;
+    let start = std::time::Instant::now();
+
+    let result = reconcile_a_record(ctx.0.clone(), (*record).clone(), &ctx.1).await;
+    let duration = start.elapsed();
+
+    match result {
         Ok(()) => {
             info!("Successfully reconciled ARecord: {}", record.name_any());
+            metrics::record_reconciliation_success(KIND_A_RECORD, duration);
 
             // Check if record is ready to determine requeue interval
             let is_ready = record
@@ -826,6 +917,8 @@ async fn reconcile_arecord_wrapper(
         }
         Err(e) => {
             error!("Failed to reconcile ARecord: {}", e);
+            metrics::record_reconciliation_error(KIND_A_RECORD, duration);
+            metrics::record_error(KIND_A_RECORD, "reconcile_error");
             Err(e.into())
         }
     }
@@ -836,9 +929,16 @@ async fn reconcile_txtrecord_wrapper(
     record: Arc<TXTRecord>,
     ctx: Arc<(Client, Arc<Bind9Manager>)>,
 ) -> Result<Action, ReconcileError> {
-    match reconcile_txt_record(ctx.0.clone(), (*record).clone(), &ctx.1).await {
+    use bindy::constants::KIND_TXT_RECORD;
+    let start = std::time::Instant::now();
+
+    let result = reconcile_txt_record(ctx.0.clone(), (*record).clone(), &ctx.1).await;
+    let duration = start.elapsed();
+
+    match result {
         Ok(()) => {
             info!("Successfully reconciled TXTRecord: {}", record.name_any());
+            metrics::record_reconciliation_success(KIND_TXT_RECORD, duration);
 
             // Check if record is ready to determine requeue interval
             let is_ready = record
@@ -857,6 +957,8 @@ async fn reconcile_txtrecord_wrapper(
         }
         Err(e) => {
             error!("Failed to reconcile TXTRecord: {}", e);
+            metrics::record_reconciliation_error(KIND_TXT_RECORD, duration);
+            metrics::record_error(KIND_TXT_RECORD, "reconcile_error");
             Err(e.into())
         }
     }
@@ -867,9 +969,16 @@ async fn reconcile_aaaarecord_wrapper(
     record: Arc<AAAARecord>,
     ctx: Arc<(Client, Arc<Bind9Manager>)>,
 ) -> Result<Action, ReconcileError> {
-    match reconcile_aaaa_record(ctx.0.clone(), (*record).clone(), &ctx.1).await {
+    use bindy::constants::KIND_AAAA_RECORD;
+    let start = std::time::Instant::now();
+
+    let result = reconcile_aaaa_record(ctx.0.clone(), (*record).clone(), &ctx.1).await;
+    let duration = start.elapsed();
+
+    match result {
         Ok(()) => {
             info!("Successfully reconciled AAAARecord: {}", record.name_any());
+            metrics::record_reconciliation_success(KIND_AAAA_RECORD, duration);
 
             // Check if record is ready to determine requeue interval
             let is_ready = record
@@ -888,6 +997,8 @@ async fn reconcile_aaaarecord_wrapper(
         }
         Err(e) => {
             error!("Failed to reconcile AAAARecord: {}", e);
+            metrics::record_reconciliation_error(KIND_AAAA_RECORD, duration);
+            metrics::record_error(KIND_AAAA_RECORD, "reconcile_error");
             Err(e.into())
         }
     }
@@ -898,9 +1009,16 @@ async fn reconcile_cnamerecord_wrapper(
     record: Arc<CNAMERecord>,
     ctx: Arc<(Client, Arc<Bind9Manager>)>,
 ) -> Result<Action, ReconcileError> {
-    match reconcile_cname_record(ctx.0.clone(), (*record).clone(), &ctx.1).await {
+    use bindy::constants::KIND_CNAME_RECORD;
+    let start = std::time::Instant::now();
+
+    let result = reconcile_cname_record(ctx.0.clone(), (*record).clone(), &ctx.1).await;
+    let duration = start.elapsed();
+
+    match result {
         Ok(()) => {
             info!("Successfully reconciled CNAMERecord: {}", record.name_any());
+            metrics::record_reconciliation_success(KIND_CNAME_RECORD, duration);
 
             // Check if record is ready to determine requeue interval
             let is_ready = record
@@ -919,6 +1037,8 @@ async fn reconcile_cnamerecord_wrapper(
         }
         Err(e) => {
             error!("Failed to reconcile CNAMERecord: {}", e);
+            metrics::record_reconciliation_error(KIND_CNAME_RECORD, duration);
+            metrics::record_error(KIND_CNAME_RECORD, "reconcile_error");
             Err(e.into())
         }
     }
@@ -929,9 +1049,16 @@ async fn reconcile_mxrecord_wrapper(
     record: Arc<MXRecord>,
     ctx: Arc<(Client, Arc<Bind9Manager>)>,
 ) -> Result<Action, ReconcileError> {
-    match reconcile_mx_record(ctx.0.clone(), (*record).clone(), &ctx.1).await {
+    use bindy::constants::KIND_MX_RECORD;
+    let start = std::time::Instant::now();
+
+    let result = reconcile_mx_record(ctx.0.clone(), (*record).clone(), &ctx.1).await;
+    let duration = start.elapsed();
+
+    match result {
         Ok(()) => {
             info!("Successfully reconciled MXRecord: {}", record.name_any());
+            metrics::record_reconciliation_success(KIND_MX_RECORD, duration);
 
             // Check if record is ready to determine requeue interval
             let is_ready = record
@@ -950,6 +1077,8 @@ async fn reconcile_mxrecord_wrapper(
         }
         Err(e) => {
             error!("Failed to reconcile MXRecord: {}", e);
+            metrics::record_reconciliation_error(KIND_MX_RECORD, duration);
+            metrics::record_error(KIND_MX_RECORD, "reconcile_error");
             Err(e.into())
         }
     }
@@ -960,9 +1089,16 @@ async fn reconcile_nsrecord_wrapper(
     record: Arc<NSRecord>,
     ctx: Arc<(Client, Arc<Bind9Manager>)>,
 ) -> Result<Action, ReconcileError> {
-    match reconcile_ns_record(ctx.0.clone(), (*record).clone(), &ctx.1).await {
+    use bindy::constants::KIND_NS_RECORD;
+    let start = std::time::Instant::now();
+
+    let result = reconcile_ns_record(ctx.0.clone(), (*record).clone(), &ctx.1).await;
+    let duration = start.elapsed();
+
+    match result {
         Ok(()) => {
             info!("Successfully reconciled NSRecord: {}", record.name_any());
+            metrics::record_reconciliation_success(KIND_NS_RECORD, duration);
 
             // Check if record is ready to determine requeue interval
             let is_ready = record
@@ -981,6 +1117,8 @@ async fn reconcile_nsrecord_wrapper(
         }
         Err(e) => {
             error!("Failed to reconcile NSRecord: {}", e);
+            metrics::record_reconciliation_error(KIND_NS_RECORD, duration);
+            metrics::record_error(KIND_NS_RECORD, "reconcile_error");
             Err(e.into())
         }
     }
@@ -991,9 +1129,16 @@ async fn reconcile_srvrecord_wrapper(
     record: Arc<SRVRecord>,
     ctx: Arc<(Client, Arc<Bind9Manager>)>,
 ) -> Result<Action, ReconcileError> {
-    match reconcile_srv_record(ctx.0.clone(), (*record).clone(), &ctx.1).await {
+    use bindy::constants::KIND_SRV_RECORD;
+    let start = std::time::Instant::now();
+
+    let result = reconcile_srv_record(ctx.0.clone(), (*record).clone(), &ctx.1).await;
+    let duration = start.elapsed();
+
+    match result {
         Ok(()) => {
             info!("Successfully reconciled SRVRecord: {}", record.name_any());
+            metrics::record_reconciliation_success(KIND_SRV_RECORD, duration);
 
             // Check if record is ready to determine requeue interval
             let is_ready = record
@@ -1012,6 +1157,8 @@ async fn reconcile_srvrecord_wrapper(
         }
         Err(e) => {
             error!("Failed to reconcile SRVRecord: {}", e);
+            metrics::record_reconciliation_error(KIND_SRV_RECORD, duration);
+            metrics::record_error(KIND_SRV_RECORD, "reconcile_error");
             Err(e.into())
         }
     }
@@ -1022,9 +1169,16 @@ async fn reconcile_caarecord_wrapper(
     record: Arc<CAARecord>,
     ctx: Arc<(Client, Arc<Bind9Manager>)>,
 ) -> Result<Action, ReconcileError> {
-    match reconcile_caa_record(ctx.0.clone(), (*record).clone(), &ctx.1).await {
+    use bindy::constants::KIND_CAA_RECORD;
+    let start = std::time::Instant::now();
+
+    let result = reconcile_caa_record(ctx.0.clone(), (*record).clone(), &ctx.1).await;
+    let duration = start.elapsed();
+
+    match result {
         Ok(()) => {
             info!("Successfully reconciled CAARecord: {}", record.name_any());
+            metrics::record_reconciliation_success(KIND_CAA_RECORD, duration);
 
             // Check if record is ready to determine requeue interval
             let is_ready = record
@@ -1043,6 +1197,8 @@ async fn reconcile_caarecord_wrapper(
         }
         Err(e) => {
             error!("Failed to reconcile CAARecord: {}", e);
+            metrics::record_reconciliation_error(KIND_CAA_RECORD, duration);
+            metrics::record_error(KIND_CAA_RECORD, "reconcile_error");
             Err(e.into())
         }
     }
