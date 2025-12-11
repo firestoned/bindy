@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-10 15:20] - Fix Protobuf Security Vulnerability
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: Upgraded prometheus from `0.13` to `0.14`
+- `Cargo.lock`: Removed vulnerable protobuf v2.28.0, now using only protobuf v3.7.2
+
+### Why
+Security vulnerability RUSTSEC-2024-0437 was found in protobuf v2.28.0:
+- **Title**: Crash due to uncontrolled recursion in protobuf crate
+- **Date**: 2024-12-12
+- **Solution**: Upgrade to protobuf >=3.7.2
+
+The issue was caused by having two versions of prometheus:
+- `prometheus 0.13.4` (direct dependency) → protobuf v2.28.0 (vulnerable)
+- `prometheus 0.14.0` (from bindcar) → protobuf v3.7.2 (fixed)
+
+Upgrading to `prometheus 0.14` eliminates the duplicate and resolves the vulnerability.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Security fix
+- [ ] CI/CD workflow fix
+
+---
+
 ## [2025-12-10 15:15] - Use Kubernetes API v1.30 for Broader Compatibility
 
 **Author:** Erick Bourgeois
