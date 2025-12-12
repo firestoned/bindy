@@ -31,7 +31,7 @@ spec:
         runAsNonRoot: true
       containers:
         - name: bindy
-          image: firestoned/bindy:latest
+          image: ghcr.io/firestoned/bindy:latest
           imagePullPolicy: Never
           env:
             - name: RUST_LOG
