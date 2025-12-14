@@ -10,7 +10,7 @@ use crate::bind9::Bind9Manager;
 use crate::bind9_resources::{
     build_configmap, build_deployment, build_service, build_service_account,
 };
-use crate::constants::DEFAULT_BIND9_VERSION;
+use crate::constants::{API_GROUP_VERSION, DEFAULT_BIND9_VERSION, KIND_BIND9_INSTANCE};
 use crate::crd::{Bind9Cluster, Bind9Instance, Bind9InstanceStatus, Condition};
 use crate::labels::{BINDY_MANAGED_BY_LABEL, FINALIZER_BIND9_INSTANCE};
 use anyhow::Result;
@@ -235,7 +235,7 @@ pub async fn reconcile_bind9instance(client: Client, instance: Bind9Instance) ->
         deployment_api.get(&name).await.is_ok()
     };
 
-    // Only reconcile if:
+    // Only reconcile resources if:
     // 1. Spec changed (generation mismatch), OR
     // 2. We haven't processed this resource yet (no observed_generation), OR
     // 3. Resources are missing (drift detected)
@@ -244,9 +244,11 @@ pub async fn reconcile_bind9instance(client: Client, instance: Bind9Instance) ->
 
     if !should_reconcile && deployment_exists {
         debug!(
-            "Spec unchanged (generation={:?}) and resources exist, skipping reconciliation",
+            "Spec unchanged (generation={:?}) and resources exist, skipping resource reconciliation",
             current_generation
         );
+        // Update status from current deployment state (only patches if status changed)
+        update_status_from_deployment(&client, &namespace, &name, &instance, replicas).await?;
         return Ok(());
     }
 
@@ -308,7 +310,7 @@ async fn create_or_update_resources(
         "Creating or updating Kubernetes resources"
     );
 
-    // Fetch the Bind9Cluster if referenced
+    // Fetch the Bind9Cluster (namespace-scoped) if referenced
     let cluster = if instance.spec.cluster_ref.is_empty() {
         debug!("No cluster reference, proceeding with standalone instance");
         None
@@ -337,6 +339,31 @@ async fn create_or_update_resources(
         }
     };
 
+    // Fetch the Bind9GlobalCluster (cluster-scoped) if no namespace-scoped cluster was found
+    let global_cluster = if cluster.is_none() && !instance.spec.cluster_ref.is_empty() {
+        debug!(cluster_ref = %instance.spec.cluster_ref, "Fetching Bind9GlobalCluster");
+        let global_cluster_api: Api<crate::crd::Bind9GlobalCluster> = Api::all(client.clone());
+        match global_cluster_api.get(&instance.spec.cluster_ref).await {
+            Ok(gc) => {
+                debug!(
+                    cluster_name = %instance.spec.cluster_ref,
+                    "Successfully fetched Bind9GlobalCluster"
+                );
+                info!("Found Bind9GlobalCluster: {}", instance.spec.cluster_ref);
+                Some(gc)
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to fetch Bind9GlobalCluster {}: {}. Proceeding with instance-only config.",
+                    instance.spec.cluster_ref, e
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // 1. Create/update ServiceAccount (must be first, as deployment will reference it)
     debug!("Step 1: Creating/updating ServiceAccount");
     create_or_update_service_account(client, namespace, instance).await?;
@@ -347,15 +374,39 @@ async fn create_or_update_resources(
 
     // 3. Create/update ConfigMap
     debug!("Step 3: Creating/updating ConfigMap");
-    create_or_update_configmap(client, namespace, name, instance, cluster.as_ref()).await?;
+    create_or_update_configmap(
+        client,
+        namespace,
+        name,
+        instance,
+        cluster.as_ref(),
+        global_cluster.as_ref(),
+    )
+    .await?;
 
     // 4. Create/update Deployment
     debug!("Step 4: Creating/updating Deployment");
-    create_or_update_deployment(client, namespace, name, instance, cluster.as_ref()).await?;
+    create_or_update_deployment(
+        client,
+        namespace,
+        name,
+        instance,
+        cluster.as_ref(),
+        global_cluster.as_ref(),
+    )
+    .await?;
 
     // 5. Create/update Service
     debug!("Step 5: Creating/updating Service");
-    create_or_update_service(client, namespace, name, instance, cluster.as_ref()).await?;
+    create_or_update_service(
+        client,
+        namespace,
+        name,
+        instance,
+        cluster.as_ref(),
+        global_cluster.as_ref(),
+    )
+    .await?;
 
     debug!("Successfully created/updated all resources");
     Ok(())
@@ -470,8 +521,8 @@ async fn create_or_update_rndc_secret(
 
     // Create owner reference to the Bind9Instance
     let owner_ref = OwnerReference {
-        api_version: "dns.firestoned.com/v1alpha1".to_string(),
-        kind: "Bind9Instance".to_string(),
+        api_version: API_GROUP_VERSION.to_string(),
+        kind: KIND_BIND9_INSTANCE.to_string(),
         name: name.to_string(),
         uid: instance.metadata.uid.clone().unwrap_or_default(),
         controller: Some(true),
@@ -508,6 +559,7 @@ async fn create_or_update_configmap(
     name: &str,
     instance: &Bind9Instance,
     cluster: Option<&Bind9Cluster>,
+    _global_cluster: Option<&crate::crd::Bind9GlobalCluster>,
 ) -> Result<()> {
     // If instance belongs to a cluster, skip ConfigMap creation
     // The cluster creates a shared ConfigMap that all instances use
@@ -526,14 +578,18 @@ async fn create_or_update_configmap(
     );
 
     // Get role-specific allow-transfer override from cluster config
+    // Note: We only reach this code for standalone instances (no clusterRef),
+    // so we should only have a namespace-scoped cluster here, not a global cluster
     let role_allow_transfer = cluster.and_then(|c| match instance.spec.role {
         crate::crd::ServerRole::Primary => c
             .spec
+            .common
             .primary
             .as_ref()
             .and_then(|p| p.allow_transfer.as_ref()),
         crate::crd::ServerRole::Secondary => c
             .spec
+            .common
             .secondary
             .as_ref()
             .and_then(|s| s.allow_transfer.as_ref()),
@@ -574,8 +630,9 @@ async fn create_or_update_deployment(
     name: &str,
     instance: &Bind9Instance,
     cluster: Option<&Bind9Cluster>,
+    global_cluster: Option<&crate::crd::Bind9GlobalCluster>,
 ) -> Result<()> {
-    let deployment = build_deployment(name, namespace, instance, cluster);
+    let deployment = build_deployment(name, namespace, instance, cluster, global_cluster);
     let deploy_api: Api<Deployment> = Api::namespaced(client.clone(), namespace);
 
     if (deploy_api.get(name).await).is_ok() {
@@ -602,14 +659,41 @@ async fn create_or_update_service(
     name: &str,
     instance: &Bind9Instance,
     cluster: Option<&Bind9Cluster>,
+    global_cluster: Option<&crate::crd::Bind9GlobalCluster>,
 ) -> Result<()> {
-    // Get custom service spec based on instance role from cluster
-    let custom_spec = cluster.and_then(|c| match instance.spec.role {
-        crate::crd::ServerRole::Primary => c.spec.primary.as_ref().and_then(|p| p.service.as_ref()),
-        crate::crd::ServerRole::Secondary => {
-            c.spec.secondary.as_ref().and_then(|s| s.service.as_ref())
-        }
-    });
+    // Get custom service spec based on instance role from cluster (namespace-scoped or global)
+    let custom_spec = cluster
+        .and_then(|c| match instance.spec.role {
+            crate::crd::ServerRole::Primary => c
+                .spec
+                .common
+                .primary
+                .as_ref()
+                .and_then(|p| p.service.as_ref()),
+            crate::crd::ServerRole::Secondary => c
+                .spec
+                .common
+                .secondary
+                .as_ref()
+                .and_then(|s| s.service.as_ref()),
+        })
+        .or_else(|| {
+            // Fall back to global cluster if no namespace-scoped cluster
+            global_cluster.and_then(|gc| match instance.spec.role {
+                crate::crd::ServerRole::Primary => gc
+                    .spec
+                    .common
+                    .primary
+                    .as_ref()
+                    .and_then(|p| p.service.as_ref()),
+                crate::crd::ServerRole::Secondary => gc
+                    .spec
+                    .common
+                    .secondary
+                    .as_ref()
+                    .and_then(|s| s.service.as_ref()),
+            })
+        });
 
     let service = build_service(name, namespace, instance, custom_spec);
     let svc_api: Api<Service> = Api::namespaced(client.clone(), namespace);

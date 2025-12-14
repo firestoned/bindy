@@ -1,3 +1,6 @@
+   Compiling bindy v0.1.0 (/Users/erick/dev/bindy)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.75s
+     Running `target/debug/crddoc`
 # API Reference
 
 This document describes the Custom Resource Definitions (CRDs) provided by Bindy.
@@ -28,13 +31,14 @@ This document describes the Custom Resource Definitions (CRDs) provided by Bindy
 
 **API Version**: `bindy.firestoned.io/v1alpha1`
 
-DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defines a zone (e.g., example.com) with SOA record parameters and is served by a specified Bind9Instance.
+DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defines a zone (e.g., example.com) with SOA record parameters. Can reference either a namespace-scoped Bind9Cluster or cluster-scoped Bind9GlobalCluster.
 
 #### Spec Fields
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
-| `clusterRef` | string | Yes | Reference to the \`Bind9Instance\` that serves this zone.  Must match the name of a \`Bind9Instance\` in the same namespace. The zone will be added to this instance via rndc addzone. |
+| `clusterRef` | string | No | Reference to a namespace-scoped \`Bind9Cluster\` in the same namespace.  Must match the name of a \`Bind9Cluster\` resource in the same namespace. The zone will be added to all instances in this cluster.  Either \`clusterRef\` or \`globalClusterRef\` must be specified (not both). |
+| `globalClusterRef` | string | No | Reference to a cluster-scoped \`Bind9GlobalCluster\`.  Must match the name of a \`Bind9GlobalCluster\` resource (cluster-scoped). The zone will be added to all instances in this global cluster.  Either \`clusterRef\` or \`globalClusterRef\` must be specified (not both). |
 | `nameServerIps` | object | No | Map of nameserver hostnames to IP addresses for glue records.  Glue records provide IP addresses for nameservers within the zone's own domain. This is necessary when delegating subdomains where the nameserver is within the delegated zone itself.  Example: When delegating \`sub.example.com\` with nameserver \`ns1.sub.example.com\`, you must provide the IP address of \`ns1.sub.example.com\` as a glue record.  Format: \`{"ns1.example.com.": "192.0.2.1", "ns2.example.com.": "192.0.2.2"}\`  Note: Nameserver hostnames should end with a dot (.) for FQDN. |
 | `soaRecord` | object | Yes | SOA (Start of Authority) record - defines zone authority and refresh parameters.  The SOA record is required for all authoritative zones and contains timing information for zone transfers and caching. |
 | `ttl` | integer | No | Default TTL (Time To Live) for records in this zone, in seconds.  If not specified, individual records must specify their own TTL. Typical values: 300-86400 (5 minutes to 1 day). |
@@ -66,8 +70,7 @@ ARecord maps a DNS hostname to an IPv4 address. Multiple A records for the same 
 | `ipv4Address` | string | Yes | IPv4 address in dotted-decimal notation.  Must be a valid IPv4 address (e.g., "192.0.2.1"). |
 | `name` | string | Yes | Record name within the zone. Use "@" for the zone apex.  Examples: "www", "mail", "ftp", "@" The full DNS name will be: {name}.{zone} |
 | `ttl` | integer | No | Time To Live in seconds. Overrides zone default TTL if specified.  Typical values: 60-86400 (1 minute to 1 day). |
-| `zone` | string | No | DNS zone this record belongs to (e.g., "example.com").  Must match the zoneName of an existing \`DNSZone\` resource in the same namespace. The controller will search for a \`DNSZone\` with matching \`spec.zoneName\`. Either \`zone\` or \`zoneRef\` must be specified (not both). |
-| `zoneRef` | string | No | Reference to a \`DNSZone\` resource by metadata.name.  Directly references a \`DNSZone\` resource by its Kubernetes name for more efficient lookup. Either \`zone\` or \`zoneRef\` must be specified (not both). |
+| `zoneRef` | string | Yes | Reference to a \`DNSZone\` resource by metadata.name.  Directly references a \`DNSZone\` resource in the same namespace by its Kubernetes resource name. This is more efficient than searching by zone name.  Example: If the \`DNSZone\` is named "example-com", use \`zoneRef: example-com\` |
 
 #### Status Fields
 
@@ -91,8 +94,7 @@ AAAARecord maps a DNS hostname to an IPv6 address. This is the IPv6 equivalent o
 | `ipv6Address` | string | Yes | IPv6 address in standard notation.  Examples: \`2001:db8::1\`, \`fe80::1\`, \`::1\` |
 | `name` | string | Yes | Record name within the zone. |
 | `ttl` | integer | No | Time To Live in seconds. |
-| `zone` | string | No | DNS zone this record belongs to (e.g., "example.com").  Must match the zoneName of an existing \`DNSZone\` resource in the same namespace. Either \`zone\` or \`zoneRef\` must be specified (not both). |
-| `zoneRef` | string | No | Reference to a \`DNSZone\` resource by metadata.name.  Either \`zone\` or \`zoneRef\` must be specified (not both). |
+| `zoneRef` | string | Yes | Reference to a \`DNSZone\` resource by metadata.name.  Directly references a \`DNSZone\` resource in the same namespace by its Kubernetes resource name. |
 
 #### Status Fields
 
@@ -116,8 +118,7 @@ CNAMERecord creates a DNS alias from one hostname to another. A CNAME cannot coe
 | `name` | string | Yes | Record name within the zone.  Note: CNAME records cannot be created at the zone apex (@). |
 | `target` | string | Yes | Target hostname (canonical name).  Should be a fully qualified domain name ending with a dot. Example: "example.com." or "www.example.com." |
 | `ttl` | integer | No | Time To Live in seconds. |
-| `zone` | string | No | DNS zone this record belongs to (e.g., "example.com").  Must match the zoneName of an existing \`DNSZone\` resource in the same namespace. Either \`zone\` or \`zoneRef\` must be specified (not both). |
-| `zoneRef` | string | No | Reference to a \`DNSZone\` resource by metadata.name.  Either \`zone\` or \`zoneRef\` must be specified (not both). |
+| `zoneRef` | string | Yes | Reference to a \`DNSZone\` resource by metadata.name.  Directly references a \`DNSZone\` resource in the same namespace by its Kubernetes resource name. |
 
 #### Status Fields
 
@@ -142,8 +143,7 @@ MXRecord specifies mail exchange servers for a domain. Lower priority values ind
 | `name` | string | Yes | Record name within the zone. Use "@" for the zone apex. |
 | `priority` | integer | Yes | Priority (preference) of this mail server. Lower values = higher priority.  Common values: 0-100. Multiple MX records can exist with different priorities. |
 | `ttl` | integer | No | Time To Live in seconds. |
-| `zone` | string | No | DNS zone this record belongs to (e.g., "example.com").  Must match the zoneName of an existing \`DNSZone\` resource in the same namespace. Either \`zone\` or \`zoneRef\` must be specified (not both). |
-| `zoneRef` | string | No | Reference to a \`DNSZone\` resource by metadata.name.  Either \`zone\` or \`zoneRef\` must be specified (not both). |
+| `zoneRef` | string | Yes | Reference to a \`DNSZone\` resource by metadata.name.  Directly references a \`DNSZone\` resource in the same namespace by its Kubernetes resource name. |
 
 #### Status Fields
 
@@ -167,8 +167,7 @@ NSRecord delegates a subdomain to authoritative nameservers. Used for subdomain 
 | `name` | string | Yes | Subdomain to delegate. For zone apex, use "@". |
 | `nameserver` | string | Yes | Fully qualified domain name of the nameserver.  Must end with a dot. Example: "ns1.example.com." |
 | `ttl` | integer | No | Time To Live in seconds. |
-| `zone` | string | No | DNS zone this record belongs to (e.g., "example.com").  Must match the zoneName of an existing \`DNSZone\` resource in the same namespace. Either \`zone\` or \`zoneRef\` must be specified (not both). |
-| `zoneRef` | string | No | Reference to a \`DNSZone\` resource by metadata.name.  Either \`zone\` or \`zoneRef\` must be specified (not both). |
+| `zoneRef` | string | Yes | Reference to a \`DNSZone\` resource by metadata.name.  Directly references a \`DNSZone\` resource in the same namespace by its Kubernetes resource name. |
 
 #### Status Fields
 
@@ -192,8 +191,7 @@ TXTRecord stores arbitrary text data in DNS. Commonly used for SPF, DKIM, DMARC 
 | `name` | string | Yes | Record name within the zone. |
 | `text` | array | Yes | Array of text strings. Each string can be up to 255 characters.  Multiple strings are concatenated by DNS resolvers. For long text, split into multiple strings. |
 | `ttl` | integer | No | Time To Live in seconds. |
-| `zone` | string | No | DNS zone this record belongs to (e.g., "example.com").  Must match the zoneName of an existing \`DNSZone\` resource in the same namespace. Either \`zone\` or \`zoneRef\` must be specified (not both). |
-| `zoneRef` | string | No | Reference to a \`DNSZone\` resource by metadata.name.  Either \`zone\` or \`zoneRef\` must be specified (not both). |
+| `zoneRef` | string | Yes | Reference to a \`DNSZone\` resource by metadata.name.  Directly references a \`DNSZone\` resource in the same namespace by its Kubernetes resource name. |
 
 #### Status Fields
 
@@ -220,8 +218,7 @@ SRVRecord specifies the hostname and port of servers for specific services. The 
 | `target` | string | Yes | Fully qualified domain name of the target host.  Must end with a dot. Use "." for "service not available". |
 | `ttl` | integer | No | Time To Live in seconds. |
 | `weight` | integer | Yes | Relative weight for records with the same priority.  Higher values = higher probability of selection. |
-| `zone` | string | No | DNS zone this record belongs to (e.g., "example.com").  Must match the zoneName of an existing \`DNSZone\` resource in the same namespace. Either \`zone\` or \`zoneRef\` must be specified (not both). |
-| `zoneRef` | string | No | Reference to a \`DNSZone\` resource by metadata.name.  Either \`zone\` or \`zoneRef\` must be specified (not both). |
+| `zoneRef` | string | Yes | Reference to a \`DNSZone\` resource by metadata.name.  Directly references a \`DNSZone\` resource in the same namespace by its Kubernetes resource name. |
 
 #### Status Fields
 
@@ -247,8 +244,7 @@ CAARecord specifies which certificate authorities are authorized to issue certif
 | `tag` | string | Yes | Property tag. Common values: "issue", "issuewild", "iodef".  - "issue": Authorize CA to issue certificates - "issuewild": Authorize CA to issue wildcard certificates - "iodef": URL/email for violation reports |
 | `ttl` | integer | No | Time To Live in seconds. |
 | `value` | string | Yes | Property value. Format depends on the tag.  For "issue"/"issuewild": CA domain (e.g., "letsencrypt.org") For "iodef": mailto: or https: URL |
-| `zone` | string | No | DNS zone this record belongs to (e.g., "example.com").  Must match the zoneName of an existing \`DNSZone\` resource in the same namespace. Either \`zone\` or \`zoneRef\` must be specified (not both). |
-| `zoneRef` | string | No | Reference to a \`DNSZone\` resource by metadata.name.  Either \`zone\` or \`zoneRef\` must be specified (not both). |
+| `zoneRef` | string | Yes | Reference to a \`DNSZone\` resource by metadata.name.  Directly references a \`DNSZone\` resource in the same namespace by its Kubernetes resource name. |
 
 #### Status Fields
 
@@ -265,7 +261,7 @@ CAARecord specifies which certificate authorities are authorized to issue certif
 
 **API Version**: `bindy.firestoned.io/v1alpha1`
 
-Bind9Cluster defines a logical grouping of BIND9 DNS server instances with shared configuration. Provides centralized management of BIND9 version, container images, and common settings across multiple instances.
+Bind9Cluster defines a namespace-scoped logical grouping of BIND9 DNS server instances. Use this for tenant-managed DNS infrastructure isolated to a specific namespace. For platform-managed cluster-wide DNS, use Bind9GlobalCluster instead.
 
 #### Spec Fields
 
@@ -305,7 +301,7 @@ Bind9Instance represents a BIND9 DNS server deployment in Kubernetes. Each insta
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
 | `bindcarConfig` | object | No | Bindcar RNDC API sidecar container configuration.  The API container provides an HTTP interface for managing zones via rndc. If not specified, uses default configuration. |
-| `clusterRef` | string | Yes | Reference to the \`Bind9Cluster\` this instance belongs to.  The cluster provides shared configuration and defines the logical grouping. |
+| `clusterRef` | string | Yes | Reference to the cluster this instance belongs to.  Can reference either: - A namespace-scoped \`Bind9Cluster\` (must be in the same namespace as this instance) - A cluster-scoped \`Bind9GlobalCluster\` (cluster-wide, accessible from any namespace)  The cluster provides shared configuration and defines the logical grouping. The controller will automatically detect whether this references a namespace-scoped or cluster-scoped cluster resource. |
 | `config` | object | No | Instance-specific BIND9 configuration overrides.  Overrides cluster-level configuration for this instance only. |
 | `configMapRefs` | object | No | \`ConfigMap\` references override. Inherits from cluster if not specified. |
 | `image` | object | No | Container image configuration override. Inherits from cluster if not specified. |

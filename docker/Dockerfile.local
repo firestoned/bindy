@@ -1,0 +1,49 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
+# ULTRA-FAST LOCAL DEVELOPMENT DOCKERFILE
+# This assumes you've already built the binary locally with `cargo build --release`
+# Build time: ~5 seconds (just copies the pre-built binary)
+#
+# Usage:
+#   1. Build locally: cargo build --release
+#   2. Build image: docker build -f Dockerfile.local -t bindy:latest .
+#
+# IMPORTANT: This is for local development only. Do NOT use in CI/CD.
+
+FROM alpine:3.20
+
+LABEL org.opencontainers.image.source="https://github.com/firestoned/bindy"
+LABEL org.opencontainers.image.description="BIND9 DNS Controller for Kubernetes (Local Dev Build)"
+LABEL org.opencontainers.image.licenses="MIT"
+
+# Install BIND9 and required libraries
+RUN apk add --no-cache \
+    bind \
+    bind-tools \
+    ca-certificates \
+    curl
+
+# Create bindy user and directories
+RUN addgroup -S bindy && adduser -S -G bindy bindy && \
+    mkdir -p /etc/bind/zones && \
+    mkdir -p /var/cache/bind && \
+    mkdir -p /var/lib/bind && \
+    mkdir -p /run/named && \
+    chown -R bindy:bindy /etc/bind /var/cache/bind /var/lib/bind /run/named
+
+# Copy the pre-built binary from your local target directory
+COPY target/release/bindy /usr/local/bin/
+
+# Set permissions
+RUN chmod +x /usr/local/bin/bindy
+
+# Run as bind user
+USER bindy
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+# Start the controller
+ENTRYPOINT ["/usr/local/bin/bindy"]

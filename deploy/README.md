@@ -19,8 +19,8 @@ deploy/
 │   ├── srvrecords.crd.yaml        # SRV record CRD
 │   ├── txtrecords.crd.yaml        # TXT record CRD
 │   └── kustomization.yaml         # Kustomize config for CRDs
-├── operator/
-│   └── deployment.yaml            # Bindy operator deployment
+├── controller/
+│   └── deployment.yaml            # Bindy controller deployment
 ├── rbac/
 │   ├── serviceaccount.yaml        # Service account for bindy operator
 │   ├── role.yaml                  # RBAC ClusterRole for bindy
@@ -120,7 +120,7 @@ docker push <your-registry>/bindy:latest
 
 ### 5. Update Deployment
 
-Edit `deploy/operator/deployment.yaml` to use your image:
+Edit `deploy/controller/deployment.yaml` to use your image:
 
 ```yaml
 spec:
@@ -134,7 +134,7 @@ spec:
 ### 6. Deploy Operator
 
 ```bash
-kubectl apply -f deploy/operator/deployment.yaml
+kubectl apply -f deploy/controller/deployment.yaml
 ```
 
 ### 7. Verify Deployment
@@ -247,7 +247,7 @@ kubectl rollout status deployment/bindy -n dns-system
 
 ```bash
 # Delete operator
-kubectl delete -f deploy/operator/deployment.yaml
+kubectl delete -f deploy/controller/deployment.yaml
 
 # Delete RBAC
 kubectl delete -f deploy/rbac/

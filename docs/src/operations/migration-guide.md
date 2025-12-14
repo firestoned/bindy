@@ -142,7 +142,7 @@ kubectl apply -k deploy/crds
 #### Deploy the Operator
 
 ```bash
-kubectl apply -f deploy/operator/deployment.yaml
+kubectl apply -f deploy/controller/deployment.yaml
 ```
 
 ### 4. Verify Migration

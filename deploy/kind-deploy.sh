@@ -93,14 +93,14 @@ echo -e "${GREEN}🔐 Creating namespace and RBAC...${NC}"
 kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f deploy/rbac/
 
-echo -e "${GREEN}🏗️  Building Docker image...${NC}"
-docker build -t bindy:latest .
+#echo -e "${GREEN}🏗️  Building Docker image...${NC}"
+#docker build -t bindy:latest .
 
-echo -e "${GREEN}📤 Loading image into Kind...${NC}"
-kind load docker-image bindy:latest --name "${CLUSTER_NAME}"
+#echo -e "${GREEN}📤 Loading image into Kind...${NC}"
+#kind load docker-image bindy:latest --name "${CLUSTER_NAME}"
 
 echo -e "${GREEN}🚀 Deploying controller...${NC}"
-kubectl apply -f deploy/operator/deployment.yaml
+kubectl apply -f deploy/controller/deployment.yaml
 
 echo -e "${GREEN}⏳ Waiting for controller to be ready...${NC}"
 kubectl wait --for=condition=available --timeout=120s deployment/bindy -n "${NAMESPACE}" || {

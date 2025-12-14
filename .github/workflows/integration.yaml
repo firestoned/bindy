@@ -17,8 +17,6 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  NAMESPACE: dns-system
-  CLUSTER_NAME: bindy-test
 
 jobs:
   integration-test:
@@ -87,42 +85,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create Kind cluster
-        run: |
-          kind create cluster --name ${CLUSTER_NAME} --config deploy/kind-config.yaml
-          kubectl cluster-info --context kind-${CLUSTER_NAME}
-
-      - name: Install CRDs
-        run: |
-          kubectl create namespace ${NAMESPACE} || true
-          # Use 'kubectl replace --force' to avoid annotation size limits with large CRDs
-          # The --force flag deletes and recreates resources, avoiding the 256KB annotation limit
-          kubectl replace --force -f deploy/crds/ 2>/dev/null || kubectl create -f deploy/crds/
-
-      - name: Install RBAC
-        run: kubectl apply -f deploy/rbac/
-
-      - name: Deploy controller with specific image
-        run: |
-          IMAGE_TAG="${{ steps.tag.outputs.tag }}"
-          sed -i "s|ghcr.io/firestoned/bindy:latest|ghcr.io/${{ github.repository }}:${IMAGE_TAG}|g" deploy/operator/deployment.yaml
-          kubectl apply -f deploy/operator/deployment.yaml
-          kubectl wait --for=condition=available --timeout=300s deployment/bindy -n ${NAMESPACE}
-
       - name: Run integration tests
         env:
+          IMAGE_TAG: ${{ steps.tag.outputs.tag }}
+          REGISTRY: ghcr.io
+          IMAGE_NAME: ${{ github.repository }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          chmod +x tests/integration_test.sh
-          tests/integration_test.sh --image "${{ steps.tag.outputs.tag }}" --skip-deploy
+        run: make kind-integration-test-ci
 
-      - name: Check controller logs
-        if: always()
+      - name: Check controller logs on failure
+        if: failure()
         run: |
           echo "Controller logs:"
-          kubectl logs -n ${NAMESPACE} -l app=bindy --tail=100 || true
-
-      - name: Cleanup
-        if: always()
-        run: |
-          kind delete cluster --name ${CLUSTER_NAME} || true
+          kubectl logs -n dns-system -l app=bindy --tail=100 || true

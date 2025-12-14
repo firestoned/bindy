@@ -234,7 +234,7 @@ pub fn build_configmap(
         .spec
         .config_map_refs
         .as_ref()
-        .or_else(|| cluster.and_then(|c| c.spec.config_map_refs.as_ref()));
+        .or_else(|| cluster.and_then(|c| c.spec.common.config_map_refs.as_ref()));
 
     // If custom ConfigMaps are specified, don't generate a ConfigMap
     if let Some(refs) = config_map_refs {
@@ -320,7 +320,7 @@ pub fn build_cluster_configmap(
     let named_conf = build_cluster_named_conf(cluster);
     data.insert(NAMED_CONF_FILENAME.into(), named_conf);
 
-    // Build named.conf.options from cluster.spec.global
+    // Build named.conf.options from cluster.spec.common.global
     let options_conf = build_cluster_options_conf(cluster);
     data.insert(NAMED_CONF_OPTIONS_FILENAME.into(), options_conf);
 
@@ -358,7 +358,7 @@ fn build_named_conf(instance: &Bind9Instance, cluster: Option<&Bind9Cluster>) ->
         .spec
         .config_map_refs
         .as_ref()
-        .or_else(|| cluster.and_then(|c| c.spec.config_map_refs.as_ref()));
+        .or_else(|| cluster.and_then(|c| c.spec.common.config_map_refs.as_ref()));
 
     let zones_include = if let Some(refs) = config_map_refs {
         if refs.named_conf_zones.is_some() {
@@ -393,7 +393,7 @@ fn build_named_conf(instance: &Bind9Instance, cluster: Option<&Bind9Cluster>) ->
 /// Priority for configuration values (highest to lowest):
 /// 1. Instance-level settings (`instance.spec.config`)
 /// 2. Role-specific settings (`role_allow_transfer` from cluster primary/secondary spec)
-/// 3. Global cluster settings (`cluster.spec.global`)
+/// 3. Global cluster settings (`cluster.spec.common.global`)
 /// 4. Defaults (BIND9 defaults or no setting)
 ///
 /// # Arguments
@@ -417,7 +417,7 @@ fn build_options_conf(
     let mut dnssec_validate = String::new();
 
     // Get global config from cluster if available
-    let global_config = cluster.and_then(|c| c.spec.global.as_ref());
+    let global_config = cluster.and_then(|c| c.spec.common.global.as_ref());
 
     if let Some(config) = &instance.spec.config {
         // Recursion setting - instance overrides global
@@ -579,7 +579,7 @@ fn build_options_conf(
 /// A string containing the complete named.conf configuration
 fn build_cluster_named_conf(cluster: &Bind9Cluster) -> String {
     // Check if user provided a custom zones ConfigMap
-    let zones_include = if let Some(refs) = &cluster.spec.config_map_refs {
+    let zones_include = if let Some(refs) = &cluster.spec.common.config_map_refs {
         if refs.named_conf_zones.is_some() {
             // User provided custom zones file, include it from custom ConfigMap location
             "\n// Include zones file from user-provided ConfigMap\ninclude \"/etc/bind/named.conf.zones\";\n".to_string()
@@ -624,7 +624,7 @@ fn build_cluster_options_conf(cluster: &Bind9Cluster) -> String {
     let mut dnssec_validate = String::new();
 
     // Use cluster global config
-    if let Some(global) = &cluster.spec.global {
+    if let Some(global) = &cluster.spec.common.global {
         // Recursion setting
         let recursion_value = if global.recursion.unwrap_or(false) {
             "yes"
@@ -709,52 +709,72 @@ fn resolve_deployment_config<'a>(
     name: &str,
     instance: &'a Bind9Instance,
     cluster: Option<&'a Bind9Cluster>,
+    global_cluster: Option<&'a crate::crd::Bind9GlobalCluster>,
 ) -> DeploymentConfig<'a> {
-    // Get image config (instance overrides cluster)
+    // Get image config (instance overrides cluster overrides global cluster)
     let image_config = instance
         .spec
         .image
         .as_ref()
-        .or_else(|| cluster.and_then(|c| c.spec.image.as_ref()));
+        .or_else(|| cluster.and_then(|c| c.spec.common.image.as_ref()))
+        .or_else(|| global_cluster.and_then(|gc| gc.spec.common.image.as_ref()));
 
-    // Get ConfigMap references (instance overrides cluster)
+    // Get ConfigMap references (instance overrides cluster overrides global cluster)
     let config_map_refs = instance
         .spec
         .config_map_refs
         .as_ref()
-        .or_else(|| cluster.and_then(|c| c.spec.config_map_refs.as_ref()));
+        .or_else(|| cluster.and_then(|c| c.spec.common.config_map_refs.as_ref()))
+        .or_else(|| global_cluster.and_then(|gc| gc.spec.common.config_map_refs.as_ref()));
 
-    // Get version (instance overrides cluster)
+    // Get version (instance overrides cluster overrides global cluster)
     let version = instance
         .spec
         .version
         .as_deref()
-        .or_else(|| cluster.and_then(|c| c.spec.version.as_deref()))
+        .or_else(|| cluster.and_then(|c| c.spec.common.version.as_deref()))
+        .or_else(|| global_cluster.and_then(|gc| gc.spec.common.version.as_deref()))
         .unwrap_or(DEFAULT_BIND9_VERSION);
 
-    // Get volumes (instance overrides cluster)
+    // Get volumes (instance overrides cluster overrides global cluster)
     let volumes = instance
         .spec
         .volumes
         .as_ref()
-        .or_else(|| cluster.and_then(|c| c.spec.volumes.as_ref()));
+        .or_else(|| cluster.and_then(|c| c.spec.common.volumes.as_ref()))
+        .or_else(|| global_cluster.and_then(|gc| gc.spec.common.volumes.as_ref()));
 
-    // Get volume mounts (instance overrides cluster)
+    // Get volume mounts (instance overrides cluster overrides global cluster)
     let volume_mounts = instance
         .spec
         .volume_mounts
         .as_ref()
-        .or_else(|| cluster.and_then(|c| c.spec.volume_mounts.as_ref()));
+        .or_else(|| cluster.and_then(|c| c.spec.common.volume_mounts.as_ref()))
+        .or_else(|| global_cluster.and_then(|gc| gc.spec.common.volume_mounts.as_ref()));
 
-    // Get bindcar_config (instance overrides cluster global config)
-    let bindcar_config = instance.spec.bindcar_config.as_ref().or_else(|| {
-        cluster.and_then(|c| {
-            c.spec
-                .global
-                .as_ref()
-                .and_then(|g| g.bindcar_config.as_ref())
+    // Get bindcar_config (instance overrides cluster global overrides global cluster global)
+    let bindcar_config = instance
+        .spec
+        .bindcar_config
+        .as_ref()
+        .or_else(|| {
+            cluster.and_then(|c| {
+                c.spec
+                    .common
+                    .global
+                    .as_ref()
+                    .and_then(|g| g.bindcar_config.as_ref())
+            })
         })
-    });
+        .or_else(|| {
+            global_cluster.and_then(|gc| {
+                gc.spec
+                    .common
+                    .global
+                    .as_ref()
+                    .and_then(|g| g.bindcar_config.as_ref())
+            })
+        });
 
     // Determine ConfigMap name: use cluster ConfigMap if instance belongs to a cluster
     let configmap_name = if instance.spec.cluster_ref.is_empty() {
@@ -781,11 +801,13 @@ pub fn build_deployment(
     namespace: &str,
     instance: &Bind9Instance,
     cluster: Option<&Bind9Cluster>,
+    global_cluster: Option<&crate::crd::Bind9GlobalCluster>,
 ) -> Deployment {
     debug!(
         name = %name,
         namespace = %namespace,
         has_cluster = cluster.is_some(),
+        has_global_cluster = global_cluster.is_some(),
         "Building Deployment for Bind9Instance"
     );
 
@@ -794,7 +816,7 @@ pub fn build_deployment(
     let replicas = instance.spec.replicas.unwrap_or(1);
     debug!(replicas, "Deployment replica count");
 
-    let config = resolve_deployment_config(name, instance, cluster);
+    let config = resolve_deployment_config(name, instance, cluster, global_cluster);
 
     let owner_refs = build_owner_references(instance);
 
@@ -1323,25 +1345,48 @@ fn build_volumes(
 /// Creates a Service exposing:
 /// - TCP port 53 (for zone transfers and large queries)
 /// - UDP port 53 (for standard DNS queries)
+/// - HTTP port 80 (mapped to bindcar API port)
 ///
-/// Custom service spec fields are merged with defaults. This allows partial
-/// customization while maintaining safe defaults for unspecified fields.
+/// Custom service configuration includes both spec fields and metadata annotations.
+/// These are merged with defaults, allowing partial customization while maintaining
+/// safe defaults for unspecified fields.
 ///
 /// # Arguments
 ///
 /// * `name` - Name for the Service
 /// * `namespace` - Kubernetes namespace
-/// * `custom_spec` - Optional custom `ServiceSpec` fields to merge with defaults
+/// * `instance` - The `Bind9Instance` that owns this Service
+/// * `custom_config` - Optional custom `ServiceConfig` with spec and annotations to merge with defaults
 ///
 /// # Returns
 ///
 /// A Kubernetes Service resource ready for creation/update
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use bindy::bind9_resources::build_service;
+/// use bindy::crd::{Bind9Instance, ServiceConfig};
+/// use std::collections::BTreeMap;
+///
+/// # fn example(instance: Bind9Instance) {
+/// let mut annotations = BTreeMap::new();
+/// annotations.insert("metallb.universe.tf/address-pool".to_string(), "my-pool".to_string());
+///
+/// let config = ServiceConfig {
+///     annotations: Some(annotations),
+///     spec: None,
+/// };
+///
+/// let service = build_service("dns-primary", "dns-system", &instance, Some(&config));
+/// # }
+/// ```
 #[must_use]
 pub fn build_service(
     name: &str,
     namespace: &str,
     instance: &Bind9Instance,
-    custom_spec: Option<&ServiceSpec>,
+    custom_config: Option<&crate::crd::ServiceConfig>,
 ) -> Service {
     // Build labels, checking if instance is managed by a cluster
     let labels = build_labels_from_instance(name, instance);
@@ -1385,19 +1430,32 @@ pub fn build_service(
         ..Default::default()
     };
 
+    // Extract custom spec and annotations from service config
+    let (custom_spec, custom_annotations) = custom_config.map_or((None, None), |config| {
+        (config.spec.as_ref(), config.annotations.as_ref())
+    });
+
     // Merge custom spec if provided
     if let Some(custom) = custom_spec {
         merge_service_spec(&mut default_spec, custom);
     }
 
+    // Build metadata with optional annotations
+    let mut metadata = ObjectMeta {
+        name: Some(name.into()),
+        namespace: Some(namespace.into()),
+        labels: Some(labels),
+        owner_references: Some(owner_refs),
+        ..Default::default()
+    };
+
+    // Apply custom annotations if provided
+    if let Some(annotations) = custom_annotations {
+        metadata.annotations = Some(annotations.clone());
+    }
+
     Service {
-        metadata: ObjectMeta {
-            name: Some(name.into()),
-            namespace: Some(namespace.into()),
-            labels: Some(labels),
-            owner_references: Some(owner_refs),
-            ..Default::default()
-        },
+        metadata,
         spec: Some(default_spec),
         ..Default::default()
     }

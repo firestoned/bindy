@@ -44,7 +44,8 @@
 //!
 //! let spec = DNSZoneSpec {
 //!     zone_name: "example.com".to_string(),
-//!     cluster_ref: "my-dns-cluster".to_string(),
+//!     cluster_ref: Some("my-dns-cluster".to_string()),
+//!     global_cluster_ref: None,
 //!     soa_record: soa,
 //!     ttl: Some(3600),
 //!     name_server_ips: None,
@@ -56,19 +57,17 @@
 //! ```rust,no_run
 //! use bindy::crd::{ARecordSpec, MXRecordSpec};
 //!
-//! // A Record for www.example.com using zone field
+//! // A Record for www.example.com
 //! let a_record = ARecordSpec {
-//!     zone: Some("example.com".to_string()),
-//!     zone_ref: None,
+//!     zone_ref: "example-com".to_string(),
 //!     name: "www".to_string(),
 //!     ipv4_address: "192.0.2.1".to_string(),
 //!     ttl: Some(300),
 //! };
 //!
-//! // MX Record for mail routing using zoneRef field
+//! // MX Record for mail routing
 //! let mx_record = MXRecordSpec {
-//!     zone: None,
-//!     zone_ref: Some("example-com".to_string()),
+//!     zone_ref: "example-com".to_string(),
 //!     name: "@".to_string(),
 //!     priority: 10,
 //!     mail_server: "mail.example.com.".to_string(),
@@ -252,18 +251,46 @@ pub struct SecondaryZoneConfig {
 /// served by a BIND9 cluster. The zone includes SOA record information and will be
 /// synchronized to all instances in the referenced cluster via AXFR/IXFR.
 ///
-/// # Example
+/// `DNSZones` can reference either:
+/// - A namespace-scoped `Bind9Cluster` (using `clusterRef`)
+/// - A cluster-scoped `Bind9GlobalCluster` (using `globalClusterRef`)
+///
+/// Exactly one of `clusterRef` or `globalClusterRef` must be specified.
+///
+/// # Example: Namespace-scoped Cluster
 ///
 /// ```yaml
-/// apiVersion: dns.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1alpha1
 /// kind: DNSZone
 /// metadata:
 ///   name: example-com
-///   namespace: dns-system
+///   namespace: dev-team-alpha
 /// spec:
 ///   zoneName: example.com
-///   clusterRef: my-dns-cluster
-///   soa_record:
+///   clusterRef: dev-team-dns  # References Bind9Cluster in same namespace
+///   soaRecord:
+///     primaryNs: ns1.example.com.
+///     adminEmail: admin.example.com.
+///     serial: 2024010101
+///     refresh: 3600
+///     retry: 600
+///     expire: 604800
+///     negativeTtl: 86400
+///   ttl: 3600
+/// ```
+///
+/// # Example: Cluster-scoped Global Cluster
+///
+/// ```yaml
+/// apiVersion: bindy.firestoned.io/v1alpha1
+/// kind: DNSZone
+/// metadata:
+///   name: production-example-com
+///   namespace: production
+/// spec:
+///   zoneName: example.com
+///   globalClusterRef: shared-production-dns  # References Bind9GlobalCluster (cluster-scoped)
+///   soaRecord:
 ///     primaryNs: ns1.example.com.
 ///     adminEmail: admin.example.com.
 ///     serial: 2024010101
@@ -283,9 +310,10 @@ pub struct SecondaryZoneConfig {
     shortname = "zones",
     shortname = "dz",
     shortname = "dzs",
-    doc = "DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defines a zone (e.g., example.com) with SOA record parameters and is served by a specified Bind9Instance.",
+    doc = "DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defines a zone (e.g., example.com) with SOA record parameters. Can reference either a namespace-scoped Bind9Cluster or cluster-scoped Bind9GlobalCluster.",
     printcolumn = r#"{"name":"Zone","type":"string","jsonPath":".spec.zoneName"}"#,
     printcolumn = r#"{"name":"Cluster","type":"string","jsonPath":".spec.clusterRef"}"#,
+    printcolumn = r#"{"name":"Global Cluster","type":"string","jsonPath":".spec.globalClusterRef"}"#,
     printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
@@ -301,11 +329,23 @@ pub struct DNSZoneSpec {
     ))]
     pub zone_name: String,
 
-    /// Reference to the `Bind9Instance` that serves this zone.
+    /// Reference to a namespace-scoped `Bind9Cluster` in the same namespace.
     ///
-    /// Must match the name of a `Bind9Instance` in the same namespace.
-    /// The zone will be added to this instance via rndc addzone.
-    pub cluster_ref: String,
+    /// Must match the name of a `Bind9Cluster` resource in the same namespace.
+    /// The zone will be added to all instances in this cluster.
+    ///
+    /// Either `clusterRef` or `globalClusterRef` must be specified (not both).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cluster_ref: Option<String>,
+
+    /// Reference to a cluster-scoped `Bind9GlobalCluster`.
+    ///
+    /// Must match the name of a `Bind9GlobalCluster` resource (cluster-scoped).
+    /// The zone will be added to all instances in this global cluster.
+    ///
+    /// Either `clusterRef` or `globalClusterRef` must be specified (not both).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub global_cluster_ref: Option<String>,
 
     /// SOA (Start of Authority) record - defines zone authority and refresh parameters.
     ///
@@ -345,13 +385,13 @@ pub struct DNSZoneSpec {
 /// # Example
 ///
 /// ```yaml
-/// apiVersion: dns.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1alpha1
 /// kind: ARecord
 /// metadata:
 ///   name: www-example-com
 ///   namespace: dns-system
 /// spec:
-///   zone: example.com
+///   zoneRef: example-com
 ///   name: www
 ///   ipv4Address: 192.0.2.1
 ///   ttl: 300
@@ -363,25 +403,22 @@ pub struct DNSZoneSpec {
     kind = "ARecord",
     namespaced,
     shortname = "a",
-    doc = "ARecord maps a DNS hostname to an IPv4 address. Multiple A records for the same name enable round-robin DNS load balancing."
+    doc = "ARecord maps a DNS hostname to an IPv4 address. Multiple A records for the same name enable round-robin DNS load balancing.",
+    printcolumn = r#"{"name":"ZoneRef","type":"string","jsonPath":".spec.zoneRef"}"#,
+    printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
+    printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
+    printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
 #[kube(status = "RecordStatus")]
 #[serde(rename_all = "camelCase")]
 pub struct ARecordSpec {
-    /// DNS zone this record belongs to (e.g., "example.com").
-    ///
-    /// Must match the zoneName of an existing `DNSZone` resource in the same namespace.
-    /// The controller will search for a `DNSZone` with matching `spec.zoneName`.
-    /// Either `zone` or `zoneRef` must be specified (not both).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub zone: Option<String>,
-
     /// Reference to a `DNSZone` resource by metadata.name.
     ///
-    /// Directly references a `DNSZone` resource by its Kubernetes name for more efficient lookup.
-    /// Either `zone` or `zoneRef` must be specified (not both).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub zone_ref: Option<String>,
+    /// Directly references a `DNSZone` resource in the same namespace by its Kubernetes resource name.
+    /// This is more efficient than searching by zone name.
+    ///
+    /// Example: If the `DNSZone` is named "example-com", use `zoneRef: example-com`
+    pub zone_ref: String,
 
     /// Record name within the zone. Use "@" for the zone apex.
     ///
@@ -412,12 +449,12 @@ pub struct ARecordSpec {
 /// # Example
 ///
 /// ```yaml
-/// apiVersion: dns.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1alpha1
 /// kind: AAAARecord
 /// metadata:
 ///   name: www-example-com-ipv6
 /// spec:
-///   zone: example.com
+///   zoneRef: example-com
 ///   name: www
 ///   ipv6Address: "2001:db8::1"
 ///   ttl: 300
@@ -429,23 +466,19 @@ pub struct ARecordSpec {
     kind = "AAAARecord",
     namespaced,
     shortname = "aaaa",
-    doc = "AAAARecord maps a DNS hostname to an IPv6 address. This is the IPv6 equivalent of an A record."
+    doc = "AAAARecord maps a DNS hostname to an IPv6 address. This is the IPv6 equivalent of an A record.",
+    printcolumn = r#"{"name":"ZoneRef","type":"string","jsonPath":".spec.zoneRef"}"#,
+    printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
+    printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
+    printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
 #[kube(status = "RecordStatus")]
 #[serde(rename_all = "camelCase")]
 pub struct AAAARecordSpec {
-    /// DNS zone this record belongs to (e.g., "example.com").
-    ///
-    /// Must match the zoneName of an existing `DNSZone` resource in the same namespace.
-    /// Either `zone` or `zoneRef` must be specified (not both).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub zone: Option<String>,
-
     /// Reference to a `DNSZone` resource by metadata.name.
     ///
-    /// Either `zone` or `zoneRef` must be specified (not both).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub zone_ref: Option<String>,
+    /// Directly references a `DNSZone` resource in the same namespace by its Kubernetes resource name.
+    pub zone_ref: String,
 
     /// Record name within the zone.
     pub name: String,
@@ -469,12 +502,12 @@ pub struct AAAARecordSpec {
 /// # Example
 ///
 /// ```yaml
-/// apiVersion: dns.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1alpha1
 /// kind: TXTRecord
 /// metadata:
 ///   name: spf-example-com
 /// spec:
-///   zone: example.com
+///   zoneRef: example-com
 ///   name: "@"
 ///   text:
 ///     - "v=spf1 include:_spf.google.com ~all"
@@ -487,23 +520,19 @@ pub struct AAAARecordSpec {
     kind = "TXTRecord",
     namespaced,
     shortname = "txt",
-    doc = "TXTRecord stores arbitrary text data in DNS. Commonly used for SPF, DKIM, DMARC policies, and domain verification."
+    doc = "TXTRecord stores arbitrary text data in DNS. Commonly used for SPF, DKIM, DMARC policies, and domain verification.",
+    printcolumn = r#"{"name":"ZoneRef","type":"string","jsonPath":".spec.zoneRef"}"#,
+    printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
+    printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
+    printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
 #[kube(status = "RecordStatus")]
 #[serde(rename_all = "camelCase")]
 pub struct TXTRecordSpec {
-    /// DNS zone this record belongs to (e.g., "example.com").
-    ///
-    /// Must match the zoneName of an existing `DNSZone` resource in the same namespace.
-    /// Either `zone` or `zoneRef` must be specified (not both).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub zone: Option<String>,
-
     /// Reference to a `DNSZone` resource by metadata.name.
     ///
-    /// Either `zone` or `zoneRef` must be specified (not both).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub zone_ref: Option<String>,
+    /// Directly references a `DNSZone` resource in the same namespace by its Kubernetes resource name.
+    pub zone_ref: String,
 
     /// Record name within the zone.
     pub name: String,
@@ -530,12 +559,12 @@ pub struct TXTRecordSpec {
 /// # Example
 ///
 /// ```yaml
-/// apiVersion: dns.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1alpha1
 /// kind: CNAMERecord
 /// metadata:
 ///   name: blog-example-com
 /// spec:
-///   zone: example.com
+///   zoneRef: example-com
 ///   name: blog
 ///   target: example.github.io.
 ///   ttl: 3600
@@ -547,23 +576,19 @@ pub struct TXTRecordSpec {
     kind = "CNAMERecord",
     namespaced,
     shortname = "cname",
-    doc = "CNAMERecord creates a DNS alias from one hostname to another. A CNAME cannot coexist with other record types for the same name."
+    doc = "CNAMERecord creates a DNS alias from one hostname to another. A CNAME cannot coexist with other record types for the same name.",
+    printcolumn = r#"{"name":"ZoneRef","type":"string","jsonPath":".spec.zoneRef"}"#,
+    printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
+    printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
+    printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
 #[kube(status = "RecordStatus")]
 #[serde(rename_all = "camelCase")]
 pub struct CNAMERecordSpec {
-    /// DNS zone this record belongs to (e.g., "example.com").
-    ///
-    /// Must match the zoneName of an existing `DNSZone` resource in the same namespace.
-    /// Either `zone` or `zoneRef` must be specified (not both).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub zone: Option<String>,
-
     /// Reference to a `DNSZone` resource by metadata.name.
     ///
-    /// Either `zone` or `zoneRef` must be specified (not both).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub zone_ref: Option<String>,
+    /// Directly references a `DNSZone` resource in the same namespace by its Kubernetes resource name.
+    pub zone_ref: String,
 
     /// Record name within the zone.
     ///
@@ -590,12 +615,12 @@ pub struct CNAMERecordSpec {
 /// # Example
 ///
 /// ```yaml
-/// apiVersion: dns.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1alpha1
 /// kind: MXRecord
 /// metadata:
 ///   name: mail-example-com
 /// spec:
-///   zone: example.com
+///   zoneRef: example-com
 ///   name: "@"
 ///   priority: 10
 ///   mailServer: mail.example.com.
@@ -608,23 +633,19 @@ pub struct CNAMERecordSpec {
     kind = "MXRecord",
     namespaced,
     shortname = "mx",
-    doc = "MXRecord specifies mail exchange servers for a domain. Lower priority values indicate higher preference for mail delivery."
+    doc = "MXRecord specifies mail exchange servers for a domain. Lower priority values indicate higher preference for mail delivery.",
+    printcolumn = r#"{"name":"ZoneRef","type":"string","jsonPath":".spec.zoneRef"}"#,
+    printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
+    printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
+    printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
 #[kube(status = "RecordStatus")]
 #[serde(rename_all = "camelCase")]
 pub struct MXRecordSpec {
-    /// DNS zone this record belongs to (e.g., "example.com").
-    ///
-    /// Must match the zoneName of an existing `DNSZone` resource in the same namespace.
-    /// Either `zone` or `zoneRef` must be specified (not both).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub zone: Option<String>,
-
     /// Reference to a `DNSZone` resource by metadata.name.
     ///
-    /// Either `zone` or `zoneRef` must be specified (not both).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub zone_ref: Option<String>,
+    /// Directly references a `DNSZone` resource in the same namespace by its Kubernetes resource name.
+    pub zone_ref: String,
 
     /// Record name within the zone. Use "@" for the zone apex.
     pub name: String,
@@ -654,12 +675,12 @@ pub struct MXRecordSpec {
 /// # Example
 ///
 /// ```yaml
-/// apiVersion: dns.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1alpha1
 /// kind: NSRecord
 /// metadata:
 ///   name: subdomain-ns
 /// spec:
-///   zone: example.com
+///   zoneRef: example-com
 ///   name: subdomain
 ///   nameserver: ns1.other-provider.com.
 ///   ttl: 86400
@@ -671,23 +692,19 @@ pub struct MXRecordSpec {
     kind = "NSRecord",
     namespaced,
     shortname = "ns",
-    doc = "NSRecord delegates a subdomain to authoritative nameservers. Used for subdomain delegation to different DNS providers or servers."
+    doc = "NSRecord delegates a subdomain to authoritative nameservers. Used for subdomain delegation to different DNS providers or servers.",
+    printcolumn = r#"{"name":"ZoneRef","type":"string","jsonPath":".spec.zoneRef"}"#,
+    printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
+    printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
+    printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
 #[kube(status = "RecordStatus")]
 #[serde(rename_all = "camelCase")]
 pub struct NSRecordSpec {
-    /// DNS zone this record belongs to (e.g., "example.com").
-    ///
-    /// Must match the zoneName of an existing `DNSZone` resource in the same namespace.
-    /// Either `zone` or `zoneRef` must be specified (not both).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub zone: Option<String>,
-
     /// Reference to a `DNSZone` resource by metadata.name.
     ///
-    /// Either `zone` or `zoneRef` must be specified (not both).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub zone_ref: Option<String>,
+    /// Directly references a `DNSZone` resource in the same namespace by its Kubernetes resource name.
+    pub zone_ref: String,
 
     /// Subdomain to delegate. For zone apex, use "@".
     pub name: String,
@@ -711,12 +728,12 @@ pub struct NSRecordSpec {
 /// # Example
 ///
 /// ```yaml
-/// apiVersion: dns.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1alpha1
 /// kind: SRVRecord
 /// metadata:
 ///   name: ldap-srv
 /// spec:
-///   zone: example.com
+///   zoneRef: example-com
 ///   name: _ldap._tcp
 ///   priority: 10
 ///   weight: 60
@@ -731,23 +748,19 @@ pub struct NSRecordSpec {
     kind = "SRVRecord",
     namespaced,
     shortname = "srv",
-    doc = "SRVRecord specifies the hostname and port of servers for specific services. The record name follows the format _service._proto (e.g., _ldap._tcp)."
+    doc = "SRVRecord specifies the hostname and port of servers for specific services. The record name follows the format _service._proto (e.g., _ldap._tcp).",
+    printcolumn = r#"{"name":"ZoneRef","type":"string","jsonPath":".spec.zoneRef"}"#,
+    printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
+    printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
+    printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
 #[kube(status = "RecordStatus")]
 #[serde(rename_all = "camelCase")]
 pub struct SRVRecordSpec {
-    /// DNS zone this record belongs to (e.g., "example.com").
-    ///
-    /// Must match the zoneName of an existing `DNSZone` resource in the same namespace.
-    /// Either `zone` or `zoneRef` must be specified (not both).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub zone: Option<String>,
-
     /// Reference to a `DNSZone` resource by metadata.name.
     ///
-    /// Either `zone` or `zoneRef` must be specified (not both).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub zone_ref: Option<String>,
+    /// Directly references a `DNSZone` resource in the same namespace by its Kubernetes resource name.
+    pub zone_ref: String,
 
     /// Service and protocol in the format: _service._proto
     ///
@@ -787,12 +800,12 @@ pub struct SRVRecordSpec {
 /// # Example
 ///
 /// ```yaml
-/// apiVersion: dns.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1alpha1
 /// kind: CAARecord
 /// metadata:
 ///   name: caa-letsencrypt
 /// spec:
-///   zone: example.com
+///   zoneRef: example-com
 ///   name: "@"
 ///   flags: 0
 ///   tag: issue
@@ -806,23 +819,19 @@ pub struct SRVRecordSpec {
     kind = "CAARecord",
     namespaced,
     shortname = "caa",
-    doc = "CAARecord specifies which certificate authorities are authorized to issue certificates for a domain. Enhances domain security and certificate issuance control."
+    doc = "CAARecord specifies which certificate authorities are authorized to issue certificates for a domain. Enhances domain security and certificate issuance control.",
+    printcolumn = r#"{"name":"ZoneRef","type":"string","jsonPath":".spec.zoneRef"}"#,
+    printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
+    printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
+    printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
 #[kube(status = "RecordStatus")]
 #[serde(rename_all = "camelCase")]
 pub struct CAARecordSpec {
-    /// DNS zone this record belongs to (e.g., "example.com").
-    ///
-    /// Must match the zoneName of an existing `DNSZone` resource in the same namespace.
-    /// Either `zone` or `zoneRef` must be specified (not both).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub zone: Option<String>,
-
     /// Reference to a `DNSZone` resource by metadata.name.
     ///
-    /// Either `zone` or `zoneRef` must be specified (not both).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub zone_ref: Option<String>,
+    /// Directly references a `DNSZone` resource in the same namespace by its Kubernetes resource name.
+    pub zone_ref: String,
 
     /// Record name within the zone. Use "@" for the zone apex.
     pub name: String,
@@ -1225,23 +1234,31 @@ pub struct ConfigMapRefs {
     pub named_conf_zones: Option<String>,
 }
 
-/// Primary instance configuration
+/// Service configuration including spec and annotations
 ///
-/// Groups all configuration specific to primary (authoritative) DNS instances.
+/// Allows customization of both the Kubernetes Service spec and metadata annotations.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct PrimaryConfig {
-    /// Number of primary instance replicas (default: 1)
+pub struct ServiceConfig {
+    /// Annotations to apply to the Service metadata
     ///
-    /// This controls how many replicas each primary instance in this cluster should have.
-    /// Can be overridden at the instance level.
+    /// Common use cases:
+    /// - `MetalLB` address pool selection: `metallb.universe.tf/address-pool: my-ip-pool`
+    /// - AWS load balancer configuration: `service.beta.kubernetes.io/aws-load-balancer-type: nlb`
+    /// - External DNS hostname: `external-dns.alpha.kubernetes.io/hostname: dns.example.com`
+    ///
+    /// Example:
+    /// ```yaml
+    /// annotations:
+    ///   metallb.universe.tf/address-pool: my-ip-pool
+    ///   external-dns.alpha.kubernetes.io/hostname: ns1.example.com
+    /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 0, max = 100))]
-    pub replicas: Option<i32>,
+    pub annotations: Option<BTreeMap<String, String>>,
 
-    /// Custom Kubernetes Service spec for primary instances
+    /// Custom Kubernetes Service spec
     ///
-    /// Allows full customization of the Kubernetes Service created for primary DNS servers.
+    /// Allows full customization of the Kubernetes Service created for DNS servers.
     /// This accepts the same fields as the standard Kubernetes Service `spec`.
     ///
     /// Common fields:
@@ -1256,7 +1273,40 @@ pub struct PrimaryConfig {
     /// - Ports 53/TCP and 53/UDP (always set)
     /// - Selector matching the instance labels (always set)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub service: Option<ServiceSpec>,
+    pub spec: Option<ServiceSpec>,
+}
+
+/// Primary instance configuration
+///
+/// Groups all configuration specific to primary (authoritative) DNS instances.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PrimaryConfig {
+    /// Number of primary instance replicas (default: 1)
+    ///
+    /// This controls how many replicas each primary instance in this cluster should have.
+    /// Can be overridden at the instance level.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 0, max = 100))]
+    pub replicas: Option<i32>,
+
+    /// Custom Kubernetes Service configuration for primary instances
+    ///
+    /// Allows full customization of the Kubernetes Service created for primary DNS servers,
+    /// including both Service spec fields and metadata annotations.
+    ///
+    /// Annotations are commonly used for:
+    /// - `MetalLB` address pool selection
+    /// - Cloud provider load balancer configuration
+    /// - External DNS integration
+    /// - Linkerd service mesh annotations
+    ///
+    /// Fields specified here are merged with defaults. Unspecified fields use safe defaults:
+    /// - `type: ClusterIP` (if not specified)
+    /// - Ports 53/TCP and 53/UDP (always set)
+    /// - Selector matching the instance labels (always set)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<ServiceConfig>,
 
     /// Allow-transfer ACL for primary instances
     ///
@@ -1300,17 +1350,23 @@ pub struct SecondaryConfig {
     #[schemars(range(min = 0, max = 100))]
     pub replicas: Option<i32>,
 
-    /// Custom Kubernetes Service spec for secondary instances
+    /// Custom Kubernetes Service configuration for secondary instances
     ///
-    /// Allows full customization of the Kubernetes Service created for secondary DNS servers.
-    /// This accepts the same fields as the standard Kubernetes Service `spec`.
+    /// Allows full customization of the Kubernetes Service created for secondary DNS servers,
+    /// including both Service spec fields and metadata annotations.
+    ///
+    /// Annotations are commonly used for:
+    /// - `MetalLB` address pool selection
+    /// - Cloud provider load balancer configuration
+    /// - External DNS integration
+    /// - Linkerd service mesh annotations
+    ///
     /// Allows different service configurations for primary vs secondary instances.
-    ///
-    /// Example: Primaries use `LoadBalancer`, secondaries use `ClusterIP`
+    /// Example: Primaries use `LoadBalancer` with specific annotations, secondaries use `ClusterIP`
     ///
     /// See `PrimaryConfig.service` for detailed field documentation.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub service: Option<ServiceSpec>,
+    pub service: Option<ServiceConfig>,
 
     /// Allow-transfer ACL for secondary instances
     ///
@@ -1340,24 +1396,14 @@ pub struct SecondaryConfig {
     pub rndc_secret_ref: Option<RndcSecretRef>,
 }
 
-/// `BIND9Cluster` - Defines a logical DNS cluster
-#[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
-#[kube(
-    group = "bindy.firestoned.io",
-    version = "v1alpha1",
-    kind = "Bind9Cluster",
-    namespaced,
-    shortname = "b9c",
-    shortname = "b9cs",
-    doc = "Bind9Cluster defines a logical grouping of BIND9 DNS server instances with shared configuration. Provides centralized management of BIND9 version, container images, and common settings across multiple instances.",
-    printcolumn = r#"{"name":"Version","type":"string","jsonPath":".spec.version"}"#,
-    printcolumn = r#"{"name":"Primary","type":"integer","jsonPath":".spec.primary.replicas"}"#,
-    printcolumn = r#"{"name":"Secondary","type":"integer","jsonPath":".spec.secondary.replicas"}"#,
-    printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
-)]
-#[kube(status = "Bind9ClusterStatus")]
+/// Common specification fields shared between namespace-scoped and cluster-scoped BIND9 clusters.
+///
+/// This struct contains all configuration that is common to both `Bind9Cluster` (namespace-scoped)
+/// and `Bind9GlobalCluster` (cluster-scoped). By using this shared struct, we avoid code duplication
+/// and ensure consistency between the two cluster types.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct Bind9ClusterSpec {
+pub struct Bind9ClusterCommonSpec {
     /// Shared BIND9 version for the cluster
     #[serde(default)]
     pub version: Option<String>,
@@ -1417,6 +1463,125 @@ pub struct Bind9ClusterSpec {
     pub volume_mounts: Option<Vec<VolumeMount>>,
 }
 
+/// `Bind9Cluster` - Namespace-scoped DNS cluster for tenant-managed infrastructure.
+///
+/// A namespace-scoped cluster allows development teams to run their own isolated BIND9
+/// DNS infrastructure within their namespace. Each team can manage their own cluster
+/// independently, with RBAC controlling who can create and manage resources.
+///
+/// For platform-managed, cluster-wide DNS infrastructure, use `Bind9GlobalCluster` instead.
+///
+/// # Use Cases
+///
+/// - Development teams need isolated DNS infrastructure for testing
+/// - Multi-tenant environments where each team manages their own DNS
+/// - Namespaced DNS services that don't need cluster-wide visibility
+///
+/// # Example
+///
+/// ```yaml
+/// apiVersion: bindy.firestoned.io/v1alpha1
+/// kind: Bind9Cluster
+/// metadata:
+///   name: dev-team-dns
+///   namespace: dev-team-alpha
+/// spec:
+///   version: "9.18"
+///   primary:
+///     replicas: 1
+///   secondary:
+///     replicas: 1
+/// ```
+#[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[kube(
+    group = "bindy.firestoned.io",
+    version = "v1alpha1",
+    kind = "Bind9Cluster",
+    namespaced,
+    shortname = "b9c",
+    shortname = "b9cs",
+    doc = "Bind9Cluster defines a namespace-scoped logical grouping of BIND9 DNS server instances. Use this for tenant-managed DNS infrastructure isolated to a specific namespace. For platform-managed cluster-wide DNS, use Bind9GlobalCluster instead.",
+    printcolumn = r#"{"name":"Version","type":"string","jsonPath":".spec.version"}"#,
+    printcolumn = r#"{"name":"Primary","type":"integer","jsonPath":".spec.primary.replicas"}"#,
+    printcolumn = r#"{"name":"Secondary","type":"integer","jsonPath":".spec.secondary.replicas"}"#,
+    printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
+)]
+#[kube(status = "Bind9ClusterStatus")]
+#[serde(rename_all = "camelCase")]
+pub struct Bind9ClusterSpec {
+    /// All cluster configuration is flattened from the common spec
+    #[serde(flatten)]
+    pub common: Bind9ClusterCommonSpec,
+}
+
+/// `Bind9GlobalCluster` - Cluster-scoped DNS infrastructure for platform teams.
+///
+/// A cluster-scoped cluster allows platform teams to provide shared BIND9 DNS infrastructure
+/// that is accessible from any namespace. This is ideal for shared services, production DNS,
+/// or platform-managed infrastructure that multiple teams use.
+///
+/// `DNSZones` in any namespace can reference a `Bind9GlobalCluster` using the `globalClusterRef` field.
+///
+/// # Use Cases
+///
+/// - Platform team provides shared DNS infrastructure for all namespaces
+/// - Production DNS services that serve multiple applications
+/// - Centrally managed DNS with governance and compliance requirements
+///
+/// # Example
+///
+/// ```yaml
+/// apiVersion: bindy.firestoned.io/v1alpha1
+/// kind: Bind9GlobalCluster
+/// metadata:
+///   name: shared-production-dns
+///   # No namespace - cluster-scoped
+/// spec:
+///   version: "9.18"
+///   primary:
+///     replicas: 3
+///     service:
+///       type: LoadBalancer
+///   secondary:
+///     replicas: 2
+/// ```
+#[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[kube(
+    group = "bindy.firestoned.io",
+    version = "v1alpha1",
+    kind = "Bind9GlobalCluster",
+    // NOTE: No 'namespaced' attribute = cluster-scoped
+    shortname = "b9gc",
+    shortname = "b9gcs",
+    doc = "Bind9GlobalCluster defines a cluster-scoped logical grouping of BIND9 DNS server instances. Use this for platform-managed DNS infrastructure accessible from all namespaces. For tenant-managed namespace-scoped DNS, use Bind9Cluster instead.",
+    printcolumn = r#"{"name":"Version","type":"string","jsonPath":".spec.version"}"#,
+    printcolumn = r#"{"name":"Primary","type":"integer","jsonPath":".spec.primary.replicas"}"#,
+    printcolumn = r#"{"name":"Secondary","type":"integer","jsonPath":".spec.secondary.replicas"}"#,
+    printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
+)]
+#[kube(status = "Bind9ClusterStatus")]
+#[serde(rename_all = "camelCase")]
+pub struct Bind9GlobalClusterSpec {
+    /// Namespace where `Bind9Instance` resources will be created
+    ///
+    /// Since `Bind9GlobalCluster` is cluster-scoped, instances need to be created in a specific namespace.
+    /// Typically this would be a platform-managed namespace like `dns-system`.
+    ///
+    /// All managed instances (primary and secondary) will be created in this namespace.
+    /// `DNSZones` from any namespace can reference this global cluster via `globalClusterRef`.
+    ///
+    /// **Default:** If not specified, instances will be created in the same namespace where the
+    /// Bindy operator is running (from `POD_NAMESPACE` environment variable).
+    ///
+    /// Example: `dns-system` for platform DNS infrastructure
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+
+    /// All cluster configuration is flattened from the common spec
+    #[serde(flatten)]
+    pub common: Bind9ClusterCommonSpec,
+}
+
 /// `Bind9Cluster` status
 #[derive(Clone, Debug, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -1469,7 +1634,7 @@ pub enum ServerRole {
 /// # Example
 ///
 /// ```yaml
-/// apiVersion: dns.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1alpha1
 /// kind: Bind9Instance
 /// metadata:
 ///   name: dns-primary
@@ -1497,9 +1662,15 @@ pub enum ServerRole {
 #[kube(status = "Bind9InstanceStatus")]
 #[serde(rename_all = "camelCase")]
 pub struct Bind9InstanceSpec {
-    /// Reference to the `Bind9Cluster` this instance belongs to.
+    /// Reference to the cluster this instance belongs to.
+    ///
+    /// Can reference either:
+    /// - A namespace-scoped `Bind9Cluster` (must be in the same namespace as this instance)
+    /// - A cluster-scoped `Bind9GlobalCluster` (cluster-wide, accessible from any namespace)
     ///
     /// The cluster provides shared configuration and defines the logical grouping.
+    /// The controller will automatically detect whether this references a namespace-scoped
+    /// or cluster-scoped cluster resource.
     pub cluster_ref: String,
 
     /// Role of this instance (primary or secondary).

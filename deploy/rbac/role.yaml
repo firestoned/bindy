@@ -12,6 +12,11 @@ rules:
     resources: ["bind9clusters", "bind9clusters/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
+  # Bind9GlobalCluster resources - cluster-scoped resources
+  - apiGroups: ["bindy.firestoned.io"]
+    resources: ["bind9globalclusters", "bind9globalclusters/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
   # DNSZone resources - full control
   - apiGroups: ["bindy.firestoned.io"]
     resources: ["dnszones", "dnszones/status"]

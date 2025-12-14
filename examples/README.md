@@ -56,6 +56,17 @@ spec:
    - Heavily commented to explain how clusterRef works
    - Best example for understanding the architecture
 
+### Multi-Tenancy
+
+0a. **[multi-tenancy.yaml](multi-tenancy.yaml)** - **Multi-tenancy setup** with both cluster models
+   - Platform-managed DNS using Bind9GlobalCluster (cluster-scoped)
+   - Tenant-managed DNS using Bind9Cluster (namespace-scoped)
+   - Complete RBAC setup for platform and application teams
+   - Three namespaces: platform-dns, team-web, team-api
+   - Shows both production (shared) and development (isolated) patterns
+   - ServiceAccounts, Roles, RoleBindings, and ClusterRoleBindings
+   - Example zones and records for both tenancy models
+
 ### Basic Setup
 
 1. **[bind9-cluster.yaml](bind9-cluster.yaml)** - Basic Bind9Cluster configuration

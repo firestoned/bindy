@@ -18,14 +18,12 @@ mod tests {
     #[test]
     fn test_arecord_spec_creation() {
         let spec = ARecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "www".to_string(),
             ipv4_address: "192.0.2.1".to_string(),
             ttl: Some(300),
         };
 
-        assert_eq!(spec.zone, Some("example.com".to_string()));
         assert_eq!(spec.name, "www");
         assert_eq!(spec.ipv4_address, "192.0.2.1");
         assert_eq!(spec.ttl, Some(300));
@@ -34,8 +32,7 @@ mod tests {
     #[test]
     fn test_arecord_without_ttl() {
         let spec = ARecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "mail".to_string(),
             ipv4_address: "192.0.2.2".to_string(),
             ttl: None,
@@ -58,8 +55,7 @@ mod tests {
 
         for ip in valid_ips {
             let spec = ARecordSpec {
-                zone: Some("example.com".to_string()),
-                zone_ref: None,
+                zone_ref: "example-com".to_string(),
                 name: "test".to_string(),
                 ipv4_address: ip.to_string(),
                 ttl: None,
@@ -70,30 +66,17 @@ mod tests {
     }
 
     #[test]
-    fn test_arecord_zone_vs_zone_ref() {
-        // Test with zone
-        let spec_with_zone = ARecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+    fn test_arecord_zone_ref() {
+        // Test that zoneRef is required and works correctly
+        let spec = ARecordSpec {
+            zone_ref: "example-com".to_string(),
             name: "www".to_string(),
             ipv4_address: "192.0.2.1".to_string(),
             ttl: None,
         };
 
-        assert!(spec_with_zone.zone.is_some());
-        assert!(spec_with_zone.zone_ref.is_none());
-
-        // Test with zone_ref
-        let spec_with_ref = ARecordSpec {
-            zone: None,
-            zone_ref: Some("example-com-zone".to_string()),
-            name: "www".to_string(),
-            ipv4_address: "192.0.2.1".to_string(),
-            ttl: None,
-        };
-
-        assert!(spec_with_ref.zone.is_none());
-        assert!(spec_with_ref.zone_ref.is_some());
+        assert_eq!(spec.zone_ref, "example-com");
+        assert_eq!(spec.name, "www");
     }
 
     // ========================================================================
@@ -103,14 +86,12 @@ mod tests {
     #[test]
     fn test_aaaa_record_spec_creation() {
         let spec = AAAARecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "www".to_string(),
             ipv6_address: "2001:db8::1".to_string(),
             ttl: Some(300),
         };
 
-        assert_eq!(spec.zone, Some("example.com".to_string()));
         assert_eq!(spec.ipv6_address, "2001:db8::1");
         assert_eq!(spec.ttl, Some(300));
     }
@@ -128,8 +109,7 @@ mod tests {
 
         for ipv6 in ipv6_addresses {
             let spec = AAAARecordSpec {
-                zone: Some("example.com".to_string()),
-                zone_ref: None,
+                zone_ref: "example-com".to_string(),
                 name: "test".to_string(),
                 ipv6_address: ipv6.to_string(),
                 ttl: None,
@@ -146,8 +126,7 @@ mod tests {
     #[test]
     fn test_cname_record_spec_creation() {
         let spec = CNAMERecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "blog".to_string(),
             target: "www.example.com.".to_string(),
             ttl: Some(600),
@@ -160,8 +139,7 @@ mod tests {
     #[test]
     fn test_cname_fqdn_requirement() {
         let spec = CNAMERecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "alias".to_string(),
             target: "target.example.com.".to_string(),
             ttl: None,
@@ -178,8 +156,7 @@ mod tests {
     #[test]
     fn test_mx_record_spec_creation() {
         let spec = MXRecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "@".to_string(),
             priority: 10,
             mail_server: "mail.example.com.".to_string(),
@@ -197,8 +174,7 @@ mod tests {
 
         for priority in priorities {
             let spec = MXRecordSpec {
-                zone: Some("example.com".to_string()),
-                zone_ref: None,
+                zone_ref: "example-com".to_string(),
                 name: "@".to_string(),
                 priority,
                 mail_server: format!("mx{priority}.example.com."),
@@ -219,8 +195,7 @@ mod tests {
 
         for (priority, server) in mx_records {
             let spec = MXRecordSpec {
-                zone: Some("example.com".to_string()),
-                zone_ref: None,
+                zone_ref: "example-com".to_string(),
                 name: "@".to_string(),
                 priority,
                 mail_server: server.to_string(),
@@ -239,8 +214,7 @@ mod tests {
     #[test]
     fn test_txt_record_spec_single_string() {
         let spec = TXTRecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "@".to_string(),
             text: vec!["v=spf1 mx ~all".to_string()],
             ttl: Some(3600),
@@ -253,8 +227,7 @@ mod tests {
     #[test]
     fn test_txt_record_spec_multiple_strings() {
         let spec = TXTRecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "_dmarc".to_string(),
             text: vec!["v=DMARC1".to_string(), "p=reject".to_string()],
             ttl: None,
@@ -268,8 +241,7 @@ mod tests {
     #[test]
     fn test_txt_record_empty_strings() {
         let spec = TXTRecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "test".to_string(),
             text: vec![],
             ttl: None,
@@ -282,8 +254,7 @@ mod tests {
     fn test_txt_record_long_string() {
         let long_value = "v".repeat(255); // 255 characters is max for a single TXT string
         let spec = TXTRecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "test".to_string(),
             text: vec![long_value.clone()],
             ttl: None,
@@ -296,8 +267,7 @@ mod tests {
     fn test_txt_record_common_use_cases() {
         // SPF
         let spf = TXTRecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "@".to_string(),
             text: vec!["v=spf1 include:_spf.google.com ~all".to_string()],
             ttl: None,
@@ -306,8 +276,7 @@ mod tests {
 
         // DKIM
         let dkim = TXTRecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "default._domainkey".to_string(),
             text: vec!["v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQ...".to_string()],
             ttl: None,
@@ -316,8 +285,7 @@ mod tests {
 
         // DMARC
         let dmarc = TXTRecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "_dmarc".to_string(),
             text: vec!["v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com".to_string()],
             ttl: None,
@@ -326,8 +294,7 @@ mod tests {
 
         // Domain verification
         let verification = TXTRecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "@".to_string(),
             text: vec!["google-site-verification=abc123def456".to_string()],
             ttl: None,
@@ -342,8 +309,7 @@ mod tests {
     #[test]
     fn test_ns_record_spec_creation() {
         let spec = NSRecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "@".to_string(),
             nameserver: "ns1.example.com.".to_string(),
             ttl: Some(86400),
@@ -356,8 +322,7 @@ mod tests {
     #[test]
     fn test_ns_record_delegation() {
         let spec = NSRecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "subdomain".to_string(),
             nameserver: "ns1.subdomain.example.com.".to_string(),
             ttl: Some(86400),
@@ -374,8 +339,7 @@ mod tests {
     #[test]
     fn test_srv_record_spec_creation() {
         let spec = SRVRecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "_sip._tcp".to_string(),
             priority: 10,
             weight: 60,
@@ -393,8 +357,7 @@ mod tests {
     #[test]
     fn test_srv_record_data_from_spec() {
         let spec = SRVRecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "_ldap._tcp".to_string(),
             priority: 0,
             weight: 100,
@@ -430,8 +393,7 @@ mod tests {
 
         for service in services {
             let spec = SRVRecordSpec {
-                zone: Some("example.com".to_string()),
-                zone_ref: None,
+                zone_ref: "example-com".to_string(),
                 name: service.to_string(),
                 priority: 10,
                 weight: 50,
@@ -447,8 +409,7 @@ mod tests {
     #[test]
     fn test_srv_record_zero_priority_weight() {
         let spec = SRVRecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "_service._tcp".to_string(),
             priority: 0,
             weight: 0,
@@ -488,8 +449,7 @@ mod tests {
     #[test]
     fn test_caa_record_spec_issue() {
         let spec = CAARecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "@".to_string(),
             flags: 0,
             tag: "issue".to_string(),
@@ -505,8 +465,7 @@ mod tests {
     #[test]
     fn test_caa_record_spec_issuewild() {
         let spec = CAARecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "@".to_string(),
             flags: 0,
             tag: "issuewild".to_string(),
@@ -520,8 +479,7 @@ mod tests {
     #[test]
     fn test_caa_record_spec_iodef() {
         let spec = CAARecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "@".to_string(),
             flags: 128,
             tag: "iodef".to_string(),
@@ -537,8 +495,7 @@ mod tests {
     #[test]
     fn test_caa_record_critical_flag() {
         let spec = CAARecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "@".to_string(),
             flags: 128, // Critical flag
             tag: "issue".to_string(),
@@ -556,8 +513,7 @@ mod tests {
 
         for tag in tags {
             let spec = CAARecordSpec {
-                zone: Some("example.com".to_string()),
-                zone_ref: None,
+                zone_ref: "example-com".to_string(),
                 name: "@".to_string(),
                 flags: 0,
                 tag: tag.to_string(),
@@ -666,8 +622,7 @@ mod tests {
                 ..Default::default()
             },
             spec: ARecordSpec {
-                zone: Some("example.com".to_string()),
-                zone_ref: None,
+                zone_ref: "example-com".to_string(),
                 name: "www".to_string(),
                 ipv4_address: "192.0.2.1".to_string(),
                 ttl: Some(300),
@@ -696,8 +651,7 @@ mod tests {
                 ..Default::default()
             },
             spec: ARecordSpec {
-                zone: Some("example.com".to_string()),
-                zone_ref: None,
+                zone_ref: "example-com".to_string(),
                 name: "www".to_string(),
                 ipv4_address: "192.0.2.1".to_string(),
                 ttl: None,
@@ -730,8 +684,7 @@ mod tests {
                 ..Default::default()
             },
             spec: ARecordSpec {
-                zone: Some("example.com".to_string()),
-                zone_ref: None,
+                zone_ref: "example-com".to_string(),
                 name: "www".to_string(),
                 ipv4_address: "192.0.2.1".to_string(),
                 ttl: None,
@@ -752,8 +705,7 @@ mod tests {
 
         for ttl in ttl_values {
             let spec = ARecordSpec {
-                zone: Some("example.com".to_string()),
-                zone_ref: None,
+                zone_ref: "example-com".to_string(),
                 name: "test".to_string(),
                 ipv4_address: "192.0.2.1".to_string(),
                 ttl,
@@ -766,16 +718,14 @@ mod tests {
     #[test]
     fn test_apex_vs_subdomain_naming() {
         let apex_record = ARecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "@".to_string(),
             ipv4_address: "192.0.2.1".to_string(),
             ttl: None,
         };
 
         let subdomain_record = ARecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "www".to_string(),
             ipv4_address: "192.0.2.2".to_string(),
             ttl: None,
@@ -789,27 +739,22 @@ mod tests {
     fn test_all_record_types_with_same_name() {
         // Test that different record types can coexist with the same name
         let name = "test".to_string();
-        let zone = Some("example.com".to_string());
-
         let a_spec = ARecordSpec {
-            zone: zone.clone(),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: name.clone(),
             ipv4_address: "192.0.2.1".to_string(),
             ttl: None,
         };
 
         let aaaa_spec = AAAARecordSpec {
-            zone: zone.clone(),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: name.clone(),
             ipv6_address: "2001:db8::1".to_string(),
             ttl: None,
         };
 
         let txt_spec = TXTRecordSpec {
-            zone: zone.clone(),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: name.clone(),
             text: vec!["verification=abc123".to_string()],
             ttl: None,
@@ -824,24 +769,23 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_empty_zone_name() {
+    fn test_empty_zone_ref() {
+        // Empty zoneRef is allowed by the type system but would fail at runtime
         let spec = ARecordSpec {
-            zone: Some("".to_string()),
-            zone_ref: None,
+            zone_ref: "".to_string(),
             name: "test".to_string(),
             ipv4_address: "192.0.2.1".to_string(),
             ttl: None,
         };
 
-        assert_eq!(spec.zone, Some("".to_string()));
+        assert_eq!(spec.zone_ref, "");
     }
 
     #[test]
     fn test_very_long_record_name() {
         let long_name = "a".repeat(63); // Maximum label length in DNS
         let spec = ARecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: long_name.clone(),
             ipv4_address: "192.0.2.1".to_string(),
             ttl: None,
@@ -853,8 +797,7 @@ mod tests {
     #[test]
     fn test_wildcard_record_name() {
         let spec = ARecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "*".to_string(),
             ipv4_address: "192.0.2.1".to_string(),
             ttl: None,
@@ -869,8 +812,7 @@ mod tests {
 
         for name in names {
             let spec = ARecordSpec {
-                zone: Some("example.com".to_string()),
-                zone_ref: None,
+                zone_ref: "example-com".to_string(),
                 name: name.to_string(),
                 ipv4_address: "192.0.2.1".to_string(),
                 ttl: None,
@@ -887,8 +829,7 @@ mod tests {
 
         for priority in priorities {
             let spec = MXRecordSpec {
-                zone: Some("example.com".to_string()),
-                zone_ref: None,
+                zone_ref: "example-com".to_string(),
                 name: "@".to_string(),
                 priority,
                 mail_server: "mail.example.com.".to_string(),
@@ -906,8 +847,7 @@ mod tests {
 
         for port in ports {
             let spec = SRVRecordSpec {
-                zone: Some("example.com".to_string()),
-                zone_ref: None,
+                zone_ref: "example-com".to_string(),
                 name: "_service._tcp".to_string(),
                 priority: 10,
                 weight: 50,
@@ -927,8 +867,7 @@ mod tests {
 
         for flag in flags {
             let spec = CAARecordSpec {
-                zone: Some("example.com".to_string()),
-                zone_ref: None,
+                zone_ref: "example-com".to_string(),
                 name: "@".to_string(),
                 flags: flag,
                 tag: "issue".to_string(),
@@ -952,8 +891,7 @@ mod tests {
 
         for text in special_texts {
             let spec = TXTRecordSpec {
-                zone: Some("example.com".to_string()),
-                zone_ref: None,
+                zone_ref: "example-com".to_string(),
                 name: "test".to_string(),
                 text: vec![text.to_string()],
                 ttl: None,
@@ -971,8 +909,7 @@ mod tests {
     fn test_invalid_ipv4_format_still_parses() {
         // The struct will accept invalid IPs - validation happens at reconciliation time
         let spec = ARecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "test".to_string(),
             ipv4_address: "not-an-ip".to_string(),
             ttl: None,
@@ -984,8 +921,7 @@ mod tests {
     #[test]
     fn test_invalid_ipv6_format_still_parses() {
         let spec = AAAARecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "test".to_string(),
             ipv6_address: "not-an-ipv6".to_string(),
             ttl: None,
@@ -998,8 +934,7 @@ mod tests {
     fn test_cname_without_trailing_dot() {
         // CNAME targets should have trailing dot, but struct accepts without
         let spec = CNAMERecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "alias".to_string(),
             target: "target.example.com".to_string(), // Missing trailing dot
             ttl: None,
@@ -1012,43 +947,12 @@ mod tests {
     fn test_negative_ttl_value() {
         // Negative TTL is technically invalid, but struct accepts it
         let spec = ARecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "test".to_string(),
             ipv4_address: "192.0.2.1".to_string(),
             ttl: Some(-1),
         };
 
         assert_eq!(spec.ttl, Some(-1));
-    }
-
-    #[test]
-    fn test_both_zone_and_zone_ref() {
-        // Having both is invalid, but struct accepts it
-        let spec = ARecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: Some("zone-ref".to_string()),
-            name: "test".to_string(),
-            ipv4_address: "192.0.2.1".to_string(),
-            ttl: None,
-        };
-
-        assert!(spec.zone.is_some());
-        assert!(spec.zone_ref.is_some());
-    }
-
-    #[test]
-    fn test_neither_zone_nor_zone_ref() {
-        // Missing both is invalid, but struct accepts it
-        let spec = ARecordSpec {
-            zone: None,
-            zone_ref: None,
-            name: "test".to_string(),
-            ipv4_address: "192.0.2.1".to_string(),
-            ttl: None,
-        };
-
-        assert!(spec.zone.is_none());
-        assert!(spec.zone_ref.is_none());
     }
 }
