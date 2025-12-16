@@ -64,7 +64,10 @@ pub mod bind9cluster;
 pub mod bind9globalcluster;
 pub mod bind9instance;
 pub mod dnszone;
+pub mod finalizers;
 pub mod records;
+pub mod resources;
+pub mod status;
 
 #[cfg(test)]
 mod bind9cluster_tests;

@@ -15,6 +15,9 @@
 use crate::constants::{API_GROUP_VERSION, KIND_BIND9_CLUSTER, KIND_BIND9_GLOBALCLUSTER};
 use crate::crd::{Bind9Cluster, Bind9ClusterStatus, Bind9GlobalCluster, Bind9Instance, Condition};
 use crate::labels::FINALIZER_BIND9_CLUSTER;
+use crate::reconcilers::finalizers::{
+    ensure_cluster_finalizer, handle_cluster_deletion, FinalizerCleanup,
+};
 use anyhow::Result;
 use chrono::Utc;
 use kube::{
@@ -24,6 +27,109 @@ use kube::{
 };
 use serde_json::json;
 use tracing::{debug, error, info, warn};
+
+/// Implement finalizer cleanup for `Bind9GlobalCluster`.
+///
+/// This handles deletion of all managed `Bind9Cluster` resources when the
+/// global cluster is deleted.
+#[async_trait::async_trait]
+impl FinalizerCleanup for Bind9GlobalCluster {
+    async fn cleanup(&self, client: &Client) -> Result<()> {
+        use crate::labels::{
+            BINDY_CLUSTER_LABEL, BINDY_MANAGED_BY_LABEL, MANAGED_BY_BIND9_GLOBAL_CLUSTER,
+        };
+        use kube::api::DeleteParams;
+
+        let name = self.name_any();
+
+        // Step 1: Delete all managed Bind9Cluster resources
+        info!(
+            "Deleting managed Bind9Cluster resources for global cluster {}",
+            name
+        );
+
+        let clusters_api: Api<Bind9Cluster> = Api::all(client.clone());
+        let all_clusters = clusters_api.list(&ListParams::default()).await?;
+
+        // Filter clusters managed by this global cluster
+        let managed_clusters: Vec<_> = all_clusters
+            .items
+            .iter()
+            .filter(|c| {
+                c.metadata.labels.as_ref().is_some_and(|labels| {
+                    labels.get(BINDY_MANAGED_BY_LABEL)
+                        == Some(&MANAGED_BY_BIND9_GLOBAL_CLUSTER.to_string())
+                        && labels.get(BINDY_CLUSTER_LABEL) == Some(&name.clone())
+                })
+            })
+            .collect();
+
+        if !managed_clusters.is_empty() {
+            info!(
+                "Found {} managed Bind9Cluster resources to delete for global cluster {}",
+                managed_clusters.len(),
+                name
+            );
+
+            for managed_cluster in managed_clusters {
+                let cluster_name = managed_cluster.name_any();
+                let cluster_namespace = managed_cluster.namespace().unwrap_or_default();
+
+                info!(
+                    "Deleting managed Bind9Cluster {}/{} for global cluster {}",
+                    cluster_namespace, cluster_name, name
+                );
+
+                let api: Api<Bind9Cluster> = Api::namespaced(client.clone(), &cluster_namespace);
+                match api.delete(&cluster_name, &DeleteParams::default()).await {
+                    Ok(_) => {
+                        info!(
+                            "Successfully deleted Bind9Cluster {}/{}",
+                            cluster_namespace, cluster_name
+                        );
+                    }
+                    Err(e) => {
+                        // If already deleted or not found, that's fine
+                        if e.to_string().contains("NotFound") {
+                            debug!(
+                                "Bind9Cluster {}/{} already deleted",
+                                cluster_namespace, cluster_name
+                            );
+                        } else {
+                            error!(
+                                "Failed to delete Bind9Cluster {}/{}: {}",
+                                cluster_namespace, cluster_name, e
+                            );
+                            return Err(e.into());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 2: Check for orphaned Bind9Instance resources (warn only, don't delete)
+        // Note: Instances will be cleaned up by their parent Bind9Cluster's finalizer
+        let instances_api: Api<Bind9Instance> = Api::all(client.clone());
+        let instances = instances_api.list(&ListParams::default()).await?;
+
+        let referencing_instances: Vec<_> = instances
+            .items
+            .iter()
+            .filter(|inst| inst.spec.cluster_ref == name)
+            .collect();
+
+        if !referencing_instances.is_empty() {
+            warn!(
+                "Bind9GlobalCluster {} still has {} referencing instances. \
+                These will be cleaned up by their parent Bind9Cluster finalizers.",
+                name,
+                referencing_instances.len()
+            );
+        }
+
+        Ok(())
+    }
+}
 
 /// Reconciles a cluster-scoped `Bind9GlobalCluster` resource.
 ///
@@ -61,11 +167,11 @@ pub async fn reconcile_bind9globalcluster(
 
     // Handle deletion if cluster is being deleted
     if cluster.metadata.deletion_timestamp.is_some() {
-        return handle_globalcluster_deletion(&client, &cluster, &name).await;
+        return handle_cluster_deletion(&client, &cluster, FINALIZER_BIND9_CLUSTER).await;
     }
 
     // Ensure finalizer is present
-    ensure_finalizer(&client, &cluster, &name).await?;
+    ensure_cluster_finalizer(&client, &cluster, FINALIZER_BIND9_CLUSTER).await?;
 
     // Check if spec has changed using the standard generation check
     let current_generation = cluster.metadata.generation;
@@ -94,167 +200,6 @@ pub async fn reconcile_bind9globalcluster(
 
     // Update cluster status based on instances across all namespaces
     update_cluster_status(&client, &cluster).await?;
-
-    Ok(())
-}
-
-/// Handles deletion of a cluster-scoped global cluster resource.
-///
-/// This function ensures all dependent instances are cleaned up before
-/// removing the finalizer.
-///
-/// # Errors
-///
-/// Returns an error if listing instances or removing finalizer fails.
-async fn handle_globalcluster_deletion(
-    client: &Client,
-    cluster: &Bind9GlobalCluster,
-    name: &str,
-) -> Result<()> {
-    use crate::labels::{
-        BINDY_CLUSTER_LABEL, BINDY_MANAGED_BY_LABEL, MANAGED_BY_BIND9_GLOBAL_CLUSTER,
-    };
-    use kube::api::DeleteParams;
-
-    info!("Handling deletion of Bind9GlobalCluster: {}", name);
-
-    // Step 1: Delete all managed Bind9Cluster resources
-    info!(
-        "Deleting managed Bind9Cluster resources for global cluster {}",
-        name
-    );
-
-    let clusters_api: Api<Bind9Cluster> = Api::all(client.clone());
-    let all_clusters = clusters_api.list(&ListParams::default()).await?;
-
-    // Filter clusters managed by this global cluster
-    let managed_clusters: Vec<_> = all_clusters
-        .items
-        .iter()
-        .filter(|c| {
-            c.metadata.labels.as_ref().is_some_and(|labels| {
-                labels.get(BINDY_MANAGED_BY_LABEL)
-                    == Some(&MANAGED_BY_BIND9_GLOBAL_CLUSTER.to_string())
-                    && labels.get(BINDY_CLUSTER_LABEL) == Some(&name.to_string())
-            })
-        })
-        .collect();
-
-    if !managed_clusters.is_empty() {
-        info!(
-            "Found {} managed Bind9Cluster resources to delete for global cluster {}",
-            managed_clusters.len(),
-            name
-        );
-
-        for managed_cluster in managed_clusters {
-            let cluster_name = managed_cluster.name_any();
-            let cluster_namespace = managed_cluster.namespace().unwrap_or_default();
-
-            info!(
-                "Deleting managed Bind9Cluster {}/{} for global cluster {}",
-                cluster_namespace, cluster_name, name
-            );
-
-            let api: Api<Bind9Cluster> = Api::namespaced(client.clone(), &cluster_namespace);
-            match api.delete(&cluster_name, &DeleteParams::default()).await {
-                Ok(_) => {
-                    info!(
-                        "Successfully deleted Bind9Cluster {}/{}",
-                        cluster_namespace, cluster_name
-                    );
-                }
-                Err(e) => {
-                    // If already deleted or not found, that's fine
-                    if e.to_string().contains("NotFound") {
-                        debug!(
-                            "Bind9Cluster {}/{} already deleted",
-                            cluster_namespace, cluster_name
-                        );
-                    } else {
-                        error!(
-                            "Failed to delete Bind9Cluster {}/{}: {}",
-                            cluster_namespace, cluster_name, e
-                        );
-                        return Err(e.into());
-                    }
-                }
-            }
-        }
-    }
-
-    // Step 2: Check for orphaned Bind9Instance resources (warn only, don't delete)
-    // Note: Instances will be cleaned up by their parent Bind9Cluster's finalizer
-    let instances_api: Api<Bind9Instance> = Api::all(client.clone());
-    let instances = instances_api.list(&ListParams::default()).await?;
-
-    let referencing_instances: Vec<_> = instances
-        .items
-        .iter()
-        .filter(|inst| inst.spec.cluster_ref == name)
-        .collect();
-
-    if !referencing_instances.is_empty() {
-        warn!(
-            "Bind9GlobalCluster {} still has {} referencing instances. \
-            These will be cleaned up by their parent Bind9Cluster finalizers.",
-            name,
-            referencing_instances.len()
-        );
-    }
-
-    // Remove finalizer to allow deletion
-    remove_finalizer(client, cluster, name).await?;
-
-    info!("Finalizer removed for Bind9GlobalCluster: {}", name);
-    Ok(())
-}
-
-/// Ensures the finalizer is present on the global cluster resource.
-///
-/// # Errors
-///
-/// Returns an error if the patch operation fails.
-async fn ensure_finalizer(client: &Client, cluster: &Bind9GlobalCluster, name: &str) -> Result<()> {
-    let finalizers = cluster.metadata.finalizers.as_ref();
-    if finalizers.is_none_or(|f| !f.contains(&FINALIZER_BIND9_CLUSTER.to_string())) {
-        debug!("Adding finalizer to Bind9GlobalCluster: {}", name);
-
-        let api: Api<Bind9GlobalCluster> = Api::all(client.clone());
-        let patch = json!({
-            "metadata": {
-                "finalizers": [FINALIZER_BIND9_CLUSTER]
-            }
-        });
-
-        api.patch(name, &PatchParams::default(), &Patch::Merge(&patch))
-            .await?;
-    }
-
-    Ok(())
-}
-
-/// Removes the finalizer from the global cluster resource.
-///
-/// # Errors
-///
-/// Returns an error if the patch operation fails.
-async fn remove_finalizer(
-    client: &Client,
-    _cluster: &Bind9GlobalCluster,
-    name: &str,
-) -> Result<()> {
-    debug!("Removing finalizer from Bind9GlobalCluster: {}", name);
-
-    let api: Api<Bind9GlobalCluster> = Api::all(client.clone());
-    let patch = json!({
-        "metadata": {
-            "finalizers": null
-        }
-    });
-
-    api.patch(name, &PatchParams::default(), &Patch::Merge(&patch))
-        .await?;
 
     Ok(())
 }

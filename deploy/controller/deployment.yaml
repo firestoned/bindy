@@ -32,7 +32,7 @@ spec:
       containers:
         - name: bindy
           image: ghcr.io/firestoned/bindy:latest
-          imagePullPolicy: Never
+          imagePullPolicy: IfNotPresent
           env:
             - name: RUST_LOG
               value: "debug"
