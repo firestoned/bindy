@@ -2,6 +2,1711 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-16 02:15] - Fix production Dockerfile by removing unnecessary DNS query tools
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docker/Dockerfile`: Removed COPY commands for `dig`, `nslookup`, and `host` binaries
+  - These DNS query tools are not needed by the controller
+  - The controller only needs BIND9 server (`named`) and RNDC control binaries
+  - Reduces image size and attack surface
+
+### Why
+The Docker build was failing because Debian 12 doesn't place DNS query utilities (`dig`, `nslookup`, `host`) in `/usr/bin/` - they're provided by `bind9-dnsutils` and may be in different locations. Since the controller doesn't actually use these tools (it only manages BIND9 via RNDC), we removed them entirely. This makes the image smaller, more secure (fewer binaries = smaller attack surface), and fixes the build error.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (Docker image optimization)
+
+## [2025-12-16 02:00] - Optimize PR workflow to run clippy in parallel with build
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/pr.yaml`: Restructured job dependencies to improve CI speed
+  - Renamed `lint` job to `format` (only runs `cargo fmt --check`, very fast)
+  - Created separate `clippy` job that runs in parallel with `build` after `format` completes
+  - `clippy`, `build`, and `docs` jobs now run in parallel after the fast format check
+  - `test` job still depends on `build` (needs artifacts)
+  - `docker` job still depends on `test`
+
+### Why
+Previously, the `lint` job ran both `cargo fmt` and `cargo clippy`, which required a full compilation before the `build` job could start. This created a sequential bottleneck where clippy had to compile everything, then build had to compile everything again for cross-compilation targets.
+
+The new structure:
+1. **Format check runs first** (< 5 seconds, no compilation)
+2. **Clippy, Build (x86_64 + ARM64), and Docs run in parallel** (saves ~3-5 minutes on average)
+3. Test and Docker jobs run sequentially as before (they need build artifacts)
+
+This reduces total CI time significantly while maintaining the same quality checks.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (CI/CD optimization)
+
+## [2025-12-16 01:45] - Fix GitHub Actions workflows to use docker/Dockerfile
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/main.yaml`: Added `file: docker/Dockerfile` parameter to Docker build action
+- `.github/workflows/pr.yaml`: Added `file: docker/Dockerfile` parameter to Docker build action
+- `.github/workflows/release.yaml`: Added `file: docker/Dockerfile` parameter to Docker build action
+
+### Why
+The Dockerfile was moved to the `docker/` directory, but the GitHub Actions workflows were still looking for it in the root directory (default behavior when `file` parameter is not specified). This caused the "Build and push Docker image (fast - uses pre-built binaries)" step to fail with a missing Dockerfile error. The `docker/Dockerfile` is the production Dockerfile optimized for multi-arch builds using pre-built binaries from earlier workflow steps.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (CI/CD fix)
+
+## [2025-12-16 01:30] - Rename deploy/operator directory to deploy/controller
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **Directory structure**: Renamed `deploy/operator/` to `deploy/controller/` for clarity and consistency
+- `Makefile`: Updated all references from `deploy/operator` to `deploy/controller`
+- `deploy/kind-deploy.sh`: Updated deployment path
+- `tests/integration_test.sh`: Updated deployment path
+- `README.md`: Updated installation instructions
+- Documentation files updated:
+  - `docs/src/installation/quickstart.md`
+  - `docs/src/installation/installation.md`
+  - `docs/src/installation/controller.md`
+  - `docs/src/operations/migration-guide.md`
+  - `docs/src/reference/examples-simple.md`
+  - `deploy/README.md`
+  - `deploy/TESTING.md`
+
+### Why
+The directory name `operator` was ambiguous and could be confused with the operator pattern itself. Renaming to `controller` makes it clearer that this directory contains the controller deployment manifest, aligning with Kubernetes terminology where "controller" refers to the reconciliation loop implementation.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (deployment path changed in all deployment scripts)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2025-12-16 01:15] - Fix GitHub Actions composite action secret access
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/actions/setup-docker/action.yaml`: Added `github_token` input parameter to the composite action, since composite actions cannot directly access the `secrets` context
+- `.github/workflows/main.yaml`: Updated to pass `${{ secrets.GITHUB_TOKEN }}` to the setup-docker action
+- `.github/workflows/pr.yaml`: Updated to pass `${{ secrets.GITHUB_TOKEN }}` to the setup-docker action
+- `.github/workflows/release.yaml`: Updated to pass `${{ secrets.GITHUB_TOKEN }}` to the setup-docker action
+
+### Why
+GitHub Actions composite actions cannot directly access the `secrets` context - this is only available in workflow files. The error `Unrecognized named-value: 'secrets'` was occurring because the composite action tried to use `${{ secrets.GITHUB_TOKEN }}` directly. The solution is to pass secrets as input parameters from the workflow to the composite action.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2025-12-16 00:40] - Fix record reconciler tight loop with generation-based gating
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/records.rs`: Added generation-based reconciliation gating to all 8 record reconcilers (ARecord, TXTRecord, AAAARecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord) to match the pattern used by DNSZone and Bind9Cluster reconcilers
+
+### Why
+The record reconcilers were stuck in a tight loop because every status update triggered a new reconciliation. The root cause was that record reconcilers didn't implement generation-based gating using `should_reconcile()`. When a reconciler updates the status (e.g., setting conditions), Kubernetes watch API detects this change and triggers another reconciliation immediately, creating an infinite loop. The solution is to check `metadata.generation` vs `status.observed_generation` at the start of each reconciliation and skip the reconciliation if the spec hasn't actually changed. This way, status-only updates don't trigger actual DNS operations - they just return early. This is the standard pattern used by DNSZone and Bind9Cluster reconcilers.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2025-12-16 00:07] - Fix record reconciler tight loop by fetching latest status (REVERTED)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/main.rs`: Fixed all record reconciliation wrappers to fetch the latest ARecord/TXTRecord/AAAARecord/CNAMERecord/MXRecord/NSRecord/SRVRecord/CAARecord status from the API after reconciliation completes, instead of using the stale status from the function parameter
+
+### Why
+This change was REVERTED because it didn't actually solve the tight loop problem. The real issue was generation-based gating (see 00:40 entry above), not the requeue interval logic.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2025-12-15 20:30] - Remove 'zone' field from DNS record CRDs (Breaking Change)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **BREAKING**: All DNS record CRDs (ARecord, AAAARecord, CNAMERecord, MXRecord, TXTRecord, NSRecord, SRVRecord, CAARecord) now use only `zoneRef` field
+- Removed the confusing dual-field approach where records could specify either `zone` (matching by zoneName) or `zoneRef` (matching by resource name)
+- `src/crd.rs`: Updated all record specs to have `zone_ref: String` as a required field instead of optional `zone` and `zone_ref` fields
+- `src/reconcilers/records.rs`: Updated `get_zone_info()` function to only accept `zoneRef` parameter
+- `examples/dns-records.yaml`: Updated to use `zoneRef` exclusively
+- `examples/multi-tenancy.yaml`: Updated to use `zoneRef` exclusively
+- `deploy/crds/*.crd.yaml`: Regenerated CRD YAML files with updated schemas
+
+### Why
+Having both `zone` and `zoneRef` fields was confusing for users and added unnecessary complexity. The `zoneRef` approach (directly referencing a DNSZone by its Kubernetes resource name) is more efficient and follows Kubernetes best practices for cross-resource references. This simplifies the API and makes it clearer how to reference zones.
+
+### Migration Guide
+If you have existing DNS records using the `zone` field, you need to update them to use `zoneRef` instead:
+
+**Before:**
+```yaml
+spec:
+  zone: example.com  # Matches DNSZone spec.zoneName
+  name: www
+```
+
+**After:**
+```yaml
+spec:
+  zoneRef: example-com  # References DNSZone metadata.name
+  name: www
+```
+
+To find the correct `zoneRef` value, look at the `metadata.name` of your DNSZone resource:
+```bash
+kubectl get dnszones -o custom-columns=NAME:.metadata.name,ZONE:.spec.zoneName
+```
+
+### Impact
+- [x] **Breaking change** - Requires updating all DNS record manifests
+- [ ] Requires cluster rollout
+- [x] **API change** - `zone` field removed, `zoneRef` is now required
+- [x] **Migration required** - All existing records must be updated
+
+## [2025-12-15 19:15] - Fix DNS Record Status Update Reconciliation Loop
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/main.rs`:
+  - Configured all record controllers (ARecord, TXTRecord, AAAARecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord) to use `.any_semantic()` watcher configuration
+  - This prevents controllers from triggering reconciliations when only the status subresource changes
+  - Previously used `Config::default()` which watches all changes including status updates
+  - Status updates no longer trigger new reconciliation loops
+
+### Why
+All record reconcilers update the status field twice during reconciliation: once to set "Progressing", then to set "Ready". With the default watcher configuration watching all changes, status updates triggered new reconciliation events, creating an infinite loop. The logs showed constant "object updated" events for records even when nothing had changed.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Bug fix - eliminates status update reconciliation loops
+- [x] Significantly reduces CPU usage and log volume
+
+## [2025-12-15 19:00] - Fix DNS Record Reconciliation Infinite Loop
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/reconcilers/records.rs`:
+  - Fixed infinite reconciliation loop caused by unconditionally patching record annotations
+  - The `add_record_annotations()` function now fetches the record first and checks if annotations are already set
+  - Only patches if annotations are missing or have different values
+  - This prevents triggering new reconciliation events when annotations are already correct
+
+### Why
+Every reconciliation was calling `add_record_annotations()` which patched the record's metadata, triggering a new reconciliation event. This created a tight loop where records were being reconciled hundreds of times per second, generating massive log files (18.7MB in a few seconds).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Bug fix - eliminates reconciliation loops
+
+## [2025-12-15 18:30] - Fix Bind9Cluster Status Not Updating When Instances Become Ready
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/reconcilers/bind9cluster.rs`:
+  - Fixed Bind9Cluster status not being updated when instances become ready but cluster spec hasn't changed
+  - Changed reconciliation logic to ALWAYS update status based on current instance health, regardless of spec generation
+  - Previously, the reconciler would return early when spec was unchanged, never reaching the status update code
+  - Now separates spec reconciliation (configmap, instances) from status updates
+  - Status updates always run to reflect current instance health in cluster status
+
+### Why
+When instances transition to ready state, the cluster status should reflect this change even if the cluster spec hasn't been modified. The previous generation check caused an early return that skipped all status updates when the spec was unchanged.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Bug fix - status updates now work correctly
+
+## [2025-12-15 17:00] - Organize Docker Files into docker/ Directory
+
+**Author:** Erick Bourgeois
+
+### Changed
+- Moved all Dockerfile variants and `.dockerignore` into `docker/` directory for better organization
+- `Dockerfile` → `docker/Dockerfile`
+- `Dockerfile.local` → `docker/Dockerfile.local`
+- `Dockerfile.fast` → `docker/Dockerfile.fast`
+- `Dockerfile.chef` → `docker/Dockerfile.chef`
+- `.dockerignore` → `docker/.dockerignore`
+- Updated `scripts/build-docker-fast.sh` to reference new locations
+
+### Why
+Consolidates all Docker-related build files into a single directory, improving repository organization and making it easier to find and maintain Docker configurations.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (paths updated in scripts and CHANGELOG)
+
+## [2025-12-15 16:00] - Fix Generation Propagation for Spec Updates
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/reconcilers/bind9globalcluster.rs`:
+  - Implemented PATCH operation when `Bind9Cluster` already exists to propagate spec updates
+  - When `Bind9GlobalCluster` spec changes (e.g., image version), the update now properly cascades to `Bind9Cluster`
+  - Changed from "create-or-ignore" pattern to "create-or-patch" pattern
+  - Uses `PatchParams::apply("bindy-controller").force()` with server-side apply for consistent updates
+  - Added `force: true` to override field manager conflicts when updating existing resources
+  - Fixed PATCH payload to include required `apiVersion` and `kind` fields for server-side apply
+  - Uses constants from `src/constants.rs` (`API_GROUP_VERSION`, `KIND_BIND9_CLUSTER`) instead of hardcoded strings
+
+- `src/reconcilers/bind9cluster.rs`:
+  - Implemented PATCH operation when `Bind9Instance` already exists to propagate spec updates
+  - When `Bind9Cluster` spec changes, the update now properly cascades to `Bind9Instance` resources
+  - Previously only updated labels/annotations on existing instances, now updates entire spec
+  - Uses `PatchParams::apply("bindy-controller").force()` with server-side apply for consistent updates
+  - Added `force: true` to override field manager conflicts when updating existing resources
+  - Fixed PATCH payload to include required `apiVersion` and `kind` fields for server-side apply
+  - Uses constants from `src/constants.rs` (`API_GROUP_VERSION`, `KIND_BIND9_CLUSTER`, `KIND_BIND9_INSTANCE`) instead of hardcoded strings
+  - Fixed owner reference creation to use constants
+  - **CRITICAL FIX**: Now copies `bindcarConfig` from `cluster.spec.common.global.bindcarConfig` to `Bind9Instance.spec.bindcarConfig` when creating instances
+  - This ensures instances have the configuration in their spec, not just inherited at deployment time
+
+- `src/reconcilers/bind9instance.rs`:
+  - Fixed owner reference creation to use constants (`API_GROUP_VERSION`, `KIND_BIND9_INSTANCE`) instead of hardcoded strings
+  - Fixed `create_or_update_deployment()` to pass `global_cluster` parameter to `build_deployment()`
+  - Removed obsolete comment about global cluster config not being inherited by deployments
+
+- `src/bind9_resources.rs`:
+  - Updated `build_deployment()` to accept `global_cluster` parameter
+  - Updated `resolve_deployment_config()` to accept `global_cluster` parameter
+  - Fixed configuration resolution to check `Bind9GlobalCluster` for image config, version, volumes, volume mounts, and bindcar config
+  - Configuration precedence is now: instance > cluster > global_cluster > defaults
+  - This fixes deployments not inheriting configuration from `Bind9GlobalCluster`
+
+- `src/reconcilers/bind9instance_tests.rs`:
+  - Updated all `build_deployment()` calls to pass `None` for `global_cluster` parameter
+
+- `src/bind9_resources_tests.rs`:
+  - Updated all `build_deployment()` calls to pass `None` for `global_cluster` parameter
+
+- `src/main.rs`:
+  - Fixed DNSZone finalizer to use correct API group (`bindy.firestoned.io` instead of incorrect `dns.firestoned.io`)
+  - Uses constant from `src/labels.rs` (`FINALIZER_DNS_ZONE`) instead of hardcoded string
+
+- `src/labels.rs`:
+  - Added `FINALIZER_DNS_ZONE` constant for DNSZone finalizer
+
+- `src/crd.rs`:
+  - Fixed documentation examples to use correct API group (`bindy.firestoned.io` instead of `dns.firestoned.io`)
+  - Updated all YAML example snippets in rustdoc comments
+
+- `docs/src/architecture/reconciler-hierarchy.md`:
+  - Fixed all API version references from `dns.firestoned.io/v1alpha1` to `bindy.firestoned.io/v1alpha1`
+  - Updated code examples to use constants (`API_GROUP_VERSION`, `KIND_BIND9_CLUSTER`, `KIND_BIND9_GLOBALCLUSTER`)
+
+- `docs/src/concepts/bind9globalcluster.md`:
+  - Added comprehensive "Configuration Inheritance" section documenting how configuration flows from `Bind9GlobalCluster` to `Deployment`
+  - Added configuration precedence documentation: instance > cluster > global_cluster > defaults
+  - Added Mermaid sequence diagram showing propagation flow
+  - Added table of inherited configuration fields (image, version, volumes, volumeMounts, bindcarConfig, configMapRefs)
+  - Added verification examples showing how to check configuration propagation
+
+### Why
+When a user updates a `Bind9GlobalCluster` spec (e.g., changing `.global.bindcarConfig.image`), the change wasn't propagating down the hierarchy:
+
+**Problem Flow:**
+1. User updates `Bind9GlobalCluster` spec → generation changes ✅
+2. GlobalCluster reconciler sees the change ✅
+3. Reconciler tries to create `Bind9Cluster` → AlreadyExists error
+4. Old code just logged "already exists" and continued ❌
+5. `Bind9Cluster` resource never gets updated ❌
+6. `Bind9Cluster` generation never changes ❌
+7. Bind9Instance and Deployment never get updated ❌
+
+**Root Causes:**
+
+1. **Create-or-ignore pattern:** The reconcilers used a "create-or-ignore" pattern:
+```rust
+match api.create(&PostParams::default(), &resource).await {
+    Ok(_) => info!("Created"),
+    Err(e) if e.to_string().contains("AlreadyExists") => {
+        debug!("Already exists (this is expected)");  // ❌ WRONG
+    }
+}
+```
+
+This meant existing resources never got updated when parent specs changed.
+
+2. **Missing global cluster config inheritance:** The `build_deployment()` function didn't accept or use the `Bind9GlobalCluster` parameter, so deployments only inherited configuration from namespace-scoped `Bind9Cluster` resources. When using a `Bind9GlobalCluster`, the `global.bindcarConfig.image` and other settings were ignored.
+
+**Solutions:**
+
+1. **Create-or-patch pattern:** Changed to "create-or-patch" pattern:
+```rust
+match api.create(&PostParams::default(), &resource).await {
+    Ok(_) => info!("Created"),
+    Err(e) if e.to_string().contains("AlreadyExists") => {
+        // PATCH the existing resource with updated spec
+        api.patch(&name, &PatchParams::apply("bindy-controller"), &Patch::Apply(&patch)).await?;
+    }
+}
+```
+
+2. **Global cluster config inheritance:** Updated `build_deployment()` and `resolve_deployment_config()` to accept and use the `Bind9GlobalCluster` parameter. Configuration is now resolved with proper precedence:
+```rust
+// Configuration precedence: instance > cluster > global_cluster > defaults
+let image_config = instance.spec.image.as_ref()
+    .or_else(|| cluster.and_then(|c| c.spec.common.image.as_ref()))
+    .or_else(|| global_cluster.and_then(|gc| gc.spec.common.image.as_ref()));
+```
+
+This ensures spec changes propagate through the entire hierarchy:
+```
+Bind9GlobalCluster (spec change)
+  └─ PATCH → Bind9Cluster (generation increments)
+       └─ PATCH → Bind9Instance (generation increments)
+            └─ reconciles → Deployment (updated with global cluster config)
+```
+
+### Impact
+- [x] Bug fix - Spec changes now propagate correctly
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Enables runtime configuration updates (image versions, resource limits, etc.)
+
+**Testing:**
+- ✅ All tests pass (286 tests)
+- ✅ Clippy passes with strict warnings
+- ✅ cargo fmt passes
+- ✅ Generation propagation: GlobalCluster → Cluster → Instance → Deployment
+
+**Verification Command:**
+```bash
+# Update the global cluster image
+kubectl patch bind9globalcluster production-dns --type=merge -p '{"spec":{"global":{"bindcarConfig":{"image":"ghcr.io/firestoned/bindcar:v2.0.0"}}}}'
+
+# Watch the cascade update
+kubectl get bind9cluster,bind9instance,deployment -o wide --watch
+```
+
+---
+
+## [2025-12-15 15:00] - Fix Bind9GlobalCluster Creating Instances Directly
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/reconcilers/bind9globalcluster.rs`:
+  - **CRITICAL BUG**: Removed `reconcile_managed_instances()` function that was creating `Bind9Instance` resources directly
+  - `Bind9GlobalCluster` now only creates `Bind9Cluster` resources and delegates instance creation to them
+  - This fixes duplicate instance creation where both GlobalCluster and Cluster were creating instances
+  - Fixed naming: Bind9Cluster now uses the global cluster name directly (removed `-cluster` suffix)
+  - Example: `production-dns` global cluster now creates `production-dns` cluster (not `production-dns-cluster`)
+
+### Why
+The `Bind9GlobalCluster` reconciler was calling both:
+1. `reconcile_namespace_clusters()` - Creates `Bind9Cluster` resources ✅
+2. `reconcile_managed_instances()` - Creates `Bind9Instance` resources directly ❌
+
+This violated the delegation pattern and caused duplicate instances to be created:
+- `production-dns-cluster-primary-0` (created by Bind9Cluster) ✅
+- `production-dns-primary-0` (created by Bind9GlobalCluster) ❌ **DUPLICATE**
+
+**Correct Delegation Pattern:**
+```
+Bind9GlobalCluster
+  └─ creates → Bind9Cluster
+       └─ creates → Bind9Instance (handled by Bind9Cluster reconciler)
+```
+
+**Before (WRONG):**
+```
+Bind9GlobalCluster
+  ├─ creates → Bind9Cluster → creates → Bind9Instance
+  └─ creates → Bind9Instance (DUPLICATE!)
+```
+
+### Impact
+- [x] Bug fix - Prevents duplicate instance creation
+- [x] Maintains proper delegation hierarchy
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+
+**Testing:**
+- ✅ All tests pass
+- ✅ Clippy passes
+- ✅ Verified delegation: GlobalCluster → Cluster → Instance
+
+## [2025-12-15 14:00] - Fix Child Resource Tracking and OwnerReferences
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/bind9globalcluster.rs`:
+  - Added proper child tracking for `Bind9Cluster` resources created by `Bind9GlobalCluster`
+  - Added deletion logic to clean up managed `Bind9Cluster` resources on `Bind9GlobalCluster` deletion
+  - Added `ownerReferences` to `Bind9Cluster` resources pointing to their parent `Bind9GlobalCluster`
+  - Import `Bind9Cluster` and `error!` macro for proper compilation
+- `src/reconcilers/bind9cluster.rs`:
+  - Added `ownerReferences` to `Bind9Instance` resources pointing to their parent `Bind9Cluster`
+  - Created internal `create_managed_instance_with_owner()` function for setting `ownerReferences`
+  - Modified `create_managed_instance()` to delegate to new internal function for backward compatibility
+  - Updated both primary and secondary instance creation to include `ownerReferences`
+
+### Why
+Previously, reconcilers created child resources but did not properly track them using Kubernetes `ownerReferences`. This caused several issues:
+
+1. **No automatic cleanup**: When a parent resource was deleted, child resources were orphaned
+2. **Manual deletion required**: Operators had to manually find and delete child resources
+3. **Resource leaks**: Orphaned resources consumed cluster resources unnecessarily
+4. **Inconsistent behavior**: Some reconcilers warned about orphans, others didn't
+
+**Kubernetes OwnerReference Benefits:**
+- **Cascade deletion**: When a parent is deleted, Kubernetes automatically deletes all children with `ownerReferences`
+- **Garbage collection**: Built-in cleanup without custom finalizer logic
+- **Clear ownership**: Easy to see which resources belong together
+- **Block deletion**: `blockOwnerDeletion: true` prevents deleting a parent while children exist
+
+**Before this change:**
+```
+Bind9GlobalCluster
+  └─ creates → Bind9Cluster (⚠️ no ownerReference)
+       └─ creates → Bind9Instance (⚠️ no ownerReference)
+```
+
+**After this change:**
+```
+Bind9GlobalCluster
+  └─ creates → Bind9Cluster (✅ ownerReference set)
+       └─ creates → Bind9Instance (✅ ownerReference set)
+```
+
+**Deletion Flow:**
+1. User deletes `Bind9GlobalCluster`
+2. Reconciler's finalizer lists and deletes all managed `Bind9Cluster` resources
+3. Each `Bind9Cluster`'s finalizer lists and deletes all managed `Bind9Instance` resources
+4. Each `Bind9Instance`'s finalizer cleans up Kubernetes resources (Deployment, Service, etc.)
+5. Kubernetes garbage collector automatically cleans up any resources with `ownerReferences`
+
+### Impact
+- [x] Bug fix - Prevents resource leaks and enables proper cleanup
+- [x] Architectural improvement - Follows Kubernetes best practices for resource ownership
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+
+**Key Improvements:**
+1. **Bind9GlobalCluster → Bind9Cluster**: Now sets `ownerReference` and properly deletes children
+2. **Bind9Cluster → Bind9Instance**: Now sets `ownerReference` for automatic cascade deletion
+3. **Cascade deletion**: Kubernetes automatically cleans up resources when parent is deleted
+4. **Resource ownership**: Clear parent-child relationships visible in metadata
+
+**Files Modified:**
+- `src/reconcilers/bind9globalcluster.rs`: Added child tracking, deletion, and `ownerReferences`
+- `src/reconcilers/bind9cluster.rs`: Added `ownerReferences` to managed instances
+- `docs/src/architecture/reconciler-hierarchy.md`: Added comprehensive documentation section on owner references
+
+**Documentation Added:**
+- Detailed explanation of owner references and their benefits
+- Owner reference hierarchy diagram with Mermaid
+- Implementation details with code examples and file locations
+- Complete deletion flow sequence diagram
+- Explanation of why both finalizers AND owner references are used
+- Verification commands and expected output
+- Troubleshooting guide for common deletion issues
+
+**Testing:**
+- ✅ All unit tests pass
+- ✅ Clippy passes with no warnings
+- ✅ Code formatted with `cargo fmt`
+- ✅ Documentation builds successfully
+
+## [2025-12-15 12:00] - Document Reconciler Hierarchy and Delegation
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/src/architecture/reconciler-hierarchy.md`: Comprehensive documentation of reconciler architecture
+  - Hierarchical delegation pattern explanation
+  - Change detection logic documentation
+  - Protocol separation (HTTP API vs DNS UPDATE)
+  - Drift detection implementation details
+  - Mermaid diagrams showing reconciler flow and sequence
+
+### Why
+The reconciler architecture was already implemented correctly but lacked clear documentation explaining:
+1. How each reconciler delegates to sub-resources (GlobalCluster → Cluster → Instance → Resources)
+2. Change detection logic using `should_reconcile()` and generation tracking
+3. When HTTP API (bindcar) vs DNS UPDATE (hickory) is used
+4. Drift detection for missing resources
+
+This documentation makes the architecture explicit and easier to understand for maintainers and contributors.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+**Key Architectural Principles Documented:**
+1. Hierarchical delegation: Each reconciler creates only its immediate children
+2. Namespace scoping: Multi-tenant support via namespace-scoped resources
+3. Change detection: Skip work if spec unchanged and resources exist
+4. Protocol separation: HTTP API for zones, DNS UPDATE for records
+5. Idempotency: All operations are safe to retry
+6. Error handling: Graceful degradation with proper status updates
+
+**Files Added:**
+- `docs/src/architecture/reconciler-hierarchy.md`: Complete reconciler architecture documentation
+
+## [2025-12-14 18:00] - Fix ConfigMap Creation for Bind9GlobalCluster
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/bind9globalcluster.rs`: Implemented delegation pattern for ConfigMap creation
+  - Added `reconcile_namespace_clusters()` function to create namespace-scoped `Bind9Cluster` resources
+  - `Bind9GlobalCluster` now creates a `Bind9Cluster` in each namespace that has instances
+  - The namespace-scoped `Bind9Cluster` reconciler handles ConfigMap creation automatically
+- `src/labels.rs`: Added `MANAGED_BY_BIND9_GLOBAL_CLUSTER` constant for label management
+
+### Why
+Previously, `Bind9GlobalCluster` directly created `Bind9Instance` resources but did NOT create the ConfigMaps that instances need to mount. This caused a critical bug:
+
+```
+Warning  FailedMount  MountVolume.SetUp failed for volume "config":
+         configmap "production-dns-config" not found
+```
+
+The namespace-scoped `Bind9Cluster` reconciler already has all the logic for creating ConfigMaps with proper BIND9 configuration. By implementing a delegation pattern, we:
+1. Ensure ConfigMaps exist before instances try to mount them
+2. Reuse the existing ConfigMap creation logic (no code duplication)
+3. Maintain proper resource ownership and cleanup
+
+### Impact
+- [x] Bug fix - Critical issue preventing GlobalCluster instances from starting
+- [x] Architectural improvement - Proper delegation pattern between controllers
+- [ ] Breaking change
+- [ ] Documentation only
+
+**Root Cause:**
+The `Bind9Instance` reconciler skips ConfigMap creation if `clusterRef` is set, expecting the cluster to provide it. However, `Bind9GlobalCluster` never created ConfigMaps, only instances.
+
+**Solution:**
+`Bind9GlobalCluster` → creates `Bind9Cluster` → creates ConfigMap → `Bind9Instance` mounts ConfigMap
+
+**Files Modified:**
+- `src/reconcilers/bind9globalcluster.rs`: Added namespace cluster delegation logic
+- `src/labels.rs`: Added label constant for global cluster management
+
+## [2025-12-14 17:00] - Optimize CI/CD Docker Build (40x Faster)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Dockerfile`: Created new optimized production Dockerfile for CI/CD multi-architecture builds
+  - Uses pre-built GNU libc binaries instead of compiling with musl
+  - Leverages Docker BuildKit's `TARGETARCH` variable for multi-arch support
+  - Supports linux/amd64 and linux/arm64 platforms
+  - Uses Google Distroless base image for minimal attack surface
+- `.github/workflows/release.yaml`: Updated Docker build workflow
+  - Downloads pre-built binaries from build job artifacts
+  - Prepares `binaries/amd64/` and `binaries/arm64/` directories
+  - Uses production `Dockerfile` with pre-built binaries
+  - Maintains SBOM and provenance generation
+- `CI_CD_DOCKER_BUILD.md`: Comprehensive documentation of the new build strategy
+
+### Why
+The previous Docker build used musl static linking which took 15-20 minutes to compile from scratch for both architectures. This was unacceptably slow for CI/CD pipelines.
+
+The new approach:
+1. **Builds binaries in parallel** using native cargo (x86_64) and cross (ARM64) - ~2 minutes each
+2. **Reuses the same binaries** for both release artifacts and Docker images
+3. **Docker build only copies binaries** - no compilation needed (~30 seconds)
+
+This leverages the fact that we already build release binaries in the `build` job, so compiling again in Docker was pure waste.
+
+### Performance Impact
+- **Build time**: 15-20 minutes → 30 seconds (**40x faster**)
+- **Total workflow time**: Reduced by ~18 minutes
+- **Binary compatibility**: GNU libc (standard) instead of musl (limited)
+- **Same binaries**: Release artifacts and Docker images use identical binaries
+
+### Impact
+- [ ] Breaking change
+- [x] CI/CD improvement - massive speedup for release builds
+- [x] Infrastructure optimization - reduces GitHub Actions minutes usage
+- [ ] Documentation only
+
+**Before:**
+```yaml
+# Docker build compiles from scratch with musl (slow)
+docker build --platform linux/amd64,linux/arm64 -f Dockerfile .
+# Time: ~20 minutes
+```
+
+**After:**
+```yaml
+# Docker build uses pre-built binaries (fast)
+docker buildx build --platform linux/amd64,linux/arm64 -f Dockerfile .
+# Time: ~30 seconds
+```
+
+## [2025-12-14 16:30] - Add Printable Columns to DNS Record CRDs
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/crd.rs`: Added printable columns to all DNS record CRDs (ARecord, AAAARecord, CNAMERecord, MXRecord, TXTRecord, SRVRecord, NSRecord, CAARecord)
+  - Added `spec.zone` column to display the DNS zone
+  - Added `spec.name` column to display the record name
+  - Added `spec.ttl` column to display the TTL value
+  - Added `Ready` status condition column
+- `deploy/crds/*.crd.yaml`: Regenerated all CRD YAML files with new printable columns
+- `docs/src/reference/api.md`: Regenerated API documentation to reflect CRD changes
+
+### Why
+Improve user experience when viewing DNS records with `kubectl get`. The new columns provide immediate visibility into:
+- Which zone the record belongs to
+- The record name within that zone
+- The TTL configuration
+- The Ready status at a glance
+
+This eliminates the need to describe each record individually to see basic information.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout (CRDs should be updated with `kubectl replace --force -f deploy/crds/`)
+- [x] Enhancement - better UX for viewing DNS records
+- [ ] Documentation only
+
+**Before:**
+```bash
+kubectl get arecords
+NAME              AGE
+www-example-com   5m
+api-example-com   3m
+```
+
+**After:**
+```bash
+kubectl get arecords
+NAME              ZONE          NAME   TTL    READY
+www-example-com   example.com   www    300    True
+api-example-com   example.com   api    600    True
+```
+
+## [2025-12-15 03:15] - Fix DNS Records Stuck in Progressing Status
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/reconcilers/records.rs:176-196`: Fixed hardcoded HTTP port 8080 for zone existence check
+  - Now uses `get_endpoint()` with port name "http" to retrieve configurable HTTP API port
+  - Removed hardcoded `:8080` - port is now retrieved from service endpoint definition
+  - This makes the HTTP API port configurable per deployment
+- `src/reconcilers/records.rs:271-310`: Fixed `add_record_to_all_endpoints` to use correct HTTP API endpoint for zone notify
+  - Now uses `get_endpoint()` with port name "http" instead of reusing DNS endpoint
+  - Zone notify now correctly connects to bindcar HTTP API instead of DNS port 53
+  - Added proper error handling for missing HTTP endpoints
+
+### Why
+After successfully reconciling DNS records via RFC 2136 (port 53), the controller attempted to notify
+secondaries about the change. However, the `notify_zone()` function calls the HTTP API endpoint
+`/api/v1/zones/{zone_name}/notify`, which runs on the HTTP API port (default 8080), not port 53.
+
+Additionally, the HTTP API port was hardcoded as `:8080` in two places, making it impossible to configure
+a different port per deployment.
+
+**Root Cause:**
+- HTTP API port was hardcoded as `:8080` instead of using `get_endpoint()` with port name "http"
+- `for_each_primary_endpoint` was called with `port_name = "dns-tcp"` (port 53) for DNS UPDATE operations
+- This returned endpoints like `10.244.2.127:53`
+- The first endpoint was then reused for `notify_zone()` without converting to HTTP endpoint
+- `notify_zone()` tried to access `http://10.244.2.127:53/api/v1/zones/example.com/notify`
+- Port 53 is the DNS protocol port, not the HTTP API port
+- The HTTP request hung/failed, preventing the status update to Ready
+
+**Error observed in logs:**
+```
+HTTP API request to bind9 method=POST url=http://10.244.2.127:53/api/v1/zones/example.com/notify
+```
+
+This prevented records from transitioning from Progressing to Ready status after successful reconciliation.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Bug fix - fixes records stuck in Progressing status
+- [x] Bug fix - zone notify now works correctly
+- [x] Enhancement - HTTP API port is now configurable (not hardcoded)
+- [ ] Documentation only
+
+**Before:**
+- DNS records successfully updated via port 53 (DNS UPDATE protocol)
+- Zone notify attempted to use HTTP API on port 53 (wrong port)
+- HTTP request hung or failed
+- Records remained stuck in Progressing status
+- Status never transitioned to Ready
+- Example log:
+  ```
+  message: Configuring A record on primary servers
+  reason: RecordReconciling
+  status: 'True'
+  type: Progressing
+  ```
+
+**After:**
+- DNS records successfully updated via port 53 (DNS UPDATE protocol)
+- Zone notify correctly uses HTTP API on port 8080
+- HTTP request succeeds
+- Records transition to Ready status
+- Example expected status:
+  ```
+  message: A record www in zone example.com configured on 2 endpoint(s)
+  reason: ReconcileSucceeded
+  status: 'True'
+  type: Ready
+  ```
+
+## [2025-12-15 02:30] - Fix TSIG Authentication Failures with Per-Instance RNDC Keys
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/reconcilers/dnszone.rs:1420-1488`: Fixed `for_each_primary_endpoint` to load RNDC key per-instance
+  - Moved RNDC key loading inside the instance loop (line 1456-1460)
+  - Each instance now uses its own RNDC secret for TSIG authentication
+  - Removed code that loaded key from first instance only (old lines 1426-1439)
+  - Added comment documenting security isolation pattern
+- `src/reconcilers/dnszone.rs:534-609`: Fixed `add_secondary_zone` to load RNDC key per-instance
+  - Moved RNDC key loading inside the instance loop (line 557-559)
+  - Each secondary instance now uses its own RNDC secret
+  - Removed code that loaded key from first instance only (old lines 542-549)
+
+### Why
+The controller was loading the RNDC key from the **first instance only**, then reusing that same key
+to authenticate with **all instances** in the cluster. This caused TSIG verification failures (BADSIG)
+on instances 2, 3, etc., because each instance has its own unique RNDC secret.
+
+**Root Cause:**
+- Each Bind9Instance creates its own RNDC secret: `{instance-name}-rndc-key`
+- This is correct for security isolation (each instance has independent credentials)
+- But the controller code called `load_rndc_key()` only once before the instance loop
+- The same key was then passed to all endpoints via the closure
+- TSIG authentication failed on all instances except the first one
+
+**Error observed in logs:**
+```
+ERROR tsig verify failure (BADSIG) for production-dns-primary-1 (10.244.1.162)
+```
+
+This also caused tight reconciliation loops because status conditions would constantly flip between
+Ready and Degraded as the controller repeatedly failed to update instances 2+.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Bug fix - fixes TSIG authentication failures
+- [x] Bug fix - eliminates tight reconciliation loops caused by TSIG failures
+- [ ] Documentation only
+
+**Before:**
+- Only the first instance in each cluster received successful DNS updates
+- Instances 2, 3, etc. rejected updates with "tsig verify failure (BADSIG)"
+- Status conditions continuously cycled between Ready and Degraded
+- Tight reconciliation loops from status update failures
+- Example error:
+  ```
+  ERROR Failed to reconcile A record in zone example.com at endpoint 10.244.1.162:53: tsig verify failure (BADSIG)
+  ```
+
+**After:**
+- Each instance uses its own RNDC secret for authentication
+- TSIG verification succeeds for all instances
+- DNS updates succeed across all instances in the cluster
+- Status conditions remain stable (Ready)
+- No tight reconciliation loops from authentication failures
+
+## [2025-12-15 01:15] - Fix DNS Record Reconciler Tight Loop
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/reconcilers/records.rs:1507-1581`: Fixed DNS record reconcilers causing tight reconciliation loops
+  - Updated `update_record_status()` to find the condition with matching type instead of using first condition
+  - Added message comparison to prevent updates when all fields (status, reason, message) are unchanged
+  - Fixed `last_transition_time` calculation to use the matching condition type instead of first condition
+  - Records now only update status when there's an actual change, preventing unnecessary reconciliation triggers
+
+### Why
+The DNS record reconcilers (ARecord, TXTRecord, etc.) were stuck in tight reconciliation loops even when
+records were already configured correctly. The `update_record_status()` function was comparing against
+the first condition in the status array instead of finding the condition with the matching type.
+
+Since reconcilers set multiple condition types ("Progressing" and "Ready"), the function would always
+think the status needed updating because it was comparing "Ready" against "Progressing" (or vice versa).
+
+Additionally, the function wasn't comparing the `message` field, so even minor message changes would
+trigger status updates and new reconciliation loops.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Bug fix - eliminates tight reconciliation loops
+- [ ] Documentation only
+
+**Before:**
+- Records reconciled continuously even when nothing changed
+- Status updates triggered new reconciliation events
+- High CPU usage and log spam from repeated reconciliations
+- Example log showing loop:
+  ```
+  2025-12-14T21:47:00 INFO A record db already exists with correct value - no changes needed
+  2025-12-14T21:47:00 INFO reconciling object: object.reason=object updated
+  ```
+
+**After:**
+- Records only reconcile when spec changes or status needs updating
+- Status updates skipped when condition type, status, reason, and message are unchanged
+- Minimal reconciliation loops and log output
+- CPU usage reduced significantly
+
+## [2025-12-15 00:45] - Update build-docker-fast.sh to Use Full Image Reference
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `scripts/build-docker-fast.sh`: Updated to properly use REGISTRY, IMAGE_NAME, and TAG variables
+  - Added `FULL_IMAGE="${REGISTRY}/${IMAGE_NAME}:${TAG}"` variable
+  - Updated all `docker build` commands to use `$FULL_IMAGE` instead of just `$TAG`
+  - Updated output messages to display full image reference
+  - Fixed help text to show correct default registry (ghcr.io)
+
+### Why
+The script previously defined REGISTRY, IMAGE_NAME, and TAG variables but didn't combine them
+for the actual docker build commands. This meant builds would create images with incorrect tags
+(just "latest" instead of "ghcr.io/firestoned/bindy:latest").
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Bug fix - docker images now tagged correctly
+- [ ] Documentation only
+
+**Before:**
+```bash
+docker build -f docker/Dockerfile.local -t "latest" .
+# Result: Image tagged as "latest"
+```
+
+**After:**
+```bash
+docker build -f docker/Dockerfile.local -t "ghcr.io/firestoned/bindy:latest" .
+# Result: Image tagged with full registry path
+```
+
+This ensures images are immediately ready to push to the registry without re-tagging.
+
+## [2025-12-15 00:10] - Make DNSZone Deletion Idempotent and Always Succeed
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/reconcilers/dnszone.rs`: DNSZone deletion now always succeeds and removes finalizer
+  - Changed `delete_dnszone()` to treat all deletion failures as warnings, not errors
+  - Zone deletion failures (zone not found, endpoint unreachable, BIND9 down) no longer block resource deletion
+  - Finalizer is always removed, allowing the DNSZone resource to be deleted from Kubernetes
+  - Updated both primary and secondary endpoint deletion logic to continue on errors
+
+### Why
+When a DNSZone resource was marked for deletion but the zone couldn't be found in BIND9 (or BIND9
+instances were unreachable), the deletion would fail and the finalizer wouldn't be removed. This
+caused DNSZone resources to be stuck in "Terminating" state indefinitely.
+
+Common scenarios that caused this:
+- Zone was manually deleted from BIND9 via `rndc` or bindcar
+- BIND9 instances were scaled down or deleted
+- BIND9 pods were in CrashLoopBackOff or unreachable
+- Network issues prevented communication with BIND9 API
+
+This violated the principle of making deletion operations idempotent and user-friendly.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Bug fix - DNSZone deletion always succeeds now
+- [ ] Documentation only
+
+**Before:** DNSZone resources could get stuck in "Terminating" state if zone wasn't found or BIND9 was unreachable
+**After:** DNSZone deletion always succeeds - zone is removed from BIND9 if possible, finalizer removed regardless
+
+**Behavior:**
+- If zone deletion succeeds → Zone removed from BIND9, finalizer removed, resource deleted
+- If zone not found → Logged as debug (already deleted), finalizer removed, resource deleted
+- If BIND9 unreachable → Logged as warning, finalizer removed anyway, resource deleted
+- Deletion operations are now truly idempotent
+
+## [2025-12-14 17:45] - Fix Bind9Instance Status Never Updating to Ready
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/reconcilers/bind9instance.rs:245-252`: Bind9Instance status now updates on every reconciliation loop
+  - Previously, the reconciler would skip ALL processing (including status updates) when the spec hadn't changed
+  - Now, the reconciler updates status from deployment state even when skipping resource reconciliation
+  - This allows instances to transition from "Waiting for pods to become ready" to "Ready" when pods start
+
+### Why
+The Bind9Instance reconciler was using an early return optimization that prevented it from ever updating
+the instance status after initial creation. When the spec hadn't changed (`generation` matched
+`observed_generation`) and the deployment existed, the reconciler would return immediately without
+checking the deployment status.
+
+This meant that even though pods were running and ready (2/2 Running), the Bind9Instance resources
+would remain stuck showing:
+```
+readyReplicas: 0
+conditions:
+  - status: "False"
+    message: "Waiting for pods to become ready"
+```
+
+This cascaded up to Bind9GlobalCluster, which counts ready instances, causing the global cluster to
+show as "NotReady" even though all pods were actually running and healthy.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout (operator restart will trigger reconciliation)
+- [x] Bug fix - Status now updates correctly
+- [ ] Documentation only
+
+**Before:** Bind9Instance status would never update after initial creation, showing 0 ready replicas even when pods were running
+**After:** Bind9Instance status updates every reconciliation loop to reflect actual deployment state
+
+**Example:**
+```bash
+# Before fix:
+$ kubectl get bind9instances -n dns-system
+NAME                       READY   REPLICAS
+production-dns-primary-0   False   0/1      # Pods actually running!
+
+# After fix:
+$ kubectl get bind9instances -n dns-system
+NAME                       READY   REPLICAS
+production-dns-primary-0   True    1/1
+```
+
+## [2025-12-14 23:55] - Fix Service Annotations Not Propagating to Bind9Instance Services
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/reconcilers/bind9instance.rs`: Service annotations from cluster specs now propagate to instance services
+  - Added logic to fetch `Bind9GlobalCluster` when instance references a global cluster
+  - Updated `create_or_update_service()` to accept both `Bind9Cluster` and `Bind9GlobalCluster`
+  - Service annotations from `spec.primary.service.annotations` and `spec.secondary.service.annotations` now correctly apply to instance services
+  - Fixed issue where annotations defined in `Bind9GlobalCluster` were ignored for managed instances
+  - Updated `create_or_update_configmap()` and `create_or_update_deployment()` signatures for consistency
+
+### Why
+Service annotations defined in `Bind9Cluster` and `Bind9GlobalCluster` specs (e.g., MetalLB address pools,
+External DNS hostnames, cloud provider load balancer configs) were not being applied to the actual Service
+resources created for `Bind9Instance` pods. The instance reconciler only looked for namespace-scoped clusters
+and didn't check for cluster-scoped `Bind9GlobalCluster` resources.
+
+This meant that users configuring annotations like:
+```yaml
+spec:
+  primary:
+    service:
+      annotations:
+        metallb.universe.tf/address-pool: production-dns-pool
+```
+
+Would find that these annotations were not applied to the Services, breaking integrations with MetalLB,
+External DNS, and cloud load balancers.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Bug fix - Annotations now propagate correctly
+- [ ] Documentation only
+
+**Before:** Service annotations were defined in cluster spec but not applied to instance services
+**After:** Service annotations correctly propagate from both `Bind9Cluster` and `Bind9GlobalCluster` to instance services
+
+**Affected Integrations:**
+- MetalLB address pool selection
+- External DNS hostname registration
+- AWS/Azure/GCP load balancer configuration
+- Service mesh annotations (Linkerd, etc.)
+
+## [2025-12-14 23:45] - Make Bind9GlobalCluster Namespace Field Optional
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/crd.rs`: Made `namespace` field optional in `Bind9GlobalClusterSpec`
+  - Changed from `pub namespace: String` to `pub namespace: Option<String>`
+  - If not specified, defaults to the namespace where the Bindy operator is running
+  - Default is determined from `POD_NAMESPACE` environment variable (fallback: `dns-system`)
+  - Updated documentation to explain the default behavior
+- `src/reconcilers/bind9globalcluster.rs`: Updated to handle optional namespace
+  - Added logic to resolve namespace: use `spec.namespace` if provided, else use operator's namespace
+  - Reads `POD_NAMESPACE` environment variable for default
+  - Falls back to `dns-system` if environment variable not set
+- `examples/bind9-cluster.yaml`: Updated comments to indicate namespace is optional
+  - Clarified that namespace defaults to operator's namespace if not specified
+- `tests/simple_integration.rs`: Updated test to use `namespace: None`
+- `tests/multi_tenancy_integration.rs`: Updated test to use `namespace: None`
+- `deploy/crds/bind9globalclusters.crd.yaml`: Regenerated CRD with optional namespace field
+
+### Why
+Requiring an explicit namespace field was unnecessarily strict. Most deployments will want instances
+created in the same namespace where the operator runs. Making the field optional with a sensible
+default improves the user experience while maintaining flexibility for advanced use cases.
+
+This change aligns with Kubernetes conventions where resources default to the namespace of the
+controlling component when not explicitly specified.
+
+### Impact
+- [ ] Breaking change - This is backward compatible (existing manifests with namespace still work)
+- [ ] Requires cluster rollout
+- [x] Config change (namespace field now optional)
+- [x] Documentation updated
+- [x] CRD regenerated
+
+**Backward Compatibility:**
+Existing `Bind9GlobalCluster` resources with `namespace: dns-system` (or any other value) continue
+to work exactly as before. The field is now optional, so new deployments can omit it and instances
+will be created in the operator's namespace.
+
+**Migration Options:**
+```yaml
+# Option 1: Explicit namespace (existing behavior)
+spec:
+  namespace: dns-system
+  # ... rest of spec
+
+# Option 2: Use operator's namespace (new default behavior)
+spec:
+  # namespace field omitted - uses POD_NAMESPACE
+  # ... rest of spec
+```
+
+## [2025-12-14 23:30] - Implement Automatic Instance Management for Bind9GlobalCluster
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/bind9cluster.rs`: Made instance management functions public for code reuse
+  - Made `create_managed_instance()` public with signature accepting `common_spec` parameter
+  - Made `delete_managed_instance()` public for reuse by global cluster reconciler
+  - Updated all internal call sites to pass new parameters including `is_global: bool` flag
+  - Functions now accept `Bind9ClusterCommonSpec` instead of full cluster object for better reusability
+- `src/reconcilers/bind9globalcluster.rs`: Implemented full automatic instance management
+  - Replaced TODO stub with complete implementation of `reconcile_managed_instances()`
+  - Implemented instance listing and filtering by management labels (`bindy.firestoned.io/managed-by`, `bindy.firestoned.io/cluster`)
+  - Implemented scale-up logic: creates missing primary and secondary instances based on replica counts
+  - Implemented scale-down logic: deletes excess instances (highest index first)
+  - Reuses public functions from `bind9cluster` module for actual instance operations
+  - Instances are automatically created in the namespace specified in `spec.namespace`
+  - Instances are labeled with management metadata for tracking and cleanup
+
+### Added
+- `src/crd.rs`: Added required `namespace` field to `Bind9GlobalClusterSpec`
+  - Global clusters are cluster-scoped resources but instances must be created in a namespace
+  - Users specify the target namespace where `Bind9Instance` resources will live
+  - Typically this would be a platform-managed namespace like `dns-system`
+  - DNSZones from any namespace can still reference the global cluster via `globalClusterRef`
+- `examples/bind9-cluster.yaml`: Updated with required namespace field
+  - Added `namespace: dns-system` to spec
+  - Documented that this specifies where instances will be created
+  - Added examples showing automatic instance creation with replica counts
+- `deploy/crds/bind9globalclusters.crd.yaml`: Regenerated CRD with namespace field
+
+### Why
+`Bind9GlobalCluster` is a cluster-scoped resource (no namespace in metadata), but it needs to create
+`Bind9Instance` resources which are namespace-scoped. The `namespace` field specifies where instances
+should be created.
+
+This enables:
+- **Automatic instance management**: Users no longer need to manually create `Bind9Instance` resources
+- **Declarative scaling**: Set `spec.primary.replicas` and `spec.secondary.replicas` to scale instances
+- **Platform teams** to manage DNS infrastructure in a dedicated namespace (e.g., `dns-system`)
+- **Application teams** to reference the global cluster from any namespace via `globalClusterRef`
+- **Clear separation** between cluster-level DNS configuration and namespace-scoped instances
+- **Code reuse** between `Bind9Cluster` and `Bind9GlobalCluster` reconcilers
+
+### Impact
+- [x] Breaking change - Existing `Bind9GlobalCluster` resources must add `namespace` field
+- [ ] Requires cluster rollout
+- [x] Config change required
+- [x] Documentation updated
+- [x] New feature - Automatic instance creation/deletion/scaling
+
+**Breaking Change Migration:**
+Existing `Bind9GlobalCluster` resources will fail validation without the `namespace` field.
+
+Update existing resources:
+```yaml
+spec:
+  namespace: dns-system  # Add this required field
+  primary:
+    replicas: 2  # Optional: auto-create 2 primary instances
+  secondary:
+    replicas: 1  # Optional: auto-create 1 secondary instance
+  version: "9.18"
+  # ... rest of spec
+```
+
+**New Behavior:**
+`Bind9GlobalCluster` now **automatically creates, updates, and deletes** `Bind9Instance` resources
+based on the replica counts in `spec.primary.replicas` and `spec.secondary.replicas`. Users no longer
+need to manually create instances - just specify the desired replica counts and the controller handles
+the rest.
+
+**Scaling:**
+- **Scale up**: Increase replica count → controller creates new instances
+- **Scale down**: Decrease replica count → controller deletes excess instances (highest index first)
+- **Delete cluster**: Deletes all managed instances automatically via finalizers
+
+## [2025-12-14 22:45] - Register Bind9GlobalCluster Controller
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/main.rs`: Registered the `Bind9GlobalCluster` controller that was missing
+  - Added `Bind9GlobalCluster` to imports
+  - Added `reconcile_bind9globalcluster` function import
+  - Created `run_bind9globalcluster_controller()` function
+  - Created `reconcile_bind9globalcluster_wrapper()` function with metrics
+  - Created `error_policy_globalcluster()` error handler
+  - Registered controller in `run_controllers_without_leader_election()`
+  - Registered controller in `run_all_controllers()`
+- `src/constants.rs`: Added `KIND_BIND9_GLOBALCLUSTER` constant
+
+### Why
+The `Bind9GlobalCluster` reconciler existed in `src/reconcilers/bind9globalcluster.rs` but was never registered in `main.rs`, so it was never actually running. This meant that when users deployed a `Bind9GlobalCluster` resource, no `Bind9Instance` resources were created, and no BIND9 pods would start.
+
+**Impact of Bug:**
+- `kubectl apply -f examples/bind9-cluster.yaml` would create the `Bind9GlobalCluster` resource
+- But no instances would be created → no pods would start
+- The cluster would remain in a non-ready state indefinitely
+
+**Fix:**
+The controller is now registered and will:
+1. Watch for `Bind9GlobalCluster` resources
+2. Monitor instance health across all namespaces
+3. Update global cluster status based on instances
+4. Handle deletion and cleanup properly
+
+**Note:** `Bind9GlobalCluster` does NOT automatically create `Bind9Instance` resources - instances must be created separately and reference the global cluster via `spec.clusterRef`. This is by design to allow instances to be deployed in any namespace.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Bug fix - controller now works as designed
+- [ ] Documentation only
+
+## [2025-12-14 22:30] - Add Service Annotations Support to Bind9Cluster and Bind9GlobalCluster
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/crd.rs`: Added `ServiceConfig` struct with support for service annotations
+  - Created new `ServiceConfig` type that includes both `spec` and `annotations` fields
+  - Updated `PrimaryConfig` and `SecondaryConfig` to use `ServiceConfig` instead of `ServiceSpec`
+  - Applies to both `Bind9Cluster` (namespace-scoped) and `Bind9GlobalCluster` (cluster-scoped) via shared `Bind9ClusterCommonSpec`
+  - Added comprehensive documentation with examples for common use cases:
+    - `MetalLB` address pool selection
+    - Cloud provider load balancer configuration
+    - External DNS integration
+    - Linkerd service mesh annotations
+- `src/bind9_resources.rs`: Updated `build_service()` to apply service annotations
+  - Changed function signature to accept `Option<&ServiceConfig>` instead of `Option<&ServiceSpec>`
+  - Extract and apply annotations from `ServiceConfig` to Service metadata
+  - Updated function documentation with annotation usage examples
+- `src/bind9_resources_tests.rs`: Updated tests and added new test for annotations
+  - Updated all existing service tests to use `ServiceConfig`
+  - Added `test_build_service_with_annotations()` to verify annotation functionality
+- `examples/bind9-cluster-custom-service.yaml`: Updated with annotation examples for namespace-scoped clusters
+  - Added `MetalLB` address pool selection example
+  - Added External DNS hostname configuration example
+  - Added Linkerd service mesh annotation example
+  - Added AWS and Azure load balancer annotation examples
+  - Updated structure to use `service.spec` and `service.annotations` fields
+- `examples/bind9-cluster.yaml`: Updated with annotation examples for cluster-scoped (global) clusters
+  - Added production DNS load balancer configuration with `MetalLB` pool
+  - Added External DNS hostname annotations for both primary and secondary instances
+  - Demonstrates service annotations for cluster-scoped `Bind9GlobalCluster`
+- `deploy/crds/bind9clusters.crd.yaml`: Regenerated CRD with new schema
+- `deploy/crds/bind9globalclusters.crd.yaml`: Regenerated CRD with new schema
+- `docs/src/reference/api.md`: Regenerated API documentation
+
+### Why
+Users need the ability to configure Kubernetes Service annotations for integration with:
+- Load balancer controllers (`MetalLB`, cloud providers)
+- External DNS controllers for automatic DNS record creation
+- Service mesh implementations (Linkerd, Istio)
+- Other Kubernetes ecosystem tools that rely on Service annotations
+
+Without this feature, users had to manually edit Services after creation, which is not GitOps-friendly and doesn't survive reconciliation loops.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change (new optional fields)
+- [x] Documentation updated
+
+**Schema Change:**
+The Service configuration structure has changed from:
+```yaml
+primary:
+  service:
+    type: LoadBalancer
+```
+
+To:
+```yaml
+primary:
+  service:
+    annotations:
+      metallb.universe.tf/address-pool: my-ip-pool
+    spec:
+      type: LoadBalancer
+```
+
+**Backward Compatibility:**
+This change is backward compatible. Existing configurations without annotations will continue to work. The old structure will need to be migrated to use the new `spec` field when adding annotations.
+
+## [2025-12-14 21:00] - Convert Platform Cluster to Bind9GlobalCluster
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `examples/bind9-cluster.yaml`: Converted from `Bind9Cluster` to `Bind9GlobalCluster`
+  - Changed resource kind from namespace-scoped to cluster-scoped
+  - Removed `metadata.namespace` field (not applicable to cluster-scoped resources)
+  - Added `managed-by: platform-team` label
+  - Added documentation comments explaining global cluster usage
+- `examples/multi-tenancy.yaml`: Updated documentation to reflect Bind9GlobalCluster usage
+  - Clarified that platform DNS is deployed as a cluster-scoped resource
+  - DNSZones in team-web and team-api already correctly use `globalClusterRef`
+
+### Why
+**Recommended Architecture for Platform DNS:**
+- `dns-system` namespace should host Bind9Instance resources for cluster-scoped `Bind9GlobalCluster`
+- Global clusters can be referenced from DNSZones in any namespace using `globalClusterRef`
+- This enables multi-tenancy: platform team manages DNS infrastructure, application teams manage zones
+- Namespace-scoped `Bind9Cluster` is for tenant-managed, isolated DNS (development/testing)
+
+### Impact
+- [x] Breaking change - Existing deployments using namespace-scoped `Bind9Cluster` named `production-dns` must be recreated
+- [ ] Requires cluster rollout
+- [x] Config change required
+- [ ] Documentation only
+
+**Migration Steps:**
+```bash
+# Delete existing namespace-scoped cluster
+kubectl delete bind9cluster production-dns -n dns-system
+
+# Deploy new global cluster
+kubectl apply -f examples/bind9-cluster.yaml
+
+# Verify global cluster is created
+kubectl get bind9globalclusters
+```
+
+## [2025-12-14 20:30] - Add Logging for Global Cluster Debugging
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/dnszone.rs`: Added detailed logging to help diagnose global cluster issues
+  - Log cluster_ref, global_cluster_ref, and is_global_cluster flag at reconciliation start
+  - Shows which cluster a DNSZone references and whether it's global or namespaced
+
+### Why
+Added diagnostic logging to help troubleshoot issues where DNSZones referencing global clusters fail to find primary instances. This helps verify that the `is_global_cluster` flag is being set correctly based on the DNSZone spec.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only - logging improvement
+
+## [2025-12-14 20:00] - Fix Race Condition: Check Zone Existence Before DNS UPDATE
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/reconcilers/records.rs`: Added zone existence check before attempting DNS UPDATE operations
+  - `add_record_to_all_endpoints()` now checks if zone exists using bindcar API before sending DNS UPDATEs
+  - When zone doesn't exist, returns 0 endpoints updated (non-error)
+  - All record reconcilers (A, AAAA, CNAME, MX, TXT, NS, SRV, CAA) now check `endpoint_count == 0`
+  - Records set status to "Progressing" with reason "WaitingForZone" when zone doesn't exist yet
+  - Will retry on next reconciliation loop when DNSZone becomes ready
+- `src/reconcilers/dnszone.rs`: Made `find_all_primary_pods()` and `PodInfo` public for use by record reconcilers
+  - `PodInfo` struct and fields are now public
+  - `find_all_primary_pods()` is now public to allow zone existence checks
+
+### Why
+**Problem:** Race condition between DNSZone reconciliation and DNS record reconciliation:
+
+1. DNSZone reconciler calls bindcar HTTP API to create zone
+2. HTTP API returns success after writing zone file and telling BIND9 to reload
+3. **BIND9 hasn't finished loading the zone yet**
+4. Meanwhile, record reconcilers (ARecord, TXTRecord, etc.) are triggered
+5. Record reconcilers try to send DNS UPDATE messages
+6. BIND9 returns NOTAUTH because zone isn't fully loaded and authoritative yet
+
+**Example Error:**
+```
+update failed: api.dev.local: not authoritative for update zone (NOTAUTH)
+```
+
+The DNS UPDATE message format was correct (records in AUTHORITY/UPDATE section as per RFC 2136), but BIND9 rejected them because the zone wasn't ready.
+
+**Solution:**
+Before attempting DNS UPDATE operations, check if the zone exists:
+1. Get first primary pod from cluster
+2. Call `zone_manager.zone_exists()` using bindcar API endpoint
+3. If zone doesn't exist, set status to "Progressing/WaitingForZone" and return 0 endpoints
+4. Record reconciler checks `endpoint_count == 0` and returns success (will retry later)
+5. On next reconciliation loop, zone will exist and record will be added
+
+### Impact
+- [x] Breaking change - NO (backward compatible)
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+**Benefits:**
+- Eliminates NOTAUTH errors during zone creation
+- Records gracefully wait for zones to be ready
+- Clear status messaging: "WaitingForZone" vs "Ready"
+- No tight error loops - reconciliation retries naturally
+
+## [2025-12-14 18:00] - Fix Global Cluster Namespace Resolution for RNDC Keys
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/reconcilers/dnszone.rs`: Fixed namespace resolution for RNDC secrets when using Bind9GlobalCluster
+  - `PodInfo` struct now includes `namespace` field to track instance namespace
+  - `find_all_primary_pods()` searches all namespaces when `is_global_cluster=true`
+  - `find_all_secondary_pods()` searches all namespaces when `is_global_cluster=true`
+  - `load_rndc_key()` now uses instance's namespace instead of DNSZone's namespace
+  - `for_each_primary_endpoint()` correctly retrieves RNDC key from instance namespace
+  - `find_all_primary_pod_ips()` and `find_all_secondary_pod_ips()` support global clusters
+- `src/reconcilers/records.rs`: Updated record reconcilers to support global clusters
+  - `get_zone_info()` now returns `(cluster_ref, zone_name, is_global_cluster)` tuple
+  - `add_record_to_all_endpoints()` accepts `is_global_cluster` parameter
+  - All record types (A, AAAA, CNAME, MX, TXT, NS, SRV, CAA) now support global clusters
+
+### Why
+**Problem:** When DNSZones referenced Bind9GlobalCluster resources, the reconciler was trying to find RNDC secrets in the DNSZone's namespace instead of the Bind9Instance's namespace. This caused NOTAUTH errors when trying to perform dynamic DNS updates because:
+1. Global clusters are cluster-scoped, so instances can be in any namespace
+2. RNDC secrets are namespaced and created alongside each Bind9Instance
+3. The code was only searching for instances in the DNSZone's namespace
+4. The code was trying to load RNDC secrets from the wrong namespace
+
+**Example Error:**
+```
+14-Dec-2025 14:36:03.968 client @0x400cfb3890 10.244.2.119#56199/key bindy-operator:
+update failed: api.dev.local: not authoritative for update zone (NOTAUTH)
+```
+
+**Solution:**
+1. Track the namespace of each instance by adding it to the `PodInfo` struct
+2. When `is_global_cluster=true`, use `Api::all()` to search all namespaces for instances
+3. When loading RNDC secrets, use the instance's namespace instead of the DNSZone's namespace
+4. Pass `is_global_cluster` flag through the entire call chain from reconcilers to helper functions
+
+### Impact
+- [x] Breaking change - NO (backward compatible)
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+**Benefits:**
+- Global clusters now work correctly with instances in any namespace
+- RNDC authentication succeeds for namespace-scoped instances referencing global clusters
+- Multi-tenancy patterns with global clusters are now fully functional
+- Team namespaces can use global clusters for production DNS
+
+**Technical Details:**
+- `PodInfo` struct: Added `namespace: String` field
+- `find_all_primary_pods()`: New `is_global_cluster: bool` parameter
+- `find_all_secondary_pods()`: New `is_global_cluster: bool` parameter
+- `for_each_primary_endpoint()`: New `is_global_cluster: bool` parameter
+- All instances are now tracked as `(instance_name, instance_namespace)` tuples
+- RNDC key loading uses instance namespace from `PodInfo.namespace`
+
+## [2025-12-14 15:00] - Add Multi-Tenancy Example
+
+**Author:** Erick Bourgeois
+
+### Added
+- `examples/multi-tenancy.yaml`: Comprehensive multi-tenancy example demonstrating both cluster models (28 resources)
+  - Platform-managed DNS with Bind9GlobalCluster (cluster-scoped)
+  - Tenant-managed DNS with Bind9Cluster (namespace-scoped)
+  - Three namespaces: platform-dns, team-web, team-api
+  - Complete RBAC setup:
+    - ClusterRole and ClusterRoleBinding for platform team (Bind9GlobalCluster management)
+    - Role and RoleBinding for web team (DNSZone and record management only)
+    - Role and RoleBinding for API team (full DNS infrastructure management in namespace)
+  - ServiceAccounts for each team
+  - Production DNS zones using globalClusterRef (platform-managed)
+  - Development DNS zones using clusterRef (tenant-managed)
+  - 15+ example DNS records across different record types (A, CNAME, TXT, SRV)
+  - Uses correct CRD schema: `global` field instead of `config`, proper `dnssec` structure
+  - Uses DNS-format email addresses (dots instead of @) in SOA records
+- `examples/README.md`: Added documentation for multi-tenancy example
+  - New "Multi-Tenancy" section describing the example
+  - Links to the multi-tenancy guide in docs
+
+### Why
+**Problem:** Users needed a practical, deployable example showing how to implement multi-tenancy with Bindy. The documentation explained the concepts, but there was no complete YAML example demonstrating:
+- RBAC configuration for different team roles
+- Namespace isolation between teams
+- Using both Bind9GlobalCluster (platform-managed) and Bind9Cluster (tenant-managed) patterns
+- How platform teams and application teams collaborate
+
+**Solution:** Created a comprehensive, production-ready example that demonstrates:
+1. **Platform Team Setup**: ClusterRole for managing cluster-scoped Bind9GlobalCluster
+2. **Application Team Setup**: Namespace-scoped Roles for managing zones and records
+3. **Development Team Setup**: Full namespace isolation with their own DNS infrastructure
+4. **Real-world patterns**: Web team uses platform DNS for production, API team uses both platform DNS (production) and tenant DNS (development)
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation and examples
+
+**Benefits:**
+- Developers can deploy and test multi-tenancy locally with `kubectl apply -f examples/multi-tenancy.yaml`
+- Clear RBAC patterns for different organizational models
+- Demonstrates both production (shared infrastructure) and development (isolated infrastructure) patterns
+- Shows how teams can use different cluster types for different environments
+- Validates that the CRD schemas support real-world multi-tenancy scenarios
+
+**Validation:**
+```bash
+$ kubectl apply --dry-run=client -f examples/multi-tenancy.yaml
+# Successfully validates 28 resources:
+# - 3 namespaces, 3 ServiceAccounts
+# - 1 ClusterRole, 1 ClusterRoleBinding, 2 Roles, 2 RoleBindings
+# - 1 Bind9GlobalCluster, 1 Bind9Cluster
+# - 3 DNSZones, 15 DNS records
+```
+
+---
+
+## [2025-12-14 14:30] - Simplify CI/CD with Makefile-Driven Workflows
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Makefile`: Added `kind-integration-test-ci` target for CI mode integration tests
+  - Orchestrates full integration test flow: cluster creation, CRD/RBAC installation, controller deployment, test execution, and cleanup
+  - Accepts environment variables: `IMAGE_TAG`, `REGISTRY`, `IMAGE_NAME`, `NAMESPACE`, `KIND_CLUSTER`
+  - Includes proper error handling and automatic cleanup on failure
+  - Renamed `kind-integration-test` to clarify it uses local builds
+- `.github/workflows/integration.yaml`: Simplified workflow from 129 lines to 101 lines
+  - Removed 8 workflow steps (cluster creation, CRD install, RBAC install, deployment, test execution, logs, cleanup)
+  - Replaced with single `make kind-integration-test-ci` call
+  - Workflow now only handles tool installation and environment setup
+  - All test orchestration logic moved to Makefile
+- `CLAUDE.md`: Added new section "GitHub Workflows & CI/CD"
+  - Documented requirement for Makefile-driven workflows
+  - Added examples showing good vs bad workflow patterns
+  - Established requirements: no multi-line bash in workflows, all orchestration in Makefile
+  - Listed available integration test targets
+
+### Why
+**Problem:** GitHub workflows contained complex multi-line bash scripts with cluster setup, deployment, and test logic scattered across multiple steps. This made it difficult to:
+- Run integration tests locally exactly as they run in CI
+- Debug CI failures (needed to replicate complex workflow logic)
+- Maintain consistency between local and CI environments
+- Modify test orchestration (changes required in multiple places)
+
+**Solution:** Consolidate all test orchestration logic into Makefile targets. Workflows become thin declarative configuration that only installs tools and calls Makefile targets. Developers can now run `make kind-integration-test-ci` locally to exactly replicate CI behavior.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] CI/CD infrastructure improvement
+
+**Benefits:**
+- Local reproducibility: `make kind-integration-test-ci` works identically to CI
+- Easier debugging: Test logic in Makefile, not scattered across workflow YAML
+- Faster iteration: Test Makefile changes locally before pushing
+- Single source of truth: Orchestration logic lives in one place
+- Better maintainability: Makefile is easier to read and modify than workflow YAML
+
+---
+
+## [2025-12-14 10:15] - Fix Multi-Tenancy Integration Test Cleanup
+
+**Author:** Erick Bourgeois
+
+### Added
+- `Makefile`: Enhanced `kind-integration-test-ci` target to run both simple and multi-tenancy integration tests
+  - Now runs simple integration tests first (`tests/integration_test.sh`)
+  - Then runs multi-tenancy integration tests (`tests/run_multi_tenancy_tests.sh`)
+  - Added clear section headers to distinguish between test suites
+  - Both test suites must pass for CI to succeed
+- `tests/force-delete-ns.sh`: Copied from `~/bin/force-delete-ns.sh` for use in integration test cleanup
+  - Handles force-deletion of namespaces stuck in "Terminating" state
+  - Supports multiple namespace arguments
+  - Used by `run_multi_tenancy_tests.sh` for automated cleanup
+
+### Changed
+- `tests/multi_tenancy_integration.rs`: Added helper functions to delete namespace resources in correct order
+  - Added `delete_all_zones_in_namespace()` to clean up DNSZones
+  - Added `delete_all_instances_in_namespace()` to clean up Bind9Instances
+  - Added `delete_all_clusters_in_namespace()` to clean up Bind9Clusters
+  - Added `cleanup_namespace()` orchestrator function that deletes resources in reverse dependency order
+  - Added `force_delete_namespace()` to remove finalizers from stuck namespaces (based on `~/bin/force-delete-ns.sh`)
+  - Updated all test cleanup sections to use `cleanup_namespace()` instead of direct `delete_namespace()`
+  - `cleanup_namespace()` now checks if namespace is stuck in "Terminating" state and force-deletes if needed
+- `tests/run_multi_tenancy_tests.sh`: Enhanced cleanup script to delete resources before namespaces
+  - Added loop to iterate through all test namespaces
+  - Delete DNSZones, Bind9Instances, and Bind9Clusters before deleting namespace
+  - Added cleanup for global clusters created by tests
+  - Added proper waiting for finalizers to complete
+  - **Calls `tests/force-delete-ns.sh`**: Collects stuck namespaces and passes them to the force-delete script
+  - Uses `yes y` to provide non-interactive input for CI environments
+
+### Why
+**Problem:** Integration tests were leaving namespaces stuck in "Terminating" state because:
+1. Resources were not deleted before deleting namespaces
+2. Finalizers on resources or namespaces prevented cleanup
+3. No fallback mechanism to force-delete stuck namespaces
+
+**Solution:**
+1. Delete resources in reverse dependency order (DNSZones → Bind9Instances → Bind9Clusters → Namespace)
+2. Wait for finalizers to complete after each deletion step
+3. **Force-delete**: If namespace remains in "Terminating" state, call `tests/force-delete-ns.sh` to remove finalizers
+4. **Reusable script**: Copied `~/bin/force-delete-ns.sh` to `tests/` for consistent force-delete behavior across local dev and CI
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Test infrastructure only
+
+---
+
+## [2025-12-13 10:30] - Add Multi-Tenancy Support with Dual-Cluster Model
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/crd.rs`: Created `Bind9GlobalCluster` CRD (cluster-scoped) for platform-managed DNS infrastructure
+- `src/crd.rs`: Created `Bind9ClusterCommonSpec` shared struct for common configuration between cluster types
+- `src/crd.rs`: Added `global_cluster_ref` field to `DNSZoneSpec` to reference cluster-scoped clusters
+- `src/reconcilers/bind9globalcluster.rs`: New reconciler for cluster-scoped global clusters
+- `src/reconcilers/bind9globalcluster_tests.rs`: Unit tests for global cluster reconciliation
+- `src/bin/crdgen.rs`: Added `Bind9GlobalCluster` to CRD YAML generation
+- `deploy/crds/bind9globalclusters.crd.yaml`: Generated CRD manifest for cluster-scoped global clusters
+- `docs/src/guide/architecture.md`: Comprehensive architecture overview with 6 Mermaid diagrams
+- `docs/src/guide/multi-tenancy.md`: Complete RBAC setup guide for platform and development teams
+- `docs/src/guide/choosing-cluster-type.md`: Decision guide for choosing between cluster types
+- `docs/src/concepts/bind9globalcluster.md`: Comprehensive CRD reference documentation
+- `docs/src/SUMMARY.md`: Added new documentation pages to table of contents
+- `tests/multi_tenancy_integration.rs`: Comprehensive integration tests for dual-cluster multi-tenancy model (9 test cases)
+- `tests/run_multi_tenancy_tests.sh`: Shell script to run multi-tenancy integration tests locally
+- `tests/README.md`: Updated with multi-tenancy integration test documentation
+- `Makefile`: Added `integ-test-multi-tenancy` target for running multi-tenancy integration tests
+
+### Changed
+- `src/crd.rs`: Refactored `Bind9ClusterSpec` to use `#[serde(flatten)]` with `Bind9ClusterCommonSpec`
+- `src/crd.rs`: Made `DNSZoneSpec.cluster_ref` optional (one of `cluster_ref` or `global_cluster_ref` required)
+- `src/crd.rs`: Updated `Bind9Instance` documentation to clarify `cluster_ref` can reference either cluster type
+- `src/reconcilers/dnszone.rs`: Created `get_cluster_ref_from_spec()` helper for mutual exclusivity validation
+- `src/reconcilers/dnszone.rs`: Updated reconciler to handle both namespace-scoped and cluster-scoped cluster lookups
+- `src/reconcilers/mod.rs`: Exported new `bind9globalcluster` reconciler functions
+- `deploy/rbac/role.yaml`: Added `bind9globalclusters` and `bind9globalclusters/status` permissions to controller ClusterRole
+- `deploy/crds/*.crd.yaml`: Regenerated all CRD YAMLs to reflect schema changes
+- `docs/src/reference/api.md`: Regenerated API documentation
+- `tests/simple_integration.rs`: Expanded from 3 to 11 comprehensive integration tests covering all CRD types with full CRUD operations (100% test coverage)
+
+### Why
+**Multi-Tenancy Requirements:**
+- Platform teams need cluster-wide DNS infrastructure management (`Bind9GlobalCluster`)
+- Development teams need namespace-scoped DNS zone management (`DNSZone`, `Bind9Cluster`)
+- RBAC-based access control:
+  - ClusterRole for platform teams to manage `Bind9GlobalCluster`
+  - Role for tenant teams to manage `Bind9Cluster` and `DNSZone` in their namespace
+- Namespace isolation: DNSZones and records are scoped to their namespace
+- Both patterns coexist: platforms use global clusters, dev teams use namespace-scoped clusters
+
+**Architecture:**
+- **Bind9GlobalCluster** (cluster-scoped): Platform team manages cluster-wide BIND9 infrastructure
+- **Bind9Cluster** (namespace-scoped): Dev teams manage DNS clusters in their namespace
+- **DNSZone** (namespace-scoped): References either `clusterRef` (namespace-scoped) or `globalClusterRef` (cluster-scoped)
+- **Records** (namespace-scoped): Can only reference zones in their own namespace (enforced isolation)
+
+### Migration Notes
+**Breaking Changes:**
+- `DNSZoneSpec.cluster_ref` is now optional (was required)
+- **Action Required**: Existing DNSZone manifests continue to work (no changes needed)
+- **New Option**: DNSZones can now reference cluster-scoped `Bind9GlobalCluster` via `globalClusterRef`
+
+**Validation:**
+- DNSZones MUST specify exactly one of `clusterRef` OR `globalClusterRef` (mutual exclusivity enforced)
+- Records can ONLY reference DNSZones in their own namespace (namespace isolation enforced)
+
+**Upgrade Path:**
+1. Apply updated CRDs: `kubectl replace --force -f deploy/crds/`
+   - **Note**: Use `kubectl replace --force` or `kubectl create` to avoid 256KB annotation size limit
+   - The `Bind9Instance` CRD is ~393KB which exceeds `kubectl apply`'s annotation limit
+2. Existing resources continue to work without changes
+3. Optionally migrate to `Bind9GlobalCluster` for platform-managed infrastructure
+
+### Impact
+- [x] Breaking change (DNSZoneSpec.cluster_ref now optional, validation added)
+- [ ] Requires cluster rollout
+- [x] Config change (new CRDs, updated schemas)
+- [x] Documentation update needed
+
+---
+
 ## [2025-12-10 15:25] - Add Comprehensive CNAME Records Documentation
 
 **Author:** Erick Bourgeois

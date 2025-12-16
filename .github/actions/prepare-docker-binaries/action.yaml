@@ -1,0 +1,42 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
+name: 'Prepare Docker Binaries'
+description: 'Downloads artifacts and prepares binaries for multi-arch Docker build'
+
+runs:
+  using: composite
+  steps:
+    - name: Download all binary artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: ./artifacts
+
+    - name: Prepare binaries for Docker build
+      shell: bash
+      run: |
+        mkdir -p binaries/amd64 binaries/arm64
+
+        # Copy x86_64 binary
+        if [ -f "artifacts/bindy-linux-amd64/bindy" ]; then
+          cp artifacts/bindy-linux-amd64/bindy binaries/amd64/bindy
+          chmod +x binaries/amd64/bindy
+          echo "✓ Copied x86_64 binary"
+        else
+          echo "ERROR: x86_64 binary not found"
+          exit 1
+        fi
+
+        # Copy ARM64 binary
+        if [ -f "artifacts/bindy-linux-arm64/bindy" ]; then
+          cp artifacts/bindy-linux-arm64/bindy binaries/arm64/bindy
+          chmod +x binaries/arm64/bindy
+          echo "✓ Copied ARM64 binary"
+        else
+          echo "ERROR: ARM64 binary not found"
+          exit 1
+        fi
+
+        # Verify binaries
+        ls -lh binaries/amd64/bindy binaries/arm64/bindy
+        file binaries/amd64/bindy binaries/arm64/bindy

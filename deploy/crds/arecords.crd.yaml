@@ -19,7 +19,19 @@ spec:
     singular: arecord
   scope: Namespaced
   versions:
-  - additionalPrinterColumns: []
+  - additionalPrinterColumns:
+    - jsonPath: .spec.zoneRef
+      name: ZoneRef
+      type: string
+    - jsonPath: .spec.name
+      name: Name
+      type: string
+    - jsonPath: .spec.ttl
+      name: TTL
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -35,13 +47,13 @@ spec:
               # Example
 
               ```yaml
-              apiVersion: dns.firestoned.io/v1alpha1
+              apiVersion: bindy.firestoned.io/v1alpha1
               kind: ARecord
               metadata:
                 name: www-example-com
                 namespace: dns-system
               spec:
-                zone: example.com
+                zoneRef: example-com
                 name: www
                 ipv4Address: 192.0.2.1
                 ttl: 300
@@ -71,26 +83,19 @@ spec:
                 minimum: 0.0
                 nullable: true
                 type: integer
-              zone:
-                description: |-
-                  DNS zone this record belongs to (e.g., "example.com").
-
-                  Must match the zoneName of an existing `DNSZone` resource in the same namespace.
-                  The controller will search for a `DNSZone` with matching `spec.zoneName`.
-                  Either `zone` or `zoneRef` must be specified (not both).
-                nullable: true
-                type: string
               zoneRef:
                 description: |-
                   Reference to a `DNSZone` resource by metadata.name.
 
-                  Directly references a `DNSZone` resource by its Kubernetes name for more efficient lookup.
-                  Either `zone` or `zoneRef` must be specified (not both).
-                nullable: true
+                  Directly references a `DNSZone` resource in the same namespace by its Kubernetes resource name.
+                  This is more efficient than searching by zone name.
+
+                  Example: If the `DNSZone` is named "example-com", use `zoneRef: example-com`
                 type: string
             required:
             - ipv4Address
             - name
+            - zoneRef
             type: object
           status:
             description: Generic record status

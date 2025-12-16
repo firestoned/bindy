@@ -8,15 +8,25 @@ spec:
   primary:
     # Use NodePort for primary instances (external DNS access)
     service:
-      type: NodePort
-      externalTrafficPolicy: Local
+      annotations:
+        # Example: MetalLB address pool selection
+        metallb.universe.tf/address-pool: dns-pool
+        # Example: External DNS hostname
+        external-dns.alpha.kubernetes.io/hostname: ns1.example.com
+      spec:
+        type: NodePort
+        externalTrafficPolicy: Local
 
   # Secondary instance configuration
   secondary:
     # Use ClusterIP for secondary instances (internal only)
     service:
-      type: ClusterIP
-      sessionAffinity: ClientIP
+      annotations:
+        # Example: Linkerd service mesh annotations
+        linkerd.io/inject: enabled
+      spec:
+        type: ClusterIP
+        sessionAffinity: ClientIP
 
   version: "9.18"
 
@@ -40,16 +50,25 @@ spec:
   primary:
     # Use LoadBalancer for primary instances (cloud environments)
     service:
-      type: LoadBalancer
-      loadBalancerIP: "203.0.113.10"  # Optional: specify IP
-      externalTrafficPolicy: Local
+      annotations:
+        # Example: AWS load balancer configuration
+        service.beta.kubernetes.io/aws-load-balancer-type: nlb
+        service.beta.kubernetes.io/aws-load-balancer-backend-protocol: udp
+      spec:
+        type: LoadBalancer
+        loadBalancerIP: "203.0.113.10"  # Optional: specify IP
+        externalTrafficPolicy: Local
 
   # Secondary instance configuration
   secondary:
     # Secondaries also use LoadBalancer for high availability
     service:
-      type: LoadBalancer
-      externalTrafficPolicy: Cluster
+      annotations:
+        # Example: Azure internal load balancer
+        service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+      spec:
+        type: LoadBalancer
+        externalTrafficPolicy: Cluster
 
   version: "9.20"
 

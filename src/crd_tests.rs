@@ -128,14 +128,15 @@ mod tests {
 
         let spec = DNSZoneSpec {
             zone_name: "example.com".into(),
-            cluster_ref: "my-cluster".into(),
+            cluster_ref: Some("my-cluster".into()),
+            global_cluster_ref: None,
             soa_record: soa,
             ttl: Some(3600),
             name_server_ips: None,
         };
 
         assert_eq!(spec.zone_name, "example.com");
-        assert_eq!(spec.cluster_ref, "my-cluster");
+        assert_eq!(spec.cluster_ref, Some("my-cluster".into()));
         assert_eq!(spec.soa_record.primary_ns, "ns1.example.com.");
         assert_eq!(spec.ttl.unwrap(), 3600);
     }
@@ -146,51 +147,51 @@ mod tests {
         acls.insert("trusted".into(), vec!["10.0.0.0/8".into()]);
 
         let spec = Bind9ClusterSpec {
-            version: Some("9.18".into()),
-            image: None,
-            config_map_refs: None,
-            global: Some(Bind9Config {
-                recursion: Some(false),
-                allow_query: None,
-                allow_transfer: None,
-                dnssec: None,
-                forwarders: None,
-                listen_on: None,
-                listen_on_v6: None,
-                rndc_secret_ref: None,
-                bindcar_config: None,
-            }),
-            primary: None,
-            secondary: None,
-            rndc_secret_refs: Some(vec![RndcSecretRef {
-                name: "rndc-key-secret".into(),
-                algorithm: RndcAlgorithm::HmacSha256,
-                key_name_key: "key-name".into(),
-                secret_key: "secret".into(),
-            }]),
-            acls: Some(acls.clone()),
-            volumes: None,
-            volume_mounts: None,
+            common: Bind9ClusterCommonSpec {
+                version: Some("9.18".into()),
+                image: None,
+                config_map_refs: None,
+                global: Some(Bind9Config {
+                    recursion: Some(false),
+                    allow_query: None,
+                    allow_transfer: None,
+                    dnssec: None,
+                    forwarders: None,
+                    listen_on: None,
+                    listen_on_v6: None,
+                    rndc_secret_ref: None,
+                    bindcar_config: None,
+                }),
+                primary: None,
+                secondary: None,
+                rndc_secret_refs: Some(vec![RndcSecretRef {
+                    name: "rndc-key-secret".into(),
+                    algorithm: RndcAlgorithm::HmacSha256,
+                    key_name_key: "key-name".into(),
+                    secret_key: "secret".into(),
+                }]),
+                acls: Some(acls.clone()),
+                volumes: None,
+                volume_mounts: None,
+            },
         };
 
-        assert_eq!(spec.version.unwrap(), "9.18");
-        assert!(spec.global.is_some());
-        assert_eq!(spec.rndc_secret_refs.as_ref().unwrap().len(), 1);
-        assert!(spec.acls.is_some());
-        assert_eq!(spec.acls.unwrap().get("trusted").unwrap().len(), 1);
+        assert_eq!(spec.common.version.unwrap(), "9.18");
+        assert!(spec.common.global.is_some());
+        assert_eq!(spec.common.rndc_secret_refs.as_ref().unwrap().len(), 1);
+        assert!(spec.common.acls.is_some());
+        assert_eq!(spec.common.acls.unwrap().get("trusted").unwrap().len(), 1);
     }
 
     #[test]
     fn test_arecord_spec() {
         let spec = ARecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "www".into(),
             ipv4_address: "192.0.2.1".into(),
             ttl: Some(300),
         };
 
-        assert_eq!(spec.zone, Some("example.com".to_string()));
         assert_eq!(spec.name, "www");
         assert_eq!(spec.ipv4_address, "192.0.2.1");
         assert_eq!(spec.ttl.unwrap(), 300);
@@ -199,22 +200,19 @@ mod tests {
     #[test]
     fn test_aaaarecord_spec() {
         let spec = AAAARecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "www".into(),
             ipv6_address: "2001:db8::1".into(),
             ttl: Some(300),
         };
 
-        assert_eq!(spec.zone, Some("example.com".to_string()));
         assert_eq!(spec.ipv6_address, "2001:db8::1");
     }
 
     #[test]
     fn test_txtrecord_spec() {
         let spec = TXTRecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "@".into(),
             text: vec!["v=spf1 mx ~all".into()],
             ttl: Some(3600),
@@ -227,8 +225,7 @@ mod tests {
     #[test]
     fn test_cnamerecord_spec() {
         let spec = CNAMERecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "blog".into(),
             target: "www.example.com.".into(),
             ttl: Some(300),
@@ -240,8 +237,7 @@ mod tests {
     #[test]
     fn test_mxrecord_spec() {
         let spec = MXRecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "@".into(),
             priority: 10,
             mail_server: "mail.example.com.".into(),
@@ -255,8 +251,7 @@ mod tests {
     #[test]
     fn test_nsrecord_spec() {
         let spec = NSRecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "@".into(),
             nameserver: "ns1.example.com.".into(),
             ttl: Some(3600),
@@ -268,8 +263,7 @@ mod tests {
     #[test]
     fn test_srvrecord_spec() {
         let spec = SRVRecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "_sip._tcp".into(),
             priority: 10,
             weight: 60,
@@ -287,8 +281,7 @@ mod tests {
     #[test]
     fn test_caarecord_spec() {
         let spec = CAARecordSpec {
-            zone: Some("example.com".to_string()),
-            zone_ref: None,
+            zone_ref: "example-com".to_string(),
             name: "@".into(),
             flags: 0,
             tag: "issue".into(),

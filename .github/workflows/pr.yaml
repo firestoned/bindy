@@ -15,8 +15,8 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  lint:
-    name: Lint
+  format:
+    name: Check Formatting
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -25,37 +25,10 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-git-
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-build-target-
+          components: rustfmt
 
       - name: Check formatting
         run: cargo fmt -- --check
-
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
 
   docs:
     name: Build Documentation
@@ -85,61 +58,63 @@ jobs:
           make docs
           find docs -name '*toc*'
 
-  build:
-    name: Build
+  clippy:
+    name: Clippy
     runs-on: ubuntu-latest
-    needs: lint
+    needs: format
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
         with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
+          components: clippy
 
-      - name: Cache cargo index
-        uses: actions/cache@v4
+      - name: Cache cargo dependencies
+        uses: ./.github/actions/cache-cargo
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  build:
+    name: Build - ${{ matrix.platform.name }}
+    runs-on: ${{ matrix.platform.os }}
+    needs: format
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Linux x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: bindy-linux-amd64
+            binary_name: bindy
+          - name: Linux ARM64
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact_name: bindy-linux-arm64
+            binary_name: bindy
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust build environment
+        uses: ./.github/actions/setup-rust-build
         with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-git-
+          target: ${{ matrix.platform.target }}
 
-      - name: Cache cargo build
-        uses: actions/cache@v4
+      - name: Build binary
+        uses: ./.github/actions/build-binary
         with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-build-target-
+          target: ${{ matrix.platform.target }}
 
-      - name: Build (debug)
-        run: cargo build --verbose
-
-      - name: Build (release)
-        run: cargo build --release --verbose
-
-      - name: Upload build artifacts
+      - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cargo-build
-          path: |
-            target/debug/bindy
-            target/debug/crdgen
-            target/debug/deps/
-            target/debug/build/
-            target/debug/.fingerprint/
-            target/release/bindy
-            target/release/crdgen
+          name: ${{ matrix.platform.artifact_name }}
+          path: target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}
           retention-days: 1
-          if-no-files-found: error
 
   test:
     name: Test
@@ -152,41 +127,20 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Download build artifacts
+      - name: Download x86_64 build artifact
         uses: actions/download-artifact@v4
         with:
-          name: cargo-build
-          path: target/
+          name: bindy-linux-amd64
+          path: target/x86_64-unknown-linux-gnu/release/
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-git-
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-build-target-
+      - name: Cache cargo dependencies
+        uses: ./.github/actions/cache-cargo
 
       - name: Run tests
         run: cargo test --all --verbose
 
   docker:
-    name: Docker Build
+    name: Build and Push Docker Image
     runs-on: ubuntu-latest
     needs: test
     permissions:
@@ -196,15 +150,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Prepare Docker binaries
+        uses: ./.github/actions/prepare-docker-binaries
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+      - name: Setup Docker environment
+        uses: ./.github/actions/setup-docker
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta
@@ -215,16 +167,19 @@ jobs:
             type=ref,event=pr,prefix=pr-
             type=sha,prefix=sha-
 
-      - name: Build and push Docker image
+      - name: Build and push Docker image (fast - uses pre-built binaries)
         uses: docker/build-push-action@v5
         with:
           context: .
-          platforms: linux/amd64
+          file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          sbom: true
+          provenance: true
 
   security:
     name: Security Audit
@@ -236,21 +191,8 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-git-
+      - name: Cache cargo dependencies
+        uses: ./.github/actions/cache-cargo
 
       - name: Cache cargo-audit binary
         uses: actions/cache@v4

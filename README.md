@@ -119,7 +119,7 @@ kubectl apply -f deploy/rbac/
 ### 4. Deploy Controller
 
 ```bash
-kubectl apply -f deploy/operator/deployment.yaml
+kubectl apply -f deploy/controller/deployment.yaml
 ```
 
 Wait for the controller to be ready:

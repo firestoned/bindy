@@ -131,7 +131,7 @@ mod tests {
     #[test]
     fn test_deployment_creation() {
         let instance = create_test_instance("test-deploy", 3, "9.20");
-        let deployment = build_deployment("test-deploy", "test-ns", &instance, None);
+        let deployment = build_deployment("test-deploy", "test-ns", &instance, None, None);
 
         assert_eq!(deployment.metadata.name.as_deref(), Some("test-deploy"));
         assert_eq!(deployment.metadata.namespace.as_deref(), Some("test-ns"));
@@ -176,7 +176,7 @@ mod tests {
     fn test_deployment_with_various_replica_counts() {
         for replicas in [1, 2, 3, 5, 10] {
             let instance = create_test_instance("test", replicas, "9.18");
-            let deployment = build_deployment("test", "test-ns", &instance, None);
+            let deployment = build_deployment("test", "test-ns", &instance, None, None);
 
             let spec = deployment.spec.unwrap();
             assert_eq!(spec.replicas, Some(replicas));
@@ -187,7 +187,7 @@ mod tests {
     fn test_deployment_with_various_versions() {
         for version in ["9.16", "9.18", "9.20", "latest"] {
             let instance = create_test_instance("test", 1, version);
-            let deployment = build_deployment("test", "test-ns", &instance, None);
+            let deployment = build_deployment("test", "test-ns", &instance, None, None);
 
             let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
             let container = &pod_spec.containers[0];
@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn test_deployment_container_ports() {
         let instance = create_test_instance("port-test", 1, "9.18");
-        let deployment = build_deployment("port-test", "test-ns", &instance, None);
+        let deployment = build_deployment("port-test", "test-ns", &instance, None, None);
 
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let container = &pod_spec.containers[0];
@@ -370,7 +370,7 @@ mod tests {
     #[test]
     fn test_deployment_has_probes() {
         let instance = create_test_instance("probe-test", 1, "9.18");
-        let deployment = build_deployment("probe-test", "test-ns", &instance, None);
+        let deployment = build_deployment("probe-test", "test-ns", &instance, None, None);
 
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let container = &pod_spec.containers[0];
@@ -390,7 +390,7 @@ mod tests {
     #[test]
     fn test_deployment_volume_mounts() {
         let instance = create_test_instance("volume-test", 1, "9.18");
-        let deployment = build_deployment("volume-test", "test-ns", &instance, None);
+        let deployment = build_deployment("volume-test", "test-ns", &instance, None, None);
 
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let container = &pod_spec.containers[0];
@@ -407,7 +407,7 @@ mod tests {
     #[test]
     fn test_service_selector_matches_deployment_labels() {
         let instance = create_test_instance("label-test", 1, "9.18");
-        let deployment = build_deployment("label-test", "test-ns", &instance, None);
+        let deployment = build_deployment("label-test", "test-ns", &instance, None, None);
         let service = build_service("label-test", "test-ns", &instance, None);
 
         let deploy_labels = deployment.metadata.labels.unwrap();

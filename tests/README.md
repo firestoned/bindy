@@ -41,11 +41,39 @@ Comprehensive test suite that:
 5. Verifies resources were created successfully
 6. Cleans up test resources
 
-### Rust Integration Tests (`simple_integration.rs`)
+### Rust Integration Tests
+
+#### Simple Integration Tests (`simple_integration.rs`)
 
 - **test_kubernetes_connectivity** - Verifies cluster access
 - **test_crds_installed** - Checks for Bindy CRDs
 - **test_create_and_cleanup_namespace** - Tests namespace management
+
+#### Multi-Tenancy Integration Tests (`multi_tenancy_integration.rs`)
+
+Comprehensive tests for the dual-cluster model:
+
+- **test_bind9globalcluster_creation** - Cluster-scoped global cluster creation
+- **test_bind9cluster_namespace_scoped** - Namespace-scoped cluster isolation
+- **test_dnszone_with_global_cluster_ref** - DNSZone referencing global clusters
+- **test_dnszone_with_cluster_ref** - DNSZone referencing namespace-scoped clusters
+- **test_namespace_isolation** - Verify resources are isolated between namespaces
+- **test_global_cluster_cross_namespace_access** - Global clusters accessible from all namespaces
+- **test_bind9instance_references_global_cluster** - Instances can reference global clusters
+- **test_list_global_clusters_across_all_namespaces** - List cluster-scoped resources
+- **test_hybrid_deployment** - Production (global) + Development (namespaced) pattern
+
+Run with:
+```bash
+# All multi-tenancy tests
+./tests/run_multi_tenancy_tests.sh
+
+# Specific test
+./tests/run_multi_tenancy_tests.sh test_namespace_isolation
+
+# Or directly with cargo
+cargo test --test multi_tenancy_integration -- --ignored --nocapture --test-threads=1
+```
 
 ## Prerequisites
 
@@ -201,11 +229,13 @@ The script handles all setup automatically.
 
 ```
 tests/
-├── README.md                 # This file
-├── integration_test.sh       # Main integration test script
-├── simple_integration.rs     # Rust integration tests
+├── README.md                        # This file
+├── integration_test.sh              # Main integration test script
+├── run_multi_tenancy_tests.sh       # Multi-tenancy test runner
+├── simple_integration.rs            # Basic Rust integration tests
+├── multi_tenancy_integration.rs     # Multi-tenancy integration tests
 └── common/
-    └── mod.rs               # Shared test utilities
+    └── mod.rs                       # Shared test utilities
 ```
 
 ## See Also

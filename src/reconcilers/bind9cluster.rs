@@ -7,6 +7,7 @@
 //! It manages the `Bind9Instance` resources that belong to a cluster and updates
 //! the cluster status to reflect the overall health.
 
+use crate::constants::{API_GROUP_VERSION, KIND_BIND9_CLUSTER, KIND_BIND9_INSTANCE};
 use crate::crd::{
     Bind9Cluster, Bind9ClusterStatus, Bind9Instance, Bind9InstanceSpec, Condition, ServerRole,
 };
@@ -79,27 +80,30 @@ pub async fn reconcile_bind9cluster(client: Client, cluster: Bind9Cluster) -> Re
     let current_generation = cluster.metadata.generation;
     let observed_generation = cluster.status.as_ref().and_then(|s| s.observed_generation);
 
-    // Only reconcile if spec changed or we haven't processed this resource yet
-    if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
+    // Only reconcile spec-related resources if spec changed
+    let spec_changed =
+        crate::reconcilers::should_reconcile(current_generation, observed_generation);
+
+    if spec_changed {
         debug!(
-            "Spec unchanged (generation={:?}), skipping cluster updates",
+            "Reconciliation needed: current_generation={:?}, observed_generation={:?}",
+            current_generation, observed_generation
+        );
+
+        // Create or update shared cluster ConfigMap
+        create_or_update_cluster_configmap(&client, &cluster).await?;
+
+        // Reconcile managed instances (create/update as needed)
+        reconcile_managed_instances(&client, &cluster).await?;
+    } else {
+        debug!(
+            "Spec unchanged (generation={:?}), skipping cluster resource updates",
             current_generation
         );
-        return Ok(());
     }
 
-    debug!(
-        "Reconciliation needed: current_generation={:?}, observed_generation={:?}",
-        current_generation, observed_generation
-    );
-
-    // Create or update shared cluster ConfigMap
-    create_or_update_cluster_configmap(&client, &cluster).await?;
-
-    // Reconcile managed instances (create/update as needed)
-    reconcile_managed_instances(&client, &cluster).await?;
-
-    // List and analyze cluster instances
+    // ALWAYS list and analyze cluster instances to update status
+    // This ensures status reflects current instance health even when spec hasn't changed
     let instances: Vec<Bind9Instance> =
         list_cluster_instances(&client, &cluster, &namespace, &name).await?;
 
@@ -520,6 +524,7 @@ async fn reconcile_managed_instances(client: &Client, cluster: &Bind9Cluster) ->
     // Get desired replica counts from spec
     let primary_replicas = cluster
         .spec
+        .common
         .primary
         .as_ref()
         .and_then(|p| p.replicas)
@@ -527,6 +532,7 @@ async fn reconcile_managed_instances(client: &Client, cluster: &Bind9Cluster) ->
 
     let secondary_replicas = cluster
         .spec
+        .common
         .secondary
         .as_ref()
         .and_then(|s| s.replicas)
@@ -586,18 +592,29 @@ async fn reconcile_managed_instances(client: &Client, cluster: &Bind9Cluster) ->
         existing_secondary.len()
     );
 
+    // Create ownerReference to the Bind9Cluster
+    let owner_ref = k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference {
+        api_version: API_GROUP_VERSION.to_string(),
+        kind: KIND_BIND9_CLUSTER.to_string(),
+        name: cluster_name.clone(),
+        uid: cluster.metadata.uid.clone().unwrap_or_default(),
+        controller: Some(true),
+        block_owner_deletion: Some(true),
+    };
+
     // Handle scale-up: Create missing primary instances
     #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     let primaries_to_create = (primary_replicas as usize).saturating_sub(existing_primary.len());
     for i in 0..primaries_to_create {
         let index = existing_primary.len() + i;
-        create_managed_instance(
+        create_managed_instance_with_owner(
             client,
-            cluster,
             &namespace,
             &cluster_name,
             ServerRole::Primary,
             index,
+            &cluster.spec.common,
+            Some(owner_ref.clone()),
         )
         .await?;
     }
@@ -633,13 +650,14 @@ async fn reconcile_managed_instances(client: &Client, cluster: &Bind9Cluster) ->
         (secondary_replicas as usize).saturating_sub(existing_secondary.len());
     for i in 0..secondaries_to_create {
         let index = existing_secondary.len() + i;
-        create_managed_instance(
+        create_managed_instance_with_owner(
             client,
-            cluster,
             &namespace,
             &cluster_name,
             ServerRole::Secondary,
             index,
+            &cluster.spec.common,
+            Some(owner_ref.clone()),
         )
         .await?;
     }
@@ -807,26 +825,60 @@ async fn ensure_managed_instance_resources(
 
 /// Create a managed `Bind9Instance` resource
 ///
+/// This function is public to allow reuse by `Bind9GlobalCluster` reconciler.
+///
 /// # Arguments
 ///
 /// * `client` - Kubernetes API client
-/// * `cluster` - The parent `Bind9Cluster`
 /// * `namespace` - Namespace for the instance
-/// * `cluster_name` - Name of the cluster
+/// * `cluster_name` - Name of the cluster (namespace-scoped or global)
 /// * `role` - Role of the instance (Primary or Secondary)
 /// * `index` - Index of this instance within its role
+/// * `common_spec` - The cluster's common specification
+/// * `is_global` - Whether this is for a global cluster
 ///
 /// # Errors
 ///
 /// Returns an error if instance creation fails
-#[allow(clippy::too_many_lines)]
-async fn create_managed_instance(
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+pub async fn create_managed_instance(
     client: &Client,
-    cluster: &Bind9Cluster,
     namespace: &str,
     cluster_name: &str,
     role: ServerRole,
     index: usize,
+    common_spec: &crate::crd::Bind9ClusterCommonSpec,
+    _is_global: bool,
+) -> Result<()> {
+    create_managed_instance_with_owner(
+        client,
+        namespace,
+        cluster_name,
+        role,
+        index,
+        common_spec,
+        None, // No owner reference - for backward compatibility
+    )
+    .await
+}
+
+/// Create a managed `Bind9Instance` with optional ownerReference.
+///
+/// This is the internal implementation that supports setting ownerReferences.
+/// Use `create_managed_instance()` for backward compatibility without ownerReferences.
+///
+/// # Arguments
+///
+/// * `owner_ref` - Optional ownerReference to the parent `Bind9Cluster`
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn create_managed_instance_with_owner(
+    client: &Client,
+    namespace: &str,
+    cluster_name: &str,
+    role: ServerRole,
+    index: usize,
+    common_spec: &crate::crd::Bind9ClusterCommonSpec,
+    owner_ref: Option<k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference>,
 ) -> Result<()> {
     let role_str = match role {
         ServerRole::Primary => ROLE_PRIMARY,
@@ -857,21 +909,24 @@ async fn create_managed_instance(
         index.to_string(),
     );
 
-    // Build instance spec
+    // Build instance spec - copy configuration from cluster
     let instance_spec = Bind9InstanceSpec {
         cluster_ref: cluster_name.to_string(),
         role,
         replicas: Some(1), // Each managed instance has 1 replica
-        version: cluster.spec.version.clone(),
-        image: cluster.spec.image.clone(),
-        config_map_refs: cluster.spec.config_map_refs.clone(),
+        version: common_spec.version.clone(),
+        image: common_spec.image.clone(),
+        config_map_refs: common_spec.config_map_refs.clone(),
         config: None,          // Inherit from cluster
         primary_servers: None, // TODO: Could populate for secondaries
-        volumes: cluster.spec.volumes.clone(),
-        volume_mounts: cluster.spec.volume_mounts.clone(),
+        volumes: common_spec.volumes.clone(),
+        volume_mounts: common_spec.volume_mounts.clone(),
         rndc_secret_ref: None, // Inherit from cluster/role config
         storage: None,         // Use default (emptyDir)
-        bindcar_config: None,  // Use default Bindcar configuration
+        bindcar_config: common_spec
+            .global
+            .as_ref()
+            .and_then(|g| g.bindcar_config.clone()),
     };
 
     let instance = Bind9Instance {
@@ -880,6 +935,7 @@ async fn create_managed_instance(
             namespace: Some(namespace.to_string()),
             labels: Some(labels),
             annotations: Some(annotations),
+            owner_references: owner_ref.map(|r| vec![r]),
             ..Default::default()
         },
         spec: instance_spec,
@@ -897,64 +953,58 @@ async fn create_managed_instance(
             Ok(())
         }
         Err(e) => {
-            // If already exists, update labels/annotations if missing
+            // If already exists, patch it to ensure spec is up to date
             if e.to_string().contains("AlreadyExists") {
-                warn!(
-                    "Managed instance {}/{} already exists, checking labels/annotations",
+                debug!(
+                    "Managed instance {}/{} already exists, patching with updated spec",
                     namespace, instance_name
                 );
 
-                // Fetch existing instance
-                let existing = api.get(&instance_name).await?;
-
-                // Check if labels/annotations need updating
-                let needs_label_update = existing.metadata.labels.as_ref().is_none_or(|l| {
-                    l.get(BINDY_MANAGED_BY_LABEL) != Some(&MANAGED_BY_BIND9_CLUSTER.to_string())
-                        || l.get(BINDY_CLUSTER_LABEL) != Some(&cluster_name.to_string())
-                        || l.get(BINDY_ROLE_LABEL) != Some(&role_str.to_string())
+                // Build a complete patch object for server-side apply
+                let patch = serde_json::json!({
+                    "apiVersion": API_GROUP_VERSION,
+                    "kind": KIND_BIND9_INSTANCE,
+                    "metadata": {
+                        "name": instance_name,
+                        "namespace": namespace,
+                        "labels": {
+                            BINDY_MANAGED_BY_LABEL: MANAGED_BY_BIND9_CLUSTER,
+                            BINDY_CLUSTER_LABEL: cluster_name,
+                            BINDY_ROLE_LABEL: role_str,
+                            K8S_PART_OF: PART_OF_BINDY,
+                        },
+                        "annotations": {
+                            BINDY_INSTANCE_INDEX_ANNOTATION: index.to_string(),
+                        },
+                        "ownerReferences": instance.metadata.owner_references,
+                    },
+                    "spec": instance.spec,
                 });
 
-                let needs_annotation_update = existing
-                    .metadata
-                    .annotations
-                    .as_ref()
-                    .is_none_or(|a| a.get(BINDY_INSTANCE_INDEX_ANNOTATION).is_none());
-
-                if needs_label_update || needs_annotation_update {
-                    info!(
-                        "Updating labels/annotations for existing instance {}/{}",
-                        namespace, instance_name
-                    );
-
-                    // Patch the instance with updated labels and annotations
-                    let patch = serde_json::json!({
-                        "metadata": {
-                            "labels": {
-                                BINDY_MANAGED_BY_LABEL: MANAGED_BY_BIND9_CLUSTER,
-                                BINDY_CLUSTER_LABEL: cluster_name,
-                                BINDY_ROLE_LABEL: role_str,
-                                K8S_PART_OF: PART_OF_BINDY,
-                            },
-                            "annotations": {
-                                BINDY_INSTANCE_INDEX_ANNOTATION: index.to_string(),
-                            }
-                        }
-                    });
-
-                    api.patch(
+                // Apply the patch to update the spec, labels, annotations, and owner references
+                match api
+                    .patch(
                         &instance_name,
-                        &PatchParams::default(),
-                        &Patch::Merge(&patch),
+                        &PatchParams::apply("bindy-controller").force(),
+                        &Patch::Apply(&patch),
                     )
-                    .await?;
-
-                    info!(
-                        "Successfully updated labels/annotations for instance {}/{}",
-                        namespace, instance_name
-                    );
+                    .await
+                {
+                    Ok(_) => {
+                        info!(
+                            "Successfully patched managed instance {}/{} with updated spec",
+                            namespace, instance_name
+                        );
+                        Ok(())
+                    }
+                    Err(patch_err) => {
+                        error!(
+                            "Failed to patch managed instance {}/{}: {}",
+                            namespace, instance_name, patch_err
+                        );
+                        Err(patch_err.into())
+                    }
                 }
-
-                Ok(())
             } else {
                 error!(
                     "Failed to create managed instance {}/{}: {}",
@@ -988,7 +1038,7 @@ async fn create_or_update_cluster_configmap(client: &Client, cluster: &Bind9Clus
     let name = cluster.name_any();
 
     // Check if custom ConfigMaps are referenced at the cluster level
-    if let Some(refs) = &cluster.spec.config_map_refs {
+    if let Some(refs) = &cluster.spec.common.config_map_refs {
         if refs.named_conf.is_some() || refs.named_conf_options.is_some() {
             info!(
                 "Cluster {}/{} uses custom ConfigMaps, skipping cluster ConfigMap creation",
@@ -1026,6 +1076,8 @@ async fn create_or_update_cluster_configmap(client: &Client, cluster: &Bind9Clus
 
 /// Delete a single managed `Bind9Instance` resource
 ///
+/// This function is public to allow reuse by `Bind9GlobalCluster` reconciler.
+///
 /// # Arguments
 ///
 /// * `client` - Kubernetes API client
@@ -1035,7 +1087,7 @@ async fn create_or_update_cluster_configmap(client: &Client, cluster: &Bind9Clus
 /// # Errors
 ///
 /// Returns an error if deletion fails (except for `NotFound` errors, which are treated as success)
-async fn delete_managed_instance(
+pub async fn delete_managed_instance(
     client: &Client,
     namespace: &str,
     instance_name: &str,

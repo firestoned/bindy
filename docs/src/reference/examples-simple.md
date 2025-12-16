@@ -196,7 +196,7 @@ kubectl apply -k deploy/crds/
 ### 2. Deploy Bindy Operator
 
 ```bash
-kubectl apply -f deploy/operator.yaml
+kubectl apply -f deploy/controller/deployment.yaml
 ```
 
 ### 3. Apply Configuration

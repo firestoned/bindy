@@ -121,7 +121,7 @@ kubectl create namespace dns-system
 kubectl apply -f deploy/rbac/
 
 # Deploy controller
-kubectl apply -f deploy/operator/deployment.yaml
+kubectl apply -f deploy/controller/deployment.yaml
 ```
 
 ### Step 5: Verify Deployment
@@ -445,7 +445,7 @@ kubectl delete arecords,txtrecords,cnamerecords,dnszones,bind9instances --all -n
 ### Remove Controller
 
 ```bash
-kubectl delete -f deploy/operator/deployment.yaml
+kubectl delete -f deploy/controller/deployment.yaml
 kubectl delete -f deploy/rbac/
 kubectl delete -f deploy/crds/dns-crds.yaml
 kubectl delete namespace dns-system
@@ -476,7 +476,7 @@ Example GitHub Actions workflow snippet:
     kind load docker-image bindy:test --name bindy-test
     kubectl apply -k deploy/crds/
     kubectl apply -f deploy/rbac/
-    kubectl apply -f deploy/operator/
+    kubectl apply -f deploy/controller/
 
 - name: Run Tests
   run: ./deploy/kind-test.sh

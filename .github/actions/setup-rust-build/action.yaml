@@ -1,0 +1,52 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
+name: 'Setup Rust Build Environment'
+description: 'Sets up Rust toolchain with caching for multi-architecture builds'
+
+inputs:
+  target:
+    description: 'Rust target triple (e.g., x86_64-unknown-linux-gnu)'
+    required: true
+  cache-key:
+    description: 'Additional cache key component'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ inputs.target }}
+
+    - name: Cache Rust dependencies
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ inputs.target }}-${{ inputs.cache-key }}
+        cache-on-failure: true
+
+    - name: Cache cross binary
+      if: inputs.target == 'aarch64-unknown-linux-gnu'
+      id: cache-cross
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/bin/cross
+        key: ${{ runner.os }}-cross-v0.2.5
+        restore-keys: |
+          ${{ runner.os }}-cross-
+
+    - name: Install cross for ARM64 builds
+      if: inputs.target == 'aarch64-unknown-linux-gnu' && steps.cache-cross.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        cargo install cross --git https://github.com/cross-rs/cross --tag v0.2.5
+        cross --version
+
+    - name: Verify Docker for cross (ARM64)
+      if: inputs.target == 'aarch64-unknown-linux-gnu'
+      shell: bash
+      run: |
+        docker --version
+        docker info

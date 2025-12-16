@@ -1,0 +1,501 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
+# ============================================================================
+# Multi-Tenancy Example: Platform-Managed + Tenant-Managed DNS
+# ============================================================================
+#
+# This example demonstrates both multi-tenancy models supported by Bindy:
+#
+# 1. Platform-Managed DNS: Shared cluster-scoped Bind9GlobalCluster
+#    - Platform team manages the DNS infrastructure (ClusterRole required)
+#    - Application teams manage their own zones and records (Role required)
+#    - Suitable for production workloads with centralized DNS management
+#
+# 2. Tenant-Managed DNS: Isolated namespace-scoped Bind9Cluster
+#    - Development teams manage their own DNS infrastructure (Role required)
+#    - Full control within their namespace
+#    - Suitable for development, testing, and isolated environments
+#
+# Components:
+# - Namespaces: team-web, team-api
+# - RBAC: Roles and RoleBindings for platform and application teams
+# - Platform DNS: Bind9GlobalCluster (cluster-scoped, deployed separately)
+# - Tenant DNS: Bind9Cluster (namespace-scoped) in team-api namespace
+# - DNS Zones and Records for both models
+#
+# Prerequisites:
+# - Deploy the platform DNS cluster first: kubectl apply -f examples/bind9-cluster.yaml
+#   This creates a Bind9GlobalCluster named 'production-dns' (cluster-scoped resource)
+#
+# Deployment:
+#   kubectl apply -f examples/multi-tenancy.yaml
+#
+#   IMPORTANT: Use 'kubectl apply', NOT 'kubectl replace'
+#   The 'replace' command expects resources to already exist and will fail.
+#
+# Cleanup:
+#   kubectl delete -f examples/multi-tenancy.yaml
+#
+#   Note: If namespaces get stuck in 'Terminating' state, delete resources first:
+#   kubectl delete dnszones,bind9clusters --all -n team-web
+#   kubectl delete dnszones,bind9clusters --all -n team-api
+#
+# ============================================================================
+
+---
+# ============================================================================
+# Namespaces
+# ============================================================================
+# Note: dns-system namespace is created separately when deploying the platform cluster
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-web
+  labels:
+    team: web-team
+    purpose: web-applications
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-api
+  labels:
+    team: api-team
+    purpose: api-services
+
+---
+# ============================================================================
+# RBAC: Platform Team
+# ============================================================================
+# Note: Platform team manages dns-system namespace and Bind9Cluster there
+# These RBAC resources would typically be deployed separately with the platform cluster
+
+
+# ============================================================================
+# RBAC: Application Team (Role for DNSZone and Record management)
+# ============================================================================
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: bindy-zone-manager
+  namespace: team-web
+  labels:
+    app: bindy
+    team: web-team
+rules:
+  # DNSZone management
+  - apiGroups: ["bindy.firestoned.io"]
+    resources: ["dnszones"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["bindy.firestoned.io"]
+    resources: ["dnszones/status"]
+    verbs: ["get", "update", "patch"]
+  # DNS Record management (all types)
+  - apiGroups: ["bindy.firestoned.io"]
+    resources:
+      - "arecords"
+      - "aaaarecords"
+      - "cnamerecords"
+      - "mxrecords"
+      - "txtrecords"
+      - "nsrecords"
+      - "srvrecords"
+      - "caarecords"
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bindy-zone-manager
+  namespace: team-web
+  labels:
+    app: bindy
+    team: web-team
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: bindy-zone-manager
+subjects:
+  - kind: ServiceAccount
+    name: web-team-developer
+    namespace: team-web
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: web-team-developer
+  namespace: team-web
+  labels:
+    app: bindy
+    team: web-team
+
+---
+# ============================================================================
+# RBAC: API Team (Role for full DNS infrastructure management)
+# ============================================================================
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: bindy-full-admin
+  namespace: team-api
+  labels:
+    app: bindy
+    team: api-team
+rules:
+  # Bind9Cluster management (namespace-scoped)
+  - apiGroups: ["bindy.firestoned.io"]
+    resources: ["bind9clusters"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["bindy.firestoned.io"]
+    resources: ["bind9clusters/status"]
+    verbs: ["get", "update", "patch"]
+  # Bind9Instance management
+  - apiGroups: ["bindy.firestoned.io"]
+    resources: ["bind9instances"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["bindy.firestoned.io"]
+    resources: ["bind9instances/status"]
+    verbs: ["get", "update", "patch"]
+  # DNSZone management
+  - apiGroups: ["bindy.firestoned.io"]
+    resources: ["dnszones"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["bindy.firestoned.io"]
+    resources: ["dnszones/status"]
+    verbs: ["get", "update", "patch"]
+  # DNS Record management (all types)
+  - apiGroups: ["bindy.firestoned.io"]
+    resources:
+      - "arecords"
+      - "aaaarecords"
+      - "cnamerecords"
+      - "mxrecords"
+      - "txtrecords"
+      - "nsrecords"
+      - "srvrecords"
+      - "caarecords"
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bindy-full-admin
+  namespace: team-api
+  labels:
+    app: bindy
+    team: api-team
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: bindy-full-admin
+subjects:
+  - kind: ServiceAccount
+    name: api-team-developer
+    namespace: team-api
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: api-team-developer
+  namespace: team-api
+  labels:
+    app: bindy
+    team: api-team
+
+---
+# ============================================================================
+# Platform-Managed DNS: DNSZone for Web Team (uses globalClusterRef)
+# ============================================================================
+# The platform DNS cluster (production-dns) is a Bind9GlobalCluster
+# deployed separately via: kubectl apply -f examples/bind9-cluster.yaml
+#
+# DNSZones reference it using globalClusterRef, which works across namespaces
+# ============================================================================
+
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: DNSZone
+metadata:
+  name: web-production-zone
+  namespace: team-web
+  labels:
+    team: web-team
+    environment: production
+spec:
+  zoneName: web.example.com
+  globalClusterRef: production-dns  # References cluster-scoped Bind9GlobalCluster
+  nameServerIps:
+    ns1.example.com.: 192.168.0.60
+  soaRecord:
+    primaryNs: ns1.web.example.com.
+    adminEmail: dns-admin.example.com.
+    serial: 2025010101
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTtl: 86400
+  ttl: 3600
+
+---
+# DNS Records for Web Team Zone
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: ARecord
+metadata:
+  name: web-app-primary
+  namespace: team-web
+  labels:
+    app: web-application
+    tier: frontend
+spec:
+  zoneRef: web-production-zone
+  name: www
+  ipv4Address: "10.0.10.100"
+  ttl: 300
+
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: ARecord
+metadata:
+  name: web-app-secondary
+  namespace: team-web
+  labels:
+    app: web-application
+    tier: frontend
+spec:
+  zoneRef: web-production-zone
+  name: app
+  ipv4Address: "10.0.10.101"
+  ttl: 300
+
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: CNAMERecord
+metadata:
+  name: web-cdn
+  namespace: team-web
+  labels:
+    app: web-application
+    tier: cdn
+spec:
+  zoneRef: web-production-zone
+  name: cdn
+  target: www.web.example.com.
+  ttl: 3600
+
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: TXTRecord
+metadata:
+  name: web-verification
+  namespace: team-web
+  labels:
+    purpose: domain-verification
+spec:
+  zoneRef: web-production-zone
+  name: "@"
+  text:
+    - "v=spf1 mx include:_spf.example.com ~all"
+    - "google-site-verification=abc123def456"
+  ttl: 3600
+
+---
+# ============================================================================
+# Tenant-Managed DNS: Bind9Cluster (Namespace-Scoped) for API Team
+# ============================================================================
+
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
+metadata:
+  name: api-dev-dns
+  namespace: team-api
+  labels:
+    team: api-team
+    environment: development
+spec:
+  version: "9.18"
+  primary:
+    replicas: 1
+  secondary:
+    replicas: 2
+  global:
+    recursion: true  # Allow recursion for development
+    allowQuery:
+      - "any"  # Open for dev environment
+    bindcarConfig:
+      image: "ghcr.io/firestoned/bindcar:latest"
+      imagePullPolicy: Never
+      logLevel: debug
+    dnssec:
+      validation: true
+
+---
+# Tenant-Managed DNS: DNSZone for API Team (uses clusterRef)
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: DNSZone
+metadata:
+  name: api-dev-zone
+  namespace: team-api
+  labels:
+    team: api-team
+    environment: development
+spec:
+  zoneName: api.dev.local
+  clusterRef: api-dev-dns  # References namespace-scoped Bind9Cluster
+  nameServerIps:
+    ns1.example.com.: 192.168.0.61
+  soaRecord:
+    primaryNs: ns1.api.dev.local.
+    adminEmail: api-team.example.com.
+    serial: 2025010101
+    refresh: 1800
+    retry: 300
+    expire: 86400
+    negativeTtl: 3600
+  ttl: 300
+
+---
+# DNS Records for API Team Zone
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: ARecord
+metadata:
+  name: api-gateway
+  namespace: team-api
+  labels:
+    app: api-gateway
+    tier: gateway
+spec:
+  zoneRef: api-dev-zone
+  name: gateway
+  ipv4Address: "10.1.20.50"
+  ttl: 60
+
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: ARecord
+metadata:
+  name: api-service-v1
+  namespace: team-api
+  labels:
+    app: api-service
+    version: v1
+spec:
+  zoneRef: api-dev-zone
+  name: api-v1
+  ipv4Address: "10.1.20.51"
+  ttl: 60
+
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: ARecord
+metadata:
+  name: api-service-v2
+  namespace: team-api
+  labels:
+    app: api-service
+    version: v2
+spec:
+  zoneRef: api-dev-zone
+  name: api-v2
+  ipv4Address: "10.1.20.52"
+  ttl: 60
+
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: SRVRecord
+metadata:
+  name: api-grpc-service
+  namespace: team-api
+  labels:
+    app: api-service
+    protocol: grpc
+spec:
+  zoneRef: api-dev-zone
+  name: _grpc._tcp
+  priority: 10
+  weight: 100
+  port: 50051
+  target: api-v2.api.dev.local.
+  ttl: 300
+
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: TXTRecord
+metadata:
+  name: api-metadata
+  namespace: team-api
+  labels:
+    purpose: service-discovery
+spec:
+  zoneRef: api-dev-zone
+  name: "@"
+  text:
+    - "env=development"
+    - "team=api-team"
+    - "version=2.0.0"
+  ttl: 300
+
+---
+# ============================================================================
+# Example: Additional Zone in Platform DNS for Another Team
+# ============================================================================
+
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: DNSZone
+metadata:
+  name: api-production-zone
+  namespace: team-api
+  labels:
+    team: api-team
+    environment: production
+spec:
+  zoneName: api.example.com
+  globalClusterRef: production-dns  # API team uses platform DNS for production
+  nameServerIps:
+    ns1.example.com.: 192.168.0.60
+  soaRecord:
+    primaryNs: ns1.api.example.com.
+    adminEmail: dns-admin.example.com.
+    serial: 2025010101
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTtl: 86400
+  ttl: 3600
+
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: ARecord
+metadata:
+  name: api-prod-gateway
+  namespace: team-api
+  labels:
+    app: api-gateway
+    environment: production
+spec:
+  zoneRef: api-production-zone
+  name: gateway
+  ipv4Address: "10.0.20.100"
+  ttl: 300
+
+---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: CNAMERecord
+metadata:
+  name: api-prod-alias
+  namespace: team-api
+  labels:
+    app: api-gateway
+    environment: production
+spec:
+  zoneRef: api-production-zone
+  name: api
+  target: gateway.api.example.com.
+  ttl: 300

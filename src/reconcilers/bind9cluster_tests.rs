@@ -4,8 +4,9 @@
 #[cfg(test)]
 mod tests {
     use crate::crd::{
-        Bind9Cluster, Bind9ClusterSpec, Bind9ClusterStatus, Bind9Instance, Bind9InstanceSpec,
-        Bind9InstanceStatus, Condition, PrimaryConfig, SecondaryConfig, ServerRole,
+        Bind9Cluster, Bind9ClusterCommonSpec, Bind9ClusterSpec, Bind9ClusterStatus, Bind9Instance,
+        Bind9InstanceSpec, Bind9InstanceStatus, Condition, PrimaryConfig, SecondaryConfig,
+        ServerRole,
     };
     use crate::labels::FINALIZER_BIND9_CLUSTER;
     use crate::reconcilers::bind9cluster::calculate_cluster_status;
@@ -23,26 +24,28 @@ mod tests {
                 ..Default::default()
             },
             spec: Bind9ClusterSpec {
-                version: Some("9.18".to_string()),
-                primary: Some(PrimaryConfig {
-                    replicas: Some(2),
-                    service: None,
-                    allow_transfer: None,
-                    rndc_secret_ref: None,
-                }),
-                secondary: Some(SecondaryConfig {
-                    replicas: Some(1),
-                    service: None,
-                    allow_transfer: None,
-                    rndc_secret_ref: None,
-                }),
-                image: None,
-                config_map_refs: None,
-                global: None,
-                rndc_secret_refs: None,
-                acls: None,
-                volumes: None,
-                volume_mounts: None,
+                common: Bind9ClusterCommonSpec {
+                    version: Some("9.18".to_string()),
+                    primary: Some(PrimaryConfig {
+                        replicas: Some(2),
+                        service: None,
+                        allow_transfer: None,
+                        rndc_secret_ref: None,
+                    }),
+                    secondary: Some(SecondaryConfig {
+                        replicas: Some(1),
+                        service: None,
+                        allow_transfer: None,
+                        rndc_secret_ref: None,
+                    }),
+                    image: None,
+                    config_map_refs: None,
+                    global: None,
+                    rndc_secret_refs: None,
+                    acls: None,
+                    volumes: None,
+                    volume_mounts: None,
+                },
             },
             status: None,
         }
@@ -141,34 +144,36 @@ mod tests {
 
     #[test]
     fn test_bind9cluster_spec_with_replicas() {
-        use crate::crd::{PrimaryConfig, SecondaryConfig};
+        use crate::crd::{Bind9ClusterCommonSpec, PrimaryConfig, SecondaryConfig};
 
         let spec = Bind9ClusterSpec {
-            version: Some("9.18".to_string()),
-            primary: Some(PrimaryConfig {
-                replicas: Some(2),
-                service: None,
-                allow_transfer: None,
-                rndc_secret_ref: None,
-            }),
-            secondary: Some(SecondaryConfig {
-                replicas: Some(3),
-                service: None,
-                allow_transfer: None,
-                rndc_secret_ref: None,
-            }),
-            image: None,
-            config_map_refs: None,
-            global: None,
-            rndc_secret_refs: None,
-            acls: None,
-            volumes: None,
-            volume_mounts: None,
+            common: Bind9ClusterCommonSpec {
+                version: Some("9.18".to_string()),
+                primary: Some(PrimaryConfig {
+                    replicas: Some(2),
+                    service: None,
+                    allow_transfer: None,
+                    rndc_secret_ref: None,
+                }),
+                secondary: Some(SecondaryConfig {
+                    replicas: Some(3),
+                    service: None,
+                    allow_transfer: None,
+                    rndc_secret_ref: None,
+                }),
+                image: None,
+                config_map_refs: None,
+                global: None,
+                rndc_secret_refs: None,
+                acls: None,
+                volumes: None,
+                volume_mounts: None,
+            },
         };
 
-        assert_eq!(spec.version, Some("9.18".to_string()));
-        assert_eq!(spec.primary.as_ref().unwrap().replicas, Some(2));
-        assert_eq!(spec.secondary.as_ref().unwrap().replicas, Some(3));
+        assert_eq!(spec.common.version, Some("9.18".to_string()));
+        assert_eq!(spec.common.primary.as_ref().unwrap().replicas, Some(2));
+        assert_eq!(spec.common.secondary.as_ref().unwrap().replicas, Some(3));
     }
 
     #[test]
@@ -486,6 +491,7 @@ mod tests {
         let cluster = create_test_cluster("test-cluster", "test-ns");
         let replicas = cluster
             .spec
+            .common
             .primary
             .as_ref()
             .and_then(|p| p.replicas)
@@ -499,6 +505,7 @@ mod tests {
         let cluster = create_test_cluster("test-cluster", "test-ns");
         let replicas = cluster
             .spec
+            .common
             .secondary
             .as_ref()
             .and_then(|s| s.replicas)

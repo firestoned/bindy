@@ -17,7 +17,7 @@ use k8s_openapi::api::core::v1::{Event, ObjectReference};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use k8s_openapi::chrono::Utc;
 use kube::{
-    api::{ListParams, Patch, PatchParams, PostParams},
+    api::{Patch, PatchParams, PostParams},
     client::Client,
     Api, Resource, ResourceExt,
 };
@@ -26,15 +26,17 @@ use tracing::{debug, error, info, warn};
 
 /// Helper macro to handle zone lookup with proper error reporting
 ///
-/// Returns a tuple of (`cluster_ref`, `zone_name`) from the `DNSZone` lookup
+/// Returns a tuple of (`cluster_ref`, `zone_name`, `is_global_cluster`) from the `DNSZone` lookup
 macro_rules! get_zone_or_fail {
-    ($client:expr, $namespace:expr, $zone:expr, $zone_ref:expr, $record:expr) => {
-        match get_zone_info($client, $namespace, $zone.as_ref(), $zone_ref.as_ref()).await {
-            Ok((cluster_ref, zone_name)) => (cluster_ref, zone_name),
+    ($client:expr, $namespace:expr, $zone_ref:expr, $record:expr) => {
+        match get_zone_info($client, $namespace, $zone_ref).await {
+            Ok((cluster_ref, zone_name, is_global_cluster)) => {
+                (cluster_ref, zone_name, is_global_cluster)
+            }
             Err(e) => {
                 let error_msg = format!(
-                    "Failed to lookup DNSZone in namespace {}: {}",
-                    $namespace, e
+                    "Failed to lookup DNSZone '{}' in namespace {}: {}",
+                    $zone_ref, $namespace, e
                 );
                 error!("{}", error_msg);
                 update_record_status(
@@ -56,6 +58,8 @@ macro_rules! get_zone_or_fail {
 ///
 /// Annotations are added to help track which `Bind9Cluster`, `Bind9Instance`, and `DNSZone`
 /// this record is associated with. This aids in debugging and resource management.
+///
+/// **IMPORTANT**: Only patches if annotations are missing or differ to avoid reconciliation loops.
 ///
 /// # Arguments
 ///
@@ -80,6 +84,28 @@ async fn add_record_annotations<T>(
 where
     T: Resource + Clone + std::fmt::Debug + serde::de::DeserializeOwned + serde::Serialize,
 {
+    // Fetch current record to check if annotations already exist
+    let record = api.get(record_name).await?;
+
+    // Check if annotations are already set with correct values
+    let needs_update = if let Some(metadata) = record.meta().annotations.as_ref() {
+        metadata.get(BINDY_CLUSTER_ANNOTATION) != Some(&cluster_ref.to_string())
+            || metadata.get(BINDY_INSTANCE_ANNOTATION) != Some(&instance_name.to_string())
+            || metadata.get(BINDY_ZONE_ANNOTATION) != Some(&zone_name.to_string())
+    } else {
+        // No annotations at all
+        true
+    };
+
+    // Only patch if annotations are missing or differ
+    if !needs_update {
+        debug!(
+            record = record_name,
+            "Tracking annotations already present and correct, skipping update"
+        );
+        return Ok(());
+    }
+
     let patch = json!({
         "metadata": {
             "annotations": {
@@ -137,12 +163,15 @@ where
 /// # Errors
 ///
 /// Returns error if any endpoint operation fails
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 async fn add_record_to_all_endpoints<R, F, Fut>(
     client: &Client,
     record: &R,
     zone_manager: &crate::bind9::Bind9Manager,
     record_type_name: &str,
     cluster_ref: &str,
+    is_global_cluster: bool,
     zone_name: &str,
     add_operation: F,
 ) -> Result<usize>
@@ -157,15 +186,70 @@ where
 {
     let namespace = record.namespace().unwrap_or_default();
 
+    // First, check if the zone exists before attempting DNS UPDATE operations
+    // This prevents NOTAUTH errors when the zone hasn't been loaded by BIND9 yet
+    let primary_pods =
+        super::dnszone::find_all_primary_pods(client, &namespace, cluster_ref, is_global_cluster)
+            .await?;
+
+    if primary_pods.is_empty() {
+        return Err(anyhow::anyhow!(
+            "No primary servers found for cluster {cluster_ref} - cannot add {record_type_name} record"
+        ));
+    }
+
+    // Check if zone exists on the first primary pod
+    // Use HTTP API endpoint for zone status check
+    let first_pod = &primary_pods[0];
+
+    // Get HTTP endpoint for zone existence check
+    // Don't hardcode port - retrieve from service endpoint definition
+    let http_endpoints = super::dnszone::get_endpoint(
+        client,
+        &first_pod.namespace,
+        &first_pod.instance_name,
+        "http", // Port name for HTTP API
+    )
+    .await?;
+
+    let http_endpoint = if let Some(endpoint) = http_endpoints.first() {
+        format!("{}:{}", endpoint.ip, endpoint.port)
+    } else {
+        return Err(anyhow::anyhow!(
+            "No HTTP endpoint found for instance {}/{} - cannot check zone existence",
+            first_pod.namespace,
+            first_pod.instance_name
+        ));
+    };
+
+    debug!(
+        "Checking if zone {} exists on {} before adding {} record",
+        zone_name, http_endpoint, record_type_name
+    );
+
+    if !zone_manager.zone_exists(zone_name, &http_endpoint).await {
+        warn!(
+            "Zone {} does not exist yet on {}, skipping {} record reconciliation (will retry on next reconciliation loop)",
+            zone_name, http_endpoint, record_type_name
+        );
+        return Ok(0); // Return 0 endpoints updated, will retry later
+    }
+
+    info!(
+        "Zone {} exists on {}, proceeding with {} record reconciliation",
+        zone_name, http_endpoint, record_type_name
+    );
+
     // Add the record to ALL primary pods across ALL instances
     // With EmptyDir storage, each pod maintains its own zone files
     let zone_name_clone = zone_name.to_string();
     let zone_manager_clone = zone_manager.clone();
 
-    let (first_endpoint, total_endpoints) = super::dnszone::for_each_primary_endpoint(
+    let (_first_endpoint, total_endpoints) = super::dnszone::for_each_primary_endpoint(
         client,
         &namespace,
         cluster_ref,
+        is_global_cluster,
         true, // with_rndc_key = true for record operations
         "dns-tcp", // Use DNS TCP port for dynamic DNS updates (RFC 2136)
         |pod_endpoint, instance_name, rndc_key| {
@@ -211,16 +295,42 @@ where
         record_type_name, zone_name, total_endpoints, cluster_ref
     );
 
-    // Notify secondaries about the record change via the first endpoint
-    if let Some(first_pod_endpoint) = first_endpoint {
-        if let Err(e) = zone_manager
-            .notify_zone(zone_name, &first_pod_endpoint)
-            .await
-        {
-            warn!(
-                "Failed to notify secondaries for zone {}: {}. Secondaries will sync via SOA refresh timer.",
-                zone_name, e
-            );
+    // Notify secondaries about the record change via HTTP API
+    // Don't reuse DNS endpoint (port 53) - get HTTP endpoint (port name "http")
+    if !primary_pods.is_empty() {
+        let first_pod = &primary_pods[0];
+
+        // Get HTTP endpoint for notify operation
+        let http_endpoints = super::dnszone::get_endpoint(
+            client,
+            &first_pod.namespace,
+            &first_pod.instance_name,
+            "http", // Port name for HTTP API
+        )
+        .await;
+
+        match http_endpoints {
+            Ok(endpoints) if !endpoints.is_empty() => {
+                let http_endpoint = format!("{}:{}", endpoints[0].ip, endpoints[0].port);
+                if let Err(e) = zone_manager.notify_zone(zone_name, &http_endpoint).await {
+                    warn!(
+                        "Failed to notify secondaries for zone {}: {}. Secondaries will sync via SOA refresh timer.",
+                        zone_name, e
+                    );
+                }
+            }
+            Ok(_) => {
+                warn!(
+                    "No HTTP endpoint found for instance {}/{}, cannot notify secondaries for zone {}. Secondaries will sync via SOA refresh timer.",
+                    first_pod.namespace, first_pod.instance_name, zone_name
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to get HTTP endpoint for notify operation: {}. Secondaries will sync via SOA refresh timer.",
+                    e
+                );
+            }
         }
     }
 
@@ -256,6 +366,7 @@ where
 /// # Errors
 ///
 /// Returns an error if Kubernetes API operations or BIND9 record operations fail.
+#[allow(clippy::too_many_lines)]
 pub async fn reconcile_a_record(
     client: Client,
     record: ARecord,
@@ -272,12 +383,24 @@ pub async fn reconcile_a_record(
         "Starting ARecord reconciliation"
     );
 
+    // Check if spec has changed using generation tracking
+    let current_generation = record.metadata.generation;
+    let observed_generation = record.status.as_ref().and_then(|s| s.observed_generation);
+
+    // Early return if spec hasn't changed (avoids reconciliation loop from status updates)
+    if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
+        debug!(
+            "Spec unchanged (generation={:?}), skipping reconciliation",
+            current_generation
+        );
+        return Ok(());
+    }
+
     let spec = &record.spec;
     debug!(
         record_name = %spec.name,
         ipv4_address = %spec.ipv4_address,
         ttl = ?spec.ttl,
-        zone = ?spec.zone,
         zone_ref = ?spec.zone_ref,
         "ARecord configuration"
     );
@@ -295,9 +418,9 @@ pub async fn reconcile_a_record(
 
     // Find the cluster and zone name for this zone
     debug!("Looking up DNSZone");
-    let (cluster_ref, zone_name) =
-        get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
-    debug!(cluster_ref = %cluster_ref, zone_name = %zone_name, "Found DNSZone");
+    let (cluster_ref, zone_name, is_global_cluster) =
+        get_zone_or_fail!(&client, &namespace, &spec.zone_ref, &record);
+    debug!(cluster_ref = %cluster_ref, zone_name = %zone_name, is_global_cluster = %is_global_cluster, "Found DNSZone");
 
     // Add tracking annotations
     let api: Api<ARecord> = Api::namespaced(client.clone(), &namespace);
@@ -322,6 +445,7 @@ pub async fn reconcile_a_record(
         zone_manager,
         "A",
         &cluster_ref,
+        is_global_cluster,
         &zone_name,
         move |zone_manager, zone_name, pod_endpoint, key_data| {
             let record_name = record_name.clone();
@@ -358,6 +482,20 @@ pub async fn reconcile_a_record(
         }
     };
 
+    // Check if zone exists - if not, set Progressing status and return (will retry later)
+    if endpoint_count == 0 {
+        update_record_status(
+            &client,
+            &record,
+            "Progressing",
+            "True",
+            "WaitingForZone",
+            &format!("Zone {zone_name} does not exist yet, waiting for DNSZone to be created"),
+        )
+        .await?;
+        return Ok(()); // Return success but not Ready - will retry on next reconciliation
+    }
+
     // All done - set Ready status
     update_record_status(
         &client,
@@ -383,6 +521,7 @@ pub async fn reconcile_a_record(
 /// # Errors
 ///
 /// Returns an error if Kubernetes API operations or BIND9 record operations fail.
+#[allow(clippy::too_many_lines)]
 pub async fn reconcile_txt_record(
     client: Client,
     record: TXTRecord,
@@ -392,6 +531,19 @@ pub async fn reconcile_txt_record(
     let name = record.name_any();
 
     info!("Reconciling TXTRecord: {}/{}", namespace, name);
+
+    // Check if spec has changed using generation tracking
+    let current_generation = record.metadata.generation;
+    let observed_generation = record.status.as_ref().and_then(|s| s.observed_generation);
+
+    // Early return if spec hasn't changed (avoids reconciliation loop from status updates)
+    if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
+        debug!(
+            "Spec unchanged (generation={:?}), skipping reconciliation",
+            current_generation
+        );
+        return Ok(());
+    }
 
     let spec = &record.spec;
 
@@ -406,8 +558,8 @@ pub async fn reconcile_txt_record(
     )
     .await?;
 
-    let (cluster_ref, zone_name) =
-        get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
+    let (cluster_ref, zone_name, is_global_cluster) =
+        get_zone_or_fail!(&client, &namespace, &spec.zone_ref, &record);
 
     // Add tracking annotations
     let api: Api<TXTRecord> = Api::namespaced(client.clone(), &namespace);
@@ -432,6 +584,7 @@ pub async fn reconcile_txt_record(
         zone_manager,
         "TXT",
         &cluster_ref,
+        is_global_cluster,
         &zone_name,
         move |zone_manager, zone_name, pod_endpoint, key_data| {
             let record_name = record_name.clone();
@@ -471,6 +624,20 @@ pub async fn reconcile_txt_record(
         }
     };
 
+    // Check if zone exists - if not, set Progressing status and return (will retry later)
+    if endpoint_count == 0 {
+        update_record_status(
+            &client,
+            &record,
+            "Progressing",
+            "True",
+            "WaitingForZone",
+            &format!("Zone {zone_name} does not exist yet, waiting for DNSZone to be created"),
+        )
+        .await?;
+        return Ok(()); // Return success but not Ready - will retry on next reconciliation
+    }
+
     // All done - set Ready status
     update_record_status(
         &client,
@@ -495,6 +662,7 @@ pub async fn reconcile_txt_record(
 /// # Errors
 ///
 /// Returns an error if Kubernetes API operations or BIND9 record operations fail.
+#[allow(clippy::too_many_lines)]
 pub async fn reconcile_aaaa_record(
     client: Client,
     record: AAAARecord,
@@ -504,6 +672,19 @@ pub async fn reconcile_aaaa_record(
     let name = record.name_any();
 
     info!("Reconciling AAAARecord: {}/{}", namespace, name);
+
+    // Check if spec has changed using generation tracking
+    let current_generation = record.metadata.generation;
+    let observed_generation = record.status.as_ref().and_then(|s| s.observed_generation);
+
+    // Early return if spec hasn't changed (avoids reconciliation loop from status updates)
+    if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
+        debug!(
+            "Spec unchanged (generation={:?}), skipping reconciliation",
+            current_generation
+        );
+        return Ok(());
+    }
 
     let spec = &record.spec;
 
@@ -518,8 +699,8 @@ pub async fn reconcile_aaaa_record(
     )
     .await?;
 
-    let (cluster_ref, zone_name) =
-        get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
+    let (cluster_ref, zone_name, is_global_cluster) =
+        get_zone_or_fail!(&client, &namespace, &spec.zone_ref, &record);
 
     // Add tracking annotations
     let api: Api<AAAARecord> = Api::namespaced(client.clone(), &namespace);
@@ -544,6 +725,7 @@ pub async fn reconcile_aaaa_record(
         zone_manager,
         "AAAA",
         &cluster_ref,
+        is_global_cluster,
         &zone_name,
         move |zone_manager, zone_name, pod_endpoint, key_data| {
             let record_name = record_name.clone();
@@ -580,6 +762,20 @@ pub async fn reconcile_aaaa_record(
         }
     };
 
+    // Check if zone exists - if not, set Progressing status and return (will retry later)
+    if endpoint_count == 0 {
+        update_record_status(
+            &client,
+            &record,
+            "Progressing",
+            "True",
+            "WaitingForZone",
+            &format!("Zone {zone_name} does not exist yet, waiting for DNSZone to be created"),
+        )
+        .await?;
+        return Ok(()); // Return success but not Ready - will retry on next reconciliation
+    }
+
     // All done - set Ready status
     update_record_status(
         &client,
@@ -604,6 +800,7 @@ pub async fn reconcile_aaaa_record(
 /// # Errors
 ///
 /// Returns an error if Kubernetes API operations or BIND9 record operations fail.
+#[allow(clippy::too_many_lines)]
 pub async fn reconcile_cname_record(
     client: Client,
     record: CNAMERecord,
@@ -613,6 +810,19 @@ pub async fn reconcile_cname_record(
     let name = record.name_any();
 
     info!("Reconciling CNAMERecord: {}/{}", namespace, name);
+
+    // Check if spec has changed using generation tracking
+    let current_generation = record.metadata.generation;
+    let observed_generation = record.status.as_ref().and_then(|s| s.observed_generation);
+
+    // Early return if spec hasn't changed (avoids reconciliation loop from status updates)
+    if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
+        debug!(
+            "Spec unchanged (generation={:?}), skipping reconciliation",
+            current_generation
+        );
+        return Ok(());
+    }
 
     let spec = &record.spec;
 
@@ -627,8 +837,8 @@ pub async fn reconcile_cname_record(
     )
     .await?;
 
-    let (cluster_ref, zone_name) =
-        get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
+    let (cluster_ref, zone_name, is_global_cluster) =
+        get_zone_or_fail!(&client, &namespace, &spec.zone_ref, &record);
 
     // Add tracking annotations
     let api: Api<CNAMERecord> = Api::namespaced(client.clone(), &namespace);
@@ -653,6 +863,7 @@ pub async fn reconcile_cname_record(
         zone_manager,
         "CNAME",
         &cluster_ref,
+        is_global_cluster,
         &zone_name,
         move |zone_manager, zone_name, pod_endpoint, key_data| {
             let record_name = record_name.clone();
@@ -689,6 +900,20 @@ pub async fn reconcile_cname_record(
         }
     };
 
+    // Check if zone exists - if not, set Progressing status and return (will retry later)
+    if endpoint_count == 0 {
+        update_record_status(
+            &client,
+            &record,
+            "Progressing",
+            "True",
+            "WaitingForZone",
+            &format!("Zone {zone_name} does not exist yet, waiting for DNSZone to be created"),
+        )
+        .await?;
+        return Ok(()); // Return success but not Ready - will retry on next reconciliation
+    }
+
     // All done - set Ready status
     update_record_status(
         &client,
@@ -714,6 +939,7 @@ pub async fn reconcile_cname_record(
 /// # Errors
 ///
 /// Returns an error if Kubernetes API operations or BIND9 record operations fail.
+#[allow(clippy::too_many_lines)]
 pub async fn reconcile_mx_record(
     client: Client,
     record: MXRecord,
@@ -723,6 +949,19 @@ pub async fn reconcile_mx_record(
     let name = record.name_any();
 
     info!("Reconciling MXRecord: {}/{}", namespace, name);
+
+    // Check if spec has changed using generation tracking
+    let current_generation = record.metadata.generation;
+    let observed_generation = record.status.as_ref().and_then(|s| s.observed_generation);
+
+    // Early return if spec hasn't changed (avoids reconciliation loop from status updates)
+    if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
+        debug!(
+            "Spec unchanged (generation={:?}), skipping reconciliation",
+            current_generation
+        );
+        return Ok(());
+    }
 
     let spec = &record.spec;
 
@@ -737,8 +976,8 @@ pub async fn reconcile_mx_record(
     )
     .await?;
 
-    let (cluster_ref, zone_name) =
-        get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
+    let (cluster_ref, zone_name, is_global_cluster) =
+        get_zone_or_fail!(&client, &namespace, &spec.zone_ref, &record);
 
     // Add tracking annotations
     let api: Api<MXRecord> = Api::namespaced(client.clone(), &namespace);
@@ -764,6 +1003,7 @@ pub async fn reconcile_mx_record(
         zone_manager,
         "MX",
         &cluster_ref,
+        is_global_cluster,
         &zone_name,
         move |zone_manager, zone_name, pod_endpoint, key_data| {
             let record_name = record_name.clone();
@@ -803,6 +1043,20 @@ pub async fn reconcile_mx_record(
         }
     };
 
+    // Check if zone exists - if not, set Progressing status and return (will retry later)
+    if endpoint_count == 0 {
+        update_record_status(
+            &client,
+            &record,
+            "Progressing",
+            "True",
+            "WaitingForZone",
+            &format!("Zone {zone_name} does not exist yet, waiting for DNSZone to be created"),
+        )
+        .await?;
+        return Ok(()); // Return success but not Ready - will retry on next reconciliation
+    }
+
     // All done - set Ready status
     update_record_status(
         &client,
@@ -828,6 +1082,7 @@ pub async fn reconcile_mx_record(
 /// # Errors
 ///
 /// Returns an error if Kubernetes API operations or BIND9 record operations fail.
+#[allow(clippy::too_many_lines)]
 pub async fn reconcile_ns_record(
     client: Client,
     record: NSRecord,
@@ -837,6 +1092,19 @@ pub async fn reconcile_ns_record(
     let name = record.name_any();
 
     info!("Reconciling NSRecord: {}/{}", namespace, name);
+
+    // Check if spec has changed using generation tracking
+    let current_generation = record.metadata.generation;
+    let observed_generation = record.status.as_ref().and_then(|s| s.observed_generation);
+
+    // Early return if spec hasn't changed (avoids reconciliation loop from status updates)
+    if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
+        debug!(
+            "Spec unchanged (generation={:?}), skipping reconciliation",
+            current_generation
+        );
+        return Ok(());
+    }
 
     let spec = &record.spec;
 
@@ -851,8 +1119,8 @@ pub async fn reconcile_ns_record(
     )
     .await?;
 
-    let (cluster_ref, zone_name) =
-        get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
+    let (cluster_ref, zone_name, is_global_cluster) =
+        get_zone_or_fail!(&client, &namespace, &spec.zone_ref, &record);
 
     // Add tracking annotations
     let api: Api<NSRecord> = Api::namespaced(client.clone(), &namespace);
@@ -877,6 +1145,7 @@ pub async fn reconcile_ns_record(
         zone_manager,
         "NS",
         &cluster_ref,
+        is_global_cluster,
         &zone_name,
         move |zone_manager, zone_name, pod_endpoint, key_data| {
             let record_name = record_name.clone();
@@ -913,6 +1182,20 @@ pub async fn reconcile_ns_record(
         }
     };
 
+    // Check if zone exists - if not, set Progressing status and return (will retry later)
+    if endpoint_count == 0 {
+        update_record_status(
+            &client,
+            &record,
+            "Progressing",
+            "True",
+            "WaitingForZone",
+            &format!("Zone {zone_name} does not exist yet, waiting for DNSZone to be created"),
+        )
+        .await?;
+        return Ok(()); // Return success but not Ready - will retry on next reconciliation
+    }
+
     // All done - set Ready status
     update_record_status(
         &client,
@@ -938,6 +1221,7 @@ pub async fn reconcile_ns_record(
 /// # Errors
 ///
 /// Returns an error if Kubernetes API operations or BIND9 record operations fail.
+#[allow(clippy::too_many_lines)]
 pub async fn reconcile_srv_record(
     client: Client,
     record: SRVRecord,
@@ -947,6 +1231,19 @@ pub async fn reconcile_srv_record(
     let name = record.name_any();
 
     info!("Reconciling SRVRecord: {}/{}", namespace, name);
+
+    // Check if spec has changed using generation tracking
+    let current_generation = record.metadata.generation;
+    let observed_generation = record.status.as_ref().and_then(|s| s.observed_generation);
+
+    // Early return if spec hasn't changed (avoids reconciliation loop from status updates)
+    if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
+        debug!(
+            "Spec unchanged (generation={:?}), skipping reconciliation",
+            current_generation
+        );
+        return Ok(());
+    }
 
     let spec = &record.spec;
 
@@ -961,8 +1258,8 @@ pub async fn reconcile_srv_record(
     )
     .await?;
 
-    let (cluster_ref, zone_name) =
-        get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
+    let (cluster_ref, zone_name, is_global_cluster) =
+        get_zone_or_fail!(&client, &namespace, &spec.zone_ref, &record);
 
     // Add tracking annotations
     let api: Api<SRVRecord> = Api::namespaced(client.clone(), &namespace);
@@ -992,6 +1289,7 @@ pub async fn reconcile_srv_record(
         zone_manager,
         "SRV",
         &cluster_ref,
+        is_global_cluster,
         &zone_name,
         move |zone_manager, zone_name, pod_endpoint, key_data| {
             let record_name = record_name.clone();
@@ -1030,6 +1328,20 @@ pub async fn reconcile_srv_record(
         }
     };
 
+    // Check if zone exists - if not, set Progressing status and return (will retry later)
+    if endpoint_count == 0 {
+        update_record_status(
+            &client,
+            &record,
+            "Progressing",
+            "True",
+            "WaitingForZone",
+            &format!("Zone {zone_name} does not exist yet, waiting for DNSZone to be created"),
+        )
+        .await?;
+        return Ok(()); // Return success but not Ready - will retry on next reconciliation
+    }
+
     // All done - set Ready status
     update_record_status(
         &client,
@@ -1055,6 +1367,7 @@ pub async fn reconcile_srv_record(
 /// # Errors
 ///
 /// Returns an error if Kubernetes API operations or BIND9 record operations fail.
+#[allow(clippy::too_many_lines)]
 pub async fn reconcile_caa_record(
     client: Client,
     record: CAARecord,
@@ -1064,6 +1377,19 @@ pub async fn reconcile_caa_record(
     let name = record.name_any();
 
     info!("Reconciling CAARecord: {}/{}", namespace, name);
+
+    // Check if spec has changed using generation tracking
+    let current_generation = record.metadata.generation;
+    let observed_generation = record.status.as_ref().and_then(|s| s.observed_generation);
+
+    // Early return if spec hasn't changed (avoids reconciliation loop from status updates)
+    if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
+        debug!(
+            "Spec unchanged (generation={:?}), skipping reconciliation",
+            current_generation
+        );
+        return Ok(());
+    }
 
     let spec = &record.spec;
 
@@ -1078,8 +1404,8 @@ pub async fn reconcile_caa_record(
     )
     .await?;
 
-    let (cluster_ref, zone_name) =
-        get_zone_or_fail!(&client, &namespace, &spec.zone, &spec.zone_ref, &record);
+    let (cluster_ref, zone_name, is_global_cluster) =
+        get_zone_or_fail!(&client, &namespace, &spec.zone_ref, &record);
 
     // Add tracking annotations
     let api: Api<CAARecord> = Api::namespaced(client.clone(), &namespace);
@@ -1106,6 +1432,7 @@ pub async fn reconcile_caa_record(
         zone_manager,
         "CAA",
         &cluster_ref,
+        is_global_cluster,
         &zone_name,
         move |zone_manager, zone_name, pod_endpoint, key_data| {
             let record_name = record_name.clone();
@@ -1147,6 +1474,20 @@ pub async fn reconcile_caa_record(
         }
     };
 
+    // Check if zone exists - if not, set Progressing status and return (will retry later)
+    if endpoint_count == 0 {
+        update_record_status(
+            &client,
+            &record,
+            "Progressing",
+            "True",
+            "WaitingForZone",
+            &format!("Zone {zone_name} does not exist yet, waiting for DNSZone to be created"),
+        )
+        .await?;
+        return Ok(()); // Return success but not Ready - will retry on next reconciliation
+    }
+
     // All done - set Ready status
     update_record_status(
         &client,
@@ -1166,69 +1507,44 @@ pub async fn reconcile_caa_record(
 
 /// Retrieves zone information (`cluster_ref` and `zone_name`) for a DNS record.
 ///
-/// This function supports two lookup methods:
-/// - `zone`: Searches for a `DNSZone` by matching `spec.zoneName` (e.g., "example.com")
-/// - `zone_ref`: Directly retrieves a `DNSZone` by its Kubernetes resource name (more efficient)
+/// Directly retrieves a `DNSZone` by its Kubernetes resource name.
 ///
 /// # Arguments
 ///
 /// * `client` - Kubernetes API client
 /// * `namespace` - Namespace to search for the `DNSZone`
-/// * `zone` - Optional DNS zone name to match against `spec.zoneName`
-/// * `zone_ref` - Optional reference to a `DNSZone` resource by metadata.name
+/// * `zone_ref` - Reference to a `DNSZone` resource by metadata.name
 ///
 /// # Returns
 ///
-/// A tuple of `(cluster_ref, zone_name)` where:
-/// - `cluster_ref` identifies which `Bind9Instance` serves the zone
+/// A tuple of `(cluster_ref, zone_name, is_global_cluster)` where:
+/// - `cluster_ref` identifies which `Bind9Cluster` or `Bind9GlobalCluster` serves the zone
 /// - `zone_name` is the actual DNS zone name (e.g., "example.com")
+/// - `is_global_cluster` indicates if this references a `Bind9GlobalCluster`
 ///
 /// # Errors
 ///
 /// Returns an error if:
-/// - Neither `zone` nor `zone_ref` is specified
-/// - Both `zone` and `zone_ref` are specified
 /// - The `DNSZone` API is unavailable
-/// - No `DNSZone` matches the given `zone` name
 /// - The specified `zone_ref` does not exist
 async fn get_zone_info(
     client: &Client,
     namespace: &str,
-    zone: Option<&String>,
-    zone_ref: Option<&String>,
-) -> Result<(String, String)> {
+    zone_ref: &str,
+) -> Result<(String, String, bool)> {
     let zone_api: Api<DNSZone> = Api::namespaced(client.clone(), namespace);
 
-    match (zone, zone_ref) {
-        (Some(zone_name), None) => {
-            // Lookup by zoneName - search all zones for matching spec.zoneName
-            let zones = zone_api.list(&ListParams::default()).await?;
+    // Lookup by zoneRef - direct get by resource name (efficient)
+    let zone = zone_api
+        .get(zone_ref)
+        .await
+        .with_context(|| format!("Failed to get DNSZone {zone_ref} in namespace {namespace}"))?;
 
-            for z in zones.items {
-                if &z.spec.zone_name == zone_name {
-                    return Ok((z.spec.cluster_ref, z.spec.zone_name));
-                }
-            }
-
-            Err(anyhow!(
-                "No DNSZone found with zoneName={zone_name} in namespace {namespace}"
-            ))
-        }
-        (None, Some(ref_name)) => {
-            // Lookup by zoneRef - direct get by resource name (more efficient)
-            let zone = zone_api.get(ref_name).await.with_context(|| {
-                format!("Failed to get DNSZone {ref_name} in namespace {namespace}")
-            })?;
-
-            Ok((zone.spec.cluster_ref, zone.spec.zone_name))
-        }
-        (Some(_), Some(_)) => Err(anyhow!(
-            "Cannot specify both 'zone' and 'zoneRef'. Use only one."
-        )),
-        (None, None) => Err(anyhow!(
-            "Must specify either 'zone' or 'zoneRef' to identify the DNS zone"
-        )),
-    }
+    // Extract cluster_ref (handles both clusterRef and globalClusterRef)
+    let cluster_ref =
+        crate::reconcilers::dnszone::get_cluster_ref_from_spec(&zone.spec, namespace, zone_ref)?;
+    let is_global_cluster = zone.spec.global_cluster_ref.is_some();
+    Ok((cluster_ref, zone.spec.zone_name, is_global_cluster))
 }
 
 /// Create a Kubernetes Event for a DNS record.
@@ -1340,14 +1656,22 @@ where
                 if let Some(conditions) =
                     current_status.get("conditions").and_then(|c| c.as_array())
                 {
-                    if let Some(cond) = conditions.first() {
+                    // Find the condition with matching type (not just first condition)
+                    let matching_condition = conditions.iter().find(|cond| {
+                        cond.get("type").and_then(|t| t.as_str()) == Some(condition_type)
+                    });
+
+                    if let Some(cond) = matching_condition {
                         let status_matches =
                             cond.get("status").and_then(|s| s.as_str()) == Some(status);
                         let reason_matches =
                             cond.get("reason").and_then(|r| r.as_str()) == Some(reason);
-                        !(status_matches && reason_matches)
+                        let message_matches =
+                            cond.get("message").and_then(|m| m.as_str()) == Some(message);
+                        // Only update if any field has changed
+                        !(status_matches && reason_matches && message_matches)
                     } else {
-                        true // No conditions, need to add one
+                        true // Condition type not found, need to add it
                     }
                 } else {
                     true // No conditions array, need to update
@@ -1370,7 +1694,12 @@ where
     // Determine last_transition_time
     let last_transition_time = if let Some(current_status) = current_json.get("status") {
         if let Some(conditions) = current_status.get("conditions").and_then(|c| c.as_array()) {
-            if let Some(cond) = conditions.first() {
+            // Find the condition with matching type (same as above)
+            let matching_condition = conditions
+                .iter()
+                .find(|cond| cond.get("type").and_then(|t| t.as_str()) == Some(condition_type));
+
+            if let Some(cond) = matching_condition {
                 let status_changed = cond.get("status").and_then(|s| s.as_str()) != Some(status);
                 if status_changed {
                     // Status changed, use current time
@@ -1383,6 +1712,7 @@ where
                         .to_string()
                 }
             } else {
+                // Condition type not found, use current time
                 Utc::now().to_rfc3339()
             }
         } else {

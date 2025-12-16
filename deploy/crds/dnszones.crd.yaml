@@ -29,6 +29,9 @@ spec:
     - jsonPath: .spec.clusterRef
       name: Cluster
       type: string
+    - jsonPath: .spec.globalClusterRef
+      name: Global Cluster
+      type: string
     - jsonPath: .spec.ttl
       name: TTL
       type: integer
@@ -38,7 +41,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defines a zone (e.g., example.com) with SOA record parameters and is served by a specified Bind9Instance.
+        description: DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defines a zone (e.g., example.com) with SOA record parameters. Can reference either a namespace-scoped Bind9Cluster or cluster-scoped Bind9GlobalCluster.
         properties:
           spec:
             description: |-
@@ -48,18 +51,46 @@ spec:
               served by a BIND9 cluster. The zone includes SOA record information and will be
               synchronized to all instances in the referenced cluster via AXFR/IXFR.
 
-              # Example
+              `DNSZones` can reference either:
+              - A namespace-scoped `Bind9Cluster` (using `clusterRef`)
+              - A cluster-scoped `Bind9GlobalCluster` (using `globalClusterRef`)
+
+              Exactly one of `clusterRef` or `globalClusterRef` must be specified.
+
+              # Example: Namespace-scoped Cluster
 
               ```yaml
-              apiVersion: dns.firestoned.io/v1alpha1
+              apiVersion: bindy.firestoned.io/v1alpha1
               kind: DNSZone
               metadata:
                 name: example-com
-                namespace: dns-system
+                namespace: dev-team-alpha
               spec:
                 zoneName: example.com
-                clusterRef: my-dns-cluster
-                soa_record:
+                clusterRef: dev-team-dns  # References Bind9Cluster in same namespace
+                soaRecord:
+                  primaryNs: ns1.example.com.
+                  adminEmail: admin.example.com.
+                  serial: 2024010101
+                  refresh: 3600
+                  retry: 600
+                  expire: 604800
+                  negativeTtl: 86400
+                ttl: 3600
+              ```
+
+              # Example: Cluster-scoped Global Cluster
+
+              ```yaml
+              apiVersion: bindy.firestoned.io/v1alpha1
+              kind: DNSZone
+              metadata:
+                name: production-example-com
+                namespace: production
+              spec:
+                zoneName: example.com
+                globalClusterRef: shared-production-dns  # References Bind9GlobalCluster (cluster-scoped)
+                soaRecord:
                   primaryNs: ns1.example.com.
                   adminEmail: admin.example.com.
                   serial: 2024010101
@@ -72,10 +103,23 @@ spec:
             properties:
               clusterRef:
                 description: |-
-                  Reference to the `Bind9Instance` that serves this zone.
+                  Reference to a namespace-scoped `Bind9Cluster` in the same namespace.
 
-                  Must match the name of a `Bind9Instance` in the same namespace.
-                  The zone will be added to this instance via rndc addzone.
+                  Must match the name of a `Bind9Cluster` resource in the same namespace.
+                  The zone will be added to all instances in this cluster.
+
+                  Either `clusterRef` or `globalClusterRef` must be specified (not both).
+                nullable: true
+                type: string
+              globalClusterRef:
+                description: |-
+                  Reference to a cluster-scoped `Bind9GlobalCluster`.
+
+                  Must match the name of a `Bind9GlobalCluster` resource (cluster-scoped).
+                  The zone will be added to all instances in this global cluster.
+
+                  Either `clusterRef` or `globalClusterRef` must be specified (not both).
+                nullable: true
                 type: string
               nameServerIps:
                 additionalProperties:
@@ -193,7 +237,6 @@ spec:
                 pattern: ^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$
                 type: string
             required:
-            - clusterRef
             - soaRecord
             - zoneName
             type: object

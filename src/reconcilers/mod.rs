@@ -20,8 +20,10 @@
 //!
 //! ## Infrastructure
 //!
-//! - [`reconcile_bind9cluster`] - Manages BIND9 cluster status and instance tracking
-//! - [`delete_bind9cluster`] - Cleans up BIND9 cluster resources
+//! - [`reconcile_bind9cluster`] - Manages namespace-scoped BIND9 cluster status
+//! - [`delete_bind9cluster`] - Cleans up namespace-scoped BIND9 cluster resources
+//! - [`reconcile_bind9globalcluster`] - Manages cluster-scoped BIND9 global cluster status
+//! - [`delete_bind9globalcluster`] - Cleans up cluster-scoped BIND9 global cluster resources
 //! - [`reconcile_bind9instance`] - Creates/updates BIND9 server deployments
 //! - [`delete_bind9instance`] - Cleans up BIND9 server resources
 //!
@@ -59,12 +61,15 @@
 //! ```
 
 pub mod bind9cluster;
+pub mod bind9globalcluster;
 pub mod bind9instance;
 pub mod dnszone;
 pub mod records;
 
 #[cfg(test)]
 mod bind9cluster_tests;
+#[cfg(test)]
+mod bind9globalcluster_tests;
 #[cfg(test)]
 mod bind9instance_tests;
 #[cfg(test)]
@@ -73,6 +78,7 @@ mod dnszone_tests;
 mod records_tests;
 
 pub use bind9cluster::{delete_bind9cluster, reconcile_bind9cluster};
+pub use bind9globalcluster::{delete_bind9globalcluster, reconcile_bind9globalcluster};
 pub use bind9instance::{delete_bind9instance, reconcile_bind9instance};
 pub use dnszone::{delete_dnszone, reconcile_dnszone};
 pub use records::{
@@ -124,4 +130,51 @@ pub fn should_reconcile(current_generation: Option<i64>, observed_generation: Op
         (Some(_), None) => true, // First reconciliation
         _ => false,              // No generation tracking available
     }
+}
+
+/// Check if a status value has actually changed compared to the current status.
+///
+/// This helper prevents unnecessary status updates that would trigger reconciliation loops.
+/// It compares a new status value with the existing status and returns `true` only if
+/// they differ, indicating an update is needed.
+///
+/// # Arguments
+///
+/// * `current_value` - The current status value (from existing resource)
+/// * `new_value` - The new status value to potentially set
+///
+/// # Returns
+///
+/// * `true` - Status has changed and needs updating
+/// * `false` - Status is unchanged, skip the update
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use bindy::reconcilers::status_changed;
+///
+/// let current_ready = instance.status.as_ref()
+///     .and_then(|s| s.ready_replicas);
+/// let new_ready = Some(3);
+///
+/// if status_changed(&current_ready, &new_ready) {
+///     // Status has changed, safe to update
+///     update_status(client, instance, new_ready).await?;
+/// }
+/// ```
+///
+/// # Why This Matters
+///
+/// In kube-rs, status updates trigger "object updated" events which cause new reconciliations.
+/// Without this check, updating status on every reconciliation creates a tight loop:
+///
+/// 1. Reconcile → Update status
+/// 2. Status update → "object updated" event
+/// 3. Event → New reconciliation
+/// 4. Repeat from step 1 (infinite loop)
+///
+/// By only updating when status actually changes, we break this cycle.
+#[must_use]
+pub fn status_changed<T: PartialEq>(current_value: &Option<T>, new_value: &Option<T>) -> bool {
+    current_value != new_value
 }

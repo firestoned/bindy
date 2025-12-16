@@ -11,14 +11,15 @@ use bindy::{
         METRICS_SERVER_PATH, METRICS_SERVER_PORT, TOKIO_WORKER_THREADS,
     },
     crd::{
-        AAAARecord, ARecord, Bind9Cluster, Bind9Instance, CAARecord, CNAMERecord, DNSZone,
-        MXRecord, NSRecord, SRVRecord, TXTRecord,
+        AAAARecord, ARecord, Bind9Cluster, Bind9GlobalCluster, Bind9Instance, CAARecord,
+        CNAMERecord, DNSZone, MXRecord, NSRecord, SRVRecord, TXTRecord,
     },
     metrics,
     reconcilers::{
         delete_dnszone, reconcile_a_record, reconcile_aaaa_record, reconcile_bind9cluster,
-        reconcile_bind9instance, reconcile_caa_record, reconcile_cname_record, reconcile_dnszone,
-        reconcile_mx_record, reconcile_ns_record, reconcile_srv_record, reconcile_txt_record,
+        reconcile_bind9globalcluster, reconcile_bind9instance, reconcile_caa_record,
+        reconcile_cname_record, reconcile_dnszone, reconcile_mx_record, reconcile_ns_record,
+        reconcile_srv_record, reconcile_txt_record,
     },
 };
 use futures::StreamExt;
@@ -244,6 +245,11 @@ async fn run_controllers_without_leader_election(
             result?;
             anyhow::bail!("Bind9Cluster controller exited unexpectedly without error")
         }
+        result = run_bind9globalcluster_controller(client.clone()) => {
+            error!("CRITICAL: Bind9GlobalCluster controller exited unexpectedly: {:?}", result);
+            result?;
+            anyhow::bail!("Bind9GlobalCluster controller exited unexpectedly without error")
+        }
         result = run_bind9instance_controller(client.clone()) => {
             error!("CRITICAL: Bind9Instance controller exited unexpectedly: {:?}", result);
             result?;
@@ -376,6 +382,11 @@ async fn run_all_controllers(client: Client, bind9_manager: Arc<Bind9Manager>) -
             error!("CRITICAL: Bind9Cluster controller exited unexpectedly: {:?}", result);
             result?;
             anyhow::bail!("Bind9Cluster controller exited unexpectedly without error")
+        }
+        result = run_bind9globalcluster_controller(client.clone()) => {
+            error!("CRITICAL: Bind9GlobalCluster controller exited unexpectedly: {:?}", result);
+            result?;
+            anyhow::bail!("Bind9GlobalCluster controller exited unexpectedly without error")
         }
         result = run_bind9instance_controller(client.clone()) => {
             error!("CRITICAL: Bind9Instance controller exited unexpectedly: {:?}", result);
@@ -532,7 +543,11 @@ async fn run_arecord_controller(client: Client, bind9_manager: Arc<Bind9Manager>
     let api = Api::<ARecord>::all(client.clone());
     debug!("ARecord API client created");
 
-    Controller::new(api, Config::default())
+    // Configure controller to only watch for spec changes, not status updates
+    // This prevents reconciliation loops when we update status
+    let watcher_config = Config::default().any_semantic();
+
+    Controller::new(api, watcher_config)
         .run(
             reconcile_arecord_wrapper,
             error_policy,
@@ -550,7 +565,10 @@ async fn run_txtrecord_controller(client: Client, bind9_manager: Arc<Bind9Manage
 
     let api = Api::<TXTRecord>::all(client.clone());
 
-    Controller::new(api, Config::default())
+    // Configure controller to only watch for spec changes, not status updates
+    let watcher_config = Config::default().any_semantic();
+
+    Controller::new(api, watcher_config)
         .run(
             reconcile_txtrecord_wrapper,
             error_policy,
@@ -568,7 +586,10 @@ async fn run_aaaarecord_controller(client: Client, bind9_manager: Arc<Bind9Manag
 
     let api = Api::<AAAARecord>::all(client.clone());
 
-    Controller::new(api, Config::default())
+    // Configure controller to only watch for spec changes, not status updates
+    let watcher_config = Config::default().any_semantic();
+
+    Controller::new(api, watcher_config)
         .run(
             reconcile_aaaarecord_wrapper,
             error_policy,
@@ -589,7 +610,10 @@ async fn run_cnamerecord_controller(
 
     let api = Api::<CNAMERecord>::all(client.clone());
 
-    Controller::new(api, Config::default())
+    // Configure controller to only watch for spec changes, not status updates
+    let watcher_config = Config::default().any_semantic();
+
+    Controller::new(api, watcher_config)
         .run(
             reconcile_cnamerecord_wrapper,
             error_policy,
@@ -607,7 +631,10 @@ async fn run_mxrecord_controller(client: Client, bind9_manager: Arc<Bind9Manager
 
     let api = Api::<MXRecord>::all(client.clone());
 
-    Controller::new(api, Config::default())
+    // Configure controller to only watch for spec changes, not status updates
+    let watcher_config = Config::default().any_semantic();
+
+    Controller::new(api, watcher_config)
         .run(
             reconcile_mxrecord_wrapper,
             error_policy,
@@ -625,7 +652,10 @@ async fn run_nsrecord_controller(client: Client, bind9_manager: Arc<Bind9Manager
 
     let api = Api::<NSRecord>::all(client.clone());
 
-    Controller::new(api, Config::default())
+    // Configure controller to only watch for spec changes, not status updates
+    let watcher_config = Config::default().any_semantic();
+
+    Controller::new(api, watcher_config)
         .run(
             reconcile_nsrecord_wrapper,
             error_policy,
@@ -643,7 +673,10 @@ async fn run_srvrecord_controller(client: Client, bind9_manager: Arc<Bind9Manage
 
     let api = Api::<SRVRecord>::all(client.clone());
 
-    Controller::new(api, Config::default())
+    // Configure controller to only watch for spec changes, not status updates
+    let watcher_config = Config::default().any_semantic();
+
+    Controller::new(api, watcher_config)
         .run(
             reconcile_srvrecord_wrapper,
             error_policy,
@@ -661,7 +694,10 @@ async fn run_caarecord_controller(client: Client, bind9_manager: Arc<Bind9Manage
 
     let api = Api::<CAARecord>::all(client.clone());
 
-    Controller::new(api, Config::default())
+    // Configure controller to only watch for spec changes, not status updates
+    let watcher_config = Config::default().any_semantic();
+
+    Controller::new(api, watcher_config)
         .run(
             reconcile_caarecord_wrapper,
             error_policy,
@@ -743,6 +779,75 @@ async fn reconcile_bind9cluster_wrapper(
     }
 }
 
+/// Reconcile wrapper for `Bind9GlobalCluster`
+async fn reconcile_bind9globalcluster_wrapper(
+    cluster: Arc<Bind9GlobalCluster>,
+    ctx: Arc<Client>,
+) -> Result<Action, ReconcileError> {
+    use bindy::constants::KIND_BIND9_GLOBALCLUSTER;
+    let start = std::time::Instant::now();
+
+    debug!(
+        cluster_name = %cluster.name_any(),
+        "Reconcile wrapper called for Bind9GlobalCluster"
+    );
+
+    let result = reconcile_bind9globalcluster((*ctx).clone(), (*cluster).clone()).await;
+    let duration = start.elapsed();
+
+    match result {
+        Ok(()) => {
+            info!(
+                "Successfully reconciled Bind9GlobalCluster: {}",
+                cluster.name_any()
+            );
+            metrics::record_reconciliation_success(KIND_BIND9_GLOBALCLUSTER, duration);
+
+            // Check if cluster is ready to determine requeue interval
+            let is_ready = cluster
+                .status
+                .as_ref()
+                .and_then(|status| status.conditions.first())
+                .is_some_and(|condition| condition.r#type == "Ready" && condition.status == "True");
+
+            if is_ready {
+                // Cluster is ready, check less frequently (5 minutes)
+                debug!("Global cluster ready, requeueing in 5 minutes");
+                Ok(Action::requeue(Duration::from_secs(300)))
+            } else {
+                // Cluster is not ready, check more frequently (30 seconds)
+                // to monitor instance status changes
+                debug!("Global cluster not ready, requeueing in 30 seconds");
+                Ok(Action::requeue(Duration::from_secs(30)))
+            }
+        }
+        Err(e) => {
+            error!("Failed to reconcile Bind9GlobalCluster: {}", e);
+            metrics::record_reconciliation_error(KIND_BIND9_GLOBALCLUSTER, duration);
+            metrics::record_error(KIND_BIND9_GLOBALCLUSTER, "reconcile_error");
+            Err(e.into())
+        }
+    }
+}
+
+/// Run the `Bind9GlobalCluster` controller
+async fn run_bind9globalcluster_controller(client: Client) -> Result<()> {
+    info!("Starting Bind9GlobalCluster controller");
+
+    let api = Api::<Bind9GlobalCluster>::all(client.clone());
+
+    Controller::new(api, Config::default())
+        .run(
+            reconcile_bind9globalcluster_wrapper,
+            error_policy_globalcluster,
+            Arc::new(client),
+        )
+        .for_each(|_| futures::future::ready(()))
+        .await;
+
+    Ok(())
+}
+
 /// Run the `Bind9Instance` controller
 async fn run_bind9instance_controller(client: Client) -> Result<()> {
     info!("Starting Bind9Instance controller");
@@ -811,7 +916,8 @@ async fn reconcile_dnszone_wrapper(
     ctx: Arc<(Client, Arc<Bind9Manager>)>,
 ) -> Result<Action, ReconcileError> {
     use bindy::constants::KIND_DNS_ZONE;
-    const FINALIZER_NAME: &str = "dns.firestoned.io/dnszone";
+    use bindy::labels::FINALIZER_DNS_ZONE;
+    const FINALIZER_NAME: &str = FINALIZER_DNS_ZONE;
     let start = std::time::Instant::now();
 
     let client = ctx.0.clone();
@@ -900,12 +1006,23 @@ async fn reconcile_arecord_wrapper(
             info!("Successfully reconciled ARecord: {}", record.name_any());
             metrics::record_reconciliation_success(KIND_A_RECORD, duration);
 
-            // Check if record is ready to determine requeue interval
-            let is_ready = record
-                .status
-                .as_ref()
-                .and_then(|status| status.conditions.first())
-                .is_some_and(|condition| condition.r#type == "Ready" && condition.status == "True");
+            // Fetch the latest status to check if record is ready
+            // (status was updated inside reconcile_a_record, but not in our Arc<ARecord>)
+            let namespace = record.namespace().unwrap_or_default();
+            let name = record.name_any();
+            let api: Api<ARecord> = Api::namespaced(ctx.0.clone(), &namespace);
+
+            let is_ready = if let Ok(updated_record) = api.get(&name).await {
+                updated_record
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.first())
+                    .is_some_and(|condition| {
+                        condition.r#type == "Ready" && condition.status == "True"
+                    })
+            } else {
+                false
+            };
 
             if is_ready {
                 // Record is ready, check less frequently (5 minutes)
@@ -940,12 +1057,23 @@ async fn reconcile_txtrecord_wrapper(
             info!("Successfully reconciled TXTRecord: {}", record.name_any());
             metrics::record_reconciliation_success(KIND_TXT_RECORD, duration);
 
-            // Check if record is ready to determine requeue interval
-            let is_ready = record
-                .status
-                .as_ref()
-                .and_then(|status| status.conditions.first())
-                .is_some_and(|condition| condition.r#type == "Ready" && condition.status == "True");
+            // Fetch the latest status to check if record is ready
+            // (status was updated inside reconcile_txt_record, but not in our Arc<TXTRecord>)
+            let namespace = record.namespace().unwrap_or_default();
+            let name = record.name_any();
+            let api: Api<TXTRecord> = Api::namespaced(ctx.0.clone(), &namespace);
+
+            let is_ready = if let Ok(updated_record) = api.get(&name).await {
+                updated_record
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.first())
+                    .is_some_and(|condition| {
+                        condition.r#type == "Ready" && condition.status == "True"
+                    })
+            } else {
+                false
+            };
 
             if is_ready {
                 // Record is ready, check less frequently (5 minutes)
@@ -980,12 +1108,23 @@ async fn reconcile_aaaarecord_wrapper(
             info!("Successfully reconciled AAAARecord: {}", record.name_any());
             metrics::record_reconciliation_success(KIND_AAAA_RECORD, duration);
 
-            // Check if record is ready to determine requeue interval
-            let is_ready = record
-                .status
-                .as_ref()
-                .and_then(|status| status.conditions.first())
-                .is_some_and(|condition| condition.r#type == "Ready" && condition.status == "True");
+            // Fetch the latest status to check if record is ready
+            // (status was updated inside reconcile_aaaa_record, but not in our Arc<AAAARecord>)
+            let namespace = record.namespace().unwrap_or_default();
+            let name = record.name_any();
+            let api: Api<AAAARecord> = Api::namespaced(ctx.0.clone(), &namespace);
+
+            let is_ready = if let Ok(updated_record) = api.get(&name).await {
+                updated_record
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.first())
+                    .is_some_and(|condition| {
+                        condition.r#type == "Ready" && condition.status == "True"
+                    })
+            } else {
+                false
+            };
 
             if is_ready {
                 // Record is ready, check less frequently (5 minutes)
@@ -1020,12 +1159,23 @@ async fn reconcile_cnamerecord_wrapper(
             info!("Successfully reconciled CNAMERecord: {}", record.name_any());
             metrics::record_reconciliation_success(KIND_CNAME_RECORD, duration);
 
-            // Check if record is ready to determine requeue interval
-            let is_ready = record
-                .status
-                .as_ref()
-                .and_then(|status| status.conditions.first())
-                .is_some_and(|condition| condition.r#type == "Ready" && condition.status == "True");
+            // Fetch the latest status to check if record is ready
+            // (status was updated inside reconcile_cname_record, but not in our Arc<CNAMERecord>)
+            let namespace = record.namespace().unwrap_or_default();
+            let name = record.name_any();
+            let api: Api<CNAMERecord> = Api::namespaced(ctx.0.clone(), &namespace);
+
+            let is_ready = if let Ok(updated_record) = api.get(&name).await {
+                updated_record
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.first())
+                    .is_some_and(|condition| {
+                        condition.r#type == "Ready" && condition.status == "True"
+                    })
+            } else {
+                false
+            };
 
             if is_ready {
                 // Record is ready, check less frequently (5 minutes)
@@ -1060,12 +1210,23 @@ async fn reconcile_mxrecord_wrapper(
             info!("Successfully reconciled MXRecord: {}", record.name_any());
             metrics::record_reconciliation_success(KIND_MX_RECORD, duration);
 
-            // Check if record is ready to determine requeue interval
-            let is_ready = record
-                .status
-                .as_ref()
-                .and_then(|status| status.conditions.first())
-                .is_some_and(|condition| condition.r#type == "Ready" && condition.status == "True");
+            // Fetch the latest status to check if record is ready
+            // (status was updated inside reconcile_mx_record, but not in our Arc<MXRecord>)
+            let namespace = record.namespace().unwrap_or_default();
+            let name = record.name_any();
+            let api: Api<MXRecord> = Api::namespaced(ctx.0.clone(), &namespace);
+
+            let is_ready = if let Ok(updated_record) = api.get(&name).await {
+                updated_record
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.first())
+                    .is_some_and(|condition| {
+                        condition.r#type == "Ready" && condition.status == "True"
+                    })
+            } else {
+                false
+            };
 
             if is_ready {
                 // Record is ready, check less frequently (5 minutes)
@@ -1100,12 +1261,23 @@ async fn reconcile_nsrecord_wrapper(
             info!("Successfully reconciled NSRecord: {}", record.name_any());
             metrics::record_reconciliation_success(KIND_NS_RECORD, duration);
 
-            // Check if record is ready to determine requeue interval
-            let is_ready = record
-                .status
-                .as_ref()
-                .and_then(|status| status.conditions.first())
-                .is_some_and(|condition| condition.r#type == "Ready" && condition.status == "True");
+            // Fetch the latest status to check if record is ready
+            // (status was updated inside reconcile_ns_record, but not in our Arc<NSRecord>)
+            let namespace = record.namespace().unwrap_or_default();
+            let name = record.name_any();
+            let api: Api<NSRecord> = Api::namespaced(ctx.0.clone(), &namespace);
+
+            let is_ready = if let Ok(updated_record) = api.get(&name).await {
+                updated_record
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.first())
+                    .is_some_and(|condition| {
+                        condition.r#type == "Ready" && condition.status == "True"
+                    })
+            } else {
+                false
+            };
 
             if is_ready {
                 // Record is ready, check less frequently (5 minutes)
@@ -1140,12 +1312,23 @@ async fn reconcile_srvrecord_wrapper(
             info!("Successfully reconciled SRVRecord: {}", record.name_any());
             metrics::record_reconciliation_success(KIND_SRV_RECORD, duration);
 
-            // Check if record is ready to determine requeue interval
-            let is_ready = record
-                .status
-                .as_ref()
-                .and_then(|status| status.conditions.first())
-                .is_some_and(|condition| condition.r#type == "Ready" && condition.status == "True");
+            // Fetch the latest status to check if record is ready
+            // (status was updated inside reconcile_srv_record, but not in our Arc<SRVRecord>)
+            let namespace = record.namespace().unwrap_or_default();
+            let name = record.name_any();
+            let api: Api<SRVRecord> = Api::namespaced(ctx.0.clone(), &namespace);
+
+            let is_ready = if let Ok(updated_record) = api.get(&name).await {
+                updated_record
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.first())
+                    .is_some_and(|condition| {
+                        condition.r#type == "Ready" && condition.status == "True"
+                    })
+            } else {
+                false
+            };
 
             if is_ready {
                 // Record is ready, check less frequently (5 minutes)
@@ -1180,12 +1363,23 @@ async fn reconcile_caarecord_wrapper(
             info!("Successfully reconciled CAARecord: {}", record.name_any());
             metrics::record_reconciliation_success(KIND_CAA_RECORD, duration);
 
-            // Check if record is ready to determine requeue interval
-            let is_ready = record
-                .status
-                .as_ref()
-                .and_then(|status| status.conditions.first())
-                .is_some_and(|condition| condition.r#type == "Ready" && condition.status == "True");
+            // Fetch the latest status to check if record is ready
+            // (status was updated inside reconcile_caa_record, but not in our Arc<CAARecord>)
+            let namespace = record.namespace().unwrap_or_default();
+            let name = record.name_any();
+            let api: Api<CAARecord> = Api::namespaced(ctx.0.clone(), &namespace);
+
+            let is_ready = if let Ok(updated_record) = api.get(&name).await {
+                updated_record
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.first())
+                    .is_some_and(|condition| {
+                        condition.r#type == "Ready" && condition.status == "True"
+                    })
+            } else {
+                false
+            };
 
             if is_ready {
                 // Record is ready, check less frequently (5 minutes)
@@ -1215,6 +1409,15 @@ fn error_policy(
 
 /// Error policy for `Bind9Cluster` controller
 fn error_policy_cluster(
+    _resource: Arc<impl std::fmt::Debug>,
+    _err: &ReconcileError,
+    _ctx: Arc<Client>,
+) -> Action {
+    Action::requeue(Duration::from_secs(ERROR_REQUEUE_DURATION_SECS))
+}
+
+/// Error policy for `Bind9GlobalCluster` controller
+fn error_policy_globalcluster(
     _resource: Arc<impl std::fmt::Debug>,
     _err: &ReconcileError,
     _ctx: Arc<Client>,

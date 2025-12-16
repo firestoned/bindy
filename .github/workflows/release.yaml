@@ -57,46 +57,16 @@ jobs:
           echo "Updated Cargo.toml to version ${{ needs.extract-version.outputs.version }}"
           grep '^version = ' Cargo.toml
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust build environment
+        uses: ./.github/actions/setup-rust-build
         with:
-          targets: ${{ matrix.platform.target }}
+          target: ${{ matrix.platform.target }}
+          cache-key: release-${{ needs.extract-version.outputs.version }}
 
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+      - name: Build binary
+        uses: ./.github/actions/build-binary
         with:
-          key: ${{ matrix.platform.target }}
-          cache-on-failure: true
-
-      - name: Cache cross binary
-        if: matrix.platform.target == 'aarch64-unknown-linux-gnu'
-        id: cache-cross
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/cross
-          key: ${{ runner.os }}-cross-v0.2.5
-          restore-keys: |
-            ${{ runner.os }}-cross-
-
-      - name: Install cross for ARM64 builds
-        if: matrix.platform.target == 'aarch64-unknown-linux-gnu' && steps.cache-cross.outputs.cache-hit != 'true'
-        run: |
-          cargo install cross --git https://github.com/cross-rs/cross --tag v0.2.5
-          cross --version
-
-      - name: Verify Docker for cross (ARM64)
-        if: matrix.platform.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          docker --version
-          docker info
-
-      - name: Build (release) - x86_64
-        if: matrix.platform.target == 'x86_64-unknown-linux-gnu'
-        run: cargo build --release --target ${{ matrix.platform.target }} --verbose
-
-      - name: Build (release) - ARM64 with cross
-        if: matrix.platform.target == 'aarch64-unknown-linux-gnu'
-        run: cross build --release --target ${{ matrix.platform.target }} --verbose
+          target: ${{ matrix.platform.target }}
 
       - name: Cache cargo-cyclonedx
         id: cache-cyclonedx
@@ -135,21 +105,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Update Cargo.toml version
-        run: |
-          sed -i 's/^version = ".*"/version = "${{ needs.extract-version.outputs.version }}"/' Cargo.toml
-          echo "Updated Cargo.toml to version ${{ needs.extract-version.outputs.version }}"
-          grep '^version = ' Cargo.toml
+      - name: Prepare Docker binaries
+        uses: ./.github/actions/prepare-docker-binaries
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+      - name: Setup Docker environment
+        uses: ./.github/actions/setup-docker
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta
@@ -163,11 +125,12 @@ jobs:
             type=raw,value=latest
             type=raw,value=${{ needs.extract-version.outputs.tag_name }}
 
-      - name: Build and push Docker image
+      - name: Build and push Docker image (fast - uses pre-built binaries)
         id: docker_build
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: docker/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

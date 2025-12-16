@@ -1,19 +1,17 @@
 ---
 # A Records
 
-# Method 1: Using 'zone' field - matches against DNSZone spec.zoneName
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: www-example
   namespace: dns-system
 spec:
-  zone: example.com  # Matches DNSZone spec.zoneName
+  zoneRef: example-com
   name: www
   ipv4Address: "192.0.2.1"
   ttl: 300
 ---
-# Method 2: Using 'zoneRef' field - references DNSZone by metadata.name (more efficient)
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
@@ -25,6 +23,17 @@ spec:
   ipv4Address: "192.0.2.2"
   ttl: 300
 ---
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: ARecord
+metadata:
+  name: mail-example
+  namespace: dns-system
+spec:
+  zoneRef: example-com  # References DNSZone metadata.name directly
+  name: mail
+  ipv4Address: "192.0.2.2"
+  ttl: 300
+---
 # MX Records
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: MXRecord
@@ -32,7 +41,7 @@ metadata:
   name: mail-example
   namespace: dns-system
 spec:
-  zone: example.com
+  zoneRef: example-com
   name: "@"
   priority: 10
   mailServer: mail.example.com.
@@ -45,7 +54,7 @@ metadata:
   name: spf-example
   namespace: dns-system
 spec:
-  zone: example.com
+  zoneRef: example-com
   name: "@"
   text:
     - "v=spf1 include:_spf.example.com ~all"
@@ -82,7 +91,7 @@ metadata:
   name: db-internal
   namespace: dns-system
 spec:
-  zone: internal.local  # Using zoneName lookup
+  zoneRef: internal-local
   name: db
   ipv4Address: "10.0.1.10"
   ttl: 300

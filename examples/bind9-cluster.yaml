@@ -1,21 +1,45 @@
 ---
+# Platform DNS Cluster - Cluster-Scoped (Global)
+# This cluster can be referenced from DNSZones in any namespace
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9Cluster
+kind: Bind9GlobalCluster
 metadata:
   name: production-dns
-  namespace: dns-system
   labels:
     environment: production
+    managed-by: platform-team
 spec:
+  # Namespace where Bind9Instance resources will be created (optional)
+  # Global clusters are cluster-scoped, but instances must live in a namespace
+  # If not specified, defaults to the namespace where the Bindy operator is running
+  namespace: dns-system
   version: "9.18"
   # Primary instance configuration
   primary:
     # Default number of replicas for primary instances (can be overridden per instance)
     replicas: 2
+    # Service configuration with annotations for load balancer integration
+    service:
+      annotations:
+        # MetalLB address pool for production DNS
+        metallb.universe.tf/address-pool: production-dns-pool
+        # External DNS to create public DNS records
+        external-dns.alpha.kubernetes.io/hostname: ns1.production.example.com
+      spec:
+        type: LoadBalancer
+        externalTrafficPolicy: Local
   # Secondary instance configuration
   secondary:
     # Default number of replicas for secondary instances (can be overridden per instance)
     replicas: 1
+    service:
+      annotations:
+        # Use different pool for secondaries
+        metallb.universe.tf/address-pool: production-dns-pool
+        external-dns.alpha.kubernetes.io/hostname: ns2.production.example.com
+      spec:
+        type: LoadBalancer
+        externalTrafficPolicy: Local
   global:
     recursion: false
     allowQuery:
@@ -23,7 +47,7 @@ spec:
     allowTransfer:
       - "10.0.0.0/8"
     bindcarConfig:
-      image: "ghcr.io/firestoned/bindcar:latest"
+      image: "ghcr.io/firestoned/bindcar:v0.2.8"
       imagePullPolicy: Never
       logLevel: debug
     dnssec:

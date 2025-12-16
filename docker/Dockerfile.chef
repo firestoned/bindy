@@ -1,23 +1,37 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 
-# Build stage
-FROM rust:1.91.0 as builder
+# This Dockerfile uses cargo-chef for optimal caching of Rust dependencies
+# First build: ~5 minutes, subsequent builds: ~30 seconds (if only src/ changes)
+#
+# To use this Dockerfile:
+#   docker build -f Dockerfile.chef -t bindy:latest .
+#
+# IMPORTANT: This requires cargo-chef to be installed in the base image.
+# The rust:1.91.0 image doesn't include it by default, so we install it in a separate stage.
 
-# Accept version as build argument (e.g., 1.0.0)
-ARG VERSION=0.1.0
-
+# Stage 1: Prepare cargo-chef
+FROM rust:1.91.0 as chef
+RUN cargo install cargo-chef
 WORKDIR /workspace
+
+# Stage 2: Generate recipe file (this layer is cached unless Cargo.toml/Cargo.lock change)
+FROM chef as planner
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+RUN cargo chef prepare --recipe-path recipe.json
+
+# Stage 3: Build dependencies (this layer is cached unless recipe changes)
+FROM chef as builder
+
+# Accept version as build argument
+ARG VERSION=0.1.0
 
 # Install musl target and cross-compilation tools for static linking
 RUN rustup target add aarch64-unknown-linux-musl x86_64-unknown-linux-musl && \
     apt-get update && \
     apt-get install -y musl-tools && \
     rm -rf /var/lib/apt/lists/*
-
-# Copy only dependency manifests first to leverage Docker layer caching
-COPY Cargo.toml ./
-COPY Cargo.lock* ./
 
 # Determine the musl target based on architecture
 RUN ARCH=$(uname -m) && \
@@ -27,26 +41,21 @@ RUN ARCH=$(uname -m) && \
         echo "x86_64-unknown-linux-musl" > /tmp/target; \
     fi
 
-# Create dummy source files to build dependencies
-RUN mkdir -p src/bin && \
-    echo "fn main() {}" > src/main.rs && \
-    echo "fn main() {}" > src/bin/crdgen.rs && \
-    echo "fn main() {}" > src/bin/crddoc.rs && \
-    cargo build --release --target $(cat /tmp/target) && \
-    rm -rf src
+# Copy recipe and build dependencies
+COPY --from=planner /workspace/recipe.json recipe.json
+RUN TARGET=$(cat /tmp/target) && \
+    cargo chef cook --release --target $TARGET --recipe-path recipe.json
 
-# Now copy the actual source code
+# Copy source code and build the actual binary
+COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY templates ./templates
 
 # Update version in Cargo.toml using the VERSION build argument
-# This ensures the final binary has the correct version from the release tag
 RUN sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
 
 # Build the actual controller with musl for static linking
-# Touch main.rs to ensure it's rebuilt with the real code
-RUN touch src/main.rs && \
-    TARGET=$(cat /tmp/target) && \
+RUN TARGET=$(cat /tmp/target) && \
     cargo build --release --target $TARGET && \
     cp target/$TARGET/release/bindy target/release/bindy
 
