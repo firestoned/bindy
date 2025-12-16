@@ -16,6 +16,7 @@ use crate::labels::{
     BINDY_RECONCILE_TRIGGER_ANNOTATION, BINDY_ROLE_LABEL, FINALIZER_BIND9_CLUSTER, K8S_PART_OF,
     MANAGED_BY_BIND9_CLUSTER, PART_OF_BINDY, ROLE_PRIMARY, ROLE_SECONDARY,
 };
+use crate::reconcilers::finalizers::{ensure_finalizer, handle_deletion, FinalizerCleanup};
 use anyhow::Result;
 use chrono::Utc;
 use k8s_openapi::{
@@ -33,6 +34,16 @@ use kube::{
 use serde_json::json;
 use std::collections::BTreeMap;
 use tracing::{debug, error, info, warn};
+
+/// Implement cleanup trait for `Bind9Cluster` finalizer management
+#[async_trait::async_trait]
+impl FinalizerCleanup for Bind9Cluster {
+    async fn cleanup(&self, client: &Client) -> Result<()> {
+        let namespace = self.namespace().unwrap_or_default();
+        let name = self.name_any();
+        delete_cluster_instances(client, &namespace, &name).await
+    }
+}
 
 /// Reconciles a `Bind9Cluster` resource.
 ///
@@ -70,11 +81,11 @@ pub async fn reconcile_bind9cluster(client: Client, cluster: Bind9Cluster) -> Re
 
     // Handle deletion if cluster is being deleted
     if cluster.metadata.deletion_timestamp.is_some() {
-        return handle_cluster_deletion(&client, &cluster, &namespace, &name).await;
+        return handle_deletion(&client, &cluster, FINALIZER_BIND9_CLUSTER).await;
     }
 
     // Ensure finalizer is present
-    ensure_finalizer(&client, &cluster, &namespace, &name).await?;
+    ensure_finalizer(&client, &cluster, FINALIZER_BIND9_CLUSTER).await?;
 
     // Check if spec has changed using the standard generation check
     let current_generation = cluster.metadata.generation;
@@ -123,126 +134,6 @@ pub async fn reconcile_bind9cluster(client: Client, cluster: Bind9Cluster) -> Re
         instance_names,
     )
     .await?;
-
-    Ok(())
-}
-
-/// Handle deletion of a `Bind9Cluster`
-///
-/// Deletes all managed `Bind9Instance` resources and removes the finalizer.
-///
-/// # Arguments
-///
-/// * `client` - Kubernetes API client
-/// * `cluster` - The `Bind9Cluster` being deleted
-/// * `namespace` - Cluster namespace
-/// * `name` - Cluster name
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - Failed to delete managed instances
-/// - Failed to remove finalizer
-async fn handle_cluster_deletion(
-    client: &Client,
-    cluster: &Bind9Cluster,
-    namespace: &str,
-    name: &str,
-) -> Result<()> {
-    info!("Bind9Cluster {}/{} is being deleted", namespace, name);
-
-    // Check if our finalizer is present
-    if cluster
-        .metadata
-        .finalizers
-        .as_ref()
-        .is_some_and(|f| f.contains(&FINALIZER_BIND9_CLUSTER.to_string()))
-    {
-        info!("Running cleanup for Bind9Cluster {}/{}", namespace, name);
-
-        // Delete all Bind9Instance resources with matching clusterRef
-        if let Err(e) = delete_cluster_instances(client, namespace, name).await {
-            error!(
-                "Failed to delete instances for cluster {}/{}: {}",
-                namespace, name, e
-            );
-            return Err(e);
-        }
-
-        // Remove our finalizer
-        info!(
-            "Removing finalizer from Bind9Cluster {}/{}",
-            namespace, name
-        );
-        let mut finalizers = cluster.metadata.finalizers.clone().unwrap_or_default();
-        finalizers.retain(|f| f != FINALIZER_BIND9_CLUSTER);
-
-        let api: Api<Bind9Cluster> = Api::namespaced(client.clone(), namespace);
-        let patch = json!({
-            "metadata": {
-                "finalizers": finalizers
-            }
-        });
-
-        api.patch(name, &PatchParams::default(), &Patch::Merge(&patch))
-            .await?;
-
-        info!(
-            "Successfully removed finalizer from Bind9Cluster {}/{}",
-            namespace, name
-        );
-    }
-
-    Ok(())
-}
-
-/// Ensure finalizer is present on a `Bind9Cluster`
-///
-/// Adds the cluster finalizer if not already present.
-///
-/// # Arguments
-///
-/// * `client` - Kubernetes API client
-/// * `cluster` - The `Bind9Cluster` to add finalizer to
-/// * `namespace` - Cluster namespace
-/// * `name` - Cluster name
-///
-/// # Errors
-///
-/// Returns an error if the finalizer patch fails
-async fn ensure_finalizer(
-    client: &Client,
-    cluster: &Bind9Cluster,
-    namespace: &str,
-    name: &str,
-) -> Result<()> {
-    // Add finalizer if not present
-    if cluster
-        .metadata
-        .finalizers
-        .as_ref()
-        .is_none_or(|f| !f.contains(&FINALIZER_BIND9_CLUSTER.to_string()))
-    {
-        info!("Adding finalizer to Bind9Cluster {}/{}", namespace, name);
-
-        let mut finalizers = cluster.metadata.finalizers.clone().unwrap_or_default();
-        finalizers.push(FINALIZER_BIND9_CLUSTER.to_string());
-
-        let api: Api<Bind9Cluster> = Api::namespaced(client.clone(), namespace);
-        let patch = json!({
-            "metadata": {
-                "finalizers": finalizers
-            }
-        });
-
-        api.patch(name, &PatchParams::default(), &Patch::Merge(&patch))
-            .await?;
-
-        info!(
-            "Successfully added finalizer to Bind9Cluster {}/{}",
-            namespace, name
-        );
-    }
 
     Ok(())
 }

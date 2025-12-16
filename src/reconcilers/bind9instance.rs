@@ -13,6 +13,8 @@ use crate::bind9_resources::{
 use crate::constants::{API_GROUP_VERSION, DEFAULT_BIND9_VERSION, KIND_BIND9_INSTANCE};
 use crate::crd::{Bind9Cluster, Bind9Instance, Bind9InstanceStatus, Condition};
 use crate::labels::{BINDY_MANAGED_BY_LABEL, FINALIZER_BIND9_INSTANCE};
+use crate::reconcilers::finalizers::{ensure_finalizer, handle_deletion, FinalizerCleanup};
+use crate::reconcilers::resources::{create_or_apply, create_or_replace};
 use anyhow::Result;
 use chrono::Utc;
 use k8s_openapi::api::{
@@ -27,6 +29,37 @@ use kube::{
 };
 use serde_json::json;
 use tracing::{debug, error, info, warn};
+
+/// Implement cleanup trait for `Bind9Instance` finalizer management
+#[async_trait::async_trait]
+impl FinalizerCleanup for Bind9Instance {
+    async fn cleanup(&self, client: &Client) -> Result<()> {
+        let namespace = self.namespace().unwrap_or_default();
+        let name = self.name_any();
+
+        // Check if this instance is managed by a Bind9Cluster
+        let is_managed: bool = self
+            .metadata
+            .labels
+            .as_ref()
+            .and_then(|labels| labels.get(BINDY_MANAGED_BY_LABEL))
+            .is_some();
+
+        if is_managed {
+            info!(
+                "Bind9Instance {}/{} is managed by a Bind9Cluster, skipping resource cleanup (cluster will handle it)",
+                namespace, name
+            );
+            Ok(())
+        } else {
+            info!(
+                "Running cleanup for standalone Bind9Instance {}/{}",
+                namespace, name
+            );
+            delete_resources(client, &namespace, &name).await
+        }
+    }
+}
 
 /// Reconciles a `Bind9Instance` resource.
 ///
@@ -63,114 +96,6 @@ use tracing::{debug, error, info, warn};
 ///
 /// Returns an error if Kubernetes API operations fail or resource creation/update fails.
 ///
-/// Handle deletion of a `Bind9Instance`, including cleanup and finalizer removal
-async fn handle_deletion(
-    client: &Client,
-    api: &Api<Bind9Instance>,
-    instance: &Bind9Instance,
-    namespace: &str,
-    name: &str,
-) -> Result<()> {
-    info!("Bind9Instance {}/{} is being deleted", namespace, name);
-
-    // Check if our finalizer is present
-    if instance
-        .metadata
-        .finalizers
-        .as_ref()
-        .is_some_and(|f| f.contains(&FINALIZER_BIND9_INSTANCE.to_string()))
-    {
-        // Check if this instance is managed by a Bind9Cluster
-        let is_managed: bool = instance
-            .metadata
-            .labels
-            .as_ref()
-            .and_then(|labels| labels.get(BINDY_MANAGED_BY_LABEL))
-            .is_some();
-
-        if is_managed {
-            info!(
-                "Bind9Instance {}/{} is managed by a Bind9Cluster, skipping resource cleanup (cluster will handle it)",
-                namespace, name
-            );
-        } else {
-            info!(
-                "Running cleanup for standalone Bind9Instance {}/{}",
-                namespace, name
-            );
-
-            // Delete all resources created by this instance
-            if let Err(e) = delete_resources(client, namespace, name).await {
-                error!(
-                    "Failed to delete resources for instance {}/{}: {}",
-                    namespace, name, e
-                );
-                return Err(e);
-            }
-        }
-
-        // Remove our finalizer
-        info!(
-            "Removing finalizer from Bind9Instance {}/{}",
-            namespace, name
-        );
-        let mut finalizers = instance.metadata.finalizers.clone().unwrap_or_default();
-        finalizers.retain(|f| f != FINALIZER_BIND9_INSTANCE);
-
-        let patch = json!({
-            "metadata": {
-                "finalizers": finalizers
-            }
-        });
-
-        api.patch(name, &PatchParams::default(), &Patch::Merge(&patch))
-            .await?;
-
-        info!(
-            "Successfully removed finalizer from Bind9Instance {}/{}",
-            namespace, name
-        );
-    }
-
-    Ok(())
-}
-
-/// Add finalizer to a `Bind9Instance` if not present
-async fn ensure_finalizer(
-    api: &Api<Bind9Instance>,
-    instance: &Bind9Instance,
-    namespace: &str,
-    name: &str,
-) -> Result<()> {
-    if instance
-        .metadata
-        .finalizers
-        .as_ref()
-        .is_none_or(|f| !f.contains(&FINALIZER_BIND9_INSTANCE.to_string()))
-    {
-        info!("Adding finalizer to Bind9Instance {}/{}", namespace, name);
-
-        let mut finalizers = instance.metadata.finalizers.clone().unwrap_or_default();
-        finalizers.push(FINALIZER_BIND9_INSTANCE.to_string());
-
-        let patch = json!({
-            "metadata": {
-                "finalizers": finalizers
-            }
-        });
-
-        api.patch(name, &PatchParams::default(), &Patch::Merge(&patch))
-            .await?;
-
-        info!(
-            "Successfully added finalizer to Bind9Instance {}/{}",
-            namespace, name
-        );
-    }
-
-    Ok(())
-}
-
 /// Reconcile a `Bind9Instance` custom resource
 ///
 /// Creates or updates all Kubernetes resources needed to run a BIND9 DNS server:
@@ -189,7 +114,6 @@ async fn ensure_finalizer(
 pub async fn reconcile_bind9instance(client: Client, instance: Bind9Instance) -> Result<()> {
     let namespace = instance.namespace().unwrap_or_default();
     let name = instance.name_any();
-    let api: Api<Bind9Instance> = Api::namespaced(client.clone(), &namespace);
 
     info!("Reconciling Bind9Instance: {}/{}", namespace, name);
     debug!(
@@ -201,12 +125,11 @@ pub async fn reconcile_bind9instance(client: Client, instance: Bind9Instance) ->
 
     // Check if the instance is being deleted
     if instance.metadata.deletion_timestamp.is_some() {
-        handle_deletion(&client, &api, &instance, &namespace, &name).await?;
-        return Ok(());
+        return handle_deletion(&client, &instance, FINALIZER_BIND9_INSTANCE).await;
     }
 
     // Add finalizer if not present
-    ensure_finalizer(&api, &instance, &namespace, &name).await?;
+    ensure_finalizer(&client, &instance, FINALIZER_BIND9_INSTANCE).await?;
 
     let spec = &instance.spec;
     let replicas = spec.replicas.unwrap_or(1);
@@ -418,45 +341,8 @@ async fn create_or_update_service_account(
     namespace: &str,
     instance: &Bind9Instance,
 ) -> Result<()> {
-    let service_account_api: Api<ServiceAccount> = Api::namespaced(client.clone(), namespace);
     let service_account = build_service_account(namespace, instance);
-    let sa_name = service_account
-        .metadata
-        .name
-        .as_ref()
-        .expect("ServiceAccount must have a name");
-
-    debug!(
-        namespace = %namespace,
-        name = %sa_name,
-        "Creating or updating ServiceAccount"
-    );
-
-    if service_account_api.get(sa_name).await.is_ok() {
-        debug!(
-            "ServiceAccount {}/{} already exists, updating",
-            namespace, sa_name
-        );
-        service_account_api
-            .patch(
-                sa_name,
-                &PatchParams::apply("bindy-controller"),
-                &Patch::Apply(&service_account),
-            )
-            .await?;
-        info!("Updated ServiceAccount {}/{}", namespace, sa_name);
-    } else {
-        debug!(
-            "ServiceAccount {}/{} does not exist, creating",
-            namespace, sa_name
-        );
-        service_account_api
-            .create(&PostParams::default(), &service_account)
-            .await?;
-        info!("Created ServiceAccount {}/{}", namespace, sa_name);
-    }
-
-    Ok(())
+    create_or_apply(client, namespace, &service_account, "bindy-controller").await
 }
 
 /// Create or update the RNDC Secret for BIND9 remote control
@@ -633,23 +519,7 @@ async fn create_or_update_deployment(
     global_cluster: Option<&crate::crd::Bind9GlobalCluster>,
 ) -> Result<()> {
     let deployment = build_deployment(name, namespace, instance, cluster, global_cluster);
-    let deploy_api: Api<Deployment> = Api::namespaced(client.clone(), namespace);
-
-    if (deploy_api.get(name).await).is_ok() {
-        // Deployment exists, update it
-        info!("Updating Deployment {}/{}", namespace, name);
-        deploy_api
-            .replace(name, &PostParams::default(), &deployment)
-            .await?;
-    } else {
-        // Deployment doesn't exist, create it
-        info!("Creating Deployment {}/{}", namespace, name);
-        deploy_api
-            .create(&PostParams::default(), &deployment)
-            .await?;
-    }
-
-    Ok(())
+    create_or_replace(client, namespace, &deployment).await
 }
 
 /// Create or update the Service for BIND9

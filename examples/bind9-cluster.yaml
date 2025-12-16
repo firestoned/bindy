@@ -48,7 +48,7 @@ spec:
       - "10.0.0.0/8"
     bindcarConfig:
       image: "ghcr.io/firestoned/bindcar:v0.2.8"
-      imagePullPolicy: Never
+      imagePullPolicy: IfNotPresent
       logLevel: debug
     dnssec:
       validation: true
