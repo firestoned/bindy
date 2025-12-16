@@ -36,6 +36,8 @@ Thumbs.db
 *.rlib
 *.rmeta
 **/*.rs.bk
+**/*.rs.bak
+**/*.rs.backup
 .cargo/
 
 # IDE

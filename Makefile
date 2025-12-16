@@ -8,6 +8,7 @@ IMAGE_NAME ?= firestoned/bindy
 IMAGE_TAG ?= latest
 NAMESPACE ?= dns-system
 KIND_CLUSTER ?= bindy-test
+KIND_CONTEXT ?= "kind-$(KIND_CLUSTER)"
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -59,7 +60,7 @@ format: ## Format code
 	cargo fmt
 
 docker-build: ## Build Docker image
-	./scripts/build-docker-fast.sh chef
+	./scripts/build-docker-fast.sh local
 
 docker-build-kind: docker-build ## Build Docker image
 
@@ -110,32 +111,34 @@ kind-integration-test-ci: ## Run integration tests in CI mode (requires IMAGE_TA
 	@echo "Running integration tests in CI mode..."
 	@command -v kind >/dev/null 2>&1 || { echo "Error: kind not found. Install from https://kind.sigs.k8s.io/docs/user/quick-start/"; exit 1; }
 	@command -v kubectl >/dev/null 2>&1 || { echo "Error: kubectl not found"; exit 1; }
+	@echo "Checking for existing Kind cluster..."
+	@kind delete cluster --name $(KIND_CLUSTER) 2>/dev/null || true
 	@echo "Creating Kind cluster..."
 	@kind create cluster --name $(KIND_CLUSTER) --config deploy/kind-config.yaml
-	@kubectl cluster-info --context kind-$(KIND_CLUSTER)
+	@kubectl cluster-info --context $(KIND_CONTEXT)
 	@echo "Installing CRDs..."
-	@kubectl create namespace $(NAMESPACE) || true
-	@kubectl replace --force -f deploy/crds/ 2>/dev/null || kubectl create -f deploy/crds/
+	@kubectl --context $(KIND_CONTEXT) create namespace $(NAMESPACE) || true
+	@kubectl --context $(KIND_CONTEXT) replace --force -f deploy/crds/ 2>/dev/null || kubectl --context $(KIND_CONTEXT) create -f deploy/crds/
 	@echo "Installing RBAC..."
-	@kubectl apply -f deploy/rbac/
+	@kubectl --context $(KIND_CONTEXT) apply -f deploy/rbac/
 	@echo "Deploying controller with image: $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)"
-	@sed "s|ghcr.io/firestoned/bindy:latest|$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)|g" deploy/controller/deployment.yaml | kubectl apply -f -
-	@kubectl wait --for=condition=available --timeout=300s deployment/bindy -n $(NAMESPACE)
+	@sed "s|ghcr.io/firestoned/bindy:latest|$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)|g" deploy/controller/deployment.yaml | kubectl --context $(KIND_CONTEXT) apply -f -
+	@kubectl --context $(KIND_CONTEXT) wait --for=condition=available --timeout=300s deployment/bindy -n $(NAMESPACE)
 	@echo ""
 	@echo "================================================"
 	@echo "  Running Simple Integration Tests"
 	@echo "================================================"
 	@chmod +x tests/integration_test.sh
-	@tests/integration_test.sh --image "$(IMAGE_TAG)" --skip-deploy || { echo "Simple integration tests failed"; kind delete cluster --name $(KIND_CLUSTER) || true; exit 1; }
+	@tests/integration_test.sh --image "$(IMAGE_TAG)" --skip-deploy || { echo "Simple integration tests failed"; kind delete cluster --name $(KIND_CLUSTER)-ci || true; exit 1; }
 	@echo ""
 	@echo "================================================"
 	@echo "  Running Multi-Tenancy Integration Tests"
 	@echo "================================================"
 	@chmod +x tests/run_multi_tenancy_tests.sh
-	@tests/run_multi_tenancy_tests.sh || { echo "Multi-tenancy integration tests failed"; kind delete cluster --name $(KIND_CLUSTER) || true; exit 1; }
+	@tests/run_multi_tenancy_tests.sh || { echo "Multi-tenancy integration tests failed"; kind delete cluster --name $(KIND_CLUSTER)-ci || true; exit 1; }
 	@echo ""
 	@echo "Cleaning up Kind cluster..."
-	@kind delete cluster --name $(KIND_CLUSTER) || true
+	@kind delete cluster --name $(KIND_CLUSTER)-ci || true
 	@echo "✓ All integration tests completed successfully"
 
 kind-cleanup: ## Delete Kind cluster

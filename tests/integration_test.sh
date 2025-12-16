@@ -23,6 +23,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 IMAGE_TAG=""
 SKIP_DEPLOY=false
+KUBECTL="kubectl --context kind-${CLUSTER_NAME}"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -62,12 +63,12 @@ if [ "$SKIP_DEPLOY" = false ]; then
 
         # Install CRDs and RBAC
         echo -e "${GREEN}📋 Installing CRDs...${NC}"
-        kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+        ${KUBECTL} create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
         # Use 'kubectl replace --force' to avoid annotation size limits with large CRDs
-        kubectl replace --force -f "${PROJECT_ROOT}/deploy/crds/" 2>/dev/null || kubectl create -f "${PROJECT_ROOT}/deploy/crds/"
+        ${KUBECTL} replace --force -f "${PROJECT_ROOT}/deploy/crds/" 2>/dev/null || ${KUBECTL} create -f "${PROJECT_ROOT}/deploy/crds/"
 
         echo -e "${GREEN}🔐 Creating RBAC...${NC}"
-        kubectl apply -f "${PROJECT_ROOT}/deploy/rbac/"
+        ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/rbac/"
 
         if [ -z "$IMAGE_TAG" ]; then
             # No image tag specified, build and deploy locally
@@ -78,37 +79,37 @@ if [ "$SKIP_DEPLOY" = false ]; then
             kind load docker-image bindy:latest --name "${CLUSTER_NAME}"
 
             echo -e "${GREEN}🚀 Deploying controller...${NC}"
-            kubectl apply -f "${PROJECT_ROOT}/deploy/controller/deployment.yaml"
+            ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/controller/deployment.yaml"
         else
             # Image tag specified, pull from registry
             echo -e "${YELLOW}📦 Deploying controller with image: ${IMAGE_TAG}${NC}"
             sed "s|ghcr.io/firestoned/bindy:latest|ghcr.io/${GITHUB_REPOSITORY:-firestoned/bindy}:${IMAGE_TAG}|g" \
-                "${PROJECT_ROOT}/deploy/controller/deployment.yaml" | kubectl apply -f -
+                "${PROJECT_ROOT}/deploy/controller/deployment.yaml" | ${KUBECTL} apply -f -
         fi
 
         echo -e "${GREEN}⏳ Waiting for controller to be ready...${NC}"
-        kubectl wait --for=condition=available --timeout=300s deployment/bindy -n "${NAMESPACE}" || {
+        ${KUBECTL} wait --for=condition=available --timeout=300s deployment/bindy -n "${NAMESPACE}" || {
             echo -e "${RED}❌ Controller failed to start. Checking logs:${NC}"
-            kubectl logs -n "${NAMESPACE}" -l app=bindy --tail=50
+            ${KUBECTL} logs -n "${NAMESPACE}" -l app=bindy --tail=50
             exit 1
         }
     else
         echo -e "${GREEN}✅ Using existing cluster '${CLUSTER_NAME}'${NC}"
-        kubectl config use-context "kind-${CLUSTER_NAME}" > /dev/null
+        ${KUBECTL} config use-context "kind-${CLUSTER_NAME}" > /dev/null
 
         # If IMAGE_TAG is specified, update the controller deployment
         if [ -n "$IMAGE_TAG" ]; then
             echo -e "${YELLOW}📦 Updating controller with image: ${IMAGE_TAG}${NC}"
 
             # Update deployment with specific image
-            kubectl set image deployment/bindy \
+            ${KUBECTL} set image deployment/bindy \
                 controller="ghcr.io/${GITHUB_REPOSITORY:-firestoned/bindy}:${IMAGE_TAG}" \
                 -n "${NAMESPACE}"
 
             # Wait for rollout
-            kubectl rollout status deployment/bindy -n "${NAMESPACE}" --timeout=300s || {
+            ${KUBECTL} rollout status deployment/bindy -n "${NAMESPACE}" --timeout=300s || {
                 echo -e "${RED}❌ Controller rollout failed${NC}"
-                kubectl logs -n "${NAMESPACE}" -l app=bindy --tail=50
+                ${KUBECTL} logs -n "${NAMESPACE}" -l app=bindy --tail=50
                 exit 1
             }
         fi
@@ -136,7 +137,7 @@ if [ $TEST_EXIT -eq 0 ]; then
 else
     echo -e "${RED}❌ Integration tests failed with exit code ${TEST_EXIT}${NC}"
     echo -e "${YELLOW}Checking controller logs:${NC}"
-    kubectl logs -n "${NAMESPACE}" -l app=bindy --tail=50 || true
+    ${KUBECTL} logs -n "${NAMESPACE}" -l app=bindy --tail=50 || true
 fi
 
 echo ""
@@ -144,7 +145,7 @@ echo -e "${GREEN}2️⃣  Running functional tests with kubectl...${NC}"
 
 # Test Bind9Cluster creation
 echo -e "${YELLOW}Testing Bind9Cluster creation...${NC}"
-kubectl apply -f - <<EOF
+${KUBECTL} apply -f - <<EOF
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Cluster
 metadata:
@@ -156,17 +157,21 @@ spec:
   version: "9.18"
   primary:
     replicas: 1
-  config:
+  global:
     recursion: false
     allowQuery:
       - "0.0.0.0/0"
+    bindcarConfig:
+      image: "ghcr.io/firestoned/bindcar:v0.2.8"
+      imagePullPolicy: IfNotPresent
+      logLevel: debug
 EOF
 
 sleep 2
 
 # Test Bind9Instance creation (managed by cluster)
 echo -e "${YELLOW}Testing Bind9Instance creation...${NC}"
-kubectl apply -f - <<EOF
+${KUBECTL} apply -f - <<EOF
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
@@ -177,15 +182,20 @@ metadata:
     role: primary
 spec:
   clusterRef: integration-test-cluster
-  role: PRIMARY
+  role: primary
   replicas: 1
+  bindcarConfig:
+    image: "ghcr.io/firestoned/bindcar:v0.2.8"
+    imagePullPolicy: IfNotPresent
+    logLevel: debug
+
 EOF
 
 sleep 2
 
 # Test DNSZone creation
 echo -e "${YELLOW}Testing DNSZone creation...${NC}"
-kubectl apply -f - <<EOF
+${KUBECTL} apply -f - <<EOF
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
@@ -194,6 +204,8 @@ metadata:
 spec:
   zoneName: integration.test
   clusterRef: integration-test-cluster
+  nameServerIps:
+    ns1.example.com.: 192.168.0.60
   soaRecord:
     primaryNs: ns1.integration.test.
     adminEmail: admin@integration.test
@@ -211,7 +223,7 @@ sleep 3
 echo -e "${YELLOW}Testing all DNS record types...${NC}"
 
 # A Record
-kubectl apply -f - <<EOF
+${KUBECTL} apply -f - <<EOF
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
@@ -225,7 +237,7 @@ spec:
 EOF
 
 # AAAA Record
-kubectl apply -f - <<EOF
+${KUBECTL} apply -f - <<EOF
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: AAAARecord
 metadata:
@@ -239,7 +251,7 @@ spec:
 EOF
 
 # CNAME Record
-kubectl apply -f - <<EOF
+${KUBECTL} apply -f - <<EOF
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: CNAMERecord
 metadata:
@@ -253,7 +265,7 @@ spec:
 EOF
 
 # MX Record
-kubectl apply -f - <<EOF
+${KUBECTL} apply -f - <<EOF
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: MXRecord
 metadata:
@@ -268,7 +280,7 @@ spec:
 EOF
 
 # TXT Record
-kubectl apply -f - <<EOF
+${KUBECTL} apply -f - <<EOF
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: TXTRecord
 metadata:
@@ -283,7 +295,7 @@ spec:
 EOF
 
 # NS Record
-kubectl apply -f - <<EOF
+${KUBECTL} apply -f - <<EOF
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: NSRecord
 metadata:
@@ -297,7 +309,7 @@ spec:
 EOF
 
 # SRV Record
-kubectl apply -f - <<EOF
+${KUBECTL} apply -f - <<EOF
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: SRVRecord
 metadata:
@@ -314,7 +326,7 @@ spec:
 EOF
 
 # CAA Record
-kubectl apply -f - <<EOF
+${KUBECTL} apply -f - <<EOF
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: CAARecord
 metadata:
@@ -338,21 +350,21 @@ echo -e "${GREEN}3️⃣  Verifying resources...${NC}"
 # Check if resources were created
 ERRORS=0
 
-if kubectl get bind9cluster integration-test-cluster -n "${NAMESPACE}" &>/dev/null; then
+if ${KUBECTL} get bind9cluster integration-test-cluster -n "${NAMESPACE}" &>/dev/null; then
     echo -e "  ${GREEN}✓${NC} Bind9Cluster created"
 else
     echo -e "  ${RED}✗${NC} Bind9Cluster not found"
     ERRORS=$((ERRORS + 1))
 fi
 
-if kubectl get bind9instance integration-test-primary -n "${NAMESPACE}" &>/dev/null; then
+if ${KUBECTL} get bind9instance integration-test-primary -n "${NAMESPACE}" &>/dev/null; then
     echo -e "  ${GREEN}✓${NC} Bind9Instance created"
 else
     echo -e "  ${RED}✗${NC} Bind9Instance not found"
     ERRORS=$((ERRORS + 1))
 fi
 
-if kubectl get dnszone integration-test-zone -n "${NAMESPACE}" &>/dev/null; then
+if ${KUBECTL} get dnszone integration-test-zone -n "${NAMESPACE}" &>/dev/null; then
     echo -e "  ${GREEN}✓${NC} DNSZone created"
 else
     echo -e "  ${RED}✗${NC} DNSZone not found"
@@ -364,7 +376,7 @@ RECORD_TYPES=("arecord:integration-a" "aaaarecord:integration-aaaa" "cnamerecord
 
 for record in "${RECORD_TYPES[@]}"; do
     IFS=':' read -r type name <<< "$record"
-    if kubectl get "${type}" "${name}" -n "${NAMESPACE}" &>/dev/null; then
+    if ${KUBECTL} get "${type}" "${name}" -n "${NAMESPACE}" &>/dev/null; then
         echo -e "  ${GREEN}✓${NC} ${type} created"
     else
         echo -e "  ${RED}✗${NC} ${type} not found"
@@ -375,29 +387,29 @@ done
 echo ""
 echo -e "${GREEN}4️⃣  Resource Status:${NC}"
 echo -e "${BLUE}Bind9Clusters:${NC}"
-kubectl get bind9clusters -n "${NAMESPACE}" -l test=integration 2>/dev/null || echo "  No Bind9Clusters found"
+${KUBECTL} get bind9clusters -n "${NAMESPACE}" -l test=integration 2>/dev/null || echo "  No Bind9Clusters found"
 
 echo ""
 echo -e "${BLUE}Bind9Instances:${NC}"
-kubectl get bind9instances -n "${NAMESPACE}" -l test=integration 2>/dev/null || echo "  No Bind9Instances found"
+${KUBECTL} get bind9instances -n "${NAMESPACE}" -l test=integration 2>/dev/null || echo "  No Bind9Instances found"
 
 echo ""
 echo -e "${BLUE}DNSZones:${NC}"
-kubectl get dnszones -n "${NAMESPACE}" 2>/dev/null || echo "  No DNSZones found"
+${KUBECTL} get dnszones -n "${NAMESPACE}" 2>/dev/null || echo "  No DNSZones found"
 
 echo ""
 echo -e "${BLUE}DNS Records:${NC}"
-kubectl get arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords -n "${NAMESPACE}" -l test=integration 2>/dev/null || \
-kubectl get arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords -n "${NAMESPACE}" 2>/dev/null || \
+${KUBECTL} get arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords -n "${NAMESPACE}" -l test=integration 2>/dev/null || \
+${KUBECTL} get arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords -n "${NAMESPACE}" 2>/dev/null || \
 echo "  No DNS records found"
 
 echo ""
 echo -e "${GREEN}5️⃣  Cleanup test resources...${NC}"
-kubectl delete bind9cluster integration-test-cluster -n "${NAMESPACE}" --ignore-not-found=true
-kubectl delete bind9instance integration-test-primary -n "${NAMESPACE}" --ignore-not-found=true
-kubectl delete dnszone integration-test-zone -n "${NAMESPACE}" --ignore-not-found=true
-kubectl delete arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords -l test=integration -n "${NAMESPACE}" --ignore-not-found=true 2>/dev/null || true
-kubectl delete arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords integration-a,integration-aaaa,integration-cname,integration-mx,integration-txt,integration-ns,integration-srv,integration-caa -n "${NAMESPACE}" --ignore-not-found=true 2>/dev/null || true
+${KUBECTL} delete bind9cluster integration-test-cluster -n "${NAMESPACE}" --ignore-not-found=true
+${KUBECTL} delete bind9instance integration-test-primary -n "${NAMESPACE}" --ignore-not-found=true
+${KUBECTL} delete dnszone integration-test-zone -n "${NAMESPACE}" --ignore-not-found=true
+${KUBECTL} delete arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords -l test=integration -n "${NAMESPACE}" --ignore-not-found=true 2>/dev/null || true
+${KUBECTL} delete arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords integration-a,integration-aaaa,integration-cname,integration-mx,integration-txt,integration-ns,integration-srv,integration-caa -n "${NAMESPACE}" --ignore-not-found=true 2>/dev/null || true
 
 echo ""
 if [ $ERRORS -eq 0 ] && [ $TEST_EXIT -eq 0 ]; then
@@ -416,6 +428,6 @@ else
     echo "  - Functional tests: $([ $ERRORS -eq 0 ] && echo 'PASSED' || echo "FAILED ($ERRORS errors)")"
     echo ""
     echo -e "${YELLOW}Controller logs (last 30 lines):${NC}"
-    kubectl logs -n "${NAMESPACE}" -l app=bindy --tail=30 || true
+    ${KUBECTL} logs -n "${NAMESPACE}" -l app=bindy --tail=30 || true
     exit 1
 fi
