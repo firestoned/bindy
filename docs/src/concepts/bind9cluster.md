@@ -106,6 +106,7 @@ metadata:
     dns-role: primary
 spec:
   clusterRef: prod-cluster
+  role: primary
   replicas: 2
   # Instance-specific config can override cluster defaults
   config:

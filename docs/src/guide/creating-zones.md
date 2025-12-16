@@ -31,7 +31,7 @@ metadata:
   namespace: dns-system
 spec:
   version: "9.18"
-  config:
+  global:
     recursion: false
     allowQuery:
       - "0.0.0.0/0"
@@ -47,6 +47,7 @@ metadata:
   namespace: dns-system
 spec:
   clusterRef: production-dns  # References the Bind9Cluster above
+  role: primary
   replicas: 1
 
 ---
@@ -60,13 +61,13 @@ spec:
   zoneName: example.com
   clusterRef: primary-dns  # References the Bind9Instance above
   soaRecord:
-    primaryNS: ns1.example.com.
+    primaryNs: ns1.example.com.
     adminEmail: admin.example.com.  # Note: @ replaced with .
     serial: 2024010101
     refresh: 3600
     retry: 600
     expire: 604800
-    negativeTTL: 86400
+    negativeTtl: 86400
   ttl: 3600
 ```
 

@@ -147,7 +147,7 @@ spec:
   zoneName: example.com
   clusterRef: dns-primary  # References Bind9Instance
   soaRecord:
-    primaryNS: ns1.example.com.
+    primaryNs: ns1.example.com.
     adminEmail: admin.example.com.
     serial: 2024010101
 ```

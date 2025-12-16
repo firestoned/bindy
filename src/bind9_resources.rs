@@ -1488,11 +1488,17 @@ pub fn build_service(
 /// # }
 /// ```
 #[must_use]
-pub fn build_service_account(namespace: &str, instance: &Bind9Instance) -> ServiceAccount {
-    let labels = build_labels_from_instance(BIND9_SERVICE_ACCOUNT, instance);
+pub fn build_service_account(namespace: &str, _instance: &Bind9Instance) -> ServiceAccount {
     // IMPORTANT: ServiceAccount is SHARED across all Bind9Instance resources in the namespace.
     // Do NOT set ownerReferences, as multiple instances would conflict (only one can have Controller=true).
+    // Do NOT use instance-specific labels like managed-by, as multiple instances would conflict during Server-Side Apply.
     // The ServiceAccount will be cleaned up manually or via namespace deletion.
+
+    // Use static labels that don't vary between instances
+    let mut labels = BTreeMap::new();
+    labels.insert(K8S_NAME.into(), APP_NAME_BIND9.into());
+    labels.insert(K8S_COMPONENT.into(), COMPONENT_DNS_SERVER.into());
+    labels.insert(K8S_PART_OF.into(), PART_OF_BINDY.into());
 
     ServiceAccount {
         metadata: ObjectMeta {

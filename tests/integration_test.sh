@@ -208,7 +208,7 @@ spec:
     ns1.example.com.: 192.168.0.60
   soaRecord:
     primaryNs: ns1.integration.test.
-    adminEmail: admin@integration.test
+    adminEmail: admin.integration.test.
     serial: 2024010101
     refresh: 3600
     retry: 600
@@ -230,7 +230,7 @@ metadata:
   name: integration-a
   namespace: ${NAMESPACE}
 spec:
-  zone: integration.test
+  zoneRef: integration-test-zone
   name: www
   ipv4Address: "192.0.2.10"
   ttl: 300
@@ -244,7 +244,7 @@ metadata:
   name: integration-aaaa
   namespace: ${NAMESPACE}
 spec:
-  zone: integration.test
+  zoneRef: integration-test-zone
   name: www
   ipv6Address: "2001:db8::1"
   ttl: 300
@@ -258,7 +258,7 @@ metadata:
   name: integration-cname
   namespace: ${NAMESPACE}
 spec:
-  zone: integration.test
+  zoneRef: integration-test-zone
   name: blog
   target: www.integration.test.
   ttl: 300
@@ -272,7 +272,7 @@ metadata:
   name: integration-mx
   namespace: ${NAMESPACE}
 spec:
-  zone: integration.test
+  zoneRef: integration-test-zone
   name: "@"
   priority: 10
   mailServer: mail.integration.test.
@@ -287,7 +287,7 @@ metadata:
   name: integration-txt
   namespace: ${NAMESPACE}
 spec:
-  zone: integration.test
+  zoneRef: integration-test-zone
   name: "@"
   text:
     - "v=spf1 mx ~all"
@@ -302,7 +302,7 @@ metadata:
   name: integration-ns
   namespace: ${NAMESPACE}
 spec:
-  zone: integration.test
+  zoneRef: integration-test-zone
   name: "@"
   nameserver: ns2.integration.test.
   ttl: 3600
@@ -316,7 +316,7 @@ metadata:
   name: integration-srv
   namespace: ${NAMESPACE}
 spec:
-  zone: integration.test
+  zoneRef: integration-test-zone
   name: _sip._tcp
   priority: 10
   weight: 60
@@ -333,7 +333,7 @@ metadata:
   name: integration-caa
   namespace: ${NAMESPACE}
 spec:
-  zone: integration.test
+  zoneRef: integration-test-zone
   name: "@"
   flags: 0
   tag: issue
@@ -405,11 +405,11 @@ echo "  No DNS records found"
 
 echo ""
 echo -e "${GREEN}5️⃣  Cleanup test resources...${NC}"
-${KUBECTL} delete bind9cluster integration-test-cluster -n "${NAMESPACE}" --ignore-not-found=true
-${KUBECTL} delete bind9instance integration-test-primary -n "${NAMESPACE}" --ignore-not-found=true
-${KUBECTL} delete dnszone integration-test-zone -n "${NAMESPACE}" --ignore-not-found=true
 ${KUBECTL} delete arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords -l test=integration -n "${NAMESPACE}" --ignore-not-found=true 2>/dev/null || true
 ${KUBECTL} delete arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords integration-a,integration-aaaa,integration-cname,integration-mx,integration-txt,integration-ns,integration-srv,integration-caa -n "${NAMESPACE}" --ignore-not-found=true 2>/dev/null || true
+${KUBECTL} delete dnszone integration-test-zone -n "${NAMESPACE}" --ignore-not-found=true
+${KUBECTL} delete bind9instance integration-test-primary -n "${NAMESPACE}" --ignore-not-found=true
+${KUBECTL} delete bind9cluster integration-test-cluster -n "${NAMESPACE}" --ignore-not-found=true
 
 echo ""
 if [ $ERRORS -eq 0 ] && [ $TEST_EXIT -eq 0 ]; then

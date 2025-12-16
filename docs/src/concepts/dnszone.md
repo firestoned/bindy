@@ -24,13 +24,13 @@ spec:
   zoneName: example.com
   clusterRef: my-dns-cluster  # References Bind9Instance name
   soaRecord:
-    primaryNS: ns1.example.com.
+    primaryNs: ns1.example.com.
     adminEmail: admin.example.com.  # Note: @ replaced with .
     serial: 2024010101
     refresh: 3600
     retry: 600
     expire: 604800
-    negativeTTL: 86400
+    negativeTtl: 86400
   ttl: 3600
 status:
   conditions:
@@ -51,13 +51,13 @@ status:
 
 ### SOA Record Fields
 
-- `primaryNS` - Primary nameserver (must end with `.`)
+- `primaryNs` - Primary nameserver (must end with `.`)
 - `adminEmail` - Zone administrator email (@ replaced with `.`, must end with `.`)
 - `serial` - Zone serial number (typically YYYYMMDDNN format)
 - `refresh` - Refresh interval in seconds (how often secondaries check for updates)
 - `retry` - Retry interval in seconds (retry delay after failed refresh)
 - `expire` - Expiry time in seconds (when to stop serving if primary unreachable)
-- `negativeTTL` - Negative caching TTL (cache duration for NXDOMAIN responses)
+- `negativeTtl` - Negative caching TTL (cache duration for NXDOMAIN responses)
 
 ### Optional Fields
 
@@ -211,13 +211,13 @@ spec:
   zoneName: simple.com
   clusterRef: primary-dns
   soaRecord:
-    primaryNS: ns1.simple.com.
+    primaryNs: ns1.simple.com.
     adminEmail: admin.simple.com.
     serial: 2024010101
     refresh: 3600
     retry: 600
     expire: 604800
-    negativeTTL: 86400
+    negativeTtl: 86400
 ```
 
 ### Production Zone with Custom TTL
@@ -232,13 +232,13 @@ spec:
   clusterRef: production-dns
   ttl: 300  # 5 minute default TTL for faster updates
   soaRecord:
-    primaryNS: ns1.api.example.com.
+    primaryNs: ns1.api.example.com.
     adminEmail: ops.example.com.
     serial: 2024010101
     refresh: 1800   # Check every 30 minutes
     retry: 300      # Retry after 5 minutes
     expire: 604800
-    negativeTTL: 300  # Short negative cache
+    negativeTtl: 300  # Short negative cache
 ```
 
 ## Next Steps

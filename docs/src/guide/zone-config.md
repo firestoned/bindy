@@ -16,13 +16,13 @@ spec:
 ```yaml
 spec:
   soaRecord:
-    primaryNS: ns1.example.com.    # Primary nameserver FQDN (must end with .)
+    primaryNs: ns1.example.com.    # Primary nameserver FQDN (must end with .)
     adminEmail: admin@example.com  # Admin email (@ replaced with . in zone file)
     serial: 2024010101             # Serial number (YYYYMMDDnn format recommended)
     refresh: 3600                  # How often secondaries check for updates (seconds)
     retry: 600                     # How long to wait before retry after failed refresh
     expire: 604800                 # When to stop answering if no refresh (1 week)
-    negativeTTL: 86400             # TTL for negative responses (NXDOMAIN)
+    negativeTtl: 86400             # TTL for negative responses (NXDOMAIN)
 ```
 
 ## Secondary Zone Configuration
