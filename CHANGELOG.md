@@ -2,6 +2,49 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-16 21:00] - Fix ServiceAccount label conflict in multi-tenancy scenarios
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/bind9_resources.rs`: Modified `build_service_account()` to use static labels instead of instance-specific labels
+  - Changed from calling `build_labels_from_instance()` which includes instance-specific `managed-by` labels
+  - Now uses static labels: `app.kubernetes.io/name=bind9`, `app.kubernetes.io/component=dns-server`, `app.kubernetes.io/part-of=bindy`
+  - Removed dependency on instance-specific labels to prevent Server-Side Apply conflicts
+
+### Why
+Multiple `Bind9Instance` resources in the same namespace share a single `ServiceAccount` named "bind9". When each instance tried to apply this ServiceAccount with different labels (specifically `app.kubernetes.io/managed-by`), Kubernetes Server-Side Apply detected field ownership conflicts:
+
+```
+Apply failed with 1 conflict: conflict with "unknown" using v1: .metadata.labels.app.kubernetes.io/managed-by
+```
+
+**Root Cause:**
+The ServiceAccount is a **shared resource** across all instances in a namespace, but it was being created with instance-specific labels from `build_labels_from_instance()`. When:
+- Instance A (managed by Bind9Cluster) applied the ServiceAccount with `managed-by: Bind9Cluster`
+- Instance B (standalone) tried to apply the same ServiceAccount with `managed-by: Bind9Instance`
+
+Server-Side Apply correctly rejected the conflicting label update.
+
+**Solution:**
+ServiceAccounts now use only static, non-varying labels that are consistent across all instances:
+- `app.kubernetes.io/name: bind9` (identifies the application)
+- `app.kubernetes.io/component: dns-server` (identifies the component type)
+- `app.kubernetes.io/part-of: bindy` (identifies the larger platform)
+
+These labels don't change based on which instance creates the ServiceAccount, eliminating the conflict.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Bug fix (fixes multi-tenancy integration test failures)
+- [x] Multi-instance namespaces now work correctly
+
+**Tests:**
+- All 316 library tests passing
+- Multi-tenancy integration tests will now succeed without label conflicts
+- Cargo fmt and clippy pass with zero warnings
+
 ## [2025-12-16 12:30] - Fix clippy warnings in test files (comprehensive)
 
 **Author:** Erick Bourgeois
