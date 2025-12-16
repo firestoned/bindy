@@ -1,0 +1,23 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
+name: 'Build Rust Binary'
+description: 'Builds Rust binary for specified target (uses cargo or cross)'
+
+inputs:
+  target:
+    description: 'Rust target triple (e.g., x86_64-unknown-linux-gnu)'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Build (release) - x86_64
+      if: inputs.target == 'x86_64-unknown-linux-gnu'
+      shell: bash
+      run: cargo build --release --target ${{ inputs.target }} --verbose
+
+    - name: Build (release) - ARM64 with cross
+      if: inputs.target == 'aarch64-unknown-linux-gnu'
+      shell: bash
+      run: cross build --release --target ${{ inputs.target }} --verbose

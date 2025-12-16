@@ -16,12 +16,16 @@
   - [Architecture Diagrams](./concepts/architecture-diagrams.md)
   - [Custom Resource Definitions](./concepts/crds.md)
   - [Bind9Cluster](./concepts/bind9cluster.md)
+  - [Bind9GlobalCluster](./concepts/bind9globalcluster.md)
   - [Bind9Instance](./concepts/bind9instance.md)
   - [DNSZone](./concepts/dnszone.md)
   - [DNS Records](./concepts/records.md)
 
 # User Guide
 
+- [Architecture Overview](./guide/architecture.md)
+- [Multi-Tenancy](./guide/multi-tenancy.md)
+- [Choosing a Cluster Type](./guide/choosing-cluster-type.md)
 - [Creating DNS Infrastructure](./guide/infrastructure.md)
   - [Primary DNS Instances](./guide/primary-instance.md)
   - [Secondary DNS Instances](./guide/secondary-instance.md)
@@ -83,6 +87,7 @@
 - [Architecture Deep Dive](./development/architecture-deep-dive.md)
   - [Controller Design](./development/controller-design.md)
   - [Reconciliation Logic](./development/reconciliation.md)
+  - [Reconciler Hierarchy](./architecture/reconciler-hierarchy.md)
   - [BIND9 Integration](./development/bind9-integration.md)
 - [Contributing](./development/contributing.md)
   - [Code Style](./development/code-style.md)

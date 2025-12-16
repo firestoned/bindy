@@ -19,7 +19,19 @@ spec:
     singular: srvrecord
   scope: Namespaced
   versions:
-  - additionalPrinterColumns: []
+  - additionalPrinterColumns:
+    - jsonPath: .spec.zoneRef
+      name: ZoneRef
+      type: string
+    - jsonPath: .spec.name
+      name: Name
+      type: string
+    - jsonPath: .spec.ttl
+      name: TTL
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -35,12 +47,12 @@ spec:
               # Example
 
               ```yaml
-              apiVersion: dns.firestoned.io/v1alpha1
+              apiVersion: bindy.firestoned.io/v1alpha1
               kind: SRVRecord
               metadata:
                 name: ldap-srv
               spec:
-                zone: example.com
+                zoneRef: example-com
                 name: _ldap._tcp
                 priority: 10
                 weight: 60
@@ -89,20 +101,11 @@ spec:
                 maximum: 65535.0
                 minimum: 0.0
                 type: integer
-              zone:
-                description: |-
-                  DNS zone this record belongs to (e.g., "example.com").
-
-                  Must match the zoneName of an existing `DNSZone` resource in the same namespace.
-                  Either `zone` or `zoneRef` must be specified (not both).
-                nullable: true
-                type: string
               zoneRef:
                 description: |-
                   Reference to a `DNSZone` resource by metadata.name.
 
-                  Either `zone` or `zoneRef` must be specified (not both).
-                nullable: true
+                  Directly references a `DNSZone` resource in the same namespace by its Kubernetes resource name.
                 type: string
             required:
             - name
@@ -110,6 +113,7 @@ spec:
             - priority
             - target
             - weight
+            - zoneRef
             type: object
           status:
             description: Generic record status

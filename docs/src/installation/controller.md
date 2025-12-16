@@ -32,7 +32,7 @@ This creates:
 ### Deploy Controller
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/operator/deployment.yaml
+kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/controller/deployment.yaml
 ```
 
 ### Wait for Readiness

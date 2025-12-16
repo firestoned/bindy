@@ -84,6 +84,69 @@ See **CRD Development - Rust as Source of Truth** section below for details.
 
 ---
 
+## 🔧 GitHub Workflows & CI/CD
+
+### CRITICAL: All Workflows Must Be Makefile-Driven
+
+**Status:** ✅ Required Standard
+**Impact:** Consistency, maintainability, and local reproducibility
+
+All GitHub Actions workflows MUST delegate complex logic to Makefile targets. Workflows should only:
+1. Install required tools (Kind, kubectl, Rust, etc.)
+2. Set up environment variables
+3. Call Makefile targets
+
+**Why:**
+- **Local Reproducibility**: Developers can run the exact same commands locally
+- **Consistency**: Same logic runs in CI and locally
+- **Maintainability**: Business logic lives in one place (Makefile), not scattered across workflows
+- **Testability**: Makefile targets can be tested independently
+- **Simplicity**: Workflows become declarative configuration, not complex scripts
+
+**Pattern:**
+
+```yaml
+# ✅ GOOD - Workflow delegates to Makefile
+jobs:
+  integration-test:
+    steps:
+      - name: Install Kind
+        uses: helm/kind-action@v1
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Run integration tests
+        env:
+          IMAGE_TAG: ${{ steps.tag.outputs.tag }}
+          REGISTRY: ghcr.io
+        run: make kind-integration-test-ci
+
+# ❌ BAD - Complex logic in workflow
+jobs:
+  integration-test:
+    steps:
+      - name: Create cluster
+        run: |
+          kind create cluster --config deploy/kind-config.yaml
+          kubectl create namespace dns-system
+          kubectl apply -f deploy/crds/
+          # ... 50+ lines of bash ...
+```
+
+**Requirements:**
+- Workflows MUST NOT contain multi-line bash scripts (except simple tool setup)
+- All test orchestration MUST be in Makefile targets
+- All deployment logic MUST be in Makefile targets
+- Makefile targets MUST work identically locally and in CI
+- Document Makefile targets with `## comments` for `make help`
+
+**Available Integration Test Targets:**
+- `make kind-integration-test` - Run full integration tests with local build
+- `make kind-integration-test-ci` - Run integration tests in CI mode (requires IMAGE_TAG env var)
+
+---
+
 ## 🔒 Compliance & Security Context
 
 This codebase operates in a **regulated banking environment**. All changes must be:

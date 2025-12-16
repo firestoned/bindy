@@ -52,6 +52,9 @@ pub const MANAGED_BY_BIND9_INSTANCE: &str = "Bind9Instance";
 /// Value for `app.kubernetes.io/managed-by` when resource is managed by `Bind9Cluster` controller
 pub const MANAGED_BY_BIND9_CLUSTER: &str = "Bind9Cluster";
 
+/// Value for `app.kubernetes.io/managed-by` when resource is managed by `Bind9GlobalCluster` controller
+pub const MANAGED_BY_BIND9_GLOBAL_CLUSTER: &str = "Bind9GlobalCluster";
+
 // ============================================================================
 // Bindy-Specific Labels
 // ============================================================================
@@ -93,6 +96,9 @@ pub const FINALIZER_BIND9_CLUSTER: &str = "bindy.firestoned.io/bind9cluster-fina
 
 /// Finalizer for `Bind9Instance` resources
 pub const FINALIZER_BIND9_INSTANCE: &str = "bindy.firestoned.io/bind9instance-finalizer";
+
+/// Finalizer for `DNSZone` resources
+pub const FINALIZER_DNS_ZONE: &str = "bindy.firestoned.io/dnszone-finalizer";
 
 // ============================================================================
 // Role Values

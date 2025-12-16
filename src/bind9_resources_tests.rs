@@ -117,7 +117,7 @@ mod tests {
         );
         instance.metadata.labels = Some(instance_labels);
 
-        let deployment = build_deployment("test-instance", "test-ns", &instance, None);
+        let deployment = build_deployment("test-instance", "test-ns", &instance, None, None);
 
         let labels = deployment.metadata.labels.as_ref().unwrap();
         assert_eq!(
@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn test_build_deployment() {
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "test-ns", &instance, None);
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
 
         assert_eq!(deployment.metadata.name.as_deref(), Some("test"));
         assert_eq!(deployment.metadata.namespace.as_deref(), Some("test-ns"));
@@ -218,7 +218,7 @@ mod tests {
     #[test]
     fn test_build_pod_spec() {
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "test-ns", &instance, None);
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
 
         // Verify volumes
@@ -252,7 +252,7 @@ mod tests {
         let mut instance = create_test_instance("test");
         instance.spec.replicas = Some(5);
 
-        let deployment = build_deployment("test", "test-ns", &instance, None);
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
         let spec = deployment.spec.unwrap();
 
         assert_eq!(spec.replicas, Some(5));
@@ -263,7 +263,7 @@ mod tests {
         let mut instance = create_test_instance("test");
         instance.spec.version = Some("9.20".into());
 
-        let deployment = build_deployment("test", "test-ns", &instance, None);
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let container = &pod_spec.containers[0];
 
@@ -353,7 +353,7 @@ mod tests {
     #[test]
     fn test_deployment_selector_matches_labels() {
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "test-ns", &instance, None);
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
 
         let spec = deployment.spec.unwrap();
         let selector_labels = spec.selector.match_labels.unwrap();
@@ -541,7 +541,7 @@ mod tests {
             image_pull_secrets: None,
         });
 
-        let deployment = build_deployment("test", "test-ns", &instance, None);
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         assert_eq!(
@@ -562,7 +562,7 @@ mod tests {
             image_pull_secrets: Some(vec!["secret1".to_string(), "secret2".to_string()]),
         });
 
-        let deployment = build_deployment("test", "test-ns", &instance, None);
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
 
         let secrets = pod_spec.image_pull_secrets.unwrap();
@@ -576,7 +576,7 @@ mod tests {
         let mut instance = create_test_instance("test");
         instance.spec.replicas = None;
 
-        let deployment = build_deployment("test", "test-ns", &instance, None);
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
 
         // Should default to 1 replica
         assert_eq!(deployment.spec.unwrap().replicas, Some(1));
@@ -587,7 +587,7 @@ mod tests {
         let mut instance = create_test_instance("test");
         instance.spec.replicas = Some(0);
 
-        let deployment = build_deployment("test", "test-ns", &instance, None);
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
 
         assert_eq!(deployment.spec.unwrap().replicas, Some(0));
     }
@@ -606,7 +606,7 @@ mod tests {
             ..Default::default()
         }]);
 
-        let deployment = build_deployment("test", "test-ns", &instance, None);
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
         let volumes = deployment
             .spec
             .unwrap()
@@ -635,7 +635,7 @@ mod tests {
             ..Default::default()
         }]);
 
-        let deployment = build_deployment("test", "test-ns", &instance, None);
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let mounts = pod_spec.containers[0].volume_mounts.as_ref().unwrap();
 
@@ -647,7 +647,7 @@ mod tests {
     #[test]
     fn test_deployment_container_has_correct_command() {
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "test-ns", &instance, None);
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         // Verify named command with correct flags
@@ -661,7 +661,7 @@ mod tests {
     #[test]
     fn test_deployment_has_tz_environment_variable() {
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "test-ns", &instance, None);
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         let env = container.env.as_ref().unwrap();
@@ -672,7 +672,7 @@ mod tests {
     #[test]
     fn test_deployment_probe_configuration() {
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "test-ns", &instance, None);
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         // Liveness probe
@@ -760,7 +760,7 @@ mod tests {
     #[test]
     fn test_deployment_with_custom_namespace() {
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "custom-namespace", &instance, None);
+        let deployment = build_deployment("test", "custom-namespace", &instance, None, None);
 
         assert_eq!(
             deployment.metadata.namespace.as_deref(),
@@ -792,7 +792,7 @@ mod tests {
         let mut instance = create_test_instance("test");
         instance.spec.version = None;
 
-        let deployment = build_deployment("test", "test-ns", &instance, None);
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         // Should default to 9.18
@@ -814,7 +814,7 @@ mod tests {
             image_pull_secrets: None,
         });
 
-        let deployment = build_deployment("test", "test-ns", &instance, None);
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         // Custom image should override version
@@ -833,7 +833,7 @@ mod tests {
             image_pull_secrets: None,
         });
 
-        let deployment = build_deployment("test", "test-ns", &instance, None);
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         // Should use version from spec
@@ -847,7 +847,7 @@ mod tests {
     #[test]
     fn test_deployment_default_image_pull_policy() {
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "test-ns", &instance, None);
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         assert_eq!(container.image_pull_policy.as_deref(), Some("IfNotPresent"));
@@ -856,11 +856,14 @@ mod tests {
     #[test]
     fn test_build_service_with_nodeport_type() {
         let instance = create_test_instance("test");
-        let custom_spec = ServiceSpec {
-            type_: Some("NodePort".into()),
-            ..Default::default()
+        let custom_config = crate::crd::ServiceConfig {
+            spec: Some(ServiceSpec {
+                type_: Some("NodePort".into()),
+                ..Default::default()
+            }),
+            annotations: None,
         };
-        let service = build_service("test", "test-ns", &instance, Some(&custom_spec));
+        let service = build_service("test", "test-ns", &instance, Some(&custom_config));
 
         assert_eq!(service.metadata.name.as_deref(), Some("test"));
         assert_eq!(service.spec.unwrap().type_.as_deref(), Some("NodePort"));
@@ -869,12 +872,15 @@ mod tests {
     #[test]
     fn test_build_service_with_loadbalancer_type() {
         let instance = create_test_instance("test");
-        let custom_spec = ServiceSpec {
-            type_: Some("LoadBalancer".into()),
-            load_balancer_ip: Some("192.168.1.100".into()),
-            ..Default::default()
+        let custom_config = crate::crd::ServiceConfig {
+            spec: Some(ServiceSpec {
+                type_: Some("LoadBalancer".into()),
+                load_balancer_ip: Some("192.168.1.100".into()),
+                ..Default::default()
+            }),
+            annotations: None,
         };
-        let service = build_service("test", "test-ns", &instance, Some(&custom_spec));
+        let service = build_service("test", "test-ns", &instance, Some(&custom_config));
 
         let spec = service.spec.unwrap();
         assert_eq!(spec.type_.as_deref(), Some("LoadBalancer"));
@@ -884,11 +890,14 @@ mod tests {
     #[test]
     fn test_build_service_with_session_affinity() {
         let instance = create_test_instance("test");
-        let custom_spec = ServiceSpec {
-            session_affinity: Some("ClientIP".into()),
-            ..Default::default()
+        let custom_config = crate::crd::ServiceConfig {
+            spec: Some(ServiceSpec {
+                session_affinity: Some("ClientIP".into()),
+                ..Default::default()
+            }),
+            annotations: None,
         };
-        let service = build_service("test", "test-ns", &instance, Some(&custom_spec));
+        let service = build_service("test", "test-ns", &instance, Some(&custom_config));
 
         let spec = service.spec.unwrap();
         assert_eq!(spec.session_affinity.as_deref(), Some("ClientIP"));
@@ -900,11 +909,14 @@ mod tests {
     fn test_build_service_defaults_to_clusterip() {
         let instance = create_test_instance("test");
         let service_none = build_service("test", "test-ns", &instance, None);
-        let custom_spec = ServiceSpec {
-            type_: Some("ClusterIP".into()),
-            ..Default::default()
+        let custom_config = crate::crd::ServiceConfig {
+            spec: Some(ServiceSpec {
+                type_: Some("ClusterIP".into()),
+                ..Default::default()
+            }),
+            annotations: None,
         };
-        let service_clusterip = build_service("test", "test-ns", &instance, Some(&custom_spec));
+        let service_clusterip = build_service("test", "test-ns", &instance, Some(&custom_config));
 
         assert_eq!(
             service_none.spec.as_ref().unwrap().type_,
@@ -915,12 +927,15 @@ mod tests {
     #[test]
     fn test_build_service_partial_spec_merge() {
         let instance = create_test_instance("test");
-        let custom_spec = ServiceSpec {
-            type_: Some("NodePort".into()),
-            external_traffic_policy: Some("Local".into()),
-            ..Default::default()
+        let custom_config = crate::crd::ServiceConfig {
+            spec: Some(ServiceSpec {
+                type_: Some("NodePort".into()),
+                external_traffic_policy: Some("Local".into()),
+                ..Default::default()
+            }),
+            annotations: None,
         };
-        let service = build_service("test", "test-ns", &instance, Some(&custom_spec));
+        let service = build_service("test", "test-ns", &instance, Some(&custom_config));
 
         let spec = service.spec.unwrap();
         assert_eq!(spec.type_.as_deref(), Some("NodePort"));
@@ -930,9 +945,48 @@ mod tests {
     }
 
     #[test]
+    fn test_build_service_with_annotations() {
+        use std::collections::BTreeMap;
+
+        let instance = create_test_instance("test");
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            "metallb.universe.tf/address-pool".to_string(),
+            "my-pool".to_string(),
+        );
+        annotations.insert(
+            "external-dns.alpha.kubernetes.io/hostname".to_string(),
+            "ns1.example.com".to_string(),
+        );
+
+        let custom_config = crate::crd::ServiceConfig {
+            spec: Some(ServiceSpec {
+                type_: Some("LoadBalancer".into()),
+                ..Default::default()
+            }),
+            annotations: Some(annotations.clone()),
+        };
+        let service = build_service("test", "test-ns", &instance, Some(&custom_config));
+
+        // Verify annotations are applied
+        let svc_annotations = service.metadata.annotations.as_ref().unwrap();
+        assert_eq!(
+            svc_annotations.get("metallb.universe.tf/address-pool"),
+            Some(&"my-pool".to_string())
+        );
+        assert_eq!(
+            svc_annotations.get("external-dns.alpha.kubernetes.io/hostname"),
+            Some(&"ns1.example.com".to_string())
+        );
+
+        // Verify spec is also applied
+        assert_eq!(service.spec.unwrap().type_.as_deref(), Some("LoadBalancer"));
+    }
+
+    #[test]
     fn test_deployment_rndc_conf_volume_mount() {
         let instance = create_test_instance("rndc-test");
-        let deployment = build_deployment("rndc-test", "test-ns", &instance, None);
+        let deployment = build_deployment("rndc-test", "test-ns", &instance, None, None);
 
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let container = &pod_spec.containers[0];
@@ -976,7 +1030,7 @@ mod tests {
     #[test]
     fn test_rndc_key_volume_mount() {
         let instance = create_test_instance("rndc-test");
-        let deployment = build_deployment("rndc-test", "test-ns", &instance, None);
+        let deployment = build_deployment("rndc-test", "test-ns", &instance, None, None);
 
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let container = &pod_spec.containers[0];
@@ -995,7 +1049,7 @@ mod tests {
     #[test]
     fn test_rndc_key_volume_source() {
         let instance = create_test_instance("rndc-test");
-        let deployment = build_deployment("rndc-test", "test-ns", &instance, None);
+        let deployment = build_deployment("rndc-test", "test-ns", &instance, None, None);
 
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let volumes = pod_spec.volumes.unwrap();
@@ -1082,7 +1136,7 @@ mod tests {
         // Test that deployment includes the API sidecar container
         let instance = create_test_instance("test");
 
-        let deployment = build_deployment("test", "test-ns", &instance, None);
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let containers = pod_spec.containers;
 
@@ -1124,7 +1178,7 @@ mod tests {
         // Test that API sidecar mounts the same volumes as BIND9
         let instance = create_test_instance("test");
 
-        let deployment = build_deployment("test", "test-ns", &instance, None);
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let containers = pod_spec.containers;
 

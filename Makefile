@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 
-.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup docs docs-serve docs-mdbook docs-rustdoc docs-clean docs-watch docs-github-pages crds
+.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup docs docs-serve docs-mdbook docs-rustdoc docs-clean docs-watch docs-github-pages crds integ-test-multi-tenancy
 
 REGISTRY ?= ghcr.io
 IMAGE_NAME ?= firestoned/bindy
@@ -30,6 +30,10 @@ test: ## Run unit tests
 test-integration: ## Run integration tests (requires Kubernetes)
 	cargo test --test simple_integration -- --ignored
 
+test-integ-multi-tenancy: ## Run multi-tenancy integration tests (requires Kubernetes)
+	@echo "Running multi-tenancy integration tests..."
+	@./tests/run_multi_tenancy_tests.sh
+
 test-all: test test-integration ## Run all tests (unit + integration)
 
 test-lib: ## Run library tests only
@@ -55,29 +59,30 @@ format: ## Format code
 	cargo fmt
 
 docker-build: ## Build Docker image
-	docker build -t $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG) .
+	./scripts/build-docker-fast.sh chef
+
+docker-build-kind: docker-build ## Build Docker image
 
 docker-push: ## Push Docker image
 	docker push $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
 
-docker-push-kind: docker-build ## Push Docker image to local kind
-	docker tag $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG) $(IMAGE_NAME):$(IMAGE_TAG)
-	kind load docker-image $(IMAGE_NAME):$(IMAGE_TAG) --name $(KIND_CLUSTER)
+docker-push-kind: docker-build-kind ## Push Docker image to local kind
+	kind load docker-image $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG) --name $(KIND_CLUSTER)
 
 deploy-crds: ## Deploy CRDs
-	kubectl apply -k deploy/crds/
+	kubectl create -f deploy/crds/
 
 deploy-rbac: ## Deploy RBAC resources
 	kubectl create namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
 	kubectl apply -f deploy/rbac/ -n $(NAMESPACE)
 
 deploy-operator: ## Deploy operator
-	kubectl apply -f deploy/operator/ -n $(NAMESPACE)
+	kubectl apply -f deploy/controller/ -n $(NAMESPACE)
 
 deploy: deploy-crds deploy-rbac deploy-operator ## Deploy everything
 
 undeploy: ## Remove operator
-	kubectl delete -f deploy/operator/ -n $(NAMESPACE) || true
+	kubectl delete -f deploy/controller/ -n $(NAMESPACE) || true
 	kubectl delete -f deploy/rbac/ -n $(NAMESPACE) || true
 	kubectl delete -f deploy/crds/ || true
 
@@ -98,8 +103,40 @@ kind-deploy: ## Deploy to Kind cluster (creates cluster, builds, and deploys)
 kind-test: ## Run tests on Kind cluster
 	./deploy/kind-test.sh
 
-kind-integration-test: ## Run full integration test suite
+kind-integration-test: ## Run full integration test suite (local build)
 	./tests/integration_test.sh
+
+kind-integration-test-ci: ## Run integration tests in CI mode (requires IMAGE_TAG env var)
+	@echo "Running integration tests in CI mode..."
+	@command -v kind >/dev/null 2>&1 || { echo "Error: kind not found. Install from https://kind.sigs.k8s.io/docs/user/quick-start/"; exit 1; }
+	@command -v kubectl >/dev/null 2>&1 || { echo "Error: kubectl not found"; exit 1; }
+	@echo "Creating Kind cluster..."
+	@kind create cluster --name $(KIND_CLUSTER) --config deploy/kind-config.yaml
+	@kubectl cluster-info --context kind-$(KIND_CLUSTER)
+	@echo "Installing CRDs..."
+	@kubectl create namespace $(NAMESPACE) || true
+	@kubectl replace --force -f deploy/crds/ 2>/dev/null || kubectl create -f deploy/crds/
+	@echo "Installing RBAC..."
+	@kubectl apply -f deploy/rbac/
+	@echo "Deploying controller with image: $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)"
+	@sed "s|ghcr.io/firestoned/bindy:latest|$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)|g" deploy/controller/deployment.yaml | kubectl apply -f -
+	@kubectl wait --for=condition=available --timeout=300s deployment/bindy -n $(NAMESPACE)
+	@echo ""
+	@echo "================================================"
+	@echo "  Running Simple Integration Tests"
+	@echo "================================================"
+	@chmod +x tests/integration_test.sh
+	@tests/integration_test.sh --image "$(IMAGE_TAG)" --skip-deploy || { echo "Simple integration tests failed"; kind delete cluster --name $(KIND_CLUSTER) || true; exit 1; }
+	@echo ""
+	@echo "================================================"
+	@echo "  Running Multi-Tenancy Integration Tests"
+	@echo "================================================"
+	@chmod +x tests/run_multi_tenancy_tests.sh
+	@tests/run_multi_tenancy_tests.sh || { echo "Multi-tenancy integration tests failed"; kind delete cluster --name $(KIND_CLUSTER) || true; exit 1; }
+	@echo ""
+	@echo "Cleaning up Kind cluster..."
+	@kind delete cluster --name $(KIND_CLUSTER) || true
+	@echo "✓ All integration tests completed successfully"
 
 kind-cleanup: ## Delete Kind cluster
 	./deploy/kind-cleanup.sh

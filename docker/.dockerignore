@@ -1,0 +1,47 @@
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Rust build artifacts (except when using Dockerfile.local)
+target/debug/
+target/doc/
+target/tmp/
+target/.rustc_info.json
+
+# Documentation
+*.md
+!README.md
+docs/
+book/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Tests
+tests/
+benches/
+
+# Examples (not needed in Docker build)
+examples/
+
+# Scripts (not needed in Docker build)
+scripts/
+
+# Temporary files
+*.log
+*.tmp
+.DS_Store
+
+# Docker
+Dockerfile.*
+.dockerignore
+docker-compose*.yml

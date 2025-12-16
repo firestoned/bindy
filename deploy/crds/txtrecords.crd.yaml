@@ -19,7 +19,19 @@ spec:
     singular: txtrecord
   scope: Namespaced
   versions:
-  - additionalPrinterColumns: []
+  - additionalPrinterColumns:
+    - jsonPath: .spec.zoneRef
+      name: ZoneRef
+      type: string
+    - jsonPath: .spec.name
+      name: Name
+      type: string
+    - jsonPath: .spec.ttl
+      name: TTL
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -35,12 +47,12 @@ spec:
               # Example
 
               ```yaml
-              apiVersion: dns.firestoned.io/v1alpha1
+              apiVersion: bindy.firestoned.io/v1alpha1
               kind: TXTRecord
               metadata:
                 name: spf-example-com
               spec:
-                zone: example.com
+                zoneRef: example-com
                 name: "@"
                 text:
                   - "v=spf1 include:_spf.google.com ~all"
@@ -66,24 +78,16 @@ spec:
                 minimum: 0.0
                 nullable: true
                 type: integer
-              zone:
-                description: |-
-                  DNS zone this record belongs to (e.g., "example.com").
-
-                  Must match the zoneName of an existing `DNSZone` resource in the same namespace.
-                  Either `zone` or `zoneRef` must be specified (not both).
-                nullable: true
-                type: string
               zoneRef:
                 description: |-
                   Reference to a `DNSZone` resource by metadata.name.
 
-                  Either `zone` or `zoneRef` must be specified (not both).
-                nullable: true
+                  Directly references a `DNSZone` resource in the same namespace by its Kubernetes resource name.
                 type: string
             required:
             - name
             - text
+            - zoneRef
             type: object
           status:
             description: Generic record status
