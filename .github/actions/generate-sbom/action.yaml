@@ -1,0 +1,73 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
+name: 'Generate SBOM'
+description: 'Generate Software Bill of Materials (SBOM) in CycloneDX format using default naming conventions'
+
+inputs:
+  format:
+    description: 'Output format: json, xml, or both'
+    required: false
+    default: 'json'
+  cyclonedx-version:
+    description: 'Version of cargo-cyclonedx to use'
+    required: false
+    default: '0.5.7'
+  describe:
+    description: 'What to describe in SBOM (binaries, dependencies, or both)'
+    required: false
+    default: 'binaries'
+  target:
+    description: 'Optional Rust target triple (e.g., x86_64-unknown-linux-gnu)'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Cache cargo-cyclonedx
+      id: cache-cyclonedx
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/bin/cargo-cyclonedx
+        key: ${{ runner.os }}-cargo-cyclonedx-${{ inputs.cyclonedx-version }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-cyclonedx-
+
+    - name: Install cargo-cyclonedx
+      if: steps.cache-cyclonedx.outputs.cache-hit != 'true'
+      shell: bash
+      run: cargo install cargo-cyclonedx --version ${{ inputs.cyclonedx-version }}
+
+    - name: Generate SBOM
+      shell: bash
+      run: |
+        # Build base command
+        BASE_CMD="cargo cyclonedx --all"
+
+        # Add target if specified
+        if [ -n "${{ inputs.target }}" ]; then
+          BASE_CMD="$BASE_CMD --target ${{ inputs.target }}"
+        fi
+
+        # Add describe option
+        BASE_CMD="$BASE_CMD --describe ${{ inputs.describe }}"
+
+        # Generate JSON if requested
+        if [ "${{ inputs.format }}" = "json" ] || [ "${{ inputs.format }}" = "both" ]; then
+          echo "Generating SBOM in JSON format..."
+          $BASE_CMD --format json
+        fi
+
+        # Generate XML if requested
+        if [ "${{ inputs.format }}" = "xml" ] || [ "${{ inputs.format }}" = "both" ]; then
+          echo "Generating SBOM in XML format..."
+          $BASE_CMD --format xml
+        fi
+
+        # List generated files for verification
+        echo "Generated SBOM files:"
+        ls -lh *.cdx.* 2>/dev/null || echo "No SBOM files found in current directory"
+        if [ -n "${{ inputs.target }}" ] && [ -d "target/${{ inputs.target }}/release" ]; then
+          ls -lh target/${{ inputs.target }}/release/*.cdx.* 2>/dev/null || true
+        fi
