@@ -120,7 +120,7 @@ metadata:
   namespace: dns-system
 spec:
   version: "9.18"
-  config:
+  global:
     recursion: false
     allowQuery:
       - "0.0.0.0/0"
@@ -146,6 +146,7 @@ metadata:
   namespace: dns-system
 spec:
   clusterRef: production-dns
+  role: primary  # Required: primary or secondary
   replicas: 1
   # Instance-specific storage (overrides cluster-level)
   volumes:
@@ -173,6 +174,7 @@ metadata:
   namespace: dns-system
 spec:
   clusterRef: production-dns  # References the Bind9Cluster
+  role: primary  # Required: primary or secondary
   replicas: 1
 ```
 
@@ -194,15 +196,15 @@ metadata:
   namespace: dns-system
 spec:
   zoneName: example.com
-  clusterRef: primary-dns  # References the Bind9Instance
+  clusterRef: production-dns  # References the Bind9Cluster
   soaRecord:
-    primaryNS: ns1.example.com.
+    primaryNs: ns1.example.com.
     adminEmail: admin.example.com.  # Note: @ replaced with .
     serial: 2024010101
     refresh: 3600
     retry: 600
     expire: 604800
-    negativeTTL: 86400
+    negativeTtl: 86400
   ttl: 3600
 ```
 
@@ -216,25 +218,23 @@ kubectl apply -f dns-zone.yaml
 
 Create a file `dns-records.yaml`:
 
-> **Note**: DNS records can reference zones using either:
-> - `zone`: The actual DNS zone name (e.g., `example.com`) - searches for a DNSZone with matching `spec.zoneName`
-> - `zoneRef`: The Kubernetes resource name (e.g., `example-com`) - directly references the DNSZone by `metadata.name` (more efficient)
+> **Note**: DNS records reference zones using `zoneRef`, which is the Kubernetes resource name of the DNSZone (e.g., `example-com` for a DNSZone named `example-com`).
 
 ```yaml
-# Web server A record (using zone field - matches against DNSZone spec.zoneName)
+# Web server A record
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
   name: www-example
   namespace: dns-system
 spec:
-  zone: example.com
+  zoneRef: example-com
   name: www
   ipv4Address: "192.0.2.1"
   ttl: 300
 
 ---
-# Blog CNAME record (using zoneRef - direct reference to DNSZone metadata.name)
+# Blog CNAME record
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: CNAMERecord
 metadata:
@@ -254,7 +254,7 @@ metadata:
   name: mail-example
   namespace: dns-system
 spec:
-  zone: example.com
+  zoneRef: example-com
   name: "@"
   priority: 10
   mailServer: mail.example.com.

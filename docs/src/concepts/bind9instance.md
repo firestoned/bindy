@@ -201,7 +201,7 @@ spec:
   version: "9.18"
   image:
     image: "internetsystemsconsortium/bind9:9.18"
-  config:
+  global:
     recursion: false
     allowQuery:
       - "0.0.0.0/0"

@@ -95,7 +95,7 @@ metadata:
   namespace: dns-system
 spec:
   version: "9.18"
-  config:
+  global:
     recursion: false
     dnssec:
       enabled: true
