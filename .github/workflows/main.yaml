@@ -93,13 +93,53 @@ jobs:
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
-  docker:
-    name: Build and Push Docker Image
+  extract-version:
+    name: Extract Version Information
     runs-on: ubuntu-latest
-    needs: build
+    needs: verify-commits
+    outputs:
+      image-tag-chainguard: ${{ steps.version-chainguard.outputs.image-tag }}
+      image-tag-distroless: ${{ steps.version-distroless.outputs.image-tag }}
+      short-sha: ${{ steps.version-chainguard.outputs.short-sha }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract version for Chainguard
+        id: version-chainguard
+        uses: ./.github/actions/extract-version
+        with:
+          workflow-type: main
+          image-suffix: ""
+
+      - name: Extract version for Distroless
+        id: version-distroless
+        uses: ./.github/actions/extract-version
+        with:
+          workflow-type: main
+          image-suffix: "-distroless"
+
+  docker:
+    name: Build and Push Docker Image - ${{ matrix.variant.name }}
+    runs-on: ubuntu-latest
+    needs: [build, extract-version]
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - name: Chainguard
+            dockerfile: docker/Dockerfile.chainguard
+            suffix: ""
+            description: "Chainguard Zero-CVE (glibc, ~15MB, FIPS-ready)"
+            image-tag: ${{ needs.extract-version.outputs.image-tag-chainguard }}
+          - name: Distroless
+            dockerfile: docker/Dockerfile
+            suffix: "-distroless"
+            description: "Google Distroless (glibc, ~20MB)"
+            image-tag: ${{ needs.extract-version.outputs.image-tag-distroless }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -112,34 +152,31 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate tag
-        id: tag
-        run: |
-          DATE=$(date +%Y.%m.%d)
-          TAG="main-${DATE}-${{ github.run_number }}"
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=${{ steps.tag.outputs.tag }}
-            type=sha,prefix=sha-
+            type=raw,value=${{ matrix.variant.image-tag }}
+            type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}${{ matrix.variant.suffix }}
+          flavor: |
+            latest=false
 
-      - name: Build and push Docker image (fast - uses pre-built binaries)
+      - name: Build and push Docker image (${{ matrix.variant.name }})
         id: docker_build
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: docker/Dockerfile
+          file: ${{ matrix.variant.dockerfile }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.description=${{ matrix.variant.description }}
+          cache-from: type=gha,scope=${{ matrix.variant.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant.name }}
           sbom: true
           provenance: true
 
@@ -155,15 +192,25 @@ jobs:
         uses: ./.github/actions/security-scan
 
   trivy:
-    name: Container Security Scan
+    name: Container Security Scan - ${{ matrix.variant.name }}
     runs-on: ubuntu-latest
-    needs: docker
+    needs: [docker, extract-version]
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - name: Chainguard
+            image-tag: ${{ needs.extract-version.outputs.image-tag-chainguard }}
+          - name: Distroless
+            image-tag: ${{ needs.extract-version.outputs.image-tag-distroless }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Run Trivy scan
+      - name: Run Trivy scan on ${{ matrix.variant.name }} image
         uses: ./.github/actions/trivy-scan
         with:
-          image-ref: ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
-          sarif-category: trivy-main-scan
+          image-ref: ghcr.io/${{ github.repository }}:${{ matrix.variant.image-tag }}
+          sarif-category: trivy-main-${{ matrix.variant.name }}
+          upload-artifact-name: trivy-main-${{ matrix.variant.name }}-${{ github.run_number }}
+          output-filename: trivy-main-${{ matrix.variant.name }}.json

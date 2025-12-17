@@ -35,17 +35,30 @@ jobs:
     runs-on: ubuntu-latest
     needs: verify-commits
     outputs:
-      version: ${{ steps.version.outputs.version }}
-      tag_name: ${{ steps.version.outputs.tag_name }}
+      version: ${{ steps.version-chainguard.outputs.version }}
+      tag_name: ${{ steps.version-chainguard.outputs.tag-name }}
+      image-tag-chainguard: ${{ steps.version-chainguard.outputs.image-tag }}
+      image-tag-distroless: ${{ steps.version-distroless.outputs.image-tag }}
+      short-sha: ${{ steps.version-chainguard.outputs.short-sha }}
     steps:
-      - name: Extract version from tag
-        id: version
-        run: |
-          TAG_NAME="${{ github.event.release.tag_name }}"
-          VERSION="${TAG_NAME#v}"
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
-          echo "Extracted version: ${VERSION} from tag: ${TAG_NAME}"
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract version for Chainguard
+        id: version-chainguard
+        uses: ./.github/actions/extract-version
+        with:
+          workflow-type: release
+          release-tag: ${{ github.event.release.tag_name }}
+          image-suffix: ""
+
+      - name: Extract version for Distroless
+        id: version-distroless
+        uses: ./.github/actions/extract-version
+        with:
+          workflow-type: release
+          release-tag: ${{ github.event.release.tag_name }}
+          image-suffix: "-distroless"
 
   build:
     name: Build - ${{ matrix.platform.name }}
@@ -100,12 +113,28 @@ jobs:
             target/${{ matrix.platform.target }}/release/*.cdx.json
 
   docker-release:
-    name: Build and Push Docker Image
+    name: Build and Push Docker Image - ${{ matrix.variant.name }}
     runs-on: ubuntu-latest
     needs: [extract-version, build]
     permissions:
       contents: write
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - name: Chainguard
+            dockerfile: docker/Dockerfile.chainguard
+            suffix: ""
+            description: "Chainguard Zero-CVE (glibc, ~15MB, FIPS-ready)"
+            latest_tag: "latest"
+            image-tag: ${{ needs.extract-version.outputs.image-tag-chainguard }}
+          - name: Distroless
+            dockerfile: docker/Dockerfile
+            suffix: "-distroless"
+            description: "Google Distroless (glibc, ~20MB)"
+            latest_tag: "latest-distroless"
+            image-tag: ${{ needs.extract-version.outputs.image-tag-distroless }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -124,41 +153,45 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=semver,pattern={{version}},value=${{ needs.extract-version.outputs.version }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.extract-version.outputs.version }}
-            type=semver,pattern={{major}},value=${{ needs.extract-version.outputs.version }}
-            type=raw,value=latest
-            type=raw,value=${{ needs.extract-version.outputs.tag_name }}
+            type=semver,pattern={{version}},value=${{ needs.extract-version.outputs.version }},suffix=${{ matrix.variant.suffix }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.extract-version.outputs.version }},suffix=${{ matrix.variant.suffix }}
+            type=semver,pattern={{major}},value=${{ needs.extract-version.outputs.version }},suffix=${{ matrix.variant.suffix }}
+            type=raw,value=${{ matrix.variant.latest_tag }}
+            type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}${{ matrix.variant.suffix }}
+          flavor: |
+            latest=false
 
-      - name: Build and push Docker image (fast - uses pre-built binaries)
+      - name: Build and push Docker image (${{ matrix.variant.name }})
         id: docker_build
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: docker/Dockerfile
+          file: ${{ matrix.variant.dockerfile }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.description=${{ matrix.variant.description }}
           build-args: |
             VERSION=${{ needs.extract-version.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.variant.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant.name }}
           platforms: linux/amd64,linux/arm64
           sbom: true
           provenance: true
 
-      - name: Generate Docker SBOM
+      - name: Generate Docker SBOM for ${{ matrix.variant.name }}
         uses: anchore/sbom-action@v0
         with:
-          image: ghcr.io/${{ github.repository }}:${{ needs.extract-version.outputs.tag_name }}
+          image: ghcr.io/${{ github.repository }}:${{ needs.extract-version.outputs.tag_name }}${{ matrix.variant.suffix }}
           format: cyclonedx-json
-          output-file: docker-sbom.json
+          output-file: docker-sbom-${{ matrix.variant.name }}.json
 
       - name: Upload Docker SBOM as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: docker-sbom
-          path: docker-sbom.json
+          name: docker-sbom-${{ matrix.variant.name }}
+          path: docker-sbom-${{ matrix.variant.name }}.json
 
   upload-release-assets:
     name: Upload Release Assets
@@ -200,10 +233,12 @@ jobs:
             fi
           done
 
-          # Copy Docker SBOM if it exists
-          if [ -f "docker-sbom/docker-sbom.json" ]; then
-            cp docker-sbom/docker-sbom.json sboms/
-          fi
+          # Copy Docker SBOMs for both variants
+          for variant in Chainguard Distroless; do
+            if [ -d "docker-sbom-${variant}" ] && [ -f "docker-sbom-${variant}/docker-sbom-${variant}.json" ]; then
+              cp "docker-sbom-${variant}/docker-sbom-${variant}.json" "sboms/docker-sbom-${variant}.json"
+            fi
+          done
 
           # Generate SHA256 checksums
           sha256sum *.tar.gz sboms/*.json > checksums.sha256 2>/dev/null || true
@@ -230,16 +265,25 @@ jobs:
           upload-artifact-name: cargo-audit-report-release
 
   trivy:
-    name: Container Security Scan
+    name: Container Security Scan - ${{ matrix.variant.name }}
     runs-on: ubuntu-latest
     needs: [extract-version, docker-release]
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - name: Chainguard
+            image-tag: ${{ needs.extract-version.outputs.image-tag-chainguard }}
+          - name: Distroless
+            image-tag: ${{ needs.extract-version.outputs.image-tag-distroless }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Run Trivy scan
+      - name: Run Trivy scan on ${{ matrix.variant.name }} image
         uses: ./.github/actions/trivy-scan
         with:
-          image-ref: ghcr.io/${{ github.repository }}:${{ needs.extract-version.outputs.tag_name }}
-          sarif-category: trivy-release-scan
-          upload-artifact-name: trivy-scan-report-release
+          image-ref: ghcr.io/${{ github.repository }}:${{ matrix.variant.image-tag }}
+          sarif-category: trivy-release-${{ matrix.variant.name }}
+          upload-artifact-name: trivy-release-${{ matrix.variant.name }}
+          output-filename: trivy-release-${{ matrix.variant.name }}.json
