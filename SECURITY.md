@@ -38,6 +38,18 @@ Include in your report:
 - Security advisories will be published after a fix is available
 - We will credit reporters unless they prefer to remain anonymous
 
+## Security Documentation
+
+This section provides an overview of Bindy's security posture. For detailed information, refer to the following documents:
+
+- **[Threat Model](docs/security/THREAT_MODEL.md)**: STRIDE threat analysis, attack surface, threat scenarios
+- **[Security Architecture](docs/security/ARCHITECTURE.md)**: Trust boundaries, authentication, secrets management, network security
+- **[Incident Response Playbooks](docs/security/INCIDENT_RESPONSE.md)**: Step-by-step response procedures for security incidents
+- **[Vulnerability Management Policy](docs/security/VULNERABILITY_MANAGEMENT.md)**: Remediation SLAs, scanning process, exception handling
+- **[RBAC Verification](deploy/rbac/verify-rbac.sh)**: Automated script to verify least privilege RBAC implementation
+
+---
+
 ## Security Measures
 
 ### Commit Signing (CRITICAL)
@@ -236,46 +248,44 @@ This project operates in a **regulated banking environment** and adheres to:
 
 ## Security Incident Response
 
+For detailed incident response procedures, see **[Incident Response Playbooks](docs/security/INCIDENT_RESPONSE.md)**.
+
 ### Incident Classification
 
-**Critical** (Response: Immediate):
-- Remote code execution vulnerability
-- Privilege escalation in production
-- Data breach or unauthorized access
-- Supply chain compromise
+| Severity | Response Time | Examples |
+|----------|---------------|----------|
+| 🔴 **CRITICAL** | Immediate (< 15 min) | RCE vulnerability, data breach, supply chain compromise, DNS outage |
+| 🟠 **HIGH** | < 1 hour | Authentication bypass, RNDC key compromise, unauthorized DNS changes |
+| 🟡 **MEDIUM** | < 4 hours | DoS vulnerability, suspicious activity, vulnerability without exploit |
+| 🔵 **LOW** | < 24 hours | Minor improvements, documentation, non-exploitable issues |
 
-**High** (Response: 24 hours):
-- Authentication bypass
-- SQL injection or XSS vulnerability
-- Dependency with critical CVE
-- Unsigned commits merged to main
+### Available Playbooks
 
-**Medium** (Response: 7 days):
-- Denial of service vulnerability
-- Information disclosure
-- Dependency with high CVE
+- **[P1: Critical Vulnerability Detected](docs/security/INCIDENT_RESPONSE.md#p1-critical-vulnerability-detected)** - CVSS 9.0-10.0 vulnerability, 24-hour remediation SLA
+- **[P2: Compromised Controller Pod](docs/security/INCIDENT_RESPONSE.md#p2-compromised-controller-pod)** - Unauthorized access, anomalous behavior
+- **[P3: DNS Service Outage](docs/security/INCIDENT_RESPONSE.md#p3-dns-service-outage)** - All BIND9 pods down, queries failing
+- **[P4: RNDC Key Compromise](docs/security/INCIDENT_RESPONSE.md#p4-rndc-key-compromise)** - Key leaked, unauthorized RNDC access
+- **[P5: Unauthorized DNS Changes](docs/security/INCIDENT_RESPONSE.md#p5-unauthorized-dns-changes)** - Unexpected zone modifications
+- **[P6: DDoS Attack](docs/security/INCIDENT_RESPONSE.md#p6-ddos-attack)** - Query flood, resource exhaustion
+- **[P7: Supply Chain Compromise](docs/security/INCIDENT_RESPONSE.md#p7-supply-chain-compromise)** - Malicious commit, compromised dependency
 
-**Low** (Response: 30 days):
-- Minor security improvements
-- Documentation updates
-- Non-exploitable edge cases
+### Response Process
 
-### Response Procedures
+All incidents follow the NIST Incident Response Lifecycle:
 
-1. **Identify**: Security issue reported or detected
-2. **Contain**: If in production, deploy hotfix or rollback
-3. **Investigate**: Determine root cause and impact
-4. **Remediate**: Develop and test fix
-5. **Deploy**: Emergency release following standard process
-6. **Document**: Update CHANGELOG.md and security advisory
-7. **Review**: Post-incident review and process improvement
+1. **Preparation**: Playbooks, tools, team readiness
+2. **Detection & Analysis**: Confirm incident, assess impact
+3. **Containment**: Isolate affected systems, prevent escalation
+4. **Eradication**: Remove threat, patch vulnerability
+5. **Recovery**: Restore service, verify integrity
+6. **Post-Incident Activity**: Document lessons learned, improve defenses
 
 ### Communication
 
-- **Internal**: Notify maintainers immediately
+- **Internal**: Slack war room (`#incident-[date]-[number]`), status updates every 30 minutes
 - **Public**: Coordinated disclosure after fix available
-- **Customers**: Email notification for critical issues
-- **Regulators**: Follow compliance reporting requirements
+- **Customers**: Email notification for critical/high incidents
+- **Regulators**: PCI-DSS (24h), SOX (quarterly), Basel III (risk committee)
 
 ## Security Contacts
 
