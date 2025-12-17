@@ -759,9 +759,12 @@ All compliance documentation is version-controlled and auditor-ready:
 
 ### Software Bill of Materials (SBOM)
 - **Format:** CycloneDX JSON/XML
-- **Updated:** Automatically on every commit
+- **Generation:** Automatically generated in CI/CD for every build
+- **Availability:**
+  - **Release Assets:** Attached to every [GitHub release](https://github.com/firestoned/bindy/releases) (permanent)
+  - **Container Images:** Embedded in Docker images via `docker build --sbom=true`
+  - **CI Artifacts:** Available in GitHub Actions artifacts (90-day retention)
 - **Vulnerability Scanning:** Integrated with Grype for CVE detection
-- **Download:** [sbom.json](sbom.json) | [sbom.xml](sbom.xml)
 
 ---
 
