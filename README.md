@@ -9,7 +9,7 @@
 
 ## Security & Compliance
 
-[![Security Audit](https://github.com/firestoned/bindy/actions/workflows/audit.yml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/audit.yml)
+[![Security Scan](https://github.com/firestoned/bindy/actions/workflows/security-scan.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/security-scan.yaml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/firestoned/bindy/badge)](https://api.securityscorecards.dev/projects/github.com/firestoned/bindy)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/11624/badge)](https://www.bestpractices.dev/projects/11624)
 [![SBOM](https://img.shields.io/badge/SBOM-CycloneDX-orange)](sbom.json)

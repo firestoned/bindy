@@ -2,6 +2,164 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-17 21:45] - Fix Security Scan Badge in README
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **`README.md`** - Fixed Security Audit badge to point to correct workflow:
+  - Changed from `audit.yml` (doesn't exist) to `security-scan.yaml`
+  - Changed badge label from "Security Audit" to "Security Scan"
+
+### Why
+Badge was referencing non-existent `audit.yml`. Actual workflow is `security-scan.yaml` (implemented for compliance C-3).
+
+### Impact
+- [x] **Documentation** - Badge now shows correct security scan status
+
+## [2025-12-17 21:30] - Create Reusable extract-version Composite Action for Consistent Tagging
+
+**Author:** Erick Bourgeois
+
+### Added
+- **`.github/actions/extract-version/action.yaml`** - New reusable composite action for centralized version/tag extraction:
+  - **Outputs:** `version`, `tag-name`, `image-tag`, `short-sha` (7-character SHA)
+  - **Logic:** Handles main/pr/release workflows with consistent tag generation
+  - **Example:** Release `v1.2.3` → Chainguard tag `v1.2.3`, Distroless tag `v1.2.3-distroless`
+
+### Changed
+- **`.github/workflows/main.yaml`** - Refactored to use extract-version action:
+  - Added `extract-version` job that outputs both variant tags
+  - Docker job uses pre-computed `image-tag` from extract-version outputs
+  - Trivy scan guaranteed to use the exact same `image-tag` that was pushed
+- **`.github/workflows/pr.yaml`** - Refactored to use extract-version action:
+  - Same pattern as main.yaml but with PR number input
+- **`.github/workflows/release.yaml`** - Enhanced to use extract-version action:
+  - Replaced inline bash with composite action call
+  - Added outputs for both variant image tags
+
+### Why
+**Root Cause of Previous Failures:**
+1. Docker metadata generates **short 7-char SHA** (e.g., `sha-2958a74`)
+2. Trivy was using **full 40-char SHA** (e.g., `sha-2958a741bade57e8c0def7d58820f998f5c03153`)
+3. Tag mismatch → `MANIFEST_UNKNOWN` error
+
+**Solution:**
+- Centralized version extraction in reusable composite action
+- Extract-version job runs once, outputs tags for both variants
+- Docker and Trivy jobs use the exact same pre-computed tags
+- No more tag mismatches - guaranteed synchronization
+
+### Impact
+- [x] **CI/CD Reliability** - No more `MANIFEST_UNKNOWN` errors
+- [x] **Maintainability** - Single source of truth for version/tag logic
+- [x] **Consistency** - All workflows use same extraction logic
+- [x] **Scalability** - Easy to add new image variants
+
+## [2025-12-17 21:00] - Implement Dual Docker Image Strategy with Chainguard and Distroless Variants
+
+**Author:** Erick Bourgeois
+
+### Added
+- **`docker/Dockerfile.chainguard`** - New Chainguard-based container image:
+  - Uses `cgr.dev/chainguard/glibc-dynamic:latest` base image (~15MB)
+  - **Zero known CVEs** with daily security rebuilds
+  - FIPS-ready (use `:latest-fips` tag when available)
+  - Includes SBOM by default
+  - Designed for SOX, FedRAMP, PCI-DSS compliance
+  - Multi-arch support (linux/amd64, linux/arm64)
+- **`docker/README.md`** - Comprehensive documentation for both image variants:
+  - Detailed comparison table (size, CVEs, FIPS, SBOM, support)
+  - Deployment examples (Kubernetes, Docker Compose)
+  - Available tags for both variants
+  - Security scanning information
+  - FIPS mode deployment guide
+  - FAQ explaining when to use each variant
+  - Compliance documentation links
+
+### Changed
+- **`.github/workflows/main.yaml`** - Updated to build both image variants:
+  - Changed docker job to use matrix strategy with two variants
+  - **Chainguard (default)**: `ghcr.io/firestoned/bindy:main` (no suffix)
+  - **Distroless (alternative)**: `ghcr.io/firestoned/bindy:main-distroless`
+  - Updated Trivy scan to scan both variants independently
+  - Added variant-specific SARIF categories for GitHub Security
+- **`.github/workflows/pr.yaml`** - Updated to build both image variants:
+  - Same matrix strategy as main.yaml
+  - **Chainguard (default)**: `ghcr.io/firestoned/bindy:pr-XX` (no suffix)
+  - **Distroless (alternative)**: `ghcr.io/firestoned/bindy:pr-XX-distroless`
+  - Trivy scans both variants with unique artifact names
+- **`.github/workflows/release.yaml`** - Updated to build both image variants:
+  - Matrix strategy with `latest_tag` field for proper tagging
+  - **Chainguard (default)**: `ghcr.io/firestoned/bindy:latest` and `ghcr.io/firestoned/bindy:vX.Y.Z`
+  - **Distroless (alternative)**: `ghcr.io/firestoned/bindy:latest-distroless` and `ghcr.io/firestoned/bindy:vX.Y.Z-distroless`
+  - Updated SBOM artifact collection to handle both variants
+  - Enhanced release asset upload to include Docker SBOMs for both variants
+  - Trivy scans both variants at release time
+- **`docker/Dockerfile`** - Renamed conceptually to Distroless variant:
+  - Continues to use `gcr.io/distroless/cc-debian12:nonroot` base (~20MB)
+  - Now the alternative/fallback option
+  - All existing functionality preserved
+
+### Why
+The original Debian-based Distroless images contained multiple CVEs due to the base image and bundled libraries. In regulated banking environments, **zero-CVE requirements** are critical for:
+- **Security Audits**: Compliance teams require demonstrable zero-CVE status
+- **SOX Controls**: IT General Controls mandate vulnerability management
+- **NIST 800-53**: SI-2 (Flaw Remediation) requires timely security patches
+- **Risk Mitigation**: Reduce attack surface in production DNS infrastructure
+
+**Chainguard Benefits**:
+- **Zero CVEs**: Rebuilt daily with security patches, CVSS filtering
+- **FIPS Compliance**: FIPS 140-2/140-3 validated cryptographic modules
+- **Smaller Size**: ~15MB vs ~20MB (25% smaller)
+- **Supply Chain Security**: Built-in SBOMs, provenance attestations
+- **Commercial Support**: Available for regulated environments
+
+**Why Dual Images**:
+- **Flexibility**: Teams can choose based on their compliance requirements
+- **Gradual Migration**: Existing Distroless users can migrate to Chainguard
+- **Cost Considerations**: Chainguard free for public images, Distroless always free
+- **Ecosystem Compatibility**: Some teams prefer Google Distroless ecosystem
+
+### Impact
+- [x] **Security** - Chainguard variant provides zero CVEs for regulated environments
+- [x] **Compliance** - FIPS-ready images available for federal/banking deployments
+- [x] **CI/CD** - Both variants built, tested, and scanned on every commit
+- [x] **Documentation** - Comprehensive guide helps users choose the right variant
+- [x] **Backward Compatibility** - Distroless variant continues to work for existing users
+- [x] **Supply Chain Security** - SBOMs generated for both variants
+- [x] **Default Recommendation** - Chainguard is the default (no suffix) for best security posture
+
+### Migration Guide
+For existing users currently using `ghcr.io/firestoned/bindy:latest` (Distroless):
+- **No action required** - Distroless is now `ghcr.io/firestoned/bindy:latest-distroless`
+- **Recommended**: Switch to Chainguard for zero CVEs: `ghcr.io/firestoned/bindy:latest`
+- **FIPS Required**: Use `ghcr.io/firestoned/bindy:latest-fips` (when available)
+
+See [docker/README.md](docker/README.md) for detailed comparison and deployment examples.
+
+## [2025-12-17 20:20] - Fix OpenSSF Scorecard Workflow Version Tag
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **`.github/workflows/scorecard.yml`** - Fixed scorecard-action version:
+  - Changed from `ossf/scorecard-action@v2` to `ossf/scorecard-action@v2.4.0`
+  - Uses explicit semantic version instead of major version tag
+
+### Why
+The workflow was failing with:
+```
+Error: Unable to resolve action `ossf/scorecard-action@v2`, unable to find version `v2`
+```
+
+The OSSF Scorecard action repository uses full semantic versioning tags (e.g., `v2.4.0`) and does not provide major version tags like `@v2`. This is common for security-focused actions that want to ensure users explicitly opt into specific versions.
+
+### Impact
+- [x] **CI/CD** - Scorecard analysis workflow now runs successfully
+- [x] **Security** - Explicit version provides better reproducibility and security
+- [x] **Best Practice** - Follows OSSF recommendation for pinning to specific versions
+
 ## [2025-12-17 20:15] - Simplify SBOM Action to Use Default Naming Conventions
 
 **Author:** Erick Bourgeois
