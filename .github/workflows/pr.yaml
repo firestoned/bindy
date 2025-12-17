@@ -15,9 +15,26 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  verify-commits:
+    name: Verify Signed Commits
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for verification
+
+      - name: Verify all commits are signed
+        uses: ./.github/actions/verify-signed-commits
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          base-ref: origin/${{ github.base_ref }}
+          verify-mode: pr
+
   format:
     name: Check Formatting
     runs-on: ubuntu-latest
+    needs: verify-commits
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

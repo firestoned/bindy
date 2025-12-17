@@ -60,7 +60,7 @@ format: ## Format code
 	cargo fmt
 
 docker-build: ## Build Docker image
-	./scripts/build-docker-fast.sh local
+	./scripts/build-docker-fast.sh chef
 
 docker-build-kind: docker-build ## Build Docker image
 

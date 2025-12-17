@@ -11,18 +11,18 @@
 # The rust:1.91.0 image doesn't include it by default, so we install it in a separate stage.
 
 # Stage 1: Prepare cargo-chef
-FROM rust:1.91.0 as chef
+FROM rust:1.91.0 AS chef
 RUN cargo install cargo-chef
 WORKDIR /workspace
 
 # Stage 2: Generate recipe file (this layer is cached unless Cargo.toml/Cargo.lock change)
-FROM chef as planner
+FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Stage 3: Build dependencies (this layer is cached unless recipe changes)
-FROM chef as builder
+FROM chef AS builder
 
 # Accept version as build argument
 ARG VERSION=0.1.0

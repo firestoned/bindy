@@ -13,9 +13,25 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  verify-commits:
+    name: Verify Signed Commits
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for verification
+
+      - name: Verify release tag commit is signed
+        uses: ./.github/actions/verify-signed-commits
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          verify-mode: release
+
   extract-version:
     name: Extract Version from Tag
     runs-on: ubuntu-latest
+    needs: verify-commits
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag_name: ${{ steps.version.outputs.tag_name }}
