@@ -10,9 +10,25 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  verify-commits:
+    name: Verify Signed Commits
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for verification
+
+      - name: Verify commits are signed
+        uses: ./.github/actions/verify-signed-commits
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          verify-mode: push
+
   build:
     name: Build - ${{ matrix.platform.name }}
     runs-on: ${{ matrix.platform.os }}
+    needs: verify-commits
     strategy:
       fail-fast: false
       matrix:
@@ -51,6 +67,7 @@ jobs:
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
+    needs: verify-commits
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

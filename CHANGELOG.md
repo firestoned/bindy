@@ -2,6 +2,120 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-16 22:30] - Enforce Cryptographically Signed Commits (CRITICAL SECURITY)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `.github/actions/verify-signed-commits/action.yaml`: Reusable composite action for commit signature verification
+  - Uses GitHub API to check commit verification status (same as "Verified" badge)
+  - Supports three modes: pr, push, and release
+  - Single source of truth for verification logic
+  - Eliminates code duplication across workflows
+- `CONTRIBUTING.md`: Comprehensive guide for setting up GPG/SSH commit signing
+  - GPG signing setup instructions (recommended method)
+  - SSH signing setup instructions (alternative method)
+  - Troubleshooting guide for common signing issues
+  - CI/CD verification requirements
+- `SECURITY.md`: Security policy with commit signing enforcement
+  - SOX 404 compliance requirements
+  - PCI-DSS 6.4.6 compliance requirements
+  - SLSA Level 2+ supply chain security
+  - Incident response procedures
+  - Security best practices for contributors
+
+### Changed
+- `.github/workflows/pr.yaml`: Added commit signature verification job
+  - New `verify-commits` job runs first in workflow
+  - Uses composite action `.github/actions/verify-signed-commits`
+  - All other jobs depend on `verify-commits` (fail-fast if unsigned)
+  - Verifies all commits in PR are cryptographically signed via GitHub API
+- `.github/workflows/main.yaml`: Added commit signature verification job
+  - Uses composite action `.github/actions/verify-signed-commits`
+  - Verifies all commits pushed to `main` branch are signed
+  - Blocks build/deploy if unsigned commits detected
+- `.github/workflows/release.yaml`: Added commit signature verification job
+  - Uses composite action `.github/actions/verify-signed-commits`
+  - Verifies release tag commit is cryptographically signed
+  - Prevents releases from unsigned commits
+
+### Why
+**CRITICAL COMPLIANCE REQUIREMENT**: This is a mandatory security control for operating in a regulated banking environment.
+
+**Compliance Frameworks:**
+- **SOX 404 (IT General Controls)**: Change control and authorization requirements
+  - All code changes must have cryptographic proof of authorship
+  - Two-person review + signed commits provide non-repudiation
+  - Audit trail maintained via Git history with signature verification
+- **PCI-DSS 6.4.6**: Code review and approval process verification
+  - Cryptographic signatures prove code was authorized by specific individuals
+  - Prevents unauthorized code changes from reaching production
+- **SLSA Level 2+**: Supply chain security and build provenance
+  - Signed commits provide source integrity verification
+  - Build provenance traceable to cryptographically verified authors
+
+**Security Benefits:**
+- ✅ Cryptographic proof of code authorship (non-repudiation)
+- ✅ Prevention of commit forgery (cannot impersonate other developers)
+- ✅ Protection against insider threats (requires key compromise + GitHub access)
+- ✅ Audit trail for regulatory compliance (immutable Git history)
+- ✅ Supply chain integrity (SLSA Level 2+ requirement)
+
+**Risk Mitigation:**
+Without signed commits:
+- ❌ Malicious actors could commit code without attribution
+- ❌ Insider threats undetectable (anyone with write access could impersonate)
+- ❌ No cryptographic proof for SOX 404 audits
+- ❌ Fails PCI-DSS access control requirements
+- ❌ No build provenance for supply chain security
+
+### Impact
+- [x] **CRITICAL SECURITY REQUIREMENT** - Enforced immediately
+- [x] Breaking change for contributors (must set up commit signing)
+- [ ] Requires cluster rollout
+- [x] CI/CD enforcement via GitHub Actions
+- [x] Branch protection enforcement via GitHub settings (to be configured)
+
+**Migration Required:**
+All contributors MUST configure GPG or SSH commit signing before their next contribution:
+1. Follow setup instructions in `CONTRIBUTING.md`
+2. Configure Git to sign commits automatically
+3. Add public key to GitHub account
+4. Verify commits show "Verified" badge on GitHub
+
+**Rollout Plan:**
+- **Week 1**: CI verification added (non-blocking warnings in comments)
+- **Week 2**: CI verification becomes blocking (PRs fail if unsigned)
+- **Week 3**: Branch protection enabled on `main` (GitHub-level enforcement)
+
+**Enforcement:**
+- CI/CD workflows verify all commits are signed (blocking)
+- Unsigned commits fail PR checks immediately
+- Release workflow rejects unsigned release commits
+- Branch protection will prevent merging unsigned commits (to be enabled)
+
+**Existing Commits:**
+- Historical commits before enforcement date remain unsigned (acceptable)
+- Enforcement is forward-looking only
+- Audit trail begins at enforcement date: 2025-12-16
+
+### Documentation
+- `CONTRIBUTING.md`: Setup instructions for GPG/SSH signing
+- `SECURITY.md`: Security policy and compliance requirements
+- Compliance evidence: CI/CD workflow logs, GitHub branch protection settings
+
+### Testing
+- [x] Workflow syntax validated
+- [x] Commit verification logic tested
+- [ ] End-to-end test with unsigned commit (will fail as expected)
+- [ ] End-to-end test with signed commit (will pass as expected)
+
+**Next Steps:**
+1. Configure GitHub branch protection to require signed commits on `main`
+2. Notify all contributors of new requirement
+3. Monitor CI/CD for unsigned commit attempts
+4. Quarterly audit of commit signatures for compliance reporting
+
 ## [2025-12-16 21:00] - Fix ServiceAccount label conflict in multi-tenancy scenarios
 
 **Author:** Erick Bourgeois
