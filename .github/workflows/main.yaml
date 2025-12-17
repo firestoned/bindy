@@ -5,6 +5,11 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+  packages: write
+  security-events: write  # For uploading SARIF results
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -124,6 +129,7 @@ jobs:
             type=sha,prefix=sha-
 
       - name: Build and push Docker image (fast - uses pre-built binaries)
+        id: docker_build
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -136,3 +142,28 @@ jobs:
           cache-to: type=gha,mode=max
           sbom: true
           provenance: true
+
+  security:
+    name: Security Vulnerability Scan
+    runs-on: ubuntu-latest
+    needs: verify-commits
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run security scan
+        uses: ./.github/actions/security-scan
+
+  trivy:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    needs: docker
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy scan
+        uses: ./.github/actions/trivy-scan
+        with:
+          image-ref: ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
+          sarif-category: trivy-main-scan

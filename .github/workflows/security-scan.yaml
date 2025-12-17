@@ -1,0 +1,290 @@
+name: Scheduled Security Scan
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Daily at midnight UTC
+  workflow_dispatch:  # Allow manual trigger
+
+permissions:
+  contents: read
+  security-events: write
+  issues: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  cargo-audit:
+    name: Scan Rust Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run security scan
+        id: audit
+        continue-on-error: true
+        uses: ./.github/actions/security-scan
+        with:
+          upload-artifact-name: scheduled-cargo-audit-${{ github.run_number }}
+
+      - name: Parse audit results
+        id: parse
+        if: always()
+        run: |
+          if [ -f audit-report.json ]; then
+            VULN_COUNT=$(jq '.vulnerabilities.count' audit-report.json || echo "0")
+            echo "vuln_count=${VULN_COUNT}" >> $GITHUB_OUTPUT
+
+            # Extract vulnerability details
+            if [ "$VULN_COUNT" -gt "0" ]; then
+              echo "has_vulnerabilities=true" >> $GITHUB_OUTPUT
+            else
+              echo "has_vulnerabilities=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "vuln_count=0" >> $GITHUB_OUTPUT
+            echo "has_vulnerabilities=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create GitHub issue for vulnerabilities
+        if: steps.parse.outputs.has_vulnerabilities == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = JSON.parse(fs.readFileSync('audit-report.json', 'utf8'));
+            const vulns = report.vulnerabilities.list || [];
+
+            // Group by severity
+            const critical = vulns.filter(v => v.advisory.severity === 'critical');
+            const high = vulns.filter(v => v.advisory.severity === 'high');
+            const medium = vulns.filter(v => v.advisory.severity === 'medium');
+            const low = vulns.filter(v => v.advisory.severity === 'low');
+
+            const formatVulns = (vulnList) => {
+              return vulnList.map(v => {
+                const adv = v.advisory;
+                return `- **${adv.id}**: ${v.package.name}@${v.package.version}
+              - **Title**: ${adv.title}
+              - **Severity**: ${adv.severity.toUpperCase()}
+              - **Description**: ${adv.description}
+              - **Solution**: ${adv.solution || 'Update to latest version'}
+              - **More Info**: ${adv.url}`;
+              }).join('\n\n');
+            };
+
+            let body = `## 🚨 Security Vulnerabilities Detected in Dependencies
+
+            **Scan Date**: ${new Date().toISOString()}
+            **Total Vulnerabilities**: ${vulns.length}
+
+            ### Summary
+            - 🔴 **CRITICAL**: ${critical.length}
+            - 🟠 **HIGH**: ${high.length}
+            - 🟡 **MEDIUM**: ${medium.length}
+            - 🔵 **LOW**: ${low.length}
+
+            ---
+
+            `;
+
+            if (critical.length > 0) {
+              body += `### 🔴 CRITICAL Vulnerabilities (SLA: 24 hours)\n\n${formatVulns(critical)}\n\n---\n\n`;
+            }
+
+            if (high.length > 0) {
+              body += `### 🟠 HIGH Vulnerabilities (SLA: 7 days)\n\n${formatVulns(high)}\n\n---\n\n`;
+            }
+
+            if (medium.length > 0) {
+              body += `### 🟡 MEDIUM Vulnerabilities (SLA: 30 days)\n\n${formatVulns(medium)}\n\n---\n\n`;
+            }
+
+            if (low.length > 0) {
+              body += `### 🔵 LOW Vulnerabilities (SLA: 90 days)\n\n${formatVulns(low)}\n\n`;
+            }
+
+            body += `\n---\n\n**Action Required**: Review and remediate vulnerabilities within SLA.\n**Compliance**: PCI-DSS 6.2, SOX IT Controls, Basel III Cyber Risk\n**Documentation**: See \`docs/security/VULNERABILITY_MANAGEMENT.md\`\n`;
+
+            // Check if similar issue already exists
+            const existingIssues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'security,vulnerability,automated',
+              state: 'open'
+            });
+
+            const todayStr = new Date().toISOString().split('T')[0];
+            const existingIssue = existingIssues.data.find(i =>
+              i.title.includes('Vulnerabilities detected') &&
+              i.title.includes(todayStr)
+            );
+
+            if (existingIssue) {
+              // Update existing issue
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existingIssue.number,
+                body: `## Updated Scan Results\n\n${body}`
+              });
+              console.log(`Updated existing issue #${existingIssue.number}`);
+            } else {
+              // Create new issue
+              const issue = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `[SECURITY] Vulnerabilities detected in dependencies (${todayStr})`,
+                body: body,
+                labels: ['security', 'vulnerability', 'automated']
+              });
+              console.log(`Created new issue #${issue.data.number}`);
+            }
+
+  trivy-scan:
+    name: Scan Container Images
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        tag: ['latest', 'main']
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy scan on ${{ matrix.tag }}
+        continue-on-error: true
+        id: trivy
+        uses: ./.github/actions/trivy-scan
+        with:
+          image-ref: ghcr.io/${{ github.repository }}:${{ matrix.tag }}
+          sarif-category: trivy-scheduled-${{ matrix.tag }}
+          upload-artifact-name: trivy-scan-${{ matrix.tag }}-${{ github.run_number }}
+          output-filename: trivy-${{ matrix.tag }}.json
+
+      - name: Parse Trivy results
+        id: parse
+        if: always()
+        run: |
+          if [ -f trivy-${{ matrix.tag }}.json ]; then
+            CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-${{ matrix.tag }}.json || echo "0")
+            HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' trivy-${{ matrix.tag }}.json || echo "0")
+            MEDIUM=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="MEDIUM")] | length' trivy-${{ matrix.tag }}.json || echo "0")
+
+            echo "critical=${CRITICAL}" >> $GITHUB_OUTPUT
+            echo "high=${HIGH}" >> $GITHUB_OUTPUT
+            echo "medium=${MEDIUM}" >> $GITHUB_OUTPUT
+
+            TOTAL=$((CRITICAL + HIGH))
+            if [ "$TOTAL" -gt "0" ]; then
+              echo "has_vulnerabilities=true" >> $GITHUB_OUTPUT
+            else
+              echo "has_vulnerabilities=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "has_vulnerabilities=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create GitHub issue for container vulnerabilities
+        if: steps.parse.outputs.has_vulnerabilities == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const tag = '${{ matrix.tag }}';
+            const report = JSON.parse(fs.readFileSync(`trivy-${tag}.json`, 'utf8'));
+
+            const critical = ${{ steps.parse.outputs.critical }};
+            const high = ${{ steps.parse.outputs.high }};
+            const medium = ${{ steps.parse.outputs.medium }};
+
+            let vulnDetails = '';
+            if (report.Results) {
+              for (const result of report.Results) {
+                if (result.Vulnerabilities && result.Vulnerabilities.length > 0) {
+                  vulnDetails += `\n### ${result.Target}\n\n`;
+
+                  const critVulns = result.Vulnerabilities.filter(v => v.Severity === 'CRITICAL');
+                  const highVulns = result.Vulnerabilities.filter(v => v.Severity === 'HIGH');
+
+                  if (critVulns.length > 0) {
+                    vulnDetails += `#### 🔴 CRITICAL\n\n`;
+                    critVulns.slice(0, 5).forEach(v => {
+                      vulnDetails += `- **${v.VulnerabilityID}**: ${v.PkgName}@${v.InstalledVersion}\n`;
+                      vulnDetails += `  - ${v.Title || v.Description}\n`;
+                      if (v.FixedVersion) vulnDetails += `  - Fix: Upgrade to ${v.FixedVersion}\n`;
+                      vulnDetails += `\n`;
+                    });
+                    if (critVulns.length > 5) vulnDetails += `... and ${critVulns.length - 5} more CRITICAL\n\n`;
+                  }
+
+                  if (highVulns.length > 0) {
+                    vulnDetails += `#### 🟠 HIGH\n\n`;
+                    highVulns.slice(0, 5).forEach(v => {
+                      vulnDetails += `- **${v.VulnerabilityID}**: ${v.PkgName}@${v.InstalledVersion}\n`;
+                      vulnDetails += `  - ${v.Title || v.Description}\n`;
+                      if (v.FixedVersion) vulnDetails += `  - Fix: Upgrade to ${v.FixedVersion}\n`;
+                      vulnDetails += `\n`;
+                    });
+                    if (highVulns.length > 5) vulnDetails += `... and ${highVulns.length - 5} more HIGH\n\n`;
+                  }
+                }
+              }
+            }
+
+            const body = `## 🚨 Container Image Vulnerabilities Detected
+
+            **Image**: \`ghcr.io/${{ github.repository }}:${tag}\`
+            **Scan Date**: ${new Date().toISOString()}
+
+            ### Summary
+            - 🔴 **CRITICAL**: ${critical}
+            - 🟠 **HIGH**: ${high}
+            - 🟡 **MEDIUM**: ${medium}
+
+            ${vulnDetails}
+
+            ---
+
+            **Action Required**: Review and remediate vulnerabilities within SLA.
+            - CRITICAL: 24 hours
+            - HIGH: 7 days
+
+            **Compliance**: PCI-DSS 6.2, SOX IT Controls, Basel III Cyber Risk
+            **Full Report**: Check workflow artifacts for complete Trivy scan results
+            `;
+
+            // Check for existing issue
+            const existingIssues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'security,container-vulnerability,automated',
+              state: 'open'
+            });
+
+            const todayStr = new Date().toISOString().split('T')[0];
+            const existingIssue = existingIssues.data.find(i =>
+              i.title.includes('Container vulnerabilities') &&
+              i.title.includes(tag) &&
+              i.title.includes(todayStr)
+            );
+
+            if (existingIssue) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existingIssue.number,
+                body: `## Updated Scan Results\n\n${body}`
+              });
+              console.log(`Updated existing issue #${existingIssue.number}`);
+            } else {
+              const issue = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `[SECURITY] Container vulnerabilities in ${tag} image (${todayStr})`,
+                body: body,
+                labels: ['security', 'container-vulnerability', 'automated']
+              });
+              console.log(`Created new issue #${issue.data.number}`);
+            }

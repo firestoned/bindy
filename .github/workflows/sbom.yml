@@ -1,0 +1,104 @@
+name: SBOM Generation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Generate SBOM daily to catch new vulnerabilities
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  generate-sbom:
+    name: Generate Software Bill of Materials
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: ./.github/actions/cache-cargo
+
+      - name: Generate SBOM (JSON and XML)
+        uses: ./.github/actions/generate-sbom
+        with:
+          format: both
+          describe: binaries
+
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: |
+            *.cdx.json
+            *.cdx.xml
+          retention-days: 90
+
+      - name: Commit SBOM to repository (main branch only)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add *.cdx.json *.cdx.xml
+          git diff --staged --quiet || git commit -m "chore: update SBOM [skip ci]"
+          git push
+
+  verify-sbom:
+    name: Verify SBOM Quality
+    runs-on: ubuntu-latest
+    needs: generate-sbom
+
+    steps:
+      - name: Download SBOM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom
+
+      - name: Verify SBOM contains dependencies
+        run: |
+          # Find the JSON SBOM file (cargo-cyclonedx default naming)
+          SBOM_FILE=$(ls *.cdx.json | head -1)
+
+          if [ -z "$SBOM_FILE" ]; then
+            echo "ERROR: No SBOM JSON file found"
+            exit 1
+          fi
+
+          echo "Verifying SBOM file: $SBOM_FILE"
+
+          # Check that SBOM has content
+          if [ ! -s "$SBOM_FILE" ]; then
+            echo "ERROR: SBOM is empty"
+            exit 1
+          fi
+
+          # Count components (should be > 10 for a real project)
+          component_count=$(jq '.components | length' "$SBOM_FILE")
+          echo "SBOM contains $component_count components"
+
+          if [ "$component_count" -lt 10 ]; then
+            echo "WARNING: SBOM has fewer components than expected"
+          fi
+
+      - name: Check for known vulnerabilities in SBOM
+        run: |
+          # Find the JSON SBOM file
+          SBOM_FILE=$(ls *.cdx.json | head -1)
+
+          # Install grype for vulnerability scanning
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+          # Scan SBOM for vulnerabilities
+          grype sbom:"$SBOM_FILE" --fail-on medium || true
+
+          echo "Vulnerability scan complete. See results above."

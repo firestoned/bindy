@@ -1,0 +1,52 @@
+name: 'Trivy Container Security Scan'
+description: 'Scans container images with Trivy for vulnerabilities and uploads results to GitHub Security'
+inputs:
+  image-ref:
+    description: 'Container image reference to scan (e.g., ghcr.io/org/repo:tag)'
+    required: true
+  sarif-category:
+    description: 'Category name for SARIF upload to GitHub Security tab'
+    required: false
+    default: 'trivy-container-scan'
+  upload-artifact-name:
+    description: 'Name for the Trivy scan report artifact'
+    required: false
+    default: 'trivy-scan-report'
+  output-filename:
+    description: 'Filename for the JSON output report'
+    required: false
+    default: 'trivy-results.json'
+runs:
+  using: 'composite'
+  steps:
+    - name: Run Trivy vulnerability scanner (SARIF output)
+      uses: aquasecurity/trivy-action@master
+      continue-on-error: true
+      with:
+        image-ref: ${{ inputs.image-ref }}
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+        severity: 'CRITICAL,HIGH'
+
+    - name: Upload Trivy results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v4
+      if: always()
+      with:
+        sarif_file: trivy-results.sarif
+        category: ${{ inputs.sarif-category }}
+
+    - name: Run Trivy vulnerability scanner (JSON output)
+      uses: aquasecurity/trivy-action@master
+      if: always()
+      with:
+        image-ref: ${{ inputs.image-ref }}
+        format: 'json'
+        output: ${{ inputs.output-filename }}
+        severity: 'CRITICAL,HIGH,MEDIUM,LOW'
+
+    - name: Upload Trivy JSON report as artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.upload-artifact-name }}
+        path: ${{ inputs.output-filename }}

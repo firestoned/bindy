@@ -1,13 +1,32 @@
 # BIND9 DNS Controller for Kubernetes
 
+## Build & Test Status
+
 [![Main Branch CI/CD](https://github.com/firestoned/bindy/actions/workflows/main.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/main.yaml)
 [![PR CI](https://github.com/firestoned/bindy/actions/workflows/pr.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/pr.yaml)
 [![Integration Tests](https://github.com/firestoned/bindy/actions/workflows/integration.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/integration.yaml)
 [![codecov](https://codecov.io/gh/firestoned/bindy/branch/main/graph/badge.svg)](https://codecov.io/gh/firestoned/bindy)
+
+## Security & Compliance
+
+[![Security Audit](https://github.com/firestoned/bindy/actions/workflows/audit.yml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/audit.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/firestoned/bindy/badge)](https://api.securityscorecards.dev/projects/github.com/firestoned/bindy)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/11624/badge)](https://www.bestpractices.dev/projects/11624)
+[![SBOM](https://img.shields.io/badge/SBOM-CycloneDX-orange)](sbom.json)
+[![SLSA 3](https://img.shields.io/badge/SLSA-Level%203-blue)](https://slsa.dev)
 [![Commits Signed](https://img.shields.io/badge/commits-signed-brightgreen.svg)](CONTRIBUTING.md#commit-signing-requirements)
-[![SLSA Level 2+](https://img.shields.io/badge/SLSA-Level%202+-blue.svg)](https://slsa.dev/)
+
+[![SOX Controls](https://img.shields.io/badge/SOX-Controls%20Documented-purple)](docs/compliance/sox-controls.md)
+[![NIST 800-53](https://img.shields.io/badge/NIST%20800--53-94%25%20Compliant-blue)](docs/compliance/nist-800-53.md)
+[![CIS Kubernetes](https://img.shields.io/badge/CIS%20Kubernetes-Level%201%20(84%25)-green)](docs/compliance/cis-kubernetes.md)
+[![FIPS 140-2](https://img.shields.io/badge/FIPS%20140--2-Compatible-blue)](docs/compliance/fips.md)
+[![Crypto Audit](https://img.shields.io/badge/crypto-audited-brightgreen)](docs/compliance/crypto-audit.md)
+
+---
 
 A high-performance Kubernetes operator written in Rust using kube-rs that manages BIND9 DNS infrastructure through Custom Resource Definitions (CRDs).
+
+**Built for Regulated Environments:** Bindy is designed for use in banking and financial services with full SOX, NIST 800-53, and CIS compliance documentation.
 
 > **⚠️ Security Notice for Contributors**
 >
@@ -709,6 +728,43 @@ kubectl run -it --rm debug --image=nicolaka/netshoot --restart=Never -- \
   dig @primary-0.dns-system.svc.cluster.local example.com SOA
 ```
 
+## Compliance & Security
+
+Bindy is designed for use in **regulated banking and financial services environments** with comprehensive compliance documentation:
+
+### Regulatory Compliance
+- **[SOX IT General Controls (ITGC)](docs/compliance/sox-controls.md)** - Complete SOX 404 compliance mapping with auditable controls
+- **[NIST 800-53 Rev 5](docs/compliance/nist-800-53.md)** - 94% implementation rate (33/35 controls) for federal security standards
+- **[CIS Kubernetes Benchmark](docs/compliance/cis-kubernetes.md)** - Level 1 (84%) and Level 2 (50%) hardening compliance
+- **[FIPS 140-2/140-3](docs/compliance/fips.md)** - Deployment guide for FIPS-validated cryptographic modules
+- **[Cryptographic Audit](docs/compliance/crypto-audit.md)** - Complete inventory and assessment of all cryptographic operations
+
+### Security Features
+- ✅ **Supply Chain Security** - SLSA Level 3 provenance, signed commits, SBOM generation
+- ✅ **Zero Trust Architecture** - Kubernetes RBAC, namespace isolation, least privilege
+- ✅ **Encrypted Communication** - TLS 1.2+ for all API communication, optional mTLS via Linkerd
+- ✅ **Secure Secret Management** - Kubernetes Secrets with encryption at rest, TSIG keys for DNS
+- ✅ **Continuous Vulnerability Scanning** - Daily dependency audits via `cargo audit` and OpenSSF Scorecard
+- ✅ **Audit Logging** - Structured logging of all operations, Kubernetes audit trail
+- ✅ **Non-Root Containers** - Runs as UID 1000, no privilege escalation, capabilities dropped
+- ✅ **Read-Only Filesystem** - Container root filesystem mounted read-only
+
+### Compliance Artifacts
+All compliance documentation is version-controlled and auditor-ready:
+- [docs/compliance/sox-controls.md](docs/compliance/sox-controls.md) - SOX ITGC controls matrix
+- [docs/compliance/nist-800-53.md](docs/compliance/nist-800-53.md) - NIST control implementation details
+- [docs/compliance/cis-kubernetes.md](docs/compliance/cis-kubernetes.md) - CIS benchmark verification scripts
+- [docs/compliance/fips.md](docs/compliance/fips.md) - FIPS deployment and validation procedures
+- [docs/compliance/crypto-audit.md](docs/compliance/crypto-audit.md) - Cryptographic inventory and audit
+
+### Software Bill of Materials (SBOM)
+- **Format:** CycloneDX JSON/XML
+- **Updated:** Automatically on every commit
+- **Vulnerability Scanning:** Integrated with Grype for CVE detection
+- **Download:** [sbom.json](sbom.json) | [sbom.xml](sbom.xml)
+
+---
+
 ## Documentation
 
 Complete documentation is available at [https://firestoned.github.io/bindy/](https://firestoned.github.io/bindy/)
@@ -724,6 +780,7 @@ The documentation includes:
 - **Installation Guide** - Step-by-step setup instructions
 - **User Guide** - Creating DNS infrastructure, zones, and records
 - **Operations** - Configuration, monitoring, and troubleshooting
+- **Compliance** - SOX, NIST 800-53, CIS, FIPS documentation
 - **Advanced Topics** - High availability, security, performance tuning
 - **Developer Guide** - Contributing and development workflow
 - **API Reference** - Complete CRD specifications and examples

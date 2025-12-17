@@ -1,0 +1,61 @@
+name: OpenSSF Scorecard
+
+on:
+  # Run on branch protection changes
+  branch_protection_rule:
+  # Run weekly
+  schedule:
+    - cron: '0 3 * * 1'  # Every Monday at 3 AM UTC
+  # Allow manual runs
+  workflow_dispatch:
+  # Run on pushes to main that change security-relevant files
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+
+# Declare default permissions as read-only
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      # Needed to upload results to code-scanning dashboard
+      security-events: write
+      # Needed to publish results
+      id-token: write
+      # Uncomment the permissions below if installing in a private repository.
+      # contents: read
+      # actions: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run OpenSSF Scorecard analysis
+        uses: ossf/scorecard-action@v2
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Publish results to OpenSSF REST API for aggregate statistics
+          publish_results: true
+
+      # Upload results to GitHub's code scanning dashboard
+      - name: Upload SARIF results to code scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
+
+      # Upload results as workflow artifact
+      - name: Upload Scorecard results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SARIF file
+          path: results.sarif
+          retention-days: 90

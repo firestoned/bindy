@@ -6,7 +6,9 @@ on:
       - published
 
 permissions:
+  contents: write
   packages: write
+  security-events: write  # For uploading SARIF results
 
 env:
   CARGO_TERM_COLOR: always
@@ -84,23 +86,10 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
 
-      - name: Cache cargo-cyclonedx
-        id: cache-cyclonedx
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/cargo-cyclonedx
-          key: ${{ runner.os }}-cargo-cyclonedx-0.5.7
-          restore-keys: |
-            ${{ runner.os }}-cargo-cyclonedx-
-
-      - name: Install cargo-cyclonedx
-        if: steps.cache-cyclonedx.outputs.cache-hit != 'true'
-        run: cargo install cargo-cyclonedx --version 0.5.7
-
       - name: Generate SBOM
-        run: |
-          cargo cyclonedx --format json --target ${{ matrix.platform.target }} --override-filename sbom
-          mv sbom.json target/${{ matrix.platform.target }}/release/sbom.json
+        uses: ./.github/actions/generate-sbom
+        with:
+          target: ${{ matrix.platform.target }}
 
       - name: Upload binary and SBOM artifacts
         uses: actions/upload-artifact@v4
@@ -108,7 +97,7 @@ jobs:
           name: ${{ matrix.platform.artifact_name }}
           path: |
             target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}
-            target/${{ matrix.platform.target }}/release/sbom.json
+            target/${{ matrix.platform.target }}/release/*.cdx.json
 
   docker-release:
     name: Build and Push Docker Image
@@ -202,11 +191,12 @@ jobs:
             cd ..
           done
 
-          # Collect all SBOM files
+          # Collect all SBOM files (using default cargo-cyclonedx naming)
           mkdir -p sboms
           for dir in bindy-*; do
-            if [ -f "$dir/sbom.json" ]; then
-              cp "$dir/sbom.json" "sboms/${dir}-sbom.json"
+            # Find any .cdx.json files (cargo-cyclonedx default naming)
+            if compgen -G "$dir/*.cdx.json" > /dev/null; then
+              cp "$dir"/*.cdx.json "sboms/${dir}-sbom.json"
             fi
           done
 
@@ -225,3 +215,31 @@ jobs:
             artifacts/*.tar.gz
             artifacts/sboms/*.json
             artifacts/checksums.sha256
+
+  security:
+    name: Security Vulnerability Scan
+    runs-on: ubuntu-latest
+    needs: extract-version
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run security scan
+        uses: ./.github/actions/security-scan
+        with:
+          upload-artifact-name: cargo-audit-report-release
+
+  trivy:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    needs: [extract-version, docker-release]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy scan
+        uses: ./.github/actions/trivy-scan
+        with:
+          image-ref: ghcr.io/${{ github.repository }}:${{ needs.extract-version.outputs.tag_name }}
+          sarif-category: trivy-release-scan
+          upload-artifact-name: trivy-scan-report-release
