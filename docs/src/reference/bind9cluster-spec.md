@@ -236,7 +236,7 @@ DNS servers to forward queries to (for recursive mode).
 
 ```yaml
 spec:
-  config:
+  global:
     recursion: true
     forwarders:
       - "8.8.8.8"
@@ -324,7 +324,7 @@ spec:
 ```yaml
 # In Bind9Instance
 spec:
-  config:
+  global:
     allowQuery:
       - "acl:internal"
     allowTransfer:
@@ -462,7 +462,7 @@ metadata:
   namespace: dns-system
 spec:
   version: "9.18"
-  config:
+  global:
     recursion: false
     allowQuery:
       - "0.0.0.0/0"
@@ -491,7 +491,7 @@ spec:
     imagePullPolicy: "Always"
     imagePullSecrets:
       - my-registry-secret
-  config:
+  global:
     recursion: false
     allowQuery:
       - "0.0.0.0/0"
@@ -507,7 +507,7 @@ metadata:
   namespace: dns-system
 spec:
   version: "9.18"
-  config:
+  global:
     recursion: true
     allowQuery:
       - "10.0.0.0/8"  # Internal network only
@@ -535,7 +535,7 @@ metadata:
   namespace: dns-system
 spec:
   version: "9.18"
-  config:
+  global:
     recursion: false
     allowQuery:
       - "0.0.0.0/0"
@@ -569,7 +569,7 @@ metadata:
   namespace: dns-system
 spec:
   version: "9.18"
-  config:
+  global:
     recursion: false
     allowQuery:
       - "0.0.0.0/0"

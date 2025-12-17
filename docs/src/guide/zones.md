@@ -48,13 +48,13 @@ Every primary zone requires an SOA (Start of Authority) record:
 ```yaml
 spec:
   soaRecord:
-    primaryNS: ns1.example.com.      # Primary nameserver
+    primaryNs: ns1.example.com.      # Primary nameserver
     adminEmail: admin@example.com    # Admin email (@ becomes .)
     serial: 2024010101               # Zone serial number
     refresh: 3600                    # Refresh interval
     retry: 600                       # Retry interval
     expire: 604800                   # Expiration time
-    negativeTTL: 86400              # Negative caching TTL
+    negativeTtl: 86400              # Negative caching TTL
 ```
 
 ## Zone Configuration

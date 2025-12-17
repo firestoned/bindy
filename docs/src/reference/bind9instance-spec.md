@@ -14,7 +14,7 @@ metadata:
     key: value
 spec:
   clusterRef: string          # References Bind9Cluster
-  role: primary|secondary     # Server role
+  role: primary|secondary     # Required: Server role
   replicas: integer
   version: string             # Optional, overrides cluster version
   image:                      # Optional, overrides cluster image
@@ -24,7 +24,7 @@ spec:
   configMapRefs:              # Optional, custom config files
     namedConf: string
     namedConfOptions: string
-  config:                     # Optional, overrides cluster config
+  global:                     # Optional, overrides cluster global config
     recursion: boolean
     allowQuery: [string]
     allowTransfer: [string]
@@ -52,7 +52,7 @@ spec:
 
 **How It Works**:
 - Instance inherits `version` from cluster unless overridden
-- Instance inherits `config` from cluster unless overridden
+- Instance inherits `global` config from cluster unless overridden
 - Controller uses cluster TSIG keys for zone transfers
 - Instance can override cluster settings with its own spec
 
@@ -281,13 +281,13 @@ spec:
   # namedConf not specified - will be auto-generated
 ```
 
-### config
+### global
 **Type**: object
 **Required**: No
 
-BIND9 configuration options.
+BIND9 configuration options that override cluster-level global configuration.
 
-#### config.recursion
+#### global.recursion
 **Type**: boolean
 **Required**: No
 **Default**: false
@@ -296,13 +296,13 @@ Enable recursive DNS queries. Should be `false` for authoritative servers.
 
 ```yaml
 spec:
-  config:
+  global:
     recursion: false
 ```
 
 **Warning**: Enabling recursion on public-facing authoritative servers is a security risk.
 
-#### config.allowQuery
+#### global.allowQuery
 **Type**: array of strings
 **Required**: No
 **Default**: ["0.0.0.0/0"]
@@ -311,14 +311,14 @@ IP addresses or CIDR blocks allowed to query this server.
 
 ```yaml
 spec:
-  config:
+  global:
     allowQuery:
       - "0.0.0.0/0"        # Allow all (public DNS)
       - "10.0.0.0/8"       # Private network
       - "192.168.1.0/24"   # Specific subnet
 ```
 
-#### config.allowTransfer
+#### global.allowTransfer
 **Type**: array of strings
 **Required**: No
 **Default**: []
@@ -327,7 +327,7 @@ IP addresses or CIDR blocks allowed to perform zone transfers (AXFR/IXFR).
 
 ```yaml
 spec:
-  config:
+  global:
     allowTransfer:
       - "10.0.1.10"        # Specific secondary server
       - "10.0.1.11"        # Another secondary
@@ -335,13 +335,13 @@ spec:
 
 **Security Note**: Restrict zone transfers to trusted secondary servers only.
 
-#### config.dnssec
+#### global.dnssec
 **Type**: object
 **Required**: No
 
 DNSSEC configuration for signing zones and validating responses.
 
-##### config.dnssec.enabled
+##### global.dnssec.enabled
 **Type**: boolean
 **Required**: No
 **Default**: false
@@ -350,12 +350,12 @@ Enable DNSSEC signing for zones.
 
 ```yaml
 spec:
-  config:
+  global:
     dnssec:
       enabled: true
 ```
 
-##### config.dnssec.validation
+##### global.dnssec.validation
 **Type**: boolean
 **Required**: No
 **Default**: false
@@ -364,13 +364,13 @@ Enable DNSSEC validation for recursive queries.
 
 ```yaml
 spec:
-  config:
+  global:
     dnssec:
       enabled: true
       validation: true
 ```
 
-#### config.forwarders
+#### global.forwarders
 **Type**: array of strings
 **Required**: No
 **Default**: []
@@ -379,14 +379,14 @@ DNS servers to forward queries to (for recursive mode).
 
 ```yaml
 spec:
-  config:
+  global:
     recursion: true
     forwarders:
       - "8.8.8.8"
       - "8.8.4.4"
 ```
 
-#### config.listenOn
+#### global.listenOn
 **Type**: array of strings
 **Required**: No
 **Default**: ["any"]
@@ -395,13 +395,13 @@ IPv4 addresses to listen on.
 
 ```yaml
 spec:
-  config:
+  global:
     listenOn:
       - "any"              # All IPv4 interfaces
       - "10.0.1.10"        # Specific IP
 ```
 
-#### config.listenOnV6
+#### global.listenOnV6
 **Type**: array of strings
 **Required**: No
 **Default**: ["any"]
@@ -410,7 +410,7 @@ IPv6 addresses to listen on.
 
 ```yaml
 spec:
-  config:
+  global:
     listenOnV6:
       - "any"              # All IPv6 interfaces
       - "2001:db8::1"      # Specific IPv6
@@ -483,7 +483,7 @@ metadata:
   namespace: dns-system
 spec:
   version: "9.18"
-  config:
+  global:
     recursion: false
     allowQuery:
       - "0.0.0.0/0"
@@ -504,8 +504,9 @@ metadata:
     environment: production
 spec:
   clusterRef: production-dns  # References cluster above
+  role: primary  # Required: primary or secondary
   replicas: 2
-  # Inherits version and config from cluster
+  # Inherits version and global config from cluster
 ```
 
 ### Secondary DNS Instance
@@ -521,9 +522,10 @@ metadata:
     environment: production
 spec:
   clusterRef: production-dns  # References same cluster as primary
+  role: secondary  # Required: primary or secondary
   replicas: 2
-  # Override config for secondary role
-  config:
+  # Override global config for secondary role
+  global:
     allowTransfer: []  # No zone transfers from secondary
     dnssec:
       enabled: false
@@ -541,7 +543,7 @@ metadata:
   namespace: dns-system
 spec:
   version: "9.18"
-  config:
+  global:
     recursion: true
     allowQuery:
       - "10.0.0.0/8"  # Internal network only
@@ -562,8 +564,9 @@ metadata:
     dns-role: resolver
 spec:
   clusterRef: resolver-cluster
+  role: primary  # Required: primary or secondary
   replicas: 3
-  # Inherits recursive config from cluster
+  # Inherits recursive global config from cluster
 ```
 
 ## Related Resources

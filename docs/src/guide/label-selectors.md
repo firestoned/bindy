@@ -7,7 +7,9 @@ Bindy uses direct cluster references instead of label selectors for targeting DN
 In Bindy's three-tier architecture, resources reference each other directly by name:
 
 ```
-Bind9Cluster ← clusterRef ← Bind9Instance ← clusterRef ← DNSZone ← zone ← DNS Records
+Bind9Cluster ← clusterRef ← Bind9Instance
+       ↑
+   clusterRef ← DNSZone ← zoneRef ← DNS Records
 ```
 
 This provides:
@@ -18,20 +20,18 @@ This provides:
 
 ## Cluster Reference Model
 
-### DNSZone References Bind9Instance
+### Bind9Cluster (Top-Level)
 
 ```yaml
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: DNSZone
+kind: Bind9Cluster
 metadata:
-  name: example-com
+  name: production-dns
   namespace: dns-system
 spec:
-  zoneName: example.com
-  clusterRef: primary-dns  # Direct reference to Bind9Instance name
-  soaRecord:
-    primaryNS: ns1.example.com.
-    adminEmail: admin.example.com.
+  version: "9.18"
+  global:
+    recursion: false
 ```
 
 ### Bind9Instance References Bind9Cluster
@@ -44,32 +44,36 @@ metadata:
   namespace: dns-system
 spec:
   clusterRef: production-dns  # Direct reference to Bind9Cluster name
+  role: primary  # Required: primary or secondary
   replicas: 2
 ```
 
-### Bind9Cluster (Top-Level)
+### DNSZone References Bind9Cluster
 
 ```yaml
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9Cluster
+kind: DNSZone
 metadata:
-  name: production-dns
+  name: example-com
   namespace: dns-system
 spec:
-  version: "9.18"
-  config:
-    recursion: false
+  zoneName: example.com
+  clusterRef: production-dns  # Direct reference to Bind9Cluster name
+  soaRecord:
+    primaryNs: ns1.example.com.
+    adminEmail: admin.example.com.
 ```
 
 ## How References Work
 
-When you create a DNSZone with `clusterRef: primary-dns`:
+When you create a DNSZone with `clusterRef: production-dns`:
 
-1. **Controller finds the Bind9Instance** - Looks up `Bind9Instance` named `primary-dns`
-2. **Discovers pods** - Finds pods with label `instance=primary-dns`
-3. **Loads RNDC key** - Retrieves Secret named `primary-dns-rndc-key`
-4. **Connects via RNDC** - Connects to `primary-dns.{namespace}.svc.cluster.local:953`
-5. **Creates zone** - Executes `rndc addzone` command
+1. **Controller finds the Bind9Cluster** - Looks up `Bind9Cluster` named `production-dns`
+2. **Discovers instances** - Finds all `Bind9Instance` resources referencing this cluster
+3. **Identifies primaries** - Selects instances with `role: primary`
+4. **Loads RNDC keys** - Retrieves RNDC keys from cluster configuration
+5. **Connects via RNDC** - Connects to primary instance pods via RNDC
+6. **Creates zone** - Executes `rndc addzone` command on primary instances
 
 ## Example: Multi-Region Setup
 
@@ -94,10 +98,11 @@ metadata:
   namespace: dns-system
 spec:
   clusterRef: dns-cluster-east
+  role: primary  # Required: primary or secondary
   replicas: 2
 
 ---
-# Zone on East Instance
+# Zone on East Cluster
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
@@ -105,7 +110,7 @@ metadata:
   namespace: dns-system
 spec:
   zoneName: example.com
-  clusterRef: dns-east  # Targets east instance
+  clusterRef: dns-cluster-east  # Targets east cluster
 ```
 
 ### West Region
@@ -129,10 +134,11 @@ metadata:
   namespace: dns-system
 spec:
   clusterRef: dns-cluster-west
+  role: primary  # Required: primary or secondary
   replicas: 2
 
 ---
-# Zone on West Instance
+# Zone on West Cluster
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
@@ -140,7 +146,7 @@ metadata:
   namespace: dns-system
 spec:
   zoneName: example.com
-  clusterRef: dns-west  # Targets west instance
+  clusterRef: dns-cluster-west  # Targets west cluster
 ```
 
 ## Benefits Over Label Selectors
@@ -200,7 +206,7 @@ spec:
 ```yaml
 spec:
   zoneName: example.com
-  clusterRef: primary-dns  # Direct reference to instance name
+  clusterRef: production-dns  # Direct reference to cluster name
 ```
 
 ## Next Steps

@@ -292,13 +292,13 @@ spec:
     matchLabels:
       dns-role: primary
   soaRecord:
-    primaryNS: ns1.example.com.
+    primaryNs: ns1.example.com.
     adminEmail: admin@example.com
     serial: 2024010101
     refresh: 3600
     retry: 600
     expire: 604800
-    negativeTTL: 86400
+    negativeTtl: 86400
 ---
 # Secondary Instance  
 apiVersion: bindy.firestoned.io/v1alpha1

@@ -65,7 +65,7 @@ spec:
     matchLabels:
       dns-role: primary
   soaRecord:
-    primaryNS: ns1.example.com.
+    primaryNs: ns1.example.com.
     adminEmail: admin@example.com
     serial: 2024010101
   ttl: 3600
