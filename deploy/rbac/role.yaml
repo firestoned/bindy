@@ -2,27 +2,35 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: bindy-role
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/component: rbac
 rules:
-  # Bind9Instance and Bind9Cluster resources - full control
+  # Bind9Instance resources - NO DELETE (least privilege)
   - apiGroups: ["bindy.firestoned.io"]
     resources: ["bind9instances", "bind9instances/status"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    # Removed: "delete" - Use bindy-admin-role for deletions
 
+  # Bind9Cluster resources - NO DELETE (least privilege)
   - apiGroups: ["bindy.firestoned.io"]
     resources: ["bind9clusters", "bind9clusters/status"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    # Removed: "delete" - Use bindy-admin-role for deletions
 
-  # Bind9GlobalCluster resources - cluster-scoped resources
+  # Bind9GlobalCluster resources - cluster-scoped, NO DELETE (least privilege)
   - apiGroups: ["bindy.firestoned.io"]
     resources: ["bind9globalclusters", "bind9globalclusters/status"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    # Removed: "delete" - Use bindy-admin-role for deletions
 
-  # DNSZone resources - full control
+  # DNSZone resources - NO DELETE (least privilege)
   - apiGroups: ["bindy.firestoned.io"]
     resources: ["dnszones", "dnszones/status"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    # Removed: "delete" - Use bindy-admin-role for deletions
 
-  # Record resources - full control
+  # Record resources - NO DELETE (least privilege)
   - apiGroups: ["bindy.firestoned.io"]
     resources:
       - "arecords"
@@ -41,43 +49,57 @@ rules:
       - "srvrecords/status"
       - "caarecords"
       - "caarecords/status"
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    # Removed: "delete" - Use bindy-admin-role for deletions
 
-  # Kubernetes resources for managing BIND9 infrastructure
+  # Kubernetes Deployments - NO DELETE (least privilege)
   - apiGroups: ["apps"]
     resources: ["deployments"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    # Removed: "delete" - Deployments managed via owner references
 
+  # Kubernetes Services - NO DELETE (least privilege)
   - apiGroups: [""]
     resources: ["services"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    # Removed: "delete" - Services managed via owner references
 
+  # Kubernetes ConfigMaps - NO DELETE (least privilege)
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    # Removed: "delete" - ConfigMaps recreated on reconciliation
 
+  # Kubernetes Secrets - READ-ONLY (CRITICAL: least privilege for sensitive data)
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch"]
+    # Removed: "create", "update", "patch", "delete"
+    # Controller only reads RNDC secrets (generated externally)
+    # PCI-DSS 7.1.2: Secrets are read-only for controller
 
+  # Kubernetes ServiceAccounts - NO DELETE (least privilege)
   - apiGroups: [""]
     resources: ["serviceaccounts"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    # Removed: "delete" - ServiceAccounts managed via owner references
 
+  # Kubernetes Pods - READ-ONLY (for discovery and status)
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
 
+  # Kubernetes Endpoints - READ-ONLY (for service discovery)
   - apiGroups: [""]
     resources: ["endpoints"]
     verbs: ["get", "list", "watch"]
 
-  # Events for logging
+  # Events for logging (no delete needed)
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
 
-  # Leases for leader election (high availability)
+  # Leases for leader election (no delete needed for HA)
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "create", "update", "patch"]

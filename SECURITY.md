@@ -70,18 +70,35 @@ This requirement ensures:
 
 **No exceptions** - even for hotfixes or urgent changes.
 
-### Dependency Management
+### Dependency Management & Vulnerability Scanning
 
 **Security requirements for dependencies:**
 - All dependencies scanned with `cargo audit`
 - Only use dependencies from crates.io or verified sources
 - Dependencies MUST be actively maintained (commits in last 6 months)
-- Security vulnerabilities addressed within 30 days of disclosure
+- Security vulnerabilities remediated within defined SLAs (see below)
+
+**Automated Vulnerability Scanning:**
+- **Rust Dependencies**: `cargo audit` scans all dependencies in every PR, push to main, and release
+- **Container Images**: Trivy scans all container images for OS and library vulnerabilities
+- **Scheduled Scans**: Daily security scans run automatically at 00:00 UTC
+- **SARIF Upload**: Results uploaded to GitHub Security tab for tracking
+- **Issue Creation**: GitHub issues automatically created for new vulnerabilities
 
 **CI/CD checks:**
-- `cargo audit` runs on every PR and push to main
-- Automated dependabot updates for security patches
+- `cargo audit --deny warnings` runs on every PR and push to main
+- **CI FAILS on CRITICAL/HIGH vulnerabilities** - must be remediated before merge
+- Trivy scans containers with severity threshold: CRITICAL, HIGH
+- Automated security reports uploaded as workflow artifacts
 - Manual review required for major version updates
+
+**Remediation SLAs:**
+- 🔴 **CRITICAL** (CVSS 9.0-10.0): 24 hours
+- 🟠 **HIGH** (CVSS 7.0-8.9): 7 days
+- 🟡 **MEDIUM** (CVSS 4.0-6.9): 30 days
+- 🔵 **LOW** (CVSS 0.1-3.9): 90 days
+
+**Policy**: See [docs/security/VULNERABILITY_MANAGEMENT.md](docs/security/VULNERABILITY_MANAGEMENT.md) for complete vulnerability management policy
 
 ### Access Control
 
@@ -281,5 +298,5 @@ We thank the security researchers and contributors who help keep Bindy secure:
 
 ---
 
-**Last Updated**: 2025-12-16
-**Next Review**: 2026-03-16 (Quarterly)
+**Last Updated**: 2025-12-17
+**Next Review**: 2026-03-17 (Quarterly)
