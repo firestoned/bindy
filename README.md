@@ -4,8 +4,16 @@
 [![PR CI](https://github.com/firestoned/bindy/actions/workflows/pr.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/pr.yaml)
 [![Integration Tests](https://github.com/firestoned/bindy/actions/workflows/integration.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/integration.yaml)
 [![codecov](https://codecov.io/gh/firestoned/bindy/branch/main/graph/badge.svg)](https://codecov.io/gh/firestoned/bindy)
+[![Commits Signed](https://img.shields.io/badge/commits-signed-brightgreen.svg)](CONTRIBUTING.md#commit-signing-requirements)
+[![SLSA Level 2+](https://img.shields.io/badge/SLSA-Level%202+-blue.svg)](https://slsa.dev/)
 
 A high-performance Kubernetes operator written in Rust using kube-rs that manages BIND9 DNS infrastructure through Custom Resource Definitions (CRDs).
+
+> **⚠️ Security Notice for Contributors**
+>
+> This project operates in a **regulated banking environment** and requires all commits to be **cryptographically signed** with GPG or SSH keys. This is mandatory for SOX 404, PCI-DSS 6.4.6, and SLSA Level 2+ compliance.
+>
+> **Before contributing**, you must configure commit signing. See [CONTRIBUTING.md](CONTRIBUTING.md#commit-signing-requirements) for setup instructions.
 
 ## Overview
 

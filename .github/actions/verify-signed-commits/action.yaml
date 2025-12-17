@@ -1,0 +1,95 @@
+name: 'Verify Signed Commits'
+description: 'Verifies that all commits in a PR or push are cryptographically signed using GitHub API'
+inputs:
+  github-token:
+    description: 'GitHub token for API access'
+    required: true
+  base-ref:
+    description: 'Base reference for comparison (e.g., origin/main or commit SHA)'
+    required: false
+    default: ''
+  verify-mode:
+    description: 'Verification mode: pr, push, or release'
+    required: true
+runs:
+  using: 'composite'
+  steps:
+    - name: Verify commits are signed
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        BASE_REF: ${{ inputs.base-ref }}
+        VERIFY_MODE: ${{ inputs.verify-mode }}
+      run: |
+        # Determine commits to verify based on mode
+        if [ "$VERIFY_MODE" = "release" ]; then
+          # Release mode: verify only the release commit
+          COMMITS="${{ github.sha }}"
+          echo "=== Verifying release commit ==="
+        elif [ "$VERIFY_MODE" = "pr" ]; then
+          # PR mode: verify all commits in the PR
+          COMMITS=$(git log --pretty=format:"%H" $BASE_REF..HEAD)
+          echo "=== Commits to verify in PR ==="
+        elif [ "$VERIFY_MODE" = "push" ]; then
+          # Push mode: verify commits in the push
+          if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            # New branch, check only the latest commit
+            COMMITS="${{ github.sha }}"
+          else
+            COMMITS=$(git log --pretty=format:"%H" ${{ github.event.before }}..HEAD)
+          fi
+          echo "=== Commits to verify in push ==="
+        else
+          echo "ERROR: Invalid verify-mode: $VERIFY_MODE"
+          exit 1
+        fi
+
+        if [ -z "$COMMITS" ]; then
+          echo "No commits to verify"
+          exit 0
+        fi
+
+        # Show commits being verified
+        for COMMIT in $COMMITS; do
+          git show --no-patch --format="%H %an <%ae> %s" "$COMMIT"
+        done
+        echo ""
+
+        # Verify each commit using GitHub API
+        UNSIGNED_COMMITS=()
+        for COMMIT in $COMMITS; do
+          echo "Checking commit: $COMMIT"
+
+          # Use GitHub API to check commit verification status
+          VERIFICATION=$(gh api repos/${{ github.repository }}/commits/$COMMIT --jq '.commit.verification.verified')
+
+          if [ "$VERIFICATION" = "true" ]; then
+            echo "✓ Commit $COMMIT is signed and verified"
+          else
+            echo "✗ Commit $COMMIT is NOT signed or not verified"
+            UNSIGNED_COMMITS+=("$COMMIT")
+          fi
+        done
+
+        # Report results
+        echo ""
+        if [ ${#UNSIGNED_COMMITS[@]} -gt 0 ]; then
+          echo "=========================================="
+          echo "ERROR: Found unsigned commits:"
+          echo "=========================================="
+          for COMMIT in "${UNSIGNED_COMMITS[@]}"; do
+            git show --no-patch --format="%H %an <%ae> %s" "$COMMIT"
+          done
+          echo ""
+          echo "All commits must be signed with GPG or SSH keys."
+          echo "See CONTRIBUTING.md for setup instructions."
+          echo ""
+          echo "GitHub shows commit signatures with a 'Verified' badge."
+          echo "Check: https://github.com/${{ github.repository }}/commits"
+          echo ""
+          exit 1
+        fi
+
+        echo "=========================================="
+        echo "✓ All commits are properly signed and verified"
+        echo "=========================================="
