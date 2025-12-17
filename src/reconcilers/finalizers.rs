@@ -259,18 +259,14 @@ where
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// # use bindy::reconcilers::finalizers::{handle_deletion, FinalizerCleanup};
-/// # use bindy::crd::Bind9Cluster;
-/// # use kube::Client;
-/// # use anyhow::Result;
-/// # const FINALIZER: &str = "bind9cluster.dns.firestoned.io/finalizer";
-/// #
-/// # #[async_trait::async_trait]
-/// # impl FinalizerCleanup for Bind9Cluster {
-/// #     async fn cleanup(&self, client: &Client) -> Result<()> { Ok(()) }
-/// # }
-/// #
+/// ```text
+/// use bindy::reconcilers::finalizers::{handle_deletion, FinalizerCleanup};
+/// use bindy::crd::Bind9Cluster;
+/// use kube::Client;
+/// use anyhow::Result;
+///
+/// const FINALIZER: &str = "bind9cluster.dns.firestoned.io/finalizer";
+///
 /// async fn reconcile(client: Client, cluster: Bind9Cluster) -> Result<()> {
 ///     if cluster.metadata.deletion_timestamp.is_some() {
 ///         return handle_deletion(&client, &cluster, FINALIZER).await;
@@ -278,7 +274,7 @@ where
 ///     // Normal reconciliation...
 ///     Ok(())
 /// }
-/// # ```
+/// ```
 pub async fn handle_deletion<T>(client: &Client, resource: &T, finalizer: &str) -> Result<()>
 where
     T: Resource<DynamicType = (), Scope = NamespaceResourceScope>
@@ -498,18 +494,14 @@ where
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// # use bindy::reconcilers::finalizers::{handle_cluster_deletion, FinalizerCleanup};
-/// # use bindy::crd::Bind9GlobalCluster;
-/// # use kube::Client;
-/// # use anyhow::Result;
-/// # const FINALIZER: &str = "bind9globalcluster.dns.firestoned.io/finalizer";
-/// #
-/// # #[async_trait::async_trait]
-/// # impl FinalizerCleanup for Bind9GlobalCluster {
-/// #     async fn cleanup(&self, client: &Client) -> Result<()> { Ok(()) }
-/// # }
-/// #
+/// ```text
+/// use bindy::reconcilers::finalizers::{handle_cluster_deletion, FinalizerCleanup};
+/// use bindy::crd::Bind9GlobalCluster;
+/// use kube::Client;
+/// use anyhow::Result;
+///
+/// const FINALIZER: &str = "bind9globalcluster.dns.firestoned.io/finalizer";
+///
 /// async fn reconcile(client: Client, cluster: Bind9GlobalCluster) -> Result<()> {
 ///     if cluster.metadata.deletion_timestamp.is_some() {
 ///         return handle_cluster_deletion(&client, &cluster, FINALIZER).await;
@@ -517,7 +509,7 @@ where
 ///     // Normal reconciliation...
 ///     Ok(())
 /// }
-/// # ```
+/// ```
 pub async fn handle_cluster_deletion<T>(
     client: &Client,
     resource: &T,

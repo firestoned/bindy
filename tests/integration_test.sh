@@ -4,11 +4,11 @@
 
 set -euo pipefail
 
-# Usage: integration_test.sh [--image IMAGE_TAG] [--skip-deploy]
+# Usage: integration_test.sh [--image IMAGE_REF] [--skip-deploy]
 # Examples:
-#   integration_test.sh                                    # Use local deployment
-#   integration_test.sh --image main-2025.01.01-123       # Use specific image from registry
-#   integration_test.sh --skip-deploy                      # Skip cluster/controller setup
+#   integration_test.sh                                                        # Use local deployment
+#   integration_test.sh --image ghcr.io/firestoned/bindy:main-2025.12.17     # Use specific image from registry
+#   integration_test.sh --skip-deploy                                         # Skip cluster/controller setup
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -21,7 +21,7 @@ NAMESPACE="dns-system"
 CLUSTER_NAME="${CLUSTER_NAME:=bindy-test}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-IMAGE_TAG=""
+IMAGE_REF=""
 SKIP_DEPLOY=false
 KUBECTL="kubectl --context kind-${CLUSTER_NAME}"
 
@@ -29,7 +29,7 @@ KUBECTL="kubectl --context kind-${CLUSTER_NAME}"
 while [[ $# -gt 0 ]]; do
     case $1 in
         --image)
-            IMAGE_TAG="$2"
+            IMAGE_REF="$2"
             shift 2
             ;;
         --skip-deploy)
@@ -38,7 +38,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo -e "${RED}Unknown option: $1${NC}"
-            echo "Usage: $0 [--image IMAGE_TAG] [--skip-deploy]"
+            echo "Usage: $0 [--image IMAGE_REF] [--skip-deploy]"
             exit 1
             ;;
     esac
@@ -70,8 +70,8 @@ if [ "$SKIP_DEPLOY" = false ]; then
         echo -e "${GREEN}🔐 Creating RBAC...${NC}"
         ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/rbac/"
 
-        if [ -z "$IMAGE_TAG" ]; then
-            # No image tag specified, build and deploy locally
+        if [ -z "$IMAGE_REF" ]; then
+            # No image reference specified, build and deploy locally
             echo -e "${GREEN}🏗️  Building Docker image...${NC}"
             docker build -t bindy:latest "${PROJECT_ROOT}"
 
@@ -81,9 +81,9 @@ if [ "$SKIP_DEPLOY" = false ]; then
             echo -e "${GREEN}🚀 Deploying controller...${NC}"
             ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/controller/deployment.yaml"
         else
-            # Image tag specified, pull from registry
-            echo -e "${YELLOW}📦 Deploying controller with image: ${IMAGE_TAG}${NC}"
-            sed "s|ghcr.io/firestoned/bindy:latest|ghcr.io/${GITHUB_REPOSITORY:-firestoned/bindy}:${IMAGE_TAG}|g" \
+            # Image reference specified, pull from registry
+            echo -e "${YELLOW}📦 Deploying controller with image: ${IMAGE_REF}${NC}"
+            sed "s|ghcr.io/firestoned/bindy:latest|${IMAGE_REF}|g" \
                 "${PROJECT_ROOT}/deploy/controller/deployment.yaml" | ${KUBECTL} apply -f -
         fi
 
@@ -97,13 +97,13 @@ if [ "$SKIP_DEPLOY" = false ]; then
         echo -e "${GREEN}✅ Using existing cluster '${CLUSTER_NAME}'${NC}"
         ${KUBECTL} config use-context "kind-${CLUSTER_NAME}" > /dev/null
 
-        # If IMAGE_TAG is specified, update the controller deployment
-        if [ -n "$IMAGE_TAG" ]; then
-            echo -e "${YELLOW}📦 Updating controller with image: ${IMAGE_TAG}${NC}"
+        # If IMAGE_REF is specified, update the controller deployment
+        if [ -n "$IMAGE_REF" ]; then
+            echo -e "${YELLOW}📦 Updating controller with image: ${IMAGE_REF}${NC}"
 
             # Update deployment with specific image
             ${KUBECTL} set image deployment/bindy \
-                controller="ghcr.io/${GITHUB_REPOSITORY:-firestoned/bindy}:${IMAGE_TAG}" \
+                controller="${IMAGE_REF}" \
                 -n "${NAMESPACE}"
 
             # Wait for rollout
