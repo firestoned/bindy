@@ -249,8 +249,9 @@ For NIST CSF assessments, provide:
 
 ## See Also
 
-- [Threat Model](../../security/THREAT_MODEL.md) - NIST CSF Identify function
-- [Security Architecture](../../security/ARCHITECTURE.md) - NIST CSF Protect function
-- [Incident Response](../../security/INCIDENT_RESPONSE.md) - NIST CSF Respond function
-- [Vulnerability Management](../../security/VULNERABILITY_MANAGEMENT.md) - NIST CSF Detect function
+- [Threat Model](../security/threat-model.md) - NIST CSF Identify function
+- [Security Architecture](../security/architecture.md) - NIST CSF Protect function
+- [Incident Response](../security/incident-response.md) - NIST CSF Respond function
+- [Vulnerability Management](../security/vulnerability-management.md) - NIST CSF Detect function
+- [Audit Log Retention](../security/audit-log-retention.md) - NIST CSF Recover function
 - [NIST Cybersecurity Framework](https://www.nist.gov/cyberframework) - Official NIST CSF documentation

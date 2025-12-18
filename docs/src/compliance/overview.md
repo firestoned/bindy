@@ -245,5 +245,8 @@ For compliance questions or audit support:
 
 - [SECURITY.md](../../../SECURITY.md) - Main security policy document
 - [COMPLIANCE_ROADMAP.md](../../../.github/COMPLIANCE_ROADMAP.md) - Detailed compliance tracking
-- [Threat Model](../../security/THREAT_MODEL.md) - STRIDE threat analysis
-- [Incident Response](../../security/INCIDENT_RESPONSE.md) - P1-P7 playbooks
+- [Threat Model](../security/threat-model.md) - STRIDE threat analysis
+- [Incident Response](../security/incident-response.md) - P1-P7 playbooks
+- [Security Architecture](../security/architecture.md) - Security design principles
+- [Vulnerability Management](../security/vulnerability-management.md) - CVE tracking and remediation
+- [Build Reproducibility](../security/build-reproducibility.md) - Supply chain security

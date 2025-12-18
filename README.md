@@ -1,211 +1,51 @@
-# BIND9 DNS Controller for Kubernetes
-
-## Build & Test Status
+# Bindy - BIND9 DNS Controller for Kubernetes
 
 [![Main Branch CI/CD](https://github.com/firestoned/bindy/actions/workflows/main.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/main.yaml)
-[![PR CI](https://github.com/firestoned/bindy/actions/workflows/pr.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/pr.yaml)
 [![Integration Tests](https://github.com/firestoned/bindy/actions/workflows/integration.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/integration.yaml)
 [![codecov](https://codecov.io/gh/firestoned/bindy/branch/main/graph/badge.svg)](https://codecov.io/gh/firestoned/bindy)
 
-## Security & Compliance
-
 [![Security Scan](https://github.com/firestoned/bindy/actions/workflows/security-scan.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/security-scan.yaml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/firestoned/bindy/badge)](https://api.securityscorecards.dev/projects/github.com/firestoned/bindy)
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/11624/badge)](https://www.bestpractices.dev/projects/11624)
-[![SBOM](https://img.shields.io/badge/SBOM-CycloneDX-orange)](sbom.json)
 [![SLSA 3](https://img.shields.io/badge/SLSA-Level%203-blue)](https://slsa.dev)
+[![Cosign Signed](https://img.shields.io/badge/releases-signed-brightgreen.svg)](docs/security/SIGNED_RELEASES.md)
 [![Commits Signed](https://img.shields.io/badge/commits-signed-brightgreen.svg)](CONTRIBUTING.md#commit-signing-requirements)
 
 [![SOX Controls](https://img.shields.io/badge/SOX-Controls%20Documented-purple)](docs/compliance/sox-controls.md)
 [![NIST 800-53](https://img.shields.io/badge/NIST%20800--53-94%25%20Compliant-blue)](docs/compliance/nist-800-53.md)
 [![CIS Kubernetes](https://img.shields.io/badge/CIS%20Kubernetes-Level%201%20(84%25)-green)](docs/compliance/cis-kubernetes.md)
 [![FIPS 140-2](https://img.shields.io/badge/FIPS%20140--2-Compatible-blue)](docs/compliance/fips.md)
-[![Crypto Audit](https://img.shields.io/badge/crypto-audited-brightgreen)](docs/compliance/crypto-audit.md)
+
+**Declarative DNS management for Kubernetes.** Manage BIND9 infrastructure as code using Custom Resources. Built in Rust for high performance and security.
+
+> **Built for Regulated Environments**: Full SOX, NIST 800-53, and CIS compliance documentation. Designed for banking and financial services.
 
 ---
 
-A high-performance Kubernetes operator written in Rust using kube-rs that manages BIND9 DNS infrastructure through Custom Resource Definitions (CRDs).
+## What is Bindy?
 
-**Built for Regulated Environments:** Bindy is designed for use in banking and financial services with full SOX, NIST 800-53, and CIS compliance documentation.
+Bindy is a Kubernetes operator that manages BIND9 DNS infrastructure declaratively. Instead of manually configuring DNS servers, you define DNS resources in YAML and Bindy handles:
+- Deploying and configuring BIND9 instances
+- Creating DNS zones with SOA records
+- Adding/updating DNS records dynamically via RNDC
+- Multi-cluster DNS with automatic replication
 
-> **⚠️ Security Notice for Contributors**
->
-> This project operates in a **regulated banking environment** and requires all commits to be **cryptographically signed** with GPG or SSH keys. This is mandatory for SOX 404, PCI-DSS 6.4.6, and SLSA Level 2+ compliance.
->
-> **Before contributing**, you must configure commit signing. See [CONTRIBUTING.md](CONTRIBUTING.md#commit-signing-requirements) for setup instructions.
-
-## Overview
-
-Bindy is a cloud-native DNS controller that brings declarative DNS management to Kubernetes. It watches for DNS-related CRDs and automatically provisions, configures, and manages BIND9 DNS infrastructure using industry-standard RNDC (Remote Name Daemon Control) protocol for dynamic DNS updates.
-
-## Key Features
-
-- 🚀 **High Performance** - Native Rust with async/await and zero-copy operations
-- 🏗️ **Cluster Management** - Manage logical DNS clusters with automatic instance provisioning
-- 🔄 **Dynamic DNS Updates** - Real-time record updates via RNDC protocol
-- 📝 **Multi-Record Types** - A, AAAA, CNAME, MX, TXT, NS, SRV, CAA records
-- 🎯 **Declarative Configuration** - Manage DNS as Kubernetes resources with full GitOps support
-- 🔒 **Security First** - Non-root containers, RBAC-ready, mTLS for RNDC communication
-- 📊 **Full Observability** - Status tracking, resource annotations, Prometheus metrics
-- 🏆 **High Availability** - Leader election support with automatic failover (~15s)
-- 🔐 **DNSSEC Support** - Automated DNSSEC key management and zone signing
-- 🎨 **Resource Tracking** - Automatic annotations linking records to clusters, instances, and zones
-
-## Architecture
-
-### Custom Resource Definitions (CRDs)
-
-#### Infrastructure Resources
-
-1. **Bind9Cluster** (`bind9clusters.bindy.firestoned.io`) - Logical DNS cluster definition
-   - Manages multiple Bind9Instance resources automatically
-   - Supports primary and secondary server roles
-   - Global configuration inherited by all instances
-   - Automatic scaling and self-healing
-
-2. **Bind9Instance** (`bind9instances.bindy.firestoned.io`) - Individual BIND9 server deployment
-   - Can be standalone or cluster-managed
-   - Generates Kubernetes Deployment, Service, ConfigMap, and Secret
-   - RNDC key generation and rotation
-   - Customizable BIND9 configuration
-
-#### DNS Management Resources
-
-3. **DNSZone** (`dnszones.bindy.firestoned.io`) - DNS zone definition with SOA records
-   - References Bind9Cluster for zone placement
-   - Automatic SOA record generation
-   - DNSSEC configuration support
-
-#### DNS Record Types
-
-4. **ARecord** (`arecords.bindy.firestoned.io`) - IPv4 address records
-5. **AAAARecord** (`aaaarecords.bindy.firestoned.io`) - IPv6 address records
-6. **TXTRecord** (`txtrecords.bindy.firestoned.io`) - Text records (SPF, DKIM, DMARC, etc.)
-7. **CNAMERecord** (`cnamerecords.bindy.firestoned.io`) - Canonical name (alias) records
-8. **MXRecord** (`mxrecords.bindy.firestoned.io`) - Mail exchanger records
-9. **NSRecord** (`nsrecords.bindy.firestoned.io`) - Nameserver delegation records
-10. **SRVRecord** (`srvrecords.bindy.firestoned.io`) - Service location records
-11. **CAARecord** (`caarecords.bindy.firestoned.io`) - Certificate Authority Authorization records
-
-### Controllers
-
-The operator runs multiple reconcilers concurrently:
-- **Bind9Cluster reconciler** - Manages DNS cluster lifecycle and instance provisioning
-- **Bind9Instance reconciler** - Creates/updates BIND9 deployments, services, and configuration
-- **DNSZone reconciler** - Manages DNS zones on target instances
-- **Record reconcilers** - Add/update/delete DNS records via RNDC (A, AAAA, CNAME, TXT, MX, NS, SRV, CAA)
-
-### Leader Election
-
-For high availability, Bindy supports leader election using Kubernetes Lease API:
-- Multiple controller replicas can run simultaneously
-- Only one instance actively reconciles resources (leader)
-- Automatic failover if leader becomes unavailable (~15 seconds)
-- Non-leader instances stand by ready for immediate takeover
-
-## Installation
-
-### 1. Create Namespace
-
-```bash
-kubectl create namespace dns-system
-```
-
-### 2. Install CRDs
-
-```bash
-# Use kubectl create to avoid annotation size limits
-kubectl create -f deploy/crds/
-```
-
-**Note**: Use `kubectl create` instead of `kubectl apply` to avoid the 256KB annotation limit with large CRDs. To update existing CRDs:
-
-```bash
-kubectl replace --force -f deploy/crds/
-```
-
-This will install all Custom Resource Definitions:
-- `bind9clusters.bindy.firestoned.io`
-- `bind9instances.bindy.firestoned.io`
-- `dnszones.bindy.firestoned.io`
-- `arecords.bindy.firestoned.io`
-- `aaaarecords.bindy.firestoned.io`
-- `cnamerecords.bindy.firestoned.io`
-- `mxrecords.bindy.firestoned.io`
-- `txtrecords.bindy.firestoned.io`
-- `nsrecords.bindy.firestoned.io`
-- `srvrecords.bindy.firestoned.io`
-- `caarecords.bindy.firestoned.io`
-
-### 3. Create RBAC
-
-```bash
-kubectl apply -f deploy/rbac/
-```
-
-### 4. Deploy Controller
-
-```bash
-kubectl apply -f deploy/controller/deployment.yaml
-```
-
-Wait for the controller to be ready:
-
-```bash
-kubectl wait --for=condition=available --timeout=300s deployment/bindy -n dns-system
-```
-
-### 5. Create a DNS Cluster
-
-The easiest way to get started is with a Bind9Cluster, which automatically manages instances for you:
+## Quick Example
 
 ```yaml
+# 1. Create a DNS cluster
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Cluster
 metadata:
-  name: my-dns-cluster
+  name: my-dns
   namespace: dns-system
 spec:
-  # Global configuration inherited by all instances
-  global:
-    recursion: false
-    allowQuery:
-      - "0.0.0.0/0"
-    allowTransfer:
-      - "10.0.0.0/8"
-
-  # Primary servers
   primary:
     replicas: 2
-    version: "9.18"
-    config:
-      dnssec:
-        enabled: true
-        validation: true
-
-  # Secondary servers (optional)
   secondary:
     replicas: 2
-    version: "9.18"
-```
 
-Apply the cluster:
-
-```bash
-kubectl apply -f my-dns-cluster.yaml
-```
-
-The controller will automatically create:
-- 2 primary Bind9Instance resources (`primary-0`, `primary-1`)
-- 2 secondary Bind9Instance resources (`secondary-0`, `secondary-1`)
-- Kubernetes Deployments, Services, ConfigMaps, and Secrets for each instance
-- RNDC keys for secure dynamic DNS updates
-
-## Quick Start: Creating DNS Records
-
-### 1. Create a DNS Zone
-
-```yaml
+---
+# 2. Create a zone
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
@@ -213,124 +53,243 @@ metadata:
   namespace: dns-system
 spec:
   zoneName: example.com
-  clusterRef: my-dns-cluster
+  clusterRef: my-dns
+
+---
+# 3. Add DNS records
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: ARecord
+metadata:
+  name: www
+  namespace: dns-system
+spec:
+  zoneRef: example-com
+  name: www
+  ipv4Address: "192.0.2.1"
+```
+
+Apply and you're done:
+```bash
+kubectl apply -f dns.yaml
+dig @<dns-service-ip> www.example.com  # Works!
+```
+
+## Architecture
+
+### Custom Resources (CRDs)
+
+Bindy provides 4 types of resources:
+
+#### **Infrastructure**
+| Resource | Purpose |
+|----------|---------|
+| **Bind9Cluster** | Logical DNS cluster (manages multiple instances) |
+| **Bind9GlobalCluster** | Multi-cluster DNS spanning regions/environments |
+| **Bind9Instance** | Individual BIND9 server deployment |
+
+#### **DNS Management**
+| Resource | Purpose |
+|----------|---------|
+| **DNSZone** | DNS zone with SOA record |
+| **ARecord** | IPv4 address (A) |
+| **AAAARecord** | IPv6 address (AAAA) |
+| **CNAMERecord** | Alias (CNAME) |
+| **MXRecord** | Mail server (MX) |
+| **TXTRecord** | Text data (TXT, SPF, DKIM) |
+| **NSRecord** | Nameserver delegation (NS) |
+| **SRVRecord** | Service location (SRV) |
+| **CAARecord** | Certificate authority authorization (CAA) |
+
+### How It Works
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────┐
+│ Bind9Cluster    │────▶│ Bind9Instance    │────▶│ BIND9 Pod   │
+│ (Logical)       │     │ (Physical)       │     │ + Service   │
+└─────────────────┘     └──────────────────┘     └─────────────┘
+                              │
+                              ▼
+┌─────────────────┐     ┌──────────────────┐
+│ DNSZone         │────▶│ Zone on BIND9    │
+│ (example.com)   │     │ via RNDC         │
+└─────────────────┘     └──────────────────┘
+        │
+        ▼
+┌─────────────────┐     ┌──────────────────┐
+│ ARecord         │────▶│ DNS Record       │
+│ (www)           │     │ via RNDC         │
+└─────────────────┘     └──────────────────┘
+```
+
+**Key Points:**
+- **Bind9Cluster** creates and manages **Bind9Instance** resources automatically
+- **Bind9Instance** generates Kubernetes Deployments, Services, ConfigMaps, and Secrets
+- **DNSZone** creates the zone on target BIND9 instances
+- **Record resources** add DNS records dynamically (no zone file edits!)
+
+### Multi-Cluster DNS with Bind9GlobalCluster
+
+For DNS spanning multiple Kubernetes clusters or regions:
+
+```yaml
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9GlobalCluster
+metadata:
+  name: global-dns
+spec:
+  clusters:
+    - name: us-east
+      clusterRef: dns-cluster-us-east
+      region: us-east-1
+    - name: eu-west
+      clusterRef: dns-cluster-eu-west
+      region: eu-west-1
+  replication:
+    enabled: true
+    method: axfr  # Zone transfer
+```
+
+Bindy automatically configures zone transfers between clusters for DNS replication.
+
+## Installation
+
+### 1. Install CRDs
+```bash
+kubectl create namespace dns-system
+kubectl create -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
+```
+
+### 2. Deploy Controller
+```bash
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/bindy.yaml
+```
+
+### 3. Verify
+```bash
+kubectl wait --for=condition=available --timeout=300s deployment/bindy -n dns-system
+```
+
+That's it! Now create DNS resources.
+
+## Usage Examples
+
+### Simple DNS Cluster
+
+```yaml
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
+metadata:
+  name: simple-dns
+  namespace: dns-system
+spec:
+  primary:
+    replicas: 1
+```
+
+Creates 1 primary BIND9 instance. No secondaries needed for dev/test.
+
+### Production DNS Cluster
+
+```yaml
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9Cluster
+metadata:
+  name: prod-dns
+  namespace: dns-system
+spec:
+  global:
+    recursion: false
+    allowQuery: ["0.0.0.0/0"]
+    allowTransfer: ["10.0.0.0/8"]
+  primary:
+    replicas: 3
+    config:
+      dnssec:
+        enabled: true
+  secondary:
+    replicas: 2
+```
+
+Creates 3 primaries + 2 secondaries with DNSSEC enabled and zone transfers configured.
+
+### DNS Zone with Records
+
+```yaml
+# Zone
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: DNSZone
+metadata:
+  name: example-com
+  namespace: dns-system
+spec:
+  zoneName: example.com
+  clusterRef: prod-dns
   soaRecord:
     primaryNS: ns1.example.com.
     adminEmail: admin.example.com.
-    serial: 2025010101
-    refresh: 3600
-    retry: 600
-    expire: 604800
-    negativeTTL: 86400
   ttl: 3600
-```
 
-### 2. Add DNS Records
-
-```yaml
 ---
 # A Record
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: ARecord
 metadata:
-  name: www-example-com
+  name: www
   namespace: dns-system
 spec:
-  zoneRef: example-com  # References DNSZone resource name
+  zoneRef: example-com
   name: www
   ipv4Address: "192.0.2.1"
   ttl: 300
 
 ---
-# CNAME Record
+# CNAME
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: CNAMERecord
 metadata:
-  name: blog-example-com
+  name: blog
   namespace: dns-system
 spec:
   zoneRef: example-com
   name: blog
   target: www.example.com.
-  ttl: 300
 
 ---
 # MX Record
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: MXRecord
 metadata:
-  name: mail-example-com
+  name: mail
   namespace: dns-system
 spec:
   zoneRef: example-com
   name: "@"
   priority: 10
   mailServer: mail.example.com.
-  ttl: 3600
 
 ---
-# TXT Record (SPF)
+# TXT (SPF)
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: TXTRecord
 metadata:
-  name: spf-example-com
+  name: spf
   namespace: dns-system
 spec:
   zoneRef: example-com
   name: "@"
   text:
     - "v=spf1 include:_spf.example.com ~all"
-  ttl: 3600
 ```
 
-Apply the records:
+### Standalone Instance (Advanced)
 
-```bash
-kubectl apply -f dns-records.yaml
-```
-
-### 3. Verify Records
-
-Check that records were created successfully:
-
-```bash
-# View record status
-kubectl get arecords,cnamerecords,mxrecords,txtrecords -n dns-system
-
-# Check detailed status with annotations
-kubectl describe arecord www-example-com -n dns-system
-```
-
-Each record will have annotations showing which cluster, instance, and zone it's associated with:
-```yaml
-metadata:
-  annotations:
-    bindy.firestoned.io/cluster: my-dns-cluster
-    bindy.firestoned.io/instance: primary-0
-    bindy.firestoned.io/zone: example.com
-```
-
-### 4. Test DNS Resolution
-
-```bash
-# Get the DNS service endpoint
-kubectl get svc -n dns-system
-
-# Test DNS query
-dig @<service-ip> www.example.com A
-```
-
-## Advanced Configuration
-
-### Standalone Bind9Instance
-
-You can also create standalone instances (not managed by a cluster):
+Skip the cluster abstraction and create a single instance directly:
 
 ```yaml
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9Instance
 metadata:
-  name: standalone-dns
+  name: standalone
   namespace: dns-system
 spec:
   replicas: 1
@@ -338,492 +297,154 @@ spec:
   role: primary
   config:
     recursion: false
-    allowQuery:
-      - "0.0.0.0/0"
-    allowTransfer:
-      - "10.0.0.0/8"
-    dnssec:
-      enabled: true
-      validation: true
+    allowQuery: ["0.0.0.0/0"]
 ```
 
-### Configuration Inheritance
+Useful for testing or when you need full control over a single instance.
 
-When using Bind9Cluster, configuration follows this priority order:
-1. **Instance-specific config** (highest priority)
-2. **Role-specific config** (primary/secondary)
-3. **Global config** (cluster-wide defaults)
-4. **System defaults** (lowest priority)
+## Key Features
 
-Example:
-
-```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9Cluster
-metadata:
-  name: production-dns
-  namespace: dns-system
-spec:
-  global:
-    recursion: false
-    allowQuery:
-      - "0.0.0.0/0"
-
-  primary:
-    replicas: 3
-    allowTransfer:  # Primary-specific: allow transfers
-      - "10.0.0.0/8"
-
-  secondary:
-    replicas: 2
-    # Secondaries inherit global.allowQuery
-    # Secondaries don't need allowTransfer
-```
-
-### Custom Volumes
-
-Add persistent storage for zone data:
-
-```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9Cluster
-metadata:
-  name: persistent-dns
-  namespace: dns-system
-spec:
-  primary:
-    replicas: 2
-    volumes:
-      - name: zone-data
-        persistentVolumeClaim:
-          claimName: dns-zones-pvc
-    volumeMounts:
-      - name: zone-data
-        mountPath: /var/lib/bind
-```
-
-## Development
-
-### Prerequisites
-
-- Rust 1.87+
-- Cargo
-- Docker (for building images)
-- Kubernetes 1.27+
-
-### Building Locally
-
-```bash
-cargo build
-```
-
-### Running Tests
-
-```bash
-cargo test
-```
-
-### Building Docker Image
-
-```bash
-docker build -t bindy:latest .
-```
-
-### Project Structure
-
-```
-bindy/
-├── Cargo.toml              # Rust dependencies
-├── src/
-│   ├── main.rs            # Entry point with leader election
-│   ├── lib.rs             # Library exports
-│   ├── crd.rs             # CRD type definitions
-│   ├── bind9/             # BIND9 management modules
-│   │   ├── mod.rs         # Main exports and Bind9Manager
-│   │   ├── types.rs       # Shared types (RndcKeyData, RndcError, etc.)
-│   │   ├── rndc.rs        # RNDC key generation and management
-│   │   ├── zone_ops.rs    # Zone HTTP API operations
-│   │   └── records/       # Record-specific operations
-│   │       ├── mod.rs     # Generic record query/update logic
-│   │       ├── a.rs       # A and AAAA record operations
-│   │       ├── cname.rs   # CNAME record operations
-│   │       ├── txt.rs     # TXT record operations
-│   │       ├── mx.rs      # MX record operations
-│   │       ├── ns.rs      # NS record operations
-│   │       ├── srv.rs     # SRV record operations
-│   │       └── caa.rs     # CAA record operations
-│   ├── bind9_resources.rs # Kubernetes resource generation
-│   └── reconcilers/
-│       ├── mod.rs         # Reconciler module
-│       ├── bind9cluster.rs    # Bind9Cluster reconciler
-│       ├── bind9instance.rs   # Bind9Instance reconciler
-│       ├── dnszone.rs     # DNSZone reconciler
-│       └── records.rs     # DNS record reconcilers
-├── deploy/
-│   ├── crds/              # Generated CRD YAML files
-│   ├── rbac/              # RBAC manifests
-│   └── operator/          # Operator deployment
-├── examples/              # Example resource manifests
-└── docs/                  # Documentation (mdBook)
-```
-
-### Generating CRDs
-
-CRD YAML files are auto-generated from Rust types:
-
-```bash
-# Regenerate CRD YAML files from src/crd.rs
-cargo run --bin crdgen
-
-# Regenerate API documentation
-cargo run --bin crddoc > docs/src/reference/api.md
-```
-
-**IMPORTANT:** Never edit the YAML files in `deploy/crds/` directly - they will be overwritten. Always edit `src/crd.rs` and regenerate.
-
-### Key Dependencies
-
-- **kube** (2.0) - Kubernetes client library
-- **kube-lease-manager** (0.10) - Leader election support
-- **tokio** (1.x) - Async runtime
-- **serde** (1.x) - Serialization/deserialization
-- **tracing** (0.1) - Structured logging
-- **rndc** (0.1.3) - RNDC protocol client for dynamic DNS updates
+✅ **Declarative** - Manage DNS as Kubernetes resources (GitOps-ready)
+✅ **Dynamic Updates** - Records added via RNDC (no zone file restarts)
+✅ **High Performance** - Written in Rust, minimal overhead
+✅ **Multi-Cluster** - Bind9GlobalCluster for cross-region DNS
+✅ **DNSSEC** - Automatic key management and zone signing
+✅ **High Availability** - Leader election, automatic failover
+✅ **Compliance** - SOX, NIST 800-53, CIS documented
+✅ **Secure** - Non-root containers, RBAC, signed releases
 
 ## Configuration
 
-The controller is configured via environment variables:
+The controller is configured via environment variables in the deployment:
 
-### Core Settings
-- `RUST_LOG` - Log level (default: `info`, example: `debug`)
-- `POD_NAME` - Pod name (auto-injected by Kubernetes)
-- `POD_NAMESPACE` - Pod namespace (auto-injected by Kubernetes)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUST_LOG` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
+| `BINDY_ENABLE_LEADER_ELECTION` | `true` | Enable leader election for HA |
+| `BINDY_LEASE_DURATION_SECONDS` | `15` | Lease duration |
 
-### Leader Election Settings
-- `BINDY_ENABLE_LEADER_ELECTION` - Enable leader election (default: `true`)
-- `BINDY_LEASE_NAME` - Lease resource name (default: `bindy-leader`)
-- `BINDY_LEASE_DURATION_SECONDS` - Lease duration (default: `15`)
-- `BINDY_LEASE_RENEW_DEADLINE_SECONDS` - Renew deadline (default: `10`)
-- `BINDY_LEASE_RETRY_PERIOD_SECONDS` - Retry period (default: `2`)
+See [deployment.yaml](deploy/controller/deployment.yaml) for all options.
 
-## How It Works
+## Monitoring
 
-### Bind9Cluster Reconciliation
+Check resource status:
+```bash
+# Clusters
+kubectl get bind9clusters -n dns-system
 
-1. Controller watches for Bind9Cluster resources
-2. When a cluster is created/updated:
-   - Calculates desired instance count from primary/secondary replicas
-   - Creates/updates managed Bind9Instance resources
-   - Applies global configuration to all instances
-   - Handles scale-up (creates new instances) and scale-down (deletes excess instances)
-   - Implements self-healing if child resources are deleted
+# Instances
+kubectl get bind9instances -n dns-system
 
-### Bind9Instance Reconciliation
+# Zones
+kubectl get dnszones -n dns-system
 
-1. Controller watches for Bind9Instance resources
-2. When an instance is created/updated:
-   - Generates RNDC key for secure communication
-   - Creates Kubernetes Secret with RNDC key
-   - Generates BIND9 configuration (named.conf, options)
-   - Creates ConfigMap with BIND9 configuration
-   - Creates Deployment running BIND9
-   - Creates Service for DNS access (UDP/TCP port 53, RNDC port 953)
-   - Updates status with instance readiness
+# Records
+kubectl get arecords,cnamerecords,mxrecords,txtrecords -n dns-system
+```
 
-### DNSZone Reconciliation
+View detailed status:
+```bash
+kubectl describe arecord www -n dns-system
+```
 
-1. Controller watches for DNSZone resources
-2. When a zone is created/updated:
-   - Looks up referenced Bind9Cluster
-   - Finds available Bind9Instance from cluster
-   - Connects to instance via RNDC
-   - Creates zone with SOA record
-   - Updates resource status
-
-### DNS Record Reconciliation
-
-1. Controller watches for record resources (A, AAAA, CNAME, TXT, MX, NS, SRV, CAA)
-2. When a record is created/updated:
-   - Looks up referenced DNSZone
-   - Finds associated Bind9Cluster and instance
-   - **Adds tracking annotations** to record resource:
-     - `bindy.firestoned.io/cluster` - Bind9Cluster name
-     - `bindy.firestoned.io/instance` - Bind9Instance being used
-     - `bindy.firestoned.io/zone` - DNS zone name
-   - Connects to BIND9 instance via RNDC
-   - Adds/updates DNS record dynamically
-   - Updates resource status with result
-
-### Resource Cleanup
-
-- **Finalizers** ensure proper cleanup before deletion
-- **Cluster-managed instances**: Cluster reconciler handles deletion
-- **Standalone instances**: Instance reconciler deletes all child resources (Deployment, Service, ConfigMap, Secret)
-- **DNS records**: Removed from zone via RNDC before resource deletion
-
-## Status Subresources
-
-All resources include status subresources to track reconciliation state:
-
+Output includes annotations showing cluster, instance, and zone:
 ```yaml
+metadata:
+  annotations:
+    bindy.firestoned.io/cluster: prod-dns
+    bindy.firestoned.io/instance: primary-0
+    bindy.firestoned.io/zone: example.com
 status:
   conditions:
     - type: Ready
       status: "True"
       reason: RecordCreated
       message: A record www.example.com created successfully
-      lastTransitionTime: 2025-01-01T00:00:00Z
-  observedGeneration: 1
 ```
-
-## RBAC
-
-The controller requires the following permissions:
-
-```yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: bindy
-rules:
-  # Bind9Cluster resources
-  - apiGroups: ["bindy.firestoned.io"]
-    resources: ["bind9clusters", "bind9clusters/status"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-
-  # Bind9Instance resources
-  - apiGroups: ["bindy.firestoned.io"]
-    resources: ["bind9instances", "bind9instances/status"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-
-  # DNSZone resources
-  - apiGroups: ["bindy.firestoned.io"]
-    resources: ["dnszones", "dnszones/status"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-
-  # Record resources
-  - apiGroups: ["bindy.firestoned.io"]
-    resources:
-      - "arecords"
-      - "aaaarecords"
-      - "txtrecords"
-      - "cnamerecords"
-      - "mxrecords"
-      - "nsrecords"
-      - "srvrecords"
-      - "caarecords"
-      - "*/status"
-    verbs: ["get", "list", "watch", "update", "patch"]
-
-  # Kubernetes core resources (for managing BIND9 deployments)
-  - apiGroups: [""]
-    resources: ["configmaps", "secrets", "services"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-
-  - apiGroups: ["apps"]
-    resources: ["deployments"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-
-  # Leader election
-  - apiGroups: ["coordination.k8s.io"]
-    resources: ["leases"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
-
-  # Events for logging
-  - apiGroups: [""]
-    resources: ["events"]
-    verbs: ["create", "patch"]
-```
-
-## Performance Characteristics
-
-- **Startup Time** - <1 second
-- **Memory Usage** - ~50-100MB per controller instance
-- **Reconciliation Latency**:
-  - Zone creation: <200ms
-  - Record addition via RNDC: <100ms
-  - Cluster provisioning: <5s (depending on image pull time)
-- **Controller Overhead** - Negligible CPU when idle
-- **Leader Election Failover** - ~15 seconds (configurable)
 
 ## Troubleshooting
 
-### Check Controller Logs
-
+**Controller logs:**
 ```bash
 kubectl logs -n dns-system -l app=bindy -f
 ```
 
-### Verify Leader Election
-
+**Test DNS resolution:**
 ```bash
-# Check which pod is the current leader
-kubectl get lease bindy-leader -n dns-system -o jsonpath='{.spec.holderIdentity}'
+# Get service IP
+kubectl get svc -n dns-system
 
-# View leader election logs
-kubectl logs -n dns-system -l app=bindy | grep -i leader
+# Query DNS
+dig @<service-ip> www.example.com A
 ```
 
-### Verify CRDs are Installed
-
+**Verify BIND9 config:**
 ```bash
-kubectl get crd | grep bindy.firestoned.io
-```
-
-### Check Resource Status
-
-```bash
-# Clusters
-kubectl get bind9clusters -n dns-system -o wide
-kubectl describe bind9cluster my-dns-cluster -n dns-system
-
-# Instances
-kubectl get bind9instances -n dns-system -o wide
-kubectl describe bind9instance primary-0 -n dns-system
-
-# Zones
-kubectl get dnszones -n dns-system -o wide
-kubectl describe dnszone example-com -n dns-system
-
-# Records
-kubectl get arecords,txtrecords,cnamerecords,mxrecords -n dns-system
-kubectl describe arecord www-example-com -n dns-system
-```
-
-### Check Record Annotations
-
-View which cluster, instance, and zone serve a record:
-
-```bash
-kubectl get arecord www-example-com -n dns-system -o jsonpath='{.metadata.annotations}'
-```
-
-### Verify BIND9 Configuration
-
-```bash
-# Get BIND9 pod name
+# Find BIND9 pod
 kubectl get pods -n dns-system -l app.kubernetes.io/name=bind9
 
-# View BIND9 configuration
-kubectl exec -it <bind9-pod> -n dns-system -- cat /etc/bind/named.conf
-
-# Test BIND9 configuration
-kubectl exec -it <bind9-pod> -n dns-system -- named-checkconf /etc/bind/named.conf
-
-# View zone file (if using file-based zones)
-kubectl exec -it <bind9-pod> -n dns-system -- cat /etc/bind/zones/db.example.com
-
-# Test DNS query
-kubectl exec -it <bind9-pod> -n dns-system -- dig @localhost example.com SOA
+# Check config
+kubectl exec -it <pod> -n dns-system -- named-checkconf /etc/bind/named.conf
 ```
 
-### Check RNDC Communication
-
-```bash
-# Get RNDC key from secret
-kubectl get secret <instance-name>-rndc-key -n dns-system -o jsonpath='{.data.rndc-key}' | base64 -d
-
-# Test RNDC from within cluster
-kubectl run -it --rm debug --image=nicolaka/netshoot --restart=Never -- \
-  dig @primary-0.dns-system.svc.cluster.local example.com SOA
-```
-
-## Compliance & Security
-
-Bindy is designed for use in **regulated banking and financial services environments** with comprehensive compliance documentation:
-
-### Regulatory Compliance
-- **[SOX IT General Controls (ITGC)](docs/compliance/sox-controls.md)** - Complete SOX 404 compliance mapping with auditable controls
-- **[NIST 800-53 Rev 5](docs/compliance/nist-800-53.md)** - 94% implementation rate (33/35 controls) for federal security standards
-- **[CIS Kubernetes Benchmark](docs/compliance/cis-kubernetes.md)** - Level 1 (84%) and Level 2 (50%) hardening compliance
-- **[FIPS 140-2/140-3](docs/compliance/fips.md)** - Deployment guide for FIPS-validated cryptographic modules
-- **[Cryptographic Audit](docs/compliance/crypto-audit.md)** - Complete inventory and assessment of all cryptographic operations
-
-### Security Features
-- ✅ **Supply Chain Security** - SLSA Level 3 provenance, signed commits, SBOM generation
-- ✅ **Zero Trust Architecture** - Kubernetes RBAC, namespace isolation, least privilege
-- ✅ **Encrypted Communication** - TLS 1.2+ for all API communication, optional mTLS via Linkerd
-- ✅ **Secure Secret Management** - Kubernetes Secrets with encryption at rest, TSIG keys for DNS
-- ✅ **Continuous Vulnerability Scanning** - Daily dependency audits via `cargo audit` and OpenSSF Scorecard
-- ✅ **Audit Logging** - Structured logging of all operations, Kubernetes audit trail
-- ✅ **Non-Root Containers** - Runs as UID 1000, no privilege escalation, capabilities dropped
-- ✅ **Read-Only Filesystem** - Container root filesystem mounted read-only
-
-### Compliance Artifacts
-All compliance documentation is version-controlled and auditor-ready:
-- [docs/compliance/sox-controls.md](docs/compliance/sox-controls.md) - SOX ITGC controls matrix
-- [docs/compliance/nist-800-53.md](docs/compliance/nist-800-53.md) - NIST control implementation details
-- [docs/compliance/cis-kubernetes.md](docs/compliance/cis-kubernetes.md) - CIS benchmark verification scripts
-- [docs/compliance/fips.md](docs/compliance/fips.md) - FIPS deployment and validation procedures
-- [docs/compliance/crypto-audit.md](docs/compliance/crypto-audit.md) - Cryptographic inventory and audit
-
-### Software Bill of Materials (SBOM)
-- **Format:** CycloneDX JSON/XML
-- **Generation:** Automatically generated in CI/CD for every build
-- **Availability:**
-  - **Release Assets:** Attached to every [GitHub release](https://github.com/firestoned/bindy/releases) (permanent)
-  - **Container Images:** Embedded in Docker images via `docker build --sbom=true`
-  - **CI Artifacts:** Available in GitHub Actions artifacts (90-day retention)
-- **Vulnerability Scanning:** Integrated with Grype for CVE detection
-
----
+**Common issues:**
+- Records not appearing? Check `kubectl describe <record>` for error status
+- BIND9 not starting? Check RNDC key in Secret: `kubectl get secret -n dns-system`
+- Cluster not creating instances? Check Bind9Cluster status: `kubectl describe bind9cluster`
 
 ## Documentation
 
-Complete documentation is available at [https://firestoned.github.io/bindy/](https://firestoned.github.io/bindy/)
+📚 **Complete docs:** [https://firestoned.github.io/bindy/](https://firestoned.github.io/bindy/)
 
-To build and view documentation locally:
+Includes:
+- Installation guide
+- Multi-tenancy patterns
+- High availability setup
+- DNSSEC configuration
+- Compliance documentation (SOX, NIST, CIS)
+- API reference
 
+## Development
+
+**Prerequisites:**
+- Rust 1.85+
+- Kubernetes 1.27+
+
+**Build & Test:**
 ```bash
-make docs-serve
-# Navigate to http://localhost:3000
+cargo build
+cargo test
 ```
 
-The documentation includes:
-- **Installation Guide** - Step-by-step setup instructions
-- **User Guide** - Creating DNS infrastructure, zones, and records
-- **Operations** - Configuration, monitoring, and troubleshooting
-- **Compliance** - SOX, NIST 800-53, CIS, FIPS documentation
-- **Advanced Topics** - High availability, security, performance tuning
-- **Developer Guide** - Contributing and development workflow
-- **API Reference** - Complete CRD specifications and examples
+See the [Developer Guide](https://firestoned.github.io/bindy/development/setup.html) for detailed development instructions.
 
 ## Contributing
 
-Contributions are welcome! Please ensure:
+Contributions welcome! Please:
+1. Sign commits with GPG/SSH (required for compliance)
+2. Run `cargo fmt` and `cargo clippy`
+3. Add tests for new features
+4. Update CHANGELOG.md
 
-1. Code compiles without warnings
-2. Tests pass: `cargo test`
-3. Format code: `cargo fmt`
-4. Check with clippy: `cargo clippy -- -D warnings`
-5. Update CHANGELOG.md with your changes
-6. Regenerate CRDs if you modified `src/crd.rs`: `cargo run --bin crdgen`
+See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
-See the [Contributing Guide](https://firestoned.github.io/bindy/development/contributing.html) for more details.
+## Security
+
+- **Signed Releases**: All releases signed with Cosign (keyless). [Verify releases →](docs/security/SIGNED_RELEASES.md)
+- **SLSA Level 3**: Build provenance for supply chain security
+- **SBOM**: CycloneDX SBOM included with every release
+- **Vulnerability Scanning**: Daily `cargo audit` runs
+
+Report security issues to: security@firestoned.io
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for full details.
-
-**SPDX-License-Identifier:** MIT
+MIT License - see [LICENSE](LICENSE)
 
 **Copyright (c) 2025 Erick Bourgeois, firestoned**
 
-All source code files include SPDX license identifiers for easy machine-readable license information.
+---
 
-### What This Means
-
-- ✅ **Free to use** - Personal and commercial use permitted
-- ✅ **Modify freely** - Create derivative works and modifications
-- ✅ **Distribute** - Share the original or modified versions
-- ✅ **Private use** - Use in proprietary/closed-source projects
-- ⚠️ **No warranty** - Provided "as is" without warranty of any kind
-- ℹ️ **Attribution** - Include copyright notice in substantial portions
-
-For more information about the MIT License, visit [https://opensource.org/licenses/MIT](https://opensource.org/licenses/MIT)
-
-## Support
-
-For issues, questions, or suggestions:
-- GitHub Issues: https://github.com/firestoned/bindy/issues
-- GitHub Discussions: https://github.com/firestoned/bindy/discussions
+**Need help?**
+- [GitHub Issues](https://github.com/firestoned/bindy/issues)
+- [Documentation](https://firestoned.github.io/bindy/)

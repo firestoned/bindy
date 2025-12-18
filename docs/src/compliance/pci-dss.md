@@ -489,8 +489,9 @@ For your annual PCI-DSS assessment, provide the QSA with:
 
 ## See Also
 
-- [Vulnerability Management Policy](../../security/VULNERABILITY_MANAGEMENT.md) - Remediation SLAs
-- [Secret Access Audit Trail](../../security/SECRET_ACCESS_AUDIT.md) - PCI-DSS 7.1.2, 10.2.1
-- [Audit Log Retention Policy](../../security/AUDIT_LOG_RETENTION.md) - PCI-DSS 10.5.1
-- [Incident Response Playbooks](../../security/INCIDENT_RESPONSE.md) - PCI-DSS 12.10
-- [Security Architecture](../../security/ARCHITECTURE.md) - RBAC, secrets management
+- [Vulnerability Management Policy](../security/vulnerability-management.md) - Remediation SLAs
+- [Secret Access Audit Trail](../security/secret-access-audit.md) - PCI-DSS 7.1.2, 10.2.1
+- [Audit Log Retention Policy](../security/audit-log-retention.md) - PCI-DSS 10.5.1
+- [Incident Response Playbooks](../security/incident-response.md) - PCI-DSS 12.10
+- [Security Architecture](../security/architecture.md) - RBAC, secrets management
+- [Build Reproducibility](../security/build-reproducibility.md) - Supply chain integrity
