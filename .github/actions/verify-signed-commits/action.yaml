@@ -1,3 +1,6 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
 name: 'Verify Signed Commits'
 description: 'Verifies that all commits in a PR or push are cryptographically signed using GitHub API'
 inputs:

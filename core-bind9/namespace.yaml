@@ -1,6 +1,0 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: bind9
-  labels:
-    linkerd.io/inject: enabled

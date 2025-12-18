@@ -49,7 +49,7 @@ The NIST Cybersecurity Framework (CSF) is a voluntary framework developed by the
 
 | Category | Subcategory | Bindy Implementation | Status |
 |----------|-------------|----------------------|--------|
-| **PR.AC** (Identity Management) | Least privilege access | RBAC (read-only secrets, no deletes), 2FA | ✅ Complete |
+| **PR.AC** (Identity Management) | Least privilege access | RBAC (minimal delete permissions for lifecycle management), 2FA | ✅ Complete |
 | **PR.AC** (Physical access control) | N/A (cloud-hosted) | Kubernetes cluster security | N/A |
 | **PR.AT** (Awareness and Training) | Security training | CONTRIBUTING.md (secure coding guidelines) | ✅ Complete |
 | **PR.DS** (Data Security) | Data at rest encryption | Kubernetes Secrets (encrypted etcd), S3 SSE | ✅ Complete |

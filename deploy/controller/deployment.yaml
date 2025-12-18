@@ -35,7 +35,17 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - name: RUST_LOG
-              value: "debug"
+              valueFrom:
+                configMapKeyRef:
+                  name: bindy-config
+                  key: log-level
+                  optional: true
+            - name: RUST_LOG_FORMAT
+              valueFrom:
+                configMapKeyRef:
+                  name: bindy-config
+                  key: log-format
+                  optional: true
             - name: POD_NAME
               valueFrom:
                 fieldRef:

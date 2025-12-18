@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bindy-config
+  namespace: dns-system
+  labels:
+    app: bindy
+data:
+  # Log level for the controller
+  # Options: error, warn, info, debug, trace
+  # Production default: info
+  # Change to debug for troubleshooting (requires pod restart)
+  log-level: "info"
+
+  # Log format
+  # Options: text, json
+  # Production default: json (for structured logging in SIEM)
+  log-format: "json"

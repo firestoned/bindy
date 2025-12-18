@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
 # Validate all example YAML files against CRD schemas
 # This script ensures examples stay in sync with CRD definitions
 

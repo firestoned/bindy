@@ -53,6 +53,7 @@
 - [Monitoring](./operations/monitoring.md)
   - [Status Conditions](./operations/status.md)
   - [Logging](./operations/logging.md)
+  - [Changing Log Levels](./operations/log-level-change.md)
   - [Metrics](./operations/metrics.md)
 - [Troubleshooting](./operations/troubleshooting.md)
   - [Error Handling & Retry Logic](./operations/error-handling.md)
@@ -62,6 +63,7 @@
 
 # Advanced Topics
 
+- [Replacing CoreDNS](./advanced/coredns-replacement.md)
 - [High Availability](./advanced/ha.md)
   - [Zone Transfers](./advanced/zone-transfers.md)
   - [Replication](./advanced/replication.md)
