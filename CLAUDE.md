@@ -82,6 +82,65 @@ See **CRD Development - Rust as Source of Truth** section below for details.
 - `/docs/src/` - Update any documentation that references the CRD fields
 - Quickstart guide - Verify all YAML snippets are valid
 
+### CRITICAL: Documentation Examples Must Reference CRDs
+
+**Status:** ✅ Required Standard
+**Impact:** Documentation accuracy and user trust
+
+**CRITICAL REQUIREMENTS:**
+
+1. **Before Creating Examples in Documentation:**
+   - **ALWAYS** read the relevant CRD YAML files in `/deploy/crds/` OR the Rust types in `src/crd.rs` first
+   - **VERIFY** the exact field names and structure from the source of truth
+   - **NEVER** guess or assume field names based on convention
+   - **NEVER** copy examples from memory or other documentation without verification
+
+2. **When CRDs Change:**
+   - **SEARCH** all documentation in `/docs/src/` for examples using the changed CRD
+   - **UPDATE** every example to match the new schema
+   - **VALIDATE** that all examples can be applied: `kubectl apply --dry-run=client -f examples/`
+   - **BUILD** documentation to ensure no broken references: `make docs`
+
+**Why This Matters:**
+- Incorrect examples break user trust and cause support burden
+- Documentation is often the first touchpoint for users
+- Outdated examples lead to failed deployments and frustration
+- Schema mismatches are hard to debug for users
+
+**Example of Critical Failure:**
+```yaml
+# ❌ WRONG - Using spec.config instead of spec.global
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9GlobalCluster
+spec:
+  config:  # This field doesn't exist!
+    recursion: true
+
+# ✅ CORRECT - Verified against CRD
+apiVersion: bindy.firestoned.io/v1alpha1
+kind: Bind9GlobalCluster
+spec:
+  global:  # Correct field name from CRD schema
+    recursion: true
+```
+
+**Workflow for Documentation Examples:**
+1. Identify which CRD the example uses
+2. Read `/deploy/crds/<crd-name>.crd.yaml` or `src/crd.rs`
+3. Verify the exact field names and types
+4. Write the example using the verified schema
+5. Validate the example: `kubectl apply --dry-run=client`
+6. If CRD changes, search docs for ALL examples: `grep -r "kind: <CRDName>" docs/src/`
+
+**Verification Checklist:**
+- [ ] Read CRD schema before writing examples
+- [ ] All field names match CRD exactly (case-sensitive)
+- [ ] All required fields are present
+- [ ] No deprecated or removed fields used
+- [ ] Examples validate successfully with kubectl
+
+**REMEMBER:** The CRD schema is the contract. Documentation must honor that contract exactly.
+
 ---
 
 ## 🔧 GitHub Workflows & CI/CD
