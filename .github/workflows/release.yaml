@@ -172,13 +172,14 @@ jobs:
         with:
           images: ghcr.io/${{ matrix.variant.image-repository }}
           tags: |
-            type=raw,value=${{ needs.extract-version.outputs.tag-name }}
-            type=semver,pattern=v{{major}}.{{minor}},value=${{ needs.extract-version.outputs.tag-name }}
-            type=semver,pattern=v{{major}},value=${{ needs.extract-version.outputs.tag-name }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
             type=raw,value=${{ matrix.variant.latest_tag }}
             type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}
           flavor: |
             latest=false
+            prefix=v
 
       - name: Build and push Docker image (${{ matrix.variant.name }})
         id: docker_build

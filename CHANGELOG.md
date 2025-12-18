@@ -2,6 +2,98 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-18 10:45] - Fix Docker Image Tagging to Include Full Semantic Version
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `.github/workflows/release.yaml`: Fixed Docker metadata action configuration to generate all semantic version tags (lines 169-182)
+  - Removed manual `type=raw` tag specification that bypassed semver parsing
+  - Now uses `type=semver,pattern={{version}}` to generate full version tag (e.g., `v0.2.2`)
+  - Now uses `type=semver,pattern={{major}}.{{minor}}` to generate minor version tag (e.g., `v0.2`)
+  - Now uses `type=semver,pattern={{major}}` to generate major version tag (e.g., `v0`)
+  - Added `prefix=v` flavor to ensure all semver tags have the `v` prefix
+  - Kept `type=raw` for `latest` and `sha-*` tags
+
+### Why
+The Docker metadata action was configured with `type=raw,value=${{ needs.extract-version.outputs.tag-name }}` which prevented automatic semver parsing. This resulted in only generating `v0.2` (minor) and `v0` (major) tags, but missing the full `v0.2.2` (patch) tag.
+
+The docker/metadata-action automatically extracts semver components from the git release tag when triggered by a release event. By using `type=semver` patterns without explicit `value=` parameters, the action correctly parses the release tag and generates all three version levels.
+
+This fix ensures:
+1. Full semantic version tag is generated (e.g., `v0.2.2`)
+2. Minor version tag is generated (e.g., `v0.2`)
+3. Major version tag is generated (e.g., `v0`)
+4. All version tags have consistent `v` prefix via flavor configuration
+5. Additional tags (`latest`, `sha-*`) are preserved
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] CI/CD workflow fix
+
+## [2025-12-18 10:30] - Fix SLSA Provenance Workflow to Use Git Tag Version
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `.github/workflows/slsa.yml`: Updated to use version from git release tag instead of Cargo.toml
+  - Added `extract-version` job that uses the `.github/actions/extract-version` action (same as release workflow)
+  - Updated `build` job to depend on `extract-version` and use extracted version
+  - Updated Cargo.toml version dynamically before build (lines 58-62)
+  - All binary and provenance artifact names now use the git tag version (e.g., `v0.1.0` instead of `0.1.0`)
+  - Added fallback to Cargo.toml version for `workflow_dispatch` trigger (lines 36-43)
+
+### Why
+The SLSA provenance workflow was generating artifact names using the version from Cargo.toml (e.g., `0.1.0.intoto.jsonl`) while the release workflow expected the git tag format (e.g., `v0.1.0.intoto.jsonl`). This caused the "Download Provenance" step in the release workflow to fail with "Artifact not found" errors.
+
+This fix ensures:
+1. Both workflows use the same version extraction logic from `.github/actions/extract-version`
+2. SLSA provenance artifacts are named consistently with the git release tag
+3. The release workflow can successfully download and verify provenance artifacts
+4. Manual workflow_dispatch triggers still work by falling back to Cargo.toml version
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] CI/CD workflow fix
+
+## [2025-12-18 09:48] - Fix Incorrect Bind9GlobalCluster Schema in CoreDNS Replacement Documentation
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `docs/src/advanced/coredns-replacement.md`: Corrected all Bind9GlobalCluster examples to use `spec.global` instead of incorrect `spec.config` field (lines 83, 154, 206, 298, 523)
+  - The CRD schema uses `spec.global` for global configuration shared by all instances
+  - The incorrect `spec.config` field does not exist in the Bind9GlobalCluster CRD
+  - All 5 examples in the CoreDNS replacement guide now match the actual CRD schema
+
+### Changed
+- `CLAUDE.md`: Added new section "CRITICAL: Documentation Examples Must Reference CRDs" (lines 85-143)
+  - **CRITICAL**: Requires reading CRD schemas before creating documentation examples
+  - **CRITICAL**: Requires searching and updating all docs when CRDs change
+  - Includes verification checklist and example workflows
+  - Prevents schema mismatches between documentation and deployed CRDs
+  - Ensures documentation examples validate successfully with kubectl
+
+### Why
+Incorrect documentation examples break user trust and cause deployment failures. The CoreDNS replacement guide used `spec.config` throughout, but the actual Bind9GlobalCluster CRD uses `spec.global` for global configuration. This would have caused all examples to fail validation with "unknown field" errors.
+
+The new CLAUDE.md requirements ensure that:
+1. All documentation examples are verified against actual CRD schemas before publication
+2. When CRDs change, all affected documentation is systematically updated
+3. Examples are validated with `kubectl apply --dry-run=client` before commit
+
+This change aligns with the existing requirement that "Examples and documentation MUST stay in sync with CRD schemas" and makes it enforceable through explicit workflow requirements.
+
+### Impact
+- [x] Documentation only
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+
 ## [2025-12-18 07:45] - Add SPDX License Identifiers and Fix License Scan Permissions
 
 **Author:** Erick Bourgeois
