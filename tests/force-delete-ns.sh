@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
 set -euo pipefail
 
 # Force delete Kubernetes namespaces stuck in Terminating state

@@ -121,8 +121,8 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 **Frameworks:** SOX 404, PCI-DSS 7.1.2, Basel III
 
 **Key Controls:**
-- ✅ Controller has read-only access to secrets (cannot create/update/delete)
-- ✅ Controller cannot delete any resources (least privilege)
+- ✅ Controller has minimal required permissions (create/delete secrets for RNDC lifecycle, delete managed resources for finalizer cleanup)
+- ✅ Controller cannot delete user resources (DNSZone, Records, Bind9GlobalCluster - least privilege)
 - ✅ Automated RBAC verification script (CI/CD)
 - ✅ Separation of duties (2+ reviewers for code changes)
 

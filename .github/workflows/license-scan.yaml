@@ -1,0 +1,265 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
+name: License Scan
+
+on:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/license-scan.yaml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  schedule:
+    # Run quarterly (first day of Jan, Apr, Jul, Oct at 00:00 UTC)
+    - cron: '0 0 1 1,4,7,10 *'
+  workflow_dispatch:
+
+jobs:
+  license-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write  # Required to post comments on PRs
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: ./.github/actions/cache-cargo
+
+      - name: Install cargo-license
+        run: cargo install cargo-license --locked
+
+      - name: Generate license report
+        run: |
+          echo "# Dependency License Report" > license-report.md
+          echo "" >> license-report.md
+          echo "**Generated:** $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> license-report.md
+          echo "" >> license-report.md
+
+          # Full license list
+          echo "## All Dependencies" >> license-report.md
+          echo "" >> license-report.md
+          cargo license --json | jq -r '
+            .[] |
+            "| \(.name) | \(.version) | \(.license // "UNKNOWN") | \(.repository // "N/A") |"
+          ' | sort | uniq | \
+          sed '1i| Package | Version | License | Repository |' | \
+          sed '2i|---------|---------|---------|------------|' \
+          >> license-report.md
+
+          echo "" >> license-report.md
+
+      - name: Check for unapproved licenses
+        id: license-check
+        run: |
+          # Approved licenses (Basel III Legal Compliance)
+          APPROVED_LICENSES=(
+            "MIT"
+            "Apache-2.0"
+            "BSD-3-Clause"
+            "BSD-2-Clause"
+            "ISC"
+            "0BSD"
+            "Unlicense"
+            "CC0-1.0"
+            "Zlib"
+            "Unicode-3.0"
+            "MPL-2.0"
+            "BSL-1.0"
+            "CDLA-Permissive-2.0"
+          )
+
+          # Unapproved licenses (copyleft, restrictive)
+          UNAPPROVED_LICENSES=(
+            "GPL"
+            "LGPL"
+            "AGPL"
+            "SSPL"
+            "BUSL"
+            "CC-BY-SA"
+          )
+
+          echo "## License Compliance Check" >> license-report.md
+          echo "" >> license-report.md
+
+          # Get all licenses
+          LICENSES=$(cargo license --json | jq -r '.[].license // "UNKNOWN"' | sort | uniq)
+
+          # Check for unapproved licenses
+          UNAPPROVED_FOUND=()
+          UNKNOWN_FOUND=()
+
+          while IFS= read -r LICENSE; do
+            IS_APPROVED=false
+            HAS_UNAPPROVED=false
+
+            # For OR clauses, check if ANY option is approved
+            # For AND clauses, check if ALL options are approved
+            if echo "$LICENSE" | grep -q " OR "; then
+              # OR clause: at least one approved option makes it acceptable
+              for APPROVED in "${APPROVED_LICENSES[@]}"; do
+                if echo "$LICENSE" | grep -qiE "(^|OR )${APPROVED}( OR|\$)"; then
+                  IS_APPROVED=true
+                  break
+                fi
+              done
+            elif echo "$LICENSE" | grep -q " AND "; then
+              # AND clause: all parts must be approved
+              IS_APPROVED=true
+              for APPROVED in "${APPROVED_LICENSES[@]}"; do
+                # Check each AND component
+                IFS=' AND ' read -ra PARTS <<< "$LICENSE"
+                for part in "${PARTS[@]}"; do
+                  part_approved=false
+                  for approved in "${APPROVED_LICENSES[@]}"; do
+                    if echo "$part" | grep -qiE "^${approved}\$"; then
+                      part_approved=true
+                      break
+                    fi
+                  done
+                  if [ "$part_approved" = false ]; then
+                    IS_APPROVED=false
+                    break 2
+                  fi
+                done
+              done
+            else
+              # Single license
+              for APPROVED in "${APPROVED_LICENSES[@]}"; do
+                if echo "$LICENSE" | grep -qiE "^${APPROVED}\$"; then
+                  IS_APPROVED=true
+                  break
+                fi
+              done
+            fi
+
+            # Only mark as unapproved if it contains copyleft AND has no approved alternative
+            if [ "$IS_APPROVED" = false ]; then
+              for UNAPPROVED in "${UNAPPROVED_LICENSES[@]}"; do
+                if echo "$LICENSE" | grep -qiE "${UNAPPROVED}"; then
+                  UNAPPROVED_FOUND+=("$LICENSE")
+                  HAS_UNAPPROVED=true
+                  break
+                fi
+              done
+            fi
+
+            # Check for unknown licenses
+            if [ "$LICENSE" = "UNKNOWN" ] || [ "$LICENSE" = "" ]; then
+              UNKNOWN_FOUND+=("$LICENSE")
+            fi
+          done <<< "$LICENSES"
+
+          # Report unapproved licenses
+          if [ ${#UNAPPROVED_FOUND[@]} -gt 0 ]; then
+            echo "### ❌ UNAPPROVED LICENSES DETECTED" >> license-report.md
+            echo "" >> license-report.md
+            echo "The following unapproved licenses were found:" >> license-report.md
+            echo "" >> license-report.md
+            for LICENSE in "${UNAPPROVED_FOUND[@]}"; do
+              echo "- **$LICENSE** (copyleft or restrictive)" >> license-report.md
+
+              # List packages with this license
+              PACKAGES=$(cargo license --json | jq -r --arg lic "$LICENSE" '
+                .[] | select(.license == $lic) | .name
+              ')
+              echo "  - Packages: $PACKAGES" >> license-report.md
+            done
+            echo "" >> license-report.md
+
+            echo "has-unapproved=true" >> $GITHUB_OUTPUT
+          else
+            echo "### ✅ All Licenses Approved" >> license-report.md
+            echo "" >> license-report.md
+            echo "has-unapproved=false" >> $GITHUB_OUTPUT
+          fi
+
+          # Report unknown licenses
+          if [ ${#UNKNOWN_FOUND[@]} -gt 0 ]; then
+            echo "### ⚠️ Unknown Licenses" >> license-report.md
+            echo "" >> license-report.md
+            echo "The following packages have unknown or missing licenses:" >> license-report.md
+            echo "" >> license-report.md
+
+            UNKNOWN_PACKAGES=$(cargo license --json | jq -r '
+              .[] | select(.license == null or .license == "UNKNOWN" or .license == "") |
+              "- \(.name) \(.version)"
+            ')
+            echo "$UNKNOWN_PACKAGES" >> license-report.md
+            echo "" >> license-report.md
+
+            echo "has-unknown=true" >> $GITHUB_OUTPUT
+          else
+            echo "has-unknown=false" >> $GITHUB_OUTPUT
+          fi
+
+          # Summary
+          echo "## Approved Licenses" >> license-report.md
+          echo "" >> license-report.md
+          for LICENSE in "${APPROVED_LICENSES[@]}"; do
+            echo "- ✅ $LICENSE" >> license-report.md
+          done
+
+          echo "" >> license-report.md
+          echo "## Unapproved Licenses (Copyleft)" >> license-report.md
+          echo "" >> license-report.md
+          for LICENSE in "${UNAPPROVED_LICENSES[@]}"; do
+            echo "- ❌ $LICENSE" >> license-report.md
+          done
+
+      - name: Upload license report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: license-report
+          path: license-report.md
+          retention-days: 90
+
+      - name: Post license report to PR
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('license-report.md', 'utf8');
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: report
+            });
+
+      - name: Fail on unapproved licenses
+        if: steps.license-check.outputs.has-unapproved == 'true'
+        run: |
+          echo "❌ FAIL: Unapproved licenses detected (GPL, LGPL, AGPL, etc.)"
+          echo "See license-report.md artifact for details"
+          echo ""
+          echo "Action required:"
+          echo "1. Remove dependencies with unapproved licenses"
+          echo "2. OR request legal exception (document in CHANGELOG.md)"
+          exit 1
+
+      - name: Warn on unknown licenses
+        if: steps.license-check.outputs.has-unknown == 'true'
+        run: |
+          echo "⚠️ WARNING: Unknown licenses detected"
+          echo "Some dependencies have missing or unknown licenses"
+          echo "See license-report.md artifact for details"
+          echo ""
+          echo "Action required:"
+          echo "1. Investigate packages with unknown licenses"
+          echo "2. Update package metadata or request upstream fix"
+          echo "3. Consider replacing with well-licensed alternatives"
