@@ -1,3 +1,6 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
 name: 'Trivy Container Security Scan'
 description: 'Scans container images with Trivy for vulnerabilities and uploads results to GitHub Security'
 inputs:

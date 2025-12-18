@@ -1,3 +1,6 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
 name: 'Extract Version Information'
 description: 'Extracts version, tag name, and image tags for consistent use across workflows'
 inputs:

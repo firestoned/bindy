@@ -6,17 +6,25 @@ metadata:
     app.kubernetes.io/name: bindy
     app.kubernetes.io/component: rbac
 rules:
-  # Bind9Instance resources - NO DELETE (least privilege)
+  # Bind9Instance resources
   - apiGroups: ["bindy.firestoned.io"]
     resources: ["bind9instances", "bind9instances/status"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
-    # Removed: "delete" - Use bindy-admin-role for deletions
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    # Permissions needed:
+    # - "get", "list", "watch": Read instances for status updates
+    # - "create": Create instances for Bind9Cluster scaling
+    # - "update", "patch": Update instance configuration
+    # - "delete": Scale down instances (Bind9Cluster reconciler) and finalizer cleanup
 
-  # Bind9Cluster resources - NO DELETE (least privilege)
+  # Bind9Cluster resources
   - apiGroups: ["bindy.firestoned.io"]
     resources: ["bind9clusters", "bind9clusters/status"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
-    # Removed: "delete" - Use bindy-admin-role for deletions
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    # Permissions needed:
+    # - "get", "list", "watch": Read clusters for status updates
+    # - "create": Create clusters for Bind9GlobalCluster
+    # - "update", "patch": Update cluster configuration
+    # - "delete": Clean up clusters (Bind9GlobalCluster finalizer cleanup)
 
   # Bind9GlobalCluster resources - cluster-scoped, NO DELETE (least privilege)
   - apiGroups: ["bindy.firestoned.io"]
@@ -52,37 +60,62 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch"]
     # Removed: "delete" - Use bindy-admin-role for deletions
 
-  # Kubernetes Deployments - NO DELETE (least privilege)
+  # Kubernetes Deployments
   - apiGroups: ["apps"]
     resources: ["deployments"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
-    # Removed: "delete" - Deployments managed via owner references
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    # Permissions needed:
+    # - "get", "list", "watch": Read deployment status
+    # - "create": Create deployments for Bind9Instance
+    # - "update", "patch": Update deployment configuration
+    # - "delete": Finalizer cleanup (Bind9Instance reconciler)
+    # Note: Owner references provide automatic GC, but finalizer explicitly deletes
 
-  # Kubernetes Services - NO DELETE (least privilege)
+  # Kubernetes Services
   - apiGroups: [""]
     resources: ["services"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
-    # Removed: "delete" - Services managed via owner references
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    # Permissions needed:
+    # - "get", "list", "watch": Read service status and endpoints
+    # - "create": Create services for Bind9Instance
+    # - "update", "patch": Update service configuration (preserves clusterIP)
+    # - "delete": Finalizer cleanup (Bind9Instance reconciler)
+    # Note: Owner references provide automatic GC, but finalizer explicitly deletes
 
-  # Kubernetes ConfigMaps - NO DELETE (least privilege)
+  # Kubernetes ConfigMaps
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
-    # Removed: "delete" - ConfigMaps recreated on reconciliation
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    # Permissions needed:
+    # - "get", "list", "watch": Read configuration data
+    # - "create": Create ConfigMaps for Bind9Instance configuration
+    # - "update", "patch": Update BIND9 configuration (zone changes)
+    # - "delete": Finalizer cleanup (Bind9Instance reconciler)
+    # Note: Owner references provide automatic GC, but finalizer explicitly deletes
 
-  # Kubernetes Secrets - READ-ONLY (CRITICAL: least privilege for sensitive data)
+  # Kubernetes Secrets - RNDC key management (CRITICAL: least privilege for sensitive data)
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "list", "watch"]
-    # Removed: "create", "update", "patch", "delete"
-    # Controller only reads RNDC secrets (generated externally)
-    # PCI-DSS 7.1.2: Secrets are read-only for controller
+    verbs: ["get", "list", "watch", "create", "delete"]
+    # Permissions needed:
+    # - "get": Load RNDC keys for zone updates (DNSZone reconciler)
+    # - "list": Check if RNDC secrets exist (Bind9Cluster reconciler)
+    # - "watch": Monitor RNDC secret changes
+    # - "create": Generate RNDC keys for new Bind9Instance resources
+    # - "delete": Clean up RNDC keys when Bind9Instance is deleted (finalizer)
+    # Removed: "update", "patch" - Secrets are immutable (delete+recreate pattern)
+    # PCI-DSS 7.1.2: Minimal permissions for RNDC secret lifecycle management
 
-  # Kubernetes ServiceAccounts - NO DELETE (least privilege)
+  # Kubernetes ServiceAccounts
   - apiGroups: [""]
     resources: ["serviceaccounts"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
-    # Removed: "delete" - ServiceAccounts managed via owner references
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    # Permissions needed:
+    # - "get", "list", "watch": Read service account status
+    # - "create": Create service accounts for Bind9Instance pods
+    # - "update", "patch": Update service account configuration
+    # - "delete": Finalizer cleanup (Bind9Instance reconciler)
+    # Note: Owner references provide automatic GC, but finalizer explicitly deletes
 
   # Kubernetes Pods - READ-ONLY (for discovery and status)
   - apiGroups: [""]

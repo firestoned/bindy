@@ -96,7 +96,7 @@ cat docs/security/VULNERABILITY_MANAGEMENT.md
 
 | OWASP Risk | Bindy Mitigation |
 |------------|------------------|
-| **A01: Broken Access Control** | ✅ RBAC least privilege, no delete permissions |
+| **A01: Broken Access Control** | ✅ RBAC least privilege (minimal delete permissions for lifecycle management) |
 | **A02: Cryptographic Failures** | ✅ TLS for all API calls, secrets in Kubernetes Secrets |
 | **A03: Injection** | ✅ Parameterized DNS zone updates (RNDC), input validation |
 | **A04: Insecure Design** | ✅ Threat model (STRIDE), security architecture documented |
@@ -167,8 +167,8 @@ gh run list --workflow ci.yaml --limit 100
 
 | Control | Implementation | Evidence |
 |---------|----------------|----------|
-| **Least Privilege RBAC** | Controller read-only access to secrets (no create/update/delete) | `deploy/rbac/clusterrole.yaml` |
-| **No Delete Permissions** | Controller cannot delete any resources | RBAC verification script |
+| **Least Privilege RBAC** | Controller minimal RBAC (create/delete secrets for RNDC lifecycle, delete managed resources for cleanup) | `deploy/rbac/clusterrole.yaml` |
+| **Minimal Delete Permissions** | Controller delete limited to managed resources (finalizer cleanup, scaling) | RBAC verification script |
 | **Secret Access Audit Trail** | All secret access logged (7-year retention) | [Secret Access Audit Trail](../../security/SECRET_ACCESS_AUDIT.md) |
 | **Quarterly Access Reviews** | Security team reviews access every quarter | Access review reports |
 | **Role-Based Access** | Different roles for dev, ops, security teams | GitHub team permissions |
@@ -181,8 +181,10 @@ gh run list --workflow ci.yaml --limit 100
 
 # Expected output:
 # ✅ Controller can READ secrets (get, list, watch)
-# ✅ Controller CANNOT CREATE/UPDATE/PATCH/DELETE secrets
-# ✅ Controller CANNOT DELETE any resources
+# ✅ Controller can CREATE/DELETE secrets (RNDC key lifecycle only)
+# ✅ Controller CANNOT UPDATE/PATCH secrets (immutable pattern)
+# ✅ Controller can DELETE managed resources (Bind9Instance, Bind9Cluster, finalizer cleanup)
+# ✅ Controller CANNOT DELETE user resources (DNSZone, Records, Bind9GlobalCluster)
 ```
 
 **Secret Access Monitoring:**

@@ -89,7 +89,7 @@ The Basel Committee published **Cyber Risk Principles** in 2018, which define ex
 
 | Control | Implementation | Evidence |
 |---------|----------------|----------|
-| **Least Privilege RBAC** | Controller read-only secrets, no delete permissions | `deploy/rbac/clusterrole.yaml` |
+| **Least Privilege RBAC** | Controller minimal RBAC (create/delete secrets for RNDC lifecycle, delete managed resources for cleanup) | `deploy/rbac/clusterrole.yaml` |
 | **Secret Access Monitoring** | All secret access logged and alerted | [Secret Access Audit Trail](../../security/SECRET_ACCESS_AUDIT.md) |
 | **Quarterly Access Reviews** | Security team reviews access every quarter | `docs/compliance/access-reviews/` |
 | **2FA Enforcement** | GitHub requires 2FA for all contributors | GitHub organization settings |
@@ -99,7 +99,7 @@ The Basel Committee published **Cyber Risk Principles** in 2018, which define ex
 
 | Role | Secrets | CRDs | Pods | ConfigMaps | Nodes |
 |------|---------|------|------|-----------|-------|
-| **Controller** | Read-only | Read/Write | Read | Read/Write | Read |
+| **Controller** | Create/Delete (RNDC keys) | Read/Write/Delete (managed) | Read | Read/Write/Delete | Read |
 | **BIND9 Pods** | Read-only | None | None | Read | None |
 | **Developers** | None | Read (kubectl) | Read (logs) | Read | None |
 | **Operators** | Read (kubectl) | Read/Write (kubectl) | Read/Write | Read/Write | Read |

@@ -1,3 +1,6 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
 name: Release
 
 on:
@@ -16,6 +19,16 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  license-check:
+    name: Verify SPDX License Headers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check license headers
+        uses: ./.github/actions/license-check
+
   verify-commits:
     name: Verify Signed Commits
     runs-on: ubuntu-latest
@@ -34,7 +47,7 @@ jobs:
   extract-version:
     name: Extract Version from Tag
     runs-on: ubuntu-latest
-    needs: verify-commits
+    needs: [license-check, verify-commits]
     outputs:
       version: ${{ steps.version-chainguard.outputs.version }}
       tag_name: ${{ steps.version-chainguard.outputs.tag-name }}

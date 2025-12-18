@@ -1,0 +1,136 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
+name: Update Image Digests
+
+on:
+  schedule:
+    # Run on the 1st of every month at 00:00 UTC
+    - cron: '0 0 1 * *'
+  workflow_dispatch:
+
+jobs:
+  update-digests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install crane (for fetching image digests)
+        run: |
+          curl -sL https://github.com/google/go-containerregistry/releases/download/v0.19.0/go-containerregistry_Linux_x86_64.tar.gz | \
+            sudo tar -xz -C /usr/local/bin crane
+
+      - name: Fetch current image digests
+        id: fetch-digests
+        run: |
+          echo "# Current Image Digests" > digest-report.md
+          echo "" >> digest-report.md
+          echo "**Generated:** $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> digest-report.md
+          echo "" >> digest-report.md
+          echo "| Image | Current Digest | New Digest | Changed |" >> digest-report.md
+          echo "|-------|----------------|------------|---------|" >> digest-report.md
+
+          # List of images to check
+          IMAGES=(
+            "debian:12-slim"
+            "gcr.io/distroless/cc-debian12:nonroot"
+            "cgr.dev/chainguard/wolfi-base:latest"
+            "cgr.dev/chainguard/glibc-dynamic:latest"
+            "rust:1.91.0"
+            "alpine:3.20"
+          )
+
+          CHANGED=false
+
+          for image in "${IMAGES[@]}"; do
+            echo "Checking $image..." >&2
+
+            # Get current digest from Dockerfile
+            CURRENT_DIGEST=$(grep -h "FROM ${image}@sha256:" docker/Dockerfile* 2>/dev/null | \
+              head -1 | sed 's/.*@\(sha256:[a-f0-9]*\).*/\1/' || echo "none")
+
+            # Get latest digest
+            NEW_DIGEST=$(crane digest "$image" 2>/dev/null || echo "error")
+
+            if [ "$CURRENT_DIGEST" != "$NEW_DIGEST" ] && [ "$NEW_DIGEST" != "error" ]; then
+              echo "| $image | $CURRENT_DIGEST | $NEW_DIGEST | ✅ Yes |" >> digest-report.md
+              CHANGED=true
+            else
+              echo "| $image | $CURRENT_DIGEST | $NEW_DIGEST | ❌ No |" >> digest-report.md
+            fi
+          done
+
+          if [ "$CHANGED" = true ]; then
+            echo "digests-changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "digests-changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run pin-image-digests script
+        if: steps.fetch-digests.outputs.digests-changed == 'true'
+        run: |
+          ./scripts/pin-image-digests.sh
+
+      - name: Create Pull Request
+        if: steps.fetch-digests.outputs.digests-changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: |
+            chore: Update pinned container image digests (M-1)
+
+            Monthly automated update of base image digests for reproducibility.
+
+            Updated images:
+            $(cat digest-report.md | grep "✅ Yes" | awk '{print "- " $2}')
+          branch: update-image-digests-${{ github.run_number }}
+          delete-branch: true
+          title: 'chore: Update pinned container image digests'
+          body: |
+            ## Monthly Image Digest Update
+
+            This PR updates the pinned container image digests in all Dockerfiles to ensure reproducible builds while incorporating security updates from upstream base images.
+
+            ### Changes
+
+            $(cat digest-report.md)
+
+            ### Why
+
+            **M-1 (Pin Container Images by Digest):** Base images are pinned by digest to ensure reproducible builds. However, digests must be updated monthly to incorporate security patches from upstream.
+
+            **SLSA Level 2:** Pinned digests provide build reproducibility and tamper detection.
+
+            **Security:** Updated base images include latest security patches from Debian, Alpine, Chainguard, and Rust.
+
+            ### Testing
+
+            - [ ] Docker builds complete successfully
+            - [ ] Integration tests pass
+            - [ ] No unexpected changes in binary size or behavior
+
+            ### References
+
+            - [Build Reproducibility Documentation](../docs/security/BUILD_REPRODUCIBILITY.md)
+            - [Compliance Roadmap - M-1](../.github/COMPLIANCE_ROADMAP.md#m-1-pin-container-images-by-digest)
+
+            ---
+
+            *This PR was automatically created by the `update-image-digests.yaml` workflow.*
+          labels: |
+            dependencies
+            security
+            automated
+
+      - name: Upload digest report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-report
+          path: digest-report.md
+          retention-days: 90

@@ -27,7 +27,7 @@ Bindy is a Kubernetes operator that manages BIND9 DNS infrastructure declarative
 - Deploying and configuring BIND9 instances
 - Creating DNS zones with SOA records
 - Adding/updating DNS records dynamically via RNDC
-- Multi-cluster DNS with automatic replication
+- Platform-managed DNS accessible cluster-wide
 
 ## Quick Example
 
@@ -84,7 +84,7 @@ Bindy provides 4 types of resources:
 | Resource | Purpose |
 |----------|---------|
 | **Bind9Cluster** | Logical DNS cluster (manages multiple instances) |
-| **Bind9GlobalCluster** | Multi-cluster DNS spanning regions/environments |
+| **Bind9GlobalCluster** | Cluster-scoped DNS infrastructure (platform-managed) |
 | **Bind9Instance** | Individual BIND9 server deployment |
 
 #### **DNS Management**
@@ -127,29 +127,25 @@ Bindy provides 4 types of resources:
 - **DNSZone** creates the zone on target BIND9 instances
 - **Record resources** add DNS records dynamically (no zone file edits!)
 
-### Multi-Cluster DNS with Bind9GlobalCluster
+### Cluster-Scoped DNS with Bind9GlobalCluster
 
-For DNS spanning multiple Kubernetes clusters or regions:
+For platform-managed DNS infrastructure accessible from all namespaces:
 
 ```yaml
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: Bind9GlobalCluster
 metadata:
-  name: global-dns
+  name: shared-dns
+  # No namespace - cluster-scoped resource
 spec:
-  clusters:
-    - name: us-east
-      clusterRef: dns-cluster-us-east
-      region: us-east-1
-    - name: eu-west
-      clusterRef: dns-cluster-eu-west
-      region: eu-west-1
-  replication:
-    enabled: true
-    method: axfr  # Zone transfer
+  version: "9.18"
+  primary:
+    replicas: 3
+  secondary:
+    replicas: 2
 ```
 
-Bindy automatically configures zone transfers between clusters for DNS replication.
+Application teams can then reference this global cluster from any namespace using `globalClusterRef`. See [Multi-Tenancy Guide](https://firestoned.github.io/bindy/guide/multi-tenancy.html) for details.
 
 ## Installation
 
@@ -307,7 +303,7 @@ Useful for testing or when you need full control over a single instance.
 ✅ **Declarative** - Manage DNS as Kubernetes resources (GitOps-ready)
 ✅ **Dynamic Updates** - Records added via RNDC (no zone file restarts)
 ✅ **High Performance** - Written in Rust, minimal overhead
-✅ **Multi-Cluster** - Bind9GlobalCluster for cross-region DNS
+✅ **Cluster-Scoped** - Bind9GlobalCluster for platform-managed DNS
 ✅ **DNSSEC** - Automatic key management and zone signing
 ✅ **High Availability** - Leader election, automatic failover
 ✅ **Compliance** - SOX, NIST 800-53, CIS documented

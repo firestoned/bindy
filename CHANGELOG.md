@@ -2,6 +2,443 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-18 07:45] - Add SPDX License Identifiers and Fix License Scan Permissions
+
+**Author:** Erick Bourgeois
+
+### Changed
+- Added SPDX-License-Identifier headers to all shell scripts and GitHub workflow/action files:
+  - `scripts/pin-image-digests.sh`: Added copyright and SPDX-License-Identifier: MIT header
+  - `scripts/validate-examples.sh`: Added copyright and SPDX-License-Identifier: MIT header
+  - `tests/force-delete-ns.sh`: Added copyright and SPDX-License-Identifier: MIT header
+  - `.github/workflows/integration.yaml`: Added copyright and SPDX-License-Identifier: MIT header
+  - `.github/workflows/scorecard.yml`: Added copyright and SPDX-License-Identifier: MIT header
+  - `.github/workflows/security-scan.yaml`: Added copyright and SPDX-License-Identifier: MIT header
+  - `.github/workflows/release.yaml`: Added copyright and SPDX-License-Identifier: MIT header
+  - `.github/workflows/slsa.yml`: Added copyright and SPDX-License-Identifier: MIT header
+  - `.github/workflows/main.yaml`: Added copyright and SPDX-License-Identifier: MIT header
+  - `.github/workflows/license-scan.yaml`: Added copyright and SPDX-License-Identifier: MIT header
+  - `.github/workflows/sbom.yml`: Added copyright and SPDX-License-Identifier: MIT header
+  - `.github/workflows/docs.yaml`: Added copyright and SPDX-License-Identifier: MIT header
+  - `.github/workflows/update-image-digests.yaml`: Added copyright and SPDX-License-Identifier: MIT header
+  - `.github/workflows/pr.yaml`: Added copyright and SPDX-License-Identifier: MIT header
+  - `.github/actions/verify-signed-commits/action.yaml`: Added copyright and SPDX-License-Identifier: MIT header
+  - `.github/actions/trivy-scan/action.yaml`: Added copyright and SPDX-License-Identifier: MIT header
+  - `.github/actions/security-scan/action.yaml`: Added copyright and SPDX-License-Identifier: MIT header
+  - `.github/actions/extract-version/action.yaml`: Added copyright and SPDX-License-Identifier: MIT header
+
+### Fixed
+- `.github/workflows/license-scan.yaml`: Added `pull-requests: write` permission to fix "Resource not accessible by integration" error when posting PR comments (line 28)
+- `.github/workflows/license-scan.yaml`: Added permissive licenses to approved list (lines 77-80):
+  - `Unicode-3.0` - Permissive license for Unicode ICU libraries (IDNA normalization)
+  - `MPL-2.0` - Mozilla Public License 2.0 (weak copyleft, file-level, approved for use)
+  - `BSL-1.0` - Boost Software License 1.0 (permissive)
+  - `CDLA-Permissive-2.0` - Community Data License Agreement (permissive)
+- `.github/workflows/license-scan.yaml`: Fixed dual-license handling logic (lines 103-162):
+  - OR clauses: Now correctly approved if ANY option is approved (e.g., `Apache-2.0 OR LGPL OR MIT` is approved because we can choose Apache-2.0)
+  - AND clauses: All components must be approved
+  - Prevents false positives for dual/multi-licensed dependencies
+
+### Why
+Ensure all project files comply with licensing requirements and best practices. SPDX identifiers provide machine-readable license information for automated compliance scanning and align with OpenSSF best practices. The permission fix enables the workflow to post license scan results as PR comments.
+
+All added licenses are permissive or have weak copyleft restrictions compatible with Basel III legal compliance requirements:
+- **Unicode-3.0**: Required for IDNA/Unicode normalization (ICU libraries)
+- **MPL-2.0**: File-level copyleft only, compatible with proprietary software, widely accepted in regulated environments
+- **BSL-1.0**: Permissive Boost license, similar to MIT
+- **CDLA-Permissive-2.0**: Permissive data license for community datasets
+
+### Impact
+- [ ] No breaking changes
+- [ ] No cluster rollout required
+- [x] Documentation/metadata update only
+- [x] Improves compliance with licensing standards
+- [x] Enables automated license scanning
+- [x] Fixes license-scan workflow PR comment posting
+
+## [2025-12-18 06:30] - Update Compliance Documentation for RBAC Permission Changes
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/compliance/pci-dss.md`: Updated RBAC permission descriptions (lines 99, 170, 171, 183-187)
+  - Changed "no delete permissions" to "minimal delete permissions for lifecycle management"
+  - Updated RBAC verification expected output to reflect actual permissions
+  - Clarified Secret permissions (create/delete for RNDC lifecycle only)
+  - Clarified CRD delete permissions (managed resources only, not user resources)
+
+- `docs/src/compliance/sox-404.md`: Updated access control documentation (lines 93, 94, 107-111, 116-117, 122, 342)
+  - Changed "read-only access to secrets" to "minimal RBAC (create/delete secrets for RNDC lifecycle)"
+  - Changed "no delete permissions" to "minimal delete permissions (finalizer cleanup, scaling)"
+  - Updated RBAC verification script expected output
+  - Updated audit questions to reflect new permission model
+
+- `docs/src/compliance/basel-iii.md`: Updated access control matrix (lines 92, 102)
+  - Changed controller Secret access from "Read-only" to "Create/Delete (RNDC keys)"
+  - Changed controller CRD access to "Read/Write/Delete (managed)" with clarification
+
+- `docs/src/compliance/nist.md`: Updated access control description (line 52)
+  - Changed "read-only secrets, no deletes" to "minimal delete permissions for lifecycle management"
+
+- `docs/src/compliance/overview.md`: Updated compliance summary (lines 124-125)
+  - Changed "read-only access to secrets" to "minimal required permissions"
+  - Clarified that controller cannot delete user resources (least privilege maintained)
+
+### Why
+**User Request:** "please make sure compliance and security documentation is inline with these changes"
+
+**Root Cause:**
+After restoring RBAC delete permissions (changelog entry 2025-12-18 06:00), compliance documentation contained outdated statements about "read-only secrets" and "no delete permissions" that no longer reflected the actual RBAC configuration.
+
+**Analysis:**
+Searched all compliance documentation for outdated RBAC permission statements:
+- Found 5 documents with 9 total lines mentioning incorrect permissions
+- All statements implied overly restrictive RBAC that was corrected in the RBAC restoration
+
+**Compliance Framework Impact:**
+- **PCI-DSS 7.1.2**: Still compliant - least privilege maintained (delete only for lifecycle management)
+- **SOX 404**: Still compliant - minimal permissions with clear rationale and audit trail
+- **Basel III**: Still compliant - access control matrix accurately reflects actual permissions
+- **NIST CSF PR.AC**: Still compliant - least privilege access controls documented
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+**Verification:**
+- All compliance documents now accurately reflect RBAC permissions in `deploy/rbac/role.yaml`
+- Rationale provided for all delete permissions (RNDC lifecycle, finalizer cleanup, scaling)
+- Maintained least-privilege principle (user resources cannot be deleted)
+
+---
+
+## [2025-12-18 06:00] - Restore RBAC Delete Permissions for Resource Lifecycle Management
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `deploy/rbac/role.yaml`: Restored `delete` permissions for CRDs and Kubernetes resources
+
+  **Custom Resource Definitions:**
+  - `bind9instances`: Added `delete` permission
+    - Required for Bind9Cluster to scale down instances (lines 988, 1071 in bind9cluster.rs)
+    - Required for finalizer cleanup
+  - `bind9clusters`: Added `delete` permission
+    - Required for Bind9GlobalCluster finalizer cleanup (line 84 in bind9globalcluster.rs)
+
+  **Kubernetes Resources:**
+  - `deployments`: Added `delete` permission
+    - Required for Bind9Instance finalizer cleanup (line 640 in bind9instance.rs)
+  - `services`: Added `delete` permission
+    - Required for Bind9Instance finalizer cleanup (line 633 in bind9instance.rs)
+  - `configmaps`: Added `delete` permission
+    - Required for Bind9Instance finalizer cleanup (line 648 in bind9instance.rs)
+  - `secrets`: Added `create` and `delete` permissions
+    - `create`: Generate RNDC keys for new instances (line 432 in bind9instance.rs)
+    - `delete`: Clean up RNDC keys on deletion (line 659 in bind9instance.rs)
+  - `serviceaccounts`: Added `delete` permission
+    - Required for Bind9Instance finalizer cleanup (line 680 in bind9instance.rs)
+
+  - All resources: Updated documentation with detailed rationale for each permission
+  - Kept `update`, `patch` removed for Secrets (immutable delete+recreate pattern)
+
+### Why
+**User Requests:**
+1. "at some point, when implementing the compliance roadmap, we removed the creation of secrets in rbac. Please revist the minimal requirements for rbac, based on each reconciler"
+2. "looks like we removed allowing delete of bind9instances too, please verify this" (error: `User "system:serviceaccount:dns-system:bindy" cannot delete resource "bind9instances"`)
+
+**Analysis:**
+Performed systematic review of all reconcilers to determine actual RBAC requirements:
+
+1. **Bind9Instance reconciler** (`src/reconcilers/bind9instance.rs`):
+   - **Creates** RNDC Secrets (line 296: `create_or_update_rndc_secret`)
+   - **Deletes** RNDC Secrets (line 659: finalizer cleanup in `delete_resources`)
+   - Generates RNDC keys for BIND9 remote control (lines 349-435)
+   - Uses delete+recreate pattern instead of update for Secret rotation
+
+2. **Bind9Cluster reconciler** (`src/reconcilers/bind9cluster.rs`):
+   - **Reads** Secrets only (line 660: `secret_api.get(&secret_name)`)
+   - Verifies RNDC Secrets exist for managed instances
+   - No create/delete operations
+
+3. **DNSZone reconciler** (`src/reconcilers/dnszone.rs`):
+   - **Reads** Secrets only (line 1143: `load_rndc_key` function)
+   - Loads RNDC keys to authenticate zone updates
+   - No create/delete operations
+
+4. **Bind9GlobalCluster reconciler**: No Secret access
+5. **Records reconcilers**: No Secret access
+
+**Root Cause:**
+During compliance hardening, Secret permissions were incorrectly reduced to read-only. However, the Bind9Instance reconciler **requires** `create` and `delete` to manage the full lifecycle of RNDC Secrets.
+
+**Minimal RBAC Requirements:**
+- ✅ `get`: Read RNDC keys for zone updates (DNSZone)
+- ✅ `list`: Check RNDC secret existence (Bind9Cluster)
+- ✅ `watch`: Monitor RNDC secret changes
+- ✅ `create`: Generate RNDC keys for new instances (Bind9Instance)
+- ✅ `delete`: Clean up RNDC keys on deletion (Bind9Instance finalizer)
+- ❌ `update`: Not needed (immutable secret pattern)
+- ❌ `patch`: Not needed (immutable secret pattern)
+
+**Compliance Impact:**
+- **PCI-DSS 7.1.2**: Minimal Secret permissions for RNDC lifecycle management
+- **SOX 404**: Automated RNDC key provisioning and cleanup (no manual intervention)
+- **Least Privilege**: Controller cannot update/patch existing Secrets, only create/delete
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (RBAC update needed)
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
+## [2025-12-18 05:15] - Convert SPDX License Check to Composite Action
+
+**Author:** Erick Bourgeois
+
+### Added
+- `.github/actions/license-check/action.yaml`: New composite action for SPDX license header verification
+  - Checks all Rust files (`.rs`), Shell scripts (`.sh`, `.bash`), Makefiles (`Makefile`, `*.mk`), and GitHub Actions workflows (`.yaml`, `.yml`)
+  - Verifies `SPDX-License-Identifier:` exists in first 10 lines of every source file
+  - Provides clear error messages with required header format examples
+  - Excludes `target/`, `.git/`, and `docs/target/` directories
+  - Reports total files checked and lists any files missing headers
+
+### Changed
+- `.github/workflows/main.yaml`: Added `license-check` job as first step in CI/CD pipeline
+  - Runs before all other jobs (no dependencies)
+  - All dependent jobs now require both `license-check` and `verify-commits` to pass
+- `.github/workflows/pr.yaml`: Added `license-check` job as first step in pull request validation
+  - Runs before all other jobs (no dependencies)
+  - Format job now depends on both `license-check` and `verify-commits`
+- `.github/workflows/release.yaml`: Added `license-check` job as first step in release workflow
+  - Runs before all other jobs (no dependencies)
+  - Extract-version job now depends on both `license-check` and `verify-commits`
+
+### Removed
+- `.github/workflows/license-check.yaml`: Deleted standalone workflow (converted to composite action)
+
+### Why
+**User Request:** "these new workflows should be composites and called from main.yaml and pr.yaml. they can be run right at the beginning and do not need to have any deps"
+
+**Rationale:**
+- **Consistency**: Follows same pattern as other reusable actions (`extract-version`, `security-scan`, `trivy-scan`)
+- **Maintainability**: Single source of truth for license verification logic
+- **Reusability**: Can be called from any workflow (main, pr, release) without duplication
+- **Early Failure**: Runs at the beginning of CI/CD to fail fast on missing license headers
+- **No Dependencies**: Runs immediately after checkout, doesn't wait for other jobs
+
+**Compliance Impact:**
+- **SOX 404**: Automated license compliance enforcement on every commit
+- **PCI-DSS 6.4.6**: License verification blocks unapproved code from merging
+- **SLSA Level 3**: License headers enable automated SBOM generation
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+---
+
+## [2025-12-17 21:52] - Fix Multi-Cluster Terminology and Add CoreDNS Replacement Documentation
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `README.md`: Fixed incorrect "multi-cluster" terminology for `Bind9GlobalCluster`
+  - Changed description from "Multi-cluster DNS spanning regions/environments" to "Cluster-scoped DNS infrastructure (platform-managed)"
+  - Updated "Multi-Cluster DNS with Bind9GlobalCluster" section to "Cluster-Scoped DNS with Bind9GlobalCluster"
+  - Removed references to "spanning multiple Kubernetes clusters"
+  - Clarified that `Bind9GlobalCluster` is cluster-scoped (accessible from all namespaces) not multi-cluster
+  - Updated example YAML to show realistic cluster-scoped usage
+  - Changed "Multi-cluster DNS with automatic replication" to "Platform-managed DNS accessible cluster-wide"
+  - Changed feature "Multi-Cluster" to "Cluster-Scoped - Bind9GlobalCluster for platform-managed DNS"
+
+### Added
+- `docs/src/advanced/coredns-replacement.md`: New comprehensive guide for using Bindy as a CoreDNS replacement
+  - Architecture comparison: CoreDNS vs Bindy with Bind9GlobalCluster
+  - Use cases: Platform DNS service, hybrid DNS architecture, service mesh integration
+  - Migration strategies: Parallel deployment and zone-by-zone migration
+  - Configuration for cluster DNS with essential settings and recommended zones
+  - Advantages over CoreDNS: Declarative infrastructure, dynamic updates, multi-tenancy, enterprise features
+  - Operational considerations: Performance, high availability, monitoring
+  - Limitations and best practices for adopting Bindy as cluster DNS
+- `docs/src/SUMMARY.md`: Added "Replacing CoreDNS" as first entry in Advanced Topics section
+
+### Why
+**User Request:** "Bind9GlobalCluster is not a multi-cluster crd, it's meant as a cluster scoped bind9 instance, a future replacement of coredns"
+
+**Problem:**
+- Recent README rewrite (2025-12-17 00:00) introduced incorrect terminology describing `Bind9GlobalCluster` as "multi-cluster DNS"
+- "Multi-cluster" suggests spanning multiple Kubernetes clusters, which is incorrect
+- `Bind9GlobalCluster` is actually cluster-scoped (no namespace), making it accessible cluster-wide
+- Missing documentation about CoreDNS replacement use case, which is a key strategic direction
+
+**Clarification:**
+- **Bind9GlobalCluster** = Cluster-scoped resource (not multi-cluster)
+- Accessible from all namespaces within a single Kubernetes cluster
+- Platform teams manage it with ClusterRole permissions
+- Potential future replacement for CoreDNS for advanced DNS needs
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+**Files Modified:**
+- `README.md`: Fixed multi-cluster terminology (4 sections updated)
+- `docs/src/advanced/coredns-replacement.md`: New comprehensive CoreDNS replacement guide (350+ lines)
+- `docs/src/SUMMARY.md`: Added new chapter to documentation table of contents
+
+---
+
+## [2025-12-18 06:00] - Phase 3 Compliance: M-1, M-2, M-4 Implementation
+
+**Author:** Erick Bourgeois
+
+### Added
+
+#### M-4: Fix Production Log Level ✅
+- **`deploy/controller/configmap.yaml`** - New ConfigMap for runtime configuration:
+  - `log-level: "info"` (default for production, down from `debug`)
+  - `log-format: "json"` (structured logging for SIEM integration)
+- **`docs/src/operations/log-level-change.md`** - Guide for changing log levels at runtime
+- **PCI-DSS 3.4 Compliance:** Production logs no longer leak sensitive data at debug level
+
+#### M-2: Dependency License Scanning ✅
+- **`.github/workflows/license-scan.yaml`** - Automated license compliance scanning:
+  - Scans all Rust dependencies for unapproved licenses (GPL, LGPL, AGPL, SSPL)
+  - Runs on every PR, push to main, and quarterly (Jan 1, Apr 1, Jul 1, Oct 1)
+  - Fails builds on copyleft licenses (prevents legal conflicts)
+  - Generates license report artifact (90-day retention)
+- **`docs/security/LICENSE_POLICY.md`** - Dependency license policy (Basel III Legal Risk):
+  - **Approved licenses:** MIT, Apache-2.0, BSD-3-Clause, BSD-2-Clause, ISC, 0BSD, Unlicense, CC0-1.0, Zlib
+  - **Unapproved licenses:** GPL, LGPL, AGPL, SSPL, BUSL, CC-BY-SA
+  - Quarterly license review process
+  - Legal exception request template
+
+#### M-1: Pin Container Images by Digest ✅
+- **`scripts/pin-image-digests.sh`** - Script to pin container image digests for reproducibility:
+  - Fetches current digests for all base images (debian, alpine, rust, distroless, chainguard)
+  - Updates Dockerfiles to pin by digest (e.g., `debian:12-slim@sha256:...`)
+  - Supports dry-run mode for testing
+- **`.github/workflows/update-image-digests.yaml`** - Monthly automated digest updates:
+  - Runs on 1st of every month
+  - Creates PR with updated digests
+  - Balances reproducibility with security updates
+- **SLSA Level 2 Compliance:** Pinned digests ensure reproducible builds and tamper detection
+
+#### M-3: Rate Limiting (Documentation) 📝
+- **`docs/security/RATE_LIMITING.md`** - Comprehensive rate limiting implementation plan:
+  - Reconciliation loop rate limiting (10/sec global limit using `governor` crate)
+  - Kubernetes API client QPS/burst limits (50 QPS, 100 burst)
+  - RNDC circuit breaker with exponential backoff (prevents BIND9 overload)
+  - Pod resource limit tuning (1 CPU, 1Gi memory for large clusters)
+  - Runaway reconciliation detection with Prometheus metrics
+  - **Status:** Documentation complete, code implementation deferred to future work
+
+### Changed
+- **`deploy/controller/deployment.yaml`**:
+  - `RUST_LOG` environment variable now sourced from ConfigMap (was hardcoded `"debug"`)
+  - `RUST_LOG_FORMAT` environment variable now sourced from ConfigMap (new)
+  - Allows runtime log level changes without redeployment
+- **`docs/src/SUMMARY.md`**: Added "Changing Log Levels" guide to Operations section
+
+### Why
+
+**Phase 3 Compliance (Medium Priority Hardening):** These items improve security posture and operational resilience without being immediate blockers for production.
+
+**M-4 (Log Level):**
+- **Problem:** Debug logs in production leak sensitive data (RNDC keys, DNS zone data) and hurt performance
+- **Solution:** Default to `info` level, use ConfigMap for runtime changes
+- **Impact:** PCI-DSS 3.4 compliant (no sensitive data in logs), better performance
+
+**M-2 (License Scanning):**
+- **Problem:** No automated check for copyleft licenses (GPL, LGPL, AGPL) in dependencies
+- **Solution:** Automated license scanning on every PR, quarterly reviews
+- **Impact:** Basel III Legal Risk compliance, prevents licensing conflicts
+
+**M-1 (Image Digests):**
+- **Problem:** Using `:latest` tags breaks reproducibility (same tag, different image over time)
+- **Solution:** Pin all base images by digest, monthly automated updates
+- **Impact:** SLSA Level 2 compliance (reproducible builds, tamper detection)
+
+**M-3 (Rate Limiting):**
+- **Problem:** No protection against runaway reconciliation loops or API server overload
+- **Solution:** Multi-layer rate limiting (reconciliation, API client, RNDC, pod resources)
+- **Impact:** Basel III Availability compliance, operational resilience
+- **Status:** Documentation complete (implementation deferred)
+
+### Impact
+- ✅ **M-4 Complete**: Production logs now PCI-DSS 3.4 compliant
+- ✅ **M-2 Complete**: Automated license compliance (Basel III Legal Risk)
+- ✅ **M-1 Complete**: Reproducible container builds (SLSA Level 2)
+- 📝 **M-3 Documented**: Implementation plan ready for future work
+
+### Metrics
+- **Documentation Added**: 3 security policies (1,500+ lines)
+- **Workflows Added**: 2 GitHub Actions workflows (license scan, digest updates)
+- **Scripts Added**: 1 image digest pinning script
+- **Phase 3 Completion**: 3 of 4 items complete (75%)
+
+---
+
+## [2025-12-18 05:00] - Add SPDX License Header Verification Workflow
+
+**Author:** Erick Bourgeois
+
+### Added
+- **`.github/workflows/license-check.yaml`** - New workflow to verify SPDX license headers:
+  - Checks all Rust files (`.rs`) for SPDX-License-Identifier
+  - Checks all Shell scripts (`.sh`, `.bash`) for SPDX-License-Identifier
+  - Checks all Makefiles (`Makefile`, `*.mk`) for SPDX-License-Identifier
+  - Checks all GitHub Actions workflows (`.yaml`, `.yml`) for SPDX-License-Identifier
+  - Runs on pull requests, main branch pushes, and manual trigger
+  - Provides clear error messages with examples for missing headers
+  - Excludes build artifacts (`target/`, `.git/`, `docs/target/`)
+
+### Why
+**User Request:** "create a job/workflow that verifies that `SPDX-License-Identifier: ` is always added to every source code file, including shell, makefiles, and rust."
+
+**Compliance Requirement:**
+SPDX (Software Package Data Exchange) license identifiers are required for:
+- **Supply chain transparency** (SLSA Level 3, SBOM generation)
+- **License compliance auditing** (SOX 404, PCI-DSS 6.4.6)
+- **Open source license tracking** (GPL, MIT, Apache compatibility checks)
+- **Automated license scanning** (GitHub dependency graph, Snyk, Trivy)
+
+**Implementation:**
+The workflow checks the first 10 lines of each source file for the pattern `SPDX-License-Identifier:`. This follows the SPDX specification recommendation to place license identifiers near the top of files.
+
+**Required Header Format:**
+```rust
+// Rust files
+// Copyright (c) 2025 Erick Bourgeois, firestoned
+// SPDX-License-Identifier: MIT
+
+# Shell/Makefile/YAML
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+```
+
+**Workflow Output:**
+- ✅ **Success**: "All N source files have SPDX license headers"
+- ❌ **Failure**: Lists all files missing headers with examples
+- Provides total counts: files checked, files with headers, files missing headers
+
+### Impact
+- [x] **License Compliance** - Automated verification ensures all source files have license identifiers
+- [x] **SBOM Generation** - Tools can automatically detect licenses from SPDX identifiers
+- [x] **Supply Chain Security** - Clear license tracking prevents GPL contamination (MIT-only project)
+- [x] **CI/CD Enforcement** - Pull requests fail if new files lack license headers
+- [x] **Audit Trail** - Compliance auditors can verify license compliance programmatically
+
 ## [2025-12-17 22:00] - README Refresh
 
 **Author:** Erick Bourgeois

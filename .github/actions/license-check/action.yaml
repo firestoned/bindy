@@ -1,0 +1,118 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
+name: 'License Header Check'
+description: 'Verify SPDX license headers in all source files'
+author: 'Erick Bourgeois'
+
+runs:
+  using: composite
+  steps:
+    - name: Check for SPDX license identifiers
+      shell: bash
+      run: |
+        echo "🔍 Checking for SPDX license headers in source files..."
+
+        # Find all source files (excluding target/, .git/, docs/target/)
+        RUST_FILES=$(find . -type f -name "*.rs" -not -path "./target/*" -not -path "./.git/*" -not -path "./docs/target/*" || true)
+        SHELL_FILES=$(find . -type f \( -name "*.sh" -o -name "*.bash" \) -not -path "./target/*" -not -path "./.git/*" || true)
+        MAKE_FILES=$(find . -type f \( -name "Makefile" -o -name "*.mk" \) -not -path "./target/*" -not -path "./.git/*" || true)
+        YAML_FILES=$(find .github -type f \( -name "*.yaml" -o -name "*.yml" \) || true)
+
+        MISSING_FILES=()
+        TOTAL_FILES=0
+
+        # Function to check if file has SPDX header in first 10 lines
+        check_file() {
+          local file="$1"
+          TOTAL_FILES=$((TOTAL_FILES + 1))
+
+          if ! head -n 10 "$file" | grep -q "SPDX-License-Identifier:"; then
+            MISSING_FILES+=("$file")
+            return 1
+          fi
+          return 0
+        }
+
+        # Check Rust files
+        if [ -n "$RUST_FILES" ]; then
+          echo "📦 Checking Rust files (.rs)..."
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            check_file "$file" || true
+          done <<< "$RUST_FILES"
+        fi
+
+        # Check Shell scripts
+        if [ -n "$SHELL_FILES" ]; then
+          echo "🐚 Checking Shell scripts (.sh, .bash)..."
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            check_file "$file" || true
+          done <<< "$SHELL_FILES"
+        fi
+
+        # Check Makefiles
+        if [ -n "$MAKE_FILES" ]; then
+          echo "🔧 Checking Makefiles (Makefile, *.mk)..."
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            check_file "$file" || true
+          done <<< "$MAKE_FILES"
+        fi
+
+        # Check GitHub Actions workflows
+        if [ -n "$YAML_FILES" ]; then
+          echo "⚙️  Checking GitHub Actions workflows (.yaml, .yml)..."
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            check_file "$file" || true
+          done <<< "$YAML_FILES"
+        fi
+
+        # Report results
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+        if [ ${#MISSING_FILES[@]} -eq 0 ]; then
+          echo "✅ All $TOTAL_FILES source files have SPDX license headers"
+          echo ""
+          echo "File types checked:"
+          echo "  - Rust files (.rs)"
+          echo "  - Shell scripts (.sh, .bash)"
+          echo "  - Makefiles (Makefile, *.mk)"
+          echo "  - GitHub Actions workflows (.yaml, .yml)"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          exit 0
+        else
+          echo "❌ Found ${#MISSING_FILES[@]} file(s) without SPDX license headers:"
+          echo ""
+          for file in "${MISSING_FILES[@]}"; do
+            echo "  - $file"
+          done
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "Required header format:"
+          echo ""
+          echo "For Rust files (.rs):"
+          echo "  // Copyright (c) 2025 Erick Bourgeois, firestoned"
+          echo "  // SPDX-License-Identifier: MIT"
+          echo ""
+          echo "For Shell scripts (.sh, .bash):"
+          echo "  #!/usr/bin/env bash"
+          echo "  # Copyright (c) 2025 Erick Bourgeois, firestoned"
+          echo "  # SPDX-License-Identifier: MIT"
+          echo ""
+          echo "For Makefiles (Makefile, *.mk):"
+          echo "  # Copyright (c) 2025 Erick Bourgeois, firestoned"
+          echo "  # SPDX-License-Identifier: MIT"
+          echo ""
+          echo "For GitHub Actions (.yaml, .yml):"
+          echo "  # Copyright (c) 2025 Erick Bourgeois, firestoned"
+          echo "  # SPDX-License-Identifier: MIT"
+          echo ""
+          echo "The SPDX identifier must appear in the first 10 lines of the file."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          exit 1
+        fi
