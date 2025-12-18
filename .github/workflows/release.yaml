@@ -172,9 +172,9 @@ jobs:
         with:
           images: ghcr.io/${{ matrix.variant.image-repository }}
           tags: |
-            type=semver,pattern={{version}},value=${{ needs.extract-version.outputs.version }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.extract-version.outputs.version }}
-            type=semver,pattern={{major}},value=${{ needs.extract-version.outputs.version }}
+            type=raw,value=${{ needs.extract-version.outputs.tag-name }}
+            type=semver,pattern=v{{major}}.{{minor}},value=${{ needs.extract-version.outputs.tag-name }}
+            type=semver,pattern=v{{major}},value=${{ needs.extract-version.outputs.tag-name }}
             type=raw,value=${{ matrix.variant.latest_tag }}
             type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}
           flavor: |
