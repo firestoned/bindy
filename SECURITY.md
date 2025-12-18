@@ -45,6 +45,9 @@ This section provides an overview of Bindy's security posture. For detailed info
 - **[Threat Model](docs/security/THREAT_MODEL.md)**: STRIDE threat analysis, attack surface, threat scenarios
 - **[Security Architecture](docs/security/ARCHITECTURE.md)**: Trust boundaries, authentication, secrets management, network security
 - **[Incident Response Playbooks](docs/security/INCIDENT_RESPONSE.md)**: Step-by-step response procedures for security incidents
+- **[Audit Log Retention Policy](docs/security/AUDIT_LOG_RETENTION.md)**: 7-year retention, WORM storage, log integrity verification
+- **[Secret Access Audit Trail](docs/security/SECRET_ACCESS_AUDIT.md)**: Kubernetes audit logs, pre-built compliance queries, alerting rules
+- **[Build Reproducibility Verification](docs/security/BUILD_REPRODUCIBILITY.md)**: SLSA Level 3, deterministic builds, verification process
 - **[Vulnerability Management Policy](docs/security/VULNERABILITY_MANAGEMENT.md)**: Remediation SLAs, scanning process, exception handling
 - **[RBAC Verification](deploy/rbac/verify-rbac.sh)**: Automated script to verify least privilege RBAC implementation
 
@@ -308,5 +311,5 @@ We thank the security researchers and contributors who help keep Bindy secure:
 
 ---
 
-**Last Updated**: 2025-12-17
-**Next Review**: 2026-03-17 (Quarterly)
+**Last Updated**: 2025-12-18
+**Next Review**: 2026-03-18 (Quarterly)

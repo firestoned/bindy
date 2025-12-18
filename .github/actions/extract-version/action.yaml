@@ -22,8 +22,11 @@ outputs:
     description: 'Git tag name (e.g., v1.2.3)'
     value: ${{ steps.extract.outputs.tag-name }}
   image-tag:
-    description: 'Primary Docker image tag to use for scanning'
+    description: 'Docker image tag (e.g., main-2025.12.17, pr-2025.12.17-42, v0.2.0)'
     value: ${{ steps.extract.outputs.image-tag }}
+  image-repository:
+    description: 'Docker repository name (e.g., firestoned/bindy or firestoned/bindy-distroless)'
+    value: ${{ steps.extract.outputs.image-repository }}
   short-sha:
     description: 'Short 7-character SHA'
     value: ${{ steps.extract.outputs.short-sha }}
@@ -38,39 +41,50 @@ runs:
         SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
         echo "short-sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
 
+        # Determine repository name based on image suffix
+        if [ "${{ inputs.image-suffix }}" = "-distroless" ]; then
+          IMAGE_REPOSITORY="firestoned/bindy-distroless"
+        else
+          IMAGE_REPOSITORY="firestoned/bindy"
+        fi
+        echo "image-repository=${IMAGE_REPOSITORY}" >> $GITHUB_OUTPUT
+
         case "${{ inputs.workflow-type }}" in
           release)
             # Release workflow: extract from release tag
+            # Tag format: v0.2.0 (no date)
             TAG_NAME="${{ inputs.release-tag }}"
             VERSION="${TAG_NAME#v}"
-            IMAGE_TAG="${TAG_NAME}${{ inputs.image-suffix }}"
+            IMAGE_TAG="${TAG_NAME}"
             echo "version=${VERSION}" >> $GITHUB_OUTPUT
             echo "tag-name=${TAG_NAME}" >> $GITHUB_OUTPUT
             echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
-            echo "Release: version=${VERSION}, tag=${TAG_NAME}, image=${IMAGE_TAG}"
+            echo "Release: version=${VERSION}, tag=${TAG_NAME}, image=${IMAGE_REPOSITORY}:${IMAGE_TAG}"
             ;;
 
           pr)
             # PR workflow: use pr-NUMBER format
-            VERSION="0.0.0-pr${{ inputs.pr-number }}"
+            # Tag format: pr-42
+            VERSION="pr-${{ inputs.pr-number }}"
             TAG_NAME="pr-${{ inputs.pr-number }}"
-            IMAGE_TAG="pr-${{ inputs.pr-number }}${{ inputs.image-suffix }}"
+            IMAGE_TAG="pr-${{ inputs.pr-number }}"
             echo "version=${VERSION}" >> $GITHUB_OUTPUT
             echo "tag-name=${TAG_NAME}" >> $GITHUB_OUTPUT
             echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
-            echo "PR: version=${VERSION}, tag=${TAG_NAME}, image=${IMAGE_TAG}"
+            echo "PR: version=${VERSION}, tag=${TAG_NAME}, image=${IMAGE_REPOSITORY}:${IMAGE_TAG}"
             ;;
 
           main)
-            # Main branch: use main tag with date and run number
+            # Main branch: use main-YYYY.MM.DD format
+            # Tag format: main-2025.12.17
             DATE=$(date +%Y.%m.%d)
             VERSION="0.0.0-main.${DATE}.${{ github.run_number }}"
-            TAG_NAME="main"
-            IMAGE_TAG="main${{ inputs.image-suffix }}"
+            TAG_NAME="main-${DATE}"
+            IMAGE_TAG="main-${DATE}"
             echo "version=${VERSION}" >> $GITHUB_OUTPUT
             echo "tag-name=${TAG_NAME}" >> $GITHUB_OUTPUT
             echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
-            echo "Main: version=${VERSION}, tag=${TAG_NAME}, image=${IMAGE_TAG}"
+            echo "Main: version=${VERSION}, tag=${TAG_NAME}, image=${IMAGE_REPOSITORY}:${IMAGE_TAG}"
             ;;
 
           *)
