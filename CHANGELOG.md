@@ -2,6 +2,42 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-18 11:00] - Consolidate SLSA Provenance into Release Workflow
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/release.yaml`: Integrated SLSA provenance generation directly into the release workflow
+  - Added `generate-provenance-subjects` job (lines 268-289) that creates hashes from already-built signed tarballs
+  - Added `slsa-provenance` job (lines 291-302) that calls the SLSA generator with the hashes
+  - Updated `upload-release-assets` job to depend on `slsa-provenance` and include provenance files
+  - Updated artifact organization script to collect and checksum `*.intoto.jsonl` provenance files (lines 356-371)
+  - Added provenance files to release asset upload (line 385)
+
+### Removed
+- `.github/workflows/slsa.yml`: Removed redundant standalone SLSA workflow that was rebuilding binaries
+
+### Why
+The separate `slsa.yml` workflow was inefficient and error-prone:
+1. It rebuilt the same binaries that were already built in the release workflow
+2. It wasted CI resources by duplicating the build process
+3. It created potential inconsistencies between released binaries and provenance subjects
+4. It had the version mismatch issue that was previously fixed
+
+By integrating SLSA provenance generation into the release workflow:
+1. **Efficiency**: Provenance is generated for the exact binaries that are released (no rebuild)
+2. **Consistency**: The same artifacts are built, signed, and have provenance generated
+3. **Simplicity**: One workflow handles the entire release process
+4. **Correctness**: Provenance subjects are the signed tarballs that users download
+
+The SLSA generator is called after signing but before uploading to the release, ensuring the provenance attestation covers the actual release artifacts.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] CI/CD workflow improvement
+
 ## [2025-12-18 10:45] - Fix Docker Image Tagging to Include Full Semantic Version
 
 **Author:** Erick Bourgeois
