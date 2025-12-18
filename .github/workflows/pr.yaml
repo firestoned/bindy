@@ -140,11 +140,18 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
 
-      - name: Upload binary artifact
+      - name: Generate SBOM
+        uses: ./.github/actions/generate-sbom
+        with:
+          target: ${{ matrix.platform.target }}
+
+      - name: Upload binary and SBOM artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.platform.artifact_name }}
-          path: target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}
+          path: |
+            target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}
+            target/${{ matrix.platform.target }}/release/*.cdx.json
           retention-days: 1
 
   test:
