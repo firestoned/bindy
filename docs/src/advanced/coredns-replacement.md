@@ -80,7 +80,7 @@ spec:
         clusterIP: 10.96.0.10  # Standard kube-dns ClusterIP
   secondary:
     replicas: 2
-  config:
+  global:
     recursion: true  # Important for cluster DNS
     allowQuery:
       - "0.0.0.0/0"
@@ -151,7 +151,7 @@ spec:
     service:
       annotations:
         linkerd.io/inject: enabled
-  config:
+  global:
     recursion: false  # Authoritative only
     allowQuery:
       - "10.0.0.0/8"  # Service mesh network
@@ -203,7 +203,7 @@ Run Bindy alongside CoreDNS during migration:
        service:
          spec:
            type: ClusterIP  # Different IP from CoreDNS
-     config:
+     global:
        recursion: true
        forwarders:
          - "8.8.8.8"
@@ -295,7 +295,7 @@ spec:
       spec:
         type: ClusterIP
         clusterIP: 10.96.0.10  # kube-dns default
-  config:
+  global:
     # CRITICAL: Enable recursion for cluster DNS
     recursion: true
 
@@ -520,7 +520,7 @@ spec:
 
 ```yaml
 spec:
-  config:
+  global:
     logging:
       channels:
         - name: audit_log
