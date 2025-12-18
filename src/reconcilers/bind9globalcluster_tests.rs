@@ -21,7 +21,7 @@ mod tests {
         assert_eq!(status.conditions.len(), 1);
         assert_eq!(status.conditions[0].r#type, "Ready");
         assert_eq!(status.conditions[0].status, "False");
-        assert_eq!(status.conditions[0].reason, Some("NoInstances".to_string()));
+        assert_eq!(status.conditions[0].reason, Some("NoChildren".to_string()));
     }
 
     #[test]

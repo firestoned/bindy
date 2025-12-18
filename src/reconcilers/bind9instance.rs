@@ -15,15 +15,19 @@ use crate::crd::{Bind9Cluster, Bind9Instance, Bind9InstanceStatus, Condition};
 use crate::labels::{BINDY_MANAGED_BY_LABEL, FINALIZER_BIND9_INSTANCE};
 use crate::reconcilers::finalizers::{ensure_finalizer, handle_deletion, FinalizerCleanup};
 use crate::reconcilers::resources::{create_or_apply, create_or_replace};
+use crate::status_reasons::{
+    pod_condition_type, CONDITION_TYPE_READY, REASON_ALL_READY, REASON_NOT_READY,
+    REASON_PARTIALLY_READY, REASON_READY,
+};
 use anyhow::Result;
 use chrono::Utc;
 use k8s_openapi::api::{
     apps::v1::Deployment,
-    core::v1::{ConfigMap, Secret, Service, ServiceAccount},
+    core::v1::{ConfigMap, Pod, Secret, Service, ServiceAccount},
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::{
-    api::{Patch, PatchParams, PostParams},
+    api::{ListParams, Patch, PatchParams, PostParams},
     client::Client,
     Api, ResourceExt,
 };
@@ -202,16 +206,14 @@ pub async fn reconcile_bind9instance(client: Client, instance: Bind9Instance) ->
             );
 
             // Update status to show error
-            update_status(
-                &client,
-                &instance,
-                "Ready",
-                "False",
-                &format!("Failed to create resources: {e}"),
-                replicas,
-                0,
-            )
-            .await?;
+            let error_condition = Condition {
+                r#type: CONDITION_TYPE_READY.to_string(),
+                status: "False".to_string(),
+                reason: Some(REASON_NOT_READY.to_string()),
+                message: Some(format!("Failed to create resources: {e}")),
+                last_transition_time: Some(Utc::now().to_rfc3339()),
+            };
+            update_status(&client, &instance, vec![error_condition], replicas, 0).await?;
 
             return Err(e);
         }
@@ -702,7 +704,8 @@ async fn delete_resources(client: &Client, namespace: &str, name: &str) -> Resul
     Ok(())
 }
 
-/// Update status based on actual Deployment readiness
+/// Update status based on actual Deployment and Pod readiness
+#[allow(clippy::too_many_lines)]
 async fn update_status_from_deployment(
     client: &Client,
     namespace: &str,
@@ -711,6 +714,8 @@ async fn update_status_from_deployment(
     expected_replicas: i32,
 ) -> Result<()> {
     let deploy_api: Api<Deployment> = Api::namespaced(client.clone(), namespace);
+    let pod_api: Api<Pod> = Api::namespaced(client.clone(), namespace);
+
     match deploy_api.get(name).await {
         Ok(deployment) => {
             let actual_replicas = deployment
@@ -731,61 +736,115 @@ async fn update_status_from_deployment(
                 .and_then(|status| status.available_replicas)
                 .unwrap_or(0);
 
-            // Determine if the deployment is actually ready
-            let is_ready = ready_replicas > 0
-                && ready_replicas == actual_replicas
-                && available_replicas == actual_replicas;
+            // List pods for this deployment using label selector
+            let label_selector = format!("app={name}");
+            let list_params = ListParams::default().labels(&label_selector);
+            let pods = pod_api.list(&list_params).await?;
 
-            if is_ready {
-                // Deployment is fully ready
-                update_status(
-                    client,
-                    instance,
-                    "Ready",
-                    "True",
-                    &format!("All {ready_replicas} replicas are ready"),
-                    actual_replicas,
-                    ready_replicas,
-                )
-                .await?;
-            } else if ready_replicas > 0 {
-                // Deployment is progressing but not fully ready
-                update_status(
-                    client,
-                    instance,
-                    "Ready",
-                    "False",
-                    &format!("Progressing: {ready_replicas}/{actual_replicas} replicas ready"),
-                    actual_replicas,
-                    ready_replicas,
-                )
-                .await?;
-            } else {
-                // No replicas ready yet
-                update_status(
-                    client,
-                    instance,
-                    "Ready",
-                    "False",
-                    "Waiting for pods to become ready",
-                    actual_replicas,
-                    0,
-                )
-                .await?;
+            // Create pod-level conditions
+            let mut pod_conditions = Vec::new();
+            let mut ready_pod_count = 0;
+
+            for (index, pod) in pods.items.iter().enumerate() {
+                let pod_name = pod.metadata.name.as_deref().unwrap_or("unknown");
+                let is_pod_ready = pod
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.conditions.as_ref())
+                    .is_some_and(|conditions| {
+                        conditions
+                            .iter()
+                            .any(|c| c.type_ == "Ready" && c.status == "True")
+                    });
+
+                if is_pod_ready {
+                    ready_pod_count += 1;
+                }
+
+                let (status, reason, message) = if is_pod_ready {
+                    ("True", REASON_READY, format!("Pod {pod_name} is ready"))
+                } else {
+                    (
+                        "False",
+                        REASON_NOT_READY,
+                        format!("Pod {pod_name} is not ready"),
+                    )
+                };
+
+                pod_conditions.push(Condition {
+                    r#type: pod_condition_type(index),
+                    status: status.to_string(),
+                    reason: Some(reason.to_string()),
+                    message: Some(message),
+                    last_transition_time: Some(Utc::now().to_rfc3339()),
+                });
             }
+
+            // Create encompassing Ready condition
+            let (encompassing_status, encompassing_reason, encompassing_message) =
+                if ready_pod_count == 0 && actual_replicas > 0 {
+                    (
+                        "False",
+                        REASON_NOT_READY,
+                        "Waiting for pods to become ready".to_string(),
+                    )
+                } else if ready_pod_count == actual_replicas
+                    && available_replicas == actual_replicas
+                {
+                    (
+                        "True",
+                        REASON_ALL_READY,
+                        format!("All {ready_pod_count} pods are ready"),
+                    )
+                } else if ready_pod_count > 0 {
+                    (
+                        "False",
+                        REASON_PARTIALLY_READY,
+                        format!("{ready_pod_count}/{actual_replicas} pods are ready"),
+                    )
+                } else {
+                    ("False", REASON_NOT_READY, "No pods are ready".to_string())
+                };
+
+            let encompassing_condition = Condition {
+                r#type: CONDITION_TYPE_READY.to_string(),
+                status: encompassing_status.to_string(),
+                reason: Some(encompassing_reason.to_string()),
+                message: Some(encompassing_message),
+                last_transition_time: Some(Utc::now().to_rfc3339()),
+            };
+
+            // Combine encompassing condition + pod-level conditions
+            let mut all_conditions = vec![encompassing_condition];
+            all_conditions.extend(pod_conditions);
+
+            // Update status with all conditions
+            update_status(
+                client,
+                instance,
+                all_conditions,
+                actual_replicas,
+                ready_replicas,
+            )
+            .await?;
         }
         Err(e) => {
             warn!(
                 "Failed to get Deployment status for {}/{}: {}",
                 namespace, name, e
             );
-            // Set status as progressing if we can't check deployment
+            // Set status as unknown if we can't check deployment
+            let unknown_condition = Condition {
+                r#type: CONDITION_TYPE_READY.to_string(),
+                status: "Unknown".to_string(),
+                reason: Some(REASON_NOT_READY.to_string()),
+                message: Some("Unable to determine deployment status".to_string()),
+                last_transition_time: Some(Utc::now().to_rfc3339()),
+            };
             update_status(
                 client,
                 instance,
-                "Ready",
-                "Unknown",
-                "Unable to determine deployment status",
+                vec![unknown_condition],
                 expected_replicas,
                 0,
             )
@@ -796,13 +855,11 @@ async fn update_status_from_deployment(
     Ok(())
 }
 
-/// Update the status of a `Bind9Instance`
+/// Update the status of a `Bind9Instance` with multiple conditions
 async fn update_status(
     client: &Client,
     instance: &Bind9Instance,
-    condition_type: &str,
-    status: &str,
-    message: &str,
+    conditions: Vec<Condition>,
     replicas: i32,
     ready_replicas: i32,
 ) -> Result<()> {
@@ -815,14 +872,23 @@ async fn update_status(
         // Check if replicas changed
         if current.replicas != Some(replicas) || current.ready_replicas != Some(ready_replicas) {
             true
-        } else if let Some(current_condition) = current.conditions.first() {
-            // Check if condition changed
-            current_condition.r#type != condition_type
-                || current_condition.status != status
-                || current_condition.message.as_deref() != Some(message)
         } else {
-            // No conditions exist, need to update
-            true
+            // Check if any condition changed
+            if current.conditions.len() == conditions.len() {
+                // Compare each condition
+                current
+                    .conditions
+                    .iter()
+                    .zip(conditions.iter())
+                    .any(|(current_cond, new_cond)| {
+                        current_cond.r#type != new_cond.r#type
+                            || current_cond.status != new_cond.status
+                            || current_cond.message != new_cond.message
+                            || current_cond.reason != new_cond.reason
+                    })
+            } else {
+                true
+            }
         }
     } else {
         // No status exists, need to update
@@ -834,16 +900,8 @@ async fn update_status(
         return Ok(());
     }
 
-    let condition = Condition {
-        r#type: condition_type.to_string(),
-        status: status.to_string(),
-        reason: Some(condition_type.to_string()),
-        message: Some(message.to_string()),
-        last_transition_time: Some(Utc::now().to_rfc3339()),
-    };
-
     let new_status = Bind9InstanceStatus {
-        conditions: vec![condition],
+        conditions,
         observed_generation: instance.metadata.generation,
         replicas: Some(replicas),
         ready_replicas: Some(ready_replicas),

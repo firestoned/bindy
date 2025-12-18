@@ -18,6 +18,10 @@ use crate::labels::FINALIZER_BIND9_CLUSTER;
 use crate::reconcilers::finalizers::{
     ensure_cluster_finalizer, handle_cluster_deletion, FinalizerCleanup,
 };
+use crate::status_reasons::{
+    CONDITION_TYPE_READY, REASON_ALL_READY, REASON_NOT_READY, REASON_NO_CHILDREN,
+    REASON_PARTIALLY_READY,
+};
 use anyhow::Result;
 use chrono::Utc;
 use kube::{
@@ -490,27 +494,31 @@ pub fn calculate_cluster_status(
 
     let total_instances = instances.len();
 
-    // Determine cluster ready condition
+    // Determine cluster ready condition using standard reasons
     let (status, reason, message) = if total_instances == 0 {
         (
             "False",
-            "NoInstances",
+            REASON_NO_CHILDREN,
             "No instances found for this cluster".to_string(),
         )
     } else if ready_instances == total_instances {
         (
             "True",
-            "AllReady",
+            REASON_ALL_READY,
             format!("All {total_instances} instances are ready"),
         )
     } else if ready_instances > 0 {
         (
             "False",
-            "PartiallyReady",
+            REASON_PARTIALLY_READY,
             format!("{ready_instances}/{total_instances} instances are ready"),
         )
     } else {
-        ("False", "NotReady", "No instances are ready".to_string())
+        (
+            "False",
+            REASON_NOT_READY,
+            "No instances are ready".to_string(),
+        )
     };
 
     // Collect instance names (with namespace for global clusters)
@@ -525,7 +533,7 @@ pub fn calculate_cluster_status(
 
     Bind9ClusterStatus {
         conditions: vec![Condition {
-            r#type: "Ready".to_string(),
+            r#type: CONDITION_TYPE_READY.to_string(),
             status: status.to_string(),
             reason: Some(reason.to_string()),
             message: Some(message.clone()),
