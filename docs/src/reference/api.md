@@ -1,6 +1,3 @@
-   Compiling bindy v0.1.0 (/Users/erick/dev/bindy)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.75s
-     Running `target/debug/crddoc`
 # API Reference
 
 This document describes the Custom Resource Definitions (CRDs) provided by Bindy.

@@ -5,6 +5,7 @@
 
 REGISTRY ?= ghcr.io
 IMAGE_NAME ?= firestoned/bindy
+IMAGE_REPOSITORY ?= firestoned/bindy
 IMAGE_TAG ?= latest
 NAMESPACE ?= dns-system
 KIND_CLUSTER ?= bindy-test
@@ -121,15 +122,15 @@ kind-integration-test-ci: ## Run integration tests in CI mode (requires IMAGE_TA
 	@kubectl --context $(KIND_CONTEXT) replace --force -f deploy/crds/ 2>/dev/null || kubectl --context $(KIND_CONTEXT) create -f deploy/crds/
 	@echo "Installing RBAC..."
 	@kubectl --context $(KIND_CONTEXT) apply -f deploy/rbac/
-	@echo "Deploying controller with image: $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)"
-	@sed "s|ghcr.io/firestoned/bindy:latest|$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)|g" deploy/controller/deployment.yaml | kubectl --context $(KIND_CONTEXT) apply -f -
+	@echo "Deploying controller with image: $(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)"
+	@sed "s|ghcr.io/firestoned/bindy:latest|$(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)|g" deploy/controller/deployment.yaml | kubectl --context $(KIND_CONTEXT) apply -f -
 	@kubectl --context $(KIND_CONTEXT) wait --for=condition=available --timeout=300s deployment/bindy -n $(NAMESPACE)
 	@echo ""
 	@echo "================================================"
 	@echo "  Running Simple Integration Tests"
 	@echo "================================================"
 	@chmod +x tests/integration_test.sh
-	@tests/integration_test.sh --image "$(IMAGE_TAG)" --skip-deploy || { echo "Simple integration tests failed"; kind delete cluster --name $(KIND_CLUSTER)-ci || true; exit 1; }
+	@tests/integration_test.sh --image "$(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)" --skip-deploy || { echo "Simple integration tests failed"; kind delete cluster --name $(KIND_CLUSTER)-ci || true; exit 1; }
 	@echo ""
 	@echo "================================================"
 	@echo "  Running Multi-Tenancy Integration Tests"

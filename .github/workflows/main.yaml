@@ -100,6 +100,8 @@ jobs:
     outputs:
       image-tag-chainguard: ${{ steps.version-chainguard.outputs.image-tag }}
       image-tag-distroless: ${{ steps.version-distroless.outputs.image-tag }}
+      image-repository-chainguard: ${{ steps.version-chainguard.outputs.image-repository }}
+      image-repository-distroless: ${{ steps.version-distroless.outputs.image-repository }}
       short-sha: ${{ steps.version-chainguard.outputs.short-sha }}
     steps:
       - name: Checkout code
@@ -135,11 +137,13 @@ jobs:
             suffix: ""
             description: "Chainguard Zero-CVE (glibc, ~15MB, FIPS-ready)"
             image-tag: ${{ needs.extract-version.outputs.image-tag-chainguard }}
+            image-repository: ${{ needs.extract-version.outputs.image-repository-chainguard }}
           - name: Distroless
             dockerfile: docker/Dockerfile
             suffix: "-distroless"
             description: "Google Distroless (glibc, ~20MB)"
             image-tag: ${{ needs.extract-version.outputs.image-tag-distroless }}
+            image-repository: ${{ needs.extract-version.outputs.image-repository-distroless }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -156,10 +160,10 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ghcr.io/${{ matrix.variant.image-repository }}
           tags: |
             type=raw,value=${{ matrix.variant.image-tag }}
-            type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}${{ matrix.variant.suffix }}
+            type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}
           flavor: |
             latest=false
 
@@ -201,8 +205,10 @@ jobs:
         variant:
           - name: Chainguard
             image-tag: ${{ needs.extract-version.outputs.image-tag-chainguard }}
+            image-repository: ${{ needs.extract-version.outputs.image-repository-chainguard }}
           - name: Distroless
             image-tag: ${{ needs.extract-version.outputs.image-tag-distroless }}
+            image-repository: ${{ needs.extract-version.outputs.image-repository-distroless }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -210,7 +216,7 @@ jobs:
       - name: Run Trivy scan on ${{ matrix.variant.name }} image
         uses: ./.github/actions/trivy-scan
         with:
-          image-ref: ghcr.io/${{ github.repository }}:${{ matrix.variant.image-tag }}
+          image-ref: ghcr.io/${{ matrix.variant.image-repository }}:${{ matrix.variant.image-tag }}
           sarif-category: trivy-main-${{ matrix.variant.name }}
           upload-artifact-name: trivy-main-${{ matrix.variant.name }}-${{ github.run_number }}
           output-filename: trivy-main-${{ matrix.variant.name }}.json
