@@ -352,8 +352,9 @@ For Basel III operational risk reviews, provide:
 
 ## See Also
 
-- [Threat Model](../../security/THREAT_MODEL.md) - STRIDE threat analysis
-- [Security Architecture](../../security/ARCHITECTURE.md) - Security domains, data flows
-- [Incident Response](../../security/INCIDENT_RESPONSE.md) - 7 playbooks (P1-P7)
-- [Vulnerability Management](../../security/VULNERABILITY_MANAGEMENT.md) - Remediation SLAs
+- [Threat Model](../security/threat-model.md) - STRIDE threat analysis
+- [Security Architecture](../security/architecture.md) - Security domains, data flows
+- [Incident Response](../security/incident-response.md) - 7 playbooks (P1-P7)
+- [Vulnerability Management](../security/vulnerability-management.md) - Remediation SLAs
+- [Audit Log Retention](../security/audit-log-retention.md) - Long-term log retention
 - [Compliance Roadmap](../../../.github/COMPLIANCE_ROADMAP.md) - Tracking compliance progress

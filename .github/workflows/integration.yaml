@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: 'Docker image tag to use (e.g., main-2025-01-15-123)'
+        description: 'Docker image tag to use (e.g., main-2025.01.15)'
         required: false
         type: string
 
@@ -65,18 +65,12 @@ jobs:
         with:
           version: 'v1.28.0'
 
-      - name: Calculate Docker image tag
-        id: tag
-        run: |
-          if [ -n "${{ inputs.image_tag }}" ]; then
-            TAG="${{ inputs.image_tag }}"
-            echo "Using manually specified image tag: ${TAG}"
-          else
-            DATE=$(date +%Y.%m.%d)
-            TAG="main-${DATE}-${{ github.event.workflow_run.run_number }}"
-            echo "Using auto-generated image tag: ${TAG}"
-          fi
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+      - name: Extract version information
+        id: version
+        uses: ./.github/actions/extract-version
+        with:
+          workflow-type: main
+          image-suffix: ""
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -87,11 +81,9 @@ jobs:
 
       - name: Run integration tests
         env:
-          IMAGE_TAG: ${{ steps.tag.outputs.tag }}
-          IMAGE_REPOSITORY: firestoned/bindy
+          IMAGE_TAG: ${{ steps.version.outputs.image-tag }}
+          IMAGE_REPOSITORY: ${{ steps.version.outputs.image-repository }}
           REGISTRY: ghcr.io
-          IMAGE_NAME: ${{ github.repository }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
         run: make kind-integration-test-ci
 
       - name: Check controller logs on failure
