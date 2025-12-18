@@ -9,6 +9,7 @@ permissions:
   contents: write
   packages: write
   security-events: write  # For uploading SARIF results
+  id-token: write  # For keyless signing with Cosign
 
 env:
   CARGO_TERM_COLOR: always
@@ -121,6 +122,7 @@ jobs:
     permissions:
       contents: write
       packages: write
+      id-token: write  # For keyless signing with Cosign
     strategy:
       fail-fast: false
       matrix:
@@ -184,6 +186,14 @@ jobs:
           sbom: true
           provenance: true
 
+      - name: Sign container image with Cosign
+        uses: ./.github/actions/cosign-sign
+        with:
+          image-digest: ${{ steps.docker_build.outputs.digest }}
+          image-tags: ${{ needs.extract-version.outputs.tag_name }},${{ matrix.variant.latest_tag }}
+          registry: ghcr.io
+          repository: ${{ matrix.variant.image-repository }}
+
       - name: Generate Docker SBOM for ${{ matrix.variant.name }}
         uses: anchore/sbom-action@v0
         with:
@@ -197,10 +207,54 @@ jobs:
           name: docker-sbom-${{ matrix.variant.name }}
           path: docker-sbom-${{ matrix.variant.name }}.json
 
+  sign-artifacts:
+    name: Sign Binary Artifacts
+    runs-on: ubuntu-latest
+    needs: [build, extract-version]
+    permissions:
+      id-token: write  # For keyless signing with Cosign
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Linux x86_64
+            artifact_name: bindy-linux-amd64
+          - name: Linux ARM64
+            artifact_name: bindy-linux-arm64
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.platform.artifact_name }}
+          path: ./artifacts/${{ matrix.platform.artifact_name }}
+
+      - name: Create tarball for signing
+        run: |
+          cd artifacts/${{ matrix.platform.artifact_name }}
+          chmod +x bindy
+          tar czf ${{ matrix.platform.artifact_name }}.tar.gz bindy
+          ls -lh ${{ matrix.platform.artifact_name }}.tar.gz
+
+      - name: Sign binary tarball with Cosign
+        uses: ./.github/actions/cosign-sign
+        with:
+          artifact-path: artifacts/${{ matrix.platform.artifact_name }}/${{ matrix.platform.artifact_name }}.tar.gz
+
+      - name: Upload signed artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform.artifact_name }}-signed
+          path: |
+            artifacts/${{ matrix.platform.artifact_name }}/${{ matrix.platform.artifact_name }}.tar.gz
+            artifacts/${{ matrix.platform.artifact_name }}/${{ matrix.platform.artifact_name }}.tar.gz.bundle
+
   upload-release-assets:
     name: Upload Release Assets
     runs-on: ubuntu-latest
-    needs: [build, docker-release]
+    needs: [build, docker-release, sign-artifacts]
     permissions:
       contents: write
     steps:
@@ -209,31 +263,36 @@ jobs:
         with:
           path: ./artifacts
 
-      - name: Create tarballs and checksums
+      - name: Organize release artifacts
         run: |
           cd artifacts
+          mkdir -p release sboms signatures
 
-          # Process each platform binary
-          for dir in bindy-*; do
-            platform="$dir"
-            echo "Processing $platform..."
-            cd "$platform"
+          # Copy signed tarballs and signature bundles
+          for dir in bindy-linux-*-signed; do
+            if [ -d "$dir" ]; then
+              platform="${dir%-signed}"
+              echo "Processing signed artifacts for $platform..."
 
-            # Make binary executable and create tarball
-            if [ -f "bindy" ]; then
-              chmod +x bindy
-              tar czf "../${platform}.tar.gz" bindy
+              # Copy tarball
+              if compgen -G "$dir/*.tar.gz" > /dev/null; then
+                cp "$dir"/*.tar.gz release/
+              fi
+
+              # Copy signature bundle
+              if compgen -G "$dir/*.tar.gz.bundle" > /dev/null; then
+                cp "$dir"/*.tar.gz.bundle signatures/
+              fi
             fi
-
-            cd ..
           done
 
           # Collect all SBOM files (using default cargo-cyclonedx naming)
-          mkdir -p sboms
-          for dir in bindy-*; do
-            # Find any .cdx.json files (cargo-cyclonedx default naming)
-            if compgen -G "$dir/*.cdx.json" > /dev/null; then
-              cp "$dir"/*.cdx.json "sboms/${dir}-sbom.json"
+          for dir in bindy-linux-amd64 bindy-linux-arm64; do
+            if [ -d "$dir" ]; then
+              # Find any .cdx.json files (cargo-cyclonedx default naming)
+              if compgen -G "$dir/*.cdx.json" > /dev/null; then
+                cp "$dir"/*.cdx.json "sboms/${dir}-sbom.json"
+              fi
             fi
           done
 
@@ -244,16 +303,25 @@ jobs:
             fi
           done
 
-          # Generate SHA256 checksums
-          sha256sum *.tar.gz sboms/*.json > checksums.sha256 2>/dev/null || true
+          # Generate SHA256 checksums for all release artifacts
+          cd release
+          sha256sum *.tar.gz > checksums.sha256
+          cd ../sboms
+          sha256sum *.json >> ../release/checksums.sha256
+          cd ../signatures
+          sha256sum *.bundle >> ../release/checksums.sha256
+
+          echo "Release artifacts prepared:"
+          ls -lh ../release/
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            artifacts/*.tar.gz
+            artifacts/release/*.tar.gz
             artifacts/sboms/*.json
-            artifacts/checksums.sha256
+            artifacts/signatures/*.bundle
+            artifacts/release/checksums.sha256
 
   security:
     name: Security Vulnerability Scan

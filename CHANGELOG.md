@@ -2,6 +2,270 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-17 22:00] - README Refresh
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **`README.md`** - Complete rewrite for clarity and conciseness:
+  - Streamlined from 831 lines to ~465 lines (44% reduction)
+  - Added **Bind9GlobalCluster** to architecture section (was missing)
+  - Reorganized with focus on "What is Bindy?" and "How to deploy"
+  - Added quick 3-step example (cluster → zone → records)
+  - Created concise CRD reference table (Infrastructure vs DNS Management)
+  - Added ASCII diagram showing resource relationships
+  - Simplified installation to 3 commands
+  - Kept all compliance and security badges
+  - Moved verbose technical details to documentation links
+  - Cleaner troubleshooting with common issues
+  - Development section links to Developer Guide instead of duplicating content
+
+### Why
+**User Request:** "the readme file in the root seems to be outdated, it doesn't have the new globalcluster crd. it shoudl be updated and kept 'punchy', straight forward and not complicated. basically, what is bindy, what can it do. qucik architecture of crds, how to deploy on kube"
+
+**Problem:**
+- README was 831 lines with dense technical content
+- Missing Bind9GlobalCluster (key CRD for multi-cluster DNS)
+- Mixed high-level overview with deep implementation details
+- Installation instructions buried deep in the file
+- Difficult for new users to quickly understand value proposition
+
+**Solution:**
+Rewrite focusing on essentials:
+1. **Clear value proposition** - "What is Bindy?" upfront
+2. **Quick example** - Working 3-step YAML example
+3. **Punchy architecture** - Tables + ASCII diagrams instead of paragraphs
+4. **Simple deployment** - 3 bash commands to get started
+5. **Include Bind9GlobalCluster** - Multi-cluster DNS with example
+6. **Link to detailed docs** - Don't duplicate, link to comprehensive guides
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
+## [2025-12-17 21:30] - Cryptographic Signing for Releases
+
+**Author:** Erick Bourgeois
+
+### Added
+- **`.github/actions/cosign-sign/action.yml`** - New composite action for signing container images and binary artifacts using Cosign with keyless signing (Sigstore):
+  - Signs container images by digest and tags
+  - Signs binary artifacts with signature bundles
+  - Automatic signature verification smoke tests
+  - Uses GitHub Actions OIDC for keyless signing (no private keys to manage)
+  - All signatures recorded in public Rekor transparency log
+- **`.github/workflows/release.yaml`** - Integrated Cosign signing into release workflow:
+  - Added `id-token: write` permission for keyless signing
+  - New `sign-artifacts` job to sign binary tarballs after build
+  - Container image signing in `docker-release` job after image push
+  - Updated `upload-release-assets` job to organize and upload signature bundles
+  - Signature bundles uploaded to GitHub releases as `*.tar.gz.bundle` files
+- **`docs/security/SIGNED_RELEASES.md`** - Comprehensive documentation for signed releases:
+  - Installation instructions for Cosign
+  - Verification steps for container images and binary tarballs
+  - Understanding signature verification output
+  - Troubleshooting common verification errors
+  - Kubernetes deployment verification with Kyverno policy examples
+  - Automated download-and-verify script
+  - SLSA provenance verification
+  - Rekor transparency log inspection
+- **`Makefile`** - New targets for signing and verification:
+  - `sign-verify-install` - Install Cosign on macOS or Linux
+  - `verify-image` - Verify container image signatures
+  - `verify-binary` - Verify binary tarball signatures
+  - `sign-binary` - Sign binary tarballs locally
+
+### Changed
+- **`.github/workflows/release.yaml`**:
+  - Binary artifacts now signed before upload to releases
+  - Container images signed immediately after build
+  - Release assets now include signature bundles in `signatures/` directory
+  - Checksums now include signature bundle hashes
+
+### Why
+**Business Requirement:** Regulated banking environment requires cryptographic proof of artifact authenticity and integrity.
+
+**Problem:**
+- No cryptographic verification that releases came from official CI/CD
+- Users cannot verify binaries or container images haven't been tampered with
+- Supply chain attacks (e.g., compromised registry) cannot be detected
+- Compliance requirement for non-repudiation of build artifacts
+
+**Solution:**
+Implement industry-standard cryptographic signing using Sigstore/Cosign with keyless signing:
+1. **Container Images**: Signed by digest using OCI registry signature storage
+2. **Binary Artifacts**: Signed with signature bundles uploaded to GitHub releases
+3. **Keyless Signing**: Uses GitHub Actions OIDC identity (no private keys to manage or leak)
+4. **Transparency**: All signatures recorded in public Rekor transparency log (tamper-evident)
+5. **Verification**: Simple `cosign verify` commands for users to verify authenticity
+
+**Security Benefits:**
+- **Authenticity**: Cryptographic proof artifacts came from official Bindy repository
+- **Integrity**: Detect any tampering with released artifacts
+- **Non-repudiation**: Signatures prove artifacts were built by official CI/CD
+- **Transparency**: Public audit trail via Rekor transparency log
+- **Supply Chain Security**: Prevents use of counterfeit or compromised artifacts
+
+**Compliance Benefits:**
+- Meets regulatory requirements for artifact signing in banking environments
+- Provides audit trail for artifact provenance
+- Enables policy enforcement in Kubernetes (Kyverno, policy-controller)
+- Supports zero-trust security model
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+- [x] Security enhancement
+- [x] Compliance requirement
+
+### Verification
+```bash
+# Install Cosign
+make sign-verify-install
+
+# Verify container image
+make verify-image IMAGE_TAG=latest
+
+# Download and verify binary release
+VERSION="v0.1.0"
+PLATFORM="linux-amd64"
+curl -LO "https://github.com/firestoned/bindy/releases/download/${VERSION}/bindy-${PLATFORM}.tar.gz"
+curl -LO "https://github.com/firestoned/bindy/releases/download/${VERSION}/bindy-${PLATFORM}.tar.gz.bundle"
+make verify-binary TARBALL="bindy-${PLATFORM}.tar.gz"
+```
+
+See [docs/security/SIGNED_RELEASES.md](docs/security/SIGNED_RELEASES.md) for complete verification documentation.
+
+---
+
+## [2025-12-18 04:45] - Use extract-version Composite Action in Integration Tests
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **`.github/workflows/integration.yaml`** - Replaced custom tag calculation with `extract-version` composite action:
+  - Removed "Calculate Docker image tag" step with custom bash logic
+  - Added "Extract version information" step using `./.github/actions/extract-version`
+  - Removed `run_number` dependency (was creating tags like `main-2025.12.17-33`)
+  - Now uses standard `main-YYYY.MM.DD` format (e.g., `main-2025.12.17`)
+  - Cleaned up environment variables: removed `IMAGE_NAME` and `GITHUB_REPOSITORY`
+
+### Why
+**User Request:** "the integration tests run from main. they should not use a `run_number` for building tag. I think the best thing is to use the composite workflow to 'extract-version' instead of the 'Calculate Docker image tag'"
+
+**Problem:**
+Integration workflow was using custom bash logic to calculate image tags, which:
+1. Included `run_number` in the tag format (`main-2025.12.17-33`)
+2. Created inconsistency with main.yaml workflow (which uses `main-2025.12.17`)
+3. Duplicated version logic across workflows (violates DRY principle)
+
+**Solution:**
+Use the centralized `extract-version` composite action that all other workflows use. This ensures:
+- Consistent tag format across all workflows (`main-2025.12.17`)
+- Single source of truth for version/tag generation
+- Integration tests use exact same image that main workflow built
+
+**Before:**
+```yaml
+- name: Calculate Docker image tag
+  run: |
+    DATE=$(date +%Y.%m.%d)
+    TAG="main-${DATE}-${{ github.event.workflow_run.run_number }}"
+    echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+- name: Run integration tests
+  env:
+    IMAGE_TAG: ${{ steps.tag.outputs.tag }}
+    IMAGE_REPOSITORY: firestoned/bindy
+```
+
+**After:**
+```yaml
+- name: Extract version information
+  uses: ./.github/actions/extract-version
+  with:
+    workflow-type: main
+    image-suffix: ""
+
+- name: Run integration tests
+  env:
+    IMAGE_TAG: ${{ steps.version.outputs.image-tag }}
+    IMAGE_REPOSITORY: ${{ steps.version.outputs.image-repository }}
+```
+
+### Impact
+- [x] **Tag Consistency** - Integration tests now use `main-2025.12.17` instead of `main-2025.12.17-33`
+- [x] **Version Logic** - Centralized in `extract-version` action (single source of truth)
+- [x] **Image Matching** - Integration tests use exact same tag format as main workflow builds
+- [x] **Maintainability** - One place to update version logic, not scattered across workflows
+
+## [2025-12-18 04:30] - Reorganize Security & Compliance Documentation
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **`docs/src/SUMMARY.md`** - Restructured documentation organization:
+  - Renamed "Compliance" chapter to "Security & Compliance"
+  - Created nested sub-chapters for "Security" and "Compliance"
+  - Security sub-chapter contains 7 pages from `docs/security/` (now lowercased in `docs/src/security/`)
+  - Compliance sub-chapter contains existing 6 compliance framework pages
+
+- **`docs/src/security-compliance-overview.md`** - Created new overview page:
+  - Combined introduction to both security and compliance
+  - Clear navigation guide for different audiences (security engineers, compliance officers, auditors)
+  - Documents core principles (zero trust, least privilege, defense in depth, auditability)
+
+- **`docs/security/` → `docs/src/security/`** - Moved and lowercased 7 security documents:
+  - `ARCHITECTURE.md` → `architecture.md` - Security architecture and design principles
+  - `THREAT_MODEL.md` → `threat-model.md` - STRIDE threat analysis
+  - `INCIDENT_RESPONSE.md` → `incident-response.md` - P1-P7 incident playbooks
+  - `VULNERABILITY_MANAGEMENT.md` → `vulnerability-management.md` - CVE tracking
+  - `BUILD_REPRODUCIBILITY.md` → `build-reproducibility.md` - Supply chain security
+  - `SECRET_ACCESS_AUDIT.md` → `secret-access-audit.md` - Secret access auditing
+  - `AUDIT_LOG_RETENTION.md` → `audit-log-retention.md` - Log retention policies
+
+- **Updated "See Also" links in all compliance pages**:
+  - `docs/src/compliance/overview.md` - Fixed 3 security links, added 3 new cross-references
+  - `docs/src/compliance/sox-404.md` - Fixed 3 security links, added build reproducibility
+  - `docs/src/compliance/pci-dss.md` - Fixed 5 security links, added build reproducibility
+  - `docs/src/compliance/basel-iii.md` - Fixed 4 security links, added audit log retention
+  - `docs/src/compliance/slsa.md` - Fixed 2 security links, added vulnerability management
+  - `docs/src/compliance/nist.md` - Fixed 4 security links, added audit log retention
+
+### Why
+**User Request:** Reorganize security and compliance documentation structure for better navigation and logical grouping.
+
+**Previous Structure:**
+- Compliance was a top-level chapter with 6 pages
+- Security docs were in `docs/security/` (uppercase, not integrated into mdBook)
+- No clear overview explaining the relationship between security and compliance
+
+**New Structure:**
+- "Security & Compliance" top-level chapter with comprehensive overview
+- Security sub-chapter (7 pages) - technical controls and threat models
+- Compliance sub-chapter (6 pages) - regulatory framework mappings
+- All cross-references updated to new paths (`../security/threat-model.md` instead of `../../security/THREAT_MODEL.md`)
+
+**Benefits:**
+1. **Better Organization**: Related topics grouped under single top-level chapter
+2. **Integrated Documentation**: Security docs now part of mdBook, not separate files
+3. **Clear Audience Segmentation**: Overview guides different roles to relevant sections
+4. **Lowercase Convention**: Follows Rust/mdBook naming convention (lowercase filenames)
+5. **Cross-Referenced**: All compliance pages link to relevant security controls
+
+### Impact
+- [x] **Documentation Structure** - Security and Compliance now combined under one chapter
+- [x] **Navigation** - Folded sub-chapters improve readability
+- [x] **Cross-References** - All "See Also" links updated to new security paths
+- [x] **mdBook Integration** - Security docs now rendered in documentation site
+- [x] **File Naming** - All documentation follows lowercase convention
+
 ## [2025-12-18 03:15] - Fix Integration Tests to Use Versioned Image Tags
 
 **Author:** Erick Bourgeois

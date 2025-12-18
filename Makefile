@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 
-.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup docs docs-serve docs-mdbook docs-rustdoc docs-clean docs-watch docs-github-pages crds integ-test-multi-tenancy
+.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup docs docs-serve docs-mdbook docs-rustdoc docs-clean docs-watch docs-github-pages crds integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary
 
 REGISTRY ?= ghcr.io
 IMAGE_NAME ?= firestoned/bindy
@@ -204,3 +204,69 @@ docs-clean: ## Clean documentation build artifacts
 docs-watch: ## Watch and rebuild mdBook documentation on changes
 	@command -v mdbook >/dev/null 2>&1 || { echo "Installing mdbook..."; cargo install mdbook; }
 	mdbook serve
+
+# Signing and verification targets
+sign-verify-install: ## Install Cosign for signing and verification
+	@echo "Checking for Cosign installation..."
+	@if command -v cosign >/dev/null 2>&1; then \
+		echo "✓ Cosign already installed: $$(cosign version)"; \
+	else \
+		echo "Installing Cosign..."; \
+		if [ "$$(uname)" = "Darwin" ]; then \
+			brew install cosign; \
+		else \
+			LATEST_VERSION=$$(curl -s https://api.github.com/repos/sigstore/cosign/releases/latest | grep tag_name | cut -d '"' -f 4); \
+			curl -Lo /tmp/cosign "https://github.com/sigstore/cosign/releases/download/$${LATEST_VERSION}/cosign-linux-amd64"; \
+			chmod +x /tmp/cosign; \
+			sudo mv /tmp/cosign /usr/local/bin/; \
+		fi; \
+		echo "✓ Cosign installed successfully"; \
+	fi
+
+verify-image: ## Verify container image signature (usage: make verify-image IMAGE_TAG=v0.1.0)
+	@echo "Verifying signature for image: $(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)"
+	@command -v cosign >/dev/null 2>&1 || { echo "Error: cosign not found. Run 'make sign-verify-install' first."; exit 1; }
+	@cosign verify \
+		--certificate-identity-regexp='https://github.com/firestoned/bindy' \
+		--certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
+		$(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG) | jq .
+	@echo "✓ Image signature verified successfully"
+
+verify-binary: ## Verify binary tarball signature (usage: make verify-binary TARBALL=bindy-linux-amd64.tar.gz)
+	@if [ -z "$(TARBALL)" ]; then \
+		echo "Error: TARBALL parameter required. Usage: make verify-binary TARBALL=bindy-linux-amd64.tar.gz"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(TARBALL)" ]; then \
+		echo "Error: Tarball not found: $(TARBALL)"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(TARBALL).bundle" ]; then \
+		echo "Error: Signature bundle not found: $(TARBALL).bundle"; \
+		exit 1; \
+	fi
+	@echo "Verifying signature for: $(TARBALL)"
+	@command -v cosign >/dev/null 2>&1 || { echo "Error: cosign not found. Run 'make sign-verify-install' first."; exit 1; }
+	@cosign verify-blob \
+		--bundle "$(TARBALL).bundle" \
+		--certificate-identity-regexp='https://github.com/firestoned/bindy' \
+		--certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
+		"$(TARBALL)"
+	@echo "✓ Binary signature verified successfully"
+
+sign-binary: ## Sign a binary tarball locally (requires TARBALL parameter, e.g., make sign-binary TARBALL=bindy-linux-amd64.tar.gz)
+	@if [ -z "$(TARBALL)" ]; then \
+		echo "Error: TARBALL parameter required. Usage: make sign-binary TARBALL=bindy-linux-amd64.tar.gz"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(TARBALL)" ]; then \
+		echo "Error: Tarball not found: $(TARBALL)"; \
+		exit 1; \
+	fi
+	@echo "Signing tarball: $(TARBALL)"
+	@command -v cosign >/dev/null 2>&1 || { echo "Error: cosign not found. Run 'make sign-verify-install' first."; exit 1; }
+	@COSIGN_EXPERIMENTAL=1 cosign sign-blob \
+		--bundle "$(TARBALL).bundle" \
+		"$(TARBALL)"
+	@echo "✓ Tarball signed successfully"
+	@echo "  - Signature bundle: $(TARBALL).bundle"
