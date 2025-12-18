@@ -2,6 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-18 11:15] - Consolidate SBOM Generation into Build Workflows
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/main.yaml`: Added SBOM generation to build job (lines 78-89)
+  - Now generates SBOM for each platform using the `generate-sbom` composite action
+  - Uploads SBOM artifacts alongside binaries
+- `.github/workflows/pr.yaml`: Added SBOM generation to build job (lines 143-155)
+  - Now generates SBOM for each platform using the `generate-sbom` composite action
+  - Uploads SBOM artifacts alongside binaries
+- `.github/workflows/sbom.yml`: Refactored to only run on schedule (lines 6-10)
+  - Removed `push` and `pull_request` triggers
+  - Now only runs on cron schedule (daily at 2 AM UTC) or manual workflow_dispatch
+  - Renamed to "Scheduled SBOM Scan" for clarity
+  - Added documentation explaining the consolidation (lines 16-18)
+
+### Why
+The SBOM workflow was duplicating work already done in the build workflows:
+1. It ran on every push and PR, regenerating SBOMs that were already created
+2. It wasted CI resources by duplicating SBOM generation
+3. The generated SBOMs weren't used in the build artifacts
+
+By consolidating SBOM generation into the build workflows:
+1. **Efficiency**: SBOMs are generated once per build, alongside the binaries
+2. **Consistency**: The SBOM is generated from the exact binary that's being built
+3. **Reusability**: All workflows (main, pr, release) use the same `generate-sbom` composite action
+4. **Clarity**: The `sbom.yml` workflow now has a single, clear purpose: scheduled vulnerability scanning
+
+The scheduled SBOM workflow still runs daily to catch new vulnerabilities in dependencies, providing continuous security monitoring independent of code changes.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] CI/CD workflow improvement
+
 ## [2025-12-18 11:00] - Consolidate SLSA Provenance into Release Workflow
 
 **Author:** Erick Bourgeois

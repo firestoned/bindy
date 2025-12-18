@@ -1,25 +1,23 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 
-name: SBOM Generation
+name: Scheduled SBOM Scan
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   schedule:
-    # Generate SBOM daily to catch new vulnerabilities
+    # Generate SBOM daily at 2 AM UTC to catch new vulnerabilities
     - cron: '0 2 * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
-  pull-requests: read
 
 jobs:
+  # This workflow runs on a schedule to perform daily SBOM generation and vulnerability scanning.
+  # For PR and main branch builds, SBOM generation is integrated directly into the build jobs
+  # in pr.yaml and main.yaml using the generate-sbom composite action.
   generate-sbom:
-    name: Generate Software Bill of Materials
+    name: Generate and Verify SBOM (Scheduled)
     runs-on: ubuntu-latest
 
     steps:
