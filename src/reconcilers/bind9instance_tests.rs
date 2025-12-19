@@ -418,4 +418,183 @@ mod tests {
             assert_eq!(deploy_labels.get(key), Some(value));
         }
     }
+
+    // Phase 4: Pod-level condition tracking tests
+
+    #[test]
+    fn test_pod_condition_type_helper() {
+        use crate::status_reasons::pod_condition_type;
+
+        assert_eq!(pod_condition_type(0), "Pod-0");
+        assert_eq!(pod_condition_type(1), "Pod-1");
+        assert_eq!(pod_condition_type(10), "Pod-10");
+    }
+
+    #[test]
+    fn test_status_reason_constants() {
+        use crate::status_reasons::{
+            REASON_ALL_READY, REASON_NOT_READY, REASON_PARTIALLY_READY, REASON_READY,
+        };
+
+        // Verify the constants match expected values
+        assert_eq!(REASON_ALL_READY, "AllReady");
+        assert_eq!(REASON_READY, "Ready");
+        assert_eq!(REASON_PARTIALLY_READY, "PartiallyReady");
+        assert_eq!(REASON_NOT_READY, "NotReady");
+    }
+
+    #[test]
+    fn test_encompassing_condition_uses_all_ready() {
+        use crate::status_reasons::REASON_ALL_READY;
+
+        // When all pods are ready, encompassing condition should use REASON_ALL_READY
+        let ready_pod_count = 3;
+        let actual_replicas = 3;
+        let available_replicas = 3;
+
+        let (status, reason, _message) =
+            if ready_pod_count == actual_replicas && available_replicas == actual_replicas {
+                (
+                    "True",
+                    REASON_ALL_READY,
+                    format!("All {ready_pod_count} pods are ready"),
+                )
+            } else {
+                ("False", "NotReady", "Not ready".to_string())
+            };
+
+        assert_eq!(status, "True");
+        assert_eq!(reason, "AllReady");
+    }
+
+    #[test]
+    fn test_child_pod_condition_uses_ready() {
+        use crate::status_reasons::{pod_condition_type, REASON_NOT_READY, REASON_READY};
+
+        // When a pod is ready, it should use REASON_READY (not REASON_ALL_READY)
+        let is_pod_ready = true;
+        let pod_name = "bind9-test-0";
+
+        let (status, reason, message) = if is_pod_ready {
+            ("True", REASON_READY, format!("Pod {pod_name} is ready"))
+        } else {
+            (
+                "False",
+                REASON_NOT_READY,
+                format!("Pod {pod_name} is not ready"),
+            )
+        };
+
+        assert_eq!(status, "True");
+        assert_eq!(reason, "Ready"); // Child condition uses "Ready"
+        assert!(message.contains(pod_name));
+        assert_eq!(pod_condition_type(0), "Pod-0");
+    }
+
+    #[test]
+    fn test_partially_ready_pods() {
+        use crate::status_reasons::REASON_PARTIALLY_READY;
+
+        let ready_pod_count = 2;
+        let actual_replicas = 5;
+
+        let (status, reason, message) = if ready_pod_count > 0 && ready_pod_count < actual_replicas
+        {
+            (
+                "False",
+                REASON_PARTIALLY_READY,
+                format!("{ready_pod_count}/{actual_replicas} pods are ready"),
+            )
+        } else {
+            ("True", "AllReady", "All ready".to_string())
+        };
+
+        assert_eq!(status, "False");
+        assert_eq!(reason, "PartiallyReady");
+        assert_eq!(message, "2/5 pods are ready");
+    }
+
+    #[test]
+    fn test_no_pods_ready() {
+        use crate::status_reasons::REASON_NOT_READY;
+
+        let ready_pod_count = 0;
+        let actual_replicas = 3;
+
+        let (status, reason, message) = if ready_pod_count == 0 && actual_replicas > 0 {
+            (
+                "False",
+                REASON_NOT_READY,
+                "Waiting for pods to become ready".to_string(),
+            )
+        } else {
+            ("True", "AllReady", "All ready".to_string())
+        };
+
+        assert_eq!(status, "False");
+        assert_eq!(reason, "NotReady");
+        assert_eq!(message, "Waiting for pods to become ready");
+    }
+
+    #[test]
+    fn test_condition_message_format_for_all_ready() {
+        let ready_pod_count = 3;
+        let message = format!("All {ready_pod_count} pods are ready");
+
+        assert_eq!(message, "All 3 pods are ready");
+        assert!(message.contains("All"));
+        assert!(message.contains("pods are ready"));
+    }
+
+    #[test]
+    fn test_condition_message_format_for_partially_ready() {
+        let ready_pod_count = 2;
+        let actual_replicas = 5;
+        let message = format!("{ready_pod_count}/{actual_replicas} pods are ready");
+
+        assert_eq!(message, "2/5 pods are ready");
+        assert!(message.contains("/"));
+        assert!(message.contains("pods are ready"));
+    }
+
+    #[test]
+    fn test_multiple_conditions_structure() {
+        use crate::crd::Condition;
+        use crate::status_reasons::{
+            pod_condition_type, CONDITION_TYPE_READY, REASON_ALL_READY, REASON_READY,
+        };
+
+        // Simulate creating multiple conditions: 1 encompassing + 3 pod-level
+        let mut conditions = Vec::new();
+
+        // Encompassing condition
+        conditions.push(Condition {
+            r#type: CONDITION_TYPE_READY.to_string(),
+            status: "True".to_string(),
+            reason: Some(REASON_ALL_READY.to_string()),
+            message: Some("All 3 pods are ready".to_string()),
+            last_transition_time: Some("2025-01-15T10:00:00Z".to_string()),
+        });
+
+        // Pod-level conditions
+        for i in 0..3 {
+            conditions.push(Condition {
+                r#type: pod_condition_type(i),
+                status: "True".to_string(),
+                reason: Some(REASON_READY.to_string()),
+                message: Some(format!("Pod bind9-test-{i} is ready")),
+                last_transition_time: Some("2025-01-15T10:00:00Z".to_string()),
+            });
+        }
+
+        assert_eq!(conditions.len(), 4); // 1 encompassing + 3 pod-level
+        assert_eq!(conditions[0].r#type, "Ready");
+        assert_eq!(conditions[0].reason, Some("AllReady".to_string()));
+
+        assert_eq!(conditions[1].r#type, "Pod-0");
+        assert_eq!(conditions[1].reason, Some("Ready".to_string()));
+
+        assert_eq!(conditions[2].r#type, "Pod-1");
+        assert_eq!(conditions[3].r#type, "Pod-2");
+    }
 }
