@@ -17,6 +17,10 @@ use crate::labels::{
     MANAGED_BY_BIND9_CLUSTER, PART_OF_BINDY, ROLE_PRIMARY, ROLE_SECONDARY,
 };
 use crate::reconcilers::finalizers::{ensure_finalizer, handle_deletion, FinalizerCleanup};
+use crate::status_reasons::{
+    bind9_instance_condition_type, CONDITION_TYPE_READY, REASON_ALL_READY, REASON_NOT_READY,
+    REASON_NO_CHILDREN, REASON_PARTIALLY_READY, REASON_READY,
+};
 use anyhow::Result;
 use chrono::Utc;
 use k8s_openapi::{
@@ -119,16 +123,14 @@ pub async fn reconcile_bind9cluster(client: Client, cluster: Bind9Cluster) -> Re
         list_cluster_instances(&client, &cluster, &namespace, &name).await?;
 
     // Calculate cluster status from instances
-    let (instance_count, ready_instances, instance_names, status, message) =
+    let (instance_count, ready_instances, instance_names, conditions) =
         calculate_cluster_status(&instances, &namespace, &name);
 
-    // Update cluster status
+    // Update cluster status with all conditions
     update_status(
         &client,
         &cluster,
-        "Ready",
-        status,
-        &message,
+        conditions,
         instance_count,
         ready_instances,
         instance_names,
@@ -195,17 +197,14 @@ async fn list_cluster_instances(
             );
 
             // Update status to show error
-            update_status(
-                client,
-                cluster,
-                "Ready",
-                "False",
-                &format!("Failed to list instances: {e}"),
-                0,
-                0,
-                vec![],
-            )
-            .await?;
+            let error_condition = Condition {
+                r#type: CONDITION_TYPE_READY.to_string(),
+                status: "False".to_string(),
+                reason: Some(REASON_NOT_READY.to_string()),
+                message: Some(format!("Failed to list instances: {e}")),
+                last_transition_time: Some(Utc::now().to_rfc3339()),
+            };
+            update_status(client, cluster, vec![error_condition], 0, 0, vec![]).await?;
 
             Err(e.into())
         }
@@ -235,7 +234,7 @@ pub(crate) fn calculate_cluster_status(
     instances: &[Bind9Instance],
     namespace: &str,
     name: &str,
-) -> (i32, i32, Vec<String>, &'static str, String) {
+) -> (i32, i32, Vec<String>, Vec<Condition>) {
     // Count total instances and ready instances
     let instance_count = instances.len() as i32;
     let instance_names: Vec<String> = instances.iter().map(ResourceExt::name_any).collect();
@@ -256,27 +255,86 @@ pub(crate) fn calculate_cluster_status(
         namespace, name, instance_count, ready_instances
     );
 
-    // Determine cluster status
-    let (status, message) = if instance_count == 0 {
+    // Create instance-level conditions
+    let mut instance_conditions = Vec::new();
+    for (index, instance) in instances.iter().enumerate() {
+        let instance_name = instance.name_any();
+        let is_instance_ready = instance
+            .status
+            .as_ref()
+            .and_then(|status| status.conditions.first())
+            .is_some_and(|condition| condition.r#type == "Ready" && condition.status == "True");
+
+        let (status, reason, message) = if is_instance_ready {
+            (
+                "True",
+                REASON_READY,
+                format!("Instance {instance_name} is ready"),
+            )
+        } else {
+            (
+                "False",
+                REASON_NOT_READY,
+                format!("Instance {instance_name} is not ready"),
+            )
+        };
+
+        instance_conditions.push(Condition {
+            r#type: bind9_instance_condition_type(index),
+            status: status.to_string(),
+            reason: Some(reason.to_string()),
+            message: Some(message),
+            last_transition_time: Some(Utc::now().to_rfc3339()),
+        });
+    }
+
+    // Create encompassing Ready condition
+    let (encompassing_status, encompassing_reason, encompassing_message) = if instance_count == 0 {
         debug!("No instances found for cluster");
-        ("False", "No instances found for this cluster".to_string())
+        (
+            "False",
+            REASON_NO_CHILDREN,
+            "No instances found for this cluster".to_string(),
+        )
     } else if ready_instances == instance_count {
         debug!("All instances ready");
-        ("True", format!("All {instance_count} instances are ready"))
+        (
+            "True",
+            REASON_ALL_READY,
+            format!("All {instance_count} instances are ready"),
+        )
     } else if ready_instances > 0 {
         debug!(ready_instances, instance_count, "Cluster progressing");
         (
             "False",
-            format!("Progressing: {ready_instances}/{instance_count} instances ready"),
+            REASON_PARTIALLY_READY,
+            format!("{ready_instances}/{instance_count} instances are ready"),
         )
     } else {
         debug!("Waiting for instances to become ready");
-        ("False", "Waiting for instances to become ready".to_string())
+        (
+            "False",
+            REASON_NOT_READY,
+            "No instances are ready".to_string(),
+        )
     };
 
+    let encompassing_condition = Condition {
+        r#type: CONDITION_TYPE_READY.to_string(),
+        status: encompassing_status.to_string(),
+        reason: Some(encompassing_reason.to_string()),
+        message: Some(encompassing_message.clone()),
+        last_transition_time: Some(Utc::now().to_rfc3339()),
+    };
+
+    // Combine encompassing condition + instance-level conditions
+    let mut all_conditions = vec![encompassing_condition];
+    all_conditions.extend(instance_conditions);
+
     debug!(
-        status = %status,
-        message = %message,
+        status = %encompassing_status,
+        message = %encompassing_message,
+        num_conditions = all_conditions.len(),
         "Determined cluster status"
     );
 
@@ -284,19 +342,15 @@ pub(crate) fn calculate_cluster_status(
         instance_count,
         ready_instances,
         instance_names,
-        status,
-        message,
+        all_conditions,
     )
 }
 
-/// Update the status of a `Bind9Cluster`
-#[allow(clippy::too_many_arguments)]
+/// Update the status of a `Bind9Cluster` with multiple conditions
 async fn update_status(
     client: &Client,
     cluster: &Bind9Cluster,
-    condition_type: &str,
-    status: &str,
-    message: &str,
+    conditions: Vec<Condition>,
     instance_count: i32,
     ready_instances: i32,
     instances: Vec<String>,
@@ -306,26 +360,34 @@ async fn update_status(
 
     // Check if status has actually changed
     let current_status = &cluster.status;
-    let status_changed = if let Some(current) = current_status {
-        // Check if counts changed
-        if current.instance_count != Some(instance_count)
-            || current.ready_instances != Some(ready_instances)
-            || current.instances != instances
-        {
-            true
-        } else if let Some(current_condition) = current.conditions.first() {
-            // Check if condition changed
-            current_condition.r#type != condition_type
-                || current_condition.status != status
-                || current_condition.message.as_deref() != Some(message)
+    let status_changed =
+        if let Some(current) = current_status {
+            // Check if counts changed
+            if current.instance_count != Some(instance_count)
+                || current.ready_instances != Some(ready_instances)
+                || current.instances != instances
+            {
+                true
+            } else {
+                // Check if any condition changed
+                if current.conditions.len() == conditions.len() {
+                    // Compare each condition
+                    current.conditions.iter().zip(conditions.iter()).any(
+                        |(current_cond, new_cond)| {
+                            current_cond.r#type != new_cond.r#type
+                                || current_cond.status != new_cond.status
+                                || current_cond.message != new_cond.message
+                                || current_cond.reason != new_cond.reason
+                        },
+                    )
+                } else {
+                    true
+                }
+            }
         } else {
-            // No conditions exist, need to update
+            // No status exists, need to update
             true
-        }
-    } else {
-        // No status exists, need to update
-        true
-    };
+        };
 
     // Only update if status has changed
     if !status_changed {
@@ -343,25 +405,15 @@ async fn update_status(
     }
 
     debug!(
-        condition_type = %condition_type,
-        status = %status,
-        message = %message,
         instance_count,
         ready_instances,
         instances_count = instances.len(),
+        num_conditions = conditions.len(),
         "Preparing status update"
     );
 
-    let condition = Condition {
-        r#type: condition_type.to_string(),
-        status: status.to_string(),
-        reason: Some(condition_type.to_string()),
-        message: Some(message.to_string()),
-        last_transition_time: Some(Utc::now().to_rfc3339()),
-    };
-
     let new_status = Bind9ClusterStatus {
-        conditions: vec![condition],
+        conditions,
         observed_generation: cluster.metadata.generation,
         instance_count: Some(instance_count),
         ready_instances: Some(ready_instances),

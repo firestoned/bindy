@@ -204,6 +204,167 @@ jobs:
 - `make kind-integration-test` - Run full integration tests with local build
 - `make kind-integration-test-ci` - Run integration tests in CI mode (requires IMAGE_TAG env var)
 
+### CRITICAL: Workflows Must Be Reusable and Composable
+
+**Status:** ✅ Required Standard
+**Impact:** Maintainability, DRY principles, and workflow consistency
+
+When adding new GitHub Actions workflows, they MUST be designed for reusability and integration with existing workflows.
+
+**Why:**
+- **DRY Principle**: Avoid duplicating workflow logic across multiple files
+- **Consistency**: Same steps produce same results across different contexts
+- **Maintainability**: Update shared logic once, not in every workflow
+- **Composability**: Workflows can call other workflows or be called by others
+- **Flexibility**: Standalone execution and integration into larger workflows
+
+**Requirements:**
+
+1. **Use Reusable Workflows** (`.github/workflows/*.yml` with `workflow_call`):
+   - Define workflows that can be called by other workflows
+   - Accept inputs for configuration
+   - Define outputs for downstream steps
+   - Make them standalone executable (support both `workflow_call` and manual triggers)
+
+2. **Use Composite Actions** (`.github/actions/*/action.yml`):
+   - For complex multi-step operations that are used across multiple workflows
+   - For shared setup/teardown logic
+   - For operations that need to be consistent across workflows
+
+3. **Integration Strategy**:
+   - New workflows MUST be callable from existing workflows
+   - Existing workflows SHOULD be able to include new workflow steps
+   - Avoid creating isolated workflows that duplicate existing logic
+
+**Pattern for Reusable Workflows:**
+
+```yaml
+# .github/workflows/integration-test.yml - Reusable workflow
+name: Integration Tests
+
+on:
+  workflow_call:
+    inputs:
+      image_tag:
+        required: true
+        type: string
+      registry:
+        required: false
+        type: string
+        default: ghcr.io
+    outputs:
+      test_result:
+        description: "Test execution result"
+        value: ${{ jobs.test.outputs.result }}
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        required: true
+        type: string
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    outputs:
+      result: ${{ steps.test.outputs.result }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run integration tests
+        id: test
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          REGISTRY: ${{ inputs.registry }}
+        run: make kind-integration-test-ci
+```
+
+**Pattern for Composite Actions:**
+
+```yaml
+# .github/actions/setup-rust/action.yml - Composite action
+name: Setup Rust Environment
+description: Install Rust toolchain and cache dependencies
+
+inputs:
+  toolchain:
+    description: 'Rust toolchain version'
+    required: false
+    default: 'stable'
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: ${{ inputs.toolchain }}
+
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo build
+      uses: actions/cache@v3
+      with:
+        path: target
+        key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+```
+
+**Pattern for Calling Reusable Workflows:**
+
+```yaml
+# .github/workflows/ci.yml - Main CI workflow that composes others
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      rust_version: stable
+
+  integration-test:
+    needs: build
+    uses: ./.github/workflows/integration-test.yml
+    with:
+      image_tag: ${{ needs.build.outputs.image_tag }}
+      registry: ghcr.io
+
+  security-scan:
+    needs: build
+    uses: ./.github/workflows/security.yml
+    with:
+      image_tag: ${{ needs.build.outputs.image_tag }}
+```
+
+**Checklist for New Workflows:**
+
+Before adding a new workflow, ask:
+- [ ] Can this be added as a job to an existing workflow?
+- [ ] Can this be made into a reusable workflow that others can call?
+- [ ] Does this duplicate logic from an existing workflow?
+- [ ] Can this be extracted into a composite action for reuse?
+- [ ] Will existing workflows benefit from calling this workflow?
+- [ ] Can this workflow be triggered both standalone and as a called workflow?
+
+**Examples of Good Reusability:**
+
+- ✅ Build workflow that can be called by CI, release, and PR workflows
+- ✅ Integration test workflow that works locally and in CI
+- ✅ Security scan that runs standalone, in CI, and on schedule
+- ✅ Composite action for Kind cluster setup used across multiple workflows
+
+**Examples of Poor Design:**
+
+- ❌ Duplicating the same build steps in CI and release workflows
+- ❌ Creating a workflow that can only run in one specific context
+- ❌ Hardcoding values that should be inputs
+- ❌ Creating standalone workflows that can't be composed
+
+**REMEMBER:** Every new workflow should enhance the ecosystem, not create a silo. Design for reuse from day one.
+
 ---
 
 ## 🔒 Compliance & Security Context

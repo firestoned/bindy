@@ -64,9 +64,11 @@ pub mod bind9_resources;
 pub mod constants;
 pub mod crd;
 pub mod crd_docs;
+pub mod http_errors;
 pub mod labels;
 pub mod metrics;
 pub mod reconcilers;
+pub mod status_reasons;
 
 #[cfg(test)]
 mod bind9_resources_tests;
@@ -74,3 +76,7 @@ mod bind9_resources_tests;
 mod crd_docs_tests;
 #[cfg(test)]
 mod crd_tests;
+#[cfg(test)]
+mod http_errors_tests;
+#[cfg(test)]
+mod status_reasons_tests;
