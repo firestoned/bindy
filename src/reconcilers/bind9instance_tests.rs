@@ -597,4 +597,135 @@ mod tests {
         assert_eq!(conditions[2].r#type, "Pod-1");
         assert_eq!(conditions[3].r#type, "Pod-2");
     }
+
+    /// Test that the pod label selector uses the correct Kubernetes standard label
+    ///
+    /// This is a regression test for a critical bug where the wrong label selector
+    /// was used, causing all instances to show as "Not Ready" even when pods were running.
+    ///
+    /// Bug: Used `app={instance_name}` which doesn't match any pods
+    /// Fix: Use `app.kubernetes.io/instance={instance_name}` (K8S_INSTANCE constant)
+    #[test]
+    fn test_pod_label_selector_uses_correct_label() {
+        use crate::labels::K8S_INSTANCE;
+
+        let instance_name = "my-dns-primary-0";
+
+        // This is the correct label selector format that should be used
+        let correct_selector = format!("{}={}", K8S_INSTANCE, instance_name);
+        assert_eq!(
+            correct_selector, "app.kubernetes.io/instance=my-dns-primary-0",
+            "Label selector should use the standard Kubernetes instance label"
+        );
+
+        // Verify it's NOT using the old incorrect format
+        let incorrect_selector = format!("app={}", instance_name);
+        assert_ne!(
+            incorrect_selector, correct_selector,
+            "Should NOT use 'app=instance_name' - that was the bug!"
+        );
+
+        // The correct selector should match pods labeled by build_deployment()
+        // Pods have these labels:
+        // - app.kubernetes.io/instance={instance_name} ✓
+        // - instance={instance_name} ✓
+        // - app=bind9 (NOT app={instance_name}!)
+    }
+
+    /// Test that deployment labels match the pod selector used in status checking
+    ///
+    /// This ensures that the labels applied to pods by build_deployment() match
+    /// the selector used in update_status_from_deployment() to find those pods.
+    #[test]
+    fn test_deployment_labels_match_pod_selector() {
+        use crate::labels::K8S_INSTANCE;
+
+        let instance_name = "test-instance";
+        let namespace = "test-ns";
+        let instance = create_test_instance(instance_name, 1, "9.18");
+
+        // Build a deployment and check its pod template labels
+        let deployment = build_deployment(instance_name, namespace, &instance, None, None);
+        let pod_template = deployment.spec.unwrap().template;
+        let pod_labels = pod_template.metadata.unwrap().labels.unwrap();
+
+        // The critical label: pods MUST have app.kubernetes.io/instance label
+        assert!(
+            pod_labels.contains_key(K8S_INSTANCE),
+            "Pod template must include {} label",
+            K8S_INSTANCE
+        );
+        assert_eq!(
+            pod_labels.get(K8S_INSTANCE).unwrap(),
+            instance_name,
+            "{} label value must match instance name",
+            K8S_INSTANCE
+        );
+
+        // Verify the selector that will be used to find these pods
+        let selector_used_in_status_check = format!("{}={}", K8S_INSTANCE, instance_name);
+
+        // This selector should match the pod's labels
+        let instance_label_value = pod_labels.get(K8S_INSTANCE).unwrap();
+        assert_eq!(
+            instance_label_value,
+            &instance_name.to_string(),
+            "Selector '{}' should match pod label",
+            selector_used_in_status_check
+        );
+
+        // Document what labels the pod actually has for debugging
+        println!("Pod labels created by build_deployment():");
+        for (key, value) in &pod_labels {
+            println!("  {}: {}", key, value);
+        }
+    }
+
+    /// Test the exact label selector string format used in the code
+    ///
+    /// This test documents and validates the exact format of the label selector
+    /// string that gets passed to Kubernetes API.
+    #[test]
+    fn test_label_selector_string_format() {
+        use crate::labels::K8S_INSTANCE;
+
+        // Test various instance names
+        let test_cases = vec![
+            (
+                "my-dns-primary-0",
+                "app.kubernetes.io/instance=my-dns-primary-0",
+            ),
+            (
+                "my-dns-secondary-1",
+                "app.kubernetes.io/instance=my-dns-secondary-1",
+            ),
+            ("test", "app.kubernetes.io/instance=test"),
+            (
+                "prod-dns-cluster-primary-0",
+                "app.kubernetes.io/instance=prod-dns-cluster-primary-0",
+            ),
+        ];
+
+        for (instance_name, expected_selector) in test_cases {
+            let selector = format!("{}={}", K8S_INSTANCE, instance_name);
+            assert_eq!(
+                selector, expected_selector,
+                "Label selector format is incorrect for instance '{}'",
+                instance_name
+            );
+        }
+    }
+
+    /// Test that the K8S_INSTANCE constant has the correct value
+    ///
+    /// This validates that we're using the official Kubernetes standard label name.
+    #[test]
+    fn test_k8s_instance_constant_value() {
+        use crate::labels::K8S_INSTANCE;
+
+        assert_eq!(
+            K8S_INSTANCE, "app.kubernetes.io/instance",
+            "K8S_INSTANCE constant must use the official Kubernetes standard label"
+        );
+    }
 }

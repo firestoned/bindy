@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -26,7 +27,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Check license headers
-        uses: ./.github/actions/license-check
+        uses: firestoned/github-actions/security/license-check@v1.3.1
+        with:
+          copyright-holder: "Erick Bourgeois, firestoned"
+          license-id: "MIT"
 
   verify-commits:
     name: Verify Signed Commits
@@ -38,7 +42,7 @@ jobs:
           fetch-depth: 0  # Fetch all history for verification
 
       - name: Verify commits are signed
-        uses: ./.github/actions/verify-signed-commits
+        uses: firestoned/github-actions/security/verify-signed-commits@v1.3.1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           verify-mode: push
@@ -66,17 +70,17 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Rust build environment
-        uses: ./.github/actions/setup-rust-build
+        uses: firestoned/github-actions/rust/setup-rust-build@v1.3.1
         with:
           target: ${{ matrix.platform.target }}
 
       - name: Build binary
-        uses: ./.github/actions/build-binary
+        uses: firestoned/github-actions/rust/build-binary@v1.3.1
         with:
           target: ${{ matrix.platform.target }}
 
       - name: Generate SBOM
-        uses: ./.github/actions/generate-sbom
+        uses: firestoned/github-actions/rust/generate-sbom@v1.3.1
         with:
           target: ${{ matrix.platform.target }}
 
@@ -129,15 +133,17 @@ jobs:
 
       - name: Extract version for Chainguard
         id: version-chainguard
-        uses: ./.github/actions/extract-version
+        uses: firestoned/github-actions/versioning/extract-version@v1.3.1
         with:
+          repository: firestoned/bindy
           workflow-type: main
           image-suffix: ""
 
       - name: Extract version for Distroless
         id: version-distroless
-        uses: ./.github/actions/extract-version
+        uses: firestoned/github-actions/versioning/extract-version@v1.3.1
         with:
+          repository: firestoned/bindy
           workflow-type: main
           image-suffix: "-distroless"
 
@@ -172,7 +178,7 @@ jobs:
         uses: ./.github/actions/prepare-docker-binaries
 
       - name: Setup Docker environment
-        uses: ./.github/actions/setup-docker
+        uses: firestoned/github-actions/docker/setup-docker@v1.3.1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -183,7 +189,9 @@ jobs:
           images: ghcr.io/${{ matrix.variant.image-repository }}
           tags: |
             type=raw,value=${{ matrix.variant.image-tag }}
+            type=raw,value=main-{{date 'YYYY-MM-DD'}}
             type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}
+            type=raw,value=latest
           flavor: |
             latest=false
 
@@ -213,7 +221,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run security scan
-        uses: ./.github/actions/security-scan
+        uses: firestoned/github-actions/rust/security-scan@v1.3.1
+        with:
+          cargo-audit-version: "0.22.0"
 
   trivy:
     name: Container Security Scan - ${{ matrix.variant.name }}
@@ -234,7 +244,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Trivy scan on ${{ matrix.variant.name }} image
-        uses: ./.github/actions/trivy-scan
+        uses: firestoned/github-actions/security/trivy-scan@v1.3.1
         with:
           image-ref: ghcr.io/${{ matrix.variant.image-repository }}:${{ matrix.variant.image-tag }}
           sarif-category: trivy-main-${{ matrix.variant.name }}

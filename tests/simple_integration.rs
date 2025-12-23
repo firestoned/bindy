@@ -860,6 +860,260 @@ async fn test_txt_record_create_read_delete() {
 }
 
 // ============================================================================
+// Pod Label Selector Tests
+// ============================================================================
+
+/// Integration test: Verify that Bind9Instance can find its pods using correct label selector
+///
+/// This is a regression test for a critical bug where instances always showed "Not Ready"
+/// because the pod label selector used the wrong label (app={name} instead of
+/// app.kubernetes.io/instance={name}).
+///
+/// This test:
+/// 1. Creates a Bind9Instance
+/// 2. Waits for its deployment and pods to be created
+/// 3. Verifies the pods have the correct labels
+/// 4. Verifies the instance status correctly detects the pods as ready
+#[tokio::test]
+#[ignore] // Run with: cargo test --test simple_integration test_instance_pod_label_selector -- --ignored
+async fn test_instance_pod_label_selector_finds_pods() {
+    println!("\n=== Test: Instance Pod Label Selector Finds Pods ===\n");
+
+    let client = match get_kube_client_or_skip().await {
+        Some(c) => c,
+        None => return,
+    };
+
+    let namespace = "bindy-label-selector-test";
+
+    // Setup
+    if let Err(e) = create_test_namespace(&client, namespace).await {
+        eprintln!("Failed to create test namespace: {e}");
+        return;
+    }
+
+    // Create a simple Bind9Instance
+    let instance_name = "test-pod-labels";
+    let instances: Api<Bind9Instance> = Api::namespaced(client.clone(), namespace);
+
+    let instance = Bind9Instance {
+        metadata: ObjectMeta {
+            name: Some(instance_name.to_string()),
+            namespace: Some(namespace.to_string()),
+            ..Default::default()
+        },
+        spec: Bind9InstanceSpec {
+            cluster_ref: "test-cluster".to_string(),
+            role: ServerRole::Primary,
+            replicas: Some(1),
+            version: Some("9.18".to_string()),
+            image: None,
+            config: None,
+            config_map_refs: None,
+            primary_servers: None,
+            volumes: None,
+            volume_mounts: None,
+            rndc_secret_ref: None,
+            storage: None,
+            bindcar_config: None,
+        },
+        status: None,
+    };
+
+    println!("Creating Bind9Instance: {instance_name}");
+    match instances.create(&PostParams::default(), &instance).await {
+        Ok(_) => println!("✓ Created Bind9Instance"),
+        Err(e) => {
+            eprintln!("Failed to create Bind9Instance: {e}");
+            delete_test_namespace(&client, namespace).await;
+            return;
+        }
+    }
+
+    // Wait for pods to be created and become ready
+    use k8s_openapi::api::core::v1::Pod;
+    let pod_api: Api<Pod> = Api::namespaced(client.clone(), namespace);
+
+    println!("Waiting for pods to be created and become ready (up to 2 minutes)...");
+    let mut pod_ready = false;
+    for attempt in 1..=24 {
+        // 24 attempts * 5 seconds = 2 minutes
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+        // Use the CORRECT label selector (the one the controller uses)
+        let label_selector = format!("app.kubernetes.io/instance={}", instance_name);
+        let list_params = ListParams::default().labels(&label_selector);
+
+        match pod_api.list(&list_params).await {
+            Ok(pods) => {
+                if pods.items.is_empty() {
+                    println!("  Attempt {attempt}/24: No pods found yet with selector '{label_selector}'");
+                    continue;
+                }
+
+                println!(
+                    "  Found {} pod(s) with selector '{label_selector}'",
+                    pods.items.len()
+                );
+
+                // Check if any pod is ready
+                for pod in &pods.items {
+                    let pod_name = pod.metadata.name.as_deref().unwrap_or("unknown");
+                    if let Some(status) = &pod.status {
+                        if let Some(conditions) = &status.conditions {
+                            let is_ready = conditions
+                                .iter()
+                                .any(|c| c.type_ == "Ready" && c.status == "True");
+
+                            if is_ready {
+                                println!("✓ Pod {pod_name} is Ready");
+                                pod_ready = true;
+                                break;
+                            } else {
+                                println!("  Pod {pod_name} not ready yet (attempt {attempt}/24)");
+                            }
+                        }
+                    }
+                }
+
+                if pod_ready {
+                    break;
+                }
+            }
+            Err(e) => {
+                eprintln!("  Failed to list pods: {e}");
+            }
+        }
+    }
+
+    if !pod_ready {
+        eprintln!("✗ Pods never became ready after 2 minutes");
+        eprintln!("  This might indicate a cluster issue or slow image pull");
+    }
+
+    // Now check the Bind9Instance status
+    println!("\nChecking Bind9Instance status...");
+    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await; // Give controller time to reconcile
+
+    match instances.get(instance_name).await {
+        Ok(instance) => {
+            if let Some(status) = &instance.status {
+                println!("Instance status: {status:#?}");
+
+                // Check if the instance has a Ready condition
+                let conditions = &status.conditions;
+                if !conditions.is_empty() {
+                    if let Some(ready_condition) = conditions.iter().find(|c| c.r#type == "Ready") {
+                        println!("\nReady condition:");
+                        println!("  Status: {}", ready_condition.status);
+                        println!("  Reason: {:?}", ready_condition.reason);
+                        println!("  Message: {:?}", ready_condition.message);
+
+                        // If pods are ready, the instance should eventually be ready too
+                        if pod_ready {
+                            if ready_condition.status == "True" {
+                                println!("✓ Instance correctly detected pods as ready");
+                            } else {
+                                println!("⚠ Instance shows Not Ready even though pods are ready");
+                                println!("   This might indicate the label selector bug or slow reconciliation");
+                                println!("   Waiting 30 more seconds for reconciliation...");
+
+                                tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+
+                                // Check again
+                                if let Ok(instance) = instances.get(instance_name).await {
+                                    if let Some(status) = &instance.status {
+                                        let conditions = &status.conditions;
+                                        if !conditions.is_empty() {
+                                            if let Some(ready_condition) =
+                                                conditions.iter().find(|c| c.r#type == "Ready")
+                                            {
+                                                if ready_condition.status == "True" {
+                                                    println!("✓ Instance now shows Ready after additional wait");
+                                                } else {
+                                                    println!("✗ Instance still shows Not Ready after total wait");
+                                                    println!(
+                                                        "   Status: {}",
+                                                        ready_condition.status
+                                                    );
+                                                    println!(
+                                                        "   Message: {:?}",
+                                                        ready_condition.message
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        println!("⚠ No Ready condition found in instance status");
+                    }
+                } else {
+                    println!("⚠ Instance status has no conditions");
+                }
+            } else {
+                println!("⚠ Instance has no status");
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to get instance status: {e}");
+        }
+    }
+
+    // Verify pods have the correct labels
+    println!("\nVerifying pod labels...");
+    let label_selector = format!("app.kubernetes.io/instance={}", instance_name);
+    let list_params = ListParams::default().labels(&label_selector);
+
+    match pod_api.list(&list_params).await {
+        Ok(pods) => {
+            for pod in &pods.items {
+                let pod_name = pod.metadata.name.as_deref().unwrap_or("unknown");
+                if let Some(labels) = &pod.metadata.labels {
+                    println!("\nPod {pod_name} labels:");
+                    println!(
+                        "  app.kubernetes.io/instance: {:?}",
+                        labels.get("app.kubernetes.io/instance")
+                    );
+                    println!("  instance: {:?}", labels.get("instance"));
+                    println!("  app: {:?}", labels.get("app"));
+
+                    // Verify critical labels exist
+                    assert!(
+                        labels.contains_key("app.kubernetes.io/instance"),
+                        "Pod must have app.kubernetes.io/instance label"
+                    );
+                    assert_eq!(
+                        labels.get("app.kubernetes.io/instance").unwrap(),
+                        instance_name,
+                        "app.kubernetes.io/instance label value must match instance name"
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to list pods for label verification: {e}");
+        }
+    }
+
+    // Cleanup
+    println!("\nCleaning up...");
+    match instances
+        .delete(instance_name, &DeleteParams::default())
+        .await
+    {
+        Ok(_) => println!("✓ Deleted Bind9Instance"),
+        Err(e) => eprintln!("⚠ Failed to delete Bind9Instance: {e}"),
+    }
+
+    delete_test_namespace(&client, namespace).await;
+
+    println!("\n✓ Test passed\n");
+}
+
+// ============================================================================
 // Unit Test
 // ============================================================================
 

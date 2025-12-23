@@ -730,14 +730,9 @@ async fn update_status_from_deployment(
                 .and_then(|status| status.ready_replicas)
                 .unwrap_or(0);
 
-            let available_replicas = deployment
-                .status
-                .as_ref()
-                .and_then(|status| status.available_replicas)
-                .unwrap_or(0);
-
             // List pods for this deployment using label selector
-            let label_selector = format!("app={name}");
+            // Use the standard Kubernetes label for instance matching
+            let label_selector = format!("{}={}", crate::labels::K8S_INSTANCE, name);
             let list_params = ListParams::default().labels(&label_selector);
             let pods = pod_api.list(&list_params).await?;
 
@@ -747,11 +742,13 @@ async fn update_status_from_deployment(
 
             for (index, pod) in pods.items.iter().enumerate() {
                 let pod_name = pod.metadata.name.as_deref().unwrap_or("unknown");
+                // Using map_or for explicit false default on None - more readable than is_some_and
+                #[allow(clippy::unnecessary_map_or)]
                 let is_pod_ready = pod
                     .status
                     .as_ref()
                     .and_then(|status| status.conditions.as_ref())
-                    .is_some_and(|conditions| {
+                    .map_or(false, |conditions| {
                         conditions
                             .iter()
                             .any(|c| c.type_ == "Ready" && c.status == "True")
@@ -788,9 +785,7 @@ async fn update_status_from_deployment(
                         REASON_NOT_READY,
                         "Waiting for pods to become ready".to_string(),
                     )
-                } else if ready_pod_count == actual_replicas
-                    && available_replicas == actual_replicas
-                {
+                } else if ready_pod_count == actual_replicas && actual_replicas > 0 {
                     (
                         "True",
                         REASON_ALL_READY,
