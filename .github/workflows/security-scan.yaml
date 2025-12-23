@@ -28,7 +28,7 @@ jobs:
       - name: Run security scan
         id: audit
         continue-on-error: true
-        uses: ./.github/actions/security-scan
+        uses: firestoned/github-actions/rust/security-scan@v1.3.1
         with:
           upload-artifact-name: scheduled-cargo-audit-${{ github.run_number }}
 
@@ -159,7 +159,7 @@ jobs:
       - name: Run Trivy scan on ${{ matrix.tag }}
         continue-on-error: true
         id: trivy
-        uses: ./.github/actions/trivy-scan
+        uses: firestoned/github-actions/security/trivy-scan@v1.3.1
         with:
           image-ref: ghcr.io/${{ github.repository }}:${{ matrix.tag }}
           sarif-category: trivy-scheduled-${{ matrix.tag }}

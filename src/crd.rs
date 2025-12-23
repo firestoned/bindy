@@ -1029,6 +1029,12 @@ fn default_secret_key() -> String {
     "secret".to_string()
 }
 
+/// Default BIND9 version for clusters when not specified
+#[allow(clippy::unnecessary_wraps)]
+fn default_bind9_version() -> Option<String> {
+    Some(crate::constants::DEFAULT_BIND9_VERSION.to_string())
+}
+
 /// TSIG Key configuration for authenticated zone transfers (deprecated in favor of `RndcSecretRef`)
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -1405,7 +1411,10 @@ pub struct SecondaryConfig {
 #[serde(rename_all = "camelCase")]
 pub struct Bind9ClusterCommonSpec {
     /// Shared BIND9 version for the cluster
-    #[serde(default)]
+    ///
+    /// If not specified, defaults to "9.18".
+    #[serde(default = "default_bind9_version")]
+    #[schemars(default = "default_bind9_version")]
     pub version: Option<String>,
 
     /// Primary instance configuration
