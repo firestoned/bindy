@@ -2265,7 +2265,11 @@ spec:
                     type: object
                 type: object
               version:
-                description: Shared BIND9 version for the cluster
+                default: '9.18'
+                description: |-
+                  Shared BIND9 version for the cluster
+
+                  If not specified, defaults to "9.18".
                 nullable: true
                 type: string
               volumeMounts:

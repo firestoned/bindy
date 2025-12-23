@@ -2,6 +2,78 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-23 22:00] - CI/CD: Migrate Workflows to firestoned/github-actions
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/integration.yaml`: Simplified to use unified Rust setup
+  - Replaced `dtolnay/rust-toolchain` + 3 manual cargo cache steps with single `firestoned/github-actions/rust/setup-rust-build@v1.3.1`
+  - Replaced local `extract-version` action with `firestoned/github-actions/versioning/extract-version@v1.3.1`
+  - **Reduction**: 4 steps → 2 steps (50% reduction)
+- `.github/workflows/license-scan.yaml`: Simplified Rust setup
+  - Replaced `dtolnay/rust-toolchain` + `./.github/actions/cache-cargo` with single `firestoned/github-actions/rust/setup-rust-build@v1.3.1`
+  - **Reduction**: 2 steps → 1 step (50% reduction)
+- `.github/workflows/sbom.yml`: Unified Rust setup and SBOM generation
+  - Replaced `dtolnay/rust-toolchain` + `./.github/actions/cache-cargo` with single `firestoned/github-actions/rust/setup-rust-build@v1.3.1`
+  - Replaced `./.github/actions/generate-sbom` with `firestoned/github-actions/rust/generate-sbom@v1.3.1`
+  - **Reduction**: 3 steps → 2 steps (33% reduction)
+- `.github/workflows/docs.yaml`: Simplified Rust setup for documentation builds
+  - Replaced `dtolnay/rust-toolchain` + `Swatinem/rust-cache@v2` with single `firestoned/github-actions/rust/setup-rust-build@v1.3.1`
+  - **Reduction**: 2 steps → 1 step (50% reduction)
+- `.github/workflows/security-scan.yaml`: Migrated security scanning to centralized actions
+  - Replaced `./.github/actions/security-scan` with `firestoned/github-actions/rust/security-scan@v1.3.1`
+  - Replaced `./.github/actions/trivy-scan` with `firestoned/github-actions/security/trivy-scan@v1.3.1`
+- `.github/workflows/scorecard.yml`: No changes needed (already optimal, uses only OpenSSF Scorecard action)
+- `.github/workflows/update-image-digests.yaml`: No changes needed (specialized workflow with no applicable firestoned actions)
+
+### Why
+Consolidating workflow logic into centralized `firestoned/github-actions` repository provides:
+1. **Single Source of Truth**: Composite action logic maintained in one place
+2. **Consistency**: Same caching and versioning strategy across all workflows
+3. **Maintainability**: Updates to composite actions automatically apply to all workflows using them
+4. **Reduced Duplication**: Eliminates need to maintain local copies of common actions
+5. **Version Control**: All workflows now use versioned actions (@v1.3.1) for reproducibility
+
+This follows the DRY (Don't Repeat Yourself) principle and aligns with GitHub Actions best practices for reusable workflows and composite actions.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (workflow updates)
+- [ ] Documentation only
+
+**Note**: These changes only affect CI/CD workflows. No impact on runtime behavior.
+
+## [2025-12-23 21:00] - Feature: Default BIND9 Version in CRD Schema
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/crd.rs:1033`: Added `default_bind9_version()` helper function that returns `Some("9.18")` as the default version
+- `src/crd.rs:1415`: Added `#[serde(default = "default_bind9_version")]` attribute to `Bind9ClusterCommonSpec.version` field
+- `src/crd.rs:1416`: Added `#[schemars(default = "default_bind9_version")]` attribute to populate default in CRD schema
+
+### Changed
+- `deploy/crds/bind9clusters.crd.yaml`: CRD now includes `default: "9.18"` in the version field schema
+- `deploy/crds/bind9globalclusters.crd.yaml`: CRD now includes `default: "9.18"` in the version field schema
+
+### Why
+When users create a `Bind9Cluster` or `Bind9GlobalCluster` without specifying a version, the default version ("9.18") was only applied at runtime in the reconciler. This meant:
+1. `kubectl get bind9cluster` would show an empty version column
+2. `kubectl describe` would show `version: <nil>` or omit the field entirely
+3. Users couldn't see what version would actually be deployed
+
+By adding the default to the CRD schema using `#[schemars(default)]`, Kubernetes now populates the field with "9.18" when creating the resource, making it visible in all kubectl commands.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (CRD schema update)
+- [ ] Documentation only
+
+**Note**: Existing resources without a version field will continue to work (handled by `#[serde(default)]`), but new resources will show the default value in kubectl output.
+
 ## [2025-12-23 19:30] - CI/CD: Docker Image Tagging Strategy
 
 **Author:** Erick Bourgeois
