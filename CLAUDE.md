@@ -55,6 +55,48 @@ Before committing, search for repeated string literals:
 grep -rn '"[^"]\{5,\}"' src/ | sort | uniq -d
 ```
 
+### CRITICAL: Always Run cargo fmt and clippy After Code Changes
+**Status:** ✅ Required Standard
+**Impact:** Code quality, consistency, and CI/CD pipeline success
+
+**MANDATORY REQUIREMENT:**
+
+Whenever you add or modify code in tests or source files, you **MUST** run these commands before considering the task complete:
+
+```bash
+# CRITICAL: Always source ~/.zshrc first to ensure cargo is in PATH
+source ~/.zshrc
+
+# 1. Format code (REQUIRED)
+cargo fmt
+
+# 2. Run clippy with strict warnings (REQUIRED - fix ALL warnings)
+cargo clippy -- -D warnings -W clippy::pedantic -A clippy::module_name_repetitions
+
+# 3. Run tests (REQUIRED - ALL tests must pass)
+cargo test
+```
+
+**Why This Matters:**
+- **CI/CD Will Fail**: GitHub Actions will reject commits with formatting violations or clippy warnings
+- **Catches Bugs Early**: Clippy identifies common mistakes and non-idiomatic code before they reach production
+- **Maintains Consistency**: Ensures uniform code style across the entire project
+- **Saves Time**: Prevents wasted CI minutes and failed builds due to formatting issues
+
+**When to Run:**
+- ✅ After adding new functions or types
+- ✅ After modifying existing code
+- ✅ After writing or updating tests
+- ✅ Before committing any `.rs` file changes
+- ✅ At the end of EVERY task involving Rust code
+
+**What to Do If They Fail:**
+- **cargo fmt failures**: Run `cargo fmt` and commit the formatting changes
+- **cargo clippy warnings**: Fix ALL warnings - do not ignore them
+- **cargo test failures**: Fix the failing tests - the task is NOT complete until all tests pass
+
+**REMEMBER:** A task involving Rust code is **NOT complete** until cargo fmt, cargo clippy, and cargo test all pass successfully.
+
 ### High Priority: CRD Code Generation
 **Status:** ✅ Implemented
 **Impact:** Automated - CRD YAMLs are generated from Rust types

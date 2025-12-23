@@ -1,19 +1,59 @@
-# Bindy - BIND9 DNS Controller for Kubernetes
+# <img src="docs/images/bindy-the-bee.png" alt="Bindy the Bee" width="60" style="vertical-align: middle; margin-right: 5px;"/> Bindy - BIND9 DNS Controller for Kubernetes
+### *Pronounced: "bined-ee" (like BIND + ee)*
+
+## Project Status
+
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![GitHub Release](https://img.shields.io/github/v/release/firestoned/bindy)](https://github.com/firestoned/bindy/releases/latest)
+[![GitHub commits since latest release](https://img.shields.io/github/commits-since/firestoned/bindy/latest)](https://github.com/firestoned/bindy/commits/main)
+[![Last Commit](https://img.shields.io/github/last-commit/firestoned/bindy)](https://github.com/firestoned/bindy/commits/main)
+
+## CI/CD Status
 
 [![Main Branch CI/CD](https://github.com/firestoned/bindy/actions/workflows/main.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/main.yaml)
+[![Pull Request Checks](https://github.com/firestoned/bindy/actions/workflows/pr.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/pr.yaml)
+[![Release Workflow](https://github.com/firestoned/bindy/actions/workflows/release.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/release.yaml)
 [![Integration Tests](https://github.com/firestoned/bindy/actions/workflows/integration.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/integration.yaml)
-[![codecov](https://codecov.io/gh/firestoned/bindy/branch/main/graph/badge.svg)](https://codecov.io/gh/firestoned/bindy)
+[![Documentation](https://github.com/firestoned/bindy/actions/workflows/docs.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/docs.yaml)
 
-[![Security Scan](https://github.com/firestoned/bindy/actions/workflows/security-scan.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/security-scan.yaml)
+## Code Quality
+
+[![codecov](https://codecov.io/gh/firestoned/bindy/branch/main/graph/badge.svg)](https://codecov.io/gh/firestoned/bindy)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/firestoned/bindy/badge)](https://api.securityscorecards.dev/projects/github.com/firestoned/bindy)
+[![Security Scan](https://github.com/firestoned/bindy/actions/workflows/security-scan.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/security-scan.yaml)
+
+## Technology & Compatibility
+
+[![Rust](https://img.shields.io/badge/rust-1.85+-orange.svg?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![Kubernetes](https://img.shields.io/badge/kubernetes-1.27+-326CE5.svg?logo=kubernetes&logoColor=white)](https://kubernetes.io)
+[![BIND9](https://img.shields.io/badge/BIND9-DNS%20Server-blue)](https://www.isc.org/bind/)
+[![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black)](https://www.linux.org/)
+[![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+
+## Security & Compliance
+
+[![SPDX](https://img.shields.io/badge/SPDX-License--Identifier-blue)](https://spdx.dev/)
 [![SLSA 3](https://img.shields.io/badge/SLSA-Level%203-blue)](https://slsa.dev)
 [![Cosign Signed](https://img.shields.io/badge/releases-signed-brightgreen.svg)](docs/security/SIGNED_RELEASES.md)
 [![Commits Signed](https://img.shields.io/badge/commits-signed-brightgreen.svg)](CONTRIBUTING.md#commit-signing-requirements)
+[![SBOM](https://img.shields.io/badge/SBOM-CycloneDX-orange)](https://cyclonedx.org/)
+[![Trivy](https://img.shields.io/badge/Trivy-Security%20Scanning-blue)](https://trivy.dev/)
+
+## Regulatory Compliance
 
 [![SOX Controls](https://img.shields.io/badge/SOX-Controls%20Documented-purple)](docs/compliance/sox-controls.md)
 [![NIST 800-53](https://img.shields.io/badge/NIST%20800--53-94%25%20Compliant-blue)](docs/compliance/nist-800-53.md)
 [![CIS Kubernetes](https://img.shields.io/badge/CIS%20Kubernetes-Level%201%20(84%25)-green)](docs/compliance/cis-kubernetes.md)
 [![FIPS 140-2](https://img.shields.io/badge/FIPS%20140--2-Compatible-blue)](docs/compliance/fips.md)
+
+## Community & Support
+
+[![Issues](https://img.shields.io/github/issues/firestoned/bindy)](https://github.com/firestoned/bindy/issues)
+[![Pull Requests](https://img.shields.io/github/issues-pr/firestoned/bindy)](https://github.com/firestoned/bindy/pulls)
+[![Contributors](https://img.shields.io/github/contributors/firestoned/bindy)](https://github.com/firestoned/bindy/graphs/contributors)
+[![Stars](https://img.shields.io/github/stars/firestoned/bindy?style=social)](https://github.com/firestoned/bindy/stargazers)
+
+---
 
 **Declarative DNS management for Kubernetes.** Manage BIND9 infrastructure as code using Custom Resources. Built in Rust for high performance and security.
 
