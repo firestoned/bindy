@@ -10,9 +10,9 @@ data:
   # Options: error, warn, info, debug, trace
   # Production default: info
   # Change to debug for troubleshooting (requires pod restart)
-  log-level: "info"
+  log-level: "debug"
 
   # Log format
   # Options: text, json
   # Production default: json (for structured logging in SIEM)
-  log-format: "json"
+  log-format: "text"

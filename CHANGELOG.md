@@ -2,6 +2,141 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-23 19:30] - CI/CD: Docker Image Tagging Strategy
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/main.yaml`: Updated Docker image tags to include both date-based and `latest` tags:
+  - Added explicit `main-{{date 'YYYY-MM-DD'}}` tag format (e.g., `main-2025-12-23`)
+  - Added `latest` tag pointing to most recent main branch build
+  - Kept `sha-{commit}` tag for exact commit tracking
+- `.github/workflows/release.yaml`: Removed `latest` tag from release builds (releases use semantic version tags only)
+- `.github/workflows/release.yaml`: Removed `latest_tag` variable from matrix variants
+- `.github/workflows/release.yaml`: Updated Cosign signing to only sign release version tags
+
+### Why
+Clarified Docker image tagging strategy to follow best practices:
+- **`latest` tag**: Points to the most recent build from the `main` branch (development/unstable)
+- **`main-YYYY-MM-DD` tags**: Date-based tags for tracking main branch builds over time
+- **Release tags**: Use semantic versioning (e.g., `v1.2.3`, `v1.2`, `v1`) for stable releases
+- **PR tags**: Use branch-specific tags (e.g., `pr-123`) for testing, no `latest` tag
+- **SHA tags**: All builds include `sha-{short-sha}` for exact commit tracking
+
+This prevents confusion where `latest` could point to either:
+1. The latest release (stable)
+2. The latest commit on main (development)
+
+Now it's clear: `latest` = main branch (development), versioned tags = releases (stable).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+## [2025-12-23 19:00] - Fix: Bind9Instance Pod Label Selector
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/reconcilers/bind9instance.rs:735`: Fixed critical bug where Bind9Instance status was always showing "Not Ready" even when all pods were running and ready
+
+### Added
+- `src/reconcilers/bind9instance_tests.rs`: Added 4 comprehensive unit tests for label selector regression prevention:
+  - `test_pod_label_selector_uses_correct_label()`: Validates correct label selector format
+  - `test_deployment_labels_match_pod_selector()`: Ensures deployment labels match the selector used in status checks
+  - `test_label_selector_string_format()`: Tests exact selector string format for various instance names
+  - `test_k8s_instance_constant_value()`: Validates the K8S_INSTANCE constant value
+- `tests/simple_integration.rs`: Added integration test `test_instance_pod_label_selector_finds_pods()` that:
+  - Creates a real Bind9Instance in a Kubernetes cluster
+  - Waits for pods to become ready
+  - Verifies pods have correct labels
+  - Confirms instance status correctly detects pod readiness
+  - Provides detailed diagnostic output for debugging
+
+### Why
+**Root Cause:** The pod label selector was using the wrong label.
+
+The code was using `app={instance_name}` (e.g., `app=my-dns-primary-0`) to list pods, but the actual pods are labeled with:
+- Standard Kubernetes labels: `app.kubernetes.io/instance={instance_name}`
+- Short-form labels: `instance={instance_name}`
+- NOT: `app={instance_name}` (they have `app=bind9` instead)
+
+This meant the pod listing returned zero pods, so `ready_pod_count` was always 0, causing the instance to perpetually show as "Not Ready" with the message "Waiting for pods to become ready" even though the pods were actually running and ready.
+
+**Evidence from logs:**
+```
+Bind9Cluster dns-system/my-dns has 4 instances, 0 ready
+```
+
+But when checking the actual pod:
+```bash
+kubectl get pods -n dns-system -l instance=my-dns-primary-0
+# Shows: my-dns-primary-0-6bbbff46fc-kjfbt   2/2     Running   0   93m
+```
+
+**The Fix:**
+Changed the label selector from `app={name}` to use the standard Kubernetes label:
+```rust
+// Before:
+let label_selector = format!("app={name}");
+
+// After:
+let label_selector = format!("{}={}", crate::labels::K8S_INSTANCE, name);
+// Expands to: app.kubernetes.io/instance={name}
+```
+
+This matches the actual labels applied to pods by the `build_labels()` function in `bind9_resources.rs`.
+
+## [2025-01-19 09:00] - Fix: Bind9Instance Ready Condition Logic
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/reconcilers/bind9instance.rs`: Fixed bug where Bind9Instance resources would never show as Ready even when all pods were ready
+
+### Why
+The Ready condition logic was checking BOTH `ready_pod_count == actual_replicas` AND `available_replicas == actual_replicas`. The problem is that `available_replicas` comes from the Deployment status, which can lag behind actual pod readiness. This created a race condition where:
+1. Pods become Ready (detected by our own pod condition check)
+2. But Kubernetes hasn't updated `deployment.status.available_replicas` yet
+3. Result: Instance stays in "Not Ready" state even though all pods are ready
+
+The fix removes the redundant `available_replicas` check and relies only on our direct pod readiness count, which is more accurate and immediate.
+
+### Changed
+- Line 791: Changed condition from `ready_pod_count == actual_replicas && available_replicas == actual_replicas` to `ready_pod_count == actual_replicas && actual_replicas > 0`
+- Removed unused `available_replicas` variable entirely (was lines 733-737)
+- Added `#[allow(clippy::unnecessary_map_or)]` to pod readiness check to document explicit `map_or` usage
+- `.github/workflows/main.yaml`, `.github/workflows/pr.yaml`, `.github/workflows/release.yaml`: Explicitly set cargo-audit version to 0.22.0 in all security-scan action calls
+- `src/reconcilers/bind9cluster.rs`: Fixed rustfmt formatting of multi-line closures at lines 249 and 266
+- `src/main.rs`: Fixed rustfmt formatting of multi-line closures at lines 760 and 893
+- `.github/workflows/release.yaml`: Upgraded all firestoned/github-actions references from v1.3.0 to v1.3.1 (12 occurrences)
+- `.github/workflows/main.yaml`: Upgraded all firestoned/github-actions references from v1.3.0 to v1.3.1 (10 occurrences)
+- `.github/workflows/pr.yaml`: Upgraded all firestoned/github-actions references from v1.3.0 to v1.3.1 (12 occurrences)
+
+### Impact
+- [x] Bug fix
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+
+## [2025-01-18 21:00] - CI/CD: Update cargo-audit to 0.22.0
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/actions/security-scan/action.yaml`: Updated default cargo-audit version from 0.21.0 to 0.22.0
+
+### Why
+The advisory database now contains CVSS 4.0 vulnerability scores (specifically in `RUSTSEC-2024-0445.md`), which cargo-audit 0.21.0 does not support. This was causing CI failures with the error: "unsupported CVSS version: 4.0". Version 0.22.0 (released November 7, 2025) includes support for parsing CVSS 4.0 scores.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2025-01-18 19:30] - Testing: Unit Tests for New Modules
 
 **Author:** Erick Bourgeois
