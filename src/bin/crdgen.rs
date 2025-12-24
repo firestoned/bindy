@@ -82,6 +82,17 @@ where
                 "bindy.firestoned.io/v1alpha1 is deprecated. Use bindy.firestoned.io/v1beta1 instead.".to_string()
             );
 
+            // Remove v1beta1-only fields from v1alpha1 schema
+            // The 'records' field in DNSZone status is only in v1beta1
+            if filename == "dnszones.crd.yaml" {
+                if let Some(schema) = v1alpha1["schema"]["openAPIV3Schema"]["properties"]["status"]
+                    ["properties"]
+                    .as_object_mut()
+                {
+                    schema.remove("records");
+                }
+            }
+
             // Update v1beta1 to be the storage version
             if let Some(v1beta1_ref) = versions.first_mut() {
                 v1beta1_ref["storage"] = Value::Bool(true);
