@@ -1,10 +1,10 @@
-# Bind9GlobalCluster
+# ClusterBind9Provider
 
-The `Bind9GlobalCluster` CRD defines a cluster-scoped logical grouping of BIND9 DNS server instances for platform-managed infrastructure.
+The `ClusterBind9Provider` CRD defines a cluster-scoped logical grouping of BIND9 DNS server instances for platform-managed infrastructure.
 
 ## Overview
 
-`Bind9GlobalCluster` is a **cluster-scoped** resource (no namespace) designed for platform teams to provide shared DNS infrastructure accessible from all namespaces in the cluster.
+`ClusterBind9Provider` is a **cluster-scoped** resource (no namespace) designed for platform teams to provide shared DNS infrastructure accessible from all namespaces in the cluster.
 
 ### Key Characteristics
 
@@ -18,24 +18,24 @@ The `Bind9GlobalCluster` CRD defines a cluster-scoped logical grouping of BIND9 
 
 Bindy provides two cluster types:
 
-| Feature | Bind9Cluster | Bind9GlobalCluster |
+| Feature | Bind9Cluster | ClusterBind9Provider |
 |---------|--------------|-------------------|
 | **Scope** | Namespace-scoped | Cluster-scoped |
 | **Managed By** | Development teams | Platform teams |
 | **Visibility** | Single namespace | All namespaces |
 | **RBAC** | Role + RoleBinding | ClusterRole + ClusterRoleBinding |
-| **Zone Reference** | `clusterRef` | `globalClusterRef` |
+| **Zone Reference** | `clusterRef` | `clusterProviderRef` |
 | **Use Case** | Dev/test, team isolation | Production, shared infrastructure |
 
 **Shared Configuration**: Both cluster types use the same `Bind9ClusterCommonSpec` for configuration, ensuring consistency.
 
 ## Spec Structure
 
-The `Bind9GlobalClusterSpec` uses the same configuration fields as `Bind9Cluster` through a shared spec:
+The `ClusterBind9ProviderSpec` uses the same configuration fields as `Bind9Cluster` through a shared spec:
 
 ```yaml
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: production-dns
   # No namespace - cluster-scoped
@@ -85,7 +85,7 @@ For detailed field descriptions, see the [Bind9Cluster Spec Reference](bind9clus
 
 ## Status
 
-The status subresource tracks the overall health of the global cluster:
+The status subresource tracks the overall health of the cluster provider:
 
 ```yaml
 status:
@@ -97,7 +97,7 @@ status:
       message: "All 5 instances are ready"
       lastTransitionTime: "2025-01-10T12:00:00Z"
 
-  # Instance tracking (namespace/name format for global clusters)
+  # Instance tracking (namespace/name format for cluster providers)
   instances:
     - "production/primary-dns-0"
     - "production/primary-dns-1"
@@ -122,9 +122,9 @@ status:
 **Scenario**: Platform team provides shared DNS for all production workloads.
 
 ```yaml
-# Platform team creates global cluster (ClusterRole required)
+# Platform team creates cluster provider (ClusterRole required)
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: shared-production-dns
 spec:
@@ -140,7 +140,7 @@ spec:
       - "recursion no"
       - "allow-transfer { none; }"
 ---
-# Application team references global cluster (Role in their namespace)
+# Application team references cluster provider (Role in their namespace)
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
@@ -148,7 +148,7 @@ metadata:
   namespace: api-service  # Application namespace
 spec:
   zoneName: api.example.com
-  globalClusterRef: shared-production-dns  # References cluster-scoped cluster
+  clusterProviderRef: shared-production-dns  # References cluster-scoped cluster
   soaRecord:
     primaryNs: ns1.example.com.
     adminEmail: dns-admin.example.com.
@@ -158,7 +158,7 @@ spec:
     expire: 604800
     negativeTtl: 86400
 ---
-# Different application, same global cluster
+# Different application, same cluster provider
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
@@ -166,7 +166,7 @@ metadata:
   namespace: web-frontend  # Different namespace
 spec:
   zoneName: www.example.com
-  globalClusterRef: shared-production-dns  # Same global cluster
+  clusterProviderRef: shared-production-dns  # Same cluster provider
   soaRecord:
     primaryNs: ns1.example.com.
     adminEmail: dns-admin.example.com.
@@ -177,14 +177,14 @@ spec:
     negativeTtl: 86400
 ```
 
-### Pattern 2: Multi-Region Global Clusters
+### Pattern 2: Multi-Region Cluster Providers
 
-**Scenario**: Geo-distributed DNS with regional global clusters.
+**Scenario**: Geo-distributed DNS with regional cluster providers.
 
 ```yaml
 # US East region
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: dns-us-east
   labels:
@@ -206,7 +206,7 @@ spec:
 ---
 # EU West region
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: dns-eu-west
   labels:
@@ -232,7 +232,7 @@ metadata:
   namespace: api-service
 spec:
   zoneName: api.us.example.com
-  globalClusterRef: dns-us-east  # US region
+  clusterProviderRef: dns-us-east  # US region
   soaRecord: { /* ... */ }
 ---
 apiVersion: bindy.firestoned.io/v1alpha1
@@ -242,7 +242,7 @@ metadata:
   namespace: api-service
 spec:
   zoneName: api.eu.example.com
-  globalClusterRef: dns-eu-west  # EU region
+  clusterProviderRef: dns-eu-west  # EU region
   soaRecord: { /* ... */ }
 ```
 
@@ -253,7 +253,7 @@ spec:
 ```yaml
 # Premium tier - high availability
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: dns-premium
   labels:
@@ -274,7 +274,7 @@ spec:
 ---
 # Standard tier - balanced cost/availability
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: dns-standard
   labels:
@@ -289,7 +289,7 @@ spec:
 ---
 # Economy tier - minimal resources
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: dns-economy
   labels:
@@ -307,7 +307,7 @@ spec:
 
 ### Platform Team (ClusterRole)
 
-Platform teams need ClusterRole to manage global clusters:
+Platform teams need ClusterRole to manage cluster providers:
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -315,17 +315,17 @@ kind: ClusterRole
 metadata:
   name: platform-dns-admin
 rules:
-# Manage global clusters
+# Manage cluster providers
 - apiGroups: ["bindy.firestoned.io"]
   resources: ["bind9globalclusters"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
-# View global cluster status
+# View cluster provider status
 - apiGroups: ["bindy.firestoned.io"]
   resources: ["bind9globalclusters/status"]
   verbs: ["get", "list", "watch"]
 
-# Manage instances across namespaces (for global clusters)
+# Manage instances across namespaces (for cluster providers)
 - apiGroups: ["bindy.firestoned.io"]
   resources: ["bind9instances"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -371,7 +371,7 @@ rules:
     - "arecords/status"
   verbs: ["get", "list", "watch"]
 
-# Note: No permissions for Bind9GlobalCluster needed
+# Note: No permissions for ClusterBind9Provider needed
 # Application teams only manage DNSZones, not the cluster itself
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -391,9 +391,9 @@ roleRef:
 
 ## Instance Management
 
-### Creating Instances for Global Clusters
+### Creating Instances for Cluster Providers
 
-Instances can be created in any namespace and reference the global cluster:
+Instances can be created in any namespace and reference the cluster provider:
 
 ```yaml
 # Instance in production namespace
@@ -403,7 +403,7 @@ metadata:
   name: primary-dns-0
   namespace: production
 spec:
-  cluster_ref: shared-production-dns  # References global cluster
+  cluster_ref: shared-production-dns  # References cluster provider
   role: primary
   replicas: 1
 ---
@@ -414,12 +414,12 @@ metadata:
   name: secondary-dns-0
   namespace: staging
 spec:
-  cluster_ref: shared-production-dns  # Same global cluster
+  cluster_ref: shared-production-dns  # Same cluster provider
   role: secondary
   replicas: 1
 ```
 
-**Status Tracking**: The global cluster status includes instances from all namespaces:
+**Status Tracking**: The cluster provider status includes instances from all namespaces:
 
 ```yaml
 status:
@@ -434,7 +434,7 @@ status:
 
 ### How Configuration Flows to Deployments
 
-When you update a `Bind9GlobalCluster`, the configuration automatically propagates down to all managed `Deployment` resources. This ensures consistency across your entire DNS infrastructure.
+When you update a `ClusterBind9Provider`, the configuration automatically propagates down to all managed `Deployment` resources. This ensures consistency across your entire DNS infrastructure.
 
 #### Configuration Precedence
 
@@ -442,15 +442,15 @@ Configuration is resolved with the following precedence (highest to lowest):
 
 1. **Bind9Instance** - Instance-specific overrides
 2. **Bind9Cluster** - Namespace-scoped cluster defaults
-3. **Bind9GlobalCluster** - Cluster-scoped global defaults
+3. **ClusterBind9Provider** - Cluster-scoped global defaults
 4. **System defaults** - Built-in fallback values
 
 **Example:**
 
 ```yaml
-# Bind9GlobalCluster defines global defaults
+# ClusterBind9Provider defines global defaults
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: production-dns
 spec:
@@ -477,12 +477,12 @@ spec:
 
 #### Propagation Flow
 
-When you update `Bind9GlobalCluster.spec.common.global.bindcarConfig.image`, the change propagates automatically:
+When you update `ClusterBind9Provider.spec.common.global.bindcarConfig.image`, the change propagates automatically:
 
 ```mermaid
 sequenceDiagram
     participant User
-    participant GC as Bind9GlobalCluster<br/>Reconciler
+    participant GC as ClusterBind9Provider<br/>Reconciler
     participant BC as Bind9Cluster<br/>Reconciler
     participant BI as Bind9Instance<br/>Reconciler
     participant Deploy as Deployment
@@ -496,7 +496,7 @@ sequenceDiagram
     BC->>BI: PATCH Bind9Instance with new spec
     Note over BI: metadata.generation increments
     BI->>BI: Detect spec change
-    BI->>BI: Fetch Bind9GlobalCluster config
+    BI->>BI: Fetch ClusterBind9Provider config
     BI->>BI: resolve_deployment_config():<br/>instance > cluster > global_cluster
     BI->>Deploy: UPDATE Deployment with new image
     Deploy->>Deploy: Rolling update pods
@@ -504,7 +504,7 @@ sequenceDiagram
 
 #### Inherited Configuration Fields
 
-The following fields are inherited from `Bind9GlobalCluster` to `Deployment`:
+The following fields are inherited from `ClusterBind9Provider` to `Deployment`:
 
 | Field | Example | Description |
 |-------|---------|-------------|
@@ -519,7 +519,7 @@ The following fields are inherited from `Bind9GlobalCluster` to `Deployment`:
 
 ```yaml
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: production-dns
 spec:
@@ -554,36 +554,36 @@ spec:
       mountPath: /etc/bind/custom
 ```
 
-All instances referencing this global cluster will inherit these configurations in their `Deployment` resources.
+All instances referencing this cluster provider will inherit these configurations in their `Deployment` resources.
 
 #### Verifying Configuration Propagation
 
 To verify configuration is inherited correctly:
 
 ```bash
-# 1. Check Bind9GlobalCluster spec
+# 1. Check ClusterBind9Provider spec
 kubectl get bind9globalcluster production-dns -o yaml | grep -A 5 bindcarConfig
 
 # 2. Check Bind9Instance spec (should be empty if using global config)
 kubectl get bind9instance primary-0 -n production -o yaml | grep -A 5 bindcarConfig
 
-# 3. Check Deployment - should show global cluster's bindcar image
+# 3. Check Deployment - should show cluster provider's bindcar image
 kubectl get deployment primary-0 -n production -o yaml | grep "image:" | grep bindcar
 ```
 
 **Expected Output:**
 ```yaml
-# Deployment should use global cluster's bindcar image
+# Deployment should use cluster provider's bindcar image
 containers:
   - name: bindcar
-    image: ghcr.io/mycompany/bindcar:v1.2.0  # From Bind9GlobalCluster
+    image: ghcr.io/mycompany/bindcar:v1.2.0  # From ClusterBind9Provider
 ```
 
 ## Reconciliation
 
 ### Controller Behavior
 
-The `Bind9GlobalCluster` reconciler:
+The `ClusterBind9Provider` reconciler:
 
 1. **Lists instances across ALL namespaces**
    ```rust
@@ -591,7 +591,7 @@ The `Bind9GlobalCluster` reconciler:
    let all_instances = instances_api.list(&lp).await?;
    ```
 
-2. **Filters instances by `cluster_ref` matching the global cluster name**
+2. **Filters instances by `cluster_ref` matching the cluster provider name**
    ```rust
    let instances: Vec<_> = all_instances
        .items
@@ -636,14 +636,14 @@ status:
 
 ### Differences
 
-| Aspect | Bind9Cluster | Bind9GlobalCluster |
+| Aspect | Bind9Cluster | ClusterBind9Provider |
 |--------|--------------|-------------------|
 | **Scope** | Namespace-scoped | Cluster-scoped (no namespace) |
 | **API Used** | `Api::namespaced()` | `Api::all()` |
 | **Instance Listing** | Same namespace only | All namespaces |
 | **Instance Names** | `name` | `namespace/name` |
 | **RBAC** | Role + RoleBinding | ClusterRole + ClusterRoleBinding |
-| **Zone Reference Field** | `spec.clusterRef` | `spec.globalClusterRef` |
+| **Zone Reference Field** | `spec.clusterRef` | `spec.clusterProviderRef` |
 | **Kubectl Get** | `kubectl get bind9cluster -n <namespace>` | `kubectl get bind9globalcluster` |
 
 ## Best Practices
@@ -654,7 +654,7 @@ Global clusters are ideal for production:
 
 ```yaml
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: production-dns
   labels:
@@ -670,12 +670,12 @@ spec:
     replicas: 3
 ```
 
-### 2. Separate Global Clusters by Environment
+### 2. Separate Cluster Providers by Environment
 
 ```yaml
 # Production cluster
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: dns-production
   labels:
@@ -684,7 +684,7 @@ spec: { /* production config */ }
 ---
 # Staging cluster (also global, but separate)
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: dns-staging
   labels:
@@ -694,7 +694,7 @@ spec: { /* staging config */ }
 
 ### 3. Label for Organization
 
-Use labels to categorize global clusters:
+Use labels to categorize cluster providers:
 
 ```yaml
 metadata:
@@ -710,7 +710,7 @@ metadata:
 ### 4. Monitor Status Across Namespaces
 
 ```bash
-# View global cluster status
+# View cluster provider status
 kubectl get bind9globalcluster dns-production
 
 # See instances across all namespaces
@@ -722,7 +722,7 @@ kubectl get bind9instance -A -l cluster=dns-production
 
 ### 5. Use with DNSZone Namespace Isolation
 
-Remember: DNSZones are always namespace-scoped, even when referencing global clusters:
+Remember: DNSZones are always namespace-scoped, even when referencing cluster providers:
 
 ```yaml
 # DNSZone in namespace-a
@@ -733,7 +733,7 @@ metadata:
   namespace: namespace-a
 spec:
   zoneName: app-a.example.com
-  globalClusterRef: shared-dns
+  clusterProviderRef: shared-dns
   # Records in namespace-a can ONLY reference this zone
 ---
 # DNSZone in namespace-b
@@ -744,19 +744,19 @@ metadata:
   namespace: namespace-b
 spec:
   zoneName: app-b.example.com
-  globalClusterRef: shared-dns
+  clusterProviderRef: shared-dns
   # Records in namespace-b can ONLY reference this zone
 ```
 
 ## Troubleshooting
 
-### Viewing Global Clusters
+### Viewing Cluster Providers
 
 ```bash
-# List all global clusters
+# List all cluster providers
 kubectl get bind9globalclusters
 
-# Describe a specific global cluster
+# Describe a specific cluster provider
 kubectl describe bind9globalcluster production-dns
 
 # View status
@@ -765,7 +765,7 @@ kubectl get bind9globalcluster production-dns -o yaml
 
 ### Common Issues
 
-**Issue**: Application team cannot create global cluster
+**Issue**: Application team cannot create cluster provider
 
 **Solution**: Check RBAC - requires ClusterRole, not Role
 ```bash
@@ -774,17 +774,17 @@ kubectl auth can-i create bind9globalclusters --as=user@example.com
 
 **Issue**: Instances not showing in status
 
-**Solution**: Verify instance `cluster_ref` matches global cluster name
+**Solution**: Verify instance `cluster_ref` matches cluster provider name
 ```bash
 kubectl get bind9instance -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}: {.spec.cluster_ref}{"\n"}{end}'
 ```
 
-**Issue**: DNSZone cannot find global cluster
+**Issue**: DNSZone cannot find cluster provider
 
-**Solution**: Check `globalClusterRef` field (not `clusterRef`)
+**Solution**: Check `clusterProviderRef` field (not `clusterRef`)
 ```yaml
 spec:
-  globalClusterRef: production-dns  # ✓ Correct
+  clusterProviderRef: production-dns  # ✓ Correct
   # clusterRef: production-dns      # ✗ Wrong - for namespace-scoped
 ```
 

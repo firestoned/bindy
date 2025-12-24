@@ -709,50 +709,50 @@ fn resolve_deployment_config<'a>(
     name: &str,
     instance: &'a Bind9Instance,
     cluster: Option<&'a Bind9Cluster>,
-    global_cluster: Option<&'a crate::crd::Bind9GlobalCluster>,
+    cluster_provider: Option<&'a crate::crd::ClusterBind9Provider>,
 ) -> DeploymentConfig<'a> {
-    // Get image config (instance overrides cluster overrides global cluster)
+    // Get image config (instance overrides cluster overrides cluster provider)
     let image_config = instance
         .spec
         .image
         .as_ref()
         .or_else(|| cluster.and_then(|c| c.spec.common.image.as_ref()))
-        .or_else(|| global_cluster.and_then(|gc| gc.spec.common.image.as_ref()));
+        .or_else(|| cluster_provider.and_then(|cp| cp.spec.common.image.as_ref()));
 
-    // Get ConfigMap references (instance overrides cluster overrides global cluster)
+    // Get ConfigMap references (instance overrides cluster overrides cluster provider)
     let config_map_refs = instance
         .spec
         .config_map_refs
         .as_ref()
         .or_else(|| cluster.and_then(|c| c.spec.common.config_map_refs.as_ref()))
-        .or_else(|| global_cluster.and_then(|gc| gc.spec.common.config_map_refs.as_ref()));
+        .or_else(|| cluster_provider.and_then(|cp| cp.spec.common.config_map_refs.as_ref()));
 
-    // Get version (instance overrides cluster overrides global cluster)
+    // Get version (instance overrides cluster overrides cluster provider)
     let version = instance
         .spec
         .version
         .as_deref()
         .or_else(|| cluster.and_then(|c| c.spec.common.version.as_deref()))
-        .or_else(|| global_cluster.and_then(|gc| gc.spec.common.version.as_deref()))
+        .or_else(|| cluster_provider.and_then(|cp| cp.spec.common.version.as_deref()))
         .unwrap_or(DEFAULT_BIND9_VERSION);
 
-    // Get volumes (instance overrides cluster overrides global cluster)
+    // Get volumes (instance overrides cluster overrides cluster provider)
     let volumes = instance
         .spec
         .volumes
         .as_ref()
         .or_else(|| cluster.and_then(|c| c.spec.common.volumes.as_ref()))
-        .or_else(|| global_cluster.and_then(|gc| gc.spec.common.volumes.as_ref()));
+        .or_else(|| cluster_provider.and_then(|cp| cp.spec.common.volumes.as_ref()));
 
-    // Get volume mounts (instance overrides cluster overrides global cluster)
+    // Get volume mounts (instance overrides cluster overrides cluster provider)
     let volume_mounts = instance
         .spec
         .volume_mounts
         .as_ref()
         .or_else(|| cluster.and_then(|c| c.spec.common.volume_mounts.as_ref()))
-        .or_else(|| global_cluster.and_then(|gc| gc.spec.common.volume_mounts.as_ref()));
+        .or_else(|| cluster_provider.and_then(|cp| cp.spec.common.volume_mounts.as_ref()));
 
-    // Get bindcar_config (instance overrides cluster global overrides global cluster global)
+    // Get bindcar_config (instance overrides cluster global overrides cluster provider global)
     let bindcar_config = instance
         .spec
         .bindcar_config
@@ -767,8 +767,8 @@ fn resolve_deployment_config<'a>(
             })
         })
         .or_else(|| {
-            global_cluster.and_then(|gc| {
-                gc.spec
+            cluster_provider.and_then(|cp| {
+                cp.spec
                     .common
                     .global
                     .as_ref()
@@ -801,13 +801,13 @@ pub fn build_deployment(
     namespace: &str,
     instance: &Bind9Instance,
     cluster: Option<&Bind9Cluster>,
-    global_cluster: Option<&crate::crd::Bind9GlobalCluster>,
+    cluster_provider: Option<&crate::crd::ClusterBind9Provider>,
 ) -> Deployment {
     debug!(
         name = %name,
         namespace = %namespace,
         has_cluster = cluster.is_some(),
-        has_global_cluster = global_cluster.is_some(),
+        has_cluster_provider = cluster_provider.is_some(),
         "Building Deployment for Bind9Instance"
     );
 
@@ -816,7 +816,7 @@ pub fn build_deployment(
     let replicas = instance.spec.replicas.unwrap_or(1);
     debug!(replicas, "Deployment replica count");
 
-    let config = resolve_deployment_config(name, instance, cluster, global_cluster);
+    let config = resolve_deployment_config(name, instance, cluster, cluster_provider);
 
     let owner_refs = build_owner_references(instance);
 

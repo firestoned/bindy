@@ -49,8 +49,8 @@ pub const KIND_CAA_RECORD: &str = "CAARecord";
 /// Kind name for `Bind9Cluster` resource
 pub const KIND_BIND9_CLUSTER: &str = "Bind9Cluster";
 
-/// Kind name for `Bind9GlobalCluster` resource
-pub const KIND_BIND9_GLOBALCLUSTER: &str = "Bind9GlobalCluster";
+/// Kind name for `ClusterBind9Provider` resource
+pub const KIND_CLUSTER_BIND9_PROVIDER: &str = "ClusterBind9Provider";
 
 /// Kind name for `Bind9Instance` resource
 pub const KIND_BIND9_INSTANCE: &str = "Bind9Instance";

@@ -12,9 +12,9 @@
 #![allow(clippy::manual_let_else)]
 
 use bindy::crd::{
-    ARecord, ARecordSpec, Bind9Cluster, Bind9ClusterCommonSpec, Bind9ClusterSpec,
-    Bind9GlobalCluster, Bind9GlobalClusterSpec, Bind9Instance, Bind9InstanceSpec, CNAMERecord,
-    CNAMERecordSpec, DNSZone, DNSZoneSpec, MXRecord, MXRecordSpec, SOARecord, ServerRole,
+    ARecord, ARecordSpec, Bind9Cluster, Bind9ClusterCommonSpec, Bind9ClusterSpec, Bind9Instance,
+    Bind9InstanceSpec, CNAMERecord, CNAMERecordSpec, ClusterBind9Provider,
+    ClusterBind9ProviderSpec, DNSZone, DNSZoneSpec, MXRecord, MXRecordSpec, SOARecord, ServerRole,
     TXTRecord, TXTRecordSpec,
 };
 use k8s_openapi::api::core::v1::Namespace;
@@ -143,7 +143,7 @@ async fn test_crds_installed() {
 
             let expected_crds = vec![
                 "Bind9Cluster",
-                "Bind9GlobalCluster",
+                "ClusterBind9Provider",
                 "Bind9Instance",
                 "DNSZone",
                 "ARecord",
@@ -314,13 +314,13 @@ async fn test_bind9cluster_create_read_delete() {
 }
 
 // ============================================================================
-// Bind9GlobalCluster Tests (Cluster-Scoped)
+// ClusterBind9Provider Tests (Cluster-Scoped)
 // ============================================================================
 
 #[tokio::test]
 #[ignore]
-async fn test_bind9globalcluster_create_read_delete() {
-    println!("\n=== Test: Bind9GlobalCluster CRUD Operations ===\n");
+async fn test_clusterbind9provider_create_read_delete() {
+    println!("\n=== Test: ClusterBind9Provider CRUD Operations ===\n");
 
     let client = match get_kube_client_or_skip().await {
         Some(c) => c,
@@ -329,14 +329,14 @@ async fn test_bind9globalcluster_create_read_delete() {
 
     let cluster_name = "test-global-cluster";
 
-    // Create Bind9GlobalCluster
-    let global_clusters: Api<Bind9GlobalCluster> = Api::all(client.clone());
-    let cluster = Bind9GlobalCluster {
+    // Create ClusterBind9Provider
+    let cluster_providers: Api<ClusterBind9Provider> = Api::all(client.clone());
+    let cluster = ClusterBind9Provider {
         metadata: ObjectMeta {
             name: Some(cluster_name.to_string()),
             ..Default::default()
         },
-        spec: Bind9GlobalClusterSpec {
+        spec: ClusterBind9ProviderSpec {
             namespace: None, // Use operator's namespace
             common: Bind9ClusterCommonSpec {
                 version: Some("9.18".to_string()),
@@ -354,47 +354,47 @@ async fn test_bind9globalcluster_create_read_delete() {
         status: None,
     };
 
-    match global_clusters
+    match cluster_providers
         .create(&PostParams::default(), &cluster)
         .await
     {
         Ok(created) => {
-            println!("✓ Created Bind9GlobalCluster: {cluster_name}");
+            println!("✓ Created ClusterBind9Provider: {cluster_name}");
             assert_eq!(created.metadata.name.as_deref(), Some(cluster_name));
         }
         Err(kube::Error::Api(ae)) if ae.code == 409 => {
-            println!("  Bind9GlobalCluster already exists");
+            println!("  ClusterBind9Provider already exists");
         }
-        Err(e) => panic!("Failed to create Bind9GlobalCluster: {e}"),
+        Err(e) => panic!("Failed to create ClusterBind9Provider: {e}"),
     }
 
-    // Read Bind9GlobalCluster
-    match global_clusters.get(cluster_name).await {
+    // Read ClusterBind9Provider
+    match cluster_providers.get(cluster_name).await {
         Ok(retrieved) => {
-            println!("✓ Retrieved Bind9GlobalCluster: {cluster_name}");
+            println!("✓ Retrieved ClusterBind9Provider: {cluster_name}");
             assert_eq!(retrieved.metadata.name.as_deref(), Some(cluster_name));
         }
-        Err(e) => panic!("Failed to retrieve Bind9GlobalCluster: {e}"),
+        Err(e) => panic!("Failed to retrieve ClusterBind9Provider: {e}"),
     }
 
-    // List Bind9GlobalClusters
-    match global_clusters.list(&ListParams::default()).await {
+    // List ClusterBind9Providers
+    match cluster_providers.list(&ListParams::default()).await {
         Ok(list) => {
-            println!("✓ Listed {} Bind9GlobalCluster(s)", list.items.len());
+            println!("✓ Listed {} ClusterBind9Provider(s)", list.items.len());
         }
-        Err(e) => panic!("Failed to list Bind9GlobalClusters: {e}"),
+        Err(e) => panic!("Failed to list ClusterBind9Providers: {e}"),
     }
 
-    // Delete Bind9GlobalCluster
-    match global_clusters
+    // Delete ClusterBind9Provider
+    match cluster_providers
         .delete(cluster_name, &DeleteParams::default())
         .await
     {
-        Ok(_) => println!("✓ Deleted Bind9GlobalCluster: {cluster_name}"),
+        Ok(_) => println!("✓ Deleted ClusterBind9Provider: {cluster_name}"),
         Err(kube::Error::Api(ae)) if ae.code == 404 => {
-            println!("  Bind9GlobalCluster already deleted");
+            println!("  ClusterBind9Provider already deleted");
         }
-        Err(e) => eprintln!("⚠ Failed to delete Bind9GlobalCluster: {e}"),
+        Err(e) => eprintln!("⚠ Failed to delete ClusterBind9Provider: {e}"),
     }
 
     println!("\n✓ Test passed\n");
@@ -522,7 +522,7 @@ async fn test_dnszone_create_read_delete() {
         spec: DNSZoneSpec {
             zone_name: "example.com".to_string(),
             cluster_ref: Some(cluster_ref.to_string()),
-            global_cluster_ref: None,
+            cluster_provider_ref: None,
             soa_record: SOARecord {
                 primary_ns: "ns1.example.com.".to_string(),
                 admin_email: "admin.example.com.".to_string(),

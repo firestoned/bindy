@@ -5,7 +5,9 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::crd::{Bind9Cluster, Bind9ClusterCommonSpec, Bind9ClusterSpec, Bind9GlobalCluster};
+    use crate::crd::{
+        Bind9Cluster, Bind9ClusterCommonSpec, Bind9ClusterSpec, ClusterBind9Provider,
+    };
     use crate::reconcilers::finalizers::FinalizerCleanup;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, Time};
     use k8s_openapi::chrono::Utc;
@@ -102,10 +104,10 @@ mod tests {
         }
     }
 
-    /// Helper to create a test Bind9GlobalCluster (cluster-scoped)
-    fn create_test_global_cluster() -> Bind9GlobalCluster {
-        use crate::crd::Bind9GlobalClusterSpec;
-        Bind9GlobalCluster {
+    /// Helper to create a test ClusterBind9Provider (cluster-scoped)
+    fn create_test_cluster_provider() -> ClusterBind9Provider {
+        use crate::crd::ClusterBind9ProviderSpec;
+        ClusterBind9Provider {
             metadata: ObjectMeta {
                 name: Some(TEST_NAME.to_string()),
                 namespace: None, // Cluster-scoped
@@ -114,7 +116,7 @@ mod tests {
                 generation: Some(1),
                 ..Default::default()
             },
-            spec: Bind9GlobalClusterSpec {
+            spec: ClusterBind9ProviderSpec {
                 namespace: None,
                 common: Bind9ClusterCommonSpec {
                     version: None,
@@ -133,10 +135,12 @@ mod tests {
         }
     }
 
-    /// Helper to create a test Bind9GlobalCluster with finalizers
-    fn create_test_global_cluster_with_finalizers(finalizers: Vec<String>) -> Bind9GlobalCluster {
-        use crate::crd::Bind9GlobalClusterSpec;
-        Bind9GlobalCluster {
+    /// Helper to create a test ClusterBind9Provider with finalizers
+    fn create_test_cluster_provider_with_finalizers(
+        finalizers: Vec<String>,
+    ) -> ClusterBind9Provider {
+        use crate::crd::ClusterBind9ProviderSpec;
+        ClusterBind9Provider {
             metadata: ObjectMeta {
                 name: Some(TEST_NAME.to_string()),
                 namespace: None, // Cluster-scoped
@@ -145,7 +149,7 @@ mod tests {
                 generation: Some(1),
                 ..Default::default()
             },
-            spec: Bind9GlobalClusterSpec {
+            spec: ClusterBind9ProviderSpec {
                 namespace: None,
                 common: Bind9ClusterCommonSpec {
                     version: None,
@@ -164,10 +168,10 @@ mod tests {
         }
     }
 
-    /// Helper to create a test Bind9GlobalCluster with deletion timestamp
-    fn create_test_global_cluster_being_deleted(finalizers: Vec<String>) -> Bind9GlobalCluster {
-        use crate::crd::Bind9GlobalClusterSpec;
-        Bind9GlobalCluster {
+    /// Helper to create a test ClusterBind9Provider with deletion timestamp
+    fn create_test_cluster_provider_being_deleted(finalizers: Vec<String>) -> ClusterBind9Provider {
+        use crate::crd::ClusterBind9ProviderSpec;
+        ClusterBind9Provider {
             metadata: ObjectMeta {
                 name: Some(TEST_NAME.to_string()),
                 namespace: None, // Cluster-scoped
@@ -176,7 +180,7 @@ mod tests {
                 generation: Some(1),
                 ..Default::default()
             },
-            spec: Bind9GlobalClusterSpec {
+            spec: ClusterBind9ProviderSpec {
                 namespace: None,
                 common: Bind9ClusterCommonSpec {
                     version: None,
@@ -320,7 +324,7 @@ mod tests {
     #[ignore] // Requires Kubernetes cluster
     async fn test_ensure_cluster_finalizer_adds_when_missing() {
         let _client = mock_client().await;
-        let cluster = create_test_global_cluster();
+        let cluster = create_test_cluster_provider();
 
         // Verify no finalizers initially
         assert!(cluster.metadata.finalizers.is_none());
@@ -336,7 +340,8 @@ mod tests {
     #[ignore] // Requires Kubernetes cluster
     async fn test_ensure_cluster_finalizer_idempotent_when_present() {
         let _client = mock_client().await;
-        let cluster = create_test_global_cluster_with_finalizers(vec![TEST_FINALIZER.to_string()]);
+        let cluster =
+            create_test_cluster_provider_with_finalizers(vec![TEST_FINALIZER.to_string()]);
 
         // Verify finalizer already present
         assert!(cluster
@@ -357,7 +362,8 @@ mod tests {
     #[ignore] // Requires Kubernetes cluster
     async fn test_remove_cluster_finalizer_removes_when_present() {
         let _client = mock_client().await;
-        let cluster = create_test_global_cluster_with_finalizers(vec![TEST_FINALIZER.to_string()]);
+        let cluster =
+            create_test_cluster_provider_with_finalizers(vec![TEST_FINALIZER.to_string()]);
 
         // Verify finalizer is present
         assert!(cluster
@@ -378,7 +384,7 @@ mod tests {
     #[ignore] // Requires Kubernetes cluster
     async fn test_remove_cluster_finalizer_idempotent_when_absent() {
         let _client = mock_client().await;
-        let cluster = create_test_global_cluster();
+        let cluster = create_test_cluster_provider();
 
         // Verify no finalizers
         assert!(cluster.metadata.finalizers.is_none());
@@ -394,7 +400,7 @@ mod tests {
     #[ignore] // Requires Kubernetes cluster
     async fn test_handle_cluster_deletion_runs_cleanup_and_removes_finalizer() {
         let _client = mock_client().await;
-        let cluster = create_test_global_cluster_being_deleted(vec![TEST_FINALIZER.to_string()]);
+        let cluster = create_test_cluster_provider_being_deleted(vec![TEST_FINALIZER.to_string()]);
 
         // Verify resource is being deleted
         assert!(cluster.metadata.deletion_timestamp.is_some());
@@ -411,7 +417,7 @@ mod tests {
     #[ignore] // Requires Kubernetes cluster
     async fn test_handle_cluster_deletion_skips_when_finalizer_absent() {
         let _client = mock_client().await;
-        let cluster = create_test_global_cluster_being_deleted(vec![]);
+        let cluster = create_test_cluster_provider_being_deleted(vec![]);
 
         // Verify resource is being deleted but has no finalizers
         assert!(cluster.metadata.deletion_timestamp.is_some());
@@ -434,7 +440,7 @@ mod tests {
         // If this compiles, the trait is correctly defined as async
         fn _assert_trait_is_async<T: FinalizerCleanup>() {}
         _assert_trait_is_async::<Bind9Cluster>();
-        _assert_trait_is_async::<Bind9GlobalCluster>();
+        _assert_trait_is_async::<ClusterBind9Provider>();
     }
 
     #[test]
@@ -466,15 +472,16 @@ mod tests {
     }
 
     #[test]
-    fn test_create_test_global_cluster_has_no_namespace() {
-        let cluster = create_test_global_cluster();
+    fn test_create_test_cluster_provider_has_no_namespace() {
+        let cluster = create_test_cluster_provider();
         assert!(cluster.metadata.namespace.is_none());
         assert_eq!(cluster.metadata.name.as_ref().unwrap(), TEST_NAME);
     }
 
     #[test]
-    fn test_create_test_global_cluster_with_finalizers_has_finalizers() {
-        let cluster = create_test_global_cluster_with_finalizers(vec![TEST_FINALIZER.to_string()]);
+    fn test_create_test_cluster_provider_with_finalizers_has_finalizers() {
+        let cluster =
+            create_test_cluster_provider_with_finalizers(vec![TEST_FINALIZER.to_string()]);
         assert!(cluster.metadata.finalizers.is_some());
         assert_eq!(cluster.metadata.finalizers.as_ref().unwrap().len(), 1);
         assert!(cluster
@@ -486,8 +493,8 @@ mod tests {
     }
 
     #[test]
-    fn test_create_test_global_cluster_being_deleted_has_deletion_timestamp() {
-        let cluster = create_test_global_cluster_being_deleted(vec![TEST_FINALIZER.to_string()]);
+    fn test_create_test_cluster_provider_being_deleted_has_deletion_timestamp() {
+        let cluster = create_test_cluster_provider_being_deleted(vec![TEST_FINALIZER.to_string()]);
         assert!(cluster.metadata.deletion_timestamp.is_some());
         assert!(cluster.metadata.finalizers.is_some());
         assert!(cluster.metadata.namespace.is_none());
@@ -503,8 +510,8 @@ mod tests {
     #[test]
     fn test_bind9globalcluster_kind() {
         use kube::Resource;
-        let _cluster = create_test_global_cluster();
-        assert_eq!(Bind9GlobalCluster::kind(&()), "Bind9GlobalCluster");
+        let _cluster = create_test_cluster_provider();
+        assert_eq!(ClusterBind9Provider::kind(&()), "ClusterBind9Provider");
     }
 
     #[test]
@@ -539,10 +546,10 @@ mod tests {
     }
 
     #[test]
-    fn test_global_cluster_has_finalizer_check() {
-        let cluster_without = create_test_global_cluster();
+    fn test_cluster_provider_has_finalizer_check() {
+        let cluster_without = create_test_cluster_provider();
         let cluster_with =
-            create_test_global_cluster_with_finalizers(vec![TEST_FINALIZER.to_string()]);
+            create_test_cluster_provider_with_finalizers(vec![TEST_FINALIZER.to_string()]);
 
         // Test the logic for checking if finalizer is present on cluster-scoped resources
         assert!(cluster_without.metadata.finalizers.is_none());
@@ -628,7 +635,7 @@ mod tests {
     #[test]
     fn test_namespace_scoped_vs_cluster_scoped() {
         let ns_scoped = create_test_cluster();
-        let cluster_scoped = create_test_global_cluster();
+        let cluster_scoped = create_test_cluster_provider();
 
         // Namespace-scoped resources have a namespace
         assert!(ns_scoped.metadata.namespace.is_some());
@@ -644,13 +651,13 @@ mod tests {
     #[test]
     fn test_resource_names_are_set() {
         let cluster = create_test_cluster();
-        let global_cluster = create_test_global_cluster();
+        let cluster_provider = create_test_cluster_provider();
 
         assert!(cluster.metadata.name.is_some());
         assert_eq!(cluster.metadata.name.as_ref().unwrap(), TEST_NAME);
 
-        assert!(global_cluster.metadata.name.is_some());
-        assert_eq!(global_cluster.metadata.name.as_ref().unwrap(), TEST_NAME);
+        assert!(cluster_provider.metadata.name.is_some());
+        assert_eq!(cluster_provider.metadata.name.as_ref().unwrap(), TEST_NAME);
     }
 
     #[test]

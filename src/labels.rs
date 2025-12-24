@@ -52,8 +52,8 @@ pub const MANAGED_BY_BIND9_INSTANCE: &str = "Bind9Instance";
 /// Value for `app.kubernetes.io/managed-by` when resource is managed by `Bind9Cluster` controller
 pub const MANAGED_BY_BIND9_CLUSTER: &str = "Bind9Cluster";
 
-/// Value for `app.kubernetes.io/managed-by` when resource is managed by `Bind9GlobalCluster` controller
-pub const MANAGED_BY_BIND9_GLOBAL_CLUSTER: &str = "Bind9GlobalCluster";
+/// Value for `app.kubernetes.io/managed-by` when resource is managed by `ClusterBind9Provider` controller
+pub const MANAGED_BY_CLUSTER_BIND9_PROVIDER: &str = "ClusterBind9Provider";
 
 // ============================================================================
 // Bindy-Specific Labels

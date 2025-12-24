@@ -23,9 +23,9 @@ rules:
     resources: ["bind9clusters"]
     verbs: ["delete", "deletecollection"]
 
-  # Bind9GlobalCluster - admin delete permission
+  # ClusterBind9Provider - admin delete permission
   - apiGroups: ["bindy.firestoned.io"]
-    resources: ["bind9globalclusters"]
+    resources: ["clusterbind9providers"]
     verbs: ["delete", "deletecollection"]
 
   # DNSZone - admin delete permission

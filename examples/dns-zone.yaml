@@ -8,7 +8,7 @@ spec:
   zoneName: example.com
   # Reference to the Bind9Cluster that manages this zone
   # This must match the Bind9Cluster name, NOT the Bind9Instance name
-  globalClusterRef: production-dns
+  clusterProviderRef: production-dns
   nameServerIps:
     ns1.example.com.: 192.168.0.60
   soaRecord:
@@ -30,7 +30,7 @@ spec:
   zoneName: internal.local
   # Reference to the Bind9Cluster that manages this zone
   # This must match the Bind9Cluster name, NOT the Bind9Instance name
-  globalClusterRef: production-dns
+  clusterProviderRef: production-dns
   nameServerIps:
     ns1.internal.local.: 192.168.0.60
   soaRecord:

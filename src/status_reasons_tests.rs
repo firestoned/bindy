@@ -134,7 +134,7 @@ mod tests {
     }
 
     // ============================================================================
-    // Test Bind9GlobalCluster Specific Reason Constants
+    // Test ClusterBind9Provider Specific Reason Constants
     // ============================================================================
 
     #[test]

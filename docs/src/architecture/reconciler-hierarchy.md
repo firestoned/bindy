@@ -8,7 +8,7 @@ Bindy follows a **hierarchical delegation pattern** where each reconciler is res
 
 ```mermaid
 graph TD
-    GC[Bind9GlobalCluster<br/>cluster-scoped] -->|creates| BC[Bind9Cluster<br/>namespace-scoped]
+    GC[ClusterBind9Provider<br/>cluster-scoped] -->|creates| BC[Bind9Cluster<br/>namespace-scoped]
     BC -->|creates| BI[Bind9Instance<br/>namespace-scoped]
     BI -->|creates| RES[Kubernetes Resources<br/>ServiceAccount, Secret,<br/>ConfigMap, Deployment, Service]
     BI -.->|targets| DZ[DNSZone<br/>namespace-scoped]
@@ -28,13 +28,13 @@ graph TD
 
 ## Reconciler Details
 
-### 1. Bind9GlobalCluster Reconciler
+### 1. ClusterBind9Provider Reconciler
 
 **Scope**: Cluster-scoped resource
 
 **Purpose**: Creates `Bind9Cluster` resources in desired namespaces to enable multi-tenant DNS infrastructure.
 
-**Watches**: `Bind9GlobalCluster` resources
+**Watches**: `ClusterBind9Provider` resources
 
 **Creates**: `Bind9Cluster` resources in the namespace specified in the spec, or defaults to `dns-system`
 
@@ -47,7 +47,7 @@ graph TD
 **Example**:
 ```yaml
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: global-dns
 spec:
@@ -332,7 +332,7 @@ sequenceDiagram
 
 | Component | Creates | Protocol | Port | Authentication |
 |-----------|---------|----------|------|----------------|
-| **Bind9GlobalCluster** | Bind9Cluster | Kubernetes API | - | ServiceAccount |
+| **ClusterBind9Provider** | Bind9Cluster | Kubernetes API | - | ServiceAccount |
 | **Bind9Cluster** | Bind9Instance | Kubernetes API | - | ServiceAccount |
 | **Bind9Instance** | K8s Resources | Kubernetes API | - | ServiceAccount |
 | **DNSZone** | Zones in BIND9 | HTTP API (bindcar) | 8080 | ServiceAccount token |
@@ -345,12 +345,12 @@ sequenceDiagram
 
 ### 1. **Hierarchical Delegation**
 Each reconciler creates and manages only its immediate children:
-- `Bind9GlobalCluster` → `Bind9Cluster`
+- `ClusterBind9Provider` → `Bind9Cluster`
 - `Bind9Cluster` → `Bind9Instance`
 - `Bind9Instance` → Kubernetes resources
 
 ### 2. **Namespace Scoping**
-All resources (except `Bind9GlobalCluster`) are namespace-scoped, enabling multi-tenancy:
+All resources (except `ClusterBind9Provider`) are namespace-scoped, enabling multi-tenancy:
 - Teams can manage their own DNS infrastructure in their namespaces
 - No cross-namespace resource access required
 
@@ -394,7 +394,7 @@ Owner references are Kubernetes metadata that establish parent-child relationshi
 
 ```mermaid
 graph TD
-    GC[Bind9GlobalCluster<br/>cluster-scoped] -->|ownerReference| BC[Bind9Cluster<br/>namespace-scoped]
+    GC[ClusterBind9Provider<br/>cluster-scoped] -->|ownerReference| BC[Bind9Cluster<br/>namespace-scoped]
     BC -->|ownerReference| BI[Bind9Instance<br/>namespace-scoped]
     BI -->|ownerReferences| DEP[Deployment]
     BI -->|ownerReferences| SVC[Service]
@@ -412,12 +412,12 @@ graph TD
 
 ### Implementation Details
 
-#### 1. Bind9GlobalCluster → Bind9Cluster
+#### 1. ClusterBind9Provider → Bind9Cluster
 
 **Location:** [`src/reconcilers/bind9globalcluster.rs:340-352`](../../src/reconcilers/bind9globalcluster.rs#L340-L352)
 
 ```rust
-// Create ownerReference to global cluster (cluster-scoped can own namespace-scoped)
+// Create ownerReference to cluster provider (cluster-scoped can own namespace-scoped)
 let owner_ref = OwnerReference {
     api_version: API_GROUP_VERSION.to_string(),
     kind: KIND_BIND9_GLOBALCLUSTER.to_string(),
@@ -481,13 +481,13 @@ pub fn build_owner_references(instance: &Bind9Instance) -> Vec<OwnerReference> {
 
 ### Deletion Flow
 
-When a `Bind9GlobalCluster` is deleted, the following cascade occurs:
+When a `ClusterBind9Provider` is deleted, the following cascade occurs:
 
 ```mermaid
 sequenceDiagram
     participant User
     participant K8s as Kubernetes API
-    participant GC as Bind9GlobalCluster<br/>Reconciler
+    participant GC as ClusterBind9Provider<br/>Reconciler
     participant C as Bind9Cluster<br/>Reconciler
     participant I as Bind9Instance<br/>Reconciler
     participant GC_Obj as Garbage<br/>Collector
@@ -497,7 +497,7 @@ sequenceDiagram
     GC->>GC: Check finalizer present
 
     Note over GC: Step 1: Delete managed Bind9Cluster resources
-    GC->>K8s: List Bind9Cluster with labels<br/>managed-by=Bind9GlobalCluster
+    GC->>K8s: List Bind9Cluster with labels<br/>managed-by=ClusterBind9Provider
     K8s-->>GC: Return managed clusters
 
     loop For each Bind9Cluster
@@ -526,8 +526,8 @@ sequenceDiagram
         K8s->>GC_Obj: Bind9Cluster deleted
     end
 
-    GC->>K8s: Remove finalizer from Bind9GlobalCluster
-    K8s->>GC_Obj: Bind9GlobalCluster deleted
+    GC->>K8s: Remove finalizer from ClusterBind9Provider
+    K8s->>GC_Obj: ClusterBind9Provider deleted
 
     Note over GC_Obj: Kubernetes garbage collector<br/>cleans up any remaining<br/>resources with ownerReferences
 ```
@@ -571,7 +571,7 @@ ownerReferences:
 - apiVersion: bindy.firestoned.io/v1alpha1
   blockOwnerDeletion: true
   controller: true
-  kind: Bind9GlobalCluster  # or Bind9Cluster, Bind9Instance
+  kind: ClusterBind9Provider  # or Bind9Cluster, Bind9Instance
   name: global-dns
   uid: 12345678-1234-1234-1234-123456789abc
 ```

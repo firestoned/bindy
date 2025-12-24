@@ -11,13 +11,13 @@ use bindy::{
         METRICS_SERVER_PATH, METRICS_SERVER_PORT, TOKIO_WORKER_THREADS,
     },
     crd::{
-        AAAARecord, ARecord, Bind9Cluster, Bind9GlobalCluster, Bind9Instance, CAARecord,
-        CNAMERecord, DNSZone, MXRecord, NSRecord, SRVRecord, TXTRecord,
+        AAAARecord, ARecord, Bind9Cluster, Bind9Instance, CAARecord, CNAMERecord,
+        ClusterBind9Provider, DNSZone, MXRecord, NSRecord, SRVRecord, TXTRecord,
     },
     metrics,
     reconcilers::{
         delete_dnszone, reconcile_a_record, reconcile_aaaa_record, reconcile_bind9cluster,
-        reconcile_bind9globalcluster, reconcile_bind9instance, reconcile_caa_record,
+        reconcile_bind9instance, reconcile_caa_record, reconcile_clusterbind9provider,
         reconcile_cname_record, reconcile_dnszone, reconcile_mx_record, reconcile_ns_record,
         reconcile_srv_record, reconcile_txt_record,
     },
@@ -245,10 +245,10 @@ async fn run_controllers_without_leader_election(
             result?;
             anyhow::bail!("Bind9Cluster controller exited unexpectedly without error")
         }
-        result = run_bind9globalcluster_controller(client.clone()) => {
-            error!("CRITICAL: Bind9GlobalCluster controller exited unexpectedly: {:?}", result);
+        result = run_clusterbind9provider_controller(client.clone()) => {
+            error!("CRITICAL: ClusterBind9Provider controller exited unexpectedly: {:?}", result);
             result?;
-            anyhow::bail!("Bind9GlobalCluster controller exited unexpectedly without error")
+            anyhow::bail!("ClusterBind9Provider controller exited unexpectedly without error")
         }
         result = run_bind9instance_controller(client.clone()) => {
             error!("CRITICAL: Bind9Instance controller exited unexpectedly: {:?}", result);
@@ -383,10 +383,10 @@ async fn run_all_controllers(client: Client, bind9_manager: Arc<Bind9Manager>) -
             result?;
             anyhow::bail!("Bind9Cluster controller exited unexpectedly without error")
         }
-        result = run_bind9globalcluster_controller(client.clone()) => {
-            error!("CRITICAL: Bind9GlobalCluster controller exited unexpectedly: {:?}", result);
+        result = run_clusterbind9provider_controller(client.clone()) => {
+            error!("CRITICAL: ClusterBind9Provider controller exited unexpectedly: {:?}", result);
             result?;
-            anyhow::bail!("Bind9GlobalCluster controller exited unexpectedly without error")
+            anyhow::bail!("ClusterBind9Provider controller exited unexpectedly without error")
         }
         result = run_bind9instance_controller(client.clone()) => {
             error!("CRITICAL: Bind9Instance controller exited unexpectedly: {:?}", result);
@@ -779,29 +779,29 @@ async fn reconcile_bind9cluster_wrapper(
     }
 }
 
-/// Reconcile wrapper for `Bind9GlobalCluster`
-async fn reconcile_bind9globalcluster_wrapper(
-    cluster: Arc<Bind9GlobalCluster>,
+/// Reconcile wrapper for `ClusterBind9Provider`
+async fn reconcile_clusterbind9provider_wrapper(
+    cluster: Arc<ClusterBind9Provider>,
     ctx: Arc<Client>,
 ) -> Result<Action, ReconcileError> {
-    use bindy::constants::KIND_BIND9_GLOBALCLUSTER;
+    use bindy::constants::KIND_CLUSTER_BIND9_PROVIDER;
     let start = std::time::Instant::now();
 
     debug!(
         cluster_name = %cluster.name_any(),
-        "Reconcile wrapper called for Bind9GlobalCluster"
+        "Reconcile wrapper called for ClusterBind9Provider"
     );
 
-    let result = reconcile_bind9globalcluster((*ctx).clone(), (*cluster).clone()).await;
+    let result = reconcile_clusterbind9provider((*ctx).clone(), (*cluster).clone()).await;
     let duration = start.elapsed();
 
     match result {
         Ok(()) => {
             info!(
-                "Successfully reconciled Bind9GlobalCluster: {}",
+                "Successfully reconciled ClusterBind9Provider: {}",
                 cluster.name_any()
             );
-            metrics::record_reconciliation_success(KIND_BIND9_GLOBALCLUSTER, duration);
+            metrics::record_reconciliation_success(KIND_CLUSTER_BIND9_PROVIDER, duration);
 
             // Check if cluster is ready to determine requeue interval
             let is_ready = cluster
@@ -812,34 +812,34 @@ async fn reconcile_bind9globalcluster_wrapper(
 
             if is_ready {
                 // Cluster is ready, check less frequently (5 minutes)
-                debug!("Global cluster ready, requeueing in 5 minutes");
+                debug!("Cluster provider ready, requeueing in 5 minutes");
                 Ok(Action::requeue(Duration::from_secs(300)))
             } else {
                 // Cluster is not ready, check more frequently (30 seconds)
                 // to monitor instance status changes
-                debug!("Global cluster not ready, requeueing in 30 seconds");
+                debug!("Cluster provider not ready, requeueing in 30 seconds");
                 Ok(Action::requeue(Duration::from_secs(30)))
             }
         }
         Err(e) => {
-            error!("Failed to reconcile Bind9GlobalCluster: {}", e);
-            metrics::record_reconciliation_error(KIND_BIND9_GLOBALCLUSTER, duration);
-            metrics::record_error(KIND_BIND9_GLOBALCLUSTER, "reconcile_error");
+            error!("Failed to reconcile ClusterBind9Provider: {}", e);
+            metrics::record_reconciliation_error(KIND_CLUSTER_BIND9_PROVIDER, duration);
+            metrics::record_error(KIND_CLUSTER_BIND9_PROVIDER, "reconcile_error");
             Err(e.into())
         }
     }
 }
 
-/// Run the `Bind9GlobalCluster` controller
-async fn run_bind9globalcluster_controller(client: Client) -> Result<()> {
-    info!("Starting Bind9GlobalCluster controller");
+/// Run the `ClusterBind9Provider` controller
+async fn run_clusterbind9provider_controller(client: Client) -> Result<()> {
+    info!("Starting ClusterBind9Provider controller");
 
-    let api = Api::<Bind9GlobalCluster>::all(client.clone());
+    let api = Api::<ClusterBind9Provider>::all(client.clone());
 
     Controller::new(api, Config::default())
         .run(
-            reconcile_bind9globalcluster_wrapper,
-            error_policy_globalcluster,
+            reconcile_clusterbind9provider_wrapper,
+            error_policy_clusterprovider,
             Arc::new(client),
         )
         .for_each(|_| futures::future::ready(()))
@@ -1416,8 +1416,8 @@ fn error_policy_cluster(
     Action::requeue(Duration::from_secs(ERROR_REQUEUE_DURATION_SECS))
 }
 
-/// Error policy for `Bind9GlobalCluster` controller
-fn error_policy_globalcluster(
+/// Error policy for `ClusterBind9Provider` controller
+fn error_policy_clusterprovider(
     _resource: Arc<impl std::fmt::Debug>,
     _err: &ReconcileError,
     _ctx: Arc<Client>,

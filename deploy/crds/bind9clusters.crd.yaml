@@ -36,7 +36,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Bind9Cluster defines a namespace-scoped logical grouping of BIND9 DNS server instances. Use this for tenant-managed DNS infrastructure isolated to a specific namespace. For platform-managed cluster-wide DNS, use Bind9GlobalCluster instead.
+        description: Bind9Cluster defines a namespace-scoped logical grouping of BIND9 DNS server instances. Use this for tenant-managed DNS infrastructure isolated to a specific namespace. For platform-managed cluster-wide DNS, use ClusterBind9Provider instead.
         properties:
           spec:
             description: |-
@@ -46,7 +46,7 @@ spec:
               DNS infrastructure within their namespace. Each team can manage their own cluster
               independently, with RBAC controlling who can create and manage resources.
 
-              For platform-managed, cluster-wide DNS infrastructure, use `Bind9GlobalCluster` instead.
+              For platform-managed, cluster-wide DNS infrastructure, use `ClusterBind9Provider` instead.
 
               # Use Cases
 

@@ -45,7 +45,7 @@
 //! let spec = DNSZoneSpec {
 //!     zone_name: "example.com".to_string(),
 //!     cluster_ref: Some("my-dns-cluster".to_string()),
-//!     global_cluster_ref: None,
+//!     cluster_provider_ref: None,
 //!     soa_record: soa,
 //!     ttl: Some(3600),
 //!     name_server_ips: None,
@@ -253,9 +253,9 @@ pub struct SecondaryZoneConfig {
 ///
 /// `DNSZones` can reference either:
 /// - A namespace-scoped `Bind9Cluster` (using `clusterRef`)
-/// - A cluster-scoped `Bind9GlobalCluster` (using `globalClusterRef`)
+/// - A cluster-scoped `ClusterBind9Provider` (using `clusterProviderRef`)
 ///
-/// Exactly one of `clusterRef` or `globalClusterRef` must be specified.
+/// Exactly one of `clusterRef` or `clusterProviderRef` must be specified.
 ///
 /// # Example: Namespace-scoped Cluster
 ///
@@ -289,7 +289,7 @@ pub struct SecondaryZoneConfig {
 ///   namespace: production
 /// spec:
 ///   zoneName: example.com
-///   globalClusterRef: shared-production-dns  # References Bind9GlobalCluster (cluster-scoped)
+///   clusterProviderRef: shared-production-dns  # References ClusterBind9Provider (cluster-scoped)
 ///   soaRecord:
 ///     primaryNs: ns1.example.com.
 ///     adminEmail: admin.example.com.
@@ -310,10 +310,10 @@ pub struct SecondaryZoneConfig {
     shortname = "zones",
     shortname = "dz",
     shortname = "dzs",
-    doc = "DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defines a zone (e.g., example.com) with SOA record parameters. Can reference either a namespace-scoped Bind9Cluster or cluster-scoped Bind9GlobalCluster.",
+    doc = "DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defines a zone (e.g., example.com) with SOA record parameters. Can reference either a namespace-scoped Bind9Cluster or cluster-scoped ClusterBind9Provider.",
     printcolumn = r#"{"name":"Zone","type":"string","jsonPath":".spec.zoneName"}"#,
     printcolumn = r#"{"name":"Cluster","type":"string","jsonPath":".spec.clusterRef"}"#,
-    printcolumn = r#"{"name":"Global Cluster","type":"string","jsonPath":".spec.globalClusterRef"}"#,
+    printcolumn = r#"{"name":"Provider","type":"string","jsonPath":".spec.clusterProviderRef"}"#,
     printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
@@ -334,18 +334,18 @@ pub struct DNSZoneSpec {
     /// Must match the name of a `Bind9Cluster` resource in the same namespace.
     /// The zone will be added to all instances in this cluster.
     ///
-    /// Either `clusterRef` or `globalClusterRef` must be specified (not both).
+    /// Either `clusterRef` or `clusterProviderRef` must be specified (not both).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cluster_ref: Option<String>,
 
-    /// Reference to a cluster-scoped `Bind9GlobalCluster`.
+    /// Reference to a cluster-scoped `ClusterBind9Provider`.
     ///
-    /// Must match the name of a `Bind9GlobalCluster` resource (cluster-scoped).
-    /// The zone will be added to all instances in this global cluster.
+    /// Must match the name of a `ClusterBind9Provider` resource (cluster-scoped).
+    /// The zone will be added to all instances in this provider.
     ///
-    /// Either `clusterRef` or `globalClusterRef` must be specified (not both).
+    /// Either `clusterRef` or `clusterProviderRef` must be specified (not both).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub global_cluster_ref: Option<String>,
+    pub cluster_provider_ref: Option<String>,
 
     /// SOA (Start of Authority) record - defines zone authority and refresh parameters.
     ///
@@ -1405,7 +1405,7 @@ pub struct SecondaryConfig {
 /// Common specification fields shared between namespace-scoped and cluster-scoped BIND9 clusters.
 ///
 /// This struct contains all configuration that is common to both `Bind9Cluster` (namespace-scoped)
-/// and `Bind9GlobalCluster` (cluster-scoped). By using this shared struct, we avoid code duplication
+/// and `ClusterBind9Provider` (cluster-scoped). By using this shared struct, we avoid code duplication
 /// and ensure consistency between the two cluster types.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -1478,7 +1478,7 @@ pub struct Bind9ClusterCommonSpec {
 /// DNS infrastructure within their namespace. Each team can manage their own cluster
 /// independently, with RBAC controlling who can create and manage resources.
 ///
-/// For platform-managed, cluster-wide DNS infrastructure, use `Bind9GlobalCluster` instead.
+/// For platform-managed, cluster-wide DNS infrastructure, use `ClusterBind9Provider` instead.
 ///
 /// # Use Cases
 ///
@@ -1509,7 +1509,7 @@ pub struct Bind9ClusterCommonSpec {
     namespaced,
     shortname = "b9c",
     shortname = "b9cs",
-    doc = "Bind9Cluster defines a namespace-scoped logical grouping of BIND9 DNS server instances. Use this for tenant-managed DNS infrastructure isolated to a specific namespace. For platform-managed cluster-wide DNS, use Bind9GlobalCluster instead.",
+    doc = "Bind9Cluster defines a namespace-scoped logical grouping of BIND9 DNS server instances. Use this for tenant-managed DNS infrastructure isolated to a specific namespace. For platform-managed cluster-wide DNS, use ClusterBind9Provider instead.",
     printcolumn = r#"{"name":"Version","type":"string","jsonPath":".spec.version"}"#,
     printcolumn = r#"{"name":"Primary","type":"integer","jsonPath":".spec.primary.replicas"}"#,
     printcolumn = r#"{"name":"Secondary","type":"integer","jsonPath":".spec.secondary.replicas"}"#,
@@ -1523,13 +1523,13 @@ pub struct Bind9ClusterSpec {
     pub common: Bind9ClusterCommonSpec,
 }
 
-/// `Bind9GlobalCluster` - Cluster-scoped DNS infrastructure for platform teams.
+/// `ClusterBind9Provider` - Cluster-scoped BIND9 DNS provider for platform teams.
 ///
-/// A cluster-scoped cluster allows platform teams to provide shared BIND9 DNS infrastructure
+/// A cluster-scoped provider allows platform teams to provision shared BIND9 DNS infrastructure
 /// that is accessible from any namespace. This is ideal for shared services, production DNS,
 /// or platform-managed infrastructure that multiple teams use.
 ///
-/// `DNSZones` in any namespace can reference a `Bind9GlobalCluster` using the `globalClusterRef` field.
+/// `DNSZones` in any namespace can reference a `ClusterBind9Provider` using the `clusterProviderRef` field.
 ///
 /// # Use Cases
 ///
@@ -1541,7 +1541,7 @@ pub struct Bind9ClusterSpec {
 ///
 /// ```yaml
 /// apiVersion: bindy.firestoned.io/v1alpha1
-/// kind: Bind9GlobalCluster
+/// kind: ClusterBind9Provider
 /// metadata:
 ///   name: shared-production-dns
 ///   # No namespace - cluster-scoped
@@ -1558,11 +1558,11 @@ pub struct Bind9ClusterSpec {
 #[kube(
     group = "bindy.firestoned.io",
     version = "v1alpha1",
-    kind = "Bind9GlobalCluster",
+    kind = "ClusterBind9Provider",
     // NOTE: No 'namespaced' attribute = cluster-scoped
-    shortname = "b9gc",
-    shortname = "b9gcs",
-    doc = "Bind9GlobalCluster defines a cluster-scoped logical grouping of BIND9 DNS server instances. Use this for platform-managed DNS infrastructure accessible from all namespaces. For tenant-managed namespace-scoped DNS, use Bind9Cluster instead.",
+    shortname = "cb9p",
+    shortname = "cb9ps",
+    doc = "ClusterBind9Provider defines a cluster-scoped BIND9 DNS provider that manages DNS infrastructure accessible from all namespaces. Use this for platform-managed DNS infrastructure. For tenant-managed namespace-scoped DNS, use Bind9Cluster instead.",
     printcolumn = r#"{"name":"Version","type":"string","jsonPath":".spec.version"}"#,
     printcolumn = r#"{"name":"Primary","type":"integer","jsonPath":".spec.primary.replicas"}"#,
     printcolumn = r#"{"name":"Secondary","type":"integer","jsonPath":".spec.secondary.replicas"}"#,
@@ -1570,14 +1570,14 @@ pub struct Bind9ClusterSpec {
 )]
 #[kube(status = "Bind9ClusterStatus")]
 #[serde(rename_all = "camelCase")]
-pub struct Bind9GlobalClusterSpec {
+pub struct ClusterBind9ProviderSpec {
     /// Namespace where `Bind9Instance` resources will be created
     ///
-    /// Since `Bind9GlobalCluster` is cluster-scoped, instances need to be created in a specific namespace.
+    /// Since `ClusterBind9Provider` is cluster-scoped, instances need to be created in a specific namespace.
     /// Typically this would be a platform-managed namespace like `dns-system`.
     ///
     /// All managed instances (primary and secondary) will be created in this namespace.
-    /// `DNSZones` from any namespace can reference this global cluster via `globalClusterRef`.
+    /// `DNSZones` from any namespace can reference this provider via `clusterProviderRef`.
     ///
     /// **Default:** If not specified, instances will be created in the same namespace where the
     /// Bindy operator is running (from `POD_NAMESPACE` environment variable).
@@ -1675,7 +1675,7 @@ pub struct Bind9InstanceSpec {
     ///
     /// Can reference either:
     /// - A namespace-scoped `Bind9Cluster` (must be in the same namespace as this instance)
-    /// - A cluster-scoped `Bind9GlobalCluster` (cluster-wide, accessible from any namespace)
+    /// - A cluster-scoped `ClusterBind9Provider` (cluster-wide, accessible from any namespace)
     ///
     /// The cluster provides shared configuration and defines the logical grouping.
     /// The controller will automatically detect whether this references a namespace-scoped

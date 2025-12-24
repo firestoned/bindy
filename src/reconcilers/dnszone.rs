@@ -38,11 +38,11 @@ pub fn get_cluster_ref_from_spec(
     namespace: &str,
     name: &str,
 ) -> Result<String> {
-    match (&spec.cluster_ref, &spec.global_cluster_ref) {
+    match (&spec.cluster_ref, &spec.cluster_provider_ref) {
         (Some(ref cluster_name), None) => Ok(cluster_name.clone()),
-        (None, Some(ref global_cluster_name)) => Ok(global_cluster_name.clone()),
+        (None, Some(ref cluster_provider_name)) => Ok(cluster_provider_name.clone()),
         (Some(_), Some(_)) => Err(anyhow!(
-            "DNSZone {namespace}/{name} has both clusterRef and globalClusterRef specified. \
+            "DNSZone {namespace}/{name} has both clusterRef and clusterProviderRef specified. \
             Only one must be specified."
         )),
         (None, None) => Err(anyhow!(
@@ -114,11 +114,11 @@ pub async fn reconcile_dnszone(
 
     // Guard clause: Validate exactly one cluster reference is provided
     let cluster_ref = get_cluster_ref_from_spec(spec, &namespace, &name)?;
-    let is_global_cluster = spec.global_cluster_ref.is_some();
+    let is_cluster_provider = spec.cluster_provider_ref.is_some();
 
     info!(
-        "DNSZone {}/{} references cluster '{}' (is_global_cluster={}, cluster_ref={:?}, global_cluster_ref={:?})",
-        namespace, name, cluster_ref, is_global_cluster, spec.cluster_ref, spec.global_cluster_ref
+        "DNSZone {}/{} references cluster '{}' (is_cluster_provider={}, cluster_ref={:?}, cluster_provider_ref={:?})",
+        namespace, name, cluster_ref, is_cluster_provider, spec.cluster_ref, spec.cluster_provider_ref
     );
 
     // Determine if this is the first reconciliation or if spec has changed
@@ -159,7 +159,7 @@ pub async fn reconcile_dnszone(
         &client,
         &namespace,
         &cluster_ref,
-        is_global_cluster,
+        is_cluster_provider,
     )
     .await
     {
@@ -293,7 +293,7 @@ pub async fn reconcile_dnszone(
 
     // Re-fetch secondary IPs to store in status
     let secondary_ips =
-        find_all_secondary_pod_ips(&client, &namespace, &cluster_ref, is_global_cluster)
+        find_all_secondary_pod_ips(&client, &namespace, &cluster_ref, is_cluster_provider)
             .await
             .unwrap_or_default();
 
@@ -346,13 +346,13 @@ pub async fn add_dnszone(
 
     // Extract and validate cluster reference
     let cluster_ref = get_cluster_ref_from_spec(spec, &namespace, &name)?;
-    let is_global_cluster = spec.global_cluster_ref.is_some();
+    let is_cluster_provider = spec.cluster_provider_ref.is_some();
 
     info!("Adding DNSZone: {}", name);
 
     // Find secondary pod IPs for zone transfer configuration
     let secondary_ips =
-        find_all_secondary_pod_ips(&client, &namespace, &cluster_ref, is_global_cluster).await?;
+        find_all_secondary_pod_ips(&client, &namespace, &cluster_ref, is_cluster_provider).await?;
 
     if secondary_ips.is_empty() {
         warn!(
@@ -375,7 +375,7 @@ pub async fn add_dnszone(
         &client,
         &namespace,
         &cluster_ref,
-        is_global_cluster,
+        is_cluster_provider,
         true, // with_rndc_key = true for zone addition
         "http", // Use HTTP API port for zone addition via bindcar API
         |pod_endpoint, instance_name, rndc_key| {
@@ -498,7 +498,7 @@ pub async fn add_dnszone_to_secondaries(
 
     // Extract and validate cluster reference
     let cluster_ref = get_cluster_ref_from_spec(spec, &namespace, &name)?;
-    let is_global_cluster = spec.global_cluster_ref.is_some();
+    let is_cluster_provider = spec.cluster_provider_ref.is_some();
 
     if primary_ips.is_empty() {
         warn!(
@@ -515,7 +515,7 @@ pub async fn add_dnszone_to_secondaries(
 
     // Find all secondary pods
     let secondary_pods =
-        find_all_secondary_pods(&client, &namespace, &cluster_ref, is_global_cluster).await?;
+        find_all_secondary_pods(&client, &namespace, &cluster_ref, is_cluster_provider).await?;
 
     if secondary_pods.is_empty() {
         info!(
@@ -646,7 +646,7 @@ pub async fn delete_dnszone(
 
     // Extract and validate cluster reference
     let cluster_ref = get_cluster_ref_from_spec(spec, &namespace, &name)?;
-    let is_global_cluster = spec.global_cluster_ref.is_some();
+    let is_cluster_provider = spec.cluster_provider_ref.is_some();
 
     info!("Deleting DNSZone: {}", name);
 
@@ -657,7 +657,7 @@ pub async fn delete_dnszone(
         &client,
         &namespace,
         &cluster_ref,
-        is_global_cluster,
+        is_cluster_provider,
         false, // with_rndc_key = false for zone deletion
         "http", // Use HTTP API port for zone deletion via bindcar API
         |pod_endpoint, instance_name, _rndc_key| {
@@ -698,7 +698,7 @@ pub async fn delete_dnszone(
 
     // Delete from all secondary instances
     let secondary_pods =
-        find_all_secondary_pods(&client, &namespace, &cluster_ref, is_global_cluster).await?;
+        find_all_secondary_pods(&client, &namespace, &cluster_ref, is_cluster_provider).await?;
 
     if !secondary_pods.is_empty() {
         // Get unique (instance_name, namespace) tuples
@@ -813,7 +813,7 @@ pub struct PodInfo {
     pub namespace: String,
 }
 
-/// Find ALL PRIMARY pods for the given `Bind9Cluster` or `Bind9GlobalCluster`
+/// Find ALL PRIMARY pods for the given `Bind9Cluster` or `ClusterBind9Provider`
 ///
 /// Returns all running pods for PRIMARY instances in the cluster to ensure zone changes
 /// are applied to all primary replicas consistently.
@@ -821,9 +821,9 @@ pub struct PodInfo {
 /// # Arguments
 ///
 /// * `client` - Kubernetes API client
-/// * `namespace` - Namespace to search in (ignored if `is_global_cluster` is true)
-/// * `cluster_name` - Name of the `Bind9Cluster` or `Bind9GlobalCluster`
-/// * `is_global_cluster` - If true, searches all namespaces; if false, searches only the specified namespace
+/// * `namespace` - Namespace to search in (ignored if `is_cluster_provider` is true)
+/// * `cluster_name` - Name of the `Bind9Cluster` or `ClusterBind9Provider`
+/// * `is_cluster_provider` - If true, searches all namespaces; if false, searches only the specified namespace
 ///
 /// # Returns
 ///
@@ -836,12 +836,12 @@ pub async fn find_all_primary_pods(
     client: &Client,
     namespace: &str,
     cluster_name: &str,
-    is_global_cluster: bool,
+    is_cluster_provider: bool,
 ) -> Result<Vec<PodInfo>> {
     use crate::crd::{Bind9Instance, ServerRole};
 
     // First, find all Bind9Instance resources that belong to this cluster and have role=primary
-    let instance_api: Api<Bind9Instance> = if is_global_cluster {
+    let instance_api: Api<Bind9Instance> = if is_cluster_provider {
         Api::all(client.clone())
     } else {
         Api::namespaced(client.clone(), namespace)
@@ -859,7 +859,7 @@ pub async fn find_all_primary_pods(
     }
 
     if primary_instances.is_empty() {
-        let search_scope = if is_global_cluster {
+        let search_scope = if is_cluster_provider {
             "all namespaces".to_string()
         } else {
             format!("namespace {namespace}")
@@ -962,12 +962,12 @@ async fn find_all_secondary_pod_ips(
     client: &Client,
     namespace: &str,
     cluster_name: &str,
-    is_global_cluster: bool,
+    is_cluster_provider: bool,
 ) -> Result<Vec<String>> {
     info!("Finding SECONDARY pod IPs for cluster {}", cluster_name);
 
     let secondary_pods =
-        find_all_secondary_pods(client, namespace, cluster_name, is_global_cluster).await?;
+        find_all_secondary_pods(client, namespace, cluster_name, is_cluster_provider).await?;
 
     let secondary_ips: Vec<String> = secondary_pods.iter().map(|pod| pod.ip.clone()).collect();
 
@@ -989,12 +989,12 @@ async fn find_all_primary_pod_ips(
     client: &Client,
     namespace: &str,
     cluster_name: &str,
-    is_global_cluster: bool,
+    is_cluster_provider: bool,
 ) -> Result<Vec<String>> {
     info!("Finding PRIMARY pod IPs for cluster {}", cluster_name);
 
     let primary_pods =
-        find_all_primary_pods(client, namespace, cluster_name, is_global_cluster).await?;
+        find_all_primary_pods(client, namespace, cluster_name, is_cluster_provider).await?;
 
     let primary_ips: Vec<String> = primary_pods.iter().map(|pod| pod.ip.clone()).collect();
 
@@ -1016,9 +1016,9 @@ async fn find_all_primary_pod_ips(
 /// # Arguments
 ///
 /// * `client` - Kubernetes API client
-/// * `namespace` - Namespace to search in (ignored if `is_global_cluster` is true)
-/// * `cluster_name` - Name of the `Bind9Cluster` or `Bind9GlobalCluster`
-/// * `is_global_cluster` - If true, searches all namespaces; if false, searches only the specified namespace
+/// * `namespace` - Namespace to search in (ignored if `is_cluster_provider` is true)
+/// * `cluster_name` - Name of the `Bind9Cluster` or `ClusterBind9Provider`
+/// * `is_cluster_provider` - If true, searches all namespaces; if false, searches only the specified namespace
 ///
 /// # Returns
 ///
@@ -1027,12 +1027,12 @@ async fn find_all_secondary_pods(
     client: &Client,
     namespace: &str,
     cluster_name: &str,
-    is_global_cluster: bool,
+    is_cluster_provider: bool,
 ) -> Result<Vec<PodInfo>> {
     use crate::crd::{Bind9Instance, ServerRole};
 
     // Find all Bind9Instance resources with role=SECONDARY for this cluster
-    let instance_api: Api<Bind9Instance> = if is_global_cluster {
+    let instance_api: Api<Bind9Instance> = if is_cluster_provider {
         Api::all(client.clone())
     } else {
         Api::namespaced(client.clone(), namespace)
@@ -1405,7 +1405,7 @@ pub async fn for_each_primary_endpoint<F, Fut>(
     client: &Client,
     namespace: &str,
     cluster_ref: &str,
-    is_global_cluster: bool,
+    is_cluster_provider: bool,
     with_rndc_key: bool,
     port_name: &str,
     operation: F,
@@ -1416,7 +1416,7 @@ where
 {
     // Find all PRIMARY pods to get the unique instance names
     let primary_pods =
-        find_all_primary_pods(client, namespace, cluster_ref, is_global_cluster).await?;
+        find_all_primary_pods(client, namespace, cluster_ref, is_cluster_provider).await?;
 
     info!(
         "Found {} PRIMARY pod(s) for cluster {}",

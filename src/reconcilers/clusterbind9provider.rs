@@ -8,12 +8,14 @@
 //! global cluster.
 //!
 //! The key difference from namespace-scoped `Bind9Cluster` is that:
-//! - `Bind9GlobalCluster` resources are cluster-scoped (no namespace)
+//! - `ClusterBind9Provider` resources are cluster-scoped (no namespace)
 //! - Instances can be created in any namespace and reference the global cluster
 //! - The reconciler must list instances across all namespaces
 
-use crate::constants::{API_GROUP_VERSION, KIND_BIND9_CLUSTER, KIND_BIND9_GLOBALCLUSTER};
-use crate::crd::{Bind9Cluster, Bind9ClusterStatus, Bind9GlobalCluster, Bind9Instance, Condition};
+use crate::constants::{API_GROUP_VERSION, KIND_BIND9_CLUSTER, KIND_CLUSTER_BIND9_PROVIDER};
+use crate::crd::{
+    Bind9Cluster, Bind9ClusterStatus, Bind9Instance, ClusterBind9Provider, Condition,
+};
 use crate::labels::FINALIZER_BIND9_CLUSTER;
 use crate::reconcilers::finalizers::{
     ensure_cluster_finalizer, handle_cluster_deletion, FinalizerCleanup,
@@ -32,15 +34,15 @@ use kube::{
 use serde_json::json;
 use tracing::{debug, error, info, warn};
 
-/// Implement finalizer cleanup for `Bind9GlobalCluster`.
+/// Implement finalizer cleanup for `ClusterBind9Provider`.
 ///
 /// This handles deletion of all managed `Bind9Cluster` resources when the
 /// global cluster is deleted.
 #[async_trait::async_trait]
-impl FinalizerCleanup for Bind9GlobalCluster {
+impl FinalizerCleanup for ClusterBind9Provider {
     async fn cleanup(&self, client: &Client) -> Result<()> {
         use crate::labels::{
-            BINDY_CLUSTER_LABEL, BINDY_MANAGED_BY_LABEL, MANAGED_BY_BIND9_GLOBAL_CLUSTER,
+            BINDY_CLUSTER_LABEL, BINDY_MANAGED_BY_LABEL, MANAGED_BY_CLUSTER_BIND9_PROVIDER,
         };
         use kube::api::DeleteParams;
 
@@ -62,7 +64,7 @@ impl FinalizerCleanup for Bind9GlobalCluster {
             .filter(|c| {
                 c.metadata.labels.as_ref().is_some_and(|labels| {
                     labels.get(BINDY_MANAGED_BY_LABEL)
-                        == Some(&MANAGED_BY_BIND9_GLOBAL_CLUSTER.to_string())
+                        == Some(&MANAGED_BY_CLUSTER_BIND9_PROVIDER.to_string())
                         && labels.get(BINDY_CLUSTER_LABEL) == Some(&name.clone())
                 })
             })
@@ -124,7 +126,7 @@ impl FinalizerCleanup for Bind9GlobalCluster {
 
         if !referencing_instances.is_empty() {
             warn!(
-                "Bind9GlobalCluster {} still has {} referencing instances. \
+                "ClusterBind9Provider {} still has {} referencing instances. \
                 These will be cleaned up by their parent Bind9Cluster finalizers.",
                 name,
                 referencing_instances.len()
@@ -135,7 +137,7 @@ impl FinalizerCleanup for Bind9GlobalCluster {
     }
 }
 
-/// Reconciles a cluster-scoped `Bind9GlobalCluster` resource.
+/// Reconciles a cluster-scoped `ClusterBind9Provider` resource.
 ///
 /// This function:
 /// 1. Checks if the cluster is being deleted and handles cleanup
@@ -146,7 +148,7 @@ impl FinalizerCleanup for Bind9GlobalCluster {
 /// # Arguments
 ///
 /// * `client` - Kubernetes API client
-/// * `cluster` - The `Bind9GlobalCluster` resource to reconcile
+/// * `cluster` - The `ClusterBind9Provider` resource to reconcile
 ///
 /// # Returns
 ///
@@ -156,17 +158,17 @@ impl FinalizerCleanup for Bind9GlobalCluster {
 /// # Errors
 ///
 /// Returns an error if Kubernetes API operations fail or status update fails.
-pub async fn reconcile_bind9globalcluster(
+pub async fn reconcile_clusterbind9provider(
     client: Client,
-    cluster: Bind9GlobalCluster,
+    cluster: ClusterBind9Provider,
 ) -> Result<()> {
     let name = cluster.name_any();
 
-    info!("Reconciling Bind9GlobalCluster: {}", name);
+    info!("Reconciling ClusterBind9Provider: {}", name);
     debug!(
         name = %name,
         generation = ?cluster.metadata.generation,
-        "Starting Bind9GlobalCluster reconciliation (cluster-scoped)"
+        "Starting ClusterBind9Provider reconciliation (cluster-scoped)"
     );
 
     // Handle deletion if cluster is being deleted
@@ -225,26 +227,26 @@ pub async fn reconcile_bind9globalcluster(
 #[allow(clippy::too_many_lines)]
 async fn reconcile_namespace_clusters(
     client: &Client,
-    global_cluster: &Bind9GlobalCluster,
+    cluster_provider: &ClusterBind9Provider,
 ) -> Result<()> {
     use crate::crd::{Bind9Cluster, Bind9ClusterSpec};
     use crate::labels::{
-        BINDY_CLUSTER_LABEL, BINDY_MANAGED_BY_LABEL, MANAGED_BY_BIND9_GLOBAL_CLUSTER,
+        BINDY_CLUSTER_LABEL, BINDY_MANAGED_BY_LABEL, MANAGED_BY_CLUSTER_BIND9_PROVIDER,
     };
     use kube::api::{ListParams, PostParams};
     use std::collections::{BTreeMap, HashSet};
 
-    let global_cluster_name = global_cluster.name_any();
+    let cluster_provider_name = cluster_provider.name_any();
 
     // Get target namespace from spec or default to operator's namespace
-    let target_namespace = global_cluster.spec.namespace.as_ref().map_or_else(
+    let target_namespace = cluster_provider.spec.namespace.as_ref().map_or_else(
         || std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "dns-system".to_string()),
         std::clone::Clone::clone,
     );
 
     debug!(
         "Reconciling namespace-scoped Bind9Cluster for global cluster {} in namespace {}",
-        global_cluster_name, target_namespace
+        cluster_provider_name, target_namespace
     );
 
     // List all instances across all namespaces that reference this global cluster
@@ -255,7 +257,7 @@ async fn reconcile_namespace_clusters(
     let namespaces: HashSet<String> = all_instances
         .items
         .iter()
-        .filter(|inst| inst.spec.cluster_ref == global_cluster_name)
+        .filter(|inst| inst.spec.cluster_ref == cluster_provider_name)
         .filter_map(kube::ResourceExt::namespace)
         .collect();
 
@@ -271,40 +273,43 @@ async fn reconcile_namespace_clusters(
     debug!(
         "Found {} namespace(s) needing Bind9Cluster for global cluster {}",
         namespaces_to_reconcile.len(),
-        global_cluster_name
+        cluster_provider_name
     );
 
     // For each namespace, create or update a namespace-scoped Bind9Cluster
     for namespace in namespaces_to_reconcile {
         // Use the global cluster name directly (don't append "-cluster")
-        let cluster_name = global_cluster_name.clone();
+        let cluster_name = cluster_provider_name.clone();
 
         info!(
             "Creating/updating Bind9Cluster {}/{} for global cluster {}",
-            namespace, cluster_name, global_cluster_name
+            namespace, cluster_name, cluster_provider_name
         );
 
         // Create labels to mark this as managed by the global cluster
         let mut labels = BTreeMap::new();
         labels.insert(
             BINDY_MANAGED_BY_LABEL.to_string(),
-            MANAGED_BY_BIND9_GLOBAL_CLUSTER.to_string(),
+            MANAGED_BY_CLUSTER_BIND9_PROVIDER.to_string(),
         );
-        labels.insert(BINDY_CLUSTER_LABEL.to_string(), global_cluster_name.clone());
+        labels.insert(
+            BINDY_CLUSTER_LABEL.to_string(),
+            cluster_provider_name.clone(),
+        );
 
         // Create ownerReference to global cluster (cluster-scoped can own namespace-scoped)
         let owner_ref = k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference {
             api_version: API_GROUP_VERSION.to_string(),
-            kind: KIND_BIND9_GLOBALCLUSTER.to_string(),
-            name: global_cluster_name.clone(),
-            uid: global_cluster.metadata.uid.clone().unwrap_or_default(),
+            kind: KIND_CLUSTER_BIND9_PROVIDER.to_string(),
+            name: cluster_provider_name.clone(),
+            uid: cluster_provider.metadata.uid.clone().unwrap_or_default(),
             controller: Some(true),
             block_owner_deletion: Some(true),
         };
 
         // Build the Bind9Cluster spec by cloning the global cluster's common spec
         let cluster_spec = Bind9ClusterSpec {
-            common: global_cluster.spec.common.clone(),
+            common: cluster_provider.spec.common.clone(),
         };
 
         let cluster = Bind9Cluster {
@@ -391,7 +396,7 @@ async fn reconcile_namespace_clusters(
 /// # Errors
 ///
 /// Returns an error if status update fails.
-async fn update_cluster_status(client: &Client, cluster: &Bind9GlobalCluster) -> Result<()> {
+async fn update_cluster_status(client: &Client, cluster: &ClusterBind9Provider) -> Result<()> {
     let name = cluster.name_any();
 
     // List all Bind9Instance resources across all namespaces
@@ -407,7 +412,7 @@ async fn update_cluster_status(client: &Client, cluster: &Bind9GlobalCluster) ->
         .collect();
 
     debug!(
-        "Found {} instances referencing Bind9GlobalCluster {}",
+        "Found {} instances referencing ClusterBind9Provider {}",
         instances.len(),
         name
     );
@@ -445,14 +450,14 @@ async fn update_cluster_status(client: &Client, cluster: &Bind9GlobalCluster) ->
     // Only update if status has changed
     if !status_changed {
         debug!(
-            "Status unchanged for Bind9GlobalCluster {}, skipping patch",
+            "Status unchanged for ClusterBind9Provider {}, skipping patch",
             name
         );
         return Ok(());
     }
 
     // Update status
-    let api: Api<Bind9GlobalCluster> = Api::all(client.clone());
+    let api: Api<ClusterBind9Provider> = Api::all(client.clone());
     let status_patch = json!({
         "status": new_status
     });
@@ -460,7 +465,7 @@ async fn update_cluster_status(client: &Client, cluster: &Bind9GlobalCluster) ->
     api.patch_status(&name, &PatchParams::default(), &Patch::Merge(&status_patch))
         .await?;
 
-    debug!("Updated status for Bind9GlobalCluster: {}", name);
+    debug!("Updated status for ClusterBind9Provider: {}", name);
     Ok(())
 }
 
@@ -548,7 +553,7 @@ pub fn calculate_cluster_status(
     }
 }
 
-/// Deletes a cluster-scoped `Bind9GlobalCluster` resource.
+/// Deletes a cluster-scoped `ClusterBind9Provider` resource.
 ///
 /// This is called when the cluster resource is explicitly deleted by the user.
 /// It delegates to the reconciler which handles the deletion via finalizers.
@@ -556,7 +561,7 @@ pub fn calculate_cluster_status(
 /// # Arguments
 ///
 /// * `client` - Kubernetes API client
-/// * `cluster` - The `Bind9GlobalCluster` resource being deleted
+/// * `cluster` - The `ClusterBind9Provider` resource being deleted
 ///
 /// # Returns
 ///
@@ -566,10 +571,13 @@ pub fn calculate_cluster_status(
 /// # Errors
 ///
 /// Returns an error if finalizer cleanup or API operations fail.
-pub async fn delete_bind9globalcluster(client: Client, cluster: Bind9GlobalCluster) -> Result<()> {
+pub async fn delete_clusterbind9provider(
+    client: Client,
+    cluster: ClusterBind9Provider,
+) -> Result<()> {
     let name = cluster.name_any();
-    info!("Deleting Bind9GlobalCluster: {}", name);
+    info!("Deleting ClusterBind9Provider: {}", name);
 
     // Deletion is handled via the reconciler through finalizers
-    reconcile_bind9globalcluster(client, cluster).await
+    reconcile_clusterbind9provider(client, cluster).await
 }

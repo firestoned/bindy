@@ -26,12 +26,12 @@ use tracing::{debug, error, info, warn};
 
 /// Helper macro to handle zone lookup with proper error reporting
 ///
-/// Returns a tuple of (`cluster_ref`, `zone_name`, `is_global_cluster`) from the `DNSZone` lookup
+/// Returns a tuple of (`cluster_ref`, `zone_name`, `is_cluster_provider`) from the `DNSZone` lookup
 macro_rules! get_zone_or_fail {
     ($client:expr, $namespace:expr, $zone_ref:expr, $record:expr) => {
         match get_zone_info($client, $namespace, $zone_ref).await {
-            Ok((cluster_ref, zone_name, is_global_cluster)) => {
-                (cluster_ref, zone_name, is_global_cluster)
+            Ok((cluster_ref, zone_name, is_cluster_provider)) => {
+                (cluster_ref, zone_name, is_cluster_provider)
             }
             Err(e) => {
                 let error_msg = format!(
@@ -171,7 +171,7 @@ async fn add_record_to_all_endpoints<R, F, Fut>(
     zone_manager: &crate::bind9::Bind9Manager,
     record_type_name: &str,
     cluster_ref: &str,
-    is_global_cluster: bool,
+    is_cluster_provider: bool,
     zone_name: &str,
     add_operation: F,
 ) -> Result<usize>
@@ -189,7 +189,7 @@ where
     // First, check if the zone exists before attempting DNS UPDATE operations
     // This prevents NOTAUTH errors when the zone hasn't been loaded by BIND9 yet
     let primary_pods =
-        super::dnszone::find_all_primary_pods(client, &namespace, cluster_ref, is_global_cluster)
+        super::dnszone::find_all_primary_pods(client, &namespace, cluster_ref, is_cluster_provider)
             .await?;
 
     if primary_pods.is_empty() {
@@ -249,7 +249,7 @@ where
         client,
         &namespace,
         cluster_ref,
-        is_global_cluster,
+        is_cluster_provider,
         true, // with_rndc_key = true for record operations
         "dns-tcp", // Use DNS TCP port for dynamic DNS updates (RFC 2136)
         |pod_endpoint, instance_name, rndc_key| {
@@ -418,9 +418,9 @@ pub async fn reconcile_a_record(
 
     // Find the cluster and zone name for this zone
     debug!("Looking up DNSZone");
-    let (cluster_ref, zone_name, is_global_cluster) =
+    let (cluster_ref, zone_name, is_cluster_provider) =
         get_zone_or_fail!(&client, &namespace, &spec.zone_ref, &record);
-    debug!(cluster_ref = %cluster_ref, zone_name = %zone_name, is_global_cluster = %is_global_cluster, "Found DNSZone");
+    debug!(cluster_ref = %cluster_ref, zone_name = %zone_name, is_cluster_provider = %is_cluster_provider, "Found DNSZone");
 
     // Add tracking annotations
     let api: Api<ARecord> = Api::namespaced(client.clone(), &namespace);
@@ -445,7 +445,7 @@ pub async fn reconcile_a_record(
         zone_manager,
         "A",
         &cluster_ref,
-        is_global_cluster,
+        is_cluster_provider,
         &zone_name,
         move |zone_manager, zone_name, pod_endpoint, key_data| {
             let record_name = record_name.clone();
@@ -558,7 +558,7 @@ pub async fn reconcile_txt_record(
     )
     .await?;
 
-    let (cluster_ref, zone_name, is_global_cluster) =
+    let (cluster_ref, zone_name, is_cluster_provider) =
         get_zone_or_fail!(&client, &namespace, &spec.zone_ref, &record);
 
     // Add tracking annotations
@@ -584,7 +584,7 @@ pub async fn reconcile_txt_record(
         zone_manager,
         "TXT",
         &cluster_ref,
-        is_global_cluster,
+        is_cluster_provider,
         &zone_name,
         move |zone_manager, zone_name, pod_endpoint, key_data| {
             let record_name = record_name.clone();
@@ -699,7 +699,7 @@ pub async fn reconcile_aaaa_record(
     )
     .await?;
 
-    let (cluster_ref, zone_name, is_global_cluster) =
+    let (cluster_ref, zone_name, is_cluster_provider) =
         get_zone_or_fail!(&client, &namespace, &spec.zone_ref, &record);
 
     // Add tracking annotations
@@ -725,7 +725,7 @@ pub async fn reconcile_aaaa_record(
         zone_manager,
         "AAAA",
         &cluster_ref,
-        is_global_cluster,
+        is_cluster_provider,
         &zone_name,
         move |zone_manager, zone_name, pod_endpoint, key_data| {
             let record_name = record_name.clone();
@@ -837,7 +837,7 @@ pub async fn reconcile_cname_record(
     )
     .await?;
 
-    let (cluster_ref, zone_name, is_global_cluster) =
+    let (cluster_ref, zone_name, is_cluster_provider) =
         get_zone_or_fail!(&client, &namespace, &spec.zone_ref, &record);
 
     // Add tracking annotations
@@ -863,7 +863,7 @@ pub async fn reconcile_cname_record(
         zone_manager,
         "CNAME",
         &cluster_ref,
-        is_global_cluster,
+        is_cluster_provider,
         &zone_name,
         move |zone_manager, zone_name, pod_endpoint, key_data| {
             let record_name = record_name.clone();
@@ -976,7 +976,7 @@ pub async fn reconcile_mx_record(
     )
     .await?;
 
-    let (cluster_ref, zone_name, is_global_cluster) =
+    let (cluster_ref, zone_name, is_cluster_provider) =
         get_zone_or_fail!(&client, &namespace, &spec.zone_ref, &record);
 
     // Add tracking annotations
@@ -1003,7 +1003,7 @@ pub async fn reconcile_mx_record(
         zone_manager,
         "MX",
         &cluster_ref,
-        is_global_cluster,
+        is_cluster_provider,
         &zone_name,
         move |zone_manager, zone_name, pod_endpoint, key_data| {
             let record_name = record_name.clone();
@@ -1119,7 +1119,7 @@ pub async fn reconcile_ns_record(
     )
     .await?;
 
-    let (cluster_ref, zone_name, is_global_cluster) =
+    let (cluster_ref, zone_name, is_cluster_provider) =
         get_zone_or_fail!(&client, &namespace, &spec.zone_ref, &record);
 
     // Add tracking annotations
@@ -1145,7 +1145,7 @@ pub async fn reconcile_ns_record(
         zone_manager,
         "NS",
         &cluster_ref,
-        is_global_cluster,
+        is_cluster_provider,
         &zone_name,
         move |zone_manager, zone_name, pod_endpoint, key_data| {
             let record_name = record_name.clone();
@@ -1258,7 +1258,7 @@ pub async fn reconcile_srv_record(
     )
     .await?;
 
-    let (cluster_ref, zone_name, is_global_cluster) =
+    let (cluster_ref, zone_name, is_cluster_provider) =
         get_zone_or_fail!(&client, &namespace, &spec.zone_ref, &record);
 
     // Add tracking annotations
@@ -1289,7 +1289,7 @@ pub async fn reconcile_srv_record(
         zone_manager,
         "SRV",
         &cluster_ref,
-        is_global_cluster,
+        is_cluster_provider,
         &zone_name,
         move |zone_manager, zone_name, pod_endpoint, key_data| {
             let record_name = record_name.clone();
@@ -1404,7 +1404,7 @@ pub async fn reconcile_caa_record(
     )
     .await?;
 
-    let (cluster_ref, zone_name, is_global_cluster) =
+    let (cluster_ref, zone_name, is_cluster_provider) =
         get_zone_or_fail!(&client, &namespace, &spec.zone_ref, &record);
 
     // Add tracking annotations
@@ -1432,7 +1432,7 @@ pub async fn reconcile_caa_record(
         zone_manager,
         "CAA",
         &cluster_ref,
-        is_global_cluster,
+        is_cluster_provider,
         &zone_name,
         move |zone_manager, zone_name, pod_endpoint, key_data| {
             let record_name = record_name.clone();
@@ -1517,10 +1517,10 @@ pub async fn reconcile_caa_record(
 ///
 /// # Returns
 ///
-/// A tuple of `(cluster_ref, zone_name, is_global_cluster)` where:
-/// - `cluster_ref` identifies which `Bind9Cluster` or `Bind9GlobalCluster` serves the zone
+/// A tuple of `(cluster_ref, zone_name, is_cluster_provider)` where:
+/// - `cluster_ref` identifies which `Bind9Cluster` or `ClusterBind9Provider` serves the zone
 /// - `zone_name` is the actual DNS zone name (e.g., "example.com")
-/// - `is_global_cluster` indicates if this references a `Bind9GlobalCluster`
+/// - `is_cluster_provider` indicates if this references a `ClusterBind9Provider`
 ///
 /// # Errors
 ///
@@ -1543,8 +1543,8 @@ async fn get_zone_info(
     // Extract cluster_ref (handles both clusterRef and globalClusterRef)
     let cluster_ref =
         crate::reconcilers::dnszone::get_cluster_ref_from_spec(&zone.spec, namespace, zone_ref)?;
-    let is_global_cluster = zone.spec.global_cluster_ref.is_some();
-    Ok((cluster_ref, zone.spec.zone_name, is_global_cluster))
+    let is_cluster_provider = zone.spec.cluster_provider_ref.is_some();
+    Ok((cluster_ref, zone.spec.zone_name, is_cluster_provider))
 }
 
 /// Create a Kubernetes Event for a DNS record.

@@ -72,14 +72,14 @@ spec:
     replicas: 1
 ```
 
-### Cluster-Scoped Clusters (`Bind9GlobalCluster`)
+### Cluster-Scoped Clusters (`ClusterBind9Provider`)
 
 **Use Case**: Platform teams provide shared DNS infrastructure accessible from all namespaces.
 
 ```mermaid
 graph TB
     subgraph "Cluster-Scoped (no namespace)"
-        GlobalCluster[Bind9GlobalCluster<br/>shared-production-dns]
+        GlobalCluster[ClusterBind9Provider<br/>shared-production-dns]
     end
 
     subgraph "Namespace: production"
@@ -113,7 +113,7 @@ graph TB
 **YAML Example:**
 ```yaml
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: shared-production-dns
   # No namespace - cluster-scoped resource
@@ -134,7 +134,7 @@ The complete resource hierarchy shows how components relate:
 ```mermaid
 graph TD
     subgraph "Cluster-Scoped Resources"
-        GlobalCluster[Bind9GlobalCluster]
+        GlobalCluster[ClusterBind9Provider]
     end
 
     subgraph "Namespace-Scoped Resources"
@@ -144,7 +144,7 @@ graph TD
         Records[DNS Records<br/>A, AAAA, CNAME, MX, etc.]
     end
 
-    GlobalCluster -.globalClusterRef.-> Zone
+    GlobalCluster -.clusterProviderRef.-> Zone
     Cluster --clusterRef--> Zone
 
     Cluster --cluster_ref--> Instance
@@ -163,11 +163,11 @@ graph TD
 
 1. **DNSZone → Cluster References**:
    - `spec.clusterRef`: References namespace-scoped `Bind9Cluster` (same namespace)
-   - `spec.globalClusterRef`: References cluster-scoped `Bind9GlobalCluster`
+   - `spec.clusterProviderRef`: References cluster-scoped `ClusterBind9Provider`
    - **Mutual Exclusivity**: Exactly one must be specified
 
 2. **Bind9Instance → Cluster Reference**:
-   - `spec.cluster_ref`: Can reference either `Bind9Cluster` or `Bind9GlobalCluster`
+   - `spec.cluster_ref`: Can reference either `Bind9Cluster` or `ClusterBind9Provider`
    - Controller auto-detects cluster type
 
 3. **DNS Records → Zone Reference**:
@@ -192,15 +192,15 @@ sequenceDiagram
     alt Spec unchanged
         Controller->>K8s: Skip reconciliation (status-only update)
     else Spec changed
-        Controller->>Controller: Validate clusterRef XOR globalClusterRef
-        Controller->>Cluster: Get cluster by clusterRef or globalClusterRef
+        Controller->>Controller: Validate clusterRef XOR clusterProviderRef
+        Controller->>Cluster: Get cluster by clusterRef or clusterProviderRef
         Controller->>Instances: List instances by cluster reference
         Controller->>BIND9: Update zone files via Bindcar API
         Controller->>K8s: Update status (observedGeneration, conditions)
     end
 ```
 
-### Bind9GlobalCluster Reconciliation
+### ClusterBind9Provider Reconciliation
 
 ```mermaid
 sequenceDiagram
@@ -208,7 +208,7 @@ sequenceDiagram
     participant Controller as GlobalCluster Controller
     participant Instances as Bind9Instances (all namespaces)
 
-    K8s->>Controller: Bind9GlobalCluster created/updated
+    K8s->>Controller: ClusterBind9Provider created/updated
     Controller->>Controller: Check generation changed
     Controller->>Instances: List all instances across all namespaces
     Controller->>Controller: Filter instances by cluster_ref
@@ -232,7 +232,7 @@ graph TB
     end
 
     subgraph "Cluster-Scoped"
-        GlobalCluster[Bind9GlobalCluster<br/>production-dns]
+        GlobalCluster[ClusterBind9Provider<br/>production-dns]
     end
 
     subgraph "Namespace: app-a"
@@ -342,7 +342,7 @@ roleRef:
 ```mermaid
 graph TB
     subgraph "Cluster-Scoped"
-        GlobalCluster[Bind9GlobalCluster<br/>shared-dns]
+        GlobalCluster[ClusterBind9Provider<br/>shared-dns]
     end
 
     subgraph "Namespace: team-a"
@@ -375,11 +375,11 @@ graph TB
    - Cross-namespace references are impossible
 
 2. **DNSZones are namespace-scoped**
-   - Even when referencing `Bind9GlobalCluster`
+   - Even when referencing `ClusterBind9Provider`
    - Each team manages their own zones
 
 3. **RBAC controls zone management**
-   - Platform team: ClusterRole for `Bind9GlobalCluster`
+   - Platform team: ClusterRole for `ClusterBind9Provider`
    - Dev teams: Role for `DNSZone` and records in their namespace
 
 **Example - Record Isolation:**
@@ -418,7 +418,7 @@ graph TD
     Start -->|Platform Team| PlatformCheck{Shared across<br/>namespaces?}
     Start -->|Development Team| DevCheck{Isolated to<br/>namespace?}
 
-    PlatformCheck -->|Yes| Global[Use Bind9GlobalCluster<br/>cluster-scoped]
+    PlatformCheck -->|Yes| Global[Use ClusterBind9Provider<br/>cluster-scoped]
     PlatformCheck -->|No| Cluster[Use Bind9Cluster<br/>namespace-scoped]
 
     DevCheck -->|Yes| Cluster

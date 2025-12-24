@@ -184,7 +184,7 @@ gh run list --workflow ci.yaml --limit 100
 # ✅ Controller can CREATE/DELETE secrets (RNDC key lifecycle only)
 # ✅ Controller CANNOT UPDATE/PATCH secrets (immutable pattern)
 # ✅ Controller can DELETE managed resources (Bind9Instance, Bind9Cluster, finalizer cleanup)
-# ✅ Controller CANNOT DELETE user resources (DNSZone, Records, Bind9GlobalCluster)
+# ✅ Controller CANNOT DELETE user resources (DNSZone, Records, ClusterBind9Provider)
 ```
 
 **Secret Access Monitoring:**
