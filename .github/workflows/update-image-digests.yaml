@@ -9,6 +9,9 @@ on:
     - cron: '0 0 1 * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   update-digests:
     runs-on: ubuntu-latest
@@ -17,8 +20,13 @@ jobs:
       pull-requests: write
 
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Install crane (for fetching image digests)
         run: |
@@ -78,7 +86,7 @@ jobs:
 
       - name: Create Pull Request
         if: steps.fetch-digests.outputs.digests-changed == 'true'
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c # v6.1.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           commit-message: |
@@ -129,7 +137,7 @@ jobs:
 
       - name: Upload digest report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: digest-report
           path: digest-report.md
