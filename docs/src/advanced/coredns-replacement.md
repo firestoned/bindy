@@ -1,6 +1,6 @@
-# Replacing CoreDNS with Bind9GlobalCluster
+# Replacing CoreDNS with ClusterBind9Provider
 
-`Bind9GlobalCluster` provides a powerful alternative to CoreDNS for cluster-wide DNS infrastructure. This guide explores using Bindy as a CoreDNS replacement in Kubernetes clusters.
+`ClusterBind9Provider` provides a powerful alternative to CoreDNS for cluster-wide DNS infrastructure. This guide explores using Bindy as a CoreDNS replacement in Kubernetes clusters.
 
 ## Why Consider Replacing CoreDNS?
 
@@ -32,11 +32,11 @@ CoreDNS is the default DNS solution for Kubernetes, but you might want an altern
 - Limited declarative management
 - Manual ConfigMap edits for changes
 
-### Bindy with Bind9GlobalCluster
+### Bindy with ClusterBind9Provider
 
 ```
 ┌──────────────────────────────────────────────────┐
-│ Bind9GlobalCluster (cluster-scoped)             │
+│ ClusterBind9Provider (cluster-scoped)             │
 │ - Cluster-wide DNS infrastructure                │
 │ - Platform team managed                          │
 └──────────────────────────────────────────────────┘
@@ -64,7 +64,7 @@ Replace CoreDNS with a platform-managed DNS service accessible to all namespaces
 
 ```yaml
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: platform-dns
   labels:
@@ -104,7 +104,7 @@ Use Bindy for application DNS while keeping CoreDNS for `cluster.local`:
 # Bindy handles application-specific zones
 
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: app-dns
 spec:
@@ -121,7 +121,7 @@ metadata:
   namespace: platform
 spec:
   zoneName: internal.example.com
-  globalClusterRef: app-dns
+  clusterProviderRef: app-dns
   soaRecord:
     primaryNs: ns1.internal.example.com.
     adminEmail: platform.example.com.
@@ -139,7 +139,7 @@ Provide DNS for service mesh configurations:
 
 ```yaml
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: mesh-dns
   labels:
@@ -164,7 +164,7 @@ metadata:
   namespace: api-team
 spec:
   zoneName: api.mesh.local
-  globalClusterRef: mesh-dns
+  clusterProviderRef: mesh-dns
 ---
 # Dynamic service records
 apiVersion: bindy.firestoned.io/v1alpha1
@@ -190,10 +190,10 @@ spec:
 
 Run Bindy alongside CoreDNS during migration:
 
-1. **Deploy Bindy Global Cluster**:
+1. **Deploy Bindy Cluster Provider**:
    ```yaml
    apiVersion: bindy.firestoned.io/v1alpha1
-   kind: Bind9GlobalCluster
+   kind: ClusterBind9Provider
    metadata:
      name: platform-dns-migration
    spec:
@@ -259,7 +259,7 @@ Keep CoreDNS for cluster.local, migrate application zones:
      namespace: platform
    spec:
      zoneName: apps.example.com
-     globalClusterRef: platform-dns
+     clusterProviderRef: platform-dns
    ```
 
 3. **Configure Forwarding** (CoreDNS → Bindy):
@@ -284,7 +284,7 @@ For cluster DNS replacement, configure these settings:
 
 ```yaml
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: cluster-dns
 spec:
@@ -329,7 +329,7 @@ metadata:
   namespace: dns-system
 spec:
   zoneName: cluster.local
-  globalClusterRef: cluster-dns
+  clusterProviderRef: cluster-dns
   soaRecord:
     primaryNs: ns1.cluster.local.
     adminEmail: dns-admin.cluster.local.
@@ -341,7 +341,7 @@ metadata:
   namespace: dns-system
 spec:
   zoneName: svc.cluster.local
-  globalClusterRef: cluster-dns
+  clusterProviderRef: cluster-dns
   soaRecord:
     primaryNs: ns1.svc.cluster.local.
     adminEmail: dns-admin.svc.cluster.local.
@@ -371,7 +371,7 @@ data:
 ```yaml
 # Infrastructure as code
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 # ... declarative specs
 ---
 apiVersion: bindy.firestoned.io/v1alpha1
@@ -399,7 +399,7 @@ kind: DNSZone
 - Platform team controls everything
 
 **Bindy:**
-- Platform team: Manages `Bind9GlobalCluster`
+- Platform team: Manages `ClusterBind9Provider`
 - Application teams: Manage `DNSZone` and records in their namespace
 - RBAC-enforced isolation
 
@@ -439,7 +439,7 @@ kind: DNSZone
 
 ```yaml
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: ha-dns
 spec:
@@ -543,7 +543,7 @@ kubectl get arecords,cnamerecords,mxrecords -A -o yaml > dns-records-backup.yaml
 
 ## Conclusion
 
-`Bind9GlobalCluster` provides a powerful, enterprise-grade alternative to CoreDNS for Kubernetes clusters. While CoreDNS remains an excellent choice for simple forwarding scenarios, Bindy excels when you need:
+`ClusterBind9Provider` provides a powerful, enterprise-grade alternative to CoreDNS for Kubernetes clusters. While CoreDNS remains an excellent choice for simple forwarding scenarios, Bindy excels when you need:
 
 - Declarative DNS infrastructure-as-code
 - GitOps workflows for DNS management
@@ -557,6 +557,6 @@ kubectl get arecords,cnamerecords,mxrecords -A -o yaml > dns-records-backup.yaml
 ## Next Steps
 
 - [Multi-Tenancy Guide](../guide/multi-tenancy.md) - RBAC setup for platform and application teams
-- [Choosing a Cluster Type](../guide/choosing-cluster-type.md) - When to use Bind9GlobalCluster vs Bind9Cluster
+- [Choosing a Cluster Type](../guide/choosing-cluster-type.md) - When to use ClusterBind9Provider vs Bind9Cluster
 - [High Availability](./ha.md) - HA configuration for production DNS
 - [DNSSEC](./dnssec.md) - Enabling DNSSEC for secure DNS

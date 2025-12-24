@@ -1,11 +1,11 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: MIT
 
-//! Unit tests for `bind9globalcluster.rs`
+//! Unit tests for `clusterbind9provider.rs`
 
 #[cfg(test)]
 mod tests {
-    use super::super::bind9globalcluster::calculate_cluster_status;
+    use super::super::clusterbind9provider::calculate_cluster_status;
     use crate::crd::{
         Bind9Instance, Bind9InstanceSpec, Bind9InstanceStatus, Condition, ServerRole,
     };

@@ -1,8 +1,8 @@
 ---
-# Platform DNS Cluster - Cluster-Scoped (Global)
-# This cluster can be referenced from DNSZones in any namespace
+# Platform DNS Cluster - Cluster-Scoped Provider
+# This cluster provider can be referenced from DNSZones in any namespace
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: production-dns
   labels:
@@ -10,7 +10,7 @@ metadata:
     managed-by: platform-team
 spec:
   # Namespace where Bind9Instance resources will be created (optional)
-  # Global clusters are cluster-scoped, but instances must live in a namespace
+  # Cluster providers are cluster-scoped, but instances must live in a namespace
   # If not specified, defaults to the namespace where the Bindy operator is running
   namespace: dns-system
   version: "9.18"

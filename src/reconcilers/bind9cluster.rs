@@ -768,7 +768,7 @@ async fn ensure_managed_instance_resources(
 
 /// Create a managed `Bind9Instance` resource
 ///
-/// This function is public to allow reuse by `Bind9GlobalCluster` reconciler.
+/// This function is public to allow reuse by `ClusterBind9Provider` reconciler.
 ///
 /// # Arguments
 ///
@@ -1019,7 +1019,7 @@ async fn create_or_update_cluster_configmap(client: &Client, cluster: &Bind9Clus
 
 /// Delete a single managed `Bind9Instance` resource
 ///
-/// This function is public to allow reuse by `Bind9GlobalCluster` reconciler.
+/// This function is public to allow reuse by `ClusterBind9Provider` reconciler.
 ///
 /// # Arguments
 ///

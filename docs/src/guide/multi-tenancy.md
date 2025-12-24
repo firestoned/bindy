@@ -41,7 +41,7 @@ graph TB
     end
 
     subgraph "Cluster-Scoped Resources"
-        GlobalCluster[Bind9GlobalCluster<br/>production-dns]
+        GlobalCluster[ClusterBind9Provider<br/>production-dns]
     end
 
     subgraph "Application Team A Namespace"
@@ -55,8 +55,8 @@ graph TB
     end
 
     PlatformAdmin -->|manages| GlobalCluster
-    GlobalCluster -.globalClusterRef.-> ZoneA
-    GlobalCluster -.globalClusterRef.-> ZoneB
+    GlobalCluster -.clusterProviderRef.-> ZoneA
+    GlobalCluster -.clusterProviderRef.-> ZoneB
     ZoneA --> RecordsA
     ZoneB --> RecordsB
 
@@ -67,7 +67,7 @@ graph TB
 ```
 
 **Characteristics:**
-- Platform team manages `Bind9GlobalCluster` (requires ClusterRole)
+- Platform team manages `ClusterBind9Provider` (requires ClusterRole)
 - Application teams manage `DNSZone` and records in their namespace (requires Role)
 - Shared DNS infrastructure, distributed zone management
 - Suitable for production workloads
@@ -126,17 +126,17 @@ kind: ClusterRole
 metadata:
   name: platform-dns-admin
 rules:
-# Manage cluster-scoped global clusters
+# Manage cluster-scoped cluster providers
 - apiGroups: ["bindy.firestoned.io"]
   resources: ["bind9globalclusters"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
-# View global cluster status
+# View cluster provider status
 - apiGroups: ["bindy.firestoned.io"]
   resources: ["bind9globalclusters/status"]
   verbs: ["get", "list", "watch"]
 
-# Manage bind9 instances across all namespaces (for global clusters)
+# Manage bind9 instances across all namespaces (for cluster providers)
 - apiGroups: ["bindy.firestoned.io"]
   resources: ["bind9instances"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -168,11 +168,11 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 ```
 
-### Step 3: Create Bind9GlobalCluster
+### Step 3: Create ClusterBind9Provider
 
 ```yaml
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: shared-production-dns
   # No namespace - cluster-scoped
@@ -267,7 +267,7 @@ metadata:
   namespace: app-team-a
 spec:
   zoneName: app-a.example.com
-  globalClusterRef: shared-production-dns  # References platform cluster
+  clusterProviderRef: shared-production-dns  # References platform cluster
   soaRecord:
     primaryNs: ns1.example.com.
     adminEmail: dns-admin.example.com.
@@ -408,7 +408,7 @@ spec:
 
 | Resource | Scope | RBAC Type | Who Gets It |
 |----------|-------|-----------|-------------|
-| `Bind9GlobalCluster` | Cluster-scoped | ClusterRole + ClusterRoleBinding | Platform team |
+| `ClusterBind9Provider` | Cluster-scoped | ClusterRole + ClusterRoleBinding | Platform team |
 | `Bind9Cluster` | Namespace-scoped | Role + RoleBinding | Development teams |
 | `Bind9Instance` | Namespace-scoped | Role + RoleBinding | Teams managing instances |
 | `DNSZone` | Namespace-scoped | Role + RoleBinding | Application teams |
@@ -531,7 +531,7 @@ rules:
 
 | Role Type | Manages | Scope |
 |-----------|---------|-------|
-| Platform DNS Admin | `Bind9GlobalCluster` | Cluster-wide |
+| Platform DNS Admin | `ClusterBind9Provider` | Cluster-wide |
 | Tenant Cluster Admin | `Bind9Cluster`, `Bind9Instance` | Namespace |
 | Tenant Zone Admin | `DNSZone`, Records | Namespace |
 | Tenant Record Editor | Records only | Namespace |
@@ -599,9 +599,9 @@ spec:
 **Requirement**: Platform team manages production DNS across multiple regions.
 
 ```yaml
-# Platform creates global cluster per region
+# Platform creates cluster provider per region
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: production-dns-us-east
 spec:
@@ -617,7 +617,7 @@ spec:
       - "10.0.0.0/8"
 ---
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: production-dns-eu-west
 spec:
@@ -640,7 +640,7 @@ metadata:
   namespace: api-service
 spec:
   zoneName: api.example.com
-  globalClusterRef: production-dns-us-east
+  clusterProviderRef: production-dns-us-east
   soaRecord: { /* ... */ }
 ---
 apiVersion: bindy.firestoned.io/v1alpha1
@@ -650,7 +650,7 @@ metadata:
   namespace: api-service
 spec:
   zoneName: api.eu.example.com
-  globalClusterRef: production-dns-eu-west
+  clusterProviderRef: production-dns-eu-west
   soaRecord: { /* ... */ }
 ```
 
@@ -711,9 +711,9 @@ spec:
 **Requirement**: Production uses platform DNS, dev teams use their own.
 
 ```yaml
-# Platform manages production global cluster
+# Platform manages production cluster provider
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: production-dns
 spec:
@@ -725,7 +725,7 @@ spec:
   secondary:
     replicas: 2
 ---
-# Production app references global cluster
+# Production app references cluster provider
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
@@ -733,7 +733,7 @@ metadata:
   namespace: production
 spec:
   zoneName: app.example.com
-  globalClusterRef: production-dns  # Platform-managed
+  clusterProviderRef: production-dns  # Platform-managed
   soaRecord: { /* ... */ }
 ---
 # Dev team manages their own cluster

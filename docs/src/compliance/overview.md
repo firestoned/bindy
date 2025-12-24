@@ -122,7 +122,7 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 
 **Key Controls:**
 - ✅ Controller has minimal required permissions (create/delete secrets for RNDC lifecycle, delete managed resources for finalizer cleanup)
-- ✅ Controller cannot delete user resources (DNSZone, Records, Bind9GlobalCluster - least privilege)
+- ✅ Controller cannot delete user resources (DNSZone, Records, ClusterBind9Provider - least privilege)
 - ✅ Automated RBAC verification script (CI/CD)
 - ✅ Separation of duties (2+ reviewers for code changes)
 

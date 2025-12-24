@@ -2,6 +2,61 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-23 23:30] - Breaking: Rename Bind9GlobalCluster to ClusterBind9Provider
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **API Breaking Change**: Renamed CRD kind from `Bind9GlobalCluster` to `ClusterBind9Provider`
+  - `src/crd.rs`: Renamed struct from `Bind9GlobalCluster` to `ClusterBind9Provider`
+  - `src/crd.rs`: Renamed spec struct from `Bind9GlobalClusterSpec` to `ClusterBind9ProviderSpec`
+  - `src/crd.rs`: Updated CRD shortnames from `b9gc`, `b9gcs` to `cb9p`, `cb9ps`
+  - `src/constants.rs`: Renamed constant from `KIND_BIND9_GLOBALCLUSTER` to `KIND_CLUSTER_BIND9_PROVIDER`
+  - `src/labels.rs`: Renamed constant from `MANAGED_BY_BIND9_GLOBAL_CLUSTER` to `MANAGED_BY_CLUSTER_BIND9_PROVIDER`
+  - `src/reconcilers/`: Renamed `bind9globalcluster.rs` to `clusterbind9provider.rs`
+  - `src/reconcilers/`: Renamed `bind9globalcluster_tests.rs` to `clusterbind9provider_tests.rs`
+  - `src/reconcilers/mod.rs`: Updated exports to use new function names
+  - `src/main.rs`: Updated controller registration and wrapper functions
+  - All reconcilers updated to use new type names
+- **Field Rename**: Changed DNSZone field from `globalClusterRef` to `clusterProviderRef`
+  - `src/crd.rs`: Updated DNSZoneSpec field name
+  - All reconcilers updated to use new field name
+- **CRD Files**: Regenerated all CRD YAML files
+  - `deploy/crds/clusterbind9providers.crd.yaml`: New file (replaces bind9globalclusters.crd.yaml)
+  - `deploy/crds/bind9globalclusters.crd.yaml`: Deleted (replaced by clusterbind9providers.crd.yaml)
+  - `deploy/crds/dnszones.crd.yaml`: Regenerated with new field name
+- **Examples**: Updated all example YAML files
+  - `examples/bind9-cluster.yaml`: Updated to use ClusterBind9Provider kind
+  - `examples/dns-zone.yaml`: Updated to use clusterProviderRef field
+  - `examples/multi-tenancy.yaml`: Updated all references
+- **Documentation**: Updated all documentation
+  - `docs/src/concepts/`: Renamed `bind9globalcluster.md` to `clusterbind9provider.md`
+  - Updated 11 documentation files with new terminology
+  - `docs/src/SUMMARY.md`: Updated to reference new filename
+- **RBAC**: Updated role definitions
+  - `deploy/rbac/role.yaml`: Updated resource name from `bind9globalclusters` to `clusterbind9providers`
+  - `deploy/rbac/role-admin.yaml`: Updated resource name from `bind9globalclusters` to `clusterbind9providers`
+
+### Why
+The new naming better reflects the resource's purpose and scope:
+- **Explicit Scope**: "Cluster" prefix clarifies this is a cluster-scoped resource (not namespace-scoped)
+- **Provider Semantics**: "Provider" better describes that it provides BIND9 DNS infrastructure
+- **Consistency**: Aligns with Kubernetes naming conventions (e.g., ClusterRole, ClusterRoleBinding)
+
+### Impact
+- [x] **Breaking change** - Requires manual migration
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+### Migration Steps
+1. Export existing Bind9GlobalCluster resources: `kubectl get bind9globalclusters -o yaml > backup.yaml`
+2. Update CRDs: `kubectl replace --force -f deploy/crds/`
+3. Update backed up YAML files:
+   - Change `kind: Bind9GlobalCluster` to `kind: ClusterBind9Provider`
+   - Change `globalClusterRef:` to `clusterProviderRef:` in DNSZone resources
+4. Apply updated resources: `kubectl apply -f backup.yaml`
+
 ## [2025-12-23 22:00] - CI/CD: Migrate Workflows to firestoned/github-actions
 
 **Author:** Erick Bourgeois

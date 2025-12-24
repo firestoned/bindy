@@ -16,7 +16,7 @@
   - [Architecture Diagrams](./concepts/architecture-diagrams.md)
   - [Custom Resource Definitions](./concepts/crds.md)
   - [Bind9Cluster](./concepts/bind9cluster.md)
-  - [Bind9GlobalCluster](./concepts/bind9globalcluster.md)
+  - [ClusterBind9Provider](./concepts/clusterbind9provider.md)
   - [Bind9Instance](./concepts/bind9instance.md)
   - [DNSZone](./concepts/dnszone.md)
   - [DNS Records](./concepts/records.md)

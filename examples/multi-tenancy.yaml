@@ -7,7 +7,7 @@
 #
 # This example demonstrates both multi-tenancy models supported by Bindy:
 #
-# 1. Platform-Managed DNS: Shared cluster-scoped Bind9GlobalCluster
+# 1. Platform-Managed DNS: Shared cluster-scoped ClusterBind9Provider
 #    - Platform team manages the DNS infrastructure (ClusterRole required)
 #    - Application teams manage their own zones and records (Role required)
 #    - Suitable for production workloads with centralized DNS management
@@ -20,13 +20,13 @@
 # Components:
 # - Namespaces: team-web, team-api
 # - RBAC: Roles and RoleBindings for platform and application teams
-# - Platform DNS: Bind9GlobalCluster (cluster-scoped, deployed separately)
+# - Platform DNS: ClusterBind9Provider (cluster-scoped, deployed separately)
 # - Tenant DNS: Bind9Cluster (namespace-scoped) in team-api namespace
 # - DNS Zones and Records for both models
 #
 # Prerequisites:
 # - Deploy the platform DNS cluster first: kubectl apply -f examples/bind9-cluster.yaml
-#   This creates a Bind9GlobalCluster named 'production-dns' (cluster-scoped resource)
+#   This creates a ClusterBind9Provider named 'production-dns' (cluster-scoped resource)
 #
 # Deployment:
 #   kubectl apply -f examples/multi-tenancy.yaml
@@ -213,12 +213,12 @@ metadata:
 
 ---
 # ============================================================================
-# Platform-Managed DNS: DNSZone for Web Team (uses globalClusterRef)
+# Platform-Managed DNS: DNSZone for Web Team (uses clusterProviderRef)
 # ============================================================================
-# The platform DNS cluster (production-dns) is a Bind9GlobalCluster
+# The platform DNS cluster (production-dns) is a ClusterBind9Provider
 # deployed separately via: kubectl apply -f examples/bind9-cluster.yaml
 #
-# DNSZones reference it using globalClusterRef, which works across namespaces
+# DNSZones reference it using clusterProviderRef, which works across namespaces
 # ============================================================================
 
 apiVersion: bindy.firestoned.io/v1alpha1
@@ -231,7 +231,7 @@ metadata:
     environment: production
 spec:
   zoneName: web.example.com
-  globalClusterRef: production-dns  # References cluster-scoped Bind9GlobalCluster
+  clusterProviderRef: production-dns  # References cluster-scoped ClusterBind9Provider
   nameServerIps:
     ns1.example.com.: 192.168.0.60
   soaRecord:
@@ -457,7 +457,7 @@ metadata:
     environment: production
 spec:
   zoneName: api.example.com
-  globalClusterRef: production-dns  # API team uses platform DNS for production
+  clusterProviderRef: production-dns  # API team uses platform DNS for production
   nameServerIps:
     ns1.example.com.: 192.168.0.60
   soaRecord:

@@ -29,8 +29,8 @@ spec:
     - jsonPath: .spec.clusterRef
       name: Cluster
       type: string
-    - jsonPath: .spec.globalClusterRef
-      name: Global Cluster
+    - jsonPath: .spec.clusterProviderRef
+      name: Provider
       type: string
     - jsonPath: .spec.ttl
       name: TTL
@@ -41,7 +41,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defines a zone (e.g., example.com) with SOA record parameters. Can reference either a namespace-scoped Bind9Cluster or cluster-scoped Bind9GlobalCluster.
+        description: DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defines a zone (e.g., example.com) with SOA record parameters. Can reference either a namespace-scoped Bind9Cluster or cluster-scoped ClusterBind9Provider.
         properties:
           spec:
             description: |-
@@ -53,9 +53,9 @@ spec:
 
               `DNSZones` can reference either:
               - A namespace-scoped `Bind9Cluster` (using `clusterRef`)
-              - A cluster-scoped `Bind9GlobalCluster` (using `globalClusterRef`)
+              - A cluster-scoped `ClusterBind9Provider` (using `clusterProviderRef`)
 
-              Exactly one of `clusterRef` or `globalClusterRef` must be specified.
+              Exactly one of `clusterRef` or `clusterProviderRef` must be specified.
 
               # Example: Namespace-scoped Cluster
 
@@ -89,7 +89,7 @@ spec:
                 namespace: production
               spec:
                 zoneName: example.com
-                globalClusterRef: shared-production-dns  # References Bind9GlobalCluster (cluster-scoped)
+                clusterProviderRef: shared-production-dns  # References ClusterBind9Provider (cluster-scoped)
                 soaRecord:
                   primaryNs: ns1.example.com.
                   adminEmail: admin.example.com.
@@ -101,6 +101,16 @@ spec:
                 ttl: 3600
               ```
             properties:
+              clusterProviderRef:
+                description: |-
+                  Reference to a cluster-scoped `ClusterBind9Provider`.
+
+                  Must match the name of a `ClusterBind9Provider` resource (cluster-scoped).
+                  The zone will be added to all instances in this provider.
+
+                  Either `clusterRef` or `clusterProviderRef` must be specified (not both).
+                nullable: true
+                type: string
               clusterRef:
                 description: |-
                   Reference to a namespace-scoped `Bind9Cluster` in the same namespace.
@@ -108,17 +118,7 @@ spec:
                   Must match the name of a `Bind9Cluster` resource in the same namespace.
                   The zone will be added to all instances in this cluster.
 
-                  Either `clusterRef` or `globalClusterRef` must be specified (not both).
-                nullable: true
-                type: string
-              globalClusterRef:
-                description: |-
-                  Reference to a cluster-scoped `Bind9GlobalCluster`.
-
-                  Must match the name of a `Bind9GlobalCluster` resource (cluster-scoped).
-                  The zone will be added to all instances in this global cluster.
-
-                  Either `clusterRef` or `globalClusterRef` must be specified (not both).
+                  Either `clusterRef` or `clusterProviderRef` must be specified (not both).
                 nullable: true
                 type: string
               nameServerIps:
