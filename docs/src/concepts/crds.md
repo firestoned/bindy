@@ -9,7 +9,7 @@ Bindy extends Kubernetes with these Custom Resource Definitions (CRDs).
 Represents cluster-level configuration shared across multiple BIND9 instances.
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
@@ -37,7 +37,7 @@ Learn more: [Bind9Cluster concept documentation](./bind9cluster.md)
 Represents a BIND9 DNS server instance that references a Bind9Cluster.
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
@@ -56,7 +56,7 @@ spec:
 Defines a DNS zone with SOA record and references a Bind9Instance.
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com

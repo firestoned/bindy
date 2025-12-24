@@ -13,7 +13,7 @@ See [Environment Variables](./env-vars.md) for details on all available configur
 Configure BIND9 instances through the `Bind9Instance` custom resource:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
@@ -53,7 +53,7 @@ spec:
 Or configure at the cluster level for all instances:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: my-cluster

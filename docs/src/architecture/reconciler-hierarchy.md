@@ -46,7 +46,7 @@ graph TD
 
 **Example**:
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: global-dns
@@ -86,7 +86,7 @@ Creates `Bind9Cluster` resources in each namespace: `platform-dns`, `team-web`, 
 
 **Example**:
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: my-cluster
@@ -146,7 +146,7 @@ if !should_reconcile && !deployment_exists {
 
 **Example**:
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: my-cluster-primary-0
@@ -197,7 +197,7 @@ Creates: ServiceAccount, Secret, ConfigMap, Deployment, Service for `my-cluster-
 
 **Example**:
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-zone
@@ -255,7 +255,7 @@ Creates zone `example.com` in all instances of `my-cluster` via HTTP API.
 
 **Example**:
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example-com
@@ -568,7 +568,7 @@ kubectl get deployment <name> -n <namespace> -o yaml | grep -A 10 ownerReference
 Expected output:
 ```yaml
 ownerReferences:
-- apiVersion: bindy.firestoned.io/v1alpha1
+- apiVersion: bindy.firestoned.io/v1beta1
   blockOwnerDeletion: true
   controller: true
   kind: ClusterBind9Provider  # or Bind9Cluster, Bind9Instance

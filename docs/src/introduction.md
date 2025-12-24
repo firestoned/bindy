@@ -56,7 +56,7 @@ Here's how simple it is to create a DNS zone with records:
 
 ```yaml
 # Create a DNS zone
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
@@ -73,7 +73,7 @@ spec:
 
 ---
 # Add an A record
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example

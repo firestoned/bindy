@@ -15,7 +15,7 @@ The zone is created on the referenced BIND9 cluster using the RNDC protocol.
 ## Example
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
@@ -86,7 +86,7 @@ spec:
 This references a Bind9Instance resource:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: my-dns-cluster  # Referenced by DNSZone
@@ -203,7 +203,7 @@ DNSZone uses the following condition types:
 ### Simple Zone
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: simple-com
@@ -223,7 +223,7 @@ spec:
 ### Production Zone with Custom TTL
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: api-example-com

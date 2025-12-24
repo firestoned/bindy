@@ -5,7 +5,7 @@ TXT records store arbitrary text data in DNS. They're commonly used for domain v
 ## Creating a TXT Record
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: verification-txt
@@ -26,7 +26,7 @@ spec:
 Authorize mail servers to send email on behalf of your domain:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: spf-record
@@ -50,7 +50,7 @@ Common SPF mechanisms:
 Publish DKIM public keys:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: dkim-selector
@@ -66,7 +66,7 @@ spec:
 Set email authentication policy:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: dmarc-policy
@@ -88,7 +88,7 @@ Verify domain ownership for services:
 
 ```yaml
 # Google verification
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: google-verification
@@ -98,7 +98,7 @@ spec:
   text: "google-site-verification=1234567890abcdef"
 ---
 # Microsoft verification
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: ms-verification
@@ -113,7 +113,7 @@ spec:
 #### Atlassian Domain Verification
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: atlassian-verify
@@ -126,7 +126,7 @@ spec:
 #### Stripe Domain Verification
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: stripe-verify
@@ -142,7 +142,7 @@ Some records require multiple TXT strings. Create separate records:
 
 ```yaml
 # SPF record
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: txt-spf
@@ -152,7 +152,7 @@ spec:
   text: "v=spf1 include:_spf.google.com ~all"
 ---
 # Domain verification (same name, different value)
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: txt-verify

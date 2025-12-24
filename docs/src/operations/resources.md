@@ -7,7 +7,7 @@ Configure CPU and memory limits for BIND9 pods.
 Configure resources in the Bind9Instance spec:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns

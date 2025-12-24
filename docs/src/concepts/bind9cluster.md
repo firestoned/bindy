@@ -14,7 +14,7 @@ A Bind9Cluster defines cluster-level configuration that can be inherited by mult
 ## Example
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
@@ -83,7 +83,7 @@ The relationship between Bind9Cluster and Bind9Instance:
 
 ```yaml
 # Cluster defines shared configuration
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: prod-cluster
@@ -97,7 +97,7 @@ spec:
 
 ---
 # Instance references the cluster
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
@@ -199,7 +199,7 @@ The operator automatically scales instances up and down based on the replica cou
 When you specify replica counts in the cluster spec, the operator automatically creates the corresponding instances:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
@@ -236,7 +236,7 @@ And annotated with:
 Example of a managed instance:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: production-dns-primary-0
@@ -296,7 +296,7 @@ kubectl delete configmap production-dns-primary-0-config -n dns-system
 ```bash
 # Initial cluster with 2 primary instances
 kubectl apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
@@ -324,7 +324,7 @@ kubectl patch bind9cluster production-dns -n dns-system --type=merge -p '{"spec"
 You can mix managed and manual instances:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: mixed-cluster
@@ -335,7 +335,7 @@ spec:
   # No secondary replicas - create manually
 ---
 # Manual instance with custom configuration
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: custom-secondary
@@ -421,7 +421,7 @@ kubectl patch bind9cluster production-dns -p '{"metadata":{"finalizers":null}}' 
 ### Multi-Region DNS Cluster
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: global-dns
@@ -448,7 +448,7 @@ spec:
 ### Development Cluster
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: dev-dns
@@ -472,7 +472,7 @@ spec:
 Use a custom container image across all instances:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: custom-image-cluster
@@ -522,7 +522,7 @@ data:
       };
     };
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: custom-config-cluster

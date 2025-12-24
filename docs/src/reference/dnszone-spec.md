@@ -5,7 +5,7 @@ Complete specification for the DNSZone Custom Resource Definition.
 ## Resource Definition
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: string
@@ -272,7 +272,7 @@ status:
 ### Simple Primary Zone
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
@@ -294,7 +294,7 @@ spec:
 ### Production Zone with Custom TTL
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: api-example-com
@@ -316,7 +316,7 @@ spec:
 ### Reverse DNS Zone
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: reverse-zone
@@ -339,7 +339,7 @@ spec:
 
 ```yaml
 # East Region Zone
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com-east
@@ -358,7 +358,7 @@ spec:
 
 ---
 # West Region Zone
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com-west

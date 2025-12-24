@@ -13,7 +13,7 @@ Zone transfers replicate DNS zone data from primary to secondary servers using A
 Allow zone transfers to secondary servers:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
@@ -29,7 +29,7 @@ spec:
 Configure secondary zones to transfer from primary:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com-secondary
@@ -193,7 +193,7 @@ stringData:
 
 ---
 # 2. Reference the secret in Bind9Cluster
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
@@ -268,7 +268,7 @@ kubectl exec -n dns-system deployment/secondary-dns -- \
 
 ```yaml
 # Primary Instance
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
@@ -281,7 +281,7 @@ spec:
       - "10.0.0.0/8"
 ---
 # Primary Zone
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com-primary
@@ -301,7 +301,7 @@ spec:
     negativeTtl: 86400
 ---
 # Secondary Instance  
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary-dns
@@ -311,7 +311,7 @@ spec:
   replicas: 2
 ---
 # Secondary Zone
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com-secondary

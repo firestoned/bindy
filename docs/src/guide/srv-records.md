@@ -5,7 +5,7 @@ SRV records specify the location of services, including hostname and port number
 ## Creating an SRV Record
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: xmpp-server
@@ -44,7 +44,7 @@ The DNS name format is: `_service._proto.name.domain`
 
 ```yaml
 # Client connections
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: xmpp-client
@@ -59,7 +59,7 @@ spec:
   target: xmpp.example.com.
 ---
 # Server-to-server
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: xmpp-server
@@ -78,7 +78,7 @@ spec:
 
 ```yaml
 # SIP over TCP
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: sip-tcp
@@ -93,7 +93,7 @@ spec:
   target: sip.example.com.
 ---
 # SIP over UDP
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: sip-udp
@@ -111,7 +111,7 @@ spec:
 ### LDAP
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: ldap-service
@@ -129,7 +129,7 @@ spec:
 ### Minecraft Server
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: minecraft
@@ -150,7 +150,7 @@ spec:
 
 ```yaml
 # Primary server (priority 10)
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: sip-primary
@@ -165,7 +165,7 @@ spec:
   target: sip1.example.com.
 ---
 # Backup server (priority 20)
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: sip-backup
@@ -184,7 +184,7 @@ spec:
 
 ```yaml
 # Server 1 (weight 70 = 70% of traffic)
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: srv-1
@@ -199,7 +199,7 @@ spec:
   target: xmpp1.example.com.
 ---
 # Server 2 (weight 30 = 30% of traffic)
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: srv-2
@@ -232,7 +232,7 @@ SRV records need corresponding A/AAAA records for targets:
 
 ```yaml
 # SRV record
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: service-srv
@@ -247,7 +247,7 @@ spec:
   target: server.example.com.
 ---
 # A record for target
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: server

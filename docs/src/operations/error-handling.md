@@ -52,7 +52,7 @@ spec:
 **Scenario:** DNS record references a zone that doesn't exist
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example
@@ -84,7 +84,7 @@ Warning  ZoneNotFound   No DNSZone found for zone example.com in namespace dns-s
 **Resolution:**
 1. Create the DNSZone resource:
    ```yaml
-   apiVersion: bindy.firestoned.io/v1alpha1
+   apiVersion: bindy.firestoned.io/v1beta1
    kind: DNSZone
    metadata:
      name: example-com
@@ -304,7 +304,7 @@ kubectl apply -f records/
 Tag related resources for easier monitoring:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example
