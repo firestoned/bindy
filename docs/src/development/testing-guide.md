@@ -398,7 +398,7 @@ make test-cov-view
 # Create many resources
 for i in {1..100}; do
   kubectl apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: test-${i}

@@ -15,7 +15,7 @@ A Bind9Instance defines:
 ## Example
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
@@ -139,7 +139,7 @@ spec:
 ### Instance with Custom Image
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: custom-image-dns
@@ -178,7 +178,7 @@ data:
       };
     };
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: custom-config-dns
@@ -192,7 +192,7 @@ spec:
 ### Instance Inheriting from Cluster
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: prod-cluster
@@ -206,7 +206,7 @@ spec:
     allowQuery:
       - "0.0.0.0/0"
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: prod-instance-1
@@ -220,7 +220,7 @@ spec:
 ### Canary Instance with Override
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: canary-instance

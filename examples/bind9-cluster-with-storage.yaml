@@ -9,7 +9,7 @@
 # 2. Apply the PVC first: kubectl apply -f storage-pvc.yaml
 # 3. Then apply this cluster: kubectl apply -f bind9-cluster-with-storage.yaml
 
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
@@ -57,7 +57,7 @@ spec:
 ---
 # Alternative: Instance-specific storage override
 # Use this pattern when different instances need different storage
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
@@ -82,7 +82,7 @@ spec:
       mountPath: /var/cache/bind
 
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary-dns

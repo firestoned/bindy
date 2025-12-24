@@ -5,7 +5,7 @@ Complete specification for the Bind9Cluster Custom Resource Definition.
 ## Resource Definition
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: string
@@ -455,7 +455,7 @@ status:
 ### Basic Production Cluster
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
@@ -479,7 +479,7 @@ spec:
 ### Cluster with Custom Image
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: custom-dns
@@ -500,7 +500,7 @@ spec:
 ### Recursive Resolver Cluster
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: resolver-cluster
@@ -528,7 +528,7 @@ spec:
 ### Multi-Region Cluster with ACLs
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: global-dns
@@ -562,7 +562,7 @@ spec:
 ### Cluster with Persistent Storage
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: persistent-dns

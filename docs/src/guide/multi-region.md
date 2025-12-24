@@ -15,7 +15,7 @@ A multi-region DNS setup typically includes:
 ### Primary in Region 1
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-us-east
@@ -40,7 +40,7 @@ spec:
 ### Secondary in Region 2
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary-us-west
@@ -61,7 +61,7 @@ spec:
 ### Secondary in Region 3
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary-eu-west
@@ -84,7 +84,7 @@ spec:
 Create zones that target all regions:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com

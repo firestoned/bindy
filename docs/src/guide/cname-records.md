@@ -5,7 +5,7 @@ CNAME (Canonical Name) records create aliases to other domain names.
 ## Creating a CNAME Record
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: blog-example-com
@@ -55,7 +55,7 @@ If a CNAME exists for a name, no other record types can exist for that same name
 
 ```yaml
 # ❌ Not allowed - www already has a CNAME
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: www-alias
@@ -65,7 +65,7 @@ spec:
   target: server.example.com.
 ---
 # ❌ This will conflict with the CNAME above
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-a-record
@@ -82,7 +82,7 @@ spec:
 Point to external services like CDNs or cloud providers:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: cdn-example
@@ -99,7 +99,7 @@ spec:
 Create aliases for subdomains:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: shop-example
@@ -118,7 +118,7 @@ This creates `shop.example.com -> www.example.com`.
 Point to internal Kubernetes services:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: cache-internal
@@ -135,7 +135,7 @@ spec:
 Create a www alias:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: www-example
@@ -191,7 +191,7 @@ Avoid creating CNAME loops:
 # a.example.com -> b.example.com
 # b.example.com -> a.example.com
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: cname-a
@@ -200,7 +200,7 @@ spec:
   name: a
   target: b.example.com.
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: cname-b

@@ -5,7 +5,7 @@ NS records delegate a subdomain to a different set of nameservers. This is essen
 ## Creating an NS Record
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: subdomain-ns
@@ -27,7 +27,7 @@ Delegate a subdomain to external nameservers:
 
 ```yaml
 # Primary nameserver
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: dev-ns1
@@ -37,7 +37,7 @@ spec:
   nameserver: ns1.hosting-provider.com.
 ---
 # Secondary nameserver
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: dev-ns2
@@ -55,7 +55,7 @@ Now `dev.example.com` is managed by the hosting provider's DNS servers.
 
 ```yaml
 # Delegate subdomain to AWS Route 53
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: aws-ns1
@@ -64,7 +64,7 @@ spec:
   name: aws
   nameserver: ns-123.awsdns-12.com.
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: aws-ns2
@@ -78,7 +78,7 @@ spec:
 
 ```yaml
 # Production environment
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: prod-ns1
@@ -88,7 +88,7 @@ spec:
   nameserver: ns-prod1.example.com.
 ---
 # Staging environment
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: staging-ns1
@@ -116,7 +116,7 @@ When delegating to nameservers within the delegated zone, you need glue records 
 
 ```yaml
 # NS delegation
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: sub-ns
@@ -126,7 +126,7 @@ spec:
   nameserver: ns1.sub.example.com.  # Nameserver is within delegated zone
 ---
 # Glue record (A record for the nameserver)
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: sub-ns-glue

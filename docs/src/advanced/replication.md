@@ -91,7 +91,7 @@ graph TB
 
 ```yaml
 # Central Primary (us-east-1)
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: global-primary
@@ -105,7 +105,7 @@ spec:
       - "10.0.0.0/8"  # Allow all regional networks
 ---
 # Regional Secondaries
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary-us-west
@@ -115,7 +115,7 @@ metadata:
 spec:
   replicas: 2
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary-eu-west

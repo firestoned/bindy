@@ -101,7 +101,7 @@ The zone will be created on new instances and you can delete from old ones.
 Create multiple ARecord resources with different names but same spec.name:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-1
@@ -110,7 +110,7 @@ spec:
   name: www
   ipv4Address: "192.0.2.1"
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-2

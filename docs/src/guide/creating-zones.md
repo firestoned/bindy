@@ -24,7 +24,7 @@ First, ensure you have a cluster and instance:
 
 ```yaml
 # Step 1: Create a Bind9Cluster (if not already created)
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
@@ -40,7 +40,7 @@ spec:
 
 ---
 # Step 2: Create a Bind9Instance (if not already created)
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
@@ -52,7 +52,7 @@ spec:
 
 ---
 # Step 3: Create the DNSZone
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
@@ -98,7 +98,7 @@ Name:         example-com
 Namespace:    dns-system
 Labels:       <none>
 Annotations:  <none>
-API Version:  bindy.firestoned.io/v1alpha1
+API Version:  bindy.firestoned.io/v1beta1
 Kind:         DNSZone
 Spec:
   Cluster Ref:  primary-dns

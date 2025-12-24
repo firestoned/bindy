@@ -102,7 +102,7 @@ Bindy manages DNS zones dynamically using BIND9's RNDC (Remote Name Daemon Contr
 
 ```yaml
 # 1. Operator creates BIND9 instance
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
@@ -115,7 +115,7 @@ spec:
     allowQuery: ["any"]
 
 # 2. Controller (sidecar) watches zones
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
@@ -135,7 +135,7 @@ spec:
     negativeTtl: 86400
 
 # 3. Controller (sidecar) watches records
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example-com

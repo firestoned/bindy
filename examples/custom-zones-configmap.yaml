@@ -43,7 +43,7 @@ data:
 
 ---
 # Bind9Instance using the custom zones ConfigMap
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: dns-with-custom-zones

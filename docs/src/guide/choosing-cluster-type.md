@@ -68,7 +68,7 @@ graph TD
 
 **1. Development Team Sandbox**
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: dev-dns
@@ -83,7 +83,7 @@ spec:
     options:
       - "recursion yes"  # Allow recursion for dev
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: test-zone
@@ -105,7 +105,7 @@ spec:
 **2. CI/CD Ephemeral Environments**
 ```yaml
 # Each PR creates isolated DNS infrastructure
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: pr-{{PR_NUMBER}}-dns
@@ -123,7 +123,7 @@ spec:
 **3. Multi-Tenant SaaS Platform**
 ```yaml
 # Each customer gets isolated DNS in their namespace
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: customer-dns
@@ -185,7 +185,7 @@ spec:
 
 **1. Production DNS Infrastructure**
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: production-dns
@@ -234,7 +234,7 @@ spec:
 **Application teams reference the cluster provider:**
 ```yaml
 # Application in any namespace can use the cluster provider
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: api-zone
@@ -253,7 +253,7 @@ spec:
   ttl: 3600
 ---
 # Another application in a different namespace
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: web-zone
@@ -274,7 +274,7 @@ spec:
 **2. Multi-Region DNS**
 ```yaml
 # Regional cluster providers for geo-distributed DNS
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: dns-us-east
@@ -292,7 +292,7 @@ spec:
     region-networks:
       - "10.0.0.0/8"
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: dns-eu-west
@@ -314,7 +314,7 @@ spec:
 **3. Platform DNS as a Service**
 ```yaml
 # Platform team provides multiple tiers of DNS service
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: dns-premium
@@ -330,7 +330,7 @@ spec:
   secondary:
     replicas: 5
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: dns-standard
@@ -396,7 +396,7 @@ graph TB
 
 ```yaml
 # Platform team manages production DNS globally
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: production-dns
@@ -406,7 +406,7 @@ spec:
     replicas: 3
 ---
 # Dev teams manage their own DNS per namespace
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: dev-dns
@@ -417,7 +417,7 @@ spec:
     replicas: 1
 ---
 # Production app references cluster provider
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: prod-zone
@@ -428,7 +428,7 @@ spec:
   soaRecord: { /* ... */ }
 ---
 # Dev app references namespace-scoped cluster
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: dev-zone
@@ -492,7 +492,7 @@ When you grow, migrate production to `ClusterBind9Provider` while keeping dev on
 
 1. **Create ClusterBind9Provider**:
    ```yaml
-   apiVersion: bindy.firestoned.io/v1alpha1
+   apiVersion: bindy.firestoned.io/v1beta1
    kind: ClusterBind9Provider
    metadata:
      name: shared-dns
@@ -508,7 +508,7 @@ When you grow, migrate production to `ClusterBind9Provider` while keeping dev on
 2. **Update DNSZone References**:
    ```yaml
    # Before
-   apiVersion: bindy.firestoned.io/v1alpha1
+   apiVersion: bindy.firestoned.io/v1beta1
    kind: DNSZone
    metadata:
      name: my-zone
@@ -518,7 +518,7 @@ When you grow, migrate production to `ClusterBind9Provider` while keeping dev on
      clusterRef: my-cluster  # namespace-scoped
 
    # After
-   apiVersion: bindy.firestoned.io/v1alpha1
+   apiVersion: bindy.firestoned.io/v1beta1
    kind: DNSZone
    metadata:
      name: my-zone
@@ -543,7 +543,7 @@ When you grow, migrate production to `ClusterBind9Provider` while keeping dev on
 
 1. **Create Bind9Cluster in Target Namespace**:
    ```yaml
-   apiVersion: bindy.firestoned.io/v1alpha1
+   apiVersion: bindy.firestoned.io/v1beta1
    kind: Bind9Cluster
    metadata:
      name: team-dns

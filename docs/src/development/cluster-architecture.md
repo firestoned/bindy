@@ -88,7 +88,7 @@ graph TB
 User creates a `Bind9Cluster`:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
@@ -116,7 +116,7 @@ User creates `Bind9Instance` resources:
 
 ```yaml
 # Primary instance
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
@@ -127,7 +127,7 @@ spec:
   replicas: 2
 ---
 # Secondary instance
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary-dns
@@ -152,7 +152,7 @@ spec:
 User creates a `DNSZone`:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
@@ -183,7 +183,7 @@ spec:
 User creates DNS records:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example-com
