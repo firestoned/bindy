@@ -21,22 +21,27 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Setup Rust build environment
-        uses: firestoned/github-actions/rust/setup-rust-build@v1.3.1
+        uses: firestoned/github-actions/rust/setup-rust-build@91de875aa3887b7cb029f380502c15b24a8f3999 # v1.3.1
         with:
           target: x86_64-unknown-linux-gnu
 
       - name: Generate SBOM (JSON and XML)
-        uses: firestoned/github-actions/rust/generate-sbom@v1.3.1
+        uses: firestoned/github-actions/rust/generate-sbom@91de875aa3887b7cb029f380502c15b24a8f3999 # v1.3.1
         with:
           format: both
           describe: binaries
 
       - name: Upload SBOM artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: sbom
           path: |
@@ -57,8 +62,13 @@ jobs:
     needs: generate-sbom
 
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+
       - name: Download SBOM artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: sbom
 

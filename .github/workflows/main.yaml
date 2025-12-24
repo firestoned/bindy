@@ -23,11 +23,16 @@ jobs:
     name: Verify SPDX License Headers
     runs-on: ubuntu-latest
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Check license headers
-        uses: firestoned/github-actions/security/license-check@v1.3.1
+        uses: firestoned/github-actions/security/license-check@91de875aa3887b7cb029f380502c15b24a8f3999 # v1.3.1
         with:
           copyright-holder: "Erick Bourgeois, firestoned"
           license-id: "MIT"
@@ -36,13 +41,18 @@ jobs:
     name: Verify Signed Commits
     runs-on: ubuntu-latest
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0  # Fetch all history for verification
 
       - name: Verify commits are signed
-        uses: firestoned/github-actions/security/verify-signed-commits@v1.3.1
+        uses: firestoned/github-actions/security/verify-signed-commits@91de875aa3887b7cb029f380502c15b24a8f3999 # v1.3.1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           verify-mode: push
@@ -66,26 +76,31 @@ jobs:
             artifact_name: bindy-linux-arm64
             binary_name: bindy
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Setup Rust build environment
-        uses: firestoned/github-actions/rust/setup-rust-build@v1.3.1
+        uses: firestoned/github-actions/rust/setup-rust-build@91de875aa3887b7cb029f380502c15b24a8f3999 # v1.3.1
         with:
           target: ${{ matrix.platform.target }}
 
       - name: Build binary
-        uses: firestoned/github-actions/rust/build-binary@v1.3.1
+        uses: firestoned/github-actions/rust/build-binary@91de875aa3887b7cb029f380502c15b24a8f3999 # v1.3.1
         with:
           target: ${{ matrix.platform.target }}
 
       - name: Generate SBOM
-        uses: firestoned/github-actions/rust/generate-sbom@v1.3.1
+        uses: firestoned/github-actions/rust/generate-sbom@91de875aa3887b7cb029f380502c15b24a8f3999 # v1.3.1
         with:
           target: ${{ matrix.platform.target }}
 
       - name: Upload binary and SBOM artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.platform.artifact_name }}
           path: |
@@ -98,11 +113,16 @@ jobs:
     runs-on: ubuntu-latest
     needs: [license-check, verify-commits]
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
 
       - name: Install tarpaulin
         run: cargo install cargo-tarpaulin
@@ -111,7 +131,7 @@ jobs:
         run: cargo tarpaulin --verbose --all-features --workspace --timeout 120 --out Xml
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4.6.0
         with:
           files: ./cobertura.xml
           fail_ci_if_error: false
@@ -128,12 +148,17 @@ jobs:
       image-repository-distroless: ${{ steps.version-distroless.outputs.image-repository }}
       short-sha: ${{ steps.version-chainguard.outputs.short-sha }}
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Extract version for Chainguard
         id: version-chainguard
-        uses: firestoned/github-actions/versioning/extract-version@v1.3.1
+        uses: firestoned/github-actions/versioning/extract-version@91de875aa3887b7cb029f380502c15b24a8f3999 # v1.3.1
         with:
           repository: firestoned/bindy
           workflow-type: main
@@ -141,7 +166,7 @@ jobs:
 
       - name: Extract version for Distroless
         id: version-distroless
-        uses: firestoned/github-actions/versioning/extract-version@v1.3.1
+        uses: firestoned/github-actions/versioning/extract-version@91de875aa3887b7cb029f380502c15b24a8f3999 # v1.3.1
         with:
           repository: firestoned/bindy
           workflow-type: main
@@ -171,20 +196,25 @@ jobs:
             image-tag: ${{ needs.extract-version.outputs.image-tag-distroless }}
             image-repository: ${{ needs.extract-version.outputs.image-repository-distroless }}
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Prepare Docker binaries
         uses: ./.github/actions/prepare-docker-binaries
 
       - name: Setup Docker environment
-        uses: firestoned/github-actions/docker/setup-docker@v1.3.1
+        uses: firestoned/github-actions/docker/setup-docker@91de875aa3887b7cb029f380502c15b24a8f3999 # v1.3.1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ghcr.io/${{ matrix.variant.image-repository }}
           tags: |
@@ -197,7 +227,7 @@ jobs:
 
       - name: Build and push Docker image (${{ matrix.variant.name }})
         id: docker_build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: .
           file: ${{ matrix.variant.dockerfile }}
@@ -217,11 +247,16 @@ jobs:
     runs-on: ubuntu-latest
     needs: [license-check, verify-commits]
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Run security scan
-        uses: firestoned/github-actions/rust/security-scan@v1.3.1
+        uses: firestoned/github-actions/rust/security-scan@91de875aa3887b7cb029f380502c15b24a8f3999 # v1.3.1
         with:
           cargo-audit-version: "0.22.0"
 
@@ -240,11 +275,16 @@ jobs:
             image-tag: ${{ needs.extract-version.outputs.image-tag-distroless }}
             image-repository: ${{ needs.extract-version.outputs.image-repository-distroless }}
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Run Trivy scan on ${{ matrix.variant.name }} image
-        uses: firestoned/github-actions/security/trivy-scan@v1.3.1
+        uses: firestoned/github-actions/security/trivy-scan@91de875aa3887b7cb029f380502c15b24a8f3999 # v1.3.1
         with:
           image-ref: ghcr.io/${{ matrix.variant.image-repository }}:${{ matrix.variant.image-tag }}
           sarif-category: trivy-main-${{ matrix.variant.name }}
