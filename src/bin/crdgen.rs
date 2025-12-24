@@ -12,7 +12,7 @@
 //! Generated files will be written to deploy/crds/ with proper headers.
 
 use bindy::crd::{
-    AAAARecord, ARecord, Bind9Cluster, Bind9GlobalCluster, Bind9Instance, CAARecord, CNAMERecord,
+    AAAARecord, ARecord, Bind9Cluster, Bind9Instance, CAARecord, CNAMERecord, ClusterBind9Provider,
     DNSZone, MXRecord, NSRecord, SRVRecord, TXTRecord,
 };
 use kube::CustomResourceExt;
@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     generate_crd::<CAARecord>("caarecords.crd.yaml", output_dir)?;
     generate_crd::<DNSZone>("dnszones.crd.yaml", output_dir)?;
     generate_crd::<Bind9Cluster>("bind9clusters.crd.yaml", output_dir)?;
-    generate_crd::<Bind9GlobalCluster>("bind9globalclusters.crd.yaml", output_dir)?;
+    generate_crd::<ClusterBind9Provider>("clusterbind9providers.crd.yaml", output_dir)?;
     generate_crd::<Bind9Instance>("bind9instances.crd.yaml", output_dir)?;
 
     println!("✓ Successfully generated CRD YAML files in deploy/crds/");

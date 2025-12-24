@@ -129,7 +129,7 @@ mod tests {
         let spec = DNSZoneSpec {
             zone_name: "example.com".into(),
             cluster_ref: Some("my-cluster".into()),
-            global_cluster_ref: None,
+            cluster_provider_ref: None,
             soa_record: soa,
             ttl: Some(3600),
             name_server_ips: None,

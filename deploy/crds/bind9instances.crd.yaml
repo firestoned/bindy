@@ -1389,7 +1389,7 @@ spec:
 
                   Can reference either:
                   - A namespace-scoped `Bind9Cluster` (must be in the same namespace as this instance)
-                  - A cluster-scoped `Bind9GlobalCluster` (cluster-wide, accessible from any namespace)
+                  - A cluster-scoped `ClusterBind9Provider` (cluster-wide, accessible from any namespace)
 
                   The cluster provides shared configuration and defines the logical grouping.
                   The controller will automatically detect whether this references a namespace-scoped

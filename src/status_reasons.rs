@@ -11,7 +11,7 @@
 //!
 //! Bindy uses a hierarchical status tracking system where each resource tracks its children:
 //!
-//! - **`Bind9GlobalCluster`** → tracks `Bind9Cluster` resources
+//! - **`ClusterBind9Provider`** → tracks `Bind9Cluster` resources
 //! - **`Bind9Cluster`** → tracks `Bind9Instance` resources
 //! - **`Bind9Instance`** → tracks `Pod` replicas
 //!
@@ -220,7 +220,7 @@ pub const REASON_INSTANCES_SCALING: &str = "InstancesScaling";
 pub const REASON_INSTANCES_PENDING: &str = "InstancesPending";
 
 // ============================================================================
-// Bind9GlobalCluster Specific Reasons
+// ClusterBind9Provider Specific Reasons
 // ============================================================================
 
 /// All namespace-scoped `Bind9Cluster` resources are ready.

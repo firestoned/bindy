@@ -264,22 +264,22 @@ async fn create_or_update_resources(
         }
     };
 
-    // Fetch the Bind9GlobalCluster (cluster-scoped) if no namespace-scoped cluster was found
-    let global_cluster = if cluster.is_none() && !instance.spec.cluster_ref.is_empty() {
-        debug!(cluster_ref = %instance.spec.cluster_ref, "Fetching Bind9GlobalCluster");
-        let global_cluster_api: Api<crate::crd::Bind9GlobalCluster> = Api::all(client.clone());
-        match global_cluster_api.get(&instance.spec.cluster_ref).await {
+    // Fetch the ClusterBind9Provider (cluster-scoped) if no namespace-scoped cluster was found
+    let cluster_provider = if cluster.is_none() && !instance.spec.cluster_ref.is_empty() {
+        debug!(cluster_ref = %instance.spec.cluster_ref, "Fetching ClusterBind9Provider");
+        let cluster_provider_api: Api<crate::crd::ClusterBind9Provider> = Api::all(client.clone());
+        match cluster_provider_api.get(&instance.spec.cluster_ref).await {
             Ok(gc) => {
                 debug!(
                     cluster_name = %instance.spec.cluster_ref,
-                    "Successfully fetched Bind9GlobalCluster"
+                    "Successfully fetched ClusterBind9Provider"
                 );
-                info!("Found Bind9GlobalCluster: {}", instance.spec.cluster_ref);
+                info!("Found ClusterBind9Provider: {}", instance.spec.cluster_ref);
                 Some(gc)
             }
             Err(e) => {
                 warn!(
-                    "Failed to fetch Bind9GlobalCluster {}: {}. Proceeding with instance-only config.",
+                    "Failed to fetch ClusterBind9Provider {}: {}. Proceeding with instance-only config.",
                     instance.spec.cluster_ref, e
                 );
                 None
@@ -305,7 +305,7 @@ async fn create_or_update_resources(
         name,
         instance,
         cluster.as_ref(),
-        global_cluster.as_ref(),
+        cluster_provider.as_ref(),
     )
     .await?;
 
@@ -317,7 +317,7 @@ async fn create_or_update_resources(
         name,
         instance,
         cluster.as_ref(),
-        global_cluster.as_ref(),
+        cluster_provider.as_ref(),
     )
     .await?;
 
@@ -329,7 +329,7 @@ async fn create_or_update_resources(
         name,
         instance,
         cluster.as_ref(),
-        global_cluster.as_ref(),
+        cluster_provider.as_ref(),
     )
     .await?;
 
@@ -447,7 +447,7 @@ async fn create_or_update_configmap(
     name: &str,
     instance: &Bind9Instance,
     cluster: Option<&Bind9Cluster>,
-    _global_cluster: Option<&crate::crd::Bind9GlobalCluster>,
+    _cluster_provider: Option<&crate::crd::ClusterBind9Provider>,
 ) -> Result<()> {
     // If instance belongs to a cluster, skip ConfigMap creation
     // The cluster creates a shared ConfigMap that all instances use
@@ -518,9 +518,9 @@ async fn create_or_update_deployment(
     name: &str,
     instance: &Bind9Instance,
     cluster: Option<&Bind9Cluster>,
-    global_cluster: Option<&crate::crd::Bind9GlobalCluster>,
+    cluster_provider: Option<&crate::crd::ClusterBind9Provider>,
 ) -> Result<()> {
-    let deployment = build_deployment(name, namespace, instance, cluster, global_cluster);
+    let deployment = build_deployment(name, namespace, instance, cluster, cluster_provider);
     create_or_replace(client, namespace, &deployment).await
 }
 
@@ -531,7 +531,7 @@ async fn create_or_update_service(
     name: &str,
     instance: &Bind9Instance,
     cluster: Option<&Bind9Cluster>,
-    global_cluster: Option<&crate::crd::Bind9GlobalCluster>,
+    cluster_provider: Option<&crate::crd::ClusterBind9Provider>,
 ) -> Result<()> {
     // Get custom service spec based on instance role from cluster (namespace-scoped or global)
     let custom_spec = cluster
@@ -551,7 +551,7 @@ async fn create_or_update_service(
         })
         .or_else(|| {
             // Fall back to global cluster if no namespace-scoped cluster
-            global_cluster.and_then(|gc| match instance.spec.role {
+            cluster_provider.and_then(|gc| match instance.spec.role {
                 crate::crd::ServerRole::Primary => gc
                     .spec
                     .common

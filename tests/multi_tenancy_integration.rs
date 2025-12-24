@@ -4,7 +4,7 @@
 //! Integration tests for Multi-Tenancy Dual-Cluster Model
 //!
 //! These tests verify:
-//! - Bind9GlobalCluster (cluster-scoped) functionality
+//! - ClusterBind9Provider (cluster-scoped) functionality
 //! - Bind9Cluster (namespace-scoped) functionality
 //! - Namespace isolation between tenants
 //! - DNSZone references to both cluster types
@@ -18,8 +18,8 @@
 // mod common; // Not needed for these tests
 
 use bindy::crd::{
-    Bind9Cluster, Bind9ClusterCommonSpec, Bind9ClusterSpec, Bind9GlobalCluster,
-    Bind9GlobalClusterSpec, Bind9Instance, DNSZone, DNSZoneSpec, SOARecord, ServerRole,
+    Bind9Cluster, Bind9ClusterCommonSpec, Bind9ClusterSpec, Bind9Instance, ClusterBind9Provider,
+    ClusterBind9ProviderSpec, DNSZone, DNSZoneSpec, SOARecord, ServerRole,
 };
 use k8s_openapi::api::core::v1::Namespace;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
@@ -241,19 +241,19 @@ async fn force_delete_namespace(client: &Client, namespace: &str) {
     }
 }
 
-/// Create a Bind9GlobalCluster (cluster-scoped)
+/// Create a ClusterBind9Provider (cluster-scoped)
 async fn create_global_cluster(
     client: &Client,
     name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let global_clusters: Api<Bind9GlobalCluster> = Api::all(client.clone());
+    let cluster_providers: Api<ClusterBind9Provider> = Api::all(client.clone());
 
-    let cluster = Bind9GlobalCluster {
+    let cluster = ClusterBind9Provider {
         metadata: ObjectMeta {
             name: Some(name.to_string()),
             ..Default::default()
         },
-        spec: Bind9GlobalClusterSpec {
+        spec: ClusterBind9ProviderSpec {
             namespace: None, // Use operator's namespace
             common: Bind9ClusterCommonSpec {
                 version: Some("9.18".to_string()),
@@ -271,31 +271,34 @@ async fn create_global_cluster(
         status: None,
     };
 
-    match global_clusters
+    match cluster_providers
         .create(&PostParams::default(), &cluster)
         .await
     {
         Ok(_) => {
-            println!("✓ Created Bind9GlobalCluster: {name}");
+            println!("✓ Created ClusterBind9Provider: {name}");
             Ok(())
         }
         Err(kube::Error::Api(ae)) if ae.code == 409 => {
-            println!("  Bind9GlobalCluster already exists: {name}");
+            println!("  ClusterBind9Provider already exists: {name}");
             Ok(())
         }
         Err(e) => Err(Box::new(e)),
     }
 }
 
-/// Delete a Bind9GlobalCluster
+/// Delete a ClusterBind9Provider
 async fn delete_global_cluster(client: &Client, name: &str) {
-    let global_clusters: Api<Bind9GlobalCluster> = Api::all(client.clone());
-    match global_clusters.delete(name, &DeleteParams::default()).await {
-        Ok(_) => println!("✓ Deleted Bind9GlobalCluster: {name}"),
+    let cluster_providers: Api<ClusterBind9Provider> = Api::all(client.clone());
+    match cluster_providers
+        .delete(name, &DeleteParams::default())
+        .await
+    {
+        Ok(_) => println!("✓ Deleted ClusterBind9Provider: {name}"),
         Err(kube::Error::Api(ae)) if ae.code == 404 => {
-            println!("  Bind9GlobalCluster already deleted: {name}");
+            println!("  ClusterBind9Provider already deleted: {name}");
         }
-        Err(e) => eprintln!("⚠ Failed to delete Bind9GlobalCluster {name}: {e}"),
+        Err(e) => eprintln!("⚠ Failed to delete ClusterBind9Provider {name}: {e}"),
     }
 }
 
@@ -409,7 +412,7 @@ async fn create_zone_with_cluster_ref(
         spec: DNSZoneSpec {
             zone_name: zone_name.to_string(),
             cluster_ref: Some(cluster_ref.to_string()),
-            global_cluster_ref: None,
+            cluster_provider_ref: None,
             soa_record: SOARecord {
                 primary_ns: format!("ns1.{zone_name}."),
                 admin_email: format!("admin.{zone_name}."),
@@ -438,13 +441,13 @@ async fn create_zone_with_cluster_ref(
     }
 }
 
-/// Create a DNSZone with globalClusterRef (cluster-scoped)
-async fn create_zone_with_global_cluster_ref(
+/// Create a DNSZone with clusterProviderRef (cluster-scoped)
+async fn create_zone_with_cluster_provider_ref(
     client: &Client,
     namespace: &str,
     name: &str,
     zone_name: &str,
-    global_cluster_ref: &str,
+    cluster_provider_ref: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let zones: Api<DNSZone> = Api::namespaced(client.clone(), namespace);
 
@@ -457,7 +460,7 @@ async fn create_zone_with_global_cluster_ref(
         spec: DNSZoneSpec {
             zone_name: zone_name.to_string(),
             cluster_ref: None,
-            global_cluster_ref: Some(global_cluster_ref.to_string()),
+            cluster_provider_ref: Some(cluster_provider_ref.to_string()),
             soa_record: SOARecord {
                 primary_ns: format!("ns1.{zone_name}."),
                 admin_email: format!("admin.{zone_name}."),
@@ -476,7 +479,7 @@ async fn create_zone_with_global_cluster_ref(
     match zones.create(&PostParams::default(), &zone).await {
         Ok(_) => {
             println!(
-                "✓ Created DNSZone: {namespace}/{name} → globalClusterRef={global_cluster_ref}"
+                "✓ Created DNSZone: {namespace}/{name} → clusterProviderRef={cluster_provider_ref}"
             );
             Ok(())
         }
@@ -519,8 +522,8 @@ where
 
 #[tokio::test]
 #[ignore] // Run with: cargo test --test multi_tenancy_integration -- --ignored
-async fn test_bind9globalcluster_creation() {
-    println!("\n=== Test: Bind9GlobalCluster Creation ===\n");
+async fn test_clusterbind9provider_creation() {
+    println!("\n=== Test: ClusterBind9Provider Creation ===\n");
 
     let client = match get_client_or_skip().await {
         Some(c) => c,
@@ -531,18 +534,18 @@ async fn test_bind9globalcluster_creation() {
 
     // Create global cluster
     if let Err(e) = create_global_cluster(&client, cluster_name).await {
-        panic!("Failed to create Bind9GlobalCluster: {e}");
+        panic!("Failed to create ClusterBind9Provider: {e}");
     }
 
     // Wait for cluster to exist
-    let global_clusters: Api<Bind9GlobalCluster> = Api::all(client.clone());
-    match wait_for_resource(&global_clusters, cluster_name, TEST_TIMEOUT).await {
+    let cluster_providers: Api<ClusterBind9Provider> = Api::all(client.clone());
+    match wait_for_resource(&cluster_providers, cluster_name, TEST_TIMEOUT).await {
         Ok(cluster) => {
-            println!("✓ Bind9GlobalCluster exists: {cluster_name}");
+            println!("✓ ClusterBind9Provider exists: {cluster_name}");
             assert_eq!(cluster.metadata.name.as_deref(), Some(cluster_name));
             assert_eq!(cluster.spec.common.version, Some("9.18".to_string()));
         }
-        Err(e) => panic!("Failed to verify Bind9GlobalCluster: {e}"),
+        Err(e) => panic!("Failed to verify ClusterBind9Provider: {e}"),
     }
 
     // Cleanup
@@ -602,8 +605,8 @@ async fn test_bind9cluster_namespace_scoped() {
 
 #[tokio::test]
 #[ignore]
-async fn test_dnszone_with_global_cluster_ref() {
-    println!("\n=== Test: DNSZone with globalClusterRef ===\n");
+async fn test_dnszone_with_cluster_provider_ref() {
+    println!("\n=== Test: DNSZone with clusterProviderRef ===\n");
 
     let client = match get_client_or_skip().await {
         Some(c) => c,
@@ -616,7 +619,7 @@ async fn test_dnszone_with_global_cluster_ref() {
 
     // Setup
     if let Err(e) = create_global_cluster(&client, global_cluster_name).await {
-        panic!("Failed to create Bind9GlobalCluster: {e}");
+        panic!("Failed to create ClusterBind9Provider: {e}");
     }
 
     if let Err(e) = create_namespace(&client, namespace).await {
@@ -624,7 +627,7 @@ async fn test_dnszone_with_global_cluster_ref() {
     }
 
     // Create DNSZone referencing global cluster
-    if let Err(e) = create_zone_with_global_cluster_ref(
+    if let Err(e) = create_zone_with_cluster_provider_ref(
         &client,
         namespace,
         zone_name,
@@ -643,7 +646,7 @@ async fn test_dnszone_with_global_cluster_ref() {
             println!("✓ DNSZone exists: {namespace}/{zone_name}");
             assert_eq!(zone.spec.zone_name, "example.com");
             assert_eq!(
-                zone.spec.global_cluster_ref.as_deref(),
+                zone.spec.cluster_provider_ref.as_deref(),
                 Some(global_cluster_name)
             );
             assert_eq!(zone.spec.cluster_ref, None);
@@ -695,7 +698,7 @@ async fn test_dnszone_with_cluster_ref() {
             println!("✓ DNSZone exists: {namespace}/{zone_name}");
             assert_eq!(zone.spec.zone_name, "test.local");
             assert_eq!(zone.spec.cluster_ref.as_deref(), Some(cluster_name));
-            assert_eq!(zone.spec.global_cluster_ref, None);
+            assert_eq!(zone.spec.cluster_provider_ref, None);
         }
         Err(e) => panic!("Failed to verify DNSZone: {e}"),
     }
@@ -789,7 +792,7 @@ async fn test_global_cluster_cross_namespace_access() {
 
     // Setup
     if let Err(e) = create_global_cluster(&client, global_cluster_name).await {
-        panic!("Failed to create Bind9GlobalCluster: {e}");
+        panic!("Failed to create ClusterBind9Provider: {e}");
     }
 
     if let Err(e) = create_namespace(&client, namespace_a).await {
@@ -801,7 +804,7 @@ async fn test_global_cluster_cross_namespace_access() {
     }
 
     // Create zones in different namespaces referencing the same global cluster
-    if let Err(e) = create_zone_with_global_cluster_ref(
+    if let Err(e) = create_zone_with_cluster_provider_ref(
         &client,
         namespace_a,
         "zone-a",
@@ -813,7 +816,7 @@ async fn test_global_cluster_cross_namespace_access() {
         panic!("Failed to create zone in namespace A: {e}");
     }
 
-    if let Err(e) = create_zone_with_global_cluster_ref(
+    if let Err(e) = create_zone_with_cluster_provider_ref(
         &client,
         namespace_b,
         "zone-b",
@@ -833,7 +836,7 @@ async fn test_global_cluster_cross_namespace_access() {
         Ok(zone) => {
             println!("✓ Zone in namespace A references global cluster");
             assert_eq!(
-                zone.spec.global_cluster_ref.as_deref(),
+                zone.spec.cluster_provider_ref.as_deref(),
                 Some(global_cluster_name)
             );
         }
@@ -844,7 +847,7 @@ async fn test_global_cluster_cross_namespace_access() {
         Ok(zone) => {
             println!("✓ Zone in namespace B references global cluster");
             assert_eq!(
-                zone.spec.global_cluster_ref.as_deref(),
+                zone.spec.cluster_provider_ref.as_deref(),
                 Some(global_cluster_name)
             );
         }
@@ -874,7 +877,7 @@ async fn test_bind9instance_references_global_cluster() {
 
     // Setup
     if let Err(e) = create_global_cluster(&client, global_cluster_name).await {
-        panic!("Failed to create Bind9GlobalCluster: {e}");
+        panic!("Failed to create ClusterBind9Provider: {e}");
     }
 
     if let Err(e) = create_namespace(&client, namespace).await {
@@ -913,7 +916,7 @@ async fn test_bind9instance_references_global_cluster() {
 
 #[tokio::test]
 #[ignore]
-async fn test_list_global_clusters_across_all_namespaces() {
+async fn test_list_cluster_providers_across_all_namespaces() {
     println!("\n=== Test: List Global Clusters Across All Namespaces ===\n");
 
     let client = match get_client_or_skip().await {
@@ -934,10 +937,10 @@ async fn test_list_global_clusters_across_all_namespaces() {
     }
 
     // List all global clusters
-    let global_clusters: Api<Bind9GlobalCluster> = Api::all(client.clone());
+    let cluster_providers: Api<ClusterBind9Provider> = Api::all(client.clone());
     let lp = ListParams::default();
 
-    match global_clusters.list(&lp).await {
+    match cluster_providers.list(&lp).await {
         Ok(cluster_list) => {
             let test_clusters: Vec<_> = cluster_list
                 .items
@@ -1002,7 +1005,7 @@ async fn test_hybrid_deployment() {
     }
 
     // Create production zone using global cluster
-    if let Err(e) = create_zone_with_global_cluster_ref(
+    if let Err(e) = create_zone_with_cluster_provider_ref(
         &client,
         prod_namespace,
         "prod-zone",
@@ -1035,7 +1038,7 @@ async fn test_hybrid_deployment() {
         Ok(zone) => {
             println!("✓ Production zone uses global cluster");
             assert_eq!(
-                zone.spec.global_cluster_ref.as_deref(),
+                zone.spec.cluster_provider_ref.as_deref(),
                 Some(global_cluster_name)
             );
         }

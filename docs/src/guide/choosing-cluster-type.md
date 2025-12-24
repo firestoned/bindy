@@ -1,17 +1,17 @@
 # Choosing a Cluster Type
 
-This guide helps you decide between `Bind9Cluster` (namespace-scoped) and `Bind9GlobalCluster` (cluster-scoped) for your DNS infrastructure.
+This guide helps you decide between `Bind9Cluster` (namespace-scoped) and `ClusterBind9Provider` (cluster-scoped) for your DNS infrastructure.
 
 ## Quick Decision Matrix
 
-| Factor | Bind9Cluster | Bind9GlobalCluster |
+| Factor | Bind9Cluster | ClusterBind9Provider |
 |--------|--------------|-------------------|
 | **Scope** | Single namespace | Cluster-wide |
 | **Who Manages** | Development teams | Platform teams |
 | **RBAC** | Role + RoleBinding | ClusterRole + ClusterRoleBinding |
 | **Visibility** | Namespace-only | All namespaces |
 | **Use Case** | Dev/test environments | Production infrastructure |
-| **Zone References** | `clusterRef` | `globalClusterRef` |
+| **Zone References** | `clusterRef` | `clusterProviderRef` |
 | **Isolation** | Complete isolation between teams | Shared infrastructure |
 | **Cost** | Higher (per-namespace overhead) | Lower (shared resources) |
 
@@ -25,7 +25,7 @@ graph TD
     Q1 -->|Platform Team| Q2{Shared across<br/>multiple namespaces?}
     Q1 -->|Development Team| Q3{Need isolation<br/>from other teams?}
 
-    Q2 -->|Yes| Global[Bind9GlobalCluster]
+    Q2 -->|Yes| Global[ClusterBind9Provider]
     Q2 -->|No| Cluster[Bind9Cluster]
 
     Q3 -->|Yes| Cluster
@@ -157,7 +157,7 @@ spec:
 - Each team must manage their own BIND9 instances
 - Duplication of configuration
 
-## When to Use Bind9GlobalCluster (Cluster-Scoped)
+## When to Use ClusterBind9Provider (Cluster-Scoped)
 
 ### Ideal For:
 
@@ -186,7 +186,7 @@ spec:
 **1. Production DNS Infrastructure**
 ```yaml
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: production-dns
   # No namespace - cluster-scoped
@@ -231,9 +231,9 @@ spec:
       mountPath: /var/cache/bind
 ```
 
-**Application teams reference the global cluster:**
+**Application teams reference the cluster provider:**
 ```yaml
-# Application in any namespace can use the global cluster
+# Application in any namespace can use the cluster provider
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
@@ -241,7 +241,7 @@ metadata:
   namespace: api-service  # Different namespace
 spec:
   zoneName: api.example.com
-  globalClusterRef: production-dns  # References cluster-scoped cluster
+  clusterProviderRef: production-dns  # References cluster-scoped cluster
   soaRecord:
     primaryNs: ns1.example.com.
     adminEmail: dns-admin.example.com.
@@ -260,7 +260,7 @@ metadata:
   namespace: web-frontend  # Different namespace
 spec:
   zoneName: www.example.com
-  globalClusterRef: production-dns  # Same global cluster
+  clusterProviderRef: production-dns  # Same cluster provider
   soaRecord:
     primaryNs: ns1.example.com.
     adminEmail: dns-admin.example.com.
@@ -273,9 +273,9 @@ spec:
 
 **2. Multi-Region DNS**
 ```yaml
-# Regional global clusters for geo-distributed DNS
+# Regional cluster providers for geo-distributed DNS
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: dns-us-east
   labels:
@@ -293,7 +293,7 @@ spec:
       - "10.0.0.0/8"
 ---
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: dns-eu-west
   labels:
@@ -315,7 +315,7 @@ spec:
 ```yaml
 # Platform team provides multiple tiers of DNS service
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: dns-premium
   labels:
@@ -331,7 +331,7 @@ spec:
     replicas: 5
 ---
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: dns-standard
   labels:
@@ -367,7 +367,7 @@ You can use **both** cluster types in the same Kubernetes cluster:
 ```mermaid
 graph TB
     subgraph "Production Workloads"
-        GlobalCluster[Bind9GlobalCluster<br/>production-dns]
+        GlobalCluster[ClusterBind9Provider<br/>production-dns]
         ProdZone1[DNSZone: api.example.com<br/>namespace: api-prod]
         ProdZone2[DNSZone: www.example.com<br/>namespace: web-prod]
     end
@@ -382,8 +382,8 @@ graph TB
         DevZoneB[DNSZone: dev-b.local<br/>namespace: dev-b]
     end
 
-    GlobalCluster -.globalClusterRef.-> ProdZone1
-    GlobalCluster -.globalClusterRef.-> ProdZone2
+    GlobalCluster -.clusterProviderRef.-> ProdZone1
+    GlobalCluster -.clusterProviderRef.-> ProdZone2
     ClusterA --> DevZoneA
     ClusterB --> DevZoneB
 
@@ -397,7 +397,7 @@ graph TB
 ```yaml
 # Platform team manages production DNS globally
 apiVersion: bindy.firestoned.io/v1alpha1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: production-dns
 spec:
@@ -416,7 +416,7 @@ spec:
   primary:
     replicas: 1
 ---
-# Production app references global cluster
+# Production app references cluster provider
 apiVersion: bindy.firestoned.io/v1alpha1
 kind: DNSZone
 metadata:
@@ -424,7 +424,7 @@ metadata:
   namespace: production
 spec:
   zoneName: app.example.com
-  globalClusterRef: production-dns
+  clusterProviderRef: production-dns
   soaRecord: { /* ... */ }
 ---
 # Dev app references namespace-scoped cluster
@@ -452,11 +452,11 @@ spec:
 - Lower learning curve
 
 **Migration Path:**
-When you grow, migrate production to `Bind9GlobalCluster` while keeping dev on `Bind9Cluster`.
+When you grow, migrate production to `ClusterBind9Provider` while keeping dev on `Bind9Cluster`.
 
 ### Scenario 2: Enterprise with Platform Team
 
-**Recommendation**: Use `Bind9GlobalCluster` for production, `Bind9Cluster` for dev
+**Recommendation**: Use `ClusterBind9Provider` for production, `Bind9Cluster` for dev
 
 **Why:**
 - Platform team provides production DNS as a service
@@ -486,14 +486,14 @@ When you grow, migrate production to `Bind9GlobalCluster` while keeping dev on `
 
 ## Migration Between Cluster Types
 
-### From Bind9Cluster to Bind9GlobalCluster
+### From Bind9Cluster to ClusterBind9Provider
 
 **Steps:**
 
-1. **Create Bind9GlobalCluster**:
+1. **Create ClusterBind9Provider**:
    ```yaml
    apiVersion: bindy.firestoned.io/v1alpha1
-   kind: Bind9GlobalCluster
+   kind: ClusterBind9Provider
    metadata:
      name: shared-dns
    spec:
@@ -525,7 +525,7 @@ When you grow, migrate production to `Bind9GlobalCluster` while keeping dev on `
      namespace: my-namespace
    spec:
      zoneName: example.com
-     globalClusterRef: shared-dns  # cluster-scoped
+     clusterProviderRef: shared-dns  # cluster-scoped
    ```
 
 3. **Update RBAC** (if needed):
@@ -537,7 +537,7 @@ When you grow, migrate production to `Bind9GlobalCluster` while keeping dev on `
    kubectl delete bind9cluster my-cluster -n my-namespace
    ```
 
-### From Bind9GlobalCluster to Bind9Cluster
+### From ClusterBind9Provider to Bind9Cluster
 
 **Steps:**
 
@@ -549,7 +549,7 @@ When you grow, migrate production to `Bind9GlobalCluster` while keeping dev on `
      name: team-dns
      namespace: my-namespace
    spec:
-     # Copy configuration from global cluster
+     # Copy configuration from cluster provider
      version: "9.18"
      primary:
        replicas: 2
@@ -559,7 +559,7 @@ When you grow, migrate production to `Bind9GlobalCluster` while keeping dev on `
    ```yaml
    # Before
    spec:
-     globalClusterRef: shared-dns
+     clusterProviderRef: shared-dns
 
    # After
    spec:
@@ -574,7 +574,7 @@ When you grow, migrate production to `Bind9GlobalCluster` while keeping dev on `
 | Choose This | If You Need |
 |-------------|-------------|
 | **Bind9Cluster** | Team autonomy, complete isolation, dev/test environments |
-| **Bind9GlobalCluster** | Shared infrastructure, platform management, production DNS |
+| **ClusterBind9Provider** | Shared infrastructure, platform management, production DNS |
 | **Both (Hybrid)** | Production on global, dev on namespace-scoped |
 
 **Key Takeaway**: There's no "wrong" choice - select based on your organizational structure and requirements. Many organizations use both cluster types for different purposes.

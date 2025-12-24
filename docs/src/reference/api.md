@@ -28,14 +28,14 @@ This document describes the Custom Resource Definitions (CRDs) provided by Bindy
 
 **API Version**: `bindy.firestoned.io/v1alpha1`
 
-DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defines a zone (e.g., example.com) with SOA record parameters. Can reference either a namespace-scoped Bind9Cluster or cluster-scoped Bind9GlobalCluster.
+DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defines a zone (e.g., example.com) with SOA record parameters. Can reference either a namespace-scoped Bind9Cluster or cluster-scoped ClusterBind9Provider.
 
 #### Spec Fields
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
-| `clusterRef` | string | No | Reference to a namespace-scoped \`Bind9Cluster\` in the same namespace.  Must match the name of a \`Bind9Cluster\` resource in the same namespace. The zone will be added to all instances in this cluster.  Either \`clusterRef\` or \`globalClusterRef\` must be specified (not both). |
-| `globalClusterRef` | string | No | Reference to a cluster-scoped \`Bind9GlobalCluster\`.  Must match the name of a \`Bind9GlobalCluster\` resource (cluster-scoped). The zone will be added to all instances in this global cluster.  Either \`clusterRef\` or \`globalClusterRef\` must be specified (not both). |
+| `clusterRef` | string | No | Reference to a namespace-scoped \`Bind9Cluster\` in the same namespace.  Must match the name of a \`Bind9Cluster\` resource in the same namespace. The zone will be added to all instances in this cluster.  Either \`clusterRef\` or \`clusterProviderRef\` must be specified (not both). |
+| `clusterProviderRef` | string | No | Reference to a cluster-scoped \`ClusterBind9Provider\`.  Must match the name of a \`ClusterBind9Provider\` resource (cluster-scoped). The zone will be added to all instances in this cluster provider.  Either \`clusterRef\` or \`clusterProviderRef\` must be specified (not both). |
 | `nameServerIps` | object | No | Map of nameserver hostnames to IP addresses for glue records.  Glue records provide IP addresses for nameservers within the zone's own domain. This is necessary when delegating subdomains where the nameserver is within the delegated zone itself.  Example: When delegating \`sub.example.com\` with nameserver \`ns1.sub.example.com\`, you must provide the IP address of \`ns1.sub.example.com\` as a glue record.  Format: \`{"ns1.example.com.": "192.0.2.1", "ns2.example.com.": "192.0.2.2"}\`  Note: Nameserver hostnames should end with a dot (.) for FQDN. |
 | `soaRecord` | object | Yes | SOA (Start of Authority) record - defines zone authority and refresh parameters.  The SOA record is required for all authoritative zones and contains timing information for zone transfers and caching. |
 | `ttl` | integer | No | Default TTL (Time To Live) for records in this zone, in seconds.  If not specified, individual records must specify their own TTL. Typical values: 300-86400 (5 minutes to 1 day). |
@@ -258,7 +258,7 @@ CAARecord specifies which certificate authorities are authorized to issue certif
 
 **API Version**: `bindy.firestoned.io/v1alpha1`
 
-Bind9Cluster defines a namespace-scoped logical grouping of BIND9 DNS server instances. Use this for tenant-managed DNS infrastructure isolated to a specific namespace. For platform-managed cluster-wide DNS, use Bind9GlobalCluster instead.
+Bind9Cluster defines a namespace-scoped logical grouping of BIND9 DNS server instances. Use this for tenant-managed DNS infrastructure isolated to a specific namespace. For platform-managed cluster-wide DNS, use ClusterBind9Provider instead.
 
 #### Spec Fields
 
@@ -298,7 +298,7 @@ Bind9Instance represents a BIND9 DNS server deployment in Kubernetes. Each insta
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
 | `bindcarConfig` | object | No | Bindcar RNDC API sidecar container configuration.  The API container provides an HTTP interface for managing zones via rndc. If not specified, uses default configuration. |
-| `clusterRef` | string | Yes | Reference to the cluster this instance belongs to.  Can reference either: - A namespace-scoped \`Bind9Cluster\` (must be in the same namespace as this instance) - A cluster-scoped \`Bind9GlobalCluster\` (cluster-wide, accessible from any namespace)  The cluster provides shared configuration and defines the logical grouping. The controller will automatically detect whether this references a namespace-scoped or cluster-scoped cluster resource. |
+| `clusterRef` | string | Yes | Reference to the cluster this instance belongs to.  Can reference either: - A namespace-scoped \`Bind9Cluster\` (must be in the same namespace as this instance) - A cluster-scoped \`ClusterBind9Provider\` (cluster-wide, accessible from any namespace)  The cluster provides shared configuration and defines the logical grouping. The controller will automatically detect whether this references a namespace-scoped or cluster-scoped cluster resource. |
 | `config` | object | No | Instance-specific BIND9 configuration overrides.  Overrides cluster-level configuration for this instance only. |
 | `configMapRefs` | object | No | \`ConfigMap\` references override. Inherits from cluster if not specified. |
 | `image` | object | No | Container image configuration override. Inherits from cluster if not specified. |

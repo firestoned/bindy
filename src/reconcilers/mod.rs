@@ -22,8 +22,8 @@
 //!
 //! - [`reconcile_bind9cluster`] - Manages namespace-scoped BIND9 cluster status
 //! - [`delete_bind9cluster`] - Cleans up namespace-scoped BIND9 cluster resources
-//! - [`reconcile_bind9globalcluster`] - Manages cluster-scoped BIND9 global cluster status
-//! - [`delete_bind9globalcluster`] - Cleans up cluster-scoped BIND9 global cluster resources
+//! - [`reconcile_clusterbind9provider`] - Manages cluster-scoped BIND9 provider status
+//! - [`delete_clusterbind9provider`] - Cleans up cluster-scoped BIND9 provider resources
 //! - [`reconcile_bind9instance`] - Creates/updates BIND9 server deployments
 //! - [`delete_bind9instance`] - Cleans up BIND9 server resources
 //!
@@ -61,8 +61,8 @@
 //! ```
 
 pub mod bind9cluster;
-pub mod bind9globalcluster;
 pub mod bind9instance;
+pub mod clusterbind9provider;
 pub mod dnszone;
 pub mod finalizers;
 pub mod records;
@@ -72,17 +72,17 @@ pub mod status;
 #[cfg(test)]
 mod bind9cluster_tests;
 #[cfg(test)]
-mod bind9globalcluster_tests;
-#[cfg(test)]
 mod bind9instance_tests;
+#[cfg(test)]
+mod clusterbind9provider_tests;
 #[cfg(test)]
 mod dnszone_tests;
 #[cfg(test)]
 mod records_tests;
 
 pub use bind9cluster::{delete_bind9cluster, reconcile_bind9cluster};
-pub use bind9globalcluster::{delete_bind9globalcluster, reconcile_bind9globalcluster};
 pub use bind9instance::{delete_bind9instance, reconcile_bind9instance};
+pub use clusterbind9provider::{delete_clusterbind9provider, reconcile_clusterbind9provider};
 pub use dnszone::{delete_dnszone, reconcile_dnszone};
 pub use records::{
     reconcile_a_record, reconcile_aaaa_record, reconcile_caa_record, reconcile_cname_record,

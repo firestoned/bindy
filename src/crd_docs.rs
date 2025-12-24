@@ -25,7 +25,7 @@
 /// let spec = DNSZoneSpec {
 ///     zone_name: "example.com".to_string(),
 ///     cluster_ref: Some("my-dns-cluster".to_string()),
-///     global_cluster_ref: None,
+///     cluster_provider_ref: None,
 ///     soa_record: soa,
 ///     ttl: Some(3600),
 ///     name_server_ips: None,

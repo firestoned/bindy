@@ -7,17 +7,17 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: bind9globalclusters.bindy.firestoned.io
+  name: clusterbind9providers.bindy.firestoned.io
 spec:
   group: bindy.firestoned.io
   names:
     categories: []
-    kind: Bind9GlobalCluster
-    plural: bind9globalclusters
+    kind: ClusterBind9Provider
+    plural: clusterbind9providers
     shortNames:
-    - b9gc
-    - b9gcs
-    singular: bind9globalcluster
+    - cb9p
+    - cb9ps
+    singular: clusterbind9provider
   scope: Cluster
   versions:
   - additionalPrinterColumns:
@@ -36,17 +36,17 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Bind9GlobalCluster defines a cluster-scoped logical grouping of BIND9 DNS server instances. Use this for platform-managed DNS infrastructure accessible from all namespaces. For tenant-managed namespace-scoped DNS, use Bind9Cluster instead.
+        description: ClusterBind9Provider defines a cluster-scoped BIND9 DNS provider that manages DNS infrastructure accessible from all namespaces. Use this for platform-managed DNS infrastructure. For tenant-managed namespace-scoped DNS, use Bind9Cluster instead.
         properties:
           spec:
             description: |-
-              `Bind9GlobalCluster` - Cluster-scoped DNS infrastructure for platform teams.
+              `ClusterBind9Provider` - Cluster-scoped BIND9 DNS provider for platform teams.
 
-              A cluster-scoped cluster allows platform teams to provide shared BIND9 DNS infrastructure
+              A cluster-scoped provider allows platform teams to provision shared BIND9 DNS infrastructure
               that is accessible from any namespace. This is ideal for shared services, production DNS,
               or platform-managed infrastructure that multiple teams use.
 
-              `DNSZones` in any namespace can reference a `Bind9GlobalCluster` using the `globalClusterRef` field.
+              `DNSZones` in any namespace can reference a `ClusterBind9Provider` using the `clusterProviderRef` field.
 
               # Use Cases
 
@@ -58,7 +58,7 @@ spec:
 
               ```yaml
               apiVersion: bindy.firestoned.io/v1alpha1
-              kind: Bind9GlobalCluster
+              kind: ClusterBind9Provider
               metadata:
                 name: shared-production-dns
                 # No namespace - cluster-scoped
@@ -1639,11 +1639,11 @@ spec:
                 description: |-
                   Namespace where `Bind9Instance` resources will be created
 
-                  Since `Bind9GlobalCluster` is cluster-scoped, instances need to be created in a specific namespace.
+                  Since `ClusterBind9Provider` is cluster-scoped, instances need to be created in a specific namespace.
                   Typically this would be a platform-managed namespace like `dns-system`.
 
                   All managed instances (primary and secondary) will be created in this namespace.
-                  `DNSZones` from any namespace can reference this global cluster via `globalClusterRef`.
+                  `DNSZones` from any namespace can reference this provider via `clusterProviderRef`.
 
                   **Default:** If not specified, instances will be created in the same namespace where the
                   Bindy operator is running (from `POD_NAMESPACE` environment variable).
@@ -3539,7 +3539,7 @@ spec:
             type: object
         required:
         - spec
-        title: Bind9GlobalCluster
+        title: ClusterBind9Provider
         type: object
     served: true
     storage: true

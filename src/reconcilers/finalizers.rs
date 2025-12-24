@@ -338,9 +338,9 @@ where
 ///
 /// ```rust,no_run
 /// # use bindy::reconcilers::finalizers::ensure_cluster_finalizer;
-/// # use bindy::crd::Bind9GlobalCluster;
+/// # use bindy::crd::ClusterBind9Provider;
 /// # use kube::Client;
-/// # async fn example(client: Client, cluster: Bind9GlobalCluster) {
+/// # async fn example(client: Client, cluster: ClusterBind9Provider) {
 /// const FINALIZER: &str = "bind9globalcluster.dns.firestoned.io/finalizer";
 /// ensure_cluster_finalizer(&client, &cluster, FINALIZER).await.unwrap();
 /// # }
@@ -496,13 +496,13 @@ where
 ///
 /// ```text
 /// use bindy::reconcilers::finalizers::{handle_cluster_deletion, FinalizerCleanup};
-/// use bindy::crd::Bind9GlobalCluster;
+/// use bindy::crd::ClusterBind9Provider;
 /// use kube::Client;
 /// use anyhow::Result;
 ///
 /// const FINALIZER: &str = "bind9globalcluster.dns.firestoned.io/finalizer";
 ///
-/// async fn reconcile(client: Client, cluster: Bind9GlobalCluster) -> Result<()> {
+/// async fn reconcile(client: Client, cluster: ClusterBind9Provider) -> Result<()> {
 ///     if cluster.metadata.deletion_timestamp.is_some() {
 ///         return handle_cluster_deletion(&client, &cluster, FINALIZER).await;
 ///     }

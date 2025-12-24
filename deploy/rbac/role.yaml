@@ -22,13 +22,13 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
     # Permissions needed:
     # - "get", "list", "watch": Read clusters for status updates
-    # - "create": Create clusters for Bind9GlobalCluster
+    # - "create": Create clusters for ClusterBind9Provider
     # - "update", "patch": Update cluster configuration
-    # - "delete": Clean up clusters (Bind9GlobalCluster finalizer cleanup)
+    # - "delete": Clean up clusters (ClusterBind9Provider finalizer cleanup)
 
-  # Bind9GlobalCluster resources - cluster-scoped, NO DELETE (least privilege)
+  # ClusterBind9Provider resources - cluster-scoped, NO DELETE (least privilege)
   - apiGroups: ["bindy.firestoned.io"]
-    resources: ["bind9globalclusters", "bind9globalclusters/status"]
+    resources: ["clusterbind9providers", "clusterbind9providers/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
     # Removed: "delete" - Use bindy-admin-role for deletions
 
