@@ -218,6 +218,18 @@ pub struct Condition {
     pub last_transition_time: Option<String>,
 }
 
+/// Reference to a DNS record associated with a zone
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordReference {
+    /// API version of the record (e.g., "bindy.firestoned.io/v1beta1")
+    pub api_version: String,
+    /// Kind of the record (e.g., `ARecord`, `CNAMERecord`, `MXRecord`)
+    pub kind: String,
+    /// Name of the record resource
+    pub name: String,
+}
+
 /// `DNSZone` status
 #[derive(Clone, Debug, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -232,6 +244,10 @@ pub struct DNSZoneStatus {
     /// Used to detect when secondary IPs change and zones need updating.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secondary_ips: Option<Vec<String>>,
+    /// List of DNS records successfully associated with this zone.
+    /// Updated by the zone reconciler when records are added/removed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub records: Vec<RecordReference>,
 }
 
 /// Secondary Zone configuration

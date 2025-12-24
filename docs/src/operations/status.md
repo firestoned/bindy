@@ -79,6 +79,10 @@ status:
 - Additional status fields:
   - `recordCount`: Number of records in the zone
   - `observedGeneration`: Last observed generation
+  - `records`: List of associated DNS records (v1beta1 only)
+    - Each entry contains `apiVersion`, `kind`, and `name` of the record resource
+    - Automatically populated by record reconcilers after successful reconciliation
+    - Provides real-time inventory of all DNS records associated with the zone
 
 ### DNS Records (A, AAAA, CNAME, MX, TXT, NS, SRV, CAA)
 - All use `Ready` condition type
@@ -123,7 +127,36 @@ status:
       lastTransitionTime: "2024-11-26T10:00:00Z"
   observedGeneration: 1
   recordCount: 0
+  records: []
 ```
+
+### DNSZone with Associated Records (v1beta1)
+```yaml
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: Ready
+      message: "Configured on 2 primary server(s)"
+      lastTransitionTime: "2024-11-26T10:00:00Z"
+  observedGeneration: 1
+  recordCount: 4
+  records:
+    - apiVersion: bindy.firestoned.io/v1beta1
+      kind: ARecord
+      name: web-server
+    - apiVersion: bindy.firestoned.io/v1beta1
+      kind: AAAARecord
+      name: web-server-ipv6
+    - apiVersion: bindy.firestoned.io/v1beta1
+      kind: CNAMERecord
+      name: www-alias
+    - apiVersion: bindy.firestoned.io/v1beta1
+      kind: MXRecord
+      name: mail-server
+```
+
+**Note:** The `records` field is only available in v1beta1 and provides real-time visibility into all DNS records associated with the zone.
 
 ### Progressing Deployment
 ```yaml

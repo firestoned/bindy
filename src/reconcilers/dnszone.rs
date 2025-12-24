@@ -1200,6 +1200,9 @@ async fn update_condition(
             .or(dnszone.metadata.generation),
         record_count: current_status.and_then(|s| s.record_count),
         secondary_ips: current_status.and_then(|s| s.secondary_ips.clone()),
+        records: current_status
+            .map(|s| s.records.clone())
+            .unwrap_or_default(),
     };
 
     let patch = json!({
@@ -1255,6 +1258,11 @@ async fn update_status_with_secondaries(
         } else {
             Some(secondary_ips)
         },
+        records: dnszone
+            .status
+            .as_ref()
+            .map(|s| s.records.clone())
+            .unwrap_or_default(),
     };
 
     let patch = json!({
@@ -1344,6 +1352,11 @@ async fn update_status(
             .status
             .as_ref()
             .and_then(|s| s.secondary_ips.clone()),
+        records: dnszone
+            .status
+            .as_ref()
+            .map(|s| s.records.clone())
+            .unwrap_or_default(),
     };
 
     info!(

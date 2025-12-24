@@ -2,6 +2,117 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-24 01:30] - Testing: Comprehensive Unit Tests for status.records Feature
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/records_tests.rs`: Added comprehensive unit tests for `DNSZone.status.records` feature
+  - 15 new tests covering all aspects of the status.records functionality
+  - Tests for `RecordReference` struct creation, serialization, and deserialization
+  - Tests for `DNSZoneStatus.records` field with empty and multiple records
+  - Tests for serialization behavior (skip_serializing_if for empty records)
+  - Tests for all 8 record type constants (ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord)
+  - Tests for duplicate record detection and prevention
+  - Tests for status preservation during reconciliation
+  - Tests for initialization when no current status exists
+- `src/crd_tests.rs`: Updated existing tests to include `records` field in `DNSZoneStatus` initialization
+
+### Why
+Ensure comprehensive test coverage for the new status.records feature:
+- **Correctness**: Verify RecordReference struct behaves correctly
+- **Serialization**: Ensure proper JSON serialization/deserialization
+- **Duplicate Prevention**: Verify duplicate records are not added
+- **Status Preservation**: Ensure records field survives status updates
+- **Type Safety**: Test all record type constants are correct
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change required
+- [x] Documentation only
+
+### Test Coverage
+
+All 15 tests passing:
+```
+test reconcilers::records_tests::tests::status_records_tests::test_all_record_kind_constants ... ok
+test reconcilers::records_tests::tests::status_records_tests::test_api_group_version_constant ... ok
+test reconcilers::records_tests::tests::status_records_tests::test_create_record_reference_for_all_types ... ok
+test reconcilers::records_tests::tests::status_records_tests::test_dns_zone_status_serialization_skips_empty_records ... ok
+test reconcilers::records_tests::tests::status_records_tests::test_dns_zone_status_serialization_includes_non_empty_records ... ok
+test reconcilers::records_tests::tests::status_records_tests::test_dns_zone_status_with_empty_records ... ok
+test reconcilers::records_tests::tests::status_records_tests::test_dns_zone_status_with_multiple_records ... ok
+test reconcilers::records_tests::tests::status_records_tests::test_duplicate_record_detection ... ok
+test reconcilers::records_tests::tests::status_records_tests::test_initialize_empty_records_when_no_current_status ... ok
+test reconcilers::records_tests::tests::status_records_tests::test_preserve_records_on_status_update ... ok
+test reconcilers::records_tests::tests::status_records_tests::test_prevent_duplicate_records_in_status ... ok
+test reconcilers::records_tests::tests::status_records_tests::test_record_reference_creation ... ok
+test reconcilers::records_tests::tests::status_records_tests::test_record_reference_deserialization ... ok
+test reconcilers::records_tests::tests::status_records_tests::test_record_reference_equality ... ok
+test reconcilers::records_tests::tests::status_records_tests::test_record_reference_serialization ... ok
+```
+
+---
+
+## [2025-12-24 00:20] - Feature: Add DNSZone status.records Field (v1beta1 Only)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/crd.rs`: Added new `RecordReference` struct and `records` field to `DNSZoneStatus`
+  - `RecordReference` contains `apiVersion`, `kind`, and `name` of associated DNS records
+  - `records` field is a list tracking all DNS records successfully associated with the zone
+- `src/bin/crdgen.rs`: Updated CRD generator to remove `records` field from v1alpha1 schema
+  - **IMPORTANT**: `records` field only exists in `v1beta1`, not in `v1alpha1`
+  - This creates a proper schema difference between deprecated and current API versions
+- `src/reconcilers/records.rs`: Updated all 8 record reconcilers to populate `DNSZone.status.records`
+  - New `add_record_to_zone_status()` helper function adds record references after successful reconciliation
+  - Applied to: `ARecord`, `AAAARecord`, `TXTRecord`, `CNAMERecord`, `MXRecord`, `NSRecord`, `SRVRecord`, `CAARecord`
+- `src/reconcilers/dnszone.rs`: Updated all `DNSZoneStatus` creation points to preserve `records` field
+- `src/constants.rs`: Updated `API_VERSION` and `API_GROUP_VERSION` to `v1beta1`
+- All record reconcilers now use global constants (`API_GROUP_VERSION`, `KIND_*_RECORD`) instead of hardcoded strings
+
+### Why
+Provide visibility into DNS record associations:
+- **User Visibility**: Users can see which records are associated with each zone via `kubectl get dnszone -o yaml`
+- **Debugging**: Easier to troubleshoot which records are managed by a zone
+- **Operational Insight**: Status field provides real-time record inventory per zone
+- **Code Quality**: Eliminated hardcoded strings by using global constants
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout - CRDs must be updated with `kubectl replace --force`
+- [x] Config change required
+- [ ] Documentation only
+
+### Example
+
+After reconciliation, `DNSZone` status will show:
+
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: example-com
+  namespace: default
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: ReconcileSucceeded
+  records:
+    - apiVersion: bindy.firestoned.io/v1beta1
+      kind: ARecord
+      name: www
+    - apiVersion: bindy.firestoned.io/v1beta1
+      kind: MXRecord
+      name: mail
+    - apiVersion: bindy.firestoned.io/v1beta1
+      kind: TXTRecord
+      name: spf
+```
+
 ## [2025-12-24 00:05] - Feature: Multi-Version Support for v1alpha1 and v1beta1 APIs
 
 **Author:** Erick Bourgeois

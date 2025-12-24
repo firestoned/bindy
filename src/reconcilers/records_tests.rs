@@ -955,4 +955,372 @@ mod tests {
 
         assert_eq!(spec.ttl, Some(-1));
     }
+
+    // ========================================================================
+    // Status Records Feature Tests
+    // ========================================================================
+
+    mod status_records_tests {
+        use crate::constants::{
+            API_GROUP_VERSION, KIND_AAAA_RECORD, KIND_A_RECORD, KIND_CAA_RECORD, KIND_CNAME_RECORD,
+            KIND_MX_RECORD, KIND_NS_RECORD, KIND_SRV_RECORD, KIND_TXT_RECORD,
+        };
+        use crate::crd::{DNSZoneStatus, RecordReference};
+        use serde_json::json;
+
+        // ====================================================================
+        // RecordReference Struct Tests
+        // ====================================================================
+
+        #[test]
+        fn test_record_reference_creation() {
+            let record_ref = RecordReference {
+                api_version: API_GROUP_VERSION.to_string(),
+                kind: KIND_A_RECORD.to_string(),
+                name: "test-a-record".to_string(),
+            };
+
+            assert_eq!(record_ref.api_version, "bindy.firestoned.io/v1beta1");
+            assert_eq!(record_ref.kind, "ARecord");
+            assert_eq!(record_ref.name, "test-a-record");
+        }
+
+        #[test]
+        fn test_record_reference_equality() {
+            let ref1 = RecordReference {
+                api_version: API_GROUP_VERSION.to_string(),
+                kind: KIND_A_RECORD.to_string(),
+                name: "test-record".to_string(),
+            };
+
+            let ref2 = RecordReference {
+                api_version: API_GROUP_VERSION.to_string(),
+                kind: KIND_A_RECORD.to_string(),
+                name: "test-record".to_string(),
+            };
+
+            let ref3 = RecordReference {
+                api_version: API_GROUP_VERSION.to_string(),
+                kind: KIND_AAAA_RECORD.to_string(),
+                name: "test-record".to_string(),
+            };
+
+            assert_eq!(ref1, ref2);
+            assert_ne!(ref1, ref3);
+        }
+
+        #[test]
+        fn test_record_reference_serialization() {
+            let record_ref = RecordReference {
+                api_version: "bindy.firestoned.io/v1beta1".to_string(),
+                kind: "ARecord".to_string(),
+                name: "test-a-record".to_string(),
+            };
+
+            let json = serde_json::to_value(&record_ref).unwrap();
+            assert_eq!(json["apiVersion"], "bindy.firestoned.io/v1beta1");
+            assert_eq!(json["kind"], "ARecord");
+            assert_eq!(json["name"], "test-a-record");
+        }
+
+        #[test]
+        fn test_record_reference_deserialization() {
+            let json = json!({
+                "apiVersion": "bindy.firestoned.io/v1beta1",
+                "kind": "CNAMERecord",
+                "name": "test-cname-record"
+            });
+
+            let record_ref: RecordReference = serde_json::from_value(json).unwrap();
+            assert_eq!(record_ref.api_version, "bindy.firestoned.io/v1beta1");
+            assert_eq!(record_ref.kind, "CNAMERecord");
+            assert_eq!(record_ref.name, "test-cname-record");
+        }
+
+        // ====================================================================
+        // DNSZoneStatus.records Field Tests
+        // ====================================================================
+
+        #[test]
+        fn test_dns_zone_status_with_empty_records() {
+            let status = DNSZoneStatus {
+                conditions: vec![],
+                observed_generation: None,
+                record_count: None,
+                secondary_ips: None,
+                records: vec![],
+            };
+
+            assert!(status.records.is_empty());
+        }
+
+        #[test]
+        fn test_dns_zone_status_with_multiple_records() {
+            let records = vec![
+                RecordReference {
+                    api_version: API_GROUP_VERSION.to_string(),
+                    kind: KIND_A_RECORD.to_string(),
+                    name: "web-a-record".to_string(),
+                },
+                RecordReference {
+                    api_version: API_GROUP_VERSION.to_string(),
+                    kind: KIND_AAAA_RECORD.to_string(),
+                    name: "web-aaaa-record".to_string(),
+                },
+                RecordReference {
+                    api_version: API_GROUP_VERSION.to_string(),
+                    kind: KIND_CNAME_RECORD.to_string(),
+                    name: "www-cname-record".to_string(),
+                },
+            ];
+
+            let status = DNSZoneStatus {
+                conditions: vec![],
+                observed_generation: None,
+                record_count: None,
+                secondary_ips: None,
+                records: records.clone(),
+            };
+
+            assert_eq!(status.records.len(), 3);
+            assert_eq!(status.records[0].kind, "ARecord");
+            assert_eq!(status.records[1].kind, "AAAARecord");
+            assert_eq!(status.records[2].kind, "CNAMERecord");
+        }
+
+        #[test]
+        fn test_dns_zone_status_serialization_skips_empty_records() {
+            let status = DNSZoneStatus {
+                conditions: vec![],
+                observed_generation: None,
+                record_count: None,
+                secondary_ips: None,
+                records: vec![],
+            };
+
+            let json = serde_json::to_value(&status).unwrap();
+            // records field should be omitted when empty due to skip_serializing_if
+            assert!(!json.as_object().unwrap().contains_key("records"));
+        }
+
+        #[test]
+        fn test_dns_zone_status_serialization_includes_non_empty_records() {
+            let records = vec![RecordReference {
+                api_version: API_GROUP_VERSION.to_string(),
+                kind: KIND_A_RECORD.to_string(),
+                name: "test-a-record".to_string(),
+            }];
+
+            let status = DNSZoneStatus {
+                conditions: vec![],
+                observed_generation: None,
+                record_count: None,
+                secondary_ips: None,
+                records: records.clone(),
+            };
+
+            let json = serde_json::to_value(&status).unwrap();
+            // records field should be present when non-empty
+            assert!(json.as_object().unwrap().contains_key("records"));
+            assert_eq!(json["records"].as_array().unwrap().len(), 1);
+        }
+
+        // ====================================================================
+        // All Record Types Constant Tests
+        // ====================================================================
+
+        #[test]
+        fn test_all_record_kind_constants() {
+            let record_kinds = vec![
+                (KIND_A_RECORD, "ARecord"),
+                (KIND_AAAA_RECORD, "AAAARecord"),
+                (KIND_TXT_RECORD, "TXTRecord"),
+                (KIND_CNAME_RECORD, "CNAMERecord"),
+                (KIND_MX_RECORD, "MXRecord"),
+                (KIND_NS_RECORD, "NSRecord"),
+                (KIND_SRV_RECORD, "SRVRecord"),
+                (KIND_CAA_RECORD, "CAARecord"),
+            ];
+
+            for (constant, expected) in record_kinds {
+                assert_eq!(constant, expected);
+            }
+        }
+
+        #[test]
+        fn test_api_group_version_constant() {
+            assert_eq!(API_GROUP_VERSION, "bindy.firestoned.io/v1beta1");
+        }
+
+        // ====================================================================
+        // Record Reference Creation for Each Record Type
+        // ====================================================================
+
+        #[test]
+        fn test_create_record_reference_for_all_types() {
+            let test_cases = vec![
+                (KIND_A_RECORD, "test-a-record"),
+                (KIND_AAAA_RECORD, "test-aaaa-record"),
+                (KIND_TXT_RECORD, "test-txt-record"),
+                (KIND_CNAME_RECORD, "test-cname-record"),
+                (KIND_MX_RECORD, "test-mx-record"),
+                (KIND_NS_RECORD, "test-ns-record"),
+                (KIND_SRV_RECORD, "test-srv-record"),
+                (KIND_CAA_RECORD, "test-caa-record"),
+            ];
+
+            for (kind, name) in test_cases {
+                let record_ref = RecordReference {
+                    api_version: API_GROUP_VERSION.to_string(),
+                    kind: kind.to_string(),
+                    name: name.to_string(),
+                };
+
+                assert_eq!(record_ref.api_version, "bindy.firestoned.io/v1beta1");
+                assert_eq!(record_ref.kind, kind);
+                assert_eq!(record_ref.name, name);
+            }
+        }
+
+        // ====================================================================
+        // Duplicate Record Detection Tests
+        // ====================================================================
+
+        #[test]
+        fn test_duplicate_record_detection() {
+            let records = [
+                RecordReference {
+                    api_version: API_GROUP_VERSION.to_string(),
+                    kind: KIND_A_RECORD.to_string(),
+                    name: "web-a-record".to_string(),
+                },
+                RecordReference {
+                    api_version: API_GROUP_VERSION.to_string(),
+                    kind: KIND_AAAA_RECORD.to_string(),
+                    name: "web-aaaa-record".to_string(),
+                },
+            ];
+
+            let new_record = RecordReference {
+                api_version: API_GROUP_VERSION.to_string(),
+                kind: KIND_A_RECORD.to_string(),
+                name: "web-a-record".to_string(),
+            };
+
+            // Check if record already exists
+            let exists = records.iter().any(|r| r == &new_record);
+            assert!(exists);
+
+            let different_record = RecordReference {
+                api_version: API_GROUP_VERSION.to_string(),
+                kind: KIND_MX_RECORD.to_string(),
+                name: "mail-mx-record".to_string(),
+            };
+
+            let exists = records.iter().any(|r| r == &different_record);
+            assert!(!exists);
+        }
+
+        #[test]
+        fn test_prevent_duplicate_records_in_status() {
+            let mut records = vec![RecordReference {
+                api_version: API_GROUP_VERSION.to_string(),
+                kind: KIND_A_RECORD.to_string(),
+                name: "web-a-record".to_string(),
+            }];
+
+            let new_record = RecordReference {
+                api_version: API_GROUP_VERSION.to_string(),
+                kind: KIND_A_RECORD.to_string(),
+                name: "web-a-record".to_string(),
+            };
+
+            // Simulate the duplicate check from add_record_to_zone_status
+            if !records.iter().any(|r| r == &new_record) {
+                records.push(new_record.clone());
+            }
+
+            // Should still have only 1 record
+            assert_eq!(records.len(), 1);
+
+            let different_record = RecordReference {
+                api_version: API_GROUP_VERSION.to_string(),
+                kind: KIND_AAAA_RECORD.to_string(),
+                name: "web-aaaa-record".to_string(),
+            };
+
+            if !records.iter().any(|r| r == &different_record) {
+                records.push(different_record.clone());
+            }
+
+            // Should now have 2 records
+            assert_eq!(records.len(), 2);
+        }
+
+        // ====================================================================
+        // Status Preservation Tests
+        // ====================================================================
+
+        #[test]
+        fn test_preserve_records_on_status_update() {
+            let existing_records = vec![
+                RecordReference {
+                    api_version: API_GROUP_VERSION.to_string(),
+                    kind: KIND_A_RECORD.to_string(),
+                    name: "existing-a-record".to_string(),
+                },
+                RecordReference {
+                    api_version: API_GROUP_VERSION.to_string(),
+                    kind: KIND_AAAA_RECORD.to_string(),
+                    name: "existing-aaaa-record".to_string(),
+                },
+            ];
+
+            let current_status = Some(DNSZoneStatus {
+                conditions: vec![],
+                observed_generation: Some(1),
+                record_count: Some(5),
+                secondary_ips: Some(vec!["10.0.0.1".to_string()]),
+                records: existing_records.clone(),
+            });
+
+            // Simulate DNSZone reconciler creating new status
+            let new_status = DNSZoneStatus {
+                conditions: vec![],
+                observed_generation: current_status.as_ref().and_then(|s| s.observed_generation),
+                record_count: current_status.as_ref().and_then(|s| s.record_count),
+                secondary_ips: current_status
+                    .as_ref()
+                    .and_then(|s| s.secondary_ips.clone()),
+                records: current_status
+                    .map(|s| s.records.clone())
+                    .unwrap_or_default(),
+            };
+
+            // Verify all fields preserved
+            assert_eq!(new_status.observed_generation, Some(1));
+            assert_eq!(new_status.record_count, Some(5));
+            assert_eq!(new_status.secondary_ips, Some(vec!["10.0.0.1".to_string()]));
+            assert_eq!(new_status.records.len(), 2);
+            assert_eq!(new_status.records[0].kind, "ARecord");
+            assert_eq!(new_status.records[1].kind, "AAAARecord");
+        }
+
+        #[test]
+        fn test_initialize_empty_records_when_no_current_status() {
+            let current_status: Option<DNSZoneStatus> = None;
+
+            let new_status = DNSZoneStatus {
+                conditions: vec![],
+                observed_generation: None,
+                record_count: None,
+                secondary_ips: None,
+                records: current_status
+                    .map(|s| s.records.clone())
+                    .unwrap_or_default(),
+            };
+
+            assert!(new_status.records.is_empty());
+        }
+    }
 }

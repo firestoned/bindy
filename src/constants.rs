@@ -14,10 +14,10 @@
 pub const API_GROUP: &str = "bindy.firestoned.io";
 
 /// API version for all Bindy DNS CRDs
-pub const API_VERSION: &str = "v1alpha1";
+pub const API_VERSION: &str = "v1beta1";
 
 /// Fully qualified API version (group/version)
-pub const API_GROUP_VERSION: &str = "bindy.firestoned.io/v1alpha1";
+pub const API_GROUP_VERSION: &str = "bindy.firestoned.io/v1beta1";
 
 /// Kind name for `DNSZone` resource
 pub const KIND_DNS_ZONE: &str = "DNSZone";

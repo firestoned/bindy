@@ -7,6 +7,10 @@
 //! Each reconciler adds or updates records in the appropriate zone file.
 
 use crate::bind9::RndcKeyData;
+use crate::constants::{
+    API_GROUP_VERSION, KIND_AAAA_RECORD, KIND_A_RECORD, KIND_CAA_RECORD, KIND_CNAME_RECORD,
+    KIND_MX_RECORD, KIND_NS_RECORD, KIND_SRV_RECORD, KIND_TXT_RECORD,
+};
 use crate::crd::{
     AAAARecord, ARecord, CAARecord, CNAMERecord, Condition, DNSZone, MXRecord, NSRecord,
     RecordStatus, SRVRecord, TXTRecord,
@@ -510,6 +514,17 @@ pub async fn reconcile_a_record(
     )
     .await?;
 
+    // Add this record to the DNSZone's status.records list
+    add_record_to_zone_status(
+        &client,
+        &namespace,
+        &spec.zone_ref,
+        API_GROUP_VERSION,
+        KIND_A_RECORD,
+        &name,
+    )
+    .await?;
+
     Ok(())
 }
 
@@ -652,6 +667,17 @@ pub async fn reconcile_txt_record(
     )
     .await?;
 
+    // Add this record to the DNSZone's status.records list
+    add_record_to_zone_status(
+        &client,
+        &namespace,
+        &spec.zone_ref,
+        API_GROUP_VERSION,
+        KIND_TXT_RECORD,
+        &name,
+    )
+    .await?;
+
     Ok(())
 }
 
@@ -790,6 +816,17 @@ pub async fn reconcile_aaaa_record(
     )
     .await?;
 
+    // Add this record to the DNSZone's status.records list
+    add_record_to_zone_status(
+        &client,
+        &namespace,
+        &spec.zone_ref,
+        API_GROUP_VERSION,
+        KIND_AAAA_RECORD,
+        &name,
+    )
+    .await?;
+
     Ok(())
 }
 
@@ -925,6 +962,17 @@ pub async fn reconcile_cname_record(
             "CNAME record {} in zone {} configured on {} endpoint(s)",
             spec.name, zone_name, endpoint_count
         ),
+    )
+    .await?;
+
+    // Add this record to the DNSZone's status.records list
+    add_record_to_zone_status(
+        &client,
+        &namespace,
+        &spec.zone_ref,
+        API_GROUP_VERSION,
+        KIND_CNAME_RECORD,
+        &name,
     )
     .await?;
 
@@ -1071,6 +1119,17 @@ pub async fn reconcile_mx_record(
     )
     .await?;
 
+    // Add this record to the DNSZone's status.records list
+    add_record_to_zone_status(
+        &client,
+        &namespace,
+        &spec.zone_ref,
+        API_GROUP_VERSION,
+        KIND_MX_RECORD,
+        &name,
+    )
+    .await?;
+
     Ok(())
 }
 
@@ -1207,6 +1266,17 @@ pub async fn reconcile_ns_record(
             "NS record {} in zone {} configured on {} endpoint(s)",
             spec.name, zone_name, endpoint_count
         ),
+    )
+    .await?;
+
+    // Add this record to the DNSZone's status.records list
+    add_record_to_zone_status(
+        &client,
+        &namespace,
+        &spec.zone_ref,
+        API_GROUP_VERSION,
+        KIND_NS_RECORD,
+        &name,
     )
     .await?;
 
@@ -1356,6 +1426,17 @@ pub async fn reconcile_srv_record(
     )
     .await?;
 
+    // Add this record to the DNSZone's status.records list
+    add_record_to_zone_status(
+        &client,
+        &namespace,
+        &spec.zone_ref,
+        API_GROUP_VERSION,
+        KIND_SRV_RECORD,
+        &name,
+    )
+    .await?;
+
     Ok(())
 }
 
@@ -1499,6 +1580,17 @@ pub async fn reconcile_caa_record(
             "CAA record {} in zone {} configured on {} endpoint(s)",
             spec.name, zone_name, endpoint_count
         ),
+    )
+    .await?;
+
+    // Add this record to the DNSZone's status.records list
+    add_record_to_zone_status(
+        &client,
+        &namespace,
+        &spec.zone_ref,
+        API_GROUP_VERSION,
+        KIND_CAA_RECORD,
+        &name,
     )
     .await?;
 
@@ -1755,6 +1847,113 @@ where
         "Warning"
     };
     create_event(client, record, event_type, reason, message).await?;
+
+    Ok(())
+}
+
+/// Adds or updates a record reference in the `DNSZone`'s `status.records` list.
+///
+/// When a DNS record is successfully reconciled, this function updates the associated
+/// `DNSZone`'s status to include a reference to the record. This provides visibility into
+/// which records are associated with each zone.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `namespace` - Namespace of the `DNSZone`
+/// * `zone_ref` - Name of the `DNSZone`
+/// * `api_version` - API version of the record (e.g., "bindy.firestoned.io/v1beta1")
+/// * `kind` - Kind of the record (e.g., `ARecord`, `CNAMERecord`)
+/// * `record_name` - Name of the record resource
+///
+/// # Errors
+///
+/// Returns an error if Kubernetes API operations fail.
+async fn add_record_to_zone_status(
+    client: &Client,
+    namespace: &str,
+    zone_ref: &str,
+    api_version: &str,
+    kind: &str,
+    record_name: &str,
+) -> Result<()> {
+    let zone_api: Api<DNSZone> = Api::namespaced(client.clone(), namespace);
+
+    // Get current zone to check existing records
+    let zone = zone_api
+        .get(zone_ref)
+        .await
+        .context(format!("Failed to get DNSZone {namespace}/{zone_ref}"))?;
+
+    let new_record_ref = crate::crd::RecordReference {
+        api_version: api_version.to_string(),
+        kind: kind.to_string(),
+        name: record_name.to_string(),
+    };
+
+    // Get current records list, or create empty vec
+    let mut records = zone
+        .status
+        .as_ref()
+        .map(|s| s.records.clone())
+        .unwrap_or_default();
+
+    // Check if this record is already in the list (avoid duplicates)
+    if records.iter().any(|r| {
+        r.api_version == new_record_ref.api_version
+            && r.kind == new_record_ref.kind
+            && r.name == new_record_ref.name
+    }) {
+        debug!(
+            zone = zone_ref,
+            record = record_name,
+            kind = kind,
+            "Record reference already exists in DNSZone status"
+        );
+        return Ok(()); // No update needed
+    }
+
+    records.push(new_record_ref.clone());
+    debug!(
+        zone = zone_ref,
+        record = record_name,
+        kind = kind,
+        "Adding record reference to DNSZone status"
+    );
+
+    // Preserve all other status fields
+    let current_status = zone.status.as_ref();
+    let updated_status = crate::crd::DNSZoneStatus {
+        conditions: current_status
+            .map(|s| s.conditions.clone())
+            .unwrap_or_default(),
+        observed_generation: current_status.and_then(|s| s.observed_generation),
+        record_count: current_status.and_then(|s| s.record_count),
+        secondary_ips: current_status.and_then(|s| s.secondary_ips.clone()),
+        records,
+    };
+
+    let status_patch = json!({
+        "status": updated_status
+    });
+
+    zone_api
+        .patch_status(
+            zone_ref,
+            &PatchParams::default(),
+            &Patch::Merge(&status_patch),
+        )
+        .await
+        .context(format!(
+            "Failed to update DNSZone status for {namespace}/{zone_ref}"
+        ))?;
+
+    info!(
+        zone = zone_ref,
+        record = record_name,
+        kind = kind,
+        "Added record reference to DNSZone status.records"
+    );
 
     Ok(())
 }

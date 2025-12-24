@@ -155,7 +155,25 @@ status:
     - "10.42.0.5"
     - "10.42.0.6"
     - "10.42.0.7"
+  records:
+    - apiVersion: bindy.firestoned.io/v1beta1
+      kind: ARecord
+      name: web-a-record
+    - apiVersion: bindy.firestoned.io/v1beta1
+      kind: AAAARecord
+      name: web-aaaa-record
+    - apiVersion: bindy.firestoned.io/v1beta1
+      kind: CNAMERecord
+      name: www-cname-record
+    - apiVersion: bindy.firestoned.io/v1beta1
+      kind: MXRecord
+      name: mail-mx-record
+    - apiVersion: bindy.firestoned.io/v1beta1
+      kind: TXTRecord
+      name: spf-txt-record
 ```
+
+**Note:** The `records` field is **only available in v1beta1** and tracks all DNS records successfully associated with this zone. This field does not exist in the deprecated v1alpha1 API.
 
 ### Status After Partial Failure (Degraded)
 
@@ -191,12 +209,90 @@ DNSZone uses the following condition types:
   - `PrimaryFailed`: Primary configuration failed (zone not functional)
   - `SecondaryFailed`: Secondary configuration failed (primaries work, but secondaries unavailable)
 
+### Status Field: `records` (v1beta1 only)
+
+The `status.records` field provides a real-time inventory of all DNS records successfully associated with this zone. This field is **only available in the v1beta1 API** and does not exist in the deprecated v1alpha1 API.
+
+#### How It Works
+
+When a DNS record (ARecord, AAAARecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, TXTRecord, or CAARecord) is successfully reconciled and added to the zone, the record reconciler automatically adds a reference to the `DNSZone.status.records` list.
+
+Each record reference contains:
+- `apiVersion` - The API version of the record resource (always `bindy.firestoned.io/v1beta1`)
+- `kind` - The record type (e.g., `ARecord`, `CNAMERecord`, `MXRecord`)
+- `name` - The name of the record resource in Kubernetes
+
+#### Example
+
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: example-com
+  namespace: dns-system
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+  records:
+    - apiVersion: bindy.firestoned.io/v1beta1
+      kind: ARecord
+      name: web-server
+    - apiVersion: bindy.firestoned.io/v1beta1
+      kind: AAAARecord
+      name: web-server-ipv6
+    - apiVersion: bindy.firestoned.io/v1beta1
+      kind: CNAMERecord
+      name: www-alias
+    - apiVersion: bindy.firestoned.io/v1beta1
+      kind: MXRecord
+      name: mail-server
+```
+
+#### Use Cases
+
+1. **Operational Visibility** - Quickly see which records are managed by this zone:
+   ```bash
+   kubectl get dnszone example-com -o jsonpath='{.status.records[*].name}'
+   # Output: web-server web-server-ipv6 www-alias mail-server
+   ```
+
+2. **Debugging** - Verify a record was successfully added to the zone:
+   ```bash
+   kubectl get dnszone example-com -o yaml | grep -A3 "kind: ARecord"
+   # Output:
+   # - apiVersion: bindy.firestoned.io/v1beta1
+   #   kind: ARecord
+   #   name: web-server
+   ```
+
+3. **Auditing** - Count how many records of each type are associated:
+   ```bash
+   kubectl get dnszone example-com -o json | jq '.status.records | group_by(.kind) | map({kind: .[0].kind, count: length})'
+   # Output: [{"kind":"ARecord","count":1},{"kind":"AAAARecord","count":1},{"kind":"CNAMERecord","count":1},{"kind":"MXRecord","count":1}]
+   ```
+
+4. **Automation** - Build tools that react to zone record changes:
+   ```bash
+   # Watch for changes to the records list
+   kubectl get dnszone example-com -o jsonpath='{.status.records}' --watch
+   ```
+
+#### Important Notes
+
+- **v1beta1 Only**: This field does not exist in v1alpha1. If you're still using v1alpha1, upgrade to v1beta1 to access this feature.
+- **Read-Only**: The `records` field is managed automatically by the controller. Do not manually edit it.
+- **Eventually Consistent**: After creating a new record, it may take a few seconds for it to appear in the zone's `status.records` list.
+- **Duplicate Prevention**: The controller automatically prevents duplicate record references from being added.
+- **Serialization**: When the `records` field is empty, it is omitted from the YAML/JSON output to reduce clutter.
+
 ### Benefits of Granular Status
 
 1. **Real-time visibility** - See which reconciliation phase is running
 2. **Better debugging** - Know exactly which phase failed (primary vs secondary)
 3. **Graceful degradation** - Secondary failures don't break the zone (primaries still work)
 4. **Accurate counts** - Status shows exact number of configured servers
+5. **Record inventory** - Track all DNS records associated with each zone (v1beta1 only)
 
 ## Use Cases
 
