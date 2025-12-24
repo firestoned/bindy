@@ -65,7 +65,7 @@ First, create a cluster configuration that defines shared settings:
 Create a file `bind9-cluster.yaml`:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
@@ -113,7 +113,7 @@ spec:
 Then update your Bind9Cluster to use the PVC:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
@@ -139,7 +139,7 @@ spec:
 Or add storage to a specific Bind9Instance:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
@@ -167,7 +167,7 @@ Now create an instance that references the cluster:
 Create a file `bind9-instance.yaml`:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
@@ -189,7 +189,7 @@ kubectl apply -f bind9-instance.yaml
 Create a file `dns-zone.yaml`:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
@@ -222,7 +222,7 @@ Create a file `dns-records.yaml`:
 
 ```yaml
 # Web server A record
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example
@@ -235,7 +235,7 @@ spec:
 
 ---
 # Blog CNAME record
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: blog-example
@@ -248,7 +248,7 @@ spec:
 
 ---
 # Mail server MX record
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mail-example
@@ -262,7 +262,7 @@ spec:
 
 ---
 # SPF TXT record
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: spf-example

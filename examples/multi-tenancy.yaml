@@ -221,7 +221,7 @@ metadata:
 # DNSZones reference it using clusterProviderRef, which works across namespaces
 # ============================================================================
 
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: web-production-zone
@@ -246,7 +246,7 @@ spec:
 
 ---
 # DNS Records for Web Team Zone
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: web-app-primary
@@ -261,7 +261,7 @@ spec:
   ttl: 300
 
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: web-app-secondary
@@ -276,7 +276,7 @@ spec:
   ttl: 300
 
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: web-cdn
@@ -291,7 +291,7 @@ spec:
   ttl: 3600
 
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: web-verification
@@ -311,7 +311,7 @@ spec:
 # Tenant-Managed DNS: Bind9Cluster (Namespace-Scoped) for API Team
 # ============================================================================
 
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: api-dev-dns
@@ -338,7 +338,7 @@ spec:
 
 ---
 # Tenant-Managed DNS: DNSZone for API Team (uses clusterRef)
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: api-dev-zone
@@ -363,7 +363,7 @@ spec:
 
 ---
 # DNS Records for API Team Zone
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: api-gateway
@@ -378,7 +378,7 @@ spec:
   ttl: 60
 
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: api-service-v1
@@ -393,7 +393,7 @@ spec:
   ttl: 60
 
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: api-service-v2
@@ -408,7 +408,7 @@ spec:
   ttl: 60
 
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: api-grpc-service
@@ -426,7 +426,7 @@ spec:
   ttl: 300
 
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: api-metadata
@@ -447,7 +447,7 @@ spec:
 # Example: Additional Zone in Platform DNS for Another Team
 # ============================================================================
 
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: api-production-zone
@@ -471,7 +471,7 @@ spec:
   ttl: 3600
 
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: api-prod-gateway
@@ -486,7 +486,7 @@ spec:
   ttl: 300
 
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: api-prod-alias

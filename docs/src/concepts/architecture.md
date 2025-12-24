@@ -188,7 +188,7 @@ flowchart TD
 
 1. **User creates Bind9Cluster with replicas**
    ```yaml
-   apiVersion: bindy.firestoned.io/v1alpha1
+   apiVersion: bindy.firestoned.io/v1beta1
    kind: Bind9Cluster
    metadata:
      name: production-dns

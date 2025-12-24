@@ -5,7 +5,7 @@ A records map domain names to IPv4 addresses.
 ## Creating an A Record
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example
@@ -38,7 +38,7 @@ Create multiple records for the same name for load balancing:
 
 ```bash
 kubectl apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-1
@@ -47,7 +47,7 @@ spec:
   name: www
   ipv4Address: "192.0.2.1"
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-2

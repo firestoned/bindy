@@ -260,7 +260,7 @@ pub struct SecondaryZoneConfig {
 /// # Example: Namespace-scoped Cluster
 ///
 /// ```yaml
-/// apiVersion: bindy.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1beta1
 /// kind: DNSZone
 /// metadata:
 ///   name: example-com
@@ -282,7 +282,7 @@ pub struct SecondaryZoneConfig {
 /// # Example: Cluster-scoped Global Cluster
 ///
 /// ```yaml
-/// apiVersion: bindy.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1beta1
 /// kind: DNSZone
 /// metadata:
 ///   name: production-example-com
@@ -303,7 +303,7 @@ pub struct SecondaryZoneConfig {
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "bindy.firestoned.io",
-    version = "v1alpha1",
+    version = "v1beta1",
     kind = "DNSZone",
     namespaced,
     shortname = "zone",
@@ -385,7 +385,7 @@ pub struct DNSZoneSpec {
 /// # Example
 ///
 /// ```yaml
-/// apiVersion: bindy.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1beta1
 /// kind: ARecord
 /// metadata:
 ///   name: www-example-com
@@ -399,7 +399,7 @@ pub struct DNSZoneSpec {
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "bindy.firestoned.io",
-    version = "v1alpha1",
+    version = "v1beta1",
     kind = "ARecord",
     namespaced,
     shortname = "a",
@@ -449,7 +449,7 @@ pub struct ARecordSpec {
 /// # Example
 ///
 /// ```yaml
-/// apiVersion: bindy.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1beta1
 /// kind: AAAARecord
 /// metadata:
 ///   name: www-example-com-ipv6
@@ -462,7 +462,7 @@ pub struct ARecordSpec {
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "bindy.firestoned.io",
-    version = "v1alpha1",
+    version = "v1beta1",
     kind = "AAAARecord",
     namespaced,
     shortname = "aaaa",
@@ -502,7 +502,7 @@ pub struct AAAARecordSpec {
 /// # Example
 ///
 /// ```yaml
-/// apiVersion: bindy.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1beta1
 /// kind: TXTRecord
 /// metadata:
 ///   name: spf-example-com
@@ -516,7 +516,7 @@ pub struct AAAARecordSpec {
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "bindy.firestoned.io",
-    version = "v1alpha1",
+    version = "v1beta1",
     kind = "TXTRecord",
     namespaced,
     shortname = "txt",
@@ -559,7 +559,7 @@ pub struct TXTRecordSpec {
 /// # Example
 ///
 /// ```yaml
-/// apiVersion: bindy.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1beta1
 /// kind: CNAMERecord
 /// metadata:
 ///   name: blog-example-com
@@ -572,7 +572,7 @@ pub struct TXTRecordSpec {
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "bindy.firestoned.io",
-    version = "v1alpha1",
+    version = "v1beta1",
     kind = "CNAMERecord",
     namespaced,
     shortname = "cname",
@@ -615,7 +615,7 @@ pub struct CNAMERecordSpec {
 /// # Example
 ///
 /// ```yaml
-/// apiVersion: bindy.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1beta1
 /// kind: MXRecord
 /// metadata:
 ///   name: mail-example-com
@@ -629,7 +629,7 @@ pub struct CNAMERecordSpec {
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "bindy.firestoned.io",
-    version = "v1alpha1",
+    version = "v1beta1",
     kind = "MXRecord",
     namespaced,
     shortname = "mx",
@@ -675,7 +675,7 @@ pub struct MXRecordSpec {
 /// # Example
 ///
 /// ```yaml
-/// apiVersion: bindy.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1beta1
 /// kind: NSRecord
 /// metadata:
 ///   name: subdomain-ns
@@ -688,7 +688,7 @@ pub struct MXRecordSpec {
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "bindy.firestoned.io",
-    version = "v1alpha1",
+    version = "v1beta1",
     kind = "NSRecord",
     namespaced,
     shortname = "ns",
@@ -728,7 +728,7 @@ pub struct NSRecordSpec {
 /// # Example
 ///
 /// ```yaml
-/// apiVersion: bindy.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1beta1
 /// kind: SRVRecord
 /// metadata:
 ///   name: ldap-srv
@@ -744,7 +744,7 @@ pub struct NSRecordSpec {
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "bindy.firestoned.io",
-    version = "v1alpha1",
+    version = "v1beta1",
     kind = "SRVRecord",
     namespaced,
     shortname = "srv",
@@ -800,7 +800,7 @@ pub struct SRVRecordSpec {
 /// # Example
 ///
 /// ```yaml
-/// apiVersion: bindy.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1beta1
 /// kind: CAARecord
 /// metadata:
 ///   name: caa-letsencrypt
@@ -815,7 +815,7 @@ pub struct SRVRecordSpec {
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "bindy.firestoned.io",
-    version = "v1alpha1",
+    version = "v1beta1",
     kind = "CAARecord",
     namespaced,
     shortname = "caa",
@@ -979,7 +979,7 @@ impl RndcAlgorithm {
 /// # Using with `Bind9Instance`
 ///
 /// ```yaml
-/// apiVersion: bindy.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1beta1
 /// kind: Bind9Instance
 /// metadata:
 ///   name: production-dns-primary-0
@@ -1489,7 +1489,7 @@ pub struct Bind9ClusterCommonSpec {
 /// # Example
 ///
 /// ```yaml
-/// apiVersion: bindy.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1beta1
 /// kind: Bind9Cluster
 /// metadata:
 ///   name: dev-team-dns
@@ -1504,7 +1504,7 @@ pub struct Bind9ClusterCommonSpec {
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "bindy.firestoned.io",
-    version = "v1alpha1",
+    version = "v1beta1",
     kind = "Bind9Cluster",
     namespaced,
     shortname = "b9c",
@@ -1540,7 +1540,7 @@ pub struct Bind9ClusterSpec {
 /// # Example
 ///
 /// ```yaml
-/// apiVersion: bindy.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1beta1
 /// kind: ClusterBind9Provider
 /// metadata:
 ///   name: shared-production-dns
@@ -1557,7 +1557,7 @@ pub struct Bind9ClusterSpec {
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "bindy.firestoned.io",
-    version = "v1alpha1",
+    version = "v1beta1",
     kind = "ClusterBind9Provider",
     // NOTE: No 'namespaced' attribute = cluster-scoped
     shortname = "cb9p",
@@ -1643,7 +1643,7 @@ pub enum ServerRole {
 /// # Example
 ///
 /// ```yaml
-/// apiVersion: bindy.firestoned.io/v1alpha1
+/// apiVersion: bindy.firestoned.io/v1beta1
 /// kind: Bind9Instance
 /// metadata:
 ///   name: dns-primary
@@ -1657,7 +1657,7 @@ pub enum ServerRole {
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "bindy.firestoned.io",
-    version = "v1alpha1",
+    version = "v1beta1",
     kind = "Bind9Instance",
     namespaced,
     shortname = "b9",

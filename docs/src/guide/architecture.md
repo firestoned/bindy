@@ -59,7 +59,7 @@ graph TB
 
 **YAML Example:**
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: dev-team-dns
@@ -112,7 +112,7 @@ graph TB
 
 **YAML Example:**
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: shared-production-dns
@@ -386,7 +386,7 @@ graph TB
 
 ```yaml
 # team-a namespace
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www
@@ -397,7 +397,7 @@ spec:
   ipv4Address: "192.0.2.1"
 ---
 # This would FAIL - cannot reference zone in another namespace
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www

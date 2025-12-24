@@ -5,7 +5,7 @@ Complete specification for the Bind9Instance Custom Resource Definition.
 ## Resource Definition
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: string
@@ -476,7 +476,7 @@ status:
 
 ```yaml
 # First create the Bind9Cluster
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
@@ -494,7 +494,7 @@ spec:
 
 ---
 # Then create the Bind9Instance referencing the cluster
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
@@ -512,7 +512,7 @@ spec:
 ### Secondary DNS Instance
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary-dns
@@ -536,7 +536,7 @@ spec:
 
 ```yaml
 # Separate cluster for resolvers
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: resolver-cluster
@@ -555,7 +555,7 @@ spec:
       validation: true
 
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: resolver

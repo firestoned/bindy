@@ -13,7 +13,7 @@
 ---
 # Step 1: Create the Bind9Cluster
 # This defines shared configuration for all instances in the cluster
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns  # ← This is the cluster name referenced by others
@@ -44,7 +44,7 @@ spec:
 # Step 3: Create DNS Zones
 # These define which zones the cluster will serve
 
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com  # ← Zone resource name (can be anything)
@@ -63,7 +63,7 @@ spec:
   ttl: 3600
 
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: internal-local
@@ -85,7 +85,7 @@ spec:
 # Step 4: Create DNS Records
 # These reference zones by the zone resource name (not zoneName)
 
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example-com
@@ -97,7 +97,7 @@ spec:
   ttl: 300
 
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: api-example-com
@@ -109,7 +109,7 @@ spec:
   ttl: 300
 
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: blog-example-com
@@ -121,7 +121,7 @@ spec:
   ttl: 300
 
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mail-example-com
@@ -134,7 +134,7 @@ spec:
   ttl: 300
 
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: spf-example-com

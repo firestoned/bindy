@@ -150,7 +150,7 @@ spec:
 
 Given this DNSZone:
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: internal-local      # ← Resource name

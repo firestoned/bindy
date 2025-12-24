@@ -5,7 +5,7 @@ CAA records specify which Certificate Authorities (CAs) are authorized to issue 
 ## Creating a CAA Record
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: letsencrypt-caa
@@ -30,7 +30,7 @@ This authorizes Let's Encrypt to issue certificates for `example.com`.
 Authorizes a CA to issue certificates for the domain:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-issue
@@ -47,7 +47,7 @@ spec:
 Authorizes a CA to issue wildcard certificates:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-wildcard
@@ -64,7 +64,7 @@ spec:
 Specifies URL/email for reporting policy violations:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-iodef-email
@@ -75,7 +75,7 @@ spec:
   tag: iodef
   value: mailto:security@example.com
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-iodef-url
@@ -93,7 +93,7 @@ spec:
 
 ```yaml
 # Standard certificates
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-le-issue
@@ -105,7 +105,7 @@ spec:
   value: letsencrypt.org
 ---
 # Wildcard certificates
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-le-wildcard
@@ -120,7 +120,7 @@ spec:
 ### DigiCert
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-digicert
@@ -135,7 +135,7 @@ spec:
 ### AWS Certificate Manager
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-aws
@@ -146,7 +146,7 @@ spec:
   tag: issue
   value: amazon.com
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-aws-wildcard
@@ -164,7 +164,7 @@ Authorize multiple Certificate Authorities:
 
 ```yaml
 # Let's Encrypt
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-letsencrypt
@@ -176,7 +176,7 @@ spec:
   value: letsencrypt.org
 ---
 # DigiCert
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-digicert
@@ -193,7 +193,7 @@ spec:
 Prevent any CA from issuing certificates:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-deny-all
@@ -217,7 +217,7 @@ Most deployments use `flags: 0`.
 Apply CAA policy to specific subdomains:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-staging

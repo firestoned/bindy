@@ -2,6 +2,192 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-24 00:05] - Feature: Multi-Version Support for v1alpha1 and v1beta1 APIs
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/bin/crdgen.rs`: Updated CRD generator to create multi-version CRDs supporting both `v1alpha1` and `v1beta1`
+  - `v1alpha1`: Marked as deprecated with deprecation warning, served but not stored
+  - `v1beta1`: Storage version, actively served
+  - Both versions share identical schemas, enabling automatic conversion
+  - All 12 CRDs updated with multi-version support
+
+### Why
+Enable seamless migration path from v1alpha1 to v1beta1:
+- **Zero-Downtime Migration**: Users can continue using v1alpha1 resources while migrating to v1beta1
+- **Backward Compatibility**: Existing v1alpha1 resources continue to work without immediate migration
+- **Automatic Conversion**: Kubernetes automatically converts between versions (same schema)
+- **Deprecation Warnings**: Users see warnings when using v1alpha1, encouraging migration
+- **Storage Efficiency**: Only v1beta1 is stored in etcd, reducing storage overhead
+
+### Impact
+- [ ] Breaking change - NO breaking changes, fully backward compatible
+- [x] Requires cluster rollout - CRDs must be updated with `kubectl replace --force`
+- [x] Config change required
+- [ ] Documentation only
+
+### Migration Path
+
+**For Existing v1alpha1 Users:**
+```bash
+# 1. Update CRDs (existing resources continue to work)
+kubectl replace --force -f deploy/crds/
+
+# 2. Verify both versions are served
+kubectl get crds bind9clusters.bindy.firestoned.io -o jsonpath='{.spec.versions[*].name}'
+# Expected: v1alpha1 v1beta1
+
+# 3. Migrate resources at your own pace
+# Option A: Edit in-place (automatic conversion)
+kubectl edit bind9cluster my-cluster  # Change apiVersion to v1beta1
+
+# Option B: Export and re-import
+kubectl get bind9clusters -A -o yaml > backup.yaml
+sed -i 's|bindy.firestoned.io/v1alpha1|bindy.firestoned.io/v1beta1|g' backup.yaml
+kubectl apply -f backup.yaml
+
+# 4. Verify migration
+kubectl get bind9clusters -A -o custom-columns=NAME:.metadata.name,VERSION:.apiVersion
+```
+
+**Deprecation Timeline:**
+- **Now**: Both versions supported, v1alpha1 deprecated with warnings
+- **v0.2.0**: v1alpha1 support will be removed
+
+### Technical Details
+
+**Version Configuration:**
+- `v1alpha1`:
+  - `served: true` - API server accepts requests
+  - `storage: false` - Not stored in etcd
+  - `deprecated: true` - Shows deprecation warnings
+  - `deprecationWarning: "bindy.firestoned.io/v1alpha1 is deprecated. Use bindy.firestoned.io/v1beta1 instead."`
+
+- `v1beta1`:
+  - `served: true` - API server accepts requests
+  - `storage: true` - Stored in etcd (storage version)
+
+**Automatic Conversion:**
+Since both versions have identical schemas, Kubernetes handles conversion automatically:
+- Resources created as v1alpha1 are stored as v1beta1
+- Resources can be read as either v1alpha1 or v1beta1
+- No conversion webhooks needed
+
+## [2025-12-23 23:55] - Refactor: Separate RBAC Permissions for Status Subresources
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `deploy/rbac/role.yaml`: Separated RBAC permissions for main resources and status subresources following Kubernetes best practices
+  - All CRDs now have separate permission rules for main resource and `/status` subresource
+  - Main resources: retain full permissions (`get`, `list`, `watch`, `create`, `update`, `patch`, `delete` where appropriate)
+  - Status subresources: limited to `get`, `update`, `patch` only (no `create`, `list`, `watch`, or `delete`)
+  - Affected CRDs:
+    - `bind9instances` / `bind9instances/status`
+    - `bind9clusters` / `bind9clusters/status`
+    - `clusterbind9providers` / `clusterbind9providers/status`
+    - `dnszones` / `dnszones/status`
+    - All DNS record types and their status subresources
+
+### Why
+Implementing least-privilege RBAC for status subresources:
+- **Security Best Practice**: Status subresources only need `get`, `update`, and `patch` verbs
+- **Principle of Least Privilege**: Reduces attack surface by removing unnecessary permissions
+- **Kubernetes Convention**: Follows standard Kubernetes RBAC patterns for status updates
+- **Compliance**: Aligns with PCI-DSS 7.1.2 requirement for minimal permissions
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout - RBAC ClusterRole must be updated
+- [x] Config change only
+- [ ] Documentation only
+
+### Deployment Steps
+```bash
+# Apply updated RBAC (ClusterRole will be updated)
+kubectl apply -f deploy/rbac/role.yaml
+
+# Verify permissions are applied
+kubectl auth can-i update bind9instances/status --as=system:serviceaccount:dns-system:bindy-controller
+```
+
+## [2025-12-23 23:45] - Breaking: Upgrade All CRD APIs from v1alpha1 to v1beta1
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **API Breaking Change**: Upgraded all Custom Resource Definitions from `v1alpha1` to `v1beta1`
+  - `src/crd.rs`: Updated all 12 CRD version declarations from `version = "v1alpha1"` to `version = "v1beta1"`
+  - Updated all rustdoc comments to reflect new API version
+  - Regenerated all CRD YAML files in `deploy/crds/` with v1beta1 API version
+- **Examples**: Updated all example YAML files to use `bindy.firestoned.io/v1beta1`
+  - 10 example files updated in `/examples/`
+- **Tests**: Updated all integration tests to use v1beta1 API version
+  - `tests/simple_integration.rs`
+  - `tests/multi_tenancy_integration.rs`
+- **Documentation**: Updated all documentation references from v1alpha1 to v1beta1
+  - All files in `docs/src/` updated
+
+### Why
+Upgrading to v1beta1 signals increased API stability and maturity:
+- **Beta Stability**: v1beta1 indicates the API is more stable and closer to GA
+- **Breaking Changes**: v1beta1 allows for breaking changes before v1 (GA) is released
+- **Ecosystem Signal**: Signals to users that the API is maturing and approaching production readiness
+
+### Impact
+- [x] **Breaking change** - All existing resources must be migrated from v1alpha1 to v1beta1
+- [ ] Requires cluster rollout
+- [x] Config change required
+- [ ] Documentation only
+
+### Migration Steps for Users
+
+**Option 1: Export and Re-import (Recommended)**
+```bash
+# 1. Export all existing resources
+kubectl get arecords,aaaarecords,cnamerecords,mxrecords,nsrecords,txtrecords,srvrecords,caarecords \
+  -A -o yaml > dns-records-backup.yaml
+kubectl get dnszones -A -o yaml > dnszones-backup.yaml
+kubectl get bind9clusters -A -o yaml > bind9clusters-backup.yaml
+kubectl get clusterbind9providers -o yaml > clusterbind9providers-backup.yaml
+kubectl get bind9instances -A -o yaml > bind9instances-backup.yaml
+
+# 2. Update apiVersion in backup files
+sed -i 's|bindy.firestoned.io/v1alpha1|bindy.firestoned.io/v1beta1|g' *.yaml
+
+# 3. Update CRDs (will NOT delete existing resources)
+kubectl replace --force -f deploy/crds/
+
+# 4. Delete old resources (they will be garbage-collected)
+kubectl delete arecords,aaaarecords,cnamerecords,mxrecords,nsrecords,txtrecords,srvrecords,caarecords --all -A
+kubectl delete dnszones --all -A
+kubectl delete bind9clusters --all -A
+kubectl delete clusterbind9providers --all
+kubectl delete bind9instances --all -A
+
+# 5. Re-apply with new API version
+kubectl apply -f dns-records-backup.yaml
+kubectl apply -f dnszones-backup.yaml
+kubectl apply -f bind9clusters-backup.yaml
+kubectl apply -f clusterbind9providers-backup.yaml
+kubectl apply -f bind9instances-backup.yaml
+```
+
+**Option 2: In-place kubectl edit (For Small Deployments)**
+```bash
+# Edit each resource individually to change apiVersion
+kubectl edit arecord <name> -n <namespace>
+# Change: apiVersion: bindy.firestoned.io/v1alpha1
+# To:     apiVersion: bindy.firestoned.io/v1beta1
+```
+
+**IMPORTANT**: After migration, verify all resources are running correctly:
+```bash
+# Check all bindy resources
+kubectl get arecords,dnszones,bind9clusters,clusterbind9providers,bind9instances -A
+```
+
 ## [2025-12-23 23:30] - Breaking: Rename Bind9GlobalCluster to ClusterBind9Provider
 
 **Author:** Erick Bourgeois

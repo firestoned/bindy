@@ -23,7 +23,7 @@ This provides:
 ### Bind9Cluster (Top-Level)
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
@@ -37,7 +37,7 @@ spec:
 ### Bind9Instance References Bind9Cluster
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
@@ -51,7 +51,7 @@ spec:
 ### DNSZone References Bind9Cluster
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
@@ -81,7 +81,7 @@ When you create a DNSZone with `clusterRef: production-dns`:
 
 ```yaml
 # East Cluster
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: dns-cluster-east
@@ -91,7 +91,7 @@ spec:
 
 ---
 # East Instance
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: dns-east
@@ -103,7 +103,7 @@ spec:
 
 ---
 # Zone on East Cluster
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com-east
@@ -117,7 +117,7 @@ spec:
 
 ```yaml
 # West Cluster
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: dns-cluster-west
@@ -127,7 +127,7 @@ spec:
 
 ---
 # West Instance
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: dns-west
@@ -139,7 +139,7 @@ spec:
 
 ---
 # Zone on West Cluster
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com-west

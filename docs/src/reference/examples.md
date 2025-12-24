@@ -18,7 +18,7 @@ Minimal viable configuration for testing:
 
 ```yaml
 # Bind9Instance
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: dns
@@ -29,7 +29,7 @@ spec:
   replicas: 1
 ---
 # DNSZone
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
@@ -49,7 +49,7 @@ spec:
     negativeTtl: 86400
 ---
 # A Record
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www
@@ -66,7 +66,7 @@ spec:
 
 ```yaml
 # Primary
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary
@@ -79,7 +79,7 @@ spec:
       - "10.0.2.0/24"  # Secondary network
 ---
 # Secondary
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary
@@ -89,7 +89,7 @@ spec:
   replicas: 2
 ---
 # Zone on Primary
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-primary
@@ -109,7 +109,7 @@ spec:
     negativeTtl: 86400
 ---
 # Zone on Secondary
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-secondary
@@ -128,7 +128,7 @@ spec:
 #### DNSSEC Enabled
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: dnssec-instance
@@ -145,7 +145,7 @@ spec:
 Using a custom or private container image:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: custom-image-cluster
@@ -158,7 +158,7 @@ spec:
     imagePullSecrets:
       - my-registry-secret
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: custom-dns
@@ -174,7 +174,7 @@ spec:
 Override cluster image for specific instance:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: prod-cluster
@@ -183,7 +183,7 @@ spec:
   image:
     image: "internetsystemsconsortium/bind9:9.18"
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: canary-dns
@@ -245,7 +245,7 @@ data:
     };
 ---
 # Reference custom ConfigMaps
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: custom-config-dns
@@ -276,7 +276,7 @@ data:
       dnssec-validation auto;
     };
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: shared-config-cluster
@@ -285,7 +285,7 @@ spec:
   configMapRefs:
     namedConfOptions: "shared-options"
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: instance-1
@@ -295,7 +295,7 @@ spec:
   replicas: 2
   # Inherits configMapRefs from cluster
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: instance-2
@@ -310,7 +310,7 @@ spec:
 
 ```yaml
 # Internal DNS
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: internal-dns
@@ -322,7 +322,7 @@ spec:
       - "10.0.0.0/8"
 ---
 # External DNS
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: external-dns
@@ -387,7 +387,7 @@ name: mail-mx-primary
 ### Local Development (kind/minikube)
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: dev-dns
@@ -405,7 +405,7 @@ spec:
 ### CI/CD Testing
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: ci-dns

@@ -5,7 +5,7 @@ AAAA records map domain names to IPv6 addresses. They are the IPv6 equivalent of
 ## Creating an AAAA Record
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: www-example-ipv6
@@ -38,7 +38,7 @@ Create multiple records for the same name for load balancing:
 
 ```bash
 kubectl apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: www-ipv6-1
@@ -47,7 +47,7 @@ spec:
   name: www
   ipv6Address: "2001:db8::1"
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: www-ipv6-2
@@ -66,7 +66,7 @@ For dual-stack (IPv4 + IPv6) configuration, create both A and AAAA records:
 
 ```yaml
 # IPv4
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-ipv4
@@ -77,7 +77,7 @@ spec:
   ttl: 300
 ---
 # IPv6
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: www-ipv6
@@ -116,7 +116,7 @@ ipv6Address: "::ffff:192.0.2.1"
 ### Web Server
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: web-ipv6
@@ -130,7 +130,7 @@ spec:
 ### API Endpoint
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: api-ipv6
@@ -144,7 +144,7 @@ spec:
 ### Mail Server
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: mail-ipv6

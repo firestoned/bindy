@@ -18,7 +18,7 @@ High availability (HA) DNS ensures continuous DNS service even during:
 Run multiple replicas of each Bind9Instance:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
@@ -37,7 +37,7 @@ Deploy separate primary and secondary instances:
 
 ```yaml
 # Primary instance
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
@@ -47,7 +47,7 @@ spec:
   replicas: 2
 ---
 # Secondary instance  
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary-dns
@@ -68,7 +68,7 @@ Deploy instances across multiple regions:
 
 ```yaml
 # US East primary
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-us-east
@@ -79,7 +79,7 @@ spec:
   replicas: 2
 ---
 # US West secondary
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary-us-west
@@ -90,7 +90,7 @@ spec:
   replicas: 2
 ---
 # EU secondary
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary-eu-west

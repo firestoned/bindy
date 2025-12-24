@@ -63,7 +63,7 @@ CoreDNS is the default DNS solution for Kubernetes, but you might want an altern
 Replace CoreDNS with a platform-managed DNS service accessible to all namespaces:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: platform-dns
@@ -103,7 +103,7 @@ Use Bindy for application DNS while keeping CoreDNS for `cluster.local`:
 # CoreDNS continues handling cluster.local
 # Bindy handles application-specific zones
 
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: app-dns
@@ -114,7 +114,7 @@ spec:
   secondary:
     replicas: 1
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: internal-services
@@ -138,7 +138,7 @@ spec:
 Provide DNS for service mesh configurations:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: mesh-dns
@@ -157,7 +157,7 @@ spec:
       - "10.0.0.0/8"  # Service mesh network
 ---
 # Application teams create zones
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: api-zone
@@ -167,7 +167,7 @@ spec:
   clusterProviderRef: mesh-dns
 ---
 # Dynamic service records
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: api-v1
@@ -192,7 +192,7 @@ Run Bindy alongside CoreDNS during migration:
 
 1. **Deploy Bindy Cluster Provider**:
    ```yaml
-   apiVersion: bindy.firestoned.io/v1alpha1
+   apiVersion: bindy.firestoned.io/v1beta1
    kind: ClusterBind9Provider
    metadata:
      name: platform-dns-migration
@@ -252,7 +252,7 @@ Keep CoreDNS for cluster.local, migrate application zones:
 
 2. **Create Application Zones in Bindy**:
    ```yaml
-   apiVersion: bindy.firestoned.io/v1alpha1
+   apiVersion: bindy.firestoned.io/v1beta1
    kind: DNSZone
    metadata:
      name: apps-zone
@@ -283,7 +283,7 @@ Keep CoreDNS for cluster.local, migrate application zones:
 For cluster DNS replacement, configure these settings:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: cluster-dns
@@ -322,7 +322,7 @@ Create these zones for Kubernetes cluster DNS:
 
 ```yaml
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: cluster-local
@@ -334,7 +334,7 @@ spec:
     primaryNs: ns1.cluster.local.
     adminEmail: dns-admin.cluster.local.
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: svc-cluster-local
@@ -370,11 +370,11 @@ data:
 **Bindy:**
 ```yaml
 # Infrastructure as code
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 # ... declarative specs
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 # ... versioned, reviewable YAML
 ```
@@ -438,7 +438,7 @@ kind: DNSZone
 ### High Availability
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: ha-dns

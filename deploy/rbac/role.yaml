@@ -8,7 +8,7 @@ metadata:
 rules:
   # Bind9Instance resources
   - apiGroups: ["bindy.firestoned.io"]
-    resources: ["bind9instances", "bind9instances/status"]
+    resources: ["bind9instances"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
     # Permissions needed:
     # - "get", "list", "watch": Read instances for status updates
@@ -16,9 +16,15 @@ rules:
     # - "update", "patch": Update instance configuration
     # - "delete": Scale down instances (Bind9Cluster reconciler) and finalizer cleanup
 
+  # Bind9Instance status subresource (separate permissions for least privilege)
+  - apiGroups: ["bindy.firestoned.io"]
+    resources: ["bind9instances/status"]
+    verbs: ["get", "update", "patch"]
+    # Status updates only need get/update/patch, not create/delete
+
   # Bind9Cluster resources
   - apiGroups: ["bindy.firestoned.io"]
-    resources: ["bind9clusters", "bind9clusters/status"]
+    resources: ["bind9clusters"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
     # Permissions needed:
     # - "get", "list", "watch": Read clusters for status updates
@@ -26,39 +32,63 @@ rules:
     # - "update", "patch": Update cluster configuration
     # - "delete": Clean up clusters (ClusterBind9Provider finalizer cleanup)
 
+  # Bind9Cluster status subresource (separate permissions for least privilege)
+  - apiGroups: ["bindy.firestoned.io"]
+    resources: ["bind9clusters/status"]
+    verbs: ["get", "update", "patch"]
+    # Status updates only need get/update/patch, not create/delete
+
   # ClusterBind9Provider resources - cluster-scoped, NO DELETE (least privilege)
   - apiGroups: ["bindy.firestoned.io"]
-    resources: ["clusterbind9providers", "clusterbind9providers/status"]
+    resources: ["clusterbind9providers"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
     # Removed: "delete" - Use bindy-admin-role for deletions
 
+  # ClusterBind9Provider status subresource (separate permissions for least privilege)
+  - apiGroups: ["bindy.firestoned.io"]
+    resources: ["clusterbind9providers/status"]
+    verbs: ["get", "update", "patch"]
+    # Status updates only need get/update/patch, not create/delete
+
   # DNSZone resources - NO DELETE (least privilege)
   - apiGroups: ["bindy.firestoned.io"]
-    resources: ["dnszones", "dnszones/status"]
+    resources: ["dnszones"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
     # Removed: "delete" - Use bindy-admin-role for deletions
+
+  # DNSZone status subresource (separate permissions for least privilege)
+  - apiGroups: ["bindy.firestoned.io"]
+    resources: ["dnszones/status"]
+    verbs: ["get", "update", "patch"]
+    # Status updates only need get/update/patch, not create/delete
 
   # Record resources - NO DELETE (least privilege)
   - apiGroups: ["bindy.firestoned.io"]
     resources:
       - "arecords"
-      - "arecords/status"
       - "aaaarecords"
-      - "aaaarecords/status"
       - "txtrecords"
-      - "txtrecords/status"
       - "cnamerecords"
-      - "cnamerecords/status"
       - "mxrecords"
-      - "mxrecords/status"
       - "nsrecords"
-      - "nsrecords/status"
       - "srvrecords"
-      - "srvrecords/status"
       - "caarecords"
-      - "caarecords/status"
     verbs: ["get", "list", "watch", "create", "update", "patch"]
     # Removed: "delete" - Use bindy-admin-role for deletions
+
+  # Record status subresources (separate permissions for least privilege)
+  - apiGroups: ["bindy.firestoned.io"]
+    resources:
+      - "arecords/status"
+      - "aaaarecords/status"
+      - "txtrecords/status"
+      - "cnamerecords/status"
+      - "mxrecords/status"
+      - "nsrecords/status"
+      - "srvrecords/status"
+      - "caarecords/status"
+    verbs: ["get", "update", "patch"]
+    # Status updates only need get/update/patch, not create/delete
 
   # Kubernetes Deployments
   - apiGroups: ["apps"]

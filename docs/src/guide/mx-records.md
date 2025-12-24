@@ -5,7 +5,7 @@ MX records specify the mail servers responsible for accepting email on behalf of
 ## Creating an MX Record
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mail-example
@@ -41,7 +41,7 @@ Lower priority values are preferred. Mail servers with the lowest priority are c
 ### Single Mail Server
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-primary
@@ -56,7 +56,7 @@ spec:
 
 ```yaml
 # Primary mail server (lowest priority)
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-primary
@@ -68,7 +68,7 @@ spec:
   ttl: 3600
 ---
 # Backup mail server
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-backup
@@ -88,7 +88,7 @@ Equal priority values enable round-robin load balancing:
 
 ```yaml
 # Server 1
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-1
@@ -99,7 +99,7 @@ spec:
   mailServer: mail1.example.com.
 ---
 # Server 2 (same priority)
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-2
@@ -117,7 +117,7 @@ Both servers share the load equally.
 Configure mail for a subdomain:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: support-mail
@@ -133,7 +133,7 @@ spec:
 ### Google Workspace (formerly G Suite)
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-google-1
@@ -144,7 +144,7 @@ spec:
   mailServer: aspmx.l.google.com.
   ttl: 3600
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-google-2
@@ -154,7 +154,7 @@ spec:
   priority: 5
   mailServer: alt1.aspmx.l.google.com.
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-google-3
@@ -164,7 +164,7 @@ spec:
   priority: 5
   mailServer: alt2.aspmx.l.google.com.
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-google-4
@@ -174,7 +174,7 @@ spec:
   priority: 10
   mailServer: alt3.aspmx.l.google.com.
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-google-5
@@ -188,7 +188,7 @@ spec:
 ### Microsoft 365
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-microsoft
@@ -204,7 +204,7 @@ spec:
 
 ```yaml
 # Primary MX
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-primary
@@ -215,7 +215,7 @@ spec:
   mailServer: mail.example.com.
 ---
 # Corresponding A record for mail server
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: mail-server
@@ -239,7 +239,7 @@ MX records need corresponding A/AAAA records for the mail servers:
 
 ```yaml
 # MX record points to mail.example.com
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-main
@@ -250,7 +250,7 @@ spec:
   mailServer: mail.example.com.
 ---
 # A record for mail.example.com
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: mail-server-ipv4
@@ -260,7 +260,7 @@ spec:
   ipv4Address: "203.0.113.10"
 ---
 # AAAA record for IPv6
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: mail-server-ipv6

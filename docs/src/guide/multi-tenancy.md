@@ -171,7 +171,7 @@ roleRef:
 ### Step 3: Create ClusterBind9Provider
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: shared-production-dns
@@ -260,7 +260,7 @@ roleRef:
 Application teams can now create zones in their namespace:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: app-a-zone
@@ -358,7 +358,7 @@ roleRef:
 
 ```yaml
 # Namespace-scoped cluster
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: dev-dns
@@ -371,7 +371,7 @@ spec:
     replicas: 1
 ---
 # DNS zone referencing namespace-scoped cluster
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: dev-zone
@@ -390,7 +390,7 @@ spec:
   ttl: 300
 ---
 # DNS record
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: test-server
@@ -485,7 +485,7 @@ rules:
 
 ```yaml
 # team-a namespace
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www
@@ -496,7 +496,7 @@ spec:
   ipv4Address: "192.0.2.1"
 ---
 # This FAILS - cross-namespace reference blocked
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www
@@ -600,7 +600,7 @@ spec:
 
 ```yaml
 # Platform creates cluster provider per region
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: production-dns-us-east
@@ -616,7 +616,7 @@ spec:
     trusted:
       - "10.0.0.0/8"
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: production-dns-eu-west
@@ -633,7 +633,7 @@ spec:
       - "10.128.0.0/9"
 ---
 # App teams create zones in their namespace
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: api-zone-us
@@ -643,7 +643,7 @@ spec:
   clusterProviderRef: production-dns-us-east
   soaRecord: { /* ... */ }
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: api-zone-eu
@@ -660,7 +660,7 @@ spec:
 
 ```yaml
 # Dev Team Alpha namespace
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: alpha-dns
@@ -672,7 +672,7 @@ spec:
   secondary:
     replicas: 1
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: alpha-zone
@@ -683,7 +683,7 @@ spec:
   soaRecord: { /* ... */ }
 ---
 # Dev Team Beta namespace (completely isolated)
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: beta-dns
@@ -695,7 +695,7 @@ spec:
   secondary:
     replicas: 1
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: beta-zone
@@ -712,7 +712,7 @@ spec:
 
 ```yaml
 # Platform manages production cluster provider
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: production-dns
@@ -726,7 +726,7 @@ spec:
     replicas: 2
 ---
 # Production app references cluster provider
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: app-prod
@@ -737,7 +737,7 @@ spec:
   soaRecord: { /* ... */ }
 ---
 # Dev team manages their own cluster
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: dev-dns
@@ -748,7 +748,7 @@ spec:
     replicas: 1
 ---
 # Dev app references namespace-scoped cluster
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: app-dev

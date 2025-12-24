@@ -20,7 +20,7 @@ Bindy supports all common DNS record types:
 All records share common fields:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: <RecordType>
 metadata:
   name: <unique-name>
@@ -98,7 +98,7 @@ spec:
 Given this DNSZone:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com        # Kubernetes resource name
@@ -113,7 +113,7 @@ Create an A record using either method:
 
 **Using `zone` (matches spec.zoneName):**
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example
@@ -126,7 +126,7 @@ spec:
 
 **Using `zoneRef` (matches metadata.name):**
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example

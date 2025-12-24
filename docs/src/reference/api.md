@@ -26,7 +26,7 @@ This document describes the Custom Resource Definitions (CRDs) provided by Bindy
 
 ### DNSZone
 
-**API Version**: `bindy.firestoned.io/v1alpha1`
+**API Version**: `bindy.firestoned.io/v1beta1`
 
 DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defines a zone (e.g., example.com) with SOA record parameters. Can reference either a namespace-scoped Bind9Cluster or cluster-scoped ClusterBind9Provider.
 
@@ -56,7 +56,7 @@ DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defi
 
 ### ARecord
 
-**API Version**: `bindy.firestoned.io/v1alpha1`
+**API Version**: `bindy.firestoned.io/v1beta1`
 
 ARecord maps a DNS hostname to an IPv4 address. Multiple A records for the same name enable round-robin DNS load balancing.
 
@@ -80,7 +80,7 @@ ARecord maps a DNS hostname to an IPv4 address. Multiple A records for the same 
 
 ### AAAARecord
 
-**API Version**: `bindy.firestoned.io/v1alpha1`
+**API Version**: `bindy.firestoned.io/v1beta1`
 
 AAAARecord maps a DNS hostname to an IPv6 address. This is the IPv6 equivalent of an A record.
 
@@ -104,7 +104,7 @@ AAAARecord maps a DNS hostname to an IPv6 address. This is the IPv6 equivalent o
 
 ### CNAMERecord
 
-**API Version**: `bindy.firestoned.io/v1alpha1`
+**API Version**: `bindy.firestoned.io/v1beta1`
 
 CNAMERecord creates a DNS alias from one hostname to another. A CNAME cannot coexist with other record types for the same name.
 
@@ -128,7 +128,7 @@ CNAMERecord creates a DNS alias from one hostname to another. A CNAME cannot coe
 
 ### MXRecord
 
-**API Version**: `bindy.firestoned.io/v1alpha1`
+**API Version**: `bindy.firestoned.io/v1beta1`
 
 MXRecord specifies mail exchange servers for a domain. Lower priority values indicate higher preference for mail delivery.
 
@@ -153,7 +153,7 @@ MXRecord specifies mail exchange servers for a domain. Lower priority values ind
 
 ### NSRecord
 
-**API Version**: `bindy.firestoned.io/v1alpha1`
+**API Version**: `bindy.firestoned.io/v1beta1`
 
 NSRecord delegates a subdomain to authoritative nameservers. Used for subdomain delegation to different DNS providers or servers.
 
@@ -177,7 +177,7 @@ NSRecord delegates a subdomain to authoritative nameservers. Used for subdomain 
 
 ### TXTRecord
 
-**API Version**: `bindy.firestoned.io/v1alpha1`
+**API Version**: `bindy.firestoned.io/v1beta1`
 
 TXTRecord stores arbitrary text data in DNS. Commonly used for SPF, DKIM, DMARC policies, and domain verification.
 
@@ -201,7 +201,7 @@ TXTRecord stores arbitrary text data in DNS. Commonly used for SPF, DKIM, DMARC 
 
 ### SRVRecord
 
-**API Version**: `bindy.firestoned.io/v1alpha1`
+**API Version**: `bindy.firestoned.io/v1beta1`
 
 SRVRecord specifies the hostname and port of servers for specific services. The record name follows the format _service._proto (e.g., _ldap._tcp).
 
@@ -228,7 +228,7 @@ SRVRecord specifies the hostname and port of servers for specific services. The 
 
 ### CAARecord
 
-**API Version**: `bindy.firestoned.io/v1alpha1`
+**API Version**: `bindy.firestoned.io/v1beta1`
 
 CAARecord specifies which certificate authorities are authorized to issue certificates for a domain. Enhances domain security and certificate issuance control.
 
@@ -256,7 +256,7 @@ CAARecord specifies which certificate authorities are authorized to issue certif
 
 ### Bind9Cluster
 
-**API Version**: `bindy.firestoned.io/v1alpha1`
+**API Version**: `bindy.firestoned.io/v1beta1`
 
 Bind9Cluster defines a namespace-scoped logical grouping of BIND9 DNS server instances. Use this for tenant-managed DNS infrastructure isolated to a specific namespace. For platform-managed cluster-wide DNS, use ClusterBind9Provider instead.
 
@@ -289,7 +289,7 @@ Bind9Cluster defines a namespace-scoped logical grouping of BIND9 DNS server ins
 
 ### Bind9Instance
 
-**API Version**: `bindy.firestoned.io/v1alpha1`
+**API Version**: `bindy.firestoned.io/v1beta1`
 
 Bind9Instance represents a BIND9 DNS server deployment in Kubernetes. Each instance creates a Deployment, Service, ConfigMap, and Secret for managing a BIND9 server with RNDC protocol communication.
 

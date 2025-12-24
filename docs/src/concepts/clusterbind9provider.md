@@ -34,7 +34,7 @@ Bindy provides two cluster types:
 The `ClusterBind9ProviderSpec` uses the same configuration fields as `Bind9Cluster` through a shared spec:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: production-dns
@@ -123,7 +123,7 @@ status:
 
 ```yaml
 # Platform team creates cluster provider (ClusterRole required)
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: shared-production-dns
@@ -141,7 +141,7 @@ spec:
       - "allow-transfer { none; }"
 ---
 # Application team references cluster provider (Role in their namespace)
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: api-zone
@@ -159,7 +159,7 @@ spec:
     negativeTtl: 86400
 ---
 # Different application, same cluster provider
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: web-zone
@@ -183,7 +183,7 @@ spec:
 
 ```yaml
 # US East region
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: dns-us-east
@@ -205,7 +205,7 @@ spec:
       - "10.0.0.0/8"
 ---
 # EU West region
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: dns-eu-west
@@ -225,7 +225,7 @@ spec:
       - "10.128.0.0/9"
 ---
 # Application chooses regional cluster
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: api-zone-us
@@ -235,7 +235,7 @@ spec:
   clusterProviderRef: dns-us-east  # US region
   soaRecord: { /* ... */ }
 ---
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: api-zone-eu
@@ -252,7 +252,7 @@ spec:
 
 ```yaml
 # Premium tier - high availability
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: dns-premium
@@ -273,7 +273,7 @@ spec:
       - "recursive-clients 10000"
 ---
 # Standard tier - balanced cost/availability
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: dns-standard
@@ -288,7 +288,7 @@ spec:
     replicas: 2
 ---
 # Economy tier - minimal resources
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: dns-economy
@@ -397,7 +397,7 @@ Instances can be created in any namespace and reference the cluster provider:
 
 ```yaml
 # Instance in production namespace
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns-0
@@ -408,7 +408,7 @@ spec:
   replicas: 1
 ---
 # Instance in staging namespace
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary-dns-0
@@ -449,7 +449,7 @@ Configuration is resolved with the following precedence (highest to lowest):
 
 ```yaml
 # ClusterBind9Provider defines global defaults
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: production-dns
@@ -463,7 +463,7 @@ spec:
 
 ---
 # Bind9Instance can override specific fields
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-0
@@ -518,7 +518,7 @@ The following fields are inherited from `ClusterBind9Provider` to `Deployment`:
 **Complete Example:**
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: production-dns
@@ -653,7 +653,7 @@ status:
 Global clusters are ideal for production:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: production-dns
@@ -674,7 +674,7 @@ spec:
 
 ```yaml
 # Production cluster
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: dns-production
@@ -683,7 +683,7 @@ metadata:
 spec: { /* production config */ }
 ---
 # Staging cluster (also global, but separate)
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: dns-staging
@@ -726,7 +726,7 @@ Remember: DNSZones are always namespace-scoped, even when referencing cluster pr
 
 ```yaml
 # DNSZone in namespace-a
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: zone-a
@@ -737,7 +737,7 @@ spec:
   # Records in namespace-a can ONLY reference this zone
 ---
 # DNSZone in namespace-b
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: zone-b

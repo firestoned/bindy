@@ -1,7 +1,7 @@
 ---
 # Platform DNS Cluster - Cluster-Scoped Provider
 # This cluster provider can be referenced from DNSZones in any namespace
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ClusterBind9Provider
 metadata:
   name: production-dns

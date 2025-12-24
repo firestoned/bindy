@@ -5,7 +5,7 @@ Secondary DNS instances receive zone data from primary servers via zone transfer
 ## Creating a Secondary Instance
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary-dns
@@ -62,7 +62,7 @@ metadata:
 When creating a DNSZone resource for secondary zones, use the `secondary` type and specify primary servers:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com-secondary
@@ -94,7 +94,7 @@ When you create primary `DNSZone` resources, Bindy automatically:
 ```bash
 # Create secondary instance with proper labels
 cat <<EOF | kubectl apply -f -
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary-dns
@@ -111,7 +111,7 @@ EOF
 
 # Create primary zone - zone transfers auto-configured!
 cat <<EOF | kubectl apply -f -
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com

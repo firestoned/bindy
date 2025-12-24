@@ -34,7 +34,7 @@ Labels used to identify cluster-managed instances:
 
 **Example:**
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: production-dns-primary-0
@@ -65,7 +65,7 @@ kubectl get bind9instances -A \
 
 **Example:**
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: production-dns-primary-0
@@ -98,7 +98,7 @@ kubectl get bind9instances -A \
 
 **Example:**
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: production-dns-primary-0
@@ -131,7 +131,7 @@ Users can add custom labels to any Bindy resource for organization and filtering
 
 **Example:**
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
@@ -163,7 +163,7 @@ Annotations used to store instance metadata:
 
 **Example:**
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: production-dns-primary-0
@@ -191,7 +191,7 @@ Users can add custom annotations for metadata and automation:
 
 **Example:**
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
@@ -216,7 +216,7 @@ metadata:
 A complete managed instance created by Bind9Cluster:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: production-dns-primary-0
@@ -395,7 +395,7 @@ region:
 ### 4. Use Labels for Cost Allocation
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns

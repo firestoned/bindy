@@ -92,7 +92,7 @@ graph TB
 Defines shared configuration for a logical group of BIND9 instances:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
@@ -122,7 +122,7 @@ spec:
 References a cluster and deploys BIND9 pods:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: dns-primary
@@ -139,7 +139,7 @@ The instance inherits configuration from the cluster but can override specific s
 References an instance and creates zones via RNDC:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
