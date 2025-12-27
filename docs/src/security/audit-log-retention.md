@@ -101,7 +101,7 @@ This document defines the audit log retention policy for the Bindy DNS Controlle
     "namespace": "team-web",
     "name": "example-com",
     "apiGroup": "bindy.firestoned.io",
-    "apiVersion": "v1alpha1"
+    "apiVersion": "v1beta1"
   },
   "responseStatus": {
     "metadata": {},

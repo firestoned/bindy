@@ -9,7 +9,7 @@ In Bindy's three-tier architecture, resources reference each other directly by n
 ```
 Bind9Cluster ← clusterRef ← Bind9Instance
        ↑
-   clusterRef ← DNSZone ← zoneRef ← DNS Records
+   clusterRef ← DNSZone ← (label selector) ← DNS Records
 ```
 
 This provides:

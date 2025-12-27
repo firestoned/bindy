@@ -10,8 +10,9 @@ kind: MXRecord
 metadata:
   name: mail-example
   namespace: dns-system
+  labels:
+    zone: example.com  # Used by DNSZone selector
 spec:
-  zoneRef: example-com  # References DNSZone metadata.name (recommended)
   name: "@"             # Zone apex - mail for @example.com
   priority: 10
   mailServer: mail.example.com.  # Must end with a dot (FQDN)
@@ -20,7 +21,42 @@ spec:
 
 This configures mail delivery for `example.com` to `mail.example.com` with priority 10.
 
-**Note:** You can also use `zone: example.com` (matching `DNSZone.spec.zoneName`) instead of `zoneRef`. See [Referencing DNS Zones](./records-guide.md#referencing-dns-zones) for details on choosing between `zone` and `zoneRef`.
+## How Records Are Associated with Zones
+
+Records are discovered by DNSZones using label selectors. The DNSZone must have a `recordsFrom` selector that matches the record's labels:
+
+```yaml
+# DNSZone with selector
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: example-com
+spec:
+  zoneName: example.com
+  clusterRef: production-dns
+  recordsFrom:
+    - selector:
+        matchLabels:
+          zone: example.com  # Selects all records with this label
+  soaRecord:
+    primaryNs: ns1.example.com.
+    adminEmail: admin.example.com.
+    serial: 2024010101
+---
+# Record that will be selected
+apiVersion: bindy.firestoned.io/v1beta1
+kind: MXRecord
+metadata:
+  name: mail-example
+  labels:
+    zone: example.com  # ✅ Matches selector above
+spec:
+  name: "@"
+  priority: 10
+  mailServer: mail.example.com.
+```
+
+See [Label Selector Guide](./label-selectors.md) for advanced patterns.
 
 ## FQDN Requirement
 
@@ -45,8 +81,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-primary
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   priority: 10
   mailServer: mail.example.com.
@@ -60,8 +98,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-primary
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   priority: 10
   mailServer: mail1.example.com.
@@ -72,8 +112,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-backup
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   priority: 20
   mailServer: mail2.example.com.
@@ -92,8 +134,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-1
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   priority: 10
   mailServer: mail1.example.com.
@@ -103,8 +147,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-2
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   priority: 10
   mailServer: mail2.example.com.
@@ -121,8 +167,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: support-mail
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: support  # Email: user@support.example.com
   priority: 10
   mailServer: mail-support.example.com.
@@ -137,8 +185,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-google-1
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   priority: 1
   mailServer: aspmx.l.google.com.
@@ -148,8 +198,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-google-2
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   priority: 5
   mailServer: alt1.aspmx.l.google.com.
@@ -158,8 +210,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-google-3
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   priority: 5
   mailServer: alt2.aspmx.l.google.com.
@@ -168,8 +222,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-google-4
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   priority: 10
   mailServer: alt3.aspmx.l.google.com.
@@ -178,8 +234,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-google-5
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   priority: 10
   mailServer: alt4.aspmx.l.google.com.
@@ -192,8 +250,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-microsoft
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   priority: 0
   mailServer: example-com.mail.protection.outlook.com.  # Replace 'example-com' with your domain
@@ -208,8 +268,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-primary
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   priority: 10
   mailServer: mail.example.com.
@@ -219,8 +281,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: mail-server
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: mail
   ipv4Address: "203.0.113.10"
 ```
@@ -243,8 +307,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-main
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   priority: 10
   mailServer: mail.example.com.
@@ -254,8 +320,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: mail-server-ipv4
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: mail
   ipv4Address: "203.0.113.10"
 ---
@@ -264,8 +332,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: mail-server-ipv6
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: mail
   ipv6Address: "2001:db8::10"
 ```

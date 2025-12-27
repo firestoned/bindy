@@ -133,6 +133,7 @@ mod tests {
             soa_record: soa,
             ttl: Some(3600),
             name_server_ips: None,
+            records_from: None,
         };
 
         assert_eq!(spec.zone_name, "example.com");
@@ -186,7 +187,6 @@ mod tests {
     #[test]
     fn test_arecord_spec() {
         let spec = ARecordSpec {
-            zone_ref: "example-com".to_string(),
             name: "www".into(),
             ipv4_address: "192.0.2.1".into(),
             ttl: Some(300),
@@ -200,7 +200,6 @@ mod tests {
     #[test]
     fn test_aaaarecord_spec() {
         let spec = AAAARecordSpec {
-            zone_ref: "example-com".to_string(),
             name: "www".into(),
             ipv6_address: "2001:db8::1".into(),
             ttl: Some(300),
@@ -212,7 +211,6 @@ mod tests {
     #[test]
     fn test_txtrecord_spec() {
         let spec = TXTRecordSpec {
-            zone_ref: "example-com".to_string(),
             name: "@".into(),
             text: vec!["v=spf1 mx ~all".into()],
             ttl: Some(3600),
@@ -225,7 +223,6 @@ mod tests {
     #[test]
     fn test_cnamerecord_spec() {
         let spec = CNAMERecordSpec {
-            zone_ref: "example-com".to_string(),
             name: "blog".into(),
             target: "www.example.com.".into(),
             ttl: Some(300),
@@ -237,7 +234,6 @@ mod tests {
     #[test]
     fn test_mxrecord_spec() {
         let spec = MXRecordSpec {
-            zone_ref: "example-com".to_string(),
             name: "@".into(),
             priority: 10,
             mail_server: "mail.example.com.".into(),
@@ -251,7 +247,6 @@ mod tests {
     #[test]
     fn test_nsrecord_spec() {
         let spec = NSRecordSpec {
-            zone_ref: "example-com".to_string(),
             name: "@".into(),
             nameserver: "ns1.example.com.".into(),
             ttl: Some(3600),
@@ -263,7 +258,6 @@ mod tests {
     #[test]
     fn test_srvrecord_spec() {
         let spec = SRVRecordSpec {
-            zone_ref: "example-com".to_string(),
             name: "_sip._tcp".into(),
             priority: 10,
             weight: 60,
@@ -281,7 +275,6 @@ mod tests {
     #[test]
     fn test_caarecord_spec() {
         let spec = CAARecordSpec {
-            zone_ref: "example-com".to_string(),
             name: "@".into(),
             flags: 0,
             tag: "issue".into(),
@@ -535,6 +528,7 @@ mod tests {
         let status = RecordStatus {
             conditions: vec![condition],
             observed_generation: Some(1),
+            zone: None,
         };
 
         assert_eq!(status.conditions.len(), 1);

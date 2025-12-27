@@ -1,13 +1,16 @@
 ---
-# A Records
+# A Records for example.com zone
+# Records are associated with DNSZones via labels
+# The DNSZone must have a recordsFrom selector that matches these labels
 
 apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example
   namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: www
   ipv4Address: "192.0.2.1"
   ttl: 300
@@ -17,8 +20,9 @@ kind: ARecord
 metadata:
   name: api-example
   namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com  # References DNSZone metadata.name directly
   name: api
   ipv4Address: "192.0.2.2"
   ttl: 300
@@ -28,33 +32,36 @@ kind: ARecord
 metadata:
   name: mail-example
   namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com  # References DNSZone metadata.name directly
   name: mail
   ipv4Address: "192.0.2.2"
   ttl: 300
 ---
-# MX Records
+# MX Records for example.com zone
 apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mail-example
   namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   priority: 10
   mailServer: mail.example.com.
   ttl: 3600
 ---
-# TXT Records
+# TXT Records for example.com zone
 apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: spf-example
   namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   text:
     - "v=spf1 include:_spf.example.com ~all"
@@ -65,21 +72,23 @@ kind: TXTRecord
 metadata:
   name: dmarc-example
   namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "_dmarc"
   text:
     - "v=DMARC1; p=reject; rua=mailto:admin@example.com"
   ttl: 3600
 ---
-# CNAME Records
+# CNAME Records for example.com zone
 apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: blog-example
   namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: blog
   target: www.example.com.
   ttl: 300
@@ -90,8 +99,9 @@ kind: ARecord
 metadata:
   name: db-internal
   namespace: dns-system
+  labels:
+    zone: internal.local
 spec:
-  zoneRef: internal-local
   name: db
   ipv4Address: "10.0.1.10"
   ttl: 300
@@ -101,8 +111,9 @@ kind: ARecord
 metadata:
   name: app-internal
   namespace: dns-system
+  labels:
+    zone: internal.local
 spec:
-  zoneRef: internal-local  # Using direct reference (recommended)
   name: app
   ipv4Address: "10.0.1.11"
   ttl: 300
@@ -112,8 +123,9 @@ kind: CNAMERecord
 metadata:
   name: cache-internal
   namespace: dns-system
+  labels:
+    zone: internal.local
 spec:
-  zoneRef: internal-local
   name: cache
   target: db.internal.local.
   ttl: 300

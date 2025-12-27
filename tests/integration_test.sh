@@ -162,7 +162,7 @@ spec:
     allowQuery:
       - "0.0.0.0/0"
     bindcarConfig:
-      image: "ghcr.io/firestoned/bindcar:v0.2.8"
+      image: "ghcr.io/firestoned/bindcar:v0.3.0"
       imagePullPolicy: IfNotPresent
       logLevel: debug
 EOF
@@ -185,7 +185,7 @@ spec:
   role: primary
   replicas: 1
   bindcarConfig:
-    image: "ghcr.io/firestoned/bindcar:v0.2.8"
+    image: "ghcr.io/firestoned/bindcar:v0.3.0"
     imagePullPolicy: IfNotPresent
     logLevel: debug
 

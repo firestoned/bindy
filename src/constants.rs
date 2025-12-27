@@ -148,6 +148,17 @@ pub const DEFAULT_BIND9_VERSION: &str = "9.18";
 pub const BIND9_SERVICE_ACCOUNT: &str = "bind9";
 
 // ============================================================================
+// Bindcar Container Constants
+// ============================================================================
+
+/// Default bindcar sidecar container image
+///
+/// This is the default image used for the bindcar HTTP API sidecar container
+/// when no image is specified in the `BindcarConfig` of a `Bind9Instance`,
+/// `Bind9Cluster`, or `ClusterBind9Provider`.
+pub const DEFAULT_BINDCAR_IMAGE: &str = "ghcr.io/firestoned/bindcar:v0.3.0";
+
+// ============================================================================
 // Runtime Constants
 // ============================================================================
 
@@ -176,3 +187,21 @@ pub const METRICS_SERVER_PATH: &str = "/metrics";
 
 /// Bind address for metrics HTTP server
 pub const METRICS_SERVER_BIND_ADDRESS: &str = "0.0.0.0";
+
+// ============================================================================
+// DNSZone Record Ownership Constants
+// ============================================================================
+
+/// Annotation key for marking which zone owns a DNS record
+///
+/// When a `DNSZone`'s label selector matches a DNS record, the `DNSZone` controller
+/// sets this annotation on the record with the value being the zone's FQDN.
+/// Record reconcilers read this annotation to determine which zone to update.
+pub const ANNOTATION_ZONE_OWNER: &str = "bindy.firestoned.io/zone";
+
+/// Annotation key for marking which zone previously owned a record
+///
+/// When a record stops matching a zone's selector, the `DNSZone` controller sets
+/// this annotation before removing the zone ownership. This helps track orphaned
+/// records and enables cleanup workflows.
+pub const ANNOTATION_ZONE_PREVIOUS_OWNER: &str = "bindy.firestoned.io/previous-zone";

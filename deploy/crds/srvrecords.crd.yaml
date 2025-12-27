@@ -20,156 +20,6 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.zoneRef
-      name: ZoneRef
-      type: string
-    - jsonPath: .spec.name
-      name: Name
-      type: string
-    - jsonPath: .spec.ttl
-      name: TTL
-      type: integer
-    - jsonPath: .status.conditions[?(@.type=='Ready')].status
-      name: Ready
-      type: string
-    deprecated: true
-    deprecationWarning: bindy.firestoned.io/v1alpha1 is deprecated. Use bindy.firestoned.io/v1beta1 instead.
-    name: v1alpha1
-    schema:
-      openAPIV3Schema:
-        description: SRVRecord specifies the hostname and port of servers for specific services. The record name follows the format _service._proto (e.g., _ldap._tcp).
-        properties:
-          spec:
-            description: |-
-              `SRVRecord` specifies the location of services.
-
-              SRV (Service) records specify the hostname and port of servers for specific services.
-              The name format is: _service._proto (e.g., _ldap._tcp, _sip._udp).
-
-              # Example
-
-              ```yaml
-              apiVersion: bindy.firestoned.io/v1beta1
-              kind: SRVRecord
-              metadata:
-                name: ldap-srv
-              spec:
-                zoneRef: example-com
-                name: _ldap._tcp
-                priority: 10
-                weight: 60
-                port: 389
-                target: ldap.example.com.
-                ttl: 3600
-              ```
-            properties:
-              name:
-                description: |-
-                  Service and protocol in the format: _service._proto
-
-                  Example: "_ldap._tcp", "_sip._udp", "_http._tcp"
-                type: string
-              port:
-                description: TCP or UDP port where the service is available.
-                format: int32
-                maximum: 65535.0
-                minimum: 0.0
-                type: integer
-              priority:
-                description: Priority of the target host. Lower values = higher priority.
-                format: int32
-                maximum: 65535.0
-                minimum: 0.0
-                type: integer
-              target:
-                description: |-
-                  Fully qualified domain name of the target host.
-
-                  Must end with a dot. Use "." for "service not available".
-                type: string
-              ttl:
-                description: Time To Live in seconds.
-                format: int32
-                maximum: 2147483647.0
-                minimum: 0.0
-                nullable: true
-                type: integer
-              weight:
-                description: |-
-                  Relative weight for records with the same priority.
-
-                  Higher values = higher probability of selection.
-                format: int32
-                maximum: 65535.0
-                minimum: 0.0
-                type: integer
-              zoneRef:
-                description: |-
-                  Reference to a `DNSZone` resource by metadata.name.
-
-                  Directly references a `DNSZone` resource in the same namespace by its Kubernetes resource name.
-                type: string
-            required:
-            - name
-            - port
-            - priority
-            - target
-            - weight
-            - zoneRef
-            type: object
-          status:
-            description: Generic record status
-            nullable: true
-            properties:
-              conditions:
-                default: []
-                items:
-                  description: |-
-                    Condition represents an observation of a resource's current state.
-
-                    Conditions are used in status subresources to communicate the state of
-                    a resource to users and controllers.
-                  properties:
-                    lastTransitionTime:
-                      description: Last time the condition transitioned from one status to another (RFC3339 format).
-                      nullable: true
-                      type: string
-                    message:
-                      description: Human-readable message indicating details about the transition.
-                      nullable: true
-                      type: string
-                    reason:
-                      description: Brief CamelCase reason for the condition's last transition.
-                      nullable: true
-                      type: string
-                    status:
-                      description: 'Status of the condition: True, False, or Unknown.'
-                      type: string
-                    type:
-                      description: 'Type of condition. Common types include: Ready, Available, Progressing, Degraded, Failed.'
-                      type: string
-                  required:
-                  - status
-                  - type
-                  type: object
-                type: array
-              observedGeneration:
-                format: int64
-                nullable: true
-                type: integer
-            type: object
-        required:
-        - spec
-        title: SRVRecord
-        type: object
-    served: true
-    storage: false
-    subresources:
-      status: {}
-  - additionalPrinterColumns:
-    - jsonPath: .spec.zoneRef
-      name: ZoneRef
-      type: string
     - jsonPath: .spec.name
       name: Name
       type: string
@@ -198,8 +48,10 @@ spec:
               kind: SRVRecord
               metadata:
                 name: ldap-srv
+                namespace: dns-system
+                labels:
+                  zone: example.com
               spec:
-                zoneRef: example-com
                 name: _ldap._tcp
                 priority: 10
                 weight: 60
@@ -207,6 +59,9 @@ spec:
                 target: ldap.example.com.
                 ttl: 3600
               ```
+
+              Records are associated with `DNSZones` via label selectors.
+              The `DNSZone` must have a `recordsFrom` selector that matches this record's labels.
             properties:
               name:
                 description: |-
@@ -248,19 +103,12 @@ spec:
                 maximum: 65535.0
                 minimum: 0.0
                 type: integer
-              zoneRef:
-                description: |-
-                  Reference to a `DNSZone` resource by metadata.name.
-
-                  Directly references a `DNSZone` resource in the same namespace by its Kubernetes resource name.
-                type: string
             required:
             - name
             - port
             - priority
             - target
             - weight
-            - zoneRef
             type: object
           status:
             description: Generic record status
@@ -302,6 +150,18 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              zone:
+                description: |-
+                  The FQDN of the zone that owns this record (set by `DNSZone` controller).
+
+                  When a `DNSZone`'s label selector matches this record, the `DNSZone` controller
+                  sets this field to the zone's FQDN (e.g., `"example.com"`). The record reconciler
+                  uses this to determine which zone to update in BIND9.
+
+                  If this field is empty, the record is not matched by any zone and should not
+                  be reconciled into BIND9.
+                nullable: true
+                type: string
             type: object
         required:
         - spec

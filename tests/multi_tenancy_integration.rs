@@ -424,6 +424,7 @@ async fn create_zone_with_cluster_ref(
             },
             ttl: Some(3600),
             name_server_ips: None,
+            records_from: None,
         },
         status: None,
     };
@@ -472,6 +473,7 @@ async fn create_zone_with_cluster_provider_ref(
             },
             ttl: Some(3600),
             name_server_ips: None,
+            records_from: None,
         },
         status: None,
     };

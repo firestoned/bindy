@@ -24,7 +24,7 @@ spec:
         # MetalLB address pool for production DNS
         metallb.universe.tf/address-pool: production-dns-pool
         # External DNS to create public DNS records
-        external-dns.alpha.kubernetes.io/hostname: ns1.production.example.com
+        external-dns.alpha.kubernetes.io/hostname: ns1.example.com
       spec:
         type: LoadBalancer
         externalTrafficPolicy: Local
@@ -47,7 +47,7 @@ spec:
     allowTransfer:
       - "10.0.0.0/8"
     bindcarConfig:
-      image: "ghcr.io/firestoned/bindcar:v0.2.8"
+      image: "ghcr.io/firestoned/bindcar:v0.3.0"
       imagePullPolicy: IfNotPresent
       logLevel: debug
     dnssec:

@@ -29,8 +29,13 @@
 //! );
 //! ```
 
-use crate::crd::Condition;
+use crate::crd::{Condition, DNSZone, DNSZoneStatus, RecordReference};
+use anyhow::Result;
 use chrono::Utc;
+use kube::api::Patch;
+use kube::{api::PatchParams, Api, Client, ResourceExt};
+use serde_json::json;
+use tracing::debug;
 
 /// Create a new Kubernetes condition with the current timestamp.
 ///
@@ -190,4 +195,267 @@ pub fn find_condition<'a>(
     condition_type: &str,
 ) -> Option<&'a Condition> {
     conditions.iter().find(|c| c.r#type == condition_type)
+}
+
+/// Update or add a condition in a mutable conditions list (in-memory, no API call).
+///
+/// This function modifies the conditions list in-place by either updating an existing
+/// condition or adding a new one. It preserves the `lastTransitionTime` if the status
+/// hasn't changed, or sets a new timestamp if it has.
+///
+/// **Important:** This function does NOT make any Kubernetes API calls. It only modifies
+/// the in-memory conditions list. You must call `patch_status()` separately to persist
+/// the changes.
+///
+/// # Arguments
+///
+/// * `conditions` - Mutable reference to the conditions list
+/// * `condition_type` - The type of condition (e.g., "Ready", "Progressing")
+/// * `status` - The status: "True", "False", or "Unknown"
+/// * `reason` - A programmatic identifier in `CamelCase`
+/// * `message` - A human-readable explanation
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use bindy::reconcilers::status::update_condition_in_memory;
+/// use bindy::crd::DNSZoneStatus;
+///
+/// let mut status = DNSZoneStatus::default();
+/// update_condition_in_memory(
+///     &mut status.conditions,
+///     "Ready",
+///     "True",
+///     "ZoneConfigured",
+///     "Zone configured on 3 servers"
+/// );
+/// ```
+pub fn update_condition_in_memory(
+    conditions: &mut Vec<Condition>,
+    condition_type: &str,
+    status: &str,
+    reason: &str,
+    message: &str,
+) {
+    // Find existing condition
+    if let Some(existing) = conditions.iter_mut().find(|c| c.r#type == condition_type) {
+        // Preserve lastTransitionTime if status hasn't changed
+        let last_transition_time = if existing.status == status {
+            existing
+                .last_transition_time
+                .clone()
+                .unwrap_or_else(|| Utc::now().to_rfc3339())
+        } else {
+            Utc::now().to_rfc3339()
+        };
+
+        existing.status = status.to_string();
+        existing.reason = Some(reason.to_string());
+        existing.message = Some(message.to_string());
+        existing.last_transition_time = Some(last_transition_time);
+    } else {
+        // Create new condition
+        conditions.push(create_condition(condition_type, status, reason, message));
+    }
+}
+
+/// Compare two condition lists to check if they are semantically equal.
+///
+/// This function compares two lists of conditions to determine if they represent
+/// the same state. It ignores `lastTransitionTime` differences and only compares
+/// the semantic content (type, status, reason, message).
+///
+/// # Arguments
+///
+/// * `current` - The current conditions list
+/// * `new` - The new conditions list to compare
+///
+/// # Returns
+///
+/// * `true` - The conditions are semantically equal (no update needed)
+/// * `false` - The conditions differ (update needed)
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use bindy::reconcilers::status::conditions_equal;
+///
+/// let current_conditions = vec![/* ... */];
+/// let new_conditions = vec![/* ... */];
+///
+/// if !conditions_equal(&current_conditions, &new_conditions) {
+///     // Conditions changed, update status
+/// }
+/// ```
+#[must_use]
+pub fn conditions_equal(current: &[Condition], new: &[Condition]) -> bool {
+    if current.len() != new.len() {
+        return false;
+    }
+
+    for new_cond in new {
+        match current.iter().find(|c| c.r#type == new_cond.r#type) {
+            None => return false,
+            Some(curr_cond) => {
+                if curr_cond.status != new_cond.status
+                    || curr_cond.reason != new_cond.reason
+                    || curr_cond.message != new_cond.message
+                {
+                    return false;
+                }
+            }
+        }
+    }
+
+    true
+}
+
+/// Centralized status updater for `DNSZone` resources.
+///
+/// This struct collects all status changes during reconciliation and applies them
+/// atomically in a single Kubernetes API call. This prevents the tight reconciliation
+/// loop caused by multiple status updates triggering multiple "object updated" events.
+///
+/// **Pattern aligns with kube-condition project for future migration.**
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use bindy::reconcilers::status::DNSZoneStatusUpdater;
+///
+/// async fn reconcile(client: Client, zone: DNSZone) -> Result<()> {
+///     let mut status_updater = DNSZoneStatusUpdater::new(&zone);
+///
+///     // Collect status changes in memory
+///     status_updater.set_condition("Progressing", "True", "Configuring", "Setting up zone");
+///     status_updater.set_records(vec![/* discovered records */]);
+///     status_updater.set_secondary_ips(vec!["10.0.0.1".to_string()]);
+///
+///     // Single atomic update at the end
+///     status_updater.apply(&client).await?;
+///     Ok(())
+/// }
+/// ```
+pub struct DNSZoneStatusUpdater {
+    namespace: String,
+    name: String,
+    current_status: Option<DNSZoneStatus>,
+    new_status: DNSZoneStatus,
+    has_changes: bool,
+}
+
+impl DNSZoneStatusUpdater {
+    /// Create a new status updater for a `DNSZone`.
+    ///
+    /// Initializes with the current status from the zone, or creates a new empty status.
+    #[must_use]
+    pub fn new(dnszone: &DNSZone) -> Self {
+        let current_status = dnszone.status.clone();
+        let new_status = current_status.clone().unwrap_or_default();
+
+        Self {
+            namespace: dnszone.namespace().unwrap_or_default(),
+            name: dnszone.name_any(),
+            current_status,
+            new_status,
+            has_changes: false,
+        }
+    }
+
+    /// Update or add a condition (in-memory only, no API call).
+    ///
+    /// Marks the status as changed if the condition differs from the current state.
+    pub fn set_condition(
+        &mut self,
+        condition_type: &str,
+        status: &str,
+        reason: &str,
+        message: &str,
+    ) {
+        update_condition_in_memory(
+            &mut self.new_status.conditions,
+            condition_type,
+            status,
+            reason,
+            message,
+        );
+        self.has_changes = true;
+    }
+
+    /// Set the discovered DNS records list (in-memory only, no API call).
+    pub fn set_records(&mut self, records: Vec<RecordReference>) {
+        self.new_status.records = records;
+        self.new_status.record_count = i32::try_from(self.new_status.records.len()).ok();
+        self.has_changes = true;
+    }
+
+    /// Set the secondary server IPs (in-memory only, no API call).
+    pub fn set_secondary_ips(&mut self, ips: Vec<String>) {
+        self.new_status.secondary_ips = Some(ips);
+        self.has_changes = true;
+    }
+
+    /// Set the observed generation to match the current generation.
+    pub fn set_observed_generation(&mut self, generation: Option<i64>) {
+        self.new_status.observed_generation = generation;
+        self.has_changes = true;
+    }
+
+    /// Check if the status has actually changed compared to the current status.
+    ///
+    /// Returns `true` if there are semantic changes that warrant an API update.
+    #[must_use]
+    pub fn has_changes(&self) -> bool {
+        if !self.has_changes {
+            return false;
+        }
+
+        match &self.current_status {
+            None => true, // First status update
+            Some(current) => {
+                current.records != self.new_status.records
+                    || current.record_count != self.new_status.record_count
+                    || current.secondary_ips != self.new_status.secondary_ips
+                    || current.observed_generation != self.new_status.observed_generation
+                    || !conditions_equal(&current.conditions, &self.new_status.conditions)
+            }
+        }
+    }
+
+    /// Apply the collected status changes to Kubernetes (single atomic API call).
+    ///
+    /// Only makes the API call if there are actual changes. Skips the update if
+    /// the status is semantically unchanged, preventing unnecessary reconciliation loops.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Kubernetes API call fails.
+    pub async fn apply(&self, client: &Client) -> Result<()> {
+        if !self.has_changes() {
+            debug!(
+                "DNSZone {}/{} status unchanged, skipping update",
+                self.namespace, self.name
+            );
+            return Ok(());
+        }
+
+        let api: Api<DNSZone> = Api::namespaced(client.clone(), &self.namespace);
+
+        let patch = json!({
+            "status": self.new_status
+        });
+
+        api.patch_status(&self.name, &PatchParams::default(), &Patch::Merge(&patch))
+            .await?;
+
+        debug!(
+            "Updated DNSZone {}/{} status: {} condition(s), {} record(s)",
+            self.namespace,
+            self.name,
+            self.new_status.conditions.len(),
+            self.new_status.record_count.unwrap_or(0)
+        );
+
+        Ok(())
+    }
 }

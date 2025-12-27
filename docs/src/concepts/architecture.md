@@ -117,9 +117,13 @@ spec:
     plural: dnszones
   scope: Namespaced
   versions:
-    - name: v1alpha1
+    - name: v1beta1
       served: true
       storage: true
+    - name: v1alpha1
+      served: false
+      storage: false
+      deprecated: true
 ```
 
 ### BIND9 Instances

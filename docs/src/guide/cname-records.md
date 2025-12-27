@@ -10,8 +10,9 @@ kind: CNAMERecord
 metadata:
   name: blog-example-com
   namespace: dns-system
+  labels:
+    zone: example.com  # Used by DNSZone selector
 spec:
-  zoneRef: example-com  # References DNSZone metadata.name (recommended)
   name: blog
   target: www.example.com.  # Must end with a dot
   ttl: 300
@@ -19,7 +20,41 @@ spec:
 
 This creates `blog.example.com -> www.example.com`.
 
-**Note:** You can also use `zone: example.com` (matching `DNSZone.spec.zoneName`) instead of `zoneRef`. See [Referencing DNS Zones](./records-guide.md#referencing-dns-zones) for details on choosing between `zone` and `zoneRef`.
+## How Records Are Associated with Zones
+
+Records are discovered by DNSZones using label selectors. The DNSZone must have a `recordsFrom` selector that matches the record's labels:
+
+```yaml
+# DNSZone with selector
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: example-com
+spec:
+  zoneName: example.com
+  clusterRef: production-dns
+  recordsFrom:
+    - selector:
+        matchLabels:
+          zone: example.com  # Selects all records with this label
+  soaRecord:
+    primaryNs: ns1.example.com.
+    adminEmail: admin.example.com.
+    serial: 2024010101
+---
+# Record that will be selected
+apiVersion: bindy.firestoned.io/v1beta1
+kind: CNAMERecord
+metadata:
+  name: blog
+  labels:
+    zone: example.com  # ✅ Matches selector above
+spec:
+  name: blog
+  target: www.example.com.
+```
+
+See [Label Selector Guide](./label-selectors.md) for advanced patterns.
 
 ## Important CNAME Rules
 
@@ -41,8 +76,14 @@ CNAME records **cannot** be created at the zone apex (`@`):
 
 ```yaml
 # ❌ Not allowed - RFC 1034/1035 violation
+apiVersion: bindy.firestoned.io/v1beta1
+kind: CNAMERecord
+metadata:
+  name: apex-cname
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   target: www.example.com.
 ```
@@ -59,8 +100,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: www-alias
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: www
   target: server.example.com.
 ---
@@ -69,8 +112,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-a-record
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: www  # Same name as CNAME - not allowed
   ipv4Address: "192.0.2.1"
 ```
@@ -87,8 +132,9 @@ kind: CNAMERecord
 metadata:
   name: cdn-example
   namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: cdn
   target: d111111abcdef8.cloudfront.net.
   ttl: 3600
@@ -104,8 +150,9 @@ kind: CNAMERecord
 metadata:
   name: shop-example
   namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: shop
   target: www.example.com.
   ttl: 300
@@ -123,8 +170,9 @@ kind: CNAMERecord
 metadata:
   name: cache-internal
   namespace: dns-system
+  labels:
+    zone: internal.local
 spec:
-  zoneRef: internal-local
   name: cache
   target: db.internal.local.
   ttl: 300
@@ -140,8 +188,9 @@ kind: CNAMERecord
 metadata:
   name: www-example
   namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: www
   target: example.com.
   ttl: 300
@@ -153,11 +202,11 @@ spec:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `zone` | string | Either `zone` or `zoneRef` | DNS zone name (e.g., "example.com") |
-| `zoneRef` | string | Either `zone` or `zoneRef` | Reference to DNSZone metadata.name |
 | `name` | string | Yes | Record name within the zone (cannot be "@") |
 | `target` | string | Yes | Target FQDN ending with a dot |
 | `ttl` | integer | No | Time To Live in seconds (default: zone TTL) |
+
+**Note:** Records are associated with zones using labels. Add a `zone` label in `metadata.labels` that matches the DNSZone's `recordsFrom` selector.
 
 ## TTL Behavior
 
@@ -165,16 +214,28 @@ If `ttl` is not specified, the zone's default TTL is used:
 
 ```yaml
 # Uses zone default TTL
+apiVersion: bindy.firestoned.io/v1beta1
+kind: CNAMERecord
+metadata:
+  name: blog-example
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: blog
   target: www.example.com.
 ```
 
 ```yaml
 # Explicit TTL override
+apiVersion: bindy.firestoned.io/v1beta1
+kind: CNAMERecord
+metadata:
+  name: blog-example
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: blog
   target: www.example.com.
   ttl: 600  # 10 minutes
@@ -195,8 +256,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: cname-a
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: a
   target: b.example.com.
 ---
@@ -204,8 +267,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: cname-b
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: b
   target: a.example.com.  # ❌ Loop!
 ```

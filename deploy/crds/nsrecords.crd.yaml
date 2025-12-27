@@ -20,126 +20,6 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.zoneRef
-      name: ZoneRef
-      type: string
-    - jsonPath: .spec.name
-      name: Name
-      type: string
-    - jsonPath: .spec.ttl
-      name: TTL
-      type: integer
-    - jsonPath: .status.conditions[?(@.type=='Ready')].status
-      name: Ready
-      type: string
-    deprecated: true
-    deprecationWarning: bindy.firestoned.io/v1alpha1 is deprecated. Use bindy.firestoned.io/v1beta1 instead.
-    name: v1alpha1
-    schema:
-      openAPIV3Schema:
-        description: NSRecord delegates a subdomain to authoritative nameservers. Used for subdomain delegation to different DNS providers or servers.
-        properties:
-          spec:
-            description: |-
-              `NSRecord` delegates a subdomain to other nameservers.
-
-              NS (Nameserver) records specify which DNS servers are authoritative for a subdomain.
-              They are used for delegating subdomains to different nameservers.
-
-              # Example
-
-              ```yaml
-              apiVersion: bindy.firestoned.io/v1beta1
-              kind: NSRecord
-              metadata:
-                name: subdomain-ns
-              spec:
-                zoneRef: example-com
-                name: subdomain
-                nameserver: ns1.other-provider.com.
-                ttl: 86400
-              ```
-            properties:
-              name:
-                description: Subdomain to delegate. For zone apex, use "@".
-                type: string
-              nameserver:
-                description: |-
-                  Fully qualified domain name of the nameserver.
-
-                  Must end with a dot. Example: "ns1.example.com."
-                type: string
-              ttl:
-                description: Time To Live in seconds.
-                format: int32
-                maximum: 2147483647.0
-                minimum: 0.0
-                nullable: true
-                type: integer
-              zoneRef:
-                description: |-
-                  Reference to a `DNSZone` resource by metadata.name.
-
-                  Directly references a `DNSZone` resource in the same namespace by its Kubernetes resource name.
-                type: string
-            required:
-            - name
-            - nameserver
-            - zoneRef
-            type: object
-          status:
-            description: Generic record status
-            nullable: true
-            properties:
-              conditions:
-                default: []
-                items:
-                  description: |-
-                    Condition represents an observation of a resource's current state.
-
-                    Conditions are used in status subresources to communicate the state of
-                    a resource to users and controllers.
-                  properties:
-                    lastTransitionTime:
-                      description: Last time the condition transitioned from one status to another (RFC3339 format).
-                      nullable: true
-                      type: string
-                    message:
-                      description: Human-readable message indicating details about the transition.
-                      nullable: true
-                      type: string
-                    reason:
-                      description: Brief CamelCase reason for the condition's last transition.
-                      nullable: true
-                      type: string
-                    status:
-                      description: 'Status of the condition: True, False, or Unknown.'
-                      type: string
-                    type:
-                      description: 'Type of condition. Common types include: Ready, Available, Progressing, Degraded, Failed.'
-                      type: string
-                  required:
-                  - status
-                  - type
-                  type: object
-                type: array
-              observedGeneration:
-                format: int64
-                nullable: true
-                type: integer
-            type: object
-        required:
-        - spec
-        title: NSRecord
-        type: object
-    served: true
-    storage: false
-    subresources:
-      status: {}
-  - additionalPrinterColumns:
-    - jsonPath: .spec.zoneRef
-      name: ZoneRef
-      type: string
     - jsonPath: .spec.name
       name: Name
       type: string
@@ -168,12 +48,17 @@ spec:
               kind: NSRecord
               metadata:
                 name: subdomain-ns
+                namespace: dns-system
+                labels:
+                  zone: example.com
               spec:
-                zoneRef: example-com
                 name: subdomain
                 nameserver: ns1.other-provider.com.
                 ttl: 86400
               ```
+
+              Records are associated with `DNSZones` via label selectors.
+              The `DNSZone` must have a `recordsFrom` selector that matches this record's labels.
             properties:
               name:
                 description: Subdomain to delegate. For zone apex, use "@".
@@ -191,16 +76,9 @@ spec:
                 minimum: 0.0
                 nullable: true
                 type: integer
-              zoneRef:
-                description: |-
-                  Reference to a `DNSZone` resource by metadata.name.
-
-                  Directly references a `DNSZone` resource in the same namespace by its Kubernetes resource name.
-                type: string
             required:
             - name
             - nameserver
-            - zoneRef
             type: object
           status:
             description: Generic record status
@@ -242,6 +120,18 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              zone:
+                description: |-
+                  The FQDN of the zone that owns this record (set by `DNSZone` controller).
+
+                  When a `DNSZone`'s label selector matches this record, the `DNSZone` controller
+                  sets this field to the zone's FQDN (e.g., `"example.com"`). The record reconciler
+                  uses this to determine which zone to update in BIND9.
+
+                  If this field is empty, the record is not matched by any zone and should not
+                  be reconciled into BIND9.
+                nullable: true
+                type: string
             type: object
         required:
         - spec

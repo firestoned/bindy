@@ -83,7 +83,7 @@ mod records_tests;
 pub use bind9cluster::{delete_bind9cluster, reconcile_bind9cluster};
 pub use bind9instance::{delete_bind9instance, reconcile_bind9instance};
 pub use clusterbind9provider::{delete_clusterbind9provider, reconcile_clusterbind9provider};
-pub use dnszone::{delete_dnszone, reconcile_dnszone};
+pub use dnszone::{delete_dnszone, find_zones_selecting_record, reconcile_dnszone};
 pub use records::{
     reconcile_a_record, reconcile_aaaa_record, reconcile_caa_record, reconcile_cname_record,
     reconcile_mx_record, reconcile_ns_record, reconcile_srv_record, reconcile_txt_record,

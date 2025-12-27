@@ -534,6 +534,7 @@ async fn test_dnszone_create_read_delete() {
             },
             ttl: Some(3600),
             name_server_ips: None,
+            records_from: None,
         },
         status: None,
     };
@@ -605,7 +606,6 @@ async fn test_arecord_create_read_delete() {
             ..Default::default()
         },
         spec: ARecordSpec {
-            zone_ref: "example-com".to_string(),
             name: "www".to_string(),
             ipv4_address: "192.0.2.1".to_string(),
             ttl: Some(3600),
@@ -675,7 +675,6 @@ async fn test_cname_record_create_read_delete() {
             ..Default::default()
         },
         spec: CNAMERecordSpec {
-            zone_ref: "example-com".to_string(),
             name: "www".to_string(),
             target: "example.com.".to_string(),
             ttl: Some(3600),
@@ -745,7 +744,6 @@ async fn test_mx_record_create_read_delete() {
             ..Default::default()
         },
         spec: MXRecordSpec {
-            zone_ref: "example-com".to_string(),
             name: "@".to_string(),
             mail_server: "mail.example.com.".to_string(),
             priority: 10,
@@ -816,7 +814,6 @@ async fn test_txt_record_create_read_delete() {
             ..Default::default()
         },
         spec: TXTRecordSpec {
-            zone_ref: "example-com".to_string(),
             name: "@".to_string(),
             text: vec!["v=spf1 include:_spf.example.com ~all".to_string()],
             ttl: Some(3600),

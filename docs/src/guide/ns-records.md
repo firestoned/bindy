@@ -10,8 +10,9 @@ kind: NSRecord
 metadata:
   name: subdomain-ns
   namespace: dns-system
+  labels:
+    zone: example.com  # Used by DNSZone selector
 spec:
-  zoneRef: example-com  # References DNSZone metadata.name (recommended)
   name: sub              # Subdomain to delegate
   nameserver: ns1.subdomain-host.com.  # Must end with dot (FQDN)
   ttl: 3600
@@ -19,7 +20,41 @@ spec:
 
 This delegates `sub.example.com` to `ns1.subdomain-host.com`.
 
-**Note:** You can also use `zone: example.com` (matching `DNSZone.spec.zoneName`) instead of `zoneRef`. See [Referencing DNS Zones](./records-guide.md#referencing-dns-zones) for details.
+## How Records Are Associated with Zones
+
+Records are discovered by DNSZones using label selectors. The DNSZone must have a `recordsFrom` selector that matches the record's labels:
+
+```yaml
+# DNSZone with selector
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: example-com
+spec:
+  zoneName: example.com
+  clusterRef: production-dns
+  recordsFrom:
+    - selector:
+        matchLabels:
+          zone: example.com  # Selects all records with this label
+  soaRecord:
+    primaryNs: ns1.example.com.
+    adminEmail: admin.example.com.
+    serial: 2024010101
+---
+# Record that will be selected
+apiVersion: bindy.firestoned.io/v1beta1
+kind: NSRecord
+metadata:
+  name: subdomain-ns
+  labels:
+    zone: example.com  # ✅ Matches selector above
+spec:
+  name: sub
+  nameserver: ns1.subdomain-host.com.
+```
+
+See [Label Selector Guide](./label-selectors.md) for advanced patterns.
 
 ## Subdomain Delegation
 
@@ -31,8 +66,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: dev-ns1
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: dev
   nameserver: ns1.hosting-provider.com.
 ---
@@ -41,8 +78,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: dev-ns2
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: dev
   nameserver: ns2.hosting-provider.com.
 ```
@@ -59,8 +98,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: aws-ns1
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: aws
   nameserver: ns-123.awsdns-12.com.
 ---
@@ -68,8 +109,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: aws-ns2
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: aws
   nameserver: ns-456.awsdns-45.net.
 ```
@@ -82,8 +125,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: prod-ns1
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: prod
   nameserver: ns-prod1.example.com.
 ---
@@ -92,8 +137,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: staging-ns1
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: staging
   nameserver: ns-staging1.example.com.
 ```
@@ -120,8 +167,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: sub-ns
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: sub
   nameserver: ns1.sub.example.com.  # Nameserver is within delegated zone
 ---
@@ -130,8 +179,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: sub-ns-glue
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: ns1.sub
   ipv4Address: "203.0.113.10"
 ```

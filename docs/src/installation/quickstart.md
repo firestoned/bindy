@@ -218,7 +218,7 @@ kubectl apply -f dns-zone.yaml
 
 Create a file `dns-records.yaml`:
 
-> **Note**: DNS records reference zones using `zoneRef`, which is the Kubernetes resource name of the DNSZone (e.g., `example-com` for a DNSZone named `example-com`).
+> **Note**: DNS records reference zones using labels. The controller matches records to DNSZones using the zone's label selector. In this example, the DNSZone named `example-com` has a selector that matches records with the label `zone: example.com`.
 
 ```yaml
 # Web server A record
@@ -227,8 +227,9 @@ kind: ARecord
 metadata:
   name: www-example
   namespace: dns-system
+  labels:
+    zone: example.com  # Matches DNSZone selector
 spec:
-  zoneRef: example-com
   name: www
   ipv4Address: "192.0.2.1"
   ttl: 300
@@ -240,8 +241,9 @@ kind: CNAMERecord
 metadata:
   name: blog-example
   namespace: dns-system
+  labels:
+    zone: example.com  # Matches DNSZone selector
 spec:
-  zoneRef: example-com
   name: blog
   target: www.example.com.
   ttl: 300
@@ -253,8 +255,9 @@ kind: MXRecord
 metadata:
   name: mail-example
   namespace: dns-system
+  labels:
+    zone: example.com  # Matches DNSZone selector
 spec:
-  zoneRef: example-com
   name: "@"
   priority: 10
   mailServer: mail.example.com.
@@ -267,8 +270,9 @@ kind: TXTRecord
 metadata:
   name: spf-example
   namespace: dns-system
+  labels:
+    zone: example.com  # Matches DNSZone selector
 spec:
-  zoneRef: example-com
   name: "@"
   text:
     - "v=spf1 include:_spf.example.com ~all"
