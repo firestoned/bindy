@@ -59,7 +59,7 @@ git push origin feature/my-feature
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "bindy.firestoned.io",
-    version = "v1alpha1",
+    version = "v1beta1",
     kind = "Bind9Cluster",
     namespaced
 )]

@@ -95,85 +95,86 @@ kubectl annotate dnszone example-com reconcile=true -n dns-system
 
 ## DNS Record Issues
 
-### DNSZone Not Found
+### Record Not Matching DNSZone
 
-**Symptom:** Controller logs show "DNSZone not found" errors for a zone that exists
+**Symptom:** Controller logs show "No matching DNSZone found" errors for a record that should match
 
 **Example Error:**
 ```
-ERROR Failed to find DNSZone for zone 'internal-local' in namespace 'dns-system'
+ERROR No DNSZone matched label selector for record 'www-example' in namespace 'dns-system'
 ```
 
-**Root Cause:** Mismatch between how the record references the zone and the actual DNSZone fields.
+**Root Cause:** Mismatch between record labels and DNSZone label selectors.
 
 **Diagnosis:**
 ```bash
-# Check what the record is trying to reference
-kubectl get arecord www-example -n dns-system -o yaml | grep -A2 spec:
+# Check the record's labels
+kubectl get arecord www-example -n dns-system -o yaml | yq '.metadata.labels'
 
-# Check available DNSZones
+# Check available DNSZones and their selectors
 kubectl get dnszones -n dns-system
 
-# Check the DNSZone details
-kubectl get dnszone example-com -n dns-system -o yaml
+# Check the DNSZone's label selector
+kubectl get dnszone example-com -n dns-system -o yaml | yq '.spec.recordSelector'
 ```
 
 **Understanding the Problem:**
 
-DNS records can reference zones using **two different fields**:
-
-1. **`zone` field** - Matches against `DNSZone.spec.zoneName` (the actual DNS zone name like `example.com`)
-2. **`zoneRef` field** - Matches against `DNSZone.metadata.name` (the Kubernetes resource name like `example-com`)
+DNS records are matched to DNSZones using label selectors. The DNSZone defines which records it should include using `spec.recordSelector`.
 
 Common mistakes:
-- Using `zone: internal-local` when `spec.zoneName: internal.local` (dots vs dashes)
-- Using `zone: example-com` when it should be `zone: example.com`
-- Using `zoneRef: example.com` when it should be `zoneRef: example-com`
+- Record has label `zone: internal-local` but DNSZone expects `zone: internal.local`
+- Record missing the required label entirely
+- DNSZone selector doesn't match any records
+- Typo in label key or value
 
 **Solution:**
 
-**Option 1: Use `zone` field with the actual DNS zone name**
-```yaml
-spec:
-  zone: example.com  # Must match DNSZone spec.zoneName
-  name: www
-```
+Ensure record labels match the DNSZone's selector.
 
-**Option 2: Use `zoneRef` field with the resource name (recommended)**
-```yaml
-spec:
-  zoneRef: example-com  # Must match DNSZone metadata.name
-  name: www
-```
-
-**Example Fix:**
+**Example:**
 
 Given this DNSZone:
 ```yaml
 apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
-  name: internal-local      # ← Resource name
+  name: example-com
   namespace: dns-system
 spec:
-  zoneName: internal.local  # ← Actual zone name
+  zoneName: example.com
+  recordSelector:
+    matchLabels:
+      zone: example.com  # ← Selector expects this label
 ```
 
 **Wrong:**
 ```yaml
+# Record without matching label
+apiVersion: bindy.firestoned.io/v1beta1
+kind: ARecord
+metadata:
+  name: www-example
+  namespace: dns-system
+  # ✗ Missing labels!
 spec:
-  zone: internal-local  # ✗ This looks for spec.zoneName = "internal-local"
+  name: www
+  ipv4Address: "192.0.2.1"
 ```
 
 **Correct:**
 ```yaml
-# Method 1: Use actual zone name
+# Record with matching label
+apiVersion: bindy.firestoned.io/v1beta1
+kind: ARecord
+metadata:
+  name: www-example
+  namespace: dns-system
+  labels:
+    zone: example.com  # ✓ Matches DNSZone selector
 spec:
-  zone: internal.local  # ✓ Matches spec.zoneName
-
-# Method 2: Use resource name (more efficient)
-spec:
-  zoneRef: internal-local  # ✓ Matches metadata.name
+  name: www
+  ipv4Address: "192.0.2.1"
 ```
 
 **Verification:**
@@ -181,11 +182,14 @@ spec:
 # After fixing, check the record reconciles
 kubectl describe arecord www-example -n dns-system
 
+# Check which DNSZone the record matched
+kubectl get arecord www-example -n dns-system -o yaml | yq '.status.zone'
+
 # Should see no errors in events
 kubectl get events -n dns-system --sort-by='.lastTimestamp' | tail -10
 ```
 
-See [Records Guide - Referencing DNS Zones](../guide/records-guide.md#referencing-dns-zones) for more details.
+See the [Label Selectors Guide](../guide/label-selectors.md) for more details.
 
 ### Record Not Appearing in Zone
 
@@ -202,14 +206,14 @@ kubectl exec -n dns-system deployment/primary-dns -- cat /var/lib/bind/zones/exa
 
 **Solution:**
 ```bash
-# Verify zone reference is correct (use zone or zoneRef)
-kubectl get arecord www-example -n dns-system -o yaml | grep -E 'zone:|zoneRef:'
+# Verify record has the correct labels
+kubectl get arecord www-example -n dns-system -o yaml | yq '.metadata.labels'
 
-# Check available DNSZones
-kubectl get dnszones -n dns-system
+# Check DNSZone selector
+kubectl get dnszone example-com -n dns-system -o yaml | yq '.spec.recordSelector'
 
-# Update if incorrect - use zone (matches spec.zoneName) or zoneRef (matches metadata.name)
-kubectl edit arecord www-example -n dns-system
+# Update labels to match selector
+kubectl label arecord www-example zone=example.com -n dns-system --overwrite
 ```
 
 ### DNS Query Not Resolving

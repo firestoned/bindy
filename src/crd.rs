@@ -49,6 +49,7 @@
 //!     soa_record: soa,
 //!     ttl: Some(3600),
 //!     name_server_ips: None,
+//!     records_from: None,
 //! };
 //! ```
 //!
@@ -59,7 +60,6 @@
 //!
 //! // A Record for www.example.com
 //! let a_record = ARecordSpec {
-//!     zone_ref: "example-com".to_string(),
 //!     name: "www".to_string(),
 //!     ipv4_address: "192.0.2.1".to_string(),
 //!     ttl: Some(300),
@@ -67,7 +67,6 @@
 //!
 //! // MX Record for mail routing
 //! let mx_record = MXRecordSpec {
-//!     zone_ref: "example-com".to_string(),
 //!     name: "@".to_string(),
 //!     priority: 10,
 //!     mail_server: "mail.example.com.".to_string(),
@@ -116,6 +115,143 @@ pub struct LabelSelectorRequirement {
     /// the values array must be empty.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub values: Option<Vec<String>>,
+}
+
+/// Source for DNS records to include in a zone.
+///
+/// Specifies how DNS records should be associated with this zone using label selectors.
+/// Records matching the selector criteria will be automatically included in the zone.
+///
+/// # Example
+///
+/// ```yaml
+/// recordsFrom:
+///   - selector:
+///       matchLabels:
+///         app: podinfo
+///       matchExpressions:
+///         - key: environment
+///           operator: In
+///           values:
+///             - dev
+///             - staging
+/// ```
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordSource {
+    /// Label selector to match DNS records.
+    ///
+    /// Records (`ARecord`, `CNAMERecord`, `MXRecord`, etc.) with labels matching this selector
+    /// will be automatically associated with this zone.
+    ///
+    /// The selector uses standard Kubernetes label selector semantics:
+    /// - `matchLabels`: All specified labels must match (AND logic)
+    /// - `matchExpressions`: All expressions must be satisfied (AND logic)
+    /// - Both `matchLabels` and `matchExpressions` can be used together
+    pub selector: LabelSelector,
+}
+
+impl LabelSelector {
+    /// Checks if this label selector matches the given labels.
+    ///
+    /// Returns `true` if all match requirements are satisfied.
+    ///
+    /// # Arguments
+    ///
+    /// * `labels` - The labels to match against (from `metadata.labels`)
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::collections::BTreeMap;
+    /// use bindy::crd::LabelSelector;
+    ///
+    /// let selector = LabelSelector {
+    ///     match_labels: Some(BTreeMap::from([
+    ///         ("app".to_string(), "podinfo".to_string()),
+    ///     ])),
+    ///     match_expressions: None,
+    /// };
+    ///
+    /// let labels = BTreeMap::from([
+    ///     ("app".to_string(), "podinfo".to_string()),
+    ///     ("env".to_string(), "dev".to_string()),
+    /// ]);
+    ///
+    /// assert!(selector.matches(&labels));
+    /// ```
+    #[must_use]
+    pub fn matches(&self, labels: &BTreeMap<String, String>) -> bool {
+        // Check matchLabels (all must match)
+        if let Some(ref match_labels) = self.match_labels {
+            for (key, value) in match_labels {
+                if labels.get(key) != Some(value) {
+                    return false;
+                }
+            }
+        }
+
+        // Check matchExpressions (all must be satisfied)
+        if let Some(ref expressions) = self.match_expressions {
+            for expr in expressions {
+                if !expr.matches(labels) {
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+}
+
+impl LabelSelectorRequirement {
+    /// Checks if this requirement matches the given labels.
+    ///
+    /// # Arguments
+    ///
+    /// * `labels` - The labels to match against
+    ///
+    /// # Returns
+    ///
+    /// * `true` if the requirement is satisfied, `false` otherwise
+    #[must_use]
+    pub fn matches(&self, labels: &BTreeMap<String, String>) -> bool {
+        match self.operator.as_str() {
+            "In" => {
+                // Label value must be in the values list
+                if let Some(ref values) = self.values {
+                    if let Some(label_value) = labels.get(&self.key) {
+                        values.contains(label_value)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+            "NotIn" => {
+                // Label value must NOT be in the values list
+                if let Some(ref values) = self.values {
+                    if let Some(label_value) = labels.get(&self.key) {
+                        !values.contains(label_value)
+                    } else {
+                        true // Label doesn't exist, so it's not in the list
+                    }
+                } else {
+                    true
+                }
+            }
+            "Exists" => {
+                // Label key must exist (any value)
+                labels.contains_key(&self.key)
+            }
+            "DoesNotExist" => {
+                // Label key must NOT exist
+                !labels.contains_key(&self.key)
+            }
+            _ => false, // Unknown operator
+        }
+    }
 }
 
 /// SOA (Start of Authority) Record specification.
@@ -328,9 +464,9 @@ pub struct SecondaryZoneConfig {
     shortname = "dzs",
     doc = "DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defines a zone (e.g., example.com) with SOA record parameters. Can reference either a namespace-scoped Bind9Cluster or cluster-scoped ClusterBind9Provider.",
     printcolumn = r#"{"name":"Zone","type":"string","jsonPath":".spec.zoneName"}"#,
-    printcolumn = r#"{"name":"Cluster","type":"string","jsonPath":".spec.clusterRef"}"#,
     printcolumn = r#"{"name":"Provider","type":"string","jsonPath":".spec.clusterProviderRef"}"#,
-    printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
+    printcolumn = r#"{"name":"Records","type":"integer","jsonPath":".status.recordCount"}"#,
+    printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl","priority":1}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
 #[kube(status = "DNSZoneStatus")]
@@ -391,6 +527,45 @@ pub struct DNSZoneSpec {
     /// Note: Nameserver hostnames should end with a dot (.) for FQDN.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name_server_ips: Option<HashMap<String, String>>,
+
+    /// Sources for DNS records to include in this zone.
+    ///
+    /// This field defines label selectors that automatically associate DNS records with this zone.
+    /// Records with matching labels will be included in the zone's DNS configuration.
+    ///
+    /// This follows the standard Kubernetes selector pattern used by Services, `NetworkPolicies`,
+    /// and other resources for declarative resource association.
+    ///
+    /// # Example: Match podinfo records in dev/staging environments
+    ///
+    /// ```yaml
+    /// recordsFrom:
+    ///   - selector:
+    ///       matchLabels:
+    ///         app: podinfo
+    ///       matchExpressions:
+    ///         - key: environment
+    ///           operator: In
+    ///           values:
+    ///             - dev
+    ///             - staging
+    /// ```
+    ///
+    /// # Selector Operators
+    ///
+    /// - **In**: Label value must be in the specified values list
+    /// - **`NotIn`**: Label value must NOT be in the specified values list
+    /// - **Exists**: Label key must exist (any value)
+    /// - **`DoesNotExist`**: Label key must NOT exist
+    ///
+    /// # Use Cases
+    ///
+    /// - **Multi-environment zones**: Dynamically include records based on environment labels
+    /// - **Application-specific zones**: Group all records for an application using `app` label
+    /// - **Team-based zones**: Use team labels to automatically route records to team-owned zones
+    /// - **Temporary records**: Use labels to include/exclude records without changing `zoneRef`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub records_from: Option<Vec<RecordSource>>,
 }
 
 /// `ARecord` maps a DNS name to an IPv4 address.
@@ -406,12 +581,16 @@ pub struct DNSZoneSpec {
 /// metadata:
 ///   name: www-example-com
 ///   namespace: dns-system
+///   labels:
+///     zone: example.com
 /// spec:
-///   zoneRef: example-com
 ///   name: www
 ///   ipv4Address: 192.0.2.1
 ///   ttl: 300
 /// ```
+///
+/// Records are associated with `DNSZones` via label selectors.
+/// The `DNSZone` must have a `recordsFrom` selector that matches this record's labels.
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "bindy.firestoned.io",
@@ -420,22 +599,14 @@ pub struct DNSZoneSpec {
     namespaced,
     shortname = "a",
     doc = "ARecord maps a DNS hostname to an IPv4 address. Multiple A records for the same name enable round-robin DNS load balancing.",
-    printcolumn = r#"{"name":"ZoneRef","type":"string","jsonPath":".spec.zoneRef"}"#,
     printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
+    printcolumn = r#"{"name":"Address","type":"string","jsonPath":".spec.ipv4Address"}"#,
     printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
 #[kube(status = "RecordStatus")]
 #[serde(rename_all = "camelCase")]
 pub struct ARecordSpec {
-    /// Reference to a `DNSZone` resource by metadata.name.
-    ///
-    /// Directly references a `DNSZone` resource in the same namespace by its Kubernetes resource name.
-    /// This is more efficient than searching by zone name.
-    ///
-    /// Example: If the `DNSZone` is named "example-com", use `zoneRef: example-com`
-    pub zone_ref: String,
-
     /// Record name within the zone. Use "@" for the zone apex.
     ///
     /// Examples: "www", "mail", "ftp", "@"
@@ -469,12 +640,17 @@ pub struct ARecordSpec {
 /// kind: AAAARecord
 /// metadata:
 ///   name: www-example-com-ipv6
+///   namespace: dns-system
+///   labels:
+///     zone: example.com
 /// spec:
-///   zoneRef: example-com
 ///   name: www
 ///   ipv6Address: "2001:db8::1"
 ///   ttl: 300
 /// ```
+///
+/// Records are associated with `DNSZones` via label selectors.
+/// The `DNSZone` must have a `recordsFrom` selector that matches this record's labels.
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "bindy.firestoned.io",
@@ -483,7 +659,6 @@ pub struct ARecordSpec {
     namespaced,
     shortname = "aaaa",
     doc = "AAAARecord maps a DNS hostname to an IPv6 address. This is the IPv6 equivalent of an A record.",
-    printcolumn = r#"{"name":"ZoneRef","type":"string","jsonPath":".spec.zoneRef"}"#,
     printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
     printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
@@ -491,11 +666,6 @@ pub struct ARecordSpec {
 #[kube(status = "RecordStatus")]
 #[serde(rename_all = "camelCase")]
 pub struct AAAARecordSpec {
-    /// Reference to a `DNSZone` resource by metadata.name.
-    ///
-    /// Directly references a `DNSZone` resource in the same namespace by its Kubernetes resource name.
-    pub zone_ref: String,
-
     /// Record name within the zone.
     pub name: String,
 
@@ -522,13 +692,18 @@ pub struct AAAARecordSpec {
 /// kind: TXTRecord
 /// metadata:
 ///   name: spf-example-com
+///   namespace: dns-system
+///   labels:
+///     zone: example.com
 /// spec:
-///   zoneRef: example-com
 ///   name: "@"
 ///   text:
 ///     - "v=spf1 include:_spf.google.com ~all"
 ///   ttl: 3600
 /// ```
+///
+/// Records are associated with `DNSZones` via label selectors.
+/// The `DNSZone` must have a `recordsFrom` selector that matches this record's labels.
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "bindy.firestoned.io",
@@ -537,7 +712,6 @@ pub struct AAAARecordSpec {
     namespaced,
     shortname = "txt",
     doc = "TXTRecord stores arbitrary text data in DNS. Commonly used for SPF, DKIM, DMARC policies, and domain verification.",
-    printcolumn = r#"{"name":"ZoneRef","type":"string","jsonPath":".spec.zoneRef"}"#,
     printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
     printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
@@ -545,11 +719,6 @@ pub struct AAAARecordSpec {
 #[kube(status = "RecordStatus")]
 #[serde(rename_all = "camelCase")]
 pub struct TXTRecordSpec {
-    /// Reference to a `DNSZone` resource by metadata.name.
-    ///
-    /// Directly references a `DNSZone` resource in the same namespace by its Kubernetes resource name.
-    pub zone_ref: String,
-
     /// Record name within the zone.
     pub name: String,
 
@@ -579,12 +748,17 @@ pub struct TXTRecordSpec {
 /// kind: CNAMERecord
 /// metadata:
 ///   name: blog-example-com
+///   namespace: dns-system
+///   labels:
+///     zone: example.com
 /// spec:
-///   zoneRef: example-com
 ///   name: blog
 ///   target: example.github.io.
 ///   ttl: 3600
 /// ```
+///
+/// Records are associated with `DNSZones` via label selectors.
+/// The `DNSZone` must have a `recordsFrom` selector that matches this record's labels.
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "bindy.firestoned.io",
@@ -593,7 +767,6 @@ pub struct TXTRecordSpec {
     namespaced,
     shortname = "cname",
     doc = "CNAMERecord creates a DNS alias from one hostname to another. A CNAME cannot coexist with other record types for the same name.",
-    printcolumn = r#"{"name":"ZoneRef","type":"string","jsonPath":".spec.zoneRef"}"#,
     printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
     printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
@@ -601,11 +774,6 @@ pub struct TXTRecordSpec {
 #[kube(status = "RecordStatus")]
 #[serde(rename_all = "camelCase")]
 pub struct CNAMERecordSpec {
-    /// Reference to a `DNSZone` resource by metadata.name.
-    ///
-    /// Directly references a `DNSZone` resource in the same namespace by its Kubernetes resource name.
-    pub zone_ref: String,
-
     /// Record name within the zone.
     ///
     /// Note: CNAME records cannot be created at the zone apex (@).
@@ -635,13 +803,18 @@ pub struct CNAMERecordSpec {
 /// kind: MXRecord
 /// metadata:
 ///   name: mail-example-com
+///   namespace: dns-system
+///   labels:
+///     zone: example.com
 /// spec:
-///   zoneRef: example-com
 ///   name: "@"
 ///   priority: 10
 ///   mailServer: mail.example.com.
 ///   ttl: 3600
 /// ```
+///
+/// Records are associated with `DNSZones` via label selectors.
+/// The `DNSZone` must have a `recordsFrom` selector that matches this record's labels.
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "bindy.firestoned.io",
@@ -650,7 +823,6 @@ pub struct CNAMERecordSpec {
     namespaced,
     shortname = "mx",
     doc = "MXRecord specifies mail exchange servers for a domain. Lower priority values indicate higher preference for mail delivery.",
-    printcolumn = r#"{"name":"ZoneRef","type":"string","jsonPath":".spec.zoneRef"}"#,
     printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
     printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
@@ -658,11 +830,6 @@ pub struct CNAMERecordSpec {
 #[kube(status = "RecordStatus")]
 #[serde(rename_all = "camelCase")]
 pub struct MXRecordSpec {
-    /// Reference to a `DNSZone` resource by metadata.name.
-    ///
-    /// Directly references a `DNSZone` resource in the same namespace by its Kubernetes resource name.
-    pub zone_ref: String,
-
     /// Record name within the zone. Use "@" for the zone apex.
     pub name: String,
 
@@ -695,12 +862,17 @@ pub struct MXRecordSpec {
 /// kind: NSRecord
 /// metadata:
 ///   name: subdomain-ns
+///   namespace: dns-system
+///   labels:
+///     zone: example.com
 /// spec:
-///   zoneRef: example-com
 ///   name: subdomain
 ///   nameserver: ns1.other-provider.com.
 ///   ttl: 86400
 /// ```
+///
+/// Records are associated with `DNSZones` via label selectors.
+/// The `DNSZone` must have a `recordsFrom` selector that matches this record's labels.
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "bindy.firestoned.io",
@@ -709,7 +881,6 @@ pub struct MXRecordSpec {
     namespaced,
     shortname = "ns",
     doc = "NSRecord delegates a subdomain to authoritative nameservers. Used for subdomain delegation to different DNS providers or servers.",
-    printcolumn = r#"{"name":"ZoneRef","type":"string","jsonPath":".spec.zoneRef"}"#,
     printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
     printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
@@ -717,11 +888,6 @@ pub struct MXRecordSpec {
 #[kube(status = "RecordStatus")]
 #[serde(rename_all = "camelCase")]
 pub struct NSRecordSpec {
-    /// Reference to a `DNSZone` resource by metadata.name.
-    ///
-    /// Directly references a `DNSZone` resource in the same namespace by its Kubernetes resource name.
-    pub zone_ref: String,
-
     /// Subdomain to delegate. For zone apex, use "@".
     pub name: String,
 
@@ -748,8 +914,10 @@ pub struct NSRecordSpec {
 /// kind: SRVRecord
 /// metadata:
 ///   name: ldap-srv
+///   namespace: dns-system
+///   labels:
+///     zone: example.com
 /// spec:
-///   zoneRef: example-com
 ///   name: _ldap._tcp
 ///   priority: 10
 ///   weight: 60
@@ -757,6 +925,9 @@ pub struct NSRecordSpec {
 ///   target: ldap.example.com.
 ///   ttl: 3600
 /// ```
+///
+/// Records are associated with `DNSZones` via label selectors.
+/// The `DNSZone` must have a `recordsFrom` selector that matches this record's labels.
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "bindy.firestoned.io",
@@ -765,7 +936,6 @@ pub struct NSRecordSpec {
     namespaced,
     shortname = "srv",
     doc = "SRVRecord specifies the hostname and port of servers for specific services. The record name follows the format _service._proto (e.g., _ldap._tcp).",
-    printcolumn = r#"{"name":"ZoneRef","type":"string","jsonPath":".spec.zoneRef"}"#,
     printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
     printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
@@ -773,11 +943,6 @@ pub struct NSRecordSpec {
 #[kube(status = "RecordStatus")]
 #[serde(rename_all = "camelCase")]
 pub struct SRVRecordSpec {
-    /// Reference to a `DNSZone` resource by metadata.name.
-    ///
-    /// Directly references a `DNSZone` resource in the same namespace by its Kubernetes resource name.
-    pub zone_ref: String,
-
     /// Service and protocol in the format: _service._proto
     ///
     /// Example: "_ldap._tcp", "_sip._udp", "_http._tcp"
@@ -820,14 +985,19 @@ pub struct SRVRecordSpec {
 /// kind: CAARecord
 /// metadata:
 ///   name: caa-letsencrypt
+///   namespace: dns-system
+///   labels:
+///     zone: example.com
 /// spec:
-///   zoneRef: example-com
 ///   name: "@"
 ///   flags: 0
 ///   tag: issue
 ///   value: letsencrypt.org
 ///   ttl: 86400
 /// ```
+///
+/// Records are associated with `DNSZones` via label selectors.
+/// The `DNSZone` must have a `recordsFrom` selector that matches this record's labels.
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
     group = "bindy.firestoned.io",
@@ -836,7 +1006,6 @@ pub struct SRVRecordSpec {
     namespaced,
     shortname = "caa",
     doc = "CAARecord specifies which certificate authorities are authorized to issue certificates for a domain. Enhances domain security and certificate issuance control.",
-    printcolumn = r#"{"name":"ZoneRef","type":"string","jsonPath":".spec.zoneRef"}"#,
     printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
     printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
@@ -844,11 +1013,6 @@ pub struct SRVRecordSpec {
 #[kube(status = "RecordStatus")]
 #[serde(rename_all = "camelCase")]
 pub struct CAARecordSpec {
-    /// Reference to a `DNSZone` resource by metadata.name.
-    ///
-    /// Directly references a `DNSZone` resource in the same namespace by its Kubernetes resource name.
-    pub zone_ref: String,
-
     /// Record name within the zone. Use "@" for the zone apex.
     pub name: String,
 
@@ -885,6 +1049,16 @@ pub struct RecordStatus {
     pub conditions: Vec<Condition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub observed_generation: Option<i64>,
+    /// The FQDN of the zone that owns this record (set by `DNSZone` controller).
+    ///
+    /// When a `DNSZone`'s label selector matches this record, the `DNSZone` controller
+    /// sets this field to the zone's FQDN (e.g., `"example.com"`). The record reconciler
+    /// uses this to determine which zone to update in BIND9.
+    ///
+    /// If this field is empty, the record is not matched by any zone and should not
+    /// be reconciled into BIND9.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zone: Option<String>,
 }
 
 /// RNDC/TSIG algorithm for authenticated communication and zone transfers.
@@ -1211,7 +1385,7 @@ pub struct DNSSECConfig {
 }
 
 /// Container image configuration for BIND9 instances
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageConfig {
     /// Container image repository and tag for BIND9
@@ -1232,7 +1406,7 @@ pub struct ImageConfig {
 }
 
 /// `ConfigMap` references for BIND9 configuration files
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigMapRefs {
     /// `ConfigMap` containing named.conf file
@@ -1846,12 +2020,12 @@ pub struct PersistentVolumeClaimConfig {
 }
 
 /// Bindcar container configuration
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct BindcarConfig {
     /// Container image for the RNDC API sidecar
     ///
-    /// Example: "ghcr.io/firestoned/bindcar:latest"
+    /// Example: "ghcr.io/firestoned/bindcar:v0.3.0"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
 

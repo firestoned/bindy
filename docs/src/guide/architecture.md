@@ -170,10 +170,10 @@ graph TD
    - `spec.cluster_ref`: Can reference either `Bind9Cluster` or `ClusterBind9Provider`
    - Controller auto-detects cluster type
 
-3. **DNS Records → Zone Reference**:
-   - `spec.zone`: Zone name lookup (searches in same namespace)
-   - `spec.zoneRef`: Direct DNSZone resource name (same namespace)
-   - **Namespace Isolation**: Records can ONLY reference zones in their own namespace
+3. **DNS Records → Zone Association**:
+   - Records are discovered by zones via label selectors (`DNSZone.spec.recordsFrom`)
+   - Records use `metadata.labels` to be selected by zones
+   - **Namespace Isolation**: Records can ONLY be selected by zones in their own namespace
 
 ## Reconciliation Flow
 
@@ -385,25 +385,45 @@ graph TB
 **Example - Record Isolation:**
 
 ```yaml
-# team-a namespace
+# team-a namespace - DNSZone with selector
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: team-a-zone
+  namespace: team-a
+spec:
+  zoneName: team-a.com
+  clusterRef: production-dns
+  recordsFrom:
+    - selector:
+        matchLabels:
+          zone: team-a.com
+  soaRecord:
+    primaryNs: ns1.team-a.com.
+    adminEmail: admin.team-a.com.
+    serial: 2024010101
+---
+# team-a namespace - Record with matching label
 apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www
   namespace: team-a
+  labels:
+    zone: team-a.com  # ✅ Matches DNSZone selector in same namespace
 spec:
-  zoneRef: team-a-zone  # ✅ References zone in same namespace
   name: www
   ipv4Address: "192.0.2.1"
 ---
-# This would FAIL - cannot reference zone in another namespace
+# This would NOT be selected - namespace isolation prevents cross-namespace selection
 apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
-  name: www
+  name: www-isolated
   namespace: team-a
+  labels:
+    zone: team-b.com  # ❌ No DNSZone in team-a with this selector
 spec:
-  zoneRef: team-b-zone  # ❌ References zone in team-b namespace - BLOCKED
   name: www
   ipv4Address: "192.0.2.1"
 ```

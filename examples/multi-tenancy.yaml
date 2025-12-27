@@ -243,6 +243,10 @@ spec:
     expire: 604800
     negativeTtl: 86400
   ttl: 3600
+  recordsFrom:
+    - selector:
+        matchLabels:
+          zone-name: web-production-zone
 
 ---
 # DNS Records for Web Team Zone
@@ -252,10 +256,10 @@ metadata:
   name: web-app-primary
   namespace: team-web
   labels:
+    zone-name: web-production-zone
     app: web-application
     tier: frontend
 spec:
-  zoneRef: web-production-zone
   name: www
   ipv4Address: "10.0.10.100"
   ttl: 300
@@ -267,10 +271,10 @@ metadata:
   name: web-app-secondary
   namespace: team-web
   labels:
+    zone-name: web-production-zone
     app: web-application
     tier: frontend
 spec:
-  zoneRef: web-production-zone
   name: app
   ipv4Address: "10.0.10.101"
   ttl: 300
@@ -282,10 +286,10 @@ metadata:
   name: web-cdn
   namespace: team-web
   labels:
+    zone-name: web-production-zone
     app: web-application
     tier: cdn
 spec:
-  zoneRef: web-production-zone
   name: cdn
   target: www.web.example.com.
   ttl: 3600
@@ -297,9 +301,9 @@ metadata:
   name: web-verification
   namespace: team-web
   labels:
+    zone-name: web-production-zone
     purpose: domain-verification
 spec:
-  zoneRef: web-production-zone
   name: "@"
   text:
     - "v=spf1 mx include:_spf.example.com ~all"
@@ -360,6 +364,10 @@ spec:
     expire: 86400
     negativeTtl: 3600
   ttl: 300
+  recordsFrom:
+    - selector:
+        matchLabels:
+          zone-name: api-dev-zone
 
 ---
 # DNS Records for API Team Zone
@@ -369,10 +377,10 @@ metadata:
   name: api-gateway
   namespace: team-api
   labels:
+    zone-name: api-dev-zone
     app: api-gateway
     tier: gateway
 spec:
-  zoneRef: api-dev-zone
   name: gateway
   ipv4Address: "10.1.20.50"
   ttl: 60
@@ -384,10 +392,10 @@ metadata:
   name: api-service-v1
   namespace: team-api
   labels:
+    zone-name: api-dev-zone
     app: api-service
     version: v1
 spec:
-  zoneRef: api-dev-zone
   name: api-v1
   ipv4Address: "10.1.20.51"
   ttl: 60
@@ -399,10 +407,10 @@ metadata:
   name: api-service-v2
   namespace: team-api
   labels:
+    zone-name: api-dev-zone
     app: api-service
     version: v2
 spec:
-  zoneRef: api-dev-zone
   name: api-v2
   ipv4Address: "10.1.20.52"
   ttl: 60
@@ -414,10 +422,10 @@ metadata:
   name: api-grpc-service
   namespace: team-api
   labels:
+    zone-name: api-dev-zone
     app: api-service
     protocol: grpc
 spec:
-  zoneRef: api-dev-zone
   name: _grpc._tcp
   priority: 10
   weight: 100
@@ -432,9 +440,9 @@ metadata:
   name: api-metadata
   namespace: team-api
   labels:
+    zone-name: api-dev-zone
     purpose: service-discovery
 spec:
-  zoneRef: api-dev-zone
   name: "@"
   text:
     - "env=development"
@@ -469,6 +477,10 @@ spec:
     expire: 604800
     negativeTtl: 86400
   ttl: 3600
+  recordsFrom:
+    - selector:
+        matchLabels:
+          zone-name: api-production-zone
 
 ---
 apiVersion: bindy.firestoned.io/v1beta1
@@ -477,10 +489,10 @@ metadata:
   name: api-prod-gateway
   namespace: team-api
   labels:
+    zone-name: api-production-zone
     app: api-gateway
     environment: production
 spec:
-  zoneRef: api-production-zone
   name: gateway
   ipv4Address: "10.0.20.100"
   ttl: 300
@@ -492,10 +504,10 @@ metadata:
   name: api-prod-alias
   namespace: team-api
   labels:
+    zone-name: api-production-zone
     app: api-gateway
     environment: production
 spec:
-  zoneRef: api-production-zone
   name: api
   target: gateway.api.example.com.
   ttl: 300

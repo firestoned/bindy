@@ -67,40 +67,11 @@ where
     // Convert CRD to JSON for manipulation
     let mut crd_json: Value = serde_json::to_value(&crd)?;
 
-    // Add multi-version support: v1alpha1 (deprecated) and v1beta1 (storage)
+    // Ensure v1beta1 is the storage version
     if let Some(versions) = crd_json["spec"]["versions"].as_array_mut() {
-        // The generated CRD has v1beta1. We'll duplicate it for v1alpha1.
-        if let Some(v1beta1) = versions.first().cloned() {
-            let mut v1alpha1 = v1beta1.clone();
-
-            // Modify v1alpha1 version properties
-            v1alpha1["name"] = Value::String("v1alpha1".to_string());
-            v1alpha1["served"] = Value::Bool(true);
-            v1alpha1["storage"] = Value::Bool(false);
-            v1alpha1["deprecated"] = Value::Bool(true);
-            v1alpha1["deprecationWarning"] = Value::String(
-                "bindy.firestoned.io/v1alpha1 is deprecated. Use bindy.firestoned.io/v1beta1 instead.".to_string()
-            );
-
-            // Remove v1beta1-only fields from v1alpha1 schema
-            // The 'records' field in DNSZone status is only in v1beta1
-            if filename == "dnszones.crd.yaml" {
-                if let Some(schema) = v1alpha1["schema"]["openAPIV3Schema"]["properties"]["status"]
-                    ["properties"]
-                    .as_object_mut()
-                {
-                    schema.remove("records");
-                }
-            }
-
-            // Update v1beta1 to be the storage version
-            if let Some(v1beta1_ref) = versions.first_mut() {
-                v1beta1_ref["storage"] = Value::Bool(true);
-                v1beta1_ref["served"] = Value::Bool(true);
-            }
-
-            // Insert v1alpha1 before v1beta1 (versions are typically ordered oldest to newest)
-            versions.insert(0, v1alpha1);
+        if let Some(v1beta1_ref) = versions.first_mut() {
+            v1beta1_ref["storage"] = Value::Bool(true);
+            v1beta1_ref["served"] = Value::Bool(true);
         }
     }
 

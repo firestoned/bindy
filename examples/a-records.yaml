@@ -1,0 +1,40 @@
+---
+# A Records for example.com zone
+# Records are associated with DNSZones via labels
+# The DNSZone must have a recordsFrom selector that matches these labels
+
+apiVersion: bindy.firestoned.io/v1beta1
+kind: ARecord
+metadata:
+  name: www-example
+  namespace: dns-system
+  labels:
+    zone: example.com
+spec:
+  name: www
+  ipv4Address: "192.0.2.1"
+  ttl: 300
+---
+apiVersion: bindy.firestoned.io/v1beta1
+kind: ARecord
+metadata:
+  name: api-example
+  namespace: dns-system
+  labels:
+    zone: example.com
+spec:
+  name: api
+  ipv4Address: "192.0.2.2"
+  ttl: 300
+---
+apiVersion: bindy.firestoned.io/v1beta1
+kind: ARecord
+metadata:
+  name: mail-example
+  namespace: dns-system
+  labels:
+    zone: example.com
+spec:
+  name: mail
+  ipv4Address: "192.0.2.2"
+  ttl: 300

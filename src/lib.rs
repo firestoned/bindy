@@ -47,6 +47,7 @@
 //!     soa_record: soa,
 //!     ttl: Some(3600),
 //!     name_server_ips: None,
+//!     records_from: None,
 //! };
 //! ```
 //!
@@ -64,6 +65,7 @@ pub mod bind9_resources;
 pub mod constants;
 pub mod crd;
 pub mod crd_docs;
+pub mod dns_errors;
 pub mod http_errors;
 pub mod labels;
 pub mod metrics;
@@ -76,6 +78,8 @@ mod bind9_resources_tests;
 mod crd_docs_tests;
 #[cfg(test)]
 mod crd_tests;
+#[cfg(test)]
+mod dns_errors_tests;
 #[cfg(test)]
 mod http_errors_tests;
 #[cfg(test)]

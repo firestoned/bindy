@@ -20,6 +20,12 @@ spec:
     expire: 604800
     negativeTtl: 86400
   ttl: 3600
+  # Discover DNS records with matching labels
+  # Records with labels matching this selector will be automatically included
+  recordsFrom:
+    - selector:
+        matchLabels:
+          zone: example.com
 ---
 apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
@@ -42,3 +48,8 @@ spec:
     expire: 604800
     negativeTtl: 86400
   ttl: 3600
+  # Discover DNS records with matching labels
+  recordsFrom:
+    - selector:
+        matchLabels:
+          zone: internal.local

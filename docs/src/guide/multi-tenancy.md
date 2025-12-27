@@ -395,8 +395,9 @@ kind: ARecord
 metadata:
   name: test-server
   namespace: dev-team-alpha
+  labels:
+    zone: dev.local  # Matches DNSZone selector
 spec:
-  zoneRef: dev-zone
   name: test-server
   ipv4Address: "10.244.1.100"
   ttl: 60
@@ -490,19 +491,22 @@ kind: ARecord
 metadata:
   name: www
   namespace: team-a
+  labels:
+    zone: team-a.example.com  # ✅ Matches DNSZone in same namespace
 spec:
-  zoneRef: team-a-zone  # ✅ Same namespace
   name: www
   ipv4Address: "192.0.2.1"
 ---
 # This FAILS - cross-namespace reference blocked
+# Even if labels match, DNSZone must be in same namespace
 apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www
   namespace: team-a
+  labels:
+    zone: team-b.example.com  # ❌ No DNSZone in team-a with matching selector
 spec:
-  zoneRef: team-b-zone  # ❌ Different namespace - BLOCKED
   name: www
   ipv4Address: "192.0.2.1"
 ```

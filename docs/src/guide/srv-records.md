@@ -10,8 +10,9 @@ kind: SRVRecord
 metadata:
   name: xmpp-server
   namespace: dns-system
+  labels:
+    zone: example.com  # Used by DNSZone selector
 spec:
-  zoneRef: example-com  # References DNSZone metadata.name (recommended)
   service: xmpp-client  # Service name (without leading underscore)
   proto: tcp            # Protocol: tcp or udp
   name: "@"             # Domain (use @ for zone apex)
@@ -24,7 +25,46 @@ spec:
 
 This creates `_xmpp-client._tcp.example.com` pointing to `xmpp.example.com:5222`.
 
-**Note:** You can also use `zone: example.com` (matching `DNSZone.spec.zoneName`) instead of `zoneRef`. See [Referencing DNS Zones](./records-guide.md#referencing-dns-zones) for details.
+## How Records Are Associated with Zones
+
+Records are discovered by DNSZones using label selectors. The DNSZone must have a `recordsFrom` selector that matches the record's labels:
+
+```yaml
+# DNSZone with selector
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: example-com
+spec:
+  zoneName: example.com
+  clusterRef: production-dns
+  recordsFrom:
+    - selector:
+        matchLabels:
+          zone: example.com  # Selects all records with this label
+  soaRecord:
+    primaryNs: ns1.example.com.
+    adminEmail: admin.example.com.
+    serial: 2024010101
+---
+# Record that will be selected
+apiVersion: bindy.firestoned.io/v1beta1
+kind: SRVRecord
+metadata:
+  name: xmpp-server
+  labels:
+    zone: example.com  # ✅ Matches selector above
+spec:
+  service: xmpp-client
+  proto: tcp
+  name: "@"
+  priority: 10
+  weight: 50
+  port: 5222
+  target: xmpp.example.com.
+```
+
+See [Label Selector Guide](./label-selectors.md) for advanced patterns.
 
 ## SRV Record Format
 
@@ -48,8 +88,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: xmpp-client
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   service: xmpp-client
   proto: tcp
   name: "@"
@@ -63,8 +105,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: xmpp-server
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   service: xmpp-server
   proto: tcp
   name: "@"
@@ -82,8 +126,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: sip-tcp
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   service: sip
   proto: tcp
   name: "@"
@@ -97,8 +143,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: sip-udp
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   service: sip
   proto: udp
   name: "@"
@@ -115,8 +163,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: ldap-service
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   service: ldap
   proto: tcp
   name: "@"
@@ -133,8 +183,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: minecraft
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   service: minecraft
   proto: tcp
   name: "@"
@@ -154,8 +206,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: sip-primary
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   service: sip
   proto: tcp
   name: "@"
@@ -169,8 +223,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: sip-backup
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   service: sip
   proto: tcp
   name: "@"
@@ -188,8 +244,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: srv-1
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   service: xmpp-client
   proto: tcp
   name: "@"
@@ -203,8 +261,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: srv-2
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   service: xmpp-client
   proto: tcp
   name: "@"
@@ -236,8 +296,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: service-srv
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   service: myservice
   proto: tcp
   name: "@"
@@ -251,8 +313,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: server
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: server
   ipv4Address: "203.0.113.50"
 ```
