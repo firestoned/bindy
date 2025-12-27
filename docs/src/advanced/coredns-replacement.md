@@ -172,8 +172,9 @@ kind: ARecord
 metadata:
   name: api-v1
   namespace: api-team
+  labels:
+    zone: api.mesh.local  # Matches DNSZone selector
 spec:
-  zoneRef: api-zone
   name: v1
   ipv4Address: "10.0.1.100"
 ```

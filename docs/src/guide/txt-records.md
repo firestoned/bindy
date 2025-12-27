@@ -10,14 +10,49 @@ kind: TXTRecord
 metadata:
   name: verification-txt
   namespace: dns-system
+  labels:
+    zone: example.com  # Used by DNSZone selector
 spec:
-  zoneRef: example-com  # References DNSZone metadata.name (recommended)
   name: "@"
   text: "v=spf1 include:_spf.example.com ~all"
   ttl: 3600
 ```
 
-**Note:** You can also use `zone: example.com` (matching `DNSZone.spec.zoneName`) instead of `zoneRef`. See [Referencing DNS Zones](./records-guide.md#referencing-dns-zones) for details.
+## How Records Are Associated with Zones
+
+Records are discovered by DNSZones using label selectors. The DNSZone must have a `recordsFrom` selector that matches the record's labels:
+
+```yaml
+# DNSZone with selector
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: example-com
+spec:
+  zoneName: example.com
+  clusterRef: production-dns
+  recordsFrom:
+    - selector:
+        matchLabels:
+          zone: example.com  # Selects all records with this label
+  soaRecord:
+    primaryNs: ns1.example.com.
+    adminEmail: admin.example.com.
+    serial: 2024010101
+---
+# Record that will be selected
+apiVersion: bindy.firestoned.io/v1beta1
+kind: TXTRecord
+metadata:
+  name: spf-record
+  labels:
+    zone: example.com  # ✅ Matches selector above
+spec:
+  name: "@"
+  text: "v=spf1 include:_spf.example.com ~all"
+```
+
+See [Label Selector Guide](./label-selectors.md) for advanced patterns.
 
 ## Common Use Cases
 
@@ -30,8 +65,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: spf-record
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   text: "v=spf1 mx include:_spf.google.com ~all"
   ttl: 3600
@@ -54,8 +91,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: dkim-selector
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: default._domainkey  # selector._domainkey format
   text: "v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBA..."
   ttl: 3600
@@ -70,8 +109,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: dmarc-policy
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: _dmarc
   text: "v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com"
   ttl: 3600
@@ -92,8 +133,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: google-verification
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   text: "google-site-verification=1234567890abcdef"
 ---
@@ -102,8 +145,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: ms-verification
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   text: "MS=ms12345678"
 ```
@@ -117,8 +162,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: atlassian-verify
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   text: "atlassian-domain-verification=abc123"
 ```
@@ -130,8 +177,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: stripe-verify
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "_stripe-verification"
   text: "stripe-verification=xyz789"
 ```
@@ -146,8 +195,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: txt-spf
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   text: "v=spf1 include:_spf.google.com ~all"
 ---
@@ -156,8 +207,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: txt-verify
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   text: "google-site-verification=abc123"
 ```

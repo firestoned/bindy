@@ -3,12 +3,15 @@
 # This example demonstrates the correct relationship between:
 # - Bind9Cluster (defines shared configuration)
 # - Bind9Instance (actual DNS server pods)
-# - DNSZone (DNS zones to serve)
-# - DNS Records (A, CNAME, MX, etc.)
+# - DNSZone (DNS zones to serve, discovers records via label selectors)
+# - DNS Records (A, CNAME, MX, etc. - associated via labels)
 #
 # IMPORTANT: The clusterRef must match across resources:
 #   DNSZone.spec.clusterRef → Bind9Cluster.metadata.name
 #   Bind9Instance.spec.clusterRef → Bind9Cluster.metadata.name
+#
+# IMPORTANT: Records are discovered via label selectors:
+#   DNSZone.spec.recordsFrom[].selector matches record labels
 
 ---
 # Step 1: Create the Bind9Cluster
@@ -33,16 +36,20 @@ spec:
   global:
     recursion: false
     allowQuery:
-      - "0.0.0.0/0"
+      - "any"
     allowTransfer:
       - "10.0.0.0/8"
+    bindcarConfig:
+      image: "ghcr.io/firestoned/bindcar:v0.3.0"
+      imagePullPolicy: IfNotPresent
+      logLevel: debug
     dnssec:
-      enabled: true
       validation: true
 
 ---
-# Step 3: Create DNS Zones
+# Step 2: Create DNS Zones
 # These define which zones the cluster will serve
+# Records are discovered via label selectors
 
 apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
@@ -61,6 +68,11 @@ spec:
     expire: 604800
     negativeTtl: 86400
   ttl: 3600
+  # Discover records with matching labels
+  recordsFrom:
+    - selector:
+        matchLabels:
+          zone: example.com
 
 ---
 apiVersion: bindy.firestoned.io/v1beta1
@@ -80,18 +92,25 @@ spec:
     expire: 604800
     negativeTtl: 86400
   ttl: 3600
+  # Discover records with matching labels
+  recordsFrom:
+    - selector:
+        matchLabels:
+          zone: internal.local
 
 ---
-# Step 4: Create DNS Records
-# These reference zones by the zone resource name (not zoneName)
+# Step 3: Create DNS Records
+# Records are associated with zones via labels
+# The DNSZone's recordsFrom selector will discover these records
 
 apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example-com
   namespace: dns-system
+  labels:
+    zone: example.com  # ← Matches DNSZone's recordsFrom selector
 spec:
-  zoneRef: example-com  # ← References DNSZone.metadata.name
   name: www  # Creates www.example.com
   ipv4Address: 192.168.1.10
   ttl: 300
@@ -102,8 +121,9 @@ kind: ARecord
 metadata:
   name: api-example-com
   namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: api  # Creates api.example.com
   ipv4Address: 192.168.1.20
   ttl: 300
@@ -114,8 +134,9 @@ kind: CNAMERecord
 metadata:
   name: blog-example-com
   namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: blog  # Creates blog.example.com
   target: www.example.com.  # Must end with .
   ttl: 300
@@ -126,8 +147,9 @@ kind: MXRecord
 metadata:
   name: mail-example-com
   namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"  # @ means zone apex (example.com)
   priority: 10
   mailServer: mail.example.com.  # Must end with .
@@ -139,8 +161,9 @@ kind: TXTRecord
 metadata:
   name: spf-example-com
   namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   text:
     - "v=spf1 mx -all"
@@ -157,12 +180,14 @@ spec:
 # 3. DNSZone "example-com" (clusterRef: production-dns)
 #    DNSZone "internal-local" (clusterRef: production-dns)
 #    ↓
-# 4. ARecord "www-example-com" (zoneRef: example-com)
-#    CNAMERecord "blog-example-com" (zoneRef: example-com)
+# 4. DNSZone discovers records via label selectors:
+#    - DNSZone.spec.recordsFrom[].selector.matchLabels.zone == "example.com"
+#    - Finds: ARecord "www-example-com", ARecord "api-example-com",
+#             CNAMERecord "blog-example-com", MXRecord "mail-example-com",
+#             TXTRecord "spf-example-com"
 #
-# When a record is created:
-# - Controller looks up DNSZone by zoneRef
-# - Gets the clusterRef from the DNSZone
-# - Searches for Bind9Instances with matching clusterRef
-# - Finds "primary-dns" and "secondary-dns"
-# - Updates the primary instance
+# When a DNSZone is reconciled:
+# - Controller queries all DNS record types in the namespace
+# - Filters records using the recordsFrom label selectors
+# - For each matching record, adds it to the primary BIND9 instances
+# - Records with labels matching the selector are automatically included in the zone

@@ -1003,7 +1003,7 @@ fn build_api_sidecar_container(
     // Use defaults if bindcar_config is not provided
     let image = bindcar_config
         .and_then(|c| c.image.clone())
-        .unwrap_or_else(|| "ghcr.io/firestoned/bindcar:latest".to_string());
+        .unwrap_or_else(|| crate::constants::DEFAULT_BINDCAR_IMAGE.to_string());
 
     let image_pull_policy = bindcar_config
         .and_then(|c| c.image_pull_policy.clone())

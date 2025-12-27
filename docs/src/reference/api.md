@@ -37,6 +37,7 @@ DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defi
 | `clusterProviderRef` | string | No | Reference to a cluster-scoped \`ClusterBind9Provider\`.  Must match the name of a \`ClusterBind9Provider\` resource (cluster-scoped). The zone will be added to all instances in this provider.  Either \`clusterRef\` or \`clusterProviderRef\` must be specified (not both). |
 | `clusterRef` | string | No | Reference to a namespace-scoped \`Bind9Cluster\` in the same namespace.  Must match the name of a \`Bind9Cluster\` resource in the same namespace. The zone will be added to all instances in this cluster.  Either \`clusterRef\` or \`clusterProviderRef\` must be specified (not both). |
 | `nameServerIps` | object | No | Map of nameserver hostnames to IP addresses for glue records.  Glue records provide IP addresses for nameservers within the zone's own domain. This is necessary when delegating subdomains where the nameserver is within the delegated zone itself.  Example: When delegating \`sub.example.com\` with nameserver \`ns1.sub.example.com\`, you must provide the IP address of \`ns1.sub.example.com\` as a glue record.  Format: \`{"ns1.example.com.": "192.0.2.1", "ns2.example.com.": "192.0.2.2"}\`  Note: Nameserver hostnames should end with a dot (.) for FQDN. |
+| `recordsFrom` | array | No | Sources for DNS records to include in this zone.  This field defines label selectors that automatically associate DNS records with this zone. Records with matching labels will be included in the zone's DNS configuration.  This follows the standard Kubernetes selector pattern used by Services, \`NetworkPolicies\`, and other resources for declarative resource association.  # Example: Match podinfo records in dev/staging environments  \`\`\`yaml recordsFrom:   - selector:       matchLabels:         app: podinfo       matchExpressions:         - key: environment           operator: In           values:             - dev             - staging \`\`\`  # Selector Operators  - **In**: Label value must be in the specified values list - **\`NotIn\`**: Label value must NOT be in the specified values list - **Exists**: Label key must exist (any value) - **\`DoesNotExist\`**: Label key must NOT exist  # Use Cases  - **Multi-environment zones**: Dynamically include records based on environment labels - **Application-specific zones**: Group all records for an application using \`app\` label - **Team-based zones**: Use team labels to automatically route records to team-owned zones - **Temporary records**: Use labels to include/exclude records without changing \`zoneRef\` |
 | `soaRecord` | object | Yes | SOA (Start of Authority) record - defines zone authority and refresh parameters.  The SOA record is required for all authoritative zones and contains timing information for zone transfers and caching. |
 | `ttl` | integer | No | Default TTL (Time To Live) for records in this zone, in seconds.  If not specified, individual records must specify their own TTL. Typical values: 300-86400 (5 minutes to 1 day). |
 | `zoneName` | string | Yes | DNS zone name (e.g., "example.com").  Must be a valid DNS zone name. Can be a domain or subdomain. Examples: "example.com", "internal.example.com", "10.in-addr.arpa" |
@@ -68,7 +69,6 @@ ARecord maps a DNS hostname to an IPv4 address. Multiple A records for the same 
 | `ipv4Address` | string | Yes | IPv4 address in dotted-decimal notation.  Must be a valid IPv4 address (e.g., "192.0.2.1"). |
 | `name` | string | Yes | Record name within the zone. Use "@" for the zone apex.  Examples: "www", "mail", "ftp", "@" The full DNS name will be: {name}.{zone} |
 | `ttl` | integer | No | Time To Live in seconds. Overrides zone default TTL if specified.  Typical values: 60-86400 (1 minute to 1 day). |
-| `zoneRef` | string | Yes | Reference to a \`DNSZone\` resource by metadata.name.  Directly references a \`DNSZone\` resource in the same namespace by its Kubernetes resource name. This is more efficient than searching by zone name.  Example: If the \`DNSZone\` is named "example-com", use \`zoneRef: example-com\` |
 
 #### Status Fields
 
@@ -76,6 +76,7 @@ ARecord maps a DNS hostname to an IPv4 address. Multiple A records for the same 
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
 | `observedGeneration` | integer | No |  |
+| `zone` | string | No | The FQDN of the zone that owns this record (set by \`DNSZone\` controller).  When a \`DNSZone\`'s label selector matches this record, the \`DNSZone\` controller sets this field to the zone's FQDN (e.g., \`"example.com"\`). The record reconciler uses this to determine which zone to update in BIND9.  If this field is empty, the record is not matched by any zone and should not be reconciled into BIND9. |
 
 ---
 
@@ -92,7 +93,6 @@ AAAARecord maps a DNS hostname to an IPv6 address. This is the IPv6 equivalent o
 | `ipv6Address` | string | Yes | IPv6 address in standard notation.  Examples: \`2001:db8::1\`, \`fe80::1\`, \`::1\` |
 | `name` | string | Yes | Record name within the zone. |
 | `ttl` | integer | No | Time To Live in seconds. |
-| `zoneRef` | string | Yes | Reference to a \`DNSZone\` resource by metadata.name.  Directly references a \`DNSZone\` resource in the same namespace by its Kubernetes resource name. |
 
 #### Status Fields
 
@@ -100,6 +100,7 @@ AAAARecord maps a DNS hostname to an IPv6 address. This is the IPv6 equivalent o
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
 | `observedGeneration` | integer | No |  |
+| `zone` | string | No | The FQDN of the zone that owns this record (set by \`DNSZone\` controller).  When a \`DNSZone\`'s label selector matches this record, the \`DNSZone\` controller sets this field to the zone's FQDN (e.g., \`"example.com"\`). The record reconciler uses this to determine which zone to update in BIND9.  If this field is empty, the record is not matched by any zone and should not be reconciled into BIND9. |
 
 ---
 
@@ -116,7 +117,6 @@ CNAMERecord creates a DNS alias from one hostname to another. A CNAME cannot coe
 | `name` | string | Yes | Record name within the zone.  Note: CNAME records cannot be created at the zone apex (@). |
 | `target` | string | Yes | Target hostname (canonical name).  Should be a fully qualified domain name ending with a dot. Example: "example.com." or "www.example.com." |
 | `ttl` | integer | No | Time To Live in seconds. |
-| `zoneRef` | string | Yes | Reference to a \`DNSZone\` resource by metadata.name.  Directly references a \`DNSZone\` resource in the same namespace by its Kubernetes resource name. |
 
 #### Status Fields
 
@@ -124,6 +124,7 @@ CNAMERecord creates a DNS alias from one hostname to another. A CNAME cannot coe
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
 | `observedGeneration` | integer | No |  |
+| `zone` | string | No | The FQDN of the zone that owns this record (set by \`DNSZone\` controller).  When a \`DNSZone\`'s label selector matches this record, the \`DNSZone\` controller sets this field to the zone's FQDN (e.g., \`"example.com"\`). The record reconciler uses this to determine which zone to update in BIND9.  If this field is empty, the record is not matched by any zone and should not be reconciled into BIND9. |
 
 ---
 
@@ -141,7 +142,6 @@ MXRecord specifies mail exchange servers for a domain. Lower priority values ind
 | `name` | string | Yes | Record name within the zone. Use "@" for the zone apex. |
 | `priority` | integer | Yes | Priority (preference) of this mail server. Lower values = higher priority.  Common values: 0-100. Multiple MX records can exist with different priorities. |
 | `ttl` | integer | No | Time To Live in seconds. |
-| `zoneRef` | string | Yes | Reference to a \`DNSZone\` resource by metadata.name.  Directly references a \`DNSZone\` resource in the same namespace by its Kubernetes resource name. |
 
 #### Status Fields
 
@@ -149,6 +149,7 @@ MXRecord specifies mail exchange servers for a domain. Lower priority values ind
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
 | `observedGeneration` | integer | No |  |
+| `zone` | string | No | The FQDN of the zone that owns this record (set by \`DNSZone\` controller).  When a \`DNSZone\`'s label selector matches this record, the \`DNSZone\` controller sets this field to the zone's FQDN (e.g., \`"example.com"\`). The record reconciler uses this to determine which zone to update in BIND9.  If this field is empty, the record is not matched by any zone and should not be reconciled into BIND9. |
 
 ---
 
@@ -165,7 +166,6 @@ NSRecord delegates a subdomain to authoritative nameservers. Used for subdomain 
 | `name` | string | Yes | Subdomain to delegate. For zone apex, use "@". |
 | `nameserver` | string | Yes | Fully qualified domain name of the nameserver.  Must end with a dot. Example: "ns1.example.com." |
 | `ttl` | integer | No | Time To Live in seconds. |
-| `zoneRef` | string | Yes | Reference to a \`DNSZone\` resource by metadata.name.  Directly references a \`DNSZone\` resource in the same namespace by its Kubernetes resource name. |
 
 #### Status Fields
 
@@ -173,6 +173,7 @@ NSRecord delegates a subdomain to authoritative nameservers. Used for subdomain 
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
 | `observedGeneration` | integer | No |  |
+| `zone` | string | No | The FQDN of the zone that owns this record (set by \`DNSZone\` controller).  When a \`DNSZone\`'s label selector matches this record, the \`DNSZone\` controller sets this field to the zone's FQDN (e.g., \`"example.com"\`). The record reconciler uses this to determine which zone to update in BIND9.  If this field is empty, the record is not matched by any zone and should not be reconciled into BIND9. |
 
 ---
 
@@ -189,7 +190,6 @@ TXTRecord stores arbitrary text data in DNS. Commonly used for SPF, DKIM, DMARC 
 | `name` | string | Yes | Record name within the zone. |
 | `text` | array | Yes | Array of text strings. Each string can be up to 255 characters.  Multiple strings are concatenated by DNS resolvers. For long text, split into multiple strings. |
 | `ttl` | integer | No | Time To Live in seconds. |
-| `zoneRef` | string | Yes | Reference to a \`DNSZone\` resource by metadata.name.  Directly references a \`DNSZone\` resource in the same namespace by its Kubernetes resource name. |
 
 #### Status Fields
 
@@ -197,6 +197,7 @@ TXTRecord stores arbitrary text data in DNS. Commonly used for SPF, DKIM, DMARC 
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
 | `observedGeneration` | integer | No |  |
+| `zone` | string | No | The FQDN of the zone that owns this record (set by \`DNSZone\` controller).  When a \`DNSZone\`'s label selector matches this record, the \`DNSZone\` controller sets this field to the zone's FQDN (e.g., \`"example.com"\`). The record reconciler uses this to determine which zone to update in BIND9.  If this field is empty, the record is not matched by any zone and should not be reconciled into BIND9. |
 
 ---
 
@@ -216,7 +217,6 @@ SRVRecord specifies the hostname and port of servers for specific services. The 
 | `target` | string | Yes | Fully qualified domain name of the target host.  Must end with a dot. Use "." for "service not available". |
 | `ttl` | integer | No | Time To Live in seconds. |
 | `weight` | integer | Yes | Relative weight for records with the same priority.  Higher values = higher probability of selection. |
-| `zoneRef` | string | Yes | Reference to a \`DNSZone\` resource by metadata.name.  Directly references a \`DNSZone\` resource in the same namespace by its Kubernetes resource name. |
 
 #### Status Fields
 
@@ -224,6 +224,7 @@ SRVRecord specifies the hostname and port of servers for specific services. The 
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
 | `observedGeneration` | integer | No |  |
+| `zone` | string | No | The FQDN of the zone that owns this record (set by \`DNSZone\` controller).  When a \`DNSZone\`'s label selector matches this record, the \`DNSZone\` controller sets this field to the zone's FQDN (e.g., \`"example.com"\`). The record reconciler uses this to determine which zone to update in BIND9.  If this field is empty, the record is not matched by any zone and should not be reconciled into BIND9. |
 
 ---
 
@@ -242,7 +243,6 @@ CAARecord specifies which certificate authorities are authorized to issue certif
 | `tag` | string | Yes | Property tag. Common values: "issue", "issuewild", "iodef".  - "issue": Authorize CA to issue certificates - "issuewild": Authorize CA to issue wildcard certificates - "iodef": URL/email for violation reports |
 | `ttl` | integer | No | Time To Live in seconds. |
 | `value` | string | Yes | Property value. Format depends on the tag.  For "issue"/"issuewild": CA domain (e.g., "letsencrypt.org") For "iodef": mailto: or https: URL |
-| `zoneRef` | string | Yes | Reference to a \`DNSZone\` resource by metadata.name.  Directly references a \`DNSZone\` resource in the same namespace by its Kubernetes resource name. |
 
 #### Status Fields
 
@@ -250,6 +250,7 @@ CAARecord specifies which certificate authorities are authorized to issue certif
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
 | `observedGeneration` | integer | No |  |
+| `zone` | string | No | The FQDN of the zone that owns this record (set by \`DNSZone\` controller).  When a \`DNSZone\`'s label selector matches this record, the \`DNSZone\` controller sets this field to the zone's FQDN (e.g., \`"example.com"\`). The record reconciler uses this to determine which zone to update in BIND9.  If this field is empty, the record is not matched by any zone and should not be reconciled into BIND9. |
 
 ---
 

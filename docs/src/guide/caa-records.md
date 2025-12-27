@@ -10,8 +10,9 @@ kind: CAARecord
 metadata:
   name: letsencrypt-caa
   namespace: dns-system
+  labels:
+    zone: example.com  # Used by DNSZone selector
 spec:
-  zoneRef: example-com  # References DNSZone metadata.name (recommended)
   name: "@"             # Apply to entire domain
   flags: 0              # Typically 0 (non-critical)
   tag: issue            # Tag: issue, issuewild, or iodef
@@ -21,7 +22,43 @@ spec:
 
 This authorizes Let's Encrypt to issue certificates for `example.com`.
 
-**Note:** You can also use `zone: example.com` (matching `DNSZone.spec.zoneName`) instead of `zoneRef`. See [Referencing DNS Zones](./records-guide.md#referencing-dns-zones) for details.
+## How Records Are Associated with Zones
+
+Records are discovered by DNSZones using label selectors. The DNSZone must have a `recordsFrom` selector that matches the record's labels:
+
+```yaml
+# DNSZone with selector
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: example-com
+spec:
+  zoneName: example.com
+  clusterRef: production-dns
+  recordsFrom:
+    - selector:
+        matchLabels:
+          zone: example.com  # Selects all records with this label
+  soaRecord:
+    primaryNs: ns1.example.com.
+    adminEmail: admin.example.com.
+    serial: 2024010101
+---
+# Record that will be selected
+apiVersion: bindy.firestoned.io/v1beta1
+kind: CAARecord
+metadata:
+  name: letsencrypt-caa
+  labels:
+    zone: example.com  # ✅ Matches selector above
+spec:
+  name: "@"
+  flags: 0
+  tag: issue
+  value: letsencrypt.org
+```
+
+See [Label Selector Guide](./label-selectors.md) for advanced patterns.
 
 ## CAA Tags
 
@@ -34,8 +71,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-issue
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   flags: 0
   tag: issue
@@ -51,8 +90,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-wildcard
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   flags: 0
   tag: issuewild
@@ -68,8 +109,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-iodef-email
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   flags: 0
   tag: iodef
@@ -79,8 +122,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-iodef-url
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   flags: 0
   tag: iodef
@@ -97,8 +142,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-le-issue
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   flags: 0
   tag: issue
@@ -109,8 +156,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-le-wildcard
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   flags: 0
   tag: issuewild
@@ -124,8 +173,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-digicert
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   flags: 0
   tag: issue
@@ -139,8 +190,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-aws
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   flags: 0
   tag: issue
@@ -150,8 +203,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-aws-wildcard
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   flags: 0
   tag: issuewild
@@ -168,8 +223,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-letsencrypt
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   flags: 0
   tag: issue
@@ -180,8 +237,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-digicert
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   flags: 0
   tag: issue
@@ -197,8 +256,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-deny-all
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   flags: 0
   tag: issue
@@ -221,8 +282,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-staging
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: staging  # staging.example.com
   flags: 0
   tag: issue

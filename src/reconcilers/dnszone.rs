@@ -8,6 +8,7 @@
 //! It supports both primary and secondary zone configurations.
 
 use crate::bind9::RndcKeyData;
+use crate::constants::{ANNOTATION_ZONE_OWNER, ANNOTATION_ZONE_PREVIOUS_OWNER};
 use crate::crd::{Condition, DNSZone, DNSZoneSpec, DNSZoneStatus};
 use anyhow::{anyhow, Context, Result};
 use bindcar::{ZONE_TYPE_PRIMARY, ZONE_TYPE_SECONDARY};
@@ -19,11 +20,12 @@ use kube::{
     Api, ResourceExt,
 };
 use serde_json::json;
+use std::collections::HashSet;
 use tracing::{debug, info, warn};
 
 /// Helper function to extract and validate cluster reference from `DNSZoneSpec`.
 ///
-/// Returns the cluster name, whether from clusterRef or globalClusterRef.
+/// Returns the cluster name, whether from clusterRef or clusterProviderRef.
 /// Validates that exactly one is specified (mutual exclusivity).
 ///
 /// This function is public so it can be used by other reconcilers (e.g., records reconciler).
@@ -31,8 +33,8 @@ use tracing::{debug, info, warn};
 /// # Errors
 ///
 /// Returns an error if:
-/// - Both `clusterRef` and `globalClusterRef` are specified (mutual exclusivity violation)
-/// - Neither `clusterRef` nor `globalClusterRef` is specified (at least one required)
+/// - Both `clusterRef` and `clusterProviderRef` are specified (mutual exclusivity violation)
+/// - Neither `clusterRef` nor `clusterProviderRef` is specified (at least one required)
 pub fn get_cluster_ref_from_spec(
     spec: &DNSZoneSpec,
     namespace: &str,
@@ -46,7 +48,7 @@ pub fn get_cluster_ref_from_spec(
             Only one must be specified."
         )),
         (None, None) => Err(anyhow!(
-            "DNSZone {namespace}/{name} has neither clusterRef nor globalClusterRef specified. \
+            "DNSZone {namespace}/{name} has neither clusterRef nor clusterProviderRef specified. \
             Exactly one must be specified."
         )),
     }
@@ -109,6 +111,9 @@ pub async fn reconcile_dnszone(
         "Starting DNSZone reconciliation"
     );
 
+    // Create centralized status updater to batch all status changes
+    let mut status_updater = crate::reconcilers::status::DNSZoneStatusUpdater::new(&dnszone);
+
     // Extract spec
     let spec = &dnszone.spec;
 
@@ -129,188 +134,262 @@ pub async fn reconcile_dnszone(
     let spec_changed =
         crate::reconcilers::should_reconcile(current_generation, observed_generation);
 
-    // Early return if nothing to do
-    if !first_reconciliation && !spec_changed {
-        debug!(
-            "Spec unchanged (generation={:?}), skipping reconciliation",
-            current_generation
-        );
-        return Ok(());
-    }
-
     info!(
         "Reconciling zone {} (first_reconciliation={}, spec_changed={})",
         spec.zone_name, first_reconciliation, spec_changed
     );
 
-    // Set initial Progressing status
-    update_condition(
-        &client,
-        &dnszone,
-        "Progressing",
-        "True",
-        "PrimaryReconciling",
-        "Configuring zone on primary servers",
-    )
-    .await?;
+    // BIND9 configuration: Always ensure zones exist on all instances
+    // This implements true declarative reconciliation - if a pod restarts without
+    // persistent storage, the reconciler will detect the missing zone and recreate it.
+    // The add_zones() function is idempotent, so this is safe to call every reconciliation.
+    //
+    // NOTE: We ALWAYS configure zones, not just when spec changes. This ensures:
+    // - Zones are recreated if pods restart without persistent volumes
+    // - New instances added to the cluster get zones automatically
+    // - Drift detection: if someone manually deletes a zone, it's recreated
+    // - True Kubernetes declarative reconciliation: actual state continuously matches desired state
+    let (primary_count, secondary_count) = {
+        debug!("Ensuring BIND9 zone exists on all instances (declarative reconciliation)");
 
-    // Get current primary IPs for secondary zone configuration
-    let primary_ips = match find_all_primary_pod_ips(
-        &client,
-        &namespace,
-        &cluster_ref,
-        is_cluster_provider,
-    )
-    .await
-    {
-        Ok(ips) if !ips.is_empty() => {
-            info!(
-                "Found {} primary server(s) for cluster {}: {:?}",
-                ips.len(),
-                cluster_ref,
-                ips
-            );
-            ips
-        }
-        Ok(_) => {
-            update_condition(
-                &client,
-                &dnszone,
-                "Degraded",
-                "True",
-                "PrimaryFailed",
-                &format!("No primary servers found for cluster {cluster_ref}"),
-            )
-            .await?;
-            return Err(anyhow!(
-                "No primary servers found for cluster {cluster_ref} - cannot configure zones"
-            ));
-        }
-        Err(e) => {
-            update_condition(
-                &client,
-                &dnszone,
-                "Degraded",
-                "True",
-                "PrimaryFailed",
-                &format!("Failed to find primary servers: {e}"),
-            )
-            .await?;
-            return Err(e);
-        }
-    };
+        // Set initial Progressing status (in-memory)
+        status_updater.set_condition(
+            "Progressing",
+            "True",
+            "PrimaryReconciling",
+            "Configuring zone on primary servers",
+        );
 
-    // Add/update zone on all primary instances
-    let primary_count = match add_dnszone(client.clone(), dnszone.clone(), zone_manager).await {
-        Ok(count) => {
-            // Update status after successful primary reconciliation
-            update_condition(
-                &client,
-                &dnszone,
-                "Progressing",
-                "True",
-                "PrimaryReconciled",
-                &format!(
-                    "Zone {} configured on {} primary server(s)",
-                    spec.zone_name, count
-                ),
-            )
-            .await?;
-            count
-        }
-        Err(e) => {
-            update_condition(
-                &client,
-                &dnszone,
-                "Degraded",
-                "True",
-                "PrimaryFailed",
-                &format!("Failed to configure zone on primary servers: {e}"),
-            )
-            .await?;
-            return Err(e);
-        }
-    };
+        // Get current primary IPs for secondary zone configuration
+        let primary_ips =
+            match find_all_primary_pod_ips(&client, &namespace, &cluster_ref, is_cluster_provider)
+                .await
+            {
+                Ok(ips) if !ips.is_empty() => {
+                    info!(
+                        "Found {} primary server(s) for cluster {}: {:?}",
+                        ips.len(),
+                        cluster_ref,
+                        ips
+                    );
+                    ips
+                }
+                Ok(_) => {
+                    status_updater.set_condition(
+                        "Degraded",
+                        "True",
+                        "PrimaryFailed",
+                        &format!("No primary servers found for cluster {cluster_ref}"),
+                    );
+                    // Apply status before returning error
+                    status_updater.apply(&client).await?;
+                    return Err(anyhow!(
+                    "No primary servers found for cluster {cluster_ref} - cannot configure zones"
+                ));
+                }
+                Err(e) => {
+                    status_updater.set_condition(
+                        "Degraded",
+                        "True",
+                        "PrimaryFailed",
+                        &format!("Failed to find primary servers: {e}"),
+                    );
+                    // Apply status before returning error
+                    status_updater.apply(&client).await?;
+                    return Err(e);
+                }
+            };
 
-    // Update to secondary reconciliation phase
-    update_condition(
-        &client,
-        &dnszone,
-        "Progressing",
-        "True",
-        "SecondaryReconciling",
-        "Configuring zone on secondary servers",
-    )
-    .await?;
-
-    // Add/update zone on all secondary instances with primaries configured
-    let secondary_count = match add_dnszone_to_secondaries(
-        client.clone(),
-        dnszone.clone(),
-        zone_manager,
-        &primary_ips,
-    )
-    .await
-    {
-        Ok(count) => {
-            // Update status after successful secondary reconciliation
-            if count > 0 {
-                update_condition(
-                    &client,
-                    &dnszone,
+        // Add/update zone on all primary instances
+        let primary_count = match add_dnszone(client.clone(), dnszone.clone(), zone_manager).await {
+            Ok(count) => {
+                // Update status after successful primary reconciliation (in-memory)
+                status_updater.set_condition(
                     "Progressing",
                     "True",
-                    "SecondaryReconciled",
+                    "PrimaryReconciled",
                     &format!(
-                        "Zone {} configured on {} secondary server(s)",
+                        "Zone {} configured on {} primary server(s)",
                         spec.zone_name, count
                     ),
-                )
-                .await?;
+                );
+                count
             }
-            count
+            Err(e) => {
+                status_updater.set_condition(
+                    "Degraded",
+                    "True",
+                    "PrimaryFailed",
+                    &format!("Failed to configure zone on primary servers: {e}"),
+                );
+                // Apply status before returning error
+                status_updater.apply(&client).await?;
+                return Err(e);
+            }
+        };
+
+        // Update to secondary reconciliation phase (in-memory)
+        status_updater.set_condition(
+            "Progressing",
+            "True",
+            "SecondaryReconciling",
+            "Configuring zone on secondary servers",
+        );
+
+        // Add/update zone on all secondary instances with primaries configured
+        let secondary_count = match add_dnszone_to_secondaries(
+            client.clone(),
+            dnszone.clone(),
+            zone_manager,
+            &primary_ips,
+        )
+        .await
+        {
+            Ok(count) => {
+                // Update status after successful secondary reconciliation (in-memory)
+                if count > 0 {
+                    status_updater.set_condition(
+                        "Progressing",
+                        "True",
+                        "SecondaryReconciled",
+                        &format!(
+                            "Zone {} configured on {} secondary server(s)",
+                            spec.zone_name, count
+                        ),
+                    );
+                }
+                count
+            }
+            Err(e) => {
+                // Secondary failure is non-fatal - primaries still work
+                warn!(
+                    "Failed to configure zone on secondary servers: {}. Primary servers are still operational.",
+                    e
+                );
+                status_updater.set_condition(
+                    "Degraded",
+                    "True",
+                    "SecondaryFailed",
+                    &format!(
+                        "Zone configured on {primary_count} primary server(s) but secondary configuration failed: {e}"
+                    ),
+                );
+                0
+            }
+        };
+
+        (primary_count, secondary_count)
+    };
+
+    // Discover DNS records that match the zone's label selectors (in-memory status update)
+    status_updater.set_condition(
+        "Progressing",
+        "True",
+        "RecordsDiscovering",
+        "Discovering DNS records via label selectors",
+    );
+
+    let record_refs = match reconcile_zone_records(client.clone(), dnszone.clone()).await {
+        Ok(refs) => {
+            info!(
+                "Discovered {} DNS record(s) for zone {} via label selectors",
+                refs.len(),
+                spec.zone_name
+            );
+            refs
         }
         Err(e) => {
-            // Secondary failure is non-fatal - primaries still work
+            // Record discovery failure is non-fatal - the zone itself is still configured
             warn!(
-                "Failed to configure zone on secondary servers: {}. Primary servers are still operational.",
-                e
+                "Failed to discover DNS records for zone {}: {}. Zone is configured but record discovery failed.",
+                spec.zone_name, e
             );
-            update_condition(
-                &client,
-                &dnszone,
+            status_updater.set_condition(
                 "Degraded",
                 "True",
-                "SecondaryFailed",
-                &format!(
-                    "Zone configured on {primary_count} primary server(s) but secondary configuration failed: {e}"
-                ),
-            )
-            .await?;
-            0
+                "RecordDiscoveryFailed",
+                &format!("Zone configured but record discovery failed: {e}"),
+            );
+            vec![]
         }
     };
 
-    // Re-fetch secondary IPs to store in status
+    let record_count = record_refs.len();
+
+    // Update DNSZone status with discovered records (in-memory)
+    status_updater.set_records(record_refs.clone());
+
+    // Check if all discovered records are ready and trigger zone transfers if needed
+    if record_count > 0 {
+        let all_records_ready = check_all_records_ready(&client, &namespace, &record_refs).await?;
+
+        if all_records_ready {
+            info!(
+                "All {} record(s) for zone {} are ready, triggering zone transfers to secondaries",
+                record_count, spec.zone_name
+            );
+
+            // Trigger zone transfers to all secondaries
+            match trigger_zone_transfers(
+                &client,
+                &namespace,
+                &spec.zone_name,
+                &cluster_ref,
+                is_cluster_provider,
+                zone_manager,
+            )
+            .await
+            {
+                Ok(transfer_count) => {
+                    info!(
+                        "Successfully triggered zone transfer for {} to {} secondary instance(s)",
+                        spec.zone_name, transfer_count
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to trigger zone transfers for {}: {}. Zone is configured but secondaries may be out of sync.",
+                        spec.zone_name, e
+                    );
+                    status_updater.set_condition(
+                        "Degraded",
+                        "True",
+                        "TransferFailed",
+                        &format!("Zone configured but zone transfer failed: {e}"),
+                    );
+                }
+            }
+        } else {
+            info!(
+                "Not all records for zone {} are ready yet, skipping zone transfer",
+                spec.zone_name
+            );
+        }
+    }
+
+    // Re-fetch secondary IPs to store in status (in-memory)
     let secondary_ips =
         find_all_secondary_pod_ips(&client, &namespace, &cluster_ref, is_cluster_provider)
             .await
             .unwrap_or_default();
+    status_updater.set_secondary_ips(secondary_ips);
 
-    // All reconciliation complete - set Ready status
-    update_status_with_secondaries(
-        &client,
-        &dnszone,
+    // Set observed generation (in-memory)
+    status_updater.set_observed_generation(current_generation);
+
+    // All reconciliation complete - set Ready status (in-memory)
+    status_updater.set_condition(
         "Ready",
         "True",
         "ReconcileSucceeded",
         &format!(
-            "Zone {} configured on {} primary and {} secondary server(s) for cluster {}",
-            spec.zone_name, primary_count, secondary_count, cluster_ref
+            "Zone {} configured on {} primary and {} secondary server(s), discovered {} DNS record(s) for cluster {}",
+            spec.zone_name, primary_count, secondary_count, record_count, cluster_ref
         ),
-        secondary_ips,
-    )
-    .await?;
+    );
+
+    // Apply all status changes in a single atomic operation
+    status_updater.apply(&client).await?;
 
     Ok(())
 }
@@ -617,6 +696,586 @@ pub async fn add_dnszone_to_secondaries(
     );
 
     Ok(total_endpoints)
+}
+
+/// Reconciles DNS records for a zone by discovering records that match the zone's label selectors.
+///
+/// This function implements the core of the zone/record ownership model:
+/// 1. Discovers records matching the zone's label selectors
+/// 2. Tags matched records with zone ownership annotation and status.zone field
+/// 3. Untags previously matched records that no longer match
+/// 4. Returns references to currently matched records for status tracking
+///
+/// Record reconcilers use the `bindy.firestoned.io/zone` annotation to determine
+/// which zone to update in BIND9. When a record loses the annotation, the record
+/// reconciler will delete it from BIND9.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client for querying DNS records
+/// * `dnszone` - The `DNSZone` resource with label selectors
+///
+/// # Returns
+///
+/// * `Ok(Vec<RecordReference>)` - List of currently matched DNS records
+/// * `Err(_)` - If record discovery or tagging fails
+///
+/// # Errors
+///
+/// Returns an error if Kubernetes API operations fail.
+#[allow(clippy::too_many_lines)]
+async fn reconcile_zone_records(
+    client: Client,
+    dnszone: DNSZone,
+) -> Result<Vec<crate::crd::RecordReference>> {
+    let namespace = dnszone.namespace().unwrap_or_default();
+    let spec = &dnszone.spec;
+    let zone_name = &spec.zone_name;
+
+    // Early return if no label selectors are defined
+    let Some(ref records_from) = spec.records_from else {
+        info!(
+            "No label selectors defined for zone {}, skipping record discovery",
+            zone_name
+        );
+        // If no selectors, untag ALL previously matched records
+        return Ok(Vec::new());
+    };
+
+    info!(
+        "Discovering DNS records for zone {} using {} label selector(s)",
+        zone_name,
+        records_from.len()
+    );
+
+    let mut all_record_refs = Vec::new();
+
+    // Query all record types and filter by label selectors
+    for record_source in records_from {
+        let selector = &record_source.selector;
+
+        // Discover each record type
+        all_record_refs.extend(discover_a_records(&client, &namespace, selector).await?);
+        all_record_refs.extend(discover_aaaa_records(&client, &namespace, selector).await?);
+        all_record_refs.extend(discover_txt_records(&client, &namespace, selector).await?);
+        all_record_refs.extend(discover_cname_records(&client, &namespace, selector).await?);
+        all_record_refs.extend(discover_mx_records(&client, &namespace, selector).await?);
+        all_record_refs.extend(discover_ns_records(&client, &namespace, selector).await?);
+        all_record_refs.extend(discover_srv_records(&client, &namespace, selector).await?);
+        all_record_refs.extend(discover_caa_records(&client, &namespace, selector).await?);
+    }
+
+    info!(
+        "Discovered {} DNS record(s) for zone {}",
+        all_record_refs.len(),
+        zone_name
+    );
+
+    // Get previously matched records from current status
+    let previous_records: HashSet<String> = dnszone
+        .status
+        .as_ref()
+        .map(|s| {
+            s.records
+                .iter()
+                .map(|r| format!("{}/{}", r.kind, r.name))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Create set of currently matched records
+    let current_records: HashSet<String> = all_record_refs
+        .iter()
+        .map(|r| format!("{}/{}", r.kind, r.name))
+        .collect();
+
+    // Tag newly matched records (in current but not in previous)
+    for record_ref in &all_record_refs {
+        let record_key = format!("{}/{}", record_ref.kind, record_ref.name);
+        if !previous_records.contains(&record_key) {
+            info!(
+                "Newly matched record: {} {}/{}",
+                record_ref.kind, namespace, record_ref.name
+            );
+            tag_record_with_zone(
+                &client,
+                &namespace,
+                &record_ref.kind,
+                &record_ref.name,
+                zone_name,
+            )
+            .await?;
+        }
+    }
+
+    // Untag previously matched records that no longer match or were deleted
+    // (in previous but not in current)
+    for prev_record_key in &previous_records {
+        if !current_records.contains(prev_record_key.as_str()) {
+            // Parse kind and name from "Kind/name" format
+            if let Some((kind, name)) = prev_record_key.split_once('/') {
+                warn!(
+                    "Record no longer matches zone {} (unmatched or deleted): {} {}/{}",
+                    zone_name, kind, namespace, name
+                );
+
+                // Try to untag the record, but don't fail if it was deleted
+                // If the record was deleted, the API will return NotFound, which is fine
+                if let Err(e) =
+                    untag_record_from_zone(&client, &namespace, kind, name, zone_name).await
+                {
+                    // Check if error is because record was deleted (NotFound)
+                    if e.to_string().contains("NotFound") || e.to_string().contains("not found") {
+                        info!(
+                            "Record {} {}/{} was deleted, removing from zone {} status",
+                            kind, namespace, name, zone_name
+                        );
+                    } else {
+                        // Other errors should be logged but not fail the reconciliation
+                        warn!(
+                            "Failed to untag record {} {}/{} from zone {}: {}",
+                            kind, namespace, name, zone_name, e
+                        );
+                    }
+                }
+                // Continue regardless - the record will be removed from status.records
+                // when we return all_record_refs (which doesn't include this record)
+            }
+        }
+    }
+
+    Ok(all_record_refs)
+}
+
+/// Tags a DNS record with zone ownership annotation and updates its `status.zone` field.
+///
+/// This function is called when a `DNSZone`'s label selector matches a record.
+/// It sets both the `bindy.firestoned.io/zone` annotation and the `status.zone` field.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `namespace` - Namespace of the record
+/// * `kind` - Record kind (e.g., `ARecord`, `CNAMERecord`)
+/// * `name` - Record name
+/// * `zone_fqdn` - Fully qualified domain name of the zone (e.g., `"example.com"`)
+///
+/// # Returns
+///
+/// * `Ok(())` - If the record was tagged successfully
+/// * `Err(_)` - If tagging failed
+async fn tag_record_with_zone(
+    client: &Client,
+    namespace: &str,
+    kind: &str,
+    name: &str,
+    zone_fqdn: &str,
+) -> Result<()> {
+    debug!(
+        "Tagging {} {}/{} with zone {}",
+        kind, namespace, name, zone_fqdn
+    );
+
+    // Convert kind to plural resource name (e.g., "ARecord" -> "arecords")
+    let plural = format!("{}s", kind.to_lowercase());
+
+    // Create GroupVersionKind for the resource
+    let gvk = kube::core::GroupVersionKind {
+        group: "bindy.firestoned.io".to_string(),
+        version: "v1beta1".to_string(),
+        kind: kind.to_string(),
+    };
+
+    // Use kube's Discovery API to create ApiResource
+    let api_resource = kube::api::ApiResource::from_gvk_with_plural(&gvk, &plural);
+
+    // Create a dynamic API client
+    let api = kube::api::Api::<kube::api::DynamicObject>::namespaced_with(
+        client.clone(),
+        namespace,
+        &api_resource,
+    );
+
+    // Patch metadata to add annotation
+    let annotation_patch = json!({
+        "metadata": {
+            "annotations": {
+                ANNOTATION_ZONE_OWNER: zone_fqdn
+            }
+        }
+    });
+
+    api.patch(
+        name,
+        &PatchParams::default(),
+        &Patch::Merge(&annotation_patch),
+    )
+    .await
+    .with_context(|| format!("Failed to add zone annotation to {kind} {namespace}/{name}"))?;
+
+    // Patch status to set zone field
+    let status_patch = json!({
+        "status": {
+            "zone": zone_fqdn
+        }
+    });
+
+    api.patch_status(name, &PatchParams::default(), &Patch::Merge(&status_patch))
+        .await
+        .with_context(|| format!("Failed to set status.zone on {kind} {namespace}/{name}"))?;
+
+    info!(
+        "Successfully tagged {} {}/{} with zone {}",
+        kind, namespace, name, zone_fqdn
+    );
+
+    Ok(())
+}
+
+/// Untags a DNS record that no longer matches a zone's selector.
+///
+/// This function removes the zone ownership annotation and `status.zone` field,
+/// and optionally sets a `"previous-zone"` annotation for tracking.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `namespace` - Namespace of the record
+/// * `kind` - Record kind (e.g., `ARecord`, `CNAMERecord`)
+/// * `name` - Record name
+/// * `previous_zone_fqdn` - FQDN of the zone that previously owned this record
+///
+/// # Returns
+///
+/// * `Ok(())` - If the record was untagged successfully
+/// * `Err(_)` - If untagging failed
+async fn untag_record_from_zone(
+    client: &Client,
+    namespace: &str,
+    kind: &str,
+    name: &str,
+    previous_zone_fqdn: &str,
+) -> Result<()> {
+    debug!(
+        "Untagging {} {}/{} from zone {}",
+        kind, namespace, name, previous_zone_fqdn
+    );
+
+    // Convert kind to plural resource name
+    let plural = format!("{}s", kind.to_lowercase());
+
+    // Create GroupVersionKind for the resource
+    let gvk = kube::core::GroupVersionKind {
+        group: "bindy.firestoned.io".to_string(),
+        version: "v1beta1".to_string(),
+        kind: kind.to_string(),
+    };
+
+    // Use kube's Discovery API to create ApiResource
+    let api_resource = kube::api::ApiResource::from_gvk_with_plural(&gvk, &plural);
+
+    // Create a dynamic API client
+    let api = kube::api::Api::<kube::api::DynamicObject>::namespaced_with(
+        client.clone(),
+        namespace,
+        &api_resource,
+    );
+
+    // Patch metadata to remove zone annotation and add previous-zone annotation
+    let annotation_patch = json!({
+        "metadata": {
+            "annotations": {
+                ANNOTATION_ZONE_OWNER: null,
+                ANNOTATION_ZONE_PREVIOUS_OWNER: previous_zone_fqdn
+            }
+        }
+    });
+
+    api.patch(
+        name,
+        &PatchParams::default(),
+        &Patch::Merge(&annotation_patch),
+    )
+    .await
+    .with_context(|| format!("Failed to remove zone annotation from {kind} {namespace}/{name}"))?;
+
+    // Patch status to remove zone field
+    let status_patch = json!({
+        "status": {
+            "zone": null
+        }
+    });
+
+    api.patch_status(name, &PatchParams::default(), &Patch::Merge(&status_patch))
+        .await
+        .with_context(|| format!("Failed to clear status.zone on {kind} {namespace}/{name}"))?;
+
+    info!(
+        "Successfully untagged {} {}/{} from zone {}",
+        kind, namespace, name, previous_zone_fqdn
+    );
+
+    Ok(())
+}
+
+/// Helper function to discover A records matching a label selector.
+async fn discover_a_records(
+    client: &Client,
+    namespace: &str,
+    selector: &crate::crd::LabelSelector,
+) -> Result<Vec<crate::crd::RecordReference>> {
+    use crate::crd::ARecord;
+    use std::collections::BTreeMap;
+
+    let api: Api<ARecord> = Api::namespaced(client.clone(), namespace);
+    let records = api.list(&ListParams::default()).await?;
+
+    let mut record_refs = Vec::new();
+    for record in records {
+        let labels: BTreeMap<String, String> = record.metadata.labels.clone().unwrap_or_default();
+
+        if !selector.matches(&labels) {
+            continue;
+        }
+
+        debug!("Discovered A record {}/{}", namespace, record.name_any());
+
+        record_refs.push(crate::crd::RecordReference {
+            api_version: "bindy.firestoned.io/v1beta1".to_string(),
+            kind: "ARecord".to_string(),
+            name: record.name_any(),
+        });
+    }
+
+    Ok(record_refs)
+}
+
+/// Helper function to discover AAAA records matching a label selector.
+async fn discover_aaaa_records(
+    client: &Client,
+    namespace: &str,
+    selector: &crate::crd::LabelSelector,
+) -> Result<Vec<crate::crd::RecordReference>> {
+    use crate::crd::AAAARecord;
+    use std::collections::BTreeMap;
+
+    let api: Api<AAAARecord> = Api::namespaced(client.clone(), namespace);
+    let records = api.list(&ListParams::default()).await?;
+
+    let mut record_refs = Vec::new();
+    for record in records {
+        let labels: BTreeMap<String, String> = record.metadata.labels.clone().unwrap_or_default();
+
+        if !selector.matches(&labels) {
+            continue;
+        }
+
+        debug!("Discovered AAAA record {}/{}", namespace, record.name_any());
+
+        record_refs.push(crate::crd::RecordReference {
+            api_version: "bindy.firestoned.io/v1beta1".to_string(),
+            kind: "AAAARecord".to_string(),
+            name: record.name_any(),
+        });
+    }
+
+    Ok(record_refs)
+}
+
+/// Helper function to discover TXT records matching a label selector.
+async fn discover_txt_records(
+    client: &Client,
+    namespace: &str,
+    selector: &crate::crd::LabelSelector,
+) -> Result<Vec<crate::crd::RecordReference>> {
+    use crate::crd::TXTRecord;
+    use std::collections::BTreeMap;
+
+    let api: Api<TXTRecord> = Api::namespaced(client.clone(), namespace);
+    let records = api.list(&ListParams::default()).await?;
+
+    let mut record_refs = Vec::new();
+    for record in records {
+        let labels: BTreeMap<String, String> = record.metadata.labels.clone().unwrap_or_default();
+
+        if !selector.matches(&labels) {
+            continue;
+        }
+
+        debug!("Discovered TXT record {}/{}", namespace, record.name_any());
+
+        record_refs.push(crate::crd::RecordReference {
+            api_version: "bindy.firestoned.io/v1beta1".to_string(),
+            kind: "TXTRecord".to_string(),
+            name: record.name_any(),
+        });
+    }
+
+    Ok(record_refs)
+}
+
+/// Helper function to discover CNAME records matching a label selector.
+async fn discover_cname_records(
+    client: &Client,
+    namespace: &str,
+    selector: &crate::crd::LabelSelector,
+) -> Result<Vec<crate::crd::RecordReference>> {
+    use crate::crd::CNAMERecord;
+    use std::collections::BTreeMap;
+
+    let api: Api<CNAMERecord> = Api::namespaced(client.clone(), namespace);
+    let records = api.list(&ListParams::default()).await?;
+
+    let mut record_refs = Vec::new();
+    for record in records {
+        let labels: BTreeMap<String, String> = record.metadata.labels.clone().unwrap_or_default();
+
+        if !selector.matches(&labels) {
+            continue;
+        }
+
+        debug!(
+            "Discovered CNAME record {}/{}",
+            namespace,
+            record.name_any()
+        );
+
+        record_refs.push(crate::crd::RecordReference {
+            api_version: "bindy.firestoned.io/v1beta1".to_string(),
+            kind: "CNAMERecord".to_string(),
+            name: record.name_any(),
+        });
+    }
+
+    Ok(record_refs)
+}
+
+/// Helper function to discover MX records matching a label selector.
+async fn discover_mx_records(
+    client: &Client,
+    namespace: &str,
+    selector: &crate::crd::LabelSelector,
+) -> Result<Vec<crate::crd::RecordReference>> {
+    use crate::crd::MXRecord;
+    use std::collections::BTreeMap;
+
+    let api: Api<MXRecord> = Api::namespaced(client.clone(), namespace);
+    let records = api.list(&ListParams::default()).await?;
+
+    let mut record_refs = Vec::new();
+    for record in records {
+        let labels: BTreeMap<String, String> = record.metadata.labels.clone().unwrap_or_default();
+
+        if !selector.matches(&labels) {
+            continue;
+        }
+
+        debug!("Discovered MX record {}/{}", namespace, record.name_any());
+
+        record_refs.push(crate::crd::RecordReference {
+            api_version: "bindy.firestoned.io/v1beta1".to_string(),
+            kind: "MXRecord".to_string(),
+            name: record.name_any(),
+        });
+    }
+
+    Ok(record_refs)
+}
+
+/// Helper function to discover NS records matching a label selector.
+async fn discover_ns_records(
+    client: &Client,
+    namespace: &str,
+    selector: &crate::crd::LabelSelector,
+) -> Result<Vec<crate::crd::RecordReference>> {
+    use crate::crd::NSRecord;
+    use std::collections::BTreeMap;
+
+    let api: Api<NSRecord> = Api::namespaced(client.clone(), namespace);
+    let records = api.list(&ListParams::default()).await?;
+
+    let mut record_refs = Vec::new();
+    for record in records {
+        let labels: BTreeMap<String, String> = record.metadata.labels.clone().unwrap_or_default();
+
+        if !selector.matches(&labels) {
+            continue;
+        }
+
+        debug!("Discovered NS record {}/{}", namespace, record.name_any());
+
+        record_refs.push(crate::crd::RecordReference {
+            api_version: "bindy.firestoned.io/v1beta1".to_string(),
+            kind: "NSRecord".to_string(),
+            name: record.name_any(),
+        });
+    }
+
+    Ok(record_refs)
+}
+
+/// Helper function to discover SRV records matching a label selector.
+async fn discover_srv_records(
+    client: &Client,
+    namespace: &str,
+    selector: &crate::crd::LabelSelector,
+) -> Result<Vec<crate::crd::RecordReference>> {
+    use crate::crd::SRVRecord;
+    use std::collections::BTreeMap;
+
+    let api: Api<SRVRecord> = Api::namespaced(client.clone(), namespace);
+    let records = api.list(&ListParams::default()).await?;
+
+    let mut record_refs = Vec::new();
+    for record in records {
+        let labels: BTreeMap<String, String> = record.metadata.labels.clone().unwrap_or_default();
+
+        if !selector.matches(&labels) {
+            continue;
+        }
+
+        debug!("Discovered SRV record {}/{}", namespace, record.name_any());
+
+        record_refs.push(crate::crd::RecordReference {
+            api_version: "bindy.firestoned.io/v1beta1".to_string(),
+            kind: "SRVRecord".to_string(),
+            name: record.name_any(),
+        });
+    }
+
+    Ok(record_refs)
+}
+
+/// Helper function to discover CAA records matching a label selector.
+async fn discover_caa_records(
+    client: &Client,
+    namespace: &str,
+    selector: &crate::crd::LabelSelector,
+) -> Result<Vec<crate::crd::RecordReference>> {
+    use crate::crd::CAARecord;
+    use std::collections::BTreeMap;
+
+    let api: Api<CAARecord> = Api::namespaced(client.clone(), namespace);
+    let records = api.list(&ListParams::default()).await?;
+
+    let mut record_refs = Vec::new();
+    for record in records {
+        let labels: BTreeMap<String, String> = record.metadata.labels.clone().unwrap_or_default();
+
+        if !selector.matches(&labels) {
+            continue;
+        }
+
+        debug!("Discovered CAA record {}/{}", namespace, record.name_any());
+
+        record_refs.push(crate::crd::RecordReference {
+            api_version: "bindy.firestoned.io/v1beta1".to_string(),
+            kind: "CAARecord".to_string(),
+            name: record.name_any(),
+        });
+    }
+
+    Ok(record_refs)
 }
 
 /// Deletes a DNS zone and its associated zone files.
@@ -1501,6 +2160,117 @@ where
     Ok((first_endpoint, total_endpoints))
 }
 
+/// Execute an operation on all SECONDARY endpoints for a cluster.
+///
+/// Similar to `for_each_primary_endpoint`, but operates on SECONDARY instances.
+/// Useful for triggering zone transfers or other secondary-specific operations.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `namespace` - Namespace to search for instances
+/// * `cluster_ref` - Cluster reference name
+/// * `is_cluster_provider` - Whether this is a cluster provider (cluster-scoped)
+/// * `with_rndc_key` - Whether to load and pass RNDC keys for each instance
+/// * `port_name` - Port name to use for endpoints (e.g., "rndc-api", "dns-tcp")
+/// * `operation` - Async closure to execute for each endpoint
+///
+/// # Returns
+///
+/// * `Ok((first_endpoint, total_endpoints))` - First endpoint found and total count
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Failed to find secondary pods
+/// - Failed to load RNDC keys
+/// - Failed to get service endpoints
+/// - The operation closure returns an error for any endpoint
+pub async fn for_each_secondary_endpoint<F, Fut>(
+    client: &Client,
+    namespace: &str,
+    cluster_ref: &str,
+    is_cluster_provider: bool,
+    with_rndc_key: bool,
+    port_name: &str,
+    operation: F,
+) -> Result<(Option<String>, usize)>
+where
+    F: Fn(String, String, Option<RndcKeyData>) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    // Find all SECONDARY pods to get the unique instance names
+    let secondary_pods =
+        find_all_secondary_pods(client, namespace, cluster_ref, is_cluster_provider).await?;
+
+    info!(
+        "Found {} SECONDARY pod(s) for cluster {}",
+        secondary_pods.len(),
+        cluster_ref
+    );
+
+    // Collect unique (instance_name, namespace) tuples from the secondary pods
+    // Each instance may have multiple pods (replicas)
+    let mut instance_tuples: Vec<(String, String)> = secondary_pods
+        .iter()
+        .map(|pod| (pod.instance_name.clone(), pod.namespace.clone()))
+        .collect();
+    instance_tuples.sort();
+    instance_tuples.dedup();
+
+    info!(
+        "Found {} secondary instance(s) for cluster {}: {:?}",
+        instance_tuples.len(),
+        cluster_ref,
+        instance_tuples
+    );
+
+    let mut first_endpoint: Option<String> = None;
+    let mut total_endpoints = 0;
+
+    // Loop through each secondary instance and get its endpoints
+    for (instance_name, instance_namespace) in &instance_tuples {
+        info!(
+            "Getting endpoints for secondary instance {}/{} in cluster {}",
+            instance_namespace, instance_name, cluster_ref
+        );
+
+        // Load RNDC key for this specific instance if requested
+        // Each instance has its own RNDC secret for security isolation
+        let key_data = if with_rndc_key {
+            Some(load_rndc_key(client, instance_namespace, instance_name).await?)
+        } else {
+            None
+        };
+
+        // Get all endpoints for this instance's service
+        // The Endpoints API gives us pod IPs with their container ports (not service ports)
+        let endpoints = get_endpoint(client, instance_namespace, instance_name, port_name).await?;
+
+        info!(
+            "Found {} endpoint(s) for secondary instance {}",
+            endpoints.len(),
+            instance_name
+        );
+
+        for endpoint in &endpoints {
+            let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
+
+            // Save the first endpoint
+            if first_endpoint.is_none() {
+                first_endpoint = Some(pod_endpoint.clone());
+            }
+
+            // Execute the operation on this endpoint with this instance's RNDC key
+            operation(pod_endpoint, instance_name.clone(), key_data.clone()).await?;
+
+            total_endpoints += 1;
+        }
+    }
+
+    Ok((first_endpoint, total_endpoints))
+}
+
 /// Get all endpoints for a service with a specific port name
 ///
 /// Looks up the Kubernetes Endpoints object associated with a service and returns
@@ -1570,4 +2340,242 @@ pub async fn get_endpoint(
     }
 
     Ok(result)
+}
+
+/// Check if all discovered records are ready.
+///
+/// Queries each record in the list and checks if it has a "Ready" condition with status="True".
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `namespace` - Namespace containing the records
+/// * `record_refs` - List of record references from `DNSZone.status.records`
+///
+/// # Returns
+///
+/// * `Ok(true)` - All records are ready
+/// * `Ok(false)` - Some records are not ready
+/// * `Err(_)` - API error
+async fn check_all_records_ready(
+    client: &Client,
+    namespace: &str,
+    record_refs: &[crate::crd::RecordReference],
+) -> Result<bool> {
+    use crate::crd::{
+        AAAARecord, ARecord, CAARecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, TXTRecord,
+    };
+
+    for record_ref in record_refs {
+        let is_ready = match record_ref.kind.as_str() {
+            "ARecord" => {
+                let api: Api<ARecord> = Api::namespaced(client.clone(), namespace);
+                check_record_ready(&api, &record_ref.name).await?
+            }
+            "AAAARecord" => {
+                let api: Api<AAAARecord> = Api::namespaced(client.clone(), namespace);
+                check_record_ready(&api, &record_ref.name).await?
+            }
+            "TXTRecord" => {
+                let api: Api<TXTRecord> = Api::namespaced(client.clone(), namespace);
+                check_record_ready(&api, &record_ref.name).await?
+            }
+            "CNAMERecord" => {
+                let api: Api<CNAMERecord> = Api::namespaced(client.clone(), namespace);
+                check_record_ready(&api, &record_ref.name).await?
+            }
+            "MXRecord" => {
+                let api: Api<MXRecord> = Api::namespaced(client.clone(), namespace);
+                check_record_ready(&api, &record_ref.name).await?
+            }
+            "NSRecord" => {
+                let api: Api<NSRecord> = Api::namespaced(client.clone(), namespace);
+                check_record_ready(&api, &record_ref.name).await?
+            }
+            "SRVRecord" => {
+                let api: Api<SRVRecord> = Api::namespaced(client.clone(), namespace);
+                check_record_ready(&api, &record_ref.name).await?
+            }
+            "CAARecord" => {
+                let api: Api<CAARecord> = Api::namespaced(client.clone(), namespace);
+                check_record_ready(&api, &record_ref.name).await?
+            }
+            _ => {
+                warn!(
+                    "Unknown record kind: {}, skipping readiness check",
+                    record_ref.kind
+                );
+                false
+            }
+        };
+
+        if !is_ready {
+            debug!(
+                "Record {}/{} (kind: {}) is not ready yet",
+                namespace, record_ref.name, record_ref.kind
+            );
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+/// Check if a specific record is ready by examining its status conditions.
+async fn check_record_ready<T>(api: &Api<T>, name: &str) -> Result<bool>
+where
+    T: kube::Resource<DynamicType = ()>
+        + Clone
+        + serde::de::DeserializeOwned
+        + serde::Serialize
+        + std::fmt::Debug
+        + Send
+        + Sync,
+    <T as kube::Resource>::DynamicType: Default,
+{
+    let record = match api.get(name).await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("Failed to get record {}: {}", name, e);
+            return Ok(false);
+        }
+    };
+
+    // Use serde_json to access the status field dynamically
+    let record_json = serde_json::to_value(&record)?;
+    let status = record_json.get("status");
+
+    if let Some(status_obj) = status {
+        if let Some(conditions) = status_obj.get("conditions").and_then(|c| c.as_array()) {
+            for condition in conditions {
+                if let (Some(type_val), Some(status_val)) = (
+                    condition.get("type").and_then(|t| t.as_str()),
+                    condition.get("status").and_then(|s| s.as_str()),
+                ) {
+                    if type_val == "Ready" && status_val == "True" {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+/// Find all `DNSZones` that have selected a given record via label selectors.
+///
+/// This function is used by the watch mapper to determine which `DNSZones` should be
+/// reconciled when a DNS record changes. It checks each `DNSZone`'s `status.records` list
+/// to see if the record is present.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `record_namespace` - Namespace of the record
+/// * `record_kind` - Kind of the record (e.g., `"ARecord"`, `"TXTRecord"`)
+/// * `record_name` - Name of the record resource
+///
+/// # Returns
+///
+/// A vector of tuples containing `(zone_name, zone_namespace)` for all `DNSZones` that have
+/// selected this record.
+///
+/// # Errors
+///
+/// Returns an error if Kubernetes API operations fail.
+pub async fn find_zones_selecting_record(
+    client: &Client,
+    record_namespace: &str,
+    record_kind: &str,
+    record_name: &str,
+) -> Result<Vec<(String, String)>> {
+    let api: Api<DNSZone> = Api::namespaced(client.clone(), record_namespace);
+    let zones = api.list(&ListParams::default()).await?;
+
+    let mut selecting_zones = vec![];
+
+    for zone in zones {
+        let Some(ref status) = zone.status else {
+            continue;
+        };
+
+        // Check if this record is in the zone's status.records list
+        let is_selected = status
+            .records
+            .iter()
+            .any(|r| r.kind == record_kind && r.name == record_name);
+
+        if is_selected {
+            let zone_name = zone.name_any();
+            let zone_namespace = zone.namespace().unwrap_or_default();
+            selecting_zones.push((zone_name, zone_namespace));
+        }
+    }
+
+    Ok(selecting_zones)
+}
+
+/// Trigger zone transfers to all secondary instances.
+///
+/// Uses the `rndc retransfer` command to initiate zone transfers from primaries to secondaries.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `namespace` - Namespace containing the BIND9 instances
+/// * `zone_name` - Name of the zone to transfer
+/// * `cluster_ref` - Cluster reference
+/// * `is_cluster_provider` - Whether this is a cluster provider reference
+/// * `zone_manager` - BIND9 manager for zone operations
+///
+/// # Returns
+///
+/// * `Ok(usize)` - Number of secondaries that successfully initiated transfer
+/// * `Err(_)` - If no secondaries found or all transfers failed
+async fn trigger_zone_transfers(
+    client: &Client,
+    namespace: &str,
+    zone_name: &str,
+    cluster_ref: &str,
+    is_cluster_provider: bool,
+    zone_manager: &crate::bind9::Bind9Manager,
+) -> Result<usize> {
+    let (_first_endpoint, total_endpoints) = for_each_secondary_endpoint(
+        client,
+        namespace,
+        cluster_ref,
+        is_cluster_provider,
+        false,  // with_rndc_key = false (not needed for retransfer)
+        "http", // Use bindcar HTTP API port for zone operations
+        |secondary_endpoint, instance_name, _rndc_key| {
+            let zone_name = zone_name.to_string();
+            let zone_manager = zone_manager.clone();
+
+            async move {
+                zone_manager
+                    .retransfer_zone(&zone_name, &secondary_endpoint)
+                    .await
+                    .with_context(|| format!(
+                        "Failed to trigger zone transfer for {zone_name} on secondary {secondary_endpoint} (instance: {instance_name})"
+                    ))?;
+
+                info!(
+                    "Triggered zone transfer for {zone_name} on secondary {secondary_endpoint} (instance: {instance_name})"
+                );
+
+                Ok(())
+            }
+        },
+    )
+    .await?;
+
+    if total_endpoints == 0 {
+        warn!(
+            "No secondary instances found for zone {} in cluster {}",
+            zone_name, cluster_ref
+        );
+    }
+
+    Ok(total_endpoints)
 }

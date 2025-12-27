@@ -21,63 +21,60 @@ All DNS record types share these fields:
 metadata:
   name: record-name
   namespace: dns-system
+  labels:
+    zone: <zone-name>  # Used by DNSZone selector
 spec:
-  # Zone reference (use ONE of these):
-  zone: example.com          # Match against DNSZone spec.zoneName
-  # OR
-  zoneRef: example-com       # Direct reference to DNSZone metadata.name
-
-  name: record-name          # DNS name (@ for zone apex)
-  ttl: 300                   # Time to live (optional)
+  name: record-name    # DNS name (@ for zone apex)
+  ttl: 300             # Time to live (optional)
 ```
 
-### Zone Referencing
+### Zone Association via Label Selectors
 
-DNS records can reference their parent zone using **two different methods**:
+DNS records are associated with zones using **label selectors**, similar to how Kubernetes Services select Pods.
 
-1. **`zone` field** - Searches for a DNSZone by matching `spec.zoneName`
-   - Value: The actual DNS zone name (e.g., `example.com`)
-   - The controller searches all DNSZones in the namespace for matching `spec.zoneName`
-   - More intuitive but requires a list operation
+The DNSZone resource defines selectors in the `recordsFrom` field:
 
-2. **`zoneRef` field** - Direct reference to a DNSZone resource
-   - Value: The Kubernetes resource name (e.g., `example-com`)
-   - The controller directly retrieves the DNSZone by `metadata.name`
-   - More efficient (no search required)
-   - **Recommended for production use**
-
-**Important**: You must specify **exactly one** of `zone` or `zoneRef` (not both).
-
-#### Example: Zone vs ZoneRef
-
-Given this DNSZone:
 ```yaml
 apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
-  name: example-com        # Kubernetes resource name
+  name: example-com
   namespace: dns-system
 spec:
-  zoneName: example.com    # Actual DNS zone name
+  zoneName: example.com
   clusterRef: primary-dns
-  # ... soa_record, etc.
+  recordsFrom:
+    - selector:
+        matchLabels:
+          zone: example.com  # Selects all records with this label
+  soaRecord:
+    primaryNs: ns1.example.com.
+    adminEmail: admin.example.com.
+    serial: 2024010101
 ```
 
-You can reference it using either method:
+Records with matching labels are automatically included in the zone:
 
-**Method 1: Using `zone` (matches spec.zoneName)**
 ```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: ARecord
+metadata:
+  name: www-example
+  namespace: dns-system
+  labels:
+    zone: example.com  # ✅ Matches the DNSZone selector
 spec:
-  zone: example.com  # Matches DNSZone spec.zoneName
   name: www
+  ipv4Address: "192.0.2.1"
 ```
 
-**Method 2: Using `zoneRef` (matches metadata.name)**
-```yaml
-spec:
-  zoneRef: example-com  # Matches DNSZone metadata.name
-  name: www
-```
+**Benefits of Label Selectors:**
+- **Flexible**: Use any label structure
+- **Dynamic**: Adding/removing labels updates zones automatically
+- **Multi-zone**: Records can belong to multiple zones
+- **Kubernetes-native**: Familiar pattern for Kubernetes users
+
+See [Label Selector Guide](../guide/label-selectors.md) for advanced patterns.
 
 ## ARecord (IPv4)
 
@@ -86,8 +83,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zone: example-com
   name: www
   ipv4Address: "192.0.2.1"
   ttl: 300
@@ -102,8 +101,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: www-example-ipv6
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zone: example-com
   name: www
   ipv6Address: "2001:db8::1"
   ttl: 300
@@ -118,8 +119,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: blog-example
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zone: example-com
   name: blog
   target: www.example.com.
   ttl: 300
@@ -134,8 +137,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mail-example
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zone: example-com
   name: "@"
   priority: 10
   mailServer: mail.example.com.
@@ -151,8 +156,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: spf-example
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zone: example-com
   name: "@"
   text:
     - "v=spf1 include:_spf.example.com ~all"
@@ -168,8 +175,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: delegate-subdomain
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zone: example-com
   name: subdomain
   nameserver: ns1.subdomain.example.com.
   ttl: 3600
@@ -184,8 +193,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: sip-service
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zone: example-com
   name: _sip._tcp
   priority: 10
   weight: 60
@@ -203,8 +214,10 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: letsencrypt-caa
+  namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zone: example-com
   name: "@"
   flags: 0
   tag: issue
@@ -279,15 +292,6 @@ All DNS record types use the following condition types:
 
 ## Record Management
 
-### Referencing Zones
-
-All records reference a DNSZone via the `zone` field:
-
-```yaml
-spec:
-  zone: example-com  # Must match DNSZone metadata.name
-```
-
 ### Zone Apex Records
 
 Use `@` for zone apex records:
@@ -313,3 +317,4 @@ spec:
 - [A Records](../guide/a-records.md) - IPv4 address records
 - [CNAME Records](../guide/cname-records.md) - Alias records
 - [MX Records](../guide/mx-records.md) - Mail server records
+- [Label Selector Guide](../guide/label-selectors.md) - Advanced selector patterns

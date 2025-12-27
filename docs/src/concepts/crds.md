@@ -107,10 +107,13 @@ Bind9Instance (instance deployment)
     │
 DNSZone (zone definition)
     ↑
-    │ referenced by zone field
+    │ discovered by label selectors (recordsFrom)
     │
 DNS Records (A, CNAME, MX, etc.)
 ```
+
+Records are associated with zones via label selectors defined in `DNSZone.spec.recordsFrom`.
+This allows dynamic, declarative association of records with zones based on labels.
 
 ## Common Fields
 
@@ -145,8 +148,9 @@ status:
 
 All Bindy CRDs belong to the `bindy.firestoned.io` API group:
 
-- **Current version**: `v1alpha1`
-- **API stability**: Alpha (subject to breaking changes)
+- **Current version**: `v1beta1`
+- **Previous version**: `v1alpha1` (deprecated)
+- **API stability**: Beta (backwards-compatible changes only)
 
 ## Next Steps
 

@@ -651,8 +651,143 @@ async fn reconcile_managed_instances(client: &Client, cluster: &Bind9Cluster) ->
         );
     }
 
+    // Update existing managed instances to match cluster spec (declarative reconciliation)
+    update_existing_managed_instances(
+        client,
+        &namespace,
+        &cluster_name,
+        &cluster.spec.common,
+        &managed_instances,
+    )
+    .await?;
+
     // Ensure child resources (ConfigMaps, Secrets, Services, Deployments) exist for all managed instances
     ensure_managed_instance_resources(client, cluster, &managed_instances).await?;
+
+    Ok(())
+}
+
+/// Update existing managed instances to match the cluster's current spec.
+///
+/// This implements true declarative reconciliation - comparing the desired state (from cluster spec)
+/// with the actual state (existing instance specs) and updating any instances that have drifted.
+///
+/// This ensures that when the cluster's `spec.common` changes (e.g., bindcar version, volumes,
+/// config references), all managed instances are updated to reflect the new configuration.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `namespace` - Namespace containing the instances
+/// * `cluster_name` - Name of the parent cluster
+/// * `common_spec` - The cluster's common spec (source of truth)
+/// * `managed_instances` - List of existing managed instances to check
+///
+/// # Errors
+///
+/// Returns an error if patching instances fails
+async fn update_existing_managed_instances(
+    client: &Client,
+    namespace: &str,
+    cluster_name: &str,
+    common_spec: &crate::crd::Bind9ClusterCommonSpec,
+    managed_instances: &[Bind9Instance],
+) -> Result<()> {
+    if managed_instances.is_empty() {
+        return Ok(());
+    }
+
+    let instance_api: Api<Bind9Instance> = Api::namespaced(client.clone(), namespace);
+    let mut updated_count = 0;
+
+    for instance in managed_instances {
+        let instance_name = instance.name_any();
+
+        // Build the desired spec based on current cluster configuration
+        let desired_bindcar_config = common_spec
+            .global
+            .as_ref()
+            .and_then(|g| g.bindcar_config.clone());
+
+        // Check if instance spec needs updating by comparing key fields
+        let needs_update = instance.spec.version != common_spec.version
+            || instance.spec.image != common_spec.image
+            || instance.spec.config_map_refs != common_spec.config_map_refs
+            || instance.spec.volumes != common_spec.volumes
+            || instance.spec.volume_mounts != common_spec.volume_mounts
+            || instance.spec.bindcar_config != desired_bindcar_config;
+
+        if needs_update {
+            debug!(
+                "Instance {}/{} spec differs from cluster spec, updating",
+                namespace, instance_name
+            );
+
+            // Build updated instance spec - preserve instance-specific fields, update cluster-inherited fields
+            let updated_spec = Bind9InstanceSpec {
+                cluster_ref: instance.spec.cluster_ref.clone(),
+                role: instance.spec.role.clone(),
+                replicas: instance.spec.replicas, // Preserve instance replicas (always 1 for managed)
+                version: common_spec.version.clone(),
+                image: common_spec.image.clone(),
+                config_map_refs: common_spec.config_map_refs.clone(),
+                config: None, // Managed instances inherit from cluster
+                primary_servers: instance.spec.primary_servers.clone(), // Preserve if set
+                volumes: common_spec.volumes.clone(),
+                volume_mounts: common_spec.volume_mounts.clone(),
+                rndc_secret_ref: instance.spec.rndc_secret_ref.clone(), // Preserve if set
+                storage: instance.spec.storage.clone(),                 // Preserve if set
+                bindcar_config: desired_bindcar_config,
+            };
+
+            // Use server-side apply to update the instance spec
+            let patch = serde_json::json!({
+                "apiVersion": API_GROUP_VERSION,
+                "kind": KIND_BIND9_INSTANCE,
+                "metadata": {
+                    "name": instance_name,
+                    "namespace": namespace,
+                },
+                "spec": updated_spec,
+            });
+
+            match instance_api
+                .patch(
+                    &instance_name,
+                    &PatchParams::apply("bindy-controller").force(),
+                    &Patch::Apply(&patch),
+                )
+                .await
+            {
+                Ok(_) => {
+                    info!(
+                        "Updated managed instance {}/{} to match cluster spec",
+                        namespace, instance_name
+                    );
+                    updated_count += 1;
+                }
+                Err(e) => {
+                    error!(
+                        "Failed to update managed instance {}/{}: {}",
+                        namespace, instance_name, e
+                    );
+                    return Err(e.into());
+                }
+            }
+        } else {
+            debug!(
+                "Instance {}/{} spec matches cluster spec, no update needed",
+                namespace, instance_name
+            );
+        }
+    }
+
+    if updated_count > 0 {
+        info!(
+            "Updated {} managed instances in cluster {}/{} to match current spec",
+            updated_count, namespace, cluster_name
+        );
+    }
 
     Ok(())
 }

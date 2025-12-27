@@ -185,7 +185,7 @@ spec:
     replicas: 2
 ```
 
-Application teams can then reference this global cluster from any namespace using `globalClusterRef`. See [Multi-Tenancy Guide](https://firestoned.github.io/bindy/guide/multi-tenancy.html) for details.
+Application teams can then reference this global cluster from any namespace using `clusterProviderRef`. See [Multi-Tenancy Guide](https://firestoned.github.io/bindy/guide/multi-tenancy.html) for details.
 
 ## Installation
 

@@ -24,7 +24,7 @@ Bind9Cluster
 Bind9Instance(s)
     ↓ (referenced by clusterRef via DNSZone)
 DNSZone(s)
-    ↓ (referenced by zoneRef)
+    ↓ (discovered by label selectors via recordsFrom)
 DNS Records
 ```
 
@@ -40,10 +40,15 @@ spec:
 # DNSZone references the cluster (NOT the instance!)
 spec:
   clusterRef: production-dns  # ← Must match cluster name
+  recordsFrom:
+    - selector:
+        matchLabels:
+          zone: example.com  # ← Selects records with this label
 
-# Records reference zones
-spec:
-  zoneRef: example-com  # ← References DNSZone name
+# Records are discovered via labels (no explicit zoneRef)
+metadata:
+  labels:
+    zone: example.com  # ← Matches DNSZone selector
 ```
 
 ## Examples Overview
@@ -59,7 +64,7 @@ spec:
 ### Multi-Tenancy
 
 0a. **[multi-tenancy.yaml](multi-tenancy.yaml)** - **Multi-tenancy setup** with both cluster models
-   - Platform-managed DNS using Bind9GlobalCluster (cluster-scoped)
+   - Platform-managed DNS using ClusterBind9Provider (cluster-scoped)
    - Tenant-managed DNS using Bind9Cluster (namespace-scoped)
    - Complete RBAC setup for platform and application teams
    - Three namespaces: platform-dns, team-web, team-api
@@ -148,11 +153,11 @@ kubectl apply -f bind9-instance.yaml
 # 5. Create DNS zones (references cluster via clusterRef)
 kubectl apply -f dns-zone.yaml
 
-# 6. Add DNS records (references zones via zoneRef)
+# 6. Add DNS records (discovered by zones via label selectors)
 kubectl apply -f dns-records.yaml
 ```
 
-**IMPORTANT:** Ensure all clusterRef values match:
+**IMPORTANT:** Ensure all clusterRef values match and records have proper labels:
 ```bash
 # Verify the cluster name
 kubectl get bind9cluster -n dns-system
@@ -162,6 +167,9 @@ kubectl get bind9instance -n dns-system -o yaml | grep clusterRef
 
 # Verify zones reference the correct cluster
 kubectl get dnszone -n dns-system -o yaml | grep clusterRef
+
+# Verify records are selected by zones (check DNSZone status)
+kubectl get dnszone -n dns-system -o yaml | grep -A10 "status:"
 ```
 
 ### With Persistent Storage
@@ -203,10 +211,11 @@ These examples use placeholder values. Customize them for your environment:
 
 ## Notes
 
-- All examples use the API group `bindy.firestoned.io/v1alpha1`
+- All examples use the API group `bindy.firestoned.io/v1beta1`
 - Email addresses in SOA records use `.` instead of `@` (e.g., `admin.example.com.`)
 - DNS names in records must end with `.` (FQDN format)
-- Zone references use the metadata name, not the zone name (e.g., `example-com` not `example.com`)
+- Records are associated with zones via label selectors (see `DNSZone.spec.recordsFrom`)
+- The `DNSZone.status.records` field shows all discovered records for a zone
 
 ## See Also
 

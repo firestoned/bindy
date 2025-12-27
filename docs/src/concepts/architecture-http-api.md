@@ -296,6 +296,7 @@ User creates DNSZone resource
 - `POST /api/v1/zones/:name/freeze` - Freeze zone (disable updates)
 - `POST /api/v1/zones/:name/thaw` - Thaw zone (enable updates)
 - `POST /api/v1/zones/:name/notify` - Notify secondaries
+- `POST /api/v1/zones/:name/retransfer` - Trigger zone transfer (requires bindcar v0.3.0+)
 
 ### Example Request/Response
 
@@ -469,7 +470,7 @@ spec:
       readOnly: true
 
   - name: bindcar
-    image: ghcr.io/firestoned/bindcar:latest
+    image: ghcr.io/firestoned/bindcar:v0.3.0
     ports:
     - containerPort: 8080
       protocol: TCP
@@ -606,7 +607,7 @@ Status check                ~100ms              ~150ms
 The Bind9Instance CRD supports API container configuration:
 
 ```yaml
-apiVersion: bindcar.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: bind9-primary
@@ -616,8 +617,8 @@ spec:
   replicas: 2
 
   # Optional API container configuration
-  apiConfig:
-    image: ghcr.io/firestoned/bindcar:v1.0.0
+  bindcarConfig:
+    image: ghcr.io/firestoned/bindcar:v0.3.0
     port: 8080
     resources:
       requests:
@@ -629,7 +630,7 @@ spec:
 ```
 
 Default values:
-- **Image**: `ghcr.io/firestoned/bindcar:latest`
+- **Image**: `ghcr.io/firestoned/bindcar:v0.3.0`
 - **Port**: `8080`
 - **Resources**: None (Kubernetes defaults)
 
