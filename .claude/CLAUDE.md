@@ -9,6 +9,43 @@
 
 ## 🚨 Critical TODOs
 
+### CRITICAL: Plans and Roadmaps Location
+**Status:** ✅ MANDATORY REQUIREMENT
+**Impact:** Documentation organization and discoverability
+
+**ALWAYS add plans or roadmaps to `docs/roadmaps/`, NO WHERE ELSE.**
+
+**Why:**
+- **Centralized Location**: All planning documents in one discoverable location
+- **Documentation Structure**: Maintains consistent docs/ directory organization
+- **Version Control**: Plans tracked alongside code changes
+- **Easy Reference**: Developers know exactly where to find planning documents
+
+**Examples:**
+```
+✅ CORRECT:
+docs/roadmaps/integration-test-plan.md
+docs/roadmaps/phase4-implementation.md
+docs/roadmaps/feature-roadmap-2025.md
+
+❌ WRONG:
+INTEGRATION_TEST_PLAN.md (root directory)
+ROADMAP.md (root directory)
+planning/test-plan.md (wrong directory)
+```
+
+**What Goes in docs/roadmaps/:**
+- Integration test plans
+- Feature implementation roadmaps
+- Phase/milestone planning documents
+- Release planning documents
+- Architecture decision records (ADRs) planning
+- Migration plans
+
+**REMEMBER:** Before creating any planning document, ALWAYS put it in `docs/roadmaps/`. Never in the root directory or elsewhere.
+
+---
+
 ### Code Quality: Use Global Constants for Repeated Strings
 **Status:** 🔄 Ongoing
 **Impact:** Code maintainability and consistency
@@ -1268,6 +1305,13 @@ src/
 └── bin/
     ├── crdgen.rs            # CRD YAML generator
     └── crddoc.rs            # CRD documentation generator
+
+docs/
+├── roadmaps/                # CRITICAL: All roadmaps and implementation planning docs MUST go here
+│   └── *.md                 # Future feature plans, optimization strategies, design proposals
+├── adr/                     # Architecture Decision Records
+├── src/                     # mdBook documentation source
+└── ...
 ```
 
 **Test File Pattern:**
@@ -1275,6 +1319,12 @@ src/
 - Test files are in the same directory as the source file
 - Source file declares: `#[cfg(test)] mod foo_tests;`
 - Test file contains: `#[cfg(test)] mod tests { ... }`
+
+**Documentation File Pattern:**
+- **CRITICAL**: ALL roadmaps and implementation planning documents MUST be stored in `docs/roadmaps/`
+- Use descriptive, uppercase filenames with underscores (e.g., `CLUSTER_PROVIDER_RECONCILIATION_OPTIMIZATION.md`)
+- Include date, status, and impact in document header
+- This is MANDATORY - never store roadmaps or planning docs in the root or other directories
 
 ---
 

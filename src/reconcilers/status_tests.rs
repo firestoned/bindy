@@ -5,8 +5,11 @@
 
 #[cfg(test)]
 mod tests {
-    use super::{condition_changed, create_condition, find_condition, get_last_transition_time};
-    use crate::crd::Condition;
+    use crate::crd::{Condition, DNSZone, DNSZoneSpec};
+    use crate::reconcilers::status::{
+        condition_changed, create_condition, find_condition, get_last_transition_time,
+        DNSZoneStatusUpdater,
+    };
 
     const CONDITION_TYPE_READY: &str = "Ready";
     const STATUS_TRUE: &str = "True";
@@ -84,7 +87,12 @@ mod tests {
 
     #[test]
     fn test_condition_changed_detects_message_change() {
-        let existing = Some(create_condition("Ready", STATUS_TRUE, "Ready", "Old message"));
+        let existing = Some(create_condition(
+            "Ready",
+            STATUS_TRUE,
+            "Ready",
+            "Old message",
+        ));
         let new_cond = create_condition("Ready", STATUS_TRUE, "Ready", "New message");
 
         assert!(condition_changed(&existing, &new_cond));
@@ -241,10 +249,7 @@ mod tests {
         let cond2 = create_condition("Ready", STATUS_TRUE, "Ready", "Ready");
 
         // Timestamps should be different
-        assert_ne!(
-            cond1.last_transition_time,
-            cond2.last_transition_time
-        );
+        assert_ne!(cond1.last_transition_time, cond2.last_transition_time);
     }
 
     #[test]
@@ -311,7 +316,12 @@ mod tests {
 
     #[test]
     fn test_condition_changed_ignores_reason_change() {
-        let existing = Some(create_condition("Ready", STATUS_TRUE, "OldReason", "Message"));
+        let existing = Some(create_condition(
+            "Ready",
+            STATUS_TRUE,
+            "OldReason",
+            "Message",
+        ));
         let new_cond = create_condition("Ready", STATUS_TRUE, "NewReason", "Message");
 
         // Should NOT be changed because type, status, and message are the same
@@ -338,5 +348,164 @@ mod tests {
 
         // Should NOT be changed because type, status, and message are the same
         assert!(!condition_changed(&existing, &new_cond));
+    }
+
+    // Helper function to create a test DNSZone
+    fn create_test_dnszone(name: &str, namespace: &str) -> DNSZone {
+        use crate::crd::SOARecord;
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+        DNSZone {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                namespace: Some(namespace.to_string()),
+                generation: Some(1),
+                ..Default::default()
+            },
+            spec: DNSZoneSpec {
+                zone_name: "example.com".to_string(),
+                cluster_ref: None,
+                cluster_provider_ref: Some("production-dns".to_string()),
+                soa_record: SOARecord {
+                    primary_ns: "ns1.example.com.".to_string(),
+                    admin_email: "admin.example.com.".to_string(),
+                    serial: 2025010101,
+                    refresh: 3600,
+                    retry: 1800,
+                    expire: 604800,
+                    negative_ttl: 86400,
+                },
+                ttl: None,
+                name_server_ips: None,
+                records_from: None,
+            },
+            status: None,
+        }
+    }
+
+    #[test]
+    fn test_status_updater_clear_degraded_condition_when_none_exists() {
+        let dnszone = create_test_dnszone("test-zone", "dns-system");
+        let mut updater = DNSZoneStatusUpdater::new(&dnszone);
+
+        // No degraded condition exists yet
+        assert!(!updater.has_degraded_condition());
+
+        // Clear degraded condition (should set it to False)
+        updater.clear_degraded_condition();
+
+        // Should now have a Degraded=False condition
+        let degraded = find_condition(updater.conditions(), "Degraded");
+        assert!(degraded.is_some());
+        assert_eq!(degraded.unwrap().status, "False");
+        assert_eq!(
+            degraded.unwrap().reason.as_deref(),
+            Some("ReconcileSucceeded")
+        );
+    }
+
+    #[test]
+    fn test_status_updater_clear_degraded_condition_when_true() {
+        let dnszone = create_test_dnszone("test-zone", "dns-system");
+        let mut updater = DNSZoneStatusUpdater::new(&dnszone);
+
+        // Set a Degraded=True condition first
+        updater.set_condition(
+            "Degraded",
+            "True",
+            "PrimaryFailed",
+            "Failed to configure primaries",
+        );
+
+        // Verify it's set to True
+        assert!(updater.has_degraded_condition());
+
+        // Clear the degraded condition
+        updater.clear_degraded_condition();
+
+        // Should now be Degraded=False
+        assert!(!updater.has_degraded_condition());
+        let degraded = find_condition(updater.conditions(), "Degraded");
+        assert!(degraded.is_some());
+        assert_eq!(degraded.unwrap().status, "False");
+        assert_eq!(
+            degraded.unwrap().reason.as_deref(),
+            Some("ReconcileSucceeded")
+        );
+    }
+
+    #[test]
+    fn test_status_updater_has_degraded_condition_returns_false_initially() {
+        let dnszone = create_test_dnszone("test-zone", "dns-system");
+        let updater = DNSZoneStatusUpdater::new(&dnszone);
+
+        assert!(!updater.has_degraded_condition());
+    }
+
+    #[test]
+    fn test_status_updater_has_degraded_condition_returns_true_when_set() {
+        let dnszone = create_test_dnszone("test-zone", "dns-system");
+        let mut updater = DNSZoneStatusUpdater::new(&dnszone);
+
+        updater.set_condition("Degraded", "True", "PrimaryFailed", "Primary failed");
+
+        assert!(updater.has_degraded_condition());
+    }
+
+    #[test]
+    fn test_status_updater_has_degraded_condition_returns_false_when_false() {
+        let dnszone = create_test_dnszone("test-zone", "dns-system");
+        let mut updater = DNSZoneStatusUpdater::new(&dnszone);
+
+        updater.set_condition("Degraded", "False", "Healthy", "Healthy");
+
+        assert!(!updater.has_degraded_condition());
+    }
+
+    #[test]
+    fn test_status_updater_clear_degraded_preserves_other_conditions() {
+        let dnszone = create_test_dnszone("test-zone", "dns-system");
+        let mut updater = DNSZoneStatusUpdater::new(&dnszone);
+
+        // Set multiple conditions
+        updater.set_condition("Ready", "True", "ReconcileSucceeded", "Zone configured");
+        updater.set_condition(
+            "Progressing",
+            "False",
+            "Complete",
+            "Reconciliation complete",
+        );
+        updater.set_condition("Degraded", "True", "PrimaryFailed", "Primary failed");
+
+        // Clear degraded
+        updater.clear_degraded_condition();
+
+        // Ready and Progressing should still exist
+        assert!(find_condition(updater.conditions(), "Ready").is_some());
+        assert!(find_condition(updater.conditions(), "Progressing").is_some());
+
+        // Degraded should be False
+        let degraded = find_condition(updater.conditions(), "Degraded");
+        assert!(degraded.is_some());
+        assert_eq!(degraded.unwrap().status, "False");
+    }
+
+    #[test]
+    fn test_status_updater_multiple_degraded_clears() {
+        let dnszone = create_test_dnszone("test-zone", "dns-system");
+        let mut updater = DNSZoneStatusUpdater::new(&dnszone);
+
+        // Set degraded multiple times and clear each time
+        for i in 0..3 {
+            updater.set_condition("Degraded", "True", "TestFailed", &format!("Failure {i}"));
+            assert!(updater.has_degraded_condition());
+
+            updater.clear_degraded_condition();
+            assert!(!updater.has_degraded_condition());
+        }
+
+        // Should end with Degraded=False
+        let degraded = find_condition(updater.conditions(), "Degraded");
+        assert!(degraded.is_some());
+        assert_eq!(degraded.unwrap().status, "False");
     }
 }

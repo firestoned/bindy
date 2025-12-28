@@ -47,7 +47,7 @@ spec:
     allowTransfer:
       - "10.0.0.0/8"
     bindcarConfig:
-      image: "ghcr.io/firestoned/bindcar:v0.3.0"
+      image: "ghcr.io/firestoned/bindcar:latest"
       imagePullPolicy: IfNotPresent
       logLevel: debug
     dnssec:
