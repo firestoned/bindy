@@ -889,6 +889,67 @@ async fn test_instance_pod_label_selector_finds_pods() {
         return;
     }
 
+    // Create Bind9Cluster first (required for instance to reconcile)
+    let cluster_name = "test-cluster";
+    let clusters: Api<Bind9Cluster> = Api::namespaced(client.clone(), namespace);
+
+    let cluster = Bind9Cluster {
+        metadata: ObjectMeta {
+            name: Some(cluster_name.to_string()),
+            namespace: Some(namespace.to_string()),
+            ..Default::default()
+        },
+        spec: Bind9ClusterSpec {
+            common: Bind9ClusterCommonSpec {
+                version: Some("9.18".to_string()),
+                primary: None,
+                secondary: None,
+                image: None,
+                config_map_refs: None,
+                global: None,
+                rndc_secret_refs: None,
+                acls: None,
+                volumes: None,
+                volume_mounts: None,
+            },
+        },
+        status: None,
+    };
+
+    println!("Creating Bind9Cluster: {cluster_name}");
+    match clusters.create(&PostParams::default(), &cluster).await {
+        Ok(_) => println!("✓ Created Bind9Cluster"),
+        Err(e) => {
+            eprintln!("Failed to create Bind9Cluster: {e}");
+            delete_test_namespace(&client, namespace).await;
+            return;
+        }
+    }
+
+    // Wait for cluster to reconcile and create ConfigMap
+    println!("Waiting for cluster ConfigMap to be created...");
+    use k8s_openapi::api::core::v1::ConfigMap;
+    let cm_api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+    let expected_cm_name = format!("{cluster_name}-config");
+
+    for attempt in 1..=12 {
+        // 12 attempts * 5 seconds = 1 minute
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+        if cm_api.get(&expected_cm_name).await.is_ok() {
+            println!("✓ Cluster ConfigMap created: {expected_cm_name}");
+            break;
+        }
+
+        if attempt == 12 {
+            eprintln!("✗ Cluster ConfigMap not created after 1 minute");
+            eprintln!("  Expected ConfigMap: {expected_cm_name}");
+            // Continue anyway - the test should still reveal the label issue
+        } else {
+            println!("  Attempt {attempt}/12: Waiting for ConfigMap...");
+        }
+    }
+
     // Create a simple Bind9Instance
     let instance_name = "test-pod-labels";
     let instances: Api<Bind9Instance> = Api::namespaced(client.clone(), namespace);
@@ -900,7 +961,7 @@ async fn test_instance_pod_label_selector_finds_pods() {
             ..Default::default()
         },
         spec: Bind9InstanceSpec {
-            cluster_ref: "test-cluster".to_string(),
+            cluster_ref: cluster_name.to_string(),
             role: ServerRole::Primary,
             replicas: Some(1),
             version: Some("9.18".to_string()),
@@ -1103,6 +1164,14 @@ async fn test_instance_pod_label_selector_finds_pods() {
     {
         Ok(_) => println!("✓ Deleted Bind9Instance"),
         Err(e) => eprintln!("⚠ Failed to delete Bind9Instance: {e}"),
+    }
+
+    match clusters
+        .delete(cluster_name, &DeleteParams::default())
+        .await
+    {
+        Ok(_) => println!("✓ Deleted Bind9Cluster"),
+        Err(e) => eprintln!("⚠ Failed to delete Bind9Cluster: {e}"),
     }
 
     delete_test_namespace(&client, namespace).await;

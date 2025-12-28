@@ -297,6 +297,7 @@ User creates DNSZone resource
 - `POST /api/v1/zones/:name/thaw` - Thaw zone (enable updates)
 - `POST /api/v1/zones/:name/notify` - Notify secondaries
 - `POST /api/v1/zones/:name/retransfer` - Trigger zone transfer (requires bindcar v0.3.0+)
+- `PATCH /api/v1/zones/:name` - Update zone configuration (requires bindcar v0.4.0+)
 
 ### Example Request/Response
 
@@ -470,7 +471,7 @@ spec:
       readOnly: true
 
   - name: bindcar
-    image: ghcr.io/firestoned/bindcar:v0.3.0
+    image: ghcr.io/firestoned/bindcar:v0.4.0
     ports:
     - containerPort: 8080
       protocol: TCP
@@ -618,7 +619,7 @@ spec:
 
   # Optional API container configuration
   bindcarConfig:
-    image: ghcr.io/firestoned/bindcar:v0.3.0
+    image: ghcr.io/firestoned/bindcar:v0.4.0
     port: 8080
     resources:
       requests:
@@ -630,7 +631,7 @@ spec:
 ```
 
 Default values:
-- **Image**: `ghcr.io/firestoned/bindcar:v0.3.0`
+- **Image**: `ghcr.io/firestoned/bindcar:v0.4.0`
 - **Port**: `8080`
 - **Resources**: None (Kubernetes defaults)
 

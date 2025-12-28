@@ -364,6 +364,8 @@ pub struct RecordReference {
     pub kind: String,
     /// Name of the record resource
     pub name: String,
+    /// Namespace of the record resource
+    pub namespace: String,
 }
 
 /// `DNSZone` status
@@ -1059,6 +1061,21 @@ pub struct RecordStatus {
     /// be reconciled into BIND9.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub zone: Option<String>,
+    /// SHA-256 hash of the record's spec data.
+    ///
+    /// Used to detect when a record's data has actually changed, avoiding
+    /// unnecessary BIND9 updates and zone transfers.
+    ///
+    /// The hash is calculated from all fields in the record's spec that affect
+    /// the DNS record data (name, addresses, TTL, etc.).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_hash: Option<String>,
+    /// Timestamp of the last successful update to BIND9.
+    ///
+    /// This is updated after a successful nsupdate operation.
+    /// Uses RFC 3339 format (e.g., "2025-12-26T10:30:00Z").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_updated: Option<String>,
 }
 
 /// RNDC/TSIG algorithm for authenticated communication and zone transfers.
@@ -2025,7 +2042,7 @@ pub struct PersistentVolumeClaimConfig {
 pub struct BindcarConfig {
     /// Container image for the RNDC API sidecar
     ///
-    /// Example: "ghcr.io/firestoned/bindcar:v0.3.0"
+    /// Example: "ghcr.io/firestoned/bindcar:v0.4.0"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
 

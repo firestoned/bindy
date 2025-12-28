@@ -68,6 +68,13 @@ pub(crate) async fn bindcar_request<T: Serialize + std::fmt::Debug>(
             }
             req
         }
+        "PATCH" => {
+            let mut req = client.patch(url);
+            if let Some(body_data) = body {
+                req = req.json(body_data);
+            }
+            req
+        }
         "DELETE" => client.delete(url),
         _ => anyhow::bail!("Unsupported HTTP method: {method}"),
     };
@@ -342,9 +349,26 @@ pub async fn add_primary_zone(
     secondary_ips: Option<&[String]>,
 ) -> Result<bool> {
     use bindcar::ZONE_TYPE_PRIMARY;
-    // Check if zone already exists (idempotent)
+
+    // Check if zone already exists
     if zone_exists(client, token, zone_name, server).await {
-        info!("Zone {zone_name} already exists on {server}, skipping add");
+        // Zone exists - update its configuration if we have secondary IPs to configure
+        if let Some(ips) = secondary_ips {
+            if !ips.is_empty() {
+                info!(
+                    "Zone {zone_name} already exists on {server}, updating also-notify and allow-transfer with {} secondary server(s)",
+                    ips.len()
+                );
+                // Update the zone's also-notify and allow-transfer configuration
+                // This is critical when secondary pods restart and get new IPs
+                return update_primary_zone(client, token, zone_name, server, ips).await;
+            }
+        }
+
+        // Zone exists but no secondary IPs to configure - skip
+        info!(
+            "Zone {zone_name} already exists on {server} with no secondary servers, skipping add"
+        );
         return Ok(false);
     }
 
@@ -414,6 +438,80 @@ pub async fn add_primary_zone(
                 Ok(false)
             } else {
                 Err(e).context("Failed to add zone")
+            }
+        }
+    }
+}
+
+/// Update an existing primary zone's configuration via HTTP API.
+///
+/// Updates a zone's `also-notify` and `allow-transfer` configuration without
+/// deleting and re-adding the zone. This is used when secondary pod IPs change
+/// (e.g., after pod restart) to keep zone transfer ACLs up to date.
+///
+/// **Implementation:** Uses bindcar's PATCH endpoint introduced in v0.4.0.
+///
+/// # Arguments
+/// * `client` - HTTP client
+/// * `token` - Authentication token
+/// * `zone_name` - Name of the zone (e.g., "example.com")
+/// * `server` - API endpoint (e.g., "bind9-primary-api:8080")
+/// * `secondary_ips` - Updated list of secondary server IPs for also-notify and allow-transfer
+///
+/// # Returns
+///
+/// Returns `Ok(true)` if the zone was updated, `Ok(false)` if no update was needed.
+///
+/// # Errors
+///
+/// Returns an error if the HTTP request fails or the zone cannot be updated.
+pub async fn update_primary_zone(
+    client: &Arc<HttpClient>,
+    token: &Arc<String>,
+    zone_name: &str,
+    server: &str,
+    secondary_ips: &[String],
+) -> Result<bool> {
+    // Define the update request structure
+    // IMPORTANT: Must match bindcar's ModifyZoneRequest which uses camelCase
+    #[derive(Serialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    struct ZoneUpdateRequest {
+        also_notify: Option<Vec<String>>,
+        allow_transfer: Option<Vec<String>>,
+    }
+
+    let base_url = build_api_url(server);
+    let url = format!("{base_url}/api/v1/zones/{zone_name}");
+
+    let update_request = ZoneUpdateRequest {
+        also_notify: Some(secondary_ips.to_vec()),
+        allow_transfer: Some(secondary_ips.to_vec()),
+    };
+
+    info!(
+        "Updating zone {zone_name} on {server} with {} secondary server(s): {:?}",
+        secondary_ips.len(),
+        secondary_ips
+    );
+
+    // Use PATCH to update only the specified fields
+    match bindcar_request(client, token, "PATCH", &url, Some(&update_request)).await {
+        Ok(_) => {
+            info!(
+                "Successfully updated zone {zone_name} on {server} with also-notify and allow-transfer for {} secondary server(s)",
+                secondary_ips.len()
+            );
+            Ok(true)
+        }
+        Err(e) => {
+            let error_msg = e.to_string();
+            // If the zone doesn't exist, we can't update it
+            if error_msg.contains("not found") || error_msg.contains("404") {
+                debug!("Zone {zone_name} not found on {server}, cannot update");
+                Ok(false)
+            } else {
+                Err(e).context("Failed to update zone configuration")
             }
         }
     }

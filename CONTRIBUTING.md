@@ -252,7 +252,7 @@ git rebase --exec 'git commit --amend --no-edit -S' -i origin/main
    cargo fmt
    ```
 
-3. Update documentation as needed (see `CLAUDE.md` for documentation requirements)
+3. Update documentation as needed (see `.claude/CLAUDE.md` for documentation requirements)
 
 4. Add your changes and commit (will be automatically signed):
    ```bash
@@ -316,7 +316,7 @@ All pull requests will automatically verify:
 
 ### Rust Code Guidelines
 
-See `CLAUDE.md` for comprehensive coding standards. Key requirements:
+See `.claude/CLAUDE.md` for comprehensive coding standards. Key requirements:
 
 - Use `cargo fmt` for formatting
 - Pass `cargo clippy -- -D warnings` with no warnings
@@ -350,7 +350,7 @@ When submitting a pull request for a new enhancement or feature, you MUST provid
    - Every new function MUST have corresponding unit tests
    - All code paths (success and failure) MUST be tested
    - Edge cases and boundary conditions MUST be covered
-   - Tests MUST be in separate `*_tests.rs` files (see `CLAUDE.md`)
+   - Tests MUST be in separate `*_tests.rs` files (see `.claude/CLAUDE.md`)
    - Run `cargo tarpaulin` to verify coverage (if available)
 
 2. **100% Integration Test Coverage**

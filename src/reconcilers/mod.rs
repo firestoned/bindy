@@ -79,6 +79,8 @@ mod clusterbind9provider_tests;
 mod dnszone_tests;
 #[cfg(test)]
 mod records_tests;
+#[cfg(test)]
+mod status_tests;
 
 pub use bind9cluster::{delete_bind9cluster, reconcile_bind9cluster};
 pub use bind9instance::{delete_bind9instance, reconcile_bind9instance};

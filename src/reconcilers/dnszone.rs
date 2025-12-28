@@ -21,7 +21,7 @@ use kube::{
 };
 use serde_json::json;
 use std::collections::HashSet;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Helper function to extract and validate cluster reference from `DNSZoneSpec`.
 ///
@@ -377,19 +377,43 @@ pub async fn reconcile_dnszone(
     // Set observed generation (in-memory)
     status_updater.set_observed_generation(current_generation);
 
-    // All reconciliation complete - set Ready status (in-memory)
-    status_updater.set_condition(
-        "Ready",
-        "True",
-        "ReconcileSucceeded",
-        &format!(
-            "Zone {} configured on {} primary and {} secondary server(s), discovered {} DNS record(s) for cluster {}",
-            spec.zone_name, primary_count, secondary_count, record_count, cluster_ref
-        ),
-    );
+    // Set final Ready/Degraded status based on reconciliation outcome
+    // Only set Ready=True if there were NO degraded conditions during reconciliation
+    if status_updater.has_degraded_condition() {
+        // Keep the Degraded condition that was already set, don't overwrite with Ready
+        info!(
+            "DNSZone {}/{} reconciliation completed with degraded state - will retry faster",
+            namespace, name
+        );
+    } else {
+        // All reconciliation steps succeeded - set Ready status and clear any stale Degraded condition
+        status_updater.set_condition(
+            "Ready",
+            "True",
+            "ReconcileSucceeded",
+            &format!(
+                "Zone {} configured on {} primary and {} secondary server(s), discovered {} DNS record(s) for cluster {}",
+                spec.zone_name, primary_count, secondary_count, record_count, cluster_ref
+            ),
+        );
+        // Clear any stale Degraded condition from previous failures
+        status_updater.clear_degraded_condition();
+    }
 
     // Apply all status changes in a single atomic operation
     status_updater.apply(&client).await?;
+
+    // Trigger record reconciliation: Update all matching records with a "zone-reconciled" annotation
+    // This ensures records are re-added to BIND9 after pod restarts or zone recreation
+    if !status_updater.has_degraded_condition() {
+        if let Err(e) = trigger_record_reconciliation(&client, &namespace, &spec.zone_name).await {
+            warn!(
+                "Failed to trigger record reconciliation for zone {}: {}",
+                spec.zone_name, e
+            );
+            // Don't fail the entire reconciliation for this - records will eventually reconcile
+        }
+    }
 
     Ok(())
 }
@@ -680,6 +704,35 @@ pub async fn add_dnszone_to_secondaries(
                 info!(
                     "Secondary zone {} already exists on endpoint {} (instance: {})",
                     spec.zone_name, pod_endpoint, instance_name
+                );
+            }
+
+            // CRITICAL: Immediately trigger zone transfer to load the zone data
+            // This is necessary because:
+            // 1. `rndc addzone` only adds the zone to BIND9's config (in-memory)
+            // 2. The zone file doesn't exist yet on the secondary
+            // 3. Queries will return SERVFAIL until data is transferred from primary
+            // 4. `rndc retransfer` forces an immediate AXFR from primary to secondary
+            //
+            // This ensures the zone is LOADED and SERVING queries immediately after
+            // secondary pod restart or zone creation.
+            info!(
+                "Triggering immediate zone transfer for {} on secondary {} to load zone data",
+                spec.zone_name, pod_endpoint
+            );
+            if let Err(e) = zone_manager
+                .retransfer_zone(&spec.zone_name, &pod_endpoint)
+                .await
+            {
+                // Don't fail reconciliation if retransfer fails - zone will sync via SOA refresh
+                warn!(
+                    "Failed to trigger immediate zone transfer for {} on {}: {}. Zone will sync via SOA refresh timer.",
+                    spec.zone_name, pod_endpoint, e
+                );
+            } else {
+                info!(
+                    "Successfully triggered zone transfer for {} on {}",
+                    spec.zone_name, pod_endpoint
                 );
             }
 
@@ -1044,6 +1097,7 @@ async fn discover_a_records(
             api_version: "bindy.firestoned.io/v1beta1".to_string(),
             kind: "ARecord".to_string(),
             name: record.name_any(),
+            namespace: namespace.to_string(),
         });
     }
 
@@ -1076,6 +1130,7 @@ async fn discover_aaaa_records(
             api_version: "bindy.firestoned.io/v1beta1".to_string(),
             kind: "AAAARecord".to_string(),
             name: record.name_any(),
+            namespace: namespace.to_string(),
         });
     }
 
@@ -1108,6 +1163,7 @@ async fn discover_txt_records(
             api_version: "bindy.firestoned.io/v1beta1".to_string(),
             kind: "TXTRecord".to_string(),
             name: record.name_any(),
+            namespace: namespace.to_string(),
         });
     }
 
@@ -1144,6 +1200,7 @@ async fn discover_cname_records(
             api_version: "bindy.firestoned.io/v1beta1".to_string(),
             kind: "CNAMERecord".to_string(),
             name: record.name_any(),
+            namespace: namespace.to_string(),
         });
     }
 
@@ -1176,6 +1233,7 @@ async fn discover_mx_records(
             api_version: "bindy.firestoned.io/v1beta1".to_string(),
             kind: "MXRecord".to_string(),
             name: record.name_any(),
+            namespace: namespace.to_string(),
         });
     }
 
@@ -1208,6 +1266,7 @@ async fn discover_ns_records(
             api_version: "bindy.firestoned.io/v1beta1".to_string(),
             kind: "NSRecord".to_string(),
             name: record.name_any(),
+            namespace: namespace.to_string(),
         });
     }
 
@@ -1240,6 +1299,7 @@ async fn discover_srv_records(
             api_version: "bindy.firestoned.io/v1beta1".to_string(),
             kind: "SRVRecord".to_string(),
             name: record.name_any(),
+            namespace: namespace.to_string(),
         });
     }
 
@@ -1272,6 +1332,7 @@ async fn discover_caa_records(
             api_version: "bindy.firestoned.io/v1beta1".to_string(),
             kind: "CAARecord".to_string(),
             name: record.name_any(),
+            namespace: namespace.to_string(),
         });
     }
 
@@ -2114,6 +2175,7 @@ where
 
     let mut first_endpoint: Option<String> = None;
     let mut total_endpoints = 0;
+    let mut errors: Vec<String> = Vec::new();
 
     // Loop through each primary instance and get its endpoints
     // Important: With EmptyDir storage (per-pod, non-shared), each primary pod maintains its own
@@ -2151,10 +2213,34 @@ where
             }
 
             // Execute the operation on this endpoint with this instance's RNDC key
-            operation(pod_endpoint, instance_name.clone(), key_data.clone()).await?;
-
-            total_endpoints += 1;
+            // Continue processing remaining endpoints even if this one fails
+            if let Err(e) = operation(
+                pod_endpoint.clone(),
+                instance_name.clone(),
+                key_data.clone(),
+            )
+            .await
+            {
+                error!(
+                    "Failed operation on endpoint {} (instance {}): {}",
+                    pod_endpoint, instance_name, e
+                );
+                errors.push(format!(
+                    "endpoint {pod_endpoint} (instance {instance_name}): {e}"
+                ));
+            } else {
+                total_endpoints += 1;
+            }
         }
+    }
+
+    // If any operations failed, return an error with all failures listed
+    if !errors.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Failed to process {} endpoint(s): {}",
+            errors.len(),
+            errors.join("; ")
+        ));
     }
 
     Ok((first_endpoint, total_endpoints))
@@ -2227,6 +2313,7 @@ where
 
     let mut first_endpoint: Option<String> = None;
     let mut total_endpoints = 0;
+    let mut errors: Vec<String> = Vec::new();
 
     // Loop through each secondary instance and get its endpoints
     for (instance_name, instance_namespace) in &instance_tuples {
@@ -2262,10 +2349,34 @@ where
             }
 
             // Execute the operation on this endpoint with this instance's RNDC key
-            operation(pod_endpoint, instance_name.clone(), key_data.clone()).await?;
-
-            total_endpoints += 1;
+            // Continue processing remaining endpoints even if this one fails
+            if let Err(e) = operation(
+                pod_endpoint.clone(),
+                instance_name.clone(),
+                key_data.clone(),
+            )
+            .await
+            {
+                error!(
+                    "Failed operation on secondary endpoint {} (instance {}): {}",
+                    pod_endpoint, instance_name, e
+                );
+                errors.push(format!(
+                    "endpoint {pod_endpoint} (instance {instance_name}): {e}"
+                ));
+            } else {
+                total_endpoints += 1;
+            }
         }
+    }
+
+    // If any operations failed, return an error with all failures listed
+    if !errors.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Failed to process {} secondary endpoint(s): {}",
+            errors.len(),
+            errors.join("; ")
+        ));
     }
 
     Ok((first_endpoint, total_endpoints))
@@ -2578,4 +2689,123 @@ async fn trigger_zone_transfers(
     }
 
     Ok(total_endpoints)
+}
+
+/// Trigger reconciliation of all DNS records matching a zone.
+///
+/// Updates an annotation on all record types (`ARecord`, `TXTRecord`, etc.) that have
+/// the `bindy.firestoned.io/zone` annotation matching the zone name. This causes
+/// the record controllers to re-reconcile and re-add the records to BIND9.
+///
+/// This is critical after zone recreation (e.g., pod restarts) to ensure records
+/// are re-added to the newly created zones.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `namespace` - Namespace to search for records
+/// * `zone_name` - Zone FQDN to match
+///
+/// # Errors
+///
+/// Returns an error if patching records fails. Errors are logged but don't fail
+/// the parent `DNSZone` reconciliation.
+async fn trigger_record_reconciliation(
+    client: &Client,
+    namespace: &str,
+    zone_name: &str,
+) -> Result<()> {
+    use crate::constants::ANNOTATION_ZONE_OWNER;
+    use crate::crd::{
+        AAAARecord, ARecord, CAARecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, TXTRecord,
+    };
+    use chrono::Utc;
+
+    debug!(
+        "Triggering record reconciliation for zone {} in namespace {}",
+        zone_name, namespace
+    );
+
+    // Annotation to update - timestamp triggers reconciliation without changing spec
+    let timestamp = Utc::now().to_rfc3339();
+    let patch_annotation = "bindy.firestoned.io/zone-reconciled-at";
+
+    // Helper macro to patch all records of a given type
+    macro_rules! trigger_records {
+        ($record_type:ty, $type_name:expr) => {{
+            let api: Api<$record_type> = Api::namespaced(client.clone(), namespace);
+            let lp = ListParams::default();
+
+            match api.list(&lp).await {
+                Ok(records) => {
+                    let matching: Vec<_> = records
+                        .items
+                        .iter()
+                        .filter(|r| {
+                            r.metadata
+                                .annotations
+                                .as_ref()
+                                .and_then(|a| a.get(ANNOTATION_ZONE_OWNER))
+                                == Some(&zone_name.to_string())
+                        })
+                        .collect();
+
+                    debug!(
+                        "Found {} {} record(s) for zone {}",
+                        matching.len(),
+                        $type_name,
+                        zone_name
+                    );
+
+                    for record in matching {
+                        let name = record.name_any();
+                        let patch = json!({
+                            "metadata": {
+                                "annotations": {
+                                    patch_annotation: timestamp.clone()
+                                }
+                            }
+                        });
+
+                        if let Err(e) = api
+                            .patch(
+                                &name,
+                                &PatchParams::default(),
+                                &Patch::Merge(&patch),
+                            )
+                            .await
+                        {
+                            warn!(
+                                "Failed to trigger reconciliation for {} {}/{}: {}",
+                                $type_name, namespace, name, e
+                            );
+                        } else {
+                            debug!(
+                                "Triggered reconciliation for {} {}/{}",
+                                $type_name, namespace, name
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to list {} records in namespace {}: {}",
+                        $type_name, namespace, e
+                    );
+                }
+            }
+        }};
+    }
+
+    // Trigger all record types
+    trigger_records!(ARecord, "A");
+    trigger_records!(AAAARecord, "AAAA");
+    trigger_records!(TXTRecord, "TXT");
+    trigger_records!(CNAMERecord, "CNAME");
+    trigger_records!(MXRecord, "MX");
+    trigger_records!(NSRecord, "NS");
+    trigger_records!(SRVRecord, "SRV");
+    trigger_records!(CAARecord, "CAA");
+
+    Ok(())
 }

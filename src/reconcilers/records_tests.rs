@@ -520,6 +520,8 @@ mod tests {
             conditions: vec![condition],
             observed_generation: Some(1),
             zone: None,
+            record_hash: None,
+            last_updated: None,
         };
 
         assert_eq!(status.conditions.len(), 1);
@@ -550,6 +552,8 @@ mod tests {
             conditions,
             observed_generation: Some(2),
             zone: None,
+            record_hash: None,
+            last_updated: None,
         };
 
         assert_eq!(status.conditions.len(), 2);
@@ -571,6 +575,8 @@ mod tests {
             conditions: vec![condition],
             observed_generation: Some(1),
             zone: None,
+            record_hash: None,
+            last_updated: None,
         };
 
         assert_eq!(status.conditions[0].status, "False");
@@ -929,6 +935,7 @@ mod tests {
                 api_version: API_GROUP_VERSION.to_string(),
                 kind: KIND_A_RECORD.to_string(),
                 name: "test-a-record".to_string(),
+                namespace: "dns-system".to_string(),
             };
 
             assert_eq!(record_ref.api_version, "bindy.firestoned.io/v1beta1");
@@ -942,18 +949,21 @@ mod tests {
                 api_version: API_GROUP_VERSION.to_string(),
                 kind: KIND_A_RECORD.to_string(),
                 name: "test-record".to_string(),
+                namespace: "dns-system".to_string(),
             };
 
             let ref2 = RecordReference {
                 api_version: API_GROUP_VERSION.to_string(),
                 kind: KIND_A_RECORD.to_string(),
                 name: "test-record".to_string(),
+                namespace: "dns-system".to_string(),
             };
 
             let ref3 = RecordReference {
                 api_version: API_GROUP_VERSION.to_string(),
                 kind: KIND_AAAA_RECORD.to_string(),
                 name: "test-record".to_string(),
+                namespace: "dns-system".to_string(),
             };
 
             assert_eq!(ref1, ref2);
@@ -966,6 +976,7 @@ mod tests {
                 api_version: "bindy.firestoned.io/v1beta1".to_string(),
                 kind: "ARecord".to_string(),
                 name: "test-a-record".to_string(),
+                namespace: "dns-system".to_string(),
             };
 
             let json = serde_json::to_value(&record_ref).unwrap();
@@ -979,7 +990,8 @@ mod tests {
             let json = json!({
                 "apiVersion": "bindy.firestoned.io/v1beta1",
                 "kind": "CNAMERecord",
-                "name": "test-cname-record"
+                "name": "test-cname-record",
+                "namespace": "dns-system"
             });
 
             let record_ref: RecordReference = serde_json::from_value(json).unwrap();
@@ -1012,16 +1024,19 @@ mod tests {
                     api_version: API_GROUP_VERSION.to_string(),
                     kind: KIND_A_RECORD.to_string(),
                     name: "web-a-record".to_string(),
+                    namespace: "dns-system".to_string(),
                 },
                 RecordReference {
                     api_version: API_GROUP_VERSION.to_string(),
                     kind: KIND_AAAA_RECORD.to_string(),
                     name: "web-aaaa-record".to_string(),
+                    namespace: "dns-system".to_string(),
                 },
                 RecordReference {
                     api_version: API_GROUP_VERSION.to_string(),
                     kind: KIND_CNAME_RECORD.to_string(),
                     name: "www-cname-record".to_string(),
+                    namespace: "dns-system".to_string(),
                 },
             ];
 
@@ -1060,6 +1075,7 @@ mod tests {
                 api_version: API_GROUP_VERSION.to_string(),
                 kind: KIND_A_RECORD.to_string(),
                 name: "test-a-record".to_string(),
+                namespace: "dns-system".to_string(),
             }];
 
             let status = DNSZoneStatus {
@@ -1125,6 +1141,7 @@ mod tests {
                     api_version: API_GROUP_VERSION.to_string(),
                     kind: kind.to_string(),
                     name: name.to_string(),
+                    namespace: "dns-system".to_string(),
                 };
 
                 assert_eq!(record_ref.api_version, "bindy.firestoned.io/v1beta1");
@@ -1144,11 +1161,13 @@ mod tests {
                     api_version: API_GROUP_VERSION.to_string(),
                     kind: KIND_A_RECORD.to_string(),
                     name: "web-a-record".to_string(),
+                    namespace: "dns-system".to_string(),
                 },
                 RecordReference {
                     api_version: API_GROUP_VERSION.to_string(),
                     kind: KIND_AAAA_RECORD.to_string(),
                     name: "web-aaaa-record".to_string(),
+                    namespace: "dns-system".to_string(),
                 },
             ];
 
@@ -1156,6 +1175,7 @@ mod tests {
                 api_version: API_GROUP_VERSION.to_string(),
                 kind: KIND_A_RECORD.to_string(),
                 name: "web-a-record".to_string(),
+                namespace: "dns-system".to_string(),
             };
 
             // Check if record already exists
@@ -1166,6 +1186,7 @@ mod tests {
                 api_version: API_GROUP_VERSION.to_string(),
                 kind: KIND_MX_RECORD.to_string(),
                 name: "mail-mx-record".to_string(),
+                namespace: "dns-system".to_string(),
             };
 
             let exists = records.iter().any(|r| r == &different_record);
@@ -1178,12 +1199,14 @@ mod tests {
                 api_version: API_GROUP_VERSION.to_string(),
                 kind: KIND_A_RECORD.to_string(),
                 name: "web-a-record".to_string(),
+                namespace: "dns-system".to_string(),
             }];
 
             let new_record = RecordReference {
                 api_version: API_GROUP_VERSION.to_string(),
                 kind: KIND_A_RECORD.to_string(),
                 name: "web-a-record".to_string(),
+                namespace: "dns-system".to_string(),
             };
 
             // Simulate the duplicate check from add_record_to_zone_status
@@ -1198,6 +1221,7 @@ mod tests {
                 api_version: API_GROUP_VERSION.to_string(),
                 kind: KIND_AAAA_RECORD.to_string(),
                 name: "web-aaaa-record".to_string(),
+                namespace: "dns-system".to_string(),
             };
 
             if !records.iter().any(|r| r == &different_record) {
@@ -1219,11 +1243,13 @@ mod tests {
                     api_version: API_GROUP_VERSION.to_string(),
                     kind: KIND_A_RECORD.to_string(),
                     name: "existing-a-record".to_string(),
+                    namespace: "dns-system".to_string(),
                 },
                 RecordReference {
                     api_version: API_GROUP_VERSION.to_string(),
                     kind: KIND_AAAA_RECORD.to_string(),
                     name: "existing-aaaa-record".to_string(),
+                    namespace: "dns-system".to_string(),
                 },
             ];
 

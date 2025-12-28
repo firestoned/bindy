@@ -248,7 +248,7 @@ spec:
                         description: |-
                           Container image for the RNDC API sidecar
 
-                          Example: "ghcr.io/firestoned/bindcar:v0.3.0"
+                          Example: "ghcr.io/firestoned/bindcar:v0.4.0"
                         nullable: true
                         type: string
                       imagePullPolicy:
