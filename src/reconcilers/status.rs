@@ -342,6 +342,7 @@ pub struct DNSZoneStatusUpdater {
     current_status: Option<DNSZoneStatus>,
     new_status: DNSZoneStatus,
     has_changes: bool,
+    degraded_set_this_reconciliation: bool,
 }
 
 impl DNSZoneStatusUpdater {
@@ -359,6 +360,7 @@ impl DNSZoneStatusUpdater {
             current_status,
             new_status,
             has_changes: false,
+            degraded_set_this_reconciliation: false,
         }
     }
 
@@ -372,6 +374,11 @@ impl DNSZoneStatusUpdater {
         reason: &str,
         message: &str,
     ) {
+        // Track if we're setting Degraded=True during this reconciliation
+        if condition_type == "Degraded" && status == "True" {
+            self.degraded_set_this_reconciliation = true;
+        }
+
         update_condition_in_memory(
             &mut self.new_status.conditions,
             condition_type,
@@ -420,6 +427,38 @@ impl DNSZoneStatusUpdater {
                     || !conditions_equal(&current.conditions, &self.new_status.conditions)
             }
         }
+    }
+
+    /// Check if a Degraded condition was set during **this** reconciliation.
+    ///
+    /// Returns `true` only if `set_condition("Degraded", "True", ...)` was called
+    /// during this reconciliation, not if a Degraded condition existed from a previous reconciliation.
+    #[must_use]
+    pub fn has_degraded_condition(&self) -> bool {
+        self.degraded_set_this_reconciliation
+    }
+
+    /// Clear any Degraded condition by setting it to False (in-memory only, no API call).
+    ///
+    /// This method should be called when reconciliation succeeds to ensure stale
+    /// Degraded conditions from previous failures are cleared.
+    ///
+    /// If no Degraded condition exists, this method does nothing.
+    pub fn clear_degraded_condition(&mut self) {
+        self.set_condition("Degraded", "False", "ReconcileSucceeded", "");
+        // Reset the tracking flag since we're explicitly clearing the condition
+        self.degraded_set_this_reconciliation = false;
+    }
+
+    /// Get a reference to the conditions list (for testing).
+    ///
+    /// # Returns
+    ///
+    /// A reference to the conditions vector in the new status.
+    #[cfg(test)]
+    #[must_use]
+    pub fn conditions(&self) -> &Vec<Condition> {
+        &self.new_status.conditions
     }
 
     /// Apply the collected status changes to Kubernetes (single atomic API call).

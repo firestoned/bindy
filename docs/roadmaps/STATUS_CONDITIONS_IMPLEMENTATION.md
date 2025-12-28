@@ -399,7 +399,7 @@ Before marking this work as complete:
 
 - [STATUS_CONDITIONS_DESIGN.md](STATUS_CONDITIONS_DESIGN.md) - Design specification
 - [src/status_reasons.rs](src/status_reasons.rs) - Reason constants implementation
-- [CLAUDE.md](CLAUDE.md) - Project coding standards
+- [CLAUDE.md](../.claude/CLAUDE.md) - Project coding standards
 
 ## Notes
 

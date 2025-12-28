@@ -180,7 +180,10 @@ pub async fn reconcile_bind9instance(client: Client, instance: Bind9Instance) ->
     }
 
     if !should_reconcile && !deployment_exists {
-        info!("Spec unchanged but Deployment missing - drift detected, reconciling resources");
+        info!(
+            "Drift detected for Bind9Instance {}/{}: Deployment missing, will recreate",
+            namespace, name
+        );
     }
 
     debug!(

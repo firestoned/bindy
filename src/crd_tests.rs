@@ -529,6 +529,8 @@ mod tests {
             conditions: vec![condition],
             observed_generation: Some(1),
             zone: None,
+            record_hash: None,
+            last_updated: None,
         };
 
         assert_eq!(status.conditions.len(), 1);

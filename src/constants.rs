@@ -147,6 +147,16 @@ pub const DEFAULT_BIND9_VERSION: &str = "9.18";
 /// `ServiceAccount` name for BIND9 pods
 pub const BIND9_SERVICE_ACCOUNT: &str = "bind9";
 
+/// `MALLOC_CONF` environment variable value for BIND9 containers
+///
+/// Optimizes jemalloc memory decay for containerized environments:
+/// - `dirty_decay_ms:0` - Immediately return dirty pages to OS
+/// - `muzzy_decay_ms:0` - Immediately return muzzy pages to OS
+///
+/// This enables more aggressive memory reclamation in environments where
+/// memory pressure is monitored closely.
+pub const BIND9_MALLOC_CONF: &str = "dirty_decay_ms:0,muzzy_decay_ms:0";
+
 // ============================================================================
 // Bindcar Container Constants
 // ============================================================================
@@ -156,7 +166,7 @@ pub const BIND9_SERVICE_ACCOUNT: &str = "bind9";
 /// This is the default image used for the bindcar HTTP API sidecar container
 /// when no image is specified in the `BindcarConfig` of a `Bind9Instance`,
 /// `Bind9Cluster`, or `ClusterBind9Provider`.
-pub const DEFAULT_BINDCAR_IMAGE: &str = "ghcr.io/firestoned/bindcar:v0.3.0";
+pub const DEFAULT_BINDCAR_IMAGE: &str = "ghcr.io/firestoned/bindcar:v0.4.0";
 
 // ============================================================================
 // Runtime Constants

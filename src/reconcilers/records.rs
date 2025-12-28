@@ -163,13 +163,54 @@ pub async fn reconcile_a_record(client: Client, record: ARecord) -> Result<()> {
             "NotSelected",
             "Record not selected by any DNSZone label selector",
             current_generation,
+            None, // record_hash
+            None, // last_updated
         )
         .await?;
         return Ok(());
     };
 
-    // Always reconcile to ensure declarative state - records are recreated if pods restart
-    // The underlying add_*_record() functions are idempotent and check for existence first
+    // Calculate hash of current spec to detect actual data changes
+    let current_hash = crate::ddns::calculate_record_hash(&spec);
+    let previous_hash = record
+        .status
+        .as_ref()
+        .and_then(|s| s.record_hash.as_deref());
+
+    // Check if record data actually changed using hash comparison
+    let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
+
+    if !data_changed {
+        debug!(
+            "A record {}/{} data unchanged (hash match), skipping DNS update",
+            namespace, name
+        );
+        // Data unchanged, but verify generation to avoid reconciliation loops
+        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
+            return Ok(());
+        }
+        // Generation changed but data didn't - update status only
+        update_record_status(
+            &client,
+            &record,
+            "Ready",
+            "True",
+            "Unchanged",
+            "Record data unchanged",
+            current_generation,
+            Some(current_hash),
+            record.status.as_ref().and_then(|s| s.last_updated.clone()),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    info!(
+        "A record {}/{} data changed (hash mismatch), updating DNS",
+        namespace, name
+    );
+
+    // Data changed - perform DNS update
     debug!(
         "Ensuring A record exists in zone {} (declarative reconciliation)",
         zone_fqdn
@@ -192,6 +233,8 @@ pub async fn reconcile_a_record(client: Client, record: ARecord) -> Result<()> {
                     "ZoneNotFound",
                     &format!("DNSZone '{zone_fqdn}' not found: {e}"),
                     current_generation,
+                    None, // record_hash
+                    None, // last_updated
                 )
                 .await?;
                 return Ok(());
@@ -227,6 +270,8 @@ pub async fn reconcile_a_record(client: Client, record: ARecord) -> Result<()> {
                 "ReconcileSucceeded",
                 &format!("A record added to zone {zone_name}"),
                 current_generation,
+                Some(current_hash),
+                Some(chrono::Utc::now().to_rfc3339()),
             )
             .await?;
         }
@@ -243,6 +288,8 @@ pub async fn reconcile_a_record(client: Client, record: ARecord) -> Result<()> {
                 "ReconcileFailed",
                 &format!("Failed to add record to zone {zone_name}: {e}"),
                 current_generation,
+                None, // record_hash
+                None, // last_updated
             )
             .await?;
         }
@@ -366,10 +413,52 @@ pub async fn reconcile_txt_record(client: Client, record: TXTRecord) -> Result<(
             "NotSelected",
             "Record not selected by any DNSZone label selector",
             current_generation,
+            None, // record_hash
+            None, // last_updated
         )
         .await?;
         return Ok(());
     };
+
+    // Calculate hash of current spec to detect actual data changes
+    let current_hash = crate::ddns::calculate_record_hash(&spec);
+    let previous_hash = record
+        .status
+        .as_ref()
+        .and_then(|s| s.record_hash.as_deref());
+
+    // Check if record data actually changed using hash comparison
+    let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
+
+    if !data_changed {
+        debug!(
+            "TXT record {}/{} data unchanged (hash match), skipping DNS update",
+            namespace, name
+        );
+        // Data unchanged, but verify generation to avoid reconciliation loops
+        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
+            return Ok(());
+        }
+        // Generation changed but data didn't - update status only
+        update_record_status(
+            &client,
+            &record,
+            "Ready",
+            "True",
+            "Unchanged",
+            "Record data unchanged",
+            current_generation,
+            Some(current_hash),
+            record.status.as_ref().and_then(|s| s.last_updated.clone()),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    info!(
+        "TXT record {}/{} data changed (hash mismatch), updating DNS",
+        namespace, name
+    );
 
     // Always reconcile to ensure declarative state - records are recreated if pods restart
     // The underlying add_*_record() functions are idempotent and check for existence first
@@ -395,6 +484,8 @@ pub async fn reconcile_txt_record(client: Client, record: TXTRecord) -> Result<(
                     "ZoneNotFound",
                     &format!("DNSZone {zone_fqdn} not found: {e}"),
                     current_generation,
+                    None, // record_hash
+                    None, // last_updated
                 )
                 .await?;
                 return Ok(());
@@ -427,12 +518,11 @@ pub async fn reconcile_txt_record(client: Client, record: TXTRecord) -> Result<(
                 &record,
                 "Ready",
                 "True",
-                "RecordAvailable",
-                &format!(
-                    "TXT record {} successfully added to zone {zone_name}",
-                    spec.name
-                ),
+                "ReconcileSucceeded",
+                &format!("TXT record added to zone {zone_name}"),
                 current_generation,
+                Some(current_hash),
+                Some(chrono::Utc::now().to_rfc3339()),
             )
             .await?;
         }
@@ -449,6 +539,8 @@ pub async fn reconcile_txt_record(client: Client, record: TXTRecord) -> Result<(
                 "ReconcileFailed",
                 &format!("Failed to add TXT record to zone {zone_name}: {e}"),
                 current_generation,
+                None, // record_hash
+                None, // last_updated
             )
             .await?;
         }
@@ -552,13 +644,54 @@ pub async fn reconcile_aaaa_record(client: Client, record: AAAARecord) -> Result
             "NotSelected",
             "Record not selected by any DNSZone label selector",
             current_generation,
+            None, // record_hash
+            None, // last_updated
         )
         .await?;
         return Ok(());
     };
 
-    // Always reconcile to ensure declarative state - records are recreated if pods restart
-    // The underlying add_*_record() functions are idempotent and check for existence first
+    // Calculate hash of current spec to detect actual data changes
+    let current_hash = crate::ddns::calculate_record_hash(&spec);
+    let previous_hash = record
+        .status
+        .as_ref()
+        .and_then(|s| s.record_hash.as_deref());
+
+    // Check if record data actually changed using hash comparison
+    let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
+
+    if !data_changed {
+        debug!(
+            "AAAA record {}/{} data unchanged (hash match), skipping DNS update",
+            namespace, name
+        );
+        // Data unchanged, but verify generation to avoid reconciliation loops
+        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
+            return Ok(());
+        }
+        // Generation changed but data didn't - update status only
+        update_record_status(
+            &client,
+            &record,
+            "Ready",
+            "True",
+            "Unchanged",
+            "Record data unchanged",
+            current_generation,
+            Some(current_hash),
+            record.status.as_ref().and_then(|s| s.last_updated.clone()),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    info!(
+        "AAAA record {}/{} data changed (hash mismatch), updating DNS",
+        namespace, name
+    );
+
+    // Data changed - perform DNS update
     debug!(
         "Ensuring record exists in zone {} (declarative reconciliation)",
         zone_fqdn
@@ -581,6 +714,8 @@ pub async fn reconcile_aaaa_record(client: Client, record: AAAARecord) -> Result
                     "ZoneNotFound",
                     &format!("DNSZone '{zone_fqdn}' not found: {e}"),
                     current_generation,
+                    None, // record_hash
+                    None, // last_updated
                 )
                 .await?;
                 return Ok(());
@@ -616,6 +751,8 @@ pub async fn reconcile_aaaa_record(client: Client, record: AAAARecord) -> Result
                 "ReconcileSucceeded",
                 &format!("AAAA record added to zone {zone_name}"),
                 current_generation,
+                Some(current_hash),
+                Some(chrono::Utc::now().to_rfc3339()),
             )
             .await?;
         }
@@ -632,6 +769,8 @@ pub async fn reconcile_aaaa_record(client: Client, record: AAAARecord) -> Result
                 "ReconcileFailed",
                 &format!("Failed to add record to zone {zone_name}: {e}"),
                 current_generation,
+                None, // record_hash
+                None, // last_updated
             )
             .await?;
         }
@@ -735,10 +874,52 @@ pub async fn reconcile_cname_record(client: Client, record: CNAMERecord) -> Resu
             "NotSelected",
             "Record not selected by any DNSZone label selector",
             current_generation,
+            None, // record_hash
+            None, // last_updated
         )
         .await?;
         return Ok(());
     };
+
+    // Calculate hash of current spec to detect actual data changes
+    let current_hash = crate::ddns::calculate_record_hash(&spec);
+    let previous_hash = record
+        .status
+        .as_ref()
+        .and_then(|s| s.record_hash.as_deref());
+
+    // Check if record data actually changed using hash comparison
+    let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
+
+    if !data_changed {
+        debug!(
+            "CNAME record {}/{} data unchanged (hash match), skipping DNS update",
+            namespace, name
+        );
+        // Data unchanged, but verify generation to avoid reconciliation loops
+        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
+            return Ok(());
+        }
+        // Generation changed but data didn't - update status only
+        update_record_status(
+            &client,
+            &record,
+            "Ready",
+            "True",
+            "Unchanged",
+            "Record data unchanged",
+            current_generation,
+            Some(current_hash),
+            record.status.as_ref().and_then(|s| s.last_updated.clone()),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    info!(
+        "CNAME record {}/{} data changed (hash mismatch), updating DNS",
+        namespace, name
+    );
 
     // Always reconcile to ensure declarative state - records are recreated if pods restart
     // The underlying add_*_record() functions are idempotent and check for existence first
@@ -764,6 +945,8 @@ pub async fn reconcile_cname_record(client: Client, record: CNAMERecord) -> Resu
                     "ZoneNotFound",
                     &format!("DNSZone {zone_fqdn} not found: {e}"),
                     current_generation,
+                    None, // record_hash
+                    None, // last_updated
                 )
                 .await?;
                 return Ok(());
@@ -796,12 +979,11 @@ pub async fn reconcile_cname_record(client: Client, record: CNAMERecord) -> Resu
                 &record,
                 "Ready",
                 "True",
-                "RecordAvailable",
-                &format!(
-                    "CNAME record {} successfully added to zone {zone_name}",
-                    spec.name
-                ),
+                "ReconcileSucceeded",
+                &format!("CNAME record added to zone {zone_name}"),
                 current_generation,
+                Some(current_hash),
+                Some(chrono::Utc::now().to_rfc3339()),
             )
             .await?;
         }
@@ -818,6 +1000,8 @@ pub async fn reconcile_cname_record(client: Client, record: CNAMERecord) -> Resu
                 "ReconcileFailed",
                 &format!("Failed to add CNAME record to zone {zone_name}: {e}"),
                 current_generation,
+                None, // record_hash
+                None, // last_updated
             )
             .await?;
         }
@@ -922,10 +1106,52 @@ pub async fn reconcile_mx_record(client: Client, record: MXRecord) -> Result<()>
             "NotSelected",
             "Record not selected by any DNSZone label selector",
             current_generation,
+            None, // record_hash
+            None, // last_updated
         )
         .await?;
         return Ok(());
     };
+
+    // Calculate hash of current spec to detect actual data changes
+    let current_hash = crate::ddns::calculate_record_hash(&spec);
+    let previous_hash = record
+        .status
+        .as_ref()
+        .and_then(|s| s.record_hash.as_deref());
+
+    // Check if record data actually changed using hash comparison
+    let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
+
+    if !data_changed {
+        debug!(
+            "MX record {}/{} data unchanged (hash match), skipping DNS update",
+            namespace, name
+        );
+        // Data unchanged, but verify generation to avoid reconciliation loops
+        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
+            return Ok(());
+        }
+        // Generation changed but data didn't - update status only
+        update_record_status(
+            &client,
+            &record,
+            "Ready",
+            "True",
+            "Unchanged",
+            "Record data unchanged",
+            current_generation,
+            Some(current_hash),
+            record.status.as_ref().and_then(|s| s.last_updated.clone()),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    info!(
+        "MX record {}/{} data changed (hash mismatch), updating DNS",
+        namespace, name
+    );
 
     // Always reconcile to ensure declarative state - records are recreated if pods restart
     // The underlying add_*_record() functions are idempotent and check for existence first
@@ -951,6 +1177,8 @@ pub async fn reconcile_mx_record(client: Client, record: MXRecord) -> Result<()>
                     "ZoneNotFound",
                     &format!("DNSZone {zone_fqdn} not found: {e}"),
                     current_generation,
+                    None, // record_hash
+                    None, // last_updated
                 )
                 .await?;
                 return Ok(());
@@ -984,12 +1212,11 @@ pub async fn reconcile_mx_record(client: Client, record: MXRecord) -> Result<()>
                 &record,
                 "Ready",
                 "True",
-                "RecordAvailable",
-                &format!(
-                    "MX record {} successfully added to zone {zone_name}",
-                    spec.name
-                ),
+                "ReconcileSucceeded",
+                &format!("MX record added to zone {zone_name}"),
                 current_generation,
+                Some(current_hash),
+                Some(chrono::Utc::now().to_rfc3339()),
             )
             .await?;
         }
@@ -1006,6 +1233,8 @@ pub async fn reconcile_mx_record(client: Client, record: MXRecord) -> Result<()>
                 "ReconcileFailed",
                 &format!("Failed to add MX record to zone {zone_name}: {e}"),
                 current_generation,
+                None, // record_hash
+                None, // last_updated
             )
             .await?;
         }
@@ -1112,10 +1341,52 @@ pub async fn reconcile_ns_record(client: Client, record: NSRecord) -> Result<()>
             "NotSelected",
             "Record not selected by any DNSZone label selector",
             current_generation,
+            None, // record_hash
+            None, // last_updated
         )
         .await?;
         return Ok(());
     };
+
+    // Calculate hash of current spec to detect actual data changes
+    let current_hash = crate::ddns::calculate_record_hash(&spec);
+    let previous_hash = record
+        .status
+        .as_ref()
+        .and_then(|s| s.record_hash.as_deref());
+
+    // Check if record data actually changed using hash comparison
+    let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
+
+    if !data_changed {
+        debug!(
+            "NS record {}/{} data unchanged (hash match), skipping DNS update",
+            namespace, name
+        );
+        // Data unchanged, but verify generation to avoid reconciliation loops
+        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
+            return Ok(());
+        }
+        // Generation changed but data didn't - update status only
+        update_record_status(
+            &client,
+            &record,
+            "Ready",
+            "True",
+            "Unchanged",
+            "Record data unchanged",
+            current_generation,
+            Some(current_hash),
+            record.status.as_ref().and_then(|s| s.last_updated.clone()),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    info!(
+        "NS record {}/{} data changed (hash mismatch), updating DNS",
+        namespace, name
+    );
 
     // Always reconcile to ensure declarative state - records are recreated if pods restart
     // The underlying add_*_record() functions are idempotent and check for existence first
@@ -1141,6 +1412,8 @@ pub async fn reconcile_ns_record(client: Client, record: NSRecord) -> Result<()>
                     "ZoneNotFound",
                     &format!("DNSZone {zone_fqdn} not found: {e}"),
                     current_generation,
+                    None, // record_hash
+                    None, // last_updated
                 )
                 .await?;
                 return Ok(());
@@ -1173,12 +1446,11 @@ pub async fn reconcile_ns_record(client: Client, record: NSRecord) -> Result<()>
                 &record,
                 "Ready",
                 "True",
-                "RecordAvailable",
-                &format!(
-                    "NS record {} successfully added to zone {zone_name}",
-                    spec.name
-                ),
+                "ReconcileSucceeded",
+                &format!("NS record added to zone {zone_name}"),
                 current_generation,
+                Some(current_hash),
+                Some(chrono::Utc::now().to_rfc3339()),
             )
             .await?;
         }
@@ -1195,6 +1467,8 @@ pub async fn reconcile_ns_record(client: Client, record: NSRecord) -> Result<()>
                 "ReconcileFailed",
                 &format!("Failed to add NS record to zone {zone_name}: {e}"),
                 current_generation,
+                None, // record_hash
+                None, // last_updated
             )
             .await?;
         }
@@ -1299,10 +1573,52 @@ pub async fn reconcile_srv_record(client: Client, record: SRVRecord) -> Result<(
             "NotSelected",
             "Record not selected by any DNSZone label selector",
             current_generation,
+            None, // record_hash
+            None, // last_updated
         )
         .await?;
         return Ok(());
     };
+
+    // Calculate hash of current spec to detect actual data changes
+    let current_hash = crate::ddns::calculate_record_hash(&spec);
+    let previous_hash = record
+        .status
+        .as_ref()
+        .and_then(|s| s.record_hash.as_deref());
+
+    // Check if record data actually changed using hash comparison
+    let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
+
+    if !data_changed {
+        debug!(
+            "SRV record {}/{} data unchanged (hash match), skipping DNS update",
+            namespace, name
+        );
+        // Data unchanged, but verify generation to avoid reconciliation loops
+        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
+            return Ok(());
+        }
+        // Generation changed but data didn't - update status only
+        update_record_status(
+            &client,
+            &record,
+            "Ready",
+            "True",
+            "Unchanged",
+            "Record data unchanged",
+            current_generation,
+            Some(current_hash),
+            record.status.as_ref().and_then(|s| s.last_updated.clone()),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    info!(
+        "SRV record {}/{} data changed (hash mismatch), updating DNS",
+        namespace, name
+    );
 
     // Always reconcile to ensure declarative state - records are recreated if pods restart
     // The underlying add_*_record() functions are idempotent and check for existence first
@@ -1328,6 +1644,8 @@ pub async fn reconcile_srv_record(client: Client, record: SRVRecord) -> Result<(
                     "ZoneNotFound",
                     &format!("DNSZone {zone_fqdn} not found: {e}"),
                     current_generation,
+                    None, // record_hash
+                    None, // last_updated
                 )
                 .await?;
                 return Ok(());
@@ -1363,12 +1681,11 @@ pub async fn reconcile_srv_record(client: Client, record: SRVRecord) -> Result<(
                 &record,
                 "Ready",
                 "True",
-                "RecordAvailable",
-                &format!(
-                    "SRV record {} successfully added to zone {zone_name}",
-                    spec.name
-                ),
+                "ReconcileSucceeded",
+                &format!("SRV record added to zone {zone_name}"),
                 current_generation,
+                Some(current_hash),
+                Some(chrono::Utc::now().to_rfc3339()),
             )
             .await?;
         }
@@ -1385,6 +1702,8 @@ pub async fn reconcile_srv_record(client: Client, record: SRVRecord) -> Result<(
                 "ReconcileFailed",
                 &format!("Failed to add SRV record to zone {zone_name}: {e}"),
                 current_generation,
+                None, // record_hash
+                None, // last_updated
             )
             .await?;
         }
@@ -1498,10 +1817,52 @@ pub async fn reconcile_caa_record(client: Client, record: CAARecord) -> Result<(
             "NotSelected",
             "Record not selected by any DNSZone label selector",
             current_generation,
+            None, // record_hash
+            None, // last_updated
         )
         .await?;
         return Ok(());
     };
+
+    // Calculate hash of current spec to detect actual data changes
+    let current_hash = crate::ddns::calculate_record_hash(&spec);
+    let previous_hash = record
+        .status
+        .as_ref()
+        .and_then(|s| s.record_hash.as_deref());
+
+    // Check if record data actually changed using hash comparison
+    let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
+
+    if !data_changed {
+        debug!(
+            "CAA record {}/{} data unchanged (hash match), skipping DNS update",
+            namespace, name
+        );
+        // Data unchanged, but verify generation to avoid reconciliation loops
+        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
+            return Ok(());
+        }
+        // Generation changed but data didn't - update status only
+        update_record_status(
+            &client,
+            &record,
+            "Ready",
+            "True",
+            "Unchanged",
+            "Record data unchanged",
+            current_generation,
+            Some(current_hash),
+            record.status.as_ref().and_then(|s| s.last_updated.clone()),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    info!(
+        "CAA record {}/{} data changed (hash mismatch), updating DNS",
+        namespace, name
+    );
 
     // Always reconcile to ensure declarative state - records are recreated if pods restart
     // The underlying add_*_record() functions are idempotent and check for existence first
@@ -1527,6 +1888,8 @@ pub async fn reconcile_caa_record(client: Client, record: CAARecord) -> Result<(
                     "ZoneNotFound",
                     &format!("DNSZone {zone_fqdn} not found: {e}"),
                     current_generation,
+                    None, // record_hash
+                    None, // last_updated
                 )
                 .await?;
                 return Ok(());
@@ -1561,12 +1924,11 @@ pub async fn reconcile_caa_record(client: Client, record: CAARecord) -> Result<(
                 &record,
                 "Ready",
                 "True",
-                "RecordAvailable",
-                &format!(
-                    "CAA record {} successfully added to zone {zone_name}",
-                    spec.name
-                ),
+                "ReconcileSucceeded",
+                &format!("CAA record added to zone {zone_name}"),
                 current_generation,
+                Some(current_hash),
+                Some(chrono::Utc::now().to_rfc3339()),
             )
             .await?;
         }
@@ -1583,6 +1945,8 @@ pub async fn reconcile_caa_record(client: Client, record: CAARecord) -> Result<(
                 "ReconcileFailed",
                 &format!("Failed to add CAA record to zone {zone_name}: {e}"),
                 current_generation,
+                None, // record_hash
+                None, // last_updated
             )
             .await?;
         }
@@ -1724,7 +2088,7 @@ where
 /// # Errors
 ///
 /// Returns an error if the status update fails.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 async fn update_record_status<T>(
     client: &Client,
     record: &T,
@@ -1733,6 +2097,8 @@ async fn update_record_status<T>(
     reason: &str,
     message: &str,
     observed_generation: Option<i64>,
+    record_hash: Option<String>,
+    last_updated: Option<String>,
 ) -> Result<()>
 where
     T: Resource<DynamicType = (), Scope = k8s_openapi::NamespaceResourceScope>
@@ -1847,6 +2213,8 @@ where
         conditions: vec![condition],
         observed_generation: observed_generation.or(record.meta().generation),
         zone,
+        record_hash,
+        last_updated,
     };
 
     let status_patch = json!({

@@ -418,10 +418,14 @@ spec:
                     name:
                       description: Name of the record resource
                       type: string
+                    namespace:
+                      description: Namespace of the record resource
+                      type: string
                   required:
                   - apiVersion
                   - kind
                   - name
+                  - namespace
                   type: object
                 type: array
               secondaryIps:

@@ -65,11 +65,17 @@ pub mod bind9_resources;
 pub mod constants;
 pub mod crd;
 pub mod crd_docs;
+pub mod ddns;
 pub mod dns_errors;
 pub mod http_errors;
 pub mod labels;
 pub mod metrics;
+
+#[macro_use]
+pub mod record_wrappers;
+
 pub mod reconcilers;
+pub mod selector;
 pub mod status_reasons;
 
 #[cfg(test)]

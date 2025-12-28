@@ -7,10 +7,10 @@
 //! for BIND9 instances. All functions are pure and easily testable.
 
 use crate::constants::{
-    API_GROUP_VERSION, BIND9_SERVICE_ACCOUNT, DEFAULT_BIND9_VERSION, DNS_PORT, KIND_BIND9_INSTANCE,
-    LIVENESS_FAILURE_THRESHOLD, LIVENESS_INITIAL_DELAY_SECS, LIVENESS_PERIOD_SECS,
-    LIVENESS_TIMEOUT_SECS, READINESS_FAILURE_THRESHOLD, READINESS_INITIAL_DELAY_SECS,
-    READINESS_PERIOD_SECS, READINESS_TIMEOUT_SECS, RNDC_PORT,
+    API_GROUP_VERSION, BIND9_MALLOC_CONF, BIND9_SERVICE_ACCOUNT, DEFAULT_BIND9_VERSION, DNS_PORT,
+    KIND_BIND9_INSTANCE, LIVENESS_FAILURE_THRESHOLD, LIVENESS_INITIAL_DELAY_SECS,
+    LIVENESS_PERIOD_SECS, LIVENESS_TIMEOUT_SECS, READINESS_FAILURE_THRESHOLD,
+    READINESS_INITIAL_DELAY_SECS, READINESS_PERIOD_SECS, READINESS_TIMEOUT_SECS, RNDC_PORT,
 };
 use crate::crd::{Bind9Cluster, Bind9Instance, ConfigMapRefs, ImageConfig};
 use crate::labels::{
@@ -840,6 +840,7 @@ pub fn build_deployment(
                     ..Default::default()
                 }),
                 spec: Some(build_pod_spec(
+                    namespace,
                     &config.configmap_name,
                     &format!("{name}-rndc-key"),
                     config.version,
@@ -859,6 +860,7 @@ pub fn build_deployment(
 /// Builds pod specification with BIND9 container and API sidecar
 ///
 /// # Arguments
+/// * `namespace` - Namespace where the pod will be deployed
 /// * `configmap_name` - Name of the `ConfigMap` with BIND9 configuration
 /// * `rndc_secret_name` - Name of the Secret with RNDC keys
 /// * `version` - BIND9 version tag
@@ -868,7 +870,9 @@ pub fn build_deployment(
 /// * `custom_volume_mounts` - Optional custom volume mounts to add
 /// * `bindcar_config` - Optional API sidecar configuration
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 fn build_pod_spec(
+    namespace: &str,
     configmap_name: &str,
     rndc_secret_name: &str,
     version: &str,
@@ -924,11 +928,18 @@ fn build_pod_spec(
                 ..Default::default()
             },
         ]),
-        env: Some(vec![EnvVar {
-            name: "TZ".into(),
-            value: Some("UTC".into()),
-            ..Default::default()
-        }]),
+        env: Some(vec![
+            EnvVar {
+                name: "TZ".into(),
+                value: Some("UTC".into()),
+                ..Default::default()
+            },
+            EnvVar {
+                name: "MALLOC_CONF".into(),
+                value: Some(BIND9_MALLOC_CONF.into()),
+                ..Default::default()
+            },
+        ]),
         volume_mounts: Some(build_volume_mounts(config_map_refs, custom_volume_mounts)),
         liveness_probe: Some(Probe {
             tcp_socket: Some(TCPSocketAction {
@@ -969,6 +980,7 @@ fn build_pod_spec(
         containers: {
             let mut containers = vec![bind9_container];
             containers.push(build_api_sidecar_container(
+                namespace,
                 bindcar_config,
                 rndc_secret_name,
             ));
@@ -990,6 +1002,7 @@ fn build_pod_spec(
 ///
 /// # Arguments
 ///
+/// * `namespace` - Namespace where the container will be deployed
 /// * `bindcar_config` - Optional Bindcar container configuration from the instance spec
 /// * `rndc_secret_name` - Name of the Secret containing the RNDC key
 ///
@@ -997,6 +1010,7 @@ fn build_pod_spec(
 ///
 /// A `Container` configured to run the Bindcar RNDC API sidecar
 fn build_api_sidecar_container(
+    namespace: &str,
     bindcar_config: Option<&crate::crd::BindcarConfig>,
     rndc_secret_name: &str,
 ) -> Container {
@@ -1036,7 +1050,9 @@ fn build_api_sidecar_container(
         },
         EnvVar {
             name: "BIND_ALLOWED_SERVICE_ACCOUNTS".into(),
-            value: Some(BIND9_SERVICE_ACCOUNT.into()),
+            value: Some(format!(
+                "system:serviceaccount:{namespace}:{BIND9_SERVICE_ACCOUNT}"
+            )),
             ..Default::default()
         },
         EnvVar {

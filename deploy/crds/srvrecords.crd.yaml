@@ -146,10 +146,29 @@ spec:
                   - type
                   type: object
                 type: array
+              lastUpdated:
+                description: |-
+                  Timestamp of the last successful update to BIND9.
+
+                  This is updated after a successful nsupdate operation.
+                  Uses RFC 3339 format (e.g., "2025-12-26T10:30:00Z").
+                nullable: true
+                type: string
               observedGeneration:
                 format: int64
                 nullable: true
                 type: integer
+              recordHash:
+                description: |-
+                  SHA-256 hash of the record's spec data.
+
+                  Used to detect when a record's data has actually changed, avoiding
+                  unnecessary BIND9 updates and zone transfers.
+
+                  The hash is calculated from all fields in the record's spec that affect
+                  the DNS record data (name, addresses, TTL, etc.).
+                nullable: true
+                type: string
               zone:
                 description: |-
                   The FQDN of the zone that owns this record (set by `DNSZone` controller).

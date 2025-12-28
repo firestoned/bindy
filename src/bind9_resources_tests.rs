@@ -670,6 +670,19 @@ mod tests {
     }
 
     #[test]
+    fn test_deployment_has_malloc_conf_environment_variable() {
+        use crate::constants::BIND9_MALLOC_CONF;
+
+        let instance = create_test_instance("test");
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
+
+        let env = container.env.as_ref().unwrap();
+        let malloc_conf_var = env.iter().find(|e| e.name == "MALLOC_CONF").unwrap();
+        assert_eq!(malloc_conf_var.value.as_deref(), Some(BIND9_MALLOC_CONF));
+    }
+
+    #[test]
     fn test_deployment_probe_configuration() {
         let instance = create_test_instance("test");
         let deployment = build_deployment("test", "test-ns", &instance, None, None);
