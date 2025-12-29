@@ -130,16 +130,16 @@ kind-integration-test-ci: ## Run integration tests in CI mode (requires IMAGE_TA
 	@echo "  Running Simple Integration Tests"
 	@echo "================================================"
 	@chmod +x tests/integration_test.sh
-	@tests/integration_test.sh --image "$(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)" --skip-deploy || { echo "Simple integration tests failed"; kind delete cluster --name $(KIND_CLUSTER)-ci || true; exit 1; }
+	@CLUSTER_NAME=$(KIND_CLUSTER) tests/integration_test.sh --image "$(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)" --skip-deploy || { echo "Simple integration tests failed"; kind delete cluster --name $(KIND_CLUSTER) || true; exit 1; }
 	@echo ""
 	@echo "================================================"
 	@echo "  Running Multi-Tenancy Integration Tests"
 	@echo "================================================"
 	@chmod +x tests/run_multi_tenancy_tests.sh
-	@tests/run_multi_tenancy_tests.sh || { echo "Multi-tenancy integration tests failed"; kind delete cluster --name $(KIND_CLUSTER)-ci || true; exit 1; }
+	@CLUSTER_NAME=$(KIND_CLUSTER) tests/run_multi_tenancy_tests.sh || { echo "Multi-tenancy integration tests failed"; kind delete cluster --name $(KIND_CLUSTER) || true; exit 1; }
 	@echo ""
 	@echo "Cleaning up Kind cluster..."
-	@kind delete cluster --name $(KIND_CLUSTER)-ci || true
+	@kind delete cluster --name $(KIND_CLUSTER) || true
 	@echo "✓ All integration tests completed successfully"
 
 kind-cleanup: ## Delete Kind cluster

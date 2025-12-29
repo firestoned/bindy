@@ -2,6 +2,62 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-28 21:50] - Upgrade to bindcar v0.5.0
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **`Cargo.toml:43`**: Updated bindcar dependency from git `branch = "main"` to crates.io version `"0.5.0"`
+- **`src/crd.rs:2045`**: Updated documentation example from `v0.4.0` to `v0.5.0`
+
+### Why
+Move the bindcar dependency from tracking the git main branch to using the published crates.io version. This provides:
+- **Version stability**: Changes to bindcar main won't unexpectedly break bindy builds
+- **Reproducible builds**: Same Cargo.lock always resolves to the same bindcar version
+- **Clear dependency tracking**: Know exactly which bindcar version is in use
+- **Easier rollback**: Can easily revert to previous bindcar versions if needed
+- **Standard dependency management**: Using crates.io is the idiomatic Rust approach
+- **Faster builds**: crates.io dependencies compile faster than git dependencies
+
+The crates.io v0.5.0 release includes the latest stable features from bindcar.
+
+### Impact
+- [x] No breaking changes - bindcar v0.5.0 is API-compatible with previous main branch
+- [x] All tests pass with the new version
+- [x] Documentation example updated to reflect recommended version
+
+---
+
+## [2025-12-28 21:45] - Fix Integration Test Cluster Name Mismatch
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **`Makefile:133`**: Pass `CLUSTER_NAME=$(KIND_CLUSTER)` environment variable to integration test script
+- **`Makefile:133,139,142`**: Fix cluster cleanup to use `$(KIND_CLUSTER)` instead of `$(KIND_CLUSTER)-ci`
+- **`Makefile:139`**: Pass `CLUSTER_NAME=$(KIND_CLUSTER)` to multi-tenancy test script
+
+### Why
+Integration tests were failing in CI with error:
+```
+error: resource mapping not found for name: "integration-test-cluster" namespace: "dns-system" from "STDIN": no matches for kind "Bind9Cluster" in version "bindy.firestoned.io/v1alpha1"
+ensure CRDs are installed first
+```
+
+**Root Cause**: The Makefile created a Kind cluster named `bindy-test` (value of `$(KIND_CLUSTER)`), installed CRDs, and deployed the controller. However, when calling the test script with `--skip-deploy`, it didn't pass the cluster name, causing the script to use a different kubectl context. Additionally, cleanup attempted to delete a cluster named `bindy-test-ci` which never existed.
+
+**Solution**:
+1. Pass `CLUSTER_NAME=$(KIND_CLUSTER)` to test scripts so they use the correct kubectl context
+2. Fix cleanup commands to delete the actual cluster created (`$(KIND_CLUSTER)` instead of `$(KIND_CLUSTER)-ci`)
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] CI/CD fix only
+
+---
+
 ## [2025-12-28 20:20] - Trigger Record Reconciliation After Zone Recreation
 
 **Author:** Erick Bourgeois
