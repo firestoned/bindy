@@ -40,7 +40,7 @@ rand = "0.8"
 hickory-client = { version = "0.24", features = ["dnssec", "dnssec-ring"] }
 hickory-proto = { version = "0.24", features = ["dnssec", "dnssec-ring"] }
 url = "2.5.7"
-bindcar = { git = "https://github.com/firestoned/bindcar", branch = "main" }
+bindcar = "0.5.0"
 prometheus = "0.14"
 axum = "0.7"
 sha2 = "0.10"

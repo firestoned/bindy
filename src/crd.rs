@@ -2042,7 +2042,7 @@ pub struct PersistentVolumeClaimConfig {
 pub struct BindcarConfig {
     /// Container image for the RNDC API sidecar
     ///
-    /// Example: "ghcr.io/firestoned/bindcar:v0.4.0"
+    /// Example: "ghcr.io/firestoned/bindcar:v0.5.0"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
 
