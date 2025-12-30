@@ -151,7 +151,7 @@ spec:
                     description: |-
                       Container image for the RNDC API sidecar
 
-                      Example: "ghcr.io/firestoned/bindcar:v0.4.0"
+                      Example: "ghcr.io/firestoned/bindcar:v0.5.1"
                     nullable: true
                     type: string
                   imagePullPolicy:
@@ -1534,7 +1534,7 @@ spec:
                         description: |-
                           Container image for the RNDC API sidecar
 
-                          Example: "ghcr.io/firestoned/bindcar:v0.4.0"
+                          Example: "ghcr.io/firestoned/bindcar:v0.5.1"
                         nullable: true
                         type: string
                       imagePullPolicy:
@@ -4260,6 +4260,105 @@ spec:
                   type: object
                 nullable: true
                 type: array
+              zonesFrom:
+                description: |-
+                  Select DNS zones using label selectors.
+
+                  Zones matching these selectors will be served by this instance.
+                  This field is typically inherited from the parent `Bind9Cluster` or `ClusterBind9Provider`,
+                  but can be overridden or extended at the instance level.
+
+                  The instance reconciler watches for `DNSZone` resources matching these selectors
+                  and automatically tags them with `bindy.firestoned.io/selected-by-instance` annotation.
+                  Tagged zones are then configured in BIND9.
+
+                  # Example
+
+                  ```yaml
+                  zonesFrom:
+                    - selector:
+                        matchLabels:
+                          instance: primary
+                  ```
+                items:
+                  description: |-
+                    Source for DNS zones to include in a cluster.
+
+                    Specifies how DNS zones should be associated with a cluster using label selectors.
+                    Zones matching the selector criteria will be automatically served by this cluster's instances.
+
+                    # Example
+
+                    ```yaml
+                    zonesFrom:
+                      - selector:
+                          matchLabels:
+                            environment: production
+                          matchExpressions:
+                            - key: team
+                              operator: In
+                              values:
+                                - platform
+                                - infrastructure
+                    ```
+                  properties:
+                    selector:
+                      description: |-
+                        Label selector to match DNS zones.
+
+                        `DNSZone` resources with labels matching this selector will be automatically
+                        associated with this cluster or instance.
+
+                        The selector uses standard Kubernetes label selector semantics:
+                        - `matchLabels`: All specified labels must match (AND logic)
+                        - `matchExpressions`: All expressions must be satisfied (AND logic)
+                        - Both `matchLabels` and `matchExpressions` can be used together
+                      properties:
+                        matchExpressions:
+                          description: List of label selector requirements. All requirements must be satisfied.
+                          items:
+                            description: |-
+                              A label selector requirement is a selector that contains values, a key, and an operator
+                              that relates the key and values.
+                            properties:
+                              key:
+                                description: The label key that the selector applies to.
+                                type: string
+                              operator:
+                                description: |-
+                                  Operator represents a key's relationship to a set of values.
+                                  Valid operators are In, `NotIn`, Exists and `DoesNotExist`.
+                                type: string
+                              values:
+                                description: |-
+                                  An array of string values. If the operator is In or `NotIn`,
+                                  the values array must be non-empty. If the operator is Exists or `DoesNotExist`,
+                                  the values array must be empty.
+                                items:
+                                  type: string
+                                nullable: true
+                                type: array
+                            required:
+                            - key
+                            - operator
+                            type: object
+                          nullable: true
+                          type: array
+                        matchLabels:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Map of {key,value} pairs. A single {key,value} in the matchLabels map is equivalent
+                            to an element of matchExpressions, whose key field is "key", the operator is "In",
+                            and the values array contains only "value". All requirements must be satisfied.
+                          nullable: true
+                          type: object
+                      type: object
+                  required:
+                  - selector
+                  type: object
+                nullable: true
+                type: array
             required:
             - clusterRef
             - role
@@ -4312,6 +4411,31 @@ spec:
                 format: int32
                 nullable: true
                 type: integer
+              selectedZones:
+                description: |-
+                  List of DNS zones matched by `zonesFrom` selectors.
+
+                  Updated by the instance reconciler when zones are discovered via label selectors.
+                  This field shows which zones are currently being served by this instance due to
+                  label selector matching (as opposed to explicit `clusterRef`/`clusterProviderRef`).
+                items:
+                  description: Reference to a DNS zone selected by an instance.
+                  properties:
+                    name:
+                      description: Name of the `DNSZone` resource
+                      type: string
+                    namespace:
+                      description: Namespace of the `DNSZone` resource
+                      type: string
+                    zoneName:
+                      description: Fully qualified domain name (e.g., "example.com")
+                      type: string
+                  required:
+                  - name
+                  - namespace
+                  - zoneName
+                  type: object
+                type: array
               serviceAddress:
                 description: IP or hostname of this instance's service
                 nullable: true

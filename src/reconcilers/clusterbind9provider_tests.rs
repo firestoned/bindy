@@ -119,6 +119,7 @@ mod tests {
                 replicas: Some(1),
                 ready_replicas: Some(1),
                 service_address: Some("127.0.0.1".to_string()),
+                selected_zones: vec![],
             })
         } else {
             Some(Bind9InstanceStatus {
@@ -133,6 +134,7 @@ mod tests {
                 replicas: Some(1),
                 ready_replicas: Some(0),
                 service_address: None,
+                selected_zones: vec![],
             })
         };
 
@@ -156,6 +158,7 @@ mod tests {
                 rndc_secret_ref: None,
                 storage: None,
                 bindcar_config: None,
+                zones_from: None,
             },
             status,
         }

@@ -1,3 +1,6 @@
+   Compiling bindy v0.2.0 (/Users/erick/dev/bindy)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.31s
+     Running `target/debug/crddoc`
 # API Reference
 
 This document describes the Custom Resource Definitions (CRDs) provided by Bindy.
@@ -51,6 +54,8 @@ DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defi
 | `recordCount` | integer | No |  |
 | `records` | array | No | List of DNS records successfully associated with this zone. Updated by the zone reconciler when records are added/removed. |
 | `secondaryIps` | array | No | IP addresses of secondary servers configured for zone transfers. Used to detect when secondary IPs change and zones need updating. |
+| `selectedByInstance` | string | No | Name of the instance that selected this zone (if selected via \`zonesFrom\`).  Only set when \`selection_method\` is \`"label-selector"\`. Matches the value in the \`bindy.firestoned.io/selected-by-instance\` annotation. |
+| `selectionMethod` | string | No | Indicates how this zone was assigned to a cluster.  Possible values: - \`"explicit"\`: Zone has explicit \`clusterRef\` or \`clusterProviderRef\` in spec - \`"label-selector"\`: Zone was selected by an instance's \`zonesFrom\` label selector - \`null\`: Zone is not assigned to any cluster |
 
 ---
 
@@ -75,7 +80,9 @@ ARecord maps a DNS hostname to an IPv4 address. Multiple A records for the same 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
+| `lastUpdated` | string | No | Timestamp of the last successful update to BIND9.  This is updated after a successful nsupdate operation. Uses RFC 3339 format (e.g., "2025-12-26T10:30:00Z"). |
 | `observedGeneration` | integer | No |  |
+| `recordHash` | string | No | SHA-256 hash of the record's spec data.  Used to detect when a record's data has actually changed, avoiding unnecessary BIND9 updates and zone transfers.  The hash is calculated from all fields in the record's spec that affect the DNS record data (name, addresses, TTL, etc.). |
 | `zone` | string | No | The FQDN of the zone that owns this record (set by \`DNSZone\` controller).  When a \`DNSZone\`'s label selector matches this record, the \`DNSZone\` controller sets this field to the zone's FQDN (e.g., \`"example.com"\`). The record reconciler uses this to determine which zone to update in BIND9.  If this field is empty, the record is not matched by any zone and should not be reconciled into BIND9. |
 
 ---
@@ -99,7 +106,9 @@ AAAARecord maps a DNS hostname to an IPv6 address. This is the IPv6 equivalent o
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
+| `lastUpdated` | string | No | Timestamp of the last successful update to BIND9.  This is updated after a successful nsupdate operation. Uses RFC 3339 format (e.g., "2025-12-26T10:30:00Z"). |
 | `observedGeneration` | integer | No |  |
+| `recordHash` | string | No | SHA-256 hash of the record's spec data.  Used to detect when a record's data has actually changed, avoiding unnecessary BIND9 updates and zone transfers.  The hash is calculated from all fields in the record's spec that affect the DNS record data (name, addresses, TTL, etc.). |
 | `zone` | string | No | The FQDN of the zone that owns this record (set by \`DNSZone\` controller).  When a \`DNSZone\`'s label selector matches this record, the \`DNSZone\` controller sets this field to the zone's FQDN (e.g., \`"example.com"\`). The record reconciler uses this to determine which zone to update in BIND9.  If this field is empty, the record is not matched by any zone and should not be reconciled into BIND9. |
 
 ---
@@ -123,7 +132,9 @@ CNAMERecord creates a DNS alias from one hostname to another. A CNAME cannot coe
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
+| `lastUpdated` | string | No | Timestamp of the last successful update to BIND9.  This is updated after a successful nsupdate operation. Uses RFC 3339 format (e.g., "2025-12-26T10:30:00Z"). |
 | `observedGeneration` | integer | No |  |
+| `recordHash` | string | No | SHA-256 hash of the record's spec data.  Used to detect when a record's data has actually changed, avoiding unnecessary BIND9 updates and zone transfers.  The hash is calculated from all fields in the record's spec that affect the DNS record data (name, addresses, TTL, etc.). |
 | `zone` | string | No | The FQDN of the zone that owns this record (set by \`DNSZone\` controller).  When a \`DNSZone\`'s label selector matches this record, the \`DNSZone\` controller sets this field to the zone's FQDN (e.g., \`"example.com"\`). The record reconciler uses this to determine which zone to update in BIND9.  If this field is empty, the record is not matched by any zone and should not be reconciled into BIND9. |
 
 ---
@@ -148,7 +159,9 @@ MXRecord specifies mail exchange servers for a domain. Lower priority values ind
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
+| `lastUpdated` | string | No | Timestamp of the last successful update to BIND9.  This is updated after a successful nsupdate operation. Uses RFC 3339 format (e.g., "2025-12-26T10:30:00Z"). |
 | `observedGeneration` | integer | No |  |
+| `recordHash` | string | No | SHA-256 hash of the record's spec data.  Used to detect when a record's data has actually changed, avoiding unnecessary BIND9 updates and zone transfers.  The hash is calculated from all fields in the record's spec that affect the DNS record data (name, addresses, TTL, etc.). |
 | `zone` | string | No | The FQDN of the zone that owns this record (set by \`DNSZone\` controller).  When a \`DNSZone\`'s label selector matches this record, the \`DNSZone\` controller sets this field to the zone's FQDN (e.g., \`"example.com"\`). The record reconciler uses this to determine which zone to update in BIND9.  If this field is empty, the record is not matched by any zone and should not be reconciled into BIND9. |
 
 ---
@@ -172,7 +185,9 @@ NSRecord delegates a subdomain to authoritative nameservers. Used for subdomain 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
+| `lastUpdated` | string | No | Timestamp of the last successful update to BIND9.  This is updated after a successful nsupdate operation. Uses RFC 3339 format (e.g., "2025-12-26T10:30:00Z"). |
 | `observedGeneration` | integer | No |  |
+| `recordHash` | string | No | SHA-256 hash of the record's spec data.  Used to detect when a record's data has actually changed, avoiding unnecessary BIND9 updates and zone transfers.  The hash is calculated from all fields in the record's spec that affect the DNS record data (name, addresses, TTL, etc.). |
 | `zone` | string | No | The FQDN of the zone that owns this record (set by \`DNSZone\` controller).  When a \`DNSZone\`'s label selector matches this record, the \`DNSZone\` controller sets this field to the zone's FQDN (e.g., \`"example.com"\`). The record reconciler uses this to determine which zone to update in BIND9.  If this field is empty, the record is not matched by any zone and should not be reconciled into BIND9. |
 
 ---
@@ -196,7 +211,9 @@ TXTRecord stores arbitrary text data in DNS. Commonly used for SPF, DKIM, DMARC 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
+| `lastUpdated` | string | No | Timestamp of the last successful update to BIND9.  This is updated after a successful nsupdate operation. Uses RFC 3339 format (e.g., "2025-12-26T10:30:00Z"). |
 | `observedGeneration` | integer | No |  |
+| `recordHash` | string | No | SHA-256 hash of the record's spec data.  Used to detect when a record's data has actually changed, avoiding unnecessary BIND9 updates and zone transfers.  The hash is calculated from all fields in the record's spec that affect the DNS record data (name, addresses, TTL, etc.). |
 | `zone` | string | No | The FQDN of the zone that owns this record (set by \`DNSZone\` controller).  When a \`DNSZone\`'s label selector matches this record, the \`DNSZone\` controller sets this field to the zone's FQDN (e.g., \`"example.com"\`). The record reconciler uses this to determine which zone to update in BIND9.  If this field is empty, the record is not matched by any zone and should not be reconciled into BIND9. |
 
 ---
@@ -223,7 +240,9 @@ SRVRecord specifies the hostname and port of servers for specific services. The 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
+| `lastUpdated` | string | No | Timestamp of the last successful update to BIND9.  This is updated after a successful nsupdate operation. Uses RFC 3339 format (e.g., "2025-12-26T10:30:00Z"). |
 | `observedGeneration` | integer | No |  |
+| `recordHash` | string | No | SHA-256 hash of the record's spec data.  Used to detect when a record's data has actually changed, avoiding unnecessary BIND9 updates and zone transfers.  The hash is calculated from all fields in the record's spec that affect the DNS record data (name, addresses, TTL, etc.). |
 | `zone` | string | No | The FQDN of the zone that owns this record (set by \`DNSZone\` controller).  When a \`DNSZone\`'s label selector matches this record, the \`DNSZone\` controller sets this field to the zone's FQDN (e.g., \`"example.com"\`). The record reconciler uses this to determine which zone to update in BIND9.  If this field is empty, the record is not matched by any zone and should not be reconciled into BIND9. |
 
 ---
@@ -249,7 +268,9 @@ CAARecord specifies which certificate authorities are authorized to issue certif
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
 | `conditions` | array | No |  |
+| `lastUpdated` | string | No | Timestamp of the last successful update to BIND9.  This is updated after a successful nsupdate operation. Uses RFC 3339 format (e.g., "2025-12-26T10:30:00Z"). |
 | `observedGeneration` | integer | No |  |
+| `recordHash` | string | No | SHA-256 hash of the record's spec data.  Used to detect when a record's data has actually changed, avoiding unnecessary BIND9 updates and zone transfers.  The hash is calculated from all fields in the record's spec that affect the DNS record data (name, addresses, TTL, etc.). |
 | `zone` | string | No | The FQDN of the zone that owns this record (set by \`DNSZone\` controller).  When a \`DNSZone\`'s label selector matches this record, the \`DNSZone\` controller sets this field to the zone's FQDN (e.g., \`"example.com"\`). The record reconciler uses this to determine which zone to update in BIND9.  If this field is empty, the record is not matched by any zone and should not be reconciled into BIND9. |
 
 ---
@@ -276,6 +297,7 @@ Bind9Cluster defines a namespace-scoped logical grouping of BIND9 DNS server ins
 | `version` | string | No | Shared BIND9 version for the cluster  If not specified, defaults to "9.18". |
 | `volumeMounts` | array | No | Volume mounts that specify where volumes should be mounted in containers  These mounts are inherited by all instances unless overridden. |
 | `volumes` | array | No | Volumes that can be mounted by instances in this cluster  These volumes are inherited by all instances unless overridden. Common use cases include \`PersistentVolumeClaims\` for zone data storage. |
+| `zonesFrom` | array | No | Select DNS zones using label selectors.  Zones matching these selectors will be automatically served by this cluster's instances. This is an alternative to zones explicitly specifying \`clusterRef\` or \`clusterProviderRef\`.  When specified at the cluster level, this configuration propagates to all instances in the cluster. Instances will watch for \`DNSZone\` resources matching these selectors and automatically configure BIND9 to serve them.  # Example  \`\`\`yaml zonesFrom:   - selector:       matchLabels:         environment: production         team: platform \`\`\` |
 
 #### Status Fields
 
@@ -312,6 +334,7 @@ Bind9Instance represents a BIND9 DNS server deployment in Kubernetes. Each insta
 | `version` | string | No | BIND9 version override. Inherits from cluster if not specified.  Example: "9.18", "9.16" |
 | `volumeMounts` | array | No | Volume mounts override for this instance. Inherits from cluster if not specified.  These mounts override cluster-level volume mounts. |
 | `volumes` | array | No | Volumes override for this instance. Inherits from cluster if not specified.  These volumes override cluster-level volumes. Common use cases include instance-specific \`PersistentVolumeClaims\` for zone data storage. |
+| `zonesFrom` | array | No | Select DNS zones using label selectors.  Zones matching these selectors will be served by this instance. This field is typically inherited from the parent \`Bind9Cluster\` or \`ClusterBind9Provider\`, but can be overridden or extended at the instance level.  The instance reconciler watches for \`DNSZone\` resources matching these selectors and automatically tags them with \`bindy.firestoned.io/selected-by-instance\` annotation. Tagged zones are then configured in BIND9.  # Example  \`\`\`yaml zonesFrom:   - selector:       matchLabels:         instance: primary \`\`\` |
 
 #### Status Fields
 
@@ -321,6 +344,7 @@ Bind9Instance represents a BIND9 DNS server deployment in Kubernetes. Each insta
 | `observedGeneration` | integer | No |  |
 | `readyReplicas` | integer | No |  |
 | `replicas` | integer | No |  |
+| `selectedZones` | array | No | List of DNS zones matched by \`zonesFrom\` selectors.  Updated by the instance reconciler when zones are discovered via label selectors. This field shows which zones are currently being served by this instance due to label selector matching (as opposed to explicit \`clusterRef\`/\`clusterProviderRef\`). |
 | `serviceAddress` | string | No | IP or hostname of this instance's service |
 
 ---

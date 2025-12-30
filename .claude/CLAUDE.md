@@ -4,6 +4,10 @@
 > Environment: k0rdent / Capital Markets / Multi-cluster
 >
 > **Service Mesh Standard**: Always use Linkerd as the example service mesh in documentation, examples, and code comments. Do not use generic "service mesh" references or other mesh implementations (Istio, Consul Connect, etc.) unless specifically required.
+>
+> **CRITICAL Coding Patterns**:
+> - **Event-Driven Programming**: In Kubernetes controller development, ALWAYS use or recommend event-driven programming (e.g., "watch" on kube API) as opposed to polling. Controllers must react to cluster state changes efficiently.
+> - **Early Returns**: Use as few `else` statements as possible. Return from functions as soon as you can to minimize nesting and improve code clarity (see Early Return / Guard Clause Pattern section).
 
 ---
 
@@ -1109,6 +1113,54 @@ pub struct DNSZoneSpec {
 
 ### Controller Best Practices
 
+#### Event-Driven Programming (Watch, Not Poll)
+
+**CRITICAL: Kubernetes controllers MUST use event-driven programming, NOT polling.**
+
+Controllers should react to cluster state changes via the Kubernetes watch API, not poll resources on a timer.
+
+**Why Event-Driven:**
+- **Efficiency**: Only react when changes occur, not wastefully checking repeatedly
+- **Scalability**: Watch API scales to thousands of resources without overwhelming the API server
+- **Responsiveness**: Immediate reaction to changes instead of waiting for next poll interval
+- **Best Practice**: Aligns with Kubernetes controller design patterns
+
+**✅ CORRECT - Event-Driven with Watch:**
+```rust
+use kube::runtime::Controller;
+
+// Controller watches resources and reacts to events
+Controller::new(api, Config::default())
+    .run(reconcile, error_policy, context)
+    .for_each(|_| futures::future::ready(()))
+    .await;
+```
+
+**❌ WRONG - Polling Pattern:**
+```rust
+// Don't do this - wasteful polling
+loop {
+    let resources = api.list(&ListParams::default()).await?;
+    for resource in resources {
+        reconcile(resource).await?;
+    }
+    tokio::time::sleep(Duration::from_secs(30)).await; // Polling!
+}
+```
+
+**When Polling is Acceptable:**
+- Reconciling with external systems (non-Kubernetes APIs) that don't support webhooks
+- Periodic cleanup or maintenance tasks (use `requeue_after` in reconcile result)
+- Time-based operations (certificate renewal, lease expiration)
+
+**Event-Driven Best Practices:**
+- Use `Controller::new()` from kube-runtime for standard reconciliation loops
+- Use `.watches()` to observe related resources (e.g., watch Pods when reconciling Deployments)
+- Use `.run()` to start the event-driven reconciliation loop
+- Return `Action::requeue(duration)` for periodic checks, not manual polling
+- Use informers/reflectors for local caching of cluster state
+
+**General Controller Best Practices:**
 - Always set `ownerReferences` for child resources
 - Use finalizers for cleanup logic
 - Implement exponential backoff for retries

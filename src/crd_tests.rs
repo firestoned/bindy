@@ -174,6 +174,7 @@ mod tests {
                 acls: Some(acls.clone()),
                 volumes: None,
                 volume_mounts: None,
+                zones_from: None,
             },
         };
 
@@ -351,6 +352,7 @@ mod tests {
             rndc_secret_ref: None,
             storage: None,
             bindcar_config: None,
+            zones_from: None,
         };
 
         assert_eq!(spec.cluster_ref, "my-cluster");
@@ -386,6 +388,7 @@ mod tests {
             replicas: Some(3),
             ready_replicas: Some(2),
             service_address: Some("my-instance.dns-system.svc.cluster.local".into()),
+            selected_zones: vec![],
         };
 
         assert_eq!(status.conditions.len(), 1);
@@ -485,6 +488,7 @@ mod tests {
             replicas: Some(3),
             ready_replicas: Some(3),
             service_address: None,
+            selected_zones: vec![],
         };
 
         assert_eq!(status.conditions.len(), 2);
@@ -508,6 +512,8 @@ mod tests {
             record_count: Some(5),
             secondary_ips: None,
             records: vec![],
+            selection_method: None,
+            selected_by_instance: None,
         };
 
         assert_eq!(status.conditions.len(), 1);
@@ -554,6 +560,7 @@ mod tests {
             replicas: Some(3),
             ready_replicas: Some(2),
             service_address: None,
+            selected_zones: vec![],
         };
 
         assert_eq!(status.conditions[0].r#type, "Degraded");
@@ -577,6 +584,7 @@ mod tests {
             replicas: Some(0),
             ready_replicas: Some(0),
             service_address: None,
+            selected_zones: vec![],
         };
 
         assert_eq!(status.conditions[0].r#type, "Failed");
@@ -646,6 +654,7 @@ mod tests {
             replicas: Some(3),
             ready_replicas: Some(3),
             service_address: None,
+            selected_zones: vec![],
         };
 
         assert_eq!(status.conditions.len(), 0);
@@ -660,6 +669,7 @@ mod tests {
             replicas: Some(3),
             ready_replicas: Some(3),
             service_address: None,
+            selected_zones: vec![],
         };
 
         // Observed generation tracks which generation of the resource was last reconciled

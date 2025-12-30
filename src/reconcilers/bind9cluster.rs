@@ -838,6 +838,7 @@ async fn update_existing_managed_instances(
                 rndc_secret_ref: instance.spec.rndc_secret_ref.clone(), // Preserve if set
                 storage: instance.spec.storage.clone(),                 // Preserve if set
                 bindcar_config: desired_bindcar_config,
+                zones_from: common_spec.zones_from.clone(), // Propagate from cluster
             };
 
             // Use server-side apply to update the instance spec
@@ -1105,6 +1106,7 @@ async fn create_managed_instance_with_owner(
             .global
             .as_ref()
             .and_then(|g| g.bindcar_config.clone()),
+        zones_from: common_spec.zones_from.clone(), // Propagate from cluster
     };
 
     let instance = Bind9Instance {

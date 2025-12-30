@@ -4,6 +4,9 @@ kind: DNSZone
 metadata:
   name: example-com
   namespace: dns-system
+  labels:
+    bindy.firestoned.io/environment: production
+    bindy.firestoned.io/team: platform
 spec:
   zoneName: example.com
   # Reference to the Bind9Cluster that manages this zone
@@ -25,6 +28,7 @@ spec:
   recordsFrom:
     - selector:
         matchLabels:
+          bindy.firestoned.io/zone: example.com
           zone: example.com
 ---
 apiVersion: bindy.firestoned.io/v1beta1
@@ -52,4 +56,5 @@ spec:
   recordsFrom:
     - selector:
         matchLabels:
+          bindy.firestoned.io/zone: internal.local
           zone: internal.local
