@@ -94,6 +94,14 @@ metadata:
    - Shows SOA record configuration
    - **Updated:** Now correctly references Bind9Cluster (not instance)
 
+3a. **[zone-label-selector.yaml](zone-label-selector.yaml)** - **Zone selection with label selectors**
+   - Demonstrates automatic zone discovery using `zonesFrom` field
+   - Shows production/development cluster separation
+   - Examples of `matchLabels` and `matchExpressions` selectors
+   - Illustrates explicit `clusterRef` override behavior
+   - Multi-selector and cluster-scoped provider examples
+   - Self-healing zone assignment based on labels
+
 4. **[dns-records.yaml](dns-records.yaml)** - Various DNS record types
    - A records (IPv4 addresses)
    - CNAME records (aliases)

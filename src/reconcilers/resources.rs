@@ -236,7 +236,7 @@ where
 /// # use serde_json::json;
 /// # async fn example(client: &Client, namespace: &str, instance: Bind9Instance) {
 /// let patch = json!({
-///     "apiVersion": "dns.firestoned.io/v1alpha1",
+///     "apiVersion": "dns.firestoned.io/v1beta1",
 ///     "kind": "Bind9Instance",
 ///     "metadata": {
 ///         "name": "my-instance",

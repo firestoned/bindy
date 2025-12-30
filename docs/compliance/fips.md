@@ -282,7 +282,7 @@ TLS_RSA_WITH_AES_128_CBC_SHA        # CBC mode vulnerable
 
 **Configuration:**
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: dns.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary

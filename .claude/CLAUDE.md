@@ -25,17 +25,24 @@
 - **Version Control**: Plans tracked alongside code changes
 - **Easy Reference**: Developers know exactly where to find planning documents
 
+**Naming Convention:**
+- Use **lowercase** filenames
+- Use **hyphens** (`-`) instead of underscores (`_`)
+- Use descriptive names indicating the purpose
+
 **Examples:**
 ```
 ✅ CORRECT:
 docs/roadmaps/integration-test-plan.md
 docs/roadmaps/phase4-implementation.md
 docs/roadmaps/feature-roadmap-2025.md
+docs/roadmaps/zones-from-label-selector-support.md
 
 ❌ WRONG:
-INTEGRATION_TEST_PLAN.md (root directory)
-ROADMAP.md (root directory)
+INTEGRATION_TEST_PLAN.md (root directory, uppercase, underscores)
+ROADMAP.md (root directory, uppercase)
 planning/test-plan.md (wrong directory)
+docs/roadmaps/ZONES_FROM_LABEL_SELECTOR.md (uppercase, underscores)
 ```
 
 **What Goes in docs/roadmaps/:**
@@ -193,14 +200,14 @@ See **CRD Development - Rust as Source of Truth** section below for details.
 **Example of Critical Failure:**
 ```yaml
 # ❌ WRONG - Using spec.config instead of spec.global
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9GlobalCluster
 spec:
   config:  # This field doesn't exist!
     recursion: true
 
 # ✅ CORRECT - Verified against CRD
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9GlobalCluster
 spec:
   global:  # Correct field name from CRD schema
@@ -1049,7 +1056,7 @@ All generated YAML files include:
    #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
    #[kube(
        group = "dns.firestoned.io",
-       version = "v1alpha1",
+       version = "v1beta1",
        kind = "MyNewResource",
        namespaced
    )]
@@ -1097,7 +1104,7 @@ fi
 #[kube(
     kind = "DNSZone",
     group = "dns.firestoned.io",
-    version = "v1alpha1",
+    version = "v1beta1",
     namespaced,
     status = "DNSZoneStatus",
     printcolumn = r#"{"name":"Zone","type":"string","jsonPath":".spec.zoneName"}"#,

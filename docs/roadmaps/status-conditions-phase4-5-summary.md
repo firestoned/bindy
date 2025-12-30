@@ -78,7 +78,7 @@ This enables operators to quickly identify failing components without needing to
 ### Example Output (Phase 4)
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: dns-primary-0
@@ -171,7 +171,7 @@ status:
 ### Example Output (Phase 5)
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: dns-cluster

@@ -173,7 +173,7 @@ status:
       name: spf-txt-record
 ```
 
-**Note:** The `records` field is **only available in v1beta1** and tracks all DNS records successfully associated with this zone. This field does not exist in the deprecated v1alpha1 API.
+**Note:** The `records` field is **only available in v1beta1** and tracks all DNS records successfully associated with this zone. This field did not exist in the now-removed v1alpha1 API.
 
 ### Status After Partial Failure (Degraded)
 
@@ -211,7 +211,7 @@ DNSZone uses the following condition types:
 
 ### Status Field: `records` (v1beta1 only)
 
-The `status.records` field provides a real-time inventory of all DNS records successfully associated with this zone. This field is **only available in the v1beta1 API** and does not exist in the deprecated v1alpha1 API.
+The `status.records` field provides a real-time inventory of all DNS records successfully associated with this zone. This field is **only available in the v1beta1 API** and did not exist in the now-removed v1alpha1 API.
 
 #### How It Works
 
@@ -280,7 +280,7 @@ status:
 
 #### Important Notes
 
-- **v1beta1 Only**: This field does not exist in v1alpha1. If you're still using v1alpha1, upgrade to v1beta1 to access this feature.
+- **v1beta1 Only**: This field did not exist in the now-removed v1alpha1 API.
 - **Read-Only**: The `records` field is managed automatically by the controller. Do not manually edit it.
 - **Eventually Consistent**: After creating a new record, it may take a few seconds for it to appear in the zone's `status.records` list.
 - **Duplicate Prevention**: The controller automatically prevents duplicate record references from being added.

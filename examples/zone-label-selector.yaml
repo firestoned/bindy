@@ -1,0 +1,322 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
+# Example: Zone Selection with Label Selectors
+#
+# This example demonstrates automatic zone discovery using label selectors.
+# Instead of explicitly assigning zones to clusters, zones are discovered
+# based on their labels matching cluster/instance selectors.
+#
+# This pattern enables:
+# - Declarative zone assignment
+# - Self-healing zone discovery
+# - Automatic zone movement when labels change
+# - Multi-tenant DNS management
+
+---
+# Production DNS Cluster
+# Automatically discovers zones labeled with environment=production
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Cluster
+metadata:
+  name: production-dns
+  namespace: dns-system
+spec:
+  common:
+    # Discover zones matching these labels
+    zonesFrom:
+      - selector:
+          matchLabels:
+            environment: production
+
+    # Cluster configuration
+    version: "9.18"
+    global:
+      recursion: false
+      dnssec: true
+      dnssecValidation: true
+
+    # Primary/secondary topology
+    primary:
+      replicas: 2
+    secondary:
+      replicas: 3
+
+---
+# Development DNS Cluster
+# Automatically discovers zones labeled with environment=development
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Cluster
+metadata:
+  name: development-dns
+  namespace: dns-system
+spec:
+  common:
+    # Discover zones matching these labels
+    zonesFrom:
+      - selector:
+          matchLabels:
+            environment: development
+
+    version: "9.18"
+    global:
+      recursion: true  # Allow recursion in dev
+      dnssec: false    # Disable DNSSEC in dev
+
+    primary:
+      replicas: 1
+    secondary:
+      replicas: 1
+
+---
+# Platform Team DNS Cluster
+# Discovers zones owned by the platform team using matchExpressions
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Cluster
+metadata:
+  name: platform-team-dns
+  namespace: platform
+spec:
+  common:
+    # More complex selector using expressions
+    zonesFrom:
+      - selector:
+          matchLabels:
+            owner: platform-team
+          matchExpressions:
+            - key: category
+              operator: In
+              values: [infrastructure, monitoring, logging]
+
+    version: "9.18"
+    global:
+      recursion: false
+      dnssec: true
+
+    primary:
+      replicas: 1
+
+---
+# Production API Zone
+# Automatically discovered by production-dns cluster
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: prod-api
+  namespace: dns-system
+  labels:
+    environment: production  # Matches production-dns selector
+    service: api
+    team: backend
+spec:
+  zoneName: api.example.com
+  # No clusterRef needed - automatically discovered!
+  soaRecord:
+    primaryServer: ns1.api.example.com
+    adminEmail: dns-admin.example.com
+    refresh: 3600
+    retry: 1800
+    expire: 604800
+    ttl: 86400
+
+---
+# Production Web Zone
+# Automatically discovered by production-dns cluster
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: prod-web
+  namespace: dns-system
+  labels:
+    environment: production  # Matches production-dns selector
+    service: web
+    team: frontend
+spec:
+  zoneName: www.example.com
+  soaRecord:
+    primaryServer: ns1.www.example.com
+    adminEmail: dns-admin.example.com
+
+---
+# Development API Zone
+# Automatically discovered by development-dns cluster
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: dev-api
+  namespace: dns-system
+  labels:
+    environment: development  # Matches development-dns selector
+    service: api
+    team: backend
+spec:
+  zoneName: api.dev.example.com
+  soaRecord:
+    primaryServer: ns1.api.dev.example.com
+    adminEmail: dns-admin.example.com
+
+---
+# Platform Infrastructure Zone
+# Discovered by platform-team-dns cluster via matchExpressions
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: platform-infra
+  namespace: platform
+  labels:
+    owner: platform-team        # Matches matchLabels
+    category: infrastructure    # Matches matchExpressions
+spec:
+  zoneName: infra.platform.example.com
+  soaRecord:
+    primaryServer: ns1.infra.platform.example.com
+    adminEmail: platform-team.example.com
+
+---
+# Platform Monitoring Zone
+# Discovered by platform-team-dns cluster
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: platform-monitoring
+  namespace: platform
+  labels:
+    owner: platform-team     # Matches matchLabels
+    category: monitoring     # Matches matchExpressions (In operator)
+spec:
+  zoneName: monitoring.platform.example.com
+  soaRecord:
+    primaryServer: ns1.monitoring.platform.example.com
+    adminEmail: platform-team.example.com
+
+---
+# Critical Zone with Explicit Override
+# Has labels matching production-dns, but explicit clusterRef takes precedence
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: critical-payment
+  namespace: dns-system
+  labels:
+    environment: production  # Matches production-dns, but...
+    service: payment
+    critical: "true"
+spec:
+  zoneName: payment.example.com
+  clusterRef: dedicated-payment-cluster  # ...explicit ref takes precedence
+  soaRecord:
+    primaryServer: ns1.payment.example.com
+    adminEmail: payment-team.example.com
+
+---
+# Multi-Selector Cluster
+# Discovers zones using multiple different selectors
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Cluster
+metadata:
+  name: multi-selector-dns
+  namespace: dns-system
+spec:
+  common:
+    # Multiple selectors - zones matching ANY selector will be discovered
+    zonesFrom:
+      # Production zones
+      - selector:
+          matchLabels:
+            environment: production
+            critical: "true"
+
+      # Infrastructure zones
+      - selector:
+          matchLabels:
+            type: infrastructure
+
+      # Zones for specific teams
+      - selector:
+          matchExpressions:
+            - key: owner
+              operator: In
+              values: [platform, sre, security]
+
+    version: "9.18"
+    primary:
+      replicas: 2
+    secondary:
+      replicas: 2
+
+---
+# Zone with Multiple Labels
+# Matches multi-selector-dns via critical=true selector
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: critical-auth
+  namespace: dns-system
+  labels:
+    environment: production
+    critical: "true"        # Matches first selector
+    service: authentication
+spec:
+  zoneName: auth.example.com
+  soaRecord:
+    primaryServer: ns1.auth.example.com
+    adminEmail: security-team.example.com
+
+---
+# Infrastructure Zone
+# Matches multi-selector-dns via type=infrastructure selector
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: cluster-internal
+  namespace: dns-system
+  labels:
+    type: infrastructure  # Matches second selector
+    scope: internal
+spec:
+  zoneName: cluster.internal
+  soaRecord:
+    primaryServer: ns1.cluster.internal
+    adminEmail: platform-team.example.com
+
+---
+# Cluster-Scoped Provider with Zone Selection
+# Propagates zonesFrom to all child clusters
+apiVersion: bindy.firestoned.io/v1beta1
+kind: ClusterBind9Provider
+metadata:
+  name: global-dns-provider
+spec:
+  common:
+    # This selector propagates to ALL clusters created by this provider
+    zonesFrom:
+      - selector:
+          matchLabels:
+            scope: global
+
+    version: "9.18"
+    global:
+      recursion: false
+      dnssec: true
+
+    primary:
+      replicas: 2
+    secondary:
+      replicas: 3
+
+---
+# Global Zone
+# Discovered by ANY cluster created from global-dns-provider
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: global-cdn
+  namespace: any-namespace
+  labels:
+    scope: global  # Matches ClusterBind9Provider selector
+    service: cdn
+spec:
+  zoneName: cdn.global.example.com
+  soaRecord:
+    primaryServer: ns1.cdn.global.example.com
+    adminEmail: cdn-team.example.com
