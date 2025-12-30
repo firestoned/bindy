@@ -74,6 +74,67 @@ When you create a DNSZone resource:
 5. **BIND9 creates zone** - BIND9 creates the zone file and starts serving the zone
 6. **Updates status** - Controller updates DNSZone status to Ready
 
+## Event-Driven Record Discovery
+
+The DNSZone controller uses an **event-driven architecture** to automatically discover and manage DNS records:
+
+### How It Works
+
+1. **DNSZone watches all 8 record types**
+   - ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord
+   - Watches trigger immediately when records are created/updated/deleted
+   - No polling delays - sub-second reaction time
+
+2. **Evaluates label selectors** (from `spec.recordsFrom`)
+   ```yaml
+   spec:
+     recordsFrom:
+       - selector:
+           matchLabels:
+             zone: example.com
+   ```
+
+3. **Sets `status.zoneRef` on matching records** ⚡
+   ```yaml
+   # Record status is automatically updated
+   status:
+     zoneRef:
+       apiVersion: bindy.firestoned.io/v1beta1
+       kind: DNSZone
+       name: example-com
+       namespace: default
+       zoneName: example.com
+   ```
+
+4. **Updates zone's `status.records[]`** with discovered records
+   ```yaml
+   status:
+     records:
+       - apiVersion: bindy.firestoned.io/v1beta1
+         kind: ARecord
+         name: www-example
+   ```
+
+### Immediate Reconciliation
+
+When a record is created with matching labels:
+
+```
+Record created (10:00:00.000)
+  → DNSZone watch triggered (10:00:00.050) ⚡
+  → Label selectors evaluated (10:00:00.100)
+  → status.zoneRef set (10:00:00.150)
+  → Record reconciles (10:00:00.500)
+  → Total time: 500ms ✅
+```
+
+**Old polling approach:**
+```
+Record created (10:00:00.000)
+  → DNSZone reconciles (10:05:00.000) ⏳ 5 minute delay
+  → Total time: 5 minutes ❌
+```
+
 ## Cluster References
 
 Zones reference a specific BIND9 cluster by name:

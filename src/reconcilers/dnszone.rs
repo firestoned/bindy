@@ -1,5 +1,6 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
-#![allow(dead_code)]
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::doc_markdown)]
 // SPDX-License-Identifier: MIT
 
 //! DNS zone reconciliation logic.
@@ -8,174 +9,546 @@
 //! It supports both primary and secondary zone configurations.
 
 use crate::bind9::RndcKeyData;
-use crate::constants::{ANNOTATION_ZONE_OWNER, ANNOTATION_ZONE_PREVIOUS_OWNER};
-use crate::crd::{Bind9Instance, Condition, DNSZone, DNSZoneSpec, DNSZoneStatus};
-use crate::labels::BINDY_SELECTED_BY_INSTANCE_ANNOTATION;
-use anyhow::{anyhow, Context, Result};
+// Bind9Instance and InstanceReferenceWithStatus are used by dead_code marked functions (Phase 2 cleanup)
+#[allow(unused_imports)]
+use crate::crd::{Condition, DNSZone, DNSZoneStatus};
+use anyhow::{anyhow, Context as AnyhowContext, Result};
 use bindcar::{ZONE_TYPE_PRIMARY, ZONE_TYPE_SECONDARY};
-use chrono::Utc;
-use k8s_openapi::api::core::v1::{Endpoints, Pod, Secret};
+use futures::stream::{self, StreamExt};
+use k8s_openapi::api::core::v1::{Endpoints, Pod, Secret, Service};
 use kube::{
     api::{ListParams, Patch, PatchParams},
     client::Client,
     Api, ResourceExt,
 };
 use serde_json::json;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
-/// Selection method for a `DNSZone`.
-///
-/// Indicates how the zone was assigned to an instance:
-/// - `ExplicitRef`: Via explicit `clusterRef` or `clusterProviderRef` in spec
-/// - `LabelSelector`: Via label selector matching (annotated with instance name)
-#[derive(Debug, Clone, PartialEq)]
-pub enum ZoneSelectionMethod {
-    ExplicitRef,
-    LabelSelector(String), // Instance name that selected this zone
-}
-
-impl ZoneSelectionMethod {
-    /// Convert selection method to status string values.
-    ///
-    /// Returns (`selection_method`, `selected_by_instance`) tuple for `DNSZoneStatus`.
-    #[must_use]
-    pub fn to_status_fields(&self) -> (Option<String>, Option<String>) {
-        match self {
-            ZoneSelectionMethod::ExplicitRef => (Some("explicit".to_string()), None),
-            ZoneSelectionMethod::LabelSelector(instance_name) => (
-                Some("labelSelector".to_string()),
-                Some(instance_name.clone()),
-            ),
-        }
-    }
-}
-
-/// Helper function to determine zone selection method and extract cluster reference.
-///
-/// Returns a tuple of (`cluster_ref`, `is_cluster_provider`, `selection_method`).
-///
-/// This function checks for explicit cluster references first, then falls back to
-/// checking for label selector-based selection via the `bindy.firestoned.io/selected-by-instance` annotation.
+/// - Uses the reflector store for O(1) lookups without API calls
+/// - Single source of truth: `DNSZone` owns the zone-instance relationship
 ///
 /// # Arguments
 ///
-/// * `client` - Kubernetes API client for looking up `Bind9Instance`
-/// * `dnszone` - The `DNSZone` resource being reconciled
+/// * `dnszone` - The `DNSZone` resource to get instances for
+/// * `bind9_instances_store` - The reflector store for querying `Bind9Instance` resources
 ///
 /// # Returns
 ///
-/// * `Ok((cluster_ref, is_cluster_provider, selection_method))` - On success
-/// * `Err(_)` - If no valid selection method found or conflicts detected
+/// * `Ok(Vec<InstanceReference>)` - List of instances serving this zone
+/// * `Err(_)` - If no instances match the `bind9_instances_from` selectors
 ///
 /// # Errors
 ///
-/// Returns an error if:
-/// - Both `clusterRef` and `clusterProviderRef` are specified (mutual exclusivity violation)
-/// - Neither explicit ref nor label selector annotation is present
-/// - Referenced `Bind9Instance` does not exist
-pub async fn get_zone_selection_info(
-    client: &Client,
+/// Returns an error if no instances are found matching the label selectors.
+pub fn get_instances_from_zone(
     dnszone: &DNSZone,
-) -> Result<(String, bool, ZoneSelectionMethod)> {
+    bind9_instances_store: &kube::runtime::reflector::Store<crate::crd::Bind9Instance>,
+) -> Result<Vec<crate::crd::InstanceReference>> {
     let namespace = dnszone.namespace().unwrap_or_default();
     let name = dnszone.name_any();
-    let spec = &dnszone.spec;
 
-    // Check for explicit cluster references first (they take precedence)
-    match (&spec.cluster_ref, &spec.cluster_provider_ref) {
-        (Some(ref cluster_name), None) => {
-            return Ok((
-                cluster_name.clone(),
-                false,
-                ZoneSelectionMethod::ExplicitRef,
-            ));
-        }
-        (None, Some(ref cluster_provider_name)) => {
-            return Ok((
-                cluster_provider_name.clone(),
-                true,
-                ZoneSelectionMethod::ExplicitRef,
-            ));
-        }
-        (Some(_), Some(_)) => {
+    // Get bind9_instances_from selectors from zone spec
+    let bind9_instances_from = match &dnszone.spec.bind9_instances_from {
+        Some(sources) if !sources.is_empty() => sources,
+        _ => {
             return Err(anyhow!(
-                "DNSZone {namespace}/{name} has both clusterRef and clusterProviderRef specified. \
-                Only one must be specified."
+                "DNSZone {namespace}/{name} has no bind9_instances_from selectors configured. \
+                Add spec.bind9_instances_from[] with label selectors to target Bind9Instance resources."
             ));
         }
-        (None, None) => {
-            // No explicit reference - check for label selector annotation
-        }
+    };
+
+    // Query all instances from the reflector store and filter by label selectors
+    let instances_with_zone: Vec<crate::crd::InstanceReference> = bind9_instances_store
+        .state()
+        .iter()
+        .filter_map(|instance| {
+            let instance_labels = instance.metadata.labels.as_ref()?;
+            let instance_namespace = instance.namespace()?;
+            let instance_name = instance.name_any();
+
+            // Check if instance matches ANY of the bind9_instances_from selectors (OR logic)
+            let matches = bind9_instances_from
+                .iter()
+                .any(|source| source.selector.matches(instance_labels));
+
+            if matches {
+                Some(crate::crd::InstanceReference {
+                    api_version: "bindy.firestoned.io/v1beta1".to_string(),
+                    kind: "Bind9Instance".to_string(),
+                    name: instance_name,
+                    namespace: instance_namespace,
+                    last_reconciled_at: None,
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if !instances_with_zone.is_empty() {
+        debug!(
+            "DNSZone {}/{} matched {} instances via spec.bind9_instances_from selectors",
+            namespace,
+            name,
+            instances_with_zone.len()
+        );
+        return Ok(instances_with_zone);
     }
 
-    // Check for label selector-based selection
-    if let Some(annotations) = &dnszone.metadata.annotations {
-        if let Some(instance_name) = annotations.get(BINDY_SELECTED_BY_INSTANCE_ANNOTATION) {
-            debug!(
-                "DNSZone {}/{} selected by instance {} via label selector",
-                namespace, name, instance_name
-            );
+    // No instances found
+    Err(anyhow!(
+        "DNSZone {namespace}/{name} has no instances matching spec.bind9_instances_from selectors. \
+        Verify that Bind9Instance resources exist with matching labels."
+    ))
+}
 
-            // Look up the Bind9Instance to get its cluster reference
-            let instance_api: Api<Bind9Instance> = Api::namespaced(client.clone(), &namespace);
-            match instance_api.get(instance_name).await {
-                Ok(_instance) => {
-                    // Bind9Instance must have either clusterRef or be standalone
-                    // For now, we'll just use the instance name as the cluster ref
-                    // TODO: This might need refinement based on actual cluster architecture
-                    return Ok((
-                        instance_name.clone(),
-                        false,
-                        ZoneSelectionMethod::LabelSelector(instance_name.clone()),
-                    ));
+/// Filters instances that need reconciliation based on their `last_reconciled_at` timestamp.
+///
+/// Returns instances where:
+/// - `last_reconciled_at` is `None` (never reconciled)
+/// - `last_reconciled_at` exists but we need to verify pod IPs haven't changed
+///
+/// # Arguments
+///
+/// * `instances` - All instances assigned to the zone
+///
+/// # Returns
+///
+/// List of instances that need reconciliation (zone configuration)
+fn filter_instances_needing_reconciliation(
+    instances: &[crate::crd::InstanceReference],
+) -> Vec<crate::crd::InstanceReference> {
+    instances
+        .iter()
+        .filter(|instance| {
+            // If never reconciled, needs reconciliation
+            instance.last_reconciled_at.is_none()
+        })
+        .cloned()
+        .collect()
+}
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `instance_refs` - Instance references to filter
+///
+/// # Returns
+///
+/// Vector of instance references that have role=Primary
+///
+/// # Errors
+///
+/// Returns an error if Kubernetes API calls fail.
+pub async fn filter_primary_instances(
+    client: &Client,
+    instance_refs: &[crate::crd::InstanceReference],
+) -> Result<Vec<crate::crd::InstanceReference>> {
+    use crate::crd::{Bind9Instance, ServerRole};
+
+    let mut primary_refs = Vec::new();
+
+    for instance_ref in instance_refs {
+        let instance_api: Api<Bind9Instance> =
+            Api::namespaced(client.clone(), &instance_ref.namespace);
+
+        match instance_api.get(&instance_ref.name).await {
+            Ok(instance) => {
+                if instance.spec.role == ServerRole::Primary {
+                    primary_refs.push(instance_ref.clone());
                 }
-                Err(e) => {
-                    return Err(anyhow!(
-                        "DNSZone {namespace}/{name} selected by instance {instance_name} which does not exist: {e}"
-                    ));
-                }
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to get instance {}/{}: {}. Skipping.",
+                    instance_ref.namespace, instance_ref.name, e
+                );
             }
         }
     }
 
-    Err(anyhow!(
-        "DNSZone {namespace}/{name} has neither clusterRef/clusterProviderRef nor label selector annotation. \
-        At least one selection method must be specified."
-    ))
+    Ok(primary_refs)
 }
 
-/// Helper function to extract and validate cluster reference from `DNSZoneSpec`.
+/// Filters a list of instance references to only SECONDARY instances.
 ///
-/// Returns the cluster name, whether from clusterRef or clusterProviderRef.
-/// Validates that exactly one is specified (mutual exclusivity).
+/// # Arguments
 ///
-/// This function is public so it can be used by other reconcilers (e.g., records reconciler).
+/// * `client` - Kubernetes API client
+/// * `instance_refs` - Instance references to filter
 ///
-/// **DEPRECATED**: Use `get_zone_selection_info` instead for full selection method support.
+/// # Returns
+///
+/// Vector of instance references that have role=Secondary
 ///
 /// # Errors
 ///
-/// Returns an error if:
-/// - Both `clusterRef` and `clusterProviderRef` are specified (mutual exclusivity violation)
-/// - Neither `clusterRef` nor `clusterProviderRef` is specified (at least one required)
-pub fn get_cluster_ref_from_spec(
-    spec: &DNSZoneSpec,
-    namespace: &str,
-    name: &str,
-) -> Result<String> {
-    match (&spec.cluster_ref, &spec.cluster_provider_ref) {
-        (Some(ref cluster_name), None) => Ok(cluster_name.clone()),
-        (None, Some(ref cluster_provider_name)) => Ok(cluster_provider_name.clone()),
-        (Some(_), Some(_)) => Err(anyhow!(
-            "DNSZone {namespace}/{name} has both clusterRef and clusterProviderRef specified. \
-            Only one must be specified."
-        )),
-        (None, None) => Err(anyhow!(
-            "DNSZone {namespace}/{name} has neither clusterRef nor clusterProviderRef specified. \
-            Exactly one must be specified."
-        )),
+/// Returns an error if Kubernetes API calls fail.
+pub async fn filter_secondary_instances(
+    client: &Client,
+    instance_refs: &[crate::crd::InstanceReference],
+) -> Result<Vec<crate::crd::InstanceReference>> {
+    use crate::crd::{Bind9Instance, ServerRole};
+
+    let mut secondary_refs = Vec::new();
+
+    for instance_ref in instance_refs {
+        let instance_api: Api<Bind9Instance> =
+            Api::namespaced(client.clone(), &instance_ref.namespace);
+
+        match instance_api.get(&instance_ref.name).await {
+            Ok(instance) => {
+                if instance.spec.role == ServerRole::Secondary {
+                    secondary_refs.push(instance_ref.clone());
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to get instance {}/{}: {}. Skipping.",
+                    instance_ref.namespace, instance_ref.name, e
+                );
+            }
+        }
     }
+
+    Ok(secondary_refs)
+}
+
+/// Finds all pod IPs from a list of instance references, filtering by role.
+///
+/// Queries each `Bind9Instance` resource to determine its role, then collects
+/// pod IPs only from secondary instances. This is event-driven as it reacts
+/// to the current state of `Bind9Instance` resources rather than caching.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `instance_refs` - Instance references to query
+///
+/// # Returns
+///
+/// Vector of pod IP addresses from secondary instances only
+///
+/// # Errors
+///
+/// Returns an error if Kubernetes API calls fail.
+pub async fn find_secondary_pod_ips_from_instances(
+    client: &Client,
+    instance_refs: &[crate::crd::InstanceReference],
+) -> Result<Vec<String>> {
+    use crate::crd::{Bind9Instance, ServerRole};
+    use k8s_openapi::api::core::v1::Pod;
+
+    let mut secondary_ips = Vec::new();
+
+    for instance_ref in instance_refs {
+        // Query the Bind9Instance resource to check its role
+        let instance_api: Api<Bind9Instance> =
+            Api::namespaced(client.clone(), &instance_ref.namespace);
+
+        let instance = match instance_api.get(&instance_ref.name).await {
+            Ok(inst) => inst,
+            Err(e) => {
+                warn!(
+                    "Failed to get Bind9Instance {}/{}: {}. Skipping.",
+                    instance_ref.namespace, instance_ref.name, e
+                );
+                continue;
+            }
+        };
+
+        // Only collect IPs from secondary instances
+        if instance.spec.role != ServerRole::Secondary {
+            debug!(
+                "Skipping instance {}/{} - role is {:?}, not Secondary",
+                instance_ref.namespace, instance_ref.name, instance.spec.role
+            );
+            continue;
+        }
+
+        // Find pods for this secondary instance
+        let pod_api: Api<Pod> = Api::namespaced(client.clone(), &instance_ref.namespace);
+        let label_selector = format!("app=bind9,instance={}", instance_ref.name);
+        let lp = ListParams::default().labels(&label_selector);
+
+        match pod_api.list(&lp).await {
+            Ok(pods) => {
+                for pod in pods.items {
+                    if let Some(pod_ip) = pod.status.as_ref().and_then(|s| s.pod_ip.as_ref()) {
+                        // Check if pod is running
+                        let phase = pod
+                            .status
+                            .as_ref()
+                            .and_then(|s| s.phase.as_ref())
+                            .map_or("Unknown", std::string::String::as_str);
+
+                        if phase == "Running" {
+                            secondary_ips.push(pod_ip.clone());
+                        } else {
+                            debug!(
+                                "Skipping pod {} in phase {} for instance {}/{}",
+                                pod.metadata.name.as_ref().unwrap_or(&"unknown".to_string()),
+                                phase,
+                                instance_ref.namespace,
+                                instance_ref.name
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to list pods for instance {}/{}: {}. Skipping.",
+                    instance_ref.namespace, instance_ref.name, e
+                );
+            }
+        }
+    }
+
+    Ok(secondary_ips)
+}
+
+/// Generates nameserver IPs for a DNS zone from bind9 instances.
+///
+/// Creates a map of nameserver hostnames to IP addresses by:
+/// 1. Checking for Service external IPs first (`LoadBalancer` or `NodePort`)
+/// 2. Falling back to pod IPs if no external IPs are available
+///
+/// Nameservers are named: `ns1.{zone_name}.`, `ns2.{zone_name}.`, etc.
+/// Order: Primary instances first, then secondary instances.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `zone_name` - DNS zone name (e.g., "example.com")
+/// * `instance_refs` - All instance references (primaries and secondaries)
+///
+/// # Returns
+///
+/// `HashMap` of nameserver hostnames to IP addresses, or None if no IPs found
+///
+/// # Errors
+///
+/// Returns an error if Kubernetes API calls fail.
+pub async fn generate_nameserver_ips(
+    client: &Client,
+    zone_name: &str,
+    instance_refs: &[crate::crd::InstanceReference],
+) -> Result<Option<HashMap<String, String>>> {
+    if instance_refs.is_empty() {
+        return Ok(None);
+    }
+
+    let mut nameserver_ips = HashMap::new();
+    let mut ns_index = 1;
+
+    // Process primaries first, then secondaries
+    for instance_ref in instance_refs {
+        // Try to get Service external IP first
+        let service_api: Api<Service> = Api::namespaced(client.clone(), &instance_ref.namespace);
+
+        let ip = match service_api.get(&instance_ref.name).await {
+            Ok(service) => {
+                // Check for LoadBalancer external IP
+                if let Some(status) = &service.status {
+                    if let Some(load_balancer) = &status.load_balancer {
+                        if let Some(ingress_list) = &load_balancer.ingress {
+                            if let Some(ingress) = ingress_list.first() {
+                                if let Some(lb_ip) = &ingress.ip {
+                                    debug!(
+                                        "Using LoadBalancer IP {} for instance {}/{}",
+                                        lb_ip, instance_ref.namespace, instance_ref.name
+                                    );
+                                    Some(lb_ip.clone())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            Err(e) => {
+                debug!(
+                    "Failed to get service for instance {}/{}: {}. Will try pod IP.",
+                    instance_ref.namespace, instance_ref.name, e
+                );
+                None
+            }
+        };
+
+        // If no service external IP, fallback to pod IP
+        let ip = if ip.is_none() {
+            // Get pod IP
+            let pod_api: Api<Pod> = Api::namespaced(client.clone(), &instance_ref.namespace);
+            let label_selector = format!("app=bind9,instance={}", instance_ref.name);
+            let lp = ListParams::default().labels(&label_selector);
+
+            match pod_api.list(&lp).await {
+                Ok(pods) => {
+                    // Find first running pod
+                    pods.items
+                        .iter()
+                        .find(|pod| {
+                            let phase = pod
+                                .status
+                                .as_ref()
+                                .and_then(|s| s.phase.as_ref())
+                                .map_or("Unknown", std::string::String::as_str);
+                            phase == "Running"
+                        })
+                        .and_then(|pod| {
+                            pod.status
+                                .as_ref()
+                                .and_then(|s| s.pod_ip.as_ref())
+                                .map(|ip| {
+                                    debug!(
+                                        "Using pod IP {} for instance {}/{}",
+                                        ip, instance_ref.namespace, instance_ref.name
+                                    );
+                                    ip.clone()
+                                })
+                        })
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to list pods for instance {}/{}: {}. Skipping.",
+                        instance_ref.namespace, instance_ref.name, e
+                    );
+                    None
+                }
+            }
+        } else {
+            ip
+        };
+
+        // Add to nameserver map if we found an IP
+        if let Some(ip) = ip {
+            let ns_hostname = format!("ns{ns_index}.{zone_name}.");
+            nameserver_ips.insert(ns_hostname, ip);
+            ns_index += 1;
+        }
+    }
+
+    if nameserver_ips.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(nameserver_ips))
+    }
+}
+
+/// Iterates through all endpoints for the given instances and executes an operation on each.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `instance_refs` - Instance references to process
+/// * `with_rndc_key` - Whether to load RNDC keys for each instance
+/// * `port_name` - Port name to use ("http", "dns", etc.)
+/// * `operation` - Async function to execute on each endpoint
+///
+/// # Returns
+///
+/// Tuple of (`first_endpoint`, `total_successful_endpoints`)
+///
+/// # Errors
+///
+/// Returns an error if all operations fail or if critical API calls fail.
+pub async fn for_each_instance_endpoint<F, Fut>(
+    client: &Client,
+    instance_refs: &[crate::crd::InstanceReference],
+    with_rndc_key: bool,
+    port_name: &str,
+    operation: F,
+) -> Result<(Option<String>, usize)>
+where
+    F: Fn(String, String, Option<RndcKeyData>) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    let mut first_endpoint: Option<String> = None;
+    let mut total_endpoints = 0;
+    let mut errors: Vec<String> = Vec::new();
+
+    for instance_ref in instance_refs {
+        info!(
+            "Processing endpoints for instance {}/{}",
+            instance_ref.namespace, instance_ref.name
+        );
+
+        // Load RNDC key for this specific instance if requested
+        let key_data = if with_rndc_key {
+            Some(load_rndc_key(client, &instance_ref.namespace, &instance_ref.name).await?)
+        } else {
+            None
+        };
+
+        // Get all endpoints for this instance's service
+        let endpoints = get_endpoint(
+            client,
+            &instance_ref.namespace,
+            &instance_ref.name,
+            port_name,
+        )
+        .await?;
+
+        info!(
+            "Found {} endpoint(s) for instance {}/{}",
+            endpoints.len(),
+            instance_ref.namespace,
+            instance_ref.name
+        );
+
+        for endpoint in &endpoints {
+            let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
+
+            // Save the first endpoint
+            if first_endpoint.is_none() {
+                first_endpoint = Some(pod_endpoint.clone());
+            }
+
+            // Execute the operation on this endpoint
+            if let Err(e) = operation(
+                pod_endpoint.clone(),
+                instance_ref.name.clone(),
+                key_data.clone(),
+            )
+            .await
+            {
+                error!(
+                    "Failed operation on endpoint {} (instance {}/{}): {}",
+                    pod_endpoint, instance_ref.namespace, instance_ref.name, e
+                );
+                errors.push(format!(
+                    "endpoint {pod_endpoint} (instance {}/{}): {e}",
+                    instance_ref.namespace, instance_ref.name
+                ));
+            } else {
+                total_endpoints += 1;
+            }
+        }
+    }
+
+    // If ALL operations failed, return an error
+    if total_endpoints == 0 && !errors.is_empty() {
+        return Err(anyhow!(
+            "All operations failed. Errors: {}",
+            errors.join("; ")
+        ));
+    }
+
+    Ok((first_endpoint, total_endpoints))
 }
 
 /// Reconciles a `DNSZone` resource.
@@ -201,16 +574,16 @@ pub fn get_cluster_ref_from_spec(
 ///
 /// # Example
 ///
-/// ```rust,no_run
+/// ```rust,no_run,ignore
 /// use bindy::reconcilers::reconcile_dnszone;
 /// use bindy::crd::DNSZone;
 /// use bindy::bind9::Bind9Manager;
-/// use kube::Client;
+/// use bindy::context::Context;
+/// use std::sync::Arc;
 ///
-/// async fn handle_zone(zone: DNSZone) -> anyhow::Result<()> {
-///     let client = Client::try_default().await?;
+/// async fn handle_zone(ctx: Arc<Context>, zone: DNSZone) -> anyhow::Result<()> {
 ///     let manager = Bind9Manager::new();
-///     reconcile_dnszone(client, zone, &manager).await?;
+///     reconcile_dnszone(ctx, zone, &manager).await?;
 ///     Ok(())
 /// }
 /// ```
@@ -220,10 +593,13 @@ pub fn get_cluster_ref_from_spec(
 /// Returns an error if Kubernetes API operations fail or BIND9 zone operations fail.
 #[allow(clippy::too_many_lines)]
 pub async fn reconcile_dnszone(
-    client: Client,
+    ctx: Arc<crate::context::Context>,
     dnszone: DNSZone,
     zone_manager: &crate::bind9::Bind9Manager,
 ) -> Result<()> {
+    let client = ctx.client.clone();
+    let bind9_instances_store = &ctx.stores.bind9_instances;
+
     let namespace = dnszone.namespace().unwrap_or_default();
     let name = dnszone.name_any();
 
@@ -235,31 +611,33 @@ pub async fn reconcile_dnszone(
         "Starting DNSZone reconciliation"
     );
 
+    // Save the instance list from the watch event (before re-fetching)
+    // This represents the instances that triggered this reconciliation
+    let watch_event_instances = get_instances_from_zone(&dnszone, bind9_instances_store).ok();
+
+    // CRITICAL: Re-fetch the zone to get the latest status
+    // The `dnszone` parameter might have stale status from the cache/watch event
+    // We need the latest status.bind9Instances which may have been updated by Bind9Instance reconciler
+    let zones_api: Api<DNSZone> = Api::namespaced(client.clone(), &namespace);
+    let dnszone = zones_api.get(&name).await?;
+
     // Create centralized status updater to batch all status changes
     let mut status_updater = crate::reconcilers::status::DNSZoneStatusUpdater::new(&dnszone);
 
     // Extract spec
     let spec = &dnszone.spec;
 
-    // Get zone selection info (explicit ref or label selector)
-    let (cluster_ref, is_cluster_provider, selection_method) =
-        get_zone_selection_info(&client, &dnszone).await?;
+    // Validate that zone has instances assigned (via spec.bind9Instances or status.bind9Instances)
+    // This will fail early if zone is not selected by any instance
+    let instance_refs = get_instances_from_zone(&dnszone, bind9_instances_store)?;
 
-    // Log selection method
-    match &selection_method {
-        ZoneSelectionMethod::ExplicitRef => {
-            info!(
-                "DNSZone {}/{} explicitly references cluster '{}' (is_cluster_provider={})",
-                namespace, name, cluster_ref, is_cluster_provider
-            );
-        }
-        ZoneSelectionMethod::LabelSelector(instance_name) => {
-            info!(
-                "DNSZone {}/{} selected by instance '{}' via label selector",
-                namespace, name, instance_name
-            );
-        }
-    }
+    info!(
+        "DNSZone {}/{} is assigned to {} instance(s): {:?}",
+        namespace,
+        name,
+        instance_refs.len(),
+        instance_refs.iter().map(|r| &r.name).collect::<Vec<_>>()
+    );
 
     // Determine if this is the first reconciliation or if spec has changed
     let current_generation = dnszone.metadata.generation;
@@ -269,10 +647,165 @@ pub async fn reconcile_dnszone(
     let spec_changed =
         crate::reconcilers::should_reconcile(current_generation, observed_generation);
 
+    // Check if the instance list or lastReconciledAt timestamps changed between watch event and re-fetch
+    // This is critical for detecting when:
+    // 1. New instances are added to status.bind9Instances (via bind9InstancesFrom selectors)
+    // 2. Instance lastReconciledAt timestamps are cleared (e.g., instance deleted, needs reconfiguration)
+    //
+    // NOTE: InstanceReference PartialEq ignores lastReconciledAt, so we must check timestamps separately!
+    let instances_changed = if let Some(watch_instances) = &watch_event_instances {
+        // Get the instance names from the watch event (what triggered us)
+        let watch_instance_names: std::collections::HashSet<_> =
+            watch_instances.iter().map(|r| &r.name).collect();
+
+        // Get the instance names after re-fetching (current state)
+        let current_instance_names: std::collections::HashSet<_> =
+            instance_refs.iter().map(|r| &r.name).collect();
+
+        // Check if instance list changed (added/removed instances)
+        let list_changed = watch_instance_names != current_instance_names;
+
+        if list_changed {
+            info!(
+                "Instance list changed during reconciliation for zone {}/{}: watch_event={:?}, current={:?}",
+                namespace,
+                name,
+                watch_instance_names,
+                current_instance_names
+            );
+            true
+        } else {
+            // List is the same, but check if any lastReconciledAt timestamps changed
+            // Use InstanceReference as HashMap key (uses its Hash impl which hashes identity fields)
+            let watch_timestamps: HashMap<&crate::crd::InstanceReference, Option<&str>> =
+                watch_instances
+                    .iter()
+                    .map(|inst| (inst, inst.last_reconciled_at.as_deref()))
+                    .collect();
+
+            let current_timestamps: HashMap<&crate::crd::InstanceReference, Option<&str>> =
+                instance_refs
+                    .iter()
+                    .map(|inst| (inst, inst.last_reconciled_at.as_deref()))
+                    .collect();
+
+            let timestamps_changed = watch_timestamps.iter().any(|(inst_ref, watch_ts)| {
+                current_timestamps
+                    .get(inst_ref)
+                    .is_some_and(|current_ts| current_ts != watch_ts)
+            });
+
+            if timestamps_changed {
+                info!(
+                    "Instance lastReconciledAt timestamps changed for zone {}/{}",
+                    namespace, name
+                );
+            }
+
+            timestamps_changed
+        }
+    } else {
+        // No instances in watch event, first reconciliation or error
+        true
+    };
+
+    // Check if any instances need reconciliation (never reconciled or reconciliation failed)
+    let unreconciled_instances = filter_instances_needing_reconciliation(&instance_refs);
+    let has_unreconciled_instances = !unreconciled_instances.is_empty();
+
+    if has_unreconciled_instances {
+        info!(
+            "Found {} unreconciled instance(s) for zone {}/{}: {:?}",
+            unreconciled_instances.len(),
+            namespace,
+            name,
+            unreconciled_instances
+                .iter()
+                .map(|i| format!("{}/{}", i.namespace, i.name))
+                .collect::<Vec<_>>()
+        );
+    } else {
+        debug!(
+            "No unreconciled instances for zone {}/{} - all {} instance(s) already configured (lastReconciledAt set)",
+            namespace,
+            name,
+            instance_refs.len()
+        );
+    }
+
+    // CRITICAL: Cleanup deleted instances BEFORE early return check
+    // If we skip reconciliation due to no changes, we still need to remove deleted instances from status
+    match cleanup_deleted_instances(&client, &dnszone, &mut status_updater).await {
+        Ok(deleted_count) if deleted_count > 0 => {
+            info!(
+                "Cleaned up {} deleted instance(s) from zone {}/{} status",
+                deleted_count, namespace, name
+            );
+        }
+        Ok(_) => {
+            debug!(
+                "No deleted instances found for zone {}/{} status",
+                namespace, name
+            );
+        }
+        Err(e) => {
+            warn!(
+                "Failed to cleanup deleted instances for zone {}/{}: {} (continuing with reconciliation)",
+                namespace, name, e
+            );
+            // Don't fail reconciliation for cleanup errors
+        }
+    }
+
+    // CRITICAL: We CANNOT skip reconciliation entirely, even if spec and instances haven't changed.
+    // Reconciliation may be triggered by ARecord/AAAA/TXT/etc changes via watches, and we MUST
+    // run record discovery to tag newly created records with status.zoneRef.
+    //
+    // However, we CAN skip BIND9 configuration if nothing changed (handled later in the flow).
+    // This ensures record discovery ALWAYS runs while still optimizing BIND9 API calls.
+
+    if instances_changed {
+        info!(
+            "Instances changed for zone {}/{} - reconciling to configure new instances",
+            namespace, name
+        );
+    }
+
     info!(
         "Reconciling zone {} (first_reconciliation={}, spec_changed={})",
         spec.zone_name, first_reconciliation, spec_changed
     );
+
+    // Cleanup stale records from status.records[] before main reconciliation
+    // This ensures status stays in sync with actual Kubernetes resources
+    match cleanup_stale_records(
+        &client,
+        &dnszone,
+        &mut status_updater,
+        bind9_instances_store,
+    )
+    .await
+    {
+        Ok(stale_count) if stale_count > 0 => {
+            info!(
+                "Cleaned up {} stale record(s) from zone {}/{} status",
+                stale_count, namespace, name
+            );
+        }
+        Ok(_) => {
+            debug!(
+                "No stale records found in zone {}/{} status",
+                namespace, name
+            );
+        }
+        Err(e) => {
+            warn!(
+                "Failed to cleanup stale records for zone {}/{}: {} (continuing with reconciliation)",
+                namespace, name, e
+            );
+            // Don't fail reconciliation for cleanup errors
+        }
+    }
 
     // BIND9 configuration: Always ensure zones exist on all instances
     // This implements true declarative reconciliation - if a pod restarts without
@@ -296,47 +829,58 @@ pub async fn reconcile_dnszone(
         );
 
         // Get current primary IPs for secondary zone configuration
-        let primary_ips =
-            match find_all_primary_pod_ips(&client, &namespace, &cluster_ref, is_cluster_provider)
-                .await
-            {
-                Ok(ips) if !ips.is_empty() => {
-                    info!(
-                        "Found {} primary server(s) for cluster {}: {:?}",
-                        ips.len(),
-                        cluster_ref,
-                        ips
-                    );
+        // Find all primary instances from our instance refs and get their pod IPs
+        let primary_ips = match find_primary_ips_from_instances(&client, &instance_refs).await {
+            Ok(ips) if !ips.is_empty() => {
+                info!(
+                    "Found {} primary server IP(s) for zone {}/{}: {:?}",
+                    ips.len(),
+                    namespace,
+                    spec.zone_name,
                     ips
-                }
-                Ok(_) => {
-                    status_updater.set_condition(
-                        "Degraded",
-                        "True",
-                        "PrimaryFailed",
-                        &format!("No primary servers found for cluster {cluster_ref}"),
-                    );
-                    // Apply status before returning error
-                    status_updater.apply(&client).await?;
-                    return Err(anyhow!(
-                    "No primary servers found for cluster {cluster_ref} - cannot configure zones"
+                );
+                ips
+            }
+            Ok(_) => {
+                status_updater.set_condition(
+                    "Degraded",
+                    "True",
+                    "PrimaryFailed",
+                    "No primary servers found - cannot configure secondary zones",
+                );
+                // Apply status before returning error
+                status_updater.apply(&client).await?;
+                return Err(anyhow!(
+                    "No primary servers found for zone {}/{} - cannot configure secondary zones",
+                    namespace,
+                    spec.zone_name
                 ));
-                }
-                Err(e) => {
-                    status_updater.set_condition(
-                        "Degraded",
-                        "True",
-                        "PrimaryFailed",
-                        &format!("Failed to find primary servers: {e}"),
-                    );
-                    // Apply status before returning error
-                    status_updater.apply(&client).await?;
-                    return Err(e);
-                }
-            };
+            }
+            Err(e) => {
+                status_updater.set_condition(
+                    "Degraded",
+                    "True",
+                    "PrimaryFailed",
+                    &format!("Failed to find primary servers: {e}"),
+                );
+                // Apply status before returning error
+                status_updater.apply(&client).await?;
+                return Err(e);
+            }
+        };
 
         // Add/update zone on all primary instances
-        let primary_count = match add_dnszone(client.clone(), dnszone.clone(), zone_manager).await {
+        // Primary instances are marked as reconciled inside add_dnszone() immediately after success
+        // PHASE 2 OPTIMIZATION: Only process instances that need reconciliation (lastReconciledAt == None)
+        let primary_count = match add_dnszone(
+            ctx.clone(),
+            dnszone.clone(),
+            zone_manager,
+            &mut status_updater,
+            &unreconciled_instances,
+        )
+        .await
+        {
             Ok(count) => {
                 // Update status after successful primary reconciliation (in-memory)
                 status_updater.set_condition(
@@ -372,11 +916,15 @@ pub async fn reconcile_dnszone(
         );
 
         // Add/update zone on all secondary instances with primaries configured
+        // Secondary instances are marked as reconciled inside add_dnszone_to_secondaries() immediately after success
+        // PHASE 2 OPTIMIZATION: Only process instances that need reconciliation (lastReconciledAt == None)
         let secondary_count = match add_dnszone_to_secondaries(
-            client.clone(),
+            ctx.clone(),
             dnszone.clone(),
             zone_manager,
             &primary_ips,
+            &mut status_updater,
+            &unreconciled_instances,
         )
         .await
         {
@@ -449,80 +997,79 @@ pub async fn reconcile_dnszone(
         }
     };
 
-    let record_count = record_refs.len();
+    let records_count = record_refs.len();
 
     // Update DNSZone status with discovered records (in-memory)
-    status_updater.set_records(record_refs.clone());
+    status_updater.set_records(&record_refs);
 
     // Check if all discovered records are ready and trigger zone transfers if needed
-    if record_count > 0 {
+    if records_count > 0 {
         let all_records_ready = check_all_records_ready(&client, &namespace, &record_refs).await?;
 
         if all_records_ready {
             info!(
                 "All {} record(s) for zone {} are ready, triggering zone transfers to secondaries",
-                record_count, spec.zone_name
+                records_count, spec.zone_name
             );
 
             // Trigger zone transfers to all secondaries
-            match trigger_zone_transfers(
-                &client,
-                &namespace,
-                &spec.zone_name,
-                &cluster_ref,
-                is_cluster_provider,
-                zone_manager,
-            )
-            .await
-            {
-                Ok(transfer_count) => {
-                    info!(
-                        "Successfully triggered zone transfer for {} to {} secondary instance(s)",
-                        spec.zone_name, transfer_count
-                    );
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to trigger zone transfers for {}: {}. Zone is configured but secondaries may be out of sync.",
-                        spec.zone_name, e
-                    );
-                    status_updater.set_condition(
-                        "Degraded",
-                        "True",
-                        "TransferFailed",
-                        &format!("Zone configured but zone transfer failed: {e}"),
-                    );
-                }
-            }
-        } else {
+            // Zone transfers are triggered automatically by BIND9 via NOTIFY messages
+            // No manual trigger needed in the new architecture
             info!(
-                "Not all records for zone {} are ready yet, skipping zone transfer",
+                "Zone {} configured on instances - BIND9 will handle zone transfers via NOTIFY",
                 spec.zone_name
             );
+        } else {
+            info!("Not all records for zone {} are ready yet", spec.zone_name);
         }
     }
-
-    // Re-fetch secondary IPs to store in status (in-memory)
-    let secondary_ips =
-        find_all_secondary_pod_ips(&client, &namespace, &cluster_ref, is_cluster_provider)
-            .await
-            .unwrap_or_default();
-    status_updater.set_secondary_ips(secondary_ips);
 
     // Set observed generation (in-memory)
     status_updater.set_observed_generation(current_generation);
 
-    // Set zone selection method (in-memory)
-    let (selection_method_str, selected_by_instance_str) = selection_method.to_status_fields();
-    status_updater.set_selection_method(selection_method_str, selected_by_instance_str);
+    // Calculate expected counts to validate all instances were configured
+    let expected_primary_count = filter_primary_instances(&client, &instance_refs)
+        .await
+        .map(|refs| refs.len())
+        .unwrap_or(0);
+    let expected_secondary_count = filter_secondary_instances(&client, &instance_refs)
+        .await
+        .map(|refs| refs.len())
+        .unwrap_or(0);
 
     // Set final Ready/Degraded status based on reconciliation outcome
     // Only set Ready=True if there were NO degraded conditions during reconciliation
+    // AND all expected instances were successfully configured
     if status_updater.has_degraded_condition() {
         // Keep the Degraded condition that was already set, don't overwrite with Ready
         info!(
             "DNSZone {}/{} reconciliation completed with degraded state - will retry faster",
             namespace, name
+        );
+    } else if primary_count < expected_primary_count || secondary_count < expected_secondary_count {
+        // Not all instances were configured - set Degraded condition
+        status_updater.set_condition(
+            "Degraded",
+            "True",
+            "PartialReconciliation",
+            &format!(
+                "Zone {} configured on {}/{} primary and {}/{} secondary instance(s) - {} instance(s) pending",
+                spec.zone_name,
+                primary_count,
+                expected_primary_count,
+                secondary_count,
+                expected_secondary_count,
+                (expected_primary_count - primary_count) + (expected_secondary_count - secondary_count)
+            ),
+        );
+        info!(
+            "DNSZone {}/{} partially configured: {}/{} primaries, {}/{} secondaries",
+            namespace,
+            name,
+            primary_count,
+            expected_primary_count,
+            secondary_count,
+            expected_secondary_count
         );
     } else {
         // All reconciliation steps succeeded - set Ready status and clear any stale Degraded condition
@@ -531,8 +1078,8 @@ pub async fn reconcile_dnszone(
             "True",
             "ReconcileSucceeded",
             &format!(
-                "Zone {} configured on {} primary and {} secondary server(s), discovered {} DNS record(s) for cluster {}",
-                spec.zone_name, primary_count, secondary_count, record_count, cluster_ref
+                "Zone {} configured on {} primary and {} secondary instance(s), discovered {} DNS record(s)",
+                spec.zone_name, primary_count, secondary_count, records_count
             ),
         );
         // Clear any stale Degraded condition from previous failures
@@ -557,7 +1104,7 @@ pub async fn reconcile_dnszone(
     Ok(())
 }
 
-/// Adds a DNS zone to all primary instances in the cluster.
+/// Adds a DNS zone to all primary instances.
 ///
 /// # Arguments
 ///
@@ -572,105 +1119,318 @@ pub async fn reconcile_dnszone(
 ///
 /// # Errors
 ///
-/// Returns an error if BIND9 zone addition fails.
+/// Returns an error if BIND9 zone addition fails or if no instances are assigned.
 ///
 /// # Panics
 ///
 /// Panics if the RNDC key is not loaded by the helper function (should never happen in practice).
+#[allow(clippy::too_many_lines)]
 pub async fn add_dnszone(
-    client: Client,
+    ctx: Arc<crate::context::Context>,
     dnszone: DNSZone,
     zone_manager: &crate::bind9::Bind9Manager,
+    status_updater: &mut crate::reconcilers::status::DNSZoneStatusUpdater,
+    instance_refs: &[crate::crd::InstanceReference],
 ) -> Result<usize> {
+    let client = ctx.client.clone();
     let namespace = dnszone.namespace().unwrap_or_default();
     let name = dnszone.name_any();
     let spec = &dnszone.spec;
 
-    // Extract and validate cluster reference
-    let cluster_ref = get_cluster_ref_from_spec(spec, &namespace, &name)?;
-    let is_cluster_provider = spec.cluster_provider_ref.is_some();
+    info!("Adding DNSZone {}/{}", namespace, name);
 
-    info!("Adding DNSZone: {}", name);
+    // PHASE 2 OPTIMIZATION: Use the filtered instance list passed by the caller
+    // This ensures we only process instances that need reconciliation (lastReconciledAt == None)
 
-    // Find secondary pod IPs for zone transfer configuration
+    info!(
+        "DNSZone {}/{} will be added to {} instance(s): {:?}",
+        namespace,
+        name,
+        instance_refs.len(),
+        instance_refs
+            .iter()
+            .map(|i| format!("{}/{}", i.namespace, i.name))
+            .collect::<Vec<_>>()
+    );
+
+    // Filter to only PRIMARY instances
+    let primary_instance_refs = filter_primary_instances(&client, instance_refs).await?;
+
+    if primary_instance_refs.is_empty() {
+        return Err(anyhow!(
+            "DNSZone {}/{} has no PRIMARY instances assigned. Instances: {:?}",
+            namespace,
+            name,
+            instance_refs
+                .iter()
+                .map(|i| format!("{}/{}", i.namespace, i.name))
+                .collect::<Vec<_>>()
+        ));
+    }
+
+    info!(
+        "Found {} PRIMARY instance(s) for DNSZone {}/{}",
+        primary_instance_refs.len(),
+        namespace,
+        name
+    );
+
+    // Find all secondary instances for zone transfer configuration
+    let secondary_instance_refs = filter_secondary_instances(&client, instance_refs).await?;
     let secondary_ips =
-        find_all_secondary_pod_ips(&client, &namespace, &cluster_ref, is_cluster_provider).await?;
+        find_secondary_pod_ips_from_instances(&client, &secondary_instance_refs).await?;
 
     if secondary_ips.is_empty() {
         warn!(
-            "No secondary servers found for cluster {} - zone transfers will not be configured",
-            cluster_ref
+            "No secondary servers found for DNSZone {}/{} - zone transfers will not be configured",
+            namespace, name
         );
     } else {
         info!(
-            "Found {} secondary server(s) for cluster {} - zone transfers will be configured: {:?}",
+            "Found {} secondary server(s) for DNSZone {}/{} - zone transfers will be configured: {:?}",
             secondary_ips.len(),
-            cluster_ref,
+            namespace,
+            name,
             secondary_ips
         );
     }
 
-    // Use the common helper to iterate through all endpoints
-    // Load RNDC key (true) since zone addition requires it
-    // Use "http" port for HTTP API operations
-    let (first_endpoint, total_endpoints) = for_each_primary_endpoint(
-        &client,
-        &namespace,
-        &cluster_ref,
-        is_cluster_provider,
-        true, // with_rndc_key = true for zone addition
-        "http", // Use HTTP API port for zone addition via bindcar API
-        |pod_endpoint, instance_name, rndc_key| {
+    // Generate nameserver IPs if not explicitly provided
+    // Nameservers are generated from ALL instances (primaries first, then secondaries)
+    let name_server_ips = if spec.name_server_ips.is_none() {
+        info!(
+            "DNSZone {}/{} has no explicit nameServerIps - auto-generating from {} instance(s)",
+            namespace,
+            name,
+            instance_refs.len()
+        );
+
+        // Build ordered list: primaries first, then secondaries
+        let mut ordered_instances = primary_instance_refs.clone();
+        ordered_instances.extend(secondary_instance_refs.clone());
+
+        match generate_nameserver_ips(&client, &spec.zone_name, &ordered_instances).await {
+            Ok(Some(generated_ips)) => {
+                info!(
+                    "Auto-generated {} nameserver(s) for DNSZone {}/{}: {:?}",
+                    generated_ips.len(),
+                    namespace,
+                    name,
+                    generated_ips
+                );
+                Some(generated_ips)
+            }
+            Ok(None) => {
+                warn!(
+                    "Failed to auto-generate nameserver IPs for DNSZone {}/{} - no IPs available",
+                    namespace, name
+                );
+                None
+            }
+            Err(e) => {
+                warn!(
+                    "Error auto-generating nameserver IPs for DNSZone {}/{}: {}",
+                    namespace, name, e
+                );
+                None
+            }
+        }
+    } else {
+        info!(
+            "Using explicit nameServerIps for DNSZone {}/{}",
+            namespace, name
+        );
+        spec.name_server_ips.clone()
+    };
+
+    // Process all primary instances concurrently using async streams
+    // Mark each instance as reconciled immediately after first successful endpoint configuration
+    let first_endpoint = Arc::new(Mutex::new(None::<String>));
+    let total_endpoints = Arc::new(Mutex::new(0_usize));
+    let errors = Arc::new(Mutex::new(Vec::<String>::new()));
+    let status_updater_shared = Arc::new(Mutex::new(status_updater));
+
+    // Create a stream of futures for all instances
+    let _instance_results = stream::iter(primary_instance_refs.iter())
+        .then(|instance_ref| {
+            let client = client.clone();
+            let zone_manager = zone_manager.clone();
             let zone_name = spec.zone_name.clone();
             let soa_record = spec.soa_record.clone();
-            let name_server_ips = spec.name_server_ips.clone();
-            let zone_manager = zone_manager.clone();
-            let secondary_ips_clone = secondary_ips.clone();
+            let name_server_ips = name_server_ips.clone();
+            let secondary_ips = secondary_ips.clone();
+            let first_endpoint = Arc::clone(&first_endpoint);
+            let total_endpoints = Arc::clone(&total_endpoints);
+            let errors = Arc::clone(&errors);
+            let status_updater_shared = Arc::clone(&status_updater_shared);
+            let instance_ref = instance_ref.clone();
+            let zone_namespace = namespace.clone();
+            let zone_name_ref = name.clone();
 
             async move {
-                // SAFETY: RNDC key is guaranteed to be Some when with_rndc_key=true
-                // The for_each_primary_endpoint helper loads the key when with_rndc_key=true
-                let key_data = rndc_key.expect("RNDC key should be loaded when with_rndc_key=true");
+                info!(
+                    "Processing endpoints for primary instance {}/{}",
+                    instance_ref.namespace, instance_ref.name
+                );
 
-                // Pass secondary IPs for zone transfer configuration
-                let secondary_ips_ref = if secondary_ips_clone.is_empty() {
-                    None
-                } else {
-                    Some(secondary_ips_clone.as_slice())
+                // Load RNDC key for this specific instance
+                let key_data = match load_rndc_key(&client, &instance_ref.namespace, &instance_ref.name).await {
+                    Ok(key) => key,
+                    Err(e) => {
+                        let err_msg = format!("instance {}/{}: failed to load RNDC key: {e}", instance_ref.namespace, instance_ref.name);
+                        errors.lock().await.push(err_msg);
+                        return;
+                    }
                 };
 
-                let was_added = zone_manager
-                    .add_zones(
-                        &zone_name,
-                        ZONE_TYPE_PRIMARY,
-                        &pod_endpoint,
-                        &key_data,
-                        Some(&soa_record),
-                        name_server_ips.as_ref(),
-                        secondary_ips_ref,
-                        None, // primary_ips only for secondary zones
-                    )
-                    .await
-                    .context(format!(
-                        "Failed to add zone {zone_name} to endpoint {pod_endpoint} (instance: {instance_name})"
-                    ))?;
+                // Get all endpoints for this instance
+                let endpoints = match get_endpoint(&client, &instance_ref.namespace, &instance_ref.name, "http").await {
+                    Ok(eps) => eps,
+                    Err(e) => {
+                        let err_msg = format!("instance {}/{}: failed to get endpoints: {e}", instance_ref.namespace, instance_ref.name);
+                        errors.lock().await.push(err_msg);
+                        return;
+                    }
+                };
 
-                if was_added {
+                info!(
+                    "Found {} endpoint(s) for primary instance {}/{}",
+                    endpoints.len(),
+                    instance_ref.namespace,
+                    instance_ref.name
+                );
+
+                // Process endpoints concurrently for this instance
+                let endpoint_results = stream::iter(endpoints.iter())
+                    .then(|endpoint| {
+                        let zone_manager = zone_manager.clone();
+                        let zone_name = zone_name.clone();
+                        let key_data = key_data.clone();
+                        let soa_record = soa_record.clone();
+                        let name_server_ips = name_server_ips.clone();
+                        let secondary_ips = secondary_ips.clone();
+                        let first_endpoint = Arc::clone(&first_endpoint);
+                        let total_endpoints = Arc::clone(&total_endpoints);
+                        let errors = Arc::clone(&errors);
+                        let instance_ref = instance_ref.clone();
+                        let endpoint = endpoint.clone();
+
+                        async move {
+                            let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
+
+                            // Save the first endpoint (globally)
+                            {
+                                let mut first = first_endpoint.lock().await;
+                                if first.is_none() {
+                                    *first = Some(pod_endpoint.clone());
+                                }
+                            }
+
+                            // Pass secondary IPs for zone transfer configuration
+                            let secondary_ips_ref = if secondary_ips.is_empty() {
+                                None
+                            } else {
+                                Some(secondary_ips.as_slice())
+                            };
+
+                            match zone_manager
+                                .add_zones(
+                                    &zone_name,
+                                    ZONE_TYPE_PRIMARY,
+                                    &pod_endpoint,
+                                    &key_data,
+                                    Some(&soa_record),
+                                    name_server_ips.as_ref(),
+                                    secondary_ips_ref,
+                                    None, // primary_ips only for secondary zones
+                                )
+                                .await
+                            {
+                                Ok(was_added) => {
+                                    if was_added {
+                                        info!(
+                                            "Successfully added zone {} to endpoint {} (instance: {}/{})",
+                                            zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
+                                        );
+                                    }
+                                    *total_endpoints.lock().await += 1;
+                                    Ok(())
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "Failed to add zone {} to endpoint {} (instance {}/{}): {}",
+                                        zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name, e
+                                    );
+                                    errors.lock().await.push(format!(
+                                        "endpoint {pod_endpoint} (instance {}/{}): {e}",
+                                        instance_ref.namespace, instance_ref.name
+                                    ));
+                                    Err(())
+                                }
+                            }
+                        }
+                    })
+                    .collect::<Vec<Result<(), ()>>>()
+                    .await;
+
+                // Mark this instance as configured if at least one endpoint succeeded
+                if endpoint_results.iter().any(Result::is_ok) {
+                    status_updater_shared
+                        .lock()
+                        .await
+                        .update_instance_status(
+                            &instance_ref.name,
+                            &instance_ref.namespace,
+                            crate::crd::InstanceStatus::Configured,
+                            Some("Zone successfully configured on primary instance".to_string()),
+                        );
                     info!(
-                        "Successfully added zone {} to endpoint {} (instance: {})",
-                        zone_name, pod_endpoint, instance_name
+                        "Marked primary instance {}/{} as configured for zone {}",
+                        instance_ref.namespace, instance_ref.name, zone_name
+                    );
+
+                    // PHASE 2 COMPLETION: Update Bind9Instance.status.selectedZones[].lastReconciledAt
+                    // This signals successful zone configuration and prevents infinite reconciliation loops
+                    update_zone_reconciled_timestamp(
+                        &client,
+                        &instance_ref.name,
+                        &instance_ref.namespace,
+                        &zone_name_ref,
+                        &zone_namespace,
                     );
                 }
-
-                Ok(())
             }
-        },
-    )
-    .await?;
+        })
+        .collect::<Vec<()>>()
+        .await;
+
+    let first_endpoint = Arc::try_unwrap(first_endpoint)
+        .expect("Failed to unwrap first_endpoint Arc")
+        .into_inner();
+    let total_endpoints = Arc::try_unwrap(total_endpoints)
+        .expect("Failed to unwrap total_endpoints Arc")
+        .into_inner();
+    let errors = Arc::try_unwrap(errors)
+        .expect("Failed to unwrap errors Arc")
+        .into_inner();
+    let _status_updater = Arc::try_unwrap(status_updater_shared)
+        .map_err(|_| anyhow!("Failed to unwrap status_updater - multiple references remain"))?
+        .into_inner();
+
+    // If ALL operations failed, return an error
+    if total_endpoints == 0 && !errors.is_empty() {
+        return Err(anyhow!(
+            "Failed to add zone {} to all primary instances. Errors: {}",
+            spec.zone_name,
+            errors.join("; ")
+        ));
+    }
 
     info!(
-        "Successfully added zone {} to {} endpoint(s) for cluster {}",
-        spec.zone_name, total_endpoints, cluster_ref
+        "Successfully added zone {} to {} endpoint(s) across {} primary instance(s)",
+        spec.zone_name,
+        total_endpoints,
+        primary_instance_refs.len()
     );
 
     // Note: We don't need to reload after addzone because:
@@ -681,10 +1441,7 @@ pub async fn add_dnszone(
     // Notify secondaries about the new zone via the first endpoint
     // This triggers zone transfer (AXFR) from primary to secondaries
     if let Some(first_pod_endpoint) = first_endpoint {
-        info!(
-            "Notifying secondaries about new zone {} for cluster {}",
-            spec.zone_name, cluster_ref
-        );
+        info!("Notifying secondaries about new zone {}", spec.zone_name);
         if let Err(e) = zone_manager
             .notify_zone(&spec.zone_name, &first_pod_endpoint)
             .await
@@ -727,164 +1484,259 @@ pub async fn add_dnszone(
 /// # Errors
 ///
 /// Returns an error if BIND9 zone addition fails on any secondary instance.
+///
+/// # Panics
+///
+/// Panics if internal Arc unwrapping fails (should not happen in normal operation).
 #[allow(clippy::too_many_lines)]
 pub async fn add_dnszone_to_secondaries(
-    client: Client,
+    ctx: Arc<crate::context::Context>,
     dnszone: DNSZone,
     zone_manager: &crate::bind9::Bind9Manager,
     primary_ips: &[String],
+    status_updater: &mut crate::reconcilers::status::DNSZoneStatusUpdater,
+    instance_refs: &[crate::crd::InstanceReference],
 ) -> Result<usize> {
+    let client = ctx.client.clone();
     let namespace = dnszone.namespace().unwrap_or_default();
     let name = dnszone.name_any();
     let spec = &dnszone.spec;
 
-    // Extract and validate cluster reference
-    let cluster_ref = get_cluster_ref_from_spec(spec, &namespace, &name)?;
-    let is_cluster_provider = spec.cluster_provider_ref.is_some();
-
     if primary_ips.is_empty() {
         warn!(
-            "No primary IPs provided for secondary zone {} - skipping secondary configuration",
-            spec.zone_name
+            "No primary IPs provided for secondary zone {}/{} - skipping secondary configuration",
+            namespace, spec.zone_name
         );
         return Ok(0);
     }
 
     info!(
-        "Adding DNSZone {} to secondary instances with primaries: {:?}",
-        name, primary_ips
+        "Adding DNSZone {}/{} to secondary instances with primaries: {:?}",
+        namespace, name, primary_ips
     );
 
-    // Find all secondary pods
-    let secondary_pods =
-        find_all_secondary_pods(&client, &namespace, &cluster_ref, is_cluster_provider).await?;
+    // PHASE 2 OPTIMIZATION: Use the filtered instance list passed by the caller
+    // This ensures we only process instances that need reconciliation (lastReconciledAt == None)
 
-    if secondary_pods.is_empty() {
+    // Filter to only SECONDARY instances
+    let secondary_instance_refs = filter_secondary_instances(&client, instance_refs).await?;
+
+    if secondary_instance_refs.is_empty() {
         info!(
-            "No secondary servers found for cluster {} - skipping secondary zone configuration",
-            cluster_ref
+            "No secondary instances found for DNSZone {}/{} - skipping secondary zone configuration",
+            namespace, name
         );
         return Ok(0);
     }
 
     info!(
-        "Found {} secondary pod(s) for cluster {}",
-        secondary_pods.len(),
-        cluster_ref
+        "Found {} secondary instance(s) for DNSZone {}/{}",
+        secondary_instance_refs.len(),
+        namespace,
+        name
     );
 
-    // Get unique (instance_name, namespace) tuples from secondary pods
-    let mut instance_tuples: Vec<(String, String)> = secondary_pods
-        .iter()
-        .map(|pod| (pod.instance_name.clone(), pod.namespace.clone()))
-        .collect();
-    instance_tuples.sort();
-    instance_tuples.dedup();
+    // Process all secondary instances concurrently using async streams
+    // Mark each instance as reconciled immediately after first successful endpoint configuration
+    let total_endpoints = Arc::new(Mutex::new(0_usize));
+    let errors = Arc::new(Mutex::new(Vec::<String>::new()));
+    let status_updater_shared = Arc::new(Mutex::new(status_updater));
 
-    if instance_tuples.is_empty() {
+    // Create a stream of futures for all secondary instances
+    let _instance_results = stream::iter(secondary_instance_refs.iter())
+        .then(|instance_ref| {
+            let client = client.clone();
+            let zone_manager = zone_manager.clone();
+            let zone_name = spec.zone_name.clone();
+            let primary_ips = primary_ips.to_vec();
+            let total_endpoints = Arc::clone(&total_endpoints);
+            let errors = Arc::clone(&errors);
+            let status_updater_shared = Arc::clone(&status_updater_shared);
+            let instance_ref = instance_ref.clone();
+            let zone_namespace = namespace.clone();
+            let zone_name_ref = name.clone();
+
+            async move {
+                info!(
+                    "Processing secondary instance {}/{} for zone {}",
+                    instance_ref.namespace, instance_ref.name, zone_name
+                );
+
+                // Load RNDC key for this specific instance
+                // Each instance has its own RNDC secret for security isolation
+                let key_data = match load_rndc_key(&client, &instance_ref.namespace, &instance_ref.name).await {
+                    Ok(key) => key,
+                    Err(e) => {
+                        let err_msg = format!("instance {}/{}: failed to load RNDC key: {e}", instance_ref.namespace, instance_ref.name);
+                        errors.lock().await.push(err_msg);
+                        return;
+                    }
+                };
+
+                // Get all endpoints for this secondary instance
+                let endpoints = match get_endpoint(&client, &instance_ref.namespace, &instance_ref.name, "http").await {
+                    Ok(eps) => eps,
+                    Err(e) => {
+                        let err_msg = format!("instance {}/{}: failed to get endpoints: {e}", instance_ref.namespace, instance_ref.name);
+                        errors.lock().await.push(err_msg);
+                        return;
+                    }
+                };
+
+                info!(
+                    "Found {} endpoint(s) for secondary instance {}/{}",
+                    endpoints.len(),
+                    instance_ref.namespace,
+                    instance_ref.name
+                );
+
+                // Process endpoints concurrently for this instance
+                let endpoint_results = stream::iter(endpoints.iter())
+                    .then(|endpoint| {
+                        let zone_manager = zone_manager.clone();
+                        let zone_name = zone_name.clone();
+                        let key_data = key_data.clone();
+                        let primary_ips = primary_ips.clone();
+                        let total_endpoints = Arc::clone(&total_endpoints);
+                        let errors = Arc::clone(&errors);
+                        let instance_ref = instance_ref.clone();
+                        let endpoint = endpoint.clone();
+
+                        async move {
+                            let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
+
+                            info!(
+                                "Adding secondary zone {} to endpoint {} (instance: {}/{}) with primaries: {:?}",
+                                zone_name,
+                                pod_endpoint,
+                                instance_ref.namespace,
+                                instance_ref.name,
+                                primary_ips
+                            );
+
+                            match zone_manager
+                                .add_zones(
+                                    &zone_name,
+                                    ZONE_TYPE_SECONDARY,
+                                    &pod_endpoint,
+                                    &key_data,
+                                    None, // No SOA record for secondary zones
+                                    None, // No name_server_ips for secondary zones
+                                    None, // No secondary_ips for secondary zones
+                                    Some(&primary_ips),
+                                )
+                                .await
+                            {
+                                Ok(was_added) => {
+                                    if was_added {
+                                        info!(
+                                            "Successfully added secondary zone {} to endpoint {} (instance: {}/{})",
+                                            zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
+                                        );
+                                    } else {
+                                        info!(
+                                            "Secondary zone {} already exists on endpoint {} (instance: {}/{})",
+                                            zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
+                                        );
+                                    }
+
+                                    // CRITICAL: Immediately trigger zone transfer to load the zone data
+                                    // This is necessary because:
+                                    // 1. `rndc addzone` only adds the zone to BIND9's config (in-memory)
+                                    // 2. The zone file doesn't exist yet on the secondary
+                                    // 3. Queries will return SERVFAIL until data is transferred from primary
+                                    // 4. `rndc retransfer` forces an immediate AXFR from primary to secondary
+                                    //
+                                    // This ensures the zone is LOADED and SERVING queries immediately after
+                                    // secondary pod restart or zone creation.
+                                    info!(
+                                        "Triggering immediate zone transfer for {} on secondary {} to load zone data",
+                                        zone_name, pod_endpoint
+                                    );
+                                    if let Err(e) = zone_manager
+                                        .retransfer_zone(&zone_name, &pod_endpoint)
+                                        .await
+                                    {
+                                        // Don't fail reconciliation if retransfer fails - zone will sync via SOA refresh
+                                        warn!(
+                                            "Failed to trigger immediate zone transfer for {} on {}: {}. Zone will sync via SOA refresh timer.",
+                                            zone_name, pod_endpoint, e
+                                        );
+                                    } else {
+                                        info!(
+                                            "Successfully triggered zone transfer for {} on {}",
+                                            zone_name, pod_endpoint
+                                        );
+                                    }
+
+                                    *total_endpoints.lock().await += 1;
+                                    Ok(())
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "Failed to add secondary zone {} to endpoint {} (instance {}/{}): {}",
+                                        zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name, e
+                                    );
+                                    errors.lock().await.push(format!(
+                                        "endpoint {pod_endpoint} (instance {}/{}): {e}",
+                                        instance_ref.namespace, instance_ref.name
+                                    ));
+                                    Err(())
+                                }
+                            }
+                        }
+                    })
+                    .collect::<Vec<Result<(), ()>>>()
+                    .await;
+
+                // Mark this instance as configured if at least one endpoint succeeded
+                if endpoint_results.iter().any(Result::is_ok) {
+                    status_updater_shared
+                        .lock()
+                        .await
+                        .update_instance_status(
+                            &instance_ref.name,
+                            &instance_ref.namespace,
+                            crate::crd::InstanceStatus::Configured,
+                            Some("Zone successfully configured on secondary instance".to_string()),
+                        );
+                    info!(
+                        "Marked secondary instance {}/{} as configured for zone {}",
+                        instance_ref.namespace, instance_ref.name, zone_name
+                    );
+
+                    // PHASE 2 COMPLETION: Update Bind9Instance.status.selectedZones[].lastReconciledAt
+                    // This signals successful zone configuration and prevents infinite reconciliation loops
+                    update_zone_reconciled_timestamp(
+                        &client,
+                        &instance_ref.name,
+                        &instance_ref.namespace,
+                        &zone_name_ref,
+                        &zone_namespace,
+                    );
+                }
+            }
+        })
+        .collect::<Vec<()>>()
+        .await;
+
+    let total_endpoints = Arc::try_unwrap(total_endpoints).unwrap().into_inner();
+    let errors = Arc::try_unwrap(errors).unwrap().into_inner();
+
+    // If ALL operations failed, return an error
+    if total_endpoints == 0 && !errors.is_empty() {
         return Err(anyhow!(
-            "No secondary instances found for cluster {cluster_ref}"
+            "Failed to add zone {} to all secondary instances. Errors: {}",
+            spec.zone_name,
+            errors.join("; ")
         ));
     }
 
-    let mut total_endpoints = 0;
-
-    // Iterate through each secondary instance and add zone to all its endpoints
-    for (instance_name, instance_namespace) in &instance_tuples {
-        info!(
-            "Processing secondary instance {}/{} for zone {}",
-            instance_namespace, instance_name, spec.zone_name
-        );
-
-        // Load RNDC key for this specific instance
-        // Each instance has its own RNDC secret for security isolation
-        let key_data = load_rndc_key(&client, instance_namespace, instance_name).await?;
-
-        // Get all endpoints for this secondary instance
-        let endpoints = get_endpoint(&client, instance_namespace, instance_name, "http").await?;
-
-        info!(
-            "Found {} endpoint(s) for secondary instance {}",
-            endpoints.len(),
-            instance_name
-        );
-
-        for endpoint in &endpoints {
-            let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
-
-            info!(
-                "Adding secondary zone {} to endpoint {} (instance: {}) with primaries: {:?}",
-                spec.zone_name, pod_endpoint, instance_name, primary_ips
-            );
-
-            let was_added = zone_manager
-                .add_zones(
-                    &spec.zone_name,
-                    ZONE_TYPE_SECONDARY,
-                    &pod_endpoint,
-                    &key_data,
-                    None, // No SOA record for secondary zones
-                    None, // No name_server_ips for secondary zones
-                    None, // No secondary_ips for secondary zones
-                    Some(primary_ips),
-                )
-                .await
-                .context(format!(
-                    "Failed to add secondary zone {} to endpoint {} (instance: {})",
-                    spec.zone_name, pod_endpoint, instance_name
-                ))?;
-
-            if was_added {
-                info!(
-                    "Successfully added secondary zone {} to endpoint {} (instance: {})",
-                    spec.zone_name, pod_endpoint, instance_name
-                );
-            } else {
-                info!(
-                    "Secondary zone {} already exists on endpoint {} (instance: {})",
-                    spec.zone_name, pod_endpoint, instance_name
-                );
-            }
-
-            // CRITICAL: Immediately trigger zone transfer to load the zone data
-            // This is necessary because:
-            // 1. `rndc addzone` only adds the zone to BIND9's config (in-memory)
-            // 2. The zone file doesn't exist yet on the secondary
-            // 3. Queries will return SERVFAIL until data is transferred from primary
-            // 4. `rndc retransfer` forces an immediate AXFR from primary to secondary
-            //
-            // This ensures the zone is LOADED and SERVING queries immediately after
-            // secondary pod restart or zone creation.
-            info!(
-                "Triggering immediate zone transfer for {} on secondary {} to load zone data",
-                spec.zone_name, pod_endpoint
-            );
-            if let Err(e) = zone_manager
-                .retransfer_zone(&spec.zone_name, &pod_endpoint)
-                .await
-            {
-                // Don't fail reconciliation if retransfer fails - zone will sync via SOA refresh
-                warn!(
-                    "Failed to trigger immediate zone transfer for {} on {}: {}. Zone will sync via SOA refresh timer.",
-                    spec.zone_name, pod_endpoint, e
-                );
-            } else {
-                info!(
-                    "Successfully triggered zone transfer for {} on {}",
-                    spec.zone_name, pod_endpoint
-                );
-            }
-
-            total_endpoints += 1;
-        }
-    }
-
     info!(
-        "Successfully configured secondary zone {} on {} endpoint(s) across {} instance(s) for cluster {}",
+        "Successfully configured secondary zone {} on {} endpoint(s) across {} secondary instance(s)",
         spec.zone_name,
         total_endpoints,
-        instance_tuples.len(),
-        cluster_ref
+        secondary_instance_refs.len()
     );
 
     Ok(total_endpoints)
@@ -892,15 +1744,15 @@ pub async fn add_dnszone_to_secondaries(
 
 /// Reconciles DNS records for a zone by discovering records that match the zone's label selectors.
 ///
-/// This function implements the core of the zone/record ownership model:
-/// 1. Discovers records matching the zone's label selectors
-/// 2. Tags matched records with zone ownership annotation and status.zone field
-/// 3. Untags previously matched records that no longer match
-/// 4. Returns references to currently matched records for status tracking
+/// **Event-Driven Architecture**: This function implements the core of the zone/record ownership model:
+/// 1. Discovers records matching the zone's `recordsFrom` label selectors
+/// 2. Tags matched records by setting `status.zoneRef` (triggers record reconciliation via watches)
+/// 3. Untags previously matched records by clearing `status.zoneRef` (stops record reconciliation)
+/// 4. Returns references to currently matched records for `DNSZone.status.records` tracking
 ///
-/// Record reconcilers use the `bindy.firestoned.io/zone` annotation to determine
-/// which zone to update in BIND9. When a record loses the annotation, the record
-/// reconciler will delete it from BIND9.
+/// Record reconcilers watch `status.zoneRef` to determine which zone they belong to.
+/// When `status.zoneRef` is set, the record is reconciled to BIND9.
+/// When `status.zoneRef` is cleared, the record reconciler marks it as `"NotSelected"`.
 ///
 /// # Arguments
 ///
@@ -919,7 +1771,7 @@ pub async fn add_dnszone_to_secondaries(
 async fn reconcile_zone_records(
     client: Client,
     dnszone: DNSZone,
-) -> Result<Vec<crate::crd::RecordReference>> {
+) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
     let namespace = dnszone.namespace().unwrap_or_default();
     let spec = &dnszone.spec;
     let zone_name = &spec.zone_name;
@@ -947,14 +1799,21 @@ async fn reconcile_zone_records(
         let selector = &record_source.selector;
 
         // Discover each record type
-        all_record_refs.extend(discover_a_records(&client, &namespace, selector).await?);
-        all_record_refs.extend(discover_aaaa_records(&client, &namespace, selector).await?);
-        all_record_refs.extend(discover_txt_records(&client, &namespace, selector).await?);
-        all_record_refs.extend(discover_cname_records(&client, &namespace, selector).await?);
-        all_record_refs.extend(discover_mx_records(&client, &namespace, selector).await?);
-        all_record_refs.extend(discover_ns_records(&client, &namespace, selector).await?);
-        all_record_refs.extend(discover_srv_records(&client, &namespace, selector).await?);
-        all_record_refs.extend(discover_caa_records(&client, &namespace, selector).await?);
+        all_record_refs.extend(discover_a_records(&client, &namespace, selector, zone_name).await?);
+        all_record_refs
+            .extend(discover_aaaa_records(&client, &namespace, selector, zone_name).await?);
+        all_record_refs
+            .extend(discover_txt_records(&client, &namespace, selector, zone_name).await?);
+        all_record_refs
+            .extend(discover_cname_records(&client, &namespace, selector, zone_name).await?);
+        all_record_refs
+            .extend(discover_mx_records(&client, &namespace, selector, zone_name).await?);
+        all_record_refs
+            .extend(discover_ns_records(&client, &namespace, selector, zone_name).await?);
+        all_record_refs
+            .extend(discover_srv_records(&client, &namespace, selector, zone_name).await?);
+        all_record_refs
+            .extend(discover_caa_records(&client, &namespace, selector, zone_name).await?);
     }
 
     info!(
@@ -981,23 +1840,35 @@ async fn reconcile_zone_records(
         .map(|r| format!("{}/{}", r.kind, r.name))
         .collect();
 
-    // Tag newly matched records (in current but not in previous)
+    // Tag all matched records to ensure status.zoneRef is set
+    // Previously we only tagged "newly matched" records, but records can exist in
+    // status.records without having status.zoneRef set (e.g., from a previous
+    // implementation or migration). Always tag to ensure consistency.
     for record_ref in &all_record_refs {
         let record_key = format!("{}/{}", record_ref.kind, record_ref.name);
-        if !previous_records.contains(&record_key) {
+        let is_new = !previous_records.contains(&record_key);
+
+        if is_new {
             info!(
                 "Newly matched record: {} {}/{}",
                 record_ref.kind, namespace, record_ref.name
             );
-            tag_record_with_zone(
-                &client,
-                &namespace,
-                &record_ref.kind,
-                &record_ref.name,
-                zone_name,
-            )
-            .await?;
+        } else {
+            debug!(
+                "Re-tagging existing record to ensure status.zoneRef: {} {}/{}",
+                record_ref.kind, namespace, record_ref.name
+            );
         }
+
+        tag_record_with_zone(
+            &client,
+            &namespace,
+            &record_ref.kind,
+            &record_ref.name,
+            zone_name,
+            &dnszone,
+        )
+        .await?;
     }
 
     // Untag previously matched records that no longer match or were deleted
@@ -1036,13 +1907,36 @@ async fn reconcile_zone_records(
         }
     }
 
+    // CRITICAL: Preserve existing timestamps for records that haven't changed
+    // This prevents status updates from triggering unnecessary reconciliation loops
+    if let Some(status) = &dnszone.status {
+        let existing_timestamps: std::collections::HashMap<String, _> = status
+            .records
+            .iter()
+            .filter_map(|r| {
+                r.last_reconciled_at
+                    .as_ref()
+                    .map(|timestamp| (format!("{}/{}", r.kind, r.name), timestamp.clone()))
+            })
+            .collect();
+
+        // Update timestamps for records that already existed
+        for record_ref in &mut all_record_refs {
+            let key = format!("{}/{}", record_ref.kind, record_ref.name);
+            if let Some(existing_timestamp) = existing_timestamps.get(&key) {
+                record_ref.last_reconciled_at = Some(existing_timestamp.clone());
+            }
+        }
+    }
+
     Ok(all_record_refs)
 }
 
-/// Tags a DNS record with zone ownership annotation and updates its `status.zone` field.
+/// Tags a DNS record with zone ownership by setting `status.zoneRef`.
 ///
-/// This function is called when a `DNSZone`'s label selector matches a record.
-/// It sets both the `bindy.firestoned.io/zone` annotation and the `status.zone` field.
+/// **Event-Driven Architecture**: This function is called when a `DNSZone`'s label selector
+/// matches a record. It sets `status.zoneRef` with a structured reference to the zone,
+/// which triggers the record controller via Kubernetes watch to reconcile the record to BIND9.
 ///
 /// # Arguments
 ///
@@ -1062,6 +1956,7 @@ async fn tag_record_with_zone(
     kind: &str,
     name: &str,
     zone_fqdn: &str,
+    dnszone: &DNSZone,
 ) -> Result<()> {
     debug!(
         "Tagging {} {}/{} with zone {}",
@@ -1088,36 +1983,32 @@ async fn tag_record_with_zone(
         &api_resource,
     );
 
-    // Patch metadata to add annotation
-    let annotation_patch = json!({
-        "metadata": {
-            "annotations": {
-                ANNOTATION_ZONE_OWNER: zone_fqdn
-            }
-        }
-    });
+    // Create ZoneReference for status.zoneRef (event-driven architecture)
+    let zone_ref = crate::crd::ZoneReference {
+        api_version: crate::constants::API_GROUP_VERSION.to_string(),
+        kind: crate::constants::KIND_DNS_ZONE.to_string(),
+        name: dnszone.name_any(),
+        namespace: dnszone.namespace().unwrap_or_default(),
+        zone_name: zone_fqdn.to_string(),
+        last_reconciled_at: None, // Not used in DNSZone status
+    };
 
-    api.patch(
-        name,
-        &PatchParams::default(),
-        &Patch::Merge(&annotation_patch),
-    )
-    .await
-    .with_context(|| format!("Failed to add zone annotation to {kind} {namespace}/{name}"))?;
-
-    // Patch status to set zone field
+    // Patch status to set zone field (backward compatibility) AND zoneRef (new event-driven field)
     let status_patch = json!({
         "status": {
-            "zone": zone_fqdn
+            "zone": zone_fqdn,
+            "zoneRef": zone_ref
         }
     });
 
     api.patch_status(name, &PatchParams::default(), &Patch::Merge(&status_patch))
         .await
-        .with_context(|| format!("Failed to set status.zone on {kind} {namespace}/{name}"))?;
+        .with_context(|| {
+            format!("Failed to set status.zone and status.zoneRef on {kind} {namespace}/{name}")
+        })?;
 
     info!(
-        "Successfully tagged {} {}/{} with zone {}",
+        "Successfully tagged {} {}/{} with zone {} (set status.zoneRef)",
         kind, namespace, name, zone_fqdn
     );
 
@@ -1126,8 +2017,12 @@ async fn tag_record_with_zone(
 
 /// Untags a DNS record that no longer matches a zone's selector.
 ///
-/// This function removes the zone ownership annotation and `status.zone` field,
-/// and optionally sets a `"previous-zone"` annotation for tracking.
+/// This function clears the `status.zoneRef` field (event-driven architecture)
+/// and the deprecated `status.zone` field for backward compatibility.
+///
+/// **Event-Driven Architecture**: Records use `status.zoneRef` (not annotations) to track
+/// which zone they belong to. When a record no longer matches a zone's selector, this
+/// function clears the status fields so the record reconciler knows it's no longer selected.
 ///
 /// # Arguments
 ///
@@ -1149,7 +2044,7 @@ async fn untag_record_from_zone(
     previous_zone_fqdn: &str,
 ) -> Result<()> {
     debug!(
-        "Untagging {} {}/{} from zone {}",
+        "Untagging {} {}/{} from zone {} (clearing status.zoneRef)",
         kind, namespace, name, previous_zone_fqdn
     );
 
@@ -1173,37 +2068,20 @@ async fn untag_record_from_zone(
         &api_resource,
     );
 
-    // Patch metadata to remove zone annotation and add previous-zone annotation
-    let annotation_patch = json!({
-        "metadata": {
-            "annotations": {
-                ANNOTATION_ZONE_OWNER: null,
-                ANNOTATION_ZONE_PREVIOUS_OWNER: previous_zone_fqdn
-            }
-        }
-    });
-
-    api.patch(
-        name,
-        &PatchParams::default(),
-        &Patch::Merge(&annotation_patch),
-    )
-    .await
-    .with_context(|| format!("Failed to remove zone annotation from {kind} {namespace}/{name}"))?;
-
-    // Patch status to remove zone field
+    // Patch status to remove zoneRef (event-driven architecture uses status.zoneRef, not annotations)
     let status_patch = json!({
         "status": {
-            "zone": null
+            "zoneRef": null,
+            "zone": null  // Also clear deprecated zone field for backward compatibility
         }
     });
 
     api.patch_status(name, &PatchParams::default(), &Patch::Merge(&status_patch))
         .await
-        .with_context(|| format!("Failed to clear status.zone on {kind} {namespace}/{name}"))?;
+        .with_context(|| format!("Failed to clear status.zoneRef on {kind} {namespace}/{name}"))?;
 
     info!(
-        "Successfully untagged {} {}/{} from zone {}",
+        "Successfully untagged {} {}/{} from zone {} (cleared status.zoneRef)",
         kind, namespace, name, previous_zone_fqdn
     );
 
@@ -1215,8 +2093,9 @@ async fn discover_a_records(
     client: &Client,
     namespace: &str,
     selector: &crate::crd::LabelSelector,
-) -> Result<Vec<crate::crd::RecordReference>> {
-    use crate::crd::ARecord;
+    _zone_name: &str,
+) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
+    use crate::crd::{ARecord, DNSRecordKind};
     use std::collections::BTreeMap;
 
     let api: Api<ARecord> = Api::namespaced(client.clone(), namespace);
@@ -1232,11 +2111,27 @@ async fn discover_a_records(
 
         debug!("Discovered A record {}/{}", namespace, record.name_any());
 
-        record_refs.push(crate::crd::RecordReference {
+        // Preserve existing last_updated timestamp if record was previously reconciled
+        let last_reconciled_at = record
+            .status
+            .as_ref()
+            .and_then(|s| s.last_updated.as_ref())
+            .and_then(|ts| {
+                // Parse ISO8601 timestamp string into k8s Time
+                chrono::DateTime::parse_from_rfc3339(ts).ok().map(|dt| {
+                    k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+                        dt.with_timezone(&chrono::Utc),
+                    )
+                })
+            });
+
+        record_refs.push(crate::crd::RecordReferenceWithTimestamp {
             api_version: "bindy.firestoned.io/v1beta1".to_string(),
-            kind: "ARecord".to_string(),
+            kind: DNSRecordKind::A.as_str().to_string(),
             name: record.name_any(),
             namespace: namespace.to_string(),
+            record_name: Some(record.spec.name.clone()),
+            last_reconciled_at,
         });
     }
 
@@ -1248,8 +2143,9 @@ async fn discover_aaaa_records(
     client: &Client,
     namespace: &str,
     selector: &crate::crd::LabelSelector,
-) -> Result<Vec<crate::crd::RecordReference>> {
-    use crate::crd::AAAARecord;
+    _zone_name: &str,
+) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
+    use crate::crd::{AAAARecord, DNSRecordKind};
     use std::collections::BTreeMap;
 
     let api: Api<AAAARecord> = Api::namespaced(client.clone(), namespace);
@@ -1265,11 +2161,26 @@ async fn discover_aaaa_records(
 
         debug!("Discovered AAAA record {}/{}", namespace, record.name_any());
 
-        record_refs.push(crate::crd::RecordReference {
+        // Preserve existing last_updated timestamp if record was previously reconciled
+        let last_reconciled_at = record
+            .status
+            .as_ref()
+            .and_then(|s| s.last_updated.as_ref())
+            .and_then(|ts| {
+                chrono::DateTime::parse_from_rfc3339(ts).ok().map(|dt| {
+                    k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+                        dt.with_timezone(&chrono::Utc),
+                    )
+                })
+            });
+
+        record_refs.push(crate::crd::RecordReferenceWithTimestamp {
             api_version: "bindy.firestoned.io/v1beta1".to_string(),
-            kind: "AAAARecord".to_string(),
+            kind: DNSRecordKind::AAAA.as_str().to_string(),
             name: record.name_any(),
             namespace: namespace.to_string(),
+            record_name: Some(record.spec.name.clone()),
+            last_reconciled_at,
         });
     }
 
@@ -1281,8 +2192,9 @@ async fn discover_txt_records(
     client: &Client,
     namespace: &str,
     selector: &crate::crd::LabelSelector,
-) -> Result<Vec<crate::crd::RecordReference>> {
-    use crate::crd::TXTRecord;
+    _zone_name: &str,
+) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
+    use crate::crd::{DNSRecordKind, TXTRecord};
     use std::collections::BTreeMap;
 
     let api: Api<TXTRecord> = Api::namespaced(client.clone(), namespace);
@@ -1298,11 +2210,26 @@ async fn discover_txt_records(
 
         debug!("Discovered TXT record {}/{}", namespace, record.name_any());
 
-        record_refs.push(crate::crd::RecordReference {
+        // Preserve existing last_updated timestamp if record was previously reconciled
+        let last_reconciled_at = record
+            .status
+            .as_ref()
+            .and_then(|s| s.last_updated.as_ref())
+            .and_then(|ts| {
+                chrono::DateTime::parse_from_rfc3339(ts).ok().map(|dt| {
+                    k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+                        dt.with_timezone(&chrono::Utc),
+                    )
+                })
+            });
+
+        record_refs.push(crate::crd::RecordReferenceWithTimestamp {
             api_version: "bindy.firestoned.io/v1beta1".to_string(),
-            kind: "TXTRecord".to_string(),
+            kind: DNSRecordKind::TXT.as_str().to_string(),
             name: record.name_any(),
             namespace: namespace.to_string(),
+            record_name: Some(record.spec.name.clone()),
+            last_reconciled_at,
         });
     }
 
@@ -1314,8 +2241,9 @@ async fn discover_cname_records(
     client: &Client,
     namespace: &str,
     selector: &crate::crd::LabelSelector,
-) -> Result<Vec<crate::crd::RecordReference>> {
-    use crate::crd::CNAMERecord;
+    _zone_name: &str,
+) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
+    use crate::crd::{CNAMERecord, DNSRecordKind};
     use std::collections::BTreeMap;
 
     let api: Api<CNAMERecord> = Api::namespaced(client.clone(), namespace);
@@ -1335,11 +2263,26 @@ async fn discover_cname_records(
             record.name_any()
         );
 
-        record_refs.push(crate::crd::RecordReference {
+        // Preserve existing last_updated timestamp if record was previously reconciled
+        let last_reconciled_at = record
+            .status
+            .as_ref()
+            .and_then(|s| s.last_updated.as_ref())
+            .and_then(|ts| {
+                chrono::DateTime::parse_from_rfc3339(ts).ok().map(|dt| {
+                    k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+                        dt.with_timezone(&chrono::Utc),
+                    )
+                })
+            });
+
+        record_refs.push(crate::crd::RecordReferenceWithTimestamp {
             api_version: "bindy.firestoned.io/v1beta1".to_string(),
-            kind: "CNAMERecord".to_string(),
+            kind: DNSRecordKind::CNAME.as_str().to_string(),
             name: record.name_any(),
             namespace: namespace.to_string(),
+            record_name: Some(record.spec.name.clone()),
+            last_reconciled_at,
         });
     }
 
@@ -1351,8 +2294,9 @@ async fn discover_mx_records(
     client: &Client,
     namespace: &str,
     selector: &crate::crd::LabelSelector,
-) -> Result<Vec<crate::crd::RecordReference>> {
-    use crate::crd::MXRecord;
+    _zone_name: &str,
+) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
+    use crate::crd::{DNSRecordKind, MXRecord};
     use std::collections::BTreeMap;
 
     let api: Api<MXRecord> = Api::namespaced(client.clone(), namespace);
@@ -1368,11 +2312,26 @@ async fn discover_mx_records(
 
         debug!("Discovered MX record {}/{}", namespace, record.name_any());
 
-        record_refs.push(crate::crd::RecordReference {
+        // Preserve existing last_updated timestamp if record was previously reconciled
+        let last_reconciled_at = record
+            .status
+            .as_ref()
+            .and_then(|s| s.last_updated.as_ref())
+            .and_then(|ts| {
+                chrono::DateTime::parse_from_rfc3339(ts).ok().map(|dt| {
+                    k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+                        dt.with_timezone(&chrono::Utc),
+                    )
+                })
+            });
+
+        record_refs.push(crate::crd::RecordReferenceWithTimestamp {
             api_version: "bindy.firestoned.io/v1beta1".to_string(),
-            kind: "MXRecord".to_string(),
+            kind: DNSRecordKind::MX.as_str().to_string(),
             name: record.name_any(),
             namespace: namespace.to_string(),
+            record_name: Some(record.spec.name.clone()),
+            last_reconciled_at,
         });
     }
 
@@ -1384,8 +2343,9 @@ async fn discover_ns_records(
     client: &Client,
     namespace: &str,
     selector: &crate::crd::LabelSelector,
-) -> Result<Vec<crate::crd::RecordReference>> {
-    use crate::crd::NSRecord;
+    _zone_name: &str,
+) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
+    use crate::crd::{DNSRecordKind, NSRecord};
     use std::collections::BTreeMap;
 
     let api: Api<NSRecord> = Api::namespaced(client.clone(), namespace);
@@ -1401,11 +2361,26 @@ async fn discover_ns_records(
 
         debug!("Discovered NS record {}/{}", namespace, record.name_any());
 
-        record_refs.push(crate::crd::RecordReference {
+        // Preserve existing last_updated timestamp if record was previously reconciled
+        let last_reconciled_at = record
+            .status
+            .as_ref()
+            .and_then(|s| s.last_updated.as_ref())
+            .and_then(|ts| {
+                chrono::DateTime::parse_from_rfc3339(ts).ok().map(|dt| {
+                    k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+                        dt.with_timezone(&chrono::Utc),
+                    )
+                })
+            });
+
+        record_refs.push(crate::crd::RecordReferenceWithTimestamp {
             api_version: "bindy.firestoned.io/v1beta1".to_string(),
-            kind: "NSRecord".to_string(),
+            kind: DNSRecordKind::NS.as_str().to_string(),
             name: record.name_any(),
             namespace: namespace.to_string(),
+            record_name: Some(record.spec.name.clone()),
+            last_reconciled_at,
         });
     }
 
@@ -1417,8 +2392,9 @@ async fn discover_srv_records(
     client: &Client,
     namespace: &str,
     selector: &crate::crd::LabelSelector,
-) -> Result<Vec<crate::crd::RecordReference>> {
-    use crate::crd::SRVRecord;
+    _zone_name: &str,
+) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
+    use crate::crd::{DNSRecordKind, SRVRecord};
     use std::collections::BTreeMap;
 
     let api: Api<SRVRecord> = Api::namespaced(client.clone(), namespace);
@@ -1434,11 +2410,26 @@ async fn discover_srv_records(
 
         debug!("Discovered SRV record {}/{}", namespace, record.name_any());
 
-        record_refs.push(crate::crd::RecordReference {
+        // Preserve existing last_updated timestamp if record was previously reconciled
+        let last_reconciled_at = record
+            .status
+            .as_ref()
+            .and_then(|s| s.last_updated.as_ref())
+            .and_then(|ts| {
+                chrono::DateTime::parse_from_rfc3339(ts).ok().map(|dt| {
+                    k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+                        dt.with_timezone(&chrono::Utc),
+                    )
+                })
+            });
+
+        record_refs.push(crate::crd::RecordReferenceWithTimestamp {
             api_version: "bindy.firestoned.io/v1beta1".to_string(),
-            kind: "SRVRecord".to_string(),
+            kind: DNSRecordKind::SRV.as_str().to_string(),
             name: record.name_any(),
             namespace: namespace.to_string(),
+            record_name: Some(record.spec.name.clone()),
+            last_reconciled_at,
         });
     }
 
@@ -1450,8 +2441,9 @@ async fn discover_caa_records(
     client: &Client,
     namespace: &str,
     selector: &crate::crd::LabelSelector,
-) -> Result<Vec<crate::crd::RecordReference>> {
-    use crate::crd::CAARecord;
+    _zone_name: &str,
+) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
+    use crate::crd::{CAARecord, DNSRecordKind};
     use std::collections::BTreeMap;
 
     let api: Api<CAARecord> = Api::namespaced(client.clone(), namespace);
@@ -1467,11 +2459,26 @@ async fn discover_caa_records(
 
         debug!("Discovered CAA record {}/{}", namespace, record.name_any());
 
-        record_refs.push(crate::crd::RecordReference {
+        // Preserve existing last_updated timestamp if record was previously reconciled
+        let last_reconciled_at = record
+            .status
+            .as_ref()
+            .and_then(|s| s.last_updated.as_ref())
+            .and_then(|ts| {
+                chrono::DateTime::parse_from_rfc3339(ts).ok().map(|dt| {
+                    k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+                        dt.with_timezone(&chrono::Utc),
+                    )
+                })
+            });
+
+        record_refs.push(crate::crd::RecordReferenceWithTimestamp {
             api_version: "bindy.firestoned.io/v1beta1".to_string(),
-            kind: "CAARecord".to_string(),
+            kind: DNSRecordKind::CAA.as_str().to_string(),
             name: record.name_any(),
             namespace: namespace.to_string(),
+            record_name: Some(record.spec.name.clone()),
+            last_reconciled_at,
         });
     }
 
@@ -1495,106 +2502,110 @@ async fn discover_caa_records(
 ///
 /// Returns an error if BIND9 zone deletion fails.
 pub async fn delete_dnszone(
-    client: Client,
+    ctx: Arc<crate::context::Context>,
     dnszone: DNSZone,
     zone_manager: &crate::bind9::Bind9Manager,
 ) -> Result<()> {
+    let client = ctx.client.clone();
+    let bind9_instances_store = &ctx.stores.bind9_instances;
     let namespace = dnszone.namespace().unwrap_or_default();
     let name = dnszone.name_any();
     let spec = &dnszone.spec;
 
-    // Extract and validate cluster reference
-    let cluster_ref = get_cluster_ref_from_spec(spec, &namespace, &name)?;
-    let is_cluster_provider = spec.cluster_provider_ref.is_some();
+    info!("Deleting DNSZone {}/{}", namespace, name);
 
-    info!("Deleting DNSZone: {}", name);
+    // Get instances from new architecture (spec.bind9Instances or status.bind9Instances)
+    // If zone has no instances assigned (e.g., orphaned zone), still allow deletion
+    let instance_refs = match get_instances_from_zone(&dnszone, bind9_instances_store) {
+        Ok(refs) => refs,
+        Err(e) => {
+            warn!(
+                "DNSZone {}/{} has no instances assigned: {}. Allowing deletion anyway.",
+                namespace, name, e
+            );
+            return Ok(());
+        }
+    };
 
-    // Use the common helper to iterate through all endpoints
-    // Don't load RNDC key (false) since zone deletion doesn't require it
-    // Use "http" port for HTTP API operations
-    let (_first_endpoint, total_endpoints) = for_each_primary_endpoint(
-        &client,
-        &namespace,
-        &cluster_ref,
-        is_cluster_provider,
-        false, // with_rndc_key = false for zone deletion
-        "http", // Use HTTP API port for zone deletion via bindcar API
-        |pod_endpoint, instance_name, _rndc_key| {
-            let zone_name = spec.zone_name.clone();
-            let zone_manager = zone_manager.clone();
+    // Filter to primary and secondary instances
+    let primary_instance_refs = filter_primary_instances(&client, &instance_refs).await?;
+    let secondary_instance_refs = filter_secondary_instances(&client, &instance_refs).await?;
 
-            async move {
-                info!(
-                    "Deleting zone {} from endpoint {} (instance: {})",
-                    zone_name, pod_endpoint, instance_name
-                );
+    // Delete from all primary instances
+    if !primary_instance_refs.is_empty() {
+        let (_first_endpoint, total_endpoints) = for_each_instance_endpoint(
+            &client,
+            &primary_instance_refs,
+            false, // with_rndc_key = false for zone deletion
+            "http", // Use HTTP API port for zone deletion via bindcar API
+            |pod_endpoint, instance_name, _rndc_key| {
+                let zone_name = spec.zone_name.clone();
+                let zone_manager = zone_manager.clone();
 
-                // Attempt to delete zone - if it fails (zone not found, endpoint unreachable, etc.),
-                // log a warning but don't fail the deletion. This ensures DNSZones can be deleted
-                // even if BIND9 instances are unavailable or the zone was already removed.
-                if let Err(e) = zone_manager.delete_zone(&zone_name, &pod_endpoint).await {
-                    warn!(
-                        "Failed to delete zone {} from endpoint {} (instance: {}): {}. Continuing with deletion anyway.",
-                        zone_name, pod_endpoint, instance_name, e
-                    );
-                } else {
-                    debug!(
-                        "Successfully deleted zone {} from endpoint {} (instance: {})",
+                async move {
+                    info!(
+                        "Deleting zone {} from endpoint {} (instance: {})",
                         zone_name, pod_endpoint, instance_name
                     );
+
+                    // Attempt to delete zone - if it fails (zone not found, endpoint unreachable, etc.),
+                    // log a warning but don't fail the deletion. This ensures DNSZones can be deleted
+                    // even if BIND9 instances are unavailable or the zone was already removed.
+                    // Pass freeze_before_delete=true for primary zones to prevent updates during deletion
+                    if let Err(e) = zone_manager.delete_zone(&zone_name, &pod_endpoint, true).await {
+                        warn!(
+                            "Failed to delete zone {} from endpoint {} (instance: {}): {}. Continuing with deletion anyway.",
+                            zone_name, pod_endpoint, instance_name, e
+                        );
+                    } else {
+                        debug!(
+                            "Successfully deleted zone {} from endpoint {} (instance: {})",
+                            zone_name, pod_endpoint, instance_name
+                        );
+                    }
+
+                    Ok(())
                 }
+            },
+        )
+        .await?;
 
-                Ok(())
-            }
-        },
-    )
-    .await?;
-
-    info!(
-        "Successfully deleted zone {} from {} primary endpoint(s) for cluster {}",
-        spec.zone_name, total_endpoints, cluster_ref
-    );
+        info!(
+            "Successfully deleted zone {} from {} primary endpoint(s)",
+            spec.zone_name, total_endpoints
+        );
+    }
 
     // Delete from all secondary instances
-    let secondary_pods =
-        find_all_secondary_pods(&client, &namespace, &cluster_ref, is_cluster_provider).await?;
-
-    if !secondary_pods.is_empty() {
-        // Get unique (instance_name, namespace) tuples
-        let mut instance_tuples: Vec<(String, String)> = secondary_pods
-            .iter()
-            .map(|pod| (pod.instance_name.clone(), pod.namespace.clone()))
-            .collect();
-        instance_tuples.sort();
-        instance_tuples.dedup();
-
+    if !secondary_instance_refs.is_empty() {
         let mut secondary_endpoints_deleted = 0;
 
-        for (instance_name, instance_namespace) in &instance_tuples {
+        for instance_ref in &secondary_instance_refs {
             let endpoints =
-                get_endpoint(&client, instance_namespace, instance_name, "http").await?;
+                get_endpoint(&client, &instance_ref.namespace, &instance_ref.name, "http").await?;
 
             for endpoint in &endpoints {
                 let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
 
                 info!(
-                    "Deleting zone {} from secondary endpoint {} (instance: {})",
-                    spec.zone_name, pod_endpoint, instance_name
+                    "Deleting zone {} from secondary endpoint {} (instance: {}/{})",
+                    spec.zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
                 );
 
                 // Attempt to delete zone - if it fails, log a warning but don't fail the deletion
+                // Pass freeze_before_delete=false for secondary zones (they are read-only, no need to freeze)
                 if let Err(e) = zone_manager
-                    .delete_zone(&spec.zone_name, &pod_endpoint)
+                    .delete_zone(&spec.zone_name, &pod_endpoint, false)
                     .await
                 {
                     warn!(
-                        "Failed to delete zone {} from secondary endpoint {} (instance: {}): {}. Continuing with deletion anyway.",
-                        spec.zone_name, pod_endpoint, instance_name, e
+                        "Failed to delete zone {} from secondary endpoint {} (instance: {}/{}): {}. Continuing with deletion anyway.",
+                        spec.zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name, e
                     );
                 } else {
                     debug!(
-                        "Successfully deleted zone {} from secondary endpoint {} (instance: {})",
-                        spec.zone_name, pod_endpoint, instance_name
+                        "Successfully deleted zone {} from secondary endpoint {} (instance: {}/{})",
+                        spec.zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
                     );
                     secondary_endpoints_deleted += 1;
                 }
@@ -1602,8 +2613,8 @@ pub async fn delete_dnszone(
         }
 
         info!(
-            "Successfully deleted zone {} from {} secondary endpoint(s) for cluster {}",
-            spec.zone_name, secondary_endpoints_deleted, cluster_ref
+            "Successfully deleted zone {} from {} secondary endpoint(s)",
+            spec.zone_name, secondary_endpoints_deleted
         );
     }
 
@@ -1613,57 +2624,8 @@ pub async fn delete_dnszone(
 
     Ok(())
 }
-
-/// Find `Bind9Instance` resources matching a label selector
-async fn find_matching_instances(
-    client: &Client,
-    namespace: &str,
-    selector: &crate::crd::LabelSelector,
-) -> Result<Vec<String>> {
-    use crate::crd::Bind9Instance;
-
-    let api: Api<Bind9Instance> = Api::namespaced(client.clone(), namespace);
-
-    // Build label selector string
-    let label_selector = build_label_selector(selector);
-
-    let params = kube::api::ListParams::default();
-    let params = if let Some(selector_str) = label_selector {
-        params.labels(&selector_str)
-    } else {
-        params
-    };
-
-    let instances = api.list(&params).await?;
-
-    let instance_names: Vec<String> = instances
-        .items
-        .iter()
-        .map(kube::ResourceExt::name_any)
-        .collect();
-
-    Ok(instance_names)
-}
-
-/// Build a Kubernetes label selector string from our `LabelSelector`
-pub(crate) fn build_label_selector(selector: &crate::crd::LabelSelector) -> Option<String> {
-    let mut parts = Vec::new();
-
-    // Add match labels
-    if let Some(labels) = &selector.match_labels {
-        for (key, value) in labels {
-            parts.push(format!("{key}={value}"));
-        }
-    }
-
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(","))
-    }
-}
-
-/// Helper struct for pod information
+/// Helper struct for tracking pod information during reconciliation.
+/// Used by pod discovery operations.
 #[derive(Clone)]
 pub struct PodInfo {
     pub name: String,
@@ -1810,63 +2772,103 @@ pub async fn find_all_primary_pods(
 
     Ok(all_pod_infos)
 }
-
-/// Find all SECONDARY pod IPs for a given cluster or global cluster.
-///
-/// This is a helper function that calls `find_all_secondary_pods` and extracts only the IPs.
-///
-/// Returns IP addresses of all running secondary pods in the cluster.
-/// These IPs are used for configuring also-notify and allow-transfer on primary zones.
-async fn find_all_secondary_pod_ips(
-    client: &Client,
-    namespace: &str,
-    cluster_name: &str,
-    is_cluster_provider: bool,
-) -> Result<Vec<String>> {
-    info!("Finding SECONDARY pod IPs for cluster {}", cluster_name);
-
-    let secondary_pods =
-        find_all_secondary_pods(client, namespace, cluster_name, is_cluster_provider).await?;
-
-    let secondary_ips: Vec<String> = secondary_pods.iter().map(|pod| pod.ip.clone()).collect();
-
-    info!(
-        "Found {} running SECONDARY pod IP(s) for cluster {}: {:?}",
-        secondary_ips.len(),
-        cluster_name,
-        secondary_ips
-    );
-
-    Ok(secondary_ips)
-}
-
 /// Find all PRIMARY pod IPs for a given cluster or global cluster.
 ///
 /// Returns IP addresses of all running primary pods in the cluster.
-/// These IPs are used for configuring primaries on secondary zones.
-async fn find_all_primary_pod_ips(
+/// Find primary server IPs from a list of instance references.
+///
+/// This is the NEW instance-based approach that replaces cluster-based lookup.
+/// It filters the instance refs to only PRIMARY instances, then gets their pod IPs.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `instance_refs` - List of instance references to search
+///
+/// # Returns
+///
+/// A vector of IP addresses for all running PRIMARY pods across all primary instances
+async fn find_primary_ips_from_instances(
     client: &Client,
-    namespace: &str,
-    cluster_name: &str,
-    is_cluster_provider: bool,
+    instance_refs: &[crate::crd::InstanceReference],
 ) -> Result<Vec<String>> {
-    info!("Finding PRIMARY pod IPs for cluster {}", cluster_name);
-
-    let primary_pods =
-        find_all_primary_pods(client, namespace, cluster_name, is_cluster_provider).await?;
-
-    let primary_ips: Vec<String> = primary_pods.iter().map(|pod| pod.ip.clone()).collect();
+    use crate::crd::{Bind9Instance, ServerRole};
+    use k8s_openapi::api::core::v1::Pod;
 
     info!(
-        "Found {} running PRIMARY pod IP(s) for cluster {}: {:?}",
+        "Finding PRIMARY pod IPs from {} instance reference(s)",
+        instance_refs.len()
+    );
+
+    let mut primary_ips = Vec::new();
+
+    for instance_ref in instance_refs {
+        // Get the Bind9Instance to check its role
+        let instance_api: Api<Bind9Instance> =
+            Api::namespaced(client.clone(), &instance_ref.namespace);
+
+        let instance = match instance_api.get(&instance_ref.name).await {
+            Ok(inst) => inst,
+            Err(e) => {
+                warn!(
+                    "Failed to get instance {}/{}: {}",
+                    instance_ref.namespace, instance_ref.name, e
+                );
+                continue;
+            }
+        };
+
+        // Skip if not a PRIMARY instance
+        if instance.spec.role != ServerRole::Primary {
+            continue;
+        }
+
+        // Get running pod IPs for this primary instance
+        let pod_api: Api<Pod> = Api::namespaced(client.clone(), &instance_ref.namespace);
+        let label_selector = format!("app=bind9,instance={}", instance_ref.name);
+        let lp = ListParams::default().labels(&label_selector);
+
+        match pod_api.list(&lp).await {
+            Ok(pods) => {
+                for pod in pods.items {
+                    if let Some(pod_ip) = pod.status.as_ref().and_then(|s| s.pod_ip.as_ref()) {
+                        // Check if pod is running
+                        let phase = pod
+                            .status
+                            .as_ref()
+                            .and_then(|s| s.phase.as_ref())
+                            .map_or("Unknown", std::string::String::as_str);
+
+                        if phase == "Running" {
+                            primary_ips.push(pod_ip.clone());
+                            debug!(
+                                "Added IP {} from running PRIMARY pod {} (instance {}/{})",
+                                pod_ip,
+                                pod.metadata.name.as_ref().unwrap_or(&"unknown".to_string()),
+                                instance_ref.namespace,
+                                instance_ref.name
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to list pods for PRIMARY instance {}/{}: {}",
+                    instance_ref.namespace, instance_ref.name, e
+                );
+            }
+        }
+    }
+
+    info!(
+        "Found total of {} PRIMARY pod IP(s) across all instances: {:?}",
         primary_ips.len(),
-        cluster_name,
         primary_ips
     );
 
     Ok(primary_ips)
 }
-
 /// Find all SECONDARY pods for a given cluster or global cluster.
 ///
 /// Returns structured pod information including IP, name, instance name, and namespace.
@@ -1990,6 +2992,55 @@ async fn find_all_secondary_pods(
     Ok(all_pod_infos)
 }
 
+/// Update `lastReconciledAt` timestamp for a zone in `Bind9Instance.status.selectedZones[]`.
+///
+/// This function implements the critical Phase 2 completion step: after successfully
+/// configuring a zone on an instance, we update the instance's status to signal that
+/// the zone is now reconciled and doesn't need reconfiguration on future reconciliations.
+///
+/// This prevents infinite reconciliation loops by ensuring the `DNSZone` watch mapper
+/// only triggers reconciliation when `lastReconciledAt == None`.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `instance_name` - Name of the `Bind9Instance`
+/// * `instance_namespace` - Namespace of the `Bind9Instance`
+/// * `zone_name` - Name of the `DNSZone` resource
+/// * `zone_namespace` - Namespace of the `DNSZone` resource
+///
+/// # Returns
+///
+/// * `Ok(())` - If timestamp update succeeded
+/// * `Err(_)` - If instance fetch or status patching failed
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Instance cannot be fetched from Kubernetes API
+/// - Zone is not found in instance's `selectedZones[]` array
+/// - Status patch operation fails
+fn update_zone_reconciled_timestamp(
+    _client: &Client,
+    instance_name: &str,
+    instance_namespace: &str,
+    zone_name: &str,
+    zone_namespace: &str,
+) {
+    // REMOVED: Instances no longer track selected_zones in status
+    // TODO: Implement new timestamp tracking mechanism in DNSZone.status.bind9Instances
+    // For now, this function is a no-op
+    debug!(
+        "STUB: update_zone_reconciled_timestamp for zone {}/{} on instance {}/{} - logic removed",
+        zone_namespace, zone_name, instance_namespace, instance_name
+    );
+}
+
+/// Get all secondary pod IPs for a primary instance from a list of zone instances.
+///
+/// Filters the provided instances to find all secondary instances (excluding the current instance),
+/// then queries the Kubernetes API to get their running pod IPs.
+///
 /// Load RNDC key from the instance's secret
 async fn load_rndc_key(
     client: &Client,
@@ -2017,243 +3068,8 @@ async fn load_rndc_key(
     crate::bind9::Bind9Manager::parse_rndc_secret_data(&converted_data)
 }
 
-/// Check if the operator is running inside a Kubernetes cluster
-///
-/// Detects the environment by checking for the presence of the Kubernetes service account token,
-/// which is automatically mounted in all pods running in the cluster.
-///
-/// Returns `true` if running in-cluster, `false` if running locally (e.g., via kubectl proxy)
-fn is_running_in_cluster() -> bool {
-    std::path::Path::new("/var/run/secrets/kubernetes.io/serviceaccount/token").exists()
-}
-
-/// Update a single condition on the `DNSZone` status
-///
-/// This is a lightweight status update that only modifies the conditions field.
-/// Use this for intermediate status updates during reconciliation.
-async fn update_condition(
-    client: &Client,
-    dnszone: &DNSZone,
-    condition_type: &str,
-    status: &str,
-    reason: &str,
-    message: &str,
-) -> Result<()> {
-    let api: Api<DNSZone> =
-        Api::namespaced(client.clone(), &dnszone.namespace().unwrap_or_default());
-
-    let condition = Condition {
-        r#type: condition_type.to_string(),
-        status: status.to_string(),
-        last_transition_time: Some(Utc::now().to_rfc3339()),
-        reason: Some(reason.to_string()),
-        message: Some(message.to_string()),
-    };
-
-    // Preserve existing status fields, only update conditions
-    let current_status = dnszone.status.as_ref();
-    let new_status = DNSZoneStatus {
-        conditions: vec![condition],
-        observed_generation: current_status
-            .and_then(|s| s.observed_generation)
-            .or(dnszone.metadata.generation),
-        record_count: current_status.and_then(|s| s.record_count),
-        secondary_ips: current_status.and_then(|s| s.secondary_ips.clone()),
-        records: current_status
-            .map(|s| s.records.clone())
-            .unwrap_or_default(),
-        selection_method: current_status.and_then(|s| s.selection_method.clone()),
-        selected_by_instance: current_status.and_then(|s| s.selected_by_instance.clone()),
-    };
-
-    let patch = json!({
-        "status": new_status
-    });
-
-    api.patch_status(
-        &dnszone.name_any(),
-        &PatchParams::default(),
-        &Patch::Merge(&patch),
-    )
-    .await?;
-
-    debug!(
-        "Updated DNSZone {}/{} condition: type={}, status={}, reason={}",
-        dnszone.namespace().unwrap_or_default(),
-        dnszone.name_any(),
-        condition_type,
-        status,
-        reason
-    );
-
-    Ok(())
-}
-
-/// Update `DNSZone` status including secondary IPs
-async fn update_status_with_secondaries(
-    client: &Client,
-    dnszone: &DNSZone,
-    condition_type: &str,
-    status: &str,
-    reason: &str,
-    message: &str,
-    secondary_ips: Vec<String>,
-) -> Result<()> {
-    let api: Api<DNSZone> =
-        Api::namespaced(client.clone(), &dnszone.namespace().unwrap_or_default());
-
-    let condition = Condition {
-        r#type: condition_type.to_string(),
-        status: status.to_string(),
-        last_transition_time: Some(Utc::now().to_rfc3339()),
-        reason: Some(reason.to_string()),
-        message: Some(message.to_string()),
-    };
-
-    let new_status = DNSZoneStatus {
-        conditions: vec![condition],
-        observed_generation: dnszone.metadata.generation,
-        record_count: dnszone.status.as_ref().and_then(|s| s.record_count),
-        secondary_ips: if secondary_ips.is_empty() {
-            None
-        } else {
-            Some(secondary_ips)
-        },
-        records: dnszone
-            .status
-            .as_ref()
-            .map(|s| s.records.clone())
-            .unwrap_or_default(),
-        selection_method: dnszone
-            .status
-            .as_ref()
-            .and_then(|s| s.selection_method.clone()),
-        selected_by_instance: dnszone
-            .status
-            .as_ref()
-            .and_then(|s| s.selected_by_instance.clone()),
-    };
-
-    let patch = json!({
-        "status": new_status
-    });
-
-    api.patch_status(
-        &dnszone.name_any(),
-        &PatchParams::default(),
-        &Patch::Merge(&patch),
-    )
-    .await?;
-
-    info!(
-        "Updated DNSZone {}/{} status: {}={}",
-        dnszone.namespace().unwrap_or_default(),
-        dnszone.name_any(),
-        condition_type,
-        status
-    );
-
-    Ok(())
-}
-
-async fn update_status(
-    client: &Client,
-    dnszone: &DNSZone,
-    condition_type: &str,
-    status: &str,
-    message: &str,
-) -> Result<()> {
-    let api: Api<DNSZone> =
-        Api::namespaced(client.clone(), &dnszone.namespace().unwrap_or_default());
-
-    // Check if status has actually changed
-    let current_status = &dnszone.status;
-    let status_changed = if let Some(current) = current_status {
-        if let Some(current_condition) = current.conditions.first() {
-            // Check if condition changed
-            current_condition.r#type != condition_type
-                || current_condition.status != status
-                || current_condition.message.as_deref() != Some(message)
-        } else {
-            // No conditions exist, need to update
-            true
-        }
-    } else {
-        // No status exists, need to update
-        true
-    };
-
-    // Only update if status has changed
-    if !status_changed {
-        debug!(
-            namespace = %dnszone.namespace().unwrap_or_default(),
-            name = %dnszone.name_any(),
-            "Status unchanged, skipping update"
-        );
-        info!(
-            "DNSZone {}/{} status unchanged, skipping update",
-            dnszone.namespace().unwrap_or_default(),
-            dnszone.name_any()
-        );
-        return Ok(());
-    }
-
-    debug!(
-        condition_type = %condition_type,
-        status = %status,
-        message = %message,
-        "Preparing status update"
-    );
-
-    let condition = Condition {
-        r#type: condition_type.to_string(),
-        status: status.to_string(),
-        reason: Some(condition_type.to_string()),
-        message: Some(message.to_string()),
-        last_transition_time: Some(Utc::now().to_rfc3339()),
-    };
-
-    let new_status = DNSZoneStatus {
-        conditions: vec![condition],
-        observed_generation: dnszone.metadata.generation,
-        record_count: None,
-        secondary_ips: dnszone
-            .status
-            .as_ref()
-            .and_then(|s| s.secondary_ips.clone()),
-        records: dnszone
-            .status
-            .as_ref()
-            .map(|s| s.records.clone())
-            .unwrap_or_default(),
-        selection_method: dnszone
-            .status
-            .as_ref()
-            .and_then(|s| s.selection_method.clone()),
-        selected_by_instance: dnszone
-            .status
-            .as_ref()
-            .and_then(|s| s.selected_by_instance.clone()),
-    };
-
-    info!(
-        "Updating DNSZone {}/{} status",
-        dnszone.namespace().unwrap_or_default(),
-        dnszone.name_any()
-    );
-
-    let patch = json!({ "status": new_status });
-    api.patch_status(
-        &dnszone.name_any(),
-        &PatchParams::default(),
-        &Patch::Merge(patch),
-    )
-    .await?;
-
-    Ok(())
-}
-
-/// Structure representing an endpoint (pod IP and port)
+/// Helper struct for tracking endpoint information (pod IP and port).
+/// Used by endpoint management operations.
 #[derive(Debug, Clone)]
 pub struct EndpointAddress {
     /// IP address of the pod
@@ -2628,52 +3444,47 @@ pub async fn get_endpoint(
 async fn check_all_records_ready(
     client: &Client,
     namespace: &str,
-    record_refs: &[crate::crd::RecordReference],
+    record_refs: &[crate::crd::RecordReferenceWithTimestamp],
 ) -> Result<bool> {
     use crate::crd::{
-        AAAARecord, ARecord, CAARecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, TXTRecord,
+        AAAARecord, ARecord, CAARecord, CNAMERecord, DNSRecordKind, MXRecord, NSRecord, SRVRecord,
+        TXTRecord,
     };
 
     for record_ref in record_refs {
-        let is_ready = match record_ref.kind.as_str() {
-            "ARecord" => {
+        let kind = DNSRecordKind::from(record_ref.kind.as_str());
+        let is_ready = match kind {
+            DNSRecordKind::A => {
                 let api: Api<ARecord> = Api::namespaced(client.clone(), namespace);
                 check_record_ready(&api, &record_ref.name).await?
             }
-            "AAAARecord" => {
+            DNSRecordKind::AAAA => {
                 let api: Api<AAAARecord> = Api::namespaced(client.clone(), namespace);
                 check_record_ready(&api, &record_ref.name).await?
             }
-            "TXTRecord" => {
+            DNSRecordKind::TXT => {
                 let api: Api<TXTRecord> = Api::namespaced(client.clone(), namespace);
                 check_record_ready(&api, &record_ref.name).await?
             }
-            "CNAMERecord" => {
+            DNSRecordKind::CNAME => {
                 let api: Api<CNAMERecord> = Api::namespaced(client.clone(), namespace);
                 check_record_ready(&api, &record_ref.name).await?
             }
-            "MXRecord" => {
+            DNSRecordKind::MX => {
                 let api: Api<MXRecord> = Api::namespaced(client.clone(), namespace);
                 check_record_ready(&api, &record_ref.name).await?
             }
-            "NSRecord" => {
+            DNSRecordKind::NS => {
                 let api: Api<NSRecord> = Api::namespaced(client.clone(), namespace);
                 check_record_ready(&api, &record_ref.name).await?
             }
-            "SRVRecord" => {
+            DNSRecordKind::SRV => {
                 let api: Api<SRVRecord> = Api::namespaced(client.clone(), namespace);
                 check_record_ready(&api, &record_ref.name).await?
             }
-            "CAARecord" => {
+            DNSRecordKind::CAA => {
                 let api: Api<CAARecord> = Api::namespaced(client.clone(), namespace);
                 check_record_ready(&api, &record_ref.name).await?
-            }
-            _ => {
-                warn!(
-                    "Unknown record kind: {}, skipping readiness check",
-                    record_ref.kind
-                );
-                false
             }
         };
 
@@ -2783,79 +3594,15 @@ pub async fn find_zones_selecting_record(
 
     Ok(selecting_zones)
 }
-
-/// Trigger zone transfers to all secondary instances.
+/// Counts DNS records matching a zone for logging purposes.
 ///
-/// Uses the `rndc retransfer` command to initiate zone transfers from primaries to secondaries.
+/// **Event-Driven Architecture**: This function only counts and logs records that have
+/// `status.zoneRef.zoneName` matching the zone. The actual reconciliation is triggered
+/// automatically by Kubernetes watches - when the `DNSZone` status changes, record controllers
+/// are notified via watch events and reconcile automatically.
 ///
-/// # Arguments
-///
-/// * `client` - Kubernetes API client
-/// * `namespace` - Namespace containing the BIND9 instances
-/// * `zone_name` - Name of the zone to transfer
-/// * `cluster_ref` - Cluster reference
-/// * `is_cluster_provider` - Whether this is a cluster provider reference
-/// * `zone_manager` - BIND9 manager for zone operations
-///
-/// # Returns
-///
-/// * `Ok(usize)` - Number of secondaries that successfully initiated transfer
-/// * `Err(_)` - If no secondaries found or all transfers failed
-async fn trigger_zone_transfers(
-    client: &Client,
-    namespace: &str,
-    zone_name: &str,
-    cluster_ref: &str,
-    is_cluster_provider: bool,
-    zone_manager: &crate::bind9::Bind9Manager,
-) -> Result<usize> {
-    let (_first_endpoint, total_endpoints) = for_each_secondary_endpoint(
-        client,
-        namespace,
-        cluster_ref,
-        is_cluster_provider,
-        false,  // with_rndc_key = false (not needed for retransfer)
-        "http", // Use bindcar HTTP API port for zone operations
-        |secondary_endpoint, instance_name, _rndc_key| {
-            let zone_name = zone_name.to_string();
-            let zone_manager = zone_manager.clone();
-
-            async move {
-                zone_manager
-                    .retransfer_zone(&zone_name, &secondary_endpoint)
-                    .await
-                    .with_context(|| format!(
-                        "Failed to trigger zone transfer for {zone_name} on secondary {secondary_endpoint} (instance: {instance_name})"
-                    ))?;
-
-                info!(
-                    "Triggered zone transfer for {zone_name} on secondary {secondary_endpoint} (instance: {instance_name})"
-                );
-
-                Ok(())
-            }
-        },
-    )
-    .await?;
-
-    if total_endpoints == 0 {
-        warn!(
-            "No secondary instances found for zone {} in cluster {}",
-            zone_name, cluster_ref
-        );
-    }
-
-    Ok(total_endpoints)
-}
-
-/// Trigger reconciliation of all DNS records matching a zone.
-///
-/// Updates an annotation on all record types (`ARecord`, `TXTRecord`, etc.) that have
-/// the `bindy.firestoned.io/zone` annotation matching the zone name. This causes
-/// the record controllers to re-reconcile and re-add the records to BIND9.
-///
-/// This is critical after zone recreation (e.g., pod restarts) to ensure records
-/// are re-added to the newly created zones.
+/// This function is called after zone recreation (e.g., pod restarts) to log how many
+/// records will be automatically reconciled via the event-driven architecture.
 ///
 /// # Arguments
 ///
@@ -2865,84 +3612,51 @@ async fn trigger_zone_transfers(
 ///
 /// # Errors
 ///
-/// Returns an error if patching records fails. Errors are logged but don't fail
+/// Returns an error if listing records fails. Errors are logged but don't fail
 /// the parent `DNSZone` reconciliation.
 async fn trigger_record_reconciliation(
     client: &Client,
     namespace: &str,
     zone_name: &str,
 ) -> Result<()> {
-    use crate::constants::ANNOTATION_ZONE_OWNER;
     use crate::crd::{
         AAAARecord, ARecord, CAARecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, TXTRecord,
     };
-    use chrono::Utc;
 
     debug!(
         "Triggering record reconciliation for zone {} in namespace {}",
         zone_name, namespace
     );
 
-    // Annotation to update - timestamp triggers reconciliation without changing spec
-    let timestamp = Utc::now().to_rfc3339();
-    let patch_annotation = "bindy.firestoned.io/zone-reconciled-at";
-
-    // Helper macro to patch all records of a given type
-    macro_rules! trigger_records {
+    // Helper macro to count records by status.zoneRef
+    // Note: We don't need to patch anything - the event-driven architecture (watches)
+    // will automatically trigger reconciliation when records see zone status changes
+    macro_rules! count_records {
         ($record_type:ty, $type_name:expr) => {{
             let api: Api<$record_type> = Api::namespaced(client.clone(), namespace);
             let lp = ListParams::default();
 
             match api.list(&lp).await {
                 Ok(records) => {
-                    let matching: Vec<_> = records
+                    let matching_count = records
                         .items
                         .iter()
                         .filter(|r| {
-                            r.metadata
-                                .annotations
+                            // Check if status.zoneRef.zoneName matches
+                            r.status
                                 .as_ref()
-                                .and_then(|a| a.get(ANNOTATION_ZONE_OWNER))
-                                == Some(&zone_name.to_string())
+                                .and_then(|s| s.zone_ref.as_ref())
+                                .map(|zr| zr.zone_name == zone_name)
+                                .unwrap_or(false)
                         })
-                        .collect();
+                        .count();
 
                     debug!(
-                        "Found {} {} record(s) for zone {}",
-                        matching.len(),
+                        "Found {} {} record(s) for zone {} (event-driven watches will trigger reconciliation)",
+                        matching_count,
                         $type_name,
                         zone_name
                     );
-
-                    for record in matching {
-                        let name = record.name_any();
-                        let patch = json!({
-                            "metadata": {
-                                "annotations": {
-                                    patch_annotation: timestamp.clone()
-                                }
-                            }
-                        });
-
-                        if let Err(e) = api
-                            .patch(
-                                &name,
-                                &PatchParams::default(),
-                                &Patch::Merge(&patch),
-                            )
-                            .await
-                        {
-                            warn!(
-                                "Failed to trigger reconciliation for {} {}/{}: {}",
-                                $type_name, namespace, name, e
-                            );
-                        } else {
-                            debug!(
-                                "Triggered reconciliation for {} {}/{}",
-                                $type_name, namespace, name
-                            );
-                        }
-                    }
                 }
                 Err(e) => {
                     warn!(
@@ -2954,15 +3668,340 @@ async fn trigger_record_reconciliation(
         }};
     }
 
-    // Trigger all record types
-    trigger_records!(ARecord, "A");
-    trigger_records!(AAAARecord, "AAAA");
-    trigger_records!(TXTRecord, "TXT");
-    trigger_records!(CNAMERecord, "CNAME");
-    trigger_records!(MXRecord, "MX");
-    trigger_records!(NSRecord, "NS");
-    trigger_records!(SRVRecord, "SRV");
-    trigger_records!(CAARecord, "CAA");
+    // Count records for each type (event-driven watches will trigger reconciliation automatically)
+    count_records!(ARecord, "A");
+    count_records!(AAAARecord, "AAAA");
+    count_records!(TXTRecord, "TXT");
+    count_records!(CNAMERecord, "CNAME");
+    count_records!(MXRecord, "MX");
+    count_records!(NSRecord, "NS");
+    count_records!(SRVRecord, "SRV");
+    count_records!(CAARecord, "CAA");
 
     Ok(())
+}
+
+/// Clean up stale records from `DNSZone` status with BIND9 self-healing.
+///
+/// This function provides full self-healing for DNS records by:
+/// 1. Checking if each record in `status.records[]` still exists in Kubernetes API
+/// 2. If record doesn't exist in K8s: queries BIND9 to verify DNS record was deleted
+/// 3. If DNS record still exists in BIND9: deletes it (self-healing from race conditions/bugs)
+/// 4. Removes stale entry from `status.records[]`
+///
+/// This catches edge cases where the record finalizer failed to delete from BIND9 due to:
+/// - Race conditions during controller restart
+/// - Controller crashes during deletion
+/// - Finalizer bugs that skipped deletion
+/// - Manual changes to BIND9
+///
+/// # Important Note
+///
+/// The DNS record name is stored in `RecordReference.record_name` (from `spec.name`) and
+/// the zone name in `RecordReference.zone_name`. These fields are populated when records are
+/// discovered. If a record reference is missing these fields (old status format), the BIND9
+/// cleanup is skipped for that record, but it's still removed from status.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `dnszone` - The `DNSZone` resource
+/// * `status_updater` - Status updater for modifying `status.records[]`
+///
+/// # Returns
+///
+/// Returns the number of stale records removed from status.
+/// Cleans up deleted instances from `status.bind9Instances`.
+///
+/// Checks each instance in `status.bind9Instances` to see if the `Bind9Instance` still exists.
+/// If an instance has been deleted, clears its `lastReconciledAt` timestamp to indicate
+/// the zone is no longer configured on that instance.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `dnszone` - The `DNSZone` resource
+/// * `status_updater` - Status updater to apply changes
+///
+/// # Returns
+///
+/// * `Ok(usize)` - Number of deleted instances found and cleared
+/// * `Err(_)` - If API calls fail critically
+///
+/// # Errors
+///
+/// Returns an error if Kubernetes API calls fail (except `NotFound` errors, which are expected).
+pub async fn cleanup_deleted_instances(
+    client: &Client,
+    dnszone: &DNSZone,
+    status_updater: &mut crate::reconcilers::status::DNSZoneStatusUpdater,
+) -> Result<usize> {
+    use crate::crd::Bind9Instance;
+
+    let namespace = dnszone.namespace().unwrap_or_default();
+    let zone_name = &dnszone.spec.zone_name;
+
+    // Get current instances from status
+    let current_instances = dnszone
+        .status
+        .as_ref()
+        .map(|s| s.bind9_instances.clone())
+        .unwrap_or_default();
+
+    if current_instances.is_empty() {
+        debug!(
+            "No instances in status for zone {}/{} - skipping cleanup",
+            namespace, zone_name
+        );
+        return Ok(0);
+    }
+
+    info!(
+        "Cleaning up deleted instances for zone {}/{}: checking {} instance(s)",
+        namespace,
+        zone_name,
+        current_instances.len()
+    );
+
+    let mut deleted_count = 0;
+
+    // Check each instance to see if it still exists
+    for instance_ref in current_instances {
+        let instance_api: Api<Bind9Instance> =
+            Api::namespaced(client.clone(), &instance_ref.namespace);
+
+        let instance_exists = instance_api.get(&instance_ref.name).await.is_ok();
+
+        if !instance_exists {
+            info!(
+                "Instance {}/{} no longer exists - removing from zone {}/{}",
+                instance_ref.namespace, instance_ref.name, namespace, zone_name
+            );
+            status_updater.remove_instance(&instance_ref.name, &instance_ref.namespace);
+            deleted_count += 1;
+        }
+    }
+
+    Ok(deleted_count)
+}
+
+///
+/// # Errors
+///
+/// Returns an error if API calls fail critically (non-NotFound errors).
+#[allow(clippy::too_many_lines)]
+pub async fn cleanup_stale_records(
+    client: &Client,
+    dnszone: &DNSZone,
+    status_updater: &mut crate::reconcilers::status::DNSZoneStatusUpdater,
+    bind9_instances_store: &kube::runtime::reflector::Store<crate::crd::Bind9Instance>,
+) -> Result<usize> {
+    use crate::bind9::records::query_dns_record;
+    use crate::crd::{
+        AAAARecord, ARecord, CAARecord, CNAMERecord, DNSRecordKind, MXRecord, NSRecord,
+        RecordReferenceWithTimestamp, SRVRecord, TXTRecord,
+    };
+
+    let namespace = dnszone.namespace().unwrap_or_default();
+    let zone_name = &dnszone.spec.zone_name;
+
+    // Get current records from status
+    let current_records = dnszone
+        .status
+        .as_ref()
+        .map(|s| s.records.clone())
+        .unwrap_or_default();
+
+    if current_records.is_empty() {
+        debug!(
+            "No records in status for zone {}/{} - skipping cleanup",
+            namespace, zone_name
+        );
+        return Ok(0);
+    }
+
+    info!(
+        "Cleaning up stale records for zone {}/{}: checking {} record(s)",
+        namespace,
+        zone_name,
+        current_records.len()
+    );
+
+    // Get instances to query DNS and delete if needed
+    let instance_refs = get_instances_from_zone(dnszone, bind9_instances_store)?;
+    let primary_refs = filter_primary_instances(client, &instance_refs).await?;
+
+    let mut records_to_keep: Vec<RecordReferenceWithTimestamp> = Vec::new();
+    let mut stale_count = 0;
+
+    // Check each record to see if it still exists
+    for record_ref in current_records {
+        let kind = DNSRecordKind::from(record_ref.kind.as_str());
+        let record_exists = match kind {
+            DNSRecordKind::A => {
+                let api: Api<ARecord> = Api::namespaced(client.clone(), &record_ref.namespace);
+                api.get(&record_ref.name).await.is_ok()
+            }
+            DNSRecordKind::AAAA => {
+                let api: Api<AAAARecord> = Api::namespaced(client.clone(), &record_ref.namespace);
+                api.get(&record_ref.name).await.is_ok()
+            }
+            DNSRecordKind::TXT => {
+                let api: Api<TXTRecord> = Api::namespaced(client.clone(), &record_ref.namespace);
+                api.get(&record_ref.name).await.is_ok()
+            }
+            DNSRecordKind::CNAME => {
+                let api: Api<CNAMERecord> = Api::namespaced(client.clone(), &record_ref.namespace);
+                api.get(&record_ref.name).await.is_ok()
+            }
+            DNSRecordKind::MX => {
+                let api: Api<MXRecord> = Api::namespaced(client.clone(), &record_ref.namespace);
+                api.get(&record_ref.name).await.is_ok()
+            }
+            DNSRecordKind::NS => {
+                let api: Api<NSRecord> = Api::namespaced(client.clone(), &record_ref.namespace);
+                api.get(&record_ref.name).await.is_ok()
+            }
+            DNSRecordKind::SRV => {
+                let api: Api<SRVRecord> = Api::namespaced(client.clone(), &record_ref.namespace);
+                api.get(&record_ref.name).await.is_ok()
+            }
+            DNSRecordKind::CAA => {
+                let api: Api<CAARecord> = Api::namespaced(client.clone(), &record_ref.namespace);
+                api.get(&record_ref.name).await.is_ok()
+            }
+        };
+
+        if record_exists {
+            // Record still exists in Kubernetes - keep it in status
+            // The record reconciler will handle updating BIND9
+            debug!(
+                "Record {} {}/{} still exists - keeping in status",
+                record_ref.kind, record_ref.namespace, record_ref.name
+            );
+            records_to_keep.push(record_ref);
+        } else {
+            // Record doesn't exist in Kubernetes - need to clean up
+            info!(
+                "Record {} {}/{} no longer exists in Kubernetes",
+                record_ref.kind, record_ref.namespace, record_ref.name
+            );
+
+            // Self-healing: Check if record still exists in BIND9 and delete if found
+            // This catches cases where the finalizer failed to delete
+            let kind = DNSRecordKind::from(record_ref.kind.as_str());
+            let record_type = kind.to_hickory_record_type();
+
+            // Extract DNS record name and zone from RecordReference
+            // These fields are populated from spec.name when the record is discovered
+            let dns_record_name = if let Some(name) = &record_ref.record_name {
+                name.as_str()
+            } else {
+                warn!(
+                    "Record {} {}/{} has no recordName in status - skipping BIND9 cleanup",
+                    record_ref.kind, record_ref.namespace, record_ref.name
+                );
+                stale_count += 1;
+                continue;
+            };
+
+            // Check BIND9 on all primary instances and delete if found
+            // Use for_each_instance_endpoint to iterate over all primary endpoints
+            let dns_record_name_clone = dns_record_name.to_string();
+            let dns_zone_name_clone = zone_name.clone();
+            let record_kind = record_ref.kind.clone();
+            let record_namespace = record_ref.namespace.clone();
+            let record_name = record_ref.name.clone();
+
+            // Query and potentially delete from each primary instance
+            let _ = for_each_instance_endpoint(
+                client,
+                &primary_refs,
+                true,      // with_rndc_key (needed for deletion)
+                "dns-tcp", // Use DNS TCP port for queries and updates
+                |pod_endpoint, _instance_name, rndc_key| {
+                    let server = pod_endpoint.clone();
+                    let zone = dns_zone_name_clone.clone();
+                    let dns_name = dns_record_name_clone.clone();
+                    let r_type = record_type;
+                    let r_kind = record_kind.clone();
+                    let r_namespace = record_namespace.clone();
+                    let r_name = record_name.clone();
+
+                    async move {
+                        // Query DNS to check if record exists
+                        match query_dns_record(&zone, &dns_name, r_type, &server).await {
+                            Ok(records) if !records.is_empty() => {
+                                warn!(
+                                    "SELF-HEALING: Record {} {}/{} deleted from K8s but still exists in BIND9 on {}",
+                                    r_kind, r_namespace, r_name, server
+                                );
+
+                                // Delete from BIND9 using the RNDC key
+                                if let Some(key_data) = rndc_key {
+                                    match crate::bind9::records::delete_dns_record(
+                                        &zone,
+                                        &dns_name,
+                                        r_type,
+                                        &server,
+                                        &key_data,
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => {
+                                            info!(
+                                                "SELF-HEALING: Successfully deleted orphaned {} record {} from BIND9 on {}",
+                                                r_kind, dns_name, server
+                                            );
+                                        }
+                                        Err(e) => {
+                                            warn!(
+                                                "SELF-HEALING: Failed to delete orphaned record from BIND9 on {}: {}",
+                                                server, e
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    warn!(
+                                        "No RNDC key available for {} - cannot delete orphaned record",
+                                        server
+                                    );
+                                }
+                            }
+                            Ok(_) => {
+                                // Record doesn't exist in BIND9 - good, finalizer worked
+                                debug!(
+                                    "Record {} not found in BIND9 on {} - already cleaned up",
+                                    dns_name, server
+                                );
+                            }
+                            Err(e) => {
+                                debug!(
+                                    "Failed to query DNS on {} for {} (may not exist): {}",
+                                    server, dns_name, e
+                                );
+                            }
+                        }
+
+                        Ok(())
+                    }
+                },
+            )
+            .await;
+
+            // Remove from status regardless of whether we found it in BIND9
+            stale_count += 1;
+        }
+    }
+
+    // Update status with cleaned records list
+    if stale_count > 0 {
+        status_updater.set_records(&records_to_keep);
+        info!(
+            "Removed {} stale record(s) from zone {}/{} status",
+            stale_count, namespace, zone_name
+        );
+    }
+
+    Ok(stale_count)
 }

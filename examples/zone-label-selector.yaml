@@ -1,17 +1,19 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 
-# Example: Zone Selection with Label Selectors
+# DEPRECATED EXAMPLE: Zone Selection with Label Selectors (OLD ARCHITECTURE)
 #
-# This example demonstrates automatic zone discovery using label selectors.
-# Instead of explicitly assigning zones to clusters, zones are discovered
-# based on their labels matching cluster/instance selectors.
+# WARNING: This example demonstrates the OLD architecture where instances selected zones via `zonesFrom`.
+# The architecture has been REVERSED - zones now select instances via `DNSZone.spec.bind9InstancesFrom`.
 #
-# This pattern enables:
-# - Declarative zone assignment
-# - Self-healing zone discovery
-# - Automatic zone movement when labels change
-# - Multi-tenant DNS management
+# This file is retained for historical reference only and will be removed in a future release.
+# For current examples using the NEW architecture, see dns-zone.yaml.
+#
+# OLD pattern (this example):
+#   Bind9Cluster.spec.common.zonesFrom selects DNSZones by labels
+#
+# NEW pattern (current):
+#   DNSZone.spec.bind9InstancesFrom selects Bind9Instances by labels
 
 ---
 # Production DNS Cluster

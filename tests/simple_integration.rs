@@ -10,6 +10,10 @@
 
 #![allow(clippy::items_after_statements)]
 #![allow(clippy::manual_let_else)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::if_not_else)]
 
 use bindy::crd::{
     ARecord, ARecordSpec, Bind9Cluster, Bind9ClusterCommonSpec, Bind9ClusterSpec, Bind9Instance,
@@ -92,7 +96,7 @@ async fn delete_test_namespace(client: &Client, name: &str) {
 // ============================================================================
 
 #[tokio::test]
-#[ignore] // Run with: cargo test --test simple_integration -- --ignored
+#[ignore = "Run with: cargo test --test simple_integration -- --ignored"]
 async fn test_kubernetes_connectivity() {
     println!("\n=== Test: Kubernetes Connectivity ===\n");
 
@@ -119,7 +123,7 @@ async fn test_kubernetes_connectivity() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "Requires Kubernetes cluster"]
 async fn test_crds_installed() {
     println!("\n=== Test: Bindy CRDs Installed ===\n");
 
@@ -186,7 +190,7 @@ async fn test_crds_installed() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "Requires Kubernetes cluster"]
 async fn test_create_and_cleanup_namespace() {
     println!("\n=== Test: Create and Cleanup Namespace ===\n");
 
@@ -223,7 +227,7 @@ async fn test_create_and_cleanup_namespace() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "Requires Kubernetes cluster"]
 async fn test_bind9cluster_create_read_delete() {
     println!("\n=== Test: Bind9Cluster CRUD Operations ===\n");
 
@@ -260,7 +264,6 @@ async fn test_bind9cluster_create_read_delete() {
                 acls: None,
                 volumes: None,
                 volume_mounts: None,
-                zones_from: None,
             },
         },
         status: None,
@@ -319,7 +322,7 @@ async fn test_bind9cluster_create_read_delete() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "Requires Kubernetes cluster"]
 async fn test_clusterbind9provider_create_read_delete() {
     println!("\n=== Test: ClusterBind9Provider CRUD Operations ===\n");
 
@@ -350,7 +353,6 @@ async fn test_clusterbind9provider_create_read_delete() {
                 acls: None,
                 volumes: None,
                 volume_mounts: None,
-                zones_from: None,
             },
         },
         status: None,
@@ -407,7 +409,7 @@ async fn test_clusterbind9provider_create_read_delete() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "Requires Kubernetes cluster"]
 async fn test_bind9instance_create_read_delete() {
     println!("\n=== Test: Bind9Instance CRUD Operations ===\n");
 
@@ -447,7 +449,6 @@ async fn test_bind9instance_create_read_delete() {
             rndc_secret_ref: None,
             storage: None,
             bindcar_config: None,
-            zones_from: None,
         },
         status: None,
     };
@@ -496,7 +497,7 @@ async fn test_bind9instance_create_read_delete() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "Requires Kubernetes cluster"]
 async fn test_dnszone_create_read_delete() {
     println!("\n=== Test: DNSZone CRUD Operations ===\n");
 
@@ -507,7 +508,6 @@ async fn test_dnszone_create_read_delete() {
 
     let namespace = "bindy-test-zone";
     let zone_name = "test-zone";
-    let cluster_ref = "test-cluster";
 
     // Setup
     if let Err(e) = create_test_namespace(&client, namespace).await {
@@ -524,20 +524,20 @@ async fn test_dnszone_create_read_delete() {
         },
         spec: DNSZoneSpec {
             zone_name: "example.com".to_string(),
-            cluster_ref: Some(cluster_ref.to_string()),
-            cluster_provider_ref: None,
+            cluster_ref: None,
             soa_record: SOARecord {
                 primary_ns: "ns1.example.com.".to_string(),
                 admin_email: "admin.example.com.".to_string(),
-                serial: 2025010101,
+                serial: 2_025_010_101,
                 refresh: 3600,
                 retry: 600,
-                expire: 604800,
+                expire: 604_800,
                 negative_ttl: 86400,
             },
             ttl: Some(3600),
             name_server_ips: None,
             records_from: None,
+            bind9_instances_from: None,
         },
         status: None,
     };
@@ -583,7 +583,7 @@ async fn test_dnszone_create_read_delete() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "Requires Kubernetes cluster"]
 async fn test_arecord_create_read_delete() {
     println!("\n=== Test: ARecord CRUD Operations ===\n");
 
@@ -652,7 +652,7 @@ async fn test_arecord_create_read_delete() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "Requires Kubernetes cluster"]
 async fn test_cname_record_create_read_delete() {
     println!("\n=== Test: CNAMERecord CRUD Operations ===\n");
 
@@ -721,7 +721,7 @@ async fn test_cname_record_create_read_delete() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "Requires Kubernetes cluster"]
 async fn test_mx_record_create_read_delete() {
     println!("\n=== Test: MXRecord CRUD Operations ===\n");
 
@@ -791,7 +791,7 @@ async fn test_mx_record_create_read_delete() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "Requires Kubernetes cluster"]
 async fn test_txt_record_create_read_delete() {
     println!("\n=== Test: TXTRecord CRUD Operations ===\n");
 
@@ -875,7 +875,7 @@ async fn test_txt_record_create_read_delete() {
 /// 3. Verifies the pods have the correct labels
 /// 4. Verifies the instance status correctly detects the pods as ready
 #[tokio::test]
-#[ignore] // Run with: cargo test --test simple_integration test_instance_pod_label_selector -- --ignored
+#[ignore = "Run with: cargo test --test simple_integration test_instance_pod_label_selector -- --ignored"]
 async fn test_instance_pod_label_selector_finds_pods() {
     println!("\n=== Test: Instance Pod Label Selector Finds Pods ===\n");
 
@@ -914,7 +914,6 @@ async fn test_instance_pod_label_selector_finds_pods() {
                 acls: None,
                 volumes: None,
                 volume_mounts: None,
-                zones_from: None,
             },
         },
         status: None,
@@ -978,7 +977,6 @@ async fn test_instance_pod_label_selector_finds_pods() {
             rndc_secret_ref: None,
             storage: None,
             bindcar_config: None,
-            zones_from: None,
         },
         status: None,
     };
@@ -1032,9 +1030,8 @@ async fn test_instance_pod_label_selector_finds_pods() {
                                 println!("✓ Pod {pod_name} is Ready");
                                 pod_ready = true;
                                 break;
-                            } else {
-                                println!("  Pod {pod_name} not ready yet (attempt {attempt}/24)");
                             }
+                            println!("  Pod {pod_name} not ready yet (attempt {attempt}/24)");
                         }
                     }
                 }

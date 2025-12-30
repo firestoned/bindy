@@ -17,7 +17,7 @@ mod tests {
     const TEST_NAMESPACE: &str = "test-namespace";
     const TEST_NAME: &str = "test-resource";
 
-    /// Helper to create a test Bind9Cluster
+    /// Helper to create a test `Bind9Cluster`
     fn create_test_cluster() -> Bind9Cluster {
         Bind9Cluster {
             metadata: ObjectMeta {
@@ -40,14 +40,13 @@ mod tests {
                     acls: None,
                     volumes: None,
                     volume_mounts: None,
-                    zones_from: None,
                 },
             },
             status: None,
         }
     }
 
-    /// Helper to create a test Bind9Cluster with finalizers
+    /// Helper to create a test `Bind9Cluster` with finalizers
     fn create_test_cluster_with_finalizers(finalizers: Vec<String>) -> Bind9Cluster {
         Bind9Cluster {
             metadata: ObjectMeta {
@@ -70,14 +69,13 @@ mod tests {
                     acls: None,
                     volumes: None,
                     volume_mounts: None,
-                    zones_from: None,
                 },
             },
             status: None,
         }
     }
 
-    /// Helper to create a test Bind9Cluster with deletion timestamp
+    /// Helper to create a test `Bind9Cluster` with deletion timestamp
     fn create_test_cluster_being_deleted(finalizers: Vec<String>) -> Bind9Cluster {
         Bind9Cluster {
             metadata: ObjectMeta {
@@ -100,14 +98,13 @@ mod tests {
                     acls: None,
                     volumes: None,
                     volume_mounts: None,
-                    zones_from: None,
                 },
             },
             status: None,
         }
     }
 
-    /// Helper to create a test ClusterBind9Provider (cluster-scoped)
+    /// Helper to create a test `ClusterBind9Provider` (cluster-scoped)
     fn create_test_cluster_provider() -> ClusterBind9Provider {
         use crate::crd::ClusterBind9ProviderSpec;
         ClusterBind9Provider {
@@ -132,14 +129,13 @@ mod tests {
                     acls: None,
                     volumes: None,
                     volume_mounts: None,
-                    zones_from: None,
                 },
             },
             status: None,
         }
     }
 
-    /// Helper to create a test ClusterBind9Provider with finalizers
+    /// Helper to create a test `ClusterBind9Provider` with finalizers
     fn create_test_cluster_provider_with_finalizers(
         finalizers: Vec<String>,
     ) -> ClusterBind9Provider {
@@ -166,14 +162,13 @@ mod tests {
                     acls: None,
                     volumes: None,
                     volume_mounts: None,
-                    zones_from: None,
                 },
             },
             status: None,
         }
     }
 
-    /// Helper to create a test ClusterBind9Provider with deletion timestamp
+    /// Helper to create a test `ClusterBind9Provider` with deletion timestamp
     fn create_test_cluster_provider_being_deleted(finalizers: Vec<String>) -> ClusterBind9Provider {
         use crate::crd::ClusterBind9ProviderSpec;
         ClusterBind9Provider {
@@ -198,7 +193,6 @@ mod tests {
                     acls: None,
                     volumes: None,
                     volume_mounts: None,
-                    zones_from: None,
                 },
             },
             status: None,
@@ -215,7 +209,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires Kubernetes cluster
+    #[ignore = "Requires Kubernetes cluster"]
     async fn test_ensure_finalizer_adds_when_missing() {
         let _client = mock_client().await;
         let cluster = create_test_cluster();
@@ -231,7 +225,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires Kubernetes cluster
+    #[ignore = "Requires Kubernetes cluster"]
     async fn test_ensure_finalizer_idempotent_when_present() {
         let _client = mock_client().await;
         let cluster = create_test_cluster_with_finalizers(vec![TEST_FINALIZER.to_string()]);
@@ -252,7 +246,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires Kubernetes cluster
+    #[ignore = "Requires Kubernetes cluster"]
     async fn test_remove_finalizer_removes_when_present() {
         let _client = mock_client().await;
         let cluster = create_test_cluster_with_finalizers(vec![TEST_FINALIZER.to_string()]);
@@ -273,7 +267,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires Kubernetes cluster
+    #[ignore = "Requires Kubernetes cluster"]
     async fn test_remove_finalizer_idempotent_when_absent() {
         let _client = mock_client().await;
         let cluster = create_test_cluster();
@@ -289,7 +283,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires Kubernetes cluster
+    #[ignore = "Requires Kubernetes cluster"]
     async fn test_handle_deletion_runs_cleanup_and_removes_finalizer() {
         let _client = mock_client().await;
         let cluster = create_test_cluster_being_deleted(vec![TEST_FINALIZER.to_string()]);
@@ -306,7 +300,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires Kubernetes cluster
+    #[ignore = "Requires Kubernetes cluster"]
     async fn test_handle_deletion_skips_when_finalizer_absent() {
         let _client = mock_client().await;
         let cluster = create_test_cluster_being_deleted(vec![]);
@@ -327,7 +321,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires Kubernetes cluster
+    #[ignore = "Requires Kubernetes cluster"]
     async fn test_ensure_cluster_finalizer_adds_when_missing() {
         let _client = mock_client().await;
         let cluster = create_test_cluster_provider();
@@ -343,7 +337,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires Kubernetes cluster
+    #[ignore = "Requires Kubernetes cluster"]
     async fn test_ensure_cluster_finalizer_idempotent_when_present() {
         let _client = mock_client().await;
         let cluster =
@@ -365,7 +359,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires Kubernetes cluster
+    #[ignore = "Requires Kubernetes cluster"]
     async fn test_remove_cluster_finalizer_removes_when_present() {
         let _client = mock_client().await;
         let cluster =
@@ -387,7 +381,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires Kubernetes cluster
+    #[ignore = "Requires Kubernetes cluster"]
     async fn test_remove_cluster_finalizer_idempotent_when_absent() {
         let _client = mock_client().await;
         let cluster = create_test_cluster_provider();
@@ -403,7 +397,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires Kubernetes cluster
+    #[ignore = "Requires Kubernetes cluster"]
     async fn test_handle_cluster_deletion_runs_cleanup_and_removes_finalizer() {
         let _client = mock_client().await;
         let cluster = create_test_cluster_provider_being_deleted(vec![TEST_FINALIZER.to_string()]);
@@ -420,7 +414,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires Kubernetes cluster
+    #[ignore = "Requires Kubernetes cluster"]
     async fn test_handle_cluster_deletion_skips_when_finalizer_absent() {
         let _client = mock_client().await;
         let cluster = create_test_cluster_provider_being_deleted(vec![]);
@@ -444,9 +438,9 @@ mod tests {
     fn test_finalizer_cleanup_trait_requires_async() {
         // This is a compile-time test to verify the trait signature
         // If this compiles, the trait is correctly defined as async
-        fn _assert_trait_is_async<T: FinalizerCleanup>() {}
-        _assert_trait_is_async::<Bind9Cluster>();
-        _assert_trait_is_async::<ClusterBind9Provider>();
+        fn assert_trait_is_async<T: FinalizerCleanup>() {}
+        assert_trait_is_async::<Bind9Cluster>();
+        assert_trait_is_async::<ClusterBind9Provider>();
     }
 
     #[test]

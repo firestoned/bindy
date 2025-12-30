@@ -32,12 +32,14 @@ mod tests {
                     version: Some("9.18".to_string()),
                     primary: Some(PrimaryConfig {
                         replicas: Some(2),
+                        labels: None,
                         service: None,
                         allow_transfer: None,
                         rndc_secret_ref: None,
                     }),
                     secondary: Some(SecondaryConfig {
-                        replicas: Some(1),
+                        replicas: Some(2),
+                        labels: None,
                         service: None,
                         allow_transfer: None,
                         rndc_secret_ref: None,
@@ -49,7 +51,6 @@ mod tests {
                     acls: None,
                     volumes: None,
                     volume_mounts: None,
-                    zones_from: None,
                 },
             },
             status: None,
@@ -74,10 +75,10 @@ mod tests {
                     last_transition_time: Some("2025-11-30T00:00:00Z".to_string()),
                 }],
                 observed_generation: Some(1),
-                replicas: Some(1),
-                ready_replicas: Some(1),
                 service_address: Some("10.0.0.1".to_string()),
-                selected_zones: vec![],
+                cluster_ref: None,
+                zones: Vec::new(),
+                zones_count: None,
             })
         } else {
             Some(Bind9InstanceStatus {
@@ -89,10 +90,10 @@ mod tests {
                     last_transition_time: Some("2025-11-30T00:00:00Z".to_string()),
                 }],
                 observed_generation: Some(1),
-                replicas: Some(1),
-                ready_replicas: Some(0),
                 service_address: None,
-                selected_zones: vec![],
+                cluster_ref: None,
+                zones: Vec::new(),
+                zones_count: None,
             })
         };
 
@@ -117,7 +118,6 @@ mod tests {
                 rndc_secret_ref: None,
                 storage: None,
                 bindcar_config: None,
-                zones_from: None,
             },
             status,
         }
@@ -159,12 +159,14 @@ mod tests {
                 version: Some("9.18".to_string()),
                 primary: Some(PrimaryConfig {
                     replicas: Some(2),
+                    labels: None,
                     service: None,
                     allow_transfer: None,
                     rndc_secret_ref: None,
                 }),
                 secondary: Some(SecondaryConfig {
                     replicas: Some(3),
+                    labels: None,
                     service: None,
                     allow_transfer: None,
                     rndc_secret_ref: None,
@@ -176,7 +178,6 @@ mod tests {
                 acls: None,
                 volumes: None,
                 volume_mounts: None,
-                zones_from: None,
             },
         };
 
@@ -518,7 +519,6 @@ mod tests {
                 rndc_secret_ref: None,
                 storage: None,
                 bindcar_config: None,
-                zones_from: None,
             },
             status: None, // No status set
         };
@@ -580,7 +580,6 @@ mod tests {
                 rndc_secret_ref: None,
                 storage: None,
                 bindcar_config: None,
-                zones_from: None,
             },
             status: Some(Bind9InstanceStatus {
                 conditions: vec![Condition {
@@ -591,10 +590,10 @@ mod tests {
                     last_transition_time: Some("2025-11-30T00:00:00Z".to_string()),
                 }],
                 observed_generation: Some(1),
-                replicas: Some(1),
-                ready_replicas: Some(0),
                 service_address: None,
-                selected_zones: vec![],
+                cluster_ref: None,
+                zones: Vec::new(),
+                zones_count: None,
             }),
         };
 
@@ -737,7 +736,7 @@ mod tests {
             .and_then(|s| s.replicas)
             .unwrap_or(0);
 
-        assert_eq!(replicas, 1);
+        assert_eq!(replicas, 2);
     }
 
     // Tests for standard status reason constants

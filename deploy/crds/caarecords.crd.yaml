@@ -171,8 +171,63 @@ spec:
 
                   If this field is empty, the record is not matched by any zone and should not
                   be reconciled into BIND9.
+
+                  **DEPRECATED**: Use `zone_ref` instead for structured zone reference.
                 nullable: true
                 type: string
+              zoneRef:
+                description: |-
+                  Structured reference to the `DNSZone` that owns this record.
+
+                  Set by the `DNSZone` controller when the zone's `recordsFrom` selector matches
+                  this record's labels. Contains the complete Kubernetes object reference including
+                  apiVersion, kind, name, namespace, and zoneName.
+
+                  The record reconciler uses this to:
+                  1. Look up the parent `DNSZone` resource
+                  2. Find the zone's primary `Bind9Instance` servers
+                  3. Add this record to BIND9 on primaries
+                  4. Trigger zone transfer (retransfer) on secondaries
+
+                  If this field is None, the record is not selected by any zone and will not
+                  be added to BIND9.
+                nullable: true
+                properties:
+                  apiVersion:
+                    description: API version of the `DNSZone` resource (e.g., "bindy.firestoned.io/v1beta1")
+                    type: string
+                  kind:
+                    description: Kind of the resource (always "`DNSZone`")
+                    type: string
+                  lastReconciledAt:
+                    description: |-
+                      Timestamp when this zone was last successfully configured on the instance.
+
+                      This field is set by the `DNSZone` controller after successfully applying zone configuration
+                      to the instance. It is reset to `None` when:
+                      - The instance's pod restarts (requiring zone reconfiguration)
+                      - The instance's spec changes (requiring reconfiguration)
+
+                      The `DNSZone` controller uses this field to determine which instances need zone configuration.
+                      If this field is `None`, the zone needs to be configured on the instance.
+                    nullable: true
+                    type: string
+                  name:
+                    description: Name of the `DNSZone` resource
+                    type: string
+                  namespace:
+                    description: Namespace of the `DNSZone` resource
+                    type: string
+                  zoneName:
+                    description: Fully qualified domain name from the zone's spec (e.g., "example.com")
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                - namespace
+                - zoneName
+                type: object
             type: object
         required:
         - spec

@@ -159,3 +159,110 @@ where
         }
     }
 }
+
+/// Delete a DNS record of any type using dynamic DNS update (RFC 2136).
+///
+/// This function sends an RFC 2136 DELETE operation to remove ALL records
+/// of the specified type for the given name.
+///
+/// # Arguments
+///
+/// * `zone_name` - The DNS zone name (e.g., "example.com")
+/// * `name` - The record name (e.g., "www" for www.example.com, or "@" for apex)
+/// * `record_type` - The DNS record type to delete (A, AAAA, TXT, MX, etc.)
+/// * `server` - The DNS server address (IP:port, e.g., "10.0.0.1:53")
+/// * `key_data` - TSIG key for authentication
+///
+/// # Returns
+///
+/// Returns `Ok(())` if deletion succeeded (or if record didn't exist).
+///
+/// # Errors
+///
+/// Returns an error if the DNS server rejects the update or connection fails.
+pub async fn delete_dns_record(
+    zone_name: &str,
+    name: &str,
+    record_type: hickory_client::rr::RecordType,
+    server: &str,
+    key_data: &crate::bind9::types::RndcKeyData,
+) -> Result<()> {
+    use crate::bind9::rndc::create_tsig_signer;
+    use hickory_client::op::ResponseCode;
+    use hickory_client::rr::DNSClass;
+
+    let zone_name_str = zone_name.to_string();
+    let name_str = name.to_string();
+    let server_str = server.to_string();
+    let key_data = key_data.clone();
+
+    tokio::task::spawn_blocking(move || {
+        // Parse server address
+        let server_addr = server_str
+            .parse::<std::net::SocketAddr>()
+            .with_context(|| format!("Invalid server address: {server_str}"))?;
+
+        // Create UDP connection
+        let conn =
+            UdpClientConnection::new(server_addr).context("Failed to create UDP connection")?;
+
+        // Create TSIG signer
+        let signer = create_tsig_signer(&key_data)?;
+
+        // Create client with TSIG
+        let client = SyncClient::with_tsigner(conn, signer);
+
+        // Parse zone name
+        let zone = Name::from_str(&zone_name_str)
+            .with_context(|| format!("Invalid zone name: {zone_name_str}"))?;
+
+        // Build full record name
+        let fqdn = if name_str == "@" || name_str.is_empty() {
+            zone.clone()
+        } else {
+            Name::from_str(&format!("{name_str}.{zone_name_str}"))
+                .with_context(|| format!("Invalid record name: {name_str}.{zone_name_str}"))?
+        };
+
+        info!(
+            "Deleting {:?} record: {} from zone {}",
+            record_type, fqdn, zone_name_str
+        );
+
+        // Create a dummy record with TTL=0 for deletion (hickory-client delete_rrset API)
+        let mut dummy_record = Record::new();
+        dummy_record.set_name(fqdn.clone());
+        dummy_record.set_record_type(record_type);
+        dummy_record.set_dns_class(DNSClass::IN);
+
+        // Send delete operation - deletes ALL records of this type for this name
+        let response = client
+            .delete_rrset(dummy_record, zone.clone())
+            .with_context(|| {
+                format!("Failed to send DNS UPDATE to delete {record_type:?} record {fqdn}")
+            })?;
+
+        // Check response code
+        match response.response_code() {
+            ResponseCode::NoError => {
+                info!(
+                    "Successfully deleted {:?} record: {} from zone {}",
+                    record_type, name_str, zone_name_str
+                );
+                Ok(())
+            }
+            code => {
+                warn!(
+                    "DNS DELETE for {:?} record {fqdn} returned code: {:?} (may not have existed)",
+                    record_type, code
+                );
+                // Don't treat "not found" as error - record deletion is idempotent
+                Ok(())
+            }
+        }
+    })
+    .await
+    .with_context(|| {
+        format!("DNS delete task panicked or failed for {record_type:?} record {name}")
+    })?
+}

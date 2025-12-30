@@ -21,6 +21,8 @@
 //!
 //! - [`crd`] - Custom Resource Definition types for DNS resources
 //! - [`reconcilers`] - Reconciliation logic for each resource type
+//! - [`context`] - Shared context and reflector stores for controllers
+//! - [`selector`] - Label selector matching utilities
 //! - [`bind9`] - BIND9 zone file generation and management
 //! - [`bind9_resources`] - BIND9 instance resource management
 //!
@@ -42,12 +44,12 @@
 //!
 //! let zone_spec = DNSZoneSpec {
 //!     zone_name: "example.com".to_string(),
-//!     cluster_ref: Some("my-dns-cluster".to_string()),
-//!     cluster_provider_ref: None,
+//!     cluster_ref: None,
 //!     soa_record: soa,
 //!     ttl: Some(3600),
 //!     name_server_ips: None,
 //!     records_from: None,
+//!     bind9_instances_from: None,
 //! };
 //! ```
 //!
@@ -63,6 +65,7 @@
 pub mod bind9;
 pub mod bind9_resources;
 pub mod constants;
+pub mod context;
 pub mod crd;
 pub mod crd_docs;
 pub mod ddns;

@@ -1,202 +1,336 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: MIT
 
-//! Unit tests for `selector.rs`
+//! Unit tests for label selector matching logic.
 
-use crate::crd::{
-    ARecord, ARecordSpec, DNSZone, DNSZoneSpec, LabelSelector, RecordSource, SOARecord,
-};
-use crate::selector::find_zones_for_record;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use super::*;
+use crate::crd::{LabelSelector, LabelSelectorRequirement};
 use std::collections::BTreeMap;
 
-fn create_test_zone(
-    name: &str,
-    namespace: &str,
-    match_labels: BTreeMap<String, String>,
-) -> DNSZone {
-    DNSZone {
-        metadata: ObjectMeta {
-            name: Some(name.to_string()),
-            namespace: Some(namespace.to_string()),
-            ..Default::default()
-        },
-        spec: DNSZoneSpec {
-            zone_name: format!("{}.com", name),
-            cluster_ref: Some("test-cluster".to_string()),
-            cluster_provider_ref: None,
-            soa_record: SOARecord {
-                primary_ns: "ns1.example.com.".to_string(),
-                admin_email: "admin.example.com.".to_string(),
-                serial: 1,
-                refresh: 3600,
-                retry: 600,
-                expire: 604800,
-                negative_ttl: 86400,
-            },
-            ttl: Some(3600),
-            name_server_ips: None,
-            records_from: Some(vec![RecordSource {
-                selector: LabelSelector {
-                    match_labels: Some(match_labels),
-                    match_expressions: None,
-                },
-            }]),
-        },
-        status: None,
-    }
+fn create_labels(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect()
 }
 
-fn create_test_record(name: &str, namespace: &str, labels: BTreeMap<String, String>) -> ARecord {
-    ARecord {
-        metadata: ObjectMeta {
-            name: Some(name.to_string()),
-            namespace: Some(namespace.to_string()),
-            labels: Some(labels),
-            ..Default::default()
-        },
-        spec: ARecordSpec {
-            name: "www".to_string(),
-            ipv4_address: "192.0.2.1".to_string(),
-            ttl: Some(300),
-        },
-        status: None,
-    }
+fn create_match_labels(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    create_labels(pairs)
 }
 
 #[test]
-fn test_find_zones_for_record_single_match() {
-    // Create a store with one zone
-    let zone = create_test_zone(
-        "example",
-        "dns-system",
-        BTreeMap::from([("zone".to_string(), "example.com".to_string())]),
-    );
+fn test_empty_selector_matches_everything() {
+    let selector = LabelSelector {
+        match_labels: None,
+        match_expressions: None,
+    };
 
-    let (reader, mut writer) = kube::runtime::reflector::store::<DNSZone>();
-    writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(zone.clone()));
+    let labels = create_labels(&[("app", "web"), ("env", "prod")]);
+    assert!(matches_selector(&selector, &labels));
 
-    // Create a record that matches
-    let record = create_test_record(
-        "www-record",
-        "dns-system",
-        BTreeMap::from([("zone".to_string(), "example.com".to_string())]),
-    );
-
-    // Find matching zones
-    let matches = find_zones_for_record(&reader, &record);
-
-    assert_eq!(matches.len(), 1);
-    assert_eq!(matches[0].name, "example");
-    assert_eq!(matches[0].namespace.as_deref(), Some("dns-system"));
+    let empty_labels = BTreeMap::new();
+    assert!(matches_selector(&selector, &empty_labels));
 }
 
 #[test]
-fn test_find_zones_for_record_no_match() {
-    // Create a store with one zone
-    let zone = create_test_zone(
-        "example",
-        "dns-system",
-        BTreeMap::from([("zone".to_string(), "example.com".to_string())]),
-    );
+fn test_match_labels_exact_match() {
+    let match_labels = create_match_labels(&[("app", "web"), ("env", "prod")]);
+    let selector = LabelSelector {
+        match_labels: Some(match_labels),
+        match_expressions: None,
+    };
 
-    let (reader, mut writer) = kube::runtime::reflector::store::<DNSZone>();
-    writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(zone.clone()));
-
-    // Create a record that DOESN'T match
-    let record = create_test_record(
-        "www-record",
-        "dns-system",
-        BTreeMap::from([("zone".to_string(), "different.com".to_string())]),
-    );
-
-    // Find matching zones
-    let matches = find_zones_for_record(&reader, &record);
-
-    assert_eq!(matches.len(), 0);
+    let labels = create_labels(&[("app", "web"), ("env", "prod"), ("tier", "frontend")]);
+    assert!(matches_selector(&selector, &labels));
 }
 
 #[test]
-fn test_find_zones_for_record_multiple_matches() {
-    // Create a store with multiple zones
-    let zone1 = create_test_zone(
-        "example",
-        "dns-system",
-        BTreeMap::from([("app".to_string(), "web".to_string())]),
-    );
-    let zone2 = create_test_zone(
-        "internal",
-        "dns-system",
-        BTreeMap::from([("app".to_string(), "web".to_string())]),
-    );
+fn test_match_labels_missing_key() {
+    let match_labels = create_match_labels(&[("app", "web"), ("env", "prod")]);
+    let selector = LabelSelector {
+        match_labels: Some(match_labels),
+        match_expressions: None,
+    };
 
-    let (reader, mut writer) = kube::runtime::reflector::store::<DNSZone>();
-    writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(zone1.clone()));
-    writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(zone2.clone()));
-
-    // Create a record that matches both zones
-    let record = create_test_record(
-        "www-record",
-        "dns-system",
-        BTreeMap::from([("app".to_string(), "web".to_string())]),
-    );
-
-    // Find matching zones
-    let mut matches = find_zones_for_record(&reader, &record);
-    matches.sort_by(|a, b| a.name.cmp(&b.name));
-
-    assert_eq!(matches.len(), 2);
-    assert_eq!(matches[0].name, "example");
-    assert_eq!(matches[1].name, "internal");
+    let labels = create_labels(&[("app", "web")]); // Missing "env"
+    assert!(!matches_selector(&selector, &labels));
 }
 
 #[test]
-fn test_find_zones_for_record_different_namespace() {
-    // Create a zone in namespace "dns-system"
-    let zone = create_test_zone(
-        "example",
-        "dns-system",
-        BTreeMap::from([("zone".to_string(), "example.com".to_string())]),
-    );
+fn test_match_labels_wrong_value() {
+    let match_labels = create_match_labels(&[("app", "web")]);
+    let selector = LabelSelector {
+        match_labels: Some(match_labels),
+        match_expressions: None,
+    };
 
-    let (reader, mut writer) = kube::runtime::reflector::store::<DNSZone>();
-    writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(zone.clone()));
-
-    // Create a record in a DIFFERENT namespace
-    let record = create_test_record(
-        "www-record",
-        "other-namespace",
-        BTreeMap::from([("zone".to_string(), "example.com".to_string())]),
-    );
-
-    // Find matching zones - should be empty due to namespace mismatch
-    let matches = find_zones_for_record(&reader, &record);
-
-    assert_eq!(matches.len(), 0);
+    let labels = create_labels(&[("app", "api")]); // Wrong value
+    assert!(!matches_selector(&selector, &labels));
 }
 
 #[test]
-fn test_find_zones_for_record_zone_without_selector() {
-    // Create a zone WITHOUT recordsFrom selector
-    let mut zone = create_test_zone(
-        "example",
-        "dns-system",
-        BTreeMap::from([("zone".to_string(), "example.com".to_string())]),
-    );
-    zone.spec.records_from = None;
+fn test_match_expression_in_operator() {
+    let expr = LabelSelectorRequirement {
+        key: "env".to_string(),
+        operator: "In".to_string(),
+        values: Some(vec!["prod".to_string(), "staging".to_string()]),
+    };
+    let selector = LabelSelector {
+        match_labels: None,
+        match_expressions: Some(vec![expr]),
+    };
 
-    let (reader, mut writer) = kube::runtime::reflector::store::<DNSZone>();
-    writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(zone.clone()));
+    let labels_prod = create_labels(&[("env", "prod")]);
+    assert!(matches_selector(&selector, &labels_prod));
 
-    // Create a record
-    let record = create_test_record(
-        "www-record",
-        "dns-system",
-        BTreeMap::from([("zone".to_string(), "example.com".to_string())]),
-    );
+    let labels_staging = create_labels(&[("env", "staging")]);
+    assert!(matches_selector(&selector, &labels_staging));
 
-    // Find matching zones - should be empty since zone has no selector
-    let matches = find_zones_for_record(&reader, &record);
+    let labels_dev = create_labels(&[("env", "dev")]);
+    assert!(!matches_selector(&selector, &labels_dev));
 
-    assert_eq!(matches.len(), 0);
+    let labels_missing = create_labels(&[("app", "web")]);
+    assert!(!matches_selector(&selector, &labels_missing));
+}
+
+#[test]
+fn test_match_expression_not_in_operator() {
+    let expr = LabelSelectorRequirement {
+        key: "env".to_string(),
+        operator: "NotIn".to_string(),
+        values: Some(vec!["dev".to_string(), "test".to_string()]),
+    };
+    let selector = LabelSelector {
+        match_labels: None,
+        match_expressions: Some(vec![expr]),
+    };
+
+    let labels_prod = create_labels(&[("env", "prod")]);
+    assert!(matches_selector(&selector, &labels_prod));
+
+    let labels_dev = create_labels(&[("env", "dev")]);
+    assert!(!matches_selector(&selector, &labels_dev));
+
+    // NotIn passes when label doesn't exist
+    let labels_missing = create_labels(&[("app", "web")]);
+    assert!(matches_selector(&selector, &labels_missing));
+}
+
+#[test]
+fn test_match_expression_exists_operator() {
+    let expr = LabelSelectorRequirement {
+        key: "app".to_string(),
+        operator: "Exists".to_string(),
+        values: None,
+    };
+    let selector = LabelSelector {
+        match_labels: None,
+        match_expressions: Some(vec![expr]),
+    };
+
+    let labels_with_app = create_labels(&[("app", "web")]);
+    assert!(matches_selector(&selector, &labels_with_app));
+
+    let labels_without_app = create_labels(&[("env", "prod")]);
+    assert!(!matches_selector(&selector, &labels_without_app));
+}
+
+#[test]
+fn test_match_expression_does_not_exist_operator() {
+    let expr = LabelSelectorRequirement {
+        key: "deprecated".to_string(),
+        operator: "DoesNotExist".to_string(),
+        values: None,
+    };
+    let selector = LabelSelector {
+        match_labels: None,
+        match_expressions: Some(vec![expr]),
+    };
+
+    let labels_without_deprecated = create_labels(&[("app", "web")]);
+    assert!(matches_selector(&selector, &labels_without_deprecated));
+
+    let labels_with_deprecated = create_labels(&[("deprecated", "true")]);
+    assert!(!matches_selector(&selector, &labels_with_deprecated));
+}
+
+#[test]
+fn test_combined_match_labels_and_expressions() {
+    let match_labels = create_match_labels(&[("app", "web")]);
+    let expr = LabelSelectorRequirement {
+        key: "env".to_string(),
+        operator: "In".to_string(),
+        values: Some(vec!["prod".to_string(), "staging".to_string()]),
+    };
+    let selector = LabelSelector {
+        match_labels: Some(match_labels),
+        match_expressions: Some(vec![expr]),
+    };
+
+    // Both conditions met
+    let labels_pass = create_labels(&[("app", "web"), ("env", "prod")]);
+    assert!(matches_selector(&selector, &labels_pass));
+
+    // match_labels fails
+    let labels_wrong_app = create_labels(&[("app", "api"), ("env", "prod")]);
+    assert!(!matches_selector(&selector, &labels_wrong_app));
+
+    // expression fails
+    let labels_wrong_env = create_labels(&[("app", "web"), ("env", "dev")]);
+    assert!(!matches_selector(&selector, &labels_wrong_env));
+}
+
+#[test]
+fn test_multiple_expressions_all_must_match() {
+    let expr1 = LabelSelectorRequirement {
+        key: "app".to_string(),
+        operator: "Exists".to_string(),
+        values: None,
+    };
+    let expr2 = LabelSelectorRequirement {
+        key: "env".to_string(),
+        operator: "In".to_string(),
+        values: Some(vec!["prod".to_string()]),
+    };
+    let selector = LabelSelector {
+        match_labels: None,
+        match_expressions: Some(vec![expr1, expr2]),
+    };
+
+    // Both expressions satisfied
+    let labels_pass = create_labels(&[("app", "web"), ("env", "prod")]);
+    assert!(matches_selector(&selector, &labels_pass));
+
+    // First expression fails
+    let labels_no_app = create_labels(&[("env", "prod")]);
+    assert!(!matches_selector(&selector, &labels_no_app));
+
+    // Second expression fails
+    let labels_wrong_env = create_labels(&[("app", "web"), ("env", "dev")]);
+    assert!(!matches_selector(&selector, &labels_wrong_env));
+}
+
+#[test]
+fn test_unknown_operator_fails() {
+    let expr = LabelSelectorRequirement {
+        key: "app".to_string(),
+        operator: "UnknownOperator".to_string(),
+        values: Some(vec!["web".to_string()]),
+    };
+    let selector = LabelSelector {
+        match_labels: None,
+        match_expressions: Some(vec![expr]),
+    };
+
+    let labels = create_labels(&[("app", "web")]);
+    assert!(!matches_selector(&selector, &labels));
+}
+
+#[test]
+fn test_in_operator_empty_values() {
+    let expr = LabelSelectorRequirement {
+        key: "app".to_string(),
+        operator: "In".to_string(),
+        values: Some(vec![]),
+    };
+    let selector = LabelSelector {
+        match_labels: None,
+        match_expressions: Some(vec![expr]),
+    };
+
+    let labels = create_labels(&[("app", "web")]);
+    // Can't be in empty set
+    assert!(!matches_selector(&selector, &labels));
+}
+
+#[test]
+fn test_not_in_operator_empty_values() {
+    let expr = LabelSelectorRequirement {
+        key: "app".to_string(),
+        operator: "NotIn".to_string(),
+        values: Some(vec![]),
+    };
+    let selector = LabelSelector {
+        match_labels: None,
+        match_expressions: Some(vec![expr]),
+    };
+
+    let labels = create_labels(&[("app", "web")]);
+    // NotIn empty set always passes
+    assert!(matches_selector(&selector, &labels));
+}
+
+#[test]
+fn test_real_world_zone_selector() {
+    // Simulate a DNSZone's recordsFrom selector
+    let match_labels = create_match_labels(&[("zone", "example.com")]);
+    let expr = LabelSelectorRequirement {
+        key: "record-type".to_string(),
+        operator: "In".to_string(),
+        values: Some(vec!["public".to_string()]),
+    };
+    let selector = LabelSelector {
+        match_labels: Some(match_labels),
+        match_expressions: Some(vec![expr]),
+    };
+
+    // Record that should match
+    let record_labels = create_labels(&[
+        ("zone", "example.com"),
+        ("record-type", "public"),
+        ("owner", "team-a"),
+    ]);
+    assert!(matches_selector(&selector, &record_labels));
+
+    // Record with wrong zone
+    let wrong_zone = create_labels(&[("zone", "other.com"), ("record-type", "public")]);
+    assert!(!matches_selector(&selector, &wrong_zone));
+
+    // Record with wrong type
+    let wrong_type = create_labels(&[("zone", "example.com"), ("record-type", "internal")]);
+    assert!(!matches_selector(&selector, &wrong_type));
+}
+
+#[test]
+fn test_real_world_instance_selector() {
+    // Simulate a DNSZone's bind9InstancesFrom selector
+    let match_labels = create_match_labels(&[("managed-by", "dns-operator")]);
+    let expr1 = LabelSelectorRequirement {
+        key: "tier".to_string(),
+        operator: "In".to_string(),
+        values: Some(vec!["production".to_string(), "staging".to_string()]),
+    };
+    let expr2 = LabelSelectorRequirement {
+        key: "deprecated".to_string(),
+        operator: "DoesNotExist".to_string(),
+        values: None,
+    };
+    let selector = LabelSelector {
+        match_labels: Some(match_labels),
+        match_expressions: Some(vec![expr1, expr2]),
+    };
+
+    // Zone that should match
+    let zone_labels = create_labels(&[
+        ("managed-by", "dns-operator"),
+        ("tier", "production"),
+        ("team", "platform"),
+    ]);
+    assert!(matches_selector(&selector, &zone_labels));
+
+    // Staging zone should also match
+    let staging_zone = create_labels(&[("managed-by", "dns-operator"), ("tier", "staging")]);
+    assert!(matches_selector(&selector, &staging_zone));
+
+    // Dev zone should not match (tier not in list)
+    let dev_zone = create_labels(&[("managed-by", "dns-operator"), ("tier", "dev")]);
+    assert!(!matches_selector(&selector, &dev_zone));
+
+    // Deprecated zone should not match
+    let deprecated_zone = create_labels(&[
+        ("managed-by", "dns-operator"),
+        ("tier", "production"),
+        ("deprecated", "true"),
+    ]);
+    assert!(!matches_selector(&selector, &deprecated_zone));
 }

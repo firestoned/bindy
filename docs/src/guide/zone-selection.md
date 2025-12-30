@@ -2,18 +2,20 @@
 
 Bindy supports two methods for assigning DNS zones to Bind9 instances:
 
-1. **Explicit References** - Zones explicitly specify which cluster to use
-2. **Label Selectors** - Clusters/instances automatically discover zones based on labels
+1. **Explicit Cluster References** - Zones explicitly specify which cluster's instances to use
+2. **Label Selectors** - Zones select instances using `bind9InstancesFrom` label selectors
 
 This flexibility allows both manual zone assignment and declarative, self-healing zone discovery.
 
+> **Architecture Note**: In Bindy, **zones select instances** (not the other way around). A `DNSZone` resource declares which `Bind9Instance` resources should serve it via label selectors or cluster references.
+
 ---
 
-## Explicit Zone Assignment
+## Quick Start
 
-### Using clusterRef
+### Method 1: Cluster Reference (Simplest)
 
-Zones can explicitly reference a namespace-scoped `Bind9Cluster`:
+Target all instances in a cluster:
 
 ```yaml
 apiVersion: bindy.firestoned.io/v1beta1
@@ -23,20 +25,105 @@ metadata:
   namespace: dns-system
 spec:
   zoneName: example.com
-  clusterRef: production-cluster  # Explicit reference
+  clusterRef: production-cluster  # All instances in this cluster serve the zone
   soaRecord:
-    primaryServer: ns1.example.com
+    primaryNs: ns1.example.com.
     adminEmail: admin.example.com
 ```
 
-**When to use:**
-- You want manual control over which cluster serves a zone
-- You have specific zones that must run on dedicated infrastructure
-- You need to override automatic zone discovery
+**Result**: All `Bind9Instance` resources with `spec.clusterRef: production-cluster` will serve this zone.
+
+### Method 2: Label Selectors (Most Flexible)
+
+Select instances by labels:
+
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: us-west-zone
+  namespace: dns-system
+spec:
+  zoneName: us-west.example.com
+  bind9InstancesFrom:
+    - selector:
+        matchLabels:
+          environment: production
+          region: us-west-2
+  soaRecord:
+    primaryNs: ns1.us-west.example.com.
+    adminEmail: admin.example.com
+```
+
+**Result**: Only instances with both labels `environment: production` AND `region: us-west-2` will serve this zone.
+
+### Method 3: Combined (Most Control)
+
+Use both cluster reference AND label selectors:
+
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: hybrid-zone
+  namespace: dns-system
+spec:
+  zoneName: hybrid.example.com
+  clusterRef: production-cluster
+  bind9InstancesFrom:
+    - selector:
+        matchLabels:
+          feature: edge-caching
+  soaRecord:
+    primaryNs: ns1.hybrid.example.com.
+    adminEmail: admin.example.com
+```
+
+**Result**: UNION of instances matching `clusterRef` OR `bind9InstancesFrom` will serve the zone.
+
+---
+
+## Explicit Cluster References
+
+### Using clusterRef
+
+Target all instances in a namespace-scoped `Bind9Cluster`:
+
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: corporate-zone
+  namespace: dns-system
+spec:
+  zoneName: corporate.example.com
+  clusterRef: production-cluster  # Namespace-scoped cluster
+  soaRecord:
+    primaryNs: ns1.corporate.example.com.
+    adminEmail: admin.example.com
+```
+
+**How it works:**
+1. Controller finds all `Bind9Instance` resources with `spec.clusterRef: production-cluster` in the same namespace
+2. Zone is synchronized to all matching instances
+3. Status field `bind9InstancesCount` shows how many instances serve the zone
+
+**Check instance count:**
+```bash
+kubectl get dnszone corporate-zone -n dns-system
+```
+
+Output:
+```
+NAME             ZONE                   PROVIDER   RECORDS   INSTANCES   TTL    READY
+corporate-zone   corporate.example.com              12        3           3600   True
+```
+
+The `INSTANCES` column shows 3 instances are serving this zone.
 
 ### Using clusterProviderRef
 
-Zones can also reference a cluster-scoped `ClusterBind9Provider`:
+Target instances via a cluster-scoped `ClusterBind9Provider`:
 
 ```yaml
 apiVersion: bindy.firestoned.io/v1beta1
@@ -46,41 +133,24 @@ metadata:
   namespace: dns-system
 spec:
   zoneName: global.example.com
-  clusterProviderRef: global-dns-provider  # Cluster-scoped reference
+  clusterProviderRef: global-dns-provider  # Cluster-scoped provider
   soaRecord:
-    primaryServer: ns1.global.example.com
+    primaryNs: ns1.global.example.com.
     adminEmail: admin.example.com
 ```
 
 **When to use:**
-- You have a cluster-scoped DNS provider serving multiple namespaces
-- You need centralized DNS management across namespaces
+- Centralized DNS management across multiple namespaces
+- Global infrastructure zones
+- Shared DNS services
 
 ---
 
-## Label Selector Zone Discovery
+## Label Selector Instance Selection
 
 ### How It Works
 
-Instead of explicitly assigning zones to clusters, you can define label selectors at the cluster/instance level that automatically discover and select zones:
-
-```yaml
-apiVersion: bindy.firestoned.io/v1beta1
-kind: Bind9Cluster
-metadata:
-  name: production-cluster
-  namespace: dns-system
-spec:
-  common:
-    # Automatically discover zones matching these labels
-    zonesFrom:
-      - selector:
-          matchLabels:
-            environment: production
-            team: platform
-```
-
-Any `DNSZone` resources with matching labels will be automatically selected:
+Instead of manually assigning zones to clusters, define label selectors that automatically discover and select instances:
 
 ```yaml
 apiVersion: bindy.firestoned.io/v1beta1
@@ -88,426 +158,700 @@ kind: DNSZone
 metadata:
   name: api-zone
   namespace: dns-system
-  labels:
-    environment: production
-    team: platform
 spec:
   zoneName: api.example.com
-  # No clusterRef needed - automatically discovered!
+  bind9InstancesFrom:
+    - selector:
+        matchLabels:
+          environment: production
+          team: platform
   soaRecord:
-    primaryServer: ns1.api.example.com
+    primaryNs: ns1.api.example.com.
     adminEmail: admin.example.com
+```
+
+Any `Bind9Instance` resources with matching labels will be automatically selected:
+
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Instance
+metadata:
+  name: platform-dns-west
+  namespace: dns-system
+  labels:
+    environment: production  # ✓ Matches zone selector
+    team: platform           # ✓ Matches zone selector
+    region: us-west-2
+spec:
+  clusterRef: production-cluster
+  # ... instance config
 ```
 
 ### Label Selector Operators
 
 Label selectors support Kubernetes standard operators:
 
+#### matchLabels (AND Logic)
+
+All labels must match:
+
 ```yaml
-zonesFrom:
+bind9InstancesFrom:
   - selector:
-      # AND logic - all labels must match
+      matchLabels:
+        environment: production  # Instance MUST have this label
+        region: us-west-2        # AND this label
+```
+
+#### matchExpressions (Advanced Logic)
+
+Use operators for complex selection:
+
+```yaml
+bind9InstancesFrom:
+  - selector:
       matchLabels:
         environment: production
-
-      # OR logic with operators
       matchExpressions:
-        - key: team
+        # Select instances in us-west-2 OR us-east-1
+        - key: region
           operator: In
-          values: [platform, infrastructure]
+          values: [us-west-2, us-east-1]
+        # Exclude instances marked for maintenance
+        - key: maintenance
+          operator: DoesNotExist
+        # Only instances marked as critical
         - key: critical
           operator: Exists
 ```
 
 **Supported operators:**
-- `In` - Label value must be in the list
-- `NotIn` - Label value must NOT be in the list
+- `In` - Label value must be in the values list
+- `NotIn` - Label value must NOT be in the values list
 - `Exists` - Label key must exist (any value)
 - `DoesNotExist` - Label key must NOT exist
 
-### Multiple Zone Selectors
+### Multiple Instance Selectors
 
-You can define multiple `zonesFrom` selectors to discover different sets of zones:
+Define multiple `bind9InstancesFrom` selectors to discover different sets of instances:
+
+```yaml
+spec:
+  zoneName: multi-region.example.com
+  bind9InstancesFrom:
+    # US West instances
+    - selector:
+        matchLabels:
+          region: us-west-2
+          role: primary
+
+    # US East instances
+    - selector:
+        matchLabels:
+          region: us-east-1
+          role: secondary
+
+    # Critical infrastructure instances (any region)
+    - selector:
+        matchLabels:
+          critical: "true"
+```
+
+**Result**: Zone is served by instances matching ANY of the selectors (OR logic between selectors, AND logic within each selector).
+
+---
+
+## Checking Zone-Instance Assignments
+
+### View Instances Serving a Zone
+
+```bash
+kubectl get dnszone example-zone -n dns-system -o jsonpath='{.status.bind9Instances}' | jq
+```
+
+Output:
+```json
+[
+  {
+    "apiVersion": "bindy.firestoned.io/v1beta1",
+    "kind": "Bind9Instance",
+    "name": "primary-dns-west",
+    "namespace": "dns-system",
+    "status": "Configured",
+    "lastReconciledAt": "2026-01-08T17:00:00Z"
+  },
+  {
+    "apiVersion": "bindy.firestoned.io/v1beta1",
+    "kind": "Bind9Instance",
+    "name": "secondary-dns-east",
+    "namespace": "dns-system",
+    "status": "Configured",
+    "lastReconciledAt": "2026-01-08T17:01:30Z"
+  }
+]
+```
+
+### Quick Instance Count
+
+```bash
+kubectl get dnszone example-zone -n dns-system -o jsonpath='{.status.bind9InstancesCount}'
+```
+
+Output: `2`
+
+### View Zones on an Instance
+
+```bash
+kubectl get bind9instance primary-dns-west -n dns-system -o jsonpath='{.status.zones}' | jq
+```
+
+### Quick Zone Count
+
+```bash
+kubectl get bind9instance primary-dns-west -n dns-system -o jsonpath='{.status.zonesCount}'
+```
+
+---
+
+## Selection Priority and Behavior
+
+### Combined clusterRef and bind9InstancesFrom
+
+When BOTH are specified, instances are selected using **UNION** logic:
 
 ```yaml
 spec:
-  common:
-    zonesFrom:
-      # Production zones
-      - selector:
-          matchLabels:
-            environment: production
-
-      # Critical infrastructure zones
-      - selector:
-          matchLabels:
-            critical: "true"
-
-      # Zones managed by specific teams
-      - selector:
-          matchExpressions:
-            - key: team
-              operator: In
-              values: [platform, sre, devops]
+  zoneName: hybrid.example.com
+  clusterRef: production-cluster
+  bind9InstancesFrom:
+    - selector:
+        matchLabels:
+          feature: geo-routing
 ```
+
+**Selected instances:**
+1. All instances with `spec.clusterRef: production-cluster` (**OR**)
+2. All instances with label `feature: geo-routing`
+
+**Duplicates are removed** - an instance matching both conditions appears once.
+
+### Dynamic Instance Discovery
+
+Zone-instance assignments are **self-healing** and update automatically:
+
+**When instances are added:**
+1. New instance labeled with matching labels is created
+2. Zone controller discovers the instance on next reconciliation (~60s)
+3. Zone is automatically synchronized to the new instance
+4. `bind9InstancesCount` increments
+
+**When instances are deleted:**
+1. Instance is removed from the cluster
+2. Zone controller detects the deletion
+3. Instance is removed from `status.bind9Instances`
+4. `bind9InstancesCount` decrements
+
+**When labels change:**
+1. Instance labels are modified
+2. If labels no longer match: zone is removed from that instance
+3. If labels now match: zone is added to that instance
+4. Changes reflected in zone status within ~60s
 
 ---
 
-## Selection Priority and Conflicts
+## Status Fields
 
-### Explicit References Take Precedence
+### bind9InstancesCount
 
-If a zone has both labels matching a selector AND an explicit `clusterRef`/`clusterProviderRef`, the explicit reference wins:
-
-```yaml
-# This zone will use my-specific-cluster, NOT the label selector
-apiVersion: bindy.firestoned.io/v1beta1
-kind: DNSZone
-metadata:
-  name: special-zone
-  labels:
-    environment: production  # Matches selector
-spec:
-  zoneName: special.example.com
-  clusterRef: my-specific-cluster  # Takes precedence
-```
-
-### Multi-Instance Conflict Prevention
-
-A zone can only be selected by ONE instance at a time. If multiple instances have label selectors that match the same zone, only the first one to reconcile will select it.
-
-This prevents:
-- Duplicate zone configuration
-- Split-brain scenarios
-- Conflicting zone data
-
-**Best practices:**
-- Use distinct label selectors for different instances
-- Use `matchExpressions` with `NotIn` to exclude zones
-- Monitor zone status to ensure proper assignment
-
----
-
-## Propagation Hierarchy
-
-Label selectors defined at higher levels automatically propagate down:
-
-```
-ClusterBind9Provider.spec.common.zonesFrom
-    ↓ (propagates to all child clusters)
-Bind9Cluster.spec.common.zonesFrom
-    ↓ (propagates to all child instances)
-Bind9Instance.spec.zonesFrom
-    ↓ (performs actual zone discovery)
-```
-
-**Example:**
-
-```yaml
-apiVersion: bindy.firestoned.io/v1beta1
-kind: ClusterBind9Provider
-metadata:
-  name: global-provider
-spec:
-  common:
-    zonesFrom:
-      - selector:
-          matchLabels:
-            scope: global
-    # This selector will propagate to ALL clusters and instances
----
-apiVersion: bindy.firestoned.io/v1beta1
-kind: Bind9Cluster
-metadata:
-  name: regional-cluster
-  namespace: us-east-1
-spec:
-  clusterProviderRef: global-provider
-  common:
-    # Inherits global selector + adds regional selector
-    zonesFrom:
-      - selector:
-          matchLabels:
-            region: us-east-1
-```
-
----
-
-## Zone Status Tracking
-
-### Selection Method
-
-Zones report how they were selected in their status:
+Shows how many instances are serving the zone:
 
 ```yaml
 status:
-  selectionMethod: "labelSelector"  # or "explicit"
-  selectedByInstance: "production-primary-instance"
-  conditions:
-    - type: Ready
-      status: "True"
-      reason: ReconcileSucceeded
+  bind9InstancesCount: 3  # Zone is on 3 instances
+  bind9Instances:
+    - name: primary-west
+      namespace: dns-system
+      status: Configured
+    - name: secondary-east
+      namespace: dns-system
+      status: Configured
+    - name: edge-caching
+      namespace: dns-system
+      status: Configured
 ```
 
-**Status fields:**
-- `selectionMethod`: How the zone was assigned
-  - `"explicit"` - Via `clusterRef` or `clusterProviderRef`
-  - `"labelSelector"` - Via `zonesFrom` label matching
-- `selectedByInstance`: Name of the instance that selected the zone (label selector only)
+### Instance Status Values
 
-### Monitoring Zone Assignment
+Each instance in `bind9Instances` has a status:
 
-Check which zones are selected by an instance:
+- **`Claimed`**: Zone selected this instance (waiting for configuration)
+- **`Configured`**: Zone successfully configured on instance
+- **`Failed`**: Zone configuration failed on instance
+- **`Unclaimed`**: Instance no longer selected by zone (cleanup pending)
+
+### Checking Status
 
 ```bash
-kubectl get bind9instance production-primary -n dns-system -o jsonpath='{.status.selectedZones}'
+# View all instances and their status
+kubectl get dnszone example-zone -n dns-system -o yaml | yq '.status.bind9Instances'
+
+# Check for failed instances
+kubectl get dnszone example-zone -n dns-system -o yaml | yq '.status.bind9Instances[] | select(.status == "Failed")'
+
+# Count configured instances
+kubectl get dnszone example-zone -n dns-system -o jsonpath='{.status.bind9Instances[?(@.status=="Configured")]}' | jq 'length'
 ```
-
-Check how a zone was selected:
-
-```bash
-kubectl get dnszone example-com -n dns-system -o jsonpath='{.status.selectionMethod}'
-```
-
----
-
-## Self-Healing Behavior
-
-Label selector-based zone assignment is **self-healing**:
-
-### Adding Zones
-
-When you create a new zone with matching labels, instances automatically discover and select it on their next reconciliation (typically within 30-60 seconds).
-
-### Updating Labels
-
-If you change a zone's labels:
-- Instances that no longer match will **untag** the zone
-- Instances that now match will **tag** and select the zone
-- Zone automatically moves between instances
-
-### Deleting Instances
-
-If an instance is deleted:
-- Its `selected-by-instance` annotation is removed from zones
-- Zones become available for other instances to select
-- Another instance with matching `zonesFrom` selector will pick them up
 
 ---
 
 ## Examples
 
-### Example 1: Environment-Based Selection
+### Example 1: Regional Instance Selection
 
-Create zones and let clusters discover them by environment:
+Deploy zones to instances in specific regions:
 
 ```yaml
-# Production cluster
-apiVersion: bindy.firestoned.io/v1beta1
-kind: Bind9Cluster
-metadata:
-  name: prod-cluster
-spec:
-  common:
-    zonesFrom:
-      - selector:
-          matchLabels:
-            environment: production
----
-# Development cluster
-apiVersion: bindy.firestoned.io/v1beta1
-kind: Bind9Cluster
-metadata:
-  name: dev-cluster
-spec:
-  common:
-    zonesFrom:
-      - selector:
-          matchLabels:
-            environment: development
----
-# Production zone - auto-selected by prod-cluster
+# US West zone - only west instances
 apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
-  name: prod-api
+  name: us-west-api
+  namespace: dns-system
+spec:
+  zoneName: api.us-west.example.com
+  bind9InstancesFrom:
+    - selector:
+        matchLabels:
+          region: us-west-2
+          environment: production
+  soaRecord:
+    primaryNs: ns1.us-west.example.com.
+    adminEmail: admin.example.com
+---
+# US East zone - only east instances
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: us-east-api
+  namespace: dns-system
+spec:
+  zoneName: api.us-east.example.com
+  bind9InstancesFrom:
+    - selector:
+        matchLabels:
+          region: us-east-1
+          environment: production
+  soaRecord:
+    primaryNs: ns1.us-east.example.com.
+    adminEmail: admin.example.com
+```
+
+**Bind9Instance with labels:**
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Instance
+metadata:
+  name: dns-west-primary
+  namespace: dns-system
   labels:
+    region: us-west-2        # Will serve us-west-api zone
     environment: production
-    service: api
+spec:
+  clusterRef: production-cluster
+  # ... config
+---
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Instance
+metadata:
+  name: dns-east-primary
+  namespace: dns-system
+  labels:
+    region: us-east-1        # Will serve us-east-api zone
+    environment: production
+spec:
+  clusterRef: production-cluster
+  # ... config
+```
+
+### Example 2: Team-Based Zone Separation
+
+Different teams manage their own zones on dedicated instances:
+
+```yaml
+# Platform team zone
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: platform-services
+  namespace: dns-system
+spec:
+  zoneName: platform.example.com
+  bind9InstancesFrom:
+    - selector:
+        matchLabels:
+          owner: platform-team
+  soaRecord:
+    primaryNs: ns1.platform.example.com.
+    adminEmail: platform@example.com
+---
+# Application team zone
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: app-services
+  namespace: dns-system
+spec:
+  zoneName: app.example.com
+  bind9InstancesFrom:
+    - selector:
+        matchLabels:
+          owner: app-team
+  soaRecord:
+    primaryNs: ns1.app.example.com.
+    adminEmail: appteam@example.com
+```
+
+### Example 3: Critical Infrastructure with Fallback
+
+Critical zones with automatic fallback to backup instances:
+
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: critical-api
+  namespace: dns-system
 spec:
   zoneName: api.example.com
----
-# Development zone - auto-selected by dev-cluster
-apiVersion: bindy.firestoned.io/v1beta1
-kind: DNSZone
-metadata:
-  name: dev-api
-  labels:
-    environment: development
-    service: api
-spec:
-  zoneName: api.dev.example.com
+  bind9InstancesFrom:
+    # Primary: High-performance instances
+    - selector:
+        matchLabels:
+          tier: critical
+          performance: high
+
+    # Fallback: Standard instances
+    - selector:
+        matchLabels:
+          tier: critical
+          performance: standard
+  soaRecord:
+    primaryNs: ns1.api.example.com.
+    adminEmail: sre@example.com
 ```
 
-### Example 2: Team-Based Separation
+**Result**: Zone is served by all instances labeled `tier: critical` regardless of performance tier.
 
-Different teams manage their own zones:
+### Example 4: Environment Isolation with Cluster Reference
 
-```yaml
-# Platform team cluster
-apiVersion: bindy.firestoned.io/v1beta1
-kind: Bind9Cluster
-metadata:
-  name: platform-dns
-spec:
-  common:
-    zonesFrom:
-      - selector:
-          matchLabels:
-            owner: platform-team
----
-# Application team cluster
-apiVersion: bindy.firestoned.io/v1beta1
-kind: Bind9Cluster
-metadata:
-  name: app-dns
-spec:
-  common:
-    zonesFrom:
-      - selector:
-          matchLabels:
-            owner: app-team
----
-# Platform infrastructure zone
-apiVersion: bindy.firestoned.io/v1beta1
-kind: DNSZone
-metadata:
-  name: infrastructure
-  labels:
-    owner: platform-team
-    category: infrastructure
-spec:
-  zoneName: infra.example.com
----
-# Application service zone
-apiVersion: bindy.firestoned.io/v1beta1
-kind: DNSZone
-metadata:
-  name: user-api
-  labels:
-    owner: app-team
-    category: application
-spec:
-  zoneName: users.example.com
-```
-
-### Example 3: Mixed Explicit and Label Selector
-
-Some zones use explicit references, others use label selectors:
+Combine explicit cluster reference with label selectors:
 
 ```yaml
 apiVersion: bindy.firestoned.io/v1beta1
-kind: Bind9Cluster
-metadata:
-  name: general-cluster
-spec:
-  common:
-    zonesFrom:
-      - selector:
-          matchLabels:
-            auto-assign: "true"
----
-# Auto-assigned zone (uses label selector)
-apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
-  name: auto-zone
-  labels:
-    auto-assign: "true"
+  name: hybrid-deployment
+  namespace: dns-system
 spec:
-  zoneName: auto.example.com
----
-# Explicitly assigned zone (overrides selector)
-apiVersion: bindy.firestoned.io/v1beta1
-kind: DNSZone
-metadata:
-  name: specific-zone
-  labels:
-    auto-assign: "true"  # Matches selector, but explicit ref wins
-spec:
-  zoneName: specific.example.com
-  clusterRef: dedicated-cluster  # Explicit assignment
+  zoneName: hybrid.example.com
+  clusterRef: production-cluster  # All production cluster instances
+  bind9InstancesFrom:
+    # PLUS any instance with edge-caching feature
+    - selector:
+        matchLabels:
+          feature: edge-caching
+  soaRecord:
+    primaryNs: ns1.hybrid.example.com.
+    adminEmail: ops@example.com
 ```
+
+**Result**: Zone is served by:
+1. All instances in `production-cluster`
+2. UNION with any instance labeled `feature: edge-caching` (even if not in production-cluster)
 
 ---
 
 ## Troubleshooting
 
-### Zone Not Being Selected
+### Zone Not Selecting Any Instances
 
-**Check zone labels:**
+**Symptom:**
 ```bash
-kubectl get dnszone my-zone -o yaml | grep -A5 "labels:"
+$ kubectl get dnszone my-zone -n dns-system
+NAME      ZONE            RECORDS   INSTANCES   TTL    READY
+my-zone   example.com     0         0           3600   False
 ```
 
-**Check instance selectors:**
+**Diagnosis:**
+
+1. **Check zone selectors:**
+   ```bash
+   kubectl get dnszone my-zone -n dns-system -o yaml | yq '.spec.bind9InstancesFrom'
+   ```
+
+2. **Check available instances:**
+   ```bash
+   kubectl get bind9instance -n dns-system --show-labels
+   ```
+
+3. **Test selector manually:**
+   ```bash
+   # If selector is matchLabels: {environment: production}
+   kubectl get bind9instance -n dns-system -l environment=production
+   ```
+
+**Solutions:**
+- Verify instance labels match zone selectors exactly (case-sensitive)
+- Ensure instances are in the same namespace as the zone
+- Check if `clusterRef` is specified and instances have matching `spec.clusterRef`
+- Review controller logs for selection errors
+
+### Instance Count Mismatch
+
+**Symptom:**
 ```bash
-kubectl get bind9instance my-instance -o jsonpath='{.spec.zonesFrom}'
+$ kubectl get dnszone my-zone -o jsonpath='{.status.bind9InstancesCount}'
+2
+$ kubectl get dnszone my-zone -o jsonpath='{.status.bind9Instances}' | jq 'length'
+3
 ```
 
-**Check zone status:**
+**Diagnosis:**
+This should never happen - indicates a controller bug. The `bind9InstancesCount` is automatically computed from `bind9Instances.len()`.
+
+**Solution:**
+- Trigger reconciliation by adding an annotation to the zone
+- Check controller logs for errors
+- File a bug report if the issue persists
+
+### Instances Not Updating After Label Changes
+
+**Symptom:**
+Instance labels changed but zone not selecting/deselecting instances.
+
+**Diagnosis:**
 ```bash
-kubectl get dnszone my-zone -o jsonpath='{.status.selectionMethod}'
+# Check when zone was last reconciled
+kubectl get dnszone my-zone -n dns-system -o jsonpath='{.status.observedGeneration}'
+
+# Trigger manual reconciliation
+kubectl annotate dnszone my-zone -n dns-system reconcile-trigger="$(date +%s)" --overwrite
 ```
 
-### Zone Selected by Wrong Instance
+**Solution:**
+- Wait up to 60 seconds for automatic reconciliation
+- Trigger manual reconciliation with annotation
+- Check controller logs for watch errors
 
-**Check for conflicts:**
-- Verify the zone doesn't have an explicit `clusterRef` that takes precedence
-- Check if multiple instances have overlapping `zonesFrom` selectors
-- Review instance reconciliation logs for conflict messages
+### Zone Shows "Failed" Status on Some Instances
 
-### Zone Assignment Changed Unexpectedly
-
-**Check label changes:**
-```bash
-kubectl get dnszone my-zone -o yaml | grep -A10 "labels:"
+**Symptom:**
+```yaml
+status:
+  bind9Instances:
+    - name: primary-west
+      status: Configured  # ✓ Good
+    - name: secondary-east
+      status: Failed      # ✗ Problem
+      message: "Connection to bindcar API failed: connection refused"
 ```
 
-Zone labels may have been modified, causing different instances to match.
+**Diagnosis:**
+Check instance and bindcar sidecar status:
+```bash
+# Check instance pods
+kubectl get pods -n dns-system -l app.kubernetes.io/name=bind9-instance,app.kubernetes.io/instance=secondary-east
 
-**Check instance changes:**
-Instances may have been created/deleted/updated with new `zonesFrom` selectors.
+# Check bindcar sidecar logs
+kubectl logs -n dns-system <instance-pod> -c bindcar
+```
+
+**Solutions:**
+- Ensure bindcar sidecar is running
+- Check network policies allow zone controller → bindcar communication
+- Verify bindcar API port is correct (default: 8080)
+- Review bindcar logs for configuration errors
 
 ---
 
 ## Best Practices
 
-1. **Use consistent labeling schemes**
-   - Establish label conventions across your organization
-   - Document required labels for zone assignment
-   - Use label validation admission webhooks if needed
+### 1. Use Consistent Labeling Schemes
 
-2. **Avoid overlapping selectors**
-   - Design `zonesFrom` selectors to be mutually exclusive
-   - Use `matchExpressions` with `NotIn` to exclude zones
-   - Monitor instance status to detect conflicts
+Establish label conventions across your organization:
 
-3. **Use explicit refs for critical zones**
-   - Pin critical infrastructure zones to specific clusters
-   - Use label selectors for application zones that can move
+```yaml
+# Standard label schema
+metadata:
+  labels:
+    environment: production|staging|development
+    region: us-west-2|us-east-1|eu-west-1
+    tier: critical|standard|development
+    owner: team-name
+    cost-center: department-code
+```
 
-4. **Monitor zone assignments**
-   - Check `status.selectionMethod` and `status.selectedByInstance` regularly
-   - Alert on zones with no cluster assignment
-   - Track zone movement between instances
+**Benefits:**
+- Predictable zone assignment
+- Easy troubleshooting
+- Consistent operational patterns
 
-5. **Test label changes carefully**
-   - Changing labels affects zone assignment
-   - Test in non-production first
-   - Use canary deployments for label changes
+### 2. Avoid Overlapping Selectors
 
-6. **Document your labeling strategy**
-   - Maintain documentation of label meanings
-   - Include examples in runbooks
-   - Train teams on proper label usage
+Design selectors to be mutually exclusive when zones should not overlap:
+
+```yaml
+# ✓ GOOD - Non-overlapping selectors
+# Production zone
+bind9InstancesFrom:
+  - selector:
+      matchLabels:
+        environment: production
+
+# Development zone
+bind9InstancesFrom:
+  - selector:
+      matchLabels:
+        environment: development
+```
+
+```yaml
+# ✗ BAD - Overlapping selectors
+# Zone 1
+bind9InstancesFrom:
+  - selector:
+      matchLabels:
+        tier: critical
+
+# Zone 2
+bind9InstancesFrom:
+  - selector:
+      matchLabels:
+        environment: production  # May overlap with tier: critical
+```
+
+**Solution**: Use `matchExpressions` with `NotIn` to exclude instances:
+
+```yaml
+bind9InstancesFrom:
+  - selector:
+      matchLabels:
+        environment: production
+      matchExpressions:
+        - key: tier
+          operator: NotIn
+          values: [critical]  # Exclude critical tier instances
+```
+
+### 3. Use Explicit clusterRef for Critical Zones
+
+Pin critical infrastructure zones to specific clusters:
+
+```yaml
+# Critical zone - explicit assignment
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: api-production
+spec:
+  zoneName: api.example.com
+  clusterRef: critical-infrastructure  # Explicit - won't move
+  soaRecord:
+    primaryNs: ns1.api.example.com.
+    adminEmail: sre@example.com
+```
+
+**When to use explicit refs:**
+- Critical production zones
+- Zones with specific performance/latency requirements
+- Zones that must not auto-migrate
+- Compliance/regulatory zones with fixed infrastructure
+
+### 4. Monitor Zone Assignment Metrics
+
+Set up monitoring for zone-instance assignments:
+
+```promql
+# Alert when zone has no instances
+bindy_dnszone_instance_count{namespace="dns-system"} == 0
+
+# Alert when instance count drops below expected
+bindy_dnszone_instance_count{namespace="dns-system",zone_name="api-production"} < 3
+
+# Alert when instance shows Failed status
+bindy_dnszone_instance_status{status="Failed"} > 0
+```
+
+### 5. Test Label Changes in Non-Production First
+
+Label changes affect zone assignment - test carefully:
+
+```bash
+# 1. Test in dev environment first
+kubectl label bind9instance dev-instance -n dev-dns new-label=value
+
+# 2. Verify zone assignment changed as expected
+kubectl get dnszone -n dev-dns -o custom-columns=NAME:.metadata.name,INSTANCES:.status.bind9InstancesCount
+
+# 3. If successful, apply to production
+kubectl label bind9instance prod-instance -n dns-system new-label=value
+```
+
+### 6. Document Your Labeling Strategy
+
+Maintain runbooks documenting:
+- Required labels for zone selection
+- Label value meanings and conventions
+- Examples of common selector patterns
+- Troubleshooting procedures for label-related issues
+
+---
+
+## Migration from Legacy Architecture
+
+> **Note**: If you're migrating from Bindy versions prior to Phase 5-6 (pre-v0.2.0), the zone selection architecture was reversed.
+
+### OLD Architecture (Deprecated)
+
+Instances selected zones via `Bind9Instance.spec.zonesFrom`:
+
+```yaml
+# OLD - Instances selected zones (DEPRECATED)
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Instance
+metadata:
+  name: my-instance
+spec:
+  zonesFrom:  # ← DEPRECATED FIELD
+    - selector:
+        matchLabels:
+          environment: production
+```
+
+### NEW Architecture (Current)
+
+Zones select instances via `DNSZone.spec.bind9InstancesFrom`:
+
+```yaml
+# NEW - Zones select instances (CURRENT)
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: my-zone
+spec:
+  bind9InstancesFrom:  # ← NEW FIELD
+    - selector:
+        matchLabels:
+          environment: production
+```
+
+### Migration Steps
+
+1. **Update CRDs** to latest version (v0.2.0+)
+2. **Label your Bind9Instances** with selection criteria
+3. **Add `bind9InstancesFrom`** to DNSZone resources
+4. **Remove deprecated `zonesFrom`** from Bind9Instance resources (field is ignored)
+5. **Verify selection**: Check `bind9InstancesCount` in zone status
+6. **Monitor logs** for any selection errors
+
+See [Migration Guide](../operations/migration-guide-phase5-6.md) for detailed instructions.

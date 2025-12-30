@@ -40,7 +40,7 @@ mod tests {
         );
     }
 
-    /// Test that signal handling works with tokio::select!
+    /// Test that signal handling works with `tokio::select`!
     #[tokio::test]
     async fn test_select_with_signal_and_task() {
         use tokio::sync::oneshot;

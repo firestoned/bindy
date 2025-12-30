@@ -116,10 +116,10 @@ mod tests {
                     last_transition_time: None,
                 }],
                 observed_generation: Some(1),
-                replicas: Some(1),
-                ready_replicas: Some(1),
                 service_address: Some("127.0.0.1".to_string()),
-                selected_zones: vec![],
+                cluster_ref: None,
+                zones: Vec::new(),
+                zones_count: None,
             })
         } else {
             Some(Bind9InstanceStatus {
@@ -131,10 +131,10 @@ mod tests {
                     last_transition_time: None,
                 }],
                 observed_generation: Some(1),
-                replicas: Some(1),
-                ready_replicas: Some(0),
                 service_address: None,
-                selected_zones: vec![],
+                cluster_ref: None,
+                zones: Vec::new(),
+                zones_count: None,
             })
         };
 
@@ -158,7 +158,6 @@ mod tests {
                 rndc_secret_ref: None,
                 storage: None,
                 bindcar_config: None,
-                zones_from: None,
             },
             status,
         }

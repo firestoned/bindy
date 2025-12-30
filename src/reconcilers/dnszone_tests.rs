@@ -6,94 +6,311 @@
 #[cfg(test)]
 mod tests {
     use crate::crd::*;
-    use crate::reconcilers::dnszone::build_label_selector;
     use std::collections::BTreeMap;
 
+    // ========================================================================
+    // T5: Zone-to-Instance Selection (New Architecture)
+    // ========================================================================
+
+    use super::super::dnszone::get_instances_from_zone;
+
+    /// Helper to create a `Bind9Instance` with specific labels
+    fn create_test_instance(
+        name: &str,
+        namespace: &str,
+        labels: &BTreeMap<String, String>,
+    ) -> Bind9Instance {
+        use serde_json::json;
+
+        // Create a minimal Bind9Instance using JSON deserialization
+        // This avoids having to specify every field in the spec
+        let instance_json = json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "Bind9Instance",
+            "metadata": {
+                "name": name,
+                "namespace": namespace,
+                "labels": labels,
+                "uid": format!("uid-{}", name),
+            },
+            "spec": {
+                "clusterRef": "test-cluster",
+                "role": "primary",
+            }
+        });
+
+        serde_json::from_value(instance_json).expect("Failed to create test instance")
+    }
+
+    /// Helper to create a `DNSZone` with `bind9_instances_from` selectors
+    fn create_test_zone(
+        name: &str,
+        namespace: &str,
+        bind9_instances_from: Option<Vec<InstanceSource>>,
+    ) -> DNSZone {
+        use serde_json::json;
+
+        // Create a minimal DNSZone using JSON deserialization
+        let mut zone_json = json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "DNSZone",
+            "metadata": {
+                "name": name,
+                "namespace": namespace,
+            },
+            "spec": {
+                "zoneName": "example.com",
+                "soaRecord": {
+                    "primaryNs": "ns1.example.com.",
+                    "adminEmail": "admin.example.com.",
+                    "serial": 1,
+                    "refresh": 3600,
+                    "retry": 1800,
+                    "expire": 604_800,
+                    "negativeTtl": 86400
+                },
+                "ttl": 3600,
+                "nameServerIPs": ["192.168.1.1"]
+            }
+        });
+
+        // Add bind9_instances_from if provided
+        if let Some(sources) = bind9_instances_from {
+            zone_json["spec"]["bind9InstancesFrom"] =
+                serde_json::to_value(sources).expect("Failed to serialize bind9_instances_from");
+        }
+
+        serde_json::from_value(zone_json).expect("Failed to create test zone")
+    }
+
+    /// T5.1: `get_instances_from_zone` returns error when no `bind9_instances_from` configured
     #[test]
-    fn test_build_label_selector_with_match_labels() {
+    fn test_get_instances_no_selectors() {
+        // Create zone without bind9_instances_from
+        let zone = create_test_zone("test-zone", "default", None);
+
+        // Create empty store
+        let (store, _writer) = kube::runtime::reflector::store::<Bind9Instance>();
+
+        // Should return error
+        let result = get_instances_from_zone(&zone, &store);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no bind9_instances_from selectors"));
+    }
+
+    /// T5.2: `get_instances_from_zone` returns error when `bind9_instances_from` is empty
+    #[test]
+    fn test_get_instances_empty_selectors() {
+        // Create zone with empty bind9_instances_from
+        let zone = create_test_zone("test-zone", "default", Some(vec![]));
+
+        // Create empty store
+        let (store, _writer) = kube::runtime::reflector::store::<Bind9Instance>();
+
+        // Should return error
+        let result = get_instances_from_zone(&zone, &store);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no bind9_instances_from selectors"));
+    }
+
+    /// T5.3: `get_instances_from_zone` selects instance with matching labels
+    #[test]
+    fn test_get_instances_match_labels() {
+        // Create instance with labels
+        let mut instance_labels = BTreeMap::new();
+        instance_labels.insert("environment".to_string(), "production".to_string());
+        instance_labels.insert("role".to_string(), "primary".to_string());
+        let instance = create_test_instance("dns-primary", "default", &instance_labels);
+
+        // Create store and add instance
+        let (store, mut writer) = kube::runtime::reflector::store::<Bind9Instance>();
+        writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(instance.clone()));
+
+        // Create zone with matching selector
+        let mut match_labels = BTreeMap::new();
+        match_labels.insert("environment".to_string(), "production".to_string());
+        let bind9_instances_from = vec![InstanceSource {
+            selector: LabelSelector {
+                match_labels: Some(match_labels),
+                match_expressions: None,
+            },
+        }];
+        let zone = create_test_zone("test-zone", "default", Some(bind9_instances_from));
+
+        // Should find the instance
+        let result = get_instances_from_zone(&zone, &store);
+        assert!(result.is_ok());
+        let instances = result.unwrap();
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].name, "dns-primary");
+        assert_eq!(instances[0].namespace, "default");
+        assert_eq!(instances[0].api_version, "bindy.firestoned.io/v1beta1");
+        assert_eq!(instances[0].kind, "Bind9Instance");
+    }
+
+    /// T5.4: `get_instances_from_zone` returns empty when no instances match
+    #[test]
+    fn test_get_instances_no_match() {
+        // Create instance with labels
+        let mut instance_labels = BTreeMap::new();
+        instance_labels.insert("environment".to_string(), "development".to_string());
+        let instance = create_test_instance("dns-dev", "default", &instance_labels);
+
+        // Create store and add instance
+        let (store, mut writer) = kube::runtime::reflector::store::<Bind9Instance>();
+        writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(instance));
+
+        // Create zone with non-matching selector
+        let mut match_labels = BTreeMap::new();
+        match_labels.insert("environment".to_string(), "production".to_string());
+        let bind9_instances_from = vec![InstanceSource {
+            selector: LabelSelector {
+                match_labels: Some(match_labels),
+                match_expressions: None,
+            },
+        }];
+        let zone = create_test_zone("test-zone", "default", Some(bind9_instances_from));
+
+        // Should return error (no instances match)
+        let result = get_instances_from_zone(&zone, &store);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no instances matching"));
+    }
+
+    /// T5.5: `get_instances_from_zone` supports OR logic across multiple selectors
+    #[test]
+    fn test_get_instances_or_logic() {
+        // Create instances with different labels
+        let mut prod_labels = BTreeMap::new();
+        prod_labels.insert("environment".to_string(), "production".to_string());
+        let prod_instance = create_test_instance("dns-prod", "default", &prod_labels);
+
+        let mut staging_labels = BTreeMap::new();
+        staging_labels.insert("environment".to_string(), "staging".to_string());
+        let staging_instance = create_test_instance("dns-staging", "default", &staging_labels);
+
+        let mut dev_labels = BTreeMap::new();
+        dev_labels.insert("environment".to_string(), "development".to_string());
+        let dev_instance = create_test_instance("dns-dev", "default", &dev_labels);
+
+        // Create store and add all instances
+        let (store, mut writer) = kube::runtime::reflector::store::<Bind9Instance>();
+        writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(prod_instance));
+        writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(staging_instance));
+        writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(dev_instance));
+
+        // Create zone with multiple selectors (OR logic)
+        let mut prod_match = BTreeMap::new();
+        prod_match.insert("environment".to_string(), "production".to_string());
+        let mut staging_match = BTreeMap::new();
+        staging_match.insert("environment".to_string(), "staging".to_string());
+
+        let bind9_instances_from = vec![
+            InstanceSource {
+                selector: LabelSelector {
+                    match_labels: Some(prod_match),
+                    match_expressions: None,
+                },
+            },
+            InstanceSource {
+                selector: LabelSelector {
+                    match_labels: Some(staging_match),
+                    match_expressions: None,
+                },
+            },
+        ];
+        let zone = create_test_zone("test-zone", "default", Some(bind9_instances_from));
+
+        // Should find both prod and staging instances (OR logic)
+        let result = get_instances_from_zone(&zone, &store);
+        assert!(result.is_ok());
+        let instances = result.unwrap();
+        assert_eq!(instances.len(), 2);
+        let names: Vec<String> = instances.iter().map(|i| i.name.clone()).collect();
+        assert!(names.contains(&"dns-prod".to_string()));
+        assert!(names.contains(&"dns-staging".to_string()));
+        assert!(!names.contains(&"dns-dev".to_string()));
+    }
+
+    /// T5.6: `get_instances_from_zone` selects instances across namespaces
+    #[test]
+    fn test_get_instances_cross_namespace() {
+        // Create instances in different namespaces
         let mut labels = BTreeMap::new();
         labels.insert("app".to_string(), "bind9".to_string());
-        labels.insert("env".to_string(), "prod".to_string());
 
-        let selector = LabelSelector {
-            match_labels: Some(labels),
-            match_expressions: None,
-        };
+        let instance_a = create_test_instance("dns-1", "namespace-a", &labels);
+        let instance_b = create_test_instance("dns-2", "namespace-b", &labels);
 
-        let result = build_label_selector(&selector);
-        assert!(result.is_some());
+        // Create store and add instances
+        let (store, mut writer) = kube::runtime::reflector::store::<Bind9Instance>();
+        writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(instance_a));
+        writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(instance_b));
 
-        let selector_str = result.unwrap();
-        assert!(selector_str.contains("app=bind9"));
-        assert!(selector_str.contains("env=prod"));
+        // Create zone with selector matching both
+        let bind9_instances_from = vec![InstanceSource {
+            selector: LabelSelector {
+                match_labels: Some(labels),
+                match_expressions: None,
+            },
+        }];
+        let zone = create_test_zone("test-zone", "default", Some(bind9_instances_from));
+
+        // Should find both instances
+        let result = get_instances_from_zone(&zone, &store);
+        assert!(result.is_ok());
+        let found_instances = result.unwrap();
+        assert_eq!(found_instances.len(), 2);
+
+        // Verify namespaces
+        let namespaces: Vec<String> = found_instances
+            .iter()
+            .map(|i| i.namespace.clone())
+            .collect();
+        assert!(namespaces.contains(&"namespace-a".to_string()));
+        assert!(namespaces.contains(&"namespace-b".to_string()));
     }
 
+    /// T5.7: `get_instances_from_zone` requires ALL `matchLabels` to match (AND logic)
     #[test]
-    fn test_build_label_selector_empty() {
-        let selector = LabelSelector {
-            match_labels: None,
-            match_expressions: None,
-        };
+    fn test_get_instances_match_labels_and_logic() {
+        // Create instance with partial labels
+        let mut instance_labels = BTreeMap::new();
+        instance_labels.insert("environment".to_string(), "production".to_string());
+        // Missing "role" label
+        let instance = create_test_instance("dns-primary", "default", &instance_labels);
 
-        let result = build_label_selector(&selector);
-        assert!(result.is_none());
-    }
+        // Create store and add instance
+        let (store, mut writer) = kube::runtime::reflector::store::<Bind9Instance>();
+        writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(instance));
 
-    #[test]
-    fn test_build_label_selector_with_one_label() {
-        let mut labels = BTreeMap::new();
-        labels.insert("instance".to_string(), "dns-primary".to_string());
+        // Create zone requiring BOTH environment AND role (AND logic)
+        let mut match_labels = BTreeMap::new();
+        match_labels.insert("environment".to_string(), "production".to_string());
+        match_labels.insert("role".to_string(), "primary".to_string());
+        let bind9_instances_from = vec![InstanceSource {
+            selector: LabelSelector {
+                match_labels: Some(match_labels),
+                match_expressions: None,
+            },
+        }];
+        let zone = create_test_zone("test-zone", "default", Some(bind9_instances_from));
 
-        let selector = LabelSelector {
-            match_labels: Some(labels),
-            match_expressions: None,
-        };
-
-        let result = build_label_selector(&selector);
-        assert_eq!(result, Some("instance=dns-primary".to_string()));
-    }
-
-    #[test]
-    fn test_build_label_selector_with_empty_labels() {
-        let selector = LabelSelector {
-            match_labels: Some(BTreeMap::new()),
-            match_expressions: None,
-        };
-
-        let result = build_label_selector(&selector);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_build_label_selector_with_special_characters() {
-        let mut labels = BTreeMap::new();
-        labels.insert("app.kubernetes.io/name".to_string(), "bind9".to_string());
-
-        let selector = LabelSelector {
-            match_labels: Some(labels),
-            match_expressions: None,
-        };
-
-        let result = build_label_selector(&selector);
-        assert_eq!(result, Some("app.kubernetes.io/name=bind9".to_string()));
-    }
-
-    #[test]
-    fn test_build_label_selector_multiple_labels_order() {
-        let mut labels = BTreeMap::new();
-        labels.insert("a".to_string(), "1".to_string());
-        labels.insert("b".to_string(), "2".to_string());
-        labels.insert("c".to_string(), "3".to_string());
-
-        let selector = LabelSelector {
-            match_labels: Some(labels),
-            match_expressions: None,
-        };
-
-        let result = build_label_selector(&selector).unwrap();
-        // BTreeMap maintains sorted order
-        assert!(result.contains("a=1"));
-        assert!(result.contains("b=2"));
-        assert!(result.contains("c=3"));
+        // Should NOT match (instance missing "role" label)
+        let result = get_instances_from_zone(&zone, &store);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no instances matching"));
     }
 }

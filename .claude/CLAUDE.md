@@ -6,8 +6,123 @@
 > **Service Mesh Standard**: Always use Linkerd as the example service mesh in documentation, examples, and code comments. Do not use generic "service mesh" references or other mesh implementations (Istio, Consul Connect, etc.) unless specifically required.
 >
 > **CRITICAL Coding Patterns**:
+> - **Test-Driven Development (TDD)**: ALWAYS write tests FIRST before implementing functionality. Write failing tests that define the expected behavior, then implement code to make tests pass. This ensures all code is testable and has comprehensive test coverage from the start.
 > - **Event-Driven Programming**: In Kubernetes controller development, ALWAYS use or recommend event-driven programming (e.g., "watch" on kube API) as opposed to polling. Controllers must react to cluster state changes efficiently.
 > - **Early Returns**: Use as few `else` statements as possible. Return from functions as soon as you can to minimize nesting and improve code clarity (see Early Return / Guard Clause Pattern section).
+
+---
+
+## ⚙️ Claude Code Configuration
+
+### 🚨 CRITICAL: Always Verify CRD Schema Sync
+
+**MANDATORY REQUIREMENT:** Before investigating any Kubernetes-related issue, ALWAYS verify that deployed CRDs match the Rust code definitions.
+
+**Why This Matters:**
+- CRD YAML files in `deploy/crds/` are **AUTO-GENERATED** from Rust types in `src/crd.rs`
+- If CRDs are not regenerated after code changes, schema mismatches cause silent failures
+- Kubernetes API server may accept patches (HTTP 200) but ignore fields not in the CRD schema
+- This leads to confusing bugs where code works but data doesn't persist
+
+**Verification Workflow:**
+```bash
+# 1. Check deployed CRD schema in cluster
+kubectl get crd <crd-name>.bindy.firestoned.io -o yaml | grep -A 20 "<field-name>:"
+
+# 2. Check Rust struct definition
+rg -A 10 "pub struct <StructName>" src/crd.rs
+
+# 3. If mismatch detected, regenerate CRDs
+cargo run --bin crdgen
+
+# 4. Apply updated CRDs
+kubectl replace --force -f deploy/crds/<crd-name>.crd.yaml
+```
+
+**When to Check:**
+- ✅ Before investigating reconciliation loops or infinite loops
+- ✅ Before debugging "field not appearing in kubectl output" issues
+- ✅ After ANY modification to structs in `src/crd.rs`
+- ✅ When status patches succeed but data doesn't persist
+- ✅ When user reports unexpected controller behavior
+
+**Example Failure Mode:**
+```rust
+// Rust code has new field
+pub struct Bind9InstanceStatus {
+    pub zones: Vec<ZoneReference>,  // Added in recent commit
+    // ...
+}
+
+// But deployed CRD is missing the field
+// Result: Patches succeed (200 OK) but zones never appear in kubectl output
+// Controller sees empty zones every reconciliation → infinite loop
+```
+
+**REMEMBER:** Always verify CRD schema sync BEFORE making assumptions about code logic issues.
+
+---
+
+### 🔍 MANDATORY SEARCH TOOL: ripgrep (rg)
+**OBLIGATORY RULE:** ALWAYS use `ripgrep` (command: `rg`) as your PRIMARY and FIRST tool for ANY code search, pattern matching, or grepping task. This is NON-NEGOTIABLE.
+
+### 🛠️ Tool Configuration & Usage:
+*   **Default Command:** `rg`
+*   **Rust-Specific Flags:** For Rust projects, use `rg -trs <PATTERN>` to search only Rust files (`-trs`) recursively.
+*   **Exclusions:** Use `-g '!target/'` to ignore the build directory.
+*   **Example Search:** `rg -trs "my_function_name" . -g '!target/'`
+*   **No grep/lsof/find:** If Claude tries to use `grep`, `lsof`, or other tools, remind it to use `rg` instead.
+
+### 💡 Workflow for Rust Code Tasks:
+1.  **Analyze:** Understand the request and identify relevant files/functions.
+2.  **Search (rg):** Use `rg -trs "pattern" .` to find code snippets, definitions, or usages.
+3.  **Context:** Use search results to build understanding of the codebase structure.
+4.  **Generate/Modify:** Provide Rust code based on analysis, ensuring it adheres to best practices.
+
+## 🚫 CRITICAL: Docker and Kubernetes Operations Restrictions
+
+**NEVER build or push Docker images yourself. The user handles all Docker image operations.**
+
+### Allowed kubectl Operations (Read-Only + Annotations):
+- ✅ `kubectl get` - Read resources
+- ✅ `kubectl describe` - View resource details
+- ✅ `kubectl logs` - Read pod logs
+- ✅ `kubectl annotate` - Add/modify annotations
+- ✅ Any other read-only operations
+
+### FORBIDDEN Operations:
+- ❌ `docker build` - NEVER build Docker images
+- ❌ `docker push` - NEVER push images to registries
+- ❌ `docker tag` - NEVER tag images
+- ❌ `kind load` - NEVER load images into kind
+- ❌ `kubectl rollout restart` - NEVER restart deployments/pods
+- ❌ `kubectl delete pods` - NEVER delete pods to trigger restarts
+- ❌ `kubectl apply` - NEVER apply manifests (unless explicitly requested)
+- ❌ `kubectl patch` - NEVER patch resources (unless explicitly requested)
+- ❌ Any Docker or deployment operations
+
+**Why:**
+- The user manages the deployment pipeline
+- Building/pushing images can interfere with the user's workflow
+- The user knows when and how to deploy changes
+- Claude should focus on code changes, not deployment
+
+**What to do instead:**
+1. Make code changes and run `cargo fmt`, `cargo clippy`, `cargo test`
+2. Inform the user that changes are ready
+3. Let the user handle building, pushing, and deploying
+
+**Example:**
+```
+❌ WRONG:
+"Let me build the Docker image and restart the controller..."
+docker build -t ...
+kubectl rollout restart ...
+
+✅ CORRECT:
+"I've fixed the issue in src/reconcilers/dnszone.rs and updated CHANGELOG.md.
+All tests pass. The changes are ready for you to build and deploy."
+```
 
 ---
 
@@ -119,7 +234,7 @@ source ~/.zshrc
 cargo fmt
 
 # 2. Run clippy with strict warnings (REQUIRED - fix ALL warnings)
-cargo clippy -- -D warnings -W clippy::pedantic -A clippy::module_name_repetitions
+cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic -A clippy::module_name_repetitions
 
 # 3. Run tests (REQUIRED - ALL tests must pass)
 cargo test
@@ -668,6 +783,102 @@ What are the trade-offs?
 
 ## 🦀 Rust Workflow
 
+### CRITICAL: Test-Driven Development (TDD) Workflow
+
+**MANDATORY: ALWAYS write tests FIRST before implementing functionality.**
+
+This project follows strict Test-Driven Development practices. You MUST follow the Red-Green-Refactor cycle for ALL code changes.
+
+#### TDD Workflow Steps:
+
+1. **RED - Write Failing Tests First**:
+   - **BEFORE writing any implementation code**, write tests that define the expected behavior
+   - Tests should fail initially because the functionality doesn't exist yet
+   - Write tests in separate `_tests.rs` files following the project pattern
+   - Cover success cases, error cases, and edge cases
+   - Example:
+     ```rust
+     // In src/reconcilers/dnszone_tests.rs
+     #[tokio::test]
+     async fn test_rate_limit_timestamp_updates() {
+         // Arrange: Create instance with recent timestamp
+         let instance = create_instance_with_recent_timestamp();
+
+         // Act: Try to update timestamp
+         let result = update_zone_reconciled_timestamp(...).await;
+
+         // Assert: Should skip update and return Ok(())
+         assert!(result.is_ok());
+         // Verify no API call was made (mock assertion)
+     }
+     ```
+
+2. **GREEN - Implement Minimum Code to Pass Tests**:
+   - Write the simplest code that makes the tests pass
+   - Don't over-engineer or add features not covered by tests
+   - Run `cargo test` frequently to verify tests pass
+   - Example:
+     ```rust
+     // In src/reconcilers/dnszone.rs
+     async fn update_zone_reconciled_timestamp(...) -> Result<()> {
+         // Check if timestamp is recent
+         if timestamp_is_recent(...) {
+             return Ok(()); // Early return - tests pass
+         }
+         // Update timestamp
+         ...
+     }
+     ```
+
+3. **REFACTOR - Improve Code While Tests Still Pass**:
+   - Refactor for clarity, performance, or maintainability
+   - Extract constants (e.g., `MIN_RECONCILE_INTERVAL_MINUTES`)
+   - Add documentation and comments
+   - Run `cargo test` after each refactoring to ensure tests still pass
+   - Run `cargo clippy` to catch code smells
+
+#### TDD Benefits:
+
+- **Design First**: Forces you to think about API and behavior before implementation
+- **Complete Coverage**: All code has tests because tests come first
+- **Prevents Over-Engineering**: Only write code needed to pass tests
+- **Regression Safety**: Refactoring is safe because tests verify behavior
+- **Living Documentation**: Tests document expected behavior
+
+#### When to Write Tests First:
+
+- ✅ **New Features**: Write tests defining the feature behavior, then implement
+- ✅ **Bug Fixes**: Write a failing test that reproduces the bug, then fix it
+- ✅ **Refactoring**: Ensure existing tests pass, add new tests for edge cases
+- ✅ **Performance Optimizations**: Write performance tests, then optimize
+
+#### Example TDD Session:
+
+```bash
+# 1. RED - Write failing test
+# Edit src/reconcilers/dnszone_tests.rs - add test_rate_limit_timestamp_updates
+cargo test test_rate_limit_timestamp_updates  # FAILS - function doesn't exist
+
+# 2. GREEN - Implement minimum code
+# Edit src/reconcilers/dnszone.rs - add timestamp age checking
+cargo test test_rate_limit_timestamp_updates  # PASSES
+
+# 3. REFACTOR - Improve code quality
+# Extract MIN_RECONCILE_INTERVAL_MINUTES constant
+# Add documentation
+# Improve error handling
+cargo test  # All tests still PASS
+cargo clippy  # No warnings
+```
+
+#### Exceptions to TDD:
+
+TDD is MANDATORY except for:
+- Exploratory/prototype code (must be marked as such and removed before merging)
+- Simple refactoring that doesn't change behavior (existing tests verify correctness)
+
+**REMEMBER**: If you're writing implementation code before tests, STOP and write tests first!
+
 ### After Modifying Any `.rs` File
 
 **CRITICAL: At the end of EVERY task that modifies Rust files, ALWAYS run these commands in order:**
@@ -677,7 +888,7 @@ What are the trade-offs?
 cargo fmt
 
 # 2. Run clippy with strict warnings
-cargo clippy -- -D warnings -W clippy::pedantic -A clippy::module_name_repetitions
+cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic -A clippy::module_name_repetitions
 
 # 3. Run tests
 cargo test
@@ -1436,7 +1647,7 @@ Before committing:
   - [ ] All modified functions have updated tests (REQUIRED)
   - [ ] All deleted functions have tests removed (REQUIRED)
   - [ ] `cargo fmt` passes (REQUIRED)
-  - [ ] `cargo clippy -- -D warnings` passes (REQUIRED - fix ALL warnings)
+  - [ ] `cargo clippy --all-targets --all-features -- -D warnings` passes (REQUIRED - fix ALL warnings)
   - [ ] `cargo test` passes (REQUIRED - ALL tests must pass)
   - [ ] **Documentation updated** for code changes (REQUIRED - see Documentation Requirements section):
     - [ ] Rustdoc comments on ALL public items (functions, types, modules)

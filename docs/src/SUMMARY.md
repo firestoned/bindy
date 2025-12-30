@@ -14,6 +14,7 @@
   - [Technical Architecture](./concepts/architecture-technical.md)
   - [RNDC-Based Architecture](./concepts/architecture-rndc.md)
   - [Architecture Diagrams](./concepts/architecture-diagrams.md)
+  - [DNSZone Controller Architecture](./concepts/dnszone-controller-architecture.md)
   - [Custom Resource Definitions](./concepts/crds.md)
   - [Bind9Cluster](./concepts/bind9cluster.md)
   - [ClusterBind9Provider](./concepts/clusterbind9provider.md)
@@ -59,6 +60,7 @@
 - [Troubleshooting](./operations/troubleshooting.md)
   - [Error Handling & Retry Logic](./operations/error-handling.md)
   - [Common Issues](./operations/common-issues.md)
+  - [DNSZone Migration Troubleshooting](./operations/dnszone-migration-troubleshooting.md)
   - [Debugging](./operations/debugging.md)
   - [FAQ](./operations/faq.md)
 

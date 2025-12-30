@@ -1,93 +1,144 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: MIT
 
-//! Label selector matching utilities for `DNSZone` → Record watching.
+//! Label selector matching utilities.
 //!
-//! This module provides functions to match Kubernetes resources against
-//! label selectors, enabling the `DNSZone` controller to watch for records
-//! that match its label selector criteria.
+//! This module provides helper functions for matching Kubernetes label selectors
+//! against resource labels. It supports both `matchLabels` and `matchExpressions`
+//! as defined in the Kubernetes API.
 //!
 //! # Architecture
 //!
 //! The label selector watch pattern uses kube-rs's reflector/store to maintain
-//! an in-memory cache of all `DNSZone` resources. When a record changes, the watch mapper
-//! synchronously queries this cache to find all zones that select the record.
+//! an in-memory cache of resources. When a resource changes, watch mappers
+//! synchronously query these caches to find related resources using label selectors.
 //!
 //! # Example
 //!
 //! ```rust,no_run
-//! use bindy::selector::find_zones_for_record;
-//! use bindy::crd::DNSZone;
-//! use kube::runtime::reflector::Store;
+//! use std::collections::BTreeMap;
+//! use bindy::crd::LabelSelector;
+//! use bindy::selector::matches_selector;
 //!
-//! # async fn example(store: Store<DNSZone>, record: bindy::crd::ARecord) {
-//! // Find all DNSZones that select this record
-//! let matching_zones = find_zones_for_record(&store, &record);
+//! # fn example() {
+//! let mut labels = BTreeMap::new();
+//! labels.insert("app".to_string(), "web".to_string());
+//!
+//! let mut match_labels = BTreeMap::new();
+//! match_labels.insert("app".to_string(), "web".to_string());
+//!
+//! let selector = LabelSelector {
+//!     match_labels: Some(match_labels),
+//!     match_expressions: None,
+//! };
+//!
+//! assert!(matches_selector(&selector, &labels));
 //! # }
 //! ```
 
-use crate::crd::DNSZone;
-use kube::runtime::reflector::{ObjectRef, Store};
-use kube::{Resource, ResourceExt};
+use crate::crd::{LabelSelector, LabelSelectorRequirement};
+use std::collections::BTreeMap;
 
-/// Find all `DNSZone` resources in the store that select this record via label selectors.
+/// Check if a set of labels matches a label selector.
 ///
-/// This function is called by the controller's watch mapper when a record
-/// changes. It synchronously queries the in-memory `DNSZone` cache to find
-/// all zones whose `recordsFrom.selector` matches the record's labels.
+/// This function implements the Kubernetes label selector matching logic:
+/// - All `matchLabels` entries must be present with exact values
+/// - All `matchExpressions` requirements must be satisfied
+/// - An empty selector matches everything
+/// - A selector with no matchLabels and no matchExpressions matches everything
 ///
 /// # Arguments
-///
-/// * `store` - In-memory cache of `DNSZone` resources maintained by the reflector
-/// * `record` - The record resource to match against zone selectors
+/// * `selector` - The label selector to evaluate
+/// * `labels` - The labels to match against
 ///
 /// # Returns
+/// `true` if the labels match the selector, `false` otherwise
 ///
-/// A vector of `ObjectRef<DNSZone>` for all zones that selected this record.
-/// The returned zones will be reconciled by the controller.
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use bindy::selector::find_zones_for_record;
-/// use bindy::crd::{ARecord, DNSZone};
-/// use kube::runtime::reflector::Store;
-///
-/// # async fn example(store: Store<DNSZone>, record: ARecord) {
-/// let matching_zones = find_zones_for_record(&store, &record);
-/// for zone_ref in matching_zones {
-///     println!("Zone {} selected this record", zone_ref.name);
-/// }
-/// # }
+/// # Examples
 /// ```
-pub fn find_zones_for_record<K>(store: &Store<DNSZone>, record: &K) -> Vec<ObjectRef<DNSZone>>
-where
-    K: Resource<DynamicType = ()> + ResourceExt,
-{
-    let record_labels = record.labels();
-    let record_namespace = record.namespace().unwrap_or_default();
-
-    store
-        .state()
-        .iter()
-        .filter(|zone| {
-            // Only consider zones in the same namespace
-            let zone_namespace = zone.namespace().unwrap_or_default();
-            if zone_namespace != record_namespace {
+/// use std::collections::BTreeMap;
+/// use bindy::crd::LabelSelector;
+/// use bindy::selector::matches_selector;
+///
+/// let mut labels = BTreeMap::new();
+/// labels.insert("app".to_string(), "web".to_string());
+/// labels.insert("env".to_string(), "prod".to_string());
+///
+/// let mut match_labels = BTreeMap::new();
+/// match_labels.insert("app".to_string(), "web".to_string());
+///
+/// let selector = LabelSelector {
+///     match_labels: Some(match_labels),
+///     match_expressions: None,
+/// };
+///
+/// assert!(matches_selector(&selector, &labels));
+/// ```
+#[must_use]
+pub fn matches_selector(selector: &LabelSelector, labels: &BTreeMap<String, String>) -> bool {
+    // Check matchLabels
+    if let Some(match_labels) = &selector.match_labels {
+        for (key, value) in match_labels {
+            if labels.get(key) != Some(value) {
                 return false;
             }
+        }
+    }
 
-            // Check if any recordsFrom selector matches this record
-            if let Some(ref records_from) = zone.spec.records_from {
-                records_from
-                    .iter()
-                    .any(|source| source.selector.matches(record_labels))
-            } else {
-                false
+    // Check matchExpressions
+    if let Some(match_expressions) = &selector.match_expressions {
+        for expr in match_expressions {
+            if !matches_expression(expr, labels) {
+                return false;
             }
-        })
-        .map(|zone| ObjectRef::from_obj(&**zone))
-        .collect()
+        }
+    }
+
+    true
+}
+
+/// Check if a set of labels matches a single label selector requirement.
+///
+/// Implements the four Kubernetes label selector operators:
+/// - `In`: Label value must be in the provided set
+/// - `NotIn`: Label value must not be in the provided set
+/// - `Exists`: Label key must be present (value doesn't matter)
+/// - `DoesNotExist`: Label key must not be present
+///
+/// # Arguments
+/// * `expr` - The label selector requirement to evaluate
+/// * `labels` - The labels to match against
+///
+/// # Returns
+/// `true` if the labels satisfy the requirement, `false` otherwise
+fn matches_expression(expr: &LabelSelectorRequirement, labels: &BTreeMap<String, String>) -> bool {
+    let key = &expr.key;
+    let values = expr.values.as_deref().unwrap_or(&[]);
+
+    match expr.operator.as_str() {
+        "In" => {
+            // Label must exist and value must be in the set
+            labels.get(key).is_some_and(|v| values.contains(v))
+        }
+        "NotIn" => {
+            // If label doesn't exist, it passes
+            // If label exists, value must not be in the set
+            labels.get(key).is_none_or(|v| !values.contains(v))
+        }
+        "Exists" => {
+            // Label key must be present
+            labels.contains_key(key)
+        }
+        "DoesNotExist" => {
+            // Label key must not be present
+            !labels.contains_key(key)
+        }
+        _ => {
+            // Unknown operator - fail closed
+            tracing::warn!("Unknown label selector operator: {}", expr.operator);
+            false
+        }
+    }
 }
 
 #[cfg(test)]

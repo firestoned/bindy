@@ -333,42 +333,6 @@ pub fn record_error(resource_type: &str, error_type: &str) {
         .inc();
 }
 
-/// Record leader election acquired
-///
-/// # Arguments
-/// * `pod_name` - Name of the pod that acquired leadership
-pub fn record_leader_elected(pod_name: &str) {
-    LEADER_ELECTIONS_TOTAL
-        .with_label_values(&["acquired"])
-        .inc();
-    LEADER_STATUS.with_label_values(&[pod_name]).set(1.0);
-}
-
-/// Record leader election lost
-///
-/// # Arguments
-/// * `pod_name` - Name of the pod that lost leadership
-pub fn record_leader_lost(pod_name: &str) {
-    LEADER_ELECTIONS_TOTAL.with_label_values(&["lost"]).inc();
-    LEADER_STATUS.with_label_values(&[pod_name]).set(0.0);
-}
-
-/// Record leader election renewed
-pub fn record_leader_renewed() {
-    LEADER_ELECTIONS_TOTAL.with_label_values(&["renewed"]).inc();
-}
-
-/// Record generation observation lag
-///
-/// # Arguments
-/// * `resource_type` - The kind of resource
-/// * `lag` - Duration between generation change and observation
-pub fn record_generation_lag(resource_type: &str, lag: Duration) {
-    GENERATION_OBSERVATION_LAG_SECONDS
-        .with_label_values(&[resource_type])
-        .observe(lag.as_secs_f64());
-}
-
 /// Gather and encode all metrics in Prometheus text format
 ///
 /// # Returns

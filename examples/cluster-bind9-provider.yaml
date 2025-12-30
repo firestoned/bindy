@@ -6,7 +6,7 @@ kind: ClusterBind9Provider
 metadata:
   name: production-dns
   labels:
-    environment: production
+    environment: prod
     managed-by: platform-team
 spec:
   # Namespace where Bind9Instance resources will be created (optional)
@@ -16,6 +16,9 @@ spec:
   version: "9.18"
   # Primary instance configuration
   primary:
+    labels:
+      environment: prod
+      team: platform
     # Default number of replicas for primary instances (can be overridden per instance)
     replicas: 2
     # Service configuration with annotations for load balancer integration
@@ -30,6 +33,9 @@ spec:
         externalTrafficPolicy: Local
   # Secondary instance configuration
   secondary:
+    labels:
+      environment: prod
+      team: platform
     # Default number of replicas for secondary instances (can be overridden per instance)
     replicas: 1
     service:
@@ -47,8 +53,15 @@ spec:
     allowTransfer:
       - "10.0.0.0/8"
     bindcarConfig:
-      image: "ghcr.io/firestoned/bindcar:v0.5.1"
+      #image: "ghcr.io/firestoned/bindcar:v0.5.1"
+      image: "ghcr.io/firestoned/bindcar:latest"
       imagePullPolicy: IfNotPresent
       logLevel: debug
+      serviceSpec:
+        type: LoadBalancer
+        ports:
+          - name: http
+            port: 80
+            targetPort: 8080
     dnssec:
       validation: true

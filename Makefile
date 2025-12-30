@@ -36,6 +36,11 @@ test-integ-multi-tenancy: ## Run multi-tenancy integration tests (requires Kuber
 	@echo "Running multi-tenancy integration tests..."
 	@./tests/run_multi_tenancy_tests.sh
 
+test-integ-cluster-provider: ## Run cluster provider resilience tests (requires Kubernetes)
+	@echo "Running cluster provider resilience integration tests..."
+	@chmod +x tests/cluster_provider_resilience_test.sh
+	@./tests/cluster_provider_resilience_test.sh
+
 test-all: test test-integration ## Run all tests (unit + integration)
 
 test-lib: ## Run library tests only
@@ -63,13 +68,11 @@ format: ## Format code
 docker-build: ## Build Docker image
 	./scripts/build-docker-fast.sh chef
 
-docker-build-kind: docker-build ## Build Docker image
+docker-build-kind:
+	KIND_CLUSTER=$(KIND_CLUSTER) ./scripts/build-docker-fast.sh kind
 
 docker-push: ## Push Docker image
 	docker push $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
-
-docker-push-kind: docker-build-kind ## Push Docker image to local kind
-	kind load docker-image $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG) --name $(KIND_CLUSTER)
 
 deploy-crds: ## Deploy CRDs
 	kubectl create -f deploy/crds/
@@ -154,6 +157,10 @@ build: ## Build the Rust binary
 
 build-debug: ## Build the Rust binary in debug mode
 	cargo build
+
+build-aarch64-linux-debug: ## Build the Rust binary in debug mode
+	CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-unknown-linux-gnu-gcc \
+	cargo build --target aarch64-unknown-linux-gnu
 
 # Documentation targets
 docs: export PATH := $(HOME)/.cargo/bin:$(PATH)

@@ -22,30 +22,65 @@ This ensures all examples can be successfully applied to a Kubernetes cluster.
 Bind9Cluster
     ↓ (referenced by clusterRef)
 Bind9Instance(s)
-    ↓ (referenced by clusterRef via DNSZone)
+    ↓ (selected by DNSZone via clusterRef OR bind9InstancesFrom)
 DNSZone(s)
     ↓ (discovered by label selectors via recordsFrom)
 DNS Records
 ```
 
-**Example:**
+### Instance Selection in DNSZone
+
+DNSZones can select Bind9Instances using three methods:
+
+**Method 1: clusterRef (Simple)**
 ```yaml
-# Bind9Cluster name
-name: production-dns
-
-# Bind9Instance references the cluster
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
 spec:
-  clusterRef: production-dns  # ← Must match cluster name
+  zoneName: example.com
+  clusterRef: production-dns  # Selects ALL instances with this clusterRef
+```
 
-# DNSZone references the cluster (NOT the instance!)
+**Method 2: bind9InstancesFrom (Fine-Grained)**
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
 spec:
-  clusterRef: production-dns  # ← Must match cluster name
+  zoneName: example.com
+  bind9InstancesFrom:
+    - selector:
+        matchLabels:
+          bindy.firestoned.io/region: us-west-2
+          bindy.firestoned.io/role: primary
+```
+
+**Method 3: Union (Both Together)**
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+spec:
+  zoneName: example.com
+  clusterRef: production-dns        # Instances from cluster
+  bind9InstancesFrom:               # PLUS instances from selectors
+    - selector:
+        matchLabels:
+          special-capability: geo-dns
+```
+
+The zone will be synchronized to the **UNION** of instances from both methods (duplicates automatically removed).
+
+### Record Selection in DNSZone
+
+**Records** are discovered via labels (no explicit zoneRef):
+```yaml
+# DNSZone selector
+spec:
   recordsFrom:
     - selector:
         matchLabels:
           zone: example.com  # ← Selects records with this label
 
-# Records are discovered via labels (no explicit zoneRef)
+# Records are discovered via labels
 metadata:
   labels:
     zone: example.com  # ← Matches DNSZone selector
@@ -92,7 +127,14 @@ metadata:
 3. **[dns-zone.yaml](dns-zone.yaml)** - DNS zone definitions
    - Example zones: `example.com` and `internal.local`
    - Shows SOA record configuration
-   - **Updated:** Now correctly references Bind9Cluster (not instance)
+   - Demonstrates label selector instance selection
+
+3b. **[dnszone-selection-methods.yaml](dnszone-selection-methods.yaml)** - **Instance selection methods**
+   - Shows all three methods for selecting Bind9Instances
+   - Method 1: `clusterRef` - Simple cluster reference
+   - Method 2: `bind9InstancesFrom` - Label selectors for fine-grained control
+   - Method 3: Union - Both methods together (instances from BOTH selections)
+   - Includes multi-region example with regional instance targeting
 
 3a. **[zone-label-selector.yaml](zone-label-selector.yaml)** - **Zone selection with label selectors**
    - Demonstrates automatic zone discovery using `zonesFrom` field

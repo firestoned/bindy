@@ -5,8 +5,8 @@ options {
     dump-file "/var/cache/bind/cache_dump.db";
     statistics-file "/var/cache/bind/named_stats.txt";
     memstatistics-file "/var/cache/bind/named_mem_stats.txt";
-    listen-on { any; };
-    listen-on-v6 { any; };
+    listen-on port 5353 { any; };
+    listen-on-v6 port 5353 { any; };
     allow-new-zones yes;
     {{RECURSION}}
     {{ALLOW_QUERY}}

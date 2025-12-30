@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: MIT
 
-//! Unit tests for Bind9Manager.
+//! Unit tests for `Bind9Manager`.
 
 #[cfg(test)]
 #[allow(unexpected_cfgs)]
