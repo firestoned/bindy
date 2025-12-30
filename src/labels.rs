@@ -81,6 +81,9 @@ pub const BINDY_INSTANCE_ANNOTATION: &str = "bindy.firestoned.io/instance";
 /// Annotation indicating which `DNSZone` a DNS record belongs to
 pub const BINDY_ZONE_ANNOTATION: &str = "bindy.firestoned.io/zone";
 
+/// Annotation indicating which `Bind9Instance` selected this `DNSZone` via label selector
+pub const BINDY_SELECTED_BY_INSTANCE_ANNOTATION: &str = "bindy.firestoned.io/selected-by-instance";
+
 /// Annotation indicating the instance index within a cluster (used for scale-down ordering)
 pub const BINDY_INSTANCE_INDEX_ANNOTATION: &str = "bindy.firestoned.io/instance-index";
 

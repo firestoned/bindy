@@ -9,7 +9,8 @@
 
 use crate::bind9::RndcKeyData;
 use crate::constants::{ANNOTATION_ZONE_OWNER, ANNOTATION_ZONE_PREVIOUS_OWNER};
-use crate::crd::{Condition, DNSZone, DNSZoneSpec, DNSZoneStatus};
+use crate::crd::{Bind9Instance, Condition, DNSZone, DNSZoneSpec, DNSZoneStatus};
+use crate::labels::BINDY_SELECTED_BY_INSTANCE_ANNOTATION;
 use anyhow::{anyhow, Context, Result};
 use bindcar::{ZONE_TYPE_PRIMARY, ZONE_TYPE_SECONDARY};
 use chrono::Utc;
@@ -23,12 +24,135 @@ use serde_json::json;
 use std::collections::HashSet;
 use tracing::{debug, error, info, warn};
 
+/// Selection method for a `DNSZone`.
+///
+/// Indicates how the zone was assigned to an instance:
+/// - `ExplicitRef`: Via explicit `clusterRef` or `clusterProviderRef` in spec
+/// - `LabelSelector`: Via label selector matching (annotated with instance name)
+#[derive(Debug, Clone, PartialEq)]
+pub enum ZoneSelectionMethod {
+    ExplicitRef,
+    LabelSelector(String), // Instance name that selected this zone
+}
+
+impl ZoneSelectionMethod {
+    /// Convert selection method to status string values.
+    ///
+    /// Returns (`selection_method`, `selected_by_instance`) tuple for `DNSZoneStatus`.
+    #[must_use]
+    pub fn to_status_fields(&self) -> (Option<String>, Option<String>) {
+        match self {
+            ZoneSelectionMethod::ExplicitRef => (Some("explicit".to_string()), None),
+            ZoneSelectionMethod::LabelSelector(instance_name) => (
+                Some("labelSelector".to_string()),
+                Some(instance_name.clone()),
+            ),
+        }
+    }
+}
+
+/// Helper function to determine zone selection method and extract cluster reference.
+///
+/// Returns a tuple of (`cluster_ref`, `is_cluster_provider`, `selection_method`).
+///
+/// This function checks for explicit cluster references first, then falls back to
+/// checking for label selector-based selection via the `bindy.firestoned.io/selected-by-instance` annotation.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client for looking up `Bind9Instance`
+/// * `dnszone` - The `DNSZone` resource being reconciled
+///
+/// # Returns
+///
+/// * `Ok((cluster_ref, is_cluster_provider, selection_method))` - On success
+/// * `Err(_)` - If no valid selection method found or conflicts detected
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Both `clusterRef` and `clusterProviderRef` are specified (mutual exclusivity violation)
+/// - Neither explicit ref nor label selector annotation is present
+/// - Referenced `Bind9Instance` does not exist
+pub async fn get_zone_selection_info(
+    client: &Client,
+    dnszone: &DNSZone,
+) -> Result<(String, bool, ZoneSelectionMethod)> {
+    let namespace = dnszone.namespace().unwrap_or_default();
+    let name = dnszone.name_any();
+    let spec = &dnszone.spec;
+
+    // Check for explicit cluster references first (they take precedence)
+    match (&spec.cluster_ref, &spec.cluster_provider_ref) {
+        (Some(ref cluster_name), None) => {
+            return Ok((
+                cluster_name.clone(),
+                false,
+                ZoneSelectionMethod::ExplicitRef,
+            ));
+        }
+        (None, Some(ref cluster_provider_name)) => {
+            return Ok((
+                cluster_provider_name.clone(),
+                true,
+                ZoneSelectionMethod::ExplicitRef,
+            ));
+        }
+        (Some(_), Some(_)) => {
+            return Err(anyhow!(
+                "DNSZone {namespace}/{name} has both clusterRef and clusterProviderRef specified. \
+                Only one must be specified."
+            ));
+        }
+        (None, None) => {
+            // No explicit reference - check for label selector annotation
+        }
+    }
+
+    // Check for label selector-based selection
+    if let Some(annotations) = &dnszone.metadata.annotations {
+        if let Some(instance_name) = annotations.get(BINDY_SELECTED_BY_INSTANCE_ANNOTATION) {
+            debug!(
+                "DNSZone {}/{} selected by instance {} via label selector",
+                namespace, name, instance_name
+            );
+
+            // Look up the Bind9Instance to get its cluster reference
+            let instance_api: Api<Bind9Instance> = Api::namespaced(client.clone(), &namespace);
+            match instance_api.get(instance_name).await {
+                Ok(_instance) => {
+                    // Bind9Instance must have either clusterRef or be standalone
+                    // For now, we'll just use the instance name as the cluster ref
+                    // TODO: This might need refinement based on actual cluster architecture
+                    return Ok((
+                        instance_name.clone(),
+                        false,
+                        ZoneSelectionMethod::LabelSelector(instance_name.clone()),
+                    ));
+                }
+                Err(e) => {
+                    return Err(anyhow!(
+                        "DNSZone {namespace}/{name} selected by instance {instance_name} which does not exist: {e}"
+                    ));
+                }
+            }
+        }
+    }
+
+    Err(anyhow!(
+        "DNSZone {namespace}/{name} has neither clusterRef/clusterProviderRef nor label selector annotation. \
+        At least one selection method must be specified."
+    ))
+}
+
 /// Helper function to extract and validate cluster reference from `DNSZoneSpec`.
 ///
 /// Returns the cluster name, whether from clusterRef or clusterProviderRef.
 /// Validates that exactly one is specified (mutual exclusivity).
 ///
 /// This function is public so it can be used by other reconcilers (e.g., records reconciler).
+///
+/// **DEPRECATED**: Use `get_zone_selection_info` instead for full selection method support.
 ///
 /// # Errors
 ///
@@ -117,14 +241,25 @@ pub async fn reconcile_dnszone(
     // Extract spec
     let spec = &dnszone.spec;
 
-    // Guard clause: Validate exactly one cluster reference is provided
-    let cluster_ref = get_cluster_ref_from_spec(spec, &namespace, &name)?;
-    let is_cluster_provider = spec.cluster_provider_ref.is_some();
+    // Get zone selection info (explicit ref or label selector)
+    let (cluster_ref, is_cluster_provider, selection_method) =
+        get_zone_selection_info(&client, &dnszone).await?;
 
-    info!(
-        "DNSZone {}/{} references cluster '{}' (is_cluster_provider={}, cluster_ref={:?}, cluster_provider_ref={:?})",
-        namespace, name, cluster_ref, is_cluster_provider, spec.cluster_ref, spec.cluster_provider_ref
-    );
+    // Log selection method
+    match &selection_method {
+        ZoneSelectionMethod::ExplicitRef => {
+            info!(
+                "DNSZone {}/{} explicitly references cluster '{}' (is_cluster_provider={})",
+                namespace, name, cluster_ref, is_cluster_provider
+            );
+        }
+        ZoneSelectionMethod::LabelSelector(instance_name) => {
+            info!(
+                "DNSZone {}/{} selected by instance '{}' via label selector",
+                namespace, name, instance_name
+            );
+        }
+    }
 
     // Determine if this is the first reconciliation or if spec has changed
     let current_generation = dnszone.metadata.generation;
@@ -376,6 +511,10 @@ pub async fn reconcile_dnszone(
 
     // Set observed generation (in-memory)
     status_updater.set_observed_generation(current_generation);
+
+    // Set zone selection method (in-memory)
+    let (selection_method_str, selected_by_instance_str) = selection_method.to_status_fields();
+    status_updater.set_selection_method(selection_method_str, selected_by_instance_str);
 
     // Set final Ready/Degraded status based on reconciliation outcome
     // Only set Ready=True if there were NO degraded conditions during reconciliation

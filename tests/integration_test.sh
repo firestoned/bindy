@@ -146,7 +146,7 @@ echo -e "${GREEN}2️⃣  Running functional tests with kubectl...${NC}"
 # Test Bind9Cluster creation
 echo -e "${YELLOW}Testing Bind9Cluster creation...${NC}"
 ${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: integration-test-cluster
@@ -172,7 +172,7 @@ sleep 2
 # Test Bind9Instance creation (managed by cluster)
 echo -e "${YELLOW}Testing Bind9Instance creation...${NC}"
 ${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: integration-test-primary
@@ -196,7 +196,7 @@ sleep 2
 # Test DNSZone creation
 echo -e "${YELLOW}Testing DNSZone creation...${NC}"
 ${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: integration-test-zone
@@ -224,7 +224,7 @@ echo -e "${YELLOW}Testing all DNS record types...${NC}"
 
 # A Record
 ${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: integration-a
@@ -238,7 +238,7 @@ EOF
 
 # AAAA Record
 ${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: integration-aaaa
@@ -252,7 +252,7 @@ EOF
 
 # CNAME Record
 ${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: integration-cname
@@ -266,7 +266,7 @@ EOF
 
 # MX Record
 ${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: integration-mx
@@ -281,7 +281,7 @@ EOF
 
 # TXT Record
 ${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: integration-txt
@@ -296,7 +296,7 @@ EOF
 
 # NS Record
 ${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: integration-ns
@@ -310,7 +310,7 @@ EOF
 
 # SRV Record
 ${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: integration-srv
@@ -327,7 +327,7 @@ EOF
 
 # CAA Record
 ${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: integration-caa

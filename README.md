@@ -73,7 +73,7 @@ Bindy is a Kubernetes operator that manages BIND9 DNS infrastructure declarative
 
 ```yaml
 # 1. Create a DNS cluster
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: my-dns
@@ -86,7 +86,7 @@ spec:
 
 ---
 # 2. Create a zone
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
@@ -97,7 +97,7 @@ spec:
 
 ---
 # 3. Add DNS records
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www
@@ -172,7 +172,7 @@ Bindy provides 4 types of resources:
 For platform-managed DNS infrastructure accessible from all namespaces:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9GlobalCluster
 metadata:
   name: shared-dns
@@ -212,7 +212,7 @@ That's it! Now create DNS resources.
 ### Simple DNS Cluster
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: simple-dns
@@ -227,7 +227,7 @@ Creates 1 primary BIND9 instance. No secondaries needed for dev/test.
 ### Production DNS Cluster
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: prod-dns
@@ -252,7 +252,7 @@ Creates 3 primaries + 2 secondaries with DNSSEC enabled and zone transfers confi
 
 ```yaml
 # Zone
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
@@ -267,7 +267,7 @@ spec:
 
 ---
 # A Record
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www
@@ -280,7 +280,7 @@ spec:
 
 ---
 # CNAME
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: blog
@@ -292,7 +292,7 @@ spec:
 
 ---
 # MX Record
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mail
@@ -305,7 +305,7 @@ spec:
 
 ---
 # TXT (SPF)
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: spf
@@ -322,7 +322,7 @@ spec:
 Skip the cluster abstraction and create a single instance directly:
 
 ```yaml
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: standalone
