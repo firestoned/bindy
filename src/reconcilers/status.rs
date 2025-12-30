@@ -408,6 +408,21 @@ impl DNSZoneStatusUpdater {
         self.has_changes = true;
     }
 
+    /// Set the zone selection method and selected instance.
+    ///
+    /// This tracks how the zone was assigned to an instance:
+    /// - `selection_method`: "explicit" or "labelSelector"
+    /// - `selected_by_instance`: Instance name (only when using labelSelector)
+    pub fn set_selection_method(
+        &mut self,
+        selection_method: Option<String>,
+        selected_by_instance: Option<String>,
+    ) {
+        self.new_status.selection_method = selection_method;
+        self.new_status.selected_by_instance = selected_by_instance;
+        self.has_changes = true;
+    }
+
     /// Check if the status has actually changed compared to the current status.
     ///
     /// Returns `true` if there are semantic changes that warrant an API update.

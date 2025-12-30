@@ -88,7 +88,7 @@ pub async fn create_bind9_instance(
     }
 
     let instance = json!({
-        "apiVersion": "dns.firestoned.io/v1alpha1",
+        "apiVersion": "dns.firestoned.io/v1beta1",
         "kind": "Bind9Instance",
         "metadata": {
             "name": name,
@@ -123,7 +123,7 @@ pub async fn create_primary_zone(
     let zones: Api<serde_json::Value> = Api::namespaced(client.clone(), namespace);
 
     let zone = json!({
-        "apiVersion": "dns.firestoned.io/v1alpha1",
+        "apiVersion": "dns.firestoned.io/v1beta1",
         "kind": "DNSZone",
         "metadata": {
             "name": zone_name,

@@ -48,9 +48,165 @@ The `zonesFrom` field works similarly to `recordsFrom`:
 Future phases will implement:
 - Phase 2: Instance zone discovery and tagging logic
 - Phase 3: Cluster/provider propagation logic
-- Phase 4: DNSZone response to selection
-- Phase 5: Documentation and examples
-- Phase 6: Integration testing
+
+---
+
+## [2025-12-30 00:15] - Zone Label Selector Support (Phase 2: Instance Zone Discovery)
+
+**Author:** Erick Bourgeois
+
+### Added
+- **`src/labels.rs:85`**: Added `BINDY_SELECTED_BY_INSTANCE_ANNOTATION` constant for tracking zone selection
+- **`src/reconcilers/bind9instance.rs:230-240`**: Integrated zone discovery into main reconcile loop
+- **`src/reconcilers/bind9instance.rs:1051-1223`**: Implemented `reconcile_instance_zones()` function with full zone discovery, tagging, and status update logic
+- **`src/reconcilers/bind9instance.rs:1227-1324`**: Implemented `discover_zones()` with conflict detection for explicit refs and multi-instance selection
+- **`src/reconcilers/bind9instance.rs:1328-1365`**: Implemented `tag_zone_with_instance()` for annotation-based zone tracking
+- **`src/reconcilers/bind9instance.rs:1369-1406`**: Implemented `untag_zone_from_instance()` for cleanup when zones no longer match
+- **`src/reconcilers/bind9instance.rs:1410-1464`**: Implemented `update_instance_zone_status()` for status synchronization
+- **`src/crd.rs:2085`**: Added `Eq` and `Hash` derives to `ZoneReference` for `HashSet` usage
+
+### Changed
+- **`src/reconcilers/bind9instance.rs:14-16,18-19,26`**: Added imports for zone discovery (`DNSZone`, `ZoneReference`, `HashSet`)
+
+### Why
+Enable Bind9Instance controllers to automatically discover and track DNSZone resources based on label selectors defined in `zonesFrom`. This mirrors the existing DNSZone → records pattern and provides self-healing zone assignment.
+
+This is Phase 2 of the implementation roadmap (see `docs/roadmaps/ZONES_FROM_LABEL_SELECTOR_SUPPORT.md`).
+
+Key behaviors:
+- Instances watch for DNSZones matching their `zones_from` label selectors
+- Explicit `clusterRef` takes precedence over label selection (conflict detection)
+- Multi-instance selection is prevented (one instance per zone)
+- Zones are tagged with `bindy.firestoned.io/selected-by-instance` annotation
+- Instance status tracks all selected zones via `selected_zones` field
+- Self-healing: periodic reconciliation updates zone assignments when labels change
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (zone discovery is automatic)
+- [ ] Documentation only
+
+### Technical Details
+Zone Discovery Logic:
+1. List all DNSZone resources in the same namespace
+2. Filter zones by label selectors from `zones_from`
+3. Detect conflicts:
+   - Zones with explicit `clusterRef` are excluded (explicit wins)
+   - Zones already selected by another instance are excluded (first wins)
+4. Tag matching zones with `bindy.firestoned.io/selected-by-instance` annotation
+5. Untag zones that no longer match (label changes)
+6. Update instance status with list of selected zones
+
+Future phases:
+- Phase 3: Verify cluster/provider propagation (already implemented)
+- Phase 4: Update DNSZone reconciler for selection response
+
+---
+
+## [2025-12-30 00:30] - Zone Label Selector Support (Phase 3: Cluster/Provider Propagation)
+
+**Author:** Erick Bourgeois
+
+### Verified
+- **`src/reconcilers/clusterbind9provider.rs:312`**: ClusterBind9Provider propagates entire `common` spec (including `zones_from`) to Bind9Cluster resources
+- **`src/reconcilers/bind9cluster.rs:841`**: Bind9Cluster propagates `zones_from` from cluster common spec to existing Bind9Instance resources (via patch/update)
+- **`src/reconcilers/bind9cluster.rs:1109`**: Bind9Cluster propagates `zones_from` from cluster common spec to newly created Bind9Instance resources
+
+### Why
+Verify that the `zones_from` field properly propagates through the entire resource hierarchy:
+- ClusterBind9Provider (cluster-scoped) → Bind9Cluster (namespace-scoped)
+- Bind9Cluster → Bind9Instance (both for existing and new instances)
+
+This is Phase 3 of the implementation roadmap (see `docs/roadmaps/ZONES_FROM_LABEL_SELECTOR_SUPPORT.md`).
+
+The propagation was already complete from Phase 1, as `zones_from` is part of `Bind9ClusterCommonSpec` which is cloned/propagated at all levels.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (propagation is automatic)
+- [ ] Documentation only
+
+### Technical Details
+Propagation Chain:
+1. **ClusterBind9Provider → Bind9Cluster**:
+   - Line 312: `cluster_spec.common = cluster_provider.spec.common.clone()`
+   - Creates Bind9Cluster with full common spec including `zones_from`
+
+2. **Bind9Cluster → Bind9Instance (existing)**:
+   - Line 841: `zones_from: common_spec.zones_from.clone()`
+   - Updates existing instances via server-side apply patch
+
+3. **Bind9Cluster → Bind9Instance (new)**:
+   - Line 1109: `zones_from: common_spec.zones_from.clone()`
+   - Creates new instances with `zones_from` field populated
+
+Result: Defining `zones_from` at the ClusterBind9Provider or Bind9Cluster level automatically propagates to all managed instances, which then use it for zone discovery (Phase 2).
+
+Future phases:
+- Phase 4: Update DNSZone reconciler for selection response
+- Phase 5: Create documentation and examples
+- Phase 6: Integration testing and validation
+
+---
+
+## [2025-12-30 00:45] - Zone Label Selector Support (Phase 4: DNSZone Selection Response)
+
+**Author:** Erick Bourgeois
+
+### Added
+- **`src/reconcilers/dnszone.rs:27-50`**: Added `ZoneSelectionMethod` enum to represent selection method (explicit vs label selector)
+- **`src/reconcilers/dnszone.rs:42-50`**: Implemented `to_status_fields()` method to convert selection method to status field values
+- **`src/reconcilers/dnszone.rs:76-145`**: Implemented `get_zone_selection_info()` function to determine zone selection method
+- **`src/reconcilers/status.rs:411-424`**: Added `set_selection_method()` to DNSZoneStatusUpdater for tracking selection method
+
+### Changed
+- **`src/reconcilers/dnszone.rs:12-13`**: Added imports for `Bind9Instance` and `BINDY_SELECTED_BY_INSTANCE_ANNOTATION`
+- **`src/reconcilers/dnszone.rs:229-246`**: Updated reconcile function to use `get_zone_selection_info()` instead of `get_cluster_ref_from_spec()`
+- **`src/reconcilers/dnszone.rs:513-515`**: Updated zone status to include selection method and selected instance
+- **`src/reconcilers/dnszone.rs:147-163`**: Deprecated `get_cluster_ref_from_spec()` in favor of `get_zone_selection_info()`
+
+### Why
+Enable DNSZone resources to report how they were assigned to an instance (explicit reference vs label selector) and track which instance selected them. This provides visibility into the zone assignment mechanism and supports self-healing behavior when zones are selected via label selectors.
+
+This is Phase 4 of the implementation roadmap (see `docs/roadmaps/ZONES_FROM_LABEL_SELECTOR_SUPPORT.md`).
+
+Key behaviors:
+- DNSZone reconciler checks for explicit cluster references first (takes precedence)
+- Falls back to checking for `bindy.firestoned.io/selected-by-instance` annotation
+- Updates zone status with `selection_method` field ("explicit" or "labelSelector")
+- Updates zone status with `selected_by_instance` field (instance name when using labelSelector)
+- Provides visibility into zone assignment for monitoring and troubleshooting
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (status tracking is automatic)
+- [ ] Documentation only
+
+### Technical Details
+Selection Method Detection:
+1. Check for explicit `clusterRef` or `clusterProviderRef` in zone spec
+2. If not present, check for `bindy.firestoned.io/selected-by-instance` annotation
+3. Look up the referenced Bind9Instance to validate it exists
+4. Return selection method and cluster reference for reconciliation
+
+Status Updates:
+- `status.selection_method`: "explicit" or "labelSelector"
+- `status.selected_by_instance`: Instance name (only set for labelSelector method)
+
+This allows users to:
+- See which zones are explicitly configured vs dynamically selected
+- Track which instance selected a zone via label selector
+- Monitor zone assignment changes when labels are updated
+- Troubleshoot zone assignment issues
+
+Future phases:
+- Phase 5: Create documentation and examples
+- Phase 6: Integration testing and validation
+
+---
 
 ## [2025-12-29 22:15] - Upgrade to bindcar v0.5.1
 

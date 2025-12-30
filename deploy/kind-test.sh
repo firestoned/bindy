@@ -50,7 +50,7 @@ echo -e "${GREEN}3️⃣  Applying test resources...${NC}"
 # Create a test Bind9Instance
 echo -e "${YELLOW}Creating Bind9Instance...${NC}"
 kubectl apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: test-bind9
@@ -69,7 +69,7 @@ sleep 2
 # Create a test zone
 echo -e "${YELLOW}Creating DNSZone...${NC}"
 kubectl apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: test-zone
@@ -97,7 +97,7 @@ sleep 3
 # Create test A record
 echo -e "${YELLOW}Creating ARecord...${NC}"
 kubectl apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: test-www
@@ -112,7 +112,7 @@ EOF
 # Create test TXT record
 echo -e "${YELLOW}Creating TXTRecord...${NC}"
 kubectl apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: test-txt

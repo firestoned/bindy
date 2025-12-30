@@ -11,15 +11,19 @@ use crate::bind9_resources::{
     build_configmap, build_deployment, build_service, build_service_account,
 };
 use crate::constants::{API_GROUP_VERSION, DEFAULT_BIND9_VERSION, KIND_BIND9_INSTANCE};
-use crate::crd::{Bind9Cluster, Bind9Instance, Bind9InstanceStatus, Condition};
-use crate::labels::{BINDY_MANAGED_BY_LABEL, FINALIZER_BIND9_INSTANCE};
+use crate::crd::{
+    Bind9Cluster, Bind9Instance, Bind9InstanceStatus, Condition, DNSZone, ZoneReference,
+};
+use crate::labels::{
+    BINDY_MANAGED_BY_LABEL, BINDY_SELECTED_BY_INSTANCE_ANNOTATION, FINALIZER_BIND9_INSTANCE,
+};
 use crate::reconcilers::finalizers::{ensure_finalizer, handle_deletion, FinalizerCleanup};
 use crate::reconcilers::resources::{create_or_apply, create_or_replace};
 use crate::status_reasons::{
     pod_condition_type, CONDITION_TYPE_READY, REASON_ALL_READY, REASON_NOT_READY,
     REASON_PARTIALLY_READY, REASON_READY,
 };
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use chrono::Utc;
 use k8s_openapi::api::{
     apps::v1::Deployment,
@@ -32,6 +36,7 @@ use kube::{
     Api, ResourceExt,
 };
 use serde_json::json;
+use std::collections::HashSet;
 use tracing::{debug, error, info, warn};
 
 /// Implement cleanup trait for `Bind9Instance` finalizer management
@@ -219,6 +224,18 @@ pub async fn reconcile_bind9instance(client: Client, instance: Bind9Instance) ->
             update_status(&client, &instance, vec![error_condition], replicas, 0).await?;
 
             return Err(e);
+        }
+    }
+
+    // Reconcile zone discovery if zonesFrom is configured
+    if let Some(zones_from) = &instance.spec.zones_from {
+        if let Err(e) = reconcile_instance_zones(&client, &instance, zones_from).await {
+            warn!(
+                "Failed to reconcile zone discovery for {}/{}: {}",
+                namespace, name, e
+            );
+            // Don't fail the entire reconciliation if zone discovery fails
+            // This allows the instance to still function, just without automatic zone selection
         }
     }
 
@@ -918,6 +935,306 @@ async fn update_status(
         &Patch::Merge(patch),
     )
     .await?;
+
+    Ok(())
+}
+
+// ============================================================================
+// Zone Discovery and Selection Logic
+// ============================================================================
+
+/// Reconciles zone selection for an instance with `zonesFrom` label selectors.
+///
+/// This function implements the core zone discovery logic:
+/// 1. Discovers zones matching the label selectors
+/// 2. Tags newly matched zones with annotation
+/// 3. Untags zones that no longer match
+/// 4. Updates instance status with selected zones
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `instance` - The `Bind9Instance` resource
+/// * `zones_from` - Label selectors for zone discovery
+///
+/// # Returns
+///
+/// * `Ok(())` - If zone reconciliation succeeded
+/// * `Err(_)` - If zone discovery or tagging failed
+async fn reconcile_instance_zones(
+    client: &Client,
+    instance: &Bind9Instance,
+    zones_from: &[crate::crd::ZoneSource],
+) -> Result<()> {
+    let namespace = instance
+        .namespace()
+        .ok_or_else(|| anyhow!("Instance has no namespace"))?;
+    let instance_name = instance.name_any();
+
+    debug!(
+        "Reconciling zone selection for instance {}/{}",
+        namespace, instance_name
+    );
+
+    // 1. Discover zones matching selectors
+    let current_zones = discover_zones(client, &namespace, zones_from).await?;
+
+    debug!(
+        "Discovered {} zones matching selectors for instance {}/{}",
+        current_zones.len(),
+        namespace,
+        instance_name
+    );
+
+    // 2. Get previously selected zones from instance status
+    let previous_zones: HashSet<ZoneReference> = instance
+        .status
+        .as_ref()
+        .map(|s| s.selected_zones.iter().cloned().collect())
+        .unwrap_or_default();
+
+    // 3. Determine zones to tag (newly matched) and untag (no longer match)
+    let zones_to_tag: Vec<_> = current_zones.difference(&previous_zones).collect();
+    let zones_to_untag: Vec<_> = previous_zones.difference(&current_zones).collect();
+
+    // 4. Tag newly matched zones
+    for zone_ref in &zones_to_tag {
+        if let Err(e) = tag_zone_with_instance(client, zone_ref, instance).await {
+            warn!(
+                "Failed to tag zone {}/{} for instance {}/{}: {}",
+                zone_ref.namespace, zone_ref.name, namespace, instance_name, e
+            );
+        } else {
+            info!(
+                "Tagged zone {}/{} with instance {}/{}",
+                zone_ref.namespace, zone_ref.name, namespace, instance_name
+            );
+        }
+    }
+
+    // 5. Untag zones that no longer match
+    for zone_ref in &zones_to_untag {
+        if let Err(e) = untag_zone_from_instance(client, zone_ref, instance).await {
+            warn!(
+                "Failed to untag zone {}/{} from instance {}/{}: {}",
+                zone_ref.namespace, zone_ref.name, namespace, instance_name, e
+            );
+        } else {
+            info!(
+                "Untagged zone {}/{} from instance {}/{}",
+                zone_ref.namespace, zone_ref.name, namespace, instance_name
+            );
+        }
+    }
+
+    // 6. Update instance status with current zone list
+    update_instance_zone_status(client, instance, &current_zones).await?;
+
+    Ok(())
+}
+
+/// Discovers DNS zones matching the given label selectors.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `namespace` - Namespace to search for zones
+/// * `zones_from` - Label selectors for matching zones
+///
+/// # Returns
+///
+/// * `Ok(HashSet<ZoneReference>)` - Set of zones matching the selectors
+/// * `Err(_)` - If zone listing failed
+async fn discover_zones(
+    client: &Client,
+    namespace: &str,
+    zones_from: &[crate::crd::ZoneSource],
+) -> Result<HashSet<ZoneReference>> {
+    let mut matched_zones = HashSet::new();
+
+    let zones_api: Api<DNSZone> = Api::namespaced(client.clone(), namespace);
+    let zones = zones_api.list(&ListParams::default()).await?;
+
+    for zone in zones.items {
+        // Skip zones with explicit clusterRef or clusterProviderRef (they take precedence)
+        if zone.spec.cluster_ref.is_some() || zone.spec.cluster_provider_ref.is_some() {
+            debug!(
+                "Skipping zone {}/{} - has explicit cluster reference",
+                zone.namespace().unwrap_or_default(),
+                zone.name_any()
+            );
+            continue;
+        }
+
+        // Skip zones already selected by another instance (prevent conflicts)
+        if let Some(annotations) = &zone.metadata.annotations {
+            if let Some(existing_instance) = annotations.get(BINDY_SELECTED_BY_INSTANCE_ANNOTATION)
+            {
+                // If already selected by a different instance, skip it
+                let zone_name = zone.name_any();
+                if existing_instance != &zone_name {
+                    debug!(
+                        "Skipping zone {}/{} - already selected by instance {}",
+                        zone.namespace().unwrap_or_default(),
+                        zone.name_any(),
+                        existing_instance
+                    );
+                    continue;
+                }
+            }
+        }
+
+        let labels = zone.metadata.labels.clone().unwrap_or_default();
+
+        // Check if zone matches any selector
+        for zone_source in zones_from {
+            if zone_source.selector.matches(&labels) {
+                let zone_ref = ZoneReference {
+                    name: zone.name_any(),
+                    namespace: zone
+                        .namespace()
+                        .ok_or_else(|| anyhow!("Zone has no namespace"))?
+                        .clone(),
+                    zone_name: zone.spec.zone_name.clone(),
+                };
+                matched_zones.insert(zone_ref);
+                break; // Don't double-count if multiple selectors match
+            }
+        }
+    }
+
+    Ok(matched_zones)
+}
+
+/// Tags a DNS zone with the selecting instance annotation.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `zone_ref` - Reference to the zone to tag
+/// * `instance` - The instance selecting this zone
+///
+/// # Returns
+///
+/// * `Ok(())` - If tagging succeeded
+/// * `Err(_)` - If zone patching failed
+async fn tag_zone_with_instance(
+    client: &Client,
+    zone_ref: &ZoneReference,
+    instance: &Bind9Instance,
+) -> Result<()> {
+    let zones_api: Api<DNSZone> = Api::namespaced(client.clone(), &zone_ref.namespace);
+
+    let annotation_patch = json!({
+        "metadata": {
+            "annotations": {
+                BINDY_SELECTED_BY_INSTANCE_ANNOTATION: instance.name_any()
+            }
+        }
+    });
+
+    zones_api
+        .patch(
+            &zone_ref.name,
+            &PatchParams::default(),
+            &Patch::Merge(annotation_patch),
+        )
+        .await?;
+
+    Ok(())
+}
+
+/// Removes the selecting instance annotation from a DNS zone.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `zone_ref` - Reference to the zone to untag
+/// * `instance` - The instance unselecting this zone
+///
+/// # Returns
+///
+/// * `Ok(())` - If untagging succeeded
+/// * `Err(_)` - If zone patching failed
+async fn untag_zone_from_instance(
+    client: &Client,
+    zone_ref: &ZoneReference,
+    instance: &Bind9Instance,
+) -> Result<()> {
+    let zones_api: Api<DNSZone> = Api::namespaced(client.clone(), &zone_ref.namespace);
+
+    // Fetch the zone to check if we should remove the annotation
+    let zone = zones_api.get(&zone_ref.name).await?;
+
+    // Only remove annotation if it points to this instance
+    if let Some(annotations) = &zone.metadata.annotations {
+        if let Some(selecting_instance) = annotations.get(BINDY_SELECTED_BY_INSTANCE_ANNOTATION) {
+            if selecting_instance == &instance.name_any() {
+                let annotation_patch = json!({
+                    "metadata": {
+                        "annotations": {
+                            BINDY_SELECTED_BY_INSTANCE_ANNOTATION: null
+                        }
+                    }
+                });
+
+                zones_api
+                    .patch(
+                        &zone_ref.name,
+                        &PatchParams::default(),
+                        &Patch::Merge(annotation_patch),
+                    )
+                    .await?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Updates the instance status with the current list of selected zones.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `instance` - The instance to update
+/// * `selected_zones` - Current set of selected zones
+///
+/// # Returns
+///
+/// * `Ok(())` - If status update succeeded
+/// * `Err(_)` - If status patching failed
+async fn update_instance_zone_status(
+    client: &Client,
+    instance: &Bind9Instance,
+    selected_zones: &HashSet<ZoneReference>,
+) -> Result<()> {
+    let namespace = instance
+        .namespace()
+        .ok_or_else(|| anyhow!("Instance has no namespace"))?;
+    let api: Api<Bind9Instance> = Api::namespaced(client.clone(), &namespace);
+
+    let zones_vec: Vec<ZoneReference> = selected_zones.iter().cloned().collect();
+
+    let status_patch = json!({
+        "status": {
+            "selectedZones": zones_vec
+        }
+    });
+
+    api.patch_status(
+        &instance.name_any(),
+        &PatchParams::default(),
+        &Patch::Merge(status_patch),
+    )
+    .await?;
+
+    debug!(
+        "Updated instance {}/{} status with {} selected zones",
+        namespace,
+        instance.name_any(),
+        zones_vec.len()
+    );
 
     Ok(())
 }
