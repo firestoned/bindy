@@ -84,7 +84,7 @@ use std::collections::{BTreeMap, HashMap};
 ///
 /// A label selector is a label query over a set of resources. The result of matchLabels and
 /// matchExpressions are `ANDed`. An empty label selector matches all objects.
-#[derive(Clone, Debug, Serialize, Deserialize, Default, JsonSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default, JsonSchema, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct LabelSelector {
     /// Map of {key,value} pairs. A single {key,value} in the matchLabels map is equivalent
@@ -100,7 +100,7 @@ pub struct LabelSelector {
 
 /// A label selector requirement is a selector that contains values, a key, and an operator
 /// that relates the key and values.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct LabelSelectorRequirement {
     /// The label key that the selector applies to.
@@ -143,6 +143,40 @@ pub struct RecordSource {
     ///
     /// Records (`ARecord`, `CNAMERecord`, `MXRecord`, etc.) with labels matching this selector
     /// will be automatically associated with this zone.
+    ///
+    /// The selector uses standard Kubernetes label selector semantics:
+    /// - `matchLabels`: All specified labels must match (AND logic)
+    /// - `matchExpressions`: All expressions must be satisfied (AND logic)
+    /// - Both `matchLabels` and `matchExpressions` can be used together
+    pub selector: LabelSelector,
+}
+
+/// Source for DNS zones to include in a cluster.
+///
+/// Specifies how DNS zones should be associated with a cluster using label selectors.
+/// Zones matching the selector criteria will be automatically served by this cluster's instances.
+///
+/// # Example
+///
+/// ```yaml
+/// zonesFrom:
+///   - selector:
+///       matchLabels:
+///         environment: production
+///       matchExpressions:
+///         - key: team
+///           operator: In
+///           values:
+///             - platform
+///             - infrastructure
+/// ```
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ZoneSource {
+    /// Label selector to match DNS zones.
+    ///
+    /// `DNSZone` resources with labels matching this selector will be automatically
+    /// associated with this cluster or instance.
     ///
     /// The selector uses standard Kubernetes label selector semantics:
     /// - `matchLabels`: All specified labels must match (AND logic)
@@ -386,6 +420,20 @@ pub struct DNSZoneStatus {
     /// Updated by the zone reconciler when records are added/removed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub records: Vec<RecordReference>,
+    /// Indicates how this zone was assigned to a cluster.
+    ///
+    /// Possible values:
+    /// - `"explicit"`: Zone has explicit `clusterRef` or `clusterProviderRef` in spec
+    /// - `"label-selector"`: Zone was selected by an instance's `zonesFrom` label selector
+    /// - `null`: Zone is not assigned to any cluster
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection_method: Option<String>,
+    /// Name of the instance that selected this zone (if selected via `zonesFrom`).
+    ///
+    /// Only set when `selection_method` is `"label-selector"`.
+    /// Matches the value in the `bindy.firestoned.io/selected-by-instance` annotation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_by_instance: Option<String>,
 }
 
 /// Secondary Zone configuration
@@ -1677,6 +1725,27 @@ pub struct Bind9ClusterCommonSpec {
     /// These mounts are inherited by all instances unless overridden.
     #[serde(default)]
     pub volume_mounts: Option<Vec<VolumeMount>>,
+
+    /// Select DNS zones using label selectors.
+    ///
+    /// Zones matching these selectors will be automatically served by this cluster's instances.
+    /// This is an alternative to zones explicitly specifying `clusterRef` or `clusterProviderRef`.
+    ///
+    /// When specified at the cluster level, this configuration propagates to all instances
+    /// in the cluster. Instances will watch for `DNSZone` resources matching these selectors
+    /// and automatically configure BIND9 to serve them.
+    ///
+    /// # Example
+    ///
+    /// ```yaml
+    /// zonesFrom:
+    ///   - selector:
+    ///       matchLabels:
+    ///         environment: production
+    ///         team: platform
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zones_from: Option<Vec<ZoneSource>>,
 }
 
 /// `Bind9Cluster` - Namespace-scoped DNS cluster for tenant-managed infrastructure.
@@ -1965,6 +2034,27 @@ pub struct Bind9InstanceSpec {
     /// If not specified, uses default configuration.
     #[serde(default)]
     pub bindcar_config: Option<BindcarConfig>,
+
+    /// Select DNS zones using label selectors.
+    ///
+    /// Zones matching these selectors will be served by this instance.
+    /// This field is typically inherited from the parent `Bind9Cluster` or `ClusterBind9Provider`,
+    /// but can be overridden or extended at the instance level.
+    ///
+    /// The instance reconciler watches for `DNSZone` resources matching these selectors
+    /// and automatically tags them with `bindy.firestoned.io/selected-by-instance` annotation.
+    /// Tagged zones are then configured in BIND9.
+    ///
+    /// # Example
+    ///
+    /// ```yaml
+    /// zonesFrom:
+    ///   - selector:
+    ///       matchLabels:
+    ///         instance: primary
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zones_from: Option<Vec<ZoneSource>>,
 }
 
 /// `Bind9Instance` status
@@ -1982,6 +2072,25 @@ pub struct Bind9InstanceStatus {
     /// IP or hostname of this instance's service
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_address: Option<String>,
+    /// List of DNS zones matched by `zonesFrom` selectors.
+    ///
+    /// Updated by the instance reconciler when zones are discovered via label selectors.
+    /// This field shows which zones are currently being served by this instance due to
+    /// label selector matching (as opposed to explicit `clusterRef`/`clusterProviderRef`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selected_zones: Vec<ZoneReference>,
+}
+
+/// Reference to a DNS zone selected by an instance.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ZoneReference {
+    /// Name of the `DNSZone` resource
+    pub name: String,
+    /// Namespace of the `DNSZone` resource
+    pub namespace: String,
+    /// Fully qualified domain name (e.g., "example.com")
+    pub zone_name: String,
 }
 
 /// Storage configuration for zone files
@@ -2042,7 +2151,7 @@ pub struct PersistentVolumeClaimConfig {
 pub struct BindcarConfig {
     /// Container image for the RNDC API sidecar
     ///
-    /// Example: "ghcr.io/firestoned/bindcar:v0.5.0"
+    /// Example: "ghcr.io/firestoned/bindcar:v0.5.1"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
 

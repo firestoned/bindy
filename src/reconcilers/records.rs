@@ -180,37 +180,19 @@ pub async fn reconcile_a_record(client: Client, record: ARecord) -> Result<()> {
     // Check if record data actually changed using hash comparison
     let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
 
-    if !data_changed {
-        debug!(
-            "A record {}/{} data unchanged (hash match), skipping DNS update",
+    if data_changed {
+        info!(
+            "A record {}/{} data changed (hash mismatch), updating DNS",
             namespace, name
         );
-        // Data unchanged, but verify generation to avoid reconciliation loops
-        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
-            return Ok(());
-        }
-        // Generation changed but data didn't - update status only
-        update_record_status(
-            &client,
-            &record,
-            "Ready",
-            "True",
-            "Unchanged",
-            "Record data unchanged",
-            current_generation,
-            Some(current_hash),
-            record.status.as_ref().and_then(|s| s.last_updated.clone()),
-        )
-        .await?;
-        return Ok(());
+    } else {
+        debug!(
+            "A record {}/{} data unchanged (hash match), verifying DNS state for self-healing",
+            namespace, name
+        );
     }
 
-    info!(
-        "A record {}/{} data changed (hash mismatch), updating DNS",
-        namespace, name
-    );
-
-    // Data changed - perform DNS update
+    // Always perform DNS update for self-healing (ensures record exists even if spec unchanged)
     debug!(
         "Ensuring A record exists in zone {} (declarative reconciliation)",
         zone_fqdn
@@ -430,35 +412,17 @@ pub async fn reconcile_txt_record(client: Client, record: TXTRecord) -> Result<(
     // Check if record data actually changed using hash comparison
     let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
 
-    if !data_changed {
-        debug!(
-            "TXT record {}/{} data unchanged (hash match), skipping DNS update",
+    if data_changed {
+        info!(
+            "TXT record {}/{} data changed (hash mismatch), updating DNS",
             namespace, name
         );
-        // Data unchanged, but verify generation to avoid reconciliation loops
-        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
-            return Ok(());
-        }
-        // Generation changed but data didn't - update status only
-        update_record_status(
-            &client,
-            &record,
-            "Ready",
-            "True",
-            "Unchanged",
-            "Record data unchanged",
-            current_generation,
-            Some(current_hash),
-            record.status.as_ref().and_then(|s| s.last_updated.clone()),
-        )
-        .await?;
-        return Ok(());
+    } else {
+        debug!(
+            "TXT record {}/{} data unchanged (hash match), verifying DNS state for self-healing",
+            namespace, name
+        );
     }
-
-    info!(
-        "TXT record {}/{} data changed (hash mismatch), updating DNS",
-        namespace, name
-    );
 
     // Always reconcile to ensure declarative state - records are recreated if pods restart
     // The underlying add_*_record() functions are idempotent and check for existence first
@@ -661,37 +625,19 @@ pub async fn reconcile_aaaa_record(client: Client, record: AAAARecord) -> Result
     // Check if record data actually changed using hash comparison
     let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
 
-    if !data_changed {
-        debug!(
-            "AAAA record {}/{} data unchanged (hash match), skipping DNS update",
+    if data_changed {
+        info!(
+            "AAAA record {}/{} data changed (hash mismatch), updating DNS",
             namespace, name
         );
-        // Data unchanged, but verify generation to avoid reconciliation loops
-        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
-            return Ok(());
-        }
-        // Generation changed but data didn't - update status only
-        update_record_status(
-            &client,
-            &record,
-            "Ready",
-            "True",
-            "Unchanged",
-            "Record data unchanged",
-            current_generation,
-            Some(current_hash),
-            record.status.as_ref().and_then(|s| s.last_updated.clone()),
-        )
-        .await?;
-        return Ok(());
+    } else {
+        debug!(
+            "AAAA record {}/{} data unchanged (hash match), verifying DNS state for self-healing",
+            namespace, name
+        );
     }
 
-    info!(
-        "AAAA record {}/{} data changed (hash mismatch), updating DNS",
-        namespace, name
-    );
-
-    // Data changed - perform DNS update
+    // Always perform DNS update for self-healing (ensures record exists even if spec unchanged)
     debug!(
         "Ensuring record exists in zone {} (declarative reconciliation)",
         zone_fqdn
@@ -891,38 +837,19 @@ pub async fn reconcile_cname_record(client: Client, record: CNAMERecord) -> Resu
     // Check if record data actually changed using hash comparison
     let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
 
-    if !data_changed {
-        debug!(
-            "CNAME record {}/{} data unchanged (hash match), skipping DNS update",
+    if data_changed {
+        info!(
+            "CNAME record {}/{} data changed (hash mismatch), updating DNS",
             namespace, name
         );
-        // Data unchanged, but verify generation to avoid reconciliation loops
-        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
-            return Ok(());
-        }
-        // Generation changed but data didn't - update status only
-        update_record_status(
-            &client,
-            &record,
-            "Ready",
-            "True",
-            "Unchanged",
-            "Record data unchanged",
-            current_generation,
-            Some(current_hash),
-            record.status.as_ref().and_then(|s| s.last_updated.clone()),
-        )
-        .await?;
-        return Ok(());
+    } else {
+        debug!(
+            "CNAME record {}/{} data unchanged (hash match), verifying DNS state for self-healing",
+            namespace, name
+        );
     }
 
-    info!(
-        "CNAME record {}/{} data changed (hash mismatch), updating DNS",
-        namespace, name
-    );
-
-    // Always reconcile to ensure declarative state - records are recreated if pods restart
-    // The underlying add_*_record() functions are idempotent and check for existence first
+    // Always perform DNS update for self-healing (ensures record exists even if spec unchanged)
     debug!(
         "Ensuring record exists in zone {} (declarative reconciliation)",
         zone_fqdn
@@ -1123,38 +1050,19 @@ pub async fn reconcile_mx_record(client: Client, record: MXRecord) -> Result<()>
     // Check if record data actually changed using hash comparison
     let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
 
-    if !data_changed {
-        debug!(
-            "MX record {}/{} data unchanged (hash match), skipping DNS update",
+    if data_changed {
+        info!(
+            "MX record {}/{} data changed (hash mismatch), updating DNS",
             namespace, name
         );
-        // Data unchanged, but verify generation to avoid reconciliation loops
-        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
-            return Ok(());
-        }
-        // Generation changed but data didn't - update status only
-        update_record_status(
-            &client,
-            &record,
-            "Ready",
-            "True",
-            "Unchanged",
-            "Record data unchanged",
-            current_generation,
-            Some(current_hash),
-            record.status.as_ref().and_then(|s| s.last_updated.clone()),
-        )
-        .await?;
-        return Ok(());
+    } else {
+        debug!(
+            "MX record {}/{} data unchanged (hash match), verifying DNS state for self-healing",
+            namespace, name
+        );
     }
 
-    info!(
-        "MX record {}/{} data changed (hash mismatch), updating DNS",
-        namespace, name
-    );
-
-    // Always reconcile to ensure declarative state - records are recreated if pods restart
-    // The underlying add_*_record() functions are idempotent and check for existence first
+    // Always perform DNS update for self-healing (ensures record exists even if spec unchanged)
     debug!(
         "Ensuring record exists in zone {} (declarative reconciliation)",
         zone_fqdn
@@ -1358,35 +1266,17 @@ pub async fn reconcile_ns_record(client: Client, record: NSRecord) -> Result<()>
     // Check if record data actually changed using hash comparison
     let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
 
-    if !data_changed {
-        debug!(
-            "NS record {}/{} data unchanged (hash match), skipping DNS update",
+    if data_changed {
+        info!(
+            "NS record {}/{} data changed (hash mismatch), updating DNS",
             namespace, name
         );
-        // Data unchanged, but verify generation to avoid reconciliation loops
-        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
-            return Ok(());
-        }
-        // Generation changed but data didn't - update status only
-        update_record_status(
-            &client,
-            &record,
-            "Ready",
-            "True",
-            "Unchanged",
-            "Record data unchanged",
-            current_generation,
-            Some(current_hash),
-            record.status.as_ref().and_then(|s| s.last_updated.clone()),
-        )
-        .await?;
-        return Ok(());
+    } else {
+        debug!(
+            "NS record {}/{} data unchanged (hash match), verifying DNS state for self-healing",
+            namespace, name
+        );
     }
-
-    info!(
-        "NS record {}/{} data changed (hash mismatch), updating DNS",
-        namespace, name
-    );
 
     // Always reconcile to ensure declarative state - records are recreated if pods restart
     // The underlying add_*_record() functions are idempotent and check for existence first
@@ -1590,35 +1480,17 @@ pub async fn reconcile_srv_record(client: Client, record: SRVRecord) -> Result<(
     // Check if record data actually changed using hash comparison
     let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
 
-    if !data_changed {
-        debug!(
-            "SRV record {}/{} data unchanged (hash match), skipping DNS update",
+    if data_changed {
+        info!(
+            "SRV record {}/{} data changed (hash mismatch), updating DNS",
             namespace, name
         );
-        // Data unchanged, but verify generation to avoid reconciliation loops
-        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
-            return Ok(());
-        }
-        // Generation changed but data didn't - update status only
-        update_record_status(
-            &client,
-            &record,
-            "Ready",
-            "True",
-            "Unchanged",
-            "Record data unchanged",
-            current_generation,
-            Some(current_hash),
-            record.status.as_ref().and_then(|s| s.last_updated.clone()),
-        )
-        .await?;
-        return Ok(());
+    } else {
+        debug!(
+            "SRV record {}/{} data unchanged (hash match), verifying DNS state for self-healing",
+            namespace, name
+        );
     }
-
-    info!(
-        "SRV record {}/{} data changed (hash mismatch), updating DNS",
-        namespace, name
-    );
 
     // Always reconcile to ensure declarative state - records are recreated if pods restart
     // The underlying add_*_record() functions are idempotent and check for existence first
@@ -1834,35 +1706,17 @@ pub async fn reconcile_caa_record(client: Client, record: CAARecord) -> Result<(
     // Check if record data actually changed using hash comparison
     let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
 
-    if !data_changed {
-        debug!(
-            "CAA record {}/{} data unchanged (hash match), skipping DNS update",
+    if data_changed {
+        info!(
+            "CAA record {}/{} data changed (hash mismatch), updating DNS",
             namespace, name
         );
-        // Data unchanged, but verify generation to avoid reconciliation loops
-        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
-            return Ok(());
-        }
-        // Generation changed but data didn't - update status only
-        update_record_status(
-            &client,
-            &record,
-            "Ready",
-            "True",
-            "Unchanged",
-            "Record data unchanged",
-            current_generation,
-            Some(current_hash),
-            record.status.as_ref().and_then(|s| s.last_updated.clone()),
-        )
-        .await?;
-        return Ok(());
+    } else {
+        debug!(
+            "CAA record {}/{} data unchanged (hash match), verifying DNS state for self-healing",
+            namespace, name
+        );
     }
-
-    info!(
-        "CAA record {}/{} data changed (hash mismatch), updating DNS",
-        namespace, name
-    );
 
     // Always reconcile to ensure declarative state - records are recreated if pods restart
     // The underlying add_*_record() functions are idempotent and check for existence first

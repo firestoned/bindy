@@ -9,6 +9,7 @@ metadata:
   name: www-example
   namespace: dns-system
   labels:
+    bindy.firestoned.io/zone: example.com
     zone: example.com
 spec:
   name: www
@@ -33,6 +34,7 @@ metadata:
   name: mail-example
   namespace: dns-system
   labels:
+    bindy.firestoned.io/zone: example.com
     zone: example.com
 spec:
   name: mail

@@ -436,6 +436,24 @@ spec:
                   type: string
                 nullable: true
                 type: array
+              selectedByInstance:
+                description: |-
+                  Name of the instance that selected this zone (if selected via `zonesFrom`).
+
+                  Only set when `selection_method` is `"label-selector"`.
+                  Matches the value in the `bindy.firestoned.io/selected-by-instance` annotation.
+                nullable: true
+                type: string
+              selectionMethod:
+                description: |-
+                  Indicates how this zone was assigned to a cluster.
+
+                  Possible values:
+                  - `"explicit"`: Zone has explicit `clusterRef` or `clusterProviderRef` in spec
+                  - `"label-selector"`: Zone was selected by an instance's `zonesFrom` label selector
+                  - `null`: Zone is not assigned to any cluster
+                nullable: true
+                type: string
             type: object
         required:
         - spec

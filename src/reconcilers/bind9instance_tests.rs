@@ -45,6 +45,7 @@ mod tests {
                 rndc_secret_ref: None,
                 storage: None,
                 bindcar_config: None,
+                zones_from: None,
             },
             status: None,
         }
@@ -72,6 +73,7 @@ mod tests {
                 rndc_secret_ref: None,
                 storage: None,
                 bindcar_config: None,
+                zones_from: None,
             },
             status: None,
         };
@@ -102,6 +104,7 @@ mod tests {
                 rndc_secret_ref: None,
                 storage: None,
                 bindcar_config: None,
+                zones_from: None,
             },
             status: None,
         };
@@ -228,6 +231,7 @@ mod tests {
                 rndc_secret_ref: None,
                 storage: None,
                 bindcar_config: None,
+                zones_from: None,
             },
             status: None,
         };
@@ -271,6 +275,7 @@ mod tests {
                 rndc_secret_ref: None,
                 storage: None,
                 bindcar_config: None,
+                zones_from: None,
             },
             status: None,
         };
@@ -336,6 +341,7 @@ mod tests {
                 rndc_secret_ref: None,
                 storage: None,
                 bindcar_config: None,
+                zones_from: None,
             },
             status: None,
         };

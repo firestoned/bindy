@@ -166,7 +166,7 @@ pub const BIND9_MALLOC_CONF: &str = "dirty_decay_ms:0,muzzy_decay_ms:0";
 /// This is the default image used for the bindcar HTTP API sidecar container
 /// when no image is specified in the `BindcarConfig` of a `Bind9Instance`,
 /// `Bind9Cluster`, or `ClusterBind9Provider`.
-pub const DEFAULT_BINDCAR_IMAGE: &str = "ghcr.io/firestoned/bindcar:v0.4.0";
+pub const DEFAULT_BINDCAR_IMAGE: &str = "ghcr.io/firestoned/bindcar:v0.5.1";
 
 // ============================================================================
 // Runtime Constants
