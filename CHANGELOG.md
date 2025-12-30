@@ -2,6 +2,164 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-29 23:30] - Add Label Selector Support for Zone Selection (Phase 1: CRD Schema)
+
+**Author:** Erick Bourgeois
+
+### Added
+- **`src/crd.rs:173-186`**: Added `ZoneSource` structure for label-based zone selection
+- **`src/crd.rs:1734`**: Added `zones_from: Option<Vec<ZoneSource>>` field to `Bind9ClusterCommonSpec`
+- **`src/crd.rs:2043`**: Added `zones_from: Option<Vec<ZoneSource>>` field to `Bind9InstanceSpec`
+- **`src/crd.rs:2067`**: Added `selected_zones: Vec<ZoneReference>` status field to `Bind9InstanceStatus`
+- **`src/crd.rs:2070-2080`**: Added `ZoneReference` structure for tracking selected zones
+- **`src/crd.rs:430-436`**: Added `selection_method` and `selected_by_instance` status fields to `DNSZoneStatus`
+- **`src/crd.rs:87,103`**: Added `PartialEq` derive to `LabelSelector` and `LabelSelectorRequirement` for comparison support
+
+### Changed
+- **`src/reconcilers/bind9cluster.rs:841,1109`**: Updated `Bind9InstanceSpec` initializations to propagate `zones_from` from cluster
+- **`src/reconcilers/bind9instance.rs:907`**: Updated `Bind9InstanceStatus` to preserve `selected_zones` field
+- **`src/reconcilers/dnszone.rs:1926-1927,1988-1989,2084-2085`**: Updated `DNSZoneStatus` initializations to preserve selection fields
+- **All test files**: Updated struct initializations to include new fields
+- **Auto-generated CRD files**: Regenerated all CRD YAML files via `cargo run --bin crdgen`
+- **`docs/src/reference/api.md`**: Regenerated API documentation via `cargo run --bin crddoc`
+
+### Why
+Enable declarative zone assignment to clusters using label selectors, mirroring the existing `DNSZone.recordsFrom` pattern. This is Phase 1 of the implementation roadmap (see `docs/roadmaps/ZONES_FROM_LABEL_SELECTOR_SUPPORT.md`).
+
+This allows:
+- Dynamic zone discovery based on labels
+- Self-healing zone assignment (labels change → zones re-discovered)
+- Consistent pattern across records and zones
+- Reduced manual configuration (no need to update every zone's `clusterRef`)
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (new optional fields added)
+- [ ] Documentation only
+
+### Technical Details
+The `zonesFrom` field works similarly to `recordsFrom`:
+- Defined at `ClusterBind9Provider` or `Bind9Cluster` level
+- Propagates to child `Bind9Instance` resources
+- Instances will watch for `DNSZone` resources matching the label selectors
+- Zones get tagged with `bindy.firestoned.io/selected-by-instance` annotation
+
+Future phases will implement:
+- Phase 2: Instance zone discovery and tagging logic
+- Phase 3: Cluster/provider propagation logic
+- Phase 4: DNSZone response to selection
+- Phase 5: Documentation and examples
+- Phase 6: Integration testing
+
+## [2025-12-29 22:15] - Upgrade to bindcar v0.5.1
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **`Cargo.toml:43`**: Updated bindcar dependency from `"0.5.0"` to `"0.5.1"`
+- **`src/constants.rs:169`**: Updated `DEFAULT_BINDCAR_IMAGE` from `ghcr.io/firestoned/bindcar:v0.4.0` to `ghcr.io/firestoned/bindcar:v0.5.1`
+- **`src/crd.rs:2154`**: Updated BindcarConfig image example from `v0.5.0` to `v0.5.1`
+- **`docs/src/concepts/architecture-http-api.md:300`**: Updated PATCH endpoint requirement from `bindcar v0.4.0+` to `bindcar v0.5.1+`
+- **`docs/src/concepts/architecture-http-api.md:474,622,634`**: Updated all bindcar image references from `v0.4.0` to `v0.5.1`
+- **`examples/complete-setup.yaml:43`**: Updated bindcar image from `v0.4.0` to `v0.5.1`
+- **`tests/integration_test.sh:165,188`**: Updated integration test bindcar images from `v0.4.0` to `v0.5.1`
+- **Auto-generated CRD files**: Regenerated all CRD YAML files via `cargo run --bin crdgen` to reflect updated bindcar image examples
+
+### Why
+Upgrade to the latest stable release of bindcar to ensure compatibility, security patches, and bug fixes.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+### Technical Details
+The bindcar v0.5.1 release is fully API-compatible with v0.5.0. This upgrade updates:
+- Default bindcar sidecar container image across all resources
+- Documentation examples and references
+- Integration test configurations
+- CRD schema examples
+
+Users with existing deployments will continue using their configured bindcar versions until they:
+1. Update their resource specs to use the new image
+2. Delete and recreate resources (which will use the new default)
+
+**Upgrade Path:**
+```bash
+# Option 1: Update global configuration
+kubectl patch clusterbind9provider <name> --type=merge -p '{"spec":{"common":{"global":{"bindcarConfig":{"image":"ghcr.io/firestoned/bindcar:v0.5.1"}}}}}'
+
+# Option 2: Update specific instances
+kubectl patch bind9instance <name> -n <namespace> --type=merge -p '{"spec":{"bindcarConfig":{"image":"ghcr.io/firestoned/bindcar:v0.5.1"}}}'
+
+# Option 3: Let new resources use the updated default
+# (no action needed - new resources will automatically use v0.5.1)
+```
+
+---
+
+## [2025-12-29 21:45] - Fix Self-Healing: Record Reconcilers Now Always Verify DNS State
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **`src/reconcilers/records.rs`**: Removed hash-based skip logic that prevented self-healing for all record types (ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord)
+
+### Why
+**Critical Bug**: Record reconcilers were using hash-based optimization that broke self-healing behavior. When BIND pods were recreated:
+1. Zone files started empty (no DNS records)
+2. ARecord specs hadn't changed (hash matched previous hash in status)
+3. Reconciler detected hash match and **skipped DNS update entirely**
+4. Result: Records never re-added to BIND, DNS queries returned empty
+
+**Root Cause**: Lines 183-206 in each record reconciler had early-return logic:
+```rust
+if !data_changed {
+    debug!("data unchanged (hash match), skipping DNS update");
+    return Ok(());  // ❌ SKIPPED - never verified actual BIND state
+}
+```
+
+This violated the **Kubernetes reconciliation contract**: Controllers must continuously ensure actual state matches desired state, regardless of whether the spec changed.
+
+**Solution**: Removed the early-return skip logic. Now reconcilers:
+- ✅ Always verify DNS state in BIND (self-healing)
+- ✅ Log when data changed vs. unchanged (for debugging)
+- ✅ Still use hash for status tracking and change detection logging
+- ✅ Rely on underlying `add_*_record()` functions being idempotent
+
+### Impact
+- [x] **Self-healing restored**: Records automatically re-added when BIND pods restart
+- [x] **No breaking changes**: API and behavior remain the same for users
+- [x] **Slight performance impact**: More DNS updates, but necessary for correctness
+- [x] **Idempotent operations**: Underlying functions already check existence before adding
+- [ ] **Tests pending**: Unit test failures exist from prior `zonesFrom` work (unrelated)
+
+### Technical Details
+Changed pattern from:
+```rust
+if !data_changed {
+    return Ok(());  // ❌ Skip - no verification
+}
+// Only reaches here if data changed
+add_record_to_bind().await?;
+```
+
+To:
+```rust
+if data_changed {
+    info!("data changed, updating DNS");
+} else {
+    debug!("data unchanged, verifying DNS state for self-healing");
+}
+// Always perform DNS update (self-healing)
+add_record_to_bind().await?;
+```
+
+---
+
 ## [2025-12-28 21:50] - Upgrade to bindcar v0.5.0
 
 **Author:** Erick Bourgeois

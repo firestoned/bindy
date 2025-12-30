@@ -243,9 +243,9 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bindcar"
-version = "0.5.0"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9382de7a86cc7746a411f07b296541216048b86ef00e531c5082365d52498baa"
+checksum = "aa771ffde615fa5e56a76660a0ae6b5a1a4d12d4815cd2079597df8ed18af573"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
@@ -255,6 +255,7 @@ dependencies = [
  "prometheus",
  "rndc",
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tower",

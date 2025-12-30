@@ -1923,6 +1923,8 @@ async fn update_condition(
         records: current_status
             .map(|s| s.records.clone())
             .unwrap_or_default(),
+        selection_method: current_status.and_then(|s| s.selection_method.clone()),
+        selected_by_instance: current_status.and_then(|s| s.selected_by_instance.clone()),
     };
 
     let patch = json!({
@@ -1983,6 +1985,14 @@ async fn update_status_with_secondaries(
             .as_ref()
             .map(|s| s.records.clone())
             .unwrap_or_default(),
+        selection_method: dnszone
+            .status
+            .as_ref()
+            .and_then(|s| s.selection_method.clone()),
+        selected_by_instance: dnszone
+            .status
+            .as_ref()
+            .and_then(|s| s.selected_by_instance.clone()),
     };
 
     let patch = json!({
@@ -2077,6 +2087,14 @@ async fn update_status(
             .as_ref()
             .map(|s| s.records.clone())
             .unwrap_or_default(),
+        selection_method: dnszone
+            .status
+            .as_ref()
+            .and_then(|s| s.selection_method.clone()),
+        selected_by_instance: dnszone
+            .status
+            .as_ref()
+            .and_then(|s| s.selected_by_instance.clone()),
     };
 
     info!(

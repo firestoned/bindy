@@ -1012,6 +1012,8 @@ mod tests {
                 record_count: None,
                 secondary_ips: None,
                 records: vec![],
+                selection_method: None,
+                selected_by_instance: None,
             };
 
             assert!(status.records.is_empty());
@@ -1046,6 +1048,8 @@ mod tests {
                 record_count: None,
                 secondary_ips: None,
                 records: records.clone(),
+                selection_method: None,
+                selected_by_instance: None,
             };
 
             assert_eq!(status.records.len(), 3);
@@ -1062,6 +1066,8 @@ mod tests {
                 record_count: None,
                 secondary_ips: None,
                 records: vec![],
+                selection_method: None,
+                selected_by_instance: None,
             };
 
             let json = serde_json::to_value(&status).unwrap();
@@ -1084,6 +1090,8 @@ mod tests {
                 record_count: None,
                 secondary_ips: None,
                 records: records.clone(),
+                selection_method: None,
+                selected_by_instance: None,
             };
 
             let json = serde_json::to_value(&status).unwrap();
@@ -1259,6 +1267,8 @@ mod tests {
                 record_count: Some(5),
                 secondary_ips: Some(vec!["10.0.0.1".to_string()]),
                 records: existing_records.clone(),
+                selection_method: None,
+                selected_by_instance: None,
             });
 
             // Simulate DNSZone reconciler creating new status
@@ -1272,6 +1282,8 @@ mod tests {
                 records: current_status
                     .map(|s| s.records.clone())
                     .unwrap_or_default(),
+                selection_method: None,
+                selected_by_instance: None,
             };
 
             // Verify all fields preserved
@@ -1295,6 +1307,8 @@ mod tests {
                 records: current_status
                     .map(|s| s.records.clone())
                     .unwrap_or_default(),
+                selection_method: None,
+                selected_by_instance: None,
             };
 
             assert!(new_status.records.is_empty());

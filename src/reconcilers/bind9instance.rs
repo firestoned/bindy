@@ -904,6 +904,11 @@ async fn update_status(
         replicas: Some(replicas),
         ready_replicas: Some(ready_replicas),
         service_address: None, // Will be populated when service is ready
+        selected_zones: instance
+            .status
+            .as_ref()
+            .map(|s| s.selected_zones.clone())
+            .unwrap_or_default(), // Preserve existing selected zones
     };
 
     let patch = json!({ "status": new_status });

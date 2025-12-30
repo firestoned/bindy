@@ -266,6 +266,7 @@ async fn create_global_cluster(
                 acls: None,
                 volumes: None,
                 volume_mounts: None,
+                zones_from: None,
             },
         },
         status: None,
@@ -328,6 +329,7 @@ async fn create_namespaced_cluster(
                 acls: None,
                 volumes: None,
                 volume_mounts: None,
+                zones_from: None,
             },
         },
         status: None,
@@ -376,6 +378,7 @@ async fn create_instance(
             rndc_secret_ref: None,
             storage: None,
             bindcar_config: None,
+            zones_from: None,
         },
         status: None,
     };
