@@ -2082,7 +2082,7 @@ pub struct Bind9InstanceStatus {
 }
 
 /// Reference to a DNS zone selected by an instance.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct ZoneReference {
     /// Name of the `DNSZone` resource

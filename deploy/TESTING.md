@@ -150,7 +150,7 @@ Create a test Bind9Instance:
 
 ```bash
 kubectl apply -f - <<EOF
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: dns.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: test-primary
@@ -176,7 +176,7 @@ Create a DNS zone that targets the Bind9Instance:
 
 ```bash
 kubectl apply -f - <<EOF
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: dns.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
@@ -216,7 +216,7 @@ kubectl logs -n dns-system -l app=bindy | grep "example-com"
 
 ```bash
 kubectl apply -f - <<EOF
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: dns.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example
@@ -233,7 +233,7 @@ EOF
 
 ```bash
 kubectl apply -f - <<EOF
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: dns.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: spf-example
@@ -251,7 +251,7 @@ EOF
 
 ```bash
 kubectl apply -f - <<EOF
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: dns.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: blog-example
@@ -275,7 +275,7 @@ Create a secondary instance with different labels:
 
 ```bash
 kubectl apply -f - <<EOF
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: dns.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: test-secondary
@@ -290,7 +290,7 @@ Create a zone that matches both instances:
 
 ```bash
 kubectl apply -f - <<EOF
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: dns.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: internal-local
@@ -406,7 +406,7 @@ Create many resources at once:
 ```bash
 for i in {1..100}; do
   kubectl apply -f - <<EOF
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: dns.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: test-${i}
