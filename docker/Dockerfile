@@ -21,7 +21,7 @@
 # to match the target platform (amd64 or arm64).
 
 # Build stage to install BIND9 and create user
-FROM debian:12-slim AS builder
+FROM debian:12-slim@sha256:a1363ada3b45cb3ebc74c78943558f8b0c2b59aaa194d8224e1b02cfd5d78583 AS builder
 
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
@@ -30,7 +30,7 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # Runtime stage - Distroless with glibc
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:8bd01e54ae6c812f85280cd4c6b5f6561fac96be56ea3bcf85da343a30eb9b23
 
 ARG TARGETARCH
 ARG VERSION=0.1.0

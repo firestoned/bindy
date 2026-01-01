@@ -11,7 +11,7 @@
 #
 # IMPORTANT: This is for local development only. Do NOT use in CI/CD.
 
-FROM alpine:3.20
+FROM alpine:3.20@sha256:008827ed2172a676b08121e21cf9db0ce08a90ee6c8a12fc374af8a56c0e496d
 
 LABEL org.opencontainers.image.source="https://github.com/firestoned/bindy"
 LABEL org.opencontainers.image.description="BIND9 DNS Controller for Kubernetes (Local Dev Build)"

@@ -11,7 +11,7 @@
 # The rust:1.91.0 image doesn't include it by default, so we install it in a separate stage.
 
 # Stage 1: Prepare cargo-chef
-FROM rust:1.91.0 AS chef
+FROM rust:1.91.0@sha256:06373ba3453f4e6f3e799aad206cb10a935cf1126a8843139cfacf3ac32fbff5 AS chef
 RUN cargo install cargo-chef
 WORKDIR /workspace
 
@@ -60,7 +60,7 @@ RUN TARGET=$(cat /tmp/target) && \
     cp target/$TARGET/release/bindy target/release/bindy
 
 # Runtime stage
-FROM alpine:3.20
+FROM alpine:3.20@sha256:008827ed2172a676b08121e21cf9db0ce08a90ee6c8a12fc374af8a56c0e496d
 
 LABEL org.opencontainers.image.source="https://github.com/firestoned/bindy"
 LABEL org.opencontainers.image.description="BIND9 DNS Controller for Kubernetes"

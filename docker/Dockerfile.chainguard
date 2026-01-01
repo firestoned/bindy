@@ -29,7 +29,7 @@
 # to match the target platform (amd64 or arm64).
 
 # Build stage to install BIND9
-FROM cgr.dev/chainguard/wolfi-base:latest AS builder
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:15d5bb6adcecb4f6a1d920fa70c8794345fc08f73c2a71832f03242a9e0fae0c AS builder
 
 # Install BIND9 and tools
 RUN apk add --no-cache \
@@ -38,7 +38,7 @@ RUN apk add --no-cache \
     ca-certificates
 
 # Runtime stage - Chainguard glibc-dynamic (zero CVEs)
-FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:ce2066b540536a53708fbb8e83c76add5fc1710cb4a923ac7cb466f91b2d911e
+FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:f2a838a6458f180fdbc013e381eb35a40bbcdfc7b1c42dcc3bfa1c5490a937a6
 
 ARG TARGETARCH
 ARG VERSION=0.1.0
