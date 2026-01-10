@@ -421,8 +421,8 @@ graph TB
     ZoneA --> RecordA
     ZoneB --> RecordB
 
-    RecordA -.X|blocked|ZoneB
-    RecordB -.X|blocked|ZoneA
+    RecordA -.-x ZoneB
+    RecordB -.-x ZoneA
 
     style GlobalCluster fill:#c8e6c9
     style ZoneA fill:#fff4e1

@@ -204,6 +204,10 @@ metadata:
 spec:
   zoneName: integration.test
   clusterRef: integration-test-cluster
+  recordsFrom:
+    - selector:
+        matchLabels:
+          bindy.firestoned.io/zone: integration.test
   nameServerIps:
     ns1.example.com.: 192.168.0.60
   soaRecord:
@@ -229,8 +233,9 @@ kind: ARecord
 metadata:
   name: integration-a
   namespace: ${NAMESPACE}
+  labels:
+    bindy.firestoned.io/zone: integration.test
 spec:
-  zoneRef: integration-test-zone
   name: www
   ipv4Address: "192.0.2.10"
   ttl: 300
@@ -243,8 +248,9 @@ kind: AAAARecord
 metadata:
   name: integration-aaaa
   namespace: ${NAMESPACE}
+  labels:
+    bindy.firestoned.io/zone: integration.test
 spec:
-  zoneRef: integration-test-zone
   name: www
   ipv6Address: "2001:db8::1"
   ttl: 300
@@ -257,8 +263,9 @@ kind: CNAMERecord
 metadata:
   name: integration-cname
   namespace: ${NAMESPACE}
+  labels:
+    bindy.firestoned.io/zone: integration.test
 spec:
-  zoneRef: integration-test-zone
   name: blog
   target: www.integration.test.
   ttl: 300
@@ -271,8 +278,9 @@ kind: MXRecord
 metadata:
   name: integration-mx
   namespace: ${NAMESPACE}
+  labels:
+    bindy.firestoned.io/zone: integration.test
 spec:
-  zoneRef: integration-test-zone
   name: "@"
   priority: 10
   mailServer: mail.integration.test.
@@ -286,8 +294,9 @@ kind: TXTRecord
 metadata:
   name: integration-txt
   namespace: ${NAMESPACE}
+  labels:
+    bindy.firestoned.io/zone: integration.test
 spec:
-  zoneRef: integration-test-zone
   name: "@"
   text:
     - "v=spf1 mx ~all"
@@ -301,8 +310,9 @@ kind: NSRecord
 metadata:
   name: integration-ns
   namespace: ${NAMESPACE}
+  labels:
+    bindy.firestoned.io/zone: integration.test
 spec:
-  zoneRef: integration-test-zone
   name: "@"
   nameserver: ns2.integration.test.
   ttl: 3600
@@ -315,8 +325,9 @@ kind: SRVRecord
 metadata:
   name: integration-srv
   namespace: ${NAMESPACE}
+  labels:
+    bindy.firestoned.io/zone: integration.test
 spec:
-  zoneRef: integration-test-zone
   name: _sip._tcp
   priority: 10
   weight: 60
@@ -332,8 +343,9 @@ kind: CAARecord
 metadata:
   name: integration-caa
   namespace: ${NAMESPACE}
+  labels:
+    bindy.firestoned.io/zone: integration.test
 spec:
-  zoneRef: integration-test-zone
   name: "@"
   flags: 0
   tag: issue

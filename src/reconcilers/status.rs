@@ -529,6 +529,24 @@ impl DNSZoneStatusUpdater {
         self.degraded_set_this_reconciliation = false;
     }
 
+    /// Set the Ready condition to False with `DuplicateZone` reason (in-memory only, no API call).
+    ///
+    /// This method should be called when a duplicate zone is detected to signal that
+    /// this zone cannot be reconciled because another zone already claims the same zone name.
+    ///
+    /// # Arguments
+    ///
+    /// * `zone_name` - The zone name that has a conflict
+    /// * `conflicting_zones` - List of conflicting zone identifiers (namespace/name)
+    pub fn set_duplicate_zone_condition(&mut self, zone_name: &str, conflicting_zones: &[String]) {
+        let message = format!(
+            "A zone with this name '{}' has already been declared in these BIND9 Instances: {}",
+            zone_name,
+            conflicting_zones.join(", ")
+        );
+        self.set_condition("Ready", "False", "DuplicateZone", &message);
+    }
+
     /// Get a reference to the conditions list (for testing).
     ///
     /// # Returns

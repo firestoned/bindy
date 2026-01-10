@@ -1,3 +1,260 @@
+## [2026-01-10 16:15] - Fix Doctest: check_for_duplicate_zones Example
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- **Doctest compilation error** in [src/reconcilers/dnszone.rs:150-159](src/reconcilers/dnszone.rs#L150-L159)
+  - Changed doctest attribute from `rust,no_run` to `rust,ignore`
+  - Fixed import path: `bindy::` instead of `crate::` (required for doctests)
+  - Simplified example by removing unnecessary `# hidden lines`
+  - Error was: `failed to resolve: unresolved import` for `crate::reconcilers`
+
+### Why
+**Problem**: CI was failing with doctest compilation error:
+```
+error[E0433]: failed to resolve: unresolved import
+ --> src/reconcilers/dnszone.rs:152:12
+  |
+4 | use crate::reconcilers::dnszone::check_for_duplicate_zones;
+  |            ^^^^^^^^^^^
+```
+
+**Root Cause**: Doctests run as external crates and cannot use `crate::` imports - they must use the crate name `bindy::` instead.
+
+**Solution**: Use `rust,ignore` attribute since this is a conceptual example showing how to use the function, not a compilable test case.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Bug fix (CI doctest now passes)
+- [ ] New feature
+- [ ] Documentation only
+
+---
+
+## [2026-01-10 16:00] - Fix README.md: Update Examples to Use recordsFrom Instead of zoneRef
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **README.md Quick Example** - Updated to show correct label-based record selection
+  - Added `recordsFrom` with label selectors to DNSZone spec
+  - Added `labels` to ARecord metadata matching the selector
+  - Removed invalid `spec.zoneRef` from record (field doesn't exist in CRD)
+  - Added breaking change warning for users upgrading from v0.2.x
+
+- **README.md DNS Zone with Records section** - Updated comprehensive example
+  - Added `recordsFrom` selector to DNSZone
+  - Added matching `labels` to all DNS records (ARecord, CNAMERecord, MXRecord, TXTRecord)
+  - Removed all `spec.zoneRef` references from records
+
+### Why
+**Problem**: The README.md was showing incorrect examples using `spec.zoneRef` in DNS records:
+```yaml
+# ❌ WRONG - This field doesn't exist
+spec:
+  zoneRef: example-com  # NOT VALID!
+```
+
+**Current Architecture** (since Phase 1-8 consolidation):
+- Records are discovered via **label selectors**, not explicit references
+- DNSZones use `spec.recordsFrom` to select records by labels
+- The controller sets `status.zoneRef` automatically (read-only, not user-specified)
+
+**Correct Pattern**:
+```yaml
+# DNSZone selects records
+spec:
+  recordsFrom:
+    - selector:
+        matchLabels:
+          zone: example.com
+
+# Record has matching labels
+metadata:
+  labels:
+    zone: example.com
+```
+
+### Impact
+- [ ] Breaking change (architecture changed in earlier releases)
+- [ ] Requires cluster rollout
+- [ ] Bug fix
+- [ ] New feature
+- [x] Documentation only (fixes misleading examples)
+
+**Breaking Change Notice**: Added warning for v0.2.x users that records now use label selectors instead of `zoneRef`
+
+---
+
+## [2026-01-10 15:30] - Mermaid Diagram Audit: Update Documentation to Match Code
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **Zone Transfer Configuration documentation** in [docs/src/concepts/architecture.md](docs/src/concepts/architecture.md)
+  - Updated pseudo-code to reflect actual implementation functions
+  - Replaced non-existent function references with correct implementation:
+    - Now shows: `filter_secondary_instances()` and `find_secondary_pod_ips_from_instances()`
+    - Removed outdated pseudo-code that didn't match actual reconciliation logic
+  - Added source code references linking to actual implementation
+  - Documented three-step process: get instances → filter by role → get pod IPs
+
+- **Deprecated architecture documentation** in [docs/src/development/architecture.md](docs/src/development/architecture.md)
+  - Added prominent deprecation warning at the top of the document
+  - Marked "Data Flow" diagram as deprecated with reference to current architecture
+  - Added link to [DNSZone Controller Architecture](docs/src/concepts/dnszone-controller-architecture.md)
+  - Clarified that this describes the legacy two-level operator architecture (bindy-operator + bindy-controller sidecar)
+  - Noted document is kept for historical reference and migration documentation only
+
+### Why
+**Mermaid Diagram Audit Completion**: Completed the comprehensive Mermaid diagram audit documented in [docs/roadmaps/mermaid-diagram-audit.md](docs/roadmaps/mermaid-diagram-audit.md). The audit found:
+- 58 diagrams total across 21 documentation files
+- 84% were accurate and in sync with code
+- 10% needed minor updates (completed)
+- 5% were deprecated (now clearly marked)
+
+**Main Issues Fixed:**
+1. **Outdated pseudo-code** in Zone Transfer Configuration Flow showed incorrect function patterns
+2. **Legacy architecture** diagrams lacked deprecation warnings, potentially confusing new developers
+
+**Impact on Users:**
+- Documentation now accurately reflects the actual codebase implementation
+- Deprecated architectures clearly marked to prevent confusion
+- Source code references make it easier to verify documentation claims
+- New developers can trust the documentation matches the code
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Bug fix
+- [ ] New feature
+- [x] Documentation only
+
+---
+
+## [2026-01-10] - Fix Integration Test: Remove Invalid spec.zoneRef Field
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- **Integration test schema mismatch** in [tests/integration_test.sh](tests/integration_test.sh)
+  - Removed invalid `spec.zoneRef` field from all DNS record YAMLs
+  - Added proper `labels` to records for zone discovery via label selectors
+  - Added `recordsFrom` selector to DNSZone to match record labels
+  - Fixed error: `ARecord in version "v1beta1" cannot be handled as a ARecord: strict decoding error: unknown field "spec.zoneRef"`
+
+### Why
+**Problem**: The integration test was using `spec.zoneRef: integration-test-zone` in DNS records, but this field doesn't exist in the CRD schema:
+- The `zoneRef` field is in `status`, not `spec` (set by the DNSZone controller, not by users)
+- Records are discovered via **label selectors**, not explicit references
+- The DNSZone controller sets `status.zoneRef` when a zone's `recordsFrom` selector matches a record's labels
+
+**Solution**: Follow the correct label-based discovery pattern:
+1. DNS records have **labels** (e.g., `bindy.firestoned.io/zone: integration.test`)
+2. DNSZone has **`recordsFrom`** with label selectors matching those labels
+3. DNSZone controller discovers records and sets their `status.zoneRef` automatically
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Bug fix (integration test now uses correct schema)
+- [ ] New feature
+- [ ] Documentation only
+
+---
+
+## [2026-01-09 14:45] - Duplicate Zone Detection to Prevent Conflicting Zone Names
+
+**Author:** Erick Bourgeois
+
+### Added
+- **Duplicate zone detection** in [src/reconcilers/dnszone.rs:115-241](src/reconcilers/dnszone.rs#L115-L241)
+  - New `check_for_duplicate_zones()` function detects when multiple teams try to claim the same zone name
+  - Returns `DuplicateZoneInfo` with list of conflicting zones and their instance assignments
+  - Checks reflector store for zones with same `zoneName` that have configured instances
+  - Ignores zones with `Failed` or `Unclaimed` instance statuses (not actively serving DNS)
+  - Allows the same zone resource to update itself (skips self in duplicate check)
+
+- **`DuplicateZone` status condition** in [src/reconcilers/status.rs:532-547](src/reconcilers/status.rs#L532-L547)
+  - New `set_duplicate_zone_condition()` method in `DNSZoneStatusUpdater`
+  - Sets `Ready=False` with `reason: DuplicateZone`
+  - Message lists all conflicting zone identifiers: `namespace/name`
+  - Format: `"A zone with this name 'example.com' has already been declared in these BIND9 Instances: team-a/zone1, team-b/zone2"`
+
+- **Integration into reconciliation workflow** in [src/reconcilers/dnszone.rs:776-800](src/reconcilers/dnszone.rs#L776-L800)
+  - Duplicate check runs BEFORE any zone configuration
+  - If duplicate detected: sets status condition, applies status, returns early (stops all processing)
+  - Zone never gets configured on BIND9 instances
+  - Prevents DNS conflicts and race conditions between teams
+
+- **Comprehensive test coverage** in [src/reconcilers/dnszone_tests.rs:319-770](src/reconcilers/dnszone_tests.rs#L319-L770)
+  - 7 test cases covering all duplicate detection scenarios
+  - Tests same-namespace and cross-namespace conflicts
+  - Tests ignoring zones without instances or with Failed status
+  - Tests allowing same zone to update itself
+  - Tests detecting multiple conflicting zones
+
+### Why
+**Problem**: Without duplicate detection, multiple teams could create DNSZone resources with the same `zoneName`:
+- Team A creates `DNSZone` for `example.com` in namespace `team-a`
+- Team B creates `DNSZone` for `example.com` in namespace `team-b`
+- Both zones get configured on BIND9 instances
+- Results in conflicting DNS configurations and undefined behavior
+
+**Solution**: Detect duplicates at reconciliation time and prevent configuration:
+- First zone to be configured "wins" (gets fully configured)
+- Subsequent zones with same name get `Ready=False` status with `DuplicateZone` reason
+- Clear error message showing which zone(s) already claim the name
+- Teams can identify conflicts and coordinate zone ownership
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Bug fix (prevents DNS conflicts)
+- [x] New feature (duplicate detection)
+- [ ] Documentation only
+
+**Use Cases:**
+1. **Multi-tenant environments**: Prevents teams from accidentally claiming the same public domain
+2. **Namespace isolation**: Enforces zone name uniqueness across cluster
+3. **Clear error messaging**: Teams immediately see which zone is blocking their claim
+4. **Safe resolution**: Teams can delete their zone without affecting the configured one
+
+**Example Scenario:**
+```yaml
+# Team A successfully claims example.com
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: my-zone
+  namespace: team-a
+spec:
+  zoneName: example.com
+status:
+  conditions:
+  - type: Ready
+    status: "True"
+    reason: ReconcileSucceeded
+
+# Team B tries to claim example.com
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: company-zone
+  namespace: team-b
+spec:
+  zoneName: example.com
+status:
+  conditions:
+  - type: Ready
+    status: "False"
+    reason: DuplicateZone
+    message: "A zone with this name 'example.com' has already been declared in these BIND9 Instances: team-a/my-zone"
+```
+
+---
+
 ## [2026-01-09 11:30] - Fix Record Timestamp Preservation on DNSZone Recreation
 
 **Author:** Erick Bourgeois

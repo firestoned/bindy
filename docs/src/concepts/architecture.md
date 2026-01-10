@@ -372,63 +372,36 @@ flowchart TD
 
 **Implementation Details:**
 
-1. **Secondary Discovery** - On every reconciliation:
+1. **Secondary Discovery** - On every reconciliation (see [src/reconcilers/dnszone.rs:325-373](../../src/reconcilers/dnszone.rs)):
    ```rust
-   // Find all Bind9Instance resources with role=secondary for this cluster
-   let instance_api: Api<Bind9Instance> = Api::namespaced(client.clone(), namespace);
-   let lp = ListParams::default().labels(&format!("cluster={cluster_name},role=secondary"));
-   let instances = instance_api.list(&lp).await?;
+   // Step 1: Get all instances selected for this zone
+   let instance_refs = get_instances_from_zone(dnszone, bind9_instances_store)?;
 
-   // Collect IPs from running pods
-   for instance in instances {
-       let pod_ips = get_pod_ips(&client, namespace, &instance).await?;
-       secondary_ips.extend(pod_ips);
-   }
+   // Step 2: Filter to only SECONDARY instances by ServerRole
+   let secondary_instance_refs = filter_secondary_instances(&client, &instance_refs).await?;
+
+   // Step 3: Get pod IPs from secondary instances
+   let secondary_ips = find_secondary_pod_ips_from_instances(&client, &secondary_instance_refs).await?;
    ```
 
-2. **Zone Transfer Configuration** - Pass secondary IPs to zone creation:
+2. **Zone Transfer Configuration** - Secondary IPs are passed to primary zone creation (see [src/reconcilers/dnszone.rs:1340-1360](../../src/reconcilers/dnszone.rs)):
    ```rust
+   // Configuration includes secondary IPs for also-notify and allow-transfer
+   // These are set when creating zones on PRIMARY instances
    let zone_config = ZoneConfig {
+       zone_name: dnszone.spec.zone_name.clone(),
+       zone_type: ZoneType::Primary,
+       also_notify: Some(secondary_ips.clone()),      // Notify these secondaries of changes
+       allow_transfer: Some(secondary_ips.clone()),   // Allow these secondaries to AXFR
        // ... other fields ...
-       also_notify: Some(secondary_ips.clone()),
-       allow_transfer: Some(secondary_ips.clone()),
    };
    ```
 
-3. **Change Detection** - Compare IPs on each reconciliation:
-   ```rust
-   // Get stored IPs from status
-   let stored_ips = dnszone.status.as_ref()
-       .and_then(|s| s.secondary_ips.as_ref());
-
-   // Compare sorted lists
-   let secondaries_changed = match stored_ips {
-       Some(stored) => {
-           let mut stored = stored.clone();
-           let mut current = current_secondary_ips.clone();
-           stored.sort();
-           current.sort();
-           stored != current
-       }
-       None => !current_secondary_ips.is_empty(),
-   };
-
-   // Recreate zones if IPs changed
-   if secondaries_changed {
-       delete_dnszone(client.clone(), dnszone.clone(), zone_manager).await?;
-       add_dnszone(client.clone(), dnszone.clone(), zone_manager).await?;
-   }
-   ```
-
-4. **Status Tracking** - Store current IPs for future comparison:
-   ```rust
-   let new_status = DNSZoneStatus {
-       conditions: vec![ready_condition],
-       observed_generation: dnszone.metadata.generation,
-       record_count: Some(total_records),
-       secondary_ips: Some(current_secondary_ips),  // Store for next reconciliation
-   };
-   ```
+3. **Automatic Reconfiguration** - When secondary IPs change:
+   - The reconciliation loop detects changes in the list of selected instances
+   - Zones are automatically reconfigured with the new secondary IP list
+   - No manual intervention required when secondary pods are rescheduled
+   - See [src/reconcilers/dnszone.rs:1100-1250](../../src/reconcilers/dnszone.rs) for the full reconciliation flow
 
 **Why This Matters:**
 - **Self-healing**: When secondary pods are rescheduled/restarted and get new IPs, zones automatically update

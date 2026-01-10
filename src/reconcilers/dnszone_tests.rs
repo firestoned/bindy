@@ -313,4 +313,458 @@ mod tests {
             .to_string()
             .contains("no instances matching"));
     }
+
+    // ========================================================================
+    // T6: Duplicate Zone Detection
+    // ========================================================================
+
+    use super::super::dnszone::check_for_duplicate_zones;
+
+    /// Helper to create a zone with a specific zone name and status
+    fn create_zone_with_status(
+        name: &str,
+        namespace: &str,
+        zone_name: &str,
+        bind9_instances: &[InstanceReferenceWithStatus],
+    ) -> DNSZone {
+        use serde_json::json;
+
+        let mut zone_json = json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "DNSZone",
+            "metadata": {
+                "name": name,
+                "namespace": namespace,
+            },
+            "spec": {
+                "zoneName": zone_name,
+                "soaRecord": {
+                    "primaryNs": "ns1.example.com.",
+                    "adminEmail": "admin.example.com.",
+                    "serial": 1,
+                    "refresh": 3600,
+                    "retry": 1800,
+                    "expire": 604_800,
+                    "negativeTtl": 86400
+                },
+                "ttl": 3600,
+                "nameServerIPs": ["192.168.1.1"]
+            }
+        });
+
+        // Add status if instances provided
+        if !bind9_instances.is_empty() {
+            zone_json["status"] = json!({
+                "bind9Instances": bind9_instances,
+            });
+        }
+
+        serde_json::from_value(zone_json).expect("Failed to create test zone")
+    }
+
+    /// T6.1: `check_for_duplicate_zones` returns None when no duplicates exist
+    #[test]
+    fn test_check_duplicate_zones_no_duplicates() {
+        // Create store with zones having different zone names
+        let (store, mut writer) = kube::runtime::reflector::store::<DNSZone>();
+
+        let zone1 = create_zone_with_status(
+            "zone1",
+            "team-a",
+            "example.com",
+            &[InstanceReferenceWithStatus {
+                api_version: "bindy.firestoned.io/v1beta1".to_string(),
+                kind: "Bind9Instance".to_string(),
+                name: "dns-1".to_string(),
+                namespace: "default".to_string(),
+                status: InstanceStatus::Configured,
+                last_reconciled_at: None,
+                message: None,
+            }],
+        );
+
+        let zone2 = create_zone_with_status(
+            "zone2",
+            "team-b",
+            "different.com",
+            &[InstanceReferenceWithStatus {
+                api_version: "bindy.firestoned.io/v1beta1".to_string(),
+                kind: "Bind9Instance".to_string(),
+                name: "dns-1".to_string(),
+                namespace: "default".to_string(),
+                status: InstanceStatus::Configured,
+                last_reconciled_at: None,
+                message: None,
+            }],
+        );
+
+        writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(zone1));
+        writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(zone2));
+
+        // Create current zone with unique zone name (third.com)
+        let current_zone = create_zone_with_status("my-zone", "team-c", "third.com", &[]);
+
+        // Should return None (no duplicates - different zone name)
+        let result = check_for_duplicate_zones(&current_zone, &store);
+        assert!(result.is_none());
+    }
+
+    /// T6.2: `check_for_duplicate_zones` detects duplicate zone in same namespace
+    #[test]
+    fn test_check_duplicate_zones_same_namespace() {
+        let (store, mut writer) = kube::runtime::reflector::store::<DNSZone>();
+
+        // Existing zone with example.com
+        let existing_zone = create_zone_with_status(
+            "existing-zone",
+            "team-a",
+            "example.com",
+            &[InstanceReferenceWithStatus {
+                api_version: "bindy.firestoned.io/v1beta1".to_string(),
+                kind: "Bind9Instance".to_string(),
+                name: "dns-1".to_string(),
+                namespace: "default".to_string(),
+                status: InstanceStatus::Configured,
+                last_reconciled_at: None,
+                message: None,
+            }],
+        );
+
+        writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(existing_zone));
+
+        // New zone trying to claim example.com
+        let new_zone_json = serde_json::json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "DNSZone",
+            "metadata": {
+                "name": "new-zone",
+                "namespace": "team-a",
+            },
+            "spec": {
+                "zoneName": "example.com",
+                "soaRecord": {
+                    "primaryNs": "ns1.example.com.",
+                    "adminEmail": "admin.example.com.",
+                    "serial": 1,
+                    "refresh": 3600,
+                    "retry": 1800,
+                    "expire": 604_800,
+                    "negativeTtl": 86400
+                },
+                "ttl": 3600,
+                "nameServerIPs": ["192.168.1.1"]
+            }
+        });
+
+        let new_zone: DNSZone =
+            serde_json::from_value(new_zone_json).expect("Failed to create new zone");
+
+        // Should detect duplicate
+        let result = check_for_duplicate_zones(&new_zone, &store);
+        assert!(result.is_some());
+
+        let duplicate_info = result.unwrap();
+        assert_eq!(duplicate_info.zone_name, "example.com");
+        assert_eq!(duplicate_info.conflicting_zones.len(), 1);
+        assert_eq!(duplicate_info.conflicting_zones[0].name, "existing-zone");
+        assert_eq!(duplicate_info.conflicting_zones[0].namespace, "team-a");
+    }
+
+    /// T6.3: `check_for_duplicate_zones` detects duplicate zone in different namespace
+    #[test]
+    #[allow(clippy::similar_names)]
+    fn test_check_duplicate_zones_different_namespace() {
+        let (store, mut writer) = kube::runtime::reflector::store::<DNSZone>();
+
+        // Team A claims example.com
+        let team_a_zone = create_zone_with_status(
+            "team-a-zone",
+            "team-a",
+            "example.com",
+            &[InstanceReferenceWithStatus {
+                api_version: "bindy.firestoned.io/v1beta1".to_string(),
+                kind: "Bind9Instance".to_string(),
+                name: "dns-1".to_string(),
+                namespace: "default".to_string(),
+                status: InstanceStatus::Configured,
+                last_reconciled_at: None,
+                message: None,
+            }],
+        );
+
+        writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(team_a_zone));
+
+        // Team B tries to claim example.com
+        let team_b_zone_json = serde_json::json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "DNSZone",
+            "metadata": {
+                "name": "team-b-zone",
+                "namespace": "team-b",
+            },
+            "spec": {
+                "zoneName": "example.com",
+                "soaRecord": {
+                    "primaryNs": "ns1.example.com.",
+                    "adminEmail": "admin.example.com.",
+                    "serial": 1,
+                    "refresh": 3600,
+                    "retry": 1800,
+                    "expire": 604_800,
+                    "negativeTtl": 86400
+                },
+                "ttl": 3600,
+                "nameServerIPs": ["192.168.1.1"]
+            }
+        });
+
+        let team_b_zone: DNSZone =
+            serde_json::from_value(team_b_zone_json).expect("Failed to create team B zone");
+
+        // Should detect duplicate
+        let result = check_for_duplicate_zones(&team_b_zone, &store);
+        assert!(result.is_some());
+
+        let duplicate_info = result.unwrap();
+        assert_eq!(duplicate_info.zone_name, "example.com");
+        assert_eq!(duplicate_info.conflicting_zones.len(), 1);
+        assert_eq!(duplicate_info.conflicting_zones[0].name, "team-a-zone");
+        assert_eq!(duplicate_info.conflicting_zones[0].namespace, "team-a");
+    }
+
+    /// T6.4: `check_for_duplicate_zones` allows same zone name if existing zone has no instances
+    #[test]
+    fn test_check_duplicate_zones_no_instances_no_conflict() {
+        let (store, mut writer) = kube::runtime::reflector::store::<DNSZone>();
+
+        // Existing zone with no instances (not configured anywhere)
+        let unconfigured_zone =
+            create_zone_with_status("unconfigured-zone", "team-a", "example.com", &[]);
+
+        writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(unconfigured_zone));
+
+        // New zone trying to claim example.com
+        let new_zone_json = serde_json::json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "DNSZone",
+            "metadata": {
+                "name": "new-zone",
+                "namespace": "team-b",
+            },
+            "spec": {
+                "zoneName": "example.com",
+                "soaRecord": {
+                    "primaryNs": "ns1.example.com.",
+                    "adminEmail": "admin.example.com.",
+                    "serial": 1,
+                    "refresh": 3600,
+                    "retry": 1800,
+                    "expire": 604_800,
+                    "negativeTtl": 86400
+                },
+                "ttl": 3600,
+                "nameServerIPs": ["192.168.1.1"]
+            }
+        });
+
+        let new_zone: DNSZone =
+            serde_json::from_value(new_zone_json).expect("Failed to create new zone");
+
+        // Should NOT detect duplicate (existing zone has no instances)
+        let result = check_for_duplicate_zones(&new_zone, &store);
+        assert!(result.is_none());
+    }
+
+    /// T6.5: `check_for_duplicate_zones` ignores zones with status=Failed
+    #[test]
+    fn test_check_duplicate_zones_ignores_failed() {
+        let (store, mut writer) = kube::runtime::reflector::store::<DNSZone>();
+
+        // Existing zone with Failed status
+        let failed_zone = create_zone_with_status(
+            "failed-zone",
+            "team-a",
+            "example.com",
+            &[InstanceReferenceWithStatus {
+                api_version: "bindy.firestoned.io/v1beta1".to_string(),
+                kind: "Bind9Instance".to_string(),
+                name: "dns-1".to_string(),
+                namespace: "default".to_string(),
+                status: InstanceStatus::Failed,
+                last_reconciled_at: None,
+                message: None,
+            }],
+        );
+
+        writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(failed_zone));
+
+        // New zone trying to claim example.com
+        let new_zone_json = serde_json::json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "DNSZone",
+            "metadata": {
+                "name": "new-zone",
+                "namespace": "team-b",
+            },
+            "spec": {
+                "zoneName": "example.com",
+                "soaRecord": {
+                    "primaryNs": "ns1.example.com.",
+                    "adminEmail": "admin.example.com.",
+                    "serial": 1,
+                    "refresh": 3600,
+                    "retry": 1800,
+                    "expire": 604_800,
+                    "negativeTtl": 86400
+                },
+                "ttl": 3600,
+                "nameServerIPs": ["192.168.1.1"]
+            }
+        });
+
+        let new_zone: DNSZone =
+            serde_json::from_value(new_zone_json).expect("Failed to create new zone");
+
+        // Should NOT detect duplicate (failed zones don't count)
+        let result = check_for_duplicate_zones(&new_zone, &store);
+        assert!(result.is_none());
+    }
+
+    /// T6.6: `check_for_duplicate_zones` allows updating the same zone
+    #[test]
+    fn test_check_duplicate_zones_same_zone_update() {
+        let (store, mut writer) = kube::runtime::reflector::store::<DNSZone>();
+
+        // Existing zone
+        let existing_zone = create_zone_with_status(
+            "my-zone",
+            "team-a",
+            "example.com",
+            &[InstanceReferenceWithStatus {
+                api_version: "bindy.firestoned.io/v1beta1".to_string(),
+                kind: "Bind9Instance".to_string(),
+                name: "dns-1".to_string(),
+                namespace: "default".to_string(),
+                status: InstanceStatus::Configured,
+                last_reconciled_at: None,
+                message: None,
+            }],
+        );
+
+        writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(existing_zone));
+
+        // Same zone being updated
+        let updated_zone_json = serde_json::json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "DNSZone",
+            "metadata": {
+                "name": "my-zone",
+                "namespace": "team-a",
+            },
+            "spec": {
+                "zoneName": "example.com",
+                "soaRecord": {
+                    "primaryNs": "ns1.example.com.",
+                    "adminEmail": "admin.example.com.",
+                    "serial": 2,
+                    "refresh": 3600,
+                    "retry": 1800,
+                    "expire": 604_800,
+                    "negativeTtl": 86400
+                },
+                "ttl": 3600,
+                "nameServerIPs": ["192.168.1.1"]
+            }
+        });
+
+        let updated_zone: DNSZone =
+            serde_json::from_value(updated_zone_json).expect("Failed to create updated zone");
+
+        // Should NOT detect duplicate (same zone being updated)
+        let result = check_for_duplicate_zones(&updated_zone, &store);
+        assert!(result.is_none());
+    }
+
+    /// T6.7: `check_for_duplicate_zones` detects multiple conflicting zones
+    #[test]
+    fn test_check_duplicate_zones_multiple_conflicts() {
+        let (store, mut writer) = kube::runtime::reflector::store::<DNSZone>();
+
+        // First zone claims example.com
+        let zone1 = create_zone_with_status(
+            "zone1",
+            "team-a",
+            "example.com",
+            &[InstanceReferenceWithStatus {
+                api_version: "bindy.firestoned.io/v1beta1".to_string(),
+                kind: "Bind9Instance".to_string(),
+                name: "dns-1".to_string(),
+                namespace: "default".to_string(),
+                status: InstanceStatus::Configured,
+                last_reconciled_at: None,
+                message: None,
+            }],
+        );
+
+        // Second zone also claims example.com (somehow slipped through)
+        let zone2 = create_zone_with_status(
+            "zone2",
+            "team-b",
+            "example.com",
+            &[InstanceReferenceWithStatus {
+                api_version: "bindy.firestoned.io/v1beta1".to_string(),
+                kind: "Bind9Instance".to_string(),
+                name: "dns-2".to_string(),
+                namespace: "default".to_string(),
+                status: InstanceStatus::Configured,
+                last_reconciled_at: None,
+                message: None,
+            }],
+        );
+
+        writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(zone1));
+        writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(zone2));
+
+        // Third zone tries to claim example.com
+        let zone3_json = serde_json::json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "DNSZone",
+            "metadata": {
+                "name": "zone3",
+                "namespace": "team-c",
+            },
+            "spec": {
+                "zoneName": "example.com",
+                "soaRecord": {
+                    "primaryNs": "ns1.example.com.",
+                    "adminEmail": "admin.example.com.",
+                    "serial": 1,
+                    "refresh": 3600,
+                    "retry": 1800,
+                    "expire": 604_800,
+                    "negativeTtl": 86400
+                },
+                "ttl": 3600,
+                "nameServerIPs": ["192.168.1.1"]
+            }
+        });
+
+        let zone3: DNSZone = serde_json::from_value(zone3_json).expect("Failed to create zone3");
+
+        // Should detect both conflicting zones
+        let result = check_for_duplicate_zones(&zone3, &store);
+        assert!(result.is_some());
+
+        let duplicate_info = result.unwrap();
+        assert_eq!(duplicate_info.zone_name, "example.com");
+        assert_eq!(duplicate_info.conflicting_zones.len(), 2);
+
+        let names: Vec<String> = duplicate_info
+            .conflicting_zones
+            .iter()
+            .map(|z| z.name.clone())
+            .collect();
+        assert!(names.contains(&"zone1".to_string()));
+        assert!(names.contains(&"zone2".to_string()));
+    }
 }

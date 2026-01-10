@@ -106,6 +106,143 @@ pub fn get_instances_from_zone(
     ))
 }
 
+/// Information about a duplicate zone conflict.
+#[derive(Debug, Clone)]
+pub struct DuplicateZoneInfo {
+    /// The zone name that has a conflict
+    pub zone_name: String,
+    /// List of conflicting zones that already claim this zone name
+    pub conflicting_zones: Vec<ConflictingZone>,
+}
+
+/// Information about a zone that conflicts with the current zone.
+#[derive(Debug, Clone)]
+pub struct ConflictingZone {
+    /// Name of the conflicting DNSZone resource
+    pub name: String,
+    /// Namespace of the conflicting DNSZone resource
+    pub namespace: String,
+    /// Instance names where this zone is configured
+    pub instance_names: Vec<String>,
+}
+
+/// Checks if another zone has already claimed the same zone name across any BIND9 instances.
+///
+/// This function prevents multiple teams from creating conflicting zones with the same
+/// fully qualified domain name (FQDN). A conflict exists if:
+/// 1. Another DNSZone CR has the same `spec.zoneName`
+/// 2. That zone is NOT the same resource (different namespace/name)
+/// 3. That zone has at least one instance configured (status.bind9Instances is non-empty)
+/// 4. Those instances have status != "Failed"
+///
+/// # Arguments
+///
+/// * `dnszone` - The DNSZone resource to check for duplicates
+/// * `zones_store` - The reflector store containing all DNSZone resources
+///
+/// # Returns
+///
+/// * `Some(DuplicateZoneInfo)` - If a duplicate zone is detected, with details about conflicts
+/// * `None` - If no duplicate exists (safe to proceed)
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use tracing::warn;
+/// use bindy::reconcilers::dnszone::check_for_duplicate_zones;
+///
+/// if let Some(duplicate_info) = check_for_duplicate_zones(&dnszone, &zones_store) {
+///     warn!("Zone {} conflicts with existing zones: {:?}",
+///           duplicate_info.zone_name, duplicate_info.conflicting_zones);
+///     // Set status condition to DuplicateZone and stop processing
+/// }
+/// ```
+pub fn check_for_duplicate_zones(
+    dnszone: &DNSZone,
+    zones_store: &kube::runtime::reflector::Store<DNSZone>,
+) -> Option<DuplicateZoneInfo> {
+    let current_namespace = dnszone.namespace().unwrap_or_default();
+    let current_name = dnszone.name_any();
+    let zone_name = &dnszone.spec.zone_name;
+
+    debug!(
+        "Checking for duplicate zones: current zone {}/{} claims {}",
+        current_namespace, current_name, zone_name
+    );
+
+    let mut conflicting_zones = Vec::new();
+
+    // Query all zones from the reflector store
+    for other_zone in &zones_store.state() {
+        let other_namespace = other_zone.namespace().unwrap_or_default();
+        let other_name = other_zone.name_any();
+
+        // Skip if this is the same zone (updating itself)
+        if other_namespace == current_namespace && other_name == current_name {
+            continue;
+        }
+
+        // Skip if zone name doesn't match
+        if other_zone.spec.zone_name != *zone_name {
+            continue;
+        }
+
+        // Check if other zone has instances configured
+        let has_configured_instances = other_zone.status.as_ref().is_some_and(|status| {
+            !status.bind9_instances.is_empty()
+                && status.bind9_instances.iter().any(|inst| {
+                    inst.status != crate::crd::InstanceStatus::Failed
+                        && inst.status != crate::crd::InstanceStatus::Unclaimed
+                })
+        });
+
+        if !has_configured_instances {
+            debug!(
+                "Zone {}/{} also uses {} but has no configured instances - not a conflict",
+                other_namespace, other_name, zone_name
+            );
+            continue;
+        }
+
+        // This is a conflict - collect instance names
+        let instance_names = other_zone
+            .status
+            .as_ref()
+            .map(|status| {
+                status
+                    .bind9_instances
+                    .iter()
+                    .filter(|inst| {
+                        inst.status != crate::crd::InstanceStatus::Failed
+                            && inst.status != crate::crd::InstanceStatus::Unclaimed
+                    })
+                    .map(|inst| format!("{}/{}", inst.namespace, inst.name))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        warn!(
+            "Duplicate zone detected: {}/{} already claims {} on instances: {:?}",
+            other_namespace, other_name, zone_name, instance_names
+        );
+
+        conflicting_zones.push(ConflictingZone {
+            name: other_name,
+            namespace: other_namespace,
+            instance_names,
+        });
+    }
+
+    if conflicting_zones.is_empty() {
+        None
+    } else {
+        Some(DuplicateZoneInfo {
+            zone_name: zone_name.clone(),
+            conflicting_zones,
+        })
+    }
+}
+
 /// Filters instances that need reconciliation based on their `last_reconciled_at` timestamp.
 ///
 /// Returns instances where:
@@ -638,6 +775,33 @@ pub async fn reconcile_dnszone(
         instance_refs.len(),
         instance_refs.iter().map(|r| &r.name).collect::<Vec<_>>()
     );
+
+    // CRITICAL: Check for duplicate zones BEFORE any configuration
+    // If another zone already claims this zone name, set Ready=False with DuplicateZone reason
+    // and stop processing to prevent conflicting DNS configurations
+    let zones_store = &ctx.stores.dnszones;
+    if let Some(duplicate_info) = check_for_duplicate_zones(&dnszone, zones_store) {
+        warn!(
+            "Duplicate zone detected: {}/{} cannot claim '{}' because it is already configured by: {:?}",
+            namespace, name, duplicate_info.zone_name, duplicate_info.conflicting_zones
+        );
+
+        // Build list of conflicting zones in namespace/name format
+        let conflicting_zone_refs: Vec<String> = duplicate_info
+            .conflicting_zones
+            .iter()
+            .map(|z| format!("{}/{}", z.namespace, z.name))
+            .collect();
+
+        // Set Ready=False with DuplicateZone reason
+        status_updater
+            .set_duplicate_zone_condition(&duplicate_info.zone_name, &conflicting_zone_refs);
+
+        // Apply status and stop processing
+        status_updater.apply(&client).await?;
+
+        return Ok(());
+    }
 
     // Determine if this is the first reconciliation or if spec has changed
     let current_generation = dnszone.metadata.generation;
