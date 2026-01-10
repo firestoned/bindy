@@ -74,6 +74,67 @@ When you create a DNSZone resource:
 5. **BIND9 creates zone** - BIND9 creates the zone file and starts serving the zone
 6. **Updates status** - Controller updates DNSZone status to Ready
 
+## Event-Driven Record Discovery
+
+The DNSZone controller uses an **event-driven architecture** to automatically discover and manage DNS records:
+
+### How It Works
+
+1. **DNSZone watches all 8 record types**
+   - ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord
+   - Watches trigger immediately when records are created/updated/deleted
+   - No polling delays - sub-second reaction time
+
+2. **Evaluates label selectors** (from `spec.recordsFrom`)
+   ```yaml
+   spec:
+     recordsFrom:
+       - selector:
+           matchLabels:
+             zone: example.com
+   ```
+
+3. **Sets `status.zoneRef` on matching records** ⚡
+   ```yaml
+   # Record status is automatically updated
+   status:
+     zoneRef:
+       apiVersion: bindy.firestoned.io/v1beta1
+       kind: DNSZone
+       name: example-com
+       namespace: default
+       zoneName: example.com
+   ```
+
+4. **Updates zone's `status.records[]`** with discovered records
+   ```yaml
+   status:
+     records:
+       - apiVersion: bindy.firestoned.io/v1beta1
+         kind: ARecord
+         name: www-example
+   ```
+
+### Immediate Reconciliation
+
+When a record is created with matching labels:
+
+```
+Record created (10:00:00.000)
+  → DNSZone watch triggered (10:00:00.050) ⚡
+  → Label selectors evaluated (10:00:00.100)
+  → status.zoneRef set (10:00:00.150)
+  → Record reconciles (10:00:00.500)
+  → Total time: 500ms ✅
+```
+
+**Old polling approach:**
+```
+Record created (10:00:00.000)
+  → DNSZone reconciles (10:05:00.000) ⏳ 5 minute delay
+  → Total time: 5 minutes ❌
+```
+
 ## Cluster References
 
 Zones reference a specific BIND9 cluster by name:
@@ -173,7 +234,7 @@ status:
       name: spf-txt-record
 ```
 
-**Note:** The `records` field is **only available in v1beta1** and tracks all DNS records successfully associated with this zone. This field does not exist in the deprecated v1alpha1 API.
+**Note:** The `records` field is **only available in v1beta1** and tracks all DNS records successfully associated with this zone. This field did not exist in the now-removed v1alpha1 API.
 
 ### Status After Partial Failure (Degraded)
 
@@ -211,7 +272,7 @@ DNSZone uses the following condition types:
 
 ### Status Field: `records` (v1beta1 only)
 
-The `status.records` field provides a real-time inventory of all DNS records successfully associated with this zone. This field is **only available in the v1beta1 API** and does not exist in the deprecated v1alpha1 API.
+The `status.records` field provides a real-time inventory of all DNS records successfully associated with this zone. This field is **only available in the v1beta1 API** and did not exist in the now-removed v1alpha1 API.
 
 #### How It Works
 
@@ -280,7 +341,7 @@ status:
 
 #### Important Notes
 
-- **v1beta1 Only**: This field does not exist in v1alpha1. If you're still using v1alpha1, upgrade to v1beta1 to access this feature.
+- **v1beta1 Only**: This field did not exist in the now-removed v1alpha1 API.
 - **Read-Only**: The `records` field is managed automatically by the controller. Do not manually edit it.
 - **Eventually Consistent**: After creating a new record, it may take a few seconds for it to appear in the zone's `status.records` list.
 - **Duplicate Prevention**: The controller automatically prevents duplicate record references from being added.

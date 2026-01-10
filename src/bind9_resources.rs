@@ -7,10 +7,11 @@
 //! for BIND9 instances. All functions are pure and easily testable.
 
 use crate::constants::{
-    API_GROUP_VERSION, BIND9_MALLOC_CONF, BIND9_SERVICE_ACCOUNT, DEFAULT_BIND9_VERSION, DNS_PORT,
-    KIND_BIND9_INSTANCE, LIVENESS_FAILURE_THRESHOLD, LIVENESS_INITIAL_DELAY_SECS,
-    LIVENESS_PERIOD_SECS, LIVENESS_TIMEOUT_SECS, READINESS_FAILURE_THRESHOLD,
-    READINESS_INITIAL_DELAY_SECS, READINESS_PERIOD_SECS, READINESS_TIMEOUT_SECS, RNDC_PORT,
+    API_GROUP_VERSION, BIND9_MALLOC_CONF, BIND9_NONROOT_UID, BIND9_SERVICE_ACCOUNT,
+    DEFAULT_BIND9_VERSION, DNS_CONTAINER_PORT, DNS_PORT, KIND_BIND9_INSTANCE,
+    LIVENESS_FAILURE_THRESHOLD, LIVENESS_INITIAL_DELAY_SECS, LIVENESS_PERIOD_SECS,
+    LIVENESS_TIMEOUT_SECS, READINESS_FAILURE_THRESHOLD, READINESS_INITIAL_DELAY_SECS,
+    READINESS_PERIOD_SECS, READINESS_TIMEOUT_SECS, RNDC_PORT,
 };
 use crate::crd::{Bind9Cluster, Bind9Instance, ConfigMapRefs, ImageConfig};
 use crate::labels::{
@@ -21,9 +22,9 @@ use crate::labels::{
 use k8s_openapi::api::{
     apps::v1::{Deployment, DeploymentSpec},
     core::v1::{
-        ConfigMap, Container, ContainerPort, EnvVar, EnvVarSource, PodSpec, PodTemplateSpec, Probe,
-        SecretKeySelector, Service, ServiceAccount, ServicePort, ServiceSpec, TCPSocketAction,
-        Volume, VolumeMount,
+        Capabilities, ConfigMap, Container, ContainerPort, EnvVar, EnvVarSource,
+        PodSecurityContext, PodSpec, PodTemplateSpec, Probe, SecretKeySelector, SecurityContext,
+        Service, ServiceAccount, ServicePort, ServiceSpec, TCPSocketAction, Volume, VolumeMount,
     },
 };
 use k8s_openapi::apimachinery::pkg::{
@@ -76,28 +77,6 @@ const VOLUME_NAMED_CONF_ZONES: &str = "named-conf-zones";
 ///
 /// A `BTreeMap` of label key-value pairs
 ///
-/// # Example
-///
-/// ```rust
-/// use bindy::bind9_resources::build_labels;
-///
-/// let labels = build_labels("my-dns-server");
-/// assert_eq!(labels.get("app").unwrap(), "bind9");
-/// assert_eq!(labels.get("instance").unwrap(), "my-dns-server");
-/// ```
-#[must_use]
-pub fn build_labels(instance_name: &str) -> BTreeMap<String, String> {
-    let mut labels = BTreeMap::new();
-    labels.insert("app".into(), APP_NAME_BIND9.into());
-    labels.insert("instance".into(), instance_name.into());
-    labels.insert(K8S_NAME.into(), APP_NAME_BIND9.into());
-    labels.insert(K8S_INSTANCE.into(), instance_name.into());
-    labels.insert(K8S_COMPONENT.into(), COMPONENT_DNS_SERVER.into());
-    labels.insert(K8S_MANAGED_BY.into(), MANAGED_BY_BIND9_INSTANCE.into());
-    labels.insert(K8S_PART_OF.into(), PART_OF_BINDY.into());
-    labels
-}
-
 /// Builds standardized Kubernetes labels for BIND9 cluster resources.
 ///
 /// Creates labels for resources managed by `Bind9Cluster` controller.
@@ -251,7 +230,7 @@ pub fn build_configmap(
 
     // Generate default configuration
     let mut data = BTreeMap::new();
-    let labels = build_labels(name);
+    let labels = build_labels_from_instance(name, instance);
 
     // Build named.conf
     let named_conf = build_named_conf(instance, cluster);
@@ -911,13 +890,13 @@ fn build_pod_spec(
         ports: Some(vec![
             ContainerPort {
                 name: Some("dns-tcp".into()),
-                container_port: i32::from(DNS_PORT),
+                container_port: i32::from(DNS_CONTAINER_PORT),
                 protocol: Some("TCP".into()),
                 ..Default::default()
             },
             ContainerPort {
                 name: Some("dns-udp".into()),
-                container_port: i32::from(DNS_PORT),
+                container_port: i32::from(DNS_CONTAINER_PORT),
                 protocol: Some("UDP".into()),
                 ..Default::default()
             },
@@ -943,7 +922,7 @@ fn build_pod_spec(
         volume_mounts: Some(build_volume_mounts(config_map_refs, custom_volume_mounts)),
         liveness_probe: Some(Probe {
             tcp_socket: Some(TCPSocketAction {
-                port: IntOrString::Int(i32::from(DNS_PORT)),
+                port: IntOrString::Int(i32::from(DNS_CONTAINER_PORT)),
                 ..Default::default()
             }),
             initial_delay_seconds: Some(LIVENESS_INITIAL_DELAY_SECS),
@@ -954,13 +933,24 @@ fn build_pod_spec(
         }),
         readiness_probe: Some(Probe {
             tcp_socket: Some(TCPSocketAction {
-                port: IntOrString::Int(i32::from(DNS_PORT)),
+                port: IntOrString::Int(i32::from(DNS_CONTAINER_PORT)),
                 ..Default::default()
             }),
             initial_delay_seconds: Some(READINESS_INITIAL_DELAY_SECS),
             period_seconds: Some(READINESS_PERIOD_SECS),
             timeout_seconds: Some(READINESS_TIMEOUT_SECS),
             failure_threshold: Some(READINESS_FAILURE_THRESHOLD),
+            ..Default::default()
+        }),
+        security_context: Some(SecurityContext {
+            run_as_non_root: Some(true),
+            run_as_user: Some(BIND9_NONROOT_UID),
+            run_as_group: Some(BIND9_NONROOT_UID),
+            allow_privilege_escalation: Some(false),
+            capabilities: Some(Capabilities {
+                drop: Some(vec!["ALL".to_string()]),
+                ..Default::default()
+            }),
             ..Default::default()
         }),
         ..Default::default()
@@ -994,6 +984,13 @@ fn build_pod_spec(
         )),
         image_pull_secrets,
         service_account_name: Some(BIND9_SERVICE_ACCOUNT.into()),
+        security_context: Some(PodSecurityContext {
+            run_as_user: Some(BIND9_NONROOT_UID),
+            run_as_group: Some(BIND9_NONROOT_UID),
+            fs_group: Some(BIND9_NONROOT_UID),
+            run_as_non_root: Some(true),
+            ..Default::default()
+        }),
         ..Default::default()
     }
 }
@@ -1009,6 +1006,7 @@ fn build_pod_spec(
 /// # Returns
 ///
 /// A `Container` configured to run the Bindcar RNDC API sidecar
+#[allow(clippy::too_many_lines)]
 fn build_api_sidecar_container(
     namespace: &str,
     bindcar_config: Option<&crate::crd::BindcarConfig>,
@@ -1023,7 +1021,9 @@ fn build_api_sidecar_container(
         .and_then(|c| c.image_pull_policy.clone())
         .unwrap_or_else(|| "IfNotPresent".to_string());
 
-    let port = bindcar_config.and_then(|c| c.port).unwrap_or(8080);
+    let port = bindcar_config
+        .and_then(|c| c.port)
+        .unwrap_or(i32::from(crate::constants::BINDCAR_API_PORT));
 
     let log_level = bindcar_config
         .and_then(|c| c.log_level.clone())
@@ -1119,6 +1119,17 @@ fn build_api_sidecar_container(
             },
         ]),
         resources,
+        security_context: Some(SecurityContext {
+            run_as_non_root: Some(true),
+            run_as_user: Some(BIND9_NONROOT_UID),
+            run_as_group: Some(BIND9_NONROOT_UID),
+            allow_privilege_escalation: Some(false),
+            capabilities: Some(Capabilities {
+                drop: Some(vec!["ALL".to_string()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
         ..Default::default()
     }
 }
@@ -1408,13 +1419,13 @@ pub fn build_service(
     let labels = build_labels_from_instance(name, instance);
     let owner_refs = build_owner_references(instance);
 
-    // Get API port from instance spec, default to 8080
-    let api_port = instance
+    // Get API container port from instance spec, default to BINDCAR_API_PORT
+    let api_container_port = instance
         .spec
         .bindcar_config
         .as_ref()
         .and_then(|c| c.port)
-        .unwrap_or(8080);
+        .unwrap_or(i32::from(crate::constants::BINDCAR_API_PORT));
 
     // Build default service spec
     let mut default_spec = ServiceSpec {
@@ -1423,21 +1434,21 @@ pub fn build_service(
             ServicePort {
                 name: Some("dns-tcp".into()),
                 port: i32::from(DNS_PORT),
-                target_port: Some(IntOrString::Int(i32::from(DNS_PORT))),
+                target_port: Some(IntOrString::Int(i32::from(DNS_CONTAINER_PORT))),
                 protocol: Some("TCP".into()),
                 ..Default::default()
             },
             ServicePort {
                 name: Some("dns-udp".into()),
                 port: i32::from(DNS_PORT),
-                target_port: Some(IntOrString::Int(i32::from(DNS_PORT))),
+                target_port: Some(IntOrString::Int(i32::from(DNS_CONTAINER_PORT))),
                 protocol: Some("UDP".into()),
                 ..Default::default()
             },
             ServicePort {
                 name: Some("http".into()),
-                port: 80,
-                target_port: Some(IntOrString::Int(api_port)),
+                port: i32::from(crate::constants::BINDCAR_SERVICE_PORT),
+                target_port: Some(IntOrString::Int(api_container_port)),
                 protocol: Some("TCP".into()),
                 ..Default::default()
             },
@@ -1446,12 +1457,22 @@ pub fn build_service(
         ..Default::default()
     };
 
+    // Merge bindcar service spec if provided (applies before custom_config)
+    if let Some(bindcar_service_spec) = instance
+        .spec
+        .bindcar_config
+        .as_ref()
+        .and_then(|c| c.service_spec.as_ref())
+    {
+        merge_service_spec(&mut default_spec, bindcar_service_spec);
+    }
+
     // Extract custom spec and annotations from service config
     let (custom_spec, custom_annotations) = custom_config.map_or((None, None), |config| {
         (config.spec.as_ref(), config.annotations.as_ref())
     });
 
-    // Merge custom spec if provided
+    // Merge custom spec if provided (applies after bindcar config)
     if let Some(custom) = custom_spec {
         merge_service_spec(&mut default_spec, custom);
     }
@@ -1616,6 +1637,28 @@ fn merge_service_spec(default: &mut ServiceSpec, custom: &ServiceSpec) {
         default.cluster_ips = Some(ips.clone());
     }
 
-    // Note: We intentionally don't merge ports or selector as they need to match
+    // Merge ports (merge by name, custom ports override defaults)
+    if let Some(ref custom_ports) = custom.ports {
+        if let Some(ref mut default_ports) = default.ports {
+            // Replace ports with matching names, add new ports
+            for custom_port in custom_ports {
+                if let Some(existing_port) = default_ports
+                    .iter_mut()
+                    .find(|p| p.name == custom_port.name)
+                {
+                    // Replace the entire port spec
+                    *existing_port = custom_port.clone();
+                } else {
+                    // Add new port
+                    default_ports.push(custom_port.clone());
+                }
+            }
+        } else {
+            // No default ports, use custom ports
+            default.ports = Some(custom_ports.clone());
+        }
+    }
+
+    // Note: We intentionally don't merge selector as it needs to match
     // the deployment configuration to ensure traffic is routed correctly.
 }

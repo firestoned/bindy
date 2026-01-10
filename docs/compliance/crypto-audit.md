@@ -459,7 +459,7 @@ spec:
 
 **TSIG Configuration:**
 ```yaml
-apiVersion: dns.firestoned.io/v1alpha1
+apiVersion: dns.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary

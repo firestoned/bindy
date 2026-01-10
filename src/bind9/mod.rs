@@ -49,10 +49,18 @@ pub use types::{RndcError, RndcKeyData, SRVRecordData, SERVICE_ACCOUNT_TOKEN_PAT
 
 use anyhow::{Context, Result};
 use bindcar::ZoneConfig;
+use k8s_openapi::api::apps::v1::Deployment;
 use reqwest::Client as HttpClient;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::warn;
+use tracing::{debug, warn};
+
+/// Environment variable name that indicates bindcar authentication is enabled.
+/// If this env var is present in the bindcar container, authentication is required.
+const BINDCAR_AUTH_ENV_VAR: &str = "BIND_ALLOWED_SERVICE_ACCOUNTS";
+
+/// Name of the bindcar sidecar container in `Bind9Instance` deployments.
+const BINDCAR_CONTAINER_NAME: &str = "bindcar";
 
 /// Manager for BIND9 servers via HTTP API sidecar.
 ///
@@ -71,28 +79,77 @@ use tracing::warn;
 pub struct Bind9Manager {
     /// HTTP client for API requests
     client: Arc<HttpClient>,
-    /// `ServiceAccount` token for authentication
-    token: Arc<String>,
+    /// `ServiceAccount` token for authentication (optional - only used if auth is enabled)
+    token: Arc<Option<String>>,
+    /// Deployment for the `Bind9Instance` (used to check auth status)
+    deployment: Option<Arc<Deployment>>,
+    /// Instance name (for auth checking)
+    instance_name: Option<String>,
+    /// Instance namespace (for auth checking)
+    instance_namespace: Option<String>,
 }
 
 impl Bind9Manager {
-    /// Create a new `Bind9Manager`.
+    /// Create a new `Bind9Manager` without deployment information.
     ///
     /// Reads the `ServiceAccount` token from the default location and creates
-    /// an HTTP client for API requests.
+    /// an HTTP client for API requests. Without deployment information, auth is
+    /// always assumed to be enabled (backward compatible behavior).
+    ///
+    /// For proper auth status detection, use `new_with_deployment()` instead.
     #[must_use]
     pub fn new() -> Self {
-        let token = Self::read_service_account_token().unwrap_or_else(|e| {
-            warn!(
-                "Failed to read ServiceAccount token: {}. Using empty token.",
-                e
-            );
-            String::new()
-        });
+        let token = Self::read_service_account_token().ok();
 
         Self {
             client: Arc::new(HttpClient::new()),
             token: Arc::new(token),
+            deployment: None,
+            instance_name: None,
+            instance_namespace: None,
+        }
+    }
+
+    /// Create a new `Bind9Manager` with deployment information for auth checking.
+    ///
+    /// Reads the `ServiceAccount` token from the default location and creates
+    /// an HTTP client for API requests. The deployment is used to determine if
+    /// authentication is enabled or disabled by checking for the presence of
+    /// the `BIND_ALLOWED_SERVICE_ACCOUNTS` environment variable in the bindcar container.
+    ///
+    /// # Arguments
+    /// * `deployment` - The Deployment for the `Bind9Instance`
+    /// * `instance_name` - Name of the `Bind9Instance`
+    /// * `instance_namespace` - Namespace of the instance
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use bindy::bind9::Bind9Manager;
+    /// use std::sync::Arc;
+    ///
+    /// # fn example(deployment: Arc<k8s_openapi::api::apps::v1::Deployment>) {
+    /// let manager = Bind9Manager::new_with_deployment(
+    ///     deployment,
+    ///     "my-instance".to_string(),
+    ///     "dns-system".to_string()
+    /// );
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn new_with_deployment(
+        deployment: Arc<Deployment>,
+        instance_name: String,
+        instance_namespace: String,
+    ) -> Self {
+        let token = Self::read_service_account_token().ok();
+
+        Self {
+            client: Arc::new(HttpClient::new()),
+            token: Arc::new(token),
+            deployment: Some(deployment),
+            instance_name: Some(instance_name),
+            instance_namespace: Some(instance_namespace),
         }
     }
 
@@ -100,6 +157,95 @@ impl Bind9Manager {
     fn read_service_account_token() -> Result<String> {
         std::fs::read_to_string(SERVICE_ACCOUNT_TOKEN_PATH)
             .context("Failed to read ServiceAccount token file")
+    }
+
+    /// Check if authentication is enabled for the associated `Bind9Instance`.
+    ///
+    /// **Default behavior**: Returns `true` if no deployment is available (backward compat).
+    ///
+    /// **With deployment**: Checks if the `BIND_ALLOWED_SERVICE_ACCOUNTS` environment
+    /// variable is set in the bindcar container. If the env var is present, auth is enabled.
+    /// If absent, auth is disabled.
+    ///
+    /// # Returns
+    /// * `true` - Authentication is enabled (default if no deployment info)
+    /// * `false` - Authentication is explicitly disabled via env var absence
+    #[must_use]
+    pub fn is_auth_enabled(&self) -> bool {
+        let Some(deployment) = &self.deployment else {
+            // No deployment info - assume auth enabled for backward compatibility
+            debug!("No deployment info available, assuming auth enabled");
+            return true;
+        };
+
+        // Inspect the bindcar container's environment variables
+        let pod_spec = deployment
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.template.spec.as_ref());
+
+        let Some(pod_spec) = pod_spec else {
+            warn!("Deployment has no pod template spec, assuming auth enabled");
+            return true;
+        };
+
+        // Find the bindcar container (sidecar)
+        let bindcar_container = pod_spec
+            .containers
+            .iter()
+            .find(|c| c.name == BINDCAR_CONTAINER_NAME);
+
+        let Some(bindcar_container) = bindcar_container else {
+            warn!(
+                container = BINDCAR_CONTAINER_NAME,
+                "Deployment has no bindcar container, assuming auth enabled"
+            );
+            return true;
+        };
+
+        // Check if BIND_ALLOWED_SERVICE_ACCOUNTS is set (auth enabled)
+        // If the env var is present, auth is enabled
+        // If the env var is absent, auth is disabled
+        let auth_enabled = bindcar_container
+            .env
+            .as_ref()
+            .is_some_and(|env_vars| env_vars.iter().any(|env| env.name == BINDCAR_AUTH_ENV_VAR));
+
+        debug!(
+            instance = ?self.instance_name,
+            namespace = ?self.instance_namespace,
+            auth_enabled = %auth_enabled,
+            env_var = BINDCAR_AUTH_ENV_VAR,
+            "Checked auth status for Bind9Instance"
+        );
+
+        auth_enabled
+    }
+
+    /// Get the authentication token if available and auth is enabled.
+    ///
+    /// Returns `None` if:
+    /// - Auth is disabled for this instance
+    /// - Token file couldn't be read
+    /// - No token was loaded
+    ///
+    /// This is a public method to allow external code to check auth status and get the token.
+    #[must_use]
+    pub fn get_token(&self) -> Option<String> {
+        if !self.is_auth_enabled() {
+            return None;
+        }
+
+        self.token.as_ref().clone()
+    }
+
+    /// Get a reference to the HTTP client for making API requests.
+    ///
+    /// This allows external code to make custom HTTP requests to the bindcar API
+    /// while still respecting the authentication configuration.
+    #[must_use]
+    pub fn client(&self) -> &Arc<HttpClient> {
+        &self.client
     }
 
     /// Build the API base URL from a server address
@@ -128,7 +274,8 @@ impl Bind9Manager {
     ///
     /// Returns an error if the HTTP request fails or the zone cannot be reloaded.
     pub async fn reload_zone(&self, zone_name: &str, server: &str) -> Result<()> {
-        zone_ops::reload_zone(&self.client, &self.token, zone_name, server).await
+        let token = self.get_token();
+        zone_ops::reload_zone(&self.client, token.as_deref(), zone_name, server).await
     }
 
     /// Reload all zones via HTTP API.
@@ -137,7 +284,7 @@ impl Bind9Manager {
     ///
     /// Returns an error if the HTTP request fails.
     pub async fn reload_all_zones(&self, server: &str) -> Result<()> {
-        zone_ops::reload_all_zones(&self.client, &self.token, server).await
+        zone_ops::reload_all_zones(&self.client, self.get_token().as_deref(), server).await
     }
 
     /// Trigger zone transfer via HTTP API.
@@ -146,7 +293,8 @@ impl Bind9Manager {
     ///
     /// Returns an error if the HTTP request fails or the zone transfer cannot be initiated.
     pub async fn retransfer_zone(&self, zone_name: &str, server: &str) -> Result<()> {
-        zone_ops::retransfer_zone(&self.client, &self.token, zone_name, server).await
+        zone_ops::retransfer_zone(&self.client, self.get_token().as_deref(), zone_name, server)
+            .await
     }
 
     /// Freeze a zone to prevent dynamic updates via HTTP API.
@@ -155,7 +303,7 @@ impl Bind9Manager {
     ///
     /// Returns an error if the HTTP request fails or the zone cannot be frozen.
     pub async fn freeze_zone(&self, zone_name: &str, server: &str) -> Result<()> {
-        zone_ops::freeze_zone(&self.client, &self.token, zone_name, server).await
+        zone_ops::freeze_zone(&self.client, self.get_token().as_deref(), zone_name, server).await
     }
 
     /// Thaw a frozen zone to allow dynamic updates via HTTP API.
@@ -164,7 +312,7 @@ impl Bind9Manager {
     ///
     /// Returns an error if the HTTP request fails or the zone cannot be thawed.
     pub async fn thaw_zone(&self, zone_name: &str, server: &str) -> Result<()> {
-        zone_ops::thaw_zone(&self.client, &self.token, zone_name, server).await
+        zone_ops::thaw_zone(&self.client, self.get_token().as_deref(), zone_name, server).await
     }
 
     /// Get zone status via HTTP API.
@@ -173,14 +321,24 @@ impl Bind9Manager {
     ///
     /// Returns an error if the HTTP request fails or the zone status cannot be retrieved.
     pub async fn zone_status(&self, zone_name: &str, server: &str) -> Result<String> {
-        zone_ops::zone_status(&self.client, &self.token, zone_name, server).await
+        zone_ops::zone_status(&self.client, self.get_token().as_deref(), zone_name, server).await
     }
 
     /// Check if a zone exists by trying to get its status.
     ///
-    /// Returns `true` if the zone exists and can be queried, `false` otherwise.
-    pub async fn zone_exists(&self, zone_name: &str, server: &str) -> bool {
-        zone_ops::zone_exists(&self.client, &self.token, zone_name, server).await
+    /// Returns `Ok(true)` if the zone exists and can be queried, `Ok(false)` if the zone
+    /// definitely does not exist (404), or `Err` for transient errors (rate limiting, network
+    /// errors, server errors, etc.) that should be retried.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The server is rate limiting requests (429 Too Many Requests)
+    /// - Network connectivity issues occur
+    /// - The server returns a 5xx error
+    /// - Any other non-404 error occurs
+    pub async fn zone_exists(&self, zone_name: &str, server: &str) -> Result<bool> {
+        zone_ops::zone_exists(&self.client, self.get_token().as_deref(), zone_name, server).await
     }
 
     /// Get server status via HTTP API.
@@ -189,7 +347,7 @@ impl Bind9Manager {
     ///
     /// Returns an error if the HTTP request fails or the server status cannot be retrieved.
     pub async fn server_status(&self, server: &str) -> Result<String> {
-        zone_ops::server_status(&self.client, &self.token, server).await
+        zone_ops::server_status(&self.client, self.get_token().as_deref(), server).await
     }
 
     /// Add a zone via HTTP API (primary or secondary).
@@ -229,9 +387,10 @@ impl Bind9Manager {
         secondary_ips: Option<&[String]>,
         primary_ips: Option<&[String]>,
     ) -> Result<bool> {
+        let token = self.get_token();
         zone_ops::add_zones(
             &self.client,
-            &self.token,
+            token.as_deref(),
             zone_name,
             zone_type,
             server,
@@ -286,7 +445,7 @@ impl Bind9Manager {
     ) -> Result<bool> {
         zone_ops::add_primary_zone(
             &self.client,
-            &self.token,
+            self.get_token().as_deref(),
             zone_name,
             server,
             key_data,
@@ -324,7 +483,7 @@ impl Bind9Manager {
     ) -> Result<bool> {
         zone_ops::add_secondary_zone(
             &self.client,
-            &self.token,
+            self.get_token().as_deref(),
             zone_name,
             server,
             key_data,
@@ -359,7 +518,7 @@ impl Bind9Manager {
     ) -> Result<()> {
         zone_ops::create_zone_http(
             &self.client,
-            &self.token,
+            self.get_token().as_deref(),
             zone_name,
             zone_type,
             zone_config,
@@ -371,11 +530,28 @@ impl Bind9Manager {
 
     /// Delete a zone via HTTP API.
     ///
+    /// # Arguments
+    /// * `zone_name` - Name of the zone to delete
+    /// * `server` - API server address
+    /// * `freeze_before_delete` - Whether to freeze the zone before deletion (true for primary zones, false for secondary zones)
+    ///
     /// # Errors
     ///
     /// Returns an error if the HTTP request fails or the zone cannot be deleted.
-    pub async fn delete_zone(&self, zone_name: &str, server: &str) -> Result<()> {
-        zone_ops::delete_zone(&self.client, &self.token, zone_name, server).await
+    pub async fn delete_zone(
+        &self,
+        zone_name: &str,
+        server: &str,
+        freeze_before_delete: bool,
+    ) -> Result<()> {
+        zone_ops::delete_zone(
+            &self.client,
+            self.get_token().as_deref(),
+            zone_name,
+            server,
+            freeze_before_delete,
+        )
+        .await
     }
 
     /// Notify secondaries about zone changes via HTTP API.
@@ -384,7 +560,7 @@ impl Bind9Manager {
     ///
     /// Returns an error if the HTTP request fails or the notification cannot be sent.
     pub async fn notify_zone(&self, zone_name: &str, server: &str) -> Result<()> {
-        zone_ops::notify_zone(&self.client, &self.token, zone_name, server).await
+        zone_ops::notify_zone(&self.client, self.get_token().as_deref(), zone_name, server).await
     }
 
     // ===== DNS record management methods =====
@@ -560,6 +736,33 @@ impl Bind9Manager {
     ) -> Result<()> {
         records::caa::add_caa_record(zone_name, name, flags, tag, value, ttl, server, key_data)
             .await
+    }
+
+    /// Delete a DNS record using dynamic DNS update (RFC 2136).
+    ///
+    /// This method deletes ALL records of the specified type for the given name.
+    /// It's idempotent - deleting a non-existent record is a no-op.
+    ///
+    /// # Arguments
+    ///
+    /// * `zone_name` - The DNS zone name
+    /// * `name` - The record name (e.g., "www" for www.example.com)
+    /// * `record_type` - The type of record to delete (A, AAAA, CNAME, etc.)
+    /// * `server` - The DNS server address (IP:port)
+    /// * `key_data` - TSIG key for authentication
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the DNS server rejects the update or connection fails.
+    pub async fn delete_record(
+        &self,
+        zone_name: &str,
+        name: &str,
+        record_type: hickory_client::rr::RecordType,
+        server: &str,
+        key_data: &RndcKeyData,
+    ) -> Result<()> {
+        records::delete_dns_record(zone_name, name, record_type, server, key_data).await
     }
 
     // ===== RNDC static methods (exposed through the struct for backwards compatibility) =====

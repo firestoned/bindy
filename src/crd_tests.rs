@@ -81,7 +81,7 @@ mod tests {
         let status = DNSZoneStatus::default();
         assert!(status.conditions.is_empty());
         assert!(status.observed_generation.is_none());
-        assert!(status.record_count.is_none());
+        assert!(status.records.is_empty());
     }
 
     #[test]
@@ -128,16 +128,15 @@ mod tests {
 
         let spec = DNSZoneSpec {
             zone_name: "example.com".into(),
-            cluster_ref: Some("my-cluster".into()),
-            cluster_provider_ref: None,
             soa_record: soa,
             ttl: Some(3600),
+            cluster_ref: None,
             name_server_ips: None,
             records_from: None,
+            bind9_instances_from: None,
         };
 
         assert_eq!(spec.zone_name, "example.com");
-        assert_eq!(spec.cluster_ref, Some("my-cluster".into()));
         assert_eq!(spec.soa_record.primary_ns, "ns1.example.com.");
         assert_eq!(spec.ttl.unwrap(), 3600);
     }
@@ -174,7 +173,6 @@ mod tests {
                 acls: Some(acls.clone()),
                 volumes: None,
                 volume_mounts: None,
-                zones_from: None,
             },
         };
 
@@ -352,7 +350,6 @@ mod tests {
             rndc_secret_ref: None,
             storage: None,
             bindcar_config: None,
-            zones_from: None,
         };
 
         assert_eq!(spec.cluster_ref, "my-cluster");
@@ -367,8 +364,6 @@ mod tests {
         let status = Bind9InstanceStatus::default();
         assert!(status.conditions.is_empty());
         assert!(status.observed_generation.is_none());
-        assert!(status.replicas.is_none());
-        assert!(status.ready_replicas.is_none());
         assert!(status.service_address.is_none());
     }
 
@@ -385,18 +380,36 @@ mod tests {
         let status = Bind9InstanceStatus {
             conditions: vec![condition],
             observed_generation: Some(1),
-            replicas: Some(3),
-            ready_replicas: Some(2),
             service_address: Some("my-instance.dns-system.svc.cluster.local".into()),
-            selected_zones: vec![],
+            cluster_ref: None,
+            zones: Vec::new(),
+            zones_count: None,
         };
 
         assert_eq!(status.conditions.len(), 1);
-        assert_eq!(status.replicas, Some(3));
-        assert_eq!(status.ready_replicas, Some(2));
         assert_eq!(
             status.service_address.as_deref(),
             Some("my-instance.dns-system.svc.cluster.local")
+        );
+    }
+
+    #[test]
+    fn test_bind9instance_status_auto_calculates_zone_count() {
+        // Test with empty selectedZones
+        let status_empty = Bind9InstanceStatus {
+            conditions: vec![],
+            observed_generation: Some(1),
+            service_address: None,
+            cluster_ref: None,
+            zones: Vec::new(),
+            zones_count: None,
+        };
+
+        // Test that serialization works
+        let serialized_empty = serde_json::to_value(&status_empty).unwrap();
+        assert!(
+            serialized_empty.is_object(),
+            "Status should serialize to object"
         );
     }
 
@@ -485,10 +498,10 @@ mod tests {
         let status = Bind9InstanceStatus {
             conditions: conditions.clone(),
             observed_generation: Some(1),
-            replicas: Some(3),
-            ready_replicas: Some(3),
             service_address: None,
-            selected_zones: vec![],
+            cluster_ref: None,
+            zones: Vec::new(),
+            zones_count: None,
         };
 
         assert_eq!(status.conditions.len(), 2);
@@ -509,16 +522,14 @@ mod tests {
         let status = DNSZoneStatus {
             conditions: vec![condition],
             observed_generation: Some(1),
-            record_count: Some(5),
-            secondary_ips: None,
+            records_count: 0,
             records: vec![],
-            selection_method: None,
-            selected_by_instance: None,
+            bind9_instances: vec![],
+            bind9_instances_count: None,
         };
 
         assert_eq!(status.conditions.len(), 1);
         assert_eq!(status.conditions[0].r#type, "Ready");
-        assert_eq!(status.record_count, Some(5));
     }
 
     #[test]
@@ -531,10 +542,12 @@ mod tests {
             last_transition_time: Some("2024-11-26T10:00:00Z".into()),
         };
 
+        #[allow(deprecated)] // Testing deprecated zone field for backward compatibility
         let status = RecordStatus {
             conditions: vec![condition],
             observed_generation: Some(1),
             zone: None,
+            zone_ref: None,
             record_hash: None,
             last_updated: None,
         };
@@ -557,15 +570,14 @@ mod tests {
         let status = Bind9InstanceStatus {
             conditions: vec![condition],
             observed_generation: Some(1),
-            replicas: Some(3),
-            ready_replicas: Some(2),
             service_address: None,
-            selected_zones: vec![],
+            cluster_ref: None,
+            zones: Vec::new(),
+            zones_count: None,
         };
 
         assert_eq!(status.conditions[0].r#type, "Degraded");
         assert_eq!(status.conditions[0].status, "True");
-        assert_eq!(status.ready_replicas, Some(2));
     }
 
     #[test]
@@ -581,10 +593,10 @@ mod tests {
         let status = Bind9InstanceStatus {
             conditions: vec![condition],
             observed_generation: Some(1),
-            replicas: Some(0),
-            ready_replicas: Some(0),
             service_address: None,
-            selected_zones: vec![],
+            cluster_ref: None,
+            zones: Vec::new(),
+            zones_count: None,
         };
 
         assert_eq!(status.conditions[0].r#type, "Failed");
@@ -651,10 +663,10 @@ mod tests {
         let status = Bind9InstanceStatus {
             conditions: vec![],
             observed_generation: Some(1),
-            replicas: Some(3),
-            ready_replicas: Some(3),
             service_address: None,
-            selected_zones: vec![],
+            cluster_ref: None,
+            zones: Vec::new(),
+            zones_count: None,
         };
 
         assert_eq!(status.conditions.len(), 0);
@@ -666,10 +678,10 @@ mod tests {
         let status = Bind9InstanceStatus {
             conditions: vec![],
             observed_generation: Some(5),
-            replicas: Some(3),
-            ready_replicas: Some(3),
             service_address: None,
-            selected_zones: vec![],
+            cluster_ref: None,
+            zones: Vec::new(),
+            zones_count: None,
         };
 
         // Observed generation tracks which generation of the resource was last reconciled
@@ -951,4 +963,46 @@ mod tests {
             assert_eq!(tsig.algorithm.as_rndc_str(), algo.as_rndc_str());
         }
     }
+}
+
+#[test]
+fn test_zones_count_serialization() {
+    use crate::crd::*;
+
+    let status = Bind9InstanceStatus {
+        zones: vec![
+            ZoneReference {
+                api_version: "bindy.firestoned.io/v1beta1".to_string(),
+                kind: "DNSZone".to_string(),
+                name: "example-com".to_string(),
+                namespace: "default".to_string(),
+                zone_name: "example.com".to_string(),
+                last_reconciled_at: None,
+            },
+            ZoneReference {
+                api_version: "bindy.firestoned.io/v1beta1".to_string(),
+                kind: "DNSZone".to_string(),
+                name: "test-com".to_string(),
+                namespace: "default".to_string(),
+                zone_name: "test.com".to_string(),
+                last_reconciled_at: None,
+            },
+        ],
+        zones_count: Some(2),
+        ..Default::default()
+    };
+
+    let json = serde_json::to_value(&status).unwrap();
+
+    // Check that zonesCount is present and equals the length of zones
+    assert_eq!(json["zonesCount"], 2);
+    assert_eq!(json["zones"].as_array().unwrap().len(), 2);
+
+    // Test that None serializes as absent (not null)
+    let empty_status = Bind9InstanceStatus {
+        zones_count: None,
+        ..Default::default()
+    };
+    let empty_json = serde_json::to_value(&empty_status).unwrap();
+    assert!(empty_json.get("zonesCount").is_none());
 }

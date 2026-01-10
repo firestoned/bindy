@@ -29,17 +29,46 @@ Secondary (slave) zones receive data from primary servers:
 
 ## Instance Selection
 
-Zones are deployed to Bind9Instances using label selectors:
+> **Architecture**: Zones select instances (not the other way around). A `DNSZone` declares which `Bind9Instance` resources should serve it.
+
+Zones are deployed to `Bind9Instance` resources using one of three methods:
+
+### Method 1: Cluster Reference
+
+Reference a cluster, and the zone will be served by all instances in that cluster:
 
 ```yaml
 spec:
-  instanceSelector:
-    matchLabels:
-      dns-role: primary
-      environment: production
+  clusterRef: production-dns  # Matches instances with spec.clusterRef: production-dns
 ```
 
-This deploys the zone to all instances matching both labels.
+### Method 2: Label Selectors
+
+Use label selectors to choose instances based on labels:
+
+```yaml
+spec:
+  bind9InstancesFrom:
+    - selector:
+        matchLabels:
+          dns-role: primary
+          environment: production
+```
+
+### Method 3: Combined
+
+Use both methods - the zone will be served by the UNION of instances from both:
+
+```yaml
+spec:
+  clusterRef: production-dns
+  bind9InstancesFrom:
+    - selector:
+        matchLabels:
+          region: us-west
+```
+
+For detailed guidance on instance selection, see [Zone Selection Guide](./zone-selection.md).
 
 ## SOA Record
 
@@ -76,13 +105,91 @@ Check zone status:
 
 ```bash
 kubectl get dnszone -n dns-system
+```
+
+Example output:
+
+```
+NAME          ZONE           RECORDS  INSTANCES  TTL   READY  AGE
+example-com   example.com    5        3          3600  True   10m
+api-zone      api.example    12       2          1800  True   5m
+```
+
+The **Instances** column shows how many `Bind9Instance` resources are serving the zone.
+
+### Status Fields
+
+View detailed status information:
+
+```bash
 kubectl describe dnszone example-com -n dns-system
 ```
 
-Status conditions indicate:
-- Whether the zone is ready
-- Which instances are hosting the zone
-- Any errors or warnings
+Key status fields:
+
+#### bind9InstancesCount
+
+Shows how many instances are serving the zone:
+
+```yaml
+status:
+  bind9InstancesCount: 3  # Zone is on 3 instances
+```
+
+This field is automatically computed from the `bind9Instances` array length.
+
+#### bind9Instances
+
+Lists each instance serving the zone with its status:
+
+```yaml
+status:
+  bind9Instances:
+    - name: primary-west
+      namespace: dns-system
+      status: Configured
+      message: "Zone synchronized successfully"
+    - name: primary-east
+      namespace: dns-system
+      status: Configured
+      message: "Zone synchronized successfully"
+    - name: primary-central
+      namespace: dns-system
+      status: Configured
+      message: "Zone synchronized successfully"
+```
+
+Possible instance statuses:
+- **Claimed**: Instance selected, synchronization pending
+- **Configured**: Zone successfully configured on instance
+- **Failed**: Synchronization failed (check message for details)
+
+#### recordCount
+
+Shows how many DNS records are selected by the zone:
+
+```yaml
+status:
+  recordCount: 5  # Zone has 5 DNS records
+```
+
+#### conditions
+
+Standard Kubernetes status conditions:
+
+```yaml
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: InstancesSynchronized
+      message: "Zone configured on 3 instances"
+```
+
+Possible conditions:
+- **Ready**: Zone is ready and serving DNS queries
+- **Progressing**: Zone synchronization in progress
+- **Degraded**: Some instances failed, but zone is partially operational
 
 ## Common Operations
 
@@ -93,7 +200,21 @@ Status conditions indicate:
 kubectl get dnszones -n dns-system
 
 # Show zones with custom columns
-kubectl get dnszones -n dns-system -o custom-columns=NAME:.metadata.name,ZONE:.spec.zoneName,TYPE:.spec.type
+kubectl get dnszones -n dns-system -o custom-columns=\
+NAME:.metadata.name,\
+ZONE:.spec.zoneName,\
+RECORDS:.status.recordCount,\
+INSTANCES:.status.bind9InstancesCount,\
+READY:.status.conditions[?(@.type=='Ready')].status
+```
+
+Example output:
+
+```
+NAME          ZONE           RECORDS  INSTANCES  READY
+example-com   example.com    5        3          True
+api-zone      api.example    12       2          True
+dev-zone      dev.local      8        1          True
 ```
 
 ### Viewing Zone Details

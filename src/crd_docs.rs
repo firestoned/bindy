@@ -24,12 +24,12 @@
 ///
 /// let spec = DNSZoneSpec {
 ///     zone_name: "example.com".to_string(),
-///     cluster_ref: Some("my-dns-cluster".to_string()),
-///     cluster_provider_ref: None,
+///     cluster_ref: None,
 ///     soa_record: soa,
 ///     ttl: Some(3600),
 ///     name_server_ips: None,
 ///     records_from: None,
+///     bind9_instances_from: None,
 /// };
 /// ```
 ///

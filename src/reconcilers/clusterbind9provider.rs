@@ -13,6 +13,7 @@
 //! - The reconciler must list instances across all namespaces
 
 use crate::constants::{API_GROUP_VERSION, KIND_BIND9_CLUSTER, KIND_CLUSTER_BIND9_PROVIDER};
+use crate::context::Context;
 use crate::crd::{
     Bind9Cluster, Bind9ClusterStatus, Bind9Instance, ClusterBind9Provider, Condition,
 };
@@ -32,6 +33,7 @@ use kube::{
     Api, ResourceExt,
 };
 use serde_json::json;
+use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 /// Implement finalizer cleanup for `ClusterBind9Provider`.
@@ -159,9 +161,10 @@ impl FinalizerCleanup for ClusterBind9Provider {
 ///
 /// Returns an error if Kubernetes API operations fail or status update fails.
 pub async fn reconcile_clusterbind9provider(
-    client: Client,
+    ctx: Arc<Context>,
     cluster: ClusterBind9Provider,
 ) -> Result<()> {
+    let client = ctx.client.clone();
     let name = cluster.name_any();
 
     info!("Reconciling ClusterBind9Provider: {}", name);
@@ -183,26 +186,40 @@ pub async fn reconcile_clusterbind9provider(
     let current_generation = cluster.metadata.generation;
     let observed_generation = cluster.status.as_ref().and_then(|s| s.observed_generation);
 
-    // Only reconcile resources if spec changed or we haven't processed this resource yet
-    if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
+    // Only reconcile spec-related resources if spec changed OR drift detected
+    let spec_changed =
+        crate::reconcilers::should_reconcile(current_generation, observed_generation);
+
+    // DRIFT DETECTION: Check if managed Bind9Cluster resources match desired state
+    let drift_detected = if spec_changed {
+        false
+    } else {
+        detect_cluster_drift(&client, &cluster).await?
+    };
+
+    if spec_changed || drift_detected {
+        if drift_detected {
+            info!(
+                "Spec unchanged but cluster drift detected for ClusterBind9Provider {}",
+                name
+            );
+        } else {
+            debug!(
+                "Reconciliation needed: current_generation={:?}, observed_generation={:?}",
+                current_generation, observed_generation
+            );
+        }
+
+        // Reconcile namespace-scoped Bind9Cluster resources
+        // The Bind9Cluster reconciler will handle creating Bind9Instance resources
+        // This ensures proper delegation: GlobalCluster → Cluster → Instance
+        reconcile_namespace_clusters(&client, &cluster).await?;
+    } else {
         debug!(
-            "Spec unchanged (generation={:?}), skipping resource reconciliation",
+            "Spec unchanged (generation={:?}) and no drift detected, skipping resource reconciliation",
             current_generation
         );
-        // Update status from current instance states (only patches if status changed)
-        update_cluster_status(&client, &cluster).await?;
-        return Ok(());
     }
-
-    debug!(
-        "Reconciliation needed: current_generation={:?}, observed_generation={:?}",
-        current_generation, observed_generation
-    );
-
-    // Reconcile namespace-scoped Bind9Cluster resources
-    // The Bind9Cluster reconciler will handle creating Bind9Instance resources
-    // This ensures proper delegation: GlobalCluster → Cluster → Instance
-    reconcile_namespace_clusters(&client, &cluster).await?;
 
     // Update cluster status based on instances across all namespaces
     update_cluster_status(&client, &cluster).await?;
@@ -553,6 +570,76 @@ pub fn calculate_cluster_status(
     }
 }
 
+/// Detects drift in managed `Bind9Cluster` resources.
+///
+/// Compares the expected number of namespace-scoped `Bind9Cluster` resources
+/// (should be 1 per target namespace) with the actual count of managed clusters.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `cluster_provider` - The `ClusterBind9Provider` to check for drift
+///
+/// # Returns
+///
+/// * `Ok(true)` - If drift is detected (clusters missing or extra clusters exist)
+/// * `Ok(false)` - If no drift detected
+/// * `Err(_)` - If API calls fail
+///
+/// # Errors
+///
+/// Returns an error if listing `Bind9Cluster` resources fails.
+async fn detect_cluster_drift(
+    client: &Client,
+    cluster_provider: &ClusterBind9Provider,
+) -> Result<bool> {
+    use crate::crd::Bind9Cluster;
+    use crate::labels::{
+        BINDY_CLUSTER_LABEL, BINDY_MANAGED_BY_LABEL, MANAGED_BY_CLUSTER_BIND9_PROVIDER,
+    };
+    use kube::api::ListParams;
+
+    let cluster_provider_name = cluster_provider.name_any();
+
+    // Get target namespace from spec or default
+    let target_namespace = cluster_provider.spec.namespace.as_ref().map_or_else(
+        || std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "dns-system".to_string()),
+        std::clone::Clone::clone,
+    );
+
+    // List all Bind9Cluster resources in the target namespace
+    let clusters_api: Api<Bind9Cluster> = Api::namespaced(client.clone(), &target_namespace);
+    let clusters = clusters_api.list(&ListParams::default()).await?;
+
+    // Filter for managed clusters
+    let managed_clusters: Vec<_> = clusters
+        .items
+        .into_iter()
+        .filter(|cluster| {
+            cluster.metadata.labels.as_ref().is_some_and(|labels| {
+                labels.get(BINDY_MANAGED_BY_LABEL)
+                    == Some(&MANAGED_BY_CLUSTER_BIND9_PROVIDER.to_string())
+                    && labels.get(BINDY_CLUSTER_LABEL) == Some(&cluster_provider_name.clone())
+            })
+        })
+        .collect();
+
+    // We expect exactly 1 managed cluster in the target namespace
+    let expected_count = 1;
+    let actual_count = managed_clusters.len();
+
+    let drift = actual_count != expected_count;
+
+    if drift {
+        info!(
+            "Cluster drift detected for ClusterBind9Provider {}: expected {} Bind9Cluster in namespace {}, found {}",
+            cluster_provider_name, expected_count, target_namespace, actual_count
+        );
+    }
+
+    Ok(drift)
+}
+
 /// Deletes a cluster-scoped `ClusterBind9Provider` resource.
 ///
 /// This is called when the cluster resource is explicitly deleted by the user.
@@ -572,12 +659,12 @@ pub fn calculate_cluster_status(
 ///
 /// Returns an error if finalizer cleanup or API operations fail.
 pub async fn delete_clusterbind9provider(
-    client: Client,
+    ctx: Arc<Context>,
     cluster: ClusterBind9Provider,
 ) -> Result<()> {
     let name = cluster.name_any();
     info!("Deleting ClusterBind9Provider: {}", name);
 
     // Deletion is handled via the reconciler through finalizers
-    reconcile_clusterbind9provider(client, cluster).await
+    reconcile_clusterbind9provider(ctx, cluster).await
 }

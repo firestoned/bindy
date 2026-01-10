@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: MIT
 
-//! Tests for BIND9 data types (RndcKeyData, SRVRecordData, RndcError).
+//! Tests for BIND9 data types (`RndcKeyData`, `SRVRecordData`, `RndcError`).
 
 #[cfg(test)]
 mod tests {
@@ -150,12 +150,12 @@ mod tests {
             weight: 65535,
             port: 65535,
             target: "very.long.subdomain.example.com.".to_string(),
-            ttl: Some(2147483647), // Max i32
+            ttl: Some(2_147_483_647), // Max i32
         };
         assert_eq!(srv_max.priority, 65535);
         assert_eq!(srv_max.weight, 65535);
         assert_eq!(srv_max.port, 65535);
-        assert_eq!(srv_max.ttl, Some(2147483647));
+        assert_eq!(srv_max.ttl, Some(2_147_483_647));
     }
 
     #[test]

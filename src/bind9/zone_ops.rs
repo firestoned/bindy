@@ -35,7 +35,7 @@ pub(crate) fn build_api_url(server: &str) -> String {
 ///
 /// # Arguments
 /// * `client` - HTTP client
-/// * `token` - Authentication token
+/// * `token` - Optional authentication token (None if auth disabled)
 /// * `method` - HTTP method (GET, POST, DELETE)
 /// * `url` - Full URL to the bindcar API endpoint
 /// * `body` - Optional JSON body for POST requests
@@ -45,7 +45,7 @@ pub(crate) fn build_api_url(server: &str) -> String {
 /// Returns an error if the HTTP request fails or the API returns an error.
 pub(crate) async fn bindcar_request<T: Serialize + std::fmt::Debug>(
     client: &HttpClient,
-    token: &str,
+    token: Option<&str>,
     method: &str,
     url: &str,
     body: Option<&T>,
@@ -55,11 +55,12 @@ pub(crate) async fn bindcar_request<T: Serialize + std::fmt::Debug>(
         method = %method,
         url = %url,
         body = ?body,
+        auth_enabled = token.is_some(),
         "HTTP API request to bindcar"
     );
 
     // Build the HTTP request
-    let request = match method {
+    let mut request = match method {
         "GET" => client.get(url),
         "POST" => {
             let mut req = client.post(url);
@@ -79,9 +80,13 @@ pub(crate) async fn bindcar_request<T: Serialize + std::fmt::Debug>(
         _ => anyhow::bail!("Unsupported HTTP method: {method}"),
     };
 
+    // Add Authorization header only if token is provided (auth enabled)
+    if let Some(token_value) = token {
+        request = request.header("Authorization", format!("Bearer {token_value}"));
+    }
+
     // Execute the request
     let response = request
-        .header("Authorization", format!("Bearer {token}"))
         .send()
         .await
         .context(format!("Failed to send HTTP request to {url}"))?;
@@ -128,7 +133,7 @@ pub(crate) async fn bindcar_request<T: Serialize + std::fmt::Debug>(
 ///
 /// # Arguments
 /// * `client` - HTTP client
-/// * `token` - Authentication token
+/// * `token` - Optional authentication token (None if auth disabled)
 /// * `zone_name` - Name of the zone to reload
 /// * `server` - API server address (e.g., "bind9-primary-api:8080")
 ///
@@ -137,7 +142,7 @@ pub(crate) async fn bindcar_request<T: Serialize + std::fmt::Debug>(
 /// Returns an error if the HTTP request fails or the zone cannot be reloaded.
 pub async fn reload_zone(
     client: &Arc<HttpClient>,
-    token: &Arc<String>,
+    token: Option<&str>,
     zone_name: &str,
     server: &str,
 ) -> Result<()> {
@@ -166,7 +171,7 @@ pub async fn reload_zone(
 /// Returns an error if the HTTP request fails.
 pub async fn reload_all_zones(
     client: &Arc<HttpClient>,
-    token: &Arc<String>,
+    token: Option<&str>,
     server: &str,
 ) -> Result<()> {
     let base_url = build_api_url(server);
@@ -186,7 +191,7 @@ pub async fn reload_all_zones(
 /// Returns an error if the HTTP request fails or the zone transfer cannot be initiated.
 pub async fn retransfer_zone(
     client: &Arc<HttpClient>,
-    token: &Arc<String>,
+    token: Option<&str>,
     zone_name: &str,
     server: &str,
 ) -> Result<()> {
@@ -207,7 +212,7 @@ pub async fn retransfer_zone(
 /// Returns an error if the HTTP request fails or the zone cannot be frozen.
 pub async fn freeze_zone(
     client: &Arc<HttpClient>,
-    token: &Arc<String>,
+    token: Option<&str>,
     zone_name: &str,
     server: &str,
 ) -> Result<()> {
@@ -228,7 +233,7 @@ pub async fn freeze_zone(
 /// Returns an error if the HTTP request fails or the zone cannot be thawed.
 pub async fn thaw_zone(
     client: &Arc<HttpClient>,
-    token: &Arc<String>,
+    token: Option<&str>,
     zone_name: &str,
     server: &str,
 ) -> Result<()> {
@@ -249,7 +254,7 @@ pub async fn thaw_zone(
 /// Returns an error if the HTTP request fails or the zone status cannot be retrieved.
 pub async fn zone_status(
     client: &Arc<HttpClient>,
-    token: &Arc<String>,
+    token: Option<&str>,
     zone_name: &str,
     server: &str,
 ) -> Result<String> {
@@ -265,21 +270,46 @@ pub async fn zone_status(
 
 /// Check if a zone exists by trying to get its status.
 ///
-/// Returns `true` if the zone exists and can be queried, `false` otherwise.
+/// Returns `Ok(true)` if the zone exists and can be queried, `Ok(false)` if the zone
+/// definitely does not exist (404), or `Err` for transient errors (rate limiting, network
+/// errors, server errors, etc.) that should be retried.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The server is rate limiting requests (429 Too Many Requests)
+/// - Network connectivity issues occur
+/// - The server returns a 5xx error
+/// - Any other non-404 error occurs
 pub async fn zone_exists(
     client: &Arc<HttpClient>,
-    token: &Arc<String>,
+    token: Option<&str>,
     zone_name: &str,
     server: &str,
-) -> bool {
+) -> Result<bool> {
     match zone_status(client, token, zone_name, server).await {
         Ok(_) => {
             debug!("Zone {zone_name} exists on {server}");
-            true
+            Ok(true)
         }
         Err(e) => {
-            debug!("Zone {zone_name} does not exist on {server}: {e}");
-            false
+            let err_msg = e.to_string();
+
+            // 404 Not Found - zone definitely doesn't exist
+            if err_msg.contains("404") || err_msg.contains("not found") {
+                debug!("Zone {zone_name} does not exist on {server}");
+                return Ok(false);
+            }
+
+            // Rate limiting - should retry
+            if err_msg.contains("429") || err_msg.contains("Too Many Requests") {
+                error!("Rate limited while checking if zone {zone_name} exists on {server}: {e}");
+                return Err(e).context("Rate limited while checking zone existence");
+            }
+
+            // Any other error is a transient failure that should be retried
+            error!("Error checking if zone {zone_name} exists on {server}: {e}");
+            Err(e).context("Failed to check zone existence")
         }
     }
 }
@@ -291,7 +321,7 @@ pub async fn zone_exists(
 /// Returns an error if the HTTP request fails or the server status cannot be retrieved.
 pub async fn server_status(
     client: &Arc<HttpClient>,
-    token: &Arc<String>,
+    token: Option<&str>,
     server: &str,
 ) -> Result<String> {
     let base_url = build_api_url(server);
@@ -340,7 +370,7 @@ pub async fn server_status(
 #[allow(clippy::implicit_hasher)]
 pub async fn add_primary_zone(
     client: &Arc<HttpClient>,
-    token: &Arc<String>,
+    token: Option<&str>,
     zone_name: &str,
     server: &str,
     key_data: &RndcKeyData,
@@ -350,29 +380,8 @@ pub async fn add_primary_zone(
 ) -> Result<bool> {
     use bindcar::ZONE_TYPE_PRIMARY;
 
-    // Check if zone already exists
-    if zone_exists(client, token, zone_name, server).await {
-        // Zone exists - update its configuration if we have secondary IPs to configure
-        if let Some(ips) = secondary_ips {
-            if !ips.is_empty() {
-                info!(
-                    "Zone {zone_name} already exists on {server}, updating also-notify and allow-transfer with {} secondary server(s)",
-                    ips.len()
-                );
-                // Update the zone's also-notify and allow-transfer configuration
-                // This is critical when secondary pods restart and get new IPs
-                return update_primary_zone(client, token, zone_name, server, ips).await;
-            }
-        }
-
-        // Zone exists but no secondary IPs to configure - skip
-        info!(
-            "Zone {zone_name} already exists on {server} with no secondary servers, skipping add"
-        );
-        return Ok(false);
-    }
-
     // Use the HTTP API to create a minimal zone
+    // Idempotency is handled in the error path below (lines 434-446)
     // The bindcar API will handle zone file generation and allow-update configuration
     let base_url = build_api_url(server);
     let url = format!("{base_url}/api/v1/zones");
@@ -428,14 +437,36 @@ pub async fn add_primary_zone(
             // - "already exists"
             // - "already serves the given zone"
             // - "duplicate zone"
+            // - "zone X/IN: already exists" (BIND9 format)
             // HTTP 409 Conflict is also used for resource conflicts
+            // Check if zone actually exists to confirm idempotency
+            let zone_check_result = zone_exists(client, token, zone_name, server).await;
             if err_msg.contains("already exists")
                 || err_msg.contains("already serves")
                 || err_msg.contains("duplicate zone")
                 || err_msg.contains("409")
+                || matches!(zone_check_result, Ok(true))
             {
-                info!("Zone {zone_name} already exists on {server} (detected via API error), treating as success");
+                info!("Zone {zone_name} already exists on {server} (detected via API error or existence check), treating as success");
+
+                // Zone exists - check if we need to update its configuration with secondary IPs
+                if let Some(ips) = secondary_ips {
+                    if !ips.is_empty() {
+                        info!(
+                            "Zone {zone_name} already exists on {server}, updating also-notify and allow-transfer with {} secondary server(s)",
+                            ips.len()
+                        );
+                        // Update the zone's also-notify and allow-transfer configuration
+                        // This is critical when secondary pods restart and get new IPs
+                        return update_primary_zone(client, token, zone_name, server, ips).await;
+                    }
+                }
+
                 Ok(false)
+            } else if let Err(zone_err) = zone_check_result {
+                // If we can't check zone existence (rate limiting, network error, etc.), propagate that error
+                // This prevents treating transient errors as "zone doesn't exist"
+                Err(zone_err).context("Failed to verify zone existence after creation error")
             } else {
                 Err(e).context("Failed to add zone")
             }
@@ -467,7 +498,7 @@ pub async fn add_primary_zone(
 /// Returns an error if the HTTP request fails or the zone cannot be updated.
 pub async fn update_primary_zone(
     client: &Arc<HttpClient>,
-    token: &Arc<String>,
+    token: Option<&str>,
     zone_name: &str,
     server: &str,
     secondary_ips: &[String],
@@ -539,7 +570,7 @@ pub async fn update_primary_zone(
 /// Returns an error if the HTTP request fails or the zone cannot be added.
 pub async fn add_secondary_zone(
     client: &Arc<HttpClient>,
-    token: &Arc<String>,
+    token: Option<&str>,
     zone_name: &str,
     server: &str,
     key_data: &RndcKeyData,
@@ -547,18 +578,21 @@ pub async fn add_secondary_zone(
 ) -> Result<bool> {
     use bindcar::ZONE_TYPE_SECONDARY;
 
-    // Check if zone already exists (idempotent)
-    if zone_exists(client, token, zone_name, server).await {
-        info!("Zone {zone_name} already exists on {server}, skipping add");
-        return Ok(false);
-    }
-
     // Use the HTTP API to create a minimal secondary zone
+    // Idempotency is handled in the error path below (lines 609-616)
     let base_url = build_api_url(server);
     let url = format!("{base_url}/api/v1/zones");
 
     // Create zone configuration for secondary zone with primaries
     // Secondary zones don't need SOA/NS records as they are transferred from primary
+    // CRITICAL: Append port number to primary IPs for BIND9 zone transfers
+    // BIND9 defaults to port 53, but we use DNS_CONTAINER_PORT (5353)
+    // Format: "IP port PORT" (e.g., "10.244.1.82 port 5353")
+    let primaries_with_port: Vec<String> = primary_ips
+        .iter()
+        .map(|ip| format!("{} port {}", ip, crate::constants::DNS_CONTAINER_PORT))
+        .collect();
+
     let zone_config = ZoneConfig {
         ttl: DEFAULT_DNS_RECORD_TTL_SECS as u32,
         soa: SoaRecord {
@@ -575,7 +609,7 @@ pub async fn add_secondary_zone(
         records: vec![],
         also_notify: None,
         allow_transfer: None,
-        primaries: Some(primary_ips.to_vec()),
+        primaries: Some(primaries_with_port),
     };
 
     let request = CreateZoneRequest {
@@ -589,20 +623,33 @@ pub async fn add_secondary_zone(
         Ok(_) => {
             info!(
                 "Added secondary zone {zone_name} on {server} with primaries: {:?}",
-                primary_ips
+                request.zone_config.primaries
             );
             Ok(true)
         }
         Err(e) => {
             let err_msg = e.to_string().to_lowercase();
             // Handle "zone already exists" errors as success (idempotent)
+            // BIND9 can return various messages for duplicate zones:
+            // - "already exists"
+            // - "already serves the given zone"
+            // - "duplicate zone"
+            // - "zone X/IN: already exists" (BIND9 format)
+            // HTTP 409 Conflict is also used for resource conflicts
+            // Check if zone actually exists to confirm idempotency
+            let zone_check_result = zone_exists(client, token, zone_name, server).await;
             if err_msg.contains("already exists")
                 || err_msg.contains("already serves")
                 || err_msg.contains("duplicate zone")
                 || err_msg.contains("409")
+                || matches!(zone_check_result, Ok(true))
             {
-                info!("Zone {zone_name} already exists on {server} (detected via API error), treating as success");
+                info!("Zone {zone_name} already exists on {server} (detected via API error or existence check), treating as success");
                 Ok(false)
+            } else if let Err(zone_err) = zone_check_result {
+                // If we can't check zone existence (rate limiting, network error, etc.), propagate that error
+                // This prevents treating transient errors as "zone doesn't exist"
+                Err(zone_err).context("Failed to verify zone existence after creation error")
             } else {
                 Err(e).context("Failed to add secondary zone")
             }
@@ -645,7 +692,7 @@ pub async fn add_secondary_zone(
 #[allow(clippy::implicit_hasher)]
 pub async fn add_zones(
     client: &Arc<HttpClient>,
-    token: &Arc<String>,
+    token: Option<&str>,
     zone_name: &str,
     zone_type: &str,
     server: &str,
@@ -706,15 +753,32 @@ pub async fn add_zones(
 ///
 /// Returns an error if the HTTP request fails or the zone cannot be created.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 pub async fn create_zone_http(
     client: &Arc<HttpClient>,
-    token: &Arc<String>,
+    token: Option<&str>,
     zone_name: &str,
     zone_type: &str,
     zone_config: ZoneConfig,
     server: &str,
     key_data: &RndcKeyData,
 ) -> Result<()> {
+    // Check if zone already exists (idempotent)
+    match zone_exists(client, token, zone_name, server).await {
+        Ok(true) => {
+            info!("Zone {zone_name} already exists on {server}, skipping creation");
+            return Ok(());
+        }
+        Ok(false) => {
+            // Zone doesn't exist, proceed with creation
+        }
+        Err(e) => {
+            // Can't check zone existence (rate limiting, network error, etc.)
+            // Propagate the error rather than blindly attempting creation
+            return Err(e).context("Failed to check if zone exists before creation");
+        }
+    }
+
     let base_url = build_api_url(server);
     let url = format!("{base_url}/api/v1/zones");
 
@@ -732,11 +796,17 @@ pub async fn create_zone_http(
         "Creating zone via HTTP API"
     );
 
-    let response = client
+    let mut post_request = client
         .post(&url)
-        .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
-        .json(&request)
+        .json(&request);
+
+    // Add Authorization header only if token is provided
+    if let Some(token_value) = token {
+        post_request = post_request.header("Authorization", format!("Bearer {token_value}"));
+    }
+
+    let response = post_request
         .send()
         .await
         .context(format!("Failed to send HTTP request to {url}"))?;
@@ -748,6 +818,25 @@ pub async fn create_zone_http(
             .text()
             .await
             .unwrap_or_else(|_| "Unknown error".to_string());
+
+        // Check if it's a "zone already exists" error (idempotent)
+        let error_lower = error_text.to_lowercase();
+        let zone_check_result = zone_exists(client, token, zone_name, server).await;
+        if error_lower.contains("already exists")
+            || error_lower.contains("already serves")
+            || error_lower.contains("duplicate zone")
+            || status.as_u16() == 409
+            || matches!(zone_check_result, Ok(true))
+        {
+            info!("Zone {zone_name} already exists on {server} (detected via API error or existence check), treating as success");
+            return Ok(());
+        }
+
+        // If we can't check zone existence due to rate limiting or other errors, propagate that
+        if let Err(zone_err) = zone_check_result {
+            return Err(zone_err).context("Failed to verify zone existence after creation error");
+        }
+
         error!(
             zone_name = %zone_name,
             server = %server,
@@ -764,6 +853,24 @@ pub async fn create_zone_http(
         .context("Failed to parse API response")?;
 
     if !result.success {
+        // Check if the error message indicates zone already exists (idempotent)
+        let msg_lower = result.message.to_lowercase();
+        let zone_check_result = zone_exists(client, token, zone_name, server).await;
+        if msg_lower.contains("already exists")
+            || msg_lower.contains("already serves")
+            || msg_lower.contains("duplicate zone")
+            || matches!(zone_check_result, Ok(true))
+        {
+            info!("Zone {zone_name} already exists on {server} (detected via API response), treating as success");
+            return Ok(());
+        }
+
+        // If we can't check zone existence due to rate limiting or other errors, propagate that
+        if let Err(zone_err) = zone_check_result {
+            return Err(zone_err)
+                .context("Failed to verify zone existence after API returned error");
+        }
+
         error!(
             zone_name = %zone_name,
             server = %server,
@@ -786,21 +893,32 @@ pub async fn create_zone_http(
 
 /// Delete a zone via HTTP API.
 ///
+/// # Arguments
+/// * `client` - HTTP client
+/// * `token` - Authentication token
+/// * `zone_name` - Name of the zone to delete
+/// * `server` - API server address
+/// * `freeze_before_delete` - Whether to freeze the zone before deletion (true for primary zones, false for secondary zones)
+///
 /// # Errors
 ///
 /// Returns an error if the HTTP request fails or the zone cannot be deleted.
 pub async fn delete_zone(
     client: &Arc<HttpClient>,
-    token: &Arc<String>,
+    token: Option<&str>,
     zone_name: &str,
     server: &str,
+    freeze_before_delete: bool,
 ) -> Result<()> {
-    // First freeze the zone to prevent updates (ignore errors if zone doesn't exist)
-    if let Err(e) = freeze_zone(client, token, zone_name, server).await {
-        debug!(
-            "Failed to freeze zone {} before deletion (zone may not exist): {}",
-            zone_name, e
-        );
+    // Freeze the zone before deletion if requested (only for primary zones)
+    // Secondary zones should NOT be frozen as they are read-only
+    if freeze_before_delete {
+        if let Err(e) = freeze_zone(client, token, zone_name, server).await {
+            debug!(
+                "Failed to freeze zone {} before deletion (zone may not exist): {}",
+                zone_name, e
+            );
+        }
     }
 
     let base_url = build_api_url(server);
@@ -832,7 +950,7 @@ pub async fn delete_zone(
 /// Returns an error if the HTTP request fails or the notification cannot be sent.
 pub async fn notify_zone(
     client: &Arc<HttpClient>,
-    token: &Arc<String>,
+    token: Option<&str>,
     zone_name: &str,
     server: &str,
 ) -> Result<()> {

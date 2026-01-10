@@ -438,7 +438,7 @@ pub async fn reconcile(zone: Arc<DNSZone>, ctx: Arc<Context>) -> Result<Action, 
 # Create 1,000 DNS zones
 for i in {1..1000}; do
   kubectl apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: zone-$i

@@ -768,7 +768,7 @@ Update CRD printer columns for better `kubectl get` output:
 #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[kube(
     group = "dns.bindy.io",
-    version = "v1alpha1",
+    version = "v1beta1",
     kind = "DnsZone",
     namespaced,
     status = "DnsZoneStatus",

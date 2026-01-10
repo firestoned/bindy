@@ -80,7 +80,7 @@ status:
 ```bash
 # Create instance with auto-generated secret
 kubectl apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1alpha1
+apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: my-dns

@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: MIT
 
-//! Unit tests for status_reasons module
+//! Unit tests for `status_reasons` module
 //!
 //! These tests verify all status reason constants and helper functions.
 
@@ -230,9 +230,9 @@ mod tests {
 
             assert_eq!(
                 instance_type,
-                format!("{}-{}", CONDITION_TYPE_BIND9_INSTANCE_PREFIX, i)
+                format!("{CONDITION_TYPE_BIND9_INSTANCE_PREFIX}-{i}")
             );
-            assert_eq!(pod_type, format!("{}-{}", CONDITION_TYPE_POD_PREFIX, i));
+            assert_eq!(pod_type, format!("{CONDITION_TYPE_POD_PREFIX}-{i}"));
         }
     }
 
@@ -263,8 +263,7 @@ mod tests {
                 if i != j {
                     assert_ne!(
                         reason1, reason2,
-                        "Constants at indices {} and {} have the same value: {}",
-                        i, j, reason1
+                        "Constants at indices {i} and {j} have the same value: {reason1}"
                     );
                 }
             }
@@ -289,8 +288,7 @@ mod tests {
                 if i != j {
                     assert_ne!(
                         reason1, reason2,
-                        "Constants at indices {} and {} have the same value: {}",
-                        i, j, reason1
+                        "Constants at indices {i} and {j} have the same value: {reason1}"
                     );
                 }
             }
@@ -316,17 +314,15 @@ mod tests {
         ];
 
         for reason in reasons {
-            assert!(!reason.contains(' '), "Reason '{}' contains spaces", reason);
+            assert!(!reason.contains(' '), "Reason '{reason}' contains spaces");
             assert!(
                 !reason.contains('_'),
-                "Reason '{}' contains underscores",
-                reason
+                "Reason '{reason}' contains underscores"
             );
             // First character should be uppercase
             assert!(
                 reason.chars().next().unwrap().is_uppercase(),
-                "Reason '{}' doesn't start with uppercase",
-                reason
+                "Reason '{reason}' doesn't start with uppercase"
             );
         }
     }
@@ -342,18 +338,15 @@ mod tests {
         for type_name in types {
             assert!(
                 !type_name.contains(' '),
-                "Type '{}' contains spaces",
-                type_name
+                "Type '{type_name}' contains spaces"
             );
             assert!(
                 !type_name.contains('_'),
-                "Type '{}' contains underscores",
-                type_name
+                "Type '{type_name}' contains underscores"
             );
             assert!(
                 type_name.chars().next().unwrap().is_uppercase(),
-                "Type '{}' doesn't start with uppercase",
-                type_name
+                "Type '{type_name}' doesn't start with uppercase"
             );
         }
     }

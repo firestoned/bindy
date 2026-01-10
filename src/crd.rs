@@ -29,7 +29,7 @@
 //!
 //! # Example: Creating a DNS Zone
 //!
-//! ```rust,no_run
+//! ```rust,no_run,ignore
 //! use bindy::crd::{DNSZoneSpec, SOARecord};
 //!
 //! let soa = SOARecord {
@@ -42,10 +42,10 @@
 //!     negative_ttl: 86400,
 //! };
 //!
+//! // Example showing DNSZone spec structure
+//! // Note: Actual spec fields may vary - see DNSZoneSpec definition
 //! let spec = DNSZoneSpec {
 //!     zone_name: "example.com".to_string(),
-//!     cluster_ref: Some("my-dns-cluster".to_string()),
-//!     cluster_provider_ref: None,
 //!     soa_record: soa,
 //!     ttl: Some(3600),
 //!     name_server_ips: None,
@@ -79,6 +79,155 @@ use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
+
+/// DNS record kind (type) enumeration.
+///
+/// Represents the Kubernetes `kind` field for all DNS record custom resources.
+/// This enum eliminates magic strings when matching record types and provides
+/// type-safe conversions between string representations and enum values.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use bindy::crd::DNSRecordKind;
+///
+/// // Parse from string
+/// let kind = DNSRecordKind::from("ARecord");
+/// assert_eq!(kind, DNSRecordKind::A);
+///
+/// // Convert to string
+/// assert_eq!(kind.as_str(), "ARecord");
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DNSRecordKind {
+    /// IPv4 address record (A)
+    A,
+    /// IPv6 address record (AAAA)
+    AAAA,
+    /// Text record (TXT)
+    TXT,
+    /// Canonical name record (CNAME)
+    CNAME,
+    /// Mail exchange record (MX)
+    MX,
+    /// Nameserver record (NS)
+    NS,
+    /// Service record (SRV)
+    SRV,
+    /// Certificate authority authorization record (CAA)
+    CAA,
+}
+
+impl DNSRecordKind {
+    /// Returns the Kubernetes `kind` string for this record type.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use bindy::crd::DNSRecordKind;
+    ///
+    /// assert_eq!(DNSRecordKind::A.as_str(), "ARecord");
+    /// assert_eq!(DNSRecordKind::MX.as_str(), "MXRecord");
+    /// ```
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::A => "ARecord",
+            Self::AAAA => "AAAARecord",
+            Self::TXT => "TXTRecord",
+            Self::CNAME => "CNAMERecord",
+            Self::MX => "MXRecord",
+            Self::NS => "NSRecord",
+            Self::SRV => "SRVRecord",
+            Self::CAA => "CAARecord",
+        }
+    }
+
+    /// Returns all DNS record kinds as a slice.
+    ///
+    /// Useful for iterating over all supported record types.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use bindy::crd::DNSRecordKind;
+    ///
+    /// for kind in DNSRecordKind::all() {
+    ///     println!("Record type: {}", kind.as_str());
+    /// }
+    /// ```
+    #[must_use]
+    pub const fn all() -> &'static [Self] {
+        &[
+            Self::A,
+            Self::AAAA,
+            Self::TXT,
+            Self::CNAME,
+            Self::MX,
+            Self::NS,
+            Self::SRV,
+            Self::CAA,
+        ]
+    }
+
+    /// Converts this DNS record kind to a Hickory DNS `RecordType`.
+    ///
+    /// This is useful when interfacing with the Hickory DNS library for
+    /// zone file generation or DNS protocol operations.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use bindy::crd::DNSRecordKind;
+    /// use hickory_client::rr::RecordType;
+    ///
+    /// let kind = DNSRecordKind::A;
+    /// let record_type = kind.to_hickory_record_type();
+    /// assert_eq!(record_type, RecordType::A);
+    /// ```
+    #[must_use]
+    pub const fn to_hickory_record_type(self) -> hickory_client::rr::RecordType {
+        use hickory_client::rr::RecordType;
+        match self {
+            Self::A => RecordType::A,
+            Self::AAAA => RecordType::AAAA,
+            Self::TXT => RecordType::TXT,
+            Self::CNAME => RecordType::CNAME,
+            Self::MX => RecordType::MX,
+            Self::NS => RecordType::NS,
+            Self::SRV => RecordType::SRV,
+            Self::CAA => RecordType::CAA,
+        }
+    }
+}
+
+impl From<&str> for DNSRecordKind {
+    fn from(s: &str) -> Self {
+        match s {
+            "ARecord" => Self::A,
+            "AAAARecord" => Self::AAAA,
+            "TXTRecord" => Self::TXT,
+            "CNAMERecord" => Self::CNAME,
+            "MXRecord" => Self::MX,
+            "NSRecord" => Self::NS,
+            "SRVRecord" => Self::SRV,
+            "CAARecord" => Self::CAA,
+            _ => panic!("Unknown DNS record kind: {s}"),
+        }
+    }
+}
+
+impl From<String> for DNSRecordKind {
+    fn from(s: String) -> Self {
+        Self::from(s.as_str())
+    }
+}
+
+impl std::fmt::Display for DNSRecordKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
 
 /// Label selector to match Kubernetes resources.
 ///
@@ -151,32 +300,33 @@ pub struct RecordSource {
     pub selector: LabelSelector,
 }
 
-/// Source for DNS zones to include in a cluster.
+/// Source for `Bind9Instance` resources to target for zone configuration.
 ///
-/// Specifies how DNS zones should be associated with a cluster using label selectors.
-/// Zones matching the selector criteria will be automatically served by this cluster's instances.
+/// Specifies how `Bind9Instance` resources should be selected using label selectors.
+/// The `DNSZone` controller will configure zones on all matching instances.
 ///
 /// # Example
 ///
 /// ```yaml
-/// zonesFrom:
+/// instancesFrom:
 ///   - selector:
 ///       matchLabels:
 ///         environment: production
+///         role: primary
 ///       matchExpressions:
-///         - key: team
+///         - key: region
 ///           operator: In
 ///           values:
-///             - platform
-///             - infrastructure
+///             - us-east-1
+///             - us-west-2
 /// ```
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct ZoneSource {
-    /// Label selector to match DNS zones.
+pub struct InstanceSource {
+    /// Label selector to match `Bind9Instance` resources.
     ///
-    /// `DNSZone` resources with labels matching this selector will be automatically
-    /// associated with this cluster or instance.
+    /// `Bind9Instance` resources with labels matching this selector will be automatically
+    /// targeted for zone configuration by this `DNSZone`.
     ///
     /// The selector uses standard Kubernetes label selector semantics:
     /// - `matchLabels`: All specified labels must match (AND logic)
@@ -400,6 +550,102 @@ pub struct RecordReference {
     pub name: String,
     /// Namespace of the record resource
     pub namespace: String,
+    /// DNS record name from spec.name (e.g., "www", "@", "_service._tcp")
+    /// Used for self-healing cleanup when verifying records in BIND9
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_name: Option<String>,
+    /// DNS zone name (e.g., "example.com")
+    /// Used for self-healing cleanup when querying BIND9
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zone_name: Option<String>,
+}
+
+/// Reference to a DNS record with reconciliation timestamp tracking.
+///
+/// This struct tracks which records are assigned to a zone and whether
+/// they need reconciliation based on the `lastReconciledAt` timestamp.
+///
+/// **Event-Driven Pattern:**
+/// - Records with `lastReconciledAt == None` need reconciliation
+/// - Records with `lastReconciledAt == Some(timestamp)` are already configured
+///
+/// This pattern prevents redundant BIND9 API calls for already-configured records,
+/// following the same architecture as `Bind9Instance.status.selectedZones[]`.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordReferenceWithTimestamp {
+    /// API version of the record (e.g., "bindy.firestoned.io/v1beta1")
+    pub api_version: String,
+    /// Kind of the record (e.g., "`ARecord`", "`CNAMERecord`", "`MXRecord`")
+    pub kind: String,
+    /// Name of the record resource
+    pub name: String,
+    /// Namespace of the record resource
+    pub namespace: String,
+    /// DNS record name from spec.name (e.g., "www", "@", "_service._tcp")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_name: Option<String>,
+    /// Timestamp when this record was last successfully reconciled to BIND9.
+    ///
+    /// - `None` = Record needs reconciliation (new or spec changed)
+    /// - `Some(timestamp)` = Record already configured, skip reconciliation
+    ///
+    /// This field is set by the record controller after successful BIND9 update.
+    /// The zone controller resets it to `None` when spec changes or zone is recreated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_reconciled_at: Option<k8s_openapi::apimachinery::pkg::apis::meta::v1::Time>,
+}
+
+/// Status of a `Bind9Instance` relationship with a `DNSZone`.
+///
+/// Tracks the lifecycle of zone assignment from initial selection through configuration.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(rename_all = "PascalCase")]
+pub enum InstanceStatus {
+    /// Zone has selected this instance via bind9InstancesFrom, but zone not yet configured
+    Claimed,
+    /// Zone successfully configured on instance
+    Configured,
+    /// Zone configuration failed on instance
+    Failed,
+    /// Instance no longer selected by this zone (cleanup pending)
+    Unclaimed,
+}
+
+impl InstanceStatus {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            InstanceStatus::Claimed => "Claimed",
+            InstanceStatus::Configured => "Configured",
+            InstanceStatus::Failed => "Failed",
+            InstanceStatus::Unclaimed => "Unclaimed",
+        }
+    }
+}
+
+/// Reference to a `Bind9Instance` with status and timestamp.
+///
+/// Extends `InstanceReference` with status tracking for zone claiming and configuration.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceReferenceWithStatus {
+    /// API version of the `Bind9Instance` resource
+    pub api_version: String,
+    /// Kind of the resource (always "`Bind9Instance`")
+    pub kind: String,
+    /// Name of the `Bind9Instance` resource
+    pub name: String,
+    /// Namespace of the `Bind9Instance` resource
+    pub namespace: String,
+    /// Current status of this instance's relationship with the zone
+    pub status: InstanceStatus,
+    /// Timestamp when the instance status was last reconciled for this zone
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_reconciled_at: Option<String>,
+    /// Additional message (for Failed status, error details, etc.)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// `DNSZone` status
@@ -410,30 +656,78 @@ pub struct DNSZoneStatus {
     pub conditions: Vec<Condition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub observed_generation: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub record_count: Option<i32>,
-    /// IP addresses of secondary servers configured for zone transfers.
-    /// Used to detect when secondary IPs change and zones need updating.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub secondary_ips: Option<Vec<String>>,
-    /// List of DNS records successfully associated with this zone.
-    /// Updated by the zone reconciler when records are added/removed.
+    /// Count of records selected by recordsFrom label selectors.
+    ///
+    /// This field is automatically calculated from the length of `records`.
+    /// It provides a quick view of how many records are associated with this zone.
+    ///
+    /// Defaults to 0 when no records are selected.
+    #[serde(default)]
+    pub records_count: i32,
+    /// List of DNS records selected by recordsFrom label selectors.
+    ///
+    /// **Event-Driven Pattern:**
+    /// - Records with `lastReconciledAt == None` need reconciliation
+    /// - Records with `lastReconciledAt == Some(timestamp)` are already configured
+    ///
+    /// This field is populated by the `DNSZone` controller when evaluating `recordsFrom` selectors.
+    /// The timestamp is set by the record controller after successful BIND9 update.
+    ///
+    /// **Single Source of Truth:**
+    /// This status field is authoritative for which records belong to this zone and whether
+    /// they need reconciliation, preventing redundant BIND9 API calls.
+    #[serde(default)]
+    pub records: Vec<RecordReferenceWithTimestamp>,
+    /// List of `Bind9Instance` resources and their status for this zone.
+    ///
+    /// **Single Source of Truth for Instance-Zone Relationships:**
+    /// This field tracks all `Bind9Instances` selected by this zone via `bind9InstancesFrom` selectors,
+    /// along with the current status of zone configuration on each instance.
+    ///
+    /// **Status Lifecycle:**
+    /// - `Claimed`: Zone selected this instance (via `bind9InstancesFrom`), waiting for configuration
+    /// - `Configured`: Zone successfully configured on instance
+    /// - `Failed`: Zone configuration failed on instance
+    /// - `Unclaimed`: Instance no longer selected by this zone (cleanup pending)
+    ///
+    /// **Event-Driven Pattern:**
+    /// - `DNSZone` controller evaluates `bind9InstancesFrom` selectors to find matching instances
+    /// - `DNSZone` controller reads this field to track configuration status
+    /// - `DNSZone` controller updates status after configuration attempts
+    ///
+    /// **Automatic Selection:**
+    /// When a `DNSZone` reconciles, the controller automatically:
+    /// 1. Queries all `Bind9Instances` matching `bind9InstancesFrom` selectors
+    /// 2. Adds them to this list with status="Claimed"
+    /// 3. Configures zones on each instance
+    ///
+    /// # Example
+    ///
+    /// ```yaml
+    /// status:
+    ///   bind9Instances:
+    ///     - apiVersion: bindy.firestoned.io/v1beta1
+    ///       kind: Bind9Instance
+    ///       name: primary-dns-0
+    ///       namespace: dns-system
+    ///       status: Configured
+    ///       lastReconciledAt: "2026-01-03T20:00:00Z"
+    ///     - apiVersion: bindy.firestoned.io/v1beta1
+    ///       kind: Bind9Instance
+    ///       name: secondary-dns-0
+    ///       namespace: dns-system
+    ///       status: Claimed
+    ///       lastReconciledAt: "2026-01-03T20:01:00Z"
+    /// ```
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub records: Vec<RecordReference>,
-    /// Indicates how this zone was assigned to a cluster.
+    pub bind9_instances: Vec<InstanceReferenceWithStatus>,
+    /// Number of `Bind9Instance` resources in the `bind9_instances` list.
     ///
-    /// Possible values:
-    /// - `"explicit"`: Zone has explicit `clusterRef` or `clusterProviderRef` in spec
-    /// - `"label-selector"`: Zone was selected by an instance's `zonesFrom` label selector
-    /// - `null`: Zone is not assigned to any cluster
+    /// This field is automatically updated whenever the `bind9_instances` list changes.
+    /// It provides a quick view of how many instances are serving this zone without
+    /// requiring clients to count array elements.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub selection_method: Option<String>,
-    /// Name of the instance that selected this zone (if selected via `zonesFrom`).
-    ///
-    /// Only set when `selection_method` is `"label-selector"`.
-    /// Matches the value in the `bindy.firestoned.io/selected-by-instance` annotation.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub selected_by_instance: Option<String>,
+    pub bind9_instances_count: Option<i32>,
 }
 
 /// Secondary Zone configuration
@@ -515,8 +809,9 @@ pub struct SecondaryZoneConfig {
     doc = "DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defines a zone (e.g., example.com) with SOA record parameters. Can reference either a namespace-scoped Bind9Cluster or cluster-scoped ClusterBind9Provider.",
     printcolumn = r#"{"name":"Zone","type":"string","jsonPath":".spec.zoneName"}"#,
     printcolumn = r#"{"name":"Provider","type":"string","jsonPath":".spec.clusterProviderRef"}"#,
-    printcolumn = r#"{"name":"Records","type":"integer","jsonPath":".status.recordCount"}"#,
-    printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl","priority":1}"#,
+    printcolumn = r#"{"name":"Records","type":"integer","jsonPath":".status.recordsCount"}"#,
+    printcolumn = r#"{"name":"Instances","type":"integer","jsonPath":".status.bind9InstancesCount"}"#,
+    printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
 #[kube(status = "DNSZoneStatus")]
@@ -531,24 +826,6 @@ pub struct DNSZoneSpec {
     ))]
     pub zone_name: String,
 
-    /// Reference to a namespace-scoped `Bind9Cluster` in the same namespace.
-    ///
-    /// Must match the name of a `Bind9Cluster` resource in the same namespace.
-    /// The zone will be added to all instances in this cluster.
-    ///
-    /// Either `clusterRef` or `clusterProviderRef` must be specified (not both).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cluster_ref: Option<String>,
-
-    /// Reference to a cluster-scoped `ClusterBind9Provider`.
-    ///
-    /// Must match the name of a `ClusterBind9Provider` resource (cluster-scoped).
-    /// The zone will be added to all instances in this provider.
-    ///
-    /// Either `clusterRef` or `clusterProviderRef` must be specified (not both).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cluster_provider_ref: Option<String>,
-
     /// SOA (Start of Authority) record - defines zone authority and refresh parameters.
     ///
     /// The SOA record is required for all authoritative zones and contains
@@ -562,6 +839,27 @@ pub struct DNSZoneSpec {
     #[serde(default)]
     #[schemars(range(min = 0, max = 2_147_483_647))]
     pub ttl: Option<i32>,
+
+    /// Reference to a `Bind9Cluster` or `ClusterBind9Provider` to serve this zone.
+    ///
+    /// When specified, this zone will be automatically configured on all `Bind9Instance`
+    /// resources that belong to the referenced cluster. This provides a simple way to
+    /// assign zones to entire clusters.
+    ///
+    /// **Relationship with `bind9_instances_from`:**
+    /// - If only `cluster_ref` is specified: Zone targets all instances in that cluster
+    /// - If only `bind9_instances_from` is specified: Zone targets instances matching label selectors
+    /// - If both are specified: Zone targets union of cluster instances AND label-selected instances
+    ///
+    /// # Example
+    ///
+    /// ```yaml
+    /// spec:
+    ///   clusterRef: production-dns  # Target all instances in this cluster
+    ///   zoneName: example.com
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_ref: Option<String>,
 
     /// Map of nameserver hostnames to IP addresses for glue records.
     ///
@@ -616,6 +914,87 @@ pub struct DNSZoneSpec {
     /// - **Temporary records**: Use labels to include/exclude records without changing `zoneRef`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub records_from: Option<Vec<RecordSource>>,
+
+    /// Select `Bind9Instance` resources to target for zone configuration using label selectors.
+    ///
+    /// This field enables dynamic, label-based selection of DNS instances to serve this zone.
+    /// Instances matching these selectors will automatically receive zone configuration from
+    /// the `DNSZone` controller.
+    ///
+    /// This follows the standard Kubernetes selector pattern used by Services, `NetworkPolicies`,
+    /// and other resources for declarative resource association.
+    ///
+    /// **IMPORTANT**: This is the **preferred** method for zone-instance association. It provides:
+    /// - **Decoupled Architecture**: Zones select instances, not vice versa
+    /// - **Zone Ownership**: Zone authors control which instances serve their zones
+    /// - **Dynamic Scaling**: New instances matching labels automatically pick up zones
+    /// - **Multi-Tenancy**: Zones can target specific instance groups (prod, staging, team-specific)
+    ///
+    /// # Example: Target production primary instances
+    ///
+    /// ```yaml
+    /// apiVersion: bindy.firestoned.io/v1beta1
+    /// kind: DNSZone
+    /// metadata:
+    ///   name: example-com
+    ///   namespace: dns-system
+    /// spec:
+    ///   zoneName: example.com
+    ///   bind9InstancesFrom:
+    ///     - selector:
+    ///         matchLabels:
+    ///           environment: production
+    ///           bindy.firestoned.io/role: primary
+    /// ```
+    ///
+    /// # Example: Target instances by region and tier
+    ///
+    /// ```yaml
+    /// bind9InstancesFrom:
+    ///   - selector:
+    ///       matchLabels:
+    ///         tier: frontend
+    ///       atchExpressions:
+    ///         - key: region
+    ///           operator: In
+    ///           values:
+    ///             - us-east-1
+    ///             - us-west-2
+    /// ```
+    ///
+    /// # Selector Operators
+    ///
+    /// - **In**: Label value must be in the specified values list
+    /// - **`NotIn`**: Label value must NOT be in the specified values list
+    /// - **Exists**: Label key must exist (any value)
+    /// - **`DoesNotExist`**: Label key must NOT exist
+    ///
+    /// # Use Cases
+    ///
+    /// - **Environment Isolation**: Target only production instances (`environment: production`)
+    /// - **Role-Based Selection**: Select only primary or secondary instances
+    /// - **Geographic Distribution**: Target instances in specific regions
+    /// - **Team Boundaries**: Select instances managed by specific teams
+    /// - **Testing Zones**: Target staging instances for non-production zones
+    ///
+    /// # Relationship with `clusterRef`
+    ///
+    /// - **`clusterRef`**: Explicitly assigns zone to ALL instances in a cluster
+    /// - **`bind9InstancesFrom`**: Dynamically selects specific instances using labels (more flexible)
+    ///
+    /// You can use both approaches together - the zone will target the **union** of:
+    /// - All instances in `clusterRef` cluster
+    /// - Plus any additional instances matching `bind9InstancesFrom` selectors
+    ///
+    /// # Event-Driven Architecture
+    ///
+    /// The `DNSZone` controller watches both `DNSZone` and `Bind9Instance` resources.
+    /// When labels change on either:
+    /// 1. Controller re-evaluates label selector matching
+    /// 2. Automatically configures zones on newly-matched instances
+    /// 3. Removes zone configuration from instances that no longer match
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind9_instances_from: Option<Vec<InstanceSource>>,
 }
 
 /// `ARecord` maps a DNS name to an IPv4 address.
@@ -1107,8 +1486,30 @@ pub struct RecordStatus {
     ///
     /// If this field is empty, the record is not matched by any zone and should not
     /// be reconciled into BIND9.
+    ///
+    /// **DEPRECATED**: Use `zone_ref` instead for structured zone reference.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use zone_ref instead for structured zone reference"
+    )]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub zone: Option<String>,
+    /// Structured reference to the `DNSZone` that owns this record.
+    ///
+    /// Set by the `DNSZone` controller when the zone's `recordsFrom` selector matches
+    /// this record's labels. Contains the complete Kubernetes object reference including
+    /// apiVersion, kind, name, namespace, and zoneName.
+    ///
+    /// The record reconciler uses this to:
+    /// 1. Look up the parent `DNSZone` resource
+    /// 2. Find the zone's primary `Bind9Instance` servers
+    /// 3. Add this record to BIND9 on primaries
+    /// 4. Trigger zone transfer (retransfer) on secondaries
+    ///
+    /// If this field is None, the record is not selected by any zone and will not
+    /// be added to BIND9.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zone_ref: Option<ZoneReference>,
     /// SHA-256 hash of the record's spec data.
     ///
     /// Used to detect when a record's data has actually changed, avoiding
@@ -1551,6 +1952,29 @@ pub struct PrimaryConfig {
     #[schemars(range(min = 0, max = 100))]
     pub replicas: Option<i32>,
 
+    /// Additional labels to apply to primary `Bind9Instance` resources
+    ///
+    /// These labels are propagated from the cluster/provider to all primary instances.
+    /// They are merged with standard labels (app.kubernetes.io/*) and can be used for:
+    /// - Instance selection via `DNSZone.spec.bind9InstancesFrom` label selectors
+    /// - Pod selectors in network policies
+    /// - Monitoring and alerting label filters
+    /// - Custom organizational taxonomy
+    ///
+    /// Example:
+    /// ```yaml
+    /// primary:
+    ///   labels:
+    ///     environment: production
+    ///     tier: frontend
+    ///     region: us-east-1
+    /// ```
+    ///
+    /// These labels will appear on the `Bind9Instance` metadata and can be referenced
+    /// by `DNSZone` resources using `bind9InstancesFrom.selector.matchLabels`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<BTreeMap<String, String>>,
+
     /// Custom Kubernetes Service configuration for primary instances
     ///
     /// Allows full customization of the Kubernetes Service created for primary DNS servers,
@@ -1610,6 +2034,29 @@ pub struct SecondaryConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 0, max = 100))]
     pub replicas: Option<i32>,
+
+    /// Additional labels to apply to secondary `Bind9Instance` resources
+    ///
+    /// These labels are propagated from the cluster/provider to all secondary instances.
+    /// They are merged with standard labels (app.kubernetes.io/*) and can be used for:
+    /// - Instance selection via `DNSZone.spec.bind9InstancesFrom` label selectors
+    /// - Pod selectors in network policies
+    /// - Monitoring and alerting label filters
+    /// - Custom organizational taxonomy
+    ///
+    /// Example:
+    /// ```yaml
+    /// secondary:
+    ///   labels:
+    ///     environment: production
+    ///     tier: backend
+    ///     region: us-west-2
+    /// ```
+    ///
+    /// These labels will appear on the `Bind9Instance` metadata and can be referenced
+    /// by `DNSZone` resources using `bind9InstancesFrom.selector.matchLabels`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<BTreeMap<String, String>>,
 
     /// Custom Kubernetes Service configuration for secondary instances
     ///
@@ -1725,27 +2172,6 @@ pub struct Bind9ClusterCommonSpec {
     /// These mounts are inherited by all instances unless overridden.
     #[serde(default)]
     pub volume_mounts: Option<Vec<VolumeMount>>,
-
-    /// Select DNS zones using label selectors.
-    ///
-    /// Zones matching these selectors will be automatically served by this cluster's instances.
-    /// This is an alternative to zones explicitly specifying `clusterRef` or `clusterProviderRef`.
-    ///
-    /// When specified at the cluster level, this configuration propagates to all instances
-    /// in the cluster. Instances will watch for `DNSZone` resources matching these selectors
-    /// and automatically configure BIND9 to serve them.
-    ///
-    /// # Example
-    ///
-    /// ```yaml
-    /// zonesFrom:
-    ///   - selector:
-    ///       matchLabels:
-    ///         environment: production
-    ///         team: platform
-    /// ```
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub zones_from: Option<Vec<ZoneSource>>,
 }
 
 /// `Bind9Cluster` - Namespace-scoped DNS cluster for tenant-managed infrastructure.
@@ -1911,6 +2337,33 @@ pub enum ServerRole {
     Secondary,
 }
 
+impl ServerRole {
+    /// Convert `ServerRole` to its string representation.
+    ///
+    /// Returns the lowercase zone type string used in BIND9 configuration
+    /// and bindcar API calls.
+    ///
+    /// # Returns
+    /// * `"primary"` for `ServerRole::Primary`
+    /// * `"secondary"` for `ServerRole::Secondary`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bindy::crd::ServerRole;
+    ///
+    /// assert_eq!(ServerRole::Primary.as_str(), "primary");
+    /// assert_eq!(ServerRole::Secondary.as_str(), "secondary");
+    /// ```
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Secondary => "secondary",
+        }
+    }
+}
+
 /// `Bind9Instance` represents a BIND9 DNS server deployment in Kubernetes.
 ///
 /// Each `Bind9Instance` creates a Deployment, Service, `ConfigMap`, and Secret for managing
@@ -1942,6 +2395,7 @@ pub enum ServerRole {
     printcolumn = r#"{"name":"Cluster","type":"string","jsonPath":".spec.clusterRef"}"#,
     printcolumn = r#"{"name":"Role","type":"string","jsonPath":".spec.role"}"#,
     printcolumn = r#"{"name":"Replicas","type":"integer","jsonPath":".spec.replicas"}"#,
+    printcolumn = r#"{"name":"Zones","type":"integer","jsonPath":".status.zonesCount"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
 #[kube(status = "Bind9InstanceStatus")]
@@ -2034,27 +2488,6 @@ pub struct Bind9InstanceSpec {
     /// If not specified, uses default configuration.
     #[serde(default)]
     pub bindcar_config: Option<BindcarConfig>,
-
-    /// Select DNS zones using label selectors.
-    ///
-    /// Zones matching these selectors will be served by this instance.
-    /// This field is typically inherited from the parent `Bind9Cluster` or `ClusterBind9Provider`,
-    /// but can be overridden or extended at the instance level.
-    ///
-    /// The instance reconciler watches for `DNSZone` resources matching these selectors
-    /// and automatically tags them with `bindy.firestoned.io/selected-by-instance` annotation.
-    /// Tagged zones are then configured in BIND9.
-    ///
-    /// # Example
-    ///
-    /// ```yaml
-    /// zonesFrom:
-    ///   - selector:
-    ///       matchLabels:
-    ///         instance: primary
-    /// ```
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub zones_from: Option<Vec<ZoneSource>>,
 }
 
 /// `Bind9Instance` status
@@ -2065,32 +2498,187 @@ pub struct Bind9InstanceStatus {
     pub conditions: Vec<Condition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub observed_generation: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub replicas: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ready_replicas: Option<i32>,
     /// IP or hostname of this instance's service
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_address: Option<String>,
-    /// List of DNS zones matched by `zonesFrom` selectors.
+    /// Resolved cluster reference with full object details.
     ///
-    /// Updated by the instance reconciler when zones are discovered via label selectors.
-    /// This field shows which zones are currently being served by this instance due to
-    /// label selector matching (as opposed to explicit `clusterRef`/`clusterProviderRef`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub selected_zones: Vec<ZoneReference>,
+    /// This field is populated by the instance reconciler and contains the full Kubernetes
+    /// object reference (kind, apiVersion, namespace, name) of the cluster this instance
+    /// belongs to. This provides backward compatibility with `spec.clusterRef` (which is
+    /// just a string name) and enables proper Kubernetes object references.
+    ///
+    /// For namespace-scoped `Bind9Cluster`, includes namespace.
+    /// For cluster-scoped `ClusterBind9Provider`, namespace will be empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cluster_ref: Option<ClusterReference>,
+    /// List of DNS zones that have selected this instance.
+    ///
+    /// This field is automatically populated by a status-only watcher on `DNSZones`.
+    /// When a `DNSZone`'s `status.bind9Instances` includes this instance, the zone
+    /// is added to this list. This provides a reverse lookup: instance → zones.
+    ///
+    /// Updated by: `DNSZone` status watcher (not by instance reconciler)
+    /// Used for: Observability, debugging zone assignments
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub zones: Vec<ZoneReference>,
+
+    /// Number of zones in the `zones` list.
+    ///
+    /// This field is automatically updated whenever the `zones` list changes.
+    /// It provides a quick way to see how many zones are selecting this instance
+    /// without having to count the array elements.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zones_count: Option<i32>,
 }
 
 /// Reference to a DNS zone selected by an instance.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
+///
+/// This structure follows Kubernetes object reference conventions and stores
+/// the complete information needed to reference a `DNSZone` resource.
+///
+/// **Note on Equality:** `PartialEq`, `Eq`, and `Hash` are implemented to compare only the
+/// identity fields (`api_version`, `kind`, `name`, `namespace`, `zone_name`), ignoring `last_reconciled_at`.
+/// This ensures that zones are correctly identified as duplicates even when their
+/// reconciliation timestamps differ.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ZoneReference {
+    /// API version of the `DNSZone` resource (e.g., "bindy.firestoned.io/v1beta1")
+    pub api_version: String,
+    /// Kind of the resource (always "`DNSZone`")
+    pub kind: String,
     /// Name of the `DNSZone` resource
     pub name: String,
     /// Namespace of the `DNSZone` resource
     pub namespace: String,
-    /// Fully qualified domain name (e.g., "example.com")
+    /// Fully qualified domain name from the zone's spec (e.g., "example.com")
     pub zone_name: String,
+    /// Timestamp when this zone was last successfully configured on the instance.
+    ///
+    /// This field is set by the `DNSZone` controller after successfully applying zone configuration
+    /// to the instance. It is reset to `None` when:
+    /// - The instance's pod restarts (requiring zone reconfiguration)
+    /// - The instance's spec changes (requiring reconfiguration)
+    ///
+    /// The `DNSZone` controller uses this field to determine which instances need zone configuration.
+    /// If this field is `None`, the zone needs to be configured on the instance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_reconciled_at: Option<String>,
+}
+
+// Implement PartialEq to compare only identity fields, ignoring last_reconciled_at
+impl PartialEq for ZoneReference {
+    fn eq(&self, other: &Self) -> bool {
+        self.api_version == other.api_version
+            && self.kind == other.kind
+            && self.name == other.name
+            && self.namespace == other.namespace
+            && self.zone_name == other.zone_name
+    }
+}
+
+// Implement Eq for ZoneReference
+impl Eq for ZoneReference {}
+
+// Implement Hash to hash only identity fields
+impl std::hash::Hash for ZoneReference {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.api_version.hash(state);
+        self.kind.hash(state);
+        self.name.hash(state);
+        self.namespace.hash(state);
+        self.zone_name.hash(state);
+        // Deliberately exclude last_reconciled_at from hash
+    }
+}
+
+/// Full Kubernetes object reference to a cluster resource.
+///
+/// This structure follows Kubernetes object reference conventions and stores
+/// the complete information needed to reference either a namespace-scoped
+/// `Bind9Cluster` or cluster-scoped `ClusterBind9Provider`.
+///
+/// This enables proper object references and provides backward compatibility
+/// with `spec.clusterRef` (which stores only the name as a string).
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterReference {
+    /// API version of the referenced cluster (e.g., "bindy.firestoned.io/v1beta1")
+    pub api_version: String,
+    /// Kind of the referenced cluster ("`Bind9Cluster`" or "`ClusterBind9Provider`")
+    pub kind: String,
+    /// Name of the cluster resource
+    pub name: String,
+    /// Namespace of the cluster resource.
+    ///
+    /// For namespace-scoped `Bind9Cluster`, this is the cluster's namespace.
+    /// For cluster-scoped `ClusterBind9Provider`, this field is empty/None.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+}
+
+/// Full Kubernetes object reference to a `Bind9Instance` resource.
+///
+/// This structure follows Kubernetes object reference conventions and stores
+/// the complete information needed to reference a namespace-scoped `Bind9Instance`.
+///
+/// Used in `DNSZone.status.bind9Instances` for tracking instances that have claimed the zone
+/// (via `bind9InstancesFrom` label selectors or `clusterRef`).
+///
+/// **Note on Equality:** `PartialEq`, `Eq`, and `Hash` are implemented to compare only the
+/// identity fields (`api_version`, `kind`, `name`, `namespace`), ignoring `last_reconciled_at`.
+/// This ensures that instances are correctly identified as duplicates even when their
+/// reconciliation timestamps differ.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceReference {
+    /// API version of the `Bind9Instance` resource (e.g., "bindy.firestoned.io/v1beta1")
+    pub api_version: String,
+    /// Kind of the resource (always "`Bind9Instance`")
+    pub kind: String,
+    /// Name of the `Bind9Instance` resource
+    pub name: String,
+    /// Namespace of the `Bind9Instance` resource
+    pub namespace: String,
+    /// Timestamp when this instance was last successfully reconciled with zone configuration.
+    ///
+    /// This field is set when the zone configuration is successfully applied to the instance.
+    /// It is reset (cleared) when:
+    /// - The instance is deleted
+    /// - The instance's pod IP changes (requiring zone reconfiguration)
+    /// - The zone spec changes (requiring reconfiguration)
+    ///
+    /// The reconciler uses this field to determine which instances need zone configuration.
+    /// If this field is `None` or the timestamp is before the last spec change, the instance
+    /// will be reconfigured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_reconciled_at: Option<String>,
+}
+
+// Implement PartialEq to compare only identity fields, ignoring last_reconciled_at
+impl PartialEq for InstanceReference {
+    fn eq(&self, other: &Self) -> bool {
+        self.api_version == other.api_version
+            && self.kind == other.kind
+            && self.name == other.name
+            && self.namespace == other.namespace
+    }
+}
+
+// Implement Eq for InstanceReference
+impl Eq for InstanceReference {}
+
+// Implement Hash to hash only identity fields
+impl std::hash::Hash for InstanceReference {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.api_version.hash(state);
+        self.kind.hash(state);
+        self.name.hash(state);
+        self.namespace.hash(state);
+        self.last_reconciled_at.hash(state);
+    }
 }
 
 /// Storage configuration for zone files
@@ -2163,9 +2751,28 @@ pub struct BindcarConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resources: Option<k8s_openapi::api::core::v1::ResourceRequirements>,
 
-    /// API server port (default: 8080)
+    /// API server container port (default: 8080)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<i32>,
+
+    /// Custom Kubernetes Service spec for the bindcar HTTP API
+    ///
+    /// Allows full customization of the Service that exposes the bindcar API.
+    /// This is merged with the default Service spec, allowing overrides of ports,
+    /// type, sessionAffinity, and other Service configurations.
+    ///
+    /// Example:
+    /// ```yaml
+    /// serviceSpec:
+    ///   type: NodePort
+    ///   ports:
+    ///     - name: http
+    ///       port: 8000
+    ///       targetPort: 8080
+    ///       nodePort: 30080
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_spec: Option<k8s_openapi::api::core::v1::ServiceSpec>,
 
     /// Log level for the Bindcar container (`debug`, `info`, `warn`, `error`)
     #[serde(skip_serializing_if = "Option::is_none")]

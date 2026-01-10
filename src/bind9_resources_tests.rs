@@ -6,7 +6,7 @@
 #[cfg(test)]
 mod tests {
     use crate::bind9_resources::{
-        build_configmap, build_deployment, build_labels, build_labels_from_instance, build_service,
+        build_configmap, build_deployment, build_labels_from_instance, build_service,
     };
     use crate::constants::KIND_BIND9_CLUSTER;
     use crate::crd::{Bind9Config, Bind9Instance, Bind9InstanceSpec, DNSSECConfig};
@@ -48,10 +48,15 @@ mod tests {
                 rndc_secret_ref: None,
                 storage: None,
                 bindcar_config: None,
-                zones_from: None,
             },
             status: None,
         }
+    }
+
+    /// Test helper: build labels for a `Bind9Instance`
+    fn build_labels(instance_name: &str) -> BTreeMap<String, String> {
+        let instance = create_test_instance(instance_name);
+        build_labels_from_instance(instance_name, &instance)
     }
 
     #[test]
@@ -193,8 +198,8 @@ mod tests {
         let ports = container.ports.as_ref().unwrap();
         // Should have 3 ports: DNS TCP, DNS UDP, and RNDC
         assert_eq!(ports.len(), 3);
-        assert_eq!(ports[0].container_port, 53); // DNS TCP
-        assert_eq!(ports[1].container_port, 53); // DNS UDP
+        assert_eq!(ports[0].container_port, 5353); // DNS TCP (non-privileged port)
+        assert_eq!(ports[1].container_port, 5353); // DNS UDP (non-privileged port)
         assert_eq!(ports[2].container_port, 953); // RNDC
     }
 
@@ -724,7 +729,7 @@ mod tests {
             let expected_port = if port.name.as_deref() == Some("http") {
                 8080
             } else {
-                53
+                5353 // DNS container port (non-privileged)
             };
             assert_eq!(
                 port.target_port,
@@ -1103,7 +1108,7 @@ mod tests {
         assert_eq!(
             http_port.target_port.as_ref().map(|p| match p {
                 k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(i) => i,
-                _ => &0,
+                k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::String(_) => &0,
             }),
             Some(&8080),
             "Default target port should be 8080"
@@ -1112,13 +1117,14 @@ mod tests {
 
     #[test]
     fn test_service_api_port_custom() {
-        // Test custom API port via bindcar_config
+        // Test custom API container port via bindcar_config
         let mut instance = create_test_instance("test");
         instance.spec.bindcar_config = Some(crate::crd::BindcarConfig {
             image: None,
             image_pull_policy: None,
             resources: None,
             port: Some(9090),
+            service_spec: None,
             env_vars: None,
             volumes: None,
             volume_mounts: None,
@@ -1133,16 +1139,67 @@ mod tests {
             .find(|p| p.name.as_deref() == Some("http"))
             .unwrap();
 
-        assert_eq!(http_port.port, 80, "External port should always be 80");
-        // Target port should be custom value
+        assert_eq!(http_port.port, 80, "Service port should default to 80");
+        // Target port should be custom container port value
         assert_eq!(
             http_port.target_port.as_ref().map(|p| match p {
                 k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(i) => i,
-                _ => &0,
+                k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::String(_) => &0,
             }),
             Some(&9090),
             "Custom target port should be 9090"
         );
+    }
+
+    #[test]
+    fn test_service_with_bindcar_service_spec() {
+        // Test custom Service spec via bindcar_config.service_spec
+        use k8s_openapi::api::core::v1::{ServicePort, ServiceSpec};
+        use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
+
+        let mut instance = create_test_instance("test");
+        instance.spec.bindcar_config = Some(crate::crd::BindcarConfig {
+            image: None,
+            image_pull_policy: None,
+            resources: None,
+            port: Some(8080),
+            service_spec: Some(ServiceSpec {
+                type_: Some("NodePort".into()),
+                ports: Some(vec![ServicePort {
+                    name: Some("http".into()),
+                    port: 8000,
+                    target_port: Some(IntOrString::Int(8080)),
+                    node_port: Some(30080),
+                    protocol: Some("TCP".into()),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }),
+            env_vars: None,
+            volumes: None,
+            volume_mounts: None,
+            log_level: None,
+        });
+
+        let service = build_service("test", "test-ns", &instance, None);
+        let spec = service.spec.unwrap();
+
+        // Verify service type was overridden
+        assert_eq!(
+            spec.type_.as_deref(),
+            Some("NodePort"),
+            "Service type should be NodePort from bindcar config"
+        );
+
+        // Verify http port was customized
+        let ports = spec.ports.unwrap();
+        let http_port = ports
+            .iter()
+            .find(|p| p.name.as_deref() == Some("http"))
+            .unwrap();
+
+        assert_eq!(http_port.port, 8000, "Service port should be 8000");
+        assert_eq!(http_port.node_port, Some(30080), "NodePort should be 30080");
     }
 
     #[test]

@@ -150,7 +150,8 @@ graph TD
     Cluster --cluster_ref--> Instance
     GlobalCluster -.cluster_ref.-> Instance
 
-    Zone --> Records
+    Zone ==bind9InstancesFrom==> Instance
+    Zone ==recordsFrom==> Records
 
     style GlobalCluster fill:#c8e6c9
     style Cluster fill:#e1f5ff
@@ -159,46 +160,106 @@ graph TD
     style Records fill:#f0f0f0
 ```
 
+**Relationship Legend:**
+- **Solid arrow** (-->) : Direct reference by name
+- **Dashed arrow** (-.->): Cluster-scoped reference
+- **Bold arrow** (==>) : Label selector-based selection
+
 ### Key Relationships
 
-1. **DNSZone → Cluster References**:
+1. **DNSZone → Cluster References** (Optional):
    - `spec.clusterRef`: References namespace-scoped `Bind9Cluster` (same namespace)
    - `spec.clusterProviderRef`: References cluster-scoped `ClusterBind9Provider`
-   - **Mutual Exclusivity**: Exactly one must be specified
+   - **Note**: These are optional - zones can select instances directly via label selectors
 
-2. **Bind9Instance → Cluster Reference**:
+2. **DNSZone → Bind9Instance Selection** (Primary):
+   - `spec.bind9InstancesFrom`: Label selectors to select instances
+   - **Direction**: Zones select instances (NOT instances selecting zones)
+   - **Selection Methods**:
+     - Via `clusterRef`: All instances with matching `spec.clusterRef`
+     - Via `bind9InstancesFrom`: Instances matching label selectors
+     - Via BOTH: UNION of instances from both methods (duplicates removed)
+   - **Status Tracking**: `status.bind9Instances[]` lists selected instances
+   - **Count Field**: `status.bind9InstancesCount` shows number of instances
+
+3. **Bind9Instance → Cluster Reference**:
    - `spec.cluster_ref`: Can reference either `Bind9Cluster` or `ClusterBind9Provider`
    - Controller auto-detects cluster type
+   - Used for instance organization and management
 
-3. **DNS Records → Zone Association**:
-   - Records are discovered by zones via label selectors (`DNSZone.spec.recordsFrom`)
+4. **DNSZone → DNS Records Association**:
+   - `spec.recordsFrom`: Label selectors to select records
    - Records use `metadata.labels` to be selected by zones
    - **Namespace Isolation**: Records can ONLY be selected by zones in their own namespace
+   - **Status Tracking**: `status.selectedRecords[]` lists matched records
+   - **Count Field**: `status.recordCount` shows number of records
 
 ## Reconciliation Flow
 
 ### DNSZone Reconciliation
 
+> **Architecture**: Zones select instances via `spec.bind9InstancesFrom` label selectors or `spec.clusterRef` references.
+
 ```mermaid
 sequenceDiagram
     participant K8s as Kubernetes API
-    participant Controller as DNSZone Controller
-    participant Cluster as Bind9Cluster/GlobalCluster
+    participant ZoneCtrl as DNSZone Controller
+    participant StatusUpd as DNSZoneStatusUpdater
     participant Instances as Bind9Instances
-    participant BIND9 as BIND9 Pods
+    participant Bindcar as Bindcar API (sidecar)
 
-    K8s->>Controller: DNSZone created/updated
-    Controller->>Controller: Check metadata.generation vs status.observedGeneration
-    alt Spec unchanged
-        Controller->>K8s: Skip reconciliation (status-only update)
-    else Spec changed
-        Controller->>Controller: Validate clusterRef XOR clusterProviderRef
-        Controller->>Cluster: Get cluster by clusterRef or clusterProviderRef
-        Controller->>Instances: List instances by cluster reference
-        Controller->>BIND9: Update zone files via Bindcar API
-        Controller->>K8s: Update status (observedGeneration, conditions)
+    K8s->>ZoneCtrl: DNSZone created/updated (watch event)
+    ZoneCtrl->>ZoneCtrl: Re-fetch zone for latest status
+    ZoneCtrl->>ZoneCtrl: Check metadata.generation vs status.observedGeneration
+
+    alt Spec unchanged (observedGeneration == generation)
+        ZoneCtrl->>K8s: Skip zone sync (status-only update)
+    else Spec changed OR first reconciliation
+        ZoneCtrl->>StatusUpd: Create DNSZoneStatusUpdater(zone)
+
+        alt clusterRef specified
+            ZoneCtrl->>Instances: List instances with spec.clusterRef == clusterRef
+        end
+
+        alt bind9InstancesFrom specified
+            ZoneCtrl->>Instances: List instances matching label selectors
+        end
+
+        ZoneCtrl->>ZoneCtrl: UNION instances from both selection methods
+        ZoneCtrl->>ZoneCtrl: Remove duplicates (instance UID-based)
+
+        loop For each selected instance
+            ZoneCtrl->>StatusUpd: update_instance_status(name, namespace, Claimed)
+            ZoneCtrl->>Bindcar: POST /api/v1/zones (zone configuration)
+            alt Sync successful
+                ZoneCtrl->>StatusUpd: update_instance_status(name, namespace, Configured)
+            else Sync failed
+                ZoneCtrl->>StatusUpd: update_instance_status(name, namespace, Failed, error)
+            end
+        end
+
+        StatusUpd->>StatusUpd: Compute bind9InstancesCount from bind9Instances.len()
+        StatusUpd->>StatusUpd: Set conditions (Ready, Progressing, Degraded)
+        StatusUpd->>StatusUpd: DIFF detection: compare current vs new status
+
+        alt Status actually changed
+            StatusUpd->>K8s: PATCH zone status (single atomic update)
+        else Status unchanged
+            StatusUpd->>ZoneCtrl: Skip patch (prevent reconciliation loop)
+        end
+
+        ZoneCtrl->>ZoneCtrl: Update status.observedGeneration = metadata.generation
     end
 ```
+
+**Key Architectural Points:**
+
+1. **Event-Driven**: Controller reacts to zone changes via Kubernetes watch events
+2. **Instance Selection**: Zones select instances (not instances selecting zones)
+3. **Batched Status Updates**: All status changes collected in `DNSZoneStatusUpdater`, applied atomically
+4. **DIFF Detection**: Status only patched if values actually changed (prevents reconciliation storms)
+5. **Automatic Count Computation**: `bind9InstancesCount` computed automatically when instances added/removed
+6. **UID-Based Deduplication**: Instances matched by UID prevents duplicates when both selection methods used
 
 ### ClusterBind9Provider Reconciliation
 

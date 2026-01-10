@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: MIT
 
-//! Tests for zone operations (add_zones, add_primary_zone, add_secondary_zone, delete_zone, reload_zone, zone_exists).
+//! Tests for zone operations (`add_zones`, `add_primary_zone`, `add_secondary_zone`, `delete_zone`, `reload_zone`, `zone_exists`).
 
 #[cfg(test)]
 mod tests {
@@ -148,7 +148,7 @@ mod tests {
         let soa_record = crate::crd::SOARecord {
             primary_ns: "ns1.example.com.".to_string(),
             admin_email: "admin.example.com.".to_string(),
-            serial: 2024010101,
+            serial: 2_024_010_101,
             refresh: 3600,
             retry: 600,
             expire: 604_800,
@@ -200,8 +200,9 @@ mod tests {
         let manager = Bind9Manager::new();
 
         // Deleting non-existent zone should not error (idempotent)
+        // Test with freeze_before_delete=true (primary zone behavior)
         let result = manager
-            .delete_zone("nonexistent.com", "localhost:8080")
+            .delete_zone("nonexistent.com", "localhost:8080", true)
             .await;
 
         // Should either succeed or return specific "not found" error
@@ -216,11 +217,12 @@ mod tests {
     async fn test_zone_exists_false() {
         let manager = Bind9Manager::new();
 
-        let exists = manager
+        let result = manager
             .zone_exists("definitely-does-not-exist-12345.com", "localhost:8080")
             .await;
 
-        assert!(!exists);
+        // Should return Ok(false) for 404 not found
+        assert!(matches!(result, Ok(false)));
     }
 
     #[tokio::test]
@@ -228,12 +230,12 @@ mod tests {
     async fn test_zone_exists_connection_error() {
         let manager = Bind9Manager::new();
 
-        // Should return false on connection error
-        let exists = manager
+        // Should return Err on connection error, not Ok(false)
+        let result = manager
             .zone_exists("example.com", "invalid-host:99999")
             .await;
 
-        assert!(!exists);
+        assert!(result.is_err());
     }
 
     // =====================================================
@@ -250,10 +252,10 @@ mod tests {
             soa: SoaRecord {
                 primary_ns: "ns1.example.com.".to_string(),
                 admin_email: "admin.example.com.".to_string(),
-                serial: 2025010101,
+                serial: 2_025_010_101,
                 refresh: 3600,
                 retry: 600,
-                expire: 604800,
+                expire: 604_800,
                 negative_ttl: 86400,
             },
             name_servers: vec!["ns1.example.com.".to_string()],
@@ -268,7 +270,10 @@ mod tests {
 
         assert!(zone_file.contains("$TTL 3600"));
         assert!(zone_file.contains("@ IN SOA ns1.example.com. admin.example.com."));
-        assert!(zone_file.contains("2025010101"));
+        #[allow(clippy::unreadable_literal)]
+        {
+            assert!(zone_file.contains("2025010101"));
+        }
         assert!(zone_file.contains("@ IN NS ns1.example.com."));
     }
 
@@ -285,7 +290,7 @@ mod tests {
                 serial: 1,
                 refresh: 3600,
                 retry: 600,
-                expire: 604800,
+                expire: 604_800,
                 negative_ttl: 86400,
             },
             name_servers: vec!["ns1.example.com.".to_string()],
@@ -330,7 +335,7 @@ mod tests {
                 serial: 1,
                 refresh: 3600,
                 retry: 600,
-                expire: 604800,
+                expire: 604_800,
                 negative_ttl: 86400,
             },
             name_servers: vec![],
@@ -360,7 +365,7 @@ mod tests {
                 serial: 1,
                 refresh: 3600,
                 retry: 600,
-                expire: 604800,
+                expire: 604_800,
                 negative_ttl: 86400,
             },
             name_servers: vec!["ns1.example.com.".to_string()],
@@ -436,13 +441,13 @@ mod tests {
             serial: 1,
             refresh: 3600,
             retry: 600,
-            expire: 604800,
+            expire: 604_800,
             negative_ttl: 86400,
         };
 
         assert_eq!(soa.refresh, 3600);
         assert_eq!(soa.retry, 600);
-        assert_eq!(soa.expire, 604800);
+        assert_eq!(soa.expire, 604_800);
         assert_eq!(soa.negative_ttl, 86400);
     }
 

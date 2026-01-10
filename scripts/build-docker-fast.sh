@@ -18,6 +18,7 @@ STRATEGY="${1:-local}"
 TAG="${2:-latest}"
 IMAGE_NAME=firestoned/bindy
 REGISTRY="${REGISTRY:-ghcr.io}"
+KIND_CLUSTER="${KIND_CLUSTER:-bindy-test}"
 FULL_IMAGE="${REGISTRY}/${IMAGE_NAME}:${TAG}"
 
 print_usage() {
@@ -25,13 +26,14 @@ print_usage() {
     echo ""
     echo "Strategies:"
     echo "  local     - Build locally then copy binary (fastest: ~10s)"
-    echo "  kind      - Build locally for kind then copy binary (fastest: ~10s)"
+    echo "  kind      - Build locally, copy binary, and load into kind (fastest: ~15s)"
     echo "  fast      - Use Dockerfile.fast with better caching (~1-2min)"
     echo "  chef      - Use cargo-chef for optimal caching (first: ~5min, subsequent: ~30s)"
     echo "  ci        - Use production Dockerfile with pre-built binaries (~30s, requires binaries/)"
     echo ""
     echo "Examples:"
     echo "  $0 local              # Fastest, builds locally first"
+    echo "  $0 kind               # Build locally and load into kind cluster"
     echo "  $0 fast               # Fast Docker build with caching"
     echo "  $0 chef               # Best for repeated builds"
     echo "  $0 ci                 # Production build (requires binaries/amd64/ and binaries/arm64/)"
@@ -53,19 +55,22 @@ case "$STRATEGY" in
     local)
         echo -e "${YELLOW}Strategy: Local build (fastest)${NC}"
         echo "Step 1/2: Building binary locally with cargo..."
-        cargo build --release
+        make build-aarch64-linux-debug
         echo ""
         echo "Step 2/2: Building Docker image..."
         docker build -f docker/Dockerfile.local -t "$FULL_IMAGE" .
         ;;
 
     kind)
-        echo -e "${YELLOW}Strategy: Local build (fastest)${NC}"
-        echo "Step 1/2: Building binary locally with cargo..."
-        cargo build --release
+        echo -e "${YELLOW}Strategy: Local build for kind (fastest)${NC}"
+        echo "Step 1/3: Building binary locally with cargo..."
+        make build-aarch64-linux-debug
         echo ""
-        echo "Step 2/2: Building Docker image..."
+        echo "Step 2/3: Building Docker image..."
         docker build -f docker/Dockerfile.local -t "$FULL_IMAGE" .
+        echo ""
+        echo "Step 3/3: Loading image $FULL_IMAGE into kind cluster..."
+        kind load docker-image "$FULL_IMAGE" --name $KIND_CLUSTER
         ;;
 
     fast)

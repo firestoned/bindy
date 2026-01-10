@@ -8,6 +8,7 @@
 //! the cluster status to reflect the overall health.
 
 use crate::constants::{API_GROUP_VERSION, KIND_BIND9_CLUSTER, KIND_BIND9_INSTANCE};
+use crate::context::Context;
 use crate::crd::{
     Bind9Cluster, Bind9ClusterStatus, Bind9Instance, Bind9InstanceSpec, Condition, ServerRole,
 };
@@ -37,6 +38,7 @@ use kube::{
 };
 use serde_json::json;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 /// Implement cleanup trait for `Bind9Cluster` finalizer management
@@ -60,7 +62,7 @@ impl FinalizerCleanup for Bind9Cluster {
 ///
 /// # Arguments
 ///
-/// * `client` - Kubernetes API client
+/// * `ctx` - Controller context with Kubernetes client and reflector stores
 /// * `cluster` - The `Bind9Cluster` resource to reconcile
 ///
 /// # Returns
@@ -71,7 +73,8 @@ impl FinalizerCleanup for Bind9Cluster {
 /// # Errors
 ///
 /// Returns an error if Kubernetes API operations fail or status update fails.
-pub async fn reconcile_bind9cluster(client: Client, cluster: Bind9Cluster) -> Result<()> {
+pub async fn reconcile_bind9cluster(ctx: Arc<Context>, cluster: Bind9Cluster) -> Result<()> {
+    let client = ctx.client.clone();
     let namespace = cluster.namespace().unwrap_or_default();
     let name = cluster.name_any();
 
@@ -123,7 +126,7 @@ pub async fn reconcile_bind9cluster(client: Client, cluster: Bind9Cluster) -> Re
         create_or_update_cluster_configmap(&client, &cluster).await?;
 
         // Reconcile managed instances (create/update as needed)
-        reconcile_managed_instances(&client, &cluster).await?;
+        reconcile_managed_instances(&ctx, &cluster).await?;
     } else {
         debug!(
             "Spec unchanged (generation={:?}) and no drift detected, skipping resource reconciliation",
@@ -555,7 +558,8 @@ async fn detect_instance_drift(
 /// - Failed to list existing instances
 /// - Failed to create new instances
 #[allow(clippy::too_many_lines)]
-async fn reconcile_managed_instances(client: &Client, cluster: &Bind9Cluster) -> Result<()> {
+async fn reconcile_managed_instances(ctx: &Context, cluster: &Bind9Cluster) -> Result<()> {
+    let client = ctx.client.clone();
     let namespace = cluster.namespace().unwrap_or_default();
     let cluster_name = cluster.name_any();
 
@@ -646,20 +650,50 @@ async fn reconcile_managed_instances(client: &Client, cluster: &Bind9Cluster) ->
     };
 
     // Handle scale-up: Create missing primary instances
+    // CRITICAL: Compare desired vs current state to find missing instances
+    // Build set of desired instance names, compare with existing, create the difference
     #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-    let primaries_to_create = (primary_replicas as usize).saturating_sub(existing_primary.len());
-    for i in 0..primaries_to_create {
-        let index = existing_primary.len() + i;
-        create_managed_instance_with_owner(
-            client,
-            &namespace,
-            &cluster_name,
-            ServerRole::Primary,
-            index,
-            &cluster.spec.common,
-            Some(owner_ref.clone()),
-        )
-        .await?;
+    let mut primaries_to_create = 0;
+    {
+        // Build set of desired primary instance names based on replica count
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        let desired_primary_names: std::collections::HashSet<String> = (0..(primary_replicas
+            as usize))
+            .map(|i| format!("{cluster_name}-primary-{i}"))
+            .collect();
+
+        // Build set of existing primary instance names
+        let existing_primary_names: std::collections::HashSet<String> = existing_primary
+            .iter()
+            .map(|instance| instance.name_any())
+            .collect();
+
+        // Find missing instances (desired - existing)
+        let missing_primaries: Vec<_> = desired_primary_names
+            .difference(&existing_primary_names)
+            .collect();
+
+        // Create each missing instance
+        for instance_name in missing_primaries {
+            // Extract index from name (e.g., "production-dns-primary-0" -> 0)
+            let index = instance_name
+                .rsplit('-')
+                .next()
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(0);
+
+            create_managed_instance_with_owner(
+                &client,
+                &namespace,
+                &cluster_name,
+                ServerRole::Primary,
+                index,
+                &cluster.spec.common,
+                Some(owner_ref.clone()),
+            )
+            .await?;
+            primaries_to_create += 1;
+        }
     }
 
     // Handle scale-down: Delete excess primary instances
@@ -683,26 +717,55 @@ async fn reconcile_managed_instances(client: &Client, cluster: &Bind9Cluster) ->
 
         for instance in sorted_primary.iter().take(primaries_to_delete) {
             let instance_name = instance.name_any();
-            delete_managed_instance(client, &namespace, &instance_name).await?;
+            delete_managed_instance(&client, &namespace, &instance_name).await?;
         }
     }
 
     // Handle scale-up: Create missing secondary instances
+    // CRITICAL: Compare desired vs current state to find missing instances
+    // Build set of desired instance names, compare with existing, create the difference
     #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-    let secondaries_to_create =
-        (secondary_replicas as usize).saturating_sub(existing_secondary.len());
-    for i in 0..secondaries_to_create {
-        let index = existing_secondary.len() + i;
-        create_managed_instance_with_owner(
-            client,
-            &namespace,
-            &cluster_name,
-            ServerRole::Secondary,
-            index,
-            &cluster.spec.common,
-            Some(owner_ref.clone()),
-        )
-        .await?;
+    let mut secondaries_to_create = 0;
+    {
+        // Build set of desired secondary instance names based on replica count
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        let desired_secondary_names: std::collections::HashSet<String> = (0..(secondary_replicas
+            as usize))
+            .map(|i| format!("{cluster_name}-secondary-{i}"))
+            .collect();
+
+        // Build set of existing secondary instance names
+        let existing_secondary_names: std::collections::HashSet<String> = existing_secondary
+            .iter()
+            .map(|instance| instance.name_any())
+            .collect();
+
+        // Find missing instances (desired - existing)
+        let missing_secondaries: Vec<_> = desired_secondary_names
+            .difference(&existing_secondary_names)
+            .collect();
+
+        // Create each missing instance
+        for instance_name in missing_secondaries {
+            // Extract index from name (e.g., "production-dns-secondary-0" -> 0)
+            let index = instance_name
+                .rsplit('-')
+                .next()
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(0);
+
+            create_managed_instance_with_owner(
+                &client,
+                &namespace,
+                &cluster_name,
+                ServerRole::Secondary,
+                index,
+                &cluster.spec.common,
+                Some(owner_ref.clone()),
+            )
+            .await?;
+            secondaries_to_create += 1;
+        }
     }
 
     // Handle scale-down: Delete excess secondary instances
@@ -726,7 +789,7 @@ async fn reconcile_managed_instances(client: &Client, cluster: &Bind9Cluster) ->
 
         for instance in sorted_secondary.iter().take(secondaries_to_delete) {
             let instance_name = instance.name_any();
-            delete_managed_instance(client, &namespace, &instance_name).await?;
+            delete_managed_instance(&client, &namespace, &instance_name).await?;
         }
     }
 
@@ -753,7 +816,7 @@ async fn reconcile_managed_instances(client: &Client, cluster: &Bind9Cluster) ->
 
     // Update existing managed instances to match cluster spec (declarative reconciliation)
     update_existing_managed_instances(
-        client,
+        &client,
         &namespace,
         &cluster_name,
         &cluster.spec.common,
@@ -762,7 +825,7 @@ async fn reconcile_managed_instances(client: &Client, cluster: &Bind9Cluster) ->
     .await?;
 
     // Ensure child resources (ConfigMaps, Secrets, Services, Deployments) exist for all managed instances
-    ensure_managed_instance_resources(client, cluster, &managed_instances).await?;
+    ensure_managed_instance_resources(&client, cluster, &managed_instances).await?;
 
     Ok(())
 }
@@ -838,7 +901,6 @@ async fn update_existing_managed_instances(
                 rndc_secret_ref: instance.spec.rndc_secret_ref.clone(), // Preserve if set
                 storage: instance.spec.storage.clone(),                 // Preserve if set
                 bindcar_config: desired_bindcar_config,
-                zones_from: common_spec.zones_from.clone(), // Propagate from cluster
             };
 
             // Use server-side apply to update the instance spec
@@ -1081,6 +1143,28 @@ async fn create_managed_instance_with_owner(
     labels.insert(BINDY_ROLE_LABEL.to_string(), role_str.to_string());
     labels.insert(K8S_PART_OF.to_string(), PART_OF_BINDY.to_string());
 
+    // Propagate custom labels from cluster spec based on role
+    match role {
+        ServerRole::Primary => {
+            if let Some(primary_config) = &common_spec.primary {
+                if let Some(custom_labels) = &primary_config.labels {
+                    for (key, value) in custom_labels {
+                        labels.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+        ServerRole::Secondary => {
+            if let Some(secondary_config) = &common_spec.secondary {
+                if let Some(custom_labels) = &secondary_config.labels {
+                    for (key, value) in custom_labels {
+                        labels.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+    }
+
     // Create annotations
     let mut annotations = BTreeMap::new();
     annotations.insert(
@@ -1106,14 +1190,13 @@ async fn create_managed_instance_with_owner(
             .global
             .as_ref()
             .and_then(|g| g.bindcar_config.clone()),
-        zones_from: common_spec.zones_from.clone(), // Propagate from cluster
     };
 
     let instance = Bind9Instance {
         metadata: ObjectMeta {
             name: Some(instance_name.clone()),
             namespace: Some(namespace.to_string()),
-            labels: Some(labels),
+            labels: Some(labels.clone()),
             annotations: Some(annotations),
             owner_references: owner_ref.map(|r| vec![r]),
             ..Default::default()
@@ -1141,18 +1224,19 @@ async fn create_managed_instance_with_owner(
                 );
 
                 // Build a complete patch object for server-side apply
+                // Convert BTreeMap labels to serde_json::Value for patch
+                let labels_json: serde_json::Map<String, serde_json::Value> = labels
+                    .iter()
+                    .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                    .collect();
+
                 let patch = serde_json::json!({
                     "apiVersion": API_GROUP_VERSION,
                     "kind": KIND_BIND9_INSTANCE,
                     "metadata": {
                         "name": instance_name,
                         "namespace": namespace,
-                        "labels": {
-                            BINDY_MANAGED_BY_LABEL: MANAGED_BY_BIND9_CLUSTER,
-                            BINDY_CLUSTER_LABEL: cluster_name,
-                            BINDY_ROLE_LABEL: role_str,
-                            K8S_PART_OF: PART_OF_BINDY,
-                        },
+                        "labels": labels_json,
                         "annotations": {
                             BINDY_INSTANCE_INDEX_ANNOTATION: index.to_string(),
                         },

@@ -7,6 +7,8 @@
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+
     use crate::bind9::SRVRecordData;
     use crate::crd::*;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
@@ -516,10 +518,12 @@ mod tests {
             last_transition_time: Some("2024-11-27T00:00:00Z".to_string()),
         };
 
+        #[allow(deprecated)] // Testing deprecated zone field for backward compatibility
         let status = RecordStatus {
             conditions: vec![condition],
             observed_generation: Some(1),
             zone: None,
+            zone_ref: None,
             record_hash: None,
             last_updated: None,
         };
@@ -548,10 +552,12 @@ mod tests {
             },
         ];
 
+        #[allow(deprecated)] // Testing deprecated zone field for backward compatibility
         let status = RecordStatus {
             conditions,
             observed_generation: Some(2),
             zone: None,
+            zone_ref: None,
             record_hash: None,
             last_updated: None,
         };
@@ -571,10 +577,12 @@ mod tests {
             last_transition_time: Some("2024-11-27T00:00:00Z".to_string()),
         };
 
+        #[allow(deprecated)] // Testing deprecated zone field for backward compatibility
         let status = RecordStatus {
             conditions: vec![condition],
             observed_generation: Some(1),
             zone: None,
+            zone_ref: None,
             record_hash: None,
             last_updated: None,
         };
@@ -741,7 +749,7 @@ mod tests {
     fn test_empty_record_name() {
         // Empty name is allowed by the type system but would fail at runtime
         let spec = ARecordSpec {
-            name: "".to_string(),
+            name: String::new(),
             ipv4_address: "192.0.2.1".to_string(),
             ttl: None,
         };
@@ -922,7 +930,7 @@ mod tests {
             API_GROUP_VERSION, KIND_AAAA_RECORD, KIND_A_RECORD, KIND_CAA_RECORD, KIND_CNAME_RECORD,
             KIND_MX_RECORD, KIND_NS_RECORD, KIND_SRV_RECORD, KIND_TXT_RECORD,
         };
-        use crate::crd::{DNSZoneStatus, RecordReference};
+        use crate::crd::{DNSZoneStatus, RecordReference, RecordReferenceWithTimestamp};
         use serde_json::json;
 
         // ====================================================================
@@ -936,6 +944,8 @@ mod tests {
                 kind: KIND_A_RECORD.to_string(),
                 name: "test-a-record".to_string(),
                 namespace: "dns-system".to_string(),
+                record_name: None,
+                zone_name: None,
             };
 
             assert_eq!(record_ref.api_version, "bindy.firestoned.io/v1beta1");
@@ -950,6 +960,8 @@ mod tests {
                 kind: KIND_A_RECORD.to_string(),
                 name: "test-record".to_string(),
                 namespace: "dns-system".to_string(),
+                record_name: None,
+                zone_name: None,
             };
 
             let ref2 = RecordReference {
@@ -957,6 +969,8 @@ mod tests {
                 kind: KIND_A_RECORD.to_string(),
                 name: "test-record".to_string(),
                 namespace: "dns-system".to_string(),
+                record_name: None,
+                zone_name: None,
             };
 
             let ref3 = RecordReference {
@@ -964,6 +978,8 @@ mod tests {
                 kind: KIND_AAAA_RECORD.to_string(),
                 name: "test-record".to_string(),
                 namespace: "dns-system".to_string(),
+                record_name: None,
+                zone_name: None,
             };
 
             assert_eq!(ref1, ref2);
@@ -977,6 +993,8 @@ mod tests {
                 kind: "ARecord".to_string(),
                 name: "test-a-record".to_string(),
                 namespace: "dns-system".to_string(),
+                record_name: None,
+                zone_name: None,
             };
 
             let json = serde_json::to_value(&record_ref).unwrap();
@@ -1009,11 +1027,10 @@ mod tests {
             let status = DNSZoneStatus {
                 conditions: vec![],
                 observed_generation: None,
-                record_count: None,
-                secondary_ips: None,
+                records_count: 0,
                 records: vec![],
-                selection_method: None,
-                selected_by_instance: None,
+                bind9_instances: vec![],
+                bind9_instances_count: None,
             };
 
             assert!(status.records.is_empty());
@@ -1022,34 +1039,39 @@ mod tests {
         #[test]
         fn test_dns_zone_status_with_multiple_records() {
             let records = vec![
-                RecordReference {
+                RecordReferenceWithTimestamp {
                     api_version: API_GROUP_VERSION.to_string(),
                     kind: KIND_A_RECORD.to_string(),
                     name: "web-a-record".to_string(),
                     namespace: "dns-system".to_string(),
+                    record_name: None,
+                    last_reconciled_at: None,
                 },
-                RecordReference {
+                RecordReferenceWithTimestamp {
                     api_version: API_GROUP_VERSION.to_string(),
                     kind: KIND_AAAA_RECORD.to_string(),
                     name: "web-aaaa-record".to_string(),
                     namespace: "dns-system".to_string(),
+                    record_name: None,
+                    last_reconciled_at: None,
                 },
-                RecordReference {
+                RecordReferenceWithTimestamp {
                     api_version: API_GROUP_VERSION.to_string(),
                     kind: KIND_CNAME_RECORD.to_string(),
                     name: "www-cname-record".to_string(),
                     namespace: "dns-system".to_string(),
+                    record_name: None,
+                    last_reconciled_at: None,
                 },
             ];
 
             let status = DNSZoneStatus {
                 conditions: vec![],
                 observed_generation: None,
-                record_count: None,
-                secondary_ips: None,
+                records_count: records.len() as i32,
                 records: records.clone(),
-                selection_method: None,
-                selected_by_instance: None,
+                bind9_instances: vec![],
+                bind9_instances_count: None,
             };
 
             assert_eq!(status.records.len(), 3);
@@ -1059,39 +1081,40 @@ mod tests {
         }
 
         #[test]
-        fn test_dns_zone_status_serialization_skips_empty_records() {
+        fn test_dns_zone_status_serialization_includes_empty_records() {
             let status = DNSZoneStatus {
                 conditions: vec![],
                 observed_generation: None,
-                record_count: None,
-                secondary_ips: None,
+                records_count: 0,
                 records: vec![],
-                selection_method: None,
-                selected_by_instance: None,
+                bind9_instances: vec![],
+                bind9_instances_count: None,
             };
 
             let json = serde_json::to_value(&status).unwrap();
-            // records field should be omitted when empty due to skip_serializing_if
-            assert!(!json.as_object().unwrap().contains_key("records"));
+            // records field should always be included, even when empty (0 records)
+            assert!(json.as_object().unwrap().contains_key("records"));
+            assert_eq!(json["records"].as_array().unwrap().len(), 0);
         }
 
         #[test]
         fn test_dns_zone_status_serialization_includes_non_empty_records() {
-            let records = vec![RecordReference {
+            let records = vec![RecordReferenceWithTimestamp {
                 api_version: API_GROUP_VERSION.to_string(),
                 kind: KIND_A_RECORD.to_string(),
                 name: "test-a-record".to_string(),
                 namespace: "dns-system".to_string(),
+                record_name: None,
+                last_reconciled_at: None,
             }];
 
             let status = DNSZoneStatus {
                 conditions: vec![],
                 observed_generation: None,
-                record_count: None,
-                secondary_ips: None,
+                records_count: records.len() as i32,
                 records: records.clone(),
-                selection_method: None,
-                selected_by_instance: None,
+                bind9_instances: vec![],
+                bind9_instances_count: None,
             };
 
             let json = serde_json::to_value(&status).unwrap();
@@ -1150,6 +1173,8 @@ mod tests {
                     kind: kind.to_string(),
                     name: name.to_string(),
                     namespace: "dns-system".to_string(),
+                    record_name: None,
+                    zone_name: None,
                 };
 
                 assert_eq!(record_ref.api_version, "bindy.firestoned.io/v1beta1");
@@ -1170,12 +1195,16 @@ mod tests {
                     kind: KIND_A_RECORD.to_string(),
                     name: "web-a-record".to_string(),
                     namespace: "dns-system".to_string(),
+                    record_name: None,
+                    zone_name: None,
                 },
                 RecordReference {
                     api_version: API_GROUP_VERSION.to_string(),
                     kind: KIND_AAAA_RECORD.to_string(),
                     name: "web-aaaa-record".to_string(),
                     namespace: "dns-system".to_string(),
+                    record_name: None,
+                    zone_name: None,
                 },
             ];
 
@@ -1184,6 +1213,8 @@ mod tests {
                 kind: KIND_A_RECORD.to_string(),
                 name: "web-a-record".to_string(),
                 namespace: "dns-system".to_string(),
+                record_name: None,
+                zone_name: None,
             };
 
             // Check if record already exists
@@ -1195,6 +1226,8 @@ mod tests {
                 kind: KIND_MX_RECORD.to_string(),
                 name: "mail-mx-record".to_string(),
                 namespace: "dns-system".to_string(),
+                record_name: None,
+                zone_name: None,
             };
 
             let exists = records.iter().any(|r| r == &different_record);
@@ -1208,6 +1241,8 @@ mod tests {
                 kind: KIND_A_RECORD.to_string(),
                 name: "web-a-record".to_string(),
                 namespace: "dns-system".to_string(),
+                record_name: None,
+                zone_name: None,
             }];
 
             let new_record = RecordReference {
@@ -1215,6 +1250,8 @@ mod tests {
                 kind: KIND_A_RECORD.to_string(),
                 name: "web-a-record".to_string(),
                 namespace: "dns-system".to_string(),
+                record_name: None,
+                zone_name: None,
             };
 
             // Simulate the duplicate check from add_record_to_zone_status
@@ -1230,6 +1267,8 @@ mod tests {
                 kind: KIND_AAAA_RECORD.to_string(),
                 name: "web-aaaa-record".to_string(),
                 namespace: "dns-system".to_string(),
+                record_name: None,
+                zone_name: None,
             };
 
             if !records.iter().any(|r| r == &different_record) {
@@ -1247,49 +1286,49 @@ mod tests {
         #[test]
         fn test_preserve_records_on_status_update() {
             let existing_records = vec![
-                RecordReference {
+                RecordReferenceWithTimestamp {
                     api_version: API_GROUP_VERSION.to_string(),
                     kind: KIND_A_RECORD.to_string(),
                     name: "existing-a-record".to_string(),
                     namespace: "dns-system".to_string(),
+                    record_name: None,
+                    last_reconciled_at: None,
                 },
-                RecordReference {
+                RecordReferenceWithTimestamp {
                     api_version: API_GROUP_VERSION.to_string(),
                     kind: KIND_AAAA_RECORD.to_string(),
                     name: "existing-aaaa-record".to_string(),
                     namespace: "dns-system".to_string(),
+                    record_name: None,
+                    last_reconciled_at: None,
                 },
             ];
 
             let current_status = Some(DNSZoneStatus {
                 conditions: vec![],
                 observed_generation: Some(1),
-                record_count: Some(5),
-                secondary_ips: Some(vec!["10.0.0.1".to_string()]),
+                records_count: existing_records.len() as i32,
                 records: existing_records.clone(),
-                selection_method: None,
-                selected_by_instance: None,
+                bind9_instances: vec![],
+                bind9_instances_count: None,
             });
 
             // Simulate DNSZone reconciler creating new status
+            let records = current_status
+                .as_ref()
+                .map(|s| s.records.clone())
+                .unwrap_or_default();
             let new_status = DNSZoneStatus {
                 conditions: vec![],
                 observed_generation: current_status.as_ref().and_then(|s| s.observed_generation),
-                record_count: current_status.as_ref().and_then(|s| s.record_count),
-                secondary_ips: current_status
-                    .as_ref()
-                    .and_then(|s| s.secondary_ips.clone()),
-                records: current_status
-                    .map(|s| s.records.clone())
-                    .unwrap_or_default(),
-                selection_method: None,
-                selected_by_instance: None,
+                records_count: records.len() as i32,
+                records,
+                bind9_instances: vec![],
+                bind9_instances_count: None,
             };
 
             // Verify all fields preserved
             assert_eq!(new_status.observed_generation, Some(1));
-            assert_eq!(new_status.record_count, Some(5));
-            assert_eq!(new_status.secondary_ips, Some(vec!["10.0.0.1".to_string()]));
             assert_eq!(new_status.records.len(), 2);
             assert_eq!(new_status.records[0].kind, "ARecord");
             assert_eq!(new_status.records[1].kind, "AAAARecord");
@@ -1299,16 +1338,16 @@ mod tests {
         fn test_initialize_empty_records_when_no_current_status() {
             let current_status: Option<DNSZoneStatus> = None;
 
+            let records = current_status
+                .map(|s| s.records.clone())
+                .unwrap_or_default();
             let new_status = DNSZoneStatus {
                 conditions: vec![],
                 observed_generation: None,
-                record_count: None,
-                secondary_ips: None,
-                records: current_status
-                    .map(|s| s.records.clone())
-                    .unwrap_or_default(),
-                selection_method: None,
-                selected_by_instance: None,
+                records_count: records.len() as i32,
+                records,
+                bind9_instances: vec![],
+                bind9_instances_count: None,
             };
 
             assert!(new_status.records.is_empty());

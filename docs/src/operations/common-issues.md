@@ -95,42 +95,87 @@ kubectl annotate dnszone example-com reconcile=true -n dns-system
 
 ## DNS Record Issues
 
-### Record Not Matching DNSZone
+### Record Not Matching DNSZone (Event-Driven Architecture)
 
-**Symptom:** Controller logs show "No matching DNSZone found" errors for a record that should match
-
-**Example Error:**
-```
-ERROR No DNSZone matched label selector for record 'www-example' in namespace 'dns-system'
-```
-
-**Root Cause:** Mismatch between record labels and DNSZone label selectors.
+**Symptom:** Record created but `status.zoneRef` is not set, or record status shows "NotSelected"
 
 **Diagnosis:**
 ```bash
+# Check if record has been selected by a zone
+kubectl get arecord www-example -n dns-system -o jsonpath='{.status.zoneRef}'
+
+# Check record status conditions
+kubectl get arecord www-example -n dns-system -o jsonpath='{.status.conditions[?(@.type=="Ready")]}'
+
 # Check the record's labels
-kubectl get arecord www-example -n dns-system -o yaml | yq '.metadata.labels'
+kubectl get arecord www-example -n dns-system -o jsonpath='{.metadata.labels}'
 
 # Check available DNSZones and their selectors
 kubectl get dnszones -n dns-system
 
 # Check the DNSZone's label selector
-kubectl get dnszone example-com -n dns-system -o yaml | yq '.spec.recordSelector'
+kubectl get dnszone example-com -n dns-system -o jsonpath='{.spec.recordsFrom[*].selector}'
 ```
 
 **Understanding the Problem:**
 
-DNS records are matched to DNSZones using label selectors. The DNSZone defines which records it should include using `spec.recordSelector`.
+With the **event-driven architecture**, DNS records are matched to DNSZones via watch events:
 
-Common mistakes:
+1. **DNSZone watches all 8 record types** (ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord)
+2. When a record is created/updated, **DNSZone receives a watch event immediately** (⚡ sub-second)
+3. DNSZone evaluates if record labels match `spec.recordsFrom` selectors
+4. If matched, DNSZone **sets `record.status.zoneRef`** with full zone metadata
+5. Record controller **watches for status changes** and reconciles when `status.zoneRef` is set
+
+**Common Mistakes:**
 - Record has label `zone: internal-local` but DNSZone expects `zone: internal.local`
 - Record missing the required label entirely
-- DNSZone selector doesn't match any records
+- DNSZone `spec.recordsFrom` selector doesn't match any records
 - Typo in label key or value
+- Record and DNSZone in different namespaces (watches are namespace-scoped)
+
+**Expected Behavior (Event-Driven):**
+```
+Record created at 10:00:00.000
+  → DNSZone watch triggered at 10:00:00.050 ⚡ (immediate)
+  → Label selectors evaluated
+  → status.zoneRef set at 10:00:00.100 (if matched)
+  → Record watch triggered at 10:00:00.150 ⚡ (immediate)
+  → Record reconciles to BIND9 at 10:00:00.500
+Total time: ~500ms ✅
+```
+
+**Troubleshooting:**
+
+1. **Verify record labels match zone selector:**
+   ```bash
+   # Get record labels
+   kubectl get arecord www-example -o jsonpath='{.metadata.labels}'
+
+   # Get zone selector
+   kubectl get dnszone example-com -o jsonpath='{.spec.recordsFrom[0].selector}'
+   ```
+
+2. **Check if record is in the same namespace as the zone:**
+   ```bash
+   kubectl get arecord www-example -n dns-system
+   kubectl get dnszone example-com -n dns-system
+   ```
+
+3. **Verify DNSZone controller is running:**
+   ```bash
+   kubectl logs -n dns-system deployment/bindy | grep "DNSZone watch"
+   ```
+
+4. **Check record status.zoneRef field:**
+   ```bash
+   # If empty/null, record hasn't been selected
+   kubectl get arecord www-example -o yaml | grep -A5 "zoneRef:"
+   ```
 
 **Solution:**
 
-Ensure record labels match the DNSZone's selector.
+Ensure record labels match the DNSZone's selector
 
 **Example:**
 

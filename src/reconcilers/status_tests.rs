@@ -364,19 +364,19 @@ mod tests {
             spec: DNSZoneSpec {
                 zone_name: "example.com".to_string(),
                 cluster_ref: None,
-                cluster_provider_ref: Some("production-dns".to_string()),
                 soa_record: SOARecord {
                     primary_ns: "ns1.example.com.".to_string(),
                     admin_email: "admin.example.com.".to_string(),
-                    serial: 2025010101,
+                    serial: 2_025_010_101,
                     refresh: 3600,
                     retry: 1800,
-                    expire: 604800,
+                    expire: 604_800,
                     negative_ttl: 86400,
                 },
                 ttl: None,
                 name_server_ips: None,
                 records_from: None,
+                bind9_instances_from: None,
             },
             status: None,
         }

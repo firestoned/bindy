@@ -23,7 +23,7 @@ mod tests {
             .expect("Failed to create mock client")
     }
 
-    /// Helper to create a test ServiceAccount
+    /// Helper to create a test `ServiceAccount`
     fn create_test_service_account() -> ServiceAccount {
         ServiceAccount {
             metadata: ObjectMeta {
@@ -35,7 +35,7 @@ mod tests {
         }
     }
 
-    /// Helper to create a test ConfigMap
+    /// Helper to create a test `ConfigMap`
     fn create_test_configmap() -> ConfigMap {
         let mut data = BTreeMap::new();
         data.insert("key1".to_string(), "value1".to_string());
@@ -51,7 +51,7 @@ mod tests {
         }
     }
 
-    /// Helper to create a test ConfigMap with updated data
+    /// Helper to create a test `ConfigMap` with updated data
     fn create_test_configmap_updated() -> ConfigMap {
         let mut data = BTreeMap::new();
         data.insert("key1".to_string(), "value1-updated".to_string());
@@ -69,7 +69,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires Kubernetes cluster
+    #[ignore = "Requires Kubernetes cluster"]
     async fn test_create_or_apply_creates_when_missing() {
         let _client = mock_client().await;
         let _sa = create_test_service_account();
@@ -83,7 +83,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires Kubernetes cluster
+    #[ignore = "Requires Kubernetes cluster"]
     async fn test_create_or_apply_updates_when_exists() {
         let _client = mock_client().await;
         let _sa = create_test_service_account();
@@ -98,7 +98,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires Kubernetes cluster
+    #[ignore = "Requires Kubernetes cluster"]
     async fn test_create_or_apply_is_idempotent() {
         let _client = mock_client().await;
         let _sa = create_test_service_account();
@@ -112,7 +112,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires Kubernetes cluster
+    #[ignore = "Requires Kubernetes cluster"]
     async fn test_create_or_replace_creates_when_missing() {
         let _client = mock_client().await;
         let _cm = create_test_configmap();
@@ -126,7 +126,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires Kubernetes cluster
+    #[ignore = "Requires Kubernetes cluster"]
     async fn test_create_or_replace_replaces_when_exists() {
         let _client = mock_client().await;
         let _cm_original = create_test_configmap();
@@ -142,7 +142,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires Kubernetes cluster
+    #[ignore = "Requires Kubernetes cluster"]
     async fn test_create_or_replace_is_idempotent() {
         let _client = mock_client().await;
         let _cm = create_test_configmap();
@@ -156,7 +156,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires Kubernetes cluster
+    #[ignore = "Requires Kubernetes cluster"]
     async fn test_create_or_patch_json_creates_when_missing() {
         let _client = mock_client().await;
         let _sa = create_test_service_account();
@@ -178,7 +178,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires Kubernetes cluster
+    #[ignore = "Requires Kubernetes cluster"]
     async fn test_create_or_patch_json_patches_when_exists() {
         let _client = mock_client().await;
         let _cm = create_test_configmap();
@@ -208,7 +208,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // Requires Kubernetes cluster
+    #[ignore = "Requires Kubernetes cluster"]
     async fn test_create_or_patch_json_handles_already_exists_error() {
         let _client = mock_client().await;
         let _sa = create_test_service_account();

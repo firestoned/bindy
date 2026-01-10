@@ -87,7 +87,7 @@ This document defines the audit log retention policy for the Bindy DNS Controlle
   "level": "Metadata",
   "auditID": "a0b1c2d3-e4f5-6789-0abc-def123456789",
   "stage": "ResponseComplete",
-  "requestURI": "/apis/bindy.firestoned.io/v1alpha1/namespaces/team-web/dnszones/example-com",
+  "requestURI": "/apis/bindy.firestoned.io/v1beta1/namespaces/team-web/dnszones/example-com",
   "verb": "update",
   "user": {
     "username": "system:serviceaccount:dns-system:bindy",
@@ -101,7 +101,7 @@ This document defines the audit log retention policy for the Bindy DNS Controlle
     "namespace": "team-web",
     "name": "example-com",
     "apiGroup": "bindy.firestoned.io",
-    "apiVersion": "v1alpha1"
+    "apiVersion": "v1beta1"
   },
   "responseStatus": {
     "metadata": {},

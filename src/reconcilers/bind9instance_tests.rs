@@ -45,7 +45,6 @@ mod tests {
                 rndc_secret_ref: None,
                 storage: None,
                 bindcar_config: None,
-                zones_from: None,
             },
             status: None,
         }
@@ -73,7 +72,6 @@ mod tests {
                 rndc_secret_ref: None,
                 storage: None,
                 bindcar_config: None,
-                zones_from: None,
             },
             status: None,
         };
@@ -104,7 +102,6 @@ mod tests {
                 rndc_secret_ref: None,
                 storage: None,
                 bindcar_config: None,
-                zones_from: None,
             },
             status: None,
         };
@@ -231,7 +228,6 @@ mod tests {
                 rndc_secret_ref: None,
                 storage: None,
                 bindcar_config: None,
-                zones_from: None,
             },
             status: None,
         };
@@ -275,7 +271,6 @@ mod tests {
                 rndc_secret_ref: None,
                 storage: None,
                 bindcar_config: None,
-                zones_from: None,
             },
             status: None,
         };
@@ -341,7 +336,6 @@ mod tests {
                 rndc_secret_ref: None,
                 storage: None,
                 bindcar_config: None,
-                zones_from: None,
             },
             status: None,
         };
@@ -365,11 +359,11 @@ mod tests {
         let ports = container.ports.as_ref().unwrap();
 
         assert_eq!(ports.len(), 3);
-        assert_eq!(ports[0].container_port, 53);
+        assert_eq!(ports[0].container_port, 5353); // DNS TCP (non-privileged port)
         assert_eq!(ports[0].protocol.as_deref(), Some("TCP"));
-        assert_eq!(ports[1].container_port, 53);
+        assert_eq!(ports[1].container_port, 5353); // DNS UDP (non-privileged port)
         assert_eq!(ports[1].protocol.as_deref(), Some("UDP"));
-        assert_eq!(ports[2].container_port, 953);
+        assert_eq!(ports[2].container_port, 953); // RNDC
         assert_eq!(ports[2].protocol.as_deref(), Some("TCP"));
     }
 
@@ -559,7 +553,7 @@ mod tests {
         let message = format!("{ready_pod_count}/{actual_replicas} pods are ready");
 
         assert_eq!(message, "2/5 pods are ready");
-        assert!(message.contains("/"));
+        assert!(message.contains('/'));
         assert!(message.contains("pods are ready"));
     }
 
@@ -610,7 +604,7 @@ mod tests {
     /// was used, causing all instances to show as "Not Ready" even when pods were running.
     ///
     /// Bug: Used `app={instance_name}` which doesn't match any pods
-    /// Fix: Use `app.kubernetes.io/instance={instance_name}` (K8S_INSTANCE constant)
+    /// Fix: Use `app.kubernetes.io/instance={instance_name}` (`K8S_INSTANCE` constant)
     #[test]
     fn test_pod_label_selector_uses_correct_label() {
         use crate::labels::K8S_INSTANCE;
@@ -618,14 +612,14 @@ mod tests {
         let instance_name = "my-dns-primary-0";
 
         // This is the correct label selector format that should be used
-        let correct_selector = format!("{}={}", K8S_INSTANCE, instance_name);
+        let correct_selector = format!("{K8S_INSTANCE}={instance_name}");
         assert_eq!(
             correct_selector, "app.kubernetes.io/instance=my-dns-primary-0",
             "Label selector should use the standard Kubernetes instance label"
         );
 
         // Verify it's NOT using the old incorrect format
-        let incorrect_selector = format!("app={}", instance_name);
+        let incorrect_selector = format!("app={instance_name}");
         assert_ne!(
             incorrect_selector, correct_selector,
             "Should NOT use 'app=instance_name' - that was the bug!"
@@ -640,8 +634,8 @@ mod tests {
 
     /// Test that deployment labels match the pod selector used in status checking
     ///
-    /// This ensures that the labels applied to pods by build_deployment() match
-    /// the selector used in update_status_from_deployment() to find those pods.
+    /// This ensures that the labels applied to pods by `build_deployment()` match
+    /// the selector used in `update_status_from_deployment()` to find those pods.
     #[test]
     fn test_deployment_labels_match_pod_selector() {
         use crate::labels::K8S_INSTANCE;
@@ -658,32 +652,29 @@ mod tests {
         // The critical label: pods MUST have app.kubernetes.io/instance label
         assert!(
             pod_labels.contains_key(K8S_INSTANCE),
-            "Pod template must include {} label",
-            K8S_INSTANCE
+            "Pod template must include {K8S_INSTANCE} label"
         );
         assert_eq!(
             pod_labels.get(K8S_INSTANCE).unwrap(),
             instance_name,
-            "{} label value must match instance name",
-            K8S_INSTANCE
+            "{K8S_INSTANCE} label value must match instance name"
         );
 
         // Verify the selector that will be used to find these pods
-        let selector_used_in_status_check = format!("{}={}", K8S_INSTANCE, instance_name);
+        let selector_used_in_status_check = format!("{K8S_INSTANCE}={instance_name}");
 
         // This selector should match the pod's labels
         let instance_label_value = pod_labels.get(K8S_INSTANCE).unwrap();
         assert_eq!(
             instance_label_value,
             &instance_name.to_string(),
-            "Selector '{}' should match pod label",
-            selector_used_in_status_check
+            "Selector '{selector_used_in_status_check}' should match pod label"
         );
 
         // Document what labels the pod actually has for debugging
         println!("Pod labels created by build_deployment():");
         for (key, value) in &pod_labels {
-            println!("  {}: {}", key, value);
+            println!("  {key}: {value}");
         }
     }
 
@@ -713,16 +704,15 @@ mod tests {
         ];
 
         for (instance_name, expected_selector) in test_cases {
-            let selector = format!("{}={}", K8S_INSTANCE, instance_name);
+            let selector = format!("{K8S_INSTANCE}={instance_name}");
             assert_eq!(
                 selector, expected_selector,
-                "Label selector format is incorrect for instance '{}'",
-                instance_name
+                "Label selector format is incorrect for instance '{instance_name}'"
             );
         }
     }
 
-    /// Test that the K8S_INSTANCE constant has the correct value
+    /// Test that the `K8S_INSTANCE` constant has the correct value
     ///
     /// This validates that we're using the official Kubernetes standard label name.
     #[test]
@@ -734,4 +724,8 @@ mod tests {
             "K8S_INSTANCE constant must use the official Kubernetes standard label"
         );
     }
+
+    // ========================================================================
+    // T1: Bind9Instance Controller - Zone Selection Tests
+    // ========================================================================
 }

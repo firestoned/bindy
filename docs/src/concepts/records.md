@@ -76,6 +76,91 @@ spec:
 
 See [Label Selector Guide](../guide/label-selectors.md) for advanced patterns.
 
+## Event-Driven Record Reconciliation
+
+All 8 record types use an **event-driven architecture** for immediate reconciliation:
+
+### How It Works
+
+1. **DNSZone watches all record types**
+   - When you create a record, the DNSZone controller receives a watch event immediately (⚡ sub-second)
+   - DNSZone evaluates if the record's labels match any `recordsFrom` selectors
+
+2. **DNSZone sets `status.zoneRef`**
+   - If labels match, DNSZone sets the record's `status.zoneRef` with full zone metadata:
+     ```yaml
+     status:
+       zoneRef:
+         apiVersion: bindy.firestoned.io/v1beta1
+         kind: DNSZone
+         name: example-com
+         namespace: dns-system
+         zoneName: example.com
+     ```
+
+3. **Record controllers watch status changes**
+   - Record controllers watch for **status changes** (not just spec changes)
+   - When `status.zoneRef` is set, the record controller receives a watch event immediately (⚡ sub-second)
+
+4. **Record reconciles to BIND9**
+   - Record controller reads `status.zoneRef` to find its parent zone
+   - Adds the record to BIND9 primaries via dynamic DNS (nsupdate)
+   - Updates `status.conditions` to RecordAvailable
+
+### Performance
+
+**Event-driven (current):**
+```
+Create record (10:00:00.000)
+  → DNSZone watch triggered (10:00:00.050) ⚡
+  → status.zoneRef set (10:00:00.100)
+  → Record watch triggered (10:00:00.150) ⚡
+  → BIND9 updated (10:00:00.500)
+Total: 500ms ✅
+```
+
+**Old polling approach:**
+```
+Create record (10:00:00.000)
+  → Wait for DNSZone reconcile (10:05:00.000) ⏳
+  → Wait for record reconcile (10:05:30.000) ⏳
+Total: 5 minutes 30 seconds ❌
+```
+
+### Record Status Fields
+
+All records have a `status.zoneRef` field showing which zone selected them:
+
+```yaml
+status:
+  # NEW: Structured zone reference (set by DNSZone controller)
+  zoneRef:
+    apiVersion: bindy.firestoned.io/v1beta1
+    kind: DNSZone
+    name: example-com
+    namespace: dns-system
+    zoneName: example.com
+
+  # DEPRECATED: String-based zone (kept for backward compatibility)
+  zone: example.com
+
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: RecordAvailable
+      message: "A record www successfully added to zone example.com"
+  observedGeneration: 1
+```
+
+**Checking if a record is selected:**
+```bash
+# Check if record has been selected by a zone
+kubectl get arecord www-example -o jsonpath='{.status.zoneRef}'
+
+# Check which zone selected this record
+kubectl get arecord www-example -o jsonpath='{.status.zoneRef.name}'
+```
+
 ## ARecord (IPv4)
 
 ```yaml

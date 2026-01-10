@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: MIT
 
-//! Unit tests for http_errors module
+//! Unit tests for `http_errors` module
 //!
 //! These tests verify HTTP error code mapping to status condition reasons.
 
@@ -133,13 +133,11 @@ mod tests {
             let (reason, message) = map_http_error_to_reason(code);
             assert_eq!(
                 reason, REASON_BINDCAR_UNREACHABLE,
-                "Code {} should map to BINDCAR_UNREACHABLE",
-                code
+                "Code {code} should map to BINDCAR_UNREACHABLE"
             );
             assert!(
                 message.contains(&code.to_string()),
-                "Message should contain code {}",
-                code
+                "Message should contain code {code}"
             );
         }
     }
@@ -151,13 +149,11 @@ mod tests {
             let (reason, message) = map_http_error_to_reason(code);
             assert_eq!(
                 reason, REASON_BINDCAR_UNREACHABLE,
-                "Code {} should map to BINDCAR_UNREACHABLE",
-                code
+                "Code {code} should map to BINDCAR_UNREACHABLE"
             );
             assert!(
                 message.contains(&code.to_string()),
-                "Message should contain code {}",
-                code
+                "Message should contain code {code}"
             );
         }
     }
@@ -174,8 +170,7 @@ mod tests {
             let (reason, _) = map_http_error_to_reason(code);
             assert_eq!(
                 reason, REASON_GATEWAY_ERROR,
-                "Code {} should map to GATEWAY_ERROR",
-                code
+                "Code {code} should map to GATEWAY_ERROR"
             );
         }
     }
@@ -218,18 +213,6 @@ mod tests {
     }
 
     // ============================================================================
-    // Test Connection Error Mapping
-    // ============================================================================
-
-    #[test]
-    fn test_map_connection_error() {
-        let (reason, message) = map_connection_error();
-        assert_eq!(reason, REASON_BINDCAR_UNREACHABLE);
-        assert!(message.contains("Cannot connect"));
-        assert!(message.contains("Bindcar"));
-    }
-
-    // ============================================================================
     // Test Message Format Consistency
     // ============================================================================
 
@@ -241,8 +224,7 @@ mod tests {
             let (_, message) = map_http_error_to_reason(code);
             assert!(
                 !message.is_empty(),
-                "Message for code {} should not be empty",
-                code
+                "Message for code {code} should not be empty"
             );
         }
     }
@@ -255,9 +237,7 @@ mod tests {
             let (_, message) = map_http_error_to_reason(code);
             assert!(
                 message.contains(&code.to_string()),
-                "Message for code {} should contain the status code. Got: {}",
-                code,
-                message
+                "Message for code {code} should contain the status code. Got: {message}"
             );
         }
     }
@@ -295,9 +275,6 @@ mod tests {
 
         let (reason_502, _) = map_http_error_to_reason(502);
         assert_eq!(reason_502, "GatewayError");
-
-        let (reason_conn, _) = map_connection_error();
-        assert_eq!(reason_conn, "BindcarUnreachable");
     }
 
     // ============================================================================
@@ -309,7 +286,7 @@ mod tests {
         // Code 0 is not a valid HTTP status, should map to unreachable
         let (reason, message) = map_http_error_to_reason(0);
         assert_eq!(reason, REASON_BINDCAR_UNREACHABLE);
-        assert!(message.contains("0"));
+        assert!(message.contains('0'));
     }
 
     #[test]
@@ -333,14 +310,7 @@ mod tests {
         let _: &str = reason;
 
         // message should be String (can be moved)
-        let _owned: String = message;
-    }
-
-    #[test]
-    fn test_connection_error_return_type() {
-        let (reason, message) = map_connection_error();
-
-        let _: &str = reason;
-        let _owned: String = message;
+        let owned: String = message;
+        drop(owned);
     }
 }

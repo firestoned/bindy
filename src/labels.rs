@@ -103,6 +103,30 @@ pub const FINALIZER_BIND9_INSTANCE: &str = "bindy.firestoned.io/bind9instance-fi
 /// Finalizer for `DNSZone` resources
 pub const FINALIZER_DNS_ZONE: &str = "bindy.firestoned.io/dnszone-finalizer";
 
+/// Finalizer for `ARecord` resources
+pub const FINALIZER_A_RECORD: &str = "bindy.firestoned.io/arecord-finalizer";
+
+/// Finalizer for `AAAARecord` resources
+pub const FINALIZER_AAAA_RECORD: &str = "bindy.firestoned.io/aaaarecord-finalizer";
+
+/// Finalizer for `CNAMERecord` resources
+pub const FINALIZER_CNAME_RECORD: &str = "bindy.firestoned.io/cnamerecord-finalizer";
+
+/// Finalizer for `MXRecord` resources
+pub const FINALIZER_MX_RECORD: &str = "bindy.firestoned.io/mxrecord-finalizer";
+
+/// Finalizer for `NSRecord` resources
+pub const FINALIZER_NS_RECORD: &str = "bindy.firestoned.io/nsrecord-finalizer";
+
+/// Finalizer for `TXTRecord` resources
+pub const FINALIZER_TXT_RECORD: &str = "bindy.firestoned.io/txtrecord-finalizer";
+
+/// Finalizer for `SRVRecord` resources
+pub const FINALIZER_SRV_RECORD: &str = "bindy.firestoned.io/srvrecord-finalizer";
+
+/// Finalizer for `CAARecord` resources
+pub const FINALIZER_CAA_RECORD: &str = "bindy.firestoned.io/caarecord-finalizer";
+
 // ============================================================================
 // Role Values
 // ============================================================================
