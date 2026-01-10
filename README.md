@@ -71,6 +71,8 @@ Bindy is a Kubernetes operator that manages BIND9 DNS infrastructure declarative
 
 ## Quick Example
 
+> **⚠️ Breaking Change from v0.2.x**: Records now use **label selectors** instead of `zoneRef`. Zones select records via `recordsFrom` using labels. See [Migration Guide](https://firestoned.github.io/bindy/migration/v0.2-to-v0.3.html) for upgrading.
+
 ```yaml
 # 1. Create a DNS cluster
 apiVersion: bindy.firestoned.io/v1beta1
@@ -85,7 +87,7 @@ spec:
     replicas: 2
 
 ---
-# 2. Create a zone
+# 2. Create a zone with label selector
 apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
@@ -94,16 +96,21 @@ metadata:
 spec:
   zoneName: example.com
   clusterRef: my-dns
+  recordsFrom:
+    - selector:
+        matchLabels:
+          zone: example.com
 
 ---
-# 3. Add DNS records
+# 3. Add DNS records with matching labels
 apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www
   namespace: dns-system
+  labels:
+    zone: example.com  # Selected by DNSZone
 spec:
-  zoneRef: example-com
   name: www
   ipv4Address: "192.0.2.1"
 ```
@@ -251,7 +258,7 @@ Creates 3 primaries + 2 secondaries with DNSSEC enabled and zone transfers confi
 ### DNS Zone with Records
 
 ```yaml
-# Zone
+# Zone with label selector
 apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
@@ -260,6 +267,10 @@ metadata:
 spec:
   zoneName: example.com
   clusterRef: prod-dns
+  recordsFrom:
+    - selector:
+        matchLabels:
+          zone: example.com
   soaRecord:
     primaryNS: ns1.example.com.
     adminEmail: admin.example.com.
@@ -272,8 +283,9 @@ kind: ARecord
 metadata:
   name: www
   namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: www
   ipv4Address: "192.0.2.1"
   ttl: 300
@@ -285,8 +297,9 @@ kind: CNAMERecord
 metadata:
   name: blog
   namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: blog
   target: www.example.com.
 
@@ -297,8 +310,9 @@ kind: MXRecord
 metadata:
   name: mail
   namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   priority: 10
   mailServer: mail.example.com.
@@ -310,8 +324,9 @@ kind: TXTRecord
 metadata:
   name: spf
   namespace: dns-system
+  labels:
+    zone: example.com
 spec:
-  zoneRef: example-com
   name: "@"
   text:
     - "v=spf1 include:_spf.example.com ~all"

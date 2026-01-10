@@ -1,6 +1,18 @@
 # Bindy Architecture
 
-Bindy uses a two-level operator architecture to manage BIND9 DNS servers in Kubernetes.
+> **⚠️ DEPRECATED ARCHITECTURE**
+>
+> This document describes the **legacy two-level operator architecture** (bindy-operator + bindy-controller sidecar) which was replaced in Phase 1-8 consolidation.
+>
+> **Current Architecture:** See [DNSZone Controller Architecture](../concepts/dnszone-controller-architecture.md) for the unified controller design that replaced this architecture.
+>
+> This document is kept for historical reference and migration documentation only.
+
+---
+
+## Legacy Architecture (Deprecated)
+
+Bindy **previously used** a two-level operator architecture to manage BIND9 DNS servers in Kubernetes.
 
 ## Components
 
@@ -38,11 +50,13 @@ The **bindy-controller** runs as a sidecar container alongside each BIND9 pod. I
 - Uses `bindy-controller` ServiceAccount with namespace-scoped permissions
 - Shares `/etc/bind/zones` volume with BIND9 container
 
-## Data Flow
+## Data Flow (Legacy - Deprecated)
+
+> **⚠️ DEPRECATED:** This diagram shows the legacy two-level operator architecture which was replaced in Phase 1-8 consolidation. See [DNSZone Controller Architecture](../concepts/dnszone-controller-architecture.md) for the current unified controller design.
 
 ```mermaid
 graph TB
-    subgraph cluster["Cluster Level"]
+    subgraph cluster["Cluster Level (DEPRECATED)"]
         operator["bindy-operator<br/>- Watches Bind9Instance CRDs<br/>- Creates Deployments, Services, ConfigMaps"]
     end
 
