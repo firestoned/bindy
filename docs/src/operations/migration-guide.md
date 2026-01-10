@@ -1,290 +1,358 @@
-# Migration Guide: Single Controller to Two-Level Operator Architecture
+# Migration Guide: v0.2.x → v0.3.x
 
-This document explains the architectural changes made to bindy and how to migrate from the old single-controller architecture to the new two-level operator architecture.
+This document explains how to migrate from Bindy v0.2.x to v0.3.x, which introduces breaking changes to how DNS records are associated with zones.
 
-## What Changed?
+## Breaking Changes in v0.3.0
 
-### Before (v0.x)
+### 1. Records Now Use Label Selectors (Breaking Change)
 
-Bindy ran as a single cluster-level controller that:
-- Watched `Bind9Instance` resources
-- Watched all DNS zone and record resources across all namespaces
-- Managed both BIND9 instances AND DNS records in the same process
+**What Changed:** The mechanism for associating DNS records with zones has changed from explicit references to label-based selection.
 
-**Problems with this approach:**
-- Single point of failure for all DNS management
-- No isolation between different BIND9 instances
-- High resource usage as the controller watched all resources cluster-wide
-- Difficult to scale horizontally
+#### Before (v0.2.x): Explicit `zoneRef` References
 
-### After (v1.0+)
+```yaml
+# DNSZone
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: example-com
+  namespace: dns-system
+spec:
+  zoneName: example.com
+  clusterRef: my-dns
 
-Bindy now uses a two-level operator architecture:
-
-1. **bindy-operator** (Cluster-level)
-   - Single instance per cluster
-   - Watches `Bind9Instance` resources only
-   - Creates and manages BIND9 Deployments, Services, and ConfigMaps
-   - Deploys bindy-controller as a sidecar with each BIND9 pod
-
-2. **bindy-controller** (Instance-level, sidecar)
-   - One instance per BIND9 pod
-   - Watches DNS zones and records in its namespace
-   - Writes zone files to shared volume with BIND9 container
-   - Updates BIND9 configuration
-
-**Benefits:**
-- Better isolation: Each BIND9 instance has its own controller
-- Improved scalability: Controllers scale with BIND9 instances
-- Better performance: Zone file updates happen locally in the pod
-- Fault isolation: Controller failure only affects one BIND9 instance
-
-## Architecture Comparison
-
-### Old Architecture
-
-```
-┌──────────────────────────────────────────────┐
-│          Bindy Controller (Single)           │
-│  - Watches Bind9Instances                    │
-│  - Watches ALL DNSZones                      │
-│  - Watches ALL DNS Records                   │
-│  - Manages BIND9 deployments                 │
-│  - Updates zone files remotely               │
-└──────────────────────────────────────────────┘
-                    │
-                    ▼
-        ┌───────────────────────┐
-        │   BIND9 Pod 1         │
-        │   - Serves DNS        │
-        └───────────────────────┘
-        ┌───────────────────────┐
-        │   BIND9 Pod 2         │
-        │   - Serves DNS        │
-        └───────────────────────┘
+---
+# Record with explicit zone reference
+apiVersion: bindy.firestoned.io/v1beta1
+kind: ARecord
+metadata:
+  name: www
+  namespace: dns-system
+spec:
+  zoneRef: example-com  # ❌ This field no longer exists!
+  name: www
+  ipv4Address: "192.0.2.1"
 ```
 
-### New Architecture
+#### After (v0.3.0+): Label-Based Selection
 
+```yaml
+# DNSZone selects records via labels
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: example-com
+  namespace: dns-system
+spec:
+  zoneName: example.com
+  clusterRef: my-dns
+  recordsFrom:  # ✅ New: Label selectors
+    - selector:
+        matchLabels:
+          zone: example.com
+
+---
+# Record with matching labels
+apiVersion: bindy.firestoned.io/v1beta1
+kind: ARecord
+metadata:
+  name: www
+  namespace: dns-system
+  labels:  # ✅ New: Labels for selection
+    zone: example.com
+spec:
+  # NO zoneRef field - selection is via labels
+  name: www
+  ipv4Address: "192.0.2.1"
 ```
-┌──────────────────────────────────────────────┐
-│        bindy-operator (Cluster-level)        │
-│  - Watches Bind9Instances                    │
-│  - Creates Deployments/Services/ConfigMaps   │
-└──────────────────────────────────────────────┘
-                    │ creates
-                    ▼
-        ┌───────────────────────────────┐
-        │   BIND9 Pod 1                 │
-        │  ┌──────────┬──────────────┐  │
-        │  │  BIND9   │  bindy-      │  │
-        │  │  Container│  controller  │  │
-        │  │          │  - Watches   │  │
-        │  │          │    zones     │  │
-        │  │          │  - Updates   │  │
-        │  │          │    files     │  │
-        │  └──────────┴──────────────┘  │
-        │       Shared /etc/bind/zones  │
-        └───────────────────────────────┘
-```
+
+### Why This Change?
+
+**Problems with v0.2.x explicit references:**
+1. **Tight coupling:** Records hardcoded the zone name
+2. **Limited flexibility:** Couldn't dynamically group records
+3. **No multi-environment support:** Records couldn't belong to multiple zones
+4. **Manual management:** Had to update every record when changing zones
+
+**Benefits of v0.3.0 label selectors:**
+1. **Decoupled:** Zones select records, not vice versa
+2. **Flexible:** Use any label combination for selection
+3. **Dynamic:** New records automatically picked up by matching zones
+4. **Multi-tenant:** Isolate records by team, environment, application
+5. **Kubernetes-native:** Uses standard label selector pattern
 
 ## Migration Steps
 
-### 1. Backup Your Configuration
-
-Before migrating, backup all your DNS resources:
+### Step 1: Backup Your Configuration
 
 ```bash
-# Backup Bind9Instances
-kubectl get bind9instances -A -o yaml > bind9instances-backup.yaml
-
-# Backup DNSZones
-kubectl get dnszones -A -o yaml > dnszones-backup.yaml
-
-# Backup DNS Records
+# Backup all DNS resources
+kubectl get bind9clusters,dnszones -A -o yaml > clusters-zones-backup.yaml
 kubectl get arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords -A -o yaml > records-backup.yaml
 ```
 
-### 2. Uninstall Old Version
+### Step 2: Update CRDs
 
 ```bash
-# Delete the old controller deployment
-kubectl delete deployment bindy -n dns-system
-
-# Delete old RBAC (optional - you can keep the ServiceAccount)
-kubectl delete clusterrolebinding bindy-rolebinding
-kubectl delete clusterrole bindy-role
+# Update to v0.3.0 CRDs
+kubectl apply -f https://github.com/firestoned/bindy/releases/download/v0.3.0/crds.yaml
 ```
 
-### 3. Install New Version
-
-#### Install New RBAC
+Or if installing from source:
 
 ```bash
-# Install operator RBAC
-kubectl apply -f deploy/rbac/operator-serviceaccount.yaml
-kubectl apply -f deploy/rbac/operator-role.yaml
-kubectl apply -f deploy/rbac/operator-rolebinding.yaml
-
-# Install controller RBAC
-kubectl apply -f deploy/rbac/controller-serviceaccount.yaml
-kubectl apply -f deploy/rbac/controller-role.yaml
-kubectl apply -f deploy/rbac/controller-rolebinding.yaml
+kubectl replace --force -f deploy/crds/
 ```
 
-#### Update CRDs (if needed)
+**IMPORTANT:** Use `kubectl replace --force` instead of `kubectl apply` to avoid the 256KB annotation size limit.
+
+### Step 3: Update DNSZone Resources
+
+Add `recordsFrom` selectors to all DNSZone resources:
 
 ```bash
-# Update all CRDs to latest version
-kubectl apply -k deploy/crds
+# For each DNSZone, add recordsFrom selector
+kubectl edit dnszone example-com -n dns-system
 ```
 
-#### Deploy the Operator
+Add this to the spec:
+
+```yaml
+spec:
+  recordsFrom:
+    - selector:
+        matchLabels:
+          zone: example.com  # Use the zone name as the label
+```
+
+**Automation Script:**
 
 ```bash
-kubectl apply -f deploy/controller/deployment.yaml
+#!/bin/bash
+# auto-migrate-zones.sh
+
+# Get all DNSZones
+kubectl get dnszones -A -o json | jq -r '.items[] | "\(.metadata.namespace) \(.metadata.name) \(.spec.zoneName)"' | while read ns name zonename; do
+  echo "Migrating DNSZone $ns/$name (zone: $zonename)"
+
+  # Patch the DNSZone with recordsFrom selector
+  kubectl patch dnszone "$name" -n "$ns" --type=merge -p "{
+    \"spec\": {
+      \"recordsFrom\": [
+        {
+          \"selector\": {
+            \"matchLabels\": {
+              \"zone\": \"$zonename\"
+            }
+          }
+        }
+      ]
+    }
+  }"
+done
 ```
 
-### 4. Verify Migration
+### Step 4: Update DNS Record Resources
 
-Check that the operator is running:
+Add labels to all DNS records matching the zone they belong to:
 
 ```bash
-kubectl get pods -n dns-system -l app=bindy-operator
+# For each record, add the zone label
+kubectl label arecord www -n dns-system zone=example.com
 ```
 
-The operator will automatically:
-1. Discover existing `Bind9Instance` resources
-2. Create new Deployments with the sidecar architecture
-3. Migrate zone file management to the sidecar controllers
-
-Verify BIND9 pods have the sidecar:
+**Automation Script:**
 
 ```bash
-kubectl get pods -n dns-system -l app=bind9 -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{range .spec.containers[*]}{.name}{" "}{end}{"\n"}{end}'
+#!/bin/bash
+# auto-migrate-records.sh
+
+RECORD_TYPES="arecords aaaarecords cnamerecords mxrecords txtrecords nsrecords srvrecords caarecords"
+
+for record_type in $RECORD_TYPES; do
+  echo "Migrating $record_type..."
+
+  # Get all records and their old zoneRef
+  kubectl get $record_type -A -o json | jq -r '.items[] | select(.spec.zoneRef != null) | "\(.metadata.namespace) \(.metadata.name) \(.spec.zoneRef)"' | while read ns name zoneref; do
+    # Get the zone's zoneName
+    zonename=$(kubectl get dnszone "$zoneref" -n "$ns" -o jsonpath='{.spec.zoneName}' 2>/dev/null)
+
+    if [ -n "$zonename" ]; then
+      echo "  Labeling $ns/$name with zone=$zonename"
+      kubectl label $record_type "$name" -n "$ns" "zone=$zonename" --overwrite
+    else
+      echo "  WARNING: Could not find DNSZone $zoneref in namespace $ns"
+    fi
+  done
+done
 ```
 
-You should see both `bind9` and `bindy-controller` containers.
+### Step 5: Remove Old `zoneRef` Fields
 
-### 5. Verify DNS Resolution
+The `spec.zoneRef` field no longer exists in v0.3.0 CRDs. After migration, you can optionally clean up your YAML files by removing these fields (they're already ignored by the new CRD).
 
-Test that DNS still works:
+### Step 6: Upgrade the Controller
 
 ```bash
-# Port-forward to test
-kubectl port-forward -n dns-system svc/your-bind9-instance 5353:53
+# Update the Bindy controller to v0.3.0
+kubectl set image deployment/bindy bindy=ghcr.io/firestoned/bindy:v0.3.0 -n dns-system
 
-# Test resolution
-dig @localhost -p 5353 your-domain.com
+# Or apply the new deployment
+kubectl apply -f https://github.com/firestoned/bindy/releases/download/v0.3.0/bindy.yaml
 ```
 
-## Breaking Changes
-
-### Container Names
-
-**Old:** Deployments had a single container named `controller`
-
-**New:** Deployments have two containers:
-- `bind9` - BIND9 DNS server
-- `bindy-controller` - Zone/record management sidecar
-
-If you have scripts or monitoring that references container names, update them:
+### Step 7: Verify Migration
 
 ```bash
-# Old
-kubectl logs deployment/my-dns -c controller
+# Check DNSZone status - should show selected records
+kubectl get dnszones -A -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.recordsCount}{"\n"}{end}'
 
-# New
-kubectl logs deployment/my-dns -c bindy-controller
-kubectl logs deployment/my-dns -c bind9
+# Check that records have zone labels
+kubectl get arecords,cnamerecords,mxrecords -A --show-labels
+
+# Verify DNS resolution still works
+kubectl port-forward -n dns-system svc/<bind9-service> 5353:53
+dig @localhost -p 5353 www.example.com
 ```
 
-### RBAC Changes
+## Advanced Migration Patterns
 
-**Old:** Single `bindy` ServiceAccount with cluster-wide permissions
+### Multi-Environment Records
 
-**New:** Two ServiceAccounts:
-- `bindy-operator` - For the operator (cluster-wide)
-- `bindy-controller` - For the sidecar controllers
+Use labels to support records in multiple environments:
 
-### Environment Variables
+```yaml
+# DNSZone for dev
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: example-com-dev
+spec:
+  zoneName: dev.example.com
+  recordsFrom:
+    - selector:
+        matchLabels:
+          app: myapp
+          environment: dev
 
-The bindy-controller sidecar requires these environment variables:
-- `BIND9_ZONES_DIR` - Path to zones directory (default: `/etc/bind/zones`)
-- `WATCH_NAMESPACE` - Namespace to watch (set automatically)
-- `BIND9_INSTANCE_NAME` - Name of the BIND9 instance (set automatically)
+---
+# DNSZone for prod
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: example-com-prod
+spec:
+  zoneName: prod.example.com
+  recordsFrom:
+    - selector:
+        matchLabels:
+          app: myapp
+          environment: prod
 
-These are set automatically by the operator when creating deployments.
+---
+# Record selected by dev zone
+apiVersion: bindy.firestoned.io/v1beta1
+kind: ARecord
+metadata:
+  name: myapp-dev
+  labels:
+    app: myapp
+    environment: dev
+spec:
+  name: api
+  ipv4Address: "192.0.2.10"
+```
 
-## Rollback Procedure
+### Team-Based Isolation
 
-If you need to rollback to the old architecture:
+Use team labels for multi-tenancy:
 
-1. Scale down the operator:
-   ```bash
-   kubectl scale deployment bindy-operator -n dns-system --replicas=0
-   ```
+```yaml
+# Team A's zone
+spec:
+  recordsFrom:
+    - selector:
+        matchLabels:
+          team: team-a
 
-2. Restore the old controller:
-   ```bash
-   kubectl apply -f old-deployment-backup.yaml
-   ```
-
-3. Restore old RBAC if deleted:
-   ```bash
-   kubectl apply -f old-rbac-backup.yaml
-   ```
+# Team A's record
+metadata:
+  labels:
+    team: team-a
+```
 
 ## Troubleshooting
 
-### Operator Not Creating Resources
+### Records Not Appearing in Zone
 
-Check operator logs:
+**Symptom:** Records exist but don't show up in DNS queries.
+
+**Diagnosis:**
+
 ```bash
-kubectl logs -n dns-system -l app=bindy-operator
+# Check if zone selected the records
+kubectl get dnszone example-com -n dns-system -o jsonpath='{.status.recordsCount}'
+
+# Check if records have the right labels
+kubectl get arecords -n dns-system --show-labels
 ```
 
-Common issues:
-- Missing RBAC permissions
-- CRDs not updated
-- Invalid Bind9Instance spec
+**Solution:**
+- Ensure record labels match the zone's `recordsFrom` selector
+- Check that records are in the same namespace as the zone
 
-### Controller Sidecar Not Starting
+### Zone Shows Zero Records
 
-Check controller logs:
+**Symptom:** `status.recordsCount` is 0 or missing.
+
+**Diagnosis:**
+
 ```bash
-kubectl logs -n dns-system <pod-name> -c bindy-controller
+# Check the zone's selector
+kubectl get dnszone example-com -n dns-system -o yaml | grep -A 5 recordsFrom
 ```
 
-Common issues:
-- Missing ServiceAccount
-- Environment variables not set
-- Volume mount issues
+**Solution:**
+- Add `recordsFrom` selector to the DNSZone spec
+- Ensure the selector matches at least one record's labels
 
-### DNS Queries Failing
+### Old `zoneRef` Field Error
 
-1. Check BIND9 container logs:
+**Symptom:** `kubectl apply` fails with "unknown field spec.zoneRef"
+
+**Solution:**
+- Update the CRDs to v0.3.0: `kubectl replace --force -f deploy/crds/`
+- Remove `spec.zoneRef` from your YAML files (field no longer exists)
+
+## Rollback Procedure
+
+If you need to rollback to v0.2.x:
+
+1. **Restore old CRDs:**
    ```bash
-   kubectl logs -n dns-system <pod-name> -c bind9
+   kubectl apply -f https://github.com/firestoned/bindy/releases/download/v0.2.x/crds.yaml
    ```
 
-2. Verify zone files exist:
+2. **Restore backups:**
    ```bash
-   kubectl exec -n dns-system <pod-name> -c bindy-controller -- ls -la /etc/bind/zones/
+   kubectl apply -f clusters-zones-backup.yaml
+   kubectl apply -f records-backup.yaml
    ```
 
-3. Check zone file contents:
+3. **Downgrade controller:**
    ```bash
-   kubectl exec -n dns-system <pod-name> -c bindy-controller -- cat /etc/bind/zones/db.your-domain.com
+   kubectl set image deployment/bindy bindy=ghcr.io/firestoned/bindy:v0.2.x -n dns-system
    ```
+
+## See Also
+
+- [DNSZone Concepts](../concepts/dnszone.md) - Detailed explanation of label selectors
+- [Architecture Overview](../guide/architecture.md) - Event-driven reconciliation
+- [API Reference](../reference/api.md) - Complete CRD schemas
+- [GitHub Release Notes](https://github.com/firestoned/bindy/releases/tag/v0.3.0) - Full changelog
 
 ## Support
 
 For issues or questions:
-- GitHub Issues: https://github.com/firestoned/bindy/issues
-- Documentation: https://firestoned.github.io/bindy/
-
-## See Also
-
-- [ARCHITECTURE.md](ARCHITECTURE.md) - Detailed architecture documentation
-- [deploy/DEPLOYMENT_GUIDE.md](deploy/DEPLOYMENT_GUIDE.md) - Fresh installation guide
+- [GitHub Issues](https://github.com/firestoned/bindy/issues)
+- [Documentation](https://firestoned.github.io/bindy/)
