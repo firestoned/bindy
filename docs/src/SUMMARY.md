@@ -63,6 +63,7 @@
   - [DNSZone Migration Troubleshooting](./operations/dnszone-migration-troubleshooting.md)
   - [Debugging](./operations/debugging.md)
   - [FAQ](./operations/faq.md)
+- [Migration Guide (v0.2.x → v0.3.x)](./operations/migration-guide.md)
 
 # Advanced Topics
 

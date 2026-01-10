@@ -1,3 +1,68 @@
+## [2026-01-10 16:35] - Add Migration Guide to Documentation Navigation
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **Added migration-guide.md to SUMMARY.md** [docs/src/SUMMARY.md:51](docs/src/SUMMARY.md#L51)
+  - Migration guide now appears in the "Operations" section of the documentation navigation
+  - Users can now discover the migration guide through the mdBook interface
+
+### Why
+The comprehensive migration guide (rewritten in previous commit) existed but was not accessible through the documentation navigation. Users had to know the direct URL to find it.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Bug fix
+- [ ] New feature
+- [x] Documentation only (navigation update)
+
+---
+
+## [2026-01-10 16:30] - Rewrite Migration Guide for v0.2.x → v0.3.x Breaking Changes
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **Completely rewrote** [docs/src/operations/migration-guide.md](docs/src/operations/migration-guide.md)
+  - Old version described a fictional "two-level operator architecture" that doesn't exist in the codebase
+  - New version documents the ACTUAL breaking change: `zoneRef` → `recordsFrom` label selectors
+  - Added automation scripts for migrating DNSZones and DNS records
+  - Added troubleshooting section for common migration issues
+  - Added rollback procedure
+
+- **Updated README.md** to link to the correct migration guide path
+  - Changed to `/operations/migration-guide.html` with proper migration instructions
+  - Now users get step-by-step migration instructions, not just conceptual explanations
+
+### Why
+**Problem**: The migration guide was completely wrong:
+- Described "bindy-operator" and "bindy-controller sidecar" architecture that doesn't exist
+- Referenced "v0.x → v1.0+" versions that don't match reality (current: v0.3.0)
+- No mention of the actual breaking change (label selectors)
+
+**Reality**:
+- Current architecture: Single operator with **Bindcar HTTP API sidecar** (not "bindy-controller sidecar")
+- Actual breaking change in v0.3.0: Records use label selectors, not explicit `spec.zoneRef`
+- Current version is 0.3.0, not 1.0+
+
+**New Migration Guide Includes:**
+1. Before/after YAML examples
+2. Step-by-step migration procedure
+3. Automation scripts for bulk migration
+4. Troubleshooting common issues
+5. Rollback procedure
+6. Advanced patterns (multi-environment, team-based isolation)
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Bug fix
+- [ ] New feature
+- [x] Documentation only (replaces incorrect migration guide)
+
+---
+
 ## [2026-01-10 16:15] - Fix Doctest: check_for_duplicate_zones Example
 
 **Author:** Erick Bourgeois
