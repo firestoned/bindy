@@ -5,15 +5,33 @@ metadata:
   name: example-com
   namespace: dns-system
   labels:
-    bindy.firestoned.io/environment: production
-    bindy.firestoned.io/team: platform
+    environment: prod
+    team: platform
+    zone: example.com
 spec:
   zoneName: example.com
   # Reference to the Bind9Cluster that manages this zone
   # This must match the Bind9Cluster name, NOT the Bind9Instance name
-  clusterProviderRef: production-dns
+  # clusterProviderRef: production-dns
+  # Instead of referencing cluster or Bind9Instances directly, use label selector to find them.
+  bind9InstancesFrom:
+    - selector:
+        matchLabels:
+          app.kubernetes.io/part-of: bindy
+          bindy.firestoned.io/cluster: production-dns
+          bindy.firestoned.io/managed-by: Bind9Cluster
+        matchExpressions:
+          - key: bindy.firestoned.io/role
+            operator: In
+            values:
+              - primary
+              - secondary
   nameServerIps:
     ns1.example.com.: 192.168.0.60
+  recordsFrom:
+    - selector:
+        matchLabels:
+          bindy.firestoned.io/zone: example.com
   soaRecord:
     primaryNs: ns1.example.com.
     adminEmail: admin.example.com.  # Note: @ replaced with .
@@ -23,38 +41,35 @@ spec:
     expire: 604800
     negativeTtl: 86400
   ttl: 3600
-  # Discover DNS records with matching labels
-  # Records with labels matching this selector will be automatically included
-  recordsFrom:
-    - selector:
-        matchLabels:
-          bindy.firestoned.io/zone: example.com
-          zone: example.com
----
-apiVersion: bindy.firestoned.io/v1beta1
-kind: DNSZone
-metadata:
-  name: internal-local
-  namespace: dns-system
-spec:
-  zoneName: internal.local
-  # Reference to the Bind9Cluster that manages this zone
-  # This must match the Bind9Cluster name, NOT the Bind9Instance name
-  clusterProviderRef: production-dns
-  nameServerIps:
-    ns1.internal.local.: 192.168.0.60
-  soaRecord:
-    primaryNs: ns1.internal.local.
-    adminEmail: admin.internal.local.  # Note: @ replaced with .
-    serial: 2024010101
-    refresh: 3600
-    retry: 600
-    expire: 604800
-    negativeTtl: 86400
-  ttl: 3600
-  # Discover DNS records with matching labels
-  recordsFrom:
-    - selector:
-        matchLabels:
-          bindy.firestoned.io/zone: internal.local
-          zone: internal.local
+# ---
+# apiVersion: bindy.firestoned.io/v1beta1
+# kind: DNSZone
+# metadata:
+#   name: cluster-local
+#   namespace: dns-system
+#   labels:
+#     environment: prod
+#     team: platform
+#     zone: example.com
+# spec:
+#   zoneName: cluster.local
+#   # Reference to the Bind9Cluster that manages this zone
+#   # This must match the Bind9Cluster name, NOT the Bind9Instance name
+#   # clusterProviderRef: production-dns
+#   # Instead of referencing cluster or Bind9Instances directly, use label selector to find them.
+#   bind9InstancesFrom:
+#     - selector:
+#         matchLabels:
+#           bindy.firestoned.io/environment: prod
+#           bindy.firestoned.io/team: platform
+#   nameServerIps:
+#     ns1.cluster.local.: 192.168.0.60
+#   soaRecord:
+#     primaryNs: ns1.cluster.local.
+#     adminEmail: admin.cluster.local.  # Note: @ replaced with .
+#     serial: 2024010101
+#     refresh: 3600
+#     retry: 600
+#     expire: 604800
+#     negativeTtl: 86400
+#   ttl: 3600

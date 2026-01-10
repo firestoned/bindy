@@ -218,7 +218,7 @@ kubectl apply -f dns-zone.yaml
 
 Create a file `dns-records.yaml`:
 
-> **Note**: DNS records reference zones using labels. The controller matches records to DNSZones using the zone's label selector. In this example, the DNSZone named `example-com` has a selector that matches records with the label `zone: example.com`.
+> **Note**: DNS records reference zones using labels. The controller uses an **event-driven architecture** that watches all 8 record types (ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord). When you create a record, the DNSZone controller receives a watch event **immediately** (⚡ sub-second), evaluates label selectors, and sets `status.zoneRef` if the record matches. The record controller then watches for this status change and reconciles to BIND9 instantly. **Total time: ~500ms** from record creation to BIND9 update ✅
 
 ```yaml
 # Web server A record

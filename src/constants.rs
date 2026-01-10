@@ -59,14 +59,20 @@ pub const KIND_BIND9_INSTANCE: &str = "Bind9Instance";
 // DNS Protocol Constants
 // ============================================================================
 
-/// Standard DNS port for queries and zone transfers
+/// Standard DNS service port exposed externally
 pub const DNS_PORT: u16 = 53;
+
+/// DNS container port (non-privileged port for non-root execution)
+pub const DNS_CONTAINER_PORT: u16 = 5353;
 
 /// Standard RNDC control port
 pub const RNDC_PORT: u16 = 953;
 
-/// Default bindcar HTTP API port
+/// Default bindcar HTTP API container port
 pub const BINDCAR_API_PORT: u16 = 8080;
+
+/// Default bindcar HTTP API service port (exposed via Kubernetes Service)
+pub const BINDCAR_SERVICE_PORT: u16 = 80;
 
 /// Default TTL for DNS records (5 minutes)
 pub const DEFAULT_DNS_RECORD_TTL_SECS: i32 = 300;
@@ -156,6 +162,13 @@ pub const BIND9_SERVICE_ACCOUNT: &str = "bind9";
 /// This enables more aggressive memory reclamation in environments where
 /// memory pressure is monitored closely.
 pub const BIND9_MALLOC_CONF: &str = "dirty_decay_ms:0,muzzy_decay_ms:0";
+
+/// UID for running BIND9 and bindcar containers as non-root
+///
+/// This UID corresponds to the 'bind' or 'named' user in most BIND9 images.
+/// Running as non-root improves container security by following the principle
+/// of least privilege.
+pub const BIND9_NONROOT_UID: i64 = 101;
 
 // ============================================================================
 // Bindcar Container Constants

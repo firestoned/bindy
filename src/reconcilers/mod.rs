@@ -49,13 +49,13 @@
 //! use bindy::reconcilers::reconcile_dnszone;
 //! use bindy::crd::DNSZone;
 //! use bindy::bind9::Bind9Manager;
-//! use kube::Client;
+//! use bindy::context::Context;
+//! use std::sync::Arc;
 //!
-//! async fn reconcile_zone(dnszone: DNSZone) -> anyhow::Result<()> {
-//!     let client = Client::try_default().await?;
+//! async fn reconcile_zone(ctx: Arc<Context>, dnszone: DNSZone) -> anyhow::Result<()> {
 //!     let zone_manager = Bind9Manager::new();
 //!
-//!     reconcile_dnszone(client, dnszone, &zone_manager).await?;
+//!     reconcile_dnszone(ctx, dnszone, &zone_manager).await?;
 //!     Ok(())
 //! }
 //! ```
@@ -83,12 +83,13 @@ mod records_tests;
 mod status_tests;
 
 pub use bind9cluster::{delete_bind9cluster, reconcile_bind9cluster};
-pub use bind9instance::{delete_bind9instance, reconcile_bind9instance};
+pub use bind9instance::{delete_bind9instance, reconcile_bind9instance, reconcile_instance_zones};
 pub use clusterbind9provider::{delete_clusterbind9provider, reconcile_clusterbind9provider};
 pub use dnszone::{delete_dnszone, find_zones_selecting_record, reconcile_dnszone};
 pub use records::{
-    reconcile_a_record, reconcile_aaaa_record, reconcile_caa_record, reconcile_cname_record,
-    reconcile_mx_record, reconcile_ns_record, reconcile_srv_record, reconcile_txt_record,
+    delete_record, reconcile_a_record, reconcile_aaaa_record, reconcile_caa_record,
+    reconcile_cname_record, reconcile_mx_record, reconcile_ns_record, reconcile_srv_record,
+    reconcile_txt_record,
 };
 
 /// Check if a resource's spec has changed by comparing generation with `observed_generation`.

@@ -1,0 +1,161 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
+# This file demonstrates the three methods for selecting Bind9Instances for a DNSZone:
+# 1. Using clusterRef (simple cluster reference)
+# 2. Using bind9InstancesFrom (label selectors)
+# 3. Using both together (union of both selections)
+
+---
+# Method 1: DNSZone with clusterRef
+# Selects all Bind9Instances that reference the same cluster
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: app1-example-com
+  namespace: dns-system
+  labels:
+    environment: prod
+    team: app1
+spec:
+  zoneName: app1.example.com
+  
+  # clusterRef: Selects all Bind9Instances with matching spec.clusterRef
+  # This is the simplest method - just reference a cluster name
+  clusterRef: production-dns
+  
+  nameServerIps:
+    ns1.app1.example.com.: 192.168.1.10
+  soaRecord:
+    primaryNs: ns1.app1.example.com.
+    adminEmail: admin.app1.example.com.
+    serial: 2026010601
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTtl: 86400
+  ttl: 3600
+
+---
+# Method 2: DNSZone with bind9InstancesFrom (label selectors)
+# Selects Bind9Instances based on label matching
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: app2-example-com
+  namespace: dns-system
+  labels:
+    environment: staging
+    team: app2
+spec:
+  zoneName: app2.example.com
+  
+  # bind9InstancesFrom: Selects instances matching label selectors
+  # This provides fine-grained control over instance selection
+  bind9InstancesFrom:
+    - selector:
+        matchLabels:
+          bindy.firestoned.io/environment: staging
+          bindy.firestoned.io/region: us-west-2
+        matchExpressions:
+          - key: bindy.firestoned.io/role
+            operator: In
+            values:
+              - primary
+              - secondary
+  
+  nameServerIps:
+    ns1.app2.example.com.: 192.168.2.10
+  soaRecord:
+    primaryNs: ns1.app2.example.com.
+    adminEmail: admin.app2.example.com.
+    serial: 2026010601
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTtl: 86400
+  ttl: 3600
+
+---
+# Method 3: DNSZone with BOTH clusterRef AND bind9InstancesFrom (union)
+# Selects the UNION of instances from both methods
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: app3-example-com
+  namespace: dns-system
+  labels:
+    environment: prod
+    team: app3
+spec:
+  zoneName: app3.example.com
+  
+  # Union Selection: Combines instances from BOTH methods
+  # - All instances with spec.clusterRef == "production-dns" 
+  # - PLUS all instances matching the label selectors
+  # - Duplicates are automatically deduplicated
+  clusterRef: production-dns
+  bind9InstancesFrom:
+    - selector:
+        matchLabels:
+          bindy.firestoned.io/environment: prod
+          bindy.firestoned.io/special-capability: geo-dns
+  
+  nameServerIps:
+    ns1.app3.example.com.: 192.168.3.10
+  soaRecord:
+    primaryNs: ns1.app3.example.com.
+    adminEmail: admin.app3.example.com.
+    serial: 2026010601
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTtl: 86400
+  ttl: 3600
+
+---
+# Example: Multi-Region DNSZone with Regional Instance Selection
+# Uses label selectors to target instances in specific regions
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: multi-region-example-com
+  namespace: dns-system
+  labels:
+    environment: prod
+    team: platform
+    multi-region: "true"
+spec:
+  zoneName: multi-region.example.com
+  
+  # Select instances across multiple regions using label expressions
+  bind9InstancesFrom:
+    # Primary instances in all regions
+    - selector:
+        matchLabels:
+          bindy.firestoned.io/role: primary
+        matchExpressions:
+          - key: bindy.firestoned.io/region
+            operator: In
+            values:
+              - us-west-2
+              - us-east-1
+              - eu-west-1
+    # Secondary instances in disaster recovery region
+    - selector:
+        matchLabels:
+          bindy.firestoned.io/role: secondary
+          bindy.firestoned.io/region: ap-southeast-1
+  
+  nameServerIps:
+    ns1.multi-region.example.com.: 192.168.10.10
+    ns2.multi-region.example.com.: 192.168.11.10
+  soaRecord:
+    primaryNs: ns1.multi-region.example.com.
+    adminEmail: admin.multi-region.example.com.
+    serial: 2026010601
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTtl: 86400
+  ttl: 3600

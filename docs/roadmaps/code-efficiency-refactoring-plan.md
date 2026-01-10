@@ -529,7 +529,88 @@ let watcher_config = default_watcher_config();
 
 ## Low Priority Issues
 
-### 7. Remove Unused `dnszone_store` Field
+### 7. Remove Unused Functions (Dead Code)
+
+**Status:** CRITICAL - Multiple unused public functions identified
+
+#### A. Unused DNS Record Generation Functions
+
+**File:** [src/ddns.rs](../src/ddns.rs)
+**Lines:** 138-230
+
+**Functions to Remove:**
+- `generate_a_record_update()` (lines 138-146)
+- `generate_aaaa_record_update()` (lines 149-157)
+- `generate_cname_record_update()` (lines 160-166)
+- `generate_mx_record_update()` (lines 169-176)
+- `generate_ns_record_update()` (lines 179-185)
+- `generate_txt_record_update()` (lines 188-202)
+- `generate_srv_record_update()` (lines 205-216)
+- `generate_caa_record_update()` (lines 219-230)
+
+**Analysis:** Only `calculate_record_hash()` is actually used in the reconcilers. The generate functions appear to be generated stubs or deprecated code from an earlier RFC 2136 DNS update approach that was replaced by the bindcar API.
+
+**Impact:** ~93 lines of dead code
+**Action:** Remove all 8 unused functions
+
+#### B. Unused HTTP Error Mapping Functions
+
+**File:** [src/http_errors.rs](../src/http_errors.rs)
+
+**Functions to Remove/Integrate:**
+- `is_success_status()` (lines 194-196)
+- `map_connection_error()` (lines 165-170)
+- `success_reason()` (lines 216-218)
+
+**Analysis:** These functions have full documentation and tests but are never called anywhere in the codebase.
+
+**Impact:** ~15 lines of unused helper functions
+**Action:** Either integrate into error handling paths or remove if vestigial
+
+#### C. Unused Metrics Functions
+
+**File:** [src/metrics.rs](../src/metrics.rs)
+
+**Functions to Implement or Remove:**
+- `record_leader_elected()` (lines 340-345)
+- `record_leader_lost()` (lines 351-354)
+- `record_leader_renewed()` (lines 357-359)
+- `record_generation_lag()` (lines 366-370)
+
+**Analysis:** Leader election metrics are defined but never called. These appear to be planned features not yet integrated into the main reconciliation loop.
+
+**Impact:** ~25 lines of placeholder code
+**Action:** Either implement leader election metrics tracking or remove placeholders
+
+#### D. Deprecated Function to Remove
+
+**File:** [src/reconcilers/dnszone.rs](../src/reconcilers/dnszone.rs)
+**Lines:** 525-543
+
+**Function:** `get_cluster_ref_from_spec()`
+
+**Analysis:** Marked as deprecated with clear notice. Never called anywhere. Replaced by `get_cluster_ref_from_zone()` which supports status-based cluster references.
+
+**Impact:** ~19 lines of deprecated code
+**Action:** Remove after deprecation period expires
+
+#### E. Unused Build Function
+
+**File:** [src/bind9_resources.rs](../src/bind9_resources.rs)
+**Lines:** 89-99
+
+**Function:** `build_labels()`
+
+**Analysis:** Public function never called. Replaced by more sophisticated `build_labels_from_instance()` which propagates management labels.
+
+**Impact:** ~11 lines of unused code
+**Action:** Remove and ensure all callers use `build_labels_from_instance()`
+
+**Total Dead Code Removal:** ~163 lines
+
+---
+
+### 8. Remove Unused `dnszone_store` Field
 
 **Lines:** [src/main.rs:518-519](../src/main.rs#L518-L519)
 
@@ -542,7 +623,7 @@ dnszone_store: kube::runtime::reflector::Store<DNSZone>,
 
 ---
 
-### 8. Add Duration Constants
+### 9. Add Duration Constants
 
 **Current State:** Duration values hardcoded
 
@@ -556,7 +637,7 @@ pub const REQUEUE_WHEN_NOT_READY_SECS: u64 = 30;
 
 ## Implementation Plan
 
-### Phase 1: High Impact Refactoring
+### Phase 1: High Impact Refactoring (Est. 3-5 days)
 1. **Consolidate record wrappers** (#1)
    - Add constants and helper functions
    - Add macro
@@ -570,13 +651,28 @@ pub const REQUEUE_WHEN_NOT_READY_SECS: u64 = 30;
    - Call `run_all_controllers` instead
    - Test both leader election modes
 
-### Phase 2: Medium Impact Cleanup
+### Phase 2: Medium Impact Cleanup (Est. 1-2 days)
 3. **Consolidate error policies** (#4)
 4. **Extract watcher config** (#5)
 
-### Phase 3: Low Priority Cleanup
-5. **Remove unused field** (#7)
-6. **Documentation cleanup**
+### Phase 3: Dead Code Removal (Est. 1 day)
+5. **Remove unused functions** (#7)
+   - Remove 8 unused `generate_*_record_update()` functions in ddns.rs
+   - Remove deprecated `get_cluster_ref_from_spec()` in dnszone.rs
+   - Remove unused `build_labels()` in bind9_resources.rs
+   - Decide on unused HTTP error functions (integrate or remove)
+   - Decide on unused metrics functions (implement or remove)
+   - Run `cargo test` after each removal
+   - Run `cargo clippy` to verify no warnings
+
+6. **Remove unused field** (#8)
+7. **Documentation cleanup**
+
+### Phase 4: Large Function Refactoring (Est. 8-12 days)
+8. **Generic Record Reconciler** (#1A) - 2-3 days
+9. **Break down `reconcile_dnszone()`** (#1B) - 2-3 days
+10. **Break down `build_options_conf()`** (#1C) - 1-2 days
+11. **Break down `reconcile_managed_instances()`** (#1D) - 1-2 days
 
 ---
 
@@ -610,14 +706,35 @@ For each phase:
 
 ## Success Criteria
 
+### Phase 1-2 (Consolidation)
 - [ ] All tests pass (`cargo test`)
 - [ ] Integration tests pass
 - [ ] Clippy warnings resolved
 - [ ] Code formatted (`cargo fmt`)
-- [ ] Line count reduced by ~1,000 lines
+- [ ] Line count reduced by ~1,000 lines in main.rs
 - [ ] No functional regressions
 - [ ] Metrics still work
 - [ ] Error handling unchanged
+
+### Phase 3 (Dead Code Removal)
+- [ ] All 8 unused ddns.rs functions removed
+- [ ] Deprecated `get_cluster_ref_from_spec()` removed
+- [ ] Unused `build_labels()` removed
+- [ ] Decision made on HTTP error helpers (remove or integrate)
+- [ ] Decision made on metrics placeholders (implement or remove)
+- [ ] `cargo clippy` shows no dead_code warnings
+- [ ] All tests still pass after removals
+- [ ] ~163 lines of dead code eliminated
+
+### Phase 4 (Large Function Refactoring)
+- [ ] Generic record reconciler implemented and tested
+- [ ] `reconcile_dnszone()` broken into 5 focused functions
+- [ ] `build_options_conf()` broken into helper functions
+- [ ] `reconcile_managed_instances()` refactored
+- [ ] All integration tests pass
+- [ ] Line count reduced by additional ~1,500+ lines
+- [ ] Code complexity metrics improved
+- [ ] Each new function independently testable
 
 ---
 
@@ -634,6 +751,8 @@ Commit each phase separately to allow selective rollback.
 
 ## Estimated Impact
 
+### Immediate Impact (Phases 1-3)
+
 | Metric | Before | After | Change |
 |--------|--------|-------|--------|
 | Lines of Code (main.rs) | ~1,753 | ~553 | **-1,200 lines (-68%)** |
@@ -641,7 +760,32 @@ Commit each phase separately to allow selective rollback.
 | Helper Functions | 0 | 2 | +50 lines |
 | Macro | 0 | 1 | +40 lines |
 | Error Policies | 5 × 8 lines | 1 × 8 lines | -32 lines |
-| Maintainability | Low | High | Significant improvement |
+| Dead Code (ddns.rs) | 230 lines | 137 lines | -93 lines |
+| Dead Code (http_errors.rs) | ~215 lines | ~200 lines | -15 lines |
+| Dead Code (metrics.rs) | ~370 lines | ~345 lines | -25 lines |
+| Dead Code (dnszone.rs) | ~3,442 lines | ~3,423 lines | -19 lines |
+| Dead Code (bind9_resources.rs) | ~1,100 lines | ~1,089 lines | -11 lines |
+| **Total Reduction (Phases 1-3)** | | | **-1,363 lines** |
+
+### Long-Term Impact (Phase 4)
+
+| Metric | Before | After | Change |
+|--------|--------|-------|--------|
+| Lines (records.rs) | ~2,098 | ~800-900 | **-1,200-1,300 lines** |
+| Lines (dnszone.rs) | ~3,442 | ~2,800-3,000 | **-400-600 lines** |
+| Lines (bind9_resources.rs) | ~1,100 | ~950-1,000 | **-100-150 lines** |
+| Lines (bind9cluster.rs) | ~1,800 | ~1,600-1,650 | **-150-200 lines** |
+| **Total Reduction (All Phases)** | | | **-3,213-3,613 lines (-40-45%)** |
+
+### Quality Metrics
+
+| Metric | Before | After | Impact |
+|--------|--------|-------|--------|
+| Duplicate Code | 8 identical reconcilers | 1 generic + 8 impls | -95% duplication |
+| Average Function Length | ~150 lines | ~40-60 lines | -60% |
+| Maintainability Index | Medium | High | Significant improvement |
+| Test Coverage | Per-function | Per-pattern | Easier to test |
+| Bug Fix Propagation | 8 locations | 1 location | -87% maintenance burden |
 
 ---
 
@@ -687,7 +831,28 @@ Commit each phase separately to allow selective rollback.
 | Error policies | `src/main.rs` | ~40 | ~32 lines |
 | Configuration builders | `src/bind9_resources.rs` | ~158 | ~100 lines |
 | Instance scaling | `src/reconcilers/bind9cluster.rs` | ~211 | ~150 lines |
-| **TOTAL** | | **~2,639 lines** | **~1,832-2,032 lines** |
+| **TOTAL DUPLICATION** | | **~2,639 lines** | **~1,832-2,032 lines** |
+
+### Dead Code Summary
+
+| File | Category | Functions | Lines to Remove |
+|------|----------|-----------|-----------------|
+| `src/ddns.rs` | Unused record update generators | 8 functions | ~93 lines |
+| `src/http_errors.rs` | Unused HTTP helpers | 3 functions | ~15 lines |
+| `src/metrics.rs` | Unimplemented metrics | 4 functions | ~25 lines |
+| `src/reconcilers/dnszone.rs` | Deprecated function | 1 function | ~19 lines |
+| `src/bind9_resources.rs` | Unused label builder | 1 function | ~11 lines |
+| **TOTAL DEAD CODE** | | **17 functions** | **~163 lines** |
+
+### Combined Total
+
+| Type | Lines Affected | Reduction Potential |
+|------|----------------|---------------------|
+| Duplication | ~2,639 lines | ~1,832-2,032 lines |
+| Dead Code | ~163 lines | ~163 lines |
+| **GRAND TOTAL** | **~2,802 lines** | **~1,995-2,195 lines** |
+
+**Overall Impact:** Reducing codebase size by **40-45%** while improving maintainability, testability, and consistency.
 
 ---
 

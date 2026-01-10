@@ -5,102 +5,263 @@
 //!
 //! This module contains reconcilers for all DNS record types supported by Bindy.
 //!
-//! **IMPORTANT**: With the zone ownership model, DNS record reconcilers:
-//! 1. Read the `bindy.firestoned.io/zone` annotation set by the `DNSZone` controller
-//! 2. If annotation is present, create/update the record in BIND9 for that zone
-//! 3. If annotation is absent, the record is not selected by any zone (skip reconciliation)
-//! 4. Update the record's status to reflect success or failure
+//! **Event-Driven Architecture**: DNS record reconcilers react to status changes:
+//! 1. The `DNSZone` controller sets `status.zoneRef` when recordsFrom selector matches
+//! 2. Record controller watches status changes and reconciles when `status.zoneRef` is set
+//! 3. If `status.zoneRef` is absent, the record is not selected by any zone (mark as `NotSelected`)
+//! 4. Record controller looks up the `DNSZone` via `status.zoneRef` to get instances
+//! 5. Record is added to BIND9 primaries using instances from the zone
 
-use crate::constants::ANNOTATION_ZONE_OWNER;
+// Removed ANNOTATION_ZONE_OWNER - using status.zoneRef instead (event-driven architecture)
 use crate::crd::{
     AAAARecord, ARecord, CAARecord, CNAMERecord, Condition, DNSZone, MXRecord, NSRecord,
     RecordStatus, SRVRecord, TXTRecord,
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::{Event, ObjectReference};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use k8s_openapi::chrono::Utc;
 use kube::{
-    api::{ListParams, Patch, PatchParams, PostParams},
+    api::{Patch, PatchParams, PostParams},
     client::Client,
     Api, Resource, ResourceExt,
 };
 use serde_json::json;
 use tracing::{debug, info, warn};
 
-/// Retrieves the zone FQDN from the record's `bindy.firestoned.io/zone` annotation.
+/// Gets the `DNSZone` reference from the record's status.
 ///
-/// This annotation is set by the `DNSZone` controller when a zone's label selector
-/// matches this record. The record reconciler uses this to determine which zone
-/// to update in BIND9.
-///
-/// # Arguments
-///
-/// * `record` - The DNS record resource
-///
-/// # Returns
-///
-/// * `Some(zone_fqdn)` - If the annotation is present and non-empty
-/// * `None` - If the annotation is missing or empty (record not selected by any zone)
-fn get_zone_from_annotation<T: ResourceExt>(record: &T) -> Option<String> {
-    record
-        .annotations()
-        .get(ANNOTATION_ZONE_OWNER)
-        .filter(|zone| !zone.is_empty())
-        .cloned()
-}
-
-/// Gets zone information from the annotation and looks up the `DNSZone` resource.
-///
-/// This function reads the `bindy.firestoned.io/zone` annotation set by the `DNSZone`
-/// controller, then queries the Kubernetes API to get the zone's cluster reference.
+/// The `DNSZone` controller sets `status.zoneRef` when the zone's `recordsFrom` selector
+/// matches this record's labels. This field contains the complete Kubernetes object reference.
 ///
 /// # Arguments
 ///
 /// * `client` - Kubernetes API client
-/// * `namespace` - Namespace of the record
-/// * `zone_fqdn` - Zone FQDN from the annotation
+/// * `zone_ref` - Zone reference from record status
 ///
 /// # Returns
 ///
-/// A tuple of (`zone_name`, `cluster_ref`, `is_cluster_provider`)
+/// The `DNSZone` resource
 ///
 /// # Errors
 ///
 /// Returns an error if the `DNSZone` resource cannot be found or queried.
-async fn get_zone_info(
+async fn get_zone_from_ref(
     client: &Client,
-    namespace: &str,
-    zone_fqdn: &str,
-) -> Result<(String, String, bool)> {
-    let dns_zones_api: Api<DNSZone> = Api::namespaced(client.clone(), namespace);
+    zone_ref: &crate::crd::ZoneReference,
+) -> Result<DNSZone> {
+    let dns_zones_api: Api<DNSZone> = Api::namespaced(client.clone(), &zone_ref.namespace);
 
-    // List all DNSZones and find the one with matching zoneName
-    let zones = dns_zones_api.list(&ListParams::default()).await?;
+    dns_zones_api.get(&zone_ref.name).await.context(format!(
+        "Failed to get DNSZone {}/{}",
+        zone_ref.namespace, zone_ref.name
+    ))
+}
 
-    for zone in zones {
-        if zone.spec.zone_name == zone_fqdn {
-            // Determine cluster reference
-            let (cluster_ref, is_cluster_provider) =
-                if let Some(ref cluster) = zone.spec.cluster_ref {
-                    (cluster.clone(), false)
-                } else if let Some(ref provider) = zone.spec.cluster_provider_ref {
-                    (provider.clone(), true)
-                } else {
-                    return Err(anyhow!(
-                        "DNSZone {}/{} has neither clusterRef nor clusterProviderRef",
-                        namespace,
-                        zone.name_any()
-                    ));
-                };
+/// Generic result type for record reconciliation helper.
+///
+/// Contains all the information needed to add a record to BIND9 primaries.
+struct RecordReconciliationContext {
+    /// Zone reference from record status
+    zone_ref: crate::crd::ZoneReference,
+    /// Primary instance references to use for DNS updates
+    primary_refs: Vec<crate::crd::InstanceReference>,
+    /// Current hash of the record spec
+    current_hash: String,
+}
 
-            return Ok((zone_fqdn.to_string(), cluster_ref, is_cluster_provider));
+/// Generic helper function for record reconciliation.
+///
+/// This function handles the common logic for all record types:
+/// 1. Check if record has status.zoneRef (set by `DNSZone` controller)
+/// 2. Look up the `DNSZone` resource
+/// 3. Get instances from the zone
+/// 4. Filter to primary instances only
+/// 5. Return context for adding record to BIND9
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `record` - The DNS record resource
+/// * `record_type` - Human-readable record type name (e.g., "A", "TXT", "AAAA")
+/// * `spec_hashable` - The record spec to hash for change detection
+///
+/// # Returns
+///
+/// * `Ok(Some(context))` - Record is selected and ready to be added to BIND9
+/// * `Ok(None)` - Record is not selected or generation unchanged (status already updated)
+/// * `Err(_)` - Fatal error occurred
+///
+/// # Errors
+///
+/// Returns an error if status updates fail or critical Kubernetes API errors occur.
+#[allow(clippy::too_many_lines)]
+async fn prepare_record_reconciliation<T, S>(
+    client: &Client,
+    record: &T,
+    record_type: &str,
+    spec_hashable: &S,
+    bind9_instances_store: &kube::runtime::reflector::Store<crate::crd::Bind9Instance>,
+) -> Result<Option<RecordReconciliationContext>>
+where
+    T: Resource<DynamicType = (), Scope = k8s_openapi::NamespaceResourceScope>
+        + ResourceExt
+        + Clone
+        + std::fmt::Debug
+        + serde::Serialize
+        + for<'de> serde::Deserialize<'de>,
+    S: serde::Serialize,
+{
+    let namespace = record.namespace().unwrap_or_default();
+    let name = record.name_any();
+
+    // Extract status fields generically
+    let record_json = serde_json::to_value(record)?;
+    let status = record_json.get("status");
+
+    let zone_ref = status
+        .and_then(|s| s.get("zoneRef"))
+        .and_then(|z| serde_json::from_value::<crate::crd::ZoneReference>(z.clone()).ok());
+
+    let observed_generation = status
+        .and_then(|s| s.get("observedGeneration"))
+        .and_then(serde_json::Value::as_i64);
+
+    let current_generation = record.meta().generation;
+
+    // Check if record has zoneRef (set by DNSZone controller)
+    let Some(zone_ref) = zone_ref else {
+        // Only skip reconciliation if generation hasn't changed AND already marked as NotSelected
+        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
+            debug!("Spec unchanged and no zoneRef, skipping reconciliation");
+            return Ok(None);
         }
+
+        info!(
+            "{} record {}/{} not selected by any DNSZone (no zoneRef in status)",
+            record_type, namespace, name
+        );
+        update_record_status(
+            client,
+            record,
+            "Ready",
+            "False",
+            "NotSelected",
+            "Record not selected by any DNSZone recordsFrom selector",
+            current_generation,
+            None, // record_hash
+            None, // last_updated
+        )
+        .await?;
+        return Ok(None);
+    };
+
+    // Calculate hash of current spec to detect actual data changes
+    let current_hash = crate::ddns::calculate_record_hash(spec_hashable);
+
+    // Get the DNSZone resource via zoneRef
+    let dnszone = match get_zone_from_ref(client, &zone_ref).await {
+        Ok(zone) => zone,
+        Err(e) => {
+            warn!(
+                "Failed to get DNSZone {}/{} for {} record {}/{}: {}",
+                zone_ref.namespace, zone_ref.name, record_type, namespace, name, e
+            );
+            update_record_status(
+                client,
+                record,
+                "Ready",
+                "False",
+                "ZoneNotFound",
+                &format!(
+                    "Referenced DNSZone {}/{} not found: {e}",
+                    zone_ref.namespace, zone_ref.name
+                ),
+                current_generation,
+                None, // record_hash
+                None, // last_updated
+            )
+            .await?;
+            return Ok(None);
+        }
+    };
+
+    // Get instances from the DNSZone
+    let instance_refs =
+        match crate::reconcilers::dnszone::get_instances_from_zone(&dnszone, bind9_instances_store)
+        {
+            Ok(refs) => refs,
+            Err(e) => {
+                warn!(
+                    "DNSZone {}/{} has no instances assigned for {} record {}/{}: {}",
+                    zone_ref.namespace, zone_ref.name, record_type, namespace, name, e
+                );
+                update_record_status(
+                    client,
+                    record,
+                    "Ready",
+                    "False",
+                    "ZoneNotConfigured",
+                    &format!("DNSZone has no instances: {e}"),
+                    current_generation,
+                    None, // record_hash
+                    None, // last_updated
+                )
+                .await?;
+                return Ok(None);
+            }
+        };
+
+    // Filter to PRIMARY instances only
+    let primary_refs =
+        match crate::reconcilers::dnszone::filter_primary_instances(client, &instance_refs).await {
+            Ok(refs) => refs,
+            Err(e) => {
+                warn!(
+                    "Failed to filter primary instances for {} record {}/{}: {}",
+                    record_type, namespace, name, e
+                );
+                update_record_status(
+                    client,
+                    record,
+                    "Ready",
+                    "False",
+                    "InstanceFilterError",
+                    &format!("Failed to filter primary instances: {e}"),
+                    current_generation,
+                    None, // record_hash
+                    None, // last_updated
+                )
+                .await?;
+                return Ok(None);
+            }
+        };
+
+    if primary_refs.is_empty() {
+        warn!(
+            "DNSZone {}/{} has no primary instances for {} record {}/{}",
+            zone_ref.namespace, zone_ref.name, record_type, namespace, name
+        );
+        update_record_status(
+            client,
+            record,
+            "Ready",
+            "False",
+            "NoPrimaryInstances",
+            "DNSZone has no primary instances configured",
+            current_generation,
+            None, // record_hash
+            None, // last_updated
+        )
+        .await?;
+        return Ok(None);
     }
 
-    Err(anyhow!(
-        "DNSZone with zoneName '{zone_fqdn}' not found in namespace '{namespace}'"
-    ))
+    Ok(Some(RecordReconciliationContext {
+        zone_ref,
+        primary_refs,
+        current_hash,
+    }))
 }
 
 /// Reconciles an `ARecord` (IPv4 address) resource.
@@ -118,11 +279,11 @@ async fn get_zone_info(
 /// ```rust,no_run
 /// use bindy::reconcilers::reconcile_a_record;
 /// use bindy::crd::ARecord;
-/// use kube::Client;
+/// use bindy::context::Context;
+/// use std::sync::Arc;
 ///
-/// async fn handle_a_record(record: ARecord) -> anyhow::Result<()> {
-///     let client = Client::try_default().await?;
-///     reconcile_a_record(client, record).await?;
+/// async fn handle_a_record(ctx: Arc<Context>, record: ARecord) -> anyhow::Result<()> {
+///     reconcile_a_record(ctx, record).await?;
 ///     Ok(())
 /// }
 /// ```
@@ -130,8 +291,12 @@ async fn get_zone_info(
 /// # Errors
 ///
 /// Returns an error if Kubernetes API operations fail or BIND9 record creation fails.
-#[allow(clippy::too_many_lines)]
-pub async fn reconcile_a_record(client: Client, record: ARecord) -> Result<()> {
+pub async fn reconcile_a_record(
+    ctx: std::sync::Arc<crate::context::Context>,
+    record: ARecord,
+) -> Result<()> {
+    let client = ctx.client.clone();
+    let bind9_instances_store = &ctx.stores.bind9_instances;
     let namespace = record.namespace().unwrap_or_default();
     let name = record.name_any();
 
@@ -139,128 +304,62 @@ pub async fn reconcile_a_record(client: Client, record: ARecord) -> Result<()> {
 
     let spec = &record.spec;
     let current_generation = record.metadata.generation;
-    let observed_generation = record.status.as_ref().and_then(|s| s.observed_generation);
 
-    // Get zone from annotation (set by DNSZone controller)
-    // Check this FIRST before generation check, because the annotation may have been
-    // added after the record was created (by DNSZone controller)
-    let Some(zone_fqdn) = get_zone_from_annotation(&record) else {
-        // Only skip reconciliation if generation hasn't changed AND already marked as NotSelected
-        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
-            debug!("Spec unchanged and no zone annotation, skipping reconciliation");
-            return Ok(());
-        }
-
-        info!(
-            "A record {}/{} not selected by any DNSZone (no zone annotation)",
-            namespace, name
-        );
-        update_record_status(
-            &client,
-            &record,
-            "Ready",
-            "False",
-            "NotSelected",
-            "Record not selected by any DNSZone label selector",
-            current_generation,
-            None, // record_hash
-            None, // last_updated
-        )
-        .await?;
-        return Ok(());
+    // Use generic helper to get zone and instances
+    let Some(rec_ctx) =
+        prepare_record_reconciliation(&client, &record, "A", spec, bind9_instances_store).await?
+    else {
+        return Ok(()); // Record not selected or status already updated
     };
 
-    // Calculate hash of current spec to detect actual data changes
-    let current_hash = crate::ddns::calculate_record_hash(&spec);
-    let previous_hash = record
-        .status
-        .as_ref()
-        .and_then(|s| s.record_hash.as_deref());
-
-    // Check if record data actually changed using hash comparison
-    let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
-
-    if data_changed {
-        info!(
-            "A record {}/{} data changed (hash mismatch), updating DNS",
-            namespace, name
-        );
-    } else {
-        debug!(
-            "A record {}/{} data unchanged (hash match), verifying DNS state for self-healing",
-            namespace, name
-        );
-    }
-
-    // Always perform DNS update for self-healing (ensures record exists even if spec unchanged)
-    debug!(
-        "Ensuring A record exists in zone {} (declarative reconciliation)",
-        zone_fqdn
-    );
-
-    // Get zone information from Kubernetes
-    let (zone_name, cluster_ref, is_cluster_provider) =
-        match get_zone_info(&client, &namespace, &zone_fqdn).await {
-            Ok(info) => info,
-            Err(e) => {
-                warn!(
-                    "Failed to find DNSZone for {} in {}/{}: {}",
-                    zone_fqdn, namespace, name, e
-                );
-                update_record_status(
-                    &client,
-                    &record,
-                    "Ready",
-                    "False",
-                    "ZoneNotFound",
-                    &format!("DNSZone '{zone_fqdn}' not found: {e}"),
-                    current_generation,
-                    None, // record_hash
-                    None, // last_updated
-                )
-                .await?;
-                return Ok(());
-            }
-        };
-
-    // Create/update record in BIND9 for the zone
-    let zone_manager = crate::bind9::Bind9Manager::new();
-
-    match add_a_record_to_zone(
+    // Add record to BIND9 primaries using instances
+    match add_a_record_to_instances(
         &client,
-        &namespace,
-        &zone_name,
-        &cluster_ref,
-        is_cluster_provider,
+        &ctx.stores,
+        &rec_ctx.primary_refs,
+        &rec_ctx.zone_ref.zone_name,
         &spec.name,
         &spec.ipv4_address,
         spec.ttl,
-        &zone_manager,
     )
     .await
     {
         Ok(()) => {
             info!(
-                "Successfully added A record {} to zone {} in cluster {}",
-                spec.name, zone_name, cluster_ref
+                "Successfully added A record {}.{} via {} primary instance(s)",
+                spec.name,
+                rec_ctx.zone_ref.zone_name,
+                rec_ctx.primary_refs.len()
             );
+
+            // Update lastReconciledAt timestamp in DNSZone.status.selectedRecords[]
+            update_record_reconciled_timestamp(
+                &client,
+                &rec_ctx.zone_ref.namespace,
+                &rec_ctx.zone_ref.name,
+                "ARecord",
+                &name,
+                &namespace,
+            )
+            .await?;
+
             update_record_status(
                 &client,
                 &record,
                 "Ready",
                 "True",
                 "ReconcileSucceeded",
-                &format!("A record added to zone {zone_name}"),
+                &format!("A record added to zone {}", rec_ctx.zone_ref.zone_name),
                 current_generation,
-                Some(current_hash),
+                Some(rec_ctx.current_hash),
                 Some(chrono::Utc::now().to_rfc3339()),
             )
             .await?;
         }
         Err(e) => {
             warn!(
-                "Failed to add A record {} to zone {}: {}",
-                spec.name, zone_name, e
+                "Failed to add A record {}.{}: {}",
+                spec.name, rec_ctx.zone_ref.zone_name, e
             );
             update_record_status(
                 &client,
@@ -268,7 +367,7 @@ pub async fn reconcile_a_record(client: Client, record: ARecord) -> Result<()> {
                 "Ready",
                 "False",
                 "ReconcileFailed",
-                &format!("Failed to add record to zone {zone_name}: {e}"),
+                &format!("Failed to add record to zone: {e}"),
                 current_generation,
                 None, // record_hash
                 None, // last_updated
@@ -280,18 +379,16 @@ pub async fn reconcile_a_record(client: Client, record: ARecord) -> Result<()> {
     Ok(())
 }
 
-/// Add an A record to a specific zone in BIND9 primaries.
+/// Add an A record to BIND9 primaries using instance references.
 ///
 /// Uses dynamic DNS updates (nsupdate protocol via DNS TCP port 53) to add the record
-/// to all primary endpoints for the specified zone.
+/// to all primary endpoints for the specified instances.
 ///
 /// # Arguments
 ///
 /// * `client` - Kubernetes API client
-/// * `namespace` - Namespace of the zone
+/// * `instance_refs` - Primary instance references
 /// * `zone_name` - DNS zone name
-/// * `cluster_ref` - Name of the `Bind9Cluster` or `ClusterBind9Provider`
-/// * `is_cluster_provider` - Whether the cluster is a `ClusterBind9Provider`
 /// * `record_name` - Name portion of the DNS record
 /// * `ipv4_address` - IPv4 address for the record
 /// * `ttl` - Optional TTL value
@@ -301,31 +398,38 @@ pub async fn reconcile_a_record(client: Client, record: ARecord) -> Result<()> {
 ///
 /// Returns an error if the BIND9 record creation fails.
 #[allow(clippy::too_many_arguments)]
-async fn add_a_record_to_zone(
+async fn add_a_record_to_instances(
     client: &Client,
-    namespace: &str,
+    stores: &crate::context::Stores,
+    instance_refs: &[crate::crd::InstanceReference],
     zone_name: &str,
-    cluster_ref: &str,
-    is_cluster_provider: bool,
     record_name: &str,
     ipv4_address: &str,
     ttl: Option<i32>,
-    zone_manager: &crate::bind9::Bind9Manager,
 ) -> Result<()> {
-    use crate::reconcilers::dnszone::for_each_primary_endpoint;
+    use crate::reconcilers::dnszone::for_each_instance_endpoint;
 
-    let (_first, _total) = for_each_primary_endpoint(
+    // Create a map of instance name -> namespace for quick lookup
+    let instance_map: std::collections::HashMap<String, String> = instance_refs
+        .iter()
+        .map(|inst| (inst.name.clone(), inst.namespace.clone()))
+        .collect();
+
+    let (_first, _total) = for_each_instance_endpoint(
         client,
-        namespace,
-        cluster_ref,
-        is_cluster_provider,
+        instance_refs,
         true,      // with_rndc_key
         "dns-tcp", // Use DNS TCP port for dynamic updates
         |pod_endpoint, instance_name, rndc_key| {
             let zone_name = zone_name.to_string();
             let record_name = record_name.to_string();
             let ipv4_address = ipv4_address.to_string();
-            let zone_manager = zone_manager.clone();
+
+            // Get namespace for this instance
+            let instance_namespace = instance_map.get(&instance_name).expect("Instance should be in map").clone();
+
+            // Create Bind9Manager for this specific instance with deployment-aware auth
+            let zone_manager = stores.create_bind9_manager_for_instance(&instance_name, &instance_namespace);
 
             async move {
                 let key_data = rndc_key.expect("RNDC key should be loaded");
@@ -362,8 +466,12 @@ async fn add_a_record_to_zone(
 /// # Errors
 ///
 /// Returns an error if Kubernetes API operations fail or BIND9 record creation fails.
-#[allow(clippy::too_many_lines)]
-pub async fn reconcile_txt_record(client: Client, record: TXTRecord) -> Result<()> {
+pub async fn reconcile_txt_record(
+    ctx: std::sync::Arc<crate::context::Context>,
+    record: TXTRecord,
+) -> Result<()> {
+    let client = ctx.client.clone();
+    let bind9_instances_store = &ctx.stores.bind9_instances;
     let namespace = record.namespace().unwrap_or_default();
     let name = record.name_any();
 
@@ -371,129 +479,62 @@ pub async fn reconcile_txt_record(client: Client, record: TXTRecord) -> Result<(
 
     let spec = &record.spec;
     let current_generation = record.metadata.generation;
-    let observed_generation = record.status.as_ref().and_then(|s| s.observed_generation);
 
-    // Get zone from annotation (set by DNSZone controller)
-    // Check this FIRST before generation check, because the annotation may have been
-    // added after the record was created (by DNSZone controller)
-    let Some(zone_fqdn) = get_zone_from_annotation(&record) else {
-        // Only skip reconciliation if generation hasn't changed AND already marked as NotSelected
-        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
-            debug!("Spec unchanged and no zone annotation, skipping reconciliation");
-            return Ok(());
-        }
-
-        info!(
-            "TXT record {}/{} not selected by any DNSZone",
-            namespace, name
-        );
-        update_record_status(
-            &client,
-            &record,
-            "Ready",
-            "False",
-            "NotSelected",
-            "Record not selected by any DNSZone label selector",
-            current_generation,
-            None, // record_hash
-            None, // last_updated
-        )
-        .await?;
-        return Ok(());
+    // Use generic helper to get zone and instances
+    let Some(rec_ctx) =
+        prepare_record_reconciliation(&client, &record, "TXT", spec, bind9_instances_store).await?
+    else {
+        return Ok(()); // Record not selected or status already updated
     };
 
-    // Calculate hash of current spec to detect actual data changes
-    let current_hash = crate::ddns::calculate_record_hash(&spec);
-    let previous_hash = record
-        .status
-        .as_ref()
-        .and_then(|s| s.record_hash.as_deref());
-
-    // Check if record data actually changed using hash comparison
-    let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
-
-    if data_changed {
-        info!(
-            "TXT record {}/{} data changed (hash mismatch), updating DNS",
-            namespace, name
-        );
-    } else {
-        debug!(
-            "TXT record {}/{} data unchanged (hash match), verifying DNS state for self-healing",
-            namespace, name
-        );
-    }
-
-    // Always reconcile to ensure declarative state - records are recreated if pods restart
-    // The underlying add_*_record() functions are idempotent and check for existence first
-    debug!(
-        "Ensuring record exists in zone {} (declarative reconciliation)",
-        zone_fqdn
-    );
-
-    // Get zone info from DNSZone resource
-    let (zone_name, cluster_ref, is_cluster_provider) =
-        match get_zone_info(&client, &namespace, &zone_fqdn).await {
-            Ok(info) => info,
-            Err(e) => {
-                warn!(
-                    "Failed to find DNSZone {} for TXT record {}/{}: {}",
-                    zone_fqdn, namespace, name, e
-                );
-                update_record_status(
-                    &client,
-                    &record,
-                    "Ready",
-                    "False",
-                    "ZoneNotFound",
-                    &format!("DNSZone {zone_fqdn} not found: {e}"),
-                    current_generation,
-                    None, // record_hash
-                    None, // last_updated
-                )
-                .await?;
-                return Ok(());
-            }
-        };
-
-    // Create/update record in BIND9
-    let zone_manager = crate::bind9::Bind9Manager::new();
-
-    match add_txt_record_to_zone(
+    // Add record to BIND9 primaries using instances
+    match add_txt_record_to_instances(
         &client,
-        &namespace,
-        &zone_name,
-        &cluster_ref,
-        is_cluster_provider,
+        &ctx.stores,
+        &rec_ctx.primary_refs,
+        &rec_ctx.zone_ref.zone_name,
         &spec.name,
         &spec.text,
         spec.ttl,
-        &zone_manager,
     )
     .await
     {
         Ok(()) => {
             info!(
-                "Successfully added TXT record {} to zone {} in cluster {}",
-                spec.name, zone_name, cluster_ref
+                "Successfully added TXT record {}.{} via {} primary instance(s)",
+                spec.name,
+                rec_ctx.zone_ref.zone_name,
+                rec_ctx.primary_refs.len()
             );
+
+            // Update lastReconciledAt timestamp in DNSZone.status.selectedRecords[]
+            update_record_reconciled_timestamp(
+                &client,
+                &rec_ctx.zone_ref.namespace,
+                &rec_ctx.zone_ref.name,
+                "TXTRecord",
+                &name,
+                &namespace,
+            )
+            .await?;
+
             update_record_status(
                 &client,
                 &record,
                 "Ready",
                 "True",
                 "ReconcileSucceeded",
-                &format!("TXT record added to zone {zone_name}"),
+                &format!("TXT record added to zone {}", rec_ctx.zone_ref.zone_name),
                 current_generation,
-                Some(current_hash),
+                Some(rec_ctx.current_hash),
                 Some(chrono::Utc::now().to_rfc3339()),
             )
             .await?;
         }
         Err(e) => {
             warn!(
-                "Failed to add TXT record {} to zone {}: {}",
-                spec.name, zone_name, e
+                "Failed to add TXT record {}.{}: {}",
+                spec.name, rec_ctx.zone_ref.zone_name, e
             );
             update_record_status(
                 &client,
@@ -501,7 +542,7 @@ pub async fn reconcile_txt_record(client: Client, record: TXTRecord) -> Result<(
                 "Ready",
                 "False",
                 "ReconcileFailed",
-                &format!("Failed to add TXT record to zone {zone_name}: {e}"),
+                &format!("Failed to add record to zone: {e}"),
                 current_generation,
                 None, // record_hash
                 None, // last_updated
@@ -513,33 +554,41 @@ pub async fn reconcile_txt_record(client: Client, record: TXTRecord) -> Result<(
     Ok(())
 }
 
-/// Add a TXT record to a specific zone in BIND9 primaries.
+/// Add a TXT record to BIND9 primaries using instance references.
 #[allow(clippy::too_many_arguments)]
-async fn add_txt_record_to_zone(
+async fn add_txt_record_to_instances(
     client: &Client,
-    namespace: &str,
+    stores: &crate::context::Stores,
+    instance_refs: &[crate::crd::InstanceReference],
     zone_name: &str,
-    cluster_ref: &str,
-    is_cluster_provider: bool,
     record_name: &str,
     text: &[String],
     ttl: Option<i32>,
-    zone_manager: &crate::bind9::Bind9Manager,
 ) -> Result<()> {
-    use crate::reconcilers::dnszone::for_each_primary_endpoint;
+    use crate::reconcilers::dnszone::for_each_instance_endpoint;
 
-    let (_first, _total) = for_each_primary_endpoint(
+    // Create a map of instance name -> namespace for quick lookup
+    let instance_map: std::collections::HashMap<String, String> = instance_refs
+        .iter()
+        .map(|inst| (inst.name.clone(), inst.namespace.clone()))
+        .collect();
+
+    let (_first, _total) = for_each_instance_endpoint(
         client,
-        namespace,
-        cluster_ref,
-        is_cluster_provider,
-        true,
-        "dns-tcp",
+        instance_refs,
+        true,      // with_rndc_key
+        "dns-tcp", // Use DNS TCP port for dynamic updates
         |pod_endpoint, instance_name, rndc_key| {
             let zone_name = zone_name.to_string();
             let record_name = record_name.to_string();
             let text = text.to_vec();
-            let zone_manager = zone_manager.clone();
+            let instance_namespace = instance_map
+                .get(&instance_name)
+                .expect("Instance should be in map")
+                .clone();
+
+            // Create Bind9Manager for this specific instance with deployment-aware auth
+            let zone_manager = stores.create_bind9_manager_for_instance(&instance_name, &instance_namespace);
 
             async move {
                 let key_data = rndc_key.expect("RNDC key should be loaded");
@@ -575,8 +624,12 @@ async fn add_txt_record_to_zone(
 /// # Errors
 ///
 /// Returns an error if Kubernetes API operations fail or BIND9 record creation fails.
-#[allow(clippy::too_many_lines)]
-pub async fn reconcile_aaaa_record(client: Client, record: AAAARecord) -> Result<()> {
+pub async fn reconcile_aaaa_record(
+    ctx: std::sync::Arc<crate::context::Context>,
+    record: AAAARecord,
+) -> Result<()> {
+    let client = ctx.client.clone();
+    let bind9_instances_store = &ctx.stores.bind9_instances;
     let namespace = record.namespace().unwrap_or_default();
     let name = record.name_any();
 
@@ -584,128 +637,63 @@ pub async fn reconcile_aaaa_record(client: Client, record: AAAARecord) -> Result
 
     let spec = &record.spec;
     let current_generation = record.metadata.generation;
-    let observed_generation = record.status.as_ref().and_then(|s| s.observed_generation);
 
-    // Get zone from annotation (set by DNSZone controller)
-    // Check this FIRST before generation check, because the annotation may have been
-    // added after the record was created (by DNSZone controller)
-    let Some(zone_fqdn) = get_zone_from_annotation(&record) else {
-        // Only skip reconciliation if generation hasn't changed AND already marked as NotSelected
-        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
-            debug!("Spec unchanged and no zone annotation, skipping reconciliation");
-            return Ok(());
-        }
-
-        info!(
-            "AAAA record {}/{} not selected by any DNSZone (no zone annotation)",
-            namespace, name
-        );
-        update_record_status(
-            &client,
-            &record,
-            "Ready",
-            "False",
-            "NotSelected",
-            "Record not selected by any DNSZone label selector",
-            current_generation,
-            None, // record_hash
-            None, // last_updated
-        )
-        .await?;
-        return Ok(());
+    // Use generic helper to get zone and instances
+    let Some(rec_ctx) =
+        prepare_record_reconciliation(&client, &record, "AAAA", spec, bind9_instances_store)
+            .await?
+    else {
+        return Ok(()); // Record not selected or status already updated
     };
 
-    // Calculate hash of current spec to detect actual data changes
-    let current_hash = crate::ddns::calculate_record_hash(&spec);
-    let previous_hash = record
-        .status
-        .as_ref()
-        .and_then(|s| s.record_hash.as_deref());
-
-    // Check if record data actually changed using hash comparison
-    let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
-
-    if data_changed {
-        info!(
-            "AAAA record {}/{} data changed (hash mismatch), updating DNS",
-            namespace, name
-        );
-    } else {
-        debug!(
-            "AAAA record {}/{} data unchanged (hash match), verifying DNS state for self-healing",
-            namespace, name
-        );
-    }
-
-    // Always perform DNS update for self-healing (ensures record exists even if spec unchanged)
-    debug!(
-        "Ensuring record exists in zone {} (declarative reconciliation)",
-        zone_fqdn
-    );
-
-    // Get zone information from Kubernetes
-    let (zone_name, cluster_ref, is_cluster_provider) =
-        match get_zone_info(&client, &namespace, &zone_fqdn).await {
-            Ok(info) => info,
-            Err(e) => {
-                warn!(
-                    "Failed to find DNSZone for {} in {}/{}: {}",
-                    zone_fqdn, namespace, name, e
-                );
-                update_record_status(
-                    &client,
-                    &record,
-                    "Ready",
-                    "False",
-                    "ZoneNotFound",
-                    &format!("DNSZone '{zone_fqdn}' not found: {e}"),
-                    current_generation,
-                    None, // record_hash
-                    None, // last_updated
-                )
-                .await?;
-                return Ok(());
-            }
-        };
-
-    // Create/update record in BIND9 for the zone
-    let zone_manager = crate::bind9::Bind9Manager::new();
-
-    match add_aaaa_record_to_zone(
+    // Add record to BIND9 primaries using instances
+    match add_aaaa_record_to_instances(
         &client,
-        &namespace,
-        &zone_name,
-        &cluster_ref,
-        is_cluster_provider,
+        &ctx.stores,
+        &rec_ctx.primary_refs,
+        &rec_ctx.zone_ref.zone_name,
         &spec.name,
         &spec.ipv6_address,
         spec.ttl,
-        &zone_manager,
     )
     .await
     {
         Ok(()) => {
             info!(
-                "Successfully added AAAA record {} to zone {} in cluster {}",
-                spec.name, zone_name, cluster_ref
+                "Successfully added AAAA record {}.{} via {} primary instance(s)",
+                spec.name,
+                rec_ctx.zone_ref.zone_name,
+                rec_ctx.primary_refs.len()
             );
+
+            // Update lastReconciledAt timestamp in DNSZone.status.selectedRecords[]
+            update_record_reconciled_timestamp(
+                &client,
+                &rec_ctx.zone_ref.namespace,
+                &rec_ctx.zone_ref.name,
+                "AAAARecord",
+                &name,
+                &namespace,
+            )
+            .await?;
+
             update_record_status(
                 &client,
                 &record,
                 "Ready",
                 "True",
                 "ReconcileSucceeded",
-                &format!("AAAA record added to zone {zone_name}"),
+                &format!("AAAA record added to zone {}", rec_ctx.zone_ref.zone_name),
                 current_generation,
-                Some(current_hash),
+                Some(rec_ctx.current_hash),
                 Some(chrono::Utc::now().to_rfc3339()),
             )
             .await?;
         }
         Err(e) => {
             warn!(
-                "Failed to add AAAA record {} to zone {}: {}",
-                spec.name, zone_name, e
+                "Failed to add AAAA record {}.{}: {}",
+                spec.name, rec_ctx.zone_ref.zone_name, e
             );
             update_record_status(
                 &client,
@@ -713,7 +701,7 @@ pub async fn reconcile_aaaa_record(client: Client, record: AAAARecord) -> Result
                 "Ready",
                 "False",
                 "ReconcileFailed",
-                &format!("Failed to add record to zone {zone_name}: {e}"),
+                &format!("Failed to add record to zone: {e}"),
                 current_generation,
                 None, // record_hash
                 None, // last_updated
@@ -725,33 +713,41 @@ pub async fn reconcile_aaaa_record(client: Client, record: AAAARecord) -> Result
     Ok(())
 }
 
-/// Add an AAAA record to a specific zone in BIND9 primaries.
+/// Add an AAAA record to BIND9 primaries using instance references.
 #[allow(clippy::too_many_arguments)]
-async fn add_aaaa_record_to_zone(
+async fn add_aaaa_record_to_instances(
     client: &Client,
-    namespace: &str,
+    stores: &crate::context::Stores,
+    instance_refs: &[crate::crd::InstanceReference],
     zone_name: &str,
-    cluster_ref: &str,
-    is_cluster_provider: bool,
     record_name: &str,
     ipv6_address: &str,
     ttl: Option<i32>,
-    zone_manager: &crate::bind9::Bind9Manager,
 ) -> Result<()> {
-    use crate::reconcilers::dnszone::for_each_primary_endpoint;
+    use crate::reconcilers::dnszone::for_each_instance_endpoint;
 
-    let (_first, _total) = for_each_primary_endpoint(
+    // Create a map of instance name -> namespace for quick lookup
+    let instance_map: std::collections::HashMap<String, String> = instance_refs
+        .iter()
+        .map(|inst| (inst.name.clone(), inst.namespace.clone()))
+        .collect();
+
+    let (_first, _total) = for_each_instance_endpoint(
         client,
-        namespace,
-        cluster_ref,
-        is_cluster_provider,
-        true,
-        "dns-tcp",
+        instance_refs,
+        true,      // with_rndc_key
+        "dns-tcp", // Use DNS TCP port for dynamic updates
         |pod_endpoint, instance_name, rndc_key| {
             let zone_name = zone_name.to_string();
             let record_name = record_name.to_string();
             let ipv6_address = ipv6_address.to_string();
-            let zone_manager = zone_manager.clone();
+            let instance_namespace = instance_map
+                .get(&instance_name)
+                .expect("Instance should be in map")
+                .clone();
+
+            // Create Bind9Manager for this specific instance with deployment-aware auth
+            let zone_manager = stores.create_bind9_manager_for_instance(&instance_name, &instance_namespace);
 
             async move {
                 let key_data = rndc_key.expect("RNDC key should be loaded");
@@ -788,7 +784,12 @@ async fn add_aaaa_record_to_zone(
 ///
 /// Returns an error if Kubernetes API operations fail or BIND9 record creation fails.
 #[allow(clippy::too_many_lines)]
-pub async fn reconcile_cname_record(client: Client, record: CNAMERecord) -> Result<()> {
+pub async fn reconcile_cname_record(
+    ctx: std::sync::Arc<crate::context::Context>,
+    record: CNAMERecord,
+) -> Result<()> {
+    let client = ctx.client.clone();
+    let bind9_instances_store = &ctx.stores.bind9_instances;
     let namespace = record.namespace().unwrap_or_default();
     let name = record.name_any();
 
@@ -796,128 +797,63 @@ pub async fn reconcile_cname_record(client: Client, record: CNAMERecord) -> Resu
 
     let spec = &record.spec;
     let current_generation = record.metadata.generation;
-    let observed_generation = record.status.as_ref().and_then(|s| s.observed_generation);
 
-    // Get zone from annotation (set by DNSZone controller)
-    // Check this FIRST before generation check, because the annotation may have been
-    // added after the record was created (by DNSZone controller)
-    let Some(zone_fqdn) = get_zone_from_annotation(&record) else {
-        // Only skip reconciliation if generation hasn't changed AND already marked as NotSelected
-        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
-            debug!("Spec unchanged and no zone annotation, skipping reconciliation");
-            return Ok(());
-        }
-
-        info!(
-            "CNAME record {}/{} not selected by any DNSZone",
-            namespace, name
-        );
-        update_record_status(
-            &client,
-            &record,
-            "Ready",
-            "False",
-            "NotSelected",
-            "Record not selected by any DNSZone label selector",
-            current_generation,
-            None, // record_hash
-            None, // last_updated
-        )
-        .await?;
-        return Ok(());
+    // Use generic helper to get zone and instances
+    let Some(rec_ctx) =
+        prepare_record_reconciliation(&client, &record, "CNAME", spec, bind9_instances_store)
+            .await?
+    else {
+        return Ok(()); // Record not selected or status already updated
     };
 
-    // Calculate hash of current spec to detect actual data changes
-    let current_hash = crate::ddns::calculate_record_hash(&spec);
-    let previous_hash = record
-        .status
-        .as_ref()
-        .and_then(|s| s.record_hash.as_deref());
-
-    // Check if record data actually changed using hash comparison
-    let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
-
-    if data_changed {
-        info!(
-            "CNAME record {}/{} data changed (hash mismatch), updating DNS",
-            namespace, name
-        );
-    } else {
-        debug!(
-            "CNAME record {}/{} data unchanged (hash match), verifying DNS state for self-healing",
-            namespace, name
-        );
-    }
-
-    // Always perform DNS update for self-healing (ensures record exists even if spec unchanged)
-    debug!(
-        "Ensuring record exists in zone {} (declarative reconciliation)",
-        zone_fqdn
-    );
-
-    // Get zone info from DNSZone resource
-    let (zone_name, cluster_ref, is_cluster_provider) =
-        match get_zone_info(&client, &namespace, &zone_fqdn).await {
-            Ok(info) => info,
-            Err(e) => {
-                warn!(
-                    "Failed to find DNSZone {} for CNAME record {}/{}: {}",
-                    zone_fqdn, namespace, name, e
-                );
-                update_record_status(
-                    &client,
-                    &record,
-                    "Ready",
-                    "False",
-                    "ZoneNotFound",
-                    &format!("DNSZone {zone_fqdn} not found: {e}"),
-                    current_generation,
-                    None, // record_hash
-                    None, // last_updated
-                )
-                .await?;
-                return Ok(());
-            }
-        };
-
-    // Create/update record in BIND9
-    let zone_manager = crate::bind9::Bind9Manager::new();
-
-    match add_cname_record_to_zone(
+    // Add record to BIND9 primaries using instances
+    match add_cname_record_to_instances(
         &client,
-        &namespace,
-        &zone_name,
-        &cluster_ref,
-        is_cluster_provider,
+        &ctx.stores,
+        &rec_ctx.primary_refs,
+        &rec_ctx.zone_ref.zone_name,
         &spec.name,
         &spec.target,
         spec.ttl,
-        &zone_manager,
     )
     .await
     {
         Ok(()) => {
             info!(
-                "Successfully added CNAME record {} to zone {} in cluster {}",
-                spec.name, zone_name, cluster_ref
+                "Successfully added CNAME record {}.{} via {} primary instance(s)",
+                spec.name,
+                rec_ctx.zone_ref.zone_name,
+                rec_ctx.primary_refs.len()
             );
+
+            // Update lastReconciledAt timestamp in DNSZone.status.selectedRecords[]
+            update_record_reconciled_timestamp(
+                &client,
+                &rec_ctx.zone_ref.namespace,
+                &rec_ctx.zone_ref.name,
+                "CNAMERecord",
+                &name,
+                &namespace,
+            )
+            .await?;
+
             update_record_status(
                 &client,
                 &record,
                 "Ready",
                 "True",
                 "ReconcileSucceeded",
-                &format!("CNAME record added to zone {zone_name}"),
+                &format!("CNAME record added to zone {}", rec_ctx.zone_ref.zone_name),
                 current_generation,
-                Some(current_hash),
+                Some(rec_ctx.current_hash),
                 Some(chrono::Utc::now().to_rfc3339()),
             )
             .await?;
         }
         Err(e) => {
             warn!(
-                "Failed to add CNAME record {} to zone {}: {}",
-                spec.name, zone_name, e
+                "Failed to add CNAME record {}.{}: {}",
+                spec.name, rec_ctx.zone_ref.zone_name, e
             );
             update_record_status(
                 &client,
@@ -925,7 +861,7 @@ pub async fn reconcile_cname_record(client: Client, record: CNAMERecord) -> Resu
                 "Ready",
                 "False",
                 "ReconcileFailed",
-                &format!("Failed to add CNAME record to zone {zone_name}: {e}"),
+                &format!("Failed to add record to zone: {e}"),
                 current_generation,
                 None, // record_hash
                 None, // last_updated
@@ -939,31 +875,39 @@ pub async fn reconcile_cname_record(client: Client, record: CNAMERecord) -> Resu
 
 /// Add a CNAME record to a specific zone in BIND9 primaries.
 #[allow(clippy::too_many_arguments)]
-async fn add_cname_record_to_zone(
+async fn add_cname_record_to_instances(
     client: &Client,
-    namespace: &str,
+    stores: &crate::context::Stores,
+    instance_refs: &[crate::crd::InstanceReference],
     zone_name: &str,
-    cluster_ref: &str,
-    is_cluster_provider: bool,
     record_name: &str,
     target: &str,
     ttl: Option<i32>,
-    zone_manager: &crate::bind9::Bind9Manager,
 ) -> Result<()> {
-    use crate::reconcilers::dnszone::for_each_primary_endpoint;
+    use crate::reconcilers::dnszone::for_each_instance_endpoint;
 
-    let (_first, _total) = for_each_primary_endpoint(
+    // Create a map of instance name -> namespace for quick lookup
+    let instance_map: std::collections::HashMap<String, String> = instance_refs
+        .iter()
+        .map(|inst| (inst.name.clone(), inst.namespace.clone()))
+        .collect();
+
+    let (_first, _total) = for_each_instance_endpoint(
         client,
-        namespace,
-        cluster_ref,
-        is_cluster_provider,
-        true,
-        "dns-tcp",
+        instance_refs,
+        true,      // with_rndc_key
+        "dns-tcp", // Use DNS TCP port for dynamic updates,
         |pod_endpoint, instance_name, rndc_key| {
             let zone_name = zone_name.to_string();
             let record_name = record_name.to_string();
             let target = target.to_string();
-            let zone_manager = zone_manager.clone();
+            let instance_namespace = instance_map
+                .get(&instance_name)
+                .expect("Instance should be in map")
+                .clone();
+
+            // Create Bind9Manager for this specific instance with deployment-aware auth
+            let zone_manager = stores.create_bind9_manager_for_instance(&instance_name, &instance_namespace);
 
             async move {
                 let key_data = rndc_key.expect("RNDC key should be loaded");
@@ -1001,7 +945,12 @@ async fn add_cname_record_to_zone(
 ///
 /// Returns an error if Kubernetes API operations fail or BIND9 record creation fails.
 #[allow(clippy::too_many_lines)]
-pub async fn reconcile_mx_record(client: Client, record: MXRecord) -> Result<()> {
+pub async fn reconcile_mx_record(
+    ctx: std::sync::Arc<crate::context::Context>,
+    record: MXRecord,
+) -> Result<()> {
+    let client = ctx.client.clone();
+    let bind9_instances_store = &ctx.stores.bind9_instances;
     let namespace = record.namespace().unwrap_or_default();
     let name = record.name_any();
 
@@ -1009,129 +958,63 @@ pub async fn reconcile_mx_record(client: Client, record: MXRecord) -> Result<()>
 
     let spec = &record.spec;
     let current_generation = record.metadata.generation;
-    let observed_generation = record.status.as_ref().and_then(|s| s.observed_generation);
 
-    // Get zone from annotation (set by DNSZone controller)
-    // Check this FIRST before generation check, because the annotation may have been
-    // added after the record was created (by DNSZone controller)
-    let Some(zone_fqdn) = get_zone_from_annotation(&record) else {
-        // Only skip reconciliation if generation hasn't changed AND already marked as NotSelected
-        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
-            debug!("Spec unchanged and no zone annotation, skipping reconciliation");
-            return Ok(());
-        }
-
-        info!(
-            "MX record {}/{} not selected by any DNSZone",
-            namespace, name
-        );
-        update_record_status(
-            &client,
-            &record,
-            "Ready",
-            "False",
-            "NotSelected",
-            "Record not selected by any DNSZone label selector",
-            current_generation,
-            None, // record_hash
-            None, // last_updated
-        )
-        .await?;
-        return Ok(());
+    // Use generic helper to get zone and instances
+    let Some(rec_ctx) =
+        prepare_record_reconciliation(&client, &record, "MX", spec, bind9_instances_store).await?
+    else {
+        return Ok(()); // Record not selected or status already updated
     };
 
-    // Calculate hash of current spec to detect actual data changes
-    let current_hash = crate::ddns::calculate_record_hash(&spec);
-    let previous_hash = record
-        .status
-        .as_ref()
-        .and_then(|s| s.record_hash.as_deref());
-
-    // Check if record data actually changed using hash comparison
-    let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
-
-    if data_changed {
-        info!(
-            "MX record {}/{} data changed (hash mismatch), updating DNS",
-            namespace, name
-        );
-    } else {
-        debug!(
-            "MX record {}/{} data unchanged (hash match), verifying DNS state for self-healing",
-            namespace, name
-        );
-    }
-
-    // Always perform DNS update for self-healing (ensures record exists even if spec unchanged)
-    debug!(
-        "Ensuring record exists in zone {} (declarative reconciliation)",
-        zone_fqdn
-    );
-
-    // Get zone info from DNSZone resource
-    let (zone_name, cluster_ref, is_cluster_provider) =
-        match get_zone_info(&client, &namespace, &zone_fqdn).await {
-            Ok(info) => info,
-            Err(e) => {
-                warn!(
-                    "Failed to find DNSZone {} for MX record {}/{}: {}",
-                    zone_fqdn, namespace, name, e
-                );
-                update_record_status(
-                    &client,
-                    &record,
-                    "Ready",
-                    "False",
-                    "ZoneNotFound",
-                    &format!("DNSZone {zone_fqdn} not found: {e}"),
-                    current_generation,
-                    None, // record_hash
-                    None, // last_updated
-                )
-                .await?;
-                return Ok(());
-            }
-        };
-
-    // Create/update record in BIND9
-    let zone_manager = crate::bind9::Bind9Manager::new();
-
-    match add_mx_record_to_zone(
+    // Add record to BIND9 primaries using instances
+    match add_mx_record_to_instances(
         &client,
-        &namespace,
-        &zone_name,
-        &cluster_ref,
-        is_cluster_provider,
+        &ctx.stores,
+        &rec_ctx.primary_refs,
+        &rec_ctx.zone_ref.zone_name,
         &spec.name,
         spec.priority,
         &spec.mail_server,
         spec.ttl,
-        &zone_manager,
     )
     .await
     {
         Ok(()) => {
             info!(
-                "Successfully added MX record {} to zone {} in cluster {}",
-                spec.name, zone_name, cluster_ref
+                "Successfully added MX record {}.{} via {} primary instance(s)",
+                spec.name,
+                rec_ctx.zone_ref.zone_name,
+                rec_ctx.primary_refs.len()
             );
+
+            // Update lastReconciledAt timestamp in DNSZone.status.selectedRecords[]
+            update_record_reconciled_timestamp(
+                &client,
+                &rec_ctx.zone_ref.namespace,
+                &rec_ctx.zone_ref.name,
+                "MXRecord",
+                &name,
+                &namespace,
+            )
+            .await?;
+
             update_record_status(
                 &client,
                 &record,
                 "Ready",
                 "True",
                 "ReconcileSucceeded",
-                &format!("MX record added to zone {zone_name}"),
+                &format!("MX record added to zone {}", rec_ctx.zone_ref.zone_name),
                 current_generation,
-                Some(current_hash),
+                Some(rec_ctx.current_hash),
                 Some(chrono::Utc::now().to_rfc3339()),
             )
             .await?;
         }
         Err(e) => {
             warn!(
-                "Failed to add MX record {} to zone {}: {}",
-                spec.name, zone_name, e
+                "Failed to add MX record {}.{}: {}",
+                spec.name, rec_ctx.zone_ref.zone_name, e
             );
             update_record_status(
                 &client,
@@ -1139,7 +1022,7 @@ pub async fn reconcile_mx_record(client: Client, record: MXRecord) -> Result<()>
                 "Ready",
                 "False",
                 "ReconcileFailed",
-                &format!("Failed to add MX record to zone {zone_name}: {e}"),
+                &format!("Failed to add record to zone: {e}"),
                 current_generation,
                 None, // record_hash
                 None, // last_updated
@@ -1153,32 +1036,40 @@ pub async fn reconcile_mx_record(client: Client, record: MXRecord) -> Result<()>
 
 /// Add an MX record to a specific zone in BIND9 primaries.
 #[allow(clippy::too_many_arguments)]
-async fn add_mx_record_to_zone(
+async fn add_mx_record_to_instances(
     client: &Client,
-    namespace: &str,
+    stores: &crate::context::Stores,
+    instance_refs: &[crate::crd::InstanceReference],
     zone_name: &str,
-    cluster_ref: &str,
-    is_cluster_provider: bool,
     record_name: &str,
     priority: i32,
     mail_server: &str,
     ttl: Option<i32>,
-    zone_manager: &crate::bind9::Bind9Manager,
 ) -> Result<()> {
-    use crate::reconcilers::dnszone::for_each_primary_endpoint;
+    use crate::reconcilers::dnszone::for_each_instance_endpoint;
 
-    let (_first, _total) = for_each_primary_endpoint(
+    // Create a map of instance name -> namespace for quick lookup
+    let instance_map: std::collections::HashMap<String, String> = instance_refs
+        .iter()
+        .map(|inst| (inst.name.clone(), inst.namespace.clone()))
+        .collect();
+
+    let (_first, _total) = for_each_instance_endpoint(
         client,
-        namespace,
-        cluster_ref,
-        is_cluster_provider,
-        true,
-        "dns-tcp",
+        instance_refs,
+        true,      // with_rndc_key
+        "dns-tcp", // Use DNS TCP port for dynamic updates,
         |pod_endpoint, instance_name, rndc_key| {
             let zone_name = zone_name.to_string();
             let record_name = record_name.to_string();
             let mail_server = mail_server.to_string();
-            let zone_manager = zone_manager.clone();
+            let instance_namespace = instance_map
+                .get(&instance_name)
+                .expect("Instance should be in map")
+                .clone();
+
+            // Create Bind9Manager for this specific instance with deployment-aware auth
+            let zone_manager = stores.create_bind9_manager_for_instance(&instance_name, &instance_namespace);
 
             async move {
                 let key_data = rndc_key.expect("RNDC key should be loaded");
@@ -1217,7 +1108,12 @@ async fn add_mx_record_to_zone(
 ///
 /// Returns an error if Kubernetes API operations fail or BIND9 record creation fails.
 #[allow(clippy::too_many_lines)]
-pub async fn reconcile_ns_record(client: Client, record: NSRecord) -> Result<()> {
+pub async fn reconcile_ns_record(
+    ctx: std::sync::Arc<crate::context::Context>,
+    record: NSRecord,
+) -> Result<()> {
+    let client = ctx.client.clone();
+    let bind9_instances_store = &ctx.stores.bind9_instances;
     let namespace = record.namespace().unwrap_or_default();
     let name = record.name_any();
 
@@ -1225,129 +1121,62 @@ pub async fn reconcile_ns_record(client: Client, record: NSRecord) -> Result<()>
 
     let spec = &record.spec;
     let current_generation = record.metadata.generation;
-    let observed_generation = record.status.as_ref().and_then(|s| s.observed_generation);
 
-    // Get zone from annotation (set by DNSZone controller)
-    // Check this FIRST before generation check, because the annotation may have been
-    // added after the record was created (by DNSZone controller)
-    let Some(zone_fqdn) = get_zone_from_annotation(&record) else {
-        // Only skip reconciliation if generation hasn't changed AND already marked as NotSelected
-        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
-            debug!("Spec unchanged and no zone annotation, skipping reconciliation");
-            return Ok(());
-        }
-
-        info!(
-            "NS record {}/{} not selected by any DNSZone",
-            namespace, name
-        );
-        update_record_status(
-            &client,
-            &record,
-            "Ready",
-            "False",
-            "NotSelected",
-            "Record not selected by any DNSZone label selector",
-            current_generation,
-            None, // record_hash
-            None, // last_updated
-        )
-        .await?;
-        return Ok(());
+    // Use generic helper to get zone and instances
+    let Some(rec_ctx) =
+        prepare_record_reconciliation(&client, &record, "NS", spec, bind9_instances_store).await?
+    else {
+        return Ok(()); // Record not selected or status already updated
     };
 
-    // Calculate hash of current spec to detect actual data changes
-    let current_hash = crate::ddns::calculate_record_hash(&spec);
-    let previous_hash = record
-        .status
-        .as_ref()
-        .and_then(|s| s.record_hash.as_deref());
-
-    // Check if record data actually changed using hash comparison
-    let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
-
-    if data_changed {
-        info!(
-            "NS record {}/{} data changed (hash mismatch), updating DNS",
-            namespace, name
-        );
-    } else {
-        debug!(
-            "NS record {}/{} data unchanged (hash match), verifying DNS state for self-healing",
-            namespace, name
-        );
-    }
-
-    // Always reconcile to ensure declarative state - records are recreated if pods restart
-    // The underlying add_*_record() functions are idempotent and check for existence first
-    debug!(
-        "Ensuring record exists in zone {} (declarative reconciliation)",
-        zone_fqdn
-    );
-
-    // Get zone info from DNSZone resource
-    let (zone_name, cluster_ref, is_cluster_provider) =
-        match get_zone_info(&client, &namespace, &zone_fqdn).await {
-            Ok(info) => info,
-            Err(e) => {
-                warn!(
-                    "Failed to find DNSZone {} for NS record {}/{}: {}",
-                    zone_fqdn, namespace, name, e
-                );
-                update_record_status(
-                    &client,
-                    &record,
-                    "Ready",
-                    "False",
-                    "ZoneNotFound",
-                    &format!("DNSZone {zone_fqdn} not found: {e}"),
-                    current_generation,
-                    None, // record_hash
-                    None, // last_updated
-                )
-                .await?;
-                return Ok(());
-            }
-        };
-
-    // Create/update record in BIND9
-    let zone_manager = crate::bind9::Bind9Manager::new();
-
-    match add_ns_record_to_zone(
+    // Add record to BIND9 primaries using instances
+    match add_ns_record_to_instances(
         &client,
-        &namespace,
-        &zone_name,
-        &cluster_ref,
-        is_cluster_provider,
+        &ctx.stores,
+        &rec_ctx.primary_refs,
+        &rec_ctx.zone_ref.zone_name,
         &spec.name,
         &spec.nameserver,
         spec.ttl,
-        &zone_manager,
     )
     .await
     {
         Ok(()) => {
             info!(
-                "Successfully added NS record {} to zone {} in cluster {}",
-                spec.name, zone_name, cluster_ref
+                "Successfully added NS record {}.{} via {} primary instance(s)",
+                spec.name,
+                rec_ctx.zone_ref.zone_name,
+                rec_ctx.primary_refs.len()
             );
+
+            // Update lastReconciledAt timestamp in DNSZone.status.selectedRecords[]
+            update_record_reconciled_timestamp(
+                &client,
+                &rec_ctx.zone_ref.namespace,
+                &rec_ctx.zone_ref.name,
+                "NSRecord",
+                &name,
+                &namespace,
+            )
+            .await?;
+
             update_record_status(
                 &client,
                 &record,
                 "Ready",
                 "True",
                 "ReconcileSucceeded",
-                &format!("NS record added to zone {zone_name}"),
+                &format!("NS record added to zone {}", rec_ctx.zone_ref.zone_name),
                 current_generation,
-                Some(current_hash),
+                Some(rec_ctx.current_hash),
                 Some(chrono::Utc::now().to_rfc3339()),
             )
             .await?;
         }
         Err(e) => {
             warn!(
-                "Failed to add NS record {} to zone {}: {}",
-                spec.name, zone_name, e
+                "Failed to add NS record {}.{}: {}",
+                spec.name, rec_ctx.zone_ref.zone_name, e
             );
             update_record_status(
                 &client,
@@ -1355,7 +1184,7 @@ pub async fn reconcile_ns_record(client: Client, record: NSRecord) -> Result<()>
                 "Ready",
                 "False",
                 "ReconcileFailed",
-                &format!("Failed to add NS record to zone {zone_name}: {e}"),
+                &format!("Failed to add record to zone: {e}"),
                 current_generation,
                 None, // record_hash
                 None, // last_updated
@@ -1369,31 +1198,39 @@ pub async fn reconcile_ns_record(client: Client, record: NSRecord) -> Result<()>
 
 /// Add an NS record to a specific zone in BIND9 primaries.
 #[allow(clippy::too_many_arguments)]
-async fn add_ns_record_to_zone(
+async fn add_ns_record_to_instances(
     client: &Client,
-    namespace: &str,
+    stores: &crate::context::Stores,
+    instance_refs: &[crate::crd::InstanceReference],
     zone_name: &str,
-    cluster_ref: &str,
-    is_cluster_provider: bool,
     record_name: &str,
     nameserver: &str,
     ttl: Option<i32>,
-    zone_manager: &crate::bind9::Bind9Manager,
 ) -> Result<()> {
-    use crate::reconcilers::dnszone::for_each_primary_endpoint;
+    use crate::reconcilers::dnszone::for_each_instance_endpoint;
 
-    let (_first, _total) = for_each_primary_endpoint(
+    // Create a map of instance name -> namespace for quick lookup
+    let instance_map: std::collections::HashMap<String, String> = instance_refs
+        .iter()
+        .map(|inst| (inst.name.clone(), inst.namespace.clone()))
+        .collect();
+
+    let (_first, _total) = for_each_instance_endpoint(
         client,
-        namespace,
-        cluster_ref,
-        is_cluster_provider,
-        true,
-        "dns-tcp",
+        instance_refs,
+        true,      // with_rndc_key
+        "dns-tcp", // Use DNS TCP port for dynamic updates,
         |pod_endpoint, instance_name, rndc_key| {
             let zone_name = zone_name.to_string();
             let record_name = record_name.to_string();
             let nameserver = nameserver.to_string();
-            let zone_manager = zone_manager.clone();
+            let instance_namespace = instance_map
+                .get(&instance_name)
+                .expect("Instance should be in map")
+                .clone();
+
+            // Create Bind9Manager for this specific instance with deployment-aware auth
+            let zone_manager = stores.create_bind9_manager_for_instance(&instance_name, &instance_namespace);
 
             async move {
                 let key_data = rndc_key.expect("RNDC key should be loaded");
@@ -1431,7 +1268,12 @@ async fn add_ns_record_to_zone(
 ///
 /// Returns an error if Kubernetes API operations fail or BIND9 record creation fails.
 #[allow(clippy::too_many_lines)]
-pub async fn reconcile_srv_record(client: Client, record: SRVRecord) -> Result<()> {
+pub async fn reconcile_srv_record(
+    ctx: std::sync::Arc<crate::context::Context>,
+    record: SRVRecord,
+) -> Result<()> {
+    let client = ctx.client.clone();
+    let bind9_instances_store = &ctx.stores.bind9_instances;
     let namespace = record.namespace().unwrap_or_default();
     let name = record.name_any();
 
@@ -1439,132 +1281,65 @@ pub async fn reconcile_srv_record(client: Client, record: SRVRecord) -> Result<(
 
     let spec = &record.spec;
     let current_generation = record.metadata.generation;
-    let observed_generation = record.status.as_ref().and_then(|s| s.observed_generation);
 
-    // Get zone from annotation (set by DNSZone controller)
-    // Check this FIRST before generation check, because the annotation may have been
-    // added after the record was created (by DNSZone controller)
-    let Some(zone_fqdn) = get_zone_from_annotation(&record) else {
-        // Only skip reconciliation if generation hasn't changed AND already marked as NotSelected
-        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
-            debug!("Spec unchanged and no zone annotation, skipping reconciliation");
-            return Ok(());
-        }
-
-        info!(
-            "SRV record {}/{} not selected by any DNSZone",
-            namespace, name
-        );
-        update_record_status(
-            &client,
-            &record,
-            "Ready",
-            "False",
-            "NotSelected",
-            "Record not selected by any DNSZone label selector",
-            current_generation,
-            None, // record_hash
-            None, // last_updated
-        )
-        .await?;
-        return Ok(());
+    // Use generic helper to get zone and instances
+    let Some(rec_ctx) =
+        prepare_record_reconciliation(&client, &record, "SRV", spec, bind9_instances_store).await?
+    else {
+        return Ok(()); // Record not selected or status already updated
     };
 
-    // Calculate hash of current spec to detect actual data changes
-    let current_hash = crate::ddns::calculate_record_hash(&spec);
-    let previous_hash = record
-        .status
-        .as_ref()
-        .and_then(|s| s.record_hash.as_deref());
-
-    // Check if record data actually changed using hash comparison
-    let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
-
-    if data_changed {
-        info!(
-            "SRV record {}/{} data changed (hash mismatch), updating DNS",
-            namespace, name
-        );
-    } else {
-        debug!(
-            "SRV record {}/{} data unchanged (hash match), verifying DNS state for self-healing",
-            namespace, name
-        );
-    }
-
-    // Always reconcile to ensure declarative state - records are recreated if pods restart
-    // The underlying add_*_record() functions are idempotent and check for existence first
-    debug!(
-        "Ensuring record exists in zone {} (declarative reconciliation)",
-        zone_fqdn
-    );
-
-    // Get zone info from DNSZone resource
-    let (zone_name, cluster_ref, is_cluster_provider) =
-        match get_zone_info(&client, &namespace, &zone_fqdn).await {
-            Ok(info) => info,
-            Err(e) => {
-                warn!(
-                    "Failed to find DNSZone {} for SRV record {}/{}: {}",
-                    zone_fqdn, namespace, name, e
-                );
-                update_record_status(
-                    &client,
-                    &record,
-                    "Ready",
-                    "False",
-                    "ZoneNotFound",
-                    &format!("DNSZone {zone_fqdn} not found: {e}"),
-                    current_generation,
-                    None, // record_hash
-                    None, // last_updated
-                )
-                .await?;
-                return Ok(());
-            }
-        };
-
-    // Create/update record in BIND9
-    let zone_manager = crate::bind9::Bind9Manager::new();
-
-    match add_srv_record_to_zone(
+    // Add record to BIND9 primaries using instances
+    match add_srv_record_to_instances(
         &client,
-        &namespace,
-        &zone_name,
-        &cluster_ref,
-        is_cluster_provider,
+        &ctx.stores,
+        &rec_ctx.primary_refs,
+        &rec_ctx.zone_ref.zone_name,
         &spec.name,
         spec.priority,
         spec.weight,
         spec.port,
         &spec.target,
         spec.ttl,
-        &zone_manager,
     )
     .await
     {
         Ok(()) => {
             info!(
-                "Successfully added SRV record {} to zone {} in cluster {}",
-                spec.name, zone_name, cluster_ref
+                "Successfully added SRV record {}.{} via {} primary instance(s)",
+                spec.name,
+                rec_ctx.zone_ref.zone_name,
+                rec_ctx.primary_refs.len()
             );
+
+            // Update lastReconciledAt timestamp in DNSZone.status.selectedRecords[]
+            update_record_reconciled_timestamp(
+                &client,
+                &rec_ctx.zone_ref.namespace,
+                &rec_ctx.zone_ref.name,
+                "SRVRecord",
+                &name,
+                &namespace,
+            )
+            .await?;
+
             update_record_status(
                 &client,
                 &record,
                 "Ready",
                 "True",
                 "ReconcileSucceeded",
-                &format!("SRV record added to zone {zone_name}"),
+                &format!("SRV record added to zone {}", rec_ctx.zone_ref.zone_name),
                 current_generation,
-                Some(current_hash),
+                Some(rec_ctx.current_hash),
                 Some(chrono::Utc::now().to_rfc3339()),
             )
             .await?;
         }
         Err(e) => {
             warn!(
-                "Failed to add SRV record {} to zone {}: {}",
-                spec.name, zone_name, e
+                "Failed to add SRV record {}.{}: {}",
+                spec.name, rec_ctx.zone_ref.zone_name, e
             );
             update_record_status(
                 &client,
@@ -1572,7 +1347,7 @@ pub async fn reconcile_srv_record(client: Client, record: SRVRecord) -> Result<(
                 "Ready",
                 "False",
                 "ReconcileFailed",
-                &format!("Failed to add SRV record to zone {zone_name}: {e}"),
+                &format!("Failed to add record to zone: {e}"),
                 current_generation,
                 None, // record_hash
                 None, // last_updated
@@ -1586,30 +1361,32 @@ pub async fn reconcile_srv_record(client: Client, record: SRVRecord) -> Result<(
 
 /// Add an SRV record to a specific zone in BIND9 primaries.
 #[allow(clippy::too_many_arguments)]
-async fn add_srv_record_to_zone(
+async fn add_srv_record_to_instances(
     client: &Client,
-    namespace: &str,
+    stores: &crate::context::Stores,
+    instance_refs: &[crate::crd::InstanceReference],
     zone_name: &str,
-    cluster_ref: &str,
-    is_cluster_provider: bool,
     record_name: &str,
     priority: i32,
     weight: i32,
     port: i32,
     target: &str,
     ttl: Option<i32>,
-    zone_manager: &crate::bind9::Bind9Manager,
 ) -> Result<()> {
     use crate::bind9::types::SRVRecordData;
-    use crate::reconcilers::dnszone::for_each_primary_endpoint;
+    use crate::reconcilers::dnszone::for_each_instance_endpoint;
 
-    let (_first, _total) = for_each_primary_endpoint(
+    // Create a map of instance name -> namespace for quick lookup
+    let instance_map: std::collections::HashMap<String, String> = instance_refs
+        .iter()
+        .map(|inst| (inst.name.clone(), inst.namespace.clone()))
+        .collect();
+
+    let (_first, _total) = for_each_instance_endpoint(
         client,
-        namespace,
-        cluster_ref,
-        is_cluster_provider,
-        true,
-        "dns-tcp",
+        instance_refs,
+        true,      // with_rndc_key
+        "dns-tcp", // Use DNS TCP port for dynamic updates,
         |pod_endpoint, instance_name, rndc_key| {
             let zone_name = zone_name.to_string();
             let record_name = record_name.to_string();
@@ -1620,7 +1397,13 @@ async fn add_srv_record_to_zone(
                 target: target.to_string(),
                 ttl,
             };
-            let zone_manager = zone_manager.clone();
+            let instance_namespace = instance_map
+                .get(&instance_name)
+                .expect("Instance should be in map")
+                .clone();
+
+            // Create Bind9Manager for this specific instance with deployment-aware auth
+            let zone_manager = stores.create_bind9_manager_for_instance(&instance_name, &instance_namespace);
 
             async move {
                 let key_data = rndc_key.expect("RNDC key should be loaded");
@@ -1657,7 +1440,12 @@ async fn add_srv_record_to_zone(
 ///
 /// Returns an error if Kubernetes API operations fail or BIND9 record creation fails.
 #[allow(clippy::too_many_lines)]
-pub async fn reconcile_caa_record(client: Client, record: CAARecord) -> Result<()> {
+pub async fn reconcile_caa_record(
+    ctx: std::sync::Arc<crate::context::Context>,
+    record: CAARecord,
+) -> Result<()> {
+    let client = ctx.client.clone();
+    let bind9_instances_store = &ctx.stores.bind9_instances;
     let namespace = record.namespace().unwrap_or_default();
     let name = record.name_any();
 
@@ -1665,131 +1453,64 @@ pub async fn reconcile_caa_record(client: Client, record: CAARecord) -> Result<(
 
     let spec = &record.spec;
     let current_generation = record.metadata.generation;
-    let observed_generation = record.status.as_ref().and_then(|s| s.observed_generation);
 
-    // Get zone from annotation (set by DNSZone controller)
-    // Check this FIRST before generation check, because the annotation may have been
-    // added after the record was created (by DNSZone controller)
-    let Some(zone_fqdn) = get_zone_from_annotation(&record) else {
-        // Only skip reconciliation if generation hasn't changed AND already marked as NotSelected
-        if !crate::reconcilers::should_reconcile(current_generation, observed_generation) {
-            debug!("Spec unchanged and no zone annotation, skipping reconciliation");
-            return Ok(());
-        }
-
-        info!(
-            "CAA record {}/{} not selected by any DNSZone",
-            namespace, name
-        );
-        update_record_status(
-            &client,
-            &record,
-            "Ready",
-            "False",
-            "NotSelected",
-            "Record not selected by any DNSZone label selector",
-            current_generation,
-            None, // record_hash
-            None, // last_updated
-        )
-        .await?;
-        return Ok(());
+    // Use generic helper to get zone and instances
+    let Some(rec_ctx) =
+        prepare_record_reconciliation(&client, &record, "CAA", spec, bind9_instances_store).await?
+    else {
+        return Ok(()); // Record not selected or status already updated
     };
 
-    // Calculate hash of current spec to detect actual data changes
-    let current_hash = crate::ddns::calculate_record_hash(&spec);
-    let previous_hash = record
-        .status
-        .as_ref()
-        .and_then(|s| s.record_hash.as_deref());
-
-    // Check if record data actually changed using hash comparison
-    let data_changed = previous_hash.is_none_or(|prev| prev != current_hash);
-
-    if data_changed {
-        info!(
-            "CAA record {}/{} data changed (hash mismatch), updating DNS",
-            namespace, name
-        );
-    } else {
-        debug!(
-            "CAA record {}/{} data unchanged (hash match), verifying DNS state for self-healing",
-            namespace, name
-        );
-    }
-
-    // Always reconcile to ensure declarative state - records are recreated if pods restart
-    // The underlying add_*_record() functions are idempotent and check for existence first
-    debug!(
-        "Ensuring record exists in zone {} (declarative reconciliation)",
-        zone_fqdn
-    );
-
-    // Get zone info from DNSZone resource
-    let (zone_name, cluster_ref, is_cluster_provider) =
-        match get_zone_info(&client, &namespace, &zone_fqdn).await {
-            Ok(info) => info,
-            Err(e) => {
-                warn!(
-                    "Failed to find DNSZone {} for CAA record {}/{}: {}",
-                    zone_fqdn, namespace, name, e
-                );
-                update_record_status(
-                    &client,
-                    &record,
-                    "Ready",
-                    "False",
-                    "ZoneNotFound",
-                    &format!("DNSZone {zone_fqdn} not found: {e}"),
-                    current_generation,
-                    None, // record_hash
-                    None, // last_updated
-                )
-                .await?;
-                return Ok(());
-            }
-        };
-
-    // Create/update record in BIND9
-    let zone_manager = crate::bind9::Bind9Manager::new();
-
-    match add_caa_record_to_zone(
+    // Add record to BIND9 primaries using instances
+    match add_caa_record_to_instances(
         &client,
-        &namespace,
-        &zone_name,
-        &cluster_ref,
-        is_cluster_provider,
+        &ctx.stores,
+        &rec_ctx.primary_refs,
+        &rec_ctx.zone_ref.zone_name,
         &spec.name,
         spec.flags,
         &spec.tag,
         &spec.value,
         spec.ttl,
-        &zone_manager,
     )
     .await
     {
         Ok(()) => {
             info!(
-                "Successfully added CAA record {} to zone {} in cluster {}",
-                spec.name, zone_name, cluster_ref
+                "Successfully added CAA record {}.{} via {} primary instance(s)",
+                spec.name,
+                rec_ctx.zone_ref.zone_name,
+                rec_ctx.primary_refs.len()
             );
+
+            // Update lastReconciledAt timestamp in DNSZone.status.selectedRecords[]
+            update_record_reconciled_timestamp(
+                &client,
+                &rec_ctx.zone_ref.namespace,
+                &rec_ctx.zone_ref.name,
+                "CAARecord",
+                &name,
+                &namespace,
+            )
+            .await?;
+
             update_record_status(
                 &client,
                 &record,
                 "Ready",
                 "True",
                 "ReconcileSucceeded",
-                &format!("CAA record added to zone {zone_name}"),
+                &format!("CAA record added to zone {}", rec_ctx.zone_ref.zone_name),
                 current_generation,
-                Some(current_hash),
+                Some(rec_ctx.current_hash),
                 Some(chrono::Utc::now().to_rfc3339()),
             )
             .await?;
         }
         Err(e) => {
             warn!(
-                "Failed to add CAA record {} to zone {}: {}",
-                spec.name, zone_name, e
+                "Failed to add CAA record {}.{}: {}",
+                spec.name, rec_ctx.zone_ref.zone_name, e
             );
             update_record_status(
                 &client,
@@ -1797,7 +1518,7 @@ pub async fn reconcile_caa_record(client: Client, record: CAARecord) -> Result<(
                 "Ready",
                 "False",
                 "ReconcileFailed",
-                &format!("Failed to add CAA record to zone {zone_name}: {e}"),
+                &format!("Failed to add record to zone: {e}"),
                 current_generation,
                 None, // record_hash
                 None, // last_updated
@@ -1811,34 +1532,42 @@ pub async fn reconcile_caa_record(client: Client, record: CAARecord) -> Result<(
 
 /// Add a CAA record to a specific zone in BIND9 primaries.
 #[allow(clippy::too_many_arguments)]
-async fn add_caa_record_to_zone(
+async fn add_caa_record_to_instances(
     client: &Client,
-    namespace: &str,
+    stores: &crate::context::Stores,
+    instance_refs: &[crate::crd::InstanceReference],
     zone_name: &str,
-    cluster_ref: &str,
-    is_cluster_provider: bool,
     record_name: &str,
     flags: i32,
     tag: &str,
     value: &str,
     ttl: Option<i32>,
-    zone_manager: &crate::bind9::Bind9Manager,
 ) -> Result<()> {
-    use crate::reconcilers::dnszone::for_each_primary_endpoint;
+    use crate::reconcilers::dnszone::for_each_instance_endpoint;
 
-    let (_first, _total) = for_each_primary_endpoint(
+    // Create a map of instance name -> namespace for quick lookup
+    let instance_map: std::collections::HashMap<String, String> = instance_refs
+        .iter()
+        .map(|inst| (inst.name.clone(), inst.namespace.clone()))
+        .collect();
+
+    let (_first, _total) = for_each_instance_endpoint(
         client,
-        namespace,
-        cluster_ref,
-        is_cluster_provider,
-        true,
-        "dns-tcp",
+        instance_refs,
+        true,      // with_rndc_key
+        "dns-tcp", // Use DNS TCP port for dynamic updates,
         |pod_endpoint, instance_name, rndc_key| {
             let zone_name = zone_name.to_string();
             let record_name = record_name.to_string();
             let tag = tag.to_string();
             let value = value.to_string();
-            let zone_manager = zone_manager.clone();
+            let instance_namespace = instance_map
+                .get(&instance_name)
+                .expect("Instance should be in map")
+                .clone();
+
+            // Create Bind9Manager for this specific instance with deployment-aware auth
+            let zone_manager = stores.create_bind9_manager_for_instance(&instance_name, &instance_namespace);
 
             async move {
                 let key_data = rndc_key.expect("RNDC key should be loaded");
@@ -2063,10 +1792,18 @@ where
         .and_then(|z| z.as_str())
         .map(ToString::to_string);
 
+    // Preserve existing zone_ref field if it exists (set by DNSZone controller)
+    let zone_ref = current_json
+        .get("status")
+        .and_then(|s| s.get("zoneRef"))
+        .and_then(|z| serde_json::from_value::<crate::crd::ZoneReference>(z.clone()).ok());
+
+    #[allow(deprecated)] // Maintain backward compatibility with deprecated zone field
     let record_status = RecordStatus {
         conditions: vec![condition],
         observed_generation: observed_generation.or(record.meta().generation),
         zone,
+        zone_ref, // Preserved from existing status (set by DNSZone controller)
         record_hash,
         last_updated,
     };
@@ -2091,6 +1828,279 @@ where
         "Warning"
     };
     create_event(client, record, event_type, reason, message).await?;
+
+    Ok(())
+}
+
+/// Generic function to delete a DNS record from BIND9 primaries.
+///
+/// This function handles deletion of any record type using the generic approach:
+/// 1. Gets the zone reference from the record's status
+/// 2. Looks up the `DNSZone` to get instances
+/// 3. Filters to primary instances
+/// 4. Deletes the record from all primaries
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `record` - The DNS record resource being deleted
+/// * `record_type` - Human-readable record type (e.g., "A", "TXT")
+/// * `record_type_hickory` - hickory-client `RecordType` enum value
+/// * `zone_name` - The DNS zone name
+/// * `record_name` - The DNS record name
+///
+/// # Returns
+///
+/// Returns `Ok(())` if deletion succeeded (or if record didn't exist).
+///
+/// # Errors
+///
+/// Returns an error if instance lookup fails or DNS deletion fails critically.
+///
+/// # Panics
+///
+/// Panics if RNDC key is not found for an instance (should never happen in production).
+#[allow(clippy::too_many_lines)]
+pub async fn delete_record<T>(
+    client: &Client,
+    record: &T,
+    record_type: &str,
+    record_type_hickory: hickory_client::rr::RecordType,
+    stores: &crate::context::Stores,
+) -> Result<()>
+where
+    T: Resource<DynamicType = (), Scope = k8s_openapi::NamespaceResourceScope>
+        + ResourceExt
+        + Clone
+        + std::fmt::Debug
+        + serde::Serialize
+        + for<'de> serde::Deserialize<'de>,
+{
+    let namespace = record.namespace().unwrap_or_default();
+    let name = record.name_any();
+
+    info!("Deleting {} record: {}/{}", record_type, namespace, name);
+
+    // Extract status fields generically
+    let status = serde_json::to_value(record)
+        .ok()
+        .and_then(|v| v.get("status").cloned());
+
+    let zone_ref = status
+        .as_ref()
+        .and_then(|s| s.get("zoneRef"))
+        .cloned()
+        .and_then(|z| serde_json::from_value::<crate::crd::ZoneReference>(z).ok());
+
+    // If no zone ref, record was never added to DNS (or already cleaned up)
+    let Some(zone_ref) = zone_ref else {
+        info!(
+            "{} record {}/{} has no zoneRef - was never added to DNS or already cleaned up",
+            record_type, namespace, name
+        );
+        return Ok(());
+    };
+
+    // Get the DNSZone
+    let dnszone = match get_zone_from_ref(client, &zone_ref).await {
+        Ok(zone) => zone,
+        Err(e) => {
+            warn!(
+                "DNSZone {}/{} not found for {} record {}/{}: {}. Allowing deletion anyway.",
+                zone_ref.namespace, zone_ref.name, record_type, namespace, name, e
+            );
+            return Ok(());
+        }
+    };
+
+    // Get instances from DNSZone
+    let instance_refs = match crate::reconcilers::dnszone::get_instances_from_zone(
+        &dnszone,
+        &stores.bind9_instances,
+    ) {
+        Ok(refs) => refs,
+        Err(e) => {
+            warn!(
+                "DNSZone {}/{} has no instances for {} record {}/{}: {}. Allowing deletion anyway.",
+                zone_ref.namespace, zone_ref.name, record_type, namespace, name, e
+            );
+            return Ok(());
+        }
+    };
+
+    // Filter to primary instances
+    let primary_refs = match crate::reconcilers::dnszone::filter_primary_instances(
+        client,
+        &instance_refs,
+    )
+    .await
+    {
+        Ok(refs) => refs,
+        Err(e) => {
+            warn!(
+                    "Failed to filter primary instances for {} record {}/{}: {}. Allowing deletion anyway.",
+                    record_type, namespace, name, e
+                );
+            return Ok(());
+        }
+    };
+
+    if primary_refs.is_empty() {
+        warn!(
+            "No primary instances found for {} record {}/{}. Allowing deletion anyway.",
+            record_type, namespace, name
+        );
+        return Ok(());
+    }
+
+    // Delete record from all primaries
+    // Create a map of instance name -> namespace for quick lookup
+    let instance_map: std::collections::HashMap<String, String> = primary_refs
+        .iter()
+        .map(|inst| (inst.name.clone(), inst.namespace.clone()))
+        .collect();
+
+    let (_first_endpoint, total_endpoints) =
+        crate::reconcilers::dnszone::for_each_instance_endpoint(
+            client,
+            &primary_refs,
+            true,      // with_rndc_key
+            "dns-tcp", // Use DNS TCP port for dynamic updates
+            |pod_endpoint, instance_name, rndc_key| {
+                let zone_name = zone_ref.zone_name.clone();
+                let record_name_str = if let Some(record_spec) = serde_json::to_value(record)
+                    .ok()
+                    .and_then(|v| v.get("spec").cloned())
+                {
+                    record_spec
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or(&name)
+                        .to_string()
+                } else {
+                    name.clone()
+                };
+                let instance_namespace = instance_map
+                    .get(&instance_name)
+                    .expect("Instance should be in map")
+                    .clone();
+
+                // Create Bind9Manager for this specific instance with deployment-aware auth
+                let zone_manager = stores.create_bind9_manager_for_instance(&instance_name, &instance_namespace);
+
+                async move {
+                    let key_data = rndc_key.expect("RNDC key should be loaded");
+
+                    // Attempt to delete - if it fails, log warning but don't fail the deletion
+                    if let Err(e) = zone_manager
+                        .delete_record(
+                            &zone_name,
+                            &record_name_str,
+                            record_type_hickory,
+                            &pod_endpoint,
+                            &key_data,
+                        )
+                        .await
+                    {
+                        warn!(
+                            "Failed to delete {} record {}.{} from endpoint {} (instance: {}): {}. Continuing with deletion anyway.",
+                            record_type, record_name_str, zone_name, pod_endpoint, instance_name, e
+                        );
+                    } else {
+                        info!(
+                            "Successfully deleted {} record {}.{} from endpoint {} (instance: {})",
+                            record_type, record_name_str, zone_name, pod_endpoint, instance_name
+                        );
+                    }
+
+                    Ok(())
+                }
+            },
+        )
+        .await?;
+
+    info!(
+        "Successfully deleted {} record {}/{} from {} primary endpoint(s)",
+        record_type, namespace, name, total_endpoints
+    );
+
+    Ok(())
+}
+
+/// Update lastReconciledAt timestamp for a record in DNSZone.status.selectedRecords[].
+///
+/// This signals that the record has been successfully configured in BIND9.
+/// Future reconciliations will skip this record until the timestamp is reset.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `zone_namespace` - Namespace of the `DNSZone`
+/// * `zone_name` - Name of the `DNSZone`
+/// * `record_kind` - Kind of the record (e.g., "`ARecord`", "`CNAMERecord`")
+/// * `record_name` - Name of the record resource
+/// * `record_namespace` - Namespace of the record resource
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - `DNSZone` cannot be fetched from Kubernetes API
+/// - Record is not found in zone's `selectedRecords[]` array
+/// - Status patch operation fails
+pub async fn update_record_reconciled_timestamp(
+    client: &Client,
+    zone_namespace: &str,
+    zone_name: &str,
+    record_kind: &str,
+    record_name: &str,
+    record_namespace: &str,
+) -> Result<()> {
+    let api: Api<DNSZone> = Api::namespaced(client.clone(), zone_namespace);
+
+    // Re-fetch zone to get latest status
+    let mut zone = api.get(zone_name).await?;
+
+    // Find the record reference and update its timestamp
+    let mut found = false;
+    if let Some(status) = &mut zone.status {
+        for record_ref in &mut status.records {
+            if record_ref.kind == record_kind
+                && record_ref.name == record_name
+                && record_ref.namespace == record_namespace
+            {
+                record_ref.last_reconciled_at = Some(Time(Utc::now()));
+                found = true;
+                break;
+            }
+        }
+    }
+
+    if !found {
+        warn!(
+            "Record {} {}/{} not found in DNSZone {}/{} selectedRecords[] - cannot update timestamp",
+            record_kind, record_namespace, record_name, zone_namespace, zone_name
+        );
+        return Ok(());
+    }
+
+    // Patch the status with updated timestamp
+    let status_patch = json!({
+        "status": {
+            "selectedRecords": zone.status.as_ref().map(|s| &s.records)
+        }
+    });
+
+    api.patch_status(
+        zone_name,
+        &PatchParams::default(),
+        &Patch::Merge(status_patch),
+    )
+    .await?;
+
+    info!(
+        "Updated lastReconciledAt for {} record {}/{} in zone {}/{}",
+        record_kind, record_namespace, record_name, zone_namespace, zone_name
+    );
 
     Ok(())
 }

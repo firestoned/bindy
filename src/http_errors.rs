@@ -9,32 +9,20 @@
 //!
 //! # Usage
 //!
-//! ```rust,no_run
-//! use bindy::http_errors::{map_http_error_to_reason, map_connection_error};
+//! ```rust
+//! use bindy::http_errors::map_http_error_to_reason;
 //!
-//! # async fn example() {
-//! # let client = reqwest::Client::new();
-//! // When making HTTP calls to Bindcar API
-//! match client.get("http://localhost:8080/zones").send().await {
-//!     Ok(response) => {
-//!         if response.status().is_success() {
-//!             // Handle success
-//!         } else {
-//!             let (reason, message) = map_http_error_to_reason(response.status().as_u16());
-//!             // Set condition with this reason
-//!         }
-//!     }
-//!     Err(e) => {
-//!         let (reason, message) = map_connection_error();
-//!         // Set condition for connection failure
-//!     }
-//! }
-//! # }
+//! // Map HTTP status codes to Kubernetes condition reasons
+//! let (reason, message) = map_http_error_to_reason(404);
+//! assert_eq!(reason, "ZoneNotFound");
+//!
+//! let (reason, message) = map_http_error_to_reason(500);
+//! assert_eq!(reason, "BindcarInternalError");
 //! ```
 
 use crate::status_reasons::{
     REASON_BINDCAR_AUTH_FAILED, REASON_BINDCAR_BAD_REQUEST, REASON_BINDCAR_INTERNAL_ERROR,
-    REASON_BINDCAR_NOT_IMPLEMENTED, REASON_BINDCAR_UNREACHABLE, REASON_GATEWAY_ERROR, REASON_READY,
+    REASON_BINDCAR_NOT_IMPLEMENTED, REASON_BINDCAR_UNREACHABLE, REASON_GATEWAY_ERROR,
     REASON_ZONE_NOT_FOUND,
 };
 
@@ -161,62 +149,6 @@ pub fn map_http_error_to_reason(status_code: u16) -> (&'static str, String) {
 /// }
 /// # }
 /// ```
-#[must_use]
-pub fn map_connection_error() -> (&'static str, String) {
-    (
-        REASON_BINDCAR_UNREACHABLE,
-        "Cannot connect to Bindcar API".into(),
-    )
-}
-
-/// Check if HTTP status code indicates success (2xx).
-///
-/// # Arguments
-///
-/// * `status_code` - HTTP status code
-///
-/// # Returns
-///
-/// `true` if status code is in the 2xx range, `false` otherwise
-///
-/// # Example
-///
-/// ```rust
-/// use bindy::http_errors::is_success_status;
-///
-/// assert!(is_success_status(200));
-/// assert!(is_success_status(201));
-/// assert!(is_success_status(204));
-/// assert!(!is_success_status(404));
-/// assert!(!is_success_status(500));
-/// ```
-#[must_use]
-pub const fn is_success_status(status_code: u16) -> bool {
-    status_code >= 200 && status_code < 300
-}
-
-/// Get condition reason for successful operations.
-///
-/// Use this when an operation completes successfully and you need to set
-/// a condition to reflect success.
-///
-/// # Returns
-///
-/// A tuple of `(reason, message)` for successful operations
-///
-/// # Example
-///
-/// ```rust
-/// use bindy::http_errors::success_reason;
-///
-/// let (reason, message) = success_reason();
-/// // Set condition: Pod-0 status=True reason=Ready message="Pod is ready"
-/// ```
-#[must_use]
-pub fn success_reason() -> (&'static str, &'static str) {
-    (REASON_READY, "Operation completed successfully")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,35 +223,5 @@ mod tests {
         let (reason, message) = map_http_error_to_reason(418); // I'm a teapot
         assert_eq!(reason, REASON_BINDCAR_UNREACHABLE);
         assert!(message.contains("418"));
-    }
-
-    #[test]
-    fn test_map_connection_error() {
-        let (reason, message) = map_connection_error();
-        assert_eq!(reason, REASON_BINDCAR_UNREACHABLE);
-        assert!(message.contains("connect"));
-    }
-
-    #[test]
-    fn test_is_success_status() {
-        // Success codes
-        assert!(is_success_status(200));
-        assert!(is_success_status(201));
-        assert!(is_success_status(204));
-        assert!(is_success_status(299));
-
-        // Non-success codes
-        assert!(!is_success_status(199));
-        assert!(!is_success_status(300));
-        assert!(!is_success_status(400));
-        assert!(!is_success_status(404));
-        assert!(!is_success_status(500));
-    }
-
-    #[test]
-    fn test_success_reason() {
-        let (reason, message) = success_reason();
-        assert_eq!(reason, REASON_READY);
-        assert!(message.contains("success"));
     }
 }

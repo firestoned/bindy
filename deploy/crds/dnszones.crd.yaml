@@ -29,12 +29,14 @@ spec:
     - jsonPath: .spec.clusterProviderRef
       name: Provider
       type: string
-    - jsonPath: .status.recordCount
+    - jsonPath: .status.recordsCount
       name: Records
+      type: integer
+    - jsonPath: .status.bind9InstancesCount
+      name: Instances
       type: integer
     - jsonPath: .spec.ttl
       name: TTL
-      priority: 1
       type: integer
     - jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: Ready
@@ -102,24 +104,186 @@ spec:
                 ttl: 3600
               ```
             properties:
-              clusterProviderRef:
+              bind9InstancesFrom:
                 description: |-
-                  Reference to a cluster-scoped `ClusterBind9Provider`.
+                  Select `Bind9Instance` resources to target for zone configuration using label selectors.
 
-                  Must match the name of a `ClusterBind9Provider` resource (cluster-scoped).
-                  The zone will be added to all instances in this provider.
+                  This field enables dynamic, label-based selection of DNS instances to serve this zone.
+                  Instances matching these selectors will automatically receive zone configuration from
+                  the `DNSZone` controller.
 
-                  Either `clusterRef` or `clusterProviderRef` must be specified (not both).
+                  This follows the standard Kubernetes selector pattern used by Services, `NetworkPolicies`,
+                  and other resources for declarative resource association.
+
+                  **IMPORTANT**: This is the **preferred** method for zone-instance association. It provides:
+                  - **Decoupled Architecture**: Zones select instances, not vice versa
+                  - **Zone Ownership**: Zone authors control which instances serve their zones
+                  - **Dynamic Scaling**: New instances matching labels automatically pick up zones
+                  - **Multi-Tenancy**: Zones can target specific instance groups (prod, staging, team-specific)
+
+                  # Example: Target production primary instances
+
+                  ```yaml
+                  apiVersion: bindy.firestoned.io/v1beta1
+                  kind: DNSZone
+                  metadata:
+                    name: example-com
+                    namespace: dns-system
+                  spec:
+                    zoneName: example.com
+                    bind9InstancesFrom:
+                      - selector:
+                          matchLabels:
+                            environment: production
+                            bindy.firestoned.io/role: primary
+                  ```
+
+                  # Example: Target instances by region and tier
+
+                  ```yaml
+                  bind9InstancesFrom:
+                    - selector:
+                        matchLabels:
+                          tier: frontend
+                        atchExpressions:
+                          - key: region
+                            operator: In
+                            values:
+                              - us-east-1
+                              - us-west-2
+                  ```
+
+                  # Selector Operators
+
+                  - **In**: Label value must be in the specified values list
+                  - **`NotIn`**: Label value must NOT be in the specified values list
+                  - **Exists**: Label key must exist (any value)
+                  - **`DoesNotExist`**: Label key must NOT exist
+
+                  # Use Cases
+
+                  - **Environment Isolation**: Target only production instances (`environment: production`)
+                  - **Role-Based Selection**: Select only primary or secondary instances
+                  - **Geographic Distribution**: Target instances in specific regions
+                  - **Team Boundaries**: Select instances managed by specific teams
+                  - **Testing Zones**: Target staging instances for non-production zones
+
+                  # Relationship with `clusterRef`
+
+                  - **`clusterRef`**: Explicitly assigns zone to ALL instances in a cluster
+                  - **`bind9InstancesFrom`**: Dynamically selects specific instances using labels (more flexible)
+
+                  You can use both approaches together - the zone will target the **union** of:
+                  - All instances in `clusterRef` cluster
+                  - Plus any additional instances matching `bind9InstancesFrom` selectors
+
+                  # Event-Driven Architecture
+
+                  The `DNSZone` controller watches both `DNSZone` and `Bind9Instance` resources.
+                  When labels change on either:
+                  1. Controller re-evaluates label selector matching
+                  2. Automatically configures zones on newly-matched instances
+                  3. Removes zone configuration from instances that no longer match
+                items:
+                  description: |-
+                    Source for `Bind9Instance` resources to target for zone configuration.
+
+                    Specifies how `Bind9Instance` resources should be selected using label selectors.
+                    The `DNSZone` controller will configure zones on all matching instances.
+
+                    # Example
+
+                    ```yaml
+                    instancesFrom:
+                      - selector:
+                          matchLabels:
+                            environment: production
+                            role: primary
+                          matchExpressions:
+                            - key: region
+                              operator: In
+                              values:
+                                - us-east-1
+                                - us-west-2
+                    ```
+                  properties:
+                    selector:
+                      description: |-
+                        Label selector to match `Bind9Instance` resources.
+
+                        `Bind9Instance` resources with labels matching this selector will be automatically
+                        targeted for zone configuration by this `DNSZone`.
+
+                        The selector uses standard Kubernetes label selector semantics:
+                        - `matchLabels`: All specified labels must match (AND logic)
+                        - `matchExpressions`: All expressions must be satisfied (AND logic)
+                        - Both `matchLabels` and `matchExpressions` can be used together
+                      properties:
+                        matchExpressions:
+                          description: List of label selector requirements. All requirements must be satisfied.
+                          items:
+                            description: |-
+                              A label selector requirement is a selector that contains values, a key, and an operator
+                              that relates the key and values.
+                            properties:
+                              key:
+                                description: The label key that the selector applies to.
+                                type: string
+                              operator:
+                                description: |-
+                                  Operator represents a key's relationship to a set of values.
+                                  Valid operators are In, `NotIn`, Exists and `DoesNotExist`.
+                                type: string
+                              values:
+                                description: |-
+                                  An array of string values. If the operator is In or `NotIn`,
+                                  the values array must be non-empty. If the operator is Exists or `DoesNotExist`,
+                                  the values array must be empty.
+                                items:
+                                  type: string
+                                nullable: true
+                                type: array
+                            required:
+                            - key
+                            - operator
+                            type: object
+                          nullable: true
+                          type: array
+                        matchLabels:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Map of {key,value} pairs. A single {key,value} in the matchLabels map is equivalent
+                            to an element of matchExpressions, whose key field is "key", the operator is "In",
+                            and the values array contains only "value". All requirements must be satisfied.
+                          nullable: true
+                          type: object
+                      type: object
+                  required:
+                  - selector
+                  type: object
                 nullable: true
-                type: string
+                type: array
               clusterRef:
                 description: |-
-                  Reference to a namespace-scoped `Bind9Cluster` in the same namespace.
+                  Reference to a `Bind9Cluster` or `ClusterBind9Provider` to serve this zone.
 
-                  Must match the name of a `Bind9Cluster` resource in the same namespace.
-                  The zone will be added to all instances in this cluster.
+                  When specified, this zone will be automatically configured on all `Bind9Instance`
+                  resources that belong to the referenced cluster. This provides a simple way to
+                  assign zones to entire clusters.
 
-                  Either `clusterRef` or `clusterProviderRef` must be specified (not both).
+                  **Relationship with `bind9_instances_from`:**
+                  - If only `cluster_ref` is specified: Zone targets all instances in that cluster
+                  - If only `bind9_instances_from` is specified: Zone targets instances matching label selectors
+                  - If both are specified: Zone targets union of cluster instances AND label-selected instances
+
+                  # Example
+
+                  ```yaml
+                  spec:
+                    clusterRef: production-dns  # Target all instances in this cluster
+                    zoneName: example.com
+                  ```
                 nullable: true
                 type: string
               nameServerIps:
@@ -362,6 +526,101 @@ spec:
             description: '`DNSZone` status'
             nullable: true
             properties:
+              bind9Instances:
+                description: |-
+                  List of `Bind9Instance` resources and their status for this zone.
+
+                  **Single Source of Truth for Instance-Zone Relationships:**
+                  This field tracks all `Bind9Instances` selected by this zone via `bind9InstancesFrom` selectors,
+                  along with the current status of zone configuration on each instance.
+
+                  **Status Lifecycle:**
+                  - `Claimed`: Zone selected this instance (via `bind9InstancesFrom`), waiting for configuration
+                  - `Configured`: Zone successfully configured on instance
+                  - `Failed`: Zone configuration failed on instance
+                  - `Unclaimed`: Instance no longer selected by this zone (cleanup pending)
+
+                  **Event-Driven Pattern:**
+                  - `DNSZone` controller evaluates `bind9InstancesFrom` selectors to find matching instances
+                  - `DNSZone` controller reads this field to track configuration status
+                  - `DNSZone` controller updates status after configuration attempts
+
+                  **Automatic Selection:**
+                  When a `DNSZone` reconciles, the controller automatically:
+                  1. Queries all `Bind9Instances` matching `bind9InstancesFrom` selectors
+                  2. Adds them to this list with status="Claimed"
+                  3. Configures zones on each instance
+
+                  # Example
+
+                  ```yaml
+                  status:
+                    bind9Instances:
+                      - apiVersion: bindy.firestoned.io/v1beta1
+                        kind: Bind9Instance
+                        name: primary-dns-0
+                        namespace: dns-system
+                        status: Configured
+                        lastReconciledAt: "2026-01-03T20:00:00Z"
+                      - apiVersion: bindy.firestoned.io/v1beta1
+                        kind: Bind9Instance
+                        name: secondary-dns-0
+                        namespace: dns-system
+                        status: Claimed
+                        lastReconciledAt: "2026-01-03T20:01:00Z"
+                  ```
+                items:
+                  description: |-
+                    Reference to a `Bind9Instance` with status and timestamp.
+
+                    Extends `InstanceReference` with status tracking for zone claiming and configuration.
+                  properties:
+                    apiVersion:
+                      description: API version of the `Bind9Instance` resource
+                      type: string
+                    kind:
+                      description: Kind of the resource (always "`Bind9Instance`")
+                      type: string
+                    lastReconciledAt:
+                      description: Timestamp when the instance status was last reconciled for this zone
+                      nullable: true
+                      type: string
+                    message:
+                      description: Additional message (for Failed status, error details, etc.)
+                      nullable: true
+                      type: string
+                    name:
+                      description: Name of the `Bind9Instance` resource
+                      type: string
+                    namespace:
+                      description: Namespace of the `Bind9Instance` resource
+                      type: string
+                    status:
+                      description: Current status of this instance's relationship with the zone
+                      enum:
+                      - Claimed
+                      - Configured
+                      - Failed
+                      - Unclaimed
+                      type: string
+                  required:
+                  - apiVersion
+                  - kind
+                  - name
+                  - namespace
+                  - status
+                  type: object
+                type: array
+              bind9InstancesCount:
+                description: |-
+                  Number of `Bind9Instance` resources in the `bind9_instances` list.
+
+                  This field is automatically updated whenever the `bind9_instances` list changes.
+                  It provides a quick view of how many instances are serving this zone without
+                  requiring clients to count array elements.
+                format: int32
+                nullable: true
+                type: integer
               conditions:
                 default: []
                 items:
@@ -398,28 +657,62 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
-              recordCount:
-                format: int32
-                nullable: true
-                type: integer
               records:
+                default: []
                 description: |-
-                  List of DNS records successfully associated with this zone.
-                  Updated by the zone reconciler when records are added/removed.
+                  List of DNS records selected by recordsFrom label selectors.
+
+                  **Event-Driven Pattern:**
+                  - Records with `lastReconciledAt == None` need reconciliation
+                  - Records with `lastReconciledAt == Some(timestamp)` are already configured
+
+                  This field is populated by the `DNSZone` controller when evaluating `recordsFrom` selectors.
+                  The timestamp is set by the record controller after successful BIND9 update.
+
+                  **Single Source of Truth:**
+                  This status field is authoritative for which records belong to this zone and whether
+                  they need reconciliation, preventing redundant BIND9 API calls.
                 items:
-                  description: Reference to a DNS record associated with a zone
+                  description: |-
+                    Reference to a DNS record with reconciliation timestamp tracking.
+
+                    This struct tracks which records are assigned to a zone and whether
+                    they need reconciliation based on the `lastReconciledAt` timestamp.
+
+                    **Event-Driven Pattern:**
+                    - Records with `lastReconciledAt == None` need reconciliation
+                    - Records with `lastReconciledAt == Some(timestamp)` are already configured
+
+                    This pattern prevents redundant BIND9 API calls for already-configured records,
+                    following the same architecture as `Bind9Instance.status.selectedZones[]`.
                   properties:
                     apiVersion:
                       description: API version of the record (e.g., "bindy.firestoned.io/v1beta1")
                       type: string
                     kind:
-                      description: Kind of the record (e.g., `ARecord`, `CNAMERecord`, `MXRecord`)
+                      description: Kind of the record (e.g., "`ARecord`", "`CNAMERecord`", "`MXRecord`")
+                      type: string
+                    lastReconciledAt:
+                      description: |-
+                        Timestamp when this record was last successfully reconciled to BIND9.
+
+                        - `None` = Record needs reconciliation (new or spec changed)
+                        - `Some(timestamp)` = Record already configured, skip reconciliation
+
+                        This field is set by the record controller after successful BIND9 update.
+                        The zone controller resets it to `None` when spec changes or zone is recreated.
+                      format: date-time
+                      nullable: true
                       type: string
                     name:
                       description: Name of the record resource
                       type: string
                     namespace:
                       description: Namespace of the record resource
+                      type: string
+                    recordName:
+                      description: DNS record name from spec.name (e.g., "www", "@", "_service._tcp")
+                      nullable: true
                       type: string
                   required:
                   - apiVersion
@@ -428,32 +721,17 @@ spec:
                   - namespace
                   type: object
                 type: array
-              secondaryIps:
+              recordsCount:
+                default: 0
                 description: |-
-                  IP addresses of secondary servers configured for zone transfers.
-                  Used to detect when secondary IPs change and zones need updating.
-                items:
-                  type: string
-                nullable: true
-                type: array
-              selectedByInstance:
-                description: |-
-                  Name of the instance that selected this zone (if selected via `zonesFrom`).
+                  Count of records selected by recordsFrom label selectors.
 
-                  Only set when `selection_method` is `"label-selector"`.
-                  Matches the value in the `bindy.firestoned.io/selected-by-instance` annotation.
-                nullable: true
-                type: string
-              selectionMethod:
-                description: |-
-                  Indicates how this zone was assigned to a cluster.
+                  This field is automatically calculated from the length of `records`.
+                  It provides a quick view of how many records are associated with this zone.
 
-                  Possible values:
-                  - `"explicit"`: Zone has explicit `clusterRef` or `clusterProviderRef` in spec
-                  - `"label-selector"`: Zone was selected by an instance's `zonesFrom` label selector
-                  - `null`: Zone is not assigned to any cluster
-                nullable: true
-                type: string
+                  Defaults to 0 when no records are selected.
+                format: int32
+                type: integer
             type: object
         required:
         - spec

@@ -25,37 +25,25 @@
 //!
 //! # Example
 //!
-//! ```rust,no_run
-//! use bindy::ddns::{calculate_record_hash, generate_a_record_update};
-//! use bindy::crd::{ARecord, ARecordSpec};
-//! use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+//! ```rust
+//! use bindy::ddns::calculate_record_hash;
+//! use bindy::crd::ARecordSpec;
 //!
-//! # async fn example() {
-//! let record = ARecord {
-//!     metadata: ObjectMeta::default(),
-//!     spec: ARecordSpec {
-//!         name: "www".to_string(),
-//!         ipv4_address: "192.0.2.1".to_string(),
-//!         ttl: Some(300),
-//!     },
-//!     status: None,
+//! # fn main() {
+//! let spec = ARecordSpec {
+//!     name: "www".to_string(),
+//!     ipv4_address: "192.0.2.1".to_string(),
+//!     ttl: Some(300),
 //! };
 //!
 //! // Calculate current hash
-//! let current_hash = calculate_record_hash(&record.spec);
-//!
-//! // Check if changed (compare with status.record_hash)
-//! if current_hash != record.status.as_ref().and_then(|s| s.record_hash.as_deref()).unwrap_or("") {
-//!     // Generate nsupdate commands
-//!     let commands = generate_a_record_update(&record, "example.com.");
-//!     // Execute nsupdate...
-//! }
+//! let current_hash = calculate_record_hash(&spec);
+//! // hash is a 64-character hex string
+//! assert_eq!(current_hash.len(), 64);
 //! # }
 //! ```
 
-use crate::crd::{
-    AAAARecord, ARecord, CAARecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, TXTRecord,
-};
+// Record types are used in tests and by the calculate_record_hash function via Serialize trait
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -127,108 +115,6 @@ pub fn calculate_record_hash<T: Serialize>(data: &T) -> String {
 ///         name: "www".to_string(),
 ///         ipv4_address: "192.0.2.1".to_string(),
 ///         ttl: Some(300),
-///     },
-///     status: None,
-/// };
-///
-/// let commands = generate_a_record_update(&record, "example.com.");
-/// assert!(commands.contains("update delete www.example.com. A"));
-/// assert!(commands.contains("update add www.example.com. 300 A 192.0.2.1"));
-/// ```
-pub fn generate_a_record_update(record: &ARecord, zone_fqdn: &str) -> String {
-    let fqdn = format!("{}.{}", record.spec.name, zone_fqdn);
-    let ttl = record.spec.ttl.unwrap_or(300);
-
-    format!(
-        "update delete {fqdn} A\nupdate add {fqdn} {ttl} A {}\nsend\n",
-        record.spec.ipv4_address
-    )
-}
-
-/// Generate nsupdate commands for an AAAA record.
-pub fn generate_aaaa_record_update(record: &AAAARecord, zone_fqdn: &str) -> String {
-    let fqdn = format!("{}.{}", record.spec.name, zone_fqdn);
-    let ttl = record.spec.ttl.unwrap_or(300);
-
-    format!(
-        "update delete {fqdn} AAAA\nupdate add {fqdn} {ttl} AAAA {}\nsend\n",
-        record.spec.ipv6_address
-    )
-}
-
-/// Generate nsupdate commands for a CNAME record.
-pub fn generate_cname_record_update(record: &CNAMERecord, zone_fqdn: &str) -> String {
-    let fqdn = format!("{}.{}", record.spec.name, zone_fqdn);
-    let ttl = record.spec.ttl.unwrap_or(300);
-    let target = &record.spec.target;
-
-    format!("update delete {fqdn} CNAME\nupdate add {fqdn} {ttl} CNAME {target}\nsend\n")
-}
-
-/// Generate nsupdate commands for an MX record.
-pub fn generate_mx_record_update(record: &MXRecord, zone_fqdn: &str) -> String {
-    let fqdn = format!("{}.{}", record.spec.name, zone_fqdn);
-    let ttl = record.spec.ttl.unwrap_or(300);
-    let priority = record.spec.priority;
-    let mail_server = &record.spec.mail_server;
-
-    format!("update delete {fqdn} MX\nupdate add {fqdn} {ttl} MX {priority} {mail_server}\nsend\n")
-}
-
-/// Generate nsupdate commands for an NS record.
-pub fn generate_ns_record_update(record: &NSRecord, zone_fqdn: &str) -> String {
-    let fqdn = format!("{}.{}", record.spec.name, zone_fqdn);
-    let ttl = record.spec.ttl.unwrap_or(300);
-    let nameserver = &record.spec.nameserver;
-
-    format!("update delete {fqdn} NS\nupdate add {fqdn} {ttl} NS {nameserver}\nsend\n")
-}
-
-/// Generate nsupdate commands for a TXT record.
-pub fn generate_txt_record_update(record: &TXTRecord, zone_fqdn: &str) -> String {
-    let fqdn = format!("{}.{}", record.spec.name, zone_fqdn);
-    let ttl = record.spec.ttl.unwrap_or(300);
-
-    // TXT records can have multiple strings - each needs to be quoted
-    let text_values: Vec<String> = record
-        .spec
-        .text
-        .iter()
-        .map(|s| format!("\"{s}\""))
-        .collect();
-    let text = text_values.join(" ");
-
-    format!("update delete {fqdn} TXT\nupdate add {fqdn} {ttl} TXT {text}\nsend\n")
-}
-
-/// Generate nsupdate commands for an SRV record.
-pub fn generate_srv_record_update(record: &SRVRecord, zone_fqdn: &str) -> String {
-    let fqdn = format!("{}.{}", record.spec.name, zone_fqdn);
-    let ttl = record.spec.ttl.unwrap_or(300);
-    let priority = record.spec.priority;
-    let weight = record.spec.weight;
-    let port = record.spec.port;
-    let target = &record.spec.target;
-
-    format!(
-        "update delete {fqdn} SRV\nupdate add {fqdn} {ttl} SRV {priority} {weight} {port} {target}\nsend\n"
-    )
-}
-
-/// Generate nsupdate commands for a CAA record.
-pub fn generate_caa_record_update(record: &CAARecord, zone_fqdn: &str) -> String {
-    let fqdn = format!("{}.{}", record.spec.name, zone_fqdn);
-    let ttl = record.spec.ttl.unwrap_or(300);
-    let flags = record.spec.flags;
-    let tag = &record.spec.tag;
-    let value = &record.spec.value;
-
-    // CAA format: flags tag "value"
-    format!(
-        "update delete {fqdn} CAA\nupdate add {fqdn} {ttl} CAA {flags} {tag} \"{value}\"\nsend\n"
-    )
-}
-
 #[cfg(test)]
 #[path = "ddns_tests.rs"]
 mod ddns_tests;

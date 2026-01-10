@@ -29,7 +29,7 @@
 //! );
 //! ```
 
-use crate::crd::{Condition, DNSZone, DNSZoneStatus, RecordReference};
+use crate::crd::{Condition, DNSZone, DNSZoneStatus, RecordReferenceWithTimestamp};
 use anyhow::Result;
 use chrono::Utc;
 use kube::api::Patch;
@@ -329,7 +329,6 @@ pub fn conditions_equal(current: &[Condition], new: &[Condition]) -> bool {
 ///     // Collect status changes in memory
 ///     status_updater.set_condition("Progressing", "True", "Configuring", "Setting up zone");
 ///     status_updater.set_records(vec![/* discovered records */]);
-///     status_updater.set_secondary_ips(vec!["10.0.0.1".to_string()]);
 ///
 ///     // Single atomic update at the end
 ///     status_updater.apply(&client).await?;
@@ -390,15 +389,14 @@ impl DNSZoneStatusUpdater {
     }
 
     /// Set the discovered DNS records list (in-memory only, no API call).
-    pub fn set_records(&mut self, records: Vec<RecordReference>) {
-        self.new_status.records = records;
-        self.new_status.record_count = i32::try_from(self.new_status.records.len()).ok();
-        self.has_changes = true;
-    }
-
-    /// Set the secondary server IPs (in-memory only, no API call).
-    pub fn set_secondary_ips(&mut self, ips: Vec<String>) {
-        self.new_status.secondary_ips = Some(ips);
+    pub fn set_records(&mut self, records: &[RecordReferenceWithTimestamp]) {
+        records.clone_into(&mut self.new_status.records);
+        // Update records_count whenever records changes
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        {
+            self.new_status.records_count =
+                i32::try_from(self.new_status.records.len()).unwrap_or(0);
+        }
         self.has_changes = true;
     }
 
@@ -408,19 +406,85 @@ impl DNSZoneStatusUpdater {
         self.has_changes = true;
     }
 
-    /// Set the zone selection method and selected instance.
+    /// Update instance status (in-memory only, no API call).
     ///
-    /// This tracks how the zone was assigned to an instance:
-    /// - `selection_method`: "explicit" or "labelSelector"
-    /// - `selected_by_instance`: Instance name (only when using labelSelector)
-    pub fn set_selection_method(
+    /// Updates the status of a specific instance in the `status.bind9Instances` list.
+    /// Creates a new entry if the instance doesn't exist.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - Instance name
+    /// * `namespace` - Instance namespace
+    /// * `status` - New status (Claimed, Configured, Failed, Unclaimed)
+    /// * `message` - Optional status message (error details, etc.)
+    pub fn update_instance_status(
         &mut self,
-        selection_method: Option<String>,
-        selected_by_instance: Option<String>,
+        name: &str,
+        namespace: &str,
+        status: crate::crd::InstanceStatus,
+        message: Option<String>,
     ) {
-        self.new_status.selection_method = selection_method;
-        self.new_status.selected_by_instance = selected_by_instance;
+        use chrono::Utc;
+        let now = Utc::now().to_rfc3339();
+
+        // Find existing instance or create new one
+        if let Some(instance) = self
+            .new_status
+            .bind9_instances
+            .iter_mut()
+            .find(|i| i.namespace == namespace && i.name == name)
+        {
+            // Update existing instance
+            instance.status = status;
+            instance.last_reconciled_at = Some(now);
+            instance.message = message;
+        } else {
+            // Add new instance
+            self.new_status
+                .bind9_instances
+                .push(crate::crd::InstanceReferenceWithStatus {
+                    api_version: crate::constants::API_GROUP_VERSION.to_string(),
+                    kind: crate::constants::KIND_BIND9_INSTANCE.to_string(),
+                    name: name.to_string(),
+                    namespace: namespace.to_string(),
+                    status,
+                    last_reconciled_at: Some(now),
+                    message,
+                });
+        }
+        // Update bind9_instances_count whenever bind9_instances changes
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        {
+            self.new_status.bind9_instances_count =
+                i32::try_from(self.new_status.bind9_instances.len()).ok();
+        }
         self.has_changes = true;
+    }
+
+    /// Remove instance from the instances list (in-memory only, no API call).
+    ///
+    /// Removes an instance from `status.bind9Instances` when it no longer claims the zone
+    /// or has been deleted.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - Instance name
+    /// * `namespace` - Instance namespace
+    pub fn remove_instance(&mut self, name: &str, namespace: &str) {
+        let initial_len = self.new_status.bind9_instances.len();
+        self.new_status
+            .bind9_instances
+            .retain(|i| !(i.namespace == namespace && i.name == name));
+
+        if self.new_status.bind9_instances.len() != initial_len {
+            // Update bind9_instances_count whenever bind9_instances changes
+            #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+            {
+                self.new_status.bind9_instances_count =
+                    i32::try_from(self.new_status.bind9_instances.len()).ok();
+            }
+            self.has_changes = true;
+        }
     }
 
     /// Check if the status has actually changed compared to the current status.
@@ -436,10 +500,10 @@ impl DNSZoneStatusUpdater {
             None => true, // First status update
             Some(current) => {
                 current.records != self.new_status.records
-                    || current.record_count != self.new_status.record_count
-                    || current.secondary_ips != self.new_status.secondary_ips
                     || current.observed_generation != self.new_status.observed_generation
                     || !conditions_equal(&current.conditions, &self.new_status.conditions)
+                    || current.bind9_instances != self.new_status.bind9_instances
+                    || current.bind9_instances_count != self.new_status.bind9_instances_count
             }
         }
     }
@@ -507,7 +571,7 @@ impl DNSZoneStatusUpdater {
             self.namespace,
             self.name,
             self.new_status.conditions.len(),
-            self.new_status.record_count.unwrap_or(0)
+            self.new_status.records.len()
         );
 
         Ok(())

@@ -11,21 +11,23 @@
 #
 # IMPORTANT: This is for local development only. Do NOT use in CI/CD.
 
-FROM alpine:3.20
+FROM debian:bookworm-slim
 
 LABEL org.opencontainers.image.source="https://github.com/firestoned/bindy"
 LABEL org.opencontainers.image.description="BIND9 DNS Controller for Kubernetes (Local Dev Build)"
 LABEL org.opencontainers.image.licenses="MIT"
 
 # Install BIND9 and required libraries
-RUN apk add --no-cache \
-    bind \
-    bind-tools \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bind9 \
+    bind9-utils \
+    dnsutils \
     ca-certificates \
-    curl
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
 # Create bindy user and directories
-RUN addgroup -S bindy && adduser -S -G bindy bindy && \
+RUN groupadd --system bindy && useradd --system --gid bindy bindy && \
     mkdir -p /etc/bind/zones && \
     mkdir -p /var/cache/bind && \
     mkdir -p /var/lib/bind && \
@@ -33,17 +35,16 @@ RUN addgroup -S bindy && adduser -S -G bindy bindy && \
     chown -R bindy:bindy /etc/bind /var/cache/bind /var/lib/bind /run/named
 
 # Copy the pre-built binary from your local target directory
-COPY target/release/bindy /usr/local/bin/
+COPY target/aarch64-unknown-linux-gnu/debug/bindy /usr/local/bin/
 
 # Set permissions
 RUN chmod +x /usr/local/bin/bindy
 
-# Run as bind user
+# Run as bindy user
 USER bindy
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
-# Start the controller
 ENTRYPOINT ["/usr/local/bin/bindy"]

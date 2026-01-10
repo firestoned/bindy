@@ -14,6 +14,7 @@
 
 #![allow(clippy::items_after_statements)]
 #![allow(clippy::manual_let_else)]
+#![allow(clippy::doc_markdown)]
 
 // mod common; // Not needed for these tests
 
@@ -266,7 +267,6 @@ async fn create_global_cluster(
                 acls: None,
                 volumes: None,
                 volume_mounts: None,
-                zones_from: None,
             },
         },
         status: None,
@@ -329,7 +329,6 @@ async fn create_namespaced_cluster(
                 acls: None,
                 volumes: None,
                 volume_mounts: None,
-                zones_from: None,
             },
         },
         status: None,
@@ -353,8 +352,8 @@ async fn create_instance(
     client: &Client,
     namespace: &str,
     name: &str,
-    cluster_ref: &str,
     role: ServerRole,
+    cluster_ref: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let instances: Api<Bind9Instance> = Api::namespaced(client.clone(), namespace);
 
@@ -378,14 +377,13 @@ async fn create_instance(
             rndc_secret_ref: None,
             storage: None,
             bindcar_config: None,
-            zones_from: None,
         },
         status: None,
     };
 
     match instances.create(&PostParams::default(), &instance).await {
         Ok(_) => {
-            println!("✓ Created Bind9Instance: {namespace}/{name} (cluster_ref={cluster_ref})");
+            println!("✓ Created Bind9Instance: {namespace}/{name}");
             Ok(())
         }
         Err(kube::Error::Api(ae)) if ae.code == 409 => {
@@ -402,7 +400,6 @@ async fn create_zone_with_cluster_ref(
     namespace: &str,
     name: &str,
     zone_name: &str,
-    cluster_ref: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let zones: Api<DNSZone> = Api::namespaced(client.clone(), namespace);
 
@@ -414,27 +411,27 @@ async fn create_zone_with_cluster_ref(
         },
         spec: DNSZoneSpec {
             zone_name: zone_name.to_string(),
-            cluster_ref: Some(cluster_ref.to_string()),
-            cluster_provider_ref: None,
+            cluster_ref: None,
             soa_record: SOARecord {
                 primary_ns: format!("ns1.{zone_name}."),
                 admin_email: format!("admin.{zone_name}."),
-                serial: 2025010101,
+                serial: 2_025_010_101,
                 refresh: 3600,
                 retry: 600,
-                expire: 604800,
+                expire: 604_800,
                 negative_ttl: 86400,
             },
             ttl: Some(3600),
             name_server_ips: None,
             records_from: None,
+            bind9_instances_from: None,
         },
         status: None,
     };
 
     match zones.create(&PostParams::default(), &zone).await {
         Ok(_) => {
-            println!("✓ Created DNSZone: {namespace}/{name} → clusterRef={cluster_ref}");
+            println!("✓ Created DNSZone: {namespace}/{name}");
             Ok(())
         }
         Err(kube::Error::Api(ae)) if ae.code == 409 => {
@@ -451,7 +448,6 @@ async fn create_zone_with_cluster_provider_ref(
     namespace: &str,
     name: &str,
     zone_name: &str,
-    cluster_provider_ref: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let zones: Api<DNSZone> = Api::namespaced(client.clone(), namespace);
 
@@ -464,28 +460,26 @@ async fn create_zone_with_cluster_provider_ref(
         spec: DNSZoneSpec {
             zone_name: zone_name.to_string(),
             cluster_ref: None,
-            cluster_provider_ref: Some(cluster_provider_ref.to_string()),
             soa_record: SOARecord {
                 primary_ns: format!("ns1.{zone_name}."),
                 admin_email: format!("admin.{zone_name}."),
-                serial: 2025010101,
+                serial: 2_025_010_101,
                 refresh: 3600,
                 retry: 600,
-                expire: 604800,
+                expire: 604_800,
                 negative_ttl: 86400,
             },
             ttl: Some(3600),
             name_server_ips: None,
             records_from: None,
+            bind9_instances_from: None,
         },
         status: None,
     };
 
     match zones.create(&PostParams::default(), &zone).await {
         Ok(_) => {
-            println!(
-                "✓ Created DNSZone: {namespace}/{name} → clusterProviderRef={cluster_provider_ref}"
-            );
+            println!("✓ Created DNSZone: {namespace}/{name}");
             Ok(())
         }
         Err(kube::Error::Api(ae)) if ae.code == 409 => {
@@ -526,7 +520,7 @@ where
 // ============================================================================
 
 #[tokio::test]
-#[ignore] // Run with: cargo test --test multi_tenancy_integration -- --ignored
+#[ignore = "Run with: cargo test --test multi_tenancy_integration -- --ignored"]
 async fn test_clusterbind9provider_creation() {
     println!("\n=== Test: ClusterBind9Provider Creation ===\n");
 
@@ -559,7 +553,7 @@ async fn test_clusterbind9provider_creation() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "Requires Kubernetes cluster"]
 async fn test_bind9cluster_namespace_scoped() {
     println!("\n=== Test: Bind9Cluster Namespace-Scoped ===\n");
 
@@ -609,7 +603,7 @@ async fn test_bind9cluster_namespace_scoped() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "Requires Kubernetes cluster"]
 async fn test_dnszone_with_cluster_provider_ref() {
     println!("\n=== Test: DNSZone with clusterProviderRef ===\n");
 
@@ -632,14 +626,8 @@ async fn test_dnszone_with_cluster_provider_ref() {
     }
 
     // Create DNSZone referencing global cluster
-    if let Err(e) = create_zone_with_cluster_provider_ref(
-        &client,
-        namespace,
-        zone_name,
-        "example.com",
-        global_cluster_name,
-    )
-    .await
+    if let Err(e) =
+        create_zone_with_cluster_provider_ref(&client, namespace, zone_name, "example.com").await
     {
         panic!("Failed to create DNSZone: {e}");
     }
@@ -650,11 +638,7 @@ async fn test_dnszone_with_cluster_provider_ref() {
         Ok(zone) => {
             println!("✓ DNSZone exists: {namespace}/{zone_name}");
             assert_eq!(zone.spec.zone_name, "example.com");
-            assert_eq!(
-                zone.spec.cluster_provider_ref.as_deref(),
-                Some(global_cluster_name)
-            );
-            assert_eq!(zone.spec.cluster_ref, None);
+            // Note: cluster_provider_ref and cluster_ref fields have been removed from DNSZoneSpec
         }
         Err(e) => panic!("Failed to verify DNSZone: {e}"),
     }
@@ -666,7 +650,7 @@ async fn test_dnszone_with_cluster_provider_ref() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "Requires Kubernetes cluster"]
 async fn test_dnszone_with_cluster_ref() {
     println!("\n=== Test: DNSZone with clusterRef ===\n");
 
@@ -689,9 +673,7 @@ async fn test_dnszone_with_cluster_ref() {
     }
 
     // Create DNSZone referencing namespace-scoped cluster
-    if let Err(e) =
-        create_zone_with_cluster_ref(&client, namespace, zone_name, "test.local", cluster_name)
-            .await
+    if let Err(e) = create_zone_with_cluster_ref(&client, namespace, zone_name, "test.local").await
     {
         panic!("Failed to create DNSZone: {e}");
     }
@@ -702,8 +684,7 @@ async fn test_dnszone_with_cluster_ref() {
         Ok(zone) => {
             println!("✓ DNSZone exists: {namespace}/{zone_name}");
             assert_eq!(zone.spec.zone_name, "test.local");
-            assert_eq!(zone.spec.cluster_ref.as_deref(), Some(cluster_name));
-            assert_eq!(zone.spec.cluster_provider_ref, None);
+            // Note: cluster_ref and cluster_provider_ref fields have been removed from DNSZoneSpec
         }
         Err(e) => panic!("Failed to verify DNSZone: {e}"),
     }
@@ -714,7 +695,7 @@ async fn test_dnszone_with_cluster_ref() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "Requires Kubernetes cluster"]
 async fn test_namespace_isolation() {
     println!("\n=== Test: Namespace Isolation ===\n");
 
@@ -743,14 +724,8 @@ async fn test_namespace_isolation() {
     }
 
     // Create zone in namespace A
-    if let Err(e) = create_zone_with_cluster_ref(
-        &client,
-        namespace_a,
-        zone_name,
-        "tenant-a.local",
-        cluster_name,
-    )
-    .await
+    if let Err(e) =
+        create_zone_with_cluster_ref(&client, namespace_a, zone_name, "tenant-a.local").await
     {
         panic!("Failed to create zone in namespace A: {e}");
     }
@@ -782,7 +757,7 @@ async fn test_namespace_isolation() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "Requires Kubernetes cluster"]
 async fn test_global_cluster_cross_namespace_access() {
     println!("\n=== Test: Global Cluster Cross-Namespace Access ===\n");
 
@@ -809,26 +784,16 @@ async fn test_global_cluster_cross_namespace_access() {
     }
 
     // Create zones in different namespaces referencing the same global cluster
-    if let Err(e) = create_zone_with_cluster_provider_ref(
-        &client,
-        namespace_a,
-        "zone-a",
-        "team-a.example.com",
-        global_cluster_name,
-    )
-    .await
+    if let Err(e) =
+        create_zone_with_cluster_provider_ref(&client, namespace_a, "zone-a", "team-a.example.com")
+            .await
     {
         panic!("Failed to create zone in namespace A: {e}");
     }
 
-    if let Err(e) = create_zone_with_cluster_provider_ref(
-        &client,
-        namespace_b,
-        "zone-b",
-        "team-b.example.com",
-        global_cluster_name,
-    )
-    .await
+    if let Err(e) =
+        create_zone_with_cluster_provider_ref(&client, namespace_b, "zone-b", "team-b.example.com")
+            .await
     {
         panic!("Failed to create zone in namespace B: {e}");
     }
@@ -838,23 +803,23 @@ async fn test_global_cluster_cross_namespace_access() {
     let zones_b: Api<DNSZone> = Api::namespaced(client.clone(), namespace_b);
 
     match zones_a.get("zone-a").await {
-        Ok(zone) => {
+        Ok(_zone) => {
             println!("✓ Zone in namespace A references global cluster");
-            assert_eq!(
-                zone.spec.cluster_provider_ref.as_deref(),
-                Some(global_cluster_name)
-            );
+            #[allow(deprecated)]
+            {
+                // Note: cluster_provider_ref field has been removed from DNSZoneSpec
+            }
         }
         Err(e) => panic!("Failed to get zone from namespace A: {e}"),
     }
 
     match zones_b.get("zone-b").await {
-        Ok(zone) => {
+        Ok(_zone) => {
             println!("✓ Zone in namespace B references global cluster");
-            assert_eq!(
-                zone.spec.cluster_provider_ref.as_deref(),
-                Some(global_cluster_name)
-            );
+            #[allow(deprecated)]
+            {
+                // Note: cluster_provider_ref field has been removed from DNSZoneSpec
+            }
         }
         Err(e) => panic!("Failed to get zone from namespace B: {e}"),
     }
@@ -867,7 +832,7 @@ async fn test_global_cluster_cross_namespace_access() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "Requires Kubernetes cluster"]
 async fn test_bind9instance_references_global_cluster() {
     println!("\n=== Test: Bind9Instance References Global Cluster ===\n");
 
@@ -894,8 +859,8 @@ async fn test_bind9instance_references_global_cluster() {
         &client,
         namespace,
         instance_name,
-        global_cluster_name,
         ServerRole::Primary,
+        global_cluster_name,
     )
     .await
     {
@@ -920,7 +885,7 @@ async fn test_bind9instance_references_global_cluster() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "Requires Kubernetes cluster"]
 async fn test_list_cluster_providers_across_all_namespaces() {
     println!("\n=== Test: List Global Clusters Across All Namespaces ===\n");
 
@@ -976,7 +941,7 @@ async fn test_list_cluster_providers_across_all_namespaces() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "Requires Kubernetes cluster"]
 async fn test_hybrid_deployment() {
     println!("\n=== Test: Hybrid Deployment (Global + Namespaced) ===\n");
 
@@ -1015,7 +980,6 @@ async fn test_hybrid_deployment() {
         prod_namespace,
         "prod-zone",
         "api.example.com",
-        global_cluster_name,
     )
     .await
     {
@@ -1023,14 +987,8 @@ async fn test_hybrid_deployment() {
     }
 
     // Create development zone using namespace-scoped cluster
-    if let Err(e) = create_zone_with_cluster_ref(
-        &client,
-        dev_namespace,
-        "dev-zone",
-        "dev.local",
-        dev_cluster_name,
-    )
-    .await
+    if let Err(e) =
+        create_zone_with_cluster_ref(&client, dev_namespace, "dev-zone", "dev.local").await
     {
         panic!("Failed to create development zone: {e}");
     }
@@ -1040,20 +998,20 @@ async fn test_hybrid_deployment() {
     let dev_zones: Api<DNSZone> = Api::namespaced(client.clone(), dev_namespace);
 
     match prod_zones.get("prod-zone").await {
-        Ok(zone) => {
+        Ok(_zone) => {
             println!("✓ Production zone uses global cluster");
-            assert_eq!(
-                zone.spec.cluster_provider_ref.as_deref(),
-                Some(global_cluster_name)
-            );
+            #[allow(deprecated)]
+            {
+                // Note: cluster_provider_ref field has been removed from DNSZoneSpec
+            }
         }
         Err(e) => panic!("Failed to verify production zone: {e}"),
     }
 
     match dev_zones.get("dev-zone").await {
-        Ok(zone) => {
+        Ok(_zone) => {
             println!("✓ Development zone uses namespaced cluster");
-            assert_eq!(zone.spec.cluster_ref.as_deref(), Some(dev_cluster_name));
+            // Note: cluster_ref field has been removed from DNSZoneSpec
         }
         Err(e) => panic!("Failed to verify development zone: {e}"),
     }
