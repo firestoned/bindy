@@ -85,7 +85,7 @@ mod status_tests;
 pub use bind9cluster::{delete_bind9cluster, reconcile_bind9cluster};
 pub use bind9instance::{delete_bind9instance, reconcile_bind9instance, reconcile_instance_zones};
 pub use clusterbind9provider::{delete_clusterbind9provider, reconcile_clusterbind9provider};
-pub use dnszone::{delete_dnszone, find_zones_selecting_record, reconcile_dnszone};
+pub use dnszone::{delete_dnszone, discovery::find_zones_selecting_record, reconcile_dnszone};
 pub use records::{
     delete_record, reconcile_a_record, reconcile_aaaa_record, reconcile_caa_record,
     reconcile_cname_record, reconcile_mx_record, reconcile_ns_record, reconcile_srv_record,
@@ -184,3 +184,6 @@ pub fn should_reconcile(current_generation: Option<i64>, observed_generation: Op
 pub fn status_changed<T: PartialEq>(current_value: &Option<T>, new_value: &Option<T>) -> bool {
     current_value != new_value
 }
+
+#[cfg(test)]
+mod mod_tests;
