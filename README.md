@@ -71,7 +71,7 @@ Bindy is a Kubernetes operator that manages BIND9 DNS infrastructure declarative
 
 ## Quick Example
 
-> **⚠️ Breaking Change from v0.2.x**: Records now use **label selectors** instead of `zoneRef`. Zones select records via `recordsFrom` using labels. See [Migration Guide](https://firestoned.github.io/bindy/migration/v0.2-to-v0.3.html) for upgrading.
+> **⚠️ Breaking Change from v0.2.x**: Records now use **label selectors** instead of `zoneRef`. Zones select records via `recordsFrom` using labels. See [Migration Guide](https://firestoned.github.io/bindy/operations/migration-guide.html) for upgrading from v0.2.x.
 
 ```yaml
 # 1. Create a DNS cluster
