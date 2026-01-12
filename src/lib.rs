@@ -73,6 +73,8 @@ pub mod dns_errors;
 pub mod http_errors;
 pub mod labels;
 pub mod metrics;
+pub mod record_controller;
+pub mod record_impls;
 
 #[macro_use]
 pub mod record_wrappers;
@@ -91,5 +93,11 @@ mod crd_tests;
 mod dns_errors_tests;
 #[cfg(test)]
 mod http_errors_tests;
+#[cfg(test)]
+mod record_controller_tests;
+#[cfg(test)]
+mod record_impls_tests;
+#[cfg(test)]
+mod record_wrappers_tests;
 #[cfg(test)]
 mod status_reasons_tests;
