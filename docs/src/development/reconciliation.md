@@ -47,6 +47,37 @@ async fn reconcile_bind9instance(instance: Bind9Instance) -> Result<()> {
 
 DNSZone reconciliation uses granular status updates to provide real-time progress visibility and better error reporting. The reconciliation follows a multi-phase approach with status updates at each phase.
 
+### Module Structure
+
+The DNSZone reconciler has been refactored into a modular architecture for better maintainability and testability. As of v0.3.0, the reconciler is organized into focused modules:
+
+**Main Orchestration:**
+- [dnszone.rs](../../../src/reconcilers/dnszone.rs) - Main reconciliation entry point and orchestration logic
+
+**Core Modules:**
+- [dnszone/validation.rs](../../../src/reconcilers/dnszone/validation.rs) - Zone validation (duplicate detection, selector matching)
+- [dnszone/discovery.rs](../../../src/reconcilers/dnszone/discovery.rs) - Instance and resource discovery helpers
+- [dnszone/primary.rs](../../../src/reconcilers/dnszone/primary.rs) - Primary zone configuration logic
+- [dnszone/secondary.rs](../../../src/reconcilers/dnszone/secondary.rs) - Secondary zone configuration logic
+
+**Support Modules:**
+- [dnszone/bind9_config.rs](../../../src/reconcilers/dnszone/bind9_config.rs) - BIND9 configuration generation
+- [dnszone/status_helpers.rs](../../../src/reconcilers/dnszone/status_helpers.rs) - Status update helpers
+- [dnszone/helpers.rs](../../../src/reconcilers/dnszone/helpers.rs) - Shared utility functions
+- [dnszone/cleanup.rs](../../../src/reconcilers/dnszone/cleanup.rs) - Resource cleanup and finalizer logic
+
+**Shared:**
+- [dnszone/types.rs](../../../src/reconcilers/dnszone/types.rs) - Common types (DuplicateZoneInfo, EndpointAddress, etc.)
+- [dnszone/constants.rs](../../../src/reconcilers/dnszone/constants.rs) - Shared constants (finalizer names, timeouts)
+
+**Benefits:**
+- **Code Organization**: Related functionality grouped logically (validation, discovery, configuration)
+- **Testability**: Each module can be tested independently with focused test files
+- **Maintainability**: Changes isolated to specific modules (e.g., validation logic separate from configuration)
+- **Readability**: Smaller, focused files (~200-500 lines) vs. monolithic reconciler (2000+ lines)
+
+This refactoring was completed in Phases 1.1 and 1.2, extracting 66% of code from the main reconciler into focused modules.
+
 ### Reconciliation Flow
 
 ```rust

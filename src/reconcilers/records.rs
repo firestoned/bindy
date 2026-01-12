@@ -328,6 +328,75 @@ trait RecordOperation: Clone + Send + Sync {
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 }
 
+/// Trait for DNS record resources that can be reconciled.
+///
+/// This trait provides the interface for generic record reconciliation,
+/// allowing a single `reconcile_record<T>()` function to handle all record types.
+/// It eliminates duplication across 8 record type reconcilers by providing
+/// type-specific operations through trait methods.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// impl ReconcilableRecord for ARecord {
+///     type Spec = crate::crd::ARecordSpec;
+///     type Operation = ARecordOp;
+///
+///     fn get_spec(&self) -> &Self::Spec {
+///         &self.spec
+///     }
+///
+///     fn record_type_name() -> &'static str {
+///         "A"
+///     }
+///
+///     fn create_operation(spec: &Self::Spec) -> Self::Operation {
+///         ARecordOp {
+///             ipv4_address: spec.ipv4_address.clone(),
+///         }
+///     }
+///
+///     fn get_record_name(spec: &Self::Spec) -> &str {
+///         &spec.name
+///     }
+///
+///     fn get_ttl(spec: &Self::Spec) -> Option<i32> {
+///         spec.ttl
+///     }
+/// }
+/// ```
+trait ReconcilableRecord:
+    Resource<DynamicType = (), Scope = k8s_openapi::NamespaceResourceScope>
+    + ResourceExt
+    + Clone
+    + std::fmt::Debug
+    + serde::Serialize
+    + for<'de> serde::Deserialize<'de>
+    + Send
+    + Sync
+{
+    /// The spec type for this record (e.g., `ARecordSpec`, `TXTRecordSpec`)
+    type Spec: serde::Serialize + Clone;
+
+    /// The operation type for BIND9 updates (e.g., `ARecordOp`, `TXTRecordOp`)
+    type Operation: RecordOperation;
+
+    /// Get the record's spec
+    fn get_spec(&self) -> &Self::Spec;
+
+    /// Get the record type name (e.g., "A", "TXT", "AAAA") for logging
+    fn record_type_name() -> &'static str;
+
+    /// Create the BIND9 operation from the spec
+    fn create_operation(spec: &Self::Spec) -> Self::Operation;
+
+    /// Get the record name from the spec
+    fn get_record_name(spec: &Self::Spec) -> &str;
+
+    /// Get the TTL from the spec
+    fn get_ttl(spec: &Self::Spec) -> Option<i32>;
+}
+
 /// Generic helper to add a record to all primary instances.
 ///
 /// This function eliminates duplication across the 8 `add_*_record_to_instances` functions
@@ -448,6 +517,34 @@ impl RecordOperation for ARecordOp {
     }
 }
 
+/// Implement `ReconcilableRecord` for `ARecord`.
+impl ReconcilableRecord for ARecord {
+    type Spec = crate::crd::ARecordSpec;
+    type Operation = ARecordOp;
+
+    fn get_spec(&self) -> &Self::Spec {
+        &self.spec
+    }
+
+    fn record_type_name() -> &'static str {
+        "A"
+    }
+
+    fn create_operation(spec: &Self::Spec) -> Self::Operation {
+        ARecordOp {
+            ipv4_address: spec.ipv4_address.clone(),
+        }
+    }
+
+    fn get_record_name(spec: &Self::Spec) -> &str {
+        &spec.name
+    }
+
+    fn get_ttl(spec: &Self::Spec) -> Option<i32> {
+        spec.ttl
+    }
+}
+
 /// AAAA record operation wrapper.
 #[derive(Clone)]
 struct AAAARecordOp {
@@ -481,6 +578,34 @@ impl RecordOperation for AAAARecordOp {
     }
 }
 
+/// Implement `ReconcilableRecord` for `AAAARecord`.
+impl ReconcilableRecord for AAAARecord {
+    type Spec = crate::crd::AAAARecordSpec;
+    type Operation = AAAARecordOp;
+
+    fn get_spec(&self) -> &Self::Spec {
+        &self.spec
+    }
+
+    fn record_type_name() -> &'static str {
+        "AAAA"
+    }
+
+    fn create_operation(spec: &Self::Spec) -> Self::Operation {
+        AAAARecordOp {
+            ipv6_address: spec.ipv6_address.clone(),
+        }
+    }
+
+    fn get_record_name(spec: &Self::Spec) -> &str {
+        &spec.name
+    }
+
+    fn get_ttl(spec: &Self::Spec) -> Option<i32> {
+        spec.ttl
+    }
+}
+
 /// CNAME record operation wrapper.
 #[derive(Clone)]
 struct CNAMERecordOp {
@@ -507,6 +632,34 @@ impl RecordOperation for CNAMERecordOp {
     }
 }
 
+/// Implement `ReconcilableRecord` for `CNAMERecord`.
+impl ReconcilableRecord for CNAMERecord {
+    type Spec = crate::crd::CNAMERecordSpec;
+    type Operation = CNAMERecordOp;
+
+    fn get_spec(&self) -> &Self::Spec {
+        &self.spec
+    }
+
+    fn record_type_name() -> &'static str {
+        "CNAME"
+    }
+
+    fn create_operation(spec: &Self::Spec) -> Self::Operation {
+        CNAMERecordOp {
+            target: spec.target.clone(),
+        }
+    }
+
+    fn get_record_name(spec: &Self::Spec) -> &str {
+        &spec.name
+    }
+
+    fn get_ttl(spec: &Self::Spec) -> Option<i32> {
+        spec.ttl
+    }
+}
+
 /// TXT record operation wrapper.
 #[derive(Clone)]
 struct TXTRecordOp {
@@ -530,6 +683,34 @@ impl RecordOperation for TXTRecordOp {
         zone_manager
             .add_txt_record(zone_name, record_name, &self.texts, ttl, server, key_data)
             .await
+    }
+}
+
+/// Implement `ReconcilableRecord` for `TXTRecord`.
+impl ReconcilableRecord for TXTRecord {
+    type Spec = crate::crd::TXTRecordSpec;
+    type Operation = TXTRecordOp;
+
+    fn get_spec(&self) -> &Self::Spec {
+        &self.spec
+    }
+
+    fn record_type_name() -> &'static str {
+        "TXT"
+    }
+
+    fn create_operation(spec: &Self::Spec) -> Self::Operation {
+        TXTRecordOp {
+            texts: spec.text.clone(),
+        }
+    }
+
+    fn get_record_name(spec: &Self::Spec) -> &str {
+        &spec.name
+    }
+
+    fn get_ttl(spec: &Self::Spec) -> Option<i32> {
+        spec.ttl
     }
 }
 
@@ -568,6 +749,35 @@ impl RecordOperation for MXRecordOp {
     }
 }
 
+/// Implement `ReconcilableRecord` for `MXRecord`.
+impl ReconcilableRecord for MXRecord {
+    type Spec = crate::crd::MXRecordSpec;
+    type Operation = MXRecordOp;
+
+    fn get_spec(&self) -> &Self::Spec {
+        &self.spec
+    }
+
+    fn record_type_name() -> &'static str {
+        "MX"
+    }
+
+    fn create_operation(spec: &Self::Spec) -> Self::Operation {
+        MXRecordOp {
+            priority: spec.priority,
+            mail_server: spec.mail_server.clone(),
+        }
+    }
+
+    fn get_record_name(spec: &Self::Spec) -> &str {
+        &spec.name
+    }
+
+    fn get_ttl(spec: &Self::Spec) -> Option<i32> {
+        spec.ttl
+    }
+}
+
 /// NS record operation wrapper.
 #[derive(Clone)]
 struct NSRecordOp {
@@ -598,6 +808,34 @@ impl RecordOperation for NSRecordOp {
                 key_data,
             )
             .await
+    }
+}
+
+/// Implement `ReconcilableRecord` for `NSRecord`.
+impl ReconcilableRecord for NSRecord {
+    type Spec = crate::crd::NSRecordSpec;
+    type Operation = NSRecordOp;
+
+    fn get_spec(&self) -> &Self::Spec {
+        &self.spec
+    }
+
+    fn record_type_name() -> &'static str {
+        "NS"
+    }
+
+    fn create_operation(spec: &Self::Spec) -> Self::Operation {
+        NSRecordOp {
+            nameserver: spec.nameserver.clone(),
+        }
+    }
+
+    fn get_record_name(spec: &Self::Spec) -> &str {
+        &spec.name
+    }
+
+    fn get_ttl(spec: &Self::Spec) -> Option<i32> {
+        spec.ttl
     }
 }
 
@@ -634,6 +872,37 @@ impl RecordOperation for SRVRecordOp {
         zone_manager
             .add_srv_record(zone_name, record_name, &srv_data, server, key_data)
             .await
+    }
+}
+
+/// Implement `ReconcilableRecord` for `SRVRecord`.
+impl ReconcilableRecord for SRVRecord {
+    type Spec = crate::crd::SRVRecordSpec;
+    type Operation = SRVRecordOp;
+
+    fn get_spec(&self) -> &Self::Spec {
+        &self.spec
+    }
+
+    fn record_type_name() -> &'static str {
+        "SRV"
+    }
+
+    fn create_operation(spec: &Self::Spec) -> Self::Operation {
+        SRVRecordOp {
+            priority: spec.priority,
+            weight: spec.weight,
+            port: spec.port,
+            target: spec.target.clone(),
+        }
+    }
+
+    fn get_record_name(spec: &Self::Spec) -> &str {
+        &spec.name
+    }
+
+    fn get_ttl(spec: &Self::Spec) -> Option<i32> {
+        spec.ttl
     }
 }
 
@@ -674,50 +943,121 @@ impl RecordOperation for CAARecordOp {
     }
 }
 
+/// Implement `ReconcilableRecord` for `CAARecord`.
+impl ReconcilableRecord for CAARecord {
+    type Spec = crate::crd::CAARecordSpec;
+    type Operation = CAARecordOp;
+
+    fn get_spec(&self) -> &Self::Spec {
+        &self.spec
+    }
+
+    fn record_type_name() -> &'static str {
+        "CAA"
+    }
+
+    fn create_operation(spec: &Self::Spec) -> Self::Operation {
+        CAARecordOp {
+            flags: spec.flags,
+            tag: spec.tag.clone(),
+            value: spec.value.clone(),
+        }
+    }
+
+    fn get_record_name(spec: &Self::Spec) -> &str {
+        &spec.name
+    }
+
+    fn get_ttl(spec: &Self::Spec) -> Option<i32> {
+        spec.ttl
+    }
+}
+
 ///
 /// # Errors
 ///
 /// Returns an error if Kubernetes API operations fail or BIND9 record creation fails.
-pub async fn reconcile_a_record(
-    ctx: std::sync::Arc<crate::context::Context>,
-    record: ARecord,
-) -> Result<()> {
+/// Generic record reconciliation function.
+///
+/// This function handles reconciliation for all DNS record types that implement
+/// the `ReconcilableRecord` trait. It eliminates duplication across 8 record types
+/// by providing a single implementation of the reconciliation logic.
+///
+/// The function:
+/// 1. Checks if the record is selected by a `DNSZone` (via status.zoneRef)
+/// 2. Looks up the `DNSZone` and gets primary instances
+/// 3. Adds the record to BIND9 primaries using dynamic DNS updates
+/// 4. Updates the record status based on success/failure
+///
+/// # Type Parameters
+///
+/// * `T` - The record type (e.g., `ARecord`, `TXTRecord`) implementing `ReconcilableRecord`
+///
+/// # Arguments
+///
+/// * `ctx` - Controller context with Kubernetes client and reflector stores
+/// * `record` - The DNS record resource to reconcile
+///
+/// # Returns
+///
+/// * `Ok(())` - If reconciliation succeeded or record is not selected
+/// * `Err(_)` - If a fatal error occurred
+///
+/// # Errors
+///
+/// Returns an error if status updates fail or BIND9 record creation fails.
+async fn reconcile_record<T>(ctx: std::sync::Arc<crate::context::Context>, record: T) -> Result<()>
+where
+    T: ReconcilableRecord,
+{
     let client = ctx.client.clone();
     let bind9_instances_store = &ctx.stores.bind9_instances;
     let namespace = record.namespace().unwrap_or_default();
     let name = record.name_any();
 
-    info!("Reconciling ARecord: {}/{}", namespace, name);
+    info!(
+        "Reconciling {}Record: {}/{}",
+        T::record_type_name(),
+        namespace,
+        name
+    );
 
-    let spec = &record.spec;
-    let current_generation = record.metadata.generation;
+    let spec = record.get_spec();
+    let current_generation = record.meta().generation;
 
     // Use generic helper to get zone and instances
-    let Some(rec_ctx) =
-        prepare_record_reconciliation(&client, &record, "A", spec, bind9_instances_store).await?
+    let Some(rec_ctx) = prepare_record_reconciliation(
+        &client,
+        &record,
+        T::record_type_name(),
+        spec,
+        bind9_instances_store,
+    )
+    .await?
     else {
         return Ok(()); // Record not selected or status already updated
     };
 
+    // Create type-specific operation from spec
+    let record_op = T::create_operation(spec);
+
     // Add record to BIND9 primaries using generic helper
-    let record_op = ARecordOp {
-        ipv4_address: spec.ipv4_address.clone(),
-    };
     match add_record_to_instances_generic(
         &client,
         &ctx.stores,
         &rec_ctx.primary_refs,
         &rec_ctx.zone_ref.zone_name,
-        &spec.name,
-        spec.ttl,
+        T::get_record_name(spec),
+        T::get_ttl(spec),
         record_op,
     )
     .await
     {
         Ok(()) => {
             info!(
-                "Successfully added A record {}.{} via {} primary instance(s)",
-                spec.name,
+                "Successfully added {} record {}.{} via {} primary instance(s)",
+                T::record_type_name(),
+                T::get_record_name(spec),
                 rec_ctx.zone_ref.zone_name,
                 rec_ctx.primary_refs.len()
             );
@@ -727,19 +1067,24 @@ pub async fn reconcile_a_record(
                 &client,
                 &rec_ctx.zone_ref.namespace,
                 &rec_ctx.zone_ref.name,
-                "ARecord",
+                &format!("{}Record", T::record_type_name()),
                 &name,
                 &namespace,
             )
             .await?;
 
+            // Update record status to Ready
             update_record_status(
                 &client,
                 &record,
                 "Ready",
                 "True",
                 "ReconcileSucceeded",
-                &format!("A record added to zone {}", rec_ctx.zone_ref.zone_name),
+                &format!(
+                    "{} record added to zone {}",
+                    T::record_type_name(),
+                    rec_ctx.zone_ref.zone_name
+                ),
                 current_generation,
                 Some(rec_ctx.current_hash),
                 Some(chrono::Utc::now().to_rfc3339()),
@@ -748,8 +1093,11 @@ pub async fn reconcile_a_record(
         }
         Err(e) => {
             warn!(
-                "Failed to add A record {}.{}: {}",
-                spec.name, rec_ctx.zone_ref.zone_name, e
+                "Failed to add {} record {}.{}: {}",
+                T::record_type_name(),
+                T::get_record_name(spec),
+                rec_ctx.zone_ref.zone_name,
+                e
             );
             update_record_status(
                 &client,
@@ -767,6 +1115,22 @@ pub async fn reconcile_a_record(
     }
 
     Ok(())
+}
+
+/// Reconciles an `ARecord` (IPv4 address) resource.
+///
+/// This is a thin wrapper around the generic `reconcile_record<T>()` function.
+/// It finds `DNSZones` that have selected this record via label selectors and
+/// creates/updates the record in BIND9 primaries for those zones using dynamic DNS updates.
+///
+/// # Errors
+///
+/// Returns an error if Kubernetes API operations fail or BIND9 record creation fails.
+pub async fn reconcile_a_record(
+    ctx: std::sync::Arc<crate::context::Context>,
+    record: ARecord,
+) -> Result<()> {
+    reconcile_record(ctx, record).await
 }
 
 /// Reconciles a `TXTRecord` (text) resource.
@@ -969,10 +1333,11 @@ pub async fn reconcile_aaaa_record(
     Ok(())
 }
 
-/// Reconciles a `CNAMERecord` (canonical name alias) resource.
+/// Reconciles a `CNAMERecord` \(canonical name alias\) resource.
 ///
-/// Finds `DNSZones` that have selected this record via label selectors and creates/updates
-/// the record in BIND9 primaries for those zones using dynamic DNS updates.
+/// This is a thin wrapper around the generic `reconcile_record<T>()` function.
+/// It finds `DNSZones` that have selected this record via label selectors and
+/// creates/updates the record in BIND9 primaries for those zones using dynamic DNS updates.
 ///
 /// # Errors
 ///
@@ -1377,10 +1742,11 @@ pub async fn reconcile_srv_record(
     Ok(())
 }
 
-/// Reconciles a `CAARecord` (certificate authority authorization) resource.
+/// Reconciles a `CAARecord` \(certificate authority authorization\) resource.
 ///
-/// Finds `DNSZones` that have selected this record via label selectors and creates/updates
-/// the record in BIND9 primaries for those zones using dynamic DNS updates.
+/// This is a thin wrapper around the generic `reconcile_record<T>()` function.
+/// It finds `DNSZones` that have selected this record via label selectors and
+/// creates/updates the record in BIND9 primaries for those zones using dynamic DNS updates.
 /// CAA records specify which certificate authorities can issue certificates.
 ///
 /// # Errors
