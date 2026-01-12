@@ -107,13 +107,38 @@ jobs:
       - name: Install tarpaulin
         run: cargo install cargo-tarpaulin
 
-      - name: Generate coverage
-        run: cargo tarpaulin --verbose --all-features --workspace --timeout 120 --out Xml
+      - name: Generate coverage reports
+        run: |
+          cargo tarpaulin --verbose --all-features --workspace --timeout 120 \
+            --out Xml --out Html --out Json \
+            --output-dir ./coverage
 
-      - name: Upload coverage to Codecov
+      - name: Check coverage threshold
+        run: |
+          COVERAGE=$(jq -r '.files | to_entries | map(.value.summary.line_percent) | add / length' coverage/tarpaulin-report.json)
+          echo "Coverage: ${COVERAGE}%"
+          THRESHOLD=90.0
+          if (( $(echo "$COVERAGE < $THRESHOLD" | bc -l) )); then
+            echo "❌ Coverage ${COVERAGE}% is below threshold ${THRESHOLD}%"
+            exit 1
+          else
+            echo "✅ Coverage ${COVERAGE}% meets threshold ${THRESHOLD}%"
+          fi
+
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: |
+            coverage/cobertura.xml
+            coverage/tarpaulin-report.html
+            coverage/tarpaulin-report.json
+          retention-days: 30
+
+      - name: Upload to Codecov
         uses: codecov/codecov-action@v4
         with:
-          files: ./cobertura.xml
+          files: ./coverage/cobertura.xml
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
