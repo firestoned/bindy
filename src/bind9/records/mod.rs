@@ -266,3 +266,6 @@ pub async fn delete_dns_record(
         format!("DNS delete task panicked or failed for {record_type:?} record {name}")
     })?
 }
+
+#[cfg(test)]
+mod mod_tests;

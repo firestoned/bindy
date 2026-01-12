@@ -187,55 +187,60 @@ where
     };
 
     // Get instances from the DNSZone
-    let instance_refs =
-        match crate::reconcilers::dnszone::get_instances_from_zone(&dnszone, bind9_instances_store)
-        {
-            Ok(refs) => refs,
-            Err(e) => {
-                warn!(
-                    "DNSZone {}/{} has no instances assigned for {} record {}/{}: {}",
-                    zone_ref.namespace, zone_ref.name, record_type, namespace, name, e
-                );
-                update_record_status(
-                    client,
-                    record,
-                    "Ready",
-                    "False",
-                    "ZoneNotConfigured",
-                    &format!("DNSZone has no instances: {e}"),
-                    current_generation,
-                    None, // record_hash
-                    None, // last_updated
-                )
-                .await?;
-                return Ok(None);
-            }
-        };
+    let instance_refs = match crate::reconcilers::dnszone::validation::get_instances_from_zone(
+        &dnszone,
+        bind9_instances_store,
+    ) {
+        Ok(refs) => refs,
+        Err(e) => {
+            warn!(
+                "DNSZone {}/{} has no instances assigned for {} record {}/{}: {}",
+                zone_ref.namespace, zone_ref.name, record_type, namespace, name, e
+            );
+            update_record_status(
+                client,
+                record,
+                "Ready",
+                "False",
+                "ZoneNotConfigured",
+                &format!("DNSZone has no instances: {e}"),
+                current_generation,
+                None, // record_hash
+                None, // last_updated
+            )
+            .await?;
+            return Ok(None);
+        }
+    };
 
     // Filter to PRIMARY instances only
-    let primary_refs =
-        match crate::reconcilers::dnszone::filter_primary_instances(client, &instance_refs).await {
-            Ok(refs) => refs,
-            Err(e) => {
-                warn!(
-                    "Failed to filter primary instances for {} record {}/{}: {}",
-                    record_type, namespace, name, e
-                );
-                update_record_status(
-                    client,
-                    record,
-                    "Ready",
-                    "False",
-                    "InstanceFilterError",
-                    &format!("Failed to filter primary instances: {e}"),
-                    current_generation,
-                    None, // record_hash
-                    None, // last_updated
-                )
-                .await?;
-                return Ok(None);
-            }
-        };
+    let primary_refs = match crate::reconcilers::dnszone::primary::filter_primary_instances(
+        client,
+        &instance_refs,
+    )
+    .await
+    {
+        Ok(refs) => refs,
+        Err(e) => {
+            warn!(
+                "Failed to filter primary instances for {} record {}/{}: {}",
+                record_type, namespace, name, e
+            );
+            update_record_status(
+                client,
+                record,
+                "Ready",
+                "False",
+                "InstanceFilterError",
+                &format!("Failed to filter primary instances: {e}"),
+                current_generation,
+                None, // record_hash
+                None, // last_updated
+            )
+            .await?;
+            return Ok(None);
+        }
+    };
 
     if primary_refs.is_empty() {
         warn!(
@@ -287,6 +292,388 @@ where
 ///     Ok(())
 /// }
 /// ```
+/// Trait for record-specific BIND9 operations.
+///
+/// This trait abstracts over the different record types and provides a uniform interface
+/// for adding records to BIND9 instances via the `Bind9Manager`.
+///
+/// Each DNS record type implements this trait to define how it should be added to BIND9
+/// using dynamic DNS updates (RFC 2136 nsupdate protocol).
+trait RecordOperation: Clone + Send + Sync {
+    /// Get the record type name (e.g., "A", "TXT", "AAAA") for logging and events.
+    fn record_type_name(&self) -> &'static str;
+
+    /// Add this record to a BIND9 instance via the `Bind9Manager`.
+    ///
+    /// # Arguments
+    ///
+    /// * `zone_manager` - The `Bind9Manager` instance to use for the operation
+    /// * `zone_name` - The DNS zone name (e.g., "example.com")
+    /// * `record_name` - The record name within the zone (e.g., "www")
+    /// * `ttl` - Optional TTL value
+    /// * `server` - The BIND9 server endpoint (IP:port)
+    /// * `key_data` - RNDC key data for authentication
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the dynamic DNS update fails.
+    fn add_to_bind9(
+        &self,
+        zone_manager: &crate::bind9::Bind9Manager,
+        zone_name: &str,
+        record_name: &str,
+        ttl: Option<i32>,
+        server: &str,
+        key_data: &crate::bind9::RndcKeyData,
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
+}
+
+/// Generic helper to add a record to all primary instances.
+///
+/// This function eliminates duplication across the 8 `add_*_record_to_instances` functions
+/// by providing a generic implementation that works for any record type implementing
+/// the `RecordOperation` trait.
+///
+/// # Type Parameters
+///
+/// * `R` - The record operation type implementing `RecordOperation`
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `stores` - Context stores for creating `Bind9Manager` instances
+/// * `instance_refs` - Primary instance references
+/// * `zone_name` - DNS zone name
+/// * `record_name` - Record name within the zone
+/// * `ttl` - Optional TTL value
+/// * `record_op` - The record-specific operation to perform
+///
+/// # Errors
+///
+/// Returns an error if any dynamic DNS update fails.
+async fn add_record_to_instances_generic<R>(
+    client: &Client,
+    stores: &crate::context::Stores,
+    instance_refs: &[crate::crd::InstanceReference],
+    zone_name: &str,
+    record_name: &str,
+    ttl: Option<i32>,
+    record_op: R,
+) -> Result<()>
+where
+    R: RecordOperation,
+{
+    use crate::reconcilers::dnszone::helpers::for_each_instance_endpoint;
+
+    // Create a map of instance name -> namespace for quick lookup
+    let instance_map: std::collections::HashMap<String, String> = instance_refs
+        .iter()
+        .map(|inst| (inst.name.clone(), inst.namespace.clone()))
+        .collect();
+
+    let (_first, _total) = for_each_instance_endpoint(
+        client,
+        instance_refs,
+        true,      // with_rndc_key
+        "dns-tcp", // Use DNS TCP port for dynamic updates
+        |pod_endpoint, instance_name, rndc_key| {
+            let zone_name = zone_name.to_string();
+            let record_name = record_name.to_string();
+
+            // Get namespace for this instance
+            let instance_namespace = instance_map
+                .get(&instance_name)
+                .expect("Instance should be in map")
+                .clone();
+
+            // Create Bind9Manager for this specific instance with deployment-aware auth
+            let zone_manager =
+                stores.create_bind9_manager_for_instance(&instance_name, &instance_namespace);
+
+            // Clone record_op for the async block
+            let record_op_clone = record_op.clone();
+
+            async move {
+                let key_data = rndc_key.expect("RNDC key should be loaded");
+
+                record_op_clone
+                    .add_to_bind9(&zone_manager, &zone_name, &record_name, ttl, &pod_endpoint, &key_data)
+                    .await
+                    .context(format!(
+                        "Failed to add {} record {record_name}.{zone_name} to primary {pod_endpoint} (instance: {instance_name})",
+                        record_op_clone.record_type_name()
+                    ))?;
+
+                Ok(())
+            }
+        },
+    )
+    .await?;
+
+    Ok(())
+}
+
+// Record operation implementations for each DNS record type
+
+/// A record operation wrapper.
+#[derive(Clone)]
+struct ARecordOp {
+    ipv4_address: String,
+}
+
+impl RecordOperation for ARecordOp {
+    fn record_type_name(&self) -> &'static str {
+        "A"
+    }
+
+    async fn add_to_bind9(
+        &self,
+        zone_manager: &crate::bind9::Bind9Manager,
+        zone_name: &str,
+        record_name: &str,
+        ttl: Option<i32>,
+        server: &str,
+        key_data: &crate::bind9::RndcKeyData,
+    ) -> Result<()> {
+        zone_manager
+            .add_a_record(
+                zone_name,
+                record_name,
+                &self.ipv4_address,
+                ttl,
+                server,
+                key_data,
+            )
+            .await
+    }
+}
+
+/// AAAA record operation wrapper.
+#[derive(Clone)]
+struct AAAARecordOp {
+    ipv6_address: String,
+}
+
+impl RecordOperation for AAAARecordOp {
+    fn record_type_name(&self) -> &'static str {
+        "AAAA"
+    }
+
+    async fn add_to_bind9(
+        &self,
+        zone_manager: &crate::bind9::Bind9Manager,
+        zone_name: &str,
+        record_name: &str,
+        ttl: Option<i32>,
+        server: &str,
+        key_data: &crate::bind9::RndcKeyData,
+    ) -> Result<()> {
+        zone_manager
+            .add_aaaa_record(
+                zone_name,
+                record_name,
+                &self.ipv6_address,
+                ttl,
+                server,
+                key_data,
+            )
+            .await
+    }
+}
+
+/// CNAME record operation wrapper.
+#[derive(Clone)]
+struct CNAMERecordOp {
+    target: String,
+}
+
+impl RecordOperation for CNAMERecordOp {
+    fn record_type_name(&self) -> &'static str {
+        "CNAME"
+    }
+
+    async fn add_to_bind9(
+        &self,
+        zone_manager: &crate::bind9::Bind9Manager,
+        zone_name: &str,
+        record_name: &str,
+        ttl: Option<i32>,
+        server: &str,
+        key_data: &crate::bind9::RndcKeyData,
+    ) -> Result<()> {
+        zone_manager
+            .add_cname_record(zone_name, record_name, &self.target, ttl, server, key_data)
+            .await
+    }
+}
+
+/// TXT record operation wrapper.
+#[derive(Clone)]
+struct TXTRecordOp {
+    texts: Vec<String>,
+}
+
+impl RecordOperation for TXTRecordOp {
+    fn record_type_name(&self) -> &'static str {
+        "TXT"
+    }
+
+    async fn add_to_bind9(
+        &self,
+        zone_manager: &crate::bind9::Bind9Manager,
+        zone_name: &str,
+        record_name: &str,
+        ttl: Option<i32>,
+        server: &str,
+        key_data: &crate::bind9::RndcKeyData,
+    ) -> Result<()> {
+        zone_manager
+            .add_txt_record(zone_name, record_name, &self.texts, ttl, server, key_data)
+            .await
+    }
+}
+
+/// MX record operation wrapper.
+#[derive(Clone)]
+struct MXRecordOp {
+    priority: i32,
+    mail_server: String,
+}
+
+impl RecordOperation for MXRecordOp {
+    fn record_type_name(&self) -> &'static str {
+        "MX"
+    }
+
+    async fn add_to_bind9(
+        &self,
+        zone_manager: &crate::bind9::Bind9Manager,
+        zone_name: &str,
+        record_name: &str,
+        ttl: Option<i32>,
+        server: &str,
+        key_data: &crate::bind9::RndcKeyData,
+    ) -> Result<()> {
+        zone_manager
+            .add_mx_record(
+                zone_name,
+                record_name,
+                self.priority,
+                &self.mail_server,
+                ttl,
+                server,
+                key_data,
+            )
+            .await
+    }
+}
+
+/// NS record operation wrapper.
+#[derive(Clone)]
+struct NSRecordOp {
+    nameserver: String,
+}
+
+impl RecordOperation for NSRecordOp {
+    fn record_type_name(&self) -> &'static str {
+        "NS"
+    }
+
+    async fn add_to_bind9(
+        &self,
+        zone_manager: &crate::bind9::Bind9Manager,
+        zone_name: &str,
+        record_name: &str,
+        ttl: Option<i32>,
+        server: &str,
+        key_data: &crate::bind9::RndcKeyData,
+    ) -> Result<()> {
+        zone_manager
+            .add_ns_record(
+                zone_name,
+                record_name,
+                &self.nameserver,
+                ttl,
+                server,
+                key_data,
+            )
+            .await
+    }
+}
+
+/// SRV record operation wrapper.
+#[derive(Clone)]
+struct SRVRecordOp {
+    priority: i32,
+    weight: i32,
+    port: i32,
+    target: String,
+}
+
+impl RecordOperation for SRVRecordOp {
+    fn record_type_name(&self) -> &'static str {
+        "SRV"
+    }
+
+    async fn add_to_bind9(
+        &self,
+        zone_manager: &crate::bind9::Bind9Manager,
+        zone_name: &str,
+        record_name: &str,
+        ttl: Option<i32>,
+        server: &str,
+        key_data: &crate::bind9::RndcKeyData,
+    ) -> Result<()> {
+        let srv_data = crate::bind9::SRVRecordData {
+            priority: self.priority,
+            weight: self.weight,
+            port: self.port,
+            target: self.target.clone(),
+            ttl,
+        };
+        zone_manager
+            .add_srv_record(zone_name, record_name, &srv_data, server, key_data)
+            .await
+    }
+}
+
+/// CAA record operation wrapper.
+#[derive(Clone)]
+struct CAARecordOp {
+    flags: i32,
+    tag: String,
+    value: String,
+}
+
+impl RecordOperation for CAARecordOp {
+    fn record_type_name(&self) -> &'static str {
+        "CAA"
+    }
+
+    async fn add_to_bind9(
+        &self,
+        zone_manager: &crate::bind9::Bind9Manager,
+        zone_name: &str,
+        record_name: &str,
+        ttl: Option<i32>,
+        server: &str,
+        key_data: &crate::bind9::RndcKeyData,
+    ) -> Result<()> {
+        zone_manager
+            .add_caa_record(
+                zone_name,
+                record_name,
+                self.flags,
+                &self.tag,
+                &self.value,
+                ttl,
+                server,
+                key_data,
+            )
+            .await
+    }
+}
+
 ///
 /// # Errors
 ///
@@ -312,15 +699,18 @@ pub async fn reconcile_a_record(
         return Ok(()); // Record not selected or status already updated
     };
 
-    // Add record to BIND9 primaries using instances
-    match add_a_record_to_instances(
+    // Add record to BIND9 primaries using generic helper
+    let record_op = ARecordOp {
+        ipv4_address: spec.ipv4_address.clone(),
+    };
+    match add_record_to_instances_generic(
         &client,
         &ctx.stores,
         &rec_ctx.primary_refs,
         &rec_ctx.zone_ref.zone_name,
         &spec.name,
-        &spec.ipv4_address,
         spec.ttl,
+        record_op,
     )
     .await
     {
@@ -379,84 +769,6 @@ pub async fn reconcile_a_record(
     Ok(())
 }
 
-/// Add an A record to BIND9 primaries using instance references.
-///
-/// Uses dynamic DNS updates (nsupdate protocol via DNS TCP port 53) to add the record
-/// to all primary endpoints for the specified instances.
-///
-/// # Arguments
-///
-/// * `client` - Kubernetes API client
-/// * `instance_refs` - Primary instance references
-/// * `zone_name` - DNS zone name
-/// * `record_name` - Name portion of the DNS record
-/// * `ipv4_address` - IPv4 address for the record
-/// * `ttl` - Optional TTL value
-/// * `zone_manager` - BIND9 manager instance
-///
-/// # Errors
-///
-/// Returns an error if the BIND9 record creation fails.
-#[allow(clippy::too_many_arguments)]
-async fn add_a_record_to_instances(
-    client: &Client,
-    stores: &crate::context::Stores,
-    instance_refs: &[crate::crd::InstanceReference],
-    zone_name: &str,
-    record_name: &str,
-    ipv4_address: &str,
-    ttl: Option<i32>,
-) -> Result<()> {
-    use crate::reconcilers::dnszone::for_each_instance_endpoint;
-
-    // Create a map of instance name -> namespace for quick lookup
-    let instance_map: std::collections::HashMap<String, String> = instance_refs
-        .iter()
-        .map(|inst| (inst.name.clone(), inst.namespace.clone()))
-        .collect();
-
-    let (_first, _total) = for_each_instance_endpoint(
-        client,
-        instance_refs,
-        true,      // with_rndc_key
-        "dns-tcp", // Use DNS TCP port for dynamic updates
-        |pod_endpoint, instance_name, rndc_key| {
-            let zone_name = zone_name.to_string();
-            let record_name = record_name.to_string();
-            let ipv4_address = ipv4_address.to_string();
-
-            // Get namespace for this instance
-            let instance_namespace = instance_map.get(&instance_name).expect("Instance should be in map").clone();
-
-            // Create Bind9Manager for this specific instance with deployment-aware auth
-            let zone_manager = stores.create_bind9_manager_for_instance(&instance_name, &instance_namespace);
-
-            async move {
-                let key_data = rndc_key.expect("RNDC key should be loaded");
-
-                zone_manager
-                    .add_a_record(
-                        &zone_name,
-                        &record_name,
-                        &ipv4_address,
-                        ttl,
-                        &pod_endpoint,
-                        &key_data,
-                    )
-                    .await
-                    .context(format!(
-                        "Failed to add A record {record_name}.{zone_name} to primary {pod_endpoint} (instance: {instance_name})"
-                    ))?;
-
-                Ok(())
-            }
-        },
-    )
-    .await?;
-
-    Ok(())
-}
-
 /// Reconciles a `TXTRecord` (text) resource.
 ///
 /// Finds `DNSZones` that have selected this record via label selectors and creates/updates
@@ -487,15 +799,18 @@ pub async fn reconcile_txt_record(
         return Ok(()); // Record not selected or status already updated
     };
 
-    // Add record to BIND9 primaries using instances
-    match add_txt_record_to_instances(
+    // Add record to BIND9 primaries using generic helper
+    let record_op = TXTRecordOp {
+        texts: spec.text.clone(),
+    };
+    match add_record_to_instances_generic(
         &client,
         &ctx.stores,
         &rec_ctx.primary_refs,
         &rec_ctx.zone_ref.zone_name,
         &spec.name,
-        &spec.text,
         spec.ttl,
+        record_op,
     )
     .await
     {
@@ -554,68 +869,6 @@ pub async fn reconcile_txt_record(
     Ok(())
 }
 
-/// Add a TXT record to BIND9 primaries using instance references.
-#[allow(clippy::too_many_arguments)]
-async fn add_txt_record_to_instances(
-    client: &Client,
-    stores: &crate::context::Stores,
-    instance_refs: &[crate::crd::InstanceReference],
-    zone_name: &str,
-    record_name: &str,
-    text: &[String],
-    ttl: Option<i32>,
-) -> Result<()> {
-    use crate::reconcilers::dnszone::for_each_instance_endpoint;
-
-    // Create a map of instance name -> namespace for quick lookup
-    let instance_map: std::collections::HashMap<String, String> = instance_refs
-        .iter()
-        .map(|inst| (inst.name.clone(), inst.namespace.clone()))
-        .collect();
-
-    let (_first, _total) = for_each_instance_endpoint(
-        client,
-        instance_refs,
-        true,      // with_rndc_key
-        "dns-tcp", // Use DNS TCP port for dynamic updates
-        |pod_endpoint, instance_name, rndc_key| {
-            let zone_name = zone_name.to_string();
-            let record_name = record_name.to_string();
-            let text = text.to_vec();
-            let instance_namespace = instance_map
-                .get(&instance_name)
-                .expect("Instance should be in map")
-                .clone();
-
-            // Create Bind9Manager for this specific instance with deployment-aware auth
-            let zone_manager = stores.create_bind9_manager_for_instance(&instance_name, &instance_namespace);
-
-            async move {
-                let key_data = rndc_key.expect("RNDC key should be loaded");
-
-                zone_manager
-                    .add_txt_record(
-                        &zone_name,
-                        &record_name,
-                        &text,
-                        ttl,
-                        &pod_endpoint,
-                        &key_data,
-                    )
-                    .await
-                    .context(format!(
-                        "Failed to add TXT record {record_name}.{zone_name} to primary {pod_endpoint} (instance: {instance_name})"
-                    ))?;
-
-                Ok(())
-            }
-        },
-    )
-    .await?;
-
-    Ok(())
-}
-
 /// Reconciles an `AAAARecord` (IPv6 address) resource.
 ///
 /// Finds `DNSZones` that have selected this record via label selectors and creates/updates
@@ -646,15 +899,18 @@ pub async fn reconcile_aaaa_record(
         return Ok(()); // Record not selected or status already updated
     };
 
-    // Add record to BIND9 primaries using instances
-    match add_aaaa_record_to_instances(
+    // Add record to BIND9 primaries using generic helper
+    let record_op = AAAARecordOp {
+        ipv6_address: spec.ipv6_address.clone(),
+    };
+    match add_record_to_instances_generic(
         &client,
         &ctx.stores,
         &rec_ctx.primary_refs,
         &rec_ctx.zone_ref.zone_name,
         &spec.name,
-        &spec.ipv6_address,
         spec.ttl,
+        record_op,
     )
     .await
     {
@@ -713,68 +969,6 @@ pub async fn reconcile_aaaa_record(
     Ok(())
 }
 
-/// Add an AAAA record to BIND9 primaries using instance references.
-#[allow(clippy::too_many_arguments)]
-async fn add_aaaa_record_to_instances(
-    client: &Client,
-    stores: &crate::context::Stores,
-    instance_refs: &[crate::crd::InstanceReference],
-    zone_name: &str,
-    record_name: &str,
-    ipv6_address: &str,
-    ttl: Option<i32>,
-) -> Result<()> {
-    use crate::reconcilers::dnszone::for_each_instance_endpoint;
-
-    // Create a map of instance name -> namespace for quick lookup
-    let instance_map: std::collections::HashMap<String, String> = instance_refs
-        .iter()
-        .map(|inst| (inst.name.clone(), inst.namespace.clone()))
-        .collect();
-
-    let (_first, _total) = for_each_instance_endpoint(
-        client,
-        instance_refs,
-        true,      // with_rndc_key
-        "dns-tcp", // Use DNS TCP port for dynamic updates
-        |pod_endpoint, instance_name, rndc_key| {
-            let zone_name = zone_name.to_string();
-            let record_name = record_name.to_string();
-            let ipv6_address = ipv6_address.to_string();
-            let instance_namespace = instance_map
-                .get(&instance_name)
-                .expect("Instance should be in map")
-                .clone();
-
-            // Create Bind9Manager for this specific instance with deployment-aware auth
-            let zone_manager = stores.create_bind9_manager_for_instance(&instance_name, &instance_namespace);
-
-            async move {
-                let key_data = rndc_key.expect("RNDC key should be loaded");
-
-                zone_manager
-                    .add_aaaa_record(
-                        &zone_name,
-                        &record_name,
-                        &ipv6_address,
-                        ttl,
-                        &pod_endpoint,
-                        &key_data,
-                    )
-                    .await
-                    .context(format!(
-                        "Failed to add AAAA record {record_name}.{zone_name} to primary {pod_endpoint} (instance: {instance_name})"
-                    ))?;
-
-                Ok(())
-            }
-        },
-    )
-    .await?;
-
-    Ok(())
-}
-
 /// Reconciles a `CNAMERecord` (canonical name alias) resource.
 ///
 /// Finds `DNSZones` that have selected this record via label selectors and creates/updates
@@ -807,14 +1001,17 @@ pub async fn reconcile_cname_record(
     };
 
     // Add record to BIND9 primaries using instances
-    match add_cname_record_to_instances(
+    let record_op = CNAMERecordOp {
+        target: spec.target.clone(),
+    };
+    match add_record_to_instances_generic(
         &client,
         &ctx.stores,
         &rec_ctx.primary_refs,
         &rec_ctx.zone_ref.zone_name,
         &spec.name,
-        &spec.target,
         spec.ttl,
+        record_op,
     )
     .await
     {
@@ -873,68 +1070,6 @@ pub async fn reconcile_cname_record(
     Ok(())
 }
 
-/// Add a CNAME record to a specific zone in BIND9 primaries.
-#[allow(clippy::too_many_arguments)]
-async fn add_cname_record_to_instances(
-    client: &Client,
-    stores: &crate::context::Stores,
-    instance_refs: &[crate::crd::InstanceReference],
-    zone_name: &str,
-    record_name: &str,
-    target: &str,
-    ttl: Option<i32>,
-) -> Result<()> {
-    use crate::reconcilers::dnszone::for_each_instance_endpoint;
-
-    // Create a map of instance name -> namespace for quick lookup
-    let instance_map: std::collections::HashMap<String, String> = instance_refs
-        .iter()
-        .map(|inst| (inst.name.clone(), inst.namespace.clone()))
-        .collect();
-
-    let (_first, _total) = for_each_instance_endpoint(
-        client,
-        instance_refs,
-        true,      // with_rndc_key
-        "dns-tcp", // Use DNS TCP port for dynamic updates,
-        |pod_endpoint, instance_name, rndc_key| {
-            let zone_name = zone_name.to_string();
-            let record_name = record_name.to_string();
-            let target = target.to_string();
-            let instance_namespace = instance_map
-                .get(&instance_name)
-                .expect("Instance should be in map")
-                .clone();
-
-            // Create Bind9Manager for this specific instance with deployment-aware auth
-            let zone_manager = stores.create_bind9_manager_for_instance(&instance_name, &instance_namespace);
-
-            async move {
-                let key_data = rndc_key.expect("RNDC key should be loaded");
-
-                zone_manager
-                    .add_cname_record(
-                        &zone_name,
-                        &record_name,
-                        &target,
-                        ttl,
-                        &pod_endpoint,
-                        &key_data,
-                    )
-                    .await
-                    .context(format!(
-                        "Failed to add CNAME record {record_name}.{zone_name} to primary {pod_endpoint} (instance: {instance_name})"
-                    ))?;
-
-                Ok(())
-            }
-        },
-    )
-    .await?;
-
-    Ok(())
-}
-
 /// Reconciles an `MXRecord` (mail exchange) resource.
 ///
 /// Finds `DNSZones` that have selected this record via label selectors and creates/updates
@@ -967,15 +1102,18 @@ pub async fn reconcile_mx_record(
     };
 
     // Add record to BIND9 primaries using instances
-    match add_mx_record_to_instances(
+    let record_op = MXRecordOp {
+        priority: spec.priority,
+        mail_server: spec.mail_server.clone(),
+    };
+    match add_record_to_instances_generic(
         &client,
         &ctx.stores,
         &rec_ctx.primary_refs,
         &rec_ctx.zone_ref.zone_name,
         &spec.name,
-        spec.priority,
-        &spec.mail_server,
         spec.ttl,
+        record_op,
     )
     .await
     {
@@ -1034,70 +1172,6 @@ pub async fn reconcile_mx_record(
     Ok(())
 }
 
-/// Add an MX record to a specific zone in BIND9 primaries.
-#[allow(clippy::too_many_arguments)]
-async fn add_mx_record_to_instances(
-    client: &Client,
-    stores: &crate::context::Stores,
-    instance_refs: &[crate::crd::InstanceReference],
-    zone_name: &str,
-    record_name: &str,
-    priority: i32,
-    mail_server: &str,
-    ttl: Option<i32>,
-) -> Result<()> {
-    use crate::reconcilers::dnszone::for_each_instance_endpoint;
-
-    // Create a map of instance name -> namespace for quick lookup
-    let instance_map: std::collections::HashMap<String, String> = instance_refs
-        .iter()
-        .map(|inst| (inst.name.clone(), inst.namespace.clone()))
-        .collect();
-
-    let (_first, _total) = for_each_instance_endpoint(
-        client,
-        instance_refs,
-        true,      // with_rndc_key
-        "dns-tcp", // Use DNS TCP port for dynamic updates,
-        |pod_endpoint, instance_name, rndc_key| {
-            let zone_name = zone_name.to_string();
-            let record_name = record_name.to_string();
-            let mail_server = mail_server.to_string();
-            let instance_namespace = instance_map
-                .get(&instance_name)
-                .expect("Instance should be in map")
-                .clone();
-
-            // Create Bind9Manager for this specific instance with deployment-aware auth
-            let zone_manager = stores.create_bind9_manager_for_instance(&instance_name, &instance_namespace);
-
-            async move {
-                let key_data = rndc_key.expect("RNDC key should be loaded");
-
-                zone_manager
-                    .add_mx_record(
-                        &zone_name,
-                        &record_name,
-                        priority,
-                        &mail_server,
-                        ttl,
-                        &pod_endpoint,
-                        &key_data,
-                    )
-                    .await
-                    .context(format!(
-                        "Failed to add MX record {record_name}.{zone_name} to primary {pod_endpoint} (instance: {instance_name})"
-                    ))?;
-
-                Ok(())
-            }
-        },
-    )
-    .await?;
-
-    Ok(())
-}
-
 /// Reconciles an `NSRecord` (nameserver delegation) resource.
 ///
 /// Finds `DNSZones` that have selected this record via label selectors and creates/updates
@@ -1130,14 +1204,17 @@ pub async fn reconcile_ns_record(
     };
 
     // Add record to BIND9 primaries using instances
-    match add_ns_record_to_instances(
+    let record_op = NSRecordOp {
+        nameserver: spec.nameserver.clone(),
+    };
+    match add_record_to_instances_generic(
         &client,
         &ctx.stores,
         &rec_ctx.primary_refs,
         &rec_ctx.zone_ref.zone_name,
         &spec.name,
-        &spec.nameserver,
         spec.ttl,
+        record_op,
     )
     .await
     {
@@ -1196,68 +1273,6 @@ pub async fn reconcile_ns_record(
     Ok(())
 }
 
-/// Add an NS record to a specific zone in BIND9 primaries.
-#[allow(clippy::too_many_arguments)]
-async fn add_ns_record_to_instances(
-    client: &Client,
-    stores: &crate::context::Stores,
-    instance_refs: &[crate::crd::InstanceReference],
-    zone_name: &str,
-    record_name: &str,
-    nameserver: &str,
-    ttl: Option<i32>,
-) -> Result<()> {
-    use crate::reconcilers::dnszone::for_each_instance_endpoint;
-
-    // Create a map of instance name -> namespace for quick lookup
-    let instance_map: std::collections::HashMap<String, String> = instance_refs
-        .iter()
-        .map(|inst| (inst.name.clone(), inst.namespace.clone()))
-        .collect();
-
-    let (_first, _total) = for_each_instance_endpoint(
-        client,
-        instance_refs,
-        true,      // with_rndc_key
-        "dns-tcp", // Use DNS TCP port for dynamic updates,
-        |pod_endpoint, instance_name, rndc_key| {
-            let zone_name = zone_name.to_string();
-            let record_name = record_name.to_string();
-            let nameserver = nameserver.to_string();
-            let instance_namespace = instance_map
-                .get(&instance_name)
-                .expect("Instance should be in map")
-                .clone();
-
-            // Create Bind9Manager for this specific instance with deployment-aware auth
-            let zone_manager = stores.create_bind9_manager_for_instance(&instance_name, &instance_namespace);
-
-            async move {
-                let key_data = rndc_key.expect("RNDC key should be loaded");
-
-                zone_manager
-                    .add_ns_record(
-                        &zone_name,
-                        &record_name,
-                        &nameserver,
-                        ttl,
-                        &pod_endpoint,
-                        &key_data,
-                    )
-                    .await
-                    .context(format!(
-                        "Failed to add NS record {record_name}.{zone_name} to primary {pod_endpoint} (instance: {instance_name})"
-                    ))?;
-
-                Ok(())
-            }
-        },
-    )
-    .await?;
-
-    Ok(())
-}
-
 /// Reconciles an `SRVRecord` (service location) resource.
 ///
 /// Finds `DNSZones` that have selected this record via label selectors and creates/updates
@@ -1290,17 +1305,20 @@ pub async fn reconcile_srv_record(
     };
 
     // Add record to BIND9 primaries using instances
-    match add_srv_record_to_instances(
+    let record_op = SRVRecordOp {
+        priority: spec.priority,
+        weight: spec.weight,
+        port: spec.port,
+        target: spec.target.clone(),
+    };
+    match add_record_to_instances_generic(
         &client,
         &ctx.stores,
         &rec_ctx.primary_refs,
         &rec_ctx.zone_ref.zone_name,
         &spec.name,
-        spec.priority,
-        spec.weight,
-        spec.port,
-        &spec.target,
         spec.ttl,
+        record_op,
     )
     .await
     {
@@ -1359,77 +1377,6 @@ pub async fn reconcile_srv_record(
     Ok(())
 }
 
-/// Add an SRV record to a specific zone in BIND9 primaries.
-#[allow(clippy::too_many_arguments)]
-async fn add_srv_record_to_instances(
-    client: &Client,
-    stores: &crate::context::Stores,
-    instance_refs: &[crate::crd::InstanceReference],
-    zone_name: &str,
-    record_name: &str,
-    priority: i32,
-    weight: i32,
-    port: i32,
-    target: &str,
-    ttl: Option<i32>,
-) -> Result<()> {
-    use crate::bind9::types::SRVRecordData;
-    use crate::reconcilers::dnszone::for_each_instance_endpoint;
-
-    // Create a map of instance name -> namespace for quick lookup
-    let instance_map: std::collections::HashMap<String, String> = instance_refs
-        .iter()
-        .map(|inst| (inst.name.clone(), inst.namespace.clone()))
-        .collect();
-
-    let (_first, _total) = for_each_instance_endpoint(
-        client,
-        instance_refs,
-        true,      // with_rndc_key
-        "dns-tcp", // Use DNS TCP port for dynamic updates,
-        |pod_endpoint, instance_name, rndc_key| {
-            let zone_name = zone_name.to_string();
-            let record_name = record_name.to_string();
-            let srv_data = SRVRecordData {
-                priority,
-                weight,
-                port,
-                target: target.to_string(),
-                ttl,
-            };
-            let instance_namespace = instance_map
-                .get(&instance_name)
-                .expect("Instance should be in map")
-                .clone();
-
-            // Create Bind9Manager for this specific instance with deployment-aware auth
-            let zone_manager = stores.create_bind9_manager_for_instance(&instance_name, &instance_namespace);
-
-            async move {
-                let key_data = rndc_key.expect("RNDC key should be loaded");
-
-                zone_manager
-                    .add_srv_record(
-                        &zone_name,
-                        &record_name,
-                        &srv_data,
-                        &pod_endpoint,
-                        &key_data,
-                    )
-                    .await
-                    .context(format!(
-                        "Failed to add SRV record {record_name}.{zone_name} to primary {pod_endpoint} (instance: {instance_name})"
-                    ))?;
-
-                Ok(())
-            }
-        },
-    )
-    .await?;
-
-    Ok(())
-}
-
 /// Reconciles a `CAARecord` (certificate authority authorization) resource.
 ///
 /// Finds `DNSZones` that have selected this record via label selectors and creates/updates
@@ -1462,16 +1409,19 @@ pub async fn reconcile_caa_record(
     };
 
     // Add record to BIND9 primaries using instances
-    match add_caa_record_to_instances(
+    let record_op = CAARecordOp {
+        flags: spec.flags,
+        tag: spec.tag.clone(),
+        value: spec.value.clone(),
+    };
+    match add_record_to_instances_generic(
         &client,
         &ctx.stores,
         &rec_ctx.primary_refs,
         &rec_ctx.zone_ref.zone_name,
         &spec.name,
-        spec.flags,
-        &spec.tag,
-        &spec.value,
         spec.ttl,
+        record_op,
     )
     .await
     {
@@ -1526,73 +1476,6 @@ pub async fn reconcile_caa_record(
             .await?;
         }
     }
-
-    Ok(())
-}
-
-/// Add a CAA record to a specific zone in BIND9 primaries.
-#[allow(clippy::too_many_arguments)]
-async fn add_caa_record_to_instances(
-    client: &Client,
-    stores: &crate::context::Stores,
-    instance_refs: &[crate::crd::InstanceReference],
-    zone_name: &str,
-    record_name: &str,
-    flags: i32,
-    tag: &str,
-    value: &str,
-    ttl: Option<i32>,
-) -> Result<()> {
-    use crate::reconcilers::dnszone::for_each_instance_endpoint;
-
-    // Create a map of instance name -> namespace for quick lookup
-    let instance_map: std::collections::HashMap<String, String> = instance_refs
-        .iter()
-        .map(|inst| (inst.name.clone(), inst.namespace.clone()))
-        .collect();
-
-    let (_first, _total) = for_each_instance_endpoint(
-        client,
-        instance_refs,
-        true,      // with_rndc_key
-        "dns-tcp", // Use DNS TCP port for dynamic updates,
-        |pod_endpoint, instance_name, rndc_key| {
-            let zone_name = zone_name.to_string();
-            let record_name = record_name.to_string();
-            let tag = tag.to_string();
-            let value = value.to_string();
-            let instance_namespace = instance_map
-                .get(&instance_name)
-                .expect("Instance should be in map")
-                .clone();
-
-            // Create Bind9Manager for this specific instance with deployment-aware auth
-            let zone_manager = stores.create_bind9_manager_for_instance(&instance_name, &instance_namespace);
-
-            async move {
-                let key_data = rndc_key.expect("RNDC key should be loaded");
-
-                zone_manager
-                    .add_caa_record(
-                        &zone_name,
-                        &record_name,
-                        flags,
-                        &tag,
-                        &value,
-                        ttl,
-                        &pod_endpoint,
-                        &key_data,
-                    )
-                    .await
-                    .context(format!(
-                        "Failed to add CAA record {record_name}.{zone_name} to primary {pod_endpoint} (instance: {instance_name})"
-                    ))?;
-
-                Ok(())
-            }
-        },
-    )
-    .await?;
 
     Ok(())
 }
@@ -1914,7 +1797,7 @@ where
     };
 
     // Get instances from DNSZone
-    let instance_refs = match crate::reconcilers::dnszone::get_instances_from_zone(
+    let instance_refs = match crate::reconcilers::dnszone::validation::get_instances_from_zone(
         &dnszone,
         &stores.bind9_instances,
     ) {
@@ -1929,7 +1812,7 @@ where
     };
 
     // Filter to primary instances
-    let primary_refs = match crate::reconcilers::dnszone::filter_primary_instances(
+    let primary_refs = match crate::reconcilers::dnszone::primary::filter_primary_instances(
         client,
         &instance_refs,
     )
@@ -1961,7 +1844,7 @@ where
         .collect();
 
     let (_first_endpoint, total_endpoints) =
-        crate::reconcilers::dnszone::for_each_instance_endpoint(
+        crate::reconcilers::dnszone::helpers::for_each_instance_endpoint(
             client,
             &primary_refs,
             true,      // with_rndc_key

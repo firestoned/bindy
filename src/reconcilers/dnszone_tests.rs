@@ -12,7 +12,7 @@ mod tests {
     // T5: Zone-to-Instance Selection (New Architecture)
     // ========================================================================
 
-    use super::super::dnszone::get_instances_from_zone;
+    use super::super::dnszone::validation::get_instances_from_zone;
 
     /// Helper to create a `Bind9Instance` with specific labels
     fn create_test_instance(
@@ -318,7 +318,7 @@ mod tests {
     // T6: Duplicate Zone Detection
     // ========================================================================
 
-    use super::super::dnszone::check_for_duplicate_zones;
+    use super::super::dnszone::validation::check_for_duplicate_zones;
 
     /// Helper to create a zone with a specific zone name and status
     fn create_zone_with_status(

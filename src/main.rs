@@ -17,11 +17,10 @@ use bindy::{
     },
     metrics,
     reconcilers::{
-        delete_dnszone, reconcile_a_record, reconcile_aaaa_record, reconcile_bind9cluster,
-        reconcile_bind9instance, reconcile_caa_record, reconcile_clusterbind9provider,
-        reconcile_cname_record, reconcile_dnszone, reconcile_mx_record, reconcile_ns_record,
-        reconcile_srv_record, reconcile_txt_record,
+        delete_dnszone, reconcile_bind9cluster, reconcile_bind9instance,
+        reconcile_clusterbind9provider, reconcile_dnszone,
     },
+    record_controller::run_generic_record_controller,
 };
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::Deployment;
@@ -629,42 +628,42 @@ async fn run_all_controllers(
             result?;
             anyhow::bail!("DNSZone controller exited unexpectedly without error")
         }
-        result = run_arecord_controller(context.clone(), bind9_manager.clone()) => {
+        result = run_generic_record_controller::<ARecord>(context.clone(), bind9_manager.clone()) => {
             error!("CRITICAL: ARecord controller exited unexpectedly: {:?}", result);
             result?;
             anyhow::bail!("ARecord controller exited unexpectedly without error")
         }
-        result = run_aaaarecord_controller(context.clone(), bind9_manager.clone()) => {
+        result = run_generic_record_controller::<AAAARecord>(context.clone(), bind9_manager.clone()) => {
             error!("CRITICAL: AAAARecord controller exited unexpectedly: {:?}", result);
             result?;
             anyhow::bail!("AAAARecord controller exited unexpectedly without error")
         }
-        result = run_txtrecord_controller(context.clone(), bind9_manager.clone()) => {
+        result = run_generic_record_controller::<TXTRecord>(context.clone(), bind9_manager.clone()) => {
             error!("CRITICAL: TXTRecord controller exited unexpectedly: {:?}", result);
             result?;
             anyhow::bail!("TXTRecord controller exited unexpectedly without error")
         }
-        result = run_cnamerecord_controller(context.clone(), bind9_manager.clone()) => {
+        result = run_generic_record_controller::<CNAMERecord>(context.clone(), bind9_manager.clone()) => {
             error!("CRITICAL: CNAMERecord controller exited unexpectedly: {:?}", result);
             result?;
             anyhow::bail!("CNAMERecord controller exited unexpectedly without error")
         }
-        result = run_mxrecord_controller(context.clone(), bind9_manager.clone()) => {
+        result = run_generic_record_controller::<MXRecord>(context.clone(), bind9_manager.clone()) => {
             error!("CRITICAL: MXRecord controller exited unexpectedly: {:?}", result);
             result?;
             anyhow::bail!("MXRecord controller exited unexpectedly without error")
         }
-        result = run_nsrecord_controller(context.clone(), bind9_manager.clone()) => {
+        result = run_generic_record_controller::<NSRecord>(context.clone(), bind9_manager.clone()) => {
             error!("CRITICAL: NSRecord controller exited unexpectedly: {:?}", result);
             result?;
             anyhow::bail!("NSRecord controller exited unexpectedly without error")
         }
-        result = run_srvrecord_controller(context.clone(), bind9_manager.clone()) => {
+        result = run_generic_record_controller::<SRVRecord>(context.clone(), bind9_manager.clone()) => {
             error!("CRITICAL: SRVRecord controller exited unexpectedly: {:?}", result);
             result?;
             anyhow::bail!("SRVRecord controller exited unexpectedly without error")
         }
-        result = run_caarecord_controller(context.clone(), bind9_manager.clone()) => {
+        result = run_generic_record_controller::<CAARecord>(context.clone(), bind9_manager.clone()) => {
             error!("CRITICAL: CAARecord controller exited unexpectedly: {:?}", result);
             result?;
             anyhow::bail!("CAARecord controller exited unexpectedly without error")
@@ -1207,6 +1206,7 @@ async fn run_dnszone_controller(
 }
 
 /// Reconcile wrapper for `DNSZone`
+#[allow(clippy::too_many_lines)]
 async fn reconcile_dnszone_wrapper(
     dnszone: Arc<DNSZone>,
     ctx: Arc<(Arc<Context>, Arc<Bind9Manager>)>,
@@ -1222,23 +1222,58 @@ async fn reconcile_dnszone_wrapper(
     let namespace = dnszone.namespace().unwrap_or_default();
     let api: Api<DNSZone> = Api::namespaced(client.clone(), &namespace);
 
-    // Skip reconciliation if only status changed (not spec)
-    // This prevents tight loops when status updates trigger watch events
+    // Smart reconciliation skip logic:
+    // - Skip if generation is unchanged AND no new records might be pending
+    // - Always reconcile if records might have been created (triggered by record watches)
+    // This prevents tight loops from status updates while ensuring record discovery runs
     if let Some(status) = &dnszone.status {
         if let (Some(observed_gen), Some(current_gen)) =
             (status.observed_generation, dnszone.metadata.generation)
         {
             if observed_gen == current_gen {
-                debug!(
-                    "Skipping reconciliation for DNSZone {}/{} - status-only update (generation {} already reconciled)",
-                    namespace,
-                    dnszone.name_any(),
-                    current_gen
-                );
-                // Re-check after 5 minutes for health monitoring
-                return Ok(Action::requeue(Duration::from_secs(
-                    bindy::record_wrappers::REQUEUE_WHEN_READY_SECS,
-                )));
+                // Generation unchanged - check if there might be new records to discover
+                // Use the reflector store to quickly check if any records exist that match
+                // this zone's recordsFrom selectors but aren't in status.records[]
+                let has_pending_records = if let Some(records_from) = &dnszone.spec.records_from {
+                    // Check if any record with matching labels exists that's not in status
+                    let known_records: std::collections::HashSet<String> = status
+                        .records
+                        .iter()
+                        .map(|r| format!("{}/{}/{}", r.kind, r.namespace, r.name))
+                        .collect();
+
+                    // Quick check: if status.records is empty but recordsFrom is configured,
+                    // there might be records to discover
+                    if known_records.is_empty() && !records_from.is_empty() {
+                        true
+                    } else {
+                        // Could add more sophisticated checks here, but for now
+                        // we'll be conservative and assume no pending records if generation
+                        // hasn't changed and we have some records already
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if has_pending_records {
+                    debug!(
+                        "Reconciling DNSZone {}/{} despite unchanged generation - potential new records to discover",
+                        namespace,
+                        dnszone.name_any()
+                    );
+                } else {
+                    debug!(
+                        "Skipping reconciliation for DNSZone {}/{} - status-only update (generation {} already reconciled, no pending records)",
+                        namespace,
+                        dnszone.name_any(),
+                        current_gen
+                    );
+                    // Re-check after 5 minutes for health monitoring
+                    return Ok(Action::requeue(Duration::from_secs(
+                        bindy::record_wrappers::REQUEUE_WHEN_READY_SECS,
+                    )));
+                }
             }
         }
     }
@@ -1331,1068 +1366,11 @@ async fn reconcile_dnszone_wrapper(
     })
 }
 
-// ============================================================================
-// Record Reconciliation Wrappers (With Finalizer Support)
-// ============================================================================
-
-/// Run the `ARecord` controller
-async fn run_arecord_controller(
-    context: Arc<Context>,
-    bind9_manager: Arc<Bind9Manager>,
-) -> Result<()> {
-    info!("Starting ARecord controller");
-    debug!("Initializing ARecord controller with cluster-wide watch");
-
-    let client = context.client.clone();
-    let api = Api::<ARecord>::all(client.clone());
-    let dnszone_api = Api::<DNSZone>::all(client.clone());
-    debug!("ARecord API client created");
-
-    // Configure controller to watch for ALL changes including status updates
-    // This allows reacting to status.zoneRef changes set by DNSZone controller
-    let watcher_config = default_watcher_config();
-
-    Controller::new(api, watcher_config)
-        .watches(dnszone_api, default_watcher_config(), |zone| {
-            // When DNSZone.status.selectedRecords[] changes, trigger reconciliation
-            // for ARecords that have lastReconciledAt == None (need configuration).
-            //
-            // Event-Driven Pattern (same as Phase 2 zones → instances):
-            // - DNSZone owns the relationship in status.selectedRecords[]
-            // - lastReconciledAt == None signals "record needs configuration"
-            // - Record reconciles and updates lastReconciledAt after successful BIND9 update
-            let Some(namespace) = zone.namespace() else {
-                return vec![];
-            };
-
-            // Get records from zone.status.selectedRecords[] that need reconciliation
-            let empty_vec = Vec::new();
-            let records = zone.status.as_ref().map_or(&empty_vec, |s| &s.records);
-
-            records
-                .iter()
-                .filter(|record_ref| {
-                    // Only reconcile ARecords with lastReconciledAt == None
-                    record_ref.kind == "ARecord"
-                        && record_ref.last_reconciled_at.is_none()
-                        && record_ref.namespace == namespace
-                })
-                .map(|record_ref| {
-                    kube::runtime::reflector::ObjectRef::new(&record_ref.name)
-                        .within(&record_ref.namespace)
-                })
-                .collect::<Vec<_>>()
-        })
-        .run(
-            reconcile_arecord_wrapper,
-            error_policy,
-            Arc::new((context.clone(), bind9_manager)),
-        )
-        .for_each(|_| futures::future::ready(()))
-        .await;
-
-    Ok(())
-}
-
-/// Run the `TXTRecord` controller
-async fn run_txtrecord_controller(
-    context: Arc<Context>,
-    bind9_manager: Arc<Bind9Manager>,
-) -> Result<()> {
-    info!("Starting TXTRecord controller");
-
-    let client = context.client.clone();
-    let api = Api::<TXTRecord>::all(client.clone());
-    let dnszone_api = Api::<DNSZone>::all(client.clone());
-
-    // Configure controller to watch for ALL changes including status updates
-    // This allows reacting to status.zoneRef changes set by DNSZone controller
-    let watcher_config = default_watcher_config();
-
-    Controller::new(api, watcher_config)
-        .watches(dnszone_api, default_watcher_config(), |zone| {
-            let Some(namespace) = zone.namespace() else {
-                return vec![];
-            };
-
-            let empty_vec = Vec::new();
-            let records = zone.status.as_ref().map_or(&empty_vec, |s| &s.records);
-
-            records
-                .iter()
-                .filter(|record_ref| {
-                    record_ref.kind == "TXTRecord"
-                        && record_ref.last_reconciled_at.is_none()
-                        && record_ref.namespace == namespace
-                })
-                .map(|record_ref| {
-                    kube::runtime::reflector::ObjectRef::new(&record_ref.name)
-                        .within(&record_ref.namespace)
-                })
-                .collect::<Vec<_>>()
-        })
-        .run(
-            reconcile_txtrecord_wrapper,
-            error_policy,
-            Arc::new((context.clone(), bind9_manager)),
-        )
-        .for_each(|_| futures::future::ready(()))
-        .await;
-
-    Ok(())
-}
-
-/// Run the `AAAARecord` controller
-async fn run_aaaarecord_controller(
-    context: Arc<Context>,
-    bind9_manager: Arc<Bind9Manager>,
-) -> Result<()> {
-    info!("Starting AAAARecord controller");
-
-    let client = context.client.clone();
-    let api = Api::<AAAARecord>::all(client.clone());
-    let dnszone_api = Api::<DNSZone>::all(client.clone());
-
-    // Configure controller to watch for ALL changes including status updates
-    // This allows reacting to status.zoneRef changes set by DNSZone controller
-    let watcher_config = default_watcher_config();
-
-    Controller::new(api, watcher_config)
-        .watches(dnszone_api, default_watcher_config(), |zone| {
-            let Some(namespace) = zone.namespace() else {
-                return vec![];
-            };
-
-            let empty_vec = Vec::new();
-            let records = zone.status.as_ref().map_or(&empty_vec, |s| &s.records);
-
-            records
-                .iter()
-                .filter(|record_ref| {
-                    record_ref.kind == "AAAARecord"
-                        && record_ref.last_reconciled_at.is_none()
-                        && record_ref.namespace == namespace
-                })
-                .map(|record_ref| {
-                    kube::runtime::reflector::ObjectRef::new(&record_ref.name)
-                        .within(&record_ref.namespace)
-                })
-                .collect::<Vec<_>>()
-        })
-        .run(
-            reconcile_aaaarecord_wrapper,
-            error_policy,
-            Arc::new((context.clone(), bind9_manager)),
-        )
-        .for_each(|_| futures::future::ready(()))
-        .await;
-
-    Ok(())
-}
-
-/// Run the `CNAMERecord` controller
-async fn run_cnamerecord_controller(
-    context: Arc<Context>,
-    bind9_manager: Arc<Bind9Manager>,
-) -> Result<()> {
-    info!("Starting CNAMERecord controller");
-
-    let client = context.client.clone();
-    let api = Api::<CNAMERecord>::all(client.clone());
-    let dnszone_api = Api::<DNSZone>::all(client.clone());
-
-    // Configure controller to watch for ALL changes including status updates
-    // This allows reacting to status.zoneRef changes set by DNSZone controller
-    let watcher_config = default_watcher_config();
-
-    Controller::new(api, watcher_config)
-        .watches(dnszone_api, default_watcher_config(), |zone| {
-            let Some(namespace) = zone.namespace() else {
-                return vec![];
-            };
-
-            let empty_vec = Vec::new();
-            let records = zone.status.as_ref().map_or(&empty_vec, |s| &s.records);
-
-            records
-                .iter()
-                .filter(|record_ref| {
-                    record_ref.kind == "CNAMERecord"
-                        && record_ref.last_reconciled_at.is_none()
-                        && record_ref.namespace == namespace
-                })
-                .map(|record_ref| {
-                    kube::runtime::reflector::ObjectRef::new(&record_ref.name)
-                        .within(&record_ref.namespace)
-                })
-                .collect::<Vec<_>>()
-        })
-        .run(
-            reconcile_cnamerecord_wrapper,
-            error_policy,
-            Arc::new((context.clone(), bind9_manager)),
-        )
-        .for_each(|_| futures::future::ready(()))
-        .await;
-
-    Ok(())
-}
-
-/// Run the `MXRecord` controller
-async fn run_mxrecord_controller(
-    context: Arc<Context>,
-    bind9_manager: Arc<Bind9Manager>,
-) -> Result<()> {
-    info!("Starting MXRecord controller");
-
-    let client = context.client.clone();
-    let api = Api::<MXRecord>::all(client.clone());
-    let dnszone_api = Api::<DNSZone>::all(client.clone());
-
-    // Configure controller to watch for ALL changes including status updates
-    // This allows reacting to status.zoneRef changes set by DNSZone controller
-    let watcher_config = default_watcher_config();
-
-    Controller::new(api, watcher_config)
-        .watches(dnszone_api, default_watcher_config(), |zone| {
-            let Some(namespace) = zone.namespace() else {
-                return vec![];
-            };
-
-            let empty_vec = Vec::new();
-            let records = zone.status.as_ref().map_or(&empty_vec, |s| &s.records);
-
-            records
-                .iter()
-                .filter(|record_ref| {
-                    record_ref.kind == "MXRecord"
-                        && record_ref.last_reconciled_at.is_none()
-                        && record_ref.namespace == namespace
-                })
-                .map(|record_ref| {
-                    kube::runtime::reflector::ObjectRef::new(&record_ref.name)
-                        .within(&record_ref.namespace)
-                })
-                .collect::<Vec<_>>()
-        })
-        .run(
-            reconcile_mxrecord_wrapper,
-            error_policy,
-            Arc::new((context.clone(), bind9_manager)),
-        )
-        .for_each(|_| futures::future::ready(()))
-        .await;
-
-    Ok(())
-}
-
-/// Run the `NSRecord` controller
-async fn run_nsrecord_controller(
-    context: Arc<Context>,
-    bind9_manager: Arc<Bind9Manager>,
-) -> Result<()> {
-    info!("Starting NSRecord controller");
-
-    let client = context.client.clone();
-    let api = Api::<NSRecord>::all(client.clone());
-    let dnszone_api = Api::<DNSZone>::all(client.clone());
-
-    // Configure controller to watch for ALL changes including status updates
-    // This allows reacting to status.zoneRef changes set by DNSZone controller
-    let watcher_config = default_watcher_config();
-
-    Controller::new(api, watcher_config)
-        .watches(dnszone_api, default_watcher_config(), |zone| {
-            let Some(namespace) = zone.namespace() else {
-                return vec![];
-            };
-
-            let empty_vec = Vec::new();
-            let records = zone.status.as_ref().map_or(&empty_vec, |s| &s.records);
-
-            records
-                .iter()
-                .filter(|record_ref| {
-                    record_ref.kind == "NSRecord"
-                        && record_ref.last_reconciled_at.is_none()
-                        && record_ref.namespace == namespace
-                })
-                .map(|record_ref| {
-                    kube::runtime::reflector::ObjectRef::new(&record_ref.name)
-                        .within(&record_ref.namespace)
-                })
-                .collect::<Vec<_>>()
-        })
-        .run(
-            reconcile_nsrecord_wrapper,
-            error_policy,
-            Arc::new((context.clone(), bind9_manager)),
-        )
-        .for_each(|_| futures::future::ready(()))
-        .await;
-
-    Ok(())
-}
-
-/// Run the `SRVRecord` controller
-async fn run_srvrecord_controller(
-    context: Arc<Context>,
-    bind9_manager: Arc<Bind9Manager>,
-) -> Result<()> {
-    info!("Starting SRVRecord controller");
-
-    let client = context.client.clone();
-    let api = Api::<SRVRecord>::all(client.clone());
-    let dnszone_api = Api::<DNSZone>::all(client.clone());
-
-    // Configure controller to watch for ALL changes including status updates
-    // This allows reacting to status.zoneRef changes set by DNSZone controller
-    let watcher_config = default_watcher_config();
-
-    Controller::new(api, watcher_config)
-        .watches(dnszone_api, default_watcher_config(), |zone| {
-            let Some(namespace) = zone.namespace() else {
-                return vec![];
-            };
-
-            let empty_vec = Vec::new();
-            let records = zone.status.as_ref().map_or(&empty_vec, |s| &s.records);
-
-            records
-                .iter()
-                .filter(|record_ref| {
-                    record_ref.kind == "SRVRecord"
-                        && record_ref.last_reconciled_at.is_none()
-                        && record_ref.namespace == namespace
-                })
-                .map(|record_ref| {
-                    kube::runtime::reflector::ObjectRef::new(&record_ref.name)
-                        .within(&record_ref.namespace)
-                })
-                .collect::<Vec<_>>()
-        })
-        .run(
-            reconcile_srvrecord_wrapper,
-            error_policy,
-            Arc::new((context.clone(), bind9_manager)),
-        )
-        .for_each(|_| futures::future::ready(()))
-        .await;
-
-    Ok(())
-}
-
-/// Run the `CAARecord` controller
-async fn run_caarecord_controller(
-    context: Arc<Context>,
-    bind9_manager: Arc<Bind9Manager>,
-) -> Result<()> {
-    info!("Starting CAARecord controller");
-
-    let client = context.client.clone();
-    let api = Api::<CAARecord>::all(client.clone());
-    let dnszone_api = Api::<DNSZone>::all(client.clone());
-
-    // Configure controller to watch for ALL changes including status updates
-    // This allows reacting to status.zoneRef changes set by DNSZone controller
-    let watcher_config = default_watcher_config();
-
-    Controller::new(api, watcher_config)
-        .watches(dnszone_api, default_watcher_config(), |zone| {
-            let Some(namespace) = zone.namespace() else {
-                return vec![];
-            };
-
-            let empty_vec = Vec::new();
-            let records = zone.status.as_ref().map_or(&empty_vec, |s| &s.records);
-
-            records
-                .iter()
-                .filter(|record_ref| {
-                    record_ref.kind == "CAARecord"
-                        && record_ref.last_reconciled_at.is_none()
-                        && record_ref.namespace == namespace
-                })
-                .map(|record_ref| {
-                    kube::runtime::reflector::ObjectRef::new(&record_ref.name)
-                        .within(&record_ref.namespace)
-                })
-                .collect::<Vec<_>>()
-        })
-        .run(
-            reconcile_caarecord_wrapper,
-            error_policy,
-            Arc::new((context.clone(), bind9_manager)),
-        )
-        .for_each(|_| futures::future::ready(()))
-        .await;
-
-    Ok(())
-}
-
-/// Reconcile wrapper for `ARecord` with finalizer support
-async fn reconcile_arecord_wrapper(
-    record: Arc<ARecord>,
-    ctx: Arc<(Arc<Context>, Arc<Bind9Manager>)>,
-) -> Result<Action, ReconcileError> {
-    use bindy::constants::KIND_A_RECORD;
-    use bindy::labels::FINALIZER_A_RECORD;
-    use hickory_client::rr::RecordType;
-
-    const FINALIZER_NAME: &str = FINALIZER_A_RECORD;
-    let start = std::time::Instant::now();
-
-    let context = ctx.0.clone();
-    let client = context.client.clone();
-    let namespace = record.namespace().unwrap_or_default();
-    let api: Api<ARecord> = Api::namespaced(client.clone(), &namespace);
-
-    // Handle deletion with finalizer
-    let result = finalizer(&api, FINALIZER_NAME, record.clone(), |event| async {
-        match event {
-            finalizer::Event::Apply(rec) => {
-                // Create or update the record
-                reconcile_a_record(context.clone(), (*rec).clone())
-                    .await
-                    .map_err(ReconcileError::from)?;
-                info!("Successfully reconciled ARecord: {}", rec.name_any());
-
-                // Re-fetch to get updated status
-                let updated_record = api
-                    .get(&rec.name_any())
-                    .await
-                    .map_err(|e| ReconcileError::from(anyhow::Error::from(e)))?;
-
-                // Check readiness
-                let is_ready = bindy::record_wrappers::is_resource_ready(&updated_record.status);
-
-                Ok(bindy::record_wrappers::requeue_based_on_readiness(is_ready))
-            }
-            finalizer::Event::Cleanup(rec) => {
-                // Delete the record from BIND9
-                use bindy::reconcilers::delete_record;
-
-                delete_record(&client, &*rec, "A", RecordType::A, &context.stores)
-                    .await
-                    .map_err(ReconcileError::from)?;
-
-                info!(
-                    "Successfully deleted ARecord from BIND9: {}",
-                    rec.name_any()
-                );
-                metrics::record_resource_deleted(KIND_A_RECORD);
-                Ok(Action::await_change())
-            }
-        }
-    })
-    .await;
-
-    let duration = start.elapsed();
-    if result.is_ok() {
-        metrics::record_reconciliation_success(KIND_A_RECORD, duration);
-    } else {
-        metrics::record_reconciliation_error(KIND_A_RECORD, duration);
-        metrics::record_error(KIND_A_RECORD, bindy::record_wrappers::ERROR_TYPE_RECONCILE);
-    }
-
-    result.map_err(|e: finalizer::Error<ReconcileError>| match e {
-        finalizer::Error::ApplyFailed(err) | finalizer::Error::CleanupFailed(err) => err,
-        finalizer::Error::AddFinalizer(err) | finalizer::Error::RemoveFinalizer(err) => {
-            ReconcileError::from(anyhow::anyhow!("Finalizer error: {err}"))
-        }
-        finalizer::Error::UnnamedObject => {
-            ReconcileError::from(anyhow::anyhow!("ARecord has no name"))
-        }
-        finalizer::Error::InvalidFinalizer => {
-            ReconcileError::from(anyhow::anyhow!("Invalid finalizer for ARecord"))
-        }
-    })
-}
-
-/// Reconcile wrapper for `TXTRecord` with finalizer support
-async fn reconcile_txtrecord_wrapper(
-    record: Arc<TXTRecord>,
-    ctx: Arc<(Arc<Context>, Arc<Bind9Manager>)>,
-) -> Result<Action, ReconcileError> {
-    use bindy::constants::KIND_TXT_RECORD;
-    use bindy::labels::FINALIZER_TXT_RECORD;
-    use hickory_client::rr::RecordType;
-
-    const FINALIZER_NAME: &str = FINALIZER_TXT_RECORD;
-    let start = std::time::Instant::now();
-
-    let context = ctx.0.clone();
-    let client = context.client.clone();
-    let namespace = record.namespace().unwrap_or_default();
-    let api: Api<TXTRecord> = Api::namespaced(client.clone(), &namespace);
-
-    // Handle deletion with finalizer
-    let result = finalizer(&api, FINALIZER_NAME, record.clone(), |event| async {
-        match event {
-            finalizer::Event::Apply(rec) => {
-                // Create or update the record
-                reconcile_txt_record(context.clone(), (*rec).clone())
-                    .await
-                    .map_err(ReconcileError::from)?;
-                info!("Successfully reconciled TXTRecord: {}", rec.name_any());
-
-                // Re-fetch to get updated status
-                let updated_record = api
-                    .get(&rec.name_any())
-                    .await
-                    .map_err(|e| ReconcileError::from(anyhow::Error::from(e)))?;
-
-                // Check readiness
-                let is_ready = bindy::record_wrappers::is_resource_ready(&updated_record.status);
-
-                Ok(bindy::record_wrappers::requeue_based_on_readiness(is_ready))
-            }
-            finalizer::Event::Cleanup(rec) => {
-                // Delete the record from BIND9
-                use bindy::reconcilers::delete_record;
-
-                delete_record(&client, &*rec, "TXT", RecordType::TXT, &context.stores)
-                    .await
-                    .map_err(ReconcileError::from)?;
-
-                info!(
-                    "Successfully deleted TXTRecord from BIND9: {}",
-                    rec.name_any()
-                );
-                metrics::record_resource_deleted(KIND_TXT_RECORD);
-                Ok(Action::await_change())
-            }
-        }
-    })
-    .await;
-
-    let duration = start.elapsed();
-    if result.is_ok() {
-        metrics::record_reconciliation_success(KIND_TXT_RECORD, duration);
-    } else {
-        metrics::record_reconciliation_error(KIND_TXT_RECORD, duration);
-        metrics::record_error(
-            KIND_TXT_RECORD,
-            bindy::record_wrappers::ERROR_TYPE_RECONCILE,
-        );
-    }
-
-    result.map_err(|e: finalizer::Error<ReconcileError>| match e {
-        finalizer::Error::ApplyFailed(err) | finalizer::Error::CleanupFailed(err) => err,
-        finalizer::Error::AddFinalizer(err) | finalizer::Error::RemoveFinalizer(err) => {
-            ReconcileError::from(anyhow::anyhow!("Finalizer error: {err}"))
-        }
-        finalizer::Error::UnnamedObject => {
-            ReconcileError::from(anyhow::anyhow!("TXTRecord has no name"))
-        }
-        finalizer::Error::InvalidFinalizer => {
-            ReconcileError::from(anyhow::anyhow!("Invalid finalizer for TXTRecord"))
-        }
-    })
-}
-
-/// Reconcile wrapper for `AAAARecord` with finalizer support
-async fn reconcile_aaaarecord_wrapper(
-    record: Arc<AAAARecord>,
-    ctx: Arc<(Arc<Context>, Arc<Bind9Manager>)>,
-) -> Result<Action, ReconcileError> {
-    use bindy::constants::KIND_AAAA_RECORD;
-    use bindy::labels::FINALIZER_AAAA_RECORD;
-    use hickory_client::rr::RecordType;
-
-    const FINALIZER_NAME: &str = FINALIZER_AAAA_RECORD;
-    let start = std::time::Instant::now();
-
-    let context = ctx.0.clone();
-    let client = context.client.clone();
-    let namespace = record.namespace().unwrap_or_default();
-    let api: Api<AAAARecord> = Api::namespaced(client.clone(), &namespace);
-
-    // Handle deletion with finalizer
-    let result = finalizer(&api, FINALIZER_NAME, record.clone(), |event| async {
-        match event {
-            finalizer::Event::Apply(rec) => {
-                // Create or update the record
-                reconcile_aaaa_record(context.clone(), (*rec).clone())
-                    .await
-                    .map_err(ReconcileError::from)?;
-                info!("Successfully reconciled AAAARecord: {}", rec.name_any());
-
-                // Re-fetch to get updated status
-                let updated_record = api
-                    .get(&rec.name_any())
-                    .await
-                    .map_err(|e| ReconcileError::from(anyhow::Error::from(e)))?;
-
-                // Check readiness
-                let is_ready = bindy::record_wrappers::is_resource_ready(&updated_record.status);
-
-                Ok(bindy::record_wrappers::requeue_based_on_readiness(is_ready))
-            }
-            finalizer::Event::Cleanup(rec) => {
-                // Delete the record from BIND9
-                use bindy::reconcilers::delete_record;
-
-                delete_record(&client, &*rec, "AAAA", RecordType::AAAA, &context.stores)
-                    .await
-                    .map_err(ReconcileError::from)?;
-
-                info!(
-                    "Successfully deleted AAAARecord from BIND9: {}",
-                    rec.name_any()
-                );
-                metrics::record_resource_deleted(KIND_AAAA_RECORD);
-                Ok(Action::await_change())
-            }
-        }
-    })
-    .await;
-
-    let duration = start.elapsed();
-    if result.is_ok() {
-        metrics::record_reconciliation_success(KIND_AAAA_RECORD, duration);
-    } else {
-        metrics::record_reconciliation_error(KIND_AAAA_RECORD, duration);
-        metrics::record_error(
-            KIND_AAAA_RECORD,
-            bindy::record_wrappers::ERROR_TYPE_RECONCILE,
-        );
-    }
-
-    result.map_err(|e: finalizer::Error<ReconcileError>| match e {
-        finalizer::Error::ApplyFailed(err) | finalizer::Error::CleanupFailed(err) => err,
-        finalizer::Error::AddFinalizer(err) | finalizer::Error::RemoveFinalizer(err) => {
-            ReconcileError::from(anyhow::anyhow!("Finalizer error: {err}"))
-        }
-        finalizer::Error::UnnamedObject => {
-            ReconcileError::from(anyhow::anyhow!("AAAARecord has no name"))
-        }
-        finalizer::Error::InvalidFinalizer => {
-            ReconcileError::from(anyhow::anyhow!("Invalid finalizer for AAAARecord"))
-        }
-    })
-}
-
-/// Reconcile wrapper for `CNAMERecord` with finalizer support
-async fn reconcile_cnamerecord_wrapper(
-    record: Arc<CNAMERecord>,
-    ctx: Arc<(Arc<Context>, Arc<Bind9Manager>)>,
-) -> Result<Action, ReconcileError> {
-    use bindy::constants::KIND_CNAME_RECORD;
-    use bindy::labels::FINALIZER_CNAME_RECORD;
-    use hickory_client::rr::RecordType;
-
-    const FINALIZER_NAME: &str = FINALIZER_CNAME_RECORD;
-    let start = std::time::Instant::now();
-
-    let context = ctx.0.clone();
-    let client = context.client.clone();
-    let namespace = record.namespace().unwrap_or_default();
-    let api: Api<CNAMERecord> = Api::namespaced(client.clone(), &namespace);
-
-    // Handle deletion with finalizer
-    let result = finalizer(&api, FINALIZER_NAME, record.clone(), |event| async {
-        match event {
-            finalizer::Event::Apply(rec) => {
-                // Create or update the record
-                reconcile_cname_record(context.clone(), (*rec).clone())
-                    .await
-                    .map_err(ReconcileError::from)?;
-                info!("Successfully reconciled CNAMERecord: {}", rec.name_any());
-
-                // Re-fetch to get updated status
-                let updated_record = api
-                    .get(&rec.name_any())
-                    .await
-                    .map_err(|e| ReconcileError::from(anyhow::Error::from(e)))?;
-
-                // Check readiness
-                let is_ready = bindy::record_wrappers::is_resource_ready(&updated_record.status);
-
-                Ok(bindy::record_wrappers::requeue_based_on_readiness(is_ready))
-            }
-            finalizer::Event::Cleanup(rec) => {
-                // Delete the record from BIND9
-                use bindy::reconcilers::delete_record;
-
-                delete_record(&client, &*rec, "CNAME", RecordType::CNAME, &context.stores)
-                    .await
-                    .map_err(ReconcileError::from)?;
-
-                info!(
-                    "Successfully deleted CNAMERecord from BIND9: {}",
-                    rec.name_any()
-                );
-                metrics::record_resource_deleted(KIND_CNAME_RECORD);
-                Ok(Action::await_change())
-            }
-        }
-    })
-    .await;
-
-    let duration = start.elapsed();
-    if result.is_ok() {
-        metrics::record_reconciliation_success(KIND_CNAME_RECORD, duration);
-    } else {
-        metrics::record_reconciliation_error(KIND_CNAME_RECORD, duration);
-        metrics::record_error(
-            KIND_CNAME_RECORD,
-            bindy::record_wrappers::ERROR_TYPE_RECONCILE,
-        );
-    }
-
-    result.map_err(|e: finalizer::Error<ReconcileError>| match e {
-        finalizer::Error::ApplyFailed(err) | finalizer::Error::CleanupFailed(err) => err,
-        finalizer::Error::AddFinalizer(err) | finalizer::Error::RemoveFinalizer(err) => {
-            ReconcileError::from(anyhow::anyhow!("Finalizer error: {err}"))
-        }
-        finalizer::Error::UnnamedObject => {
-            ReconcileError::from(anyhow::anyhow!("CNAMERecord has no name"))
-        }
-        finalizer::Error::InvalidFinalizer => {
-            ReconcileError::from(anyhow::anyhow!("Invalid finalizer for CNAMERecord"))
-        }
-    })
-}
-
-/// Reconcile wrapper for `MXRecord` with finalizer support
-async fn reconcile_mxrecord_wrapper(
-    record: Arc<MXRecord>,
-    ctx: Arc<(Arc<Context>, Arc<Bind9Manager>)>,
-) -> Result<Action, ReconcileError> {
-    use bindy::constants::KIND_MX_RECORD;
-    use bindy::labels::FINALIZER_MX_RECORD;
-    use hickory_client::rr::RecordType;
-
-    const FINALIZER_NAME: &str = FINALIZER_MX_RECORD;
-    let start = std::time::Instant::now();
-
-    let context = ctx.0.clone();
-    let client = context.client.clone();
-    let namespace = record.namespace().unwrap_or_default();
-    let api: Api<MXRecord> = Api::namespaced(client.clone(), &namespace);
-
-    // Handle deletion with finalizer
-    let result = finalizer(&api, FINALIZER_NAME, record.clone(), |event| async {
-        match event {
-            finalizer::Event::Apply(rec) => {
-                // Create or update the record
-                reconcile_mx_record(context.clone(), (*rec).clone())
-                    .await
-                    .map_err(ReconcileError::from)?;
-                info!("Successfully reconciled MXRecord: {}", rec.name_any());
-
-                // Re-fetch to get updated status
-                let updated_record = api
-                    .get(&rec.name_any())
-                    .await
-                    .map_err(|e| ReconcileError::from(anyhow::Error::from(e)))?;
-
-                // Check readiness
-                let is_ready = bindy::record_wrappers::is_resource_ready(&updated_record.status);
-
-                Ok(bindy::record_wrappers::requeue_based_on_readiness(is_ready))
-            }
-            finalizer::Event::Cleanup(rec) => {
-                // Delete the record from BIND9
-                use bindy::reconcilers::delete_record;
-
-                delete_record(&client, &*rec, "MX", RecordType::MX, &context.stores)
-                    .await
-                    .map_err(ReconcileError::from)?;
-
-                info!(
-                    "Successfully deleted MXRecord from BIND9: {}",
-                    rec.name_any()
-                );
-                metrics::record_resource_deleted(KIND_MX_RECORD);
-                Ok(Action::await_change())
-            }
-        }
-    })
-    .await;
-
-    let duration = start.elapsed();
-    if result.is_ok() {
-        metrics::record_reconciliation_success(KIND_MX_RECORD, duration);
-    } else {
-        metrics::record_reconciliation_error(KIND_MX_RECORD, duration);
-        metrics::record_error(KIND_MX_RECORD, bindy::record_wrappers::ERROR_TYPE_RECONCILE);
-    }
-
-    result.map_err(|e: finalizer::Error<ReconcileError>| match e {
-        finalizer::Error::ApplyFailed(err) | finalizer::Error::CleanupFailed(err) => err,
-        finalizer::Error::AddFinalizer(err) | finalizer::Error::RemoveFinalizer(err) => {
-            ReconcileError::from(anyhow::anyhow!("Finalizer error: {err}"))
-        }
-        finalizer::Error::UnnamedObject => {
-            ReconcileError::from(anyhow::anyhow!("MXRecord has no name"))
-        }
-        finalizer::Error::InvalidFinalizer => {
-            ReconcileError::from(anyhow::anyhow!("Invalid finalizer for MXRecord"))
-        }
-    })
-}
-
-/// Reconcile wrapper for `NSRecord` with finalizer support
-async fn reconcile_nsrecord_wrapper(
-    record: Arc<NSRecord>,
-    ctx: Arc<(Arc<Context>, Arc<Bind9Manager>)>,
-) -> Result<Action, ReconcileError> {
-    use bindy::constants::KIND_NS_RECORD;
-    use bindy::labels::FINALIZER_NS_RECORD;
-    use hickory_client::rr::RecordType;
-
-    const FINALIZER_NAME: &str = FINALIZER_NS_RECORD;
-    let start = std::time::Instant::now();
-
-    let context = ctx.0.clone();
-    let client = context.client.clone();
-    let namespace = record.namespace().unwrap_or_default();
-    let api: Api<NSRecord> = Api::namespaced(client.clone(), &namespace);
-
-    // Handle deletion with finalizer
-    let result = finalizer(&api, FINALIZER_NAME, record.clone(), |event| async {
-        match event {
-            finalizer::Event::Apply(rec) => {
-                // Create or update the record
-                reconcile_ns_record(context.clone(), (*rec).clone())
-                    .await
-                    .map_err(ReconcileError::from)?;
-                info!("Successfully reconciled NSRecord: {}", rec.name_any());
-
-                // Re-fetch to get updated status
-                let updated_record = api
-                    .get(&rec.name_any())
-                    .await
-                    .map_err(|e| ReconcileError::from(anyhow::Error::from(e)))?;
-
-                // Check readiness
-                let is_ready = bindy::record_wrappers::is_resource_ready(&updated_record.status);
-
-                Ok(bindy::record_wrappers::requeue_based_on_readiness(is_ready))
-            }
-            finalizer::Event::Cleanup(rec) => {
-                // Delete the record from BIND9
-                use bindy::reconcilers::delete_record;
-
-                delete_record(&client, &*rec, "NS", RecordType::NS, &context.stores)
-                    .await
-                    .map_err(ReconcileError::from)?;
-
-                info!(
-                    "Successfully deleted NSRecord from BIND9: {}",
-                    rec.name_any()
-                );
-                metrics::record_resource_deleted(KIND_NS_RECORD);
-                Ok(Action::await_change())
-            }
-        }
-    })
-    .await;
-
-    let duration = start.elapsed();
-    if result.is_ok() {
-        metrics::record_reconciliation_success(KIND_NS_RECORD, duration);
-    } else {
-        metrics::record_reconciliation_error(KIND_NS_RECORD, duration);
-        metrics::record_error(KIND_NS_RECORD, bindy::record_wrappers::ERROR_TYPE_RECONCILE);
-    }
-
-    result.map_err(|e: finalizer::Error<ReconcileError>| match e {
-        finalizer::Error::ApplyFailed(err) | finalizer::Error::CleanupFailed(err) => err,
-        finalizer::Error::AddFinalizer(err) | finalizer::Error::RemoveFinalizer(err) => {
-            ReconcileError::from(anyhow::anyhow!("Finalizer error: {err}"))
-        }
-        finalizer::Error::UnnamedObject => {
-            ReconcileError::from(anyhow::anyhow!("NSRecord has no name"))
-        }
-        finalizer::Error::InvalidFinalizer => {
-            ReconcileError::from(anyhow::anyhow!("Invalid finalizer for NSRecord"))
-        }
-    })
-}
-
-/// Reconcile wrapper for `SRVRecord` with finalizer support
-async fn reconcile_srvrecord_wrapper(
-    record: Arc<SRVRecord>,
-    ctx: Arc<(Arc<Context>, Arc<Bind9Manager>)>,
-) -> Result<Action, ReconcileError> {
-    use bindy::constants::KIND_SRV_RECORD;
-    use bindy::labels::FINALIZER_SRV_RECORD;
-    use hickory_client::rr::RecordType;
-
-    const FINALIZER_NAME: &str = FINALIZER_SRV_RECORD;
-    let start = std::time::Instant::now();
-
-    let context = ctx.0.clone();
-    let client = context.client.clone();
-    let namespace = record.namespace().unwrap_or_default();
-    let api: Api<SRVRecord> = Api::namespaced(client.clone(), &namespace);
-
-    // Handle deletion with finalizer
-    let result = finalizer(&api, FINALIZER_NAME, record.clone(), |event| async {
-        match event {
-            finalizer::Event::Apply(rec) => {
-                // Create or update the record
-                reconcile_srv_record(context.clone(), (*rec).clone())
-                    .await
-                    .map_err(ReconcileError::from)?;
-                info!("Successfully reconciled SRVRecord: {}", rec.name_any());
-
-                // Re-fetch to get updated status
-                let updated_record = api
-                    .get(&rec.name_any())
-                    .await
-                    .map_err(|e| ReconcileError::from(anyhow::Error::from(e)))?;
-
-                // Check readiness
-                let is_ready = bindy::record_wrappers::is_resource_ready(&updated_record.status);
-
-                Ok(bindy::record_wrappers::requeue_based_on_readiness(is_ready))
-            }
-            finalizer::Event::Cleanup(rec) => {
-                // Delete the record from BIND9
-                use bindy::reconcilers::delete_record;
-
-                delete_record(&client, &*rec, "SRV", RecordType::SRV, &context.stores)
-                    .await
-                    .map_err(ReconcileError::from)?;
-
-                info!(
-                    "Successfully deleted SRVRecord from BIND9: {}",
-                    rec.name_any()
-                );
-                metrics::record_resource_deleted(KIND_SRV_RECORD);
-                Ok(Action::await_change())
-            }
-        }
-    })
-    .await;
-
-    let duration = start.elapsed();
-    if result.is_ok() {
-        metrics::record_reconciliation_success(KIND_SRV_RECORD, duration);
-    } else {
-        metrics::record_reconciliation_error(KIND_SRV_RECORD, duration);
-        metrics::record_error(
-            KIND_SRV_RECORD,
-            bindy::record_wrappers::ERROR_TYPE_RECONCILE,
-        );
-    }
-
-    result.map_err(|e: finalizer::Error<ReconcileError>| match e {
-        finalizer::Error::ApplyFailed(err) | finalizer::Error::CleanupFailed(err) => err,
-        finalizer::Error::AddFinalizer(err) | finalizer::Error::RemoveFinalizer(err) => {
-            ReconcileError::from(anyhow::anyhow!("Finalizer error: {err}"))
-        }
-        finalizer::Error::UnnamedObject => {
-            ReconcileError::from(anyhow::anyhow!("SRVRecord has no name"))
-        }
-        finalizer::Error::InvalidFinalizer => {
-            ReconcileError::from(anyhow::anyhow!("Invalid finalizer for SRVRecord"))
-        }
-    })
-}
-
-/// Reconcile wrapper for `CAARecord` with finalizer support
-async fn reconcile_caarecord_wrapper(
-    record: Arc<CAARecord>,
-    ctx: Arc<(Arc<Context>, Arc<Bind9Manager>)>,
-) -> Result<Action, ReconcileError> {
-    use bindy::constants::KIND_CAA_RECORD;
-    use bindy::labels::FINALIZER_CAA_RECORD;
-    use hickory_client::rr::RecordType;
-
-    const FINALIZER_NAME: &str = FINALIZER_CAA_RECORD;
-    let start = std::time::Instant::now();
-
-    let context = ctx.0.clone();
-    let client = context.client.clone();
-    let namespace = record.namespace().unwrap_or_default();
-    let api: Api<CAARecord> = Api::namespaced(client.clone(), &namespace);
-
-    // Handle deletion with finalizer
-    let result = finalizer(&api, FINALIZER_NAME, record.clone(), |event| async {
-        match event {
-            finalizer::Event::Apply(rec) => {
-                // Create or update the record
-                reconcile_caa_record(context.clone(), (*rec).clone())
-                    .await
-                    .map_err(ReconcileError::from)?;
-                info!("Successfully reconciled CAARecord: {}", rec.name_any());
-
-                // Re-fetch to get updated status
-                let updated_record = api
-                    .get(&rec.name_any())
-                    .await
-                    .map_err(|e| ReconcileError::from(anyhow::Error::from(e)))?;
-
-                // Check readiness
-                let is_ready = bindy::record_wrappers::is_resource_ready(&updated_record.status);
-
-                Ok(bindy::record_wrappers::requeue_based_on_readiness(is_ready))
-            }
-            finalizer::Event::Cleanup(rec) => {
-                // Delete the record from BIND9
-                use bindy::reconcilers::delete_record;
-
-                delete_record(&client, &*rec, "CAA", RecordType::CAA, &context.stores)
-                    .await
-                    .map_err(ReconcileError::from)?;
-
-                info!(
-                    "Successfully deleted CAARecord from BIND9: {}",
-                    rec.name_any()
-                );
-                metrics::record_resource_deleted(KIND_CAA_RECORD);
-                Ok(Action::await_change())
-            }
-        }
-    })
-    .await;
-
-    let duration = start.elapsed();
-    if result.is_ok() {
-        metrics::record_reconciliation_success(KIND_CAA_RECORD, duration);
-    } else {
-        metrics::record_reconciliation_error(KIND_CAA_RECORD, duration);
-        metrics::record_error(
-            KIND_CAA_RECORD,
-            bindy::record_wrappers::ERROR_TYPE_RECONCILE,
-        );
-    }
-
-    result.map_err(|e: finalizer::Error<ReconcileError>| match e {
-        finalizer::Error::ApplyFailed(err) | finalizer::Error::CleanupFailed(err) => err,
-        finalizer::Error::AddFinalizer(err) | finalizer::Error::RemoveFinalizer(err) => {
-            ReconcileError::from(anyhow::anyhow!("Finalizer error: {err}"))
-        }
-        finalizer::Error::UnnamedObject => {
-            ReconcileError::from(anyhow::anyhow!("CAARecord has no name"))
-        }
-        finalizer::Error::InvalidFinalizer => {
-            ReconcileError::from(anyhow::anyhow!("Invalid finalizer for CAARecord"))
-        }
-    })
-}
-
-/// Generic error policy for all controllers.
+/// Error policy for controllers.
 ///
-/// This function handles reconciliation errors by requeuing the resource
-/// after a fixed delay. It's generic over both the resource type and
-/// context type, allowing it to be used across all controller types.
-///
-/// # Arguments
-///
-/// * `resource` - The resource being reconciled
-/// * `err` - The reconciliation error that occurred
-/// * `_ctx` - The controller context (unused)
-///
-/// # Returns
-///
+/// Returns an action to requeue the resource after a delay when reconciliation fails.
 /// An `Action` to requeue the resource after `ERROR_REQUEUE_DURATION_SECS` seconds.
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value)] // Signature required by kube::runtime::Controller
 fn error_policy<T, C>(resource: Arc<T>, err: &ReconcileError, _ctx: Arc<C>) -> Action
 where
     T: std::fmt::Debug,
