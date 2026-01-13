@@ -132,3 +132,7 @@ pub(super) fn zones_equal(a: &[ZoneReference], b: &[ZoneReference]) -> bool {
 
     set_a == set_b
 }
+
+#[cfg(test)]
+#[path = "zones_tests.rs"]
+mod zones_tests;

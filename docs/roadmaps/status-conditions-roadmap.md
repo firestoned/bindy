@@ -166,7 +166,7 @@ REASON_GATEWAY_ERROR
 
 **Key Changes:**
 
-**Bind9GlobalCluster:**
+**ClusterBind9Provider:**
 - Replaced hardcoded strings with `REASON_ALL_READY`, `REASON_PARTIALLY_READY`, `REASON_NOT_READY`, `REASON_NO_CHILDREN`
 - Updated condition type to use `CONDITION_TYPE_READY`
 
