@@ -203,3 +203,7 @@ pub async fn configure_zone_on_instances(
 
     Ok((primary_count, secondary_count))
 }
+
+#[cfg(test)]
+#[path = "bind9_config_tests.rs"]
+mod bind9_config_tests;

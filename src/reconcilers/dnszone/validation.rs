@@ -238,3 +238,7 @@ pub fn filter_instances_needing_reconciliation(
         .cloned()
         .collect()
 }
+
+#[cfg(test)]
+#[path = "validation_tests.rs"]
+mod validation_tests;
