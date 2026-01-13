@@ -8,6 +8,7 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::types::*;
+use crate::reconcilers::pagination::list_all_paginated;
 
 /// Detects if the actual managed instances match the desired replica counts.
 ///
@@ -55,11 +56,10 @@ pub(super) async fn detect_instance_drift(
 
     // List existing managed instances
     let api: Api<Bind9Instance> = Api::namespaced(client.clone(), namespace);
-    let instances = api.list(&ListParams::default()).await?;
+    let instances = list_all_paginated(&api, ListParams::default()).await?;
 
     // Filter for managed instances of this cluster
     let managed_instances: Vec<_> = instances
-        .items
         .into_iter()
         .filter(|instance| {
             instance.metadata.labels.as_ref().is_some_and(|labels| {

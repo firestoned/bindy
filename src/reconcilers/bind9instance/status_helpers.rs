@@ -8,6 +8,7 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::types::*;
+use crate::reconcilers::pagination::list_all_paginated;
 
 /// Update instance status from deployment pod health.
 ///
@@ -47,13 +48,13 @@ pub(super) async fn update_status_from_deployment(
             // Use the standard Kubernetes label for instance matching
             let label_selector = format!("{}={}", crate::labels::K8S_INSTANCE, name);
             let list_params = ListParams::default().labels(&label_selector);
-            let pods = pod_api.list(&list_params).await?;
+            let pods = list_all_paginated(&pod_api, list_params).await?;
 
             // Create pod-level conditions
             let mut pod_conditions = Vec::new();
             let mut ready_pod_count = 0;
 
-            for (index, pod) in pods.items.iter().enumerate() {
+            for (index, pod) in pods.iter().enumerate() {
                 let pod_name = pod.metadata.name.as_deref().unwrap_or("unknown");
                 // Using map_or for explicit false default on None - more readable than is_some_and
                 #[allow(clippy::unnecessary_map_or)]

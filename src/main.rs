@@ -7,8 +7,9 @@ use bindy::{
     bind9::Bind9Manager,
     constants::{
         DEFAULT_LEASE_DURATION_SECS, DEFAULT_LEASE_RENEW_DEADLINE_SECS,
-        DEFAULT_LEASE_RETRY_PERIOD_SECS, ERROR_REQUEUE_DURATION_SECS, METRICS_SERVER_BIND_ADDRESS,
-        METRICS_SERVER_PATH, METRICS_SERVER_PORT, TOKIO_WORKER_THREADS,
+        DEFAULT_LEASE_RETRY_PERIOD_SECS, ERROR_REQUEUE_DURATION_SECS, KUBE_CLIENT_BURST,
+        KUBE_CLIENT_QPS, METRICS_SERVER_BIND_ADDRESS, METRICS_SERVER_PATH, METRICS_SERVER_PORT,
+        TOKIO_WORKER_THREADS,
     },
     context::{Context, Metrics, Stores},
     crd::{
@@ -90,8 +91,31 @@ fn initialize_logging() {
 /// Initialize Kubernetes client and BIND9 manager
 async fn initialize_services() -> Result<(Client, Arc<Bind9Manager>)> {
     debug!("Initializing Kubernetes client");
-    let client = Client::try_default().await?;
-    debug!("Kubernetes client initialized successfully");
+
+    // Load kubeconfig
+    let config = kube::Config::infer().await?;
+
+    // Parse rate limit configuration from environment variables or use defaults
+    // Note: kube-rs 2.0 uses Tower middleware (RateLimitLayer) for rate limiting
+    // instead of direct QPS/burst config fields like client-go.
+    // Phase 3 of the rate limiting roadmap will implement Tower-based rate limiting.
+    let qps: f32 = std::env::var("BINDY_KUBE_QPS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(KUBE_CLIENT_QPS);
+
+    let burst: u32 = std::env::var("BINDY_KUBE_BURST")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(KUBE_CLIENT_BURST);
+
+    let client = Client::try_from(config)?;
+
+    info!(
+        qps = qps,
+        burst = burst,
+        "Kubernetes client initialized (Tower-based rate limiting to be added in Phase 3)"
+    );
 
     debug!("Creating BIND9 manager");
     let bind9_manager = Arc::new(Bind9Manager::new());

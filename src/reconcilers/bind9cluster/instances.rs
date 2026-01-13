@@ -9,6 +9,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::types::*;
 use crate::constants::{API_GROUP_VERSION, KIND_BIND9_CLUSTER, KIND_BIND9_INSTANCE};
+use crate::reconcilers::pagination::list_all_paginated;
 
 /// Reconcile managed `Bind9Instance` resources for a cluster
 ///
@@ -71,11 +72,10 @@ pub(super) async fn reconcile_managed_instances(
 
     // List existing managed instances
     let api: Api<Bind9Instance> = Api::namespaced(client.clone(), &namespace);
-    let instances = api.list(&ListParams::default()).await?;
+    let instances = list_all_paginated(&api, ListParams::default()).await?;
 
     // Filter for managed instances of this cluster
     let managed_instances: Vec<_> = instances
-        .items
         .into_iter()
         .filter(|instance| {
             // Check if instance has management labels
@@ -822,11 +822,10 @@ pub(super) async fn delete_cluster_instances(
     );
 
     // List all instances in the namespace
-    let instances = api.list(&ListParams::default()).await?;
+    let instances = list_all_paginated(&api, ListParams::default()).await?;
 
     // Filter instances that reference this cluster
     let cluster_instances: Vec<_> = instances
-        .items
         .into_iter()
         .filter(|instance| instance.spec.cluster_ref == cluster_name)
         .collect();

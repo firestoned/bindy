@@ -1,6 +1,6 @@
 # Error Handling and Retry Logic
 
-Bindy implements robust error handling for DNS record reconciliation, ensuring the operator never crashes when encountering failures. Instead, it updates status conditions, creates Kubernetes Events, and automatically retries with configurable intervals.
+Bindy implements robust error handling for DNS record reconciliation, ensuring the operator never crashes when encountering failures. Instead, it updates status conditions, creates Kubernetes Events, and automatically retries with exponential backoff.
 
 ## Overview
 
@@ -9,13 +9,117 @@ When reconciling DNS records, several failure scenarios can occur:
 - **RNDC key loading fails**: Cannot load the RNDC authentication Secret
 - **BIND9 connection fails**: Unable to connect to the BIND9 server
 - **Record operation fails**: BIND9 rejects the record operation
+- **HTTP API errors**: Bindcar sidecar temporary failures (503, 502, etc.)
+- **Kubernetes API errors**: Rate limiting (429), server errors (5xx), network failures
 
 Bindy handles all these scenarios gracefully with:
 - ✅ Status condition updates following Kubernetes conventions
 - ✅ Kubernetes Events for visibility
-- ✅ Automatic retry with exponential backoff
-- ✅ Configurable retry intervals
+- ✅ **Automatic retry with exponential backoff for HTTP and Kubernetes API calls**
+- ✅ Configurable retry intervals for reconciliation loops
 - ✅ Idempotent operations safe for multiple retries
+- ✅ Smart error classification (retryable vs permanent errors)
+
+## Automatic Retry Infrastructure
+
+Bindy includes automatic retry logic with exponential backoff for transient failures in HTTP and Kubernetes API calls. This ensures resilience to temporary issues without manual intervention.
+
+### HTTP API Retry (Bindcar Operations)
+
+All BIND9 zone management operations (via bindcar HTTP API sidecar) automatically retry on transient failures:
+
+**Retryable HTTP Status Codes:**
+- **429** - Too Many Requests (rate limiting)
+- **500** - Internal Server Error
+- **502** - Bad Gateway (proxy/load balancer issues)
+- **503** - Service Unavailable (temporary unavailability)
+- **504** - Gateway Timeout
+- **Network errors** - Connection failures, DNS resolution errors
+
+**Non-Retryable HTTP Status Codes:**
+- **4xx** (except 429) - Client errors (400 Bad Request, 404 Not Found, 401 Unauthorized, etc.)
+- These indicate permanent errors that won't be fixed by retrying
+
+**HTTP Retry Configuration:**
+- **Initial retry**: 50ms
+- **Max interval**: 10 seconds between retries
+- **Max duration**: 2 minutes total retry time
+- **Backoff multiplier**: 2.0 (exponential growth)
+- **Randomization**: ±10% (prevents thundering herd)
+
+**Retry Schedule Example:**
+```
+Attempt 1: Immediate (0ms)
+Attempt 2: 50ms after failure
+Attempt 3: ~100ms after failure
+Attempt 4: ~200ms after failure
+Attempt 5: ~400ms after failure
+Attempt 6: ~800ms after failure
+Attempt 7: ~1.6s after failure
+Attempt 8: ~3.2s after failure
+Attempt 9: ~6.4s after failure
+Attempt 10+: 10s intervals until 2 minutes elapsed
+```
+
+**Affected Operations:**
+All bindcar HTTP API operations automatically benefit from retry:
+- Zone creation (`create_zone()`)
+- Zone updates (`update_zone()`)
+- Zone deletion (`delete_zone()`)
+- Zone reload (`reload_zone()`)
+- Zone listing (`list_zones()`)
+- Zone status checks (`get_zone_status()`)
+- Primary/secondary zone operations
+
+**Example Log Output:**
+```
+WARN  Retryable HTTP API error, will retry
+      method=POST
+      url=http://bind9-primary-api:8080/api/v1/zones
+      attempt=3
+      retry_after=200ms
+      error=HTTP request 'POST http://...' failed with status 503: Service temporarily unavailable
+
+INFO  HTTP API call succeeded after retries
+      method=POST
+      url=http://bind9-primary-api:8080/api/v1/zones
+      attempt=4
+      elapsed=850ms
+```
+
+### Kubernetes API Retry
+
+Kubernetes API calls will automatically retry on transient failures (implementation planned for reconcilers):
+
+**Retryable Kubernetes Errors:**
+- **HTTP 429** - Too Many Requests (rate limiting)
+- **HTTP 5xx** - Server errors (API server temporary issues)
+- **Network errors** - Connection failures, timeouts
+
+**Non-Retryable Kubernetes Errors:**
+- **HTTP 4xx** (except 429) - Client errors (not found, unauthorized, forbidden, etc.)
+
+**Kubernetes Retry Configuration:**
+- **Initial retry**: 100ms
+- **Max interval**: 30 seconds between retries
+- **Max duration**: 5 minutes total retry time
+- **Backoff multiplier**: 2.0 (exponential growth)
+- **Randomization**: ±10% (prevents thundering herd)
+
+**Why Different from HTTP API:**
+- Kubernetes API targets remote cluster (variable network latency)
+- API server issues may take longer to resolve
+- Longer max interval (30s vs 10s) and total time (5min vs 2min)
+- Slightly slower initial retry (100ms vs 50ms)
+
+### Benefits of Automatic Retry
+
+1. **Resilience to Transient Failures**: Temporary network blips, pod restarts, and service unavailability don't cause permanent failures
+2. **No Manual Intervention**: Operators don't need to manually requeue or restart failed operations
+3. **Smart Error Classification**: Permanent errors (404, 400, etc.) fail immediately without wasting time on retries
+4. **Exponential Backoff**: Prevents overwhelming services during recovery while still providing fast retries for quick issues
+5. **Thundering Herd Prevention**: Randomization (±10%) prevents all controllers retrying simultaneously
+6. **Observability**: Structured logging provides visibility into retry attempts, duration, and outcomes
 
 ## Configuration
 
