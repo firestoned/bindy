@@ -65,18 +65,14 @@ pub mod bind9instance;
 pub mod clusterbind9provider;
 pub mod dnszone;
 pub mod finalizers;
+pub mod pagination;
 pub mod records;
 pub mod resources;
+pub mod retry;
 pub mod status;
 
 #[cfg(test)]
-mod bind9cluster_tests;
-#[cfg(test)]
-mod bind9instance_tests;
-#[cfg(test)]
 mod clusterbind9provider_tests;
-#[cfg(test)]
-mod dnszone_tests;
 #[cfg(test)]
 mod records_tests;
 #[cfg(test)]

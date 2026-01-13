@@ -8,6 +8,89 @@ The Bindy controller is configured through environment variables set in the depl
 
 See [Environment Variables](./env-vars.md) for details on all available configuration options.
 
+### Kubernetes API Rate Limiting
+
+The controller includes configurable rate limiting for Kubernetes API requests to prevent overwhelming the API server in large deployments.
+
+**Environment Variables:**
+
+- `BINDY_KUBE_QPS` - Sustained queries per second (default: `20.0`)
+- `BINDY_KUBE_BURST` - Maximum burst requests (default: `30`)
+
+**Default Values:**
+
+The defaults match `kubectl` rate limits and are suitable for most deployments:
+
+```yaml
+env:
+  - name: BINDY_KUBE_QPS
+    value: "20.0"
+  - name: BINDY_KUBE_BURST
+    value: "30"
+```
+
+**Tuning for Large Deployments:**
+
+For clusters with hundreds of resources, you may need to increase these limits:
+
+```yaml
+env:
+  - name: BINDY_KUBE_QPS
+    value: "50.0"    # Higher sustained rate
+  - name: BINDY_KUBE_BURST
+    value: "100"     # Larger burst allowance
+```
+
+**Symptoms of Rate Limiting:**
+
+- HTTP 429 (Too Many Requests) errors in logs
+- Slow reconciliation times
+- Controller falling behind on resource updates
+
+**Pagination:**
+
+The controller automatically paginates Kubernetes API list operations to prevent memory issues and reduce API server load when working with large resource sets (e.g., 1000+ `DNSZone`s).
+
+- **Page Size**: 100 items per page (configurable via `KUBE_LIST_PAGE_SIZE` constant)
+- **Memory Usage**: Constant O(1) relative to total resource count
+- **API Efficiency**: 1000 resources = 10 API calls
+
+Pagination is automatically applied to:
+- DNSZone discovery and record queries
+- Bind9Cluster instance listings
+- Bind9Instance pod health checks
+
+**Automatic Retry with Exponential Backoff:**
+
+The controller automatically retries transient Kubernetes API errors with exponential backoff:
+
+- **Retryable Errors**: HTTP 429 (rate limiting), 5xx (server errors), network failures
+- **Non-Retryable Errors**: 4xx client errors (except 429) - fail immediately
+- **Initial Retry**: 100ms
+- **Max Interval**: 30 seconds between retries
+- **Max Duration**: 5 minutes total retry time
+- **Backoff Multiplier**: 2.0 (exponential growth)
+- **Randomization**: ±10% (prevents thundering herd)
+
+Retry schedule (approximate):
+1. 100ms
+2. 200ms
+3. 400ms
+4. 800ms
+5. 1.6s
+6. 3.2s
+7. 6.4s
+8. 12.8s
+9. 25.6s
+10. 30s (then continues at 30s intervals until 5 minutes elapsed)
+
+**Implementation Status:**
+
+- ✅ Phase 1: Rate limiting configuration (QPS/Burst environment variables)
+- ✅ Phase 2: Pagination for list operations
+- ✅ Phase 3: Exponential backoff for retries
+- ⏳ Phase 4: Tower middleware-based rate limiting (planned)
+
 ## BIND9 Instance Configuration
 
 Configure BIND9 instances through the `Bind9Instance` custom resource:

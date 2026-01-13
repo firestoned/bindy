@@ -8,13 +8,15 @@
 use super::types::RndcKeyData;
 use anyhow::{Context, Result};
 use bindcar::{CreateZoneRequest, SoaRecord, ZoneConfig, ZoneResponse};
-use reqwest::Client as HttpClient;
+use reqwest::{Client as HttpClient, StatusCode};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, error, info};
+use std::time::Instant;
+use tracing::{debug, error, info, warn};
 
 use crate::constants::DEFAULT_DNS_RECORD_TTL_SECS;
+use crate::reconcilers::retry::{http_backoff, is_retryable_http_status};
 
 /// Build the API base URL from a server address
 ///
@@ -28,10 +30,143 @@ pub(crate) fn build_api_url(server: &str) -> String {
     }
 }
 
-/// Execute a request to the bindcar API.
+/// Execute a request to the bindcar API with automatic retry.
 ///
-/// Low-level helper that handles authentication, logging, and error handling
-/// for all communication with the bindcar HTTP API sidecar.
+/// This is the main entry point for all bindcar HTTP API calls. It wraps the internal
+/// `bindcar_request_internal` with exponential backoff retry logic.
+///
+/// # Retry Behavior
+/// - Retries on HTTP 429, 500, 502, 503, 504
+/// - Fails immediately on other 4xx errors
+/// - Max 2 minutes total retry time
+/// - Initial retry after 50ms, exponentially growing to max 10 seconds
+///
+/// # Arguments
+/// * `client` - HTTP client
+/// * `token` - Optional authentication token (None if auth disabled)
+/// * `method` - HTTP method (GET, POST, DELETE)
+/// * `url` - Full URL to the bindcar API endpoint
+/// * `body` - Optional JSON body for POST requests
+///
+/// # Errors
+///
+/// Returns an error if the HTTP request fails after all retries or encounters a non-retryable error.
+pub(crate) async fn bindcar_request<T: Serialize + std::fmt::Debug>(
+    client: &HttpClient,
+    token: Option<&str>,
+    method: &str,
+    url: &str,
+    body: Option<&T>,
+) -> Result<String> {
+    let mut backoff = http_backoff();
+    let start_time = Instant::now();
+    let mut attempt = 0;
+
+    loop {
+        attempt += 1;
+
+        let result = bindcar_request_internal(client, token, method, url, body).await;
+
+        match result {
+            Ok(response) => {
+                if attempt > 1 {
+                    debug!(
+                        method = %method,
+                        url = %url,
+                        attempt = attempt,
+                        elapsed = ?start_time.elapsed(),
+                        "HTTP API call succeeded after retries"
+                    );
+                }
+                return Ok(response);
+            }
+            Err(e) => {
+                // Determine if the error is retryable
+                // We need to check both the error message (for status codes) and error type (for network errors)
+                let error_msg = e.to_string();
+                let mut is_retryable = false;
+
+                // Check for retryable HTTP status codes in error message
+                // Error format from bindcar_request_internal includes the status code as a u16
+                // Example: "HTTP request 'POST http://...' failed with status 503: ..."
+                if let Some(status_start) = error_msg.find("status ") {
+                    let status_str = &error_msg[status_start + 7..]; // Skip "status "
+                    if let Some(status_end) = status_str.find(':') {
+                        let status_code_str = status_str[..status_end].trim();
+                        if let Ok(status_u16) = status_code_str.parse::<u16>() {
+                            // Convert u16 to StatusCode and check if retryable
+                            if let Ok(status_code) = StatusCode::from_u16(status_u16) {
+                                is_retryable = is_retryable_http_status(status_code);
+                            }
+                        }
+                    }
+                }
+
+                // Also check for network errors
+                if error_msg.contains("Failed to send") {
+                    is_retryable = true;
+                }
+
+                if !is_retryable {
+                    error!(
+                        method = %method,
+                        url = %url,
+                        error = %e,
+                        "Non-retryable HTTP API error, failing immediately"
+                    );
+                    return Err(e);
+                }
+
+                // Check if we've exceeded max elapsed time
+                if let Some(max_elapsed) = backoff.max_elapsed_time {
+                    if start_time.elapsed() >= max_elapsed {
+                        error!(
+                            method = %method,
+                            url = %url,
+                            attempt = attempt,
+                            elapsed = ?start_time.elapsed(),
+                            error = %e,
+                            "Max retry time exceeded, giving up"
+                        );
+                        return Err(anyhow::anyhow!(
+                            "Max retry time exceeded after {attempt} attempts: {e}"
+                        ));
+                    }
+                }
+
+                // Calculate next backoff interval
+                if let Some(duration) = backoff.next_backoff() {
+                    warn!(
+                        method = %method,
+                        url = %url,
+                        attempt = attempt,
+                        retry_after = ?duration,
+                        error = %e,
+                        "Retryable HTTP API error, will retry"
+                    );
+                    tokio::time::sleep(duration).await;
+                } else {
+                    error!(
+                        method = %method,
+                        url = %url,
+                        attempt = attempt,
+                        elapsed = ?start_time.elapsed(),
+                        error = %e,
+                        "Backoff exhausted, giving up"
+                    );
+                    return Err(anyhow::anyhow!(
+                        "Backoff exhausted after {attempt} attempts: {e}"
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// Internal implementation of bindcar API requests without retry logic.
+///
+/// This function handles the actual HTTP communication. It should not be called directly;
+/// use `bindcar_request` instead, which wraps this with retry logic.
 ///
 /// # Arguments
 /// * `client` - HTTP client
@@ -43,7 +178,7 @@ pub(crate) fn build_api_url(server: &str) -> String {
 /// # Errors
 ///
 /// Returns an error if the HTTP request fails or the API returns an error.
-pub(crate) async fn bindcar_request<T: Serialize + std::fmt::Debug>(
+async fn bindcar_request_internal<T: Serialize + std::fmt::Debug>(
     client: &HttpClient,
     token: Option<&str>,
     method: &str,
