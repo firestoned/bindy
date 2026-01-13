@@ -321,3 +321,7 @@ pub async fn cleanup_stale_records(
 
     Ok(stale_count)
 }
+
+#[cfg(test)]
+#[path = "cleanup_tests.rs"]
+mod cleanup_tests;

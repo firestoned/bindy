@@ -985,3 +985,7 @@ pub async fn discover_and_update_records(
 
     Ok((record_refs, records_count))
 }
+
+#[cfg(test)]
+#[path = "discovery_tests.rs"]
+mod discovery_tests;

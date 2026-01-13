@@ -417,3 +417,7 @@ where
 
     Ok((first_endpoint, total_endpoints))
 }
+
+#[cfg(test)]
+#[path = "secondary_tests.rs"]
+mod secondary_tests;
