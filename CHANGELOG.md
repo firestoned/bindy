@@ -1,3 +1,89 @@
+## [2026-01-12 23:53] - Update README.md to Use ClusterBind9Provider
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **[README.md](README.md)**: Updated all references from deprecated `Bind9GlobalCluster` to `ClusterBind9Provider`
+  - Infrastructure table (line 134)
+  - Cluster-scoped DNS section title and YAML example (lines 177-196)
+  - Key features list (line 362)
+
+### Why
+The CRD was renamed from `Bind9GlobalCluster` to `ClusterBind9Provider` in refactoring phase 4, but the README still referenced the old name. This caused confusion as:
+- The old CRD name no longer exists in the codebase
+- Examples using `Bind9GlobalCluster` would fail when applied to clusters
+- Documentation was inconsistent with actual deployed CRDs
+
+### Impact
+- [x] Documentation only - no code changes
+- All README examples now use correct CRD kind name
+- Users following quickstart guide will use valid YAML
+- Aligns with current CRD schema in `deploy/crds/clusterbind9providers.crd.yaml`
+
+---
+
+## [2026-01-12 23:45] - Phase 7.1: Records Reconciler Partial Refactoring (Status Helpers Extraction)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **[src/reconcilers/records/](src/reconcilers/records/)**: Refactored from single 2,355-line file into modular structure (Phase 7.1 complete, Phases 7.2-7.4 deferred)
+  - **Created modular directory structure** (partial extraction following proven pattern):
+    - `mod.rs` (~2,119 lines) - All reconciliation logic + RecordOperation trait + 8 record type implementations
+    - `status_helpers.rs` (~235 lines) - Status management and Kubernetes event creation
+    - `types.rs` (~23 lines) - Shared type re-exports and imports
+  - **Extracted status management** - Status updates and event creation isolated from reconciliation logic
+  - **Deferred core extraction** - RecordOperation trait with 8 implementations (A, AAAA, CNAME, TXT, MX, NS, SRV, CAA) kept in mod.rs due to tight coupling
+  - All 661 tests passing, zero clippy warnings
+
+### Why
+**Problem**: Single 2,355-line file with multiple concerns:
+- Status management (~234 lines) - Status updates with conditions, Kubernetes event creation
+- Core reconciliation logic (~910 lines) - RecordOperation trait + 8 record type implementations
+- Record deletion logic (~186 lines)
+- Helper functions (~200 lines)
+- All concerns intermingled in largest remaining reconciler file
+
+**Solution**:
+- Applied proven modular extraction pattern from DNSZone (Phases 1-2), Bind9Cluster (Phase 5), and Bind9Instance (Phase 6)
+- **Conservative approach**: Only extracted status_helpers.rs (self-contained, no trait dependencies)
+- **Deferred complex extractions**: RecordOperation trait and implementations have circular dependencies requiring deeper refactoring
+- Separated status concerns while maintaining backward compatibility
+- Used `pub(super)` visibility for internal helper functions
+
+**Why Phase 7.1 Only:**
+- First attempt to extract core.rs (~910 lines) with RecordOperation trait broke module structure completely
+- Trait has 8 implementations tightly coupled with reconciliation logic (A, AAAA, CNAME, TXT, MX, NS, SRV, CAA records)
+- RecordOperation trait defines generic `reconcile()`, `delete()`, `build_rdata()` methods used across all record types
+- Each implementation references shared helpers, status functions, and deletion logic
+- Breaking these dependencies requires careful trait redesign (beyond scope of Phase 7.1)
+- Status extraction provides immediate benefit without risk
+
+**Benefits**:
+- **10.0% main file reduction** (2,355 → 2,119 lines in mod.rs)
+- **Better Organization**: Status concerns separated into dedicated module
+- **Easier Testing**: Status update logic can be tested in isolation
+- **Improved Maintainability**: Status changes localized to status_helpers.rs
+- **Minimal Overhead**: Total codebase only ~22 lines more (0.9% increase for module declarations)
+- **Risk Mitigation**: Conservative extraction avoided breaking complex trait dependencies
+- **Foundation for Future Work**: Status extraction simplifies future core.rs refactoring
+
+### Impact
+- ✅ **Main reconciliation** (mod.rs): 2,119 lines - RecordOperation trait + 8 implementations + reconciliation workflow
+- ✅ **Status helpers** (status_helpers.rs): 235 lines - Status updates and event creation
+- ✅ **Types** (types.rs): 23 lines - Shared imports and type re-exports
+- ⏳ **Future work identified**: Core reconciliation (~910 lines), deletion logic (~186 lines), helper functions (~200 lines) remain candidates for extraction
+- ✅ **Pattern consistency**: Follows same modular extraction approach as Phases 5 & 6
+- ✅ **Technical debt reduction**: Partial but meaningful improvement to largest remaining file
+
+### Technical Notes
+- **RecordOperation Trait Complexity**: Generic trait with 8 implementations creates tight coupling that requires deeper refactoring
+- **Trait Dependencies**: Each record type implementation references shared helpers, making simple extraction insufficient
+- **Conservative Strategy**: Extracting self-contained logic (status) first provides value while deferring complex refactoring
+- **No Breaking Changes**: All public APIs maintained, all tests passing, zero clippy warnings
+
+---
+
 ## [2026-01-12 22:15] - Phase 6: Bind9Instance Reconciler Modular Refactoring Complete
 
 **Author:** Erick Bourgeois
