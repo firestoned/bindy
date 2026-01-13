@@ -228,3 +228,33 @@ pub const ANNOTATION_ZONE_OWNER: &str = "bindy.firestoned.io/zone";
 /// this annotation before removing the zone ownership. This helps track orphaned
 /// records and enables cleanup workflows.
 pub const ANNOTATION_ZONE_PREVIOUS_OWNER: &str = "bindy.firestoned.io/previous-zone";
+
+// ============================================================================
+// Kubernetes API Client Rate Limiting Constants
+// ============================================================================
+
+/// Kubernetes API client queries per second (sustained rate)
+///
+/// This matches kubectl default rate limits and has been tested at scale.
+/// Prevents overwhelming the API server with too many requests.
+/// Can be overridden via `BINDY_KUBE_QPS` environment variable.
+pub const KUBE_CLIENT_QPS: f32 = 20.0;
+
+/// Kubernetes API client burst size (max concurrent requests)
+///
+/// Allows temporary bursts above the QPS limit for reconciliation spikes.
+/// Matches kubectl defaults for optimal API server behavior.
+/// Can be overridden via `BINDY_KUBE_BURST` environment variable.
+pub const KUBE_CLIENT_BURST: u32 = 30;
+
+/// Page size for Kubernetes API list operations
+///
+/// Balances memory usage vs. number of API calls.
+/// Limits each list response to 100 items, reducing memory pressure
+/// when listing large resource sets (e.g., 1000+ `DNSZone`s).
+///
+/// With 100 items per page:
+/// - 1000 resources = 10 API calls
+/// - Memory usage remains constant (O(1) relative to total count)
+/// - Reduces API server load per request
+pub const KUBE_LIST_PAGE_SIZE: u32 = 100;

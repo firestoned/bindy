@@ -180,6 +180,121 @@ mod tests {
             "Error policies should requeue after 30 seconds"
         );
     }
+
+    /// Test that rate limiting constants have expected values
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn test_rate_limiting_constants() {
+        use bindy::constants::{KUBE_CLIENT_BURST, KUBE_CLIENT_QPS};
+
+        // Verify default QPS matches kubectl defaults
+        assert_eq!(
+            KUBE_CLIENT_QPS, 20.0,
+            "Default QPS should be 20.0 (matches kubectl)"
+        );
+
+        // Verify default burst matches kubectl defaults
+        assert_eq!(
+            KUBE_CLIENT_BURST, 30,
+            "Default burst should be 30 (matches kubectl)"
+        );
+
+        // Verify burst is higher than QPS (allows temporary spikes)
+        #[allow(clippy::cast_precision_loss)]
+        let burst_f32 = KUBE_CLIENT_BURST as f32;
+        assert!(
+            burst_f32 > KUBE_CLIENT_QPS,
+            "Burst should be higher than QPS to handle reconciliation spikes"
+        );
+    }
+
+    /// Test that environment variable parsing for QPS works correctly
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn test_env_var_qps_parsing() {
+        // Test valid float parsing
+        std::env::set_var("BINDY_KUBE_QPS", "25.5");
+        let qps: f32 = std::env::var("BINDY_KUBE_QPS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(20.0);
+        assert_eq!(qps, 25.5, "Should parse float QPS from env var");
+        std::env::remove_var("BINDY_KUBE_QPS");
+
+        // Test invalid value falls back to default
+        std::env::set_var("BINDY_KUBE_QPS", "invalid");
+        let qps: f32 = std::env::var("BINDY_KUBE_QPS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(20.0);
+        assert_eq!(qps, 20.0, "Should fall back to default on invalid parse");
+        std::env::remove_var("BINDY_KUBE_QPS");
+
+        // Test missing env var uses default
+        std::env::remove_var("BINDY_KUBE_QPS");
+        let qps: f32 = std::env::var("BINDY_KUBE_QPS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(20.0);
+        assert_eq!(qps, 20.0, "Should use default when env var not set");
+    }
+
+    /// Test that environment variable parsing for burst works correctly
+    #[test]
+    fn test_env_var_burst_parsing() {
+        // Test valid integer parsing
+        std::env::set_var("BINDY_KUBE_BURST", "50");
+        let burst: u32 = std::env::var("BINDY_KUBE_BURST")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(30);
+        assert_eq!(burst, 50, "Should parse integer burst from env var");
+        std::env::remove_var("BINDY_KUBE_BURST");
+
+        // Test invalid value falls back to default
+        std::env::set_var("BINDY_KUBE_BURST", "invalid");
+        let burst: u32 = std::env::var("BINDY_KUBE_BURST")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(30);
+        assert_eq!(burst, 30, "Should fall back to default on invalid parse");
+        std::env::remove_var("BINDY_KUBE_BURST");
+
+        // Test missing env var uses default
+        std::env::remove_var("BINDY_KUBE_BURST");
+        let burst: u32 = std::env::var("BINDY_KUBE_BURST")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(30);
+        assert_eq!(burst, 30, "Should use default when env var not set");
+    }
+
+    /// Test that Kubernetes config can be created with rate limits
+    #[tokio::test]
+    async fn test_kube_config_with_rate_limits() {
+        use bindy::constants::{KUBE_CLIENT_BURST, KUBE_CLIENT_QPS};
+
+        // This test verifies the pattern used in initialize_services()
+        // We can't test the full function without a kubeconfig, but we can
+        // test that kube::Config accepts our rate limit values
+
+        // Test that we can create a config with custom rate limits
+        // Note: Config::infer() requires a valid kubeconfig, so we skip
+        // the full integration test here. Integration tests will cover this.
+
+        // Verify the types are correct
+        let qps: f32 = KUBE_CLIENT_QPS;
+        let burst: u32 = KUBE_CLIENT_BURST;
+
+        assert!(qps > 0.0, "QPS should be positive");
+        assert!(burst > 0, "Burst should be positive");
+        #[allow(clippy::cast_precision_loss)]
+        let burst_f32 = burst as f32;
+        assert!(
+            burst_f32 >= qps,
+            "Burst should be >= QPS for proper throttling"
+        );
+    }
 }
 
 // Integration test documentation

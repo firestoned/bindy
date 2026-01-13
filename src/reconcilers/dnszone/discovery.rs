@@ -18,6 +18,7 @@ use std::collections::HashSet;
 use tracing::{debug, info, warn};
 
 use crate::crd::DNSZone;
+use crate::reconcilers::pagination::list_all_paginated;
 
 /// Reconciles DNS records for a zone by discovering records that match the zone's label selectors.
 ///
@@ -535,7 +536,7 @@ where
     use std::collections::BTreeMap;
 
     let api: kube::Api<T> = kube::Api::namespaced(client.clone(), namespace);
-    let records = api.list(&kube::api::ListParams::default()).await?;
+    let records = list_all_paginated(&api, kube::api::ListParams::default()).await?;
 
     let mut record_refs = Vec::new();
     for record in records {
@@ -805,7 +806,7 @@ pub async fn find_zones_selecting_record(
     record_name: &str,
 ) -> Result<Vec<(String, String)>> {
     let api: Api<DNSZone> = Api::namespaced(client.clone(), record_namespace);
-    let zones = api.list(&ListParams::default()).await?;
+    let zones = list_all_paginated(&api, ListParams::default()).await?;
 
     let mut selecting_zones = vec![];
 
