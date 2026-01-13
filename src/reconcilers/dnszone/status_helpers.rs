@@ -146,3 +146,7 @@ pub async fn finalize_zone_status(
 
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "status_helpers_tests.rs"]
+mod status_helpers_tests;
