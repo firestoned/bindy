@@ -242,3 +242,7 @@ pub(super) async fn update_status(
 
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "status_helpers_tests.rs"]
+mod status_helpers_tests;

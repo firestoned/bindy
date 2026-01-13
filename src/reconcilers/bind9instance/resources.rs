@@ -499,3 +499,7 @@ pub(super) async fn delete_resources(client: &Client, namespace: &str, name: &st
 
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "resources_tests.rs"]
+mod resources_tests;

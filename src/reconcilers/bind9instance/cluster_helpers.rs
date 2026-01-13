@@ -110,3 +110,7 @@ pub(super) fn build_cluster_reference(
         })
     }
 }
+
+#[cfg(test)]
+#[path = "cluster_helpers_tests.rs"]
+mod cluster_helpers_tests;

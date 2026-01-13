@@ -131,7 +131,7 @@ Bindy provides 4 types of resources:
 | Resource | Purpose |
 |----------|---------|
 | **Bind9Cluster** | Logical DNS cluster (manages multiple instances) |
-| **Bind9GlobalCluster** | Cluster-scoped DNS infrastructure (platform-managed) |
+| **ClusterBind9Provider** | Cluster-scoped DNS infrastructure (platform-managed) |
 | **Bind9Instance** | Individual BIND9 server deployment |
 
 #### **DNS Management**
@@ -174,13 +174,13 @@ Bindy provides 4 types of resources:
 - **DNSZone** creates the zone on target BIND9 instances
 - **Record resources** add DNS records dynamically (no zone file edits!)
 
-### Cluster-Scoped DNS with Bind9GlobalCluster
+### Cluster-Scoped DNS with ClusterBind9Provider
 
 For platform-managed DNS infrastructure accessible from all namespaces:
 
 ```yaml
 apiVersion: bindy.firestoned.io/v1beta1
-kind: Bind9GlobalCluster
+kind: ClusterBind9Provider
 metadata:
   name: shared-dns
   # No namespace - cluster-scoped resource
@@ -358,7 +358,7 @@ Useful for testing or when you need full control over a single instance.
 ✅ **Declarative** - Manage DNS as Kubernetes resources (GitOps-ready)
 ✅ **Dynamic Updates** - Records added via RNDC (no zone file restarts)
 ✅ **High Performance** - Written in Rust, minimal overhead
-✅ **Cluster-Scoped** - Bind9GlobalCluster for platform-managed DNS
+✅ **Cluster-Scoped** - ClusterBind9Provider for platform-managed DNS
 ✅ **DNSSEC** - Automatic key management and zone signing
 ✅ **High Availability** - Leader election, automatic failover
 ✅ **Compliance** - SOX, NIST 800-53, CIS documented
