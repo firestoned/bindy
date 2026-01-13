@@ -15,12 +15,13 @@ set -euo pipefail
 # 6. DNS zone recreation after pod restart
 # 7. DNSZone deletion and zone removal from all instances
 #
-# Usage: ./tests/cluster_provider_resilience_test.sh [--image IMAGE_REF] [--skip-deploy]
+# Usage: ./tests/cluster_provider_resilience_test.sh [--image IMAGE_REF] [--skip-deploy] [--zone ZONE_NAME]
 #
 # Options:
 #   --image IMAGE_REF    Use pre-built image from registry (e.g., ghcr.io/firestoned/bindy:main)
 #                        If not specified, builds image locally from source
 #   --skip-deploy        Skip cluster and controller deployment (assumes already set up)
+#   --zone ZONE_NAME     DNS zone name to use for testing (default: test-example.com)
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -37,6 +38,7 @@ SKIP_DEPLOY=false
 IMAGE_REF="${IMAGE_REF:-}"
 KUBECTL="kubectl --context kind-${CLUSTER_NAME}"
 CLUSTER_PROVIDER_NAME="test-production-dns"
+ZONE_NAME="${ZONE_NAME:-test-example.com}"
 
 # Track if we've started creating resources
 RESOURCES_CREATED=false
@@ -83,9 +85,25 @@ while [[ $# -gt 0 ]]; do
             IMAGE_REF="$2"
             shift 2
             ;;
+        --zone)
+            ZONE_NAME="$2"
+            shift 2
+            ;;
+        --help|-h)
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --image IMAGE_REF    Use pre-built image from registry (e.g., ghcr.io/firestoned/bindy:main)"
+            echo "                       If not specified, builds image locally from source"
+            echo "  --skip-deploy        Skip cluster and controller deployment (assumes already set up)"
+            echo "  --zone ZONE_NAME     DNS zone name to use for testing (default: test-example.com)"
+            echo "  --help, -h           Show this help message"
+            exit 0
+            ;;
         *)
             echo -e "${RED}Unknown option: $1${NC}"
-            echo "Usage: $0 [--image IMAGE_REF] [--skip-deploy]"
+            echo "Usage: $0 [--image IMAGE_REF] [--skip-deploy] [--zone ZONE_NAME]"
+            echo "Use --help for more information"
             exit 1
             ;;
     esac
@@ -377,31 +395,49 @@ sed -e "s/namespace: dns-system/namespace: ${NAMESPACE}/g" \
 RESOURCES_CREATED=true
 
 echo ""
-echo -e "${GREEN}📋 Step 2.5: Creating DNSZone 'example.com' for testing...${NC}"
+echo -e "${GREEN}📋 Step 2.5: Creating DNSZone '${ZONE_NAME}' for testing...${NC}"
 
 # Create a test DNSZone that matches the ClusterBind9Provider's zonesFrom selector
+# Convert zone name to a valid Kubernetes resource name (replace dots with hyphens)
+ZONE_RESOURCE_NAME=$(echo "${ZONE_NAME}" | sed 's/\./-/g')
+
 ${KUBECTL} apply -f - <<EOF
 apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
-  name: example-com
+  name: ${ZONE_RESOURCE_NAME}
   namespace: ${NAMESPACE}
   labels:
     bindy.firestoned.io/environment: production
     bindy.firestoned.io/team: platform
 spec:
-  zoneName: example.com
+  bind9InstancesFrom:
+    - selector:
+        matchLabels:
+          bindy.firestoned.io/cluster: test-production-dns
+          bindy.firestoned.io/managed-by: Bind9Cluster
+        matchExpressions:
+          - key: bindy.firestoned.io/role
+            operator: In
+            values:
+              - primary
+              - secondary
+  zoneName: ${ZONE_NAME}
   nameServerIps:
-    ns1.example.com.: 192.168.0.60
+    ns1.${ZONE_NAME}.: 192.168.0.60
   soaRecord:
-    primaryNs: ns1.example.com.
-    adminEmail: admin.example.com.
+    primaryNs: ns1.${ZONE_NAME}.
+    adminEmail: admin.${ZONE_NAME}.
     serial: 2024010101
     refresh: 3600
     retry: 600
     expire: 604800
     negativeTtl: 86400
   ttl: 3600
+  recordsFrom:
+    - selector:
+        matchLabels:
+          bindy.firestoned.io/zone: ${ZONE_NAME}
 EOF
 
 if [ $? -ne 0 ]; then
@@ -409,7 +445,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-echo -e "${GREEN}✓ DNSZone 'example-com' created${NC}"
+echo -e "${GREEN}✓ DNSZone '${ZONE_RESOURCE_NAME}' created${NC}"
 
 echo ""
 echo -e "${GREEN}⏳ Step 3: Waiting for resources to be created (timeout: 3 minutes)...${NC}"
@@ -469,7 +505,7 @@ if [ $MISSING_RESOURCES -gt 0 ]; then
 fi
 
 echo ""
-echo -e "${GREEN}🔍 Step 4: Validating DNS zone 'example.com' exists on all instances (before deletion)...${NC}"
+echo -e "${GREEN}🔍 Step 4: Validating DNS zone '${ZONE_NAME}' exists on all instances (before deletion)...${NC}"
 
 # Wait for pods to be fully ready
 sleep 5
@@ -500,25 +536,25 @@ validate_zone_on_instance() {
     if [ -z "$POD_NAME" ]; then
         echo -e "${RED}  ✗ No running pod found for instance '${instance}'${NC}"
         echo -e "${YELLOW}  Manual verification command:${NC}"
-        echo "    kubectl exec -it \$(kubectl get po -n ${NAMESPACE} -l app.kubernetes.io/instance=${instance} --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -- dig @127.0.0.1 -p 5353 SOA example.com"
+        echo "    kubectl exec -it \$(kubectl get po -n ${NAMESPACE} -l app.kubernetes.io/instance=${instance} --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -- dig @127.0.0.1 -p 5353 SOA ${ZONE_NAME}"
         return 1
     fi
 
     echo -e "${YELLOW}  Pod: ${POD_NAME}${NC}"
 
     # Execute dig command to check if zone exists (non-empty output expected)
-    SOA_RECORD=$(${KUBECTL} exec -n "${NAMESPACE}" "${POD_NAME}" -- dig @127.0.0.1 -p 5353 SOA example.com +short 2>/dev/null || echo "")
+    SOA_RECORD=$(${KUBECTL} exec -n "${NAMESPACE}" "${POD_NAME}" -- dig @127.0.0.1 -p 5353 SOA ${ZONE_NAME} +short 2>/dev/null || echo "")
 
     if [ -n "$SOA_RECORD" ]; then
         # Zone exists (non-empty output) - this is expected
-        echo -e "${GREEN}  ✓ DNS query successful - zone 'example.com' exists${NC}"
+        echo -e "${GREEN}  ✓ DNS query successful - zone '${ZONE_NAME}' exists${NC}"
         echo -e "${BLUE}  SOA Record: ${SOA_RECORD}${NC}"
         return 0
     else
         # Zone does not exist (empty output) - this is a failure
         echo -e "${RED}  ✗ DNS query failed - zone may not be loaded${NC}"
         echo -e "${YELLOW}  Manual verification command:${NC}"
-        echo "    kubectl exec -it ${POD_NAME} -n ${NAMESPACE} -- dig @127.0.0.1 -p 5353 SOA example.com"
+        echo "    kubectl exec -it ${POD_NAME} -n ${NAMESPACE} -- dig @127.0.0.1 -p 5353 SOA ${ZONE_NAME}"
         return 1
     fi
 }
@@ -542,7 +578,7 @@ if [ $ZONE_VALIDATION_FAILURES -gt 0 ]; then
 fi
 
 echo ""
-echo -e "${GREEN}✓ Zone 'example.com' validated on all ${#EXPECTED_INSTANCES[@]} instances${NC}"
+echo -e "${GREEN}✓ Zone '${ZONE_NAME}' validated on all ${#EXPECTED_INSTANCES[@]} instances${NC}"
 
 # Step 5: Delete each instance's deployment and verify recreation with zone
 echo ""
@@ -638,7 +674,7 @@ for instance in "${EXPECTED_INSTANCES[@]}"; do
 
     # Step 5d: Validate zone was recreated on the NEW pod
     echo ""
-    echo -e "${YELLOW}5d. Validating zone 'example.com' was recreated on new pod...${NC}"
+    echo -e "${YELLOW}5d. Validating zone '${ZONE_NAME}' was recreated on new pod...${NC}"
 
     # Give DNS time to fully load zone
     sleep 5
@@ -661,26 +697,26 @@ echo ""
 echo -e "${GREEN}🗑️  Step 6: Testing DNSZone deletion - verify zone removal from all instances...${NC}"
 
 echo ""
-echo -e "${YELLOW}6a. Deleting DNSZone 'example-com'...${NC}"
+echo -e "${YELLOW}6a. Deleting DNSZone '${ZONE_RESOURCE_NAME}'...${NC}"
 
-if ${KUBECTL} get dnszone example-com -n "${NAMESPACE}" &>/dev/null; then
-    ${KUBECTL} delete dnszone example-com -n "${NAMESPACE}" || {
+if ${KUBECTL} get dnszone ${ZONE_RESOURCE_NAME} -n "${NAMESPACE}" &>/dev/null; then
+    ${KUBECTL} delete dnszone ${ZONE_RESOURCE_NAME} -n "${NAMESPACE}" || {
         echo -e "${RED}❌ Failed to delete DNSZone${NC}"
         exit 1
     }
-    echo -e "${GREEN}✓ Deleted DNSZone: example-com${NC}"
+    echo -e "${GREEN}✓ Deleted DNSZone: ${ZONE_RESOURCE_NAME}${NC}"
 
     # Wait for reconciliation to process the deletion
     echo -e "${YELLOW}Waiting for reconciliation to process deletion...${NC}"
     sleep 10
 else
-    echo -e "${RED}✗ DNSZone 'example-com' not found${NC}"
+    echo -e "${RED}✗ DNSZone '${ZONE_RESOURCE_NAME}' not found${NC}"
     echo -e "${RED}✗ Test FAILED - expected DNSZone missing${NC}"
     exit 1
 fi
 
 echo ""
-echo -e "${YELLOW}6b. Validating zone 'example.com' is removed from all instances...${NC}"
+echo -e "${YELLOW}6b. Validating zone '${ZONE_NAME}' is removed from all instances...${NC}"
 
 # Helper function to validate zone does NOT exist on an instance
 validate_zone_removed_from_instance() {
@@ -697,16 +733,16 @@ validate_zone_removed_from_instance() {
     echo -e "${YELLOW}  Pod: ${POD_NAME}${NC}"
 
     # Execute dig command - zone should NOT exist (empty output expected)
-    SOA_RECORD=$(${KUBECTL} exec -n "${NAMESPACE}" "${POD_NAME}" -- dig @127.0.0.1 -p 5353 SOA example.com +short 2>/dev/null || echo "")
+    SOA_RECORD=$(${KUBECTL} exec -n "${NAMESPACE}" "${POD_NAME}" -- dig @127.0.0.1 -p 5353 SOA ${ZONE_NAME} +short 2>/dev/null || echo "")
 
     if [ -n "$SOA_RECORD" ]; then
         # Zone still exists (non-empty output) - this is a failure
-        echo -e "${RED}  ✗ Zone 'example.com' still exists (should be deleted)${NC}"
+        echo -e "${RED}  ✗ Zone '${ZONE_NAME}' still exists (should be deleted)${NC}"
         echo -e "${RED}  SOA Record: ${SOA_RECORD}${NC}"
         return 1
     else
         # Zone does not exist (empty output) - this is expected
-        echo -e "${GREEN}  ✓ Zone 'example.com' successfully removed${NC}"
+        echo -e "${GREEN}  ✓ Zone '${ZONE_NAME}' successfully removed${NC}"
         return 0
     fi
 }
@@ -730,7 +766,7 @@ if [ $ZONE_REMOVAL_FAILURES -gt 0 ]; then
 fi
 
 echo ""
-echo -e "${GREEN}✓ Zone 'example.com' successfully removed from all ${#EXPECTED_INSTANCES[@]} instances${NC}"
+echo -e "${GREEN}✓ Zone '${ZONE_NAME}' successfully removed from all ${#EXPECTED_INSTANCES[@]} instances${NC}"
 
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

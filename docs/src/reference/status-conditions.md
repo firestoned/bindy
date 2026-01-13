@@ -92,6 +92,7 @@ status:
   4. `Progressing/SecondaryReconciled`: After successful secondary configuration
   5. `Ready/ReconcileSucceeded`: When all phases complete successfully
 - **Error Conditions**:
+  - `Ready=False/DuplicateZone`: Another DNSZone already claims this zone name (validation error - see [Troubleshooting](../operations/common-issues.md#duplicate-zone-name-error))
   - `Degraded/PrimaryFailed`: Primary reconciliation failed (fatal error)
   - `Degraded/SecondaryFailed`: Secondary reconciliation failed (primaries still work, non-fatal)
 - Additional status fields:
@@ -209,6 +210,23 @@ status:
   observedGeneration: 1
   recordCount: 0
 ```
+
+### DNSZone - Duplicate Zone Name Error
+```yaml
+status:
+  conditions:
+    - type: Ready
+      status: "False"
+      reason: DuplicateZone
+      message: "Zone 'example.com' is already claimed by other DNSZone(s): production/example-com, staging/example-com-test"
+      lastTransitionTime: "2024-11-26T10:00:00Z"
+  observedGeneration: 1
+  recordCount: 0
+```
+
+**What This Means**: This condition is set when multiple DNSZone custom resources try to manage the same DNS zone name (e.g., `example.com`). Bindy prevents this to avoid conflicting DNS configurations. Only one DNSZone can claim a given zone name at a time.
+
+**How to Fix**: See the [Troubleshooting Guide](../operations/common-issues.md#duplicate-zone-name-error) for resolution steps.
 
 ### DNS Record - Progressing
 ```yaml

@@ -55,6 +55,121 @@ kubectl apply -f instance.yaml
 
 ## DNSZone Issues
 
+### Duplicate Zone Name Error
+
+**Symptom:** DNSZone status shows `Ready=False` with reason `DuplicateZone`
+
+**What This Means:**
+Multiple DNSZone custom resources are trying to manage the same DNS zone name (e.g., `example.com`). Bindy prevents this to avoid conflicting DNS configurations. Only one DNSZone can claim a given zone name at a time.
+
+**Diagnosis:**
+```bash
+# Check the DNSZone status
+kubectl get dnszone <zone-name> -n dns-system -o yaml
+
+# Look for the condition
+kubectl get dnszone <zone-name> -n dns-system -o jsonpath='{.status.conditions[?(@.type=="Ready")]}'
+
+# Expected output showing the conflict:
+# {
+#   "type": "Ready",
+#   "status": "False",
+#   "reason": "DuplicateZone",
+#   "message": "Zone 'example.com' is already claimed by other DNSZone(s): production/example-com, staging/example-com-test"
+# }
+```
+
+**Common Scenarios:**
+
+1. **Accidental Duplication**: Same zone created in multiple namespaces
+   ```bash
+   # Find all DNSZones claiming the same zone name
+   kubectl get dnszones --all-namespaces -o json | \
+     jq -r '.items[] | select(.spec.zoneName=="example.com") | "\(.metadata.namespace)/\(.metadata.name)"'
+   ```
+
+2. **Migration Leftovers**: Old zone not deleted after migration
+   ```bash
+   # Check for zones in all namespaces
+   kubectl get dnszones --all-namespaces | grep example
+   ```
+
+3. **Multi-Tenant Conflicts**: Different teams trying to use the same domain
+   ```bash
+   # Review zone ownership
+   kubectl get dnszones --all-namespaces -o custom-columns=\
+     NAMESPACE:.metadata.namespace,\
+     NAME:.metadata.name,\
+     ZONE:.spec.zoneName,\
+     OWNER:.metadata.labels.team
+   ```
+
+**Resolution:**
+
+1. **Identify the intended owner**: Determine which DNSZone should own the zone name
+   ```bash
+   # List all conflicting zones with details
+   kubectl get dnszones --all-namespaces -o json | \
+     jq -r '.items[] | select(.spec.zoneName=="example.com") |
+       "Namespace: \(.metadata.namespace), Name: \(.metadata.name), Created: \(.metadata.creationTimestamp)"'
+   ```
+
+2. **Delete duplicate zones**: Remove the DNSZone resources that should NOT manage this zone
+   ```bash
+   # Delete the unwanted zone
+   kubectl delete dnszone <duplicate-zone-name> -n <namespace>
+   ```
+
+3. **Verify resolution**: Check that the intended zone is now reconciling
+   ```bash
+   # Watch the zone status update
+   kubectl get dnszone <intended-zone-name> -n dns-system -w
+
+   # Expected: Status should transition from DuplicateZone to Ready
+   # Ready     False   DuplicateZone   ...  (before)
+   # Ready     True    ReconcileSucceeded  ...  (after)
+   ```
+
+**Prevention:**
+
+1. **Use unique names**: Name your DNSZone resources uniquely, even if managing the same domain
+   ```yaml
+   # Good: Unique names even for same zone
+   apiVersion: bindy.firestoned.io/v1beta1
+   kind: DNSZone
+   metadata:
+     name: example-com-production  # ← Unique name
+     namespace: dns-system
+   spec:
+     zoneName: example.com  # ← Shared zone name (but only one should exist)
+   ```
+
+2. **Document zone ownership**: Use labels to track which team/environment owns a zone
+   ```yaml
+   metadata:
+     name: example-com
+     namespace: production
+     labels:
+       team: platform-engineering
+       environment: production
+   ```
+
+3. **Implement admission control**: Use a ValidatingWebhook to prevent duplicate zone creation (advanced)
+
+**Technical Details:**
+
+The duplicate zone check:
+- Runs at the start of every reconciliation (before any configuration changes)
+- Searches across **all namespaces** for other DNSZones with the same `spec.zoneName`
+- Excludes the current zone itself (compares by namespace/name)
+- Sets `Ready=False` with reason `DuplicateZone` to prevent configuration
+- Lists all conflicting zones in the status message for troubleshooting
+
+This validation ensures DNS consistency and prevents:
+- Split-brain scenarios with different zone configurations
+- Conflicting DNS records from multiple sources
+- Accidental zone overwrites during reconciliation
+
 ### No Instances Match Selector
 
 **Symptom:** DNSZone status shows "No Bind9Instances matched selector"

@@ -141,9 +141,11 @@ All tests pass. The changes are ready for you to build and deploy."
 - **Easy Reference**: Developers know exactly where to find planning documents
 
 **Naming Convention:**
-- Use **lowercase** filenames
-- Use **hyphens** (`-`) instead of underscores (`_`)
+- **ALWAYS** use **lowercase** filenames (MANDATORY)
+- **ALWAYS** use **hyphens** (`-`) to separate words, NEVER underscores (`_`) (MANDATORY)
 - Use descriptive names indicating the purpose
+- NO uppercase letters anywhere in the filename
+- NO underscores anywhere in the filename
 
 **Examples:**
 ```
@@ -152,13 +154,24 @@ docs/roadmaps/integration-test-plan.md
 docs/roadmaps/phase4-implementation.md
 docs/roadmaps/feature-roadmap-2025.md
 docs/roadmaps/zones-from-label-selector-support.md
+docs/roadmaps/refactoring-complete.md
+docs/roadmaps/phase-1-2-implementation-plan.md
 
 ❌ WRONG:
 INTEGRATION_TEST_PLAN.md (root directory, uppercase, underscores)
 ROADMAP.md (root directory, uppercase)
 planning/test-plan.md (wrong directory)
 docs/roadmaps/ZONES_FROM_LABEL_SELECTOR.md (uppercase, underscores)
+docs/roadmaps/Phase_3_Analysis.md (uppercase and underscores)
+docs/roadmaps/Refactoring_Complete.md (uppercase and underscores)
+docs/roadmaps/REFACTORING-COMPLETE.md (uppercase)
 ```
+
+**CRITICAL RULE**: Before creating ANY file in `docs/roadmaps/`, verify the filename is:
+1. All lowercase letters
+2. Words separated by hyphens (`-`)
+3. No underscores (`_`)
+4. No uppercase letters
 
 **What Goes in docs/roadmaps/:**
 - Integration test plans
