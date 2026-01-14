@@ -67,7 +67,7 @@ The Basel Committee published **Cyber Risk Principles** in 2018, which define ex
 |---------------|----------|------------|-------------------|
 | **Kubernetes API** | Internal cluster network | HIGH | ✅ RBAC, audit logs, network policies (planned) |
 | **DNS Port 53** | Public internet | HIGH | ✅ BIND9 hardening, DDoS playbook |
-| **RNDC Port 953** | Internal cluster network | CRITICAL | ✅ Secret rotation, access audit, incident playbook P4 |
+| **RNDC Port 9530** | Internal cluster network | CRITICAL | ✅ Secret rotation, access audit, incident playbook P4 |
 | **Container Images** | Public registries | MEDIUM | ✅ Trivy scanning, Chainguard zero-CVE images |
 | **CRDs (Custom Resources)** | Kubernetes API | MEDIUM | ✅ Input validation, RBAC, audit logs |
 | **Git Repository** | Public GitHub | LOW | ✅ Signed commits, branch protection, code review |

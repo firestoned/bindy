@@ -23,7 +23,7 @@ mod tests {
                 "@",
                 "ns1.example.com.",
                 Some(3600),
-                "localhost:953",
+                "localhost:9530",
                 &key_data,
             )
             .await;

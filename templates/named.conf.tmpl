@@ -8,7 +8,7 @@ include "/etc/bind/named.conf.options";
 
 // RNDC Controls - listen on localhost only (API sidecar handles external access)
 controls {
-    inet 127.0.0.1 port 953 allow { localhost; } keys { {{RNDC_KEY_NAMES}}; };
+    inet 127.0.0.1 port 9530 allow { localhost; } keys { {{RNDC_KEY_NAMES}}; };
 };
 
 logging {

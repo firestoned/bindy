@@ -92,7 +92,7 @@ kubectl apply -f dns-config.yaml
 
 Bindy automatically:
 1. Finds matching BIND9 instances using pod discovery
-2. Connects to BIND9 via RNDC protocol (port 953)
+2. Connects to BIND9 via RNDC protocol (port 9530)
 3. Creates zones and records using native RNDC commands
 4. Tracks status and conditions in real-time
 

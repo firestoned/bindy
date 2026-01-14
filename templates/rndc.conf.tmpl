@@ -8,10 +8,12 @@ include "/etc/bind/keys/rndc.key";
 # Using 127.0.0.1 to connect to local BIND9 instance within the same pod
 options {
     default-server 127.0.0.1;
+    default-port 9530;
     default-key "bindy-operator";
 };
 
 # Server configuration - connects to BIND9 on localhost within the pod
 server 127.0.0.1 {
     key "bindy-operator";
+    port 9530;
 };

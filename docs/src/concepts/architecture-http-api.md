@@ -28,7 +28,7 @@ graph TB
 
         subgraph bind9pod["BIND9 Pod"]
             subgraph containers["Containers"]
-                bind9["BIND9 Container<br/>(bind9)<br/>• DNS daemon (port 53)<br/>• rndc daemon (port 953)<br/>Dynamic zones:<br/>- example.com<br/>- internal.local"]
+                bind9["BIND9 Container<br/>(bind9)<br/>• DNS daemon (port 53)<br/>• rndc daemon (port 9530)<br/>Dynamic zones:<br/>- example.com<br/>- internal.local"]
                 api["HTTP API Sidecar<br/>(bindcar)<br/>• REST API (port 8080)<br/>• Executes rndc locally<br/>• Manages zone files"]
             end
             vol["Shared Volume<br/>/var/cache/bind"]
@@ -41,7 +41,7 @@ graph TB
 
     crds -->|"watches<br/>(Kubernetes API)"| controller
     controller -->|"HTTP REST API<br/>(port 8080/TCP)<br/>POST /api/v1/zones"| api
-    api -->|"rndc locally<br/>(port 953)"| bind9
+    api -->|"rndc locally<br/>(port 9530)"| bind9
     api -->|"reads/writes"| vol
     bind9 -->|"reads/writes"| vol
     bind9 -->|"DNS Queries<br/>(UDP/TCP 53)"| clients
@@ -59,7 +59,7 @@ graph TB
 ## Key Architectural Changes from Direct RNDC
 
 ### Previous Architecture (Direct RNDC)
-- Controller communicated directly with BIND9 via rndc protocol (port 953)
+- Controller communicated directly with BIND9 via rndc protocol (port 9530)
 - Required TSIG authentication for every request
 - Controller needed network access to every BIND9 pod
 - Complex authentication and connection management
@@ -67,7 +67,7 @@ graph TB
 ### New Architecture (HTTP API Sidecar)
 - **Sidecar pattern**: bindcar container runs alongside BIND9
 - **HTTP REST API**: Controller uses simple HTTP (port 8080) instead of rndc protocol
-- **Local rndc**: API sidecar executes rndc locally (localhost:953)
+- **Local rndc**: API sidecar executes rndc locally (localhost:9530)
 - **Shared volumes**: /var/cache/bind shared between BIND9 and API containers
 - **ServiceAccount authentication**: Uses Kubernetes ServiceAccount tokens
 - **Simplified networking**: Controller only needs to reach Service, not individual pods
@@ -83,7 +83,7 @@ graph TB
 │  │  BIND9 Container │          │  bindcar Sidecar │ │
 │  │                  │          │                         │ │
 │  │  Port 53 (DNS)   │          │  Port 8080 (HTTP API)   │ │
-│  │  Port 953 (rndc) │◀─────────│  rndc client            │ │
+│  │  Port 9530 (rndc) │◀─────────│  rndc client            │ │
 │  │                  │  local   │                         │ │
 │  │  named daemon    │  rndc    │  Axum HTTP server       │ │
 │  │                  │          │                         │ │
@@ -260,7 +260,7 @@ User creates DNSZone resource
 │   4. Returns JSON response                              │
 └─────────────────────────────────────────────────────────┘
     │
-    │ Local rndc (Port 953)
+    │ Local rndc (Port 9530)
     ▼
 ┌─────────────────────────────────────────────────────────┐
 │ BIND9 Instance executes command                         │
@@ -461,7 +461,7 @@ spec:
       protocol: UDP
     - containerPort: 53
       protocol: TCP
-    - containerPort: 953
+    - containerPort: 9530
       protocol: TCP
     volumeMounts:
     - name: cache
@@ -522,8 +522,8 @@ spec:
     targetPort: 53
     protocol: UDP
   - name: rndc
-    port: 953
-    targetPort: 953
+    port: 9530
+    targetPort: 9530
     protocol: TCP
   - name: api
     port: 8080
@@ -555,7 +555,7 @@ spec:
 ```
 ┌────────────────────────────────────────────────────────────┐
 │ • HTTP API on port 8080/TCP (ClusterIP only)              │
-│ • RNDC traffic on port 953/TCP (localhost only)           │
+│ • RNDC traffic on port 9530/TCP (localhost only)           │
 │ • DNS queries on port 53/UDP+TCP (exposed via Service)    │
 │ • All API communication within cluster network            │
 │ • No external API access (ClusterIP services only)        │

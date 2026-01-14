@@ -87,9 +87,9 @@ graph TB
     RES --> SVC
 
     %% RNDC communication
-    BM -.RNDC:953.-> P1
-    BM -.RNDC:953.-> P2
-    BM -.RNDC:953.-> P3
+    BM -.RNDC:9530.-> P1
+    BM -.RNDC:9530.-> P2
+    BM -.RNDC:9530.-> P3
 
     %% DNS deployment
     DEP --> P1
@@ -317,7 +317,7 @@ stateDiagram-v2
     StoringSecret --> AddingZone: Store in Secret
 
     AddingZone --> ConnectingRNDC: Call rndc addzone
-    ConnectingRNDC --> ExecutingCommand: Connect via port 953
+    ConnectingRNDC --> ExecutingCommand: Connect via port 9530
     ExecutingCommand --> VerifyingZone: Execute addzone command
 
     VerifyingZone --> Ready: Verify zone exists
@@ -480,7 +480,7 @@ flowchart TD
 sequenceDiagram
     participant BM as Bind9Manager<br/>(Rust)
     participant RC as RNDC Client<br/>(rndc-rs)
-    participant Net as TCP Socket<br/>:953
+    participant Net as TCP Socket<br/>:9530
     participant BIND as BIND9 Server<br/>(rndc daemon)
 
     Note over BM,BIND: RNDC Key Setup (One-time)
@@ -496,7 +496,7 @@ sequenceDiagram
     RC->>RC: Prepare TSIG signature
 
     BM->>RC: rndc_command("reload zone")
-    RC->>Net: Connect to server:953
+    RC->>Net: Connect to server:9530
     Net->>BIND: TCP handshake
 
     RC->>RC: Create RNDC message

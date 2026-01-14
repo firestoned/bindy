@@ -80,7 +80,7 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 │  │  │  ┌────────────────────────────────────────┐  │  │    │
 │  │  │  │  BIND Pod (Non-Root, ReadOnly)         │  │  │    │
 │  │  │  │  - Authoritative DNS (Port 53)         │  │  │    │
-│  │  │  │  - RNDC Control (Port 953)             │  │  │    │
+│  │  │  │  - RNDC Control (Port 9530)             │  │  │    │
 │  │  │  │  - Zone files (ConfigMaps)             │  │  │    │
 │  │  │  │  - RNDC key (Secret, read-only)        │  │  │    │
 │  │  │  └────────────────────────────────────────┘  │  │    │
@@ -138,7 +138,7 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 4. **Supporting Resources**
    - ConfigMaps: Store BIND9 configuration and zone files
    - Secrets: Store RNDC keys (symmetric HMAC keys)
-   - Services: Expose DNS (port 53) and RNDC (port 953)
+   - Services: Expose DNS (port 53) and RNDC (port 9530)
    - ServiceAccounts: RBAC for controller access
 
 ---
@@ -295,12 +295,12 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 **Attack Scenario:**
 1. Attacker compromises controller pod or namespace
 2. Reads RNDC key from Kubernetes Secret
-3. Connects to BIND9 RNDC port (953) and issues commands (e.g., `reload`, `freeze`, `thaw`)
+3. Connects to BIND9 RNDC port (9530) and issues commands (e.g., `reload`, `freeze`, `thaw`)
 
 **Mitigations:**
 - ✅ Secrets encrypted at rest (Kubernetes)
 - ✅ RBAC limits secret read access to controller only
-- ✅ RNDC port (953) not exposed externally
+- ✅ RNDC port (9530) not exposed externally
 - ❌ **MISSING**: Secret access audit trail (H-3)
 - ❌ **MISSING**: RNDC key rotation policy
 
@@ -710,7 +710,7 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 
 ---
 
-### 3. RNDC Port 953
+### 3. RNDC Port 9530
 
 **Exposure:** Internal (within cluster, not exposed externally)
 **Authentication:** HMAC key (symmetric)

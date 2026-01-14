@@ -818,7 +818,7 @@ kubectl delete secret rndc-key -n dns-system
 
 **Step 2.2: Block Network Access (if attacker active)**
 ```bash
-# Apply network policy to block RNDC port (953) from external access
+# Apply network policy to block RNDC port (9530) from external access
 kubectl apply -f - <<EOF
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -847,7 +847,7 @@ spec:
           app.kubernetes.io/name: bindy
     ports:
     - protocol: TCP
-      port: 953
+      port: 9530
 EOF
 ```
 

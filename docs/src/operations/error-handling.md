@@ -242,14 +242,14 @@ status:
   - type: Ready
     status: "False"
     reason: RecordAddFailed
-    message: "Cannot connect to BIND9 server at bind9-primary.dns-system.svc.cluster.local:953: connection refused. Will retry in 30s"
+    message: "Cannot connect to BIND9 server at bind9-primary.dns-system.svc.cluster.local:9530: connection refused. Will retry in 30s"
     lastTransitionTime: "2025-11-29T23:45:00Z"
 ```
 
 **Event:**
 ```
 Type     Reason           Message
-Warning  RecordAddFailed  Cannot connect to BIND9 server at bind9-primary.dns-system.svc.cluster.local:953
+Warning  RecordAddFailed  Cannot connect to BIND9 server at bind9-primary.dns-system.svc.cluster.local:9530
 ```
 
 **Resolution:**
@@ -264,7 +264,7 @@ Warning  RecordAddFailed  Cannot connect to BIND9 server at bind9-primary.dns-sy
 3. Verify network connectivity:
    ```bash
    kubectl run -it --rm debug --image=nicolaka/netshoot --restart=Never -- \
-     nc -zv bind9-primary.dns-system.svc.cluster.local 953
+     nc -zv bind9-primary.dns-system.svc.cluster.local 9530
    ```
 4. The operator will automatically retry after the configured interval
 
@@ -465,15 +465,15 @@ kubectl get arecords -n dns-system -l environment=production
 2. Test network connectivity:
    ```bash
    kubectl run -it --rm debug --image=nicolaka/netshoot -- \
-     nc -zv {cluster-name}.dns-system.svc.cluster.local 953
+     nc -zv {cluster-name}.dns-system.svc.cluster.local 9530
    ```
 3. Check BIND9 logs for errors:
    ```bash
    kubectl logs -n dns-system -l app={cluster-name} | grep -i error
    ```
-4. Verify RNDC is listening on port 953:
+4. Verify RNDC is listening on port 9530:
    ```bash
-   kubectl exec -n dns-system {bind9-pod} -- ss -tlnp | grep 953
+   kubectl exec -n dns-system {bind9-pod} -- ss -tlnp | grep 9530
    ```
 
 ## See Also

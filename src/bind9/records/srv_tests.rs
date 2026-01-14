@@ -30,7 +30,7 @@ mod tests {
                 "example.com",
                 "_sip._tcp",
                 &srv_data,
-                "localhost:953",
+                "localhost:9530",
                 &key_data,
             )
             .await;

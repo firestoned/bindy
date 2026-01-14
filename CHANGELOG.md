@@ -1,3 +1,116 @@
+## [2026-01-14 16:45] - Created RNDC Key Auto-Rotation Implementation Roadmap with Regulatory Compliance
+
+**Author:** Erick Bourgeois
+
+### Added
+- **[docs/roadmaps/rndc-key-auto-rotation.md](docs/roadmaps/rndc-key-auto-rotation.md)**: Comprehensive implementation roadmap for RNDC key auto-rotation feature
+  - Proposed new `RndcKeyConfig` API structure replacing `RndcSecretRef`
+  - Support for automatic key rotation based on configurable intervals
+  - Manual rotation trigger via Secret annotation updates
+  - New dedicated `RndcKeyRotationController` for lifecycle management (event-driven, not polling)
+  - Backward compatibility strategy with deprecated fields
+  - Complete implementation plan across 6 phases (12-18 day estimate)
+  - **Comprehensive documentation requirements** for regulated environments (CRITICAL)
+  - **NIST SP 800-57 compliance analysis** (cryptoperiod recommendations)
+  - **NIST SP 800-53 control mapping** (AC-2, IA-5, SC-12)
+  - **FIPS 140-2/140-3 considerations** (HMAC requirements, key lifecycle)
+  - **Industry compliance standards**: PCI DSS 8.2.4, HIPAA Security Rule, SOC 2
+  - **Recommended rotation intervals** by environment type (30-180 days)
+  - **Audit preparation checklist** and evidence collection procedures
+  - Security considerations, threat modeling, and incident response
+  - Monitoring strategy with Prometheus metrics and alerting
+  - Testing strategy (unit, integration, compliance validation)
+  - Migration guide for existing deployments
+
+### Why
+Long-lived RNDC keys increase security risk and create compliance gaps in regulated environments. This roadmap defines the path to implement automatic key rotation, providing:
+
+- **Security Benefits**: Reduced exposure window, automated key hygiene, defense-in-depth
+- **Compliance Benefits**: Alignment with NIST SP 800-57 (cryptoperiod), NIST SP 800-53 (authenticator management), FIPS 140-2/140-3 (key lifecycle), PCI DSS 8.2.4 (90-day rotation), HIPAA Security Rule, SOC 2 Trust Service Criteria
+- **Operational Benefits**: Reduced manual burden, audit trail for certifications, zero-trust architecture support
+
+**Compliance Validation:** This implementation **EXCEEDS** NIST/FIPS requirements:
+- NIST allows up to 2 years for symmetric auth keys; Bindy defaults to 90 days (more conservative)
+- Fully compliant with NIST SP 800-57, NIST SP 800-53, FIPS 198-1, and all industry standards
+- **NO violations** - this feature IMPROVES compliance posture
+
+### Documentation Requirements (CRITICAL for Regulated Environments)
+The roadmap mandates comprehensive documentation across 10 areas:
+1. User guide with API reference and troubleshooting
+2. Regulatory compliance guide (NIST, FIPS, PCI DSS, HIPAA, SOC 2)
+3. Security documentation (threat model, incident response)
+4. Migration guide with step-by-step instructions
+5. Operations runbook (day 1/day 2 procedures)
+6. API reference updates
+7. Quickstart guide updates
+8. Compliance checklist
+9. CHANGELOG updates
+10. Validation of all documentation builds and links
+
+### Impact
+- [ ] Breaking change - **NO** (backward compatible with deprecation path)
+- [ ] Requires cluster rollout - **NO** (planning phase only)
+- [ ] Config change only - **NO** (planning phase only)
+- [x] Documentation only - **YES** (roadmap, planning, and compliance analysis)
+
+**Compliance Benefits:**
+- ✅ NIST SP 800-57: Cryptographic key management lifecycle
+- ✅ NIST SP 800-53: AC-2, IA-5, SC-12 controls
+- ✅ FIPS 140-2/140-3: Key lifecycle management
+- ✅ PCI DSS 3.2 Req 8.2.4: 90-day credential rotation
+- ✅ HIPAA Security Rule: Technical safeguards
+- ✅ SOC 2: Access control and key management
+
+**Next Steps:**
+1. Review and approve the proposed API design
+2. Review regulatory compliance requirements with security team
+3. Begin Phase 1 implementation (API Changes)
+4. Follow TDD workflow for all code changes
+5. Prioritize documentation (mandatory for regulated environments)
+
+## [2026-01-14 12:30] - Changed RNDC Port from 953 to 9530
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **[src/constants.rs](src/constants.rs)**: Updated `RNDC_PORT` constant from 953 to 9530
+  - Port 953 is a privileged port (requires root)
+  - Port 9530 is non-privileged, aligning with non-root security practices
+  - Maintains consistency with `DNS_CONTAINER_PORT` (5353) using non-privileged ports
+- **[templates/named.conf.tmpl](templates/named.conf.tmpl)**: Updated RNDC controls to listen on port 9530
+- **[templates/rndc.conf.tmpl](templates/rndc.conf.tmpl)**: Updated RNDC client configuration
+  - Added `default-port 9530` to options block
+  - Added `port 9530` to server 127.0.0.1 block
+  - Ensures rndc client connects to the correct non-privileged port
+- **Tests**: Updated all test files to use the new port 9530:
+  - [src/bind9_resources_tests.rs](src/bind9_resources_tests.rs)
+  - [src/reconcilers/bind9instance/resources_tests.rs](src/reconcilers/bind9instance/resources_tests.rs)
+  - [src/bind9/records/srv_tests.rs](src/bind9/records/srv_tests.rs)
+  - [src/bind9/records/mx_tests.rs](src/bind9/records/mx_tests.rs)
+  - [src/bind9/records/ns_tests.rs](src/bind9/records/ns_tests.rs)
+  - [src/bind9/records/caa_tests.rs](src/bind9/records/caa_tests.rs)
+  - [src/bind9/records/a_tests.rs](src/bind9/records/a_tests.rs)
+- **Documentation**: Updated all documentation files in `docs/` to reflect port 9530:
+  - Updated 12 files in `docs/src/` (user guide, architecture, operations, security)
+  - Updated 6 files in `docs/` root (roadmaps, security documentation)
+  - All references to port 953 replaced with 9530
+  - Architecture diagrams, troubleshooting guides, and security documentation updated
+
+### Why
+Port 953 is a privileged port that requires root access. To support non-root container execution (running as UID 101), we need to use a non-privileged port. This aligns with our existing security practices where DNS runs on port 5353 (non-privileged) instead of 53.
+
+### Impact
+- [ ] Breaking change - **YES**: RNDC communication will break until containers are redeployed with new port
+- [ ] Requires cluster rollout - **YES**: All BIND9 instances must be restarted with new config
+- [ ] Config change only - **NO**: Code and configuration changes required
+- [ ] Documentation only - **NO**: Code changes required
+
+**Migration Steps:**
+1. Deploy updated operator with new RNDC_PORT constant
+2. Operator will generate new named.conf and rndc.conf files with port 9530
+3. Restart all BIND9 pods to pick up new configuration (both server and client configs)
+4. Verify RNDC connectivity on new port: `kubectl exec -it <pod> -- rndc status`
+
 ## [2026-01-14 02:20] - Fixed Pagination Empty String Continue Token Bug
 
 **Author:** Erick Bourgeois
