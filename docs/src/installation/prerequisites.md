@@ -70,7 +70,7 @@ Bindy manages existing BIND9 servers. You'll need:
 
 ### BIND9 to Network
 - UDP/TCP port 53 for DNS queries
-- Port 953 for RNDC (if using remote name daemon control)
+- Port 9530 for RNDC (if using remote name daemon control)
 - Zone transfer ports (configured in BIND9)
 
 ## Permissions

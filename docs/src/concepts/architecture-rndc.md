@@ -28,17 +28,17 @@ graph TB
 
         subgraph bind9["BIND9 Instances (Pods)"]
             subgraph primary_pod["Primary Pod (bind9-primary)"]
-                primary_bind["BIND9 Container<br/>• rndc daemon (localhost:953)<br/>• DNS (port 53)<br/>Dynamic zones:<br/>- example.com<br/>- internal.local"]
+                primary_bind["BIND9 Container<br/>• rndc daemon (localhost:9530)<br/>• DNS (port 53)<br/>Dynamic zones:<br/>- example.com<br/>- internal.local"]
                 primary_api["Bindcar API Sidecar<br/>• HTTP API (port 80→8080)<br/>• ServiceAccount auth<br/>• Local RNDC client<br/>• Zone file management"]
 
-                primary_api -->|"rndc localhost:953"| primary_bind
+                primary_api -->|"rndc localhost:9530"| primary_bind
             end
 
             subgraph secondary_pod["Secondary Pod (bind9-secondary)"]
-                secondary_bind["BIND9 Container<br/>• rndc daemon (localhost:953)<br/>• DNS (port 53)<br/>Transferred zones:<br/>- example.com<br/>- internal.local"]
+                secondary_bind["BIND9 Container<br/>• rndc daemon (localhost:9530)<br/>• DNS (port 53)<br/>Transferred zones:<br/>- example.com<br/>- internal.local"]
                 secondary_api["Bindcar API Sidecar<br/>• HTTP API (port 80→8080)<br/>• ServiceAccount auth<br/>• Local RNDC client"]
 
-                secondary_api -->|"rndc localhost:953"| secondary_bind
+                secondary_api -->|"rndc localhost:9530"| secondary_bind
             end
         end
 
@@ -78,7 +78,7 @@ graph TB
 ### New Architecture (RNDC Protocol + Cluster Hierarchy)
 - **Three-tier resource model**: Bind9Cluster → Bind9Instance → DNSZone
 - Controller uses native RNDC protocol
-- Direct communication with BIND9 via port 953
+- Direct communication with BIND9 via port 9530
 - Commands executed in real-time: `addzone`, `delzone`, `reload`
 - No file manipulation or ConfigMap management
 - BIND9 manages zone files internally with dynamic updates
@@ -160,7 +160,7 @@ spec:
 │                      │                 │   (Primary)          │
 │  ┌────────────────┐  │                 │                      │
 │  │ Bind9Manager   │  │                 │  ┌────────────────┐  │
-│  │                │  │   TCP Port 953  │  │  rndc daemon   │  │
+│  │                │  │   TCP Port 9530  │  │  rndc daemon   │  │
 │  │ RndcClient     │──┼────────────────▶│  │                │  │
 │  │  • Server URL  │  │  TSIG Auth      │  │  Validates:    │  │
 │  │  • Algorithm   │  │  HMAC-SHA256    │  │  • Key name    │  │
@@ -199,7 +199,7 @@ spec:
 │  2. Create RndcClient Instance                                │
 │                                                                │
 │  let client = RndcClient::new(                                │
-│      "bind9-primary.dns-system.svc.cluster.local:953",       │
+│      "bind9-primary.dns-system.svc.cluster.local:9530",       │
 │      "hmac-sha256",                                           │
 │      "base64-secret-key"                                      │
 │  );                                                           │
@@ -266,7 +266,7 @@ User creates DNSZone resource
 │     app=bind9, instance={cluster_ref}                   │
 │   • Select first running pod                            │
 │   • Build server address:                               │
-│     "{cluster_ref}.{namespace}.svc.cluster.local:953"   │
+│     "{cluster_ref}.{namespace}.svc.cluster.local:9530"   │
 └─────────────────────────────────────────────────────────┘
     │
     ▼
@@ -283,12 +283,12 @@ User creates DNSZone resource
 │       zone_name: "example.com",                         │
 │       zone_type: "master",                              │
 │       zone_file: "/var/lib/bind/example.com.zone",     │
-│       server: "bind9-primary...:953",                   │
+│       server: "bind9-primary...:9530",                   │
 │       key_data: RndcKeyData { ... }                     │
 │   )                                                     │
 └─────────────────────────────────────────────────────────┘
     │
-    │ RNDC Protocol (Port 953)
+    │ RNDC Protocol (Port 9530)
     ▼
 ┌─────────────────────────────────────────────────────────┐
 │ BIND9 Instance executes command                         │
@@ -350,7 +350,7 @@ User creates ARecord resource
 ┌─────────────────────────────────────────────────────────┐
 │ Load RNDC key and build server address                  │
 │   • Load "{cluster_ref}-rndc-key" Secret               │
-│   • Server: "{cluster_ref}.{namespace}.svc:953"        │
+│   • Server: "{cluster_ref}.{namespace}.svc:9530"        │
 └─────────────────────────────────────────────────────────┘
     │
     ▼
@@ -361,7 +361,7 @@ User creates ARecord resource
 │       name: "www",                                      │
 │       ipv4: "192.0.2.1",                               │
 │       ttl: Some(300),                                   │
-│       server: "bind9-primary...:953",                   │
+│       server: "bind9-primary...:9530",                   │
 │       key_data: RndcKeyData { ... }                     │
 │   )                                                     │
 │                                                         │
@@ -443,10 +443,10 @@ DNS updates, or via zone file manipulation + reload.
 │     List pods where app=bind9 AND instance={cluster_ref}  │
 │                                                            │
 │   Service DNS:                                            │
-│     {cluster_ref}.{namespace}.svc.cluster.local:953      │
+│     {cluster_ref}.{namespace}.svc.cluster.local:9530      │
 │                                                            │
 │   Example:                                                │
-│     bind9-primary.dns-system.svc.cluster.local:953       │
+│     bind9-primary.dns-system.svc.cluster.local:9530       │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -535,7 +535,7 @@ pub async fn reconcile_dnszone(
     let key_data = load_rndc_key(&client, &namespace, &cluster_ref).await?;
 
     // 3. Build server address
-    let server = format!("{}.{}.svc.cluster.local:953", cluster_ref, namespace);
+    let server = format!("{}.{}.svc.cluster.local:9530", cluster_ref, namespace);
 
     // 4. Add zone via RNDC
     zone_manager.add_zone(&zone_name, "master", &zone_file, &server, &key_data).await?;
@@ -569,7 +569,7 @@ pub async fn reconcile_dnszone(
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│ • RNDC traffic on port 953/TCP (not exposed externally)   │
+│ • RNDC traffic on port 9530/TCP (not exposed externally)   │
 │ • DNS queries on port 53/UDP+TCP (exposed via Service)    │
 │ • All RNDC communication within cluster network           │
 │ • No external RNDC access (ClusterIP services only)       │

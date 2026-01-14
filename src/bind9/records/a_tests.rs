@@ -49,7 +49,7 @@ mod tests {
                 "www",
                 "2001:db8::1",
                 Some(300),
-                "localhost:953",
+                "localhost:9530",
                 &key_data,
             )
             .await;

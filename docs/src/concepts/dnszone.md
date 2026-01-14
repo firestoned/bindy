@@ -69,7 +69,7 @@ When you create a DNSZone resource:
 
 1. **Controller discovers pods** - Finds BIND9 pods with label `instance={clusterRef}`
 2. **Loads RNDC key** - Retrieves Secret named `{clusterRef}-rndc-key`
-3. **Connects via RNDC** - Establishes connection to `{clusterRef}.{namespace}.svc.cluster.local:953`
+3. **Connects via RNDC** - Establishes connection to `{clusterRef}.{namespace}.svc.cluster.local:9530`
 4. **Executes addzone** - Runs `rndc addzone` command with zone configuration
 5. **BIND9 creates zone** - BIND9 creates the zone file and starts serving the zone
 6. **Updates status** - Controller updates DNSZone status to Ready
@@ -166,7 +166,7 @@ DNSZone.spec.clusterRef = "my-dns-cluster"
     ↓
 Secret name = "my-dns-cluster-rndc-key"
     ↓
-RNDC authentication to: my-dns-cluster.dns-system.svc.cluster.local:953
+RNDC authentication to: my-dns-cluster.dns-system.svc.cluster.local:9530
 ```
 
 ## Status
