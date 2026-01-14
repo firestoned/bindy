@@ -478,7 +478,7 @@ graph TB
 
         subgraph dns-system["dns-system Namespace"]
             Ctrl[Bindy Controller]
-            BIND1[BIND9 Primary<br/>Port 53, 953]
+            BIND1[BIND9 Primary<br/>Port 53, 9530]
             BIND2[BIND9 Secondary<br/>Port 53]
         end
 
@@ -495,7 +495,7 @@ graph TB
     LB -->|Forward| BIND1
     LB -->|Forward| BIND2
     Ctrl -->|HTTPS 6443| API
-    Ctrl -->|TCP 953<br/>RNDC| BIND1
+    Ctrl -->|TCP 9530<br/>RNDC| BIND1
     BIND1 -->|AXFR/IXFR| BIND2
     App1 -->|HTTPS 6443| API
 
@@ -536,7 +536,7 @@ spec:
           app.kubernetes.io/name: bind9
     ports:
     - protocol: TCP
-      port: 953
+      port: 9530
   # Allow: DNS (for cluster DNS resolution)
   - to:
     - namespaceSelector: {}
@@ -577,7 +577,7 @@ spec:
           app.kubernetes.io/name: bindy
     ports:
     - protocol: TCP
-      port: 953
+      port: 9530
   # Allow: AXFR from secondaries only
   - from:
     - podSelector:

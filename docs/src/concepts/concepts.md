@@ -48,7 +48,7 @@ graph TB
 
     controller["Bindy Controller<br/>• Watches CRDs<br/>• Reconciles state<br/>• RNDC client<br/>• TSIG authentication"]
 
-    bind9["BIND9 Instances<br/>• rndc daemon (port 953)<br/>• Primary servers<br/>• Secondary servers<br/>• Dynamic zones<br/>• DNS queries (port 53)"]
+    bind9["BIND9 Instances<br/>• rndc daemon (port 9530)<br/>• Primary servers<br/>• Secondary servers<br/>• Dynamic zones<br/>• DNS queries (port 53)"]
 
     zone --> controller
     arecord --> controller
@@ -56,7 +56,7 @@ graph TB
     txt --> controller
     more --> controller
 
-    controller -->|"RNDC Protocol<br/>(Port 953/TCP)<br/>TSIG/HMAC-SHA256"| bind9
+    controller -->|"RNDC Protocol<br/>(Port 9530/TCP)<br/>TSIG/HMAC-SHA256"| bind9
 
     style k8s fill:#e1f5ff,stroke:#01579b,stroke-width:2px
     style controller fill:#f3e5f5,stroke:#4a148c,stroke-width:2px

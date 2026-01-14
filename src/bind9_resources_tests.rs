@@ -200,7 +200,7 @@ mod tests {
         assert_eq!(ports.len(), 3);
         assert_eq!(ports[0].container_port, 5353); // DNS TCP (non-privileged port)
         assert_eq!(ports[1].container_port, 5353); // DNS UDP (non-privileged port)
-        assert_eq!(ports[2].container_port, 953); // RNDC
+        assert_eq!(ports[2].container_port, 9530); // RNDC (non-privileged)
     }
 
     #[test]

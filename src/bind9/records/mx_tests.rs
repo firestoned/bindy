@@ -24,7 +24,7 @@ mod tests {
                 10,
                 "mail.example.com.",
                 Some(3600),
-                "localhost:953",
+                "localhost:9530",
                 &key_data,
             )
             .await;

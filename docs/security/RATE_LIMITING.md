@@ -476,8 +476,8 @@ kubectl delete pod -n dns-system bind9-primary-0
 kubectl logs -n dns-system -l app=bindy --follow | grep -i circuit
 
 # Expected logs:
-# WARN Circuit breaker OPEN for server bind9-primary-0.bind9-primary:953
-# INFO Circuit breaker CLOSED for server bind9-primary-0.bind9-primary:953 (after 60s)
+# WARN Circuit breaker OPEN for server bind9-primary-0.bind9-primary:9530
+# INFO Circuit breaker CLOSED for server bind9-primary-0.bind9-primary:9530 (after 60s)
 ```
 
 ---

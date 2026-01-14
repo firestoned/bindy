@@ -115,7 +115,7 @@ Before diving into the three tiers, it's essential to understand how `bindy` com
 │  │ Port 53      │  rndc    │ Port 8080            │    │
 │  │ (DNS)        │  local   │                      │    │
 │  │              │          │ - Receives HTTP      │    │
-│  │ Port 953     │          │ - Executes rndc      │    │
+│  │ Port 9530     │          │ - Executes rndc      │    │
 │  │ (RNDC)       │          │ - Manages zones      │    │
 │  │              │          │                      │    │
 │  │ /var/cache/  │◀────────▶│ /var/cache/bind      │    │
@@ -135,7 +135,7 @@ Before diving into the three tiers, it's essential to understand how `bindy` com
 1. **Simplified protocol**: `bindy` uses simple HTTP REST instead of implementing the binary RNDC protocol
 2. **Better error handling**: Structured JSON responses with detailed error messages
 3. **Authentication**: Uses Kubernetes ServiceAccount tokens (Bearer authentication)
-4. **Local RNDC**: `bindcar` executes `rndc` commands locally (localhost:953) - no network complexity
+4. **Local RNDC**: `bindcar` executes `rndc` commands locally (localhost:9530) - no network complexity
 5. **Shared storage**: Both containers access `/var/cache/bind` for zone file operations
 6. **Language-agnostic**: Any HTTP client can interact with BIND9 via `bindcar`
 
@@ -209,7 +209,7 @@ The controller:
 1. Selects a primary Bind9Instance from the cluster
 2. Sends HTTP POST request to `bindcar` API sidecar (port 8080)
 3. `bindcar` writes zone file to `/var/cache/bind` (shared volume)
-4. `bindcar` executes RNDC `addzone` command locally (localhost:953)
+4. `bindcar` executes RNDC `addzone` command locally (localhost:9530)
 5. BIND9 loads the zone and begins serving DNS queries
 6. Controller updates resource status with zone placement
 
@@ -249,7 +249,7 @@ Kubernetes API (etcd)
 bindy Controller (Rust)
     ↓ HTTP REST API (port 8080)
 bindcar Sidecar
-    ↓ RNDC protocol (localhost:953)
+    ↓ RNDC protocol (localhost:9530)
 BIND9 Pods
     ↓ Zone transfers (AXFR/IXFR)
 Secondary Instances (multi-region)
@@ -290,7 +290,7 @@ Instead of implementing RNDC in the controller, `bindcar` acts as a translation 
                                             ▼
                                   ┌──────────────────────┐
                                   │ BIND9                │
-                                  │ localhost:953        │
+                                  │ localhost:9530        │
                                   │ No network exposure  │
                                   └──────────────────────┘
 ```
@@ -300,7 +300,7 @@ Instead of implementing RNDC in the controller, `bindcar` acts as a translation 
 1. **Simplified controller**: `bindy` uses standard HTTP - no custom protocol implementation
 2. **Better errors**: Structured JSON responses with detailed error messages and stack traces
 3. **Native Kubernetes auth**: Uses ServiceAccount tokens instead of managing TSIG keys
-4. **Security**: RNDC port (953) only exposed to localhost, not the cluster network
+4. **Security**: RNDC port (9530) only exposed to localhost, not the cluster network
 5. **Observability**: Easy to add Prometheus metrics, request logging, and tracing
 6. **Language-agnostic**: Any tool that speaks HTTP can manage BIND9 (curl, Python, Go, etc.)
 7. **Testability**: API can be tested independently of the controller

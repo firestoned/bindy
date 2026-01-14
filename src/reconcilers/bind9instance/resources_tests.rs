@@ -87,7 +87,7 @@ mod tests {
         // Given: A primary instance
         // When: create_service is called
         // Then: Should create Service with type=LoadBalancer
-        //       AND expose DNS ports (53/TCP, 53/UDP, 953/TCP)
+        //       AND expose DNS ports (53/TCP, 53/UDP, 9530/TCP)
     }
 
     #[tokio::test]
@@ -98,7 +98,7 @@ mod tests {
         // Given: A secondary instance
         // When: create_service is called
         // Then: Should create Service with type=ClusterIP
-        //       AND expose DNS ports (53/TCP, 53/UDP, 953/TCP)
+        //       AND expose DNS ports (53/TCP, 53/UDP, 9530/TCP)
     }
 
     #[tokio::test]

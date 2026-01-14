@@ -24,7 +24,7 @@ This roadmap outlines the implementation of a `kube-condition` derive macro libr
 │  └──────────────────┘         │  └────────┘  └────────┘  │  │
 │           │                   │       │           ▲      │  │
 │           │                   │       │    RNDC   │      │  │
-│           ▼                   │       │   :953    │      │  │
+│           ▼                   │       │   :9530    │      │  │
 │  ┌──────────────────┐         │       └───────────┘      │  │
 │  │   DNSZone CRD    │         │       shared volume      │  │
 │  │   DNSRecord CRD  │         └──────────────────────────┘  │

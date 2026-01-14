@@ -65,8 +65,8 @@ pub const DNS_PORT: u16 = 53;
 /// DNS container port (non-privileged port for non-root execution)
 pub const DNS_CONTAINER_PORT: u16 = 5353;
 
-/// Standard RNDC control port
-pub const RNDC_PORT: u16 = 953;
+/// Standard RNDC control port (non-privileged)
+pub const RNDC_PORT: u16 = 9530;
 
 /// Default bindcar HTTP API container port
 pub const BINDCAR_API_PORT: u16 = 8080;
