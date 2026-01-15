@@ -887,7 +887,8 @@ pub async fn add_dnszone(
                                         );
                                     }
                                     *total_endpoints.lock().await += 1;
-                                    Ok(())
+                                    // Return was_added so we can check if zone was actually configured
+                                    Ok(was_added)
                                 }
                                 Err(e) => {
                                     error!(
@@ -903,11 +904,13 @@ pub async fn add_dnszone(
                             }
                         }
                     })
-                    .collect::<Vec<Result<(), ()>>>()
+                    .collect::<Vec<Result<bool, ()>>>()
                     .await;
 
-                // Mark this instance as configured if at least one endpoint succeeded
-                if endpoint_results.iter().any(Result::is_ok) {
+                // Mark this instance as configured ONLY if at least one endpoint actually added the zone
+                // This prevents updating lastReconciledAt when zone already exists (avoids tight loop)
+                let zone_was_configured = endpoint_results.iter().any(|r| r.is_ok() && *r.as_ref().unwrap());
+                if zone_was_configured {
                     status_updater_shared
                         .lock()
                         .await
@@ -1205,7 +1208,8 @@ pub async fn add_dnszone_to_secondaries(
                                     }
 
                                     *total_endpoints.lock().await += 1;
-                                    Ok(())
+                                    // Return was_added so we can check if zone was actually configured
+                                    Ok(was_added)
                                 }
                                 Err(e) => {
                                     error!(
@@ -1221,11 +1225,13 @@ pub async fn add_dnszone_to_secondaries(
                             }
                         }
                     })
-                    .collect::<Vec<Result<(), ()>>>()
+                    .collect::<Vec<Result<bool, ()>>>()
                     .await;
 
-                // Mark this instance as configured if at least one endpoint succeeded
-                if endpoint_results.iter().any(Result::is_ok) {
+                // Mark this instance as configured ONLY if at least one endpoint actually added the zone
+                // This prevents updating lastReconciledAt when zone already exists (avoids tight loop)
+                let zone_was_configured = endpoint_results.iter().any(|r| r.is_ok() && *r.as_ref().unwrap());
+                if zone_was_configured {
                     status_updater_shared
                         .lock()
                         .await

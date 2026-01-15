@@ -18,6 +18,24 @@ use tracing::{debug, error, info, warn};
 use crate::constants::DEFAULT_DNS_RECORD_TTL_SECS;
 use crate::reconcilers::retry::{http_backoff, is_retryable_http_status};
 
+/// HTTP error with status code for retry logic.
+///
+/// This error type preserves the HTTP status code so we can determine
+/// if the error is retryable (429, 5xx) without parsing error strings.
+#[derive(Debug)]
+struct HttpError {
+    status: StatusCode,
+    message: String,
+}
+
+impl std::fmt::Display for HttpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "HTTP {}: {}", self.status, self.message)
+    }
+}
+
+impl std::error::Error for HttpError {}
+
 /// Build the API base URL from a server address
 ///
 /// Converts "service-name.namespace.svc.cluster.local:8080" or "service-name:8080"
@@ -81,30 +99,18 @@ pub(crate) async fn bindcar_request<T: Serialize + std::fmt::Debug>(
                 return Ok(response);
             }
             Err(e) => {
-                // Determine if the error is retryable
-                // We need to check both the error message (for status codes) and error type (for network errors)
-                let error_msg = e.to_string();
+                // Determine if the error is retryable by checking the error type
                 let mut is_retryable = false;
 
-                // Check for retryable HTTP status codes in error message
-                // Error format from bindcar_request_internal includes the status code as a u16
-                // Example: "HTTP request 'POST http://...' failed with status 503: ..."
-                if let Some(status_start) = error_msg.find("status ") {
-                    let status_str = &error_msg[status_start + 7..]; // Skip "status "
-                    if let Some(status_end) = status_str.find(':') {
-                        let status_code_str = status_str[..status_end].trim();
-                        if let Ok(status_u16) = status_code_str.parse::<u16>() {
-                            // Convert u16 to StatusCode and check if retryable
-                            if let Ok(status_code) = StatusCode::from_u16(status_u16) {
-                                is_retryable = is_retryable_http_status(status_code);
-                            }
-                        }
+                // Check if this is an HttpError (which contains the actual status code)
+                if let Some(http_err) = e.downcast_ref::<HttpError>() {
+                    is_retryable = is_retryable_http_status(http_err.status);
+                } else {
+                    // For non-HTTP errors, check if it's a network error
+                    let error_msg = e.to_string();
+                    if error_msg.contains("Failed to send") || error_msg.contains("connection") {
+                        is_retryable = true;
                     }
-                }
-
-                // Also check for network errors
-                if error_msg.contains("Failed to send") {
-                    is_retryable = true;
                 }
 
                 if !is_retryable {
@@ -241,7 +247,11 @@ async fn bindcar_request_internal<T: Serialize + std::fmt::Debug>(
             error = %error_text,
             "HTTP API request failed"
         );
-        anyhow::bail!("HTTP request '{method} {url}' failed with status {status}: {error_text}");
+        return Err(HttpError {
+            status,
+            message: error_text,
+        }
+        .into());
     }
 
     // Read response body
@@ -566,23 +576,25 @@ pub async fn add_primary_zone(
             Ok(true)
         }
         Err(e) => {
-            let err_msg = e.to_string().to_lowercase();
             // Handle "zone already exists" errors as success (idempotent)
+            // Check if this is an HttpError with 409 Conflict status code
+            let is_conflict = e
+                .downcast_ref::<HttpError>()
+                .is_some_and(|http_err| http_err.status == StatusCode::CONFLICT);
+
+            let err_msg = e.to_string().to_lowercase();
             // BIND9 can return various messages for duplicate zones:
             // - "already exists"
             // - "already serves the given zone"
             // - "duplicate zone"
             // - "zone X/IN: already exists" (BIND9 format)
-            // HTTP 409 Conflict is also used for resource conflicts
-            // Check if zone actually exists to confirm idempotency
-            let zone_check_result = zone_exists(client, token, zone_name, server).await;
-            if err_msg.contains("already exists")
+            // HTTP 409 Conflict means the zone already exists
+            if is_conflict
+                || err_msg.contains("already exists")
                 || err_msg.contains("already serves")
                 || err_msg.contains("duplicate zone")
-                || err_msg.contains("409")
-                || matches!(zone_check_result, Ok(true))
             {
-                info!("Zone {zone_name} already exists on {server} (detected via API error or existence check), treating as success");
+                info!("Zone {zone_name} already exists on {server} (HTTP 409 Conflict), treating as success");
 
                 // Zone exists - check if we need to update its configuration with secondary IPs
                 if let Some(ips) = secondary_ips {
@@ -593,15 +605,15 @@ pub async fn add_primary_zone(
                         );
                         // Update the zone's also-notify and allow-transfer configuration
                         // This is critical when secondary pods restart and get new IPs
-                        return update_primary_zone(client, token, zone_name, server, ips).await;
+                        let _updated =
+                            update_primary_zone(client, token, zone_name, server, ips).await?;
+                        // IMPORTANT: Return Ok(false) because the zone was NOT newly added, it already existed
+                        // Returning true here would trigger status updates and cause a reconciliation loop
+                        return Ok(false);
                     }
                 }
 
                 Ok(false)
-            } else if let Err(zone_err) = zone_check_result {
-                // If we can't check zone existence (rate limiting, network error, etc.), propagate that error
-                // This prevents treating transient errors as "zone doesn't exist"
-                Err(zone_err).context("Failed to verify zone existence after creation error")
             } else {
                 Err(e).context("Failed to add zone")
             }
@@ -763,28 +775,26 @@ pub async fn add_secondary_zone(
             Ok(true)
         }
         Err(e) => {
-            let err_msg = e.to_string().to_lowercase();
             // Handle "zone already exists" errors as success (idempotent)
+            // Check if this is an HttpError with 409 Conflict status code
+            let is_conflict = e
+                .downcast_ref::<HttpError>()
+                .is_some_and(|http_err| http_err.status == StatusCode::CONFLICT);
+
+            let err_msg = e.to_string().to_lowercase();
             // BIND9 can return various messages for duplicate zones:
             // - "already exists"
             // - "already serves the given zone"
             // - "duplicate zone"
             // - "zone X/IN: already exists" (BIND9 format)
-            // HTTP 409 Conflict is also used for resource conflicts
-            // Check if zone actually exists to confirm idempotency
-            let zone_check_result = zone_exists(client, token, zone_name, server).await;
-            if err_msg.contains("already exists")
+            // HTTP 409 Conflict means the zone already exists
+            if is_conflict
+                || err_msg.contains("already exists")
                 || err_msg.contains("already serves")
                 || err_msg.contains("duplicate zone")
-                || err_msg.contains("409")
-                || matches!(zone_check_result, Ok(true))
             {
-                info!("Zone {zone_name} already exists on {server} (detected via API error or existence check), treating as success");
+                info!("Zone {zone_name} already exists on {server} (HTTP 409 Conflict), treating as success");
                 Ok(false)
-            } else if let Err(zone_err) = zone_check_result {
-                // If we can't check zone existence (rate limiting, network error, etc.), propagate that error
-                // This prevents treating transient errors as "zone doesn't exist"
-                Err(zone_err).context("Failed to verify zone existence after creation error")
             } else {
                 Err(e).context("Failed to add secondary zone")
             }

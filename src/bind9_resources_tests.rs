@@ -134,6 +134,77 @@ mod tests {
     }
 
     #[test]
+    fn test_build_deployment_propagates_role_label() {
+        use crate::labels::{BINDY_ROLE_LABEL, ROLE_PRIMARY};
+
+        // Test that deployment propagates role label from instance
+        let mut instance = create_test_instance("test-primary");
+        let mut instance_labels = BTreeMap::new();
+        instance_labels.insert(BINDY_ROLE_LABEL.to_string(), ROLE_PRIMARY.to_string());
+        instance.metadata.labels = Some(instance_labels);
+
+        let deployment = build_deployment("test-primary", "test-ns", &instance, None, None);
+
+        // Check deployment metadata labels
+        let deployment_labels = deployment.metadata.labels.as_ref().unwrap();
+        assert_eq!(
+            deployment_labels.get(BINDY_ROLE_LABEL).unwrap(),
+            ROLE_PRIMARY,
+            "Deployment metadata should propagate role label from instance"
+        );
+
+        // Check pod template labels (important for pod selectors)
+        let pod_labels = deployment
+            .spec
+            .as_ref()
+            .unwrap()
+            .template
+            .metadata
+            .as_ref()
+            .unwrap()
+            .labels
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            pod_labels.get(BINDY_ROLE_LABEL).unwrap(),
+            ROLE_PRIMARY,
+            "Pod template should propagate role label from instance"
+        );
+
+        // Verify selector includes role label
+        let selector_labels = deployment
+            .spec
+            .as_ref()
+            .unwrap()
+            .selector
+            .match_labels
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            selector_labels.get(BINDY_ROLE_LABEL).unwrap(),
+            ROLE_PRIMARY,
+            "Deployment selector should include role label"
+        );
+    }
+
+    #[test]
+    fn test_build_deployment_without_role_label() {
+        use crate::labels::BINDY_ROLE_LABEL;
+
+        // Test that deployment works fine when instance has no role label
+        let instance = create_test_instance("test-instance");
+        // Don't add role label
+
+        let deployment = build_deployment("test-instance", "test-ns", &instance, None, None);
+
+        let labels = deployment.metadata.labels.as_ref().unwrap();
+        assert!(
+            !labels.contains_key(BINDY_ROLE_LABEL),
+            "Deployment should not have role label when instance doesn't have one"
+        );
+    }
+
+    #[test]
     fn test_build_service_propagates_managed_by_label() {
         // Test that service propagates managed-by label from cluster-managed instance
         let mut instance = create_test_instance("test-instance");
