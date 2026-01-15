@@ -127,7 +127,7 @@ pub fn build_labels_from_instance(
     instance_name: &str,
     instance: &Bind9Instance,
 ) -> BTreeMap<String, String> {
-    use crate::labels::BINDY_MANAGED_BY_LABEL;
+    use crate::labels::{BINDY_MANAGED_BY_LABEL, BINDY_ROLE_LABEL};
 
     let mut labels = BTreeMap::new();
     labels.insert("app".into(), APP_NAME_BIND9.into());
@@ -147,6 +147,14 @@ pub fn build_labels_from_instance(
         .map_or(MANAGED_BY_BIND9_INSTANCE, String::as_str);
 
     labels.insert(K8S_MANAGED_BY.into(), managed_by.into());
+
+    // Propagate bindy.firestoned.io/role label if it exists on the instance
+    // This allows selecting pods by role (e.g., all primaries)
+    if let Some(instance_labels) = &instance.metadata.labels {
+        if let Some(role) = instance_labels.get(BINDY_ROLE_LABEL) {
+            labels.insert(BINDY_ROLE_LABEL.into(), role.clone());
+        }
+    }
 
     labels
 }

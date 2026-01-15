@@ -53,6 +53,9 @@ spec:
     allowTransfer:
       - "10.0.0.0/8"
     bindcarConfig:
+      envVars:
+        - name: RATE_LIMIT_ENABLED
+          value: "false"
       #image: "ghcr.io/firestoned/bindcar:v0.5.1"
       image: "ghcr.io/firestoned/bindcar:latest"
       imagePullPolicy: IfNotPresent
