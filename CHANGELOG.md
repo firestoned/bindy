@@ -1,3 +1,171 @@
+## [2026-01-15 05:30] - Feature: Propagate Role Label to Deployments and Pods
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/bind9_resources.rs`: Deployments now propagate `bindy.firestoned.io/role` label from Bind9Instance
+  - When a Bind9Instance has the `bindy.firestoned.io/role` label (e.g., "primary" or "secondary"), it's now propagated to:
+    - Deployment metadata labels
+    - Pod template labels (allows selecting pods by role)
+    - Deployment selector labels
+  - **Use Case**: Enables selecting all primary pods with: `kubectl get pods -l bindy.firestoned.io/role=primary`
+  - Works alongside existing managed-by label propagation
+  - Optional: If instance doesn't have role label, Deployment works normally without it
+
+### Why
+User requested ability to select pods by role (e.g., all primaries) for operational tasks like monitoring, debugging, or targeted operations. The role label already exists on Bind9Instance resources managed by Bind9Cluster, but wasn't being propagated to the actual pods.
+
+### Impact
+- [x] Enables pod selection by role: `kubectl get pods -l bindy.firestoned.io/role=primary`
+- [x] Works for both cluster-managed and standalone instances
+- [x] Backward compatible: Instances without role label work normally
+- [x] Comprehensive test coverage: 2 new tests verify label propagation
+- [ ] No breaking changes: Pure addition, doesn't affect existing behavior
+
+## [2026-01-15 05:15] - CRITICAL: Fixed has_changes() Always Detecting Changes Due to Timestamp Comparison
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/crd.rs`: Fixed **the actual root cause** of why reconciliations were being triggered so frequently
+  - **The Real Problem**: `InstanceReferenceWithStatus` derived `PartialEq` which included `last_reconciled_at` field
+  - Even though previous fixes prevented updating timestamps when zones already existed, timestamps from **previous reconciliations** had nanosecond precision differences
+  - Example: `"2026-01-15T04:49:52.224482100+00:00"` vs `"2026-01-15T04:49:52.248708760+00:00"`
+  - When `has_changes()` compared `bind9_instances` arrays using `!=`, the derived `PartialEq` saw timestamp differences
+  - These nanosecond differences caused `has_changes()` to always return `true` → status update → reconciliation trigger → infinite loop
+  - **The Fix (Idiomatic Rust)**: Implemented **custom `PartialEq`, `Eq`, and `Hash`** for `InstanceReferenceWithStatus` that exclude `last_reconciled_at` field
+  - Now `==` comparison only checks **semantic fields** (api_version, kind, name, namespace, status, message)
+  - `has_changes()` in `src/reconcilers/status.rs` can now use direct `!=` comparison - it works correctly because the struct's `PartialEq` ignores timestamps
+
+### Why
+The sequence was:
+1. Reconciliation runs → no actual changes to zone configuration
+2. Status updater calls `has_changes()` to check if status should be updated
+3. `current.bind9_instances != self.new_status.bind9_instances` uses derived `PartialEq` which compares **all fields including timestamps**
+4. Nanosecond precision differences in serialized timestamps → comparison returns false (not equal)
+5. `has_changes()` returns `true` → status gets updated
+6. Kubernetes watch sees "object updated" event → triggers new reconciliation
+7. Back to step 1 → **tight loop every ~100ms**
+
+**Idiomatic Rust Solution**: Instead of creating a separate comparison function, we implement custom `PartialEq` on the struct itself. This is the standard Rust pattern for types that need custom equality semantics. The `Hash` implementation must also exclude the same fields to maintain the invariant: `a == b => hash(a) == hash(b)`.
+
+### Impact
+- [x] **STOPS THE TIGHT LOOP** - status updates no longer triggered by timestamp precision differences
+- [x] **Idiomatic Rust**: Uses core trait implementations instead of custom comparison functions
+- [x] **Correct by construction**: `PartialEq` behavior is part of the type's definition, can't be used incorrectly
+- [x] Proper semantic comparison: Only actual changes (status, message) trigger updates
+- [x] Reconciliations now occur at normal intervals (not every 100ms)
+- [x] Maintains `Hash` consistency with `PartialEq` (required by Rust)
+- [ ] No breaking changes: Fixes critical bug in equality semantics
+
+## [2026-01-15 04:50] - CRITICAL: Fixed Tight Loop Caused by update_primary_zone() Returning True
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/bind9/zone_ops.rs`: Fixed the **actual root cause** of the tight reconciliation loop
+  - **The Real Problem**: When 409 Conflict occurred, code called `update_primary_zone()` which returned `Ok(true)`
+  - This `true` value propagated up to the reconciler, making it think the zone was **newly added**
+  - Reconciler then updated `lastReconciledAt` status → triggered another reconciliation → infinite loop
+  - **The Fix**: After calling `update_primary_zone()`, explicitly return `Ok(false)` (line 611)
+  - `Ok(false)` correctly indicates "zone already existed, was not newly added"
+  - This prevents status updates and stops the tight loop
+
+### Why
+The sequence was:
+1. Zone already exists → HTTP 409 Conflict
+2. Code calls `update_primary_zone()` to update also-notify/allow-transfer
+3. PATCH succeeds → `update_primary_zone()` returns `Ok(true)`  ← **PROBLEM**
+4. Reconciler sees `was_added=true` → updates `lastReconciledAt` in status
+5. Status change triggers reconciliation → back to step 1 → **every ~100ms**
+
+The confusion: `update_primary_zone()` returns `true` to mean "update succeeded", but the caller interprets it as "zone was newly added". These are different semantics!
+
+### Impact
+- [x] **STOPS THE TIGHT LOOP** - zone updates no longer trigger status changes
+- [x] Proper idempotent behavior: zone already exists = no status update
+- [x] Status only updates when zones are **newly configured**, not updated
+- [ ] No breaking changes: Fixes critical bug in reconciliation logic
+
+## [2026-01-14 23:15] - Fixed 409 Conflict Causing Tight Loop - Removed Unnecessary zone_exists() Call
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/bind9/zone_ops.rs`: Fixed 409 Conflict errors causing tight reconciliation loops
+  - Root cause: When bindcar returned 409 Conflict ("Zone already exists"), code was calling `zone_exists()` to verify
+  - The `zone_exists()` call made **another HTTP request** that could also hit rate limits or fail
+  - This created a tight loop: 409 error → zone_exists() call → possible error → retry → repeat
+  - **Solution**: Check HttpError status code **directly** using `error.downcast_ref::<HttpError>()`
+  - 409 Conflict now treated as immediate success (zone already exists) without additional API calls
+  - Fixed in both `add_primary_zone()` (line 581) and `add_secondary_zone()` (line 776)
+
+### Why
+HTTP 409 Conflict with message "Zone already exists" is **confirmation** that the zone exists. Making another API call to `zone_exists()` is redundant and can fail due to rate limiting, creating a loop:
+1. Try to create zone → 409 Conflict
+2. Call zone_exists() to verify → might fail with 429 or network error
+3. Treat as failure → retry reconciliation
+4. Repeat from step 1
+
+This was the main cause of the tight loop you were experiencing.
+
+### Impact
+- [x] 409 errors treated as immediate success (idempotent operation)
+- [x] No redundant zone_exists() API calls after 409
+- [x] Eliminates tight loop when zones already exist
+- [x] Proper idempotent behavior for zone creation
+- [ ] No breaking changes: Improves existing error handling
+
+## [2026-01-14 22:55] - Fixed 429 Rate Limiting Not Being Retried - Proper HTTP Status Code Handling
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/bind9/zone_ops.rs`: Fixed broken HTTP 429 (Too Many Requests) retry logic with proper type-safe error handling
+  - Root cause: Retry logic was parsing error **strings** to extract status codes instead of using actual HTTP status codes
+  - Old approach: String parsing of `"status 429 Too Many Requests:"` was fragile and failed
+  - **New approach**: Created `HttpError` type that preserves the actual `StatusCode` from the HTTP response
+  - Retry logic now uses `error.downcast_ref::<HttpError>()` to access the real status code
+  - **No string parsing**: Status code is captured directly from `response.status()` at line 235
+  - Type-safe and reliable: Uses Rust's type system instead of string manipulation
+
+### Why
+When bindcar HTTP API returned 429 rate limiting errors, the operator treated them as non-retryable and failed immediately. This caused:
+1. Reconciliation failures instead of backing off and retrying
+2. Tight reconciliation loops as Kubernetes watch events triggered rapid retries
+3. Cascading 429 errors as the operator overwhelmed the API with requests
+4. No exponential backoff despite having retry logic in place
+
+The original string-parsing approach was fundamentally flawed - HTTP status codes should never be extracted from error messages.
+
+### Impact
+- [x] 429 errors now properly trigger exponential backoff (200ms → 400ms → 800ms → ...)
+- [x] Type-safe error handling: No string parsing, uses actual HTTP status codes
+- [x] Prevents tight reconciliation loops when bindcar is rate-limiting
+- [x] Reduces load on bindcar API during high traffic
+- [ ] No breaking changes: Fixes existing retry behavior
+
+## [2026-01-14 22:40] - Fixed Tight Reconciliation Loop When Zone Already Exists
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/reconcilers/dnszone.rs`: Fixed tight reconciliation loop (every ~100ms) when zones already exist
+  - Root cause: `update_instance_status()` was updating `lastReconciledAt` timestamp **every reconciliation**, even when zone already existed
+  - This caused status to change → triggered another reconciliation → infinite loop
+  - Solution: Only update `lastReconciledAt` when zone is **actually configured** (when `add_zones()` returns `was_added=true`)
+  - Now properly checks if zone was newly added vs already exists before updating instance status
+  - Applied to both primary instances (line 912) and secondary instances (line 1233)
+
+### Why
+When a zone already exists on BIND9 instances, the reconciler was still calling `update_instance_status()` which updated the `lastReconciledAt` timestamp to the current time. This status change triggered another reconciliation, creating a tight loop that consumed excessive resources and created unnecessary API calls.
+
+### Impact
+- [x] Performance improvement: Reconciliation only runs when actual changes occur
+- [x] Reduced API server load: No more continuous status updates when zones already exist
+- [x] Proper declarative reconciliation: Status only changes when actual configuration changes
+- [ ] No breaking changes: Behavior is now correct and matches expected Kubernetes controller patterns
+
 ## [2026-01-14 16:45] - Created RNDC Key Auto-Rotation Implementation Roadmap with Regulatory Compliance
 
 **Author:** Erick Bourgeois

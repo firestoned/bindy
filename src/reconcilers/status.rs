@@ -490,6 +490,10 @@ impl DNSZoneStatusUpdater {
     /// Check if the status has actually changed compared to the current status.
     ///
     /// Returns `true` if there are semantic changes that warrant an API update.
+    ///
+    /// **CRITICAL**: The comparison uses `InstanceReferenceWithStatus::eq()` which excludes
+    /// `last_reconciled_at` timestamps. Without this, nanosecond precision differences would
+    /// cause infinite reconciliation loops.
     #[must_use]
     pub fn has_changes(&self) -> bool {
         if !self.has_changes {
