@@ -74,7 +74,7 @@ impl FinalizerCleanup for Bind9Instance {
 ///
 /// # Arguments
 ///
-/// * `ctx` - Controller context with Kubernetes client and reflector stores
+/// * `ctx` - Operator context with Kubernetes client and reflector stores
 /// * `instance` - The `Bind9Instance` resource to reconcile
 ///
 /// # Returns

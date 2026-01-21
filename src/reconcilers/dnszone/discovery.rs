@@ -214,7 +214,7 @@ pub async fn reconcile_zone_records(
 ///
 /// **Event-Driven Architecture**: This function is called when a `DNSZone`'s label selector
 /// matches a record. It sets `status.zoneRef` with a structured reference to the zone,
-/// which triggers the record controller via Kubernetes watch to reconcile the record to BIND9.
+/// which triggers the record operator via Kubernetes watch to reconcile the record to BIND9.
 ///
 /// # Arguments
 ///
@@ -834,7 +834,7 @@ pub async fn find_zones_selecting_record(
 ///
 /// **Event-Driven Architecture**: This function only counts and logs records that have
 /// `status.zoneRef.zoneName` matching the zone. The actual reconciliation is triggered
-/// automatically by Kubernetes watches - when the `DNSZone` status changes, record controllers
+/// automatically by Kubernetes watches - when the `DNSZone` status changes, record operators
 /// are notified via watch events and reconcile automatically.
 ///
 /// This function is called after zone recreation (e.g., pod restarts) to log how many

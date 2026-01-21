@@ -995,7 +995,7 @@ impl ReconcilableRecord for CAARecord {
 ///
 /// # Arguments
 ///
-/// * `ctx` - Controller context with Kubernetes client and reflector stores
+/// * `ctx` - Operator context with Kubernetes client and reflector stores
 /// * `record` - The DNS record resource to reconcile
 ///
 /// # Returns

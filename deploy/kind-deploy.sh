@@ -14,7 +14,7 @@ NC='\033[0m' # No Color
 CLUSTER_NAME="bindy-test"
 NAMESPACE="dns-system"
 
-echo -e "${GREEN}🚀 Deploying Bindy Controller to Kind cluster${NC}"
+echo -e "${GREEN}🚀 Deploying Bindy Operator to Kind cluster${NC}"
 
 # Check if kind is installed
 if ! command -v kind &> /dev/null; then
@@ -99,17 +99,17 @@ kubectl apply -f deploy/rbac/
 #echo -e "${GREEN}📤 Loading image into Kind...${NC}"
 #kind load docker-image bindy:latest --name "${CLUSTER_NAME}"
 
-echo -e "${GREEN}🚀 Deploying controller...${NC}"
-kubectl apply -f deploy/controller/deployment.yaml
+echo -e "${GREEN}🚀 Deploying operator...${NC}"
+kubectl apply -f deploy/operator/deployment.yaml
 
-echo -e "${GREEN}⏳ Waiting for controller to be ready...${NC}"
+echo -e "${GREEN}⏳ Waiting for operator to be ready...${NC}"
 kubectl wait --for=condition=available --timeout=120s deployment/bindy -n "${NAMESPACE}" || {
-    echo -e "${RED}❌ Controller failed to start. Checking logs:${NC}"
+    echo -e "${RED}❌ Operator failed to start. Checking logs:${NC}"
     kubectl logs -n "${NAMESPACE}" -l app=bindy --tail=50
     exit 1
 }
 
-echo -e "${GREEN}✅ Bindy controller deployed successfully!${NC}"
+echo -e "${GREEN}✅ Bindy operator deployed successfully!${NC}"
 echo ""
 echo -e "${YELLOW}📊 Cluster Status:${NC}"
 kubectl get pods -n "${NAMESPACE}"
@@ -130,7 +130,7 @@ echo ""
 echo "3. Add DNS records:"
 echo "   kubectl apply -f examples/dns-records.yaml"
 echo ""
-echo "4. Watch controller logs:"
+echo "4. Watch operator logs:"
 echo "   kubectl logs -n ${NAMESPACE} -l app=bindy -f"
 echo ""
 echo "5. Test DNS resolution:"

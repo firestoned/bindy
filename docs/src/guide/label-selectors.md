@@ -68,7 +68,7 @@ spec:
 
 When you create a DNSZone with `clusterRef: production-dns`:
 
-1. **Controller finds the Bind9Cluster** - Looks up `Bind9Cluster` named `production-dns`
+1. **Operator finds the Bind9Cluster** - Looks up `Bind9Cluster` named `production-dns`
 2. **Discovers instances** - Finds all `Bind9Instance` resources referencing this cluster
 3. **Identifies primaries** - Selects instances with `role: primary`
 4. **Loads RNDC keys** - Retrieves RNDC keys from cluster configuration

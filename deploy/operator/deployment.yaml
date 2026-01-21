@@ -7,7 +7,7 @@ metadata:
     app: bindy
     version: v1
 spec:
-  # Number of controller replicas
+  # Number of operator replicas
   # For high availability, set to 2 or 3
   # Leader election ensures only one instance is active at a time
   # Non-leader instances stand by for automatic failover (~15s)

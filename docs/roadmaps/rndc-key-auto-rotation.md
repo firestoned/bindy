@@ -3,7 +3,7 @@
 **Status:** Proposed
 **Date:** 2026-01-14
 **Author:** Erick Bourgeois
-**Impact:** Major API changes, new controller, breaking changes to CRD schemas
+**Impact:** Major API changes, new operator, breaking changes to CRD schemas
 
 ---
 
@@ -15,7 +15,7 @@ This roadmap outlines the implementation of automatic RNDC key rotation for the 
 2. **Automatic key rotation** based on configurable time intervals
 3. **Manual rotation triggers** via annotation updates
 4. **Backward compatibility** with existing deployments
-5. **A new dedicated controller** for managing key rotation lifecycle
+5. **A new dedicated operator** for managing key rotation lifecycle
 6. **Comprehensive documentation** for compliance and regulatory requirements
 
 ### Regulatory Compliance Benefits
@@ -141,7 +141,7 @@ pub struct RndcKeyConfig {
     /// Supports Go duration format: `100h12m12s`, `720h`, `30d`, etc.
     /// Minimum: 1 hour. Recommended: 30-90 days.
     ///
-    /// When `auto_rotate: true`, the controller will rotate the key when:
+    /// When `auto_rotate: true`, the operator will rotate the key when:
     /// `current_time - created_at >= rotate_after`
     ///
     /// **Manual rotation trigger**: Set the `bindy.firestoned.io/created-at`
@@ -434,7 +434,7 @@ kubectl annotate secret platform-rndc-key \
 ```
 
 **Behavior:**
-- Controller detects creation timestamp is older than `rotateAfter`
+- Operator detects creation timestamp is older than `rotateAfter`
 - Triggers immediate key rotation
 - Updates Secret with new key material
 - Restarts BIND9 pods to pick up new key
@@ -886,7 +886,7 @@ pub async fn create_or_update_rndc_secret(
     secrets_api
         .patch(
             secret.metadata.name.as_ref().unwrap(),
-            &PatchParams::apply("bindy-controller"),
+            &PatchParams::apply("bindy-operator"),
             &Patch::Apply(secret),
         )
         .await
@@ -917,11 +917,11 @@ pub async fn create_or_update_rndc_secret(
 
 ---
 
-### Phase 4: New RndcKeyRotation Controller (Event-Driven)
+### Phase 4: New RndcKeyRotation Operator (Event-Driven)
 
-**Goal:** Create a new controller to manage RNDC key rotation lifecycle.
+**Goal:** Create a new operator to manage RNDC key rotation lifecycle.
 
-**Why a Separate Controller?**
+**Why a Separate Operator?**
 - **Separation of concerns**: Key rotation is orthogonal to instance reconciliation
 - **Independent reconciliation loop**: Can watch Secrets directly
 - **Scalability**: Doesn't add overhead to instance reconciler
@@ -952,7 +952,7 @@ pub async fn create_or_update_rndc_secret(
    }
    ```
 
-2. **Implement controller** (`src/reconcilers/rndc_rotation.rs`):
+2. **Implement operator** (`src/reconcilers/rndc_rotation.rs`):
    - Create `reconcile_rndc_secret()` function
    - Watch Secrets with label selector: `app.kubernetes.io/managed-by=bindy`
    - Implement event-driven reconciliation loop
@@ -968,9 +968,9 @@ pub async fn create_or_update_rndc_secret(
 ```rust
 // In src/reconcilers/rndc_rotation.rs
 
-//! RNDC key rotation controller.
+//! RNDC key rotation operator.
 //!
-//! This controller watches Secrets managed by Bindy and rotates RNDC keys
+//! This operator watches Secrets managed by Bindy and rotates RNDC keys
 //! when they exceed the configured `rotate_after` duration.
 //!
 //! # How It Works
@@ -992,7 +992,7 @@ use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::Secret;
 use kube::{
     api::{Api, Patch, PatchParams},
-    runtime::{controller::Action, Controller},
+    runtime::{operator::Action, Operator},
     Client, Resource, ResourceExt,
 };
 use std::sync::Arc;
@@ -1009,12 +1009,12 @@ const BINDY_MANAGED_LABEL: &str = "app.kubernetes.io/managed-by=bindy";
 
 /// Reconcile an RNDC Secret for key rotation.
 ///
-/// This function is called by the controller for each Secret event.
+/// This function is called by the operator for each Secret event.
 /// It checks if the Secret needs rotation and performs the rotation if necessary.
 ///
 /// # Event-Driven Design
 ///
-/// This controller uses the Kubernetes watch API to react to Secret changes,
+/// This operator uses the Kubernetes watch API to react to Secret changes,
 /// not polling. It only reconciles when:
 /// - A new Secret is created
 /// - A Secret is modified (e.g., annotation updated)
@@ -1148,7 +1148,7 @@ async fn rotate_key(client: &Client, secret: &Secret) -> Result<()> {
     secrets_api
         .patch(
             &secret_name,
-            &PatchParams::apply("bindy-rndc-rotation-controller"),
+            &PatchParams::apply("bindy-rndc-rotation-operator"),
             &Patch::Apply(patched_secret),
         )
         .await
@@ -1223,7 +1223,7 @@ async fn restart_pods_using_secret(
         deployments_api
             .patch(
                 &deployment_name,
-                &PatchParams::apply("bindy-rndc-rotation-controller"),
+                &PatchParams::apply("bindy-rndc-rotation-operator"),
                 &Patch::Merge(patch),
             )
             .await
@@ -1251,26 +1251,26 @@ pub fn error_policy(
     Action::requeue(std::time::Duration::from_secs(60))
 }
 
-/// Start the RNDC key rotation controller.
+/// Start the RNDC key rotation operator.
 ///
-/// This controller watches Secrets with the label `app.kubernetes.io/managed-by=bindy`
+/// This operator watches Secrets with the label `app.kubernetes.io/managed-by=bindy`
 /// and rotates RNDC keys when they expire.
 ///
 /// # Event-Driven Design
 ///
-/// This controller uses the Kubernetes watch API (event-driven), not polling.
+/// This operator uses the Kubernetes watch API (event-driven), not polling.
 /// It reacts to Secret changes and requeues periodically to check for expired keys.
 ///
 /// # Errors
 ///
-/// Returns an error if the controller fails to start.
-pub async fn run_rotation_controller(client: Client) -> Result<()> {
+/// Returns an error if the operator fails to start.
+pub async fn run_rotation_operator(client: Client) -> Result<()> {
     let secrets_api: Api<Secret> = Api::all(client.clone());
     let context = Arc::new(Context { client: client.clone() });
 
-    info!("Starting RNDC key rotation controller");
+    info!("Starting RNDC key rotation operator");
 
-    Controller::new(secrets_api, Default::default())
+    Operator::new(secrets_api, Default::default())
         .run(reconcile_rndc_secret, error_policy, context)
         .for_each(|_| futures::future::ready(()))
         .await;
@@ -1284,11 +1284,11 @@ pub async fn run_rotation_controller(client: Client) -> Result<()> {
 ```rust
 // In src/main.rs
 
-// Start RNDC key rotation controller in background
+// Start RNDC key rotation operator in background
 let rotation_client = client.clone();
 tokio::spawn(async move {
-    if let Err(e) = reconcilers::rndc_rotation::run_rotation_controller(rotation_client).await {
-        error!("RNDC key rotation controller failed: {}", e);
+    if let Err(e) = reconcilers::rndc_rotation::run_rotation_operator(rotation_client).await {
+        error!("RNDC key rotation operator failed: {}", e);
     }
 });
 ```
@@ -1300,7 +1300,7 @@ tokio::spawn(async move {
 - Test that user-managed Secrets (no annotation) are skipped
 
 **Success Criteria:**
-- ✅ Controller watches Secrets event-driven (no polling)
+- ✅ Operator watches Secrets event-driven (no polling)
 - ✅ Expired keys are detected and rotated
 - ✅ Pods are restarted after rotation
 - ✅ User-managed Secrets are not rotated
@@ -1450,7 +1450,7 @@ tokio::spawn(async move {
    ### Added
    - `RndcKeyConfig` struct for enhanced RNDC key management with lifecycle controls
    - Auto-rotation support via `autoRotate` and `rotateAfter` fields
-   - New controller: `RndcKeyRotationController` for managing key lifecycle (event-driven)
+   - New operator: `RndcKeyRotationOperator` for managing key lifecycle (event-driven)
    - Manual rotation trigger via annotation updates (`bindy.firestoned.io/created-at`)
    - Backward compatibility with deprecated `rndcSecretRef` fields
    - Comprehensive documentation for regulatory compliance (NIST, FIPS, PCI DSS, HIPAA)
@@ -1582,8 +1582,8 @@ spec:
      bindy.firestoned.io/created-at="2020-01-01T00:00:00Z" \
      --overwrite
 
-   # 4. Wait for controller to detect and rotate
-   kubectl logs -l app=bindy-controller -f | grep "RNDC key expired"
+   # 4. Wait for operator to detect and rotate
+   kubectl logs -l app=bindy-operator -f | grep "RNDC key expired"
 
    # 5. Verify Secret has new creation timestamp
    kubectl get secret platform-rndc-key -o yaml | grep created-at
@@ -1651,13 +1651,13 @@ spec:
 
 4. **Deploy updated operator**:
    ```bash
-   kubectl set image deployment/bindy-controller \
-     controller=ghcr.io/firestoned/bindy:v0.6.0
+   kubectl set image deployment/bindy-operator \
+     operator=ghcr.io/firestoned/bindy:v0.6.0
    ```
 
 5. **Monitor rotation** (if enabled):
    ```bash
-   kubectl logs -l app=bindy-controller -f | grep rotation
+   kubectl logs -l app=bindy-operator -f | grep rotation
    ```
 
 ---
@@ -1750,7 +1750,7 @@ spec:
 - Metrics expose key age for compliance monitoring
 
 **Implementation Evidence:**
-- Controller logs all rotation events (audit trail)
+- Operator logs all rotation events (audit trail)
 - Prometheus metrics track key age (`bindy_rndc_key_age_seconds`)
 - Alerting detects keys exceeding configured lifetime
 
@@ -1907,7 +1907,7 @@ spec:
 - Documentation of key management policies
 
 **SOC 2 Audit Evidence:**
-- Controller logs showing rotation events
+- Operator logs showing rotation events
 - Metrics dashboards showing key age
 - Documented rotation policies in compliance guide
 - Incident response procedures for failed rotations
@@ -1950,7 +1950,7 @@ Based on NIST, FIPS, and industry standards, Bindy recommends:
   - Validate auto-rotation enabled for all production instances
 
 - [ ] **Audit Trail**:
-  - Collect controller logs showing rotation events
+  - Collect operator logs showing rotation events
   - Export Prometheus metrics for key age over audit period
   - Document any manual rotations (with justification)
 
@@ -1962,7 +1962,7 @@ Based on NIST, FIPS, and industry standards, Bindy recommends:
 - [ ] **Evidence Collection**:
   - Screenshots of Grafana dashboards showing rotation history
   - Sample Secret YAML showing rotation annotations
-  - Controller configuration showing automated rotation enabled
+  - Operator configuration showing automated rotation enabled
 
 - [ ] **Testing**:
   - Demonstrate manual rotation trigger (for auditor)
@@ -1972,13 +1972,13 @@ Based on NIST, FIPS, and industry standards, Bindy recommends:
 **Audit Questions and Answers:**
 
 **Q: How do you ensure cryptographic keys are rotated regularly?**
-**A:** "We use the Bindy operator's automated key rotation feature, configured to rotate RNDC keys every [30/60/90] days. Rotation is enforced via a dedicated Kubernetes controller that monitors key age and automatically generates new keys when the rotation interval is reached."
+**A:** "We use the Bindy operator's automated key rotation feature, configured to rotate RNDC keys every [30/60/90] days. Rotation is enforced via a dedicated Kubernetes operator that monitors key age and automatically generates new keys when the rotation interval is reached."
 
 **Q: What is your key rotation policy based on?**
 **A:** "Our policy aligns with NIST SP 800-57 (cryptoperiod recommendations) and NIST SP 800-53 (IA-5 authenticator management). We use a [30/60/90]-day interval, which is more conservative than NIST's 2-year maximum for symmetric authentication keys."
 
 **Q: How do you track key rotation for compliance?**
-**A:** "We maintain three layers of audit evidence: (1) Controller logs recording every rotation event with timestamps, (2) Prometheus metrics exposing key age and rotation counts, and (3) Kubernetes Secret annotations storing creation timestamps. Alerting notifies us if keys exceed their configured lifetime."
+**A:** "We maintain three layers of audit evidence: (1) Operator logs recording every rotation event with timestamps, (2) Prometheus metrics exposing key age and rotation counts, and (3) Kubernetes Secret annotations storing creation timestamps. Alerting notifies us if keys exceed their configured lifetime."
 
 **Q: What happens if key rotation fails?**
 **A:** "Our system includes exponential backoff retry logic and alerting. If rotation fails repeatedly, an alert fires to notify the operations team. We have documented incident response procedures including manual rotation and troubleshooting steps."
@@ -2146,7 +2146,7 @@ pub static RNDC_KEY_AGE_SECONDS: Lazy<GaugeVec> = Lazy::new(|| {
 
 - `src/bind9/rndc_tests.rs`: Test key generation, Secret creation, rotation detection
 - `src/reconcilers/bind9instance_tests.rs`: Test precedence resolution, backward compatibility
-- `src/reconcilers/rndc_rotation_tests.rs`: Test rotation controller logic
+- `src/reconcilers/rndc_rotation_tests.rs`: Test rotation operator logic
 
 ### Integration Tests
 
@@ -2169,7 +2169,7 @@ pub static RNDC_KEY_AGE_SECONDS: Lazy<GaugeVec> = Lazy::new(|| {
 | Phase 1 | API Changes (CRD schema) | 1-2 days |
 | Phase 2 | Secret Creation Logic (TDD) | 2-3 days |
 | Phase 3 | Bind9Instance Reconciler Updates | 2-3 days |
-| Phase 4 | RndcKeyRotation Controller | 3-4 days |
+| Phase 4 | RndcKeyRotation Operator | 3-4 days |
 | Phase 5 | Documentation and Migration Guide | 2-3 days |
 | Phase 6 | Integration Testing | 2-3 days |
 | **Total** | **End-to-end implementation** | **12-18 days** |
@@ -2185,7 +2185,7 @@ pub static RNDC_KEY_AGE_SECONDS: Lazy<GaugeVec> = Lazy::new(|| {
 - ✅ Backward compatibility maintained (deprecated fields work)
 - ✅ Auto-rotation implemented and tested
 - ✅ Manual rotation trigger works via annotation
-- ✅ Separate rotation controller implemented (event-driven, not polling)
+- ✅ Separate rotation operator implemented (event-driven, not polling)
 - ✅ Pods restart after rotation
 - ✅ All unit tests pass (`cargo test`)
 - ✅ All integration tests pass (`make kind-integration-test`)
@@ -2271,8 +2271,8 @@ pub static RNDC_KEY_AGE_SECONDS: Lazy<GaugeVec> = Lazy::new(|| {
 ### Kubernetes and BIND9
 - [Kubernetes Secret Management Best Practices](https://kubernetes.io/docs/concepts/configuration/secret/)
 - [BIND9 RNDC Documentation](https://bind9.readthedocs.io/en/latest/reference.html#rndc)
-- [kube-rs Controller Pattern](https://kube.rs/controllers/intro/)
-- [Kubernetes Controller Best Practices](https://kubernetes.io/docs/concepts/architecture/controller/)
+- [kube-rs Operator Pattern](https://kube.rs/operators/intro/)
+- [Kubernetes Operator Best Practices](https://kubernetes.io/docs/concepts/architecture/operator/)
 - [Go Duration Format](https://pkg.go.dev/time#ParseDuration)
 
 ### NIST Standards

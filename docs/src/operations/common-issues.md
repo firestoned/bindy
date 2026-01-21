@@ -45,7 +45,7 @@ kubectl logs -n dns-system deployment/bindy | grep ConfigMap
 
 **Solution:**
 ```bash
-# Check controller logs for errors
+# Check operator logs for errors
 kubectl logs -n dns-system deployment/bindy --tail=50
 
 # Delete and recreate instance
@@ -240,7 +240,7 @@ With the **event-driven architecture**, DNS records are matched to DNSZones via 
 2. When a record is created/updated, **DNSZone receives a watch event immediately** (⚡ sub-second)
 3. DNSZone evaluates if record labels match `spec.recordsFrom` selectors
 4. If matched, DNSZone **sets `record.status.zoneRef`** with full zone metadata
-5. Record controller **watches for status changes** and reconciles when `status.zoneRef` is set
+5. Record operator **watches for status changes** and reconciles when `status.zoneRef` is set
 
 **Common Mistakes:**
 - Record has label `zone: internal-local` but DNSZone expects `zone: internal.local`
@@ -277,7 +277,7 @@ Total time: ~500ms ✅
    kubectl get dnszone example-com -n dns-system
    ```
 
-3. **Verify DNSZone controller is running:**
+3. **Verify DNSZone operator is running:**
    ```bash
    kubectl logs -n dns-system deployment/bindy | grep "DNSZone watch"
    ```
@@ -525,7 +525,7 @@ spec:
 
 ### Forbidden Errors in Logs
 
-**Symptom:** Controller logs show "Forbidden" errors
+**Symptom:** Operator logs show "Forbidden" errors
 
 **Diagnosis:**
 ```bash
@@ -545,7 +545,7 @@ kubectl apply -f deploy/rbac/
 # Verify ClusterRoleBinding
 kubectl get clusterrolebinding bindy-rolebinding -o yaml
 
-# Restart controller
+# Restart operator
 kubectl rollout restart deployment/bindy -n dns-system
 ```
 

@@ -4,6 +4,7 @@
 //! Unit tests for DNS zone reconciliation helper functions.
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::super::helpers::*;
     use crate::crd::{DNSZone, DNSZoneSpec, DNSZoneStatus, InstanceReference, SOARecord};
@@ -31,6 +32,7 @@ mod tests {
                     negative_ttl: 86_400,
                 },
                 ttl: Some(3600),
+                name_servers: None,
                 name_server_ips: None,
                 records_from: None,
                 bind9_instances_from: None,

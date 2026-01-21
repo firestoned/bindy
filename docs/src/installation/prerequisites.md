@@ -38,33 +38,33 @@ Bindy has been tested on:
 
 ### Minimum Requirements
 
-- **CPU**: 100m per controller pod
-- **Memory**: 128Mi per controller pod
+- **CPU**: 100m per operator pod
+- **Memory**: 128Mi per operator pod
 - **Storage**:
-  - Minimal for controller (configuration only)
+  - Minimal for operator (configuration only)
   - **StorageClass**: Required for persistent zone data (optional but recommended)
 
 ### Recommended for Production
 
-- **CPU**: 500m per controller pod (2 replicas)
-- **Memory**: 512Mi per controller pod
-- **High Availability**: 3 controller replicas across different nodes
+- **CPU**: 500m per operator pod (2 replicas)
+- **Memory**: 512Mi per operator pod
+- **High Availability**: 3 operator replicas across different nodes
 
 ## BIND9 Infrastructure
 
 Bindy manages existing BIND9 servers. You'll need:
 
 - BIND9 version 9.16 or later (9.18+ recommended)
-- Network connectivity from Bindy controller to BIND9 pods
+- Network connectivity from Bindy operator to BIND9 pods
 - Shared volume for zone files (ConfigMap, PVC, or similar)
 
 ## Network Requirements
 
-### Controller to API Server
+### Operator to API Server
 - Outbound HTTPS (443) to Kubernetes API server
 - Required for watching resources and updating status
 
-### Controller to BIND9 Pods
+### Operator to BIND9 Pods
 - Access to BIND9 configuration volumes
 - Typical setup uses Kubernetes ConfigMaps or PersistentVolumes
 
@@ -217,5 +217,5 @@ yes
 Once your environment meets these prerequisites:
 
 1. [Install CRDs](./crds.md)
-2. [Deploy the Controller](./controller.md)
+2. [Deploy the Operator](./operator.md)
 3. [Quick Start Guide](./quickstart.md)

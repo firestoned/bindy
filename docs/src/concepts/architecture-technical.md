@@ -6,12 +6,12 @@
 graph TB
     subgraph k8s["Kubernetes Cluster"]
         subgraph namespace["DNS System Namespace (dns-system)"]
-            subgraph controller["Rust Controller Pod"]
+            subgraph operator["Rust Operator Pod"]
                 subgraph eventloop["Main Event Loop<br/>(runs concurrently via Tokio)"]
-                    dnszone_ctrl["DNSZone Controller"]
-                    arecord_ctrl["ARecord Controller"]
-                    txt_ctrl["TXTRecord Controller"]
-                    cname_ctrl["CNAMERecord Controller"]
+                    dnszone_ctrl["DNSZone Operator"]
+                    arecord_ctrl["ARecord Operator"]
+                    txt_ctrl["TXTRecord Operator"]
+                    cname_ctrl["CNAMERecord Operator"]
                 end
 
                 subgraph reconcilers["Reconcilers"]
@@ -49,7 +49,7 @@ graph TB
 
     style k8s fill:#e1f5ff,stroke:#01579b,stroke-width:2px
     style namespace fill:#fff9c4,stroke:#f57f17,stroke-width:2px
-    style controller fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    style operator fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
     style eventloop fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
     style reconcilers fill:#fce4ec,stroke:#880e4f,stroke-width:2px
     style manager fill:#ffe0b2,stroke:#e65100,stroke-width:2px
@@ -68,7 +68,7 @@ Kubernetes API Server stores in etcd
     ↓
 Watch event triggered
     ↓
-Controller receives event (via kube-rs runtime)
+Operator receives event (via kube-rs runtime)
     ↓
 reconcile_dnszone_wrapper() called
     ↓
@@ -94,7 +94,7 @@ Kubernetes API Server stores in etcd
     ↓
 Watch event triggered
     ↓
-Controller receives event
+Operator receives event
     ↓
 reconcile_a_record_wrapper() called
     ↓
@@ -114,10 +114,10 @@ Done, requeue after 5 minutes
 ```mermaid
 graph TB
     subgraph runtime["Main Tokio Runtime"]
-        dnszone_task["DNSZone Controller Task<br/>(watches DNSZone resources)"]
-        arecord_task["ARecord Controller Task<br/>(concurrent)"]
-        txt_task["TXTRecord Controller Task<br/>(concurrent)"]
-        cname_task["CNAME Controller Task<br/>(concurrent)"]
+        dnszone_task["DNSZone Operator Task<br/>(watches DNSZone resources)"]
+        arecord_task["ARecord Operator Task<br/>(concurrent)"]
+        txt_task["TXTRecord Operator Task<br/>(concurrent)"]
+        cname_task["CNAME Operator Task<br/>(concurrent)"]
 
         dnszone_task --> arecord_task
         arecord_task --> txt_task
@@ -233,7 +233,7 @@ Reconciliation Error
     │
     ├─→ Log error with context
     ├─→ Update resource status with error condition
-    ├─→ Return error to controller
+    ├─→ Return error to operator
     │
     └─→ Error Policy Handler:
         ├─ If transient (file not found, etc.)
@@ -278,7 +278,7 @@ main.rs
 ### Memory Layout
 
 ```
-Rust Controller (typical): ~50MB
+Rust Operator (typical): ~50MB
     ├─ Binary loaded: ~20MB
     ├─ Tokio runtime: ~10MB
     ├─ In-flight reconciliations: ~5MB
@@ -301,14 +301,14 @@ Create DNSZone              <100ms       500-1000ms
 Add A Record                <50ms        200-500ms
 Evaluate label selector     <20ms        100-300ms
 Update status              <30ms        150-300ms
-Controller startup         <1s          5-10s
+Operator startup         <1s          5-10s
 Full zone reconciliation   <500ms       2-5s
 ```
 
 ### Scalability
 
 ```
-With Rust Controller:
+With Rust Operator:
     • 10 zones: <1s reconciliation
     • 100 zones: <5s reconciliation
     • 1000 records: <10s total reconciliation
@@ -324,7 +324,7 @@ vs Python Operator:
 ## RBAC Requirements
 
 ```
-cluster-role: bind9-controller
+cluster-role: bind9-operator
     │
     ├─ [get, list, watch] on dnszones
     ├─ [get, list, watch] on arecords
@@ -345,7 +345,7 @@ Kubernetes etcd (Source of Truth)
     ├─→ Store Record resources
     ├─→ Store status conditions
     │
-    └─→ Controller watches via kube-rs
+    └─→ Operator watches via kube-rs
         │
         ├─→ Detects changes
         ├─→ Triggers reconciliation

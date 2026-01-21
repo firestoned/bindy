@@ -481,7 +481,7 @@ rules:
 **Enforce strict namespace boundaries:**
 
 - Records **cannot** reference zones in other namespaces
-- This is enforced by the controller using `Api::namespaced()`
+- This is enforced by the operator using `Api::namespaced()`
 - No configuration needed - isolation is automatic
 
 ```yaml
@@ -590,7 +590,7 @@ spec:
   - from:
     - podSelector:
         matchLabels:
-          app: bindy-controller
+          app: bindy-operator
     ports:
     - protocol: TCP
       port: 8080

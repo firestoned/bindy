@@ -18,7 +18,7 @@ graph TB
             zone --> records
         end
 
-        subgraph controller["Bindy Controller (Rust)"]
+        subgraph operator["Bindy Operator (Rust)"]
             rec1["Bind9Cluster<br/>Reconciler"]
             rec2["Bind9Instance<br/>Reconciler"]
             rec3["DNSZone<br/>Reconciler"]
@@ -39,8 +39,8 @@ graph TB
 
     clients["DNS Clients<br/>• Applications<br/>• Services<br/>• External users"]
 
-    crds -->|"watches<br/>(Kubernetes API)"| controller
-    controller -->|"HTTP REST API<br/>(port 8080/TCP)<br/>POST /api/v1/zones"| api
+    crds -->|"watches<br/>(Kubernetes API)"| operator
+    operator -->|"HTTP REST API<br/>(port 8080/TCP)<br/>POST /api/v1/zones"| api
     api -->|"rndc locally<br/>(port 9530)"| bind9
     api -->|"reads/writes"| vol
     bind9 -->|"reads/writes"| vol
@@ -49,7 +49,7 @@ graph TB
 
     style k8s fill:#e1f5ff,stroke:#01579b,stroke-width:2px
     style crds fill:#fff9c4,stroke:#f57f17,stroke-width:2px
-    style controller fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    style operator fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
     style bind9pod fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
     style containers fill:#c8e6c9,stroke:#2e7d32,stroke-width:1px
     style secrets fill:#ffe0b2,stroke:#e65100,stroke-width:2px
@@ -59,18 +59,18 @@ graph TB
 ## Key Architectural Changes from Direct RNDC
 
 ### Previous Architecture (Direct RNDC)
-- Controller communicated directly with BIND9 via rndc protocol (port 9530)
+- Operator communicated directly with BIND9 via rndc protocol (port 9530)
 - Required TSIG authentication for every request
-- Controller needed network access to every BIND9 pod
+- Operator needed network access to every BIND9 pod
 - Complex authentication and connection management
 
 ### New Architecture (HTTP API Sidecar)
 - **Sidecar pattern**: bindcar container runs alongside BIND9
-- **HTTP REST API**: Controller uses simple HTTP (port 8080) instead of rndc protocol
+- **HTTP REST API**: Operator uses simple HTTP (port 8080) instead of rndc protocol
 - **Local rndc**: API sidecar executes rndc locally (localhost:9530)
 - **Shared volumes**: /var/cache/bind shared between BIND9 and API containers
 - **ServiceAccount authentication**: Uses Kubernetes ServiceAccount tokens
-- **Simplified networking**: Controller only needs to reach Service, not individual pods
+- **Simplified networking**: Operator only needs to reach Service, not individual pods
 - **Better error handling**: REST API provides structured JSON responses
 
 ## Sidecar Container Pattern
@@ -97,14 +97,14 @@ graph TB
          │ DNS queries                   │ HTTP REST API
          │ (port 53)                     │ (port 8080)
          │                               │
-    DNS Clients                    Bindy Controller
+    DNS Clients                    Bindy Operator
 ```
 
 ## HTTP API Communication
 
 ```
 ┌──────────────────────┐                 ┌──────────────────────┐
-│  Bindy Controller    │                 │  bindcar      │
+│  Bindy Operator    │                 │  bindcar      │
 │                      │                 │  Sidecar Container   │
 │  ┌────────────────┐  │                 │                      │
 │  │ Bind9Manager   │  │   HTTP POST     │  ┌────────────────┐  │
@@ -144,12 +144,12 @@ graph TB
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│  1. Controller Retrieves ServiceAccount Token                 │
+│  1. Operator Retrieves ServiceAccount Token                 │
 │                                                                │
 │  Token file: /var/run/secrets/kubernetes.io/serviceaccount/   │
 │              token                                             │
 │                                                                │
-│  Controller reads token at startup and uses it for all API    │
+│  Operator reads token at startup and uses it for all API    │
 │  requests via the Authorization: Bearer <token> header        │
 └────────────────────────────────────────────────────────────────┘
                          │
@@ -204,7 +204,7 @@ User creates DNSZone resource
     │ Watch event
     ▼
 ┌─────────────────────────────────────────────────────────┐
-│ Bindy Controller receives event                         │
+│ Bindy Operator receives event                         │
 │   • DNSZone watcher triggers                            │
 │   • Event: Applied(dnszone)                             │
 └─────────────────────────────────────────────────────────┘
@@ -539,7 +539,7 @@ spec:
 ┌────────────────────────────────────────────────────────────┐
 │ ServiceAccount Token provides:                             │
 │                                                            │
-│  1. Authentication - Verifies controller identity          │
+│  1. Authentication - Verifies operator identity          │
 │  2. Authorization - Kubernetes RBAC controls access        │
 │  3. Automatic rotation - Kubernetes manages token lifecycle│
 │                                                            │
@@ -559,14 +559,14 @@ spec:
 │ • DNS queries on port 53/UDP+TCP (exposed via Service)    │
 │ • All API communication within cluster network            │
 │ • No external API access (ClusterIP services only)        │
-│ • NetworkPolicies can restrict API access to controller   │
+│ • NetworkPolicies can restrict API access to operator   │
 └────────────────────────────────────────────────────────────┘
 ```
 
 ### RBAC Requirements
 
 ```yaml
-# Controller needs access to:
+# Operator needs access to:
 - Secrets (get, list) - for RNDC keys
 - Pods (get, list) - for pod discovery
 - Services (get, list) - for DNS resolution
@@ -591,12 +591,12 @@ Status check                ~100ms              ~150ms
 ### Benefits of HTTP API Sidecar
 
 ```
-✓ Simplified networking - Controller talks to Service, not individual pods
+✓ Simplified networking - Operator talks to Service, not individual pods
 ✓ Standard HTTP - Easier to debug, monitor, and secure
 ✓ Better error handling - Structured JSON responses with details
 ✓ ServiceAccount auth - Native Kubernetes authentication
 ✓ Language agnostic - Any HTTP client can interact with API
-✓ Easier testing - Can test API independently of controller
+✓ Easier testing - Can test API independently of operator
 ✓ Graceful degradation - API can queue requests if BIND9 is busy
 ✓ Metrics and monitoring - Easy to add Prometheus metrics
 ```

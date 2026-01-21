@@ -1,6 +1,6 @@
-# DNSZone Controller Consolidation Migration Troubleshooting
+# DNSZone Operator Consolidation Migration Troubleshooting
 
-This guide helps troubleshoot issues during and after the DNSZone controller consolidation migration (Phases 1-8, January 2026).
+This guide helps troubleshoot issues during and after the DNSZone operator consolidation migration (Phases 1-8, January 2026).
 
 ## Pre-Migration Checklist
 
@@ -12,9 +12,9 @@ Before upgrading, verify:
    kubectl get bind9instances -A -o yaml > bind9instances-backup-$(date +%Y%m%d-%H%M%S).yaml
    ```
 
-2. **Check Bindy controller version**:
+2. **Check Bindy operator version**:
    ```bash
-   kubectl get deployment -n dns-system bindy-controller -o jsonpath='{.spec.template.spec.containers[0].image}'
+   kubectl get deployment -n dns-system bindy-operator -o jsonpath='{.spec.template.spec.containers[0].image}'
    ```
 
 3. **Verify all zones are healthy before upgrade**:
@@ -35,10 +35,10 @@ Before upgrading, verify:
 These fields were removed as part of the consolidation. The new architecture uses only `status.instances[]`.
 
 **Resolution:**
-1. Verify the new controller is running:
+1. Verify the new operator is running:
    ```bash
-   kubectl get pods -n dns-system -l app=bindy-controller
-   kubectl logs -n dns-system -l app=bindy-controller --tail=100
+   kubectl get pods -n dns-system -l app=bindy-operator
+   kubectl logs -n dns-system -l app=bindy-operator --tail=100
    ```
 
 2. Check `status.instances[]` field instead:
@@ -85,7 +85,7 @@ The `selectedZones` reverse reference was removed. This field created circular d
 2. Update dashboards to query DNSZone resources for instance relationships
 
 **Migration Note:**
-This is an intentional breaking change. The DNSZone controller now owns the instance-zone relationship.
+This is an intentional breaking change. The DNSZone operator now owns the instance-zone relationship.
 
 ### Issue 3: Zones Not Synchronizing to Instances
 
@@ -111,9 +111,9 @@ This is an intentional breaking change. The DNSZone controller now owns the inst
    kubectl get dnszone <zone-name> -n <namespace> -o jsonpath='{.status.instances[*].message}' | jq -r .
    ```
 
-4. **Check controller logs**:
+4. **Check operator logs**:
    ```bash
-   kubectl logs -n dns-system -l app=bindy-controller --tail=100 | grep -E "(ERROR|WARN|add_zones)"
+   kubectl logs -n dns-system -l app=bindy-operator --tail=100 | grep -E "(ERROR|WARN|add_zones)"
    ```
 
 **Common Root Causes:**
@@ -165,16 +165,16 @@ This is an intentional breaking change. The DNSZone controller now owns the inst
 
 3. If labels/clusterRef don't match, instance won't be selected - this is correct behavior
 
-#### C. Controller RBAC Permissions Missing
+#### C. Operator RBAC Permissions Missing
 
-**Error**: `"Forbidden: User system:serviceaccount:dns-system:bindy-controller cannot update resource..."`
+**Error**: `"Forbidden: User system:serviceaccount:dns-system:bindy-operator cannot update resource..."`
 
 **Resolution**:
 1. Verify RBAC is deployed:
    ```bash
-   kubectl get clusterrole bindy-controller
-   kubectl get clusterrolebinding bindy-controller
-   kubectl get serviceaccount -n dns-system bindy-controller
+   kubectl get clusterrole bindy-operator
+   kubectl get clusterrolebinding bindy-operator
+   kubectl get serviceaccount -n dns-system bindy-operator
    ```
 
 2. Redeploy RBAC if needed:
@@ -207,7 +207,7 @@ The Ready condition is `True` ONLY when **ALL** instances are in `Configured` st
 
 1. Identify failed instances and check their error messages (see Issue 3)
 2. Fix the root cause for each failed instance
-3. Controller will automatically retry and update status
+3. Operator will automatically retry and update status
 
 ### Issue 5: Duplicate Instances in Status
 
@@ -226,56 +226,56 @@ kubectl get dnszone <zone-name> -n <namespace> -o json | jq '.status.instances |
 **Resolution:**
 This should not happen (deduplication is automatic), but if it does:
 
-1. Check controller version (bug may be fixed in newer version)
+1. Check operator version (bug may be fixed in newer version)
 2. Force reconciliation:
    ```bash
    kubectl annotate dnszone <zone-name> -n <namespace> bindy.firestoned.io/force-reconcile="$(date +%s)" --overwrite
    ```
 
-3. If issue persists, file a bug report with controller logs
+3. If issue persists, file a bug report with operator logs
 
-### Issue 6: Old ZoneSync Controller Still Running
+### Issue 6: Old ZoneSync Operator Still Running
 
 **Symptoms:**
-- Two controllers reconciling the same DNSZone
+- Two operators reconciling the same DNSZone
 - Conflicting status updates
 - `status.syncStatus[]` is being updated (should not exist)
 
 **Diagnosis:**
 ```bash
-# Check for multiple bindy controller pods
-kubectl get pods -n dns-system -l app=bindy-controller
+# Check for multiple bindy operator pods
+kubectl get pods -n dns-system -l app=bindy-operator
 
-# Check controller version
-kubectl get deployment -n dns-system bindy-controller -o jsonpath='{.spec.template.spec.containers[0].image}'
+# Check operator version
+kubectl get deployment -n dns-system bindy-operator -o jsonpath='{.spec.template.spec.containers[0].image}'
 ```
 
 **Resolution:**
 
 1. **Verify correct image version**:
    ```bash
-   kubectl set image deployment/bindy-controller -n dns-system bindy-controller=ghcr.io/firestoned/bindy:v0.X.Y
+   kubectl set image deployment/bindy-operator -n dns-system bindy-operator=ghcr.io/firestoned/bindy:v0.X.Y
    ```
 
 2. **Force rollout**:
    ```bash
-   kubectl rollout restart deployment/bindy-controller -n dns-system
-   kubectl rollout status deployment/bindy-controller -n dns-system
+   kubectl rollout restart deployment/bindy-operator -n dns-system
+   kubectl rollout status deployment/bindy-operator -n dns-system
    ```
 
 3. **Verify old pods are terminated**:
    ```bash
-   kubectl get pods -n dns-system -l app=bindy-controller --show-labels
+   kubectl get pods -n dns-system -l app=bindy-operator --show-labels
    ```
 
 ## Rollback Procedure
 
 If migration fails and you need to rollback:
 
-1. **Restore previous controller version**:
+1. **Restore previous operator version**:
    ```bash
-   kubectl set image deployment/bindy-controller -n dns-system bindy-controller=ghcr.io/firestoned/bindy:v0.PREVIOUS.VERSION
-   kubectl rollout status deployment/bindy-controller -n dns-system
+   kubectl set image deployment/bindy-operator -n dns-system bindy-operator=ghcr.io/firestoned/bindy:v0.PREVIOUS.VERSION
+   kubectl rollout status deployment/bindy-operator -n dns-system
    ```
 
 2. **Restore old CRDs** (if CRD update was applied):
@@ -333,8 +333,8 @@ If issues persist:
    # Save all DNSZone resources
    kubectl get dnszones -A -o yaml > dnszones-debug.yaml
    
-   # Save controller logs
-   kubectl logs -n dns-system -l app=bindy-controller --tail=500 > controller-logs.txt
+   # Save operator logs
+   kubectl logs -n dns-system -l app=bindy-operator --tail=500 > operator-logs.txt
    
    # Save events
    kubectl get events -A --sort-by='.lastTimestamp' | grep -i dnszone > dnszone-events.txt
@@ -342,7 +342,7 @@ If issues persist:
 
 2. **File a GitHub issue** with:
    - Migration step where failure occurred
-   - Error messages from controller logs
+   - Error messages from operator logs
    - DNSZone YAML showing problematic status
    - Bind9Instance YAML for affected instances
 
@@ -353,7 +353,7 @@ If issues persist:
 
 ## See Also
 
-- [DNSZone Controller Architecture](../concepts/dnszone-controller-architecture.md)
+- [DNSZone Operator Architecture](../concepts/dnszone-operator-architecture.md)
 - [Integration Test Plan](../../roadmaps/integration-test-plan.md)
 - [API Reference](../reference/api.md)
 - [Common Issues](./common-issues.md)

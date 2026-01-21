@@ -8,7 +8,7 @@ Bindy follows Kubernetes patterns and idioms:
 
 - **Declarative Configuration** - You declare what DNS records should exist, Bindy makes it happen
 - **Custom Resources** - DNS zones and records are Kubernetes resources
-- **Controllers** - Bindy watches resources and reconciles state
+- **Operators** - Bindy watches resources and reconciles state
 - **Labels and Selectors** - Target specific BIND9 instances using labels
 - **Status Subresources** - Track the health and state of DNS resources
 
@@ -46,26 +46,26 @@ graph TB
         more["..."]
     end
 
-    controller["Bindy Controller<br/>• Watches CRDs<br/>• Reconciles state<br/>• RNDC client<br/>• TSIG authentication"]
+    operator["Bindy Operator<br/>• Watches CRDs<br/>• Reconciles state<br/>• RNDC client<br/>• TSIG authentication"]
 
     bind9["BIND9 Instances<br/>• rndc daemon (port 9530)<br/>• Primary servers<br/>• Secondary servers<br/>• Dynamic zones<br/>• DNS queries (port 53)"]
 
-    zone --> controller
-    arecord --> controller
-    mx --> controller
-    txt --> controller
-    more --> controller
+    zone --> operator
+    arecord --> operator
+    mx --> operator
+    txt --> operator
+    more --> operator
 
-    controller -->|"RNDC Protocol<br/>(Port 9530/TCP)<br/>TSIG/HMAC-SHA256"| bind9
+    operator -->|"RNDC Protocol<br/>(Port 9530/TCP)<br/>TSIG/HMAC-SHA256"| bind9
 
     style k8s fill:#e1f5ff,stroke:#01579b,stroke-width:2px
-    style controller fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    style operator fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
     style bind9 fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
 ```
 
 ### Reconciliation Loop
 
-1. **Watch** - Controller watches for changes to DNS resources
+1. **Watch** - Operator watches for changes to DNS resources
 2. **Discover** - Finds BIND9 instance pods via Kubernetes API
 3. **Authenticate** - Loads RNDC key from Kubernetes Secret
 4. **Execute** - Sends RNDC commands to BIND9 (addzone, reload, etc.)
@@ -176,7 +176,7 @@ graph TD
     style data fill:#fce4ec,stroke:#880e4f,stroke-width:2px
 ```
 
-The controller uses this Secret to authenticate RNDC commands to the BIND9 instance.
+The operator uses this Secret to authenticate RNDC commands to the BIND9 instance.
 
 ## Status and Conditions
 

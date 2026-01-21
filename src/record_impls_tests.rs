@@ -12,7 +12,7 @@ mod tests {
         AAAARecord, ARecord, CAARecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, TXTRecord,
     };
     use crate::labels;
-    use crate::record_controller::DnsRecordType;
+    use crate::record_operator::DnsRecordType;
     use hickory_client::rr::RecordType;
 
     // A Record Tests

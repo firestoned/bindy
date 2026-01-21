@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 # Verification script for RBAC least privilege implementation
-# Tests that the bindy controller ServiceAccount has minimal required permissions
+# Tests that the bindy operator ServiceAccount has minimal required permissions
 # and NO delete permissions on any resources (PCI-DSS 7.1.2 compliance)
 
 set -e
@@ -70,7 +70,7 @@ echo "1. Testing Bind9Instance CRD Permissions"
 echo "========================================"
 echo ""
 
-# Controller SHOULD be able to read/write Bind9Instance
+# Operator SHOULD be able to read/write Bind9Instance
 test_allowed "get" "bind9instances.bindy.firestoned.io"
 test_allowed "list" "bind9instances.bindy.firestoned.io"
 test_allowed "watch" "bind9instances.bindy.firestoned.io"
@@ -78,7 +78,7 @@ test_allowed "create" "bind9instances.bindy.firestoned.io"
 test_allowed "update" "bind9instances.bindy.firestoned.io"
 test_allowed "patch" "bind9instances.bindy.firestoned.io"
 
-# Controller MUST NOT be able to delete Bind9Instance (CRITICAL)
+# Operator MUST NOT be able to delete Bind9Instance (CRITICAL)
 test_denied "delete" "bind9instances.bindy.firestoned.io"
 test_denied "deletecollection" "bind9instances.bindy.firestoned.io"
 
@@ -88,7 +88,7 @@ echo "2. Testing DNSZone CRD Permissions"
 echo "========================================"
 echo ""
 
-# Controller SHOULD be able to read/write DNSZone
+# Operator SHOULD be able to read/write DNSZone
 test_allowed "get" "dnszones.bindy.firestoned.io"
 test_allowed "list" "dnszones.bindy.firestoned.io"
 test_allowed "watch" "dnszones.bindy.firestoned.io"
@@ -96,7 +96,7 @@ test_allowed "create" "dnszones.bindy.firestoned.io"
 test_allowed "update" "dnszones.bindy.firestoned.io"
 test_allowed "patch" "dnszones.bindy.firestoned.io"
 
-# Controller MUST NOT be able to delete DNSZone (CRITICAL)
+# Operator MUST NOT be able to delete DNSZone (CRITICAL)
 test_denied "delete" "dnszones.bindy.firestoned.io"
 test_denied "deletecollection" "dnszones.bindy.firestoned.io"
 
@@ -119,12 +119,12 @@ echo "4. Testing Secrets Permissions (CRITICAL)"
 echo "========================================"
 echo ""
 
-# Controller SHOULD be able to READ secrets (for RNDC keys)
+# Operator SHOULD be able to READ secrets (for RNDC keys)
 test_allowed "get" "secrets" "--namespace=${NAMESPACE}"
 test_allowed "list" "secrets" "--namespace=${NAMESPACE}"
 test_allowed "watch" "secrets" "--namespace=${NAMESPACE}"
 
-# Controller MUST NOT be able to modify/delete secrets (PCI-DSS 7.1.2)
+# Operator MUST NOT be able to modify/delete secrets (PCI-DSS 7.1.2)
 test_denied "create" "secrets" "--namespace=${NAMESPACE}"
 test_denied "update" "secrets" "--namespace=${NAMESPACE}"
 test_denied "patch" "secrets" "--namespace=${NAMESPACE}"
@@ -136,7 +136,7 @@ echo "5. Testing ConfigMap Permissions"
 echo "========================================"
 echo ""
 
-# Controller SHOULD be able to read/write ConfigMaps (for zone configs)
+# Operator SHOULD be able to read/write ConfigMaps (for zone configs)
 test_allowed "get" "configmaps" "--namespace=${NAMESPACE}"
 test_allowed "list" "configmaps" "--namespace=${NAMESPACE}"
 test_allowed "watch" "configmaps" "--namespace=${NAMESPACE}"
@@ -144,7 +144,7 @@ test_allowed "create" "configmaps" "--namespace=${NAMESPACE}"
 test_allowed "update" "configmaps" "--namespace=${NAMESPACE}"
 test_allowed "patch" "configmaps" "--namespace=${NAMESPACE}"
 
-# Controller MUST NOT be able to delete ConfigMaps (least privilege)
+# Operator MUST NOT be able to delete ConfigMaps (least privilege)
 test_denied "delete" "configmaps" "--namespace=${NAMESPACE}"
 
 echo ""
@@ -153,7 +153,7 @@ echo "6. Testing Deployment Permissions"
 echo "========================================"
 echo ""
 
-# Controller SHOULD be able to manage Deployments (for BIND pods)
+# Operator SHOULD be able to manage Deployments (for BIND pods)
 test_allowed "get" "deployments" "--namespace=${NAMESPACE}"
 test_allowed "list" "deployments" "--namespace=${NAMESPACE}"
 test_allowed "watch" "deployments" "--namespace=${NAMESPACE}"
@@ -161,7 +161,7 @@ test_allowed "create" "deployments" "--namespace=${NAMESPACE}"
 test_allowed "update" "deployments" "--namespace=${NAMESPACE}"
 test_allowed "patch" "deployments" "--namespace=${NAMESPACE}"
 
-# Controller MUST NOT be able to delete Deployments (least privilege)
+# Operator MUST NOT be able to delete Deployments (least privilege)
 test_denied "delete" "deployments" "--namespace=${NAMESPACE}"
 
 echo ""
@@ -170,7 +170,7 @@ echo "7. Testing Service Permissions"
 echo "========================================"
 echo ""
 
-# Controller SHOULD be able to manage Services
+# Operator SHOULD be able to manage Services
 test_allowed "get" "services" "--namespace=${NAMESPACE}"
 test_allowed "list" "services" "--namespace=${NAMESPACE}"
 test_allowed "watch" "services" "--namespace=${NAMESPACE}"
@@ -178,7 +178,7 @@ test_allowed "create" "services" "--namespace=${NAMESPACE}"
 test_allowed "update" "services" "--namespace=${NAMESPACE}"
 test_allowed "patch" "services" "--namespace=${NAMESPACE}"
 
-# Controller MUST NOT be able to delete Services (least privilege)
+# Operator MUST NOT be able to delete Services (least privilege)
 test_denied "delete" "services" "--namespace=${NAMESPACE}"
 
 echo ""
@@ -187,7 +187,7 @@ echo "8. Testing ServiceAccount Permissions"
 echo "========================================"
 echo ""
 
-# Controller SHOULD be able to manage ServiceAccounts
+# Operator SHOULD be able to manage ServiceAccounts
 test_allowed "get" "serviceaccounts" "--namespace=${NAMESPACE}"
 test_allowed "list" "serviceaccounts" "--namespace=${NAMESPACE}"
 test_allowed "watch" "serviceaccounts" "--namespace=${NAMESPACE}"
@@ -195,7 +195,7 @@ test_allowed "create" "serviceaccounts" "--namespace=${NAMESPACE}"
 test_allowed "update" "serviceaccounts" "--namespace=${NAMESPACE}"
 test_allowed "patch" "serviceaccounts" "--namespace=${NAMESPACE}"
 
-# Controller MUST NOT be able to delete ServiceAccounts (least privilege)
+# Operator MUST NOT be able to delete ServiceAccounts (least privilege)
 test_denied "delete" "serviceaccounts" "--namespace=${NAMESPACE}"
 
 echo ""
@@ -204,12 +204,12 @@ echo "9. Testing Pod Permissions"
 echo "========================================"
 echo ""
 
-# Controller SHOULD be able to read Pods (for status)
+# Operator SHOULD be able to read Pods (for status)
 test_allowed "get" "pods" "--namespace=${NAMESPACE}"
 test_allowed "list" "pods" "--namespace=${NAMESPACE}"
 test_allowed "watch" "pods" "--namespace=${NAMESPACE}"
 
-# Controller MUST NOT be able to delete Pods (managed by Deployments)
+# Operator MUST NOT be able to delete Pods (managed by Deployments)
 test_denied "delete" "pods" "--namespace=${NAMESPACE}"
 
 echo ""
@@ -226,7 +226,7 @@ if [ ${FAILED} -eq 0 ]; then
     echo -e "${GREEN}✓ ALL TESTS PASSED${NC}"
     echo ""
     echo "RBAC configuration follows least privilege principle:"
-    echo "  - Controller has NO delete permissions on any resources"
+    echo "  - Operator has NO delete permissions on any resources"
     echo "  - Secrets are READ-ONLY (PCI-DSS 7.1.2 compliant)"
     echo "  - Destructive operations require bindy-admin-role"
     echo ""
@@ -238,7 +238,7 @@ else
     echo "Review deploy/rbac/role.yaml and ensure:"
     echo "  - NO 'delete' verbs on any resources"
     echo "  - Secrets have ONLY: get, list, watch"
-    echo "  - Admin operations use bindy-admin-role (NOT controller role)"
+    echo "  - Admin operations use bindy-admin-role (NOT operator role)"
     echo ""
     exit 1
 fi

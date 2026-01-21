@@ -1,4 +1,4 @@
-# Threat Model - Bindy DNS Controller
+# Threat Model - Bindy DNS Operator
 
 **Version:** 1.0
 **Last Updated:** 2025-12-17
@@ -24,7 +24,7 @@
 
 ## Overview
 
-This document provides a comprehensive threat model for the Bindy DNS Controller, a Kubernetes operator that manages BIND9 DNS servers. The threat model uses the STRIDE methodology (Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege) to identify and analyze security threats.
+This document provides a comprehensive threat model for the Bindy DNS Operator, a Kubernetes operator that manages BIND9 DNS servers. The threat model uses the STRIDE methodology (Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege) to identify and analyze security threats.
 
 ### Objectives
 
@@ -37,7 +37,7 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 ### Scope
 
 **In Scope:**
-- Bindy controller container and runtime
+- Bindy operator container and runtime
 - Custom Resource Definitions (CRDs) and Kubernetes API interactions
 - BIND9 pods managed by Bindy
 - DNS zone data and configuration
@@ -65,9 +65,9 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 │  │              dns-system Namespace                   │    │
 │  │                                                      │    │
 │  │  ┌──────────────────────────────────────────────┐  │    │
-│  │  │        Bindy Controller (Deployment)         │  │    │
+│  │  │        Bindy Operator (Deployment)         │  │    │
 │  │  │  ┌────────────────────────────────────────┐  │  │    │
-│  │  │  │  Controller Pod (Non-Root, ReadOnly)   │  │    │    │
+│  │  │  │  Operator Pod (Non-Root, ReadOnly)   │  │    │    │
 │  │  │  │  - Watches CRDs                        │  │  │    │
 │  │  │  │  - Reconciles DNS zones                │  │  │    │
 │  │  │  │  - Manages BIND9 pods                  │  │  │    │
@@ -116,7 +116,7 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 
 ### Components
 
-1. **Bindy Controller**
+1. **Bindy Operator**
    - Kubernetes operator written in Rust
    - Watches custom resources (Bind9Cluster, Bind9Instance, DNSZone, DNS records)
    - Reconciles desired state with actual state
@@ -139,7 +139,7 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
    - ConfigMaps: Store BIND9 configuration and zone files
    - Secrets: Store RNDC keys (symmetric HMAC keys)
    - Services: Expose DNS (port 53) and RNDC (port 9530)
-   - ServiceAccounts: RBAC for controller access
+   - ServiceAccounts: RBAC for operator access
 
 ---
 
@@ -151,9 +151,9 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 |-------|-------------|-----------------|-----------|--------------|-------|
 | **DNS Zone Data** | Authoritative DNS records for all managed domains | Medium | **Critical** | **Critical** | Teams/Platform |
 | **RNDC Keys** | Symmetric HMAC keys for BIND9 control | **Critical** | **Critical** | High | Security Team |
-| **Controller Binary** | Signed container image with controller logic | Medium | **Critical** | High | Development Team |
+| **Operator Binary** | Signed container image with operator logic | Medium | **Critical** | High | Development Team |
 | **BIND9 Configuration** | named.conf, zone configs | Low | **Critical** | High | Platform Team |
-| **Kubernetes API Access** | ServiceAccount token for controller | **Critical** | **Critical** | **Critical** | Platform Team |
+| **Kubernetes API Access** | ServiceAccount token for operator | **Critical** | **Critical** | **Critical** | Platform Team |
 | **CRD Schemas** | Define API contract for DNS management | Low | **Critical** | Medium | Development Team |
 | **Audit Logs** | Record of all DNS changes and access | High | **Critical** | High | Security Team |
 | **SBOM** | Software Bill of Materials for compliance | Low | **Critical** | Medium | Compliance Team |
@@ -162,7 +162,7 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 
 - **DNS Zone Data**: Prevent unauthorized modification (tampering), ensure availability
 - **RNDC Keys**: Prevent disclosure (compromise allows full BIND9 control)
-- **Controller Binary**: Prevent supply chain attacks, ensure code integrity
+- **Operator Binary**: Prevent supply chain attacks, ensure code integrity
 - **Kubernetes API Access**: Prevent privilege escalation, enforce least privilege
 - **Audit Logs**: Ensure non-repudiation, prevent tampering, retain for compliance
 
@@ -184,14 +184,14 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 **Threats if Compromised:**
 - Attacker gains full control of all resources in cluster
 - DNS data can be exfiltrated or modified
-- Controller can be manipulated or replaced
+- Operator can be manipulated or replaced
 
 ---
 
 ### Boundary 2: dns-system Namespace
 
 **Trust Level:** High
-**Description:** Namespace containing Bindy controller and BIND9 pods
+**Description:** Namespace containing Bindy operator and BIND9 pods
 
 **Assumptions:**
 - RBAC limits access to authorized ServiceAccounts only
@@ -205,10 +205,10 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 
 ---
 
-### Boundary 3: Controller Container
+### Boundary 3: Operator Container
 
 **Trust Level:** Medium-High
-**Description:** Bindy controller runtime environment
+**Description:** Bindy operator runtime environment
 
 **Assumptions:**
 - Container runs as non-root user
@@ -218,7 +218,7 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 
 **Threats if Compromised:**
 - Attacker can abuse Kubernetes API access
-- Attacker can read secrets controller has access to
+- Attacker can read secrets operator has access to
 - Attacker can disrupt reconciliation loops
 
 ---
@@ -231,7 +231,7 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 **Assumptions:**
 - Container runs as non-root
 - Exposed to internet (port 53)
-- Configuration is managed by controller (read-only)
+- Configuration is managed by operator (read-only)
 
 **Threats if Compromised:**
 - Attacker can serve malicious DNS responses
@@ -264,7 +264,7 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 
 #### S1: Spoofed Kubernetes API Requests
 
-**Threat:** Attacker impersonates the Bindy controller ServiceAccount to make unauthorized API calls.
+**Threat:** Attacker impersonates the Bindy operator ServiceAccount to make unauthorized API calls.
 
 **Impact:** HIGH
 **Likelihood:** LOW (requires compromised cluster or stolen token)
@@ -272,13 +272,13 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 **Attack Scenario:**
 1. Attacker compromises a pod in the cluster
 2. Steals ServiceAccount token from `/var/run/secrets/kubernetes.io/serviceaccount/token`
-3. Uses token to impersonate controller and modify DNS zones
+3. Uses token to impersonate operator and modify DNS zones
 
 **Mitigations:**
-- ✅ RBAC least privilege (controller cannot delete resources)
+- ✅ RBAC least privilege (operator cannot delete resources)
 - ✅ Pod Security Standards (non-root, read-only filesystem)
 - ✅ Short-lived ServiceAccount tokens (TokenRequest API)
-- ❌ **MISSING**: Network policies to restrict egress from controller pod
+- ❌ **MISSING**: Network policies to restrict egress from operator pod
 - ❌ **MISSING**: Audit logging for all ServiceAccount API calls
 
 **Residual Risk:** MEDIUM (need network policies and audit logs)
@@ -293,13 +293,13 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 **Likelihood:** LOW (RNDC keys stored in Kubernetes Secrets with RBAC)
 
 **Attack Scenario:**
-1. Attacker compromises controller pod or namespace
+1. Attacker compromises operator pod or namespace
 2. Reads RNDC key from Kubernetes Secret
 3. Connects to BIND9 RNDC port (9530) and issues commands (e.g., `reload`, `freeze`, `thaw`)
 
 **Mitigations:**
 - ✅ Secrets encrypted at rest (Kubernetes)
-- ✅ RBAC limits secret read access to controller only
+- ✅ RBAC limits secret read access to operator only
 - ✅ RNDC port (9530) not exposed externally
 - ❌ **MISSING**: Secret access audit trail (H-3)
 - ❌ **MISSING**: RNDC key rotation policy
@@ -366,7 +366,7 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 **Attack Scenario:**
 1. Attacker compromises CI/CD pipeline or registry credentials
 2. Pushes malicious image with same tag (e.g., `:latest`)
-3. Controller pulls compromised image on next rollout
+3. Operator pulls compromised image on next rollout
 
 **Mitigations:**
 - ✅ All images signed with provenance attestation (SLSA Level 2)
@@ -374,7 +374,7 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 - ✅ GitHub Actions signed commits verification
 - ✅ Multi-stage builds minimize attack surface
 - ❌ **MISSING**: Image digests pinned (not tags) - see M-1
-- ❌ **MISSING**: Admission controller to verify image signatures (e.g., Sigstore Cosign)
+- ❌ **MISSING**: Admission operator to verify image signatures (e.g., Sigstore Cosign)
 
 **Residual Risk:** LOW (strong supply chain controls, but pinning digests would further reduce risk)
 
@@ -393,8 +393,8 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 3. BIND9 pod restarts with malicious configuration
 
 **Mitigations:**
-- ✅ Controller has NO delete permissions on Secrets/ConfigMaps (C-2)
-- ✅ RBAC limits write access to controller only
+- ✅ Operator has NO delete permissions on Secrets/ConfigMaps (C-2)
+- ✅ RBAC limits write access to operator only
 - ✅ Immutable ConfigMaps (once created, cannot be modified - requires recreation)
 - ❌ **MISSING**: ConfigMap/Secret integrity checks (hash validation)
 - ❌ **MISSING**: Automated drift detection (compare running config vs desired state)
@@ -491,7 +491,7 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 
 **Mitigations:**
 - ✅ AXFR restricted to secondary servers only (BIND9 `allow-transfer` directive)
-- ✅ BIND9 configuration managed by controller (prevents manual misconfig)
+- ✅ BIND9 configuration managed by operator (prevents manual misconfig)
 - ❌ **MISSING**: TSIG authentication for zone transfers (H-4)
 - ❌ **MISSING**: Rate limiting on AXFR requests
 
@@ -548,25 +548,25 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 
 ---
 
-#### D2: Controller Resource Exhaustion
+#### D2: Operator Resource Exhaustion
 
-**Threat:** Attacker creates thousands of DNSZone CRs, overwhelming controller.
+**Threat:** Attacker creates thousands of DNSZone CRs, overwhelming operator.
 
-**Impact:** HIGH (controller fails, DNS updates stop)
+**Impact:** HIGH (operator fails, DNS updates stop)
 **Likelihood:** LOW (requires cluster access)
 
 **Attack Scenario:**
 1. Attacker gains write access to Kubernetes API
 2. Creates 10,000+ DNSZone CRs
-3. Controller reconciliation queue overwhelms CPU/memory
-4. Controller crashes or becomes unresponsive
+3. Operator reconciliation queue overwhelms CPU/memory
+4. Operator crashes or becomes unresponsive
 
 **Mitigations:**
-- ✅ Resource limits on controller pod
+- ✅ Resource limits on operator pod
 - ✅ Exponential backoff for failed reconciliations
 - ❌ **MISSING**: Rate limiting on reconciliation loops (M-3)
 - ❌ **MISSING**: Admission webhook to limit number of CRs per namespace
-- ❌ **MISSING**: Horizontal scaling of controller (leader election)
+- ❌ **MISSING**: Horizontal scaling of operator (leader election)
 
 **Residual Risk:** MEDIUM (need M-3 - Rate Limiting)
 
@@ -633,9 +633,9 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 3. Gains cluster-admin and full control of cluster
 
 **Mitigations:**
-- ✅ RBAC least privilege (controller has NO delete permissions) - C-2
+- ✅ RBAC least privilege (operator has NO delete permissions) - C-2
 - ✅ Automated RBAC verification script (`deploy/rbac/verify-rbac.sh`)
-- ✅ No wildcard permissions in controller RBAC
+- ✅ No wildcard permissions in operator RBAC
 - ✅ Regular RBAC audits (quarterly)
 - ❌ **MISSING**: RBAC policy-as-code validation (OPA/Gatekeeper)
 
@@ -653,7 +653,7 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 **Attack Scenario:**
 1. CVE disclosed in dependency (e.g., `tokio`, `hyper`, `kube`)
 2. Attacker crafts malicious Kubernetes API response to trigger vulnerability
-3. Controller crashes or attacker gains RCE in controller pod
+3. Operator crashes or attacker gains RCE in operator pod
 
 **Mitigations:**
 - ✅ Automated vulnerability scanning (cargo-audit) - C-3
@@ -767,7 +767,7 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 
 **Mitigations:**
 - Schema validation in CRD (OpenAPI v3)
-- Input sanitization in controller
+- Input sanitization in operator
 - Namespace isolation (RBAC)
 - Admission webhooks (planned)
 
@@ -798,13 +798,13 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 
 ## Threat Scenarios
 
-### Scenario 1: Compromised Controller Pod
+### Scenario 1: Compromised Operator Pod
 
 **Severity:** HIGH
 
 **Attack Path:**
-1. Attacker exploits vulnerability in controller code (e.g., memory corruption, logic bug)
-2. Gains code execution in controller pod
+1. Attacker exploits vulnerability in operator code (e.g., memory corruption, logic bug)
+2. Gains code execution in operator pod
 3. Reads ServiceAccount token from `/var/run/secrets/`
 4. Uses token to modify DNSZone CRs or read RNDC keys from Secrets
 
@@ -814,7 +814,7 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 - Attacker can pivot to other namespaces (if RBAC is weak)
 
 **Mitigations:**
-- Controller runs as non-root, read-only filesystem
+- Operator runs as non-root, read-only filesystem
 - RBAC least privilege (no delete permissions)
 - Resource limits prevent resource exhaustion
 - Vulnerability scanning (cargo-audit, Trivy)
@@ -855,8 +855,8 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 **Attack Path:**
 1. Attacker compromises popular Rust crate (e.g., via compromised maintainer account)
 2. Malicious code injected into crate update
-3. Bindy controller depends on compromised crate
-4. Malicious code runs in controller, exfiltrates secrets or modifies DNS zones
+3. Bindy operator depends on compromised crate
+4. Malicious code runs in operator, exfiltrates secrets or modifies DNS zones
 
 **Impact:**
 - Complete compromise of DNS infrastructure
@@ -953,7 +953,7 @@ This document provides a comprehensive threat model for the Bindy DNS Controller
 | M-13 | Admission webhooks | T1 (DNS tampering) | MEDIUM | Future |
 | M-14 | DNSSEC signing | T1 (tampering), Scenario 2 (cache poisoning) | MEDIUM | Future |
 | M-15 | Image digest pinning | T2 (image tampering) | MEDIUM | M-1 |
-| M-16 | Rate limiting (controller) | D2 (controller exhaustion) | MEDIUM | M-3 |
+| M-16 | Rate limiting (operator) | D2 (operator exhaustion) | MEDIUM | M-3 |
 | M-17 | Network policies | S1 (API spoofing), E1 (lateral movement) | LOW | L-1 |
 | M-18 | DDoS edge protection | D1 (DNS query flood) | HIGH | External |
 | M-19 | RNDC key rotation | I1 (key disclosure) | MEDIUM | Future |
@@ -981,11 +981,11 @@ None identified (all critical threats have strong mitigations).
 
 1. **DNS Tampering (T1)** - Risk reduced by RBAC, but admission webhooks and DNSSEC would provide defense-in-depth.
 
-2. **Controller Resource Exhaustion (D2)** - Risk reduced by resource limits, but rate limiting (M-3) and admission webhooks are needed.
+2. **Operator Resource Exhaustion (D2)** - Risk reduced by resource limits, but rate limiting (M-3) and admission webhooks are needed.
 
 3. **Zone Enumeration (I2)** - Risk reduced by AXFR restrictions, but TSIG authentication would eliminate AXFR abuse.
 
-4. **Compromised Controller Pod (Scenario 1)** - Risk reduced by Pod Security Standards, but network policies (L-1) would prevent lateral movement.
+4. **Compromised Operator Pod (Scenario 1)** - Risk reduced by Pod Security Standards, but network policies (L-1) would prevent lateral movement.
 
 ---
 

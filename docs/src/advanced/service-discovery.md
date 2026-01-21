@@ -55,7 +55,7 @@ graph TB
 Automatically update DNS when services change (future enhancement):
 
 ```yaml
-# Controller watches Services and creates DNS records
+# Operator watches Services and creates DNS records
 ```
 
 ## Best Practices

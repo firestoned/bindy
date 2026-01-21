@@ -512,6 +512,69 @@ pub struct SOARecord {
     pub negative_ttl: i32,
 }
 
+/// Authoritative nameserver configuration for a DNS zone.
+///
+/// Defines an authoritative nameserver that will have an NS record automatically
+/// generated in the zone. Optionally includes IP addresses for glue record generation
+/// when the nameserver is within the zone's own domain.
+///
+/// # Examples
+///
+/// ## In-zone nameserver with glue records
+///
+/// ```yaml
+/// nameServers:
+///   - hostname: ns2.example.com.
+///     ipv4Address: "192.0.2.2"
+///     ipv6Address: "2001:db8::2"
+/// ```
+///
+/// ## Out-of-zone nameserver (no glue needed)
+///
+/// ```yaml
+/// nameServers:
+///   - hostname: ns1.external-provider.net.
+/// ```
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NameServer {
+    /// Fully qualified domain name of the nameserver.
+    ///
+    /// Must end with a dot (.) for FQDN. This nameserver will have an NS record
+    /// automatically generated at the zone apex (@).
+    ///
+    /// Example: `ns2.example.com.`
+    #[schemars(regex(
+        pattern = r"^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.$"
+    ))]
+    pub hostname: String,
+
+    /// Optional IPv4 address for glue record generation.
+    ///
+    /// Required when the nameserver is within the zone's own domain (in-zone delegation).
+    /// When provided, an A record will be automatically generated for the nameserver.
+    ///
+    /// Example: For `ns2.example.com.` in zone `example.com`, provide `"192.0.2.2"`
+    ///
+    /// Glue records allow resolvers to find the IP addresses of nameservers that are
+    /// within the zone they serve, avoiding circular dependencies.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(regex(pattern = r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$"))]
+    pub ipv4_address: Option<String>,
+
+    /// Optional IPv6 address for glue record generation (AAAA record).
+    ///
+    /// When provided along with (or instead of) `ipv4Address`, an AAAA record will be
+    /// automatically generated for the nameserver.
+    ///
+    /// Example: `"2001:db8::2"`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(regex(
+        pattern = r"^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$|^::$|^::1$|^([0-9a-fA-F]{1,4}:){1,7}:$|^([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}$|^([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}$|^([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}$|^([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}$|^([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}$|^[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})$|^:((:[0-9a-fA-F]{1,4}){1,7}|:)$"
+    ))]
+    pub ipv6_address: Option<String>,
+}
+
 /// Condition represents an observation of a resource's current state.
 ///
 /// Conditions are used in status subresources to communicate the state of
@@ -590,7 +653,7 @@ pub struct RecordReferenceWithTimestamp {
     /// - `None` = Record needs reconciliation (new or spec changed)
     /// - `Some(timestamp)` = Record already configured, skip reconciliation
     ///
-    /// This field is set by the record controller after successful BIND9 update.
+    /// This field is set by the record operator after successful BIND9 update.
     /// The zone controller resets it to `None` when spec changes or zone is recreated.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_reconciled_at: Option<k8s_openapi::apimachinery::pkg::apis::meta::v1::Time>,
@@ -671,7 +734,7 @@ pub struct DNSZoneStatus {
     /// - Records with `lastReconciledAt == Some(timestamp)` are already configured
     ///
     /// This field is populated by the `DNSZone` controller when evaluating `recordsFrom` selectors.
-    /// The timestamp is set by the record controller after successful BIND9 update.
+    /// The timestamp is set by the record operator after successful BIND9 update.
     ///
     /// **Single Source of Truth:**
     /// This status field is authoritative for which records belong to this zone and whether
@@ -861,7 +924,50 @@ pub struct DNSZoneSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster_ref: Option<String>,
 
-    /// Map of nameserver hostnames to IP addresses for glue records.
+    /// Authoritative nameservers for this zone (v0.4.0+).
+    ///
+    /// NS records are automatically generated at the zone apex (@) for all entries.
+    /// The primary nameserver from `soaRecord.primaryNs` is always included automatically.
+    ///
+    /// Each entry can optionally include IP addresses to generate glue records (A/AAAA)
+    /// for in-zone nameservers. Glue records are required when the nameserver is within
+    /// the zone's own domain to avoid circular dependencies.
+    ///
+    /// # Examples
+    ///
+    /// ```yaml
+    /// # In-zone nameservers with glue records
+    /// nameServers:
+    ///   - hostname: ns2.example.com.
+    ///     ipv4Address: "192.0.2.2"
+    ///   - hostname: ns3.example.com.
+    ///     ipv4Address: "192.0.2.3"
+    ///     ipv6Address: "2001:db8::3"
+    ///
+    /// # Out-of-zone nameserver (no glue needed)
+    ///   - hostname: ns4.external-provider.net.
+    /// ```
+    ///
+    /// **Generated Records:**
+    /// - `@ IN NS ns2.example.com.` (NS record)
+    /// - `ns2.example.com. IN A 192.0.2.2` (glue record for in-zone NS)
+    /// - `@ IN NS ns3.example.com.` (NS record)
+    /// - `ns3.example.com. IN A 192.0.2.3` (IPv4 glue)
+    /// - `ns3.example.com. IN AAAA 2001:db8::3` (IPv6 glue)
+    /// - `@ IN NS ns4.external-provider.net.` (NS record only, no glue)
+    ///
+    /// **Benefits over `nameServerIps` (deprecated):**
+    /// - Clearer purpose: authoritative nameservers, not just glue records
+    /// - IPv6 support via `ipv6Address` field
+    /// - Automatic NS record generation (no manual `NSRecord` CRs needed)
+    ///
+    /// **Migration:** See [docs/src/operations/migration-guide.md](../operations/migration-guide.md)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_servers: Option<Vec<NameServer>>,
+
+    /// (DEPRECATED in v0.4.0) Map of nameserver hostnames to IP addresses for glue records.
+    ///
+    /// **Use `nameServers` instead.** This field will be removed in v1.0.0.
     ///
     /// Glue records provide IP addresses for nameservers within the zone's own domain.
     /// This is necessary when delegating subdomains where the nameserver is within the
@@ -873,6 +979,22 @@ pub struct DNSZoneSpec {
     /// Format: `{"ns1.example.com.": "192.0.2.1", "ns2.example.com.": "192.0.2.2"}`
     ///
     /// Note: Nameserver hostnames should end with a dot (.) for FQDN.
+    ///
+    /// **Migration to `nameServers`:**
+    /// ```yaml
+    /// # Old (deprecated):
+    /// nameServerIps:
+    ///   ns2.example.com.: "192.0.2.2"
+    ///
+    /// # New (recommended):
+    /// nameServers:
+    ///   - hostname: ns2.example.com.
+    ///     ipv4Address: "192.0.2.2"
+    /// ```
+    #[deprecated(
+        since = "0.4.0",
+        note = "Use `name_servers` instead. This field will be removed in v1.0.0. See migration guide at docs/src/operations/migration-guide.md"
+    )]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name_server_ips: Option<HashMap<String, String>>,
 

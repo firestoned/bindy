@@ -4,13 +4,13 @@ version = "0.3.0"
 edition = "2021"
 rust-version = "1.85"
 authors = ["Erick Bourgeois <erick@hjeb.ca>"]
-description = "BIND9 DNS Controller for Kubernetes"
+description = "BIND9 DNS Operator for Kubernetes"
 license = "MIT"
 repository = "https://github.com/firestoned/bindy"
 documentation = "https://firestoned.github.io/bindy/"
 homepage = "https://firestoned.github.io/bindy/"
 readme = "README.md"
-keywords = ["kubernetes", "dns", "bind9", "controller", "operator"]
+keywords = ["kubernetes", "dns", "bind9", "operator", "operator"]
 categories = ["network-programming", "web-programming"]
 
 [package.metadata.docs.rs]

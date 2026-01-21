@@ -62,7 +62,7 @@ The NIST Cybersecurity Framework (CSF) is a voluntary framework developed by the
 - RBAC policy: `deploy/rbac/clusterrole.yaml`
 - [Secret Access Audit Trail](../../security/SECRET_ACCESS_AUDIT.md)
 - [Vulnerability Management Policy](../../security/VULNERABILITY_MANAGEMENT.md)
-- Kubernetes Security Context: `deploy/controller/deployment.yaml` (non-root, read-only FS)
+- Kubernetes Security Context: `deploy/operator/deployment.yaml` (non-root, read-only FS)
 
 **Protect Function:** ✅ **80% Complete** (Strong access controls, data protection; needs NetworkPolicies L-1)
 
@@ -83,7 +83,7 @@ The NIST Cybersecurity Framework (CSF) is a voluntary framework developed by the
 
 | Alert | Trigger | Severity | Response Time |
 |-------|---------|----------|---------------|
-| **UnauthorizedSecretAccess** | Non-controller accessed secret | CRITICAL | < 1 minute |
+| **UnauthorizedSecretAccess** | Non-operator accessed secret | CRITICAL | < 1 minute |
 | **ExcessiveSecretAccess** | > 10 secret accesses/sec | WARNING | < 5 minutes |
 | **FailedSecretAccessAttempts** | > 1 failed access/sec | WARNING | < 5 minutes |
 | **CriticalVulnerability** | CVSS 9.0-10.0 detected | CRITICAL | < 15 minutes |
@@ -115,7 +115,7 @@ The NIST Cybersecurity Framework (CSF) is a voluntary framework developed by the
 | Playbook | NIST Phases Covered | Response Time | Evidence |
 |----------|---------------------|---------------|----------|
 | **P1: Critical Vulnerability** | Preparation, Detection, Containment, Eradication, Recovery | < 15 min | [P1 Playbook](../../security/INCIDENT_RESPONSE.md#p1) |
-| **P2: Compromised Controller** | All phases | < 15 min | [P2 Playbook](../../security/INCIDENT_RESPONSE.md#p2) |
+| **P2: Compromised Operator** | All phases | < 15 min | [P2 Playbook](../../security/INCIDENT_RESPONSE.md#p2) |
 | **P3: DNS Service Outage** | Detection, Containment, Recovery | < 15 min | [P3 Playbook](../../security/INCIDENT_RESPONSE.md#p3) |
 | **P4: RNDC Key Compromise** | All phases | < 15 min | [P4 Playbook](../../security/INCIDENT_RESPONSE.md#p4) |
 | **P5: Unauthorized DNS Changes** | All phases | < 1 hour | [P5 Playbook](../../security/INCIDENT_RESPONSE.md#p5) |
@@ -153,7 +153,7 @@ The NIST Cybersecurity Framework (CSF) is a voluntary framework developed by the
 | Capability | RTO (Recovery Time Objective) | RPO (Recovery Point Objective) | Status |
 |------------|-------------------------------|--------------------------------|--------|
 | **Pod Failure** | 0 (automatic restart) | 0 (no data loss) | ✅ Complete |
-| **Controller Failure** | < 5 minutes (new pod scheduled) | 0 (no data loss) | ✅ Complete |
+| **Operator Failure** | < 5 minutes (new pod scheduled) | 0 (no data loss) | ✅ Complete |
 | **BIND9 Pod Failure** | < 5 minutes (new pod scheduled) | 0 (zone data in etcd) | ✅ Complete |
 | **Zone Data Loss** | < 1 hour (restore from Git) | < 5 minutes (last reconciliation) | ✅ Complete |
 | **Cluster Failure** | ⚠️ < 4 hours (manual failover) | < 1 hour (last etcd backup) | ⚠️ Needs testing |
@@ -169,7 +169,7 @@ The NIST Cybersecurity Framework (CSF) is a voluntary framework developed by the
 - Zone backups: Git repository (all DNSZone CRDs)
 - Incident playbooks: P3 (DNS Service Outage) includes recovery steps
 
-**Recover Function:** ⚠️ **50% Complete** (Pod/controller recovery done; needs multi-region and DR testing)
+**Recover Function:** ⚠️ **50% Complete** (Pod/operator recovery done; needs multi-region and DR testing)
 
 ---
 

@@ -1,11 +1,11 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: MIT
 
-//! Unit tests for the generic DNS record controller.
+//! Unit tests for the generic DNS record operator.
 
 #[cfg(test)]
 mod tests {
-    use crate::record_controller::ReconcileError;
+    use crate::record_operator::ReconcileError;
     use hickory_client::rr::RecordType;
 
     #[test]

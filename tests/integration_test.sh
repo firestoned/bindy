@@ -8,7 +8,7 @@ set -euo pipefail
 # Examples:
 #   integration_test.sh                                                        # Use local deployment
 #   integration_test.sh --image ghcr.io/firestoned/bindy:main-2025.12.17     # Use specific image from registry
-#   integration_test.sh --skip-deploy                                         # Skip cluster/controller setup
+#   integration_test.sh --skip-deploy                                         # Skip cluster/operator setup
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -53,7 +53,7 @@ if [ "$SKIP_DEPLOY" = false ]; then
         echo -e "${YELLOW}⚠️  Cluster '${CLUSTER_NAME}' not found${NC}"
         echo -e "${YELLOW}📦 Creating Kind cluster...${NC}"
 
-        # Create cluster without deploying controller if IMAGE_TAG is specified
+        # Create cluster without deploying operator if IMAGE_TAG is specified
         kind create cluster --name "${CLUSTER_NAME}" --config "${PROJECT_ROOT}/deploy/kind-config.yaml" || {
             echo -e "${RED}❌ Failed to create cluster${NC}"
             exit 1
@@ -78,18 +78,18 @@ if [ "$SKIP_DEPLOY" = false ]; then
             echo -e "${GREEN}📤 Loading image into Kind...${NC}"
             kind load docker-image bindy:latest --name "${CLUSTER_NAME}"
 
-            echo -e "${GREEN}🚀 Deploying controller...${NC}"
-            ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/controller/deployment.yaml"
+            echo -e "${GREEN}🚀 Deploying operator...${NC}"
+            ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/operator/deployment.yaml"
         else
             # Image reference specified, pull from registry
-            echo -e "${YELLOW}📦 Deploying controller with image: ${IMAGE_REF}${NC}"
+            echo -e "${YELLOW}📦 Deploying operator with image: ${IMAGE_REF}${NC}"
             sed "s|ghcr.io/firestoned/bindy:latest|${IMAGE_REF}|g" \
-                "${PROJECT_ROOT}/deploy/controller/deployment.yaml" | ${KUBECTL} apply -f -
+                "${PROJECT_ROOT}/deploy/operator/deployment.yaml" | ${KUBECTL} apply -f -
         fi
 
-        echo -e "${GREEN}⏳ Waiting for controller to be ready...${NC}"
+        echo -e "${GREEN}⏳ Waiting for operator to be ready...${NC}"
         ${KUBECTL} wait --for=condition=available --timeout=300s deployment/bindy -n "${NAMESPACE}" || {
-            echo -e "${RED}❌ Controller failed to start. Checking logs:${NC}"
+            echo -e "${RED}❌ Operator failed to start. Checking logs:${NC}"
             ${KUBECTL} logs -n "${NAMESPACE}" -l app=bindy --tail=50
             exit 1
         }
@@ -97,25 +97,25 @@ if [ "$SKIP_DEPLOY" = false ]; then
         echo -e "${GREEN}✅ Using existing cluster '${CLUSTER_NAME}'${NC}"
         ${KUBECTL} config use-context "kind-${CLUSTER_NAME}" > /dev/null
 
-        # If IMAGE_REF is specified, update the controller deployment
+        # If IMAGE_REF is specified, update the operator deployment
         if [ -n "$IMAGE_REF" ]; then
-            echo -e "${YELLOW}📦 Updating controller with image: ${IMAGE_REF}${NC}"
+            echo -e "${YELLOW}📦 Updating operator with image: ${IMAGE_REF}${NC}"
 
             # Update deployment with specific image
             ${KUBECTL} set image deployment/bindy \
-                controller="${IMAGE_REF}" \
+                operator="${IMAGE_REF}" \
                 -n "${NAMESPACE}"
 
             # Wait for rollout
             ${KUBECTL} rollout status deployment/bindy -n "${NAMESPACE}" --timeout=300s || {
-                echo -e "${RED}❌ Controller rollout failed${NC}"
+                echo -e "${RED}❌ Operator rollout failed${NC}"
                 ${KUBECTL} logs -n "${NAMESPACE}" -l app=bindy --tail=50
                 exit 1
             }
         fi
     fi
 else
-    echo -e "${YELLOW}⏭️  Skipping cluster and controller deployment${NC}"
+    echo -e "${YELLOW}⏭️  Skipping cluster and operator deployment${NC}"
     kubectl config use-context "kind-${CLUSTER_NAME}" > /dev/null || {
         echo -e "${RED}❌ Cluster '${CLUSTER_NAME}' not found${NC}"
         exit 1
@@ -136,7 +136,7 @@ if [ $TEST_EXIT -eq 0 ]; then
     echo -e "${GREEN}✅ Integration tests passed!${NC}"
 else
     echo -e "${RED}❌ Integration tests failed with exit code ${TEST_EXIT}${NC}"
-    echo -e "${YELLOW}Checking controller logs:${NC}"
+    echo -e "${YELLOW}Checking operator logs:${NC}"
     ${KUBECTL} logs -n "${NAMESPACE}" -l app=bindy --tail=50 || true
 fi
 
@@ -439,7 +439,7 @@ else
     echo "  - Rust integration tests: $([ $TEST_EXIT -eq 0 ] && echo 'PASSED' || echo 'FAILED')"
     echo "  - Functional tests: $([ $ERRORS -eq 0 ] && echo 'PASSED' || echo "FAILED ($ERRORS errors)")"
     echo ""
-    echo -e "${YELLOW}Controller logs (last 30 lines):${NC}"
+    echo -e "${YELLOW}Operator logs (last 30 lines):${NC}"
     ${KUBECTL} logs -n "${NAMESPACE}" -l app=bindy --tail=30 || true
     exit 1
 fi

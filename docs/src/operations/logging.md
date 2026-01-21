@@ -1,8 +1,8 @@
 # Logging
 
-Configure and analyze logs from the Bindy controller and BIND9 instances.
+Configure and analyze logs from the Bindy operator and BIND9 instances.
 
-## Controller Logging
+## Operator Logging
 
 ### Log Levels
 
@@ -35,7 +35,7 @@ env:
 - Easy integration with log aggregation tools (Loki, ELK, Splunk)
 - Enables programmatic log parsing and analysis
 
-### Viewing Controller Logs
+### Viewing Operator Logs
 
 ```bash
 # View recent logs
@@ -138,7 +138,7 @@ env:
   "message": "Reconciling DNSZone: dns-system/example-com",
   "file": "dnszone.rs",
   "line": 142,
-  "threadName": "bindy-controller"
+  "threadName": "bindy-operator"
 }
 ```
 
@@ -147,7 +147,7 @@ env:
 Default human-readable format (RUST_LOG_FORMAT=text or unset):
 
 ```
-2025-11-30T10:00:00.123456Z dnszone.rs:142 INFO bindy-controller Reconciling DNSZone: dns-system/example-com
+2025-11-30T10:00:00.123456Z dnszone.rs:142 INFO bindy-operator Reconciling DNSZone: dns-system/example-com
 ```
 
 ## Log Retention

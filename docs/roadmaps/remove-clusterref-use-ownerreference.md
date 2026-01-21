@@ -97,7 +97,7 @@ metadata:
       kind: Bind9Cluster
       name: production-dns
       uid: 12345-67890-abcdef
-      controller: true
+      operator: true
       blockOwnerDeletion: true
 spec:
   # clusterRef removed!
@@ -171,7 +171,7 @@ kubectl delete bind9instance --all -A
 kubectl replace --force -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
 
 # 4. Upgrade operator
-kubectl set image deployment/bindy-controller \
+kubectl set image deployment/bindy-operator \
   bindy=ghcr.io/firestoned/bindy:latest \
   -n bindy-system
 
@@ -289,7 +289,7 @@ pub fn get_cluster_from_owner_refs(instance: &Bind9Instance) -> Option<(&str, &s
     printcolumn = r#"{"name":"Role","type":"string","jsonPath":".spec.role"}"#,
     printcolumn = r#"{"name":"Replicas","type":"integer","jsonPath":".spec.replicas"}"#,
     // NEW: Show cluster from ownerReference
-    printcolumn = r#"{"name":"Cluster","type":"string","jsonPath":".metadata.ownerReferences[?(@.controller==true)].name"}"#,
+    printcolumn = r#"{"name":"Cluster","type":"string","jsonPath":".metadata.ownerReferences[?(@.operator==true)].name"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#,
     printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
 )]
@@ -419,7 +419,7 @@ async fn create_instance(
                 kind: "Bind9Cluster".to_string(),
                 name: cluster_name.clone(),
                 uid: cluster_uid.clone(),
-                controller: Some(true),
+                operator: Some(true),
                 block_owner_deletion: Some(true),
             }]),
             ..Default::default()
@@ -681,7 +681,7 @@ kind: Bind9Instance
 metadata:
   name: production-dns-primary
   namespace: dns-system
-  # ownerReferences are set automatically by the Bind9Cluster controller
+  # ownerReferences are set automatically by the Bind9Cluster operator
   # when it creates instances. DO NOT set manually unless creating standalone.
 spec:
   role: primary
@@ -690,7 +690,7 @@ spec:
 
 **Update `examples/README.md`**:
 - Remove sections explaining `clusterRef` relationships
-- Add section explaining ownerReference is set automatically by cluster controllers
+- Add section explaining ownerReference is set automatically by cluster operators
 - Update resource hierarchy diagram showing ownerReference arrows
 
 #### 4.2: Update Documentation
@@ -725,7 +725,7 @@ spec:
 1. (Optional) Backup instances: `kubectl get bind9instance -A -o yaml > backup.yaml`
 2. Delete instances: `kubectl delete bind9instance --all -A`
 3. Update CRDs: `kubectl replace --force -f deploy/crds/`
-4. Upgrade operator: `kubectl set image deployment/bindy-controller bindy=latest`
+4. Upgrade operator: `kubectl set image deployment/bindy-operator bindy=latest`
 5. Clusters will automatically recreate instances with ownerReferences
 
 **Why**: This change provides:
@@ -801,7 +801,7 @@ fn create_test_instance(cluster_name: &str, cluster_uid: &str) -> Bind9Instance 
                 kind: "Bind9Cluster".into(),
                 name: cluster_name.into(),
                 uid: cluster_uid.into(),
-                controller: Some(true),
+                operator: Some(true),
                 block_owner_deletion: Some(true),
             }]),
             ..Default::default()
@@ -885,7 +885,7 @@ The `clusterRef` field has been removed from `Bind9Instance.spec`. Instances now
 
 4. **Upgrade operator**:
    ```bash
-   kubectl set image deployment/bindy-controller \
+   kubectl set image deployment/bindy-operator \
      bindy=ghcr.io/firestoned/bindy:latest \
      -n bindy-system
    ```

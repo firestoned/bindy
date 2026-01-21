@@ -97,7 +97,7 @@ kubectl get clusterrole bindy-operator -o yaml | grep -E '\["?\*"?\]'
 **Implementation:**
 - ✅ **PASS** - No direct pod creation permission
 - Operator creates StatefulSets (which create pods)
-- Follows controller pattern (indirect pod management)
+- Follows operator pattern (indirect pod management)
 
 **Evidence:** [deploy/rbac/role.yaml](../../deploy/rbac/role.yaml) - no `pods` create verb
 ```yaml
@@ -530,12 +530,12 @@ spec:
 
 ### 5.5: Extensible Admission Control
 
-#### 5.5.1: Configure Image Provenance using ImagePolicyWebhook admission controller
+#### 5.5.1: Configure Image Provenance using ImagePolicyWebhook admission operator
 **Level:** 2
 **Type:** Manual
 
 **Implementation:**
-- ⚠️ **CLUSTER RESPONSIBILITY** - Admission controllers configured cluster-wide
+- ⚠️ **CLUSTER RESPONSIBILITY** - Admission operators configured cluster-wide
 - Bindy supports image signature verification
 - Compatible with:
   - Sigstore/Cosign

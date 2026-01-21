@@ -581,7 +581,7 @@ containers:
 
 ## Reconciliation
 
-### Controller Behavior
+### Operator Behavior
 
 The `ClusterBind9Provider` reconciler:
 

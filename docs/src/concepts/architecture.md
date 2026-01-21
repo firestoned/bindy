@@ -13,7 +13,7 @@ graph TB
             crd3["ARecord, MXRecord, ..."]
         end
 
-        subgraph controller["Bindy Controller (Rust)"]
+        subgraph operator["Bindy Operator (Rust)"]
             reconciler1["Instance<br/>Reconciler"]
             reconciler2["Zone<br/>Reconciler"]
             reconciler3["Records<br/>Reconciler"]
@@ -29,24 +29,24 @@ graph TB
 
     clients["Clients<br/>• Apps<br/>• Services<br/>• External"]
 
-    crds -->|watches| controller
-    controller -->|configures| bind9
+    crds -->|watches| operator
+    operator -->|configures| bind9
     primary -->|AXFR| secondary1
     secondary1 -->|AXFR| secondary2
     bind9 -->|"DNS queries<br/>(UDP/TCP 53)"| clients
 
     style k8s fill:#e1f5ff,stroke:#01579b,stroke-width:2px
     style crds fill:#fff9c4,stroke:#f57f17,stroke-width:2px
-    style controller fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    style operator fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
     style bind9 fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
     style clients fill:#fce4ec,stroke:#880e4f,stroke-width:2px
 ```
 
 ## Components
 
-### Bindy Controller
+### Bindy Operator
 
-The controller is written in Rust using the kube-rs library. It consists of:
+The operator is written in Rust using the kube-rs library. It consists of:
 
 #### 1. Reconcilers
 
@@ -148,7 +148,7 @@ BIND9 servers managed by Bindy:
    kubectl apply -f dnszone.yaml
    ```
 
-2. **Controller watches and receives event**
+2. **Operator watches and receives event**
    ```rust
    // Watch stream receives create event
    stream.next().await
@@ -180,7 +180,7 @@ BIND9 servers managed by Bindy:
 
 ### Managed Instance Creation Flow
 
-When a Bind9Cluster specifies replica counts, the controller automatically creates instances:
+When a Bind9Cluster specifies replica counts, the operator automatically creates instances:
 
 ```mermaid
 flowchart TD
@@ -232,7 +232,7 @@ flowchart TD
    ```
 
 5. **Self-healing: Recreate deleted instances**
-   - Controller detects missing managed instances
+   - Operator detects missing managed instances
    - Automatically recreates them with same configuration
 
 ### Cascade Deletion Flow
@@ -243,7 +243,7 @@ When a Bind9Cluster is deleted, all its instances are automatically cleaned up:
 flowchart TD
     A[kubectl delete bind9cluster] --> B[Deletion timestamp set]
     B --> C{Finalizer present?}
-    C -->|Yes| D[Controller detects deletion]
+    C -->|Yes| D[Operator detects deletion]
     D --> E[Find all instances with clusterRef]
     E --> F[Delete each instance]
     F --> G{All deleted?}
@@ -293,7 +293,7 @@ This flow demonstrates the **immediate, event-driven architecture** with sub-sec
    ```
 
 2. **DNSZone watch triggers immediately** ⚡
-   - DNSZone controller watches all 8 record types
+   - DNSZone operator watches all 8 record types
    - Receives event within milliseconds
    - No polling delay
 
@@ -317,7 +317,7 @@ This flow demonstrates the **immediate, event-driven architecture** with sub-sec
    ```
 
 5. **Record status watch triggers** ⚡
-   - Record controller watches for status changes
+   - Record operator watches for status changes
    - Reacts immediately to `status.zoneRef` being set
    - No polling delay
 
@@ -418,9 +418,9 @@ Bindy uses Rust's async/await with Tokio runtime:
 async fn main() -> Result<()> {
     // Spawn multiple reconcilers concurrently
     tokio::try_join!(
-        run_bind9instance_controller(),
-        run_dnszone_controller(),
-        run_record_controllers(),
+        run_bind9instance_operator(),
+        run_dnszone_operator(),
+        run_record_operators(),
     )?;
     Ok(())
 }
@@ -434,23 +434,23 @@ Benefits:
 
 ## Resource Watching (Event-Driven Architecture)
 
-The controller uses Kubernetes watch API with **cross-resource watches** for immediate event-driven reconciliation:
+The operator uses Kubernetes watch API with **cross-resource watches** for immediate event-driven reconciliation:
 
-### DNSZone Controller Watches
+### DNSZone Operator Watches
 
-The DNSZone controller watches **all 8 record types** to react immediately when records are created/updated:
+The DNSZone operator watches **all 8 record types** to react immediately when records are created/updated:
 
 ```rust
-// DNSZone controller with record watches
-let controller = Controller::new(zones_api, default_watcher_config());
-let zone_store = controller.store();
+// DNSZone operator with record watches
+let operator = Operator::new(zones_api, default_watcher_config());
+let zone_store = operator.store();
 
 // Clone store for each watch (8 record types)
 let zone_store_1 = zone_store.clone();
 let zone_store_2 = zone_store.clone();
 // ... (8 total)
 
-controller
+operator
     .watches(arecord_api, default_watcher_config(), move |record| {
         // When ARecord changes, trigger zone reconciliation
         let namespace = record.namespace()?;
@@ -467,13 +467,13 @@ controller
     .await
 ```
 
-### Record Controller Watches
+### Record Operator Watches
 
-Record controllers watch for **status changes** to react when DNSZone sets `status.zoneRef`:
+Record operators watch for **status changes** to react when DNSZone sets `status.zoneRef`:
 
 ```rust
-// Record controller watches ALL changes (spec + status)
-Controller::new(arecord_api, default_watcher_config())
+// Record operator watches ALL changes (spec + status)
+Operator::new(arecord_api, default_watcher_config())
     .run(reconcile_arecord, error_policy, ctx)
     .await
 
@@ -487,8 +487,8 @@ Controller::new(arecord_api, default_watcher_config())
 sequenceDiagram
     participant R as Record (ARecord)
     participant K as Kubernetes API
-    participant DZ as DNSZone Controller
-    participant RC as Record Controller
+    participant DZ as DNSZone Operator
+    participant RC as Record Operator
 
     R->>K: Created/Updated
     K->>DZ: ⚡ Watch event (immediate)
@@ -511,7 +511,7 @@ Multi-layer error handling strategy:
 
 1. **Validation Errors** - Caught early, reported in status
 2. **Reconciliation Errors** - Retried with exponential backoff
-3. **Fatal Errors** - Logged and cause controller restart
+3. **Fatal Errors** - Logged and cause operator restart
 4. **Status Reporting** - All errors visible in resource status
 
 ```rust
@@ -547,18 +547,18 @@ Rust compilation produces optimized native code with no runtime overhead.
 
 ### RBAC
 
-Controller uses least-privilege service account:
+Operator uses least-privilege service account:
 
 ```yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: bind9-controller
+  name: bind9-operator
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: bind9-controller
+  name: bind9-operator
 rules:
   - apiGroups: ["bindy.firestoned.io"]
     resources: ["dnszones", "arecords", ...]
@@ -567,7 +567,7 @@ rules:
 
 ### Non-Root Containers
 
-Controller runs as non-root user:
+Operator runs as non-root user:
 
 ```dockerfile
 USER 65532:65532
@@ -575,17 +575,17 @@ USER 65532:65532
 
 ### Network Policies
 
-Limit controller network access:
+Limit operator network access:
 
 ```yaml
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: bind9-controller
+  name: bind9-operator
 spec:
   podSelector:
     matchLabels:
-      app: bind9-controller
+      app: bind9-operator
   policyTypes:
     - Egress
   egress:
@@ -600,7 +600,7 @@ spec:
 
 ### Horizontal Scaling - Operator Leader Election
 
-Multiple controller replicas use Kubernetes Lease-based leader election for high availability:
+Multiple operator replicas use Kubernetes Lease-based leader election for high availability:
 
 ```mermaid
 sequenceDiagram
@@ -637,13 +637,13 @@ let lease_manager = LeaseManagerBuilder::new(client.clone(), &lease_name)
 // Watch leadership status
 let (leader_rx, lease_handle) = lease_manager.watch().await;
 
-// Run controllers with leader monitoring
+// Run operators with leader monitoring
 tokio::select! {
     result = monitor_leadership(leader_rx) => {
-        warn!("Leadership lost! Stopping all controllers...");
+        warn!("Leadership lost! Stopping all operators...");
     }
-    result = run_all_controllers() => {
-        // Normal controller execution
+    result = run_all_operators() => {
+        // Normal operator execution
     }
 }
 ```
@@ -676,5 +676,5 @@ Can handle:
 ## Next Steps
 
 - [Custom Resource Definitions](./crds.md) - CRD specifications
-- [Controller Design](../development/controller-design.md) - Implementation details
+- [Operator Design](../development/operator-design.md) - Implementation details
 - [Performance Tuning](../advanced/performance.md) - Optimization strategies

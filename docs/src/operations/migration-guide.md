@@ -191,10 +191,10 @@ done
 
 The `spec.zoneRef` field no longer exists in v0.3.0 CRDs. After migration, you can optionally clean up your YAML files by removing these fields (they're already ignored by the new CRD).
 
-### Step 6: Upgrade the Controller
+### Step 6: Upgrade the Operator
 
 ```bash
-# Update the Bindy controller to v0.3.0
+# Update the Bindy operator to v0.3.0
 kubectl set image deployment/bindy bindy=ghcr.io/firestoned/bindy:v0.3.0 -n dns-system
 
 # Or apply the new deployment
@@ -339,7 +339,7 @@ If you need to rollback to v0.2.x:
    kubectl apply -f records-backup.yaml
    ```
 
-3. **Downgrade controller:**
+3. **Downgrade operator:**
    ```bash
    kubectl set image deployment/bindy bindy=ghcr.io/firestoned/bindy:v0.2.x -n dns-system
    ```

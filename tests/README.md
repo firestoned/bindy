@@ -1,4 +1,4 @@
-# Integration Tests for Bindy DNS Controller
+# Integration Tests for Bindy DNS Operator
 
 This directory contains integration tests that run against a Kind (Kubernetes in Docker) cluster.
 
@@ -24,7 +24,7 @@ make kind-cleanup             # Clean up when done
 ./tests/integration_test.sh
 
 # Or manually:
-./deploy/kind-deploy.sh       # Setup Kind cluster and deploy controller
+./deploy/kind-deploy.sh       # Setup Kind cluster and deploy operator
 ./deploy/kind-test.sh         # Basic functional tests
 cargo test --test simple_integration -- --ignored  # Rust integration tests
 ```
@@ -35,7 +35,7 @@ cargo test --test simple_integration -- --ignored  # Rust integration tests
 
 Comprehensive test suite that:
 1. Creates/uses Kind cluster
-2. Deploys Bindy controller
+2. Deploys Bindy operator
 3. Runs Rust integration tests
 4. Creates all resource types (Bind9Instance, DNSZone, all 8 DNS record types)
 5. Verifies resources were created successfully
@@ -95,7 +95,7 @@ cargo test --test multi_tenancy_integration -- --ignored --nocapture --test-thre
 
 This will:
 - ✅ Setup Kind cluster (if not exists)
-- ✅ Deploy controller
+- ✅ Deploy operator
 - ✅ Run Rust integration tests
 - ✅ Test Bind9Instance creation
 - ✅ Test DNSZone creation
@@ -140,7 +140,7 @@ cargo test --test simple_integration -- --ignored
 ### Test Scenarios
 
 1. **Cluster Setup** - Automated Kind cluster creation
-2. **Controller Deployment** - Automated controller deployment
+2. **Operator Deployment** - Automated operator deployment
 3. **Resource Creation** - All CRD types
 4. **Resource Verification** - kubectl get/describe checks
 5. **Cleanup** - Automatic resource cleanup
@@ -186,7 +186,7 @@ Testing all DNS record types...
 - The script will automatically create it
 - Or manually run: `./deploy/kind-deploy.sh`
 
-**"Controller not found"**
+**"Operator not found"**
 - Redeploy: `./deploy/kind-deploy.sh`
 - Check logs: `make kind-logs`
 
@@ -195,10 +195,10 @@ Testing all DNS record types...
 # Check CRDs are installed
 kubectl get crds | grep dns.firestoned.io
 
-# Check controller status
+# Check operator status
 kubectl get pods -n dns-system
 
-# View controller logs
+# View operator logs
 kubectl logs -n dns-system -l app=bindy
 ```
 

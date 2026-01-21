@@ -1,6 +1,8 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: MIT
 
+#![allow(deprecated)]
+
 //! Comprehensive integration tests for Bindy DNS Controller
 //!
 //! These tests verify the controller is working correctly in a Kubernetes cluster.
@@ -535,6 +537,7 @@ async fn test_dnszone_create_read_delete() {
                 negative_ttl: 86400,
             },
             ttl: Some(3600),
+            name_servers: None,
             name_server_ips: None,
             records_from: None,
             bind9_instances_from: None,

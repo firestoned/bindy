@@ -1,8 +1,8 @@
 # Environment Variables
 
-Configure the Bindy controller using environment variables.
+Configure the Bindy operator using environment variables.
 
-## Controller Environment Variables
+## Operator Environment Variables
 
 ### RUST_LOG
 
@@ -46,10 +46,10 @@ env:
 {
   "timestamp": "2025-11-30T10:00:00.123456Z",
   "level": "INFO",
-  "message": "Starting BIND9 DNS Controller",
+  "message": "Starting BIND9 DNS Operator",
   "file": "main.rs",
   "line": 80,
-  "threadName": "bindy-controller"
+  "threadName": "bindy-operator"
 }
 ```
 
@@ -97,7 +97,7 @@ spec:
     spec:
       serviceAccountName: bindy
       containers:
-      - name: controller
+      - name: operator
         image: ghcr.io/firestoned/bindy:latest
         env:
         - name: RUST_LOG

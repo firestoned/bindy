@@ -40,7 +40,7 @@ The rustdoc API documentation includes:
 ## Key Modules
 
 - `bindy::crd` - Custom Resource Definitions
-- `bindy::reconcilers` - Controller reconciliation logic
+- `bindy::reconcilers` - Operator reconciliation logic
 - `bindy::bind9` - BIND9 zone file management
 - `bindy::bind9_resources` - Kubernetes resource builders
 

@@ -1,4 +1,4 @@
-# Security Architecture - Bindy DNS Controller
+# Security Architecture - Bindy DNS Operator
 
 **Version:** 1.0
 **Last Updated:** 2025-12-17
@@ -23,7 +23,7 @@
 
 ## Overview
 
-This document describes the security architecture of the Bindy DNS Controller, including authentication, authorization, secrets management, network segmentation, and container security. The architecture follows defense-in-depth principles with multiple security layers.
+This document describes the security architecture of the Bindy DNS Operator, including authentication, authorization, secrets management, network segmentation, and container security. The architecture follows defense-in-depth principles with multiple security layers.
 
 ### Security Principles
 
@@ -61,13 +61,13 @@ This document describes the security architecture of the Bindy DNS Controller, i
 
 ### Domain 2: Kubernetes Control Plane
 
-**Purpose:** Kubernetes API server, scheduler, controller-manager, etcd
+**Purpose:** Kubernetes API server, scheduler, operator-manager, etcd
 
 **Components:**
 - Kubernetes API server
 - etcd (cluster state storage)
 - Scheduler
-- Controller-manager
+- Operator-manager
 
 **Security Controls:**
 - ✅ **RBAC**: Role-Based Access Control enforced for all API requests
@@ -82,10 +82,10 @@ This document describes the security architecture of the Bindy DNS Controller, i
 
 ### Domain 3: dns-system Namespace
 
-**Purpose:** Bindy controller and BIND9 pods
+**Purpose:** Bindy operator and BIND9 pods
 
 **Components:**
-- Bindy controller (Deployment)
+- Bindy operator (Deployment)
 - BIND9 primary (StatefulSet)
 - BIND9 secondaries (StatefulSet)
 - ConfigMaps (BIND9 configuration)
@@ -93,7 +93,7 @@ This document describes the security architecture of the Bindy DNS Controller, i
 - Services (DNS, RNDC endpoints)
 
 **Security Controls:**
-- ✅ **RBAC Least Privilege**: Controller has minimal permissions - C-2
+- ✅ **RBAC Least Privilege**: Operator has minimal permissions - C-2
 - ✅ **Non-Root Containers**: All pods run as uid 1000+
 - ✅ **Read-Only Filesystem**: Immutable container filesystems
 - ✅ **Pod Security Standards**: Restricted profile enforced
@@ -150,7 +150,7 @@ sequenceDiagram
     participant Dev as Developer
     participant Git as Git Repository
     participant K8s as Kubernetes API
-    participant Ctrl as Bindy Controller
+    participant Ctrl as Bindy Operator
     participant CM as ConfigMap
     participant Sec as Secret
     participant BIND as BIND9 Pod
@@ -161,7 +161,7 @@ sequenceDiagram
     Ctrl->>K8s: Read DNSZone spec
     Ctrl->>K8s: Read Bind9Instance CR
     Ctrl->>Sec: Read RNDC key
-    Note over Sec: Audit: Controller read secret<br/>ServiceAccount: bindy<br/>Timestamp: 2025-12-17 10:23:45
+    Note over Sec: Audit: Operator read secret<br/>ServiceAccount: bindy<br/>Timestamp: 2025-12-17 10:23:45
     Ctrl->>CM: Create/Update ConfigMap<br/>(named.conf, zone file)
     Ctrl->>BIND: Send RNDC command<br/>(reload zone)
     BIND->>CM: Load updated zone file
@@ -171,7 +171,7 @@ sequenceDiagram
 
 **Security Notes:**
 - ✅ All API calls authenticated with ServiceAccount token (JWT)
-- ✅ RBAC enforced at every step (controller has least privilege)
+- ✅ RBAC enforced at every step (operator has least privilege)
 - ✅ Secret read is audited (H-3 planned)
 - ✅ RNDC communication uses HMAC key authentication
 - ✅ ConfigMap is immutable (recreated on change, not modified)
@@ -206,7 +206,7 @@ sequenceDiagram
 - ✅ DNS port 53 is public (required for DNS service)
 - ✅ Rate limiting prevents query floods
 - ✅ AXFR restricted to known secondary IPs
-- ✅ Zone data is read-only in BIND9 (managed by controller)
+- ✅ Zone data is read-only in BIND9 (managed by operator)
 - ❌ DNSSEC (planned): Would sign responses cryptographically
 
 ---
@@ -215,7 +215,7 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    participant Ctrl as Bindy Controller
+    participant Ctrl as Bindy Operator
     participant K8s as Kubernetes API
     participant etcd as etcd<br/>(Encrypted at Rest)
     participant Audit as Audit Log
@@ -226,13 +226,13 @@ sequenceDiagram
     K8s->>etcd: Read secret (encrypted)
     etcd-->>K8s: Return encrypted data
     K8s-->>Ctrl: Return secret (decrypted)
-    Note over Ctrl: Controller uses RNDC key<br/>to authenticate to BIND9
+    Note over Ctrl: Operator uses RNDC key<br/>to authenticate to BIND9
 ```
 
 **Security Notes:**
 - ✅ Secrets encrypted at rest in etcd
 - ✅ Secrets transmitted over TLS (in transit)
-- ✅ RBAC limits secret read access to controller only
+- ✅ RBAC limits secret read access to operator only
 - ✅ Kubernetes audit log captures all secret access
 - ❌ Dedicated secret access audit trail (H-3 planned): More visible tracking
 
@@ -252,7 +252,7 @@ flowchart TD
     Scan -->|Pass| Sign[Sign Image<br/>Provenance + SBOM]
     Sign -->|Push| Reg[Container Registry<br/>ghcr.io]
     Reg -->|Pull| K8s[Kubernetes Cluster]
-    K8s -->|Verify| Pod[Controller Pod]
+    K8s -->|Verify| Pod[Operator Pod]
 
     style Git fill:#90EE90
     style Audit fill:#FFD700
@@ -267,7 +267,7 @@ flowchart TD
 - ✅ **SLSA Level 2**: Build provenance + SBOM
 - ✅ **Signed Images**: Docker provenance attestation
 - ❌ **M-1** (planned): Pin images by digest (not tags)
-- ❌ **Image Verification** (planned): Admission controller verifies signatures
+- ❌ **Image Verification** (planned): Admission operator verifies signatures
 
 ---
 
@@ -292,7 +292,7 @@ graph TB
         end
 
         subgraph DNSNamespace["🟠 dns-system Namespace<br/>(High Privilege)"]
-            Ctrl[Bindy Controller]
+            Ctrl[Bindy Operator]
             BIND[BIND9 Pods]
             Secrets[Secrets]
         end
@@ -322,10 +322,10 @@ graph TB
 **Trust Boundary Rules:**
 
 1. **Untrusted → Perimeter**: All traffic rate-limited, DDoS protection (planned)
-2. **Perimeter → dns-system**: Only port 53 allowed, no direct access to controller
+2. **Perimeter → dns-system**: Only port 53 allowed, no direct access to operator
 3. **dns-system → Control Plane**: Authenticated with ServiceAccount token, RBAC enforced
 4. **Tenant Namespaces → Control Plane**: Authenticated with user credentials, RBAC enforced
-5. **Secrets Access**: Only controller ServiceAccount can read, audit logged
+5. **Secrets Access**: Only operator ServiceAccount can read, audit logged
 
 ---
 
@@ -342,7 +342,7 @@ graph LR
     end
 
     subgraph Roles
-        CR[ClusterRole:<br/>bindy-controller]
+        CR[ClusterRole:<br/>bindy-operator]
         NSR[Role:<br/>dnszone-editor<br/>ns: team-web]
     end
 
@@ -371,7 +371,7 @@ graph LR
     style Sec fill:#FF6B6B
 ```
 
-### Controller RBAC Permissions
+### Operator RBAC Permissions
 
 **Cluster-Scoped Resources:**
 
@@ -420,8 +420,8 @@ deploy/rbac/verify-rbac.sh
 
 | Secret | Purpose | Access | Rotation | Encryption |
 |--------|---------|--------|----------|------------|
-| **RNDC Key** | Authenticate to BIND9 | Controller: read-only | Manual (planned automation) | At rest: etcd, In transit: TLS |
-| **TLS Certificates** (future) | HTTPS, DNSSEC | Controller: read-only | Cert-manager (automated) | At rest: etcd, In transit: TLS |
+| **RNDC Key** | Authenticate to BIND9 | Operator: read-only | Manual (planned automation) | At rest: etcd, In transit: TLS |
+| **TLS Certificates** (future) | HTTPS, DNSSEC | Operator: read-only | Cert-manager (automated) | At rest: etcd, In transit: TLS |
 | **ServiceAccount Token** | Kubernetes API auth | Auto-mounted | Kubernetes (short-lived) | JWT signed by cluster CA |
 
 ### Secret Lifecycle
@@ -430,8 +430,8 @@ deploy/rbac/verify-rbac.sh
 stateDiagram-v2
     [*] --> Created: Admin creates secret<br/>(kubectl create secret)
     Created --> Stored: etcd encrypts at rest
-    Stored --> Mounted: Controller pod starts<br/>(Kubernetes mounts as volume)
-    Mounted --> Used: Controller reads RNDC key
+    Stored --> Mounted: Operator pod starts<br/>(Kubernetes mounts as volume)
+    Mounted --> Used: Operator reads RNDC key
     Used --> Audited: Access logged (H-3 planned)
     Audited --> Rotated: Key rotation (manual)
     Rotated --> Stored: New key stored
@@ -450,12 +450,12 @@ stateDiagram-v2
 - ✅ ServiceAccount token transmitted over TLS
 
 **In Use:**
-- ✅ Controller runs as non-root (uid 1000+)
+- ✅ Operator runs as non-root (uid 1000+)
 - ✅ Read-only filesystem (secrets cannot be written to disk)
 - ✅ Memory protection (secrets cleared after use - Rust Drop trait)
 
 **Access Control:**
-- ✅ RBAC limits secret read to controller only
+- ✅ RBAC limits secret read to operator only
 - ✅ Kubernetes audit log captures all secret access
 - ❌ **H-3** (planned): Dedicated secret access audit trail with alerts
 
@@ -477,7 +477,7 @@ graph TB
         end
 
         subgraph dns-system["dns-system Namespace"]
-            Ctrl[Bindy Controller]
+            Ctrl[Bindy Operator]
             BIND1[BIND9 Primary<br/>Port 53, 9530]
             BIND2[BIND9 Secondary<br/>Port 53]
         end
@@ -507,12 +507,12 @@ graph TB
 
 ### Network Policies (Planned - L-1)
 
-**Policy 1: Controller Egress**
+**Policy 1: Operator Egress**
 ```yaml
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: bindy-controller-egress
+  name: bindy-operator-egress
   namespace: dns-system
 spec:
   podSelector:
@@ -570,7 +570,7 @@ spec:
       port: 53
     - protocol: TCP
       port: 53
-  # Allow: RNDC from controller only
+  # Allow: RNDC from operator only
   - from:
     - podSelector:
         matchLabels:
@@ -595,13 +595,13 @@ spec:
 
 ### Container Hardening
 
-**Bindy Controller Pod Security:**
+**Bindy Operator Pod Security:**
 
 ```yaml
 apiVersion: v1
 kind: Pod
 metadata:
-  name: bindy-controller
+  name: bindy-operator
 spec:
   serviceAccountName: bindy
   securityContext:
@@ -612,7 +612,7 @@ spec:
     seccompProfile:
       type: RuntimeDefault
   containers:
-  - name: controller
+  - name: operator
     image: ghcr.io/firestoned/bindy:latest
     securityContext:
       allowPrivilegeEscalation: false

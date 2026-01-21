@@ -1,3 +1,84 @@
+## [2026-01-20 16:30] - Feature: Add Combined CRDs File to Releases
+
+**Author:** Erick Bourgeois
+
+### Added
+- **Combined CRDs File**: Added `crds.yaml` to GitHub releases for simplified installation
+  - New Makefile target: `make crds-combined` generates single `deploy/crds.yaml` file
+  - GitHub release workflow updated to generate and upload combined CRDs
+  - Users can now install all CRDs with: `kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml`
+  - Combined file includes proper copyright headers and installation instructions
+  - Added checksum generation for CRDs file in release artifacts
+
+### Changed
+- **Documentation Updates**:
+  - Updated [docs/src/installation/crds.md](docs/src/installation/crds.md) with "Install from Release" section (now recommended method)
+  - Updated [docs/src/installation/quickstart.md](docs/src/installation/quickstart.md) to use combined CRDs file from releases
+  - Updated [README.md](README.md) to use `kubectl apply` instead of `kubectl create` for consistency
+- **Build Process**:
+  - Added `crds-combined` target to Makefile
+  - Updated `.github/workflows/release.yaml` with new `generate-crds` job
+  - Added `/deploy/crds.yaml` to `.gitignore` (generated file)
+
+### Why
+Simplify the installation process for users by providing a single combined CRDs file in releases. This:
+- Reduces installation steps from multiple files to a single command
+- Avoids GitHub raw URL rate limiting issues
+- Provides stable, versioned CRDs tied to releases
+- Eliminates annotation size limit errors with individual file operations
+
+### Impact
+- [x] No breaking changes - existing installation methods still work
+- [x] Improved user experience with simplified installation
+- [x] Better alignment with Kubernetes operator installation best practices
+- [x] Documentation updated to recommend new installation method
+- [x] All tests pass: `make crds-combined` generates valid combined file
+
+## [2026-01-18] - Refactoring: Rename "Controller" to "Operator" Throughout Codebase
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **Terminology Standardization**: Renamed all references from "controller" to "operator" throughout the entire codebase to align with Kubernetes operator pattern terminology
+  - Rust source files:
+    - `src/record_controller.rs` → `src/record_operator.rs`
+    - `src/record_controller_tests.rs` → `src/record_operator_tests.rs`
+    - Updated all function names: `run_*_controller()` → `run_*_operator()`
+    - Updated all module references and imports
+    - Updated all comments and documentation strings
+  - Directory structure:
+    - `deploy/controller/` → `deploy/operator/`
+  - YAML manifests:
+    - `bindy-controller` → `bindy-operator` in all deployments and services
+    - Updated descriptions in CRD files
+  - Documentation:
+    - All `*.md` files updated throughout `docs/` directory
+    - README.md and root-level documentation updated
+    - "BIND9 DNS Controller" → "BIND9 DNS Operator"
+  - Configuration files:
+    - Updated GitHub workflows and CI/CD references
+    - Updated Cargo.toml descriptions
+    - Updated Makefile targets and comments
+    - Updated all Dockerfiles (Dockerfile, Dockerfile.chef, Dockerfile.fast, Dockerfile.local, Dockerfile.chainguard)
+    - Updated test scripts (tests/*.sh)
+    - Updated deployment scripts (deploy/*.sh)
+    - Updated RBAC documentation and scripts
+    - Updated docs/book.toml metadata
+    - Updated docs/src/generate_placeholders.sh
+  - **Preserved**:
+    - `kube::runtime::Controller` (kube-rs library type) - not renamed as it's a third-party library type
+    - `PhotonController` references in CRDs - these refer to VMware Photon Controller persistent disks (Kubernetes volume type)
+
+### Why
+Standardize terminology to match Kubernetes ecosystem conventions. "Operator" is the canonical term for controllers that manage Custom Resources, while "controller" typically refers to built-in Kubernetes controllers. This improves clarity and aligns with community best practices.
+
+### Impact
+- [x] No functional changes - pure refactoring
+- [x] All tests pass: cargo test, cargo clippy, cargo fmt
+- [x] Breaking change for deployment manifests: Users must update references from `bindy-controller` to `bindy-operator`
+- [x] Documentation now uses consistent "operator" terminology
+- [x] Better alignment with Kubernetes operator pattern naming conventions
+
 ## [2026-01-15 05:30] - Feature: Propagate Role Label to Deployments and Pods
 
 **Author:** Erick Bourgeois
@@ -164,7 +245,7 @@ When a zone already exists on BIND9 instances, the reconciler was still calling 
 - [x] Performance improvement: Reconciliation only runs when actual changes occur
 - [x] Reduced API server load: No more continuous status updates when zones already exist
 - [x] Proper declarative reconciliation: Status only changes when actual configuration changes
-- [ ] No breaking changes: Behavior is now correct and matches expected Kubernetes controller patterns
+- [ ] No breaking changes: Behavior is now correct and matches expected Kubernetes operator patterns
 
 ## [2026-01-14 16:45] - Created RNDC Key Auto-Rotation Implementation Roadmap with Regulatory Compliance
 
@@ -175,7 +256,7 @@ When a zone already exists on BIND9 instances, the reconciler was still calling 
   - Proposed new `RndcKeyConfig` API structure replacing `RndcSecretRef`
   - Support for automatic key rotation based on configurable intervals
   - Manual rotation trigger via Secret annotation updates
-  - New dedicated `RndcKeyRotationController` for lifecycle management (event-driven, not polling)
+  - New dedicated `RndcKeyRotationOperator` for lifecycle management (event-driven, not polling)
   - Backward compatibility strategy with deprecated fields
   - Complete implementation plan across 6 phases (12-18 day estimate)
   - **Comprehensive documentation requirements** for regulated environments (CRITICAL)
@@ -524,14 +605,14 @@ Implements Phase 3 of the [Kubernetes API Rate Limiting Roadmap](docs/roadmaps/k
 **Problem Being Solved:**
 - Transient API errors (rate limiting, temporary server issues, network glitches) cause immediate failures
 - No automatic recovery from temporary Kubernetes API server pressure
-- Controllers must handle API unavailability manually in each reconciler
+- Operators must handle API unavailability manually in each reconciler
 - Single transient error can block reconciliation for extended periods
 
 **Solution:**
 - Automatic retry of transient errors (429, 5xx, network failures)
 - Exponential backoff prevents overwhelming API server during recovery
 - Fail-fast on permanent errors (4xx client errors) to avoid wasting time
-- Randomization (±10%) prevents thundering herd when multiple controllers retry
+- Randomization (±10%) prevents thundering herd when multiple operators retry
 - Max 5-minute total retry time prevents infinite retry loops
 - Structured logging provides visibility into retry attempts
 
@@ -715,7 +796,7 @@ This prevents API server overload in large deployments (500+ resources) and prov
 ### Impact
 - [x] All 634 tests passing with 4 new rate limiting tests
 - [x] Zero clippy warnings
-- [x] Configuration values logged on controller startup
+- [x] Configuration values logged on operator startup
 - [x] Environment variables allow tuning without recompilation
 - [x] Documentation ready for operators
 - [x] Phase 1 complete - ready for Phase 2 (pagination)
@@ -1202,7 +1283,7 @@ After careful analysis of the remaining functions in [src/reconcilers/dnszone.rs
 - Well-organized into focused modules
 - Maintainable with clear boundaries
 - Testable with isolated helper functions
-- Following Kubernetes controller best practices
+- Following Kubernetes operator best practices
 
 **Next Steps**:
 1. Documentation updates (architecture diagrams, developer guides)
@@ -1449,7 +1530,7 @@ With 100% test coverage achieved, automated coverage tracking ensures:
 **New Test Coverage**:
 1. **helpers_tests.rs** (previous session): 9 tests
    - 8 passing, 1 ignored (known bug documented)
-2. **record_controller_tests.rs** (previous session): 3 tests
+2. **record_operator_tests.rs** (previous session): 3 tests
 3. **record_impls_tests.rs** (previous session): 19 tests
 4. **record_wrappers_tests.rs** (this session): 13 tests
 5. **bind9/records/mod_tests.rs** (this session): 17 tests (2 unit + 15 integration placeholders)
@@ -1579,10 +1660,10 @@ This commit completes cleanup and validation extraction - the smallest, lowest-r
   - Tests for `detect_instance_changes()` - List changes (added/removed), timestamp changes, empty lists
   - **Documents known bug**: InstanceReference Hash/PartialEq mismatch that prevents timestamp-only change detection (test marked with `#[ignore]`)
   - Helper functions for creating test DNSZone and InstanceReference fixtures
-- **[src/record_controller_tests.rs](src/record_controller_tests.rs)**: Unit tests for generic DNS record controller
+- **[src/record_operator_tests.rs](src/record_operator_tests.rs)**: Unit tests for generic DNS record operator
   - Tests for `ReconcileError` display and error conversion from anyhow
   - Tests for hickory RecordType enum string representation
-  - Documents integration test requirements for controller functions
+  - Documents integration test requirements for operator functions
 - **[src/record_impls_tests.rs](src/record_impls_tests.rs)**: Unit tests for DNS record type trait implementations
   - Tests for all 8 record types (A, AAAA, TXT, CNAME, MX, NS, SRV, CAA) verifying correct `DnsRecordType` trait constants
   - Cross-record validation tests ensuring all finalizers, kinds, and record type strings are unique
@@ -1590,19 +1671,19 @@ This commit completes cleanup and validation extraction - the smallest, lowest-r
 
 ### Changed
 - **[src/reconcilers/dnszone.rs](src/reconcilers/dnszone.rs)**: Added test module declaration for helpers_tests
-- **[src/lib.rs](src/lib.rs)**: Added test module declarations for record_controller_tests and record_impls_tests
+- **[src/lib.rs](src/lib.rs)**: Added test module declarations for record_operator_tests and record_impls_tests
 
 ### Why
 During the code cleanup and refactoring phases, new files were created that lacked unit tests as required by the project's CLAUDE.md requirements. Specifically:
 - `src/reconcilers/dnszone/helpers.rs` - Contains 4 public functions requiring tests
-- `src/record_controller.rs` - Contains public error types and controller functions
+- `src/record_operator.rs` - Contains public error types and operator functions
 - `src/record_impls.rs` - Contains DnsRecordType trait implementations for all record types
 
 Per CLAUDE.md Section "Testing Requirements": **MANDATORY: Every public function MUST have corresponding unit tests.**
 
 ### Test Coverage Summary
 - **helpers_tests.rs**: 9 tests covering spec change detection and instance change detection logic
-- **record_controller_tests.rs**: 3 tests covering error handling and hickory integration
+- **record_operator_tests.rs**: 3 tests covering error handling and hickory integration
 - **record_impls_tests.rs**: 19 tests covering trait implementation correctness for all record types
 - **Total**: 31 new unit tests added
 
@@ -1624,7 +1705,7 @@ Per CLAUDE.md Section "Testing Requirements": **MANDATORY: Every public function
 
 ### Changed
 - **[src/reconcilers/dnszone.rs](src/reconcilers/dnszone.rs)**: Eliminated duplication in record discovery using trait-based generics
-  - **Added `DiscoverableRecord` trait** ([line 2356-2375](src/reconcilers/dnszone.rs#L2356-L2375)) - Trait for record types that can be discovered by DNSZone controllers
+  - **Added `DiscoverableRecord` trait** ([line 2356-2375](src/reconcilers/dnszone.rs#L2356-L2375)) - Trait for record types that can be discovered by DNSZone operators
   - **Added generic `discover_records_generic()` helper** ([line 2514-2567](src/reconcilers/dnszone.rs#L2514-L2567)) - Generic implementation for discovering all record types
   - **Added 8 `DiscoverableRecord` implementations** ([line 2379-2489](src/reconcilers/dnszone.rs#L2379-L2489)):
     - `ARecord`, `AAAARecord`, `TXTRecord`, `CNAMERecord`
@@ -1919,14 +2000,14 @@ Implementation ready to begin following the detailed plan. Each extraction will 
 
 ---
 
-## [2026-01-10 20:30] - Phase 1.3: Implement Generic Record Controller
+## [2026-01-10 20:30] - Phase 1.3: Implement Generic Record Operator
 
 **Author:** Erick Bourgeois
 
 ### Changed
-- **Created generic record controller** [src/record_controller.rs](src/record_controller.rs)
+- **Created generic record operator** [src/record_operator.rs](src/record_operator.rs)
   - `DnsRecordType` trait abstracts common operations for all DNS record types
-  - `run_generic_record_controller<T>()` eliminates duplicate controller setup code
+  - `run_generic_record_operator<T>()` eliminates duplicate operator setup code
   - Single error policy and reconciliation wrapper for all record types
 
 - **Implemented trait for all record types** [src/record_impls.rs](src/record_impls.rs)
@@ -1935,24 +2016,24 @@ Implementation ready to begin following the detailed plan. Each extraction will 
   - Type-safe with compile-time verification
 
 - **Simplified main.rs** [src/main.rs](src/main.rs)
-  - Replaced 8 identical controller functions with generic controller calls
+  - Replaced 8 identical operator functions with generic operator calls
   - Replaced 8 identical wrapper functions with trait-based approach
   - Removed 1,068 lines of duplicate code (44% reduction: 2,411 → 1,343 lines)
 
 ### Removed
-- 8 `run_*record_controller()` functions (lines 1339-1686)
+- 8 `run_*record_operator()` functions (lines 1339-1686)
 - 8 `reconcile_*record_wrapper()` functions (lines 1734-2394)
 - Eliminated ~1,068 lines of boilerplate code
 
 ### Benefits
 - **Code Reduction**: 44% reduction in main.rs (1,068 lines removed)
-- **Maintainability**: Single source of truth for record controller logic
+- **Maintainability**: Single source of truth for record operator logic
 - **Type Safety**: Compile-time verification via trait implementations
 - **Consistency**: All record types reconcile identically
 - **Extensibility**: New record types require only trait implementation (<50 lines)
 
 ### Technical Details
-**Generic Controller Features:**
+**Generic Operator Features:**
 - Watches both record type and DNSZone resources
 - Event-driven: triggers on `DNSZone.status.records[]` changes
 - Finalizer support for cleanup operations
@@ -1992,7 +2073,7 @@ Implementation ready to begin following the detailed plan. Each extraction will 
 - **Created comprehensive code quality roadmap** [docs/roadmaps/code-quality-refactoring-roadmap.md](docs/roadmaps/code-quality-refactoring-roadmap.md)
   - Analyzed entire codebase for code quality issues
   - Identified 7 files with >1,000 lines (largest: dnszone.rs at 4,171 lines)
-  - Identified ~2,400 lines of duplicate code across record controllers
+  - Identified ~2,400 lines of duplicate code across record operators
   - Identified large functions (reconcile_dnszone: 561 lines)
   - Created 3-phase refactoring plan with detailed implementation strategy
 
@@ -2000,7 +2081,7 @@ Implementation ready to begin following the detailed plan. Each extraction will 
 **Critical Issues:**
 - `src/reconcilers/dnszone.rs`: 4,171 lines (CRITICAL - needs module split)
 - `reconcile_dnszone()`: 561 lines, handles 14+ concerns (HIGH complexity)
-- ~2,400 lines of duplicate code in record controllers (8 identical patterns)
+- ~2,400 lines of duplicate code in record operators (8 identical patterns)
 
 **Positive Findings:**
 - No magic numbers (only 0 and 1 used)
@@ -2010,7 +2091,7 @@ Implementation ready to begin following the detailed plan. Each extraction will 
 - Only 2 TODO comments
 
 **Refactoring Phases:**
-1. **Phase 1 (2-3 days)**: Split dnszone.rs, break reconcile_dnszone(), create generic record controller
+1. **Phase 1 (2-3 days)**: Split dnszone.rs, break reconcile_dnszone(), create generic record operator
 2. **Phase 2 (3-4 days)**: Generic record reconciliation, generic record discovery
 3. **Phase 3 (1-2 days)**: Optional polish - split crd.rs, monitor large reconcilers
 
@@ -2078,12 +2159,12 @@ The comprehensive migration guide (rewritten in previous commit) existed but was
 
 ### Why
 **Problem**: The migration guide was completely wrong:
-- Described "bindy-operator" and "bindy-controller sidecar" architecture that doesn't exist
+- Described "bindy-operator" and "bindy-operator sidecar" architecture that doesn't exist
 - Referenced "v0.x → v1.0+" versions that don't match reality (current: v0.3.0)
 - No mention of the actual breaking change (label selectors)
 
 **Reality**:
-- Current architecture: Single operator with **Bindcar HTTP API sidecar** (not "bindy-controller sidecar")
+- Current architecture: Single operator with **Bindcar HTTP API sidecar** (not "bindy-operator sidecar")
 - Actual breaking change in v0.3.0: Records use label selectors, not explicit `spec.zoneRef`
 - Current version is 0.3.0, not 1.0+
 
@@ -2165,7 +2246,7 @@ spec:
 **Current Architecture** (since Phase 1-8 consolidation):
 - Records are discovered via **label selectors**, not explicit references
 - DNSZones use `spec.recordsFrom` to select records by labels
-- The controller sets `status.zoneRef` automatically (read-only, not user-specified)
+- The operator sets `status.zoneRef` automatically (read-only, not user-specified)
 
 **Correct Pattern**:
 ```yaml
@@ -2209,8 +2290,8 @@ metadata:
 - **Deprecated architecture documentation** in [docs/src/development/architecture.md](docs/src/development/architecture.md)
   - Added prominent deprecation warning at the top of the document
   - Marked "Data Flow" diagram as deprecated with reference to current architecture
-  - Added link to [DNSZone Controller Architecture](docs/src/concepts/dnszone-controller-architecture.md)
-  - Clarified that this describes the legacy two-level operator architecture (bindy-operator + bindy-controller sidecar)
+  - Added link to [DNSZone Operator Architecture](docs/src/concepts/dnszone-operator-architecture.md)
+  - Clarified that this describes the legacy two-level operator architecture (bindy-operator + bindy-operator sidecar)
   - Noted document is kept for historical reference and migration documentation only
 
 ### Why
@@ -2252,14 +2333,14 @@ metadata:
 
 ### Why
 **Problem**: The integration test was using `spec.zoneRef: integration-test-zone` in DNS records, but this field doesn't exist in the CRD schema:
-- The `zoneRef` field is in `status`, not `spec` (set by the DNSZone controller, not by users)
+- The `zoneRef` field is in `status`, not `spec` (set by the DNSZone operator, not by users)
 - Records are discovered via **label selectors**, not explicit references
-- The DNSZone controller sets `status.zoneRef` when a zone's `recordsFrom` selector matches a record's labels
+- The DNSZone operator sets `status.zoneRef` when a zone's `recordsFrom` selector matches a record's labels
 
 **Solution**: Follow the correct label-based discovery pattern:
 1. DNS records have **labels** (e.g., `bindy.firestoned.io/zone: integration.test`)
 2. DNSZone has **`recordsFrom`** with label selectors matching those labels
-3. DNSZone controller discovers records and sets their `status.zoneRef` automatically
+3. DNSZone operator discovers records and sets their `status.zoneRef` automatically
 
 ### Impact
 - [ ] Breaking change
@@ -2463,7 +2544,7 @@ Improves naming consistency in DNSZone status:
 - [ ] Documentation only
 
 **Migration:**
-- **CRD Update Required**: Deploy updated CRDs before deploying controller
+- **CRD Update Required**: Deploy updated CRDs before deploying operator
 - **Existing Resources**: Status fields will be repopulated on next reconciliation
 - **kubectl Output**: "Records" column will show correct values after CRD update
 
@@ -2572,9 +2653,9 @@ The `status.zone` field (string FQDN) has been superseded by `status.zone_ref` (
 
 ### Fixed
 - **Bug in `update_record_status()`** in [records.rs:1795-1799](src/reconcilers/records.rs#L1795-L1799):
-  - Function was setting `zone_ref: None`, overwriting the value set by DNSZone controller
+  - Function was setting `zone_ref: None`, overwriting the value set by DNSZone operator
   - Now correctly preserves existing `zone_ref` from record status (same as `zone` field)
-  - Resolved TODO comment - DNSZone controller DOES set `zone_ref` in event-driven mode
+  - Resolved TODO comment - DNSZone operator DOES set `zone_ref` in event-driven mode
   - This bug would have prevented the record reconciler from finding the zone reference
 
 ### Analyzed
@@ -2591,7 +2672,7 @@ The `status.zone` field (string FQDN) has been superseded by `status.zone_ref` (
   - Current public visibility is correct API design
 
 ### Why
-The `update_record_status()` function updates record conditions and metadata, but must preserve fields set by other controllers. The DNSZone controller sets `status.zoneRef` to indicate which zone owns a record. Previously, `update_record_status()` would overwrite this with `None`, breaking the event-driven architecture.
+The `update_record_status()` function updates record conditions and metadata, but must preserve fields set by other operators. The DNSZone operator sets `status.zoneRef` to indicate which zone owns a record. Previously, `update_record_status()` would overwrite this with `None`, breaking the event-driven architecture.
 
 The API analysis verified that existing visibility modifiers are correct. Public functions that return custom types require those types to be public.
 
@@ -2845,7 +2926,7 @@ User requested count field for `bind9_instances` array to match the pattern alre
 
 **Migration:**
 - Existing DNSZone resources will have `bind9InstancesCount: null` until next reconciliation
-- Controller will automatically populate the field on next status update
+- Operator will automatically populate the field on next status update
 - No manual intervention required
 
 ---
@@ -3369,15 +3450,15 @@ let zones = if let Some(existing_status) = instance.status.as_ref() {
 - `src/reconcilers/bind9instance.rs`: Updated `update_status_from_deployment()` to preserve or populate zones (lines 955-963)
   - Preserves existing `status.zones` during subsequent reconciliations
   - On first reconciliation (no existing status), calls `update_instance_zones_from_dnszones()` to populate zones
-  - Ensures zones list is always accurate even after controller restart
+  - Ensures zones list is always accurate even after operator restart
 
 ### Why
-**Problem**: The status-only watcher added in the previous commit only reacted to DNSZone changes. When a Bind9Instance started up (or the controller restarted), the `status.zones` field remained empty until a DNSZone was updated.
+**Problem**: The status-only watcher added in the previous commit only reacted to DNSZone changes. When a Bind9Instance started up (or the operator restarted), the `status.zones` field remained empty until a DNSZone was updated.
 
 **Impact of Issue**:
 - Instance status showed no zones even though zones had already selected it
 - Required manual DNSZone update to trigger the watcher and populate the list
-- Poor user experience - status appeared incomplete on controller restart
+- Poor user experience - status appeared incomplete on operator restart
 
 **Solution**:
 - Extract zone-finding logic into reusable function `update_instance_zones_from_dnszones()`
@@ -3411,7 +3492,7 @@ let zones = if let Some(existing_status) = instance.status.as_ref() {
   - Provides reverse lookup: instance → zones (complementing existing zone → instances)
   - Automatically populated by DNSZone status-only watcher
   - Used for observability and debugging zone assignments
-- `src/main.rs`: Added status-only watcher on DNSZones to Bind9Instance controller (lines 893-1006)
+- `src/main.rs`: Added status-only watcher on DNSZones to Bind9Instance operator (lines 893-1006)
   - Watches `dnszone.status.bind9instances` for changes
   - When a DNSZone includes an instance, adds zone reference to `instance.status.zones`
   - Implemented in mapper function to avoid triggering reconciliation (returns empty vec)
@@ -3444,7 +3525,7 @@ let zones = if let Some(existing_status) = instance.status.as_ref() {
 
 **Implementation Pattern**:
 ```rust
-Controller::new(api, semantic_watcher_config())
+Operator::new(api, semantic_watcher_config())
     .owns(...resources...)
     .watches(dnszone_api, default_watcher_config(), |zone| {
         // Extract instances from zone.status.bind9instances
@@ -3484,16 +3565,16 @@ Controller::new(api, semantic_watcher_config())
 **Problem**: Creating a DNSZone triggered a tight reconciliation loop (~300ms cycles) causing:
 - Continuous status PATCH operations (~3 per second)
 - Immediate re-reconciliation after every status update
-- Excessive API server load and controller CPU usage
+- Excessive API server load and operator CPU usage
 - Repeated reconciliation of unchanged zone configuration
 
 **Root Cause Analysis**:
-1. DNSZone controller uses `semantic_watcher_config()` (`.any_semantic()`) on line 977
+1. DNSZone operator uses `semantic_watcher_config()` (`.any_semantic()`) on line 977
 2. `semantic_watcher_config()` is supposed to filter out status-only changes
 3. However, kube-rs `.any_semantic()` only filters **metadata** changes, not status updates
 4. When status subresource is patched, Kubernetes updates `metadata.resourceVersion`
 5. The resourceVersion change triggers the watch event (`object.reason=object updated`)
-6. Controller re-reconciles immediately even though spec didn't change
+6. Operator re-reconciles immediately even though spec didn't change
 7. Reconciliation updates status again → watch event → reconciliation → infinite loop
 
 **Timeline of Loop** (from logs):
@@ -3511,7 +3592,7 @@ Controller::new(api, semantic_watcher_config())
 **Solution**:
 - Added `metadata.generation` vs `status.observed_generation` check
 - `metadata.generation` only increments when **spec** changes
-- `status.observed_generation` is set by controller after reconciling that generation
+- `status.observed_generation` is set by operator after reconciling that generation
 - If they match → spec hasn't changed → skip full reconciliation
 - Still requeue after 300s for periodic health monitoring
 
@@ -3524,7 +3605,7 @@ Controller::new(api, semantic_watcher_config())
 
 ### Impact
 - **Breaking Change**: No
-- **Performance**: Dramatically reduces API server load and controller CPU for stable zones
+- **Performance**: Dramatically reduces API server load and operator CPU for stable zones
 - **Behavior**: Zones still reconcile on spec changes and every 5 minutes for health checks
 
 ---
@@ -3953,7 +4034,7 @@ The bindcar HTTP API endpoint must be constructed from the **actual deployed Ser
 ### Fixed
 - **CRITICAL BUG**: `src/reconcilers/dnszone.rs` - Fixed tight reconciliation loop for new DNSZones
   - **Problem**: New instances were marked as `Claimed` but NOT synced to bindcar on first reconciliation
-  - **Result**: Controller entered tight loop: add as Claimed → reconcile → still Claimed → reconcile → ...
+  - **Result**: Operator entered tight loop: add as Claimed → reconcile → still Claimed → reconcile → ...
   - **Root Cause**: `reconcile_dnszone_new()` only synced `existing` instances, not `added` instances
   - **Fix**: Refactored to gather ALL instances (new + existing) and process them in a single pass
 
@@ -4166,7 +4247,7 @@ status:
 
 ---
 
-## [2026-01-06 16:00] - DNSZone Controller Consolidation: Phase 7 & 8 Complete
+## [2026-01-06 16:00] - DNSZone Operator Consolidation: Phase 7 & 8 Complete
 
 **Author:** Erick Bourgeois
 
@@ -4180,7 +4261,7 @@ status:
   - Test execution pending live cluster deployment
 
 **Phase 8: Documentation and Examples**
-- `docs/src/concepts/dnszone-controller-architecture.md`: **NEW** - DNSZone controller architecture documentation
+- `docs/src/concepts/dnszone-operator-architecture.md`: **NEW** - DNSZone operator architecture documentation
   - Before/after architecture comparison with mermaid diagrams
   - Detailed explanation of all three instance selection methods
   - Reconciliation flow sequence diagram
@@ -4213,7 +4294,7 @@ status:
   - Added new example file to overview section
 
 - `docs/src/SUMMARY.md`: **UPDATED** - Added new documentation pages
-  - Added "DNSZone Controller Architecture" to concepts section
+  - Added "DNSZone Operator Architecture" to concepts section
   - Added "DNSZone Migration Troubleshooting" to operations section
 
 - `docs/roadmaps/dnszone-consolidation-roadmap.md`: **UPDATED** - Marked phases 7-8 complete
@@ -4265,7 +4346,7 @@ status:
 
 ### Next Steps
 
-1. Deploy controller to test cluster
+1. Deploy operator to test cluster
 2. Execute integration tests from `docs/roadmaps/integration-test-plan.md`
 3. Verify all test scenarios pass in live environment
 4. Document any issues found during live testing
@@ -4273,7 +4354,7 @@ status:
 
 ### See Also
 
-- [DNSZone Controller Architecture](docs/src/concepts/dnszone-controller-architecture.md)
+- [DNSZone Operator Architecture](docs/src/concepts/dnszone-operator-architecture.md)
 - [Integration Test Plan](docs/roadmaps/integration-test-plan.md)
 - [Migration Troubleshooting](docs/src/operations/dnszone-migration-troubleshooting.md)
 - [Instance Selection Examples](examples/dnszone-selection-methods.yaml)
@@ -4419,41 +4500,41 @@ status:
 
 **Upgrade Steps:**
 1. Update CRDs: `kubectl replace --force -f deploy/crds/`
-2. Restart the controller to pick up new field names
+2. Restart the operator to pick up new field names
 3. Existing DNSZone resources will automatically migrate when reconciled
 
 ---
 
-## [2026-01-06 04:00] - DNSZone Controller Consolidation: Breaking Changes Summary
+## [2026-01-06 04:00] - DNSZone Operator Consolidation: Breaking Changes Summary
 
 **Author:** Erick Bourgeois
 
 ### 🚨 BREAKING CHANGES - Read Before Upgrading
 
-This release consolidates the DNSZone and ZoneSync controllers into a single unified DNSZone controller, significantly simplifying the architecture. **This is a major breaking change that requires careful migration.**
+This release consolidates the DNSZone and ZoneSync operators into a single unified DNSZone operator, significantly simplifying the architecture. **This is a major breaking change that requires careful migration.**
 
 ---
 
 ### What Changed - Architecture Overview
 
-**BEFORE (Dual Controller Architecture)**:
+**BEFORE (Dual Operator Architecture)**:
 ```
 ┌─────────────────┐         ┌──────────────────┐
 │ DNSZone         │         │ ZoneSync         │
-│ Controller      │─────────│ Controller       │
+│ Operator      │─────────│ Operator       │
 └─────────────────┘         └──────────────────┘
         │                            │
         ├─ Manages spec              ├─ Syncs zones to instances
         ├─ Selects records           ├─ Updates syncStatus[]
         └─ Updates instances[]       └─ Tracks sync timestamps
 
-Problem: Two controllers, dual status fields, circular dependencies
+Problem: Two operators, dual status fields, circular dependencies
 ```
 
-**AFTER (Single Controller Architecture)**:
+**AFTER (Single Operator Architecture)**:
 ```
 ┌─────────────────────────────────────┐
-│ DNSZone Controller (Unified)        │
+│ DNSZone Operator (Unified)        │
 └─────────────────────────────────────┘
         │
         ├─ Manages spec AND synchronization
@@ -4462,7 +4543,7 @@ Problem: Two controllers, dual status fields, circular dependencies
         ├─ Updates instances[] with status enum
         └─ Single source of truth for zone-instance relationships
 
-Solution: One controller, unified status, clean dependencies
+Solution: One operator, unified status, clean dependencies
 ```
 
 ---
@@ -4536,9 +4617,9 @@ kubectl replace --force -f deploy/crds/dnszones.crd.yaml
 kubectl replace --force -f deploy/crds/bind9instances.crd.yaml
 ```
 
-#### Step 3: Deploy New Controller
+#### Step 3: Deploy New Operator
 ```bash
-# Build and deploy the new consolidated controller
+# Build and deploy the new consolidated operator
 # (Your deployment process here)
 ```
 
@@ -4554,8 +4635,8 @@ kubectl get dnszone example-com -n your-namespace \
 
 #### Step 5: Monitor Reconciliation
 ```bash
-# Watch controller logs
-kubectl logs -n dns-system -l app=bindy-controller -f
+# Watch operator logs
+kubectl logs -n dns-system -l app=bindy-operator -f
 
 # Verify zones are synced to instances
 # (Check your BIND9 instances for zone files)
@@ -4574,7 +4655,7 @@ kubectl logs -n dns-system -l app=bindy-controller -f
 - Service/Deployment resources
 
 ✅ **Backward compatible**:
-- Existing DNSZones will automatically reconcile with new controller
+- Existing DNSZones will automatically reconcile with new operator
 - `status.instances[]` will be populated on first reconciliation
 - Old status fields (`syncStatus`, etc.) will be ignored and garbage collected
 - No manual data migration needed
@@ -4586,11 +4667,11 @@ kubectl logs -n dns-system -l app=bindy-controller -f
 **Deleted Files** (~915 lines):
 - `src/reconcilers/zonesync.rs` (750+ lines)
 - `src/reconcilers/zonesync_tests.rs` (100+ lines)
-- Controller setup code in `src/main.rs` (65 lines)
+- Operator setup code in `src/main.rs` (65 lines)
 
 **Deleted Structs**:
 - `InstanceSyncStatus` - Replaced by `InstanceReferenceWithStatus`
-- ZoneSync controller functions
+- ZoneSync operator functions
 
 **Simplified Status**:
 - DNSZone: 8 fields → 5 fields
@@ -4600,7 +4681,7 @@ kubectl logs -n dns-system -l app=bindy-controller -f
 
 ### Performance & Reliability Improvements
 
-✅ **Simpler reconciliation**: One controller = fewer edge cases
+✅ **Simpler reconciliation**: One operator = fewer edge cases
 ✅ **No circular dependencies**: Clean unidirectional references
 ✅ **Faster status updates**: Single update instead of dual sync
 ✅ **Better error handling**: Unified error tracking in `instances[].message`
@@ -4618,7 +4699,7 @@ If you need to rollback:
    kubectl apply -f old-crds/bind9instances.crd.yaml
    ```
 
-2. **Deploy old controller version**
+2. **Deploy old operator version**
 
 3. **Restore resources**:
    ```bash
@@ -4631,7 +4712,7 @@ If you need to rollback:
 ### Support & Questions
 
 If you encounter issues during migration:
-1. Check controller logs: `kubectl logs -n dns-system -l app=bindy-controller`
+1. Check operator logs: `kubectl logs -n dns-system -l app=bindy-operator`
 2. Verify CRD schemas: `kubectl get crd dnszones.bindy.firestoned.io -o yaml`
 3. Check DNSZone status: `kubectl describe dnszone <name> -n <namespace>`
 4. Report issues: https://github.com/anthropics/claude-code/issues
@@ -4643,7 +4724,7 @@ If you encounter issues during migration:
 **Author:** Erick Bourgeois
 
 ### Summary
-**DOCUMENTATION UPDATED**: Completed comprehensive documentation updates for the DNSZone controller consolidation. All user-facing documentation, API references, and migration guides are now up-to-date.
+**DOCUMENTATION UPDATED**: Completed comprehensive documentation updates for the DNSZone operator consolidation. All user-facing documentation, API references, and migration guides are now up-to-date.
 
 ### Documentation Changes
 
@@ -4676,15 +4757,15 @@ If you encounter issues during migration:
 ### What Was Documented
 
 **Architecture Changes**:
-- Single controller architecture (DNSZone only)
-- Removal of ZoneSync controller and circular dependencies
+- Single operator architecture (DNSZone only)
+- Removal of ZoneSync operator and circular dependencies
 - Unified status model with `status.instances[]`
 - Clean unidirectional references
 
 **Breaking Changes**:
 - DNSZone: Removed `syncStatus[]`, `syncedInstancesCount`, `totalInstancesCount`
 - Bind9Instance: Removed `selectedZones[]`, `selectedZoneCount`
-- ZoneSync controller completely removed
+- ZoneSync operator completely removed
 
 **Migration Path**:
 - Step-by-step upgrade instructions
@@ -4739,7 +4820,7 @@ If you encounter issues during migration:
 **Author:** Erick Bourgeois
 
 ### Summary
-**ALL TESTS PASSING**: Comprehensive testing verification completed for the DNSZone controller consolidation (Phases 1-5). All unit tests, integration tests, and code quality checks pass successfully.
+**ALL TESTS PASSING**: Comprehensive testing verification completed for the DNSZone operator consolidation (Phases 1-5). All unit tests, integration tests, and code quality checks pass successfully.
 
 ### Testing Results
 
@@ -4762,7 +4843,7 @@ If you encounter issues during migration:
 - ✅ Bind9 zone operations tests
 - ✅ RNDC key management tests
 - ✅ CRD serialization/deserialization tests
-- ✅ Controller reconciliation logic tests
+- ✅ Operator reconciliation logic tests
 - ✅ Status update tests
 - ✅ Finalizer tests
 - ✅ Label selector matching tests
@@ -4771,7 +4852,7 @@ If you encounter issues during migration:
 
 ### What Was Tested
 
-**Phase 2 DNSZone Controller**:
+**Phase 2 DNSZone Operator**:
 - `get_target_instances()` - Instance selection from `clusterRef` and `bind9InstancesFrom`
 - `compute_instance_diff()` - Added/removed/existing instance detection
 - `sync_zone_to_instance()` - Zone synchronization via bindcar API
@@ -4779,7 +4860,7 @@ If you encounter issues during migration:
 - Status updates with `InstanceReferenceWithStatus`
 
 **Phase 3 ZoneSync Removal**:
-- Verified no ZoneSync controller code remains
+- Verified no ZoneSync operator code remains
 - Confirmed no ZoneSync test files exist
 - All ZoneSync-related tests removed from suite
 
@@ -4795,7 +4876,7 @@ If you encounter issues during migration:
 
 **By Module**:
 - `bind9::` - 52 tests (zone ops, RNDC, records)
-- `reconcilers::` - 315 tests (controllers, status, finalizers)
+- `reconcilers::` - 315 tests (operators, status, finalizers)
 - `crd::` - 67 tests (serialization, validation)
 - `ddns::` - 2 tests (record hashing)
 - `dns_errors::` - 24 tests (error handling)
@@ -4836,7 +4917,7 @@ See [docs/roadmaps/dnszone-consolidation-roadmap.md](docs/roadmaps/dnszone-conso
 ### Removed
 - **ALREADY REMOVED** `status.selected_zones: Vec<ZoneReference>` from `Bind9InstanceStatus`
 - **ALREADY REMOVED** `status.selected_zone_count: Option<i32>` from `Bind9InstanceStatus`
-- **ALREADY REMOVED** Zone tracking logic from Bind9Instance controller
+- **ALREADY REMOVED** Zone tracking logic from Bind9Instance operator
 - **ALREADY REMOVED** Custom Serialize implementation for Bind9InstanceStatus (no longer needed)
 
 ### Why
@@ -4871,7 +4952,7 @@ Bind9Instance.status → No zone references
 **Code Verification**:
 - ✅ No references to `selected_zones` or `selected_zone_count` in `src/crd.rs` (except comment)
 - ✅ No references in `deploy/crds/bind9instances.crd.yaml`
-- ✅ Bind9Instance controller (`src/reconcilers/bind9instance.rs`) contains comments indicating zone tracking was removed
+- ✅ Bind9Instance operator (`src/reconcilers/bind9instance.rs`) contains comments indicating zone tracking was removed
 
 **Migration Path**:
 Existing Bind9Instances will automatically migrate:
@@ -4906,7 +4987,7 @@ See [docs/roadmaps/dnszone-consolidation-roadmap.md](docs/roadmaps/dnszone-conso
   - `src/reconcilers/records_tests.rs` - Updated all tests to remove legacy fields
 
 ### Why
-**Schema Cleanup**: After removing the ZoneSync controller (Phase 3), the legacy `syncStatus`, `syncedInstancesCount`, and `totalInstancesCount` fields in the DNSZone CRD are obsolete and need to be removed from the schema.
+**Schema Cleanup**: After removing the ZoneSync operator (Phase 3), the legacy `syncStatus`, `syncedInstancesCount`, and `totalInstancesCount` fields in the DNSZone CRD are obsolete and need to be removed from the schema.
 
 **Single Source of Truth**: The `status.instances[]` field (added in Phase 2) is now the ONLY status field for tracking zone-instance relationships. The legacy fields created confusion and redundancy.
 
@@ -4943,7 +5024,7 @@ AFTER:
 Existing DNSZones will automatically migrate:
 1. Old `sync_status` fields will be ignored (not validated)
 2. Kubernetes will garbage collect unused fields
-3. DNSZone controller will populate `status.instances[]` on next reconciliation
+3. DNSZone operator will populate `status.instances[]` on next reconciliation
 
 ### Testing
 - ✅ **All tests pass**: `cargo test` - 532 passed, 0 failed
@@ -4960,32 +5041,32 @@ See [docs/roadmaps/dnszone-consolidation-roadmap.md](docs/roadmaps/dnszone-conso
 
 ---
 
-## [2026-01-06 01:15] - Phase 3: Complete Removal of ZoneSync Controller
+## [2026-01-06 01:15] - Phase 3: Complete Removal of ZoneSync Operator
 
 **Author:** Erick Bourgeois
 
 ### Removed
-- **DELETED** `src/reconcilers/zonesync.rs` (750+ lines) - Entire ZoneSync controller removed
+- **DELETED** `src/reconcilers/zonesync.rs` (750+ lines) - Entire ZoneSync operator removed
 - **DELETED** `src/reconcilers/zonesync_tests.rs` - All ZoneSync tests removed (4 tests)
-- **DELETED** `run_zonesync_controller()` function from `src/main.rs`
+- **DELETED** `run_zonesync_operator()` function from `src/main.rs`
 - **DELETED** `reconcile_zonesync_wrapper()` function from `src/main.rs`
 - **DELETED** `map_instance_to_zones()` function from `src/main.rs` - No longer needed
-- **REMOVED** ZoneSync controller invocation from tokio::select! block in main.rs
+- **REMOVED** ZoneSync operator invocation from tokio::select! block in main.rs
 - **REMOVED** `reconcile_zone_sync` export from `src/reconcilers/mod.rs`
 - **REMOVED** `pub mod zonesync;` declaration from `src/reconcilers/mod.rs`
 - **REMOVED** `reconcile_zone_sync` import from `src/main.rs`
 
 ### Why
-**Consolidation Complete**: All zone synchronization logic has been successfully consolidated into the DNSZone controller (Phase 2). The ZoneSync controller is now redundant and has been completely removed from the codebase.
+**Consolidation Complete**: All zone synchronization logic has been successfully consolidated into the DNSZone operator (Phase 2). The ZoneSync operator is now redundant and has been completely removed from the codebase.
 
-**Simplified Architecture**: Reducing from 2 controllers (DNSZone + ZoneSync) to 1 controller (DNSZone only) dramatically simplifies the architecture, reduces code complexity, and eliminates coordination overhead.
+**Simplified Architecture**: Reducing from 2 operators (DNSZone + ZoneSync) to 1 operator (DNSZone only) dramatically simplifies the architecture, reduces code complexity, and eliminates coordination overhead.
 
-**Single Responsibility**: DNSZone controller now has complete ownership of zone-instance management, from selection to synchronization to status tracking.
+**Single Responsibility**: DNSZone operator now has complete ownership of zone-instance management, from selection to synchronization to status tracking.
 
 ### Impact
-- [x] Breaking change: **YES** - ZoneSync controller no longer exists
-- [x] Requires cluster rollout: **YES** - Controller runtime changed
-- [ ] Config change only: **NO** - Controller code deleted
+- [x] Breaking change: **YES** - ZoneSync operator no longer exists
+- [x] Requires cluster rollout: **YES** - Operator runtime changed
+- [ ] Config change only: **NO** - Operator code deleted
 - [ ] Documentation only: **NO** - Functional change
 
 ### Technical Details
@@ -4993,20 +5074,20 @@ See [docs/roadmaps/dnszone-consolidation-roadmap.md](docs/roadmaps/dnszone-conso
 - `/src/reconcilers/zonesync.rs` - 750+ lines
 - `/src/reconcilers/zonesync_tests.rs` - 4 unit tests
 
-**Controller Lifecycle**:
+**Operator Lifecycle**:
 ```
-BEFORE (2 controllers):
-DNSZone Controller → Manages spec, records, status.instances[]
-ZoneSync Controller → Syncs zones to bindcar, status.syncStatus[]
+BEFORE (2 operators):
+DNSZone Operator → Manages spec, records, status.instances[]
+ZoneSync Operator → Syncs zones to bindcar, status.syncStatus[]
 
-AFTER (1 controller):
-DNSZone Controller → Manages EVERYTHING
+AFTER (1 operator):
+DNSZone Operator → Manages EVERYTHING
 ```
 
 **Code Reduction**:
 - **750+ lines removed** from zonesync.rs
 - **~100 lines removed** from zonesync_tests.rs
-- **~65 lines removed** from main.rs (controller setup + wrapper)
+- **~65 lines removed** from main.rs (operator setup + wrapper)
 - **Total: ~915 lines of code eliminated**
 
 ### Testing
@@ -5022,12 +5103,12 @@ See [docs/roadmaps/dnszone-consolidation-roadmap.md](docs/roadmaps/dnszone-conso
 
 ---
 
-## [2026-01-06 00:45] - Phase 2: Simplified DNSZone Controller with Consolidated Zone Management
+## [2026-01-06 00:45] - Phase 2: Simplified DNSZone Operator with Consolidated Zone Management
 
 **Author:** Erick Bourgeois
 
 ### Added
-- **NEW ARCHITECTURE**: `src/reconcilers/dnszone.rs` - Completely rewritten DNSZone controller
+- **NEW ARCHITECTURE**: `src/reconcilers/dnszone.rs` - Completely rewritten DNSZone operator
   - `get_target_instances()` - Gets instances from `spec.clusterRef` OR `spec.bind9InstancesFrom` (union logic)
   - `compute_instance_diff()` - Compares target vs current instances (added, removed, existing)
   - `sync_zone_to_instance()` - Syncs zone to instance via bindcar HTTP API (idempotent)
@@ -5035,9 +5116,9 @@ See [docs/roadmaps/dnszone-consolidation-roadmap.md](docs/roadmaps/dnszone-conso
   - `reconcile_dnszone_new()` - New simplified reconciliation flow using `status.instances[]`
 
 ### Changed
-- **SIMPLIFIED RECONCILIATION**: DNSZone controller now handles ALL zone-instance management in one place
+- **SIMPLIFIED RECONCILIATION**: DNSZone operator now handles ALL zone-instance management in one place
   - Uses `status.instances[]` with `InstanceStatus` enum (Claimed, Configured, Failed, Unclaimed)
-  - Single source of truth: No more separate ZoneSync controller needed
+  - Single source of truth: No more separate ZoneSync operator needed
   - Event-driven: Reacts to spec changes, not polling
 - **STATUS MODEL**: Replaced legacy timestamp tracking with enum-based status
   - `InstanceStatus::Claimed` - Instance selected, needs configuration
@@ -5051,7 +5132,7 @@ See [docs/roadmaps/dnszone-consolidation-roadmap.md](docs/roadmaps/dnszone-conso
 - **MAIN.RS**: Updated to call `reconcile_dnszone_new()` instead of old implementation
 
 ### Why
-**Architectural Simplification**: Consolidates zone management into a single controller, eliminating the complexity of coordinating between DNSZone and ZoneSync controllers.
+**Architectural Simplification**: Consolidates zone management into a single operator, eliminating the complexity of coordinating between DNSZone and ZoneSync operators.
 
 **Single Source of Truth**: `status.instances[]` now tracks the complete state of zone-instance relationships, replacing multiple legacy status fields.
 
@@ -5061,8 +5142,8 @@ See [docs/roadmaps/dnszone-consolidation-roadmap.md](docs/roadmaps/dnszone-conso
 
 ### Impact
 - [x] Breaking change: **YES** - Old `reconcile_dnszone()` function still exists but is NOT used
-- [x] Requires cluster rollout: **YES** - New controller behavior
-- [ ] Config change only: **NO** - Controller logic changed
+- [x] Requires cluster rollout: **YES** - New operator behavior
+- [ ] Config change only: **NO** - Operator logic changed
 - [ ] Documentation only: **NO** - Functional change
 
 ### Technical Details
@@ -5101,7 +5182,7 @@ status.instances = [
 
 ### Next Steps (Phase 3)
 See [docs/roadmaps/dnszone-consolidation-roadmap.md](docs/roadmaps/dnszone-consolidation-roadmap.md) for remaining work:
-1. **Phase 3**: Delete ZoneSync controller entirely (`src/reconcilers/zonesync.rs`)
+1. **Phase 3**: Delete ZoneSync operator entirely (`src/reconcilers/zonesync.rs`)
 2. **Phase 4-5**: Remove legacy status fields from CRD schema
 3. **Phase 6-8**: Integration testing, documentation updates
 
@@ -5121,7 +5202,7 @@ See [docs/roadmaps/dnszone-consolidation-roadmap.md](docs/roadmaps/dnszone-conso
 - **CRD YAMLs**: All DNSZone CRD schemas regenerated with new `clusterRef` field
 - **Tests**: Updated all test files to include `cluster_ref: None` in DNSZoneSpec initialization:
   - `src/crd_tests.rs` - Unit tests
-  - `src/reconcilers/zonesync_tests.rs` - ZoneSync controller tests
+  - `src/reconcilers/zonesync_tests.rs` - ZoneSync operator tests
   - `src/reconcilers/status_tests.rs` - Status updater tests
   - `tests/multi_tenancy_integration.rs` - Integration tests (2 instances)
   - `tests/simple_integration.rs` - Integration tests (1 instance)
@@ -5151,7 +5232,7 @@ spec:
 **Architectural Benefits:**
 - **Simplicity**: `clusterRef` provides simple cluster-wide zone assignment
 - **Flexibility**: Can combine with label selectors for advanced targeting
-- **Migration Path**: Prepares for future DNSZone controller consolidation (see [dnszone-consolidation-roadmap.md](docs/roadmaps/dnszone-consolidation-roadmap.md))
+- **Migration Path**: Prepares for future DNSZone operator consolidation (see [dnszone-consolidation-roadmap.md](docs/roadmaps/dnszone-consolidation-roadmap.md))
 
 ### Impact
 - [ ] Breaking change: **NO** - Field is optional, defaults to None
@@ -5161,10 +5242,10 @@ spec:
 
 ### Next Steps
 See [docs/roadmaps/dnszone-consolidation-roadmap.md](docs/roadmaps/dnszone-consolidation-roadmap.md) for the full implementation plan to:
-1. Implement `clusterRef` selection logic in DNSZone controller
-2. Consolidate ZoneSync controller into DNSZone controller
+1. Implement `clusterRef` selection logic in DNSZone operator
+2. Consolidate ZoneSync operator into DNSZone operator
 3. Use `status.instances[]` as single source of truth
-4. Remove ZoneSync controller entirely
+4. Remove ZoneSync operator entirely
 
 ---
 
@@ -5466,7 +5547,7 @@ cargo test             # ✓ 34 tests passed
 
 **Benefits of New Architecture**:
 - Zone-centric ownership model - zones declare which instances should serve them
-- Simpler reconciliation - DNSZone controller directly selects instances via labels/names
+- Simpler reconciliation - DNSZone operator directly selects instances via labels/names
 - Better observability - `DNSZone.status.bind9Instances` shows all serving instances in one place
 - Follows Kubernetes conventions - matches Service → Pod, NetworkPolicy → Pod patterns
 - Easier multi-cluster support - zones can target instances across namespace/cluster boundaries
@@ -5645,8 +5726,8 @@ spec:
   - Updated remaining test assertions to remove `.healthy` field checks
 
 ### Changed
-- **CHANGED** ZoneSync controller to use `Action::await_change()` instead of `Action::requeue(300s)`
-  - Controller now waits for watch events instead of periodic requeues
+- **CHANGED** ZoneSync operator to use `Action::await_change()` instead of `Action::requeue(300s)`
+  - Operator now waits for watch events instead of periodic requeues
   - Fully event-driven - no polling, no timers
   - Reacts instantly to `Bind9Instance.status.selectedZones` changes via watch mappers
 - **CHANGED** `reconcile_zone_sync()` to skip already-synced zones without health checks
@@ -5682,11 +5763,11 @@ spec:
 
 **Migration Path:**
 - Existing clusters: CRD schema is backward-compatible (removed fields are optional)
-- Status will no longer show `lastHealthCheckAt` or `healthy` after controller update
-- No manual intervention required - controller will continue syncing normally
+- Status will no longer show `lastHealthCheckAt` or `healthy` after operator update
+- No manual intervention required - operator will continue syncing normally
 
 ### Impact
-- [x] Event-driven architecture complete - no polling anywhere in ZoneSync controller
+- [x] Event-driven architecture complete - no polling anywhere in ZoneSync operator
 - [x] Breaking change (minor): `InstanceSyncStatus.lastHealthCheckAt` and `.healthy` fields removed
 - [x] Config change only: No Kubernetes resource recreation required
 - [x] Documentation updated: CRD examples and architecture docs reflect removal
@@ -5701,7 +5782,7 @@ spec:
 - `docs/roadmaps/ZONESYNC_ARCHITECTURE.md`: **DOCUMENTATION** - Comprehensive architecture documentation with diagrams
   - **ADDED**: Mermaid architecture diagram showing component relationships (graph TB)
   - **ADDED**: Mermaid sequence diagram showing zone sync data flow
-  - **ADDED**: Component responsibilities section explaining ZoneSync controller role
+  - **ADDED**: Component responsibilities section explaining ZoneSync operator role
   - **ADDED**: Status structure documentation with YAML examples
   - **ADDED**: Event-driven architecture details (no polling explanation)
   - **ADDED**: Sync decision logic flowchart (Mermaid)
@@ -5739,7 +5820,7 @@ spec:
   - **ADDED**: Automation examples (auto-increment serial, pre-commit hooks)
 
 ### Why
-**Phase 3.3 Completion**: Provides comprehensive documentation for users, operators, and maintainers of the ZoneSync controller.
+**Phase 3.3 Completion**: Provides comprehensive documentation for users, operators, and maintainers of the ZoneSync operator.
 
 **Documentation Goals:**
 1. **Architecture Document**: Helps developers understand how ZoneSync works internally
@@ -5781,14 +5862,14 @@ spec:
 **Author:** Erick Bourgeois
 
 ### Changed
-- `src/main.rs`: **EVENT-DRIVEN** - ZoneSync controller now uses watch-based reconciliation instead of polling
+- `src/main.rs`: **EVENT-DRIVEN** - ZoneSync operator now uses watch-based reconciliation instead of polling
   - **ADDED**: `map_instance_to_zones()` function to map `Bind9Instance` changes to `DNSZone` reconciliation requests
   - **ADDED**: `ObjectRef` import from `kube::runtime::reflector`
-  - **CHANGED**: ZoneSync controller `.watches()` now properly returns zones that need reconciliation when instances change
-  - **REMOVED**: 30-second polling intervals for pod readiness checks in `ClusterBind9Provider` controller
-  - **REMOVED**: 30-second polling intervals for pod readiness checks in `Bind9Cluster` controller
-  - **REMOVED**: 30-second polling intervals for pod readiness checks in `Bind9Instance` controller
-  - **CHANGED**: All controllers now use consistent 5-minute requeue intervals, relying on watch events for immediate reconciliation
+  - **CHANGED**: ZoneSync operator `.watches()` now properly returns zones that need reconciliation when instances change
+  - **REMOVED**: 30-second polling intervals for pod readiness checks in `ClusterBind9Provider` operator
+  - **REMOVED**: 30-second polling intervals for pod readiness checks in `Bind9Cluster` operator
+  - **REMOVED**: 30-second polling intervals for pod readiness checks in `Bind9Instance` operator
+  - **CHANGED**: All operators now use consistent 5-minute requeue intervals, relying on watch events for immediate reconciliation
 
 - `src/reconcilers/zonesync.rs`: **EVENT-DRIVEN** - Updated to reflect event-driven architecture
   - **RENAMED**: `REQUEUE_SYNC_SUCCESS` → `REQUEUE_FOR_HEALTH_CHECK` (60s → 300s)
@@ -5803,11 +5884,11 @@ spec:
   - **FIXED**: Documentation strings to use proper backticks for type references
 
 ### Why
-**CRITICAL**: This implements strict event-driven programming for all Kubernetes controllers, eliminating polling patterns that waste cluster resources.
+**CRITICAL**: This implements strict event-driven programming for all Kubernetes operators, eliminating polling patterns that waste cluster resources.
 
 **Event-Driven vs. Polling:**
-- **Before**: Controllers used 30-60 second polling intervals to check for state changes
-- **After**: Controllers react immediately to Kubernetes watch events via `.watches()` and `.owns()`
+- **Before**: Operators used 30-60 second polling intervals to check for state changes
+- **After**: Operators react immediately to Kubernetes watch events via `.watches()` and `.owns()`
 - **Benefits**: Lower API server load, immediate reconciliation on changes, reduced resource consumption
 
 **Specific Polling Patterns Eliminated:**
@@ -5815,23 +5896,23 @@ spec:
    - **Fix**: Now watches `Bind9Instance.status.selectedZones` and triggers DNSZone reconciliation when it changes
    - **Impact**: Zones sync immediately when instances select them, not after 60-second delay
 
-2. **Pod Readiness Polling (30s)**: Controllers used 30-second requeue intervals to check if pods became ready
-   - **Fix**: Controllers already own/watch the resources that change (Deployments, Services, etc.)
+2. **Pod Readiness Polling (30s)**: Operators used 30-second requeue intervals to check if pods became ready
+   - **Fix**: Operators already own/watch the resources that change (Deployments, Services, etc.)
    - **Impact**: Pod readiness changes trigger immediate reconciliation via existing `.owns()` watches
 
-3. **Consistent Requeue Intervals**: All controllers now use 5-minute intervals for periodic maintenance
+3. **Consistent Requeue Intervals**: All operators now use 5-minute intervals for periodic maintenance
    - **Fix**: Removed conditional requeue logic based on readiness status
    - **Impact**: Simpler code, consistent behavior, trust in watch events for immediate updates
 
 ### Impact
 - [x] Breaking change: **NO** - Only changes internal reconciliation timing, not behavior
-- [x] Requires cluster rollout: **NO** - Controller behavior unchanged, only timing optimized
+- [x] Requires cluster rollout: **NO** - Operator behavior unchanged, only timing optimized
 - [ ] Config change only: NO
 - [ ] Documentation only: NO
 
 ### Architecture Improvements
 **Event-Driven Design Pattern:**
-- All controllers now follow pure event-driven architecture
+- All operators now follow pure event-driven architecture
 - Watch events trigger immediate reconciliation (no polling delays)
 - Requeue intervals only for periodic health checks and maintenance
 - API server load significantly reduced (no wasteful polling)
@@ -5843,7 +5924,7 @@ spec:
 
 ---
 
-## [2026-01-05 04:00] - Phase 3.1: Implement Unit Tests with HTTP Mocking for ZoneSync Controller
+## [2026-01-05 04:00] - Phase 3.1: Implement Unit Tests with HTTP Mocking for ZoneSync Operator
 
 **Author:** Erick Bourgeois
 
@@ -5931,7 +6012,7 @@ sync_zone_to_instance_with_endpoint(...) -> Result<()>
 - **TDD Complete**: Phase 3.1 fulfills Test-Driven Development requirements
 
 ### Impact
-- ZoneSync controller now has complete unit test coverage
+- ZoneSync operator now has complete unit test coverage
 - HTTP mocking enables testing without real bindcar instances
 - Tests verify both success and error paths
 - Drift detection and health check logic validated
@@ -6184,7 +6265,7 @@ This implements Phase 1.3 from `docs/roadmaps/ZONESYNC_NEXT_STEPS.md`:
 ### Impact
 - [x] Breaking change - NO (additive only)
 - [ ] Requires cluster rollout - NO (code change only)
-- [x] Config change only - YES (requires controller pod restart)
+- [x] Config change only - YES (requires operator pod restart)
 - [ ] Documentation only
 
 **Testing:**
@@ -6214,7 +6295,7 @@ This implements Phase 1.3 from `docs/roadmaps/ZONESYNC_NEXT_STEPS.md`:
 
 ### Added
 - `src/context.rs`: **HTTP CLIENT** - Added `http_client: reqwest::Client` field to Context
-  - Shared HTTP client for all controllers to call bindcar API
+  - Shared HTTP client for all operators to call bindcar API
   - Configured with 10-second timeout for zone sync operations
   - Initialized in main.rs during context creation
 - `src/main.rs`: **HTTP CLIENT INITIALIZATION** - Create and configure reqwest::Client
@@ -6249,18 +6330,18 @@ This implements Phase 1.2 from `docs/roadmaps/ZONESYNC_NEXT_STEPS.md`:
 - Error handling and retry logic
 
 **Problem:**
-- ZoneSync controller was non-functional (placeholder implementation)
+- ZoneSync operator was non-functional (placeholder implementation)
 - Zones were NOT actually synced to BIND9
-- Controller logged messages but didn't call bindcar
+- Operator logged messages but didn't call bindcar
 
 **Solution:**
-- HTTP client shared across all controllers via Context
+- HTTP client shared across all operators via Context
 - Endpoint discovery from Kubernetes Service (stable ClusterIP)
 - Full bindcar API integration with proper error handling
 - Event-driven retry on failure (`lastReconciledAt = null`)
 
 **Benefits:**
-1. **Functional Controller**: Zones now actually sync to BIND9 via bindcar
+1. **Functional Operator**: Zones now actually sync to BIND9 via bindcar
 2. **Error Handling**: Sync failures set `error` field and `healthy = false`
 3. **Automatic Retry**: Failed syncs trigger re-reconciliation
 4. **Service Discovery**: No hardcoded IPs, discovers via Kubernetes Service
@@ -6269,7 +6350,7 @@ This implements Phase 1.2 from `docs/roadmaps/ZONESYNC_NEXT_STEPS.md`:
 ### Impact
 - [x] Breaking change - NO (additive only)
 - [ ] Requires cluster rollout - NO (code change only)
-- [x] Config change only - YES (requires controller pod restart)
+- [x] Config change only - YES (requires operator pod restart)
 - [ ] Documentation only
 
 **Testing:**
@@ -6293,7 +6374,7 @@ This implements Phase 1.2 from `docs/roadmaps/ZONESYNC_NEXT_STEPS.md`:
 - `src/crd.rs`: **SCHEMA ENHANCEMENT** - Added roadmap-required fields to `InstanceSyncStatus`
   - **ADDED**: `instance_uid: String` - Immutable Kubernetes UID for instance identification
   - **ADDED**: `last_health_check_at: Option<String>` - Timestamp of last health check
-  - Fields match roadmap specification (bindy-controller-design.md:1102-1119)
+  - Fields match roadmap specification (bindy-operator-design.md:1102-1119)
   - Uses UID instead of name/namespace composite key (prevents rename bugs)
 - `src/reconcilers/zonesync.rs`: **RECONCILE LOGIC UPDATE** - Use UID-based lookups
   - Changed HashMap key from `"{ns}/{name}/{ver}"` to `instance_uid`
@@ -6306,7 +6387,7 @@ This implements Phase 1.2 from `docs/roadmaps/ZONESYNC_NEXT_STEPS.md`:
 ### Why
 
 **Roadmap Compliance:**
-The roadmap specifies `instanceUid` as the primary key for sync status lookups (see `bindy-controller-design.md:1104`):
+The roadmap specifies `instanceUid` as the primary key for sync status lookups (see `bindy-operator-design.md:1104`):
 ```yaml
 syncStatus:
   - instanceUid: inst-123
@@ -6333,7 +6414,7 @@ syncStatus:
 
 ---
 
-## [2026-01-04 23:30] - CRITICAL: Fix ZoneSync Controller Architecture
+## [2026-01-04 23:30] - CRITICAL: Fix ZoneSync Operator Architecture
 
 **Author:** Erick Bourgeois
 
@@ -6343,7 +6424,7 @@ syncStatus:
   - **ADDED**: `InstanceSyncStatus` struct with per-instance sync state (api_version, kind, name, namespace, last_reconciled_at, healthy, error)
   - **ADDED**: `sync_status: Vec<InstanceSyncStatus>` field to `DNSZoneStatus`
   - Sync state now lives on the synced resource (zone), not the syncer (instance)
-- `src/reconcilers/zonesync.rs`: **COMPLETE REWRITE** - Fixed controller architecture
+- `src/reconcilers/zonesync.rs`: **COMPLETE REWRITE** - Fixed operator architecture
   - **PRIMARY RESOURCE**: Changed from `Bind9Instance` to `DNSZone` (CRITICAL!)
   - **WRITES TO**: `zone.status.syncStatus[]` instead of `instance.status.zoneSyncStatus[]`
   - **RECONCILE LOOP**: Iterates through instances that have zone in `selectedZones[]`
@@ -6351,16 +6432,16 @@ syncStatus:
   - **FORCE RE-SYNC**: Set `zone.status.syncStatus[instance].lastReconciledAt = null`
   - Placeholder implementation (bindcar integration deferred to future work)
 - `src/reconcilers/bind9instance.rs`: Removed `zone_sync_status` preservation
-  - Instance controller no longer touches sync status (ZoneSync controller's responsibility)
+  - Instance operator no longer touches sync status (ZoneSync operator's responsibility)
 - `src/reconcilers/dnszone.rs`: Added `sync_status` preservation in 3 status update locations
-  - DNSZone controller preserves ZoneSync controller's status field
+  - DNSZone operator preserves ZoneSync operator's status field
 - `src/main.rs`: **FIXED CONTROLLER SETUP**
-  - ZoneSync controller now watches `DNSZone` (not `Bind9Instance`) as primary resource
+  - ZoneSync operator now watches `DNSZone` (not `Bind9Instance`) as primary resource
   - Changed `reconcile_zonesync_wrapper` to accept `Arc<DNSZone>` (not `Arc<Bind9Instance>`)
   - Fixed metrics to use `KIND_DNS_ZONE` (not `KIND_BIND9_INSTANCE`)
 - `src/reconcilers/zonesync_tests.rs`: Updated test documentation
   - All test comments now reference `zone.status.syncStatus[instance]`
-  - Updated controller architecture description in module documentation
+  - Updated operator architecture description in module documentation
 - Multiple test files: Added `sync_status: vec![]` to all `DNSZoneStatus` instantiations
   - `src/reconcilers/records_tests.rs` (7 occurrences), `src/crd_tests.rs` (1 occurrence)
 - `deploy/crds/*.crd.yaml`: Regenerated all CRD YAML files with corrected schema
@@ -6376,19 +6457,19 @@ The initial implementation (commit 2026-01-04 21:45) had a **fundamental design 
 **Why This Matters:**
 1. **Single Source of Truth**: Sync status for a zone lives on the zone itself, not scattered across instances
 2. **Force Re-sync Pattern**: Setting `zone.status.syncStatus[instance].lastReconciledAt = null` triggers re-sync
-3. **RecordSync Dependency**: RecordSync controller waits for `zone.syncStatus[instance].lastReconciledAt != null`
-4. **Separation of Concerns**: Instance controller manages zone selection, ZoneSync manages zone syncing
+3. **RecordSync Dependency**: RecordSync operator waits for `zone.syncStatus[instance].lastReconciledAt != null`
+4. **Separation of Concerns**: Instance operator manages zone selection, ZoneSync manages zone syncing
 5. **Event-Driven**: Null timestamp = needs sync, non-null = already synced
 
 **Lessons Learned:**
-- Always re-read architecture documentation before implementing controllers
-- Sync state belongs on the synced resource, not the controller resource
-- Primary resource determines what the controller watches and writes to
-- Architecture diagrams in `docs/roadmaps/bindy-controller-design.md` are authoritative
+- Always re-read architecture documentation before implementing operators
+- Sync state belongs on the synced resource, not the operator resource
+- Primary resource determines what the operator watches and writes to
+- Architecture diagrams in `docs/roadmaps/bindy-operator-design.md` are authoritative
 
 **From Architecture Document:**
 ```
-ZoneSync Controller:
+ZoneSync Operator:
   WRITES: zone.status.syncStatus[] (per-instance sync state)
   WRITES: zone.status.conditions[Synced]
   WATCHES: Bind9Instance.status.selectedZones
@@ -6402,7 +6483,7 @@ ZoneSync Controller:
 
 ---
 
-## [2026-01-04 21:45] - Implement ZoneSync Controller (GREEN Phase) - **SUPERSEDED**
+## [2026-01-04 21:45] - Implement ZoneSync Operator (GREEN Phase) - **SUPERSEDED**
 
 **Author:** Erick Bourgeois
 
@@ -6411,8 +6492,8 @@ ZoneSync Controller:
 ### Changed
 - `src/crd.rs`: Added `ZoneSyncStatus` struct and `zone_sync_status` field to `Bind9InstanceStatus`
   - New per-zone sync status tracking: synced, healthy, lastSyncedAt, lastHealthCheckAt, syncError
-  - Preserves separation between zone selection (Instance controller) and zone syncing (ZoneSync controller)
-- `src/reconcilers/zonesync.rs`: Created new ZoneSync controller (442 lines)
+  - Preserves separation between zone selection (Instance operator) and zone syncing (ZoneSync operator)
+- `src/reconcilers/zonesync.rs`: Created new ZoneSync operator (442 lines)
   - Implements `reconcile_zone_sync()` function that syncs zones to BIND9 via bindcar
   - Checks instance Ready status before syncing
   - Syncs zones from `selectedZones` to BIND9 using existing `Bind9Manager` methods
@@ -6422,12 +6503,12 @@ ZoneSync Controller:
   - Implements `load_rndc_key()` to fetch RNDC keys from instance secrets
   - Requeue intervals: 10s (not ready), 60s (success), 30s (error)
 - `src/reconcilers/bind9instance.rs`: Updated to preserve `zone_sync_status` field when updating status
-  - Prevents Instance controller from overwriting ZoneSync controller's status
+  - Prevents Instance operator from overwriting ZoneSync operator's status
 - `src/reconcilers/mod.rs`: Added `zonesync` module and export
-- `src/main.rs`: Added ZoneSync controller to main controller loop
-  - Created `run_zonesync_controller()` and `reconcile_zonesync_wrapper()`
-  - Added controller to `run_all_controllers()` tokio::select! block
-  - Controller watches `Bind9Instance` and `DNSZone` resources
+- `src/main.rs`: Added ZoneSync operator to main operator loop
+  - Created `run_zonesync_operator()` and `reconcile_zonesync_wrapper()`
+  - Added operator to `run_all_operators()` tokio::select! block
+  - Operator watches `Bind9Instance` and `DNSZone` resources
 - `deploy/crds/*.crd.yaml`: Regenerated CRD YAML files with new `zoneSyncStatus` field
 - Multiple test files: Added `zone_sync_status: vec![]` to all `Bind9InstanceStatus` instantiations
   - `src/reconcilers/bind9cluster_tests.rs`, `clusterbind9provider_tests.rs`, `crd_tests.rs`
@@ -6441,10 +6522,10 @@ This is the implementation phase (GREEN) of the Test-Driven Development cycle:
 3. ⏳ **REFACTOR Phase**: Next step - improve code quality
 
 **Architecture Goal:**
-Implements the new controller architecture from `docs/roadmaps/bindy-controller-design.md`:
-- **Instance Controller**: Zone selection only (writes `selectedZones[]`)
-- **ZoneSync Controller**: Zone syncing only (writes `zoneSyncStatus[]`)
-- **Clean Separation**: Each controller has single responsibility
+Implements the new operator architecture from `docs/roadmaps/bindy-operator-design.md`:
+- **Instance Operator**: Zone selection only (writes `selectedZones[]`)
+- **ZoneSync Operator**: Zone syncing only (writes `zoneSyncStatus[]`)
+- **Clean Separation**: Each operator has single responsibility
 
 **Reused Existing Code:**
 As instructed, the `sync_zone_to_bind9()` function reuses existing bindcar HTTP client code:
@@ -6460,7 +6541,7 @@ As instructed, the `sync_zone_to_bind9()` function reuses existing bindcar HTTP 
 
 ### Impact
 
-- **New Controller**: ZoneSync controller now running alongside existing controllers
+- **New Operator**: ZoneSync operator now running alongside existing operators
 - **CRD Changes**: `Bind9InstanceStatus` now has `zoneSyncStatus` field (non-breaking addition)
 - **No Breaking Changes**: Existing functionality preserved, new field defaults to empty array
 - **Verification**: All tests pass (525 passed, 51 ignored including TDD test stubs)
@@ -6469,7 +6550,7 @@ As instructed, the `sync_zone_to_bind9()` function reuses existing bindcar HTTP 
   - Refactor code quality (REFACTOR phase)
   - Update documentation
 
-## [2026-01-04 17:30] - TDD: Add Test Stubs for New Controller Architecture
+## [2026-01-04 17:30] - TDD: Add Test Stubs for New Operator Architecture
 
 **Author:** Erick Bourgeois
 
@@ -6478,7 +6559,7 @@ As instructed, the `sync_zone_to_bind9()` function reuses existing bindcar HTTP 
   - T1.1: `test_instance_selects_zones_by_label()` - Verify instance selects zones by label selector
   - T1.2: `test_instance_no_matching_zones()` - Verify instance handles no matching zones gracefully
   - T1.3: `test_instance_rejects_duplicate_zone_names()` - Verify instance rejects duplicate zone names
-- `src/reconcilers/zonesync_tests.rs`: Created new test file with 6 test stubs for ZoneSync controller
+- `src/reconcilers/zonesync_tests.rs`: Created new test file with 6 test stubs for ZoneSync operator
   - T2.1-T2.5: Zone sync behavior tests (new zone sync, bindcar failure, skip when synced, re-sync on change, skip not ready)
   - T3.1-T3.2: Health check tests (health check passes, zone missing triggers re-sync)
 - `src/reconcilers/dnszone_tests.rs:100-197`: Added 4 T4 test stubs for claimedBy computation
@@ -6498,14 +6579,14 @@ Following Test-Driven Development (TDD) approach mandated by `.claude/CLAUDE.md`
 3. **REFACTOR Phase**: Improve code quality while tests still pass
 
 **Architecture Change:**
-The roadmap (`docs/roadmaps/bindy-controller-design.md`) describes a new architecture separating monolithic controllers into **Selection** and **Sync** layers:
-- **Current**: Instance controller handles both zone selection AND syncing to BIND9
-- **Future**: Instance controller ONLY selects zones, ZoneSync controller syncs to BIND9
+The roadmap (`docs/roadmaps/bindy-operator-design.md`) describes a new architecture separating monolithic operators into **Selection** and **Sync** layers:
+- **Current**: Instance operator handles both zone selection AND syncing to BIND9
+- **Future**: Instance operator ONLY selects zones, ZoneSync operator syncs to BIND9
 - **Benefit**: Clearer separation of concerns, easier testing, better event-driven architecture
 
 **Test Stubs Created:**
-- **T1 (Instance Selection)**: Tests zone selection logic that will remain in Instance controller
-- **T2-T3 (ZoneSync)**: Tests for NEW ZoneSync controller (doesn't exist yet) to sync zones to BIND9
+- **T1 (Instance Selection)**: Tests zone selection logic that will remain in Instance operator
+- **T2-T3 (ZoneSync)**: Tests for NEW ZoneSync operator (doesn't exist yet) to sync zones to BIND9
 - **T4 (DNSZone claimedBy)**: Tests for zone status computation from instance_store
 
 All test stubs marked with `#[ignore]` and panic with "Test not implemented yet - write this test first!" to indicate RED phase.
@@ -6514,7 +6595,7 @@ All test stubs marked with `#[ignore]` and panic with "Test not implemented yet 
 
 - **TDD Workflow**: 14 test stubs ready for implementation (RED phase complete)
 - **No Breaking Changes**: Tests only, no production code modified
-- **Next Steps**: Implement ZoneSync controller and refactor Instance controller to pass tests (GREEN phase)
+- **Next Steps**: Implement ZoneSync operator and refactor Instance operator to pass tests (GREEN phase)
 - **Verification**: All existing tests still pass (525 passed, 44 ignored including new stubs)
 
 ## [2026-01-04 01:55] - Fix Reconciliation Loop: Rate-Limit lastReconciledAt Updates
@@ -6534,7 +6615,7 @@ All test stubs marked with `#[ignore]` and panic with "Test not implemented yet 
 ### Why
 
 **Problem:**
-- Controller was in a tight reconciliation loop, constantly updating timestamps
+- Operator was in a tight reconciliation loop, constantly updating timestamps
 - Every DNSZone reconciliation updated `Bind9Instance.status.selectedZones[].lastReconciledAt`
 - This triggered Bind9Instance watch event → triggered Bind9Cluster reconciliation
 - Logs showed continuous `object.reason=object updated` events every few milliseconds
@@ -6556,7 +6637,7 @@ All test stubs marked with `#[ignore]` and panic with "Test not implemented yet 
 - **API Load:** Eliminates ~99% of unnecessary Bind9Instance status patches in steady state
 - **Watch Events:** Prevents cascading reconciliation loops (DNSZone → Instance → Cluster)
 - **Breaking:** None - timestamps still updated, just less frequently
-- **Requires cluster rollout:** Yes - deploy new controller version
+- **Requires cluster rollout:** Yes - deploy new operator version
 
 ## [2026-01-03 19:00] - Performance Optimization: Bind9Instance Zone Discovery Uses Reflector Store (Step 3)
 
@@ -6665,8 +6746,8 @@ All test stubs marked with `#[ignore]` and panic with "Test not implemented yet 
    - Finds instances whose `zonesFrom` selects the zone
    - Updates `DNSZone.status.instances[]` with status="Claimed"
 3. Watch mapper returns EMPTY Vec (no Bind9Instance reconciliation)
-4. DNSZone controller sees status change and reconciles
-5. DNSZone controller configures zones on claimed instances
+4. DNSZone operator sees status change and reconciles
+5. DNSZone operator configures zones on claimed instances
 6. Updates instance status: Claimed → Configured/Failed
 
 ### Impact
@@ -6767,7 +6848,7 @@ Consolidate into a single source of truth (`instances`) with explicit status tra
 - **Migration**: Automatic - existing DNSZones will show empty `instances` list until next reconciliation
 - **Backwards Compatibility**: Field is optional (uses `skip_serializing_if = "Vec::is_empty"`)
 - **Kubernetes Handles Gracefully**: CRD updates don't break existing resources
-- **No User Action Required**: Controller will populate `instances` automatically on next reconciliation
+- **No User Action Required**: Operator will populate `instances` automatically on next reconciliation
 
 ### Testing
 
@@ -6800,19 +6881,19 @@ Consolidate into a single source of truth (`instances`) with explicit status tra
 
 ### Why
 
-**Bug:** When `zone_exists()` received HTTP 429 (Too Many Requests), it returned `false`, causing the controller to incorrectly conclude the zone doesn't exist and attempt to create it. This led to cascading failures:
+**Bug:** When `zone_exists()` received HTTP 429 (Too Many Requests), it returned `false`, causing the operator to incorrectly conclude the zone doesn't exist and attempt to create it. This led to cascading failures:
 
 1. Rate limiting triggered → `zone_exists()` returns `false`
-2. Controller thinks zone doesn't exist
-3. Controller attempts to create zone
+2. Operator thinks zone doesn't exist
+3. Operator attempts to create zone
 4. Creation fails (zone already exists OR still rate limited)
 5. Error propagates up, reconciliation fails
 
 **Example Error Log:**
 ```
-2026-01-03T20:25:43.125910Z ERROR bindy-controller reconciling object: src/bind9/zone_ops.rs:97: HTTP API request failed method=GET url=http://10.244.3.107:8080/api/v1/zones/example.com/status status=429 Too Many Requests error=Too Many Requests! Wait for 0s
-2026-01-03T20:25:43.125914Z DEBUG bindy-controller reconciling object: src/bind9/zone_ops.rs:281: Zone example.com does not exist on 10.244.3.107:8080: Failed to get zone status
-2026-01-03T20:25:43.125919Z ERROR bindy-controller reconciling object: src/reconcilers/dnszone.rs:1462: Failed to add zone example.com to endpoint 10.244.3.107:8080 (instance dns-system/production-dns-primary-0): Failed to add zone
+2026-01-03T20:25:43.125910Z ERROR bindy-operator reconciling object: src/bind9/zone_ops.rs:97: HTTP API request failed method=GET url=http://10.244.3.107:8080/api/v1/zones/example.com/status status=429 Too Many Requests error=Too Many Requests! Wait for 0s
+2026-01-03T20:25:43.125914Z DEBUG bindy-operator reconciling object: src/bind9/zone_ops.rs:281: Zone example.com does not exist on 10.244.3.107:8080: Failed to get zone status
+2026-01-03T20:25:43.125919Z ERROR bindy-operator reconciling object: src/reconcilers/dnszone.rs:1462: Failed to add zone example.com to endpoint 10.244.3.107:8080 (instance dns-system/production-dns-primary-0): Failed to add zone
 ```
 
 **Root Cause:**
@@ -6831,7 +6912,7 @@ Consolidate into a single source of truth (`instances`) with explicit status tra
 
 ### Impact
 - [ ] Breaking change
-- [x] Requires cluster rollout (controller deployment restart)
+- [x] Requires cluster rollout (operator deployment restart)
 - [ ] Config change only
 - [ ] Documentation only
 
@@ -6843,7 +6924,7 @@ Consolidate into a single source of truth (`instances`) with explicit status tra
 
 **Error Handling:**
 - Transient errors (rate limiting, network, 5xx) now trigger reconciliation retry with exponential backoff
-- This aligns with Kubernetes controller best practices: fail fast, let the framework retry
+- This aligns with Kubernetes operator best practices: fail fast, let the framework retry
 
 ### Testing
 - Code compiles successfully (`cargo clippy` - no warnings)
@@ -6856,11 +6937,11 @@ Consolidate into a single source of truth (`instances`) with explicit status tra
 ### Related
 - Fixes rate limiting bug discovered during high-load testing
 - Improves error handling for all transient HTTP errors
-- Aligns with Kubernetes controller retry/backoff patterns
+- Aligns with Kubernetes operator retry/backoff patterns
 
 ---
 
-## [2026-01-03 17:30] - CRITICAL FIX: Bind9Instance Controller - Predicate-Based Watch Filtering to Prevent Reconciliation Storms
+## [2026-01-03 17:30] - CRITICAL FIX: Bind9Instance Operator - Predicate-Based Watch Filtering to Prevent Reconciliation Storms
 
 **Author:** Erick Bourgeois
 
@@ -6870,22 +6951,22 @@ Consolidate into a single source of truth (`instances`) with explicit status tra
 - `src/main.rs` (line 874): Use `generation_watcher_config()` for DNSZone watch to only trigger on metadata/spec changes
 
 ### Why
-The Bind9Instance controller was being reconciled excessively due to:
+The Bind9Instance operator was being reconciled excessively due to:
 1. **Status update feedback loop**: Every status update triggered a new reconciliation
 2. **Circular watch reference**: DNSZone and Bind9Instance watching each other created cascading reconciliations
 3. **Unnecessary reconciliations**: Reconciling on every DNSZone status update instead of just label changes
 
 **Root Cause:**
-The Bind9Instance controller watches DNSZones to detect when a zone's labels match the instance's `zonesFrom` selector. However, using `default_watcher_config()` caused reconciliation on EVERY DNSZone change (status, spec, metadata), when we only care about label changes (which happen on metadata/spec updates, not status).
+The Bind9Instance operator watches DNSZones to detect when a zone's labels match the instance's `zonesFrom` selector. However, using `default_watcher_config()` caused reconciliation on EVERY DNSZone change (status, spec, metadata), when we only care about label changes (which happen on metadata/spec updates, not status).
 
 **Solution:**
 - Use `semantic_watcher_config()` for the main Bind9Instance watch (filters out status-only updates)
 - Use `generation_watcher_config()` for the DNSZone watch (filters out status-only updates)
-- This prevents circular references between controllers while maintaining event-driven behavior
+- This prevents circular references between operators while maintaining event-driven behavior
 
 ### Impact
 - [ ] Breaking change
-- [x] Requires cluster rollout (controller deployment restart)
+- [x] Requires cluster rollout (operator deployment restart)
 - [ ] Config change only
 - [ ] Documentation only
 
@@ -6896,7 +6977,7 @@ The Bind9Instance controller watches DNSZones to detect when a zone's labels mat
   - Owned resources change (Deployment, Service, etc.)
   - DNSZone labels/spec change (generation filter)
 - DNSZone status updates NO LONGER trigger Bind9Instance reconciliations
-- Prevents circular reference between Bind9Instance and DNSZone controllers
+- Prevents circular reference between Bind9Instance and DNSZone operators
 
 **Behavior:**
 - Zone discovery still event-driven (immediate when DNSZone labels change)
@@ -6971,7 +7052,7 @@ Bind9Instance reconciler was constantly resetting zone timestamps from `Some→N
 **Evidence from logs:**
 ```
 [INFO] Zone timestamp reset (Some → None), triggering reconciliation (pod restart detected)
-[INFO] Bind9Instance has zones needing reconciliation, triggering DNSZone controller zone_count=2
+[INFO] Bind9Instance has zones needing reconciliation, triggering DNSZone operator zone_count=2
 [INFO] Reconciling Bind9Instance: dns-system/production-dns-primary-0 object.reason=object updated
 ```
 
@@ -7001,7 +7082,7 @@ Bind9Instance reconciler was constantly resetting zone timestamps from `Some→N
    ```
 
    **Why this is correct:**
-   - Deployment controller (`.owns()`) triggers reconciliation when Deployment changes
+   - Deployment operator (`.owns()`) triggers reconciliation when Deployment changes
    - If Deployment is missing, pods will be recreated with new IPs → zones need reconfiguration
    - The deduplication (below) prevents false triggers from status-only updates
    - This handles pod restarts, scaling, and drift
@@ -7047,7 +7128,7 @@ Bind9Instance reconciler was constantly resetting zone timestamps from `Some→N
 - For now, manually delete the Bind9Instance to trigger full reconfiguration if needed
 
 ### Validation
-- Changes align with Kubernetes controller best practices (only reconcile on spec changes)
+- Changes align with Kubernetes operator best practices (only reconcile on spec changes)
 - Reduces reconciliation storm documented in `docs/roadmaps/fix-dnszone-reconciliation-storm.md`
 
 ---
@@ -7315,7 +7396,7 @@ Part of Context pattern refactoring (Phase 2 of 6) to ensure all reconcilers use
 - `src/main.rs`: Added watch mappers for all 8 record types
   - Added DNSZone watch mappers to trigger record reconciliation when `lastReconciledAt == None`
   - Created `map_dnszone_to_arecords()` and 7 similar functions for other record types
-  - Controllers now react to DNSZone status changes event-driven instead of polling
+  - Operators now react to DNSZone status changes event-driven instead of polling
 - Test files: Updated all test code to use new schema
   - `src/crd_tests.rs`: Updated `DNSZoneStatus` initializers and assertions
   - `src/reconcilers/records_tests.rs`: Converted tests to use `RecordReferenceWithTimestamp`
@@ -7327,7 +7408,7 @@ Part of Context pattern refactoring (Phase 2 of 6) to ensure all reconcilers use
 
 **Problem:**
 - DNSZone reconciler discovers records via label selectors and sets `status.records[]`
-- Record controller watches `zoneRef` changes and reconciles
+- Record operator watches `zoneRef` changes and reconciles
 - **No timestamp tracking** - records reconcile on EVERY DNSZone status change
 - This causes redundant BIND9 API calls for already-configured records
 - Same inefficiency pattern that was fixed for zones → instances in Phase 2
@@ -7335,12 +7416,12 @@ Part of Context pattern refactoring (Phase 2 of 6) to ensure all reconcilers use
 **Solution (Event-Driven Pattern):**
 1. DNSZone reconciler sets `status.selectedRecords[{name: "www-a", lastReconciledAt: None}]`
 2. DNSZone watch mapper triggers record reconciliation when `lastReconciledAt == None`
-3. Record controller reconciles and calls `update_record_reconciled_timestamp()`
+3. Record operator reconciles and calls `update_record_reconciled_timestamp()`
 4. Timestamp is set to current time: `lastReconciledAt = Some(timestamp)`
 5. Future DNSZone status changes do NOT trigger record reconciliation (timestamp is set)
 6. Record only re-reconciles when:
    - DNSZone resets timestamp (spec change, zone recreated)
-   - Record spec changes (triggers record controller directly)
+   - Record spec changes (triggers record operator directly)
    - Record labels change (may trigger zone re-evaluation)
 
 **Schema Cleanup:**
@@ -7473,7 +7554,7 @@ Part of Context pattern refactoring (Phase 2 of 6) to ensure all reconcilers use
 **CRITICAL BUG FIX**: Phase 2 architecture was incomplete - missing the mechanism to signal successful zone configuration, causing infinite reconciliation loops.
 
 **Root Cause:**
-- `Bind9Instance` controller sets `status.selectedZones[].lastReconciledAt = None` when selecting zones
+- `Bind9Instance` operator sets `status.selectedZones[].lastReconciledAt = None` when selecting zones
 - `DNSZone` watch mapper triggers reconciliation when `lastReconciledAt == None`
 - **Missing step**: DNSZone never updated the timestamp after successful configuration
 - Result: Every `Bind9Instance` status change triggered DNSZone reconciliation, causing repeated "already exists" errors
@@ -7609,8 +7690,8 @@ Part of Context pattern refactoring (Phase 2 of 6) to ensure all reconcilers use
   - Uses `map_or()` instead of `map().unwrap_or()` for clippy compliance
 - `src/main.rs`: Changed all record wrapper signatures from `Arc<(Client, Arc<Bind9Manager>)>` to `Arc<(Arc<Context>, Arc<Bind9Manager>)>`:
   - Provides access to reflector stores through `context.stores.bind9_instances`
-  - All 8 record controllers updated
-  - DNSZone controller updated
+  - All 8 record operators updated
+  - DNSZone operator updated
 - `src/reconcilers/bind9instance.rs:1108-1115`: Removed check for `spec.bind9Instances` when discovering zones via label selectors
 - `tests/multi_tenancy_integration.rs`: Removed `bind9_instances: vec![]` from test zone specs
 - `tests/simple_integration.rs`: Removed `bind9_instances: vec![]` from test zone specs
@@ -7626,7 +7707,7 @@ Part of Context pattern refactoring (Phase 2 of 6) to ensure all reconcilers use
 
 **Store-Based Benefits:**
 1. **Performance**: O(1) in-memory lookups vs O(n) API calls
-2. **No API Overhead**: Reflector stores maintained by controller runtime
+2. **No API Overhead**: Reflector stores maintained by operator runtime
 3. **Eventually Consistent**: Watches ensure stores stay synchronized
 4. **Simpler Code**: No client parameter passing, just store references
 
@@ -7680,7 +7761,7 @@ Part of Context pattern refactoring (Phase 2 of 6) to ensure all reconcilers use
 - `lastReconciledAt` field signals when zones need configuration:
   - `None` = zone needs to be configured/reconfigured on this instance
   - `Some(timestamp)` = zone successfully configured, no action needed
-- DNSZone controller (Phase 2) will watch Bind9Instance and reconcile only when `lastReconciledAt == None`
+- DNSZone operator (Phase 2) will watch Bind9Instance and reconcile only when `lastReconciledAt == None`
 - Pod restarts and spec changes automatically reset timestamps to trigger reconfiguration
 
 **Benefits:**
@@ -7696,26 +7777,26 @@ Part of Context pattern refactoring (Phase 2 of 6) to ensure all reconcilers use
 - [x] Pod restarts and spec changes trigger zone reconfiguration via timestamp reset
 - [x] All 525 library tests passing
 - [x] Non-breaking change (DNSZone.status.bind9Instances[] field preserved but unused)
-- [ ] **Phase 2 Required**: DNSZone controller needs update to watch Bind9Instance.status.selectedZones[]
+- [ ] **Phase 2 Required**: DNSZone operator needs update to watch Bind9Instance.status.selectedZones[]
 
 **Next Steps (Phase 2):**
-1. Update DNSZone controller to watch Bind9Instance with smart mapper
+1. Update DNSZone operator to watch Bind9Instance with smart mapper
 2. Filter reconciliations based on `last_reconciled_at == None`
 3. Update `Bind9Instance.status.selectedZones[].lastReconciledAt` after successful configuration
 4. Remove dependency on `DNSZone.status.bind9Instances[]`
 
 ---
 
-## [2026-01-03 02:45] - CRITICAL FIX: DNSZone Controller Reconciliation Loop
+## [2026-01-03 02:45] - CRITICAL FIX: DNSZone Operator Reconciliation Loop
 
 **Author:** Claude Sonnet 4.5
 
 ### Changed
-- `src/main.rs:710`: DNSZone controller now watches Bind9Instance with `semantic_watcher_config()` instead of `default_watcher_config()`
+- `src/main.rs:710`: DNSZone operator now watches Bind9Instance with `semantic_watcher_config()` instead of `default_watcher_config()`
 - Updated watch mapper comment to clarify semantic watching behavior
 
 ### Why
-**CRITICAL BUG**: The DNSZone controller was causing a reconciliation storm by watching Bind9Instance with `default_watcher_config()`, which triggers on EVERY change including status updates.
+**CRITICAL BUG**: The DNSZone operator was causing a reconciliation storm by watching Bind9Instance with `default_watcher_config()`, which triggers on EVERY change including status updates.
 
 **Reconciliation Loop**:
 1. DNSZone reconciles → updates DNSZone status
@@ -7745,12 +7826,12 @@ Part of Context pattern refactoring (Phase 2 of 6) to ensure all reconcilers use
 
 ---
 
-## [2026-01-03 02:30] - FIX: Bind9Instance Controller Now Owns All Created Resources
+## [2026-01-03 02:30] - FIX: Bind9Instance Operator Now Owns All Created Resources
 
 **Author:** Claude Sonnet 4.5
 
 ### Changed
-- `src/main.rs`: Updated `run_bind9instance_controller()` to `.owns()` all 5 resources it creates
+- `src/main.rs`: Updated `run_bind9instance_operator()` to `.owns()` all 5 resources it creates
   - Added `.owns()` for ServiceAccount
   - Added `.owns()` for Secret (RNDC)
   - Added `.owns()` for ConfigMap
@@ -7759,10 +7840,10 @@ Part of Context pattern refactoring (Phase 2 of 6) to ensure all reconcilers use
 - Added imports for `k8s_openapi::api::core::v1::{ConfigMap, Secret, Service, ServiceAccount}`
 
 ### Why
-The Bind9Instance controller creates 5 Kubernetes resources (ServiceAccount, Secret, ConfigMap, Deployment, Service) but only owned the Deployment. This meant changes/deletions to the other 4 resources wouldn't automatically trigger reconciliation, potentially causing drift between expected and actual state.
+The Bind9Instance operator creates 5 Kubernetes resources (ServiceAccount, Secret, ConfigMap, Deployment, Service) but only owned the Deployment. This meant changes/deletions to the other 4 resources wouldn't automatically trigger reconciliation, potentially causing drift between expected and actual state.
 
 **Event-Driven Best Practice:**
-Controllers MUST own all resources they create to ensure automatic reconciliation when child resources change. Without ownership relationships, the controller won't react to modifications or deletions of its managed resources.
+Operators MUST own all resources they create to ensure automatic reconciliation when child resources change. Without ownership relationships, the operator won't react to modifications or deletions of its managed resources.
 
 ### Impact
 - [x] Non-breaking change
@@ -7794,9 +7875,9 @@ Controllers MUST own all resources they create to ensure automatic reconciliatio
 
 2. **Auto-Generated Keys with Secret Backup (Self-Healing for Dev/Test)**:
    - BIND9 generates keys automatically
-   - Controller exports keys to Kubernetes Secrets for backup
+   - Operator exports keys to Kubernetes Secrets for backup
    - Pod restart: Keys restored from Secret
-   - Secret deleted: BIND9 regenerates, controller exports new keys
+   - Secret deleted: BIND9 regenerates, operator exports new keys
    - **Self-healing**: Zone becomes functional again after DS update
    - Perfect for development/testing environments
 
@@ -7869,68 +7950,68 @@ Currently, bindy only supports DNSSEC validation (verifying signatures from upst
 
 ---
 
-## [2026-01-03 02:00] - ARCHITECTURE: Phase 5 - Record Controllers Refactored (Roadmap Complete!)
+## [2026-01-03 02:00] - ARCHITECTURE: Phase 5 - Record Operators Refactored (Roadmap Complete!)
 
 **Author:** Claude Sonnet 4.5
 
 ### Changed
-- `src/main.rs`: Refactored all 8 record type controllers to use `Arc<Context>` instead of `Client`
-  - `run_arecord_controller()` - Now accepts `Arc<Context>`
-  - `run_aaaarecord_controller()` - Now accepts `Arc<Context>`
-  - `run_cnamerecord_controller()` - Now accepts `Arc<Context>`
-  - `run_txtrecord_controller()` - Now accepts `Arc<Context>`
-  - `run_mxrecord_controller()` - Now accepts `Arc<Context>`
-  - `run_nsrecord_controller()` - Now accepts `Arc<Context>`
-  - `run_srvrecord_controller()` - Now accepts `Arc<Context>`
-  - `run_caarecord_controller()` - Now accepts `Arc<Context>`
-- `src/main.rs`: Updated `run_all_controllers()` to pass `context` to all 8 record controllers
-- `src/main.rs`: Removed unused `client` variable from `run_all_controllers()`
+- `src/main.rs`: Refactored all 8 record type operators to use `Arc<Context>` instead of `Client`
+  - `run_arecord_operator()` - Now accepts `Arc<Context>`
+  - `run_aaaarecord_operator()` - Now accepts `Arc<Context>`
+  - `run_cnamerecord_operator()` - Now accepts `Arc<Context>`
+  - `run_txtrecord_operator()` - Now accepts `Arc<Context>`
+  - `run_mxrecord_operator()` - Now accepts `Arc<Context>`
+  - `run_nsrecord_operator()` - Now accepts `Arc<Context>`
+  - `run_srvrecord_operator()` - Now accepts `Arc<Context>`
+  - `run_caarecord_operator()` - Now accepts `Arc<Context>`
+- `src/main.rs`: Updated `run_all_operators()` to pass `context` to all 8 record operators
+- `src/main.rs`: Removed unused `client` variable from `run_all_operators()`
 
 ### Why
 
-This implements **Phase 5 (Final Phase)** of the bindy controller refactor roadmap. The goal is to ensure all controllers follow the same consistent pattern with shared context access.
+This implements **Phase 5 (Final Phase)** of the bindy operator refactor roadmap. The goal is to ensure all operators follow the same consistent pattern with shared context access.
 
 **Key Changes:**
 
-1. **Consistent Controller Pattern**:
-   - **Before**: Record controllers accepted `(Client, Arc<Bind9Manager>)`
-   - **After**: Record controllers accept `Arc<Context>` and extract client from it
-   - **Benefit**: All 13 controllers now follow the exact same signature pattern
-   - **Consistency**: Cluster, Instance, Zone, and all 8 Record controllers unified
+1. **Consistent Operator Pattern**:
+   - **Before**: Record operators accepted `(Client, Arc<Bind9Manager>)`
+   - **After**: Record operators accept `Arc<Context>` and extract client from it
+   - **Benefit**: All 13 operators now follow the exact same signature pattern
+   - **Consistency**: Cluster, Instance, Zone, and all 8 Record operators unified
 
 2. **Foundation for Future Enhancements**:
-   - Record controllers can now access shared reflector stores (though not currently used)
+   - Record operators can now access shared reflector stores (though not currently used)
    - Enables future optimization: record reconcilers can query zones from store instead of API
    - Provides access to metrics registry for observability
-   - Consistent architecture makes it easier to add new controller types
+   - Consistent architecture makes it easier to add new operator types
 
 3. **Roadmap Complete**:
    - ✅ Phase 1: Shared context infrastructure with reflector stores
-   - ✅ Phase 2: ClusterBind9Provider and Bind9Cluster controllers refactored
-   - ✅ Phase 3: Bind9Instance controller with store-based watch
-   - ✅ Phase 4: DNSZone controller with store-based record watches
-   - ✅ **Phase 5: All 8 record controllers refactored (COMPLETE!)**
+   - ✅ Phase 2: ClusterBind9Provider and Bind9Cluster operators refactored
+   - ✅ Phase 3: Bind9Instance operator with store-based watch
+   - ✅ Phase 4: DNSZone operator with store-based record watches
+   - ✅ **Phase 5: All 8 record operators refactored (COMPLETE!)**
 
 **Architecture Achievement:**
-All 13 controllers now use the **Shared Reflector Store Pattern**:
+All 13 operators now use the **Shared Reflector Store Pattern**:
 ```rust
-// Consistent signature across ALL controllers
-async fn run_<controller>_controller(
+// Consistent signature across ALL operators
+async fn run_<operator>_operator(
     context: Arc<Context>,
     bind9_manager: Arc<Bind9Manager>,
 ) -> Result<()>
 ```
 
 **Benefits:**
-- ✅ Unified controller architecture across entire codebase
-- ✅ All controllers have access to shared reflector stores
-- ✅ All controllers can use in-memory lookups (enabled in watch mappers in Phases 3-4)
+- ✅ Unified operator architecture across entire codebase
+- ✅ All operators have access to shared reflector stores
+- ✅ All operators can use in-memory lookups (enabled in watch mappers in Phases 3-4)
 - ✅ Consistent pattern simplifies maintenance and future development
 - ✅ Foundation laid for optimizing record reconcilers with store-based queries
 - ✅ **Roadmap Complete** - All 5 phases implemented successfully
 
 **Future Optimization Opportunities:**
-- Pass `Arc<Context>` to reconcile functions (not just controller runners)
+- Pass `Arc<Context>` to reconcile functions (not just operator runners)
 - Enable record reconcilers to query zones from `ctx.stores.dnszones` instead of API
 - Add metrics for store query performance
 - Implement caching strategies for frequently accessed resources
@@ -7943,18 +8024,18 @@ async fn run_<controller>_controller(
 
 ---
 
-## [2026-01-03 01:00] - ARCHITECTURE: Phase 4 - DNSZone Controller with Store-Based Record Watches
+## [2026-01-03 01:00] - ARCHITECTURE: Phase 4 - DNSZone Operator with Store-Based Record Watches
 
 **Author:** Claude Sonnet 4.5
 
 ### Changed
-- `src/main.rs`: Refactored `run_dnszone_controller()` to use `Arc<Context>` instead of `Client`
-  - Controller now receives shared context with access to all stores
-  - **CRITICAL**: Eliminated controller's built-in store for DNSZones - uses shared `ctx.stores.dnszones` instead
+- `src/main.rs`: Refactored `run_dnszone_operator()` to use `Arc<Context>` instead of `Client`
+  - Operator now receives shared context with access to all stores
+  - **CRITICAL**: Eliminated operator's built-in store for DNSZones - uses shared `ctx.stores.dnszones` instead
   - All 8 record type watch mappers now use `ctx.stores.dnszones_selecting_record()` for reverse lookup
   - Bind9Instance watch mapper uses shared `ctx.stores.dnszones` for in-memory lookups
   - Record watch mappers are 100% event-driven with O(n) in-memory lookups
-- `src/main.rs`: Updated `run_all_controllers()` to pass context to `run_dnszone_controller()`
+- `src/main.rs`: Updated `run_all_operators()` to pass context to `run_dnszone_operator()`
 - `src/selector_tests.rs`: Fixed clippy warning for inefficient `to_string()` on `&&str`
 - `src/http_errors_tests.rs`: Fixed clippy warning for underscore-prefixed variable binding
 - `src/bind9_resources_tests.rs`: Fixed clippy warning for wildcard matches in IntOrString
@@ -7964,14 +8045,14 @@ async fn run_<controller>_controller(
 
 ### Why
 
-This implements **Phase 4** of the bindy controller refactor roadmap. The goal is to make the DNSZone controller's record watches 100% event-driven using shared reflector stores.
+This implements **Phase 4** of the bindy operator refactor roadmap. The goal is to make the DNSZone operator's record watches 100% event-driven using shared reflector stores.
 
 **Key Changes:**
 
 1. **Store-Based Watch Mappers**:
-   - **Before**: Used controller's built-in `zone_store` cloned 9 times for watch mappers
+   - **Before**: Used operator's built-in `zone_store` cloned 9 times for watch mappers
    - **After**: Uses shared `ctx.stores.dnszones` and `ctx.stores.dnszones_selecting_record()` from Phase 1
-   - **Benefit**: All controllers share the same DNSZone reflector (no duplicate watches)
+   - **Benefit**: All operators share the same DNSZone reflector (no duplicate watches)
    - **Pattern**: "Reverse lookup" - given a record, find DNSZones whose `recordsFrom` selects it
 
 2. **Event-Driven Record Discovery**:
@@ -7989,11 +8070,11 @@ This implements **Phase 4** of the bindy controller refactor roadmap. The goal i
 
 **Benefits:**
 - ✅ Record label changes immediately trigger zone reconciliation
-- ✅ No duplicate DNSZone watches - all controllers share one reflector
+- ✅ No duplicate DNSZone watches - all operators share one reflector
 - ✅ Watch mappers use in-memory O(n) lookup instead of API queries
-- ✅ Bind9Instance watch mapper also uses shared store (was using controller-local store)
+- ✅ Bind9Instance watch mapper also uses shared store (was using operator-local store)
 - ✅ All 9 watch mappers (1 instance + 8 record types) are event-driven
-- ✅ Phase 4 complete - all controllers now use shared reflector store pattern
+- ✅ Phase 4 complete - all operators now use shared reflector store pattern
 
 **Architecture Pattern Established:**
 ```rust
@@ -8018,30 +8099,30 @@ ctx.stores.dnszones_selecting_record(record_labels, namespace)
 
 ---
 
-## [2026-01-03 00:00] - ARCHITECTURE: Phase 3 - Bind9Instance Controller with Store-Based Watch
+## [2026-01-03 00:00] - ARCHITECTURE: Phase 3 - Bind9Instance Operator with Store-Based Watch
 
 **Author:** Claude Sonnet 4.5
 
 ### Changed
-- `src/main.rs`: Refactored `run_bind9instance_controller()` to use `Arc<Context>` instead of `Client`
-  - Controller now receives shared context with access to all stores
+- `src/main.rs`: Refactored `run_bind9instance_operator()` to use `Arc<Context>` instead of `Client`
+  - Operator now receives shared context with access to all stores
   - **CRITICAL**: Watch mapper now uses `ctx.stores.bind9instances_selecting_zone()` for reverse lookup
-  - Eliminated controller's built-in store - uses shared reflector stores instead
+  - Eliminated operator's built-in store - uses shared reflector stores instead
   - DNSZone watch mapper is 100% event-driven with O(n) in-memory lookups
 - `src/main.rs`: Updated `reconcile_bind9instance_wrapper()` to accept `Arc<Context>` instead of `Arc<Client>`
   - Reconcile wrapper extracts client from context for backward compatibility
-- `src/main.rs`: Updated `run_all_controllers()` to pass context to `run_bind9instance_controller()`
+- `src/main.rs`: Updated `run_all_operators()` to pass context to `run_bind9instance_operator()`
 
 ### Why
 
-This implements **Phase 3** of the bindy controller refactor roadmap. The goal is to make the Bind9Instance controller's DNSZone watch 100% event-driven using shared reflector stores.
+This implements **Phase 3** of the bindy operator refactor roadmap. The goal is to make the Bind9Instance operator's DNSZone watch 100% event-driven using shared reflector stores.
 
 **Key Changes:**
 
 1. **Store-Based Watch Mapper**:
-   - **Before**: Used controller's built-in store created by `.watches()`
+   - **Before**: Used operator's built-in store created by `.watches()`
    - **After**: Uses shared `ctx.stores.bind9instances_selecting_zone()` from Phase 1
-   - **Benefit**: All controllers share the same Bind9Instance reflector (no duplicate watches)
+   - **Benefit**: All operators share the same Bind9Instance reflector (no duplicate watches)
    - **Pattern**: "Reverse lookup" - given a DNSZone, find Bind9Instances whose `zonesFrom` selects it
 
 2. **Event-Driven Zone Discovery**:
@@ -8057,12 +8138,12 @@ This implements **Phase 3** of the bindy controller refactor roadmap. The goal i
 
 **Benefits:**
 - ✅ DNSZone label changes immediately trigger instance reconciliation
-- ✅ No duplicate Bind9Instance watches - all controllers share one reflector
-- ✅ Watch mapper uses in-memory O(n) lookup instead of controller-local store
-- ✅ Foundation for Phase 4 (DNSZone controller) to use same pattern
+- ✅ No duplicate Bind9Instance watches - all operators share one reflector
+- ✅ Watch mapper uses in-memory O(n) lookup instead of operator-local store
+- ✅ Foundation for Phase 4 (DNSZone operator) to use same pattern
 
 **Next Steps (Phase 4):**
-- Refactor DNSZone controller to use shared context
+- Refactor DNSZone operator to use shared context
 - Implement watch mappers for Bind9Instance and all 8 record types using stores
 - Use `ctx.stores.dnszones_selecting_record()` for record-to-zone reverse lookups
 
@@ -8074,7 +8155,7 @@ This implements **Phase 3** of the bindy controller refactor roadmap. The goal i
 
 ---
 
-## [2026-01-02 23:30] - ARCHITECTURE: Phase 2 - ClusterBind9Provider & Bind9Cluster Controllers
+## [2026-01-02 23:30] - ARCHITECTURE: Phase 2 - ClusterBind9Provider & Bind9Cluster Operators
 
 **Author:** Claude Sonnet 4.5
 
@@ -8085,44 +8166,44 @@ This implements **Phase 3** of the bindy controller refactor roadmap. The goal i
   - Reflectors continuously watch and update stores in background
 
 ### Changed
-- `src/main.rs`: Refactored `run_bind9cluster_controller()` and `run_clusterbind9provider_controller()` to use `Arc<Context>`
-  - Controllers now receive shared context instead of just `Client`
+- `src/main.rs`: Refactored `run_bind9cluster_operator()` and `run_clusterbind9provider_operator()` to use `Arc<Context>`
+  - Operators now receive shared context instead of just `Client`
   - Reconcile wrappers extract client from context: `ctx.client.clone()`
-  - Controller initialization updated to pass `Arc<Context>` to run functions
-- `src/main.rs`: Updated `async_main()` to initialize shared context before starting controllers
-- `src/main.rs`: Updated `run_all_controllers()` signature to accept `Arc<Context>` instead of `Client`
-- `src/main.rs`: Updated `run_controllers_with_leader_election()` and `run_controllers_without_leader_election()` to pass context to controllers
+  - Operator initialization updated to pass `Arc<Context>` to run functions
+- `src/main.rs`: Updated `async_main()` to initialize shared context before starting operators
+- `src/main.rs`: Updated `run_all_operators()` signature to accept `Arc<Context>` instead of `Client`
+- `src/main.rs`: Updated `run_operators_with_leader_election()` and `run_operators_without_leader_election()` to pass context to operators
 
 ### Why
 
-This implements **Phase 2** of the bindy controller refactor roadmap. The goal is to integrate the shared reflector stores created in Phase 1 with the ClusterBind9Provider and Bind9Cluster controllers.
+This implements **Phase 2** of the bindy operator refactor roadmap. The goal is to integrate the shared reflector stores created in Phase 1 with the ClusterBind9Provider and Bind9Cluster operators.
 
 **Key Changes:**
 
 1. **Reflector Initialization**:
    - All 12 reflectors (ClusterBind9Provider, Bind9Cluster, Bind9Instance, DNSZone, 8 record types) are started as background tasks
    - Each reflector watches its resource type and updates its corresponding store
-   - Stores are available immediately for controller use (populated asynchronously)
+   - Stores are available immediately for operator use (populated asynchronously)
 
 2. **Shared Context Pattern**:
-   - Controllers now receive `Arc<Context>` containing client, stores, and metrics
+   - Operators now receive `Arc<Context>` containing client, stores, and metrics
    - This enables future phases to use stores for label-based queries
    - Maintains backward compatibility by extracting client from context for reconcile functions
 
-3. **Controller Refactoring**:
-   - `run_bind9cluster_controller()`: Now uses `Arc<Context>`, passes it to reconcile wrapper
-   - `run_clusterbind9provider_controller()`: Now uses `Arc<Context>`, passes it to reconcile wrapper
+3. **Operator Refactoring**:
+   - `run_bind9cluster_operator()`: Now uses `Arc<Context>`, passes it to reconcile wrapper
+   - `run_clusterbind9provider_operator()`: Now uses `Arc<Context>`, passes it to reconcile wrapper
    - Reconcile wrappers: Updated signatures to accept `Arc<Context>` instead of `Arc<Client>`
 
 **Benefits:**
 - ✅ All reflectors running in background, populating stores
-- ✅ Controllers have access to shared context for future phases
-- ✅ No behavior change - controllers still use client for API calls
+- ✅ Operators have access to shared context for future phases
+- ✅ No behavior change - operators still use client for API calls
 - ✅ Foundation for Phase 3-5 to replace API queries with store lookups
 
 **Next Steps (Phase 3):**
-- Refactor Bind9Instance controller watch mapper to use stores instead of controller's built-in store
-- Update DNSZone controller to use stores for finding related resources
+- Refactor Bind9Instance operator watch mapper to use stores instead of operator's built-in store
+- Update DNSZone operator to use stores for finding related resources
 - Replace remaining API queries with store lookups
 
 ### Impact
@@ -8148,7 +8229,7 @@ This implements **Phase 2** of the bindy controller refactor roadmap. The goal i
 
 ### Why
 
-This implements **Phase 1** of the bindy controller refactor roadmap (see `docs/roadmaps/bindy-controller-refactor-roadmap.md`). The goal is to establish a shared reflector store pattern that enables efficient, event-driven resource discovery without API queries in watch mappers.
+This implements **Phase 1** of the bindy operator refactor roadmap (see `docs/roadmaps/bindy-operator-refactor-roadmap.md`). The goal is to establish a shared reflector store pattern that enables efficient, event-driven resource discovery without API queries in watch mappers.
 
 **Key Components:**
 
@@ -8179,16 +8260,16 @@ This implements **Phase 1** of the bindy controller refactor roadmap (see `docs/
 - ✅ Efficient label-based resource selection
 - ✅ Namespace-isolated queries for security
 - ✅ Type-safe record type handling with `RecordRef` enum
-- ✅ Foundation for Phase 2-5 controller refactoring
+- ✅ Foundation for Phase 2-5 operator refactoring
 
 **Next Steps (Phase 2):**
-- Refactor ClusterBind9Provider and Bind9Cluster controllers to use shared context
+- Refactor ClusterBind9Provider and Bind9Cluster operators to use shared context
 - Initialize reflectors in main.rs
 - Wire up event-driven reconciliation loops
 
 ### Impact
 - [ ] Breaking change - No
-- [ ] Requires cluster rollout - No (foundation only, no controller changes yet)
+- [ ] Requires cluster rollout - No (foundation only, no operator changes yet)
 - [x] New infrastructure - Yes (shared context and reflector stores)
 - [ ] Documentation only - No
 
@@ -8404,7 +8485,7 @@ zone example.com/IN: refresh: query 'example.com/SOA/IN' from 10.244.1.82#5353
 
 ### Impact
 - [x] Breaking change - No (existing secondary zones may need re-creation)
-- [ ] Requires cluster rollout - Yes (controller rebuild required)
+- [ ] Requires cluster rollout - Yes (operator rebuild required)
 - [ ] Config change only
 - [ ] Documentation only
 
@@ -8544,10 +8625,10 @@ When two reconciliations run concurrently:
 
 **Why Multiple Concurrent Reconciliations?**
 
-The DNSZone controller watches Bind9Instance changes. When `production-dns-primary-1` updates:
+The DNSZone operator watches Bind9Instance changes. When `production-dns-primary-1` updates:
 1. Watch mapper triggers reconciliation: `reason=related object updated: primary-1`
 2. Simultaneously, zone itself changes: `reason=object updated`
-3. kube-runtime Controller allows concurrent reconciliations of the same resource
+3. kube-runtime Operator allows concurrent reconciliations of the same resource
 4. Both reconciliations race to configure the same secondary instances
 
 **Fix - Remove Check, Rely on Idempotent Error Handling:**
@@ -8948,10 +9029,10 @@ cargo test --test cluster_provider_resilience -- --ignored
 **No prerequisites required!** The shell script automatically:
 - ✅ Checks for required tools (kind, kubectl, docker)
 - ✅ Creates kind cluster if not present
-- ✅ Deploys Bindy controller using either:
+- ✅ Deploys Bindy operator using either:
   - **Pre-built image** from registry (via `--image` flag) - **for CI/CD**
   - **Local build** from source (if no `--image` specified) - **for development**
-- ✅ Waits for controller to be ready before running tests
+- ✅ Waits for operator to be ready before running tests
 
 ### Technical Details
 
@@ -8975,7 +9056,7 @@ cargo test --test cluster_provider_resilience -- --ignored
 ### Impact
 - ✅ **Zero-setup testing**: Automatically sets up complete test environment from scratch
 - ✅ **Comprehensive testing**: Validates full lifecycle from creation to recovery
-- ✅ **Resilience verification**: Confirms controller properly handles pod failures
+- ✅ **Resilience verification**: Confirms operator properly handles pod failures
 - ✅ **Documentation**: Tests serve as examples for ClusterBind9Provider usage
 - ✅ **CI-ready**: Can be integrated into CI pipeline for regression testing
 - ✅ **Developer-friendly**: One command (`make test-integ-cluster-provider`) runs everything
@@ -9110,7 +9191,7 @@ if bind9_instances.contains(&instance_ref) {
 
 **Future Enhancement:**
 We should add logic to detect when pods actually restart/change IPs and clear `last_reconciled_at` at that time. This could be done by:
-- Watching Pod resources in DNSZone controller
+- Watching Pod resources in DNSZone operator
 - Comparing pod UIDs or IPs in Bind9Instance status
 - Only clearing timestamp when pods are recreated
 
@@ -9315,7 +9396,7 @@ All notable changes to this project will be documented in this file.
 - `docs/src/reference/api.md`: Regenerated API documentation
 
 ### Why
-**Event-Driven Architecture**: The DNSZone reconciler should query `Bind9Instance` resources directly to determine their role (primary vs secondary) instead of caching secondary IPs in status. This aligns with Kubernetes controller best practices of watching resources and reacting to state changes.
+**Event-Driven Architecture**: The DNSZone reconciler should query `Bind9Instance` resources directly to determine their role (primary vs secondary) instead of caching secondary IPs in status. This aligns with Kubernetes operator best practices of watching resources and reacting to state changes.
 
 **Previous Design (Cached)**:
 ```rust
@@ -9423,7 +9504,7 @@ if !spec_changed && !first_reconciliation && !instances_changed {
 }
 ```
 
-This meant that once 3 instances were added to `status.bind9Instances` (by the Bind9Instance controller), the DNSZone reconciler saw "instances unchanged" and skipped configuration of the 2nd and 3rd instances.
+This meant that once 3 instances were added to `status.bind9Instances` (by the Bind9Instance operator), the DNSZone reconciler saw "instances unchanged" and skipped configuration of the 2nd and 3rd instances.
 
 **Example - Before Fix:**
 ```bash
@@ -9580,7 +9661,7 @@ status:
 - ✅ **Clear degraded state**: Easy to identify partial configurations that need attention
 - ✅ **Actionable messages**: Status shows "2/3 primaries, 0/1 secondaries - 1 instance(s) pending"
 - ✅ **Proper alerting**: Monitoring systems can alert on Degraded zones
-- ✅ **Self-healing**: Controller will keep retrying until all instances are configured
+- ✅ **Self-healing**: Operator will keep retrying until all instances are configured
 
 ### Technical Details
 
@@ -9890,7 +9971,7 @@ nameServerIps:
 - `src/reconcilers/clusterbind9provider.rs`: Integrated drift detection into reconciliation loop (lines 186-218)
 
 ### Changed
-- `src/reconcilers/clusterbind9provider.rs`: Controller now automatically recreates deleted `Bind9Cluster` resources owned by `ClusterBind9Provider`
+- `src/reconcilers/clusterbind9provider.rs`: Operator now automatically recreates deleted `Bind9Cluster` resources owned by `ClusterBind9Provider`
 - `src/reconcilers/bind9cluster.rs`: Existing drift detection (already implemented) ensures deleted `Bind9Instance` resources are automatically recreated
 
 ### Why
@@ -9902,7 +9983,7 @@ nameServerIps:
 **Implementation:**
 - **Bind9Cluster → Bind9Instance**: Drift detection compares desired replica counts with actual managed instances
 - **ClusterBind9Provider → Bind9Cluster**: Drift detection verifies exactly 1 managed cluster exists in target namespace
-- Both controllers trigger reconciliation when drift is detected, recreating missing resources
+- Both operators trigger reconciliation when drift is detected, recreating missing resources
 
 **Example Flow:**
 ```bash
@@ -9915,7 +9996,7 @@ kubectl apply -f cluster-provider.yaml
 # Operator manually deletes an instance
 kubectl delete bind9instance primary-0
 
-# Bind9Cluster controller detects drift (expected 2, found 1)
+# Bind9Cluster operator detects drift (expected 2, found 1)
 # Automatically recreates primary-0 instance
 
 # Similarly, if Bind9Cluster is deleted:
@@ -10003,13 +10084,13 @@ securityContext:
 - ⚠️ **Breaking Change**: Existing deployments will restart pods with new security context
 - ⚠️ **Image Compatibility**: Requires BIND9 images with UID/GID 101 configured
 
-## [2025-12-31 23:30] - Fix: DNSZone Controller Now Watches Bind9Instance for Pod Restarts
+## [2025-12-31 23:30] - Fix: DNSZone Operator Now Watches Bind9Instance for Pod Restarts
 
 **Author:** Erick Bourgeois
 
 ### Fixed
-- `src/main.rs`: Added Bind9Instance watch to DNSZone controller (run_dnszone_controller)
-- `src/main.rs`: DNSZone controller now triggers reconciliation when Bind9Instance changes (pod restarts, status updates)
+- `src/main.rs`: Added Bind9Instance watch to DNSZone operator (run_dnszone_operator)
+- `src/main.rs`: DNSZone operator now triggers reconciliation when Bind9Instance changes (pod restarts, status updates)
 - `src/main.rs`: Watch mapper checks BOTH `spec.bind9Instances` AND `status.bind9Instances` for instance references
 
 ### Why
@@ -10017,7 +10098,7 @@ securityContext:
 - `example.com` zone: Created (had DNS records that triggered reconciliation)
 - `internal.local` zone: **NOT created** (no records, no trigger)
 
-**Root Cause:** The DNSZone controller was **NOT watching Bind9Instance** resources. The controller hierarchy was:
+**Root Cause:** The DNSZone operator was **NOT watching Bind9Instance** resources. The operator hierarchy was:
 - ✅ Bind9Cluster `.owns(Bind9Instance)` - Cluster watches instances
 - ✅ Bind9Instance `.owns(Deployment)` - Instances watch deployments (which own pods)
 - ❌ **DNSZone NOT watching Bind9Instance** - Zones didn't react to pod restarts!
@@ -10029,7 +10110,7 @@ When `primary-0` pod restarted:
 4. Zones with records get reconciled eventually (record changes trigger DNSZone)
 5. Zones WITHOUT records never get recreated ← BUG
 
-**Solution:** Add `.watches(bind9instance_api)` to DNSZone controller:
+**Solution:** Add `.watches(bind9instance_api)` to DNSZone operator:
 - When Bind9Instance changes (pod restart, status update), trigger reconciliation for ALL DNSZones that reference that instance
 - Check BOTH sources of instance references:
   - `spec.bind9Instances` - Explicitly specified instances
@@ -10044,9 +10125,9 @@ When `primary-0` pod restarted:
 - ✅ **Complete coverage**: Handles both explicit (`spec`) and discovered (`status`) instance references
 
 ### Technical Details
-**Added watch mapper** in `run_dnszone_controller()`:
+**Added watch mapper** in `run_dnszone_operator()`:
 ```rust
-controller
+operator
     .watches(bind9instance_api, default_watcher_config(), move |instance| {
         // When Bind9Instance changes, find ALL zones referencing it
         zone_store_bind9inst
@@ -10055,7 +10136,7 @@ controller
             .filter(|zone| {
                 // Check if zone references this instance in spec.bind9Instances OR status.bind9Instances
                 // spec: Directly specified instances
-                // status: Instances discovered via zonesFrom selector (set by Bind9Instance controller)
+                // status: Instances discovered via zonesFrom selector (set by Bind9Instance operator)
                 let in_spec = zone
                     .spec
                     .bind9_instances
@@ -10082,7 +10163,7 @@ controller
 
 **Two Sources of Instance References:**
 1. **`spec.bind9Instances`**: User explicitly specifies which instances to use
-2. **`status.bind9Instances`**: Bind9Instance controller populates this when zone matches its `zonesFrom` selector
+2. **`status.bind9Instances`**: Bind9Instance operator populates this when zone matches its `zonesFrom` selector
 
 **Flow after pod restart:**
 1. Pod `primary-0` deleted
@@ -10142,7 +10223,7 @@ controller
 - ✅ **CRD structure**: All zone ownership tracked in validated `status.zoneRef` field
 - ✅ **Reliable**: Status fields are part of CRD schema with validation
 - ✅ **Simplified**: Removed ~40 lines of annotation patching code
-- ✅ **Proper watches**: Record controllers watch status changes, not annotation changes
+- ✅ **Proper watches**: Record operators watch status changes, not annotation changes
 - ✅ **No redundancy**: Single source of truth (`status.zoneRef`)
 
 ### Technical Details
@@ -10180,14 +10261,14 @@ controller
 - `src/reconcilers/dnszone.rs:562-584`: Added early return logic to skip reconciliation for irrelevant status changes
 
 ### Why
-**Problem:** DNSZone controller was entering a tight reconciliation loop:
+**Problem:** DNSZone operator was entering a tight reconciliation loop:
 1. DNSZone reconciliation runs and encounters an error (e.g., 429 Too Many Requests, permission denied)
-2. Controller updates DNSZone status with error condition
-3. **Status update triggers immediate reconciliation** (because controller watches ALL changes including status)
+2. Operator updates DNSZone status with error condition
+3. **Status update triggers immediate reconciliation** (because operator watches ALL changes including status)
 4. Reconciliation fails again → updates status → **triggers immediate reconciliation**
 5. Loop repeats hundreds of times per second instead of respecting the 30-second error requeue duration
 6. BIND9 API gets hammered with requests → returns `429 Too Many Requests`
-7. Creates a vicious cycle where the controller can never succeed
+7. Creates a vicious cycle where the operator can never succeed
 
 **Evidence from logs:**
 - 258 "error policy requested retry" events in rapid succession (milliseconds apart)
@@ -10196,12 +10277,12 @@ controller
 - Reconciliations happening every ~100-500ms instead of every 30 seconds
 
 **Why DNSZone MUST watch status changes:**
-- DNSZone controller needs to react when `Bind9Instance` controller updates `status.bind9Instances[]` via label selectors
+- DNSZone operator needs to react when `Bind9Instance` operator updates `status.bind9Instances[]` via label selectors
 - This is the event-driven zone selection pattern - zones are auto-assigned to instances
-- Cannot use `semantic_watcher_config()` (spec-only watching) like other controllers
+- Cannot use `semantic_watcher_config()` (spec-only watching) like other operators
 
 **Solution:** Intelligent status change filtering:
-- DNSZone controller continues to watch ALL changes (spec + status)
+- DNSZone operator continues to watch ALL changes (spec + status)
 - Added `status_change_requires_reconciliation()` to determine if status change warrants reconciliation
 - **Reconcile when:**
   - Spec changed (generation mismatch)
@@ -10263,7 +10344,7 @@ fn status_change_requires_reconciliation(...) -> bool {
 ```
 
 **Why This Approach:**
-1. **Event-Driven Zone Selection Preserved**: Controller still reacts to `status.bind9Instances[]` changes
+1. **Event-Driven Zone Selection Preserved**: Operator still reacts to `status.bind9Instances[]` changes
 2. **Reconciliation Loop Fixed**: Skips reconciliation for condition-only updates
 3. **No Breaking Changes**: Same watch behavior, just smarter filtering
 4. **Correct Semantics**: Reconciles when zone configuration needs updating, not on every status ping
@@ -10412,7 +10493,7 @@ make kind-integration-test
 
 **Self-Healing Scenarios Caught:**
 - Record finalizer crashed before deleting from BIND9
-- Controller restarted during deletion
+- Operator restarted during deletion
 - Race condition in finalizer logic
 - Manual changes to BIND9 (record added outside operator)
 - Finalizer bug that skipped deletion
@@ -10570,12 +10651,12 @@ The issue occurred when trying to untag deleted records (404 errors) or when usi
 - `src/bind9/records/mod.rs`: Added `delete_dns_record()` function for RFC 2136 DELETE operations via hickory-client
 - `src/bind9/mod.rs`: Added `delete_record()` method to `Bind9Manager` for deleting any record type
 - `src/reconcilers/records.rs`: Added generic `delete_record<T>()` function that works for all 8 record types
-- `src/reconcilers/mod.rs`: Exported `delete_record` function for use in main controller wrappers
+- `src/reconcilers/mod.rs`: Exported `delete_record` function for use in main operator wrappers
 - `src/main.rs`: Replaced macro-generated record wrappers with finalizer-based wrappers for all 8 record types
 
 ### Changed
-- `src/main.rs`: Updated all 8 record controller wrappers to use kube-runtime finalizer pattern
-- Record controllers now handle both creation (`finalizer::Event::Apply`) and deletion (`finalizer::Event::Cleanup`)
+- `src/main.rs`: Updated all 8 record operator wrappers to use kube-runtime finalizer pattern
+- Record operators now handle both creation (`finalizer::Event::Apply`) and deletion (`finalizer::Event::Cleanup`)
 - Record deletion is now automatic when Kubernetes resource is deleted (via finalizer cleanup)
 
 ### Why
@@ -10585,7 +10666,7 @@ The issue occurred when trying to untag deleted records (404 errors) or when usi
 3. No cleanup mechanism existed to remove DNS data
 
 **Solution:** Implement Kubernetes finalizer pattern (same as DNSZone, Bind9Instance, etc.):
-1. Controller adds finalizer when record is created
+1. Operator adds finalizer when record is created
 2. When record is deleted, Kubernetes calls finalizer cleanup handler
 3. Cleanup handler deletes DNS record from all BIND9 primaries using RFC 2136
 4. Finalizer is removed, allowing Kubernetes to complete deletion
@@ -10593,7 +10674,7 @@ The issue occurred when trying to untag deleted records (404 errors) or when usi
 ### How It Works
 
 **Record Creation:**
-1. Record controller adds finalizer to the resource
+1. Record operator adds finalizer to the resource
 2. Reconcile function creates DNS record in BIND9 primaries via dynamic DNS updates
 3. Status updated with Ready condition
 
@@ -10695,14 +10776,14 @@ Manual testing required:
 - Added debug logging for re-tagging existing records vs info logging for newly matched records
 - This ensures idempotency: running the reconciliation multiple times produces the same result
 
-## [2025-12-31 15:30] - Event-Driven DNSZone and Record Controller Architecture
+## [2025-12-31 15:30] - Event-Driven DNSZone and Record Operator Architecture
 
 **Author:** Erick Bourgeois
 
 ### Changed
 - `src/crd.rs`: Added `zone_ref: Option<ZoneReference>` field to `RecordStatus` for structured zone references
-- `src/main.rs`: Added `.watches()` for all 8 record types (ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord) to DNSZone controller
-- `src/main.rs`: Updated all record controllers to use `default_watcher_config()` instead of `semantic_watcher_config()` to watch status changes
+- `src/main.rs`: Added `.watches()` for all 8 record types (ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord) to DNSZone operator
+- `src/main.rs`: Updated all record operators to use `default_watcher_config()` instead of `semantic_watcher_config()` to watch status changes
 - `src/reconcilers/dnszone.rs`: Updated `tag_record_with_zone()` to set `status.zoneRef` with full ZoneReference metadata (apiVersion, kind, name, namespace, zoneName)
 - `src/reconcilers/records.rs`: Initialize `zone_ref: None` in RecordStatus
 - `src/bind9_resources_tests.rs`: Added `build_labels()` test helper function
@@ -10710,23 +10791,23 @@ Manual testing required:
 
 ### Why
 **Problem:** The previous architecture relied on polling-based reconciliation where:
-- Record controllers periodically checked for zone changes (30s-5min delay)
-- DNSZone controller didn't know when records were created/updated
+- Record operators periodically checked for zone changes (30s-5min delay)
+- DNSZone operator didn't know when records were created/updated
 - Records used string-based zone references in annotations (no structured metadata)
 
 **Solution:** Implement event-driven architecture following the same pattern as Bind9Instance ↔ DNSZone:
 1. **DNSZone watches records** → Sets `record.status.zoneRef` when records match `spec.recordsFrom` selectors
-2. **Record controllers watch status** → React immediately to `status.zoneRef` changes and reconcile
+2. **Record operators watch status** → React immediately to `status.zoneRef` changes and reconcile
 
 This eliminates polling delays and enables instant reconciliation when records are assigned to zones.
 
 ### Impact
 - ✅ **Instant reconciliation**: Records reconcile immediately when matched by a zone (no 30s-5min delay)
-- ✅ **Event-driven**: Controllers react to changes instead of polling
+- ✅ **Event-driven**: Operators react to changes instead of polling
 - ✅ **Structured references**: `status.zoneRef` contains full metadata (apiVersion, kind, name, namespace)
 - ✅ **Backward compatible**: Deprecated `status.zone` string field still set for compatibility
 - ✅ **Better observability**: Record status shows which zone owns it with full reference
-- ⚠️ **Breaking change**: Record controllers now trigger on status updates (watch config changed)
+- ⚠️ **Breaking change**: Record operators now trigger on status updates (watch config changed)
 
 ### Technical Details
 
@@ -10736,7 +10817,7 @@ This eliminates polling delays and enables instant reconciliation when records a
 - Deprecated `status.zone` string field in favor of structured `status.zoneRef`
 
 **Phase 2: DNSZone Watches Records**
-- Added 8 `.watches()` calls in `run_dnszone_controller()` (lines 530-610)
+- Added 8 `.watches()` calls in `run_dnszone_operator()` (lines 530-610)
 - Each watch triggers zone reconciliation when records in the same namespace change
 - Uses store pattern to find zones matching the record's namespace
 
@@ -10745,18 +10826,18 @@ This eliminates polling delays and enables instant reconciliation when records a
 - Creates `ZoneReference` struct with full metadata (lines 1435-1441)
 - Patches both `status.zone` (backward compat) and `status.zoneRef` (new field) (lines 1444-1453)
 
-**Phase 4: Record Controllers Watch Status**
-- Changed all 8 record controllers from `semantic_watcher_config()` to `default_watcher_config()`
+**Phase 4: Record Operators Watch Status**
+- Changed all 8 record operators from `semantic_watcher_config()` to `default_watcher_config()`
 - Now watch for ALL changes including status updates (previously only spec changes)
-- Enables reaction to `status.zoneRef` changes set by DNSZone controller
+- Enables reaction to `status.zoneRef` changes set by DNSZone operator
 
 **Event Flow:**
 ```
 1. User creates ARecord with labels matching DNSZone's recordsFrom
-2. DNSZone controller watches ARecord changes → triggers reconciliation
+2. DNSZone operator watches ARecord changes → triggers reconciliation
 3. DNSZone reconciler checks if record labels match spec.recordsFrom
 4. DNSZone sets record.status.zoneRef with full ZoneReference
-5. ARecord controller watches status changes → triggers reconciliation
+5. ARecord operator watches status changes → triggers reconciliation
 6. ARecord reconciler reads status.zoneRef → looks up parent zone
 7. ARecord adds itself to BIND9 instances referenced by zone
 8. BIND9 instances trigger retransfer on secondaries
@@ -10765,8 +10846,8 @@ This eliminates polling delays and enables instant reconciliation when records a
 ### Migration Notes
 - Existing records will continue to work (backward compatible)
 - New records will use `status.zoneRef` for structured references
-- Controllers will react faster to zone assignments (event-driven vs polling)
-- No manual intervention required - controllers will reconcile automatically
+- Operators will react faster to zone assignments (event-driven vs polling)
+- No manual intervention required - operators will reconcile automatically
 
 ## [2025-12-30 19:15] - Add Selected Zones Count Column to Bind9Instance
 
@@ -10942,7 +11023,7 @@ Simplified the reconciler to use ONLY instance-based architecture:
 
 ### Fixed
 - `src/reconcilers/dnszone.rs:113-156`: Updated `get_zone_selection_info()` to check `status.bind9_instances` field
-- Fixed reconciliation loop caused by DNSZone controller not recognizing zones selected via zonesFrom
+- Fixed reconciliation loop caused by DNSZone operator not recognizing zones selected via zonesFrom
 
 ### Problem
 The DNSZone reconciler had a validation function `get_zone_selection_info()` that checked whether a zone was "selected" (ready for reconciliation). This function was still looking for the **old deprecated `status.cluster_ref` field** instead of the **new `status.bind9_instances` field**.
@@ -10974,33 +11055,33 @@ Updated `get_zone_selection_info()` to check **both** the new and legacy fields:
 If `status.bind9_instances` is populated, the zone IS selected and reconciliation proceeds.
 
 ### Impact
-- ✅ Reconciliation loop eliminated - DNSZone controller now recognizes zones selected via zonesFrom
+- ✅ Reconciliation loop eliminated - DNSZone operator now recognizes zones selected via zonesFrom
 - ✅ Event-driven zone selection works correctly - status updates no longer cause errors
 - ✅ Backward compatibility maintained - legacy `status.cluster_ref` still supported
 - ✅ No breaking changes - both old and new architectures supported
 
-## [2025-12-30 17:30] - Simplify DNSZone Controller by Removing Redundant Bind9Instance Watch
+## [2025-12-30 17:30] - Simplify DNSZone Operator by Removing Redundant Bind9Instance Watch
 
 **Author:** Erick Bourgeois
 
 ### Changed
-- `src/main.rs:487-514`: Simplified DNSZone controller by removing redundant `.watches()` on Bind9Instance resources
+- `src/main.rs:487-514`: Simplified DNSZone operator by removing redundant `.watches()` on Bind9Instance resources
 
 ### Why
-The DNSZone controller was watching both:
+The DNSZone operator was watching both:
 1. **DNSZone resources** (main watch) - watches all changes including status
 2. **Bind9Instance.status.selectedZones** (cross-resource watch) - **redundant!**
 
 The cross-resource watch was unnecessary because:
 - Bind9Instance reconciler updates `DNSZone.status.bind9Instances` when it selects zones
-- DNSZone controller already watches DNSZone with `default_watcher_config()` (catches status changes)
+- DNSZone operator already watches DNSZone with `default_watcher_config()` (catches status changes)
 - This status update **already triggers DNSZone reconciliation**
 - The watch on Bind9Instance provided no additional value
 
 **Event flow (simplified):**
 1. Bind9Instance reconciles and discovers zones via `zonesFrom` label selectors
 2. Bind9Instance updates `DNSZone.status.bind9Instances` to include itself
-3. DNSZone controller triggers on status change (via main DNSZone watch)
+3. DNSZone operator triggers on status change (via main DNSZone watch)
 4. DNSZone reconciler reads `status.bind9Instances` and adds zone to instances
 
 The `.watches()` call was causing **duplicate reconciliations** - once when Bind9Instance.status changed (redundant), and again when DNSZone.status changed (correct).
@@ -11009,14 +11090,14 @@ The `.watches()` call was causing **duplicate reconciliations** - once when Bind
 
 **Before (redundant watch):**
 ```rust
-Controller::new(api, default_watcher_config())
+Operator::new(api, default_watcher_config())
     .watches(instance_api, semantic_watcher_config(), mapper)  // Redundant!
     .run(reconcile, error_policy, ctx)
 ```
 
 **After (simplified):**
 ```rust
-Controller::new(api, default_watcher_config())
+Operator::new(api, default_watcher_config())
     .run(reconcile, error_policy, ctx)  // Clean and efficient!
 ```
 
@@ -11026,7 +11107,7 @@ Controller::new(api, default_watcher_config())
 - ✅ **Lower resource usage** - One less watch stream, fewer informer caches
 - ✅ **Better performance** - Reduced API server load and network traffic
 - ✅ **Easier debugging** - Clearer event flow, fewer places to look for issues
-- ✅ **Standard pattern** - Aligns with record controllers (no cross-resource watches)
+- ✅ **Standard pattern** - Aligns with record operators (no cross-resource watches)
 
 ### Impact
 - [ ] Breaking change
@@ -11096,7 +11177,7 @@ status:
 - Watch mapper now returns **ALL** Bind9Instances with matching zonesFrom selectors
 
 ### Why
-The Bind9Instance controller watches DNSZones to trigger reconciliation when zones are created/updated. The watch mapper was using `.find()` which returns only the **first** matching instance, but it should return **ALL** instances that have zonesFrom selectors matching the zone's labels.
+The Bind9Instance operator watches DNSZones to trigger reconciliation when zones are created/updated. The watch mapper was using `.find()` which returns only the **first** matching instance, but it should return **ALL** instances that have zonesFrom selectors matching the zone's labels.
 
 ### Bug Impact
 **Before (Incorrect):**
@@ -11396,11 +11477,11 @@ instance_store.state().iter()
 
 ### How It Works
 1. When a DNSZone is created/updated with labels
-2. Watch mapper uses controller's reflector store to find instances
+2. Watch mapper uses operator's reflector store to find instances
 3. **Filters instances** to only those with matching `zonesFrom` selectors
 4. Returns the **first matching instance** for reconciliation
 5. That instance updates `selectedZones` and `dnszone.status.clusterRef`
-6. DNSZone controller watches instance status and reconciles zones
+6. DNSZone operator watches instance status and reconciles zones
 
 ### Benefits
 - ✅ **Smart filtering**: Only triggers instances that actually care about the zone
@@ -11415,9 +11496,9 @@ instance_store.state().iter()
 
 ### Impact
 - ✅ **Immediate zone discovery**: DNSZones are processed within seconds instead of waiting for periodic reconciliation
-- ✅ **Event-driven architecture**: Aligns with Kubernetes controller best practices
+- ✅ **Event-driven architecture**: Aligns with Kubernetes operator best practices
 - ✅ **No breaking changes**: Backward compatible with existing deployments
-- ✅ **Minimal overhead**: Uses controller's built-in store, no additional API calls in mapper
+- ✅ **Minimal overhead**: Uses operator's built-in store, no additional API calls in mapper
 
 ### Future Optimization
 Consider implementing a multi-trigger mechanism to reconcile ALL instances in the namespace (not just the first one) when a zone event occurs. This would require:
@@ -11430,10 +11511,10 @@ Consider implementing a multi-trigger mechanism to reconcile ALL instances in th
 **Author:** Erick Bourgeois
 
 ### Added
-- `docs/roadmaps/kube-rs-label-selector-owns-watches.md`: Research document on using label selectors with kube-rs `Controller::owns()` and `Controller::watches()` methods
+- `docs/roadmaps/kube-rs-label-selector-owns-watches.md`: Research document on using label selectors with kube-rs `Operator::owns()` and `Operator::watches()` methods
 
 ### Summary
-Investigated whether kube-rs supports label-based filtering for watched resources in controller relationships.
+Investigated whether kube-rs supports label-based filtering for watched resources in operator relationships.
 
 **Answer: YES ✅**
 
@@ -11463,7 +11544,7 @@ Both `.owns()` and `.watches()` accept a `watcher::Config` parameter that suppor
 - ✅ Supports standard Kubernetes label selector syntax (=, !=, in, notin, exists)
 - ✅ Can combine with field selectors and semantic watching
 - ✅ Reduces network traffic, memory usage, and API server load at scale
-- ✅ Fully compatible with current Bindy controller architecture
+- ✅ Fully compatible with current Bindy operator architecture
 
 **Use Cases:**
 - Multi-tenant deployments (filter by tenant/namespace labels)
@@ -11476,7 +11557,7 @@ No immediate changes needed. Current `Config::default()` approach is appropriate
 - Scaling to 1000+ DNSZone resources
 - Implementing multi-tenant isolation
 - Reducing API server load becomes critical
-- Memory constraints on controller pods
+- Memory constraints on operator pods
 
 ### Why
 User asked: "can kube-rs or kube library in rust handle `.owns()` and match on a label?"
@@ -11502,7 +11583,7 @@ This research provides:
 - `src/reconcilers/bind9instance.rs:1163-1225`: Rewritten `fetch_cluster_info()` to use `ownerReferences` instead of `spec.clusterRef`
 
 ### Why
-`Bind9Instance` resources are owned by their parent cluster (via `.owns()` in the cluster controller), which sets `ownerReferences` automatically. Using `spec.clusterRef` was redundant and required manual string management.
+`Bind9Instance` resources are owned by their parent cluster (via `.owns()` in the cluster operator), which sets `ownerReferences` automatically. Using `spec.clusterRef` was redundant and required manual string management.
 
 ### Architecture Change
 
@@ -11528,7 +11609,7 @@ metadata:
     - apiVersion: bindy.firestoned.io/v1beta1
       kind: Bind9Cluster
       name: production-dns
-      controller: true
+      operator: true
       blockOwnerDeletion: true
 spec: {}  # No clusterRef needed!
 ```
@@ -11662,9 +11743,9 @@ pub struct ZoneReference {
 
 ### Why
 The previous implementation returned only the cluster name (string) when zones were selected via label selectors. This caused issues because:
-1. DNSZone spec should not be modified by the controller - it's user-provided input
+1. DNSZone spec should not be modified by the operator - it's user-provided input
 2. DNSZone reconciler needed a way to find the cluster reference without modifying spec
-3. Proper Kubernetes pattern is to use status fields for controller-managed state
+3. Proper Kubernetes pattern is to use status fields for operator-managed state
 
 ### Architecture Changes
 
@@ -11689,7 +11770,7 @@ pub struct ClusterReference {
 
 **Benefits:**
 - ✅ DNSZone spec remains immutable (user-provided)
-- ✅ DNSZone status reflects controller-assigned cluster (when using label selectors)
+- ✅ DNSZone status reflects operator-assigned cluster (when using label selectors)
 - ✅ Full Kubernetes object reference enables future enhancements
 - ✅ Backward compatible - falls back to `spec.clusterRef` for string names
 - ✅ Enables `spec.clusterRef` deprecation in future versions
@@ -11732,7 +11813,7 @@ The initial event-driven implementation included conflict prevention that ensure
 **Author:** Erick Bourgeois
 
 ### Changed
-- `src/main.rs:506-530`: Added Bind9Instance watch to DNSZone controller for event-driven zone selection
+- `src/main.rs:506-530`: Added Bind9Instance watch to DNSZone operator for event-driven zone selection
 - `src/reconcilers/bind9instance.rs:998-1018`: Removed annotation-based zone tagging/untagging logic
 - `src/reconcilers/dnszone.rs:112-142`: Replaced annotation-based selection with status query approach
 
@@ -11748,7 +11829,7 @@ The initial `zonesFrom` implementation (completed 2025-12-30 16:45) used an anno
 
 **Event-Driven Flow:**
 1. Bind9Instance reconciles and updates `status.selectedZones` based on `zonesFrom` label selectors
-2. DNSZone controller **watches** Bind9Instance resources via `.watches()`
+2. DNSZone operator **watches** Bind9Instance resources via `.watches()`
 3. When `status.selectedZones` changes, watch mapper triggers reconciliation of affected DNSZones
 4. DNSZone queries Bind9Instance status to determine if selected (no annotations)
 
@@ -11756,7 +11837,7 @@ The initial `zonesFrom` implementation (completed 2025-12-30 16:45) used an anno
 - ✅ Fully event-driven - DNSZones reconcile immediately when selection changes
 - ✅ Efficient - No periodic polling or full zone list scans
 - ✅ Clean - No annotations used for control flow
-- ✅ Consistent - Follows Kubernetes controller best practices
+- ✅ Consistent - Follows Kubernetes operator best practices
 - ✅ Kubernetes-native - Uses status fields for cross-resource communication
 - ✅ Conflict prevention - Only one instance can select each zone (first-come-first-served)
 
@@ -11768,7 +11849,7 @@ The initial `zonesFrom` implementation (completed 2025-12-30 16:45) used an anno
 - [ ] Documentation only
 
 ### Technical Details
-The DNSZone controller now uses `.watches()` to observe Bind9Instance resources:
+The DNSZone operator now uses `.watches()` to observe Bind9Instance resources:
 ```rust
 .watches(
     instance_api,
@@ -11793,30 +11874,30 @@ The `discover_zones()` function now queries all Bind9Instance statuses to ensure
 - Skips zones already selected by OTHER instances
 - Uses first-come-first-served semantics for zone ownership
 
-## [2025-12-30 17:00] - Controller Event-Driven Architecture Analysis
+## [2025-12-30 17:00] - Operator Event-Driven Architecture Analysis
 
 **Author:** Erick Bourgeois
 
 ### Added
-- `docs/roadmaps/controller-event-driven-analysis.md`: Comprehensive analysis of all 13 Bindy controllers confirming 100% event-driven architecture compliance
+- `docs/roadmaps/operator-event-driven-analysis.md`: Comprehensive analysis of all 13 Bindy operators confirming 100% event-driven architecture compliance
 
 ### Summary
-Analyzed all Bindy controllers to verify they follow event-driven programming patterns (not polling). All 13 controllers confirmed compliant with Kubernetes best practices:
+Analyzed all Bindy operators to verify they follow event-driven programming patterns (not polling). All 13 operators confirmed compliant with Kubernetes best practices:
 
-**Controllers Analyzed:**
+**Operators Analyzed:**
 - **Infrastructure (3):** ClusterBind9Provider, Bind9Cluster, Bind9Instance
 - **DNS Zones (1):** DNSZone
 - **DNS Records (8):** ARecord, AAAARecord, CNAMERecord, MXRecord, TXTRecord, NSRecord, SRVRecord, CAARecord
 
 **Findings:**
-- ✅ **All controllers use Kubernetes watch API** - No polling loops found
-- ✅ **Semantic watching prevents status loops** - Applied to all record controllers and `.owns()` relationships
-- ✅ **Event-driven cross-resource coordination** - DNSZone controller watches Bind9Instance status via `.watches()`
+- ✅ **All operators use Kubernetes watch API** - No polling loops found
+- ✅ **Semantic watching prevents status loops** - Applied to all record operators and `.owns()` relationships
+- ✅ **Event-driven cross-resource coordination** - DNSZone operator watches Bind9Instance status via `.watches()`
 - ✅ **Requeue intervals for health checks only** - Not polling (5 min ready / 30 sec not ready / 60 sec errors)
-- ✅ **Generation-based reconciliation** - Controllers check `metadata.generation` vs `status.observed_generation`
+- ✅ **Generation-based reconciliation** - Operators check `metadata.generation` vs `status.observed_generation`
 
 **Key Patterns Verified:**
-1. All controllers use `Controller::new()` from kube-runtime
+1. All operators use `Operator::new()` from kube-runtime
 2. Semantic watching via `semantic_watcher_config()` prevents reconciliation loops
 3. Ownership relationships use `.owns()` or `.watches()` (event-driven)
 4. No manual polling, sleep loops, or continuous list operations found
@@ -11827,12 +11908,12 @@ The 2025-12-30 15:35 fix (semantic watching for `.owns()` relationships) elimina
 
 ### Why
 As part of the critical coding patterns in CLAUDE.md:
-> **Event-Driven Programming**: In Kubernetes controller development, ALWAYS use or recommend event-driven programming (e.g., "watch" on kube API) as opposed to polling.
+> **Event-Driven Programming**: In Kubernetes operator development, ALWAYS use or recommend event-driven programming (e.g., "watch" on kube API) as opposed to polling.
 
 This analysis provides:
 - **Compliance verification** for the event-driven requirement
-- **Documentation** of controller architecture for new developers
-- **Reference** for future controller development
+- **Documentation** of operator architecture for new developers
+- **Reference** for future operator development
 - **Validation** that recent bug fixes maintain event-driven patterns
 
 ### Impact
@@ -11875,27 +11956,27 @@ Zone discovery now runs on EVERY reconciliation loop, not just when the Bind9Ins
 
 The zone discovery logic is intentionally non-failing - if it encounters errors, it logs a warning but allows the instance reconciliation to continue successfully.
 
-## [2025-12-30 15:35] - Fix Reconciliation Loop in ClusterBind9Provider and Bind9Cluster Controllers
+## [2025-12-30 15:35] - Fix Reconciliation Loop in ClusterBind9Provider and Bind9Cluster Operators
 
 **Author:** Erick Bourgeois
 
 ### Changed
-- `src/main.rs:708`: Changed `Bind9Cluster` controller to use `semantic_watcher_config()` instead of `default_watcher_config()` for watching owned `Bind9Instance` resources
-- `src/main.rs:839`: Changed `ClusterBind9Provider` controller to use `semantic_watcher_config()` instead of `default_watcher_config()` for watching owned `Bind9Cluster` resources
+- `src/main.rs:708`: Changed `Bind9Cluster` operator to use `semantic_watcher_config()` instead of `default_watcher_config()` for watching owned `Bind9Instance` resources
+- `src/main.rs:839`: Changed `ClusterBind9Provider` operator to use `semantic_watcher_config()` instead of `default_watcher_config()` for watching owned `Bind9Cluster` resources
 
 ### Why
-The controllers were stuck in a tight reconciliation loop caused by status-only updates triggering cascading reconciliations:
+The operators were stuck in a tight reconciliation loop caused by status-only updates triggering cascading reconciliations:
 1. `Bind9Instance` status update → triggered `Bind9Cluster` reconciliation
 2. `Bind9Cluster` status update → triggered `ClusterBind9Provider` reconciliation
 3. `ClusterBind9Provider` status update → triggered `Bind9Cluster` reconciliation again
 4. Loop repeats infinitely
 
-Using `semantic_watcher_config()` (which calls `.any_semantic()`) ensures controllers only reconcile when **spec** changes occur, ignoring status-only updates. This prevents reconciliation loops while maintaining responsiveness to actual configuration changes.
+Using `semantic_watcher_config()` (which calls `.any_semantic()`) ensures operators only reconcile when **spec** changes occur, ignoring status-only updates. This prevents reconciliation loops while maintaining responsiveness to actual configuration changes.
 
 ### Technical Details
 - `default_watcher_config()`: Watches ALL resource changes including status updates
 - `semantic_watcher_config()`: Watches only **semantic** changes (spec modifications), ignoring status-only updates
-- The main controller watchers still use `default_watcher_config()` to catch all changes to their primary resources
+- The main operator watchers still use `default_watcher_config()` to catch all changes to their primary resources
 - Only the `.owns()` relationships now use semantic watching to prevent cascading loops
 
 ### Impact
@@ -11906,7 +11987,7 @@ Using `semantic_watcher_config()` (which calls `.any_semantic()`) ensures contro
 - [ ] Documentation only
 
 ### Testing
-Applied `examples/cluster-bind9-provider.yaml` and verified that reconciliation loop no longer occurs. Controllers now only reconcile on actual spec changes.
+Applied `examples/cluster-bind9-provider.yaml` and verified that reconciliation loop no longer occurs. Operators now only reconcile on actual spec changes.
 
 ## [2025-12-30 02:30] - Mark Completed Roadmaps with "completed-" Prefix
 
@@ -12140,7 +12221,7 @@ Future phases will implement:
 - **`src/reconcilers/bind9instance.rs:14-16,18-19,26`**: Added imports for zone discovery (`DNSZone`, `ZoneReference`, `HashSet`)
 
 ### Why
-Enable Bind9Instance controllers to automatically discover and track DNSZone resources based on label selectors defined in `zonesFrom`. This mirrors the existing DNSZone → records pattern and provides self-healing zone assignment.
+Enable Bind9Instance operators to automatically discover and track DNSZone resources based on label selectors defined in `zonesFrom`. This mirrors the existing DNSZone → records pattern and provides self-healing zone assignment.
 
 This is Phase 2 of the implementation roadmap (see `docs/roadmaps/ZONES_FROM_LABEL_SELECTOR_SUPPORT.md`).
 
@@ -12471,7 +12552,7 @@ if !data_changed {
 }
 ```
 
-This violated the **Kubernetes reconciliation contract**: Controllers must continuously ensure actual state matches desired state, regardless of whether the spec changed.
+This violated the **Kubernetes reconciliation contract**: Operators must continuously ensure actual state matches desired state, regardless of whether the spec changed.
 
 **Solution**: Removed the early-return skip logic. Now reconcilers:
 - ✅ Always verify DNS state in BIND (self-healing)
@@ -12551,7 +12632,7 @@ error: resource mapping not found for name: "integration-test-cluster" namespace
 ensure CRDs are installed first
 ```
 
-**Root Cause**: The Makefile created a Kind cluster named `bindy-test` (value of `$(KIND_CLUSTER)`), installed CRDs, and deployed the controller. However, when calling the test script with `--skip-deploy`, it didn't pass the cluster name, causing the script to use a different kubectl context. Additionally, cleanup attempted to delete a cluster named `bindy-test-ci` which never existed.
+**Root Cause**: The Makefile created a Kind cluster named `bindy-test` (value of `$(KIND_CLUSTER)`), installed CRDs, and deployed the operator. However, when calling the test script with `--skip-deploy`, it didn't pass the cluster name, causing the script to use a different kubectl context. Additionally, cleanup attempted to delete a cluster named `bindy-test-ci` which never existed.
 
 **Solution**:
 1. Pass `CLUSTER_NAME=$(KIND_CLUSTER)` to test scripts so they use the correct kubectl context
@@ -12583,14 +12664,14 @@ After deleting all primary/secondary pods, zones would be recreated in BIND9 but
 
 **Root Cause**: Record reconcilers use `semantic_watcher_config()` which only triggers on spec/generation changes, not status updates. When pods restart and zones are recreated, records don't know they need to re-add themselves to BIND9.
 
-**Solution**: After successful DNSZone reconciliation, patch all matching record resources (A, AAAA, TXT, CNAME, MX, NS, SRV, CAA) with a timestamped annotation (`bindy.firestoned.io/zone-reconciled-at`). This triggers their controllers to re-reconcile and re-add the records to the newly created zones.
+**Solution**: After successful DNSZone reconciliation, patch all matching record resources (A, AAAA, TXT, CNAME, MX, NS, SRV, CAA) with a timestamped annotation (`bindy.firestoned.io/zone-reconciled-at`). This triggers their operators to re-reconcile and re-add the records to the newly created zones.
 
 ### How It Works
 1. DNSZone successfully reconciles (zone created in BIND9)
 2. `trigger_record_reconciliation()` lists all record types in the namespace
 3. Filters records matching the zone annotation (`bindy.firestoned.io/zone`)
 4. Patches each matching record with a timestamp annotation
-5. Annotation change triggers record controller reconciliation
+5. Annotation change triggers record operator reconciliation
 6. Records get re-added to BIND9 via dynamic DNS updates
 
 ### Impact
@@ -12694,7 +12775,7 @@ HTTP 400 Bad Request: At least one field (alsoNotify or allowTransfer) must be p
 **Author:** Erick Bourgeois
 
 ### Summary
-Implemented complete self-healing reconciliation for all controller layers with drift detection and `.owns()` watch relationships. Controllers now immediately detect and recreate missing resources, ensuring the cluster automatically recovers from accidental deletions.
+Implemented complete self-healing reconciliation for all operator layers with drift detection and `.owns()` watch relationships. Operators now immediately detect and recreate missing resources, ensuring the cluster automatically recovers from accidental deletions.
 
 ### Changes
 
@@ -12704,15 +12785,15 @@ Implemented complete self-healing reconciliation for all controller layers with 
   - Version: v0.4.1 (from git)
   - Fixes compilation error in published v0.4.0 crate
 
-#### Controller Watch Relationships
+#### Operator Watch Relationships
 - **`src/main.rs:26`**: Added `use k8s_openapi::api::apps::v1::Deployment` import
-- **`src/main.rs:854`**: Added `.owns(deployment_api)` to `Bind9Instance` controller
+- **`src/main.rs:854`**: Added `.owns(deployment_api)` to `Bind9Instance` operator
   - Triggers immediate reconciliation when owned Deployments change
   - Reduces drift detection time from 5 minutes to ~1 second
-- **`src/main.rs:708`**: Added `.owns(instance_api)` to `Bind9Cluster` controller
+- **`src/main.rs:708`**: Added `.owns(instance_api)` to `Bind9Cluster` operator
   - Triggers immediate reconciliation when owned `Bind9Instance` resources change
   - Enables self-healing for accidentally deleted instances
-- **`src/main.rs:839`**: Added `.owns(cluster_api)` to `ClusterBind9Provider` controller
+- **`src/main.rs:839`**: Added `.owns(cluster_api)` to `ClusterBind9Provider` operator
   - Triggers immediate reconciliation when owned `Bind9Cluster` resources change
   - Complements the `.watches()` optimization for complete event-driven architecture
 
@@ -12745,7 +12826,7 @@ Implemented complete self-healing reconciliation for all controller layers with 
 
 ### Impact
 - ✅ **99.7% faster drift recovery** for Deployments (5 min → 1 sec)
-- ✅ **Complete self-healing** across all controller layers
+- ✅ **Complete self-healing** across all operator layers
 - ✅ **Event-driven architecture** using Kubernetes best practices
 - ✅ **Reduced API load** from fewer polling operations
 - ✅ **Owner-aware deletion** via `ownerReferences` (already correct)
@@ -13382,10 +13463,10 @@ conditions:
   - Affected reconcilers: `Bind9Cluster`, `ClusterBind9Provider`, `Bind9Instance`, `DNSZone`
 
 ### Why
-Per project guidelines, all numeric literals other than 0 or 1 must be named constants. The magic numbers 300 and 30 (representing 5 minutes and 30 seconds requeue intervals) were hardcoded in 4 controller wrapper functions. These values are semantically identical to the constants already defined in `record_wrappers.rs` for the same purpose.
+Per project guidelines, all numeric literals other than 0 or 1 must be named constants. The magic numbers 300 and 30 (representing 5 minutes and 30 seconds requeue intervals) were hardcoded in 4 operator wrapper functions. These values are semantically identical to the constants already defined in `record_wrappers.rs` for the same purpose.
 
 ### Impact
-- **Consistency**: All controllers now use the same named constants for requeue intervals
+- **Consistency**: All operators now use the same named constants for requeue intervals
 - **Maintainability**: Changing requeue intervals requires updating only the constants in `record_wrappers.rs`
 - **Readability**: Code explicitly references `REQUEUE_WHEN_READY_SECS` and `REQUEUE_WHEN_NOT_READY_SECS`
 - **Zero breaking changes**: Behavior remains identical (300s ready, 30s not ready)
@@ -13424,20 +13505,20 @@ Per project guidelines, all numeric literals other than 0 or 1 must be named con
 
 ### Progress
 - ✅ **Phase 1: COMPLETE** - Consolidate record wrapper functions (510 lines saved)
-- ✅ **Phase 2: COMPLETE** - Remove controller setup duplication (56 lines saved)
+- ✅ **Phase 2: COMPLETE** - Remove operator setup duplication (56 lines saved)
 - ✅ **Phase 3: COMPLETE** - Consolidate error policy functions (improved maintainability)
 - ✅ **Phase 4: COMPLETE** - Extract watcher config helpers (improved consistency)
 
 ### Impact
 **Code Quality Improvement:**
 - **Total lines saved: 566 lines net (-35% from original 1626)**
-- **Consistency**: All controllers use same watcher configuration method
+- **Consistency**: All operators use same watcher configuration method
 - **Maintainability**: Configuration changes made in one place
 - **Documentation**: Clear explanation of semantic vs. default watchers
 - **Inline Annotations**: `#[inline]` for zero-cost abstractions
 
 ### Why
-The pattern `Config::default().any_semantic()` and `Config::default()` was repeated 12 times throughout controller setup. This made it unclear why different controllers used different configurations and made changes error-prone.
+The pattern `Config::default().any_semantic()` and `Config::default()` was repeated 12 times throughout operator setup. This made it unclear why different operators used different configurations and made changes error-prone.
 
 ### Technical Details
 - Two helper functions replace 12 inline configuration calls
@@ -13476,7 +13557,7 @@ The pattern `Config::default().any_semantic()` and `Config::default()` was repea
 
 ### Progress
 - ✅ **Phase 1: COMPLETE** - Consolidate record wrapper functions (510 lines saved)
-- ✅ **Phase 2: COMPLETE** - Remove controller setup duplication (56 lines saved)
+- ✅ **Phase 2: COMPLETE** - Remove operator setup duplication (56 lines saved)
 - ✅ **Phase 3: COMPLETE** - Consolidate error policy functions (improved maintainability)
 
 ### Impact
@@ -13494,8 +13575,8 @@ The four error policy functions (`error_policy`, `error_policy_cluster`, `error_
 - Created generic `error_policy<T, C>()` with type parameters for resource and context
 - All four specialized functions now delegate to the generic implementation
 - Type safety maintained through wrapper functions
-- All controller references updated to use new function names
-- DNS record controllers use `error_policy_records()` for clarity
+- All operator references updated to use new function names
+- DNS record operators use `error_policy_records()` for clarity
 
 ---
 
@@ -13504,11 +13585,11 @@ The four error policy functions (`error_policy`, `error_policy_cluster`, `error_
 **Author:** Erick Bourgeois
 
 ### Changed
-- **`src/main.rs`**: Removed controller setup duplication in `run_controllers_without_leader_election()`
+- **`src/main.rs`**: Removed operator setup duplication in `run_operators_without_leader_election()`
   - **Lines reduced: 1116 → 1060 (56 lines saved, -5.0%)**
-  - Replaced duplicate `tokio::select!` block with call to `run_all_controllers()`
+  - Replaced duplicate `tokio::select!` block with call to `run_all_operators()`
   - Signal handling (SIGINT/SIGTERM) remains in place
-  - Controller execution now delegated to shared function
+  - Operator execution now delegated to shared function
 
 ### Fixed
 - **`src/record_wrappers.rs`**: Fixed clippy warnings
@@ -13525,23 +13606,23 @@ The four error policy functions (`error_policy`, `error_policy_cluster`, `error_
 
 ### Progress
 - ✅ **Phase 1: COMPLETE** - Consolidate record wrapper functions (510 lines saved)
-- ✅ **Phase 2: COMPLETE** - Remove controller setup duplication (52 lines saved)
+- ✅ **Phase 2: COMPLETE** - Remove operator setup duplication (52 lines saved)
 - ⏳ Phase 3: Consolidate error policy functions (Pending, ~32 lines)
 
 ### Impact
 **Code Quality Improvement:**
 - **Total lines saved so far: 566 lines (-35% from original 1626)**
-- **DRY Principle**: Controller setup logic now exists in one place
-- **Maintainability**: Changes to controller error handling made once, not twice
+- **DRY Principle**: Operator setup logic now exists in one place
+- **Maintainability**: Changes to operator error handling made once, not twice
 - **Signal Handling**: Properly preserved for graceful shutdown
-- **Consistency**: Both leader election modes use same controller execution path
+- **Consistency**: Both leader election modes use same operator execution path
 
 ### Why
-Eliminated controller setup duplication between `run_controllers_without_leader_election()` and `run_all_controllers()`. The duplicate `tokio::select!` block monitoring 12 controllers existed in two places, violating the DRY principle.
+Eliminated operator setup duplication between `run_operators_without_leader_election()` and `run_all_operators()`. The duplicate `tokio::select!` block monitoring 12 operators existed in two places, violating the DRY principle.
 
 ### Technical Details
-- `run_controllers_without_leader_election()` now wraps `run_all_controllers()` in signal monitoring
-- Both functions share identical controller error handling logic
+- `run_operators_without_leader_election()` now wraps `run_all_operators()` in signal monitoring
+- Both functions share identical operator error handling logic
 - Signal handling (SIGINT/SIGTERM) preserved for Kubernetes pod lifecycle
 - No functional changes - both leader election modes work identically
 
@@ -13568,7 +13649,7 @@ Eliminated controller setup duplication between `run_controllers_without_leader_
 
 ### Progress
 - ✅ **Phase 1: COMPLETE** - Consolidate record wrapper functions
-- ⏳ Phase 2: Remove controller setup duplication (Pending)
+- ⏳ Phase 2: Remove operator setup duplication (Pending)
 - ⏳ Phase 3: Consolidate error policy functions (Pending)
 
 ### Impact
@@ -13608,7 +13689,7 @@ Successfully eliminated massive code duplication that made maintenance error-pro
 ### Progress
 - ✅ Phase 1a: Created reusable helper module (Complete)
 - ⏳ Phase 1b: Replace old wrapper functions in main.rs (Pending)
-- ⏳ Phase 2: Remove controller setup duplication (Pending)
+- ⏳ Phase 2: Remove operator setup duplication (Pending)
 - ⏳ Phase 3: Consolidate error policy functions (Pending)
 
 ### Why
@@ -13635,7 +13716,7 @@ Breaking the refactoring into smaller, testable phases reduces risk and allows f
 ### Added
 - **`docs/roadmaps/CODE_EFFICIENCY_REFACTORING_PLAN.md`**: Comprehensive plan to eliminate ~1,200 lines of duplicate code
   - Phase 1: Consolidate 8 record wrapper functions using macro (~900 lines → ~150 lines)
-  - Phase 2: Remove controller setup duplication (~60 line reduction)
+  - Phase 2: Remove operator setup duplication (~60 line reduction)
   - Phase 3: Extract ready status checking helpers
   - Phase 4: Consolidate 5 error policy functions (~40 lines → ~8 lines)
   - Phase 5: Add string and duration constants per project guidelines
@@ -13649,7 +13730,7 @@ Identified major code duplication in `src/main.rs`:
    - Total: ~408 lines that can be reduced to ~150 lines with macro
    - Only differences: record type, KIND constant, display name
 
-2. **HIGH**: Controller setup duplicated (lines 243-302 and 381-440)
+2. **HIGH**: Operator setup duplicated (lines 243-302 and 381-440)
    - Same `tokio::select!` block in two locations
    - Can eliminate ~60 lines
 
@@ -13688,7 +13769,7 @@ Current code duplication makes maintenance error-prone:
 4. Verify all tests pass
 
 **Phase 2 (Medium ROI):**
-5. Remove controller setup duplication
+5. Remove operator setup duplication
 6. Consolidate error policy functions
 
 **Phase 3 (Cleanup):**
@@ -13914,16 +13995,16 @@ Before this change, records would trigger zone file regeneration even when only 
 ### Added
 - `src/selector.rs` - New module for label selector matching utilities
 - `src/selector_tests.rs` - Comprehensive unit tests for selector matching logic
-- `DNSZoneContext` struct in `main.rs` - Controller context with reflector store
+- `DNSZoneContext` struct in `main.rs` - Operator context with reflector store
 - Reflector/store pattern for DNSZone caching in memory
 - `.watches()` for all 8 record types (ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord)
-- `error_policy_dnszone()` - Dedicated error policy for DNSZone controller
+- `error_policy_dnszone()` - Dedicated error policy for DNSZone operator
 
 ### Changed
-- **DNSZone Controller**: Now uses kube-rs reflector to maintain in-memory cache of all DNSZones
-- **Watch Pattern**: DNSZone controller watches all 8 record types via label selectors
+- **DNSZone Operator**: Now uses kube-rs reflector to maintain in-memory cache of all DNSZones
+- **Watch Pattern**: DNSZone operator watches all 8 record types via label selectors
 - **Reconciliation**: Event-driven reconciliation when records matching zone selectors change
-- **Context Type**: DNSZone controller now uses `DNSZoneContext` instead of tuple
+- **Context Type**: DNSZone operator now uses `DNSZoneContext` instead of tuple
 
 ### How It Works
 1. Reflector maintains in-memory cache of all DNSZones (Store)
@@ -13933,7 +14014,7 @@ Before this change, records would trigger zone file regeneration even when only 
 5. This enables true event-driven reconciliation without periodic polling
 
 ### Why
-Before this change, the DNSZone controller used periodic reconciliation (30s-5min) to discover records. This was inefficient and resulted in delayed updates. With the reflector pattern, DNSZones reconcile immediately when a record matching their label selector is created, updated, or deleted.
+Before this change, the DNSZone operator used periodic reconciliation (30s-5min) to discover records. This was inefficient and resulted in delayed updates. With the reflector pattern, DNSZones reconcile immediately when a record matching their label selector is created, updated, or deleted.
 
 ### Impact
 - [x] **Event-driven reconciliation** - DNSZones respond to record changes immediately
@@ -14173,7 +14254,7 @@ Keep GitHub Actions dependencies up-to-date with latest bug fixes and security i
 ### Why
 Implement fundamental Kubernetes declarative reconciliation for DNS records:
 - **Persistent Volume Not Required**: Records are recreated automatically when pods restart
-- **Declarative State**: Controller ensures records exist on every reconciliation, not just on spec changes
+- **Declarative State**: Operator ensures records exist on every reconciliation, not just on spec changes
 - **Drift Correction**: If someone manually deletes a record from BIND9, it's automatically recreated
 - **Auto-Healing**: Secondary servers that lose state automatically get records back
 - **Kubernetes Best Practice**: Actual state continuously matches desired state
@@ -14299,7 +14380,7 @@ Together, these changes make Bindy a **fully declarative Kubernetes DNS operator
 ### Why
 Implement fundamental Kubernetes declarative reconciliation for DNS zones:
 - **Persistent Volume Not Required**: Zones are recreated automatically when pods restart
-- **Declarative State**: Controller ensures zones exist on every reconciliation, not just on spec changes
+- **Declarative State**: Operator ensures zones exist on every reconciliation, not just on spec changes
 - **Drift Correction**: If someone manually deletes a zone from BIND9, it's automatically recreated
 - **Auto-Healing**: Secondary servers that lose state automatically get zones back
 - **Kubernetes Best Practice**: Actual state continuously matches desired state
@@ -14362,11 +14443,11 @@ This makes Bindy truly declarative and eliminates the need for persistent volume
 
 ### Why
 Implement fundamental Kubernetes declarative reconciliation principle:
-- **Declarative State**: Controller continuously ensures actual state matches desired state
+- **Declarative State**: Operator continuously ensures actual state matches desired state
 - **Drift Detection**: Detects when managed instances have drifted from cluster spec
 - **Automatic Updates**: When cluster `spec.common.bindcarConfig.image` changes, all managed instances automatically update
 - **No Manual Intervention**: Eliminates need to delete/recreate instances or scale down/up to apply changes
-- **Kubernetes Best Practice**: Follows standard controller pattern of comparing desired vs actual state
+- **Kubernetes Best Practice**: Follows standard operator pattern of comparing desired vs actual state
 
 ### Impact
 - [x] **CRITICAL FIX**: Bind9Cluster now updates existing managed instances when spec changes
@@ -14375,7 +14456,7 @@ Implement fundamental Kubernetes declarative reconciliation principle:
 - [x] Bind9Instance reconciler will then update Deployments, triggering rolling pod updates
 - [x] Works for all `spec.common` fields: version, image, volumes, config_map_refs, bindcar_config
 - [x] No breaking changes - existing clusters continue to work
-- [x] Proper declarative reconciliation aligns with Kubernetes controller best practices
+- [x] Proper declarative reconciliation aligns with Kubernetes operator best practices
 
 ### Example Use Cases
 
@@ -14466,7 +14547,7 @@ Standardize on bindcar v0.3.0 as the default version:
 ### Why
 Provide structured error handling for Bindcar HTTP API and Hickory DNS client operations:
 - **Better Observability**: Structured errors enable better logging, metrics, and status reporting
-- **Retry Logic**: `is_transient()` method allows controllers to determine if errors should be retried
+- **Retry Logic**: `is_transient()` method allows operators to determine if errors should be retried
 - **Status Updates**: `status_reason()` method provides Kubernetes-standard status condition reasons
 - **Type Safety**: Using `thiserror` instead of string-based errors catches errors at compile time
 - **Debugging**: Rich context in error messages (endpoint, zone, server, reason) aids troubleshooting
@@ -14595,7 +14676,7 @@ kubectl get dnszone -o wide
 **Author:** Erick Bourgeois
 
 ### Changed
-- `src/reconcilers/records.rs`: Fixed critical bug where records wouldn't reconcile when DNSZone controller added zone annotation
+- `src/reconcilers/records.rs`: Fixed critical bug where records wouldn't reconcile when DNSZone operator added zone annotation
   - Moved annotation check BEFORE generation check in all record reconcilers (A, AAAA, TXT, CNAME, MX, NS, SRV, CAA)
   - Added zone annotation change detection to trigger reconciliation even when spec unchanged
   - Records now check if zone annotation changed from previous value in `status.zone`
@@ -14603,7 +14684,7 @@ kubectl get dnszone -o wide
 ### Why
 Fixed a race condition in the reconciliation logic:
 1. Record created without zone annotation → reconciler sets status "NotSelected", observedGeneration=1
-2. DNSZone controller adds annotation `bindy.firestoned.io/zone` to record (metadata change, not spec)
+2. DNSZone operator adds annotation `bindy.firestoned.io/zone` to record (metadata change, not spec)
 3. Record reconciler runs but generation=1, observedGeneration=1 → skips reconciliation!
 4. DNS record never created in BIND9
 
@@ -14613,7 +14694,7 @@ The fix ensures records reconcile when:
 - Spec changes (normal case)
 
 ### Impact
-- [x] **CRITICAL FIX**: Records now properly reconcile when DNSZone controller tags them
+- [x] **CRITICAL FIX**: Records now properly reconcile when DNSZone operator tags them
 - [x] DNS records now created in BIND9 after zone annotation is set
 - [x] No breaking changes - backward compatible with existing deployments
 - [x] All tests passing (474 tests)
@@ -14657,8 +14738,8 @@ This ensures annotation changes trigger reconciliation even when the record's sp
   - All record types now reconcile to single zone identified by annotation
 
 ### Why
-Completes the migration to Kubernetes best practices for controller ownership patterns:
-- **Separation of Concerns**: DNSZone controller owns zone discovery and record tagging; record reconcilers only manage DNS data
+Completes the migration to Kubernetes best practices for operator ownership patterns:
+- **Separation of Concerns**: DNSZone operator owns zone discovery and record tagging; record reconcilers only manage DNS data
 - **Performance**: No label selector evaluation on every record reconciliation
 - **Consistency**: All record types now use the same ownership pattern
 - **Simplicity**: Record reconcilers are simpler - single zone, no loops
@@ -14714,7 +14795,7 @@ Ensures DNSZone status stays accurate when records are deleted:
   - Simplified error handling and status updates
 
 ### Why
-Completes the zone ownership model by making record reconcilers use the annotations set by DNSZone controller:
+Completes the zone ownership model by making record reconcilers use the annotations set by DNSZone operator:
 - **Single Responsibility**: Records no longer query for zones; they trust the annotation
 - **Performance**: No need to list all DNSZones and evaluate label selectors on every reconciliation
 - **Clear Contract**: Annotation is the source of truth for ownership
@@ -14753,7 +14834,7 @@ Apply the same refactoring pattern to:
 - `deploy/crds/*.crd.yaml`: Regenerated all CRD YAML files with new status.zone field
 
 ### Why
-Implements Kubernetes controller best practices for zone/record ownership separation:
+Implements Kubernetes operator best practices for zone/record ownership separation:
 - **Single Responsibility**: DNSZone manages zone infrastructure and record selection; Record reconcilers manage DNS data
 - **Clear Ownership**: Annotations make ownership visible and queryable (`kubectl get arecords -l bindy.firestoned.io/zone=example.com`)
 - **Eventual Consistency**: Records gracefully untagged when they no longer match selectors
@@ -14835,12 +14916,12 @@ After deploying this fix, verify the loop is eliminated:
 
 ```bash
 # Watch reconciliation frequency
-kubectl logs -f deployment/bindy-controller -n dns-system | grep "Reconciling DNSZone"
+kubectl logs -f deployment/bindy-operator -n dns-system | grep "Reconciling DNSZone"
 
 # Should see reconciliation every 5 minutes (when Ready), NOT continuously every 100ms
 
 # Check status updates
-kubectl logs -f deployment/bindy-controller -n dns-system | grep "PATCH.*dnszones.*status"
+kubectl logs -f deployment/bindy-operator -n dns-system | grep "PATCH.*dnszones.*status"
 
 # Should see SINGLE PATCH per reconciliation, NOT 13 PATCHes
 ```
@@ -14889,7 +14970,7 @@ kubectl logs -f deployment/bindy-controller -n dns-system | grep "PATCH.*dnszone
 - Pattern designed to align with [kube-condition](https://github.com/firestoned/kube-condition) project
 - Future migration to kube-condition will be straightforward refactor
 - Centralizes all status management in one place
-- Follows Kubernetes controller best practices
+- Follows Kubernetes operator best practices
 
 **Benefits:**
 1. Eliminates tight reconciliation loop (1 status update per reconciliation instead of 18)
@@ -14928,17 +15009,17 @@ kubectl logs -f deployment/bindy-controller -n dns-system | grep "PATCH.*dnszone
   - Recommendation to keep current architecture and optionally implement Phase 1 later
 - `src/reconcilers/dnszone.rs`: Added `find_zones_selecting_record()` helper function for future reflector-based watches
 - `src/reconcilers/mod.rs`: Exported `find_zones_selecting_record()` for public use
-- `src/main.rs`: Updated DNSZone controller comments explaining current architecture vs canonical pattern
+- `src/main.rs`: Updated DNSZone operator comments explaining current architecture vs canonical pattern
 
 ### Why
 
 **Context:**
 - Bindy's current architecture uses periodic DNSZone reconciliation (5min for ready zones) to discover records
-- Individual record controllers update BIND9 immediately via dynamic DNS updates
+- Individual record operators update BIND9 immediately via dynamic DNS updates
 - This is a hybrid model: immediate record updates + periodic zone-level synchronization
 
 **Canonical Pattern:**
-- Kubernetes controllers typically use `.watches()` with mapper functions
+- Kubernetes operators typically use `.watches()` with mapper functions
 - When a child (ARecord) changes, mapper triggers parent (DNSZone) reconciliation
 - Provides event-driven reconciliation instead of periodic polling
 
@@ -15078,7 +15159,7 @@ This hybrid architecture solves all three issues while maintaining **separation 
 1. **Parallel Record Reconciliation**: Each record reconciles independently in parallel, improving performance for zones with many records
 2. **Clear Separation of Concerns**: DNSZone = orchestration, Record = actual DNS operations
 3. **Better Error Granularity**: Individual record failures don't block entire zone reconciliation
-4. **Kubernetes-Native**: Follows controller pattern of watching individual resources
+4. **Kubernetes-Native**: Follows operator pattern of watching individual resources
 5. **Scalable**: Can handle hundreds of records per zone without blocking
 6. **Single Zone Transfer**: Only one zone transfer triggered when all records ready (not N transfers for N records)
 
@@ -15586,7 +15667,7 @@ Implementing least-privilege RBAC for status subresources:
 kubectl apply -f deploy/rbac/role.yaml
 
 # Verify permissions are applied
-kubectl auth can-i update bind9instances/status --as=system:serviceaccount:dns-system:bindy-controller
+kubectl auth can-i update bind9instances/status --as=system:serviceaccount:dns-system:bindy-operator
 ```
 
 ## [2025-12-23 23:45] - Breaking: Upgrade All CRD APIs from v1alpha1 to v1beta1
@@ -15679,7 +15760,7 @@ kubectl get arecords,dnszones,bind9clusters,clusterbind9providers,bind9instances
   - `src/reconcilers/`: Renamed `bind9globalcluster.rs` to `clusterbind9provider.rs`
   - `src/reconcilers/`: Renamed `bind9globalcluster_tests.rs` to `clusterbind9provider_tests.rs`
   - `src/reconcilers/mod.rs`: Updated exports to use new function names
-  - `src/main.rs`: Updated controller registration and wrapper functions
+  - `src/main.rs`: Updated operator registration and wrapper functions
   - All reconcilers updated to use new type names
 - **Field Rename**: Changed DNSZone field from `clusterRef` to `clusterProviderRef`
   - `src/crd.rs`: Updated DNSZoneSpec field name
@@ -16217,7 +16298,7 @@ The current status implementation only shows overall readiness (e.g., "2/3 insta
 This design enables:
 1. **Faster troubleshooting**: One `kubectl get` shows exactly which child is failing
 2. **Better observability**: Prometheus can alert on specific failure reasons
-3. **Automated remediation**: Controllers can react to specific condition reasons (e.g., HTTP 404 vs 503)
+3. **Automated remediation**: Operators can react to specific condition reasons (e.g., HTTP 404 vs 503)
 4. **Clearer failure modes**: Users understand WHY something failed with actionable HTTP error codes
 
 ### Impact
@@ -16508,15 +16589,15 @@ All added licenses are permissive or have weak copyleft restrictions compatible 
   - Updated audit questions to reflect new permission model
 
 - `docs/src/compliance/basel-iii.md`: Updated access control matrix (lines 92, 102)
-  - Changed controller Secret access from "Read-only" to "Create/Delete (RNDC keys)"
-  - Changed controller CRD access to "Read/Write/Delete (managed)" with clarification
+  - Changed operator Secret access from "Read-only" to "Create/Delete (RNDC keys)"
+  - Changed operator CRD access to "Read/Write/Delete (managed)" with clarification
 
 - `docs/src/compliance/nist.md`: Updated access control description (line 52)
   - Changed "read-only secrets, no deletes" to "minimal delete permissions for lifecycle management"
 
 - `docs/src/compliance/overview.md`: Updated compliance summary (lines 124-125)
   - Changed "read-only access to secrets" to "minimal required permissions"
-  - Clarified that controller cannot delete user resources (least privilege maintained)
+  - Clarified that operator cannot delete user resources (least privilege maintained)
 
 ### Why
 **User Request:** "please make sure compliance and security documentation is inline with these changes"
@@ -16620,7 +16701,7 @@ During compliance hardening, Secret permissions were incorrectly reduced to read
 **Compliance Impact:**
 - **PCI-DSS 7.1.2**: Minimal Secret permissions for RNDC lifecycle management
 - **SOX 404**: Automated RNDC key provisioning and cleanup (no manual intervention)
-- **Least Privilege**: Controller cannot update/patch existing Secrets, only create/delete
+- **Least Privilege**: Operator cannot update/patch existing Secrets, only create/delete
 
 ### Impact
 - [ ] Breaking change
@@ -16739,7 +16820,7 @@ During compliance hardening, Secret permissions were incorrectly reduced to read
 ### Added
 
 #### M-4: Fix Production Log Level ✅
-- **`deploy/controller/configmap.yaml`** - New ConfigMap for runtime configuration:
+- **`deploy/operator/configmap.yaml`** - New ConfigMap for runtime configuration:
   - `log-level: "info"` (default for production, down from `debug`)
   - `log-format: "json"` (structured logging for SIEM integration)
 - **`docs/src/operations/log-level-change.md`** - Guide for changing log levels at runtime
@@ -16778,7 +16859,7 @@ During compliance hardening, Secret permissions were incorrectly reduced to read
   - **Status:** Documentation complete, code implementation deferred to future work
 
 ### Changed
-- **`deploy/controller/deployment.yaml`**:
+- **`deploy/operator/deployment.yaml`**:
   - `RUST_LOG` environment variable now sourced from ConfigMap (was hardcoded `"debug"`)
   - `RUST_LOG_FORMAT` environment variable now sourced from ConfigMap (new)
   - Allows runtime log level changes without redeployment
@@ -16984,7 +17065,7 @@ Implement industry-standard cryptographic signing using Sigstore/Cosign with key
 **Compliance Benefits:**
 - Meets regulatory requirements for artifact signing in banking environments
 - Provides audit trail for artifact provenance
-- Enables policy enforcement in Kubernetes (Kyverno, policy-controller)
+- Enables policy enforcement in Kubernetes (Kyverno, policy-operator)
 - Supports zero-trust security model
 
 ### Impact
@@ -17362,12 +17443,12 @@ Previously, compliance documentation was only available in `/docs/security/*.md`
   - **Kubernetes Audit Policy**: Logs all secret access (get, list, watch) in `dns-system` namespace
   - **Audit Queries**: 5 pre-built Elasticsearch queries for compliance reviews:
     - **Q1**: All secret access by ServiceAccount (quarterly reviews)
-    - **Q2**: Non-controller secret access (unauthorized access detection)
+    - **Q2**: Non-operator secret access (unauthorized access detection)
     - **Q3**: Failed secret access attempts (brute-force detection)
     - **Q4**: After-hours secret access (insider threat detection)
     - **Q5**: Specific secret access history (compliance audits)
   - **Alerting Rules**: 3 Prometheus alerting rules for real-time anomaly detection:
-    - **UnauthorizedSecretAccess** (CRITICAL): Non-controller ServiceAccount accessed secrets
+    - **UnauthorizedSecretAccess** (CRITICAL): Non-operator ServiceAccount accessed secrets
     - **ExcessiveSecretAccess** (WARNING): Abnormally high secret access rate
     - **FailedSecretAccessAttempts** (WARNING): Multiple failed access attempts
   - **Compliance Mapping**: SOX 404, PCI-DSS 7.1.2, PCI-DSS 10.2.1, Basel III
@@ -17398,7 +17479,7 @@ Previously, compliance documentation was only available in `/docs/security/*.md`
 
 ### Impact
 - ✅ **Compliance**: H-3 complete - Secret access audit trail documented and implemented
-- ✅ **Least Privilege**: Only `bindy-controller` ServiceAccount can read secrets (RBAC enforced)
+- ✅ **Least Privilege**: Only `bindy-operator` ServiceAccount can read secrets (RBAC enforced)
 - ✅ **Auditability**: All secret access logged with 7-year retention (SOX 404)
 - ✅ **Real-Time Monitoring**: Prometheus alerts detect unauthorized access in < 1 minute
 - ✅ **Incident Response**: Automated alerting triggers P4 playbook (RNDC Key Compromise)
@@ -17418,7 +17499,7 @@ Previously, compliance documentation was only available in `/docs/security/*.md`
 ### Added
 - **`docs/security/AUDIT_LOG_RETENTION.md`** (650 lines) - Comprehensive audit log retention policy:
   - **Retention Requirements**: SOX 404 (7 years), PCI-DSS 10.5.1 (1 year), Basel III (7 years)
-  - **Log Types**: 6 log types (Kubernetes audit, controller, secrets, DNS queries, security scans, incidents)
+  - **Log Types**: 6 log types (Kubernetes audit, operator, secrets, DNS queries, security scans, incidents)
   - **Log Collection**: Kubernetes audit policy, Fluent Bit configuration, BIND9 query logging
   - **Log Storage**: Active storage (90 days Elasticsearch) + Archive (7 years S3 Glacier WORM)
   - **Log Integrity**: SHA-256 checksums, GPG signing (optional), tamper detection
@@ -17468,16 +17549,16 @@ Previously, compliance documentation was only available in `/docs/security/*.md`
 - **`docs/security/THREAT_MODEL.md`** (560 lines) - Comprehensive STRIDE threat analysis:
   - **STRIDE Analysis**: 15 threat scenarios (Spoofing, Tampering, Repudiation, Information Disclosure, DoS, Privilege Escalation)
   - **Attack Surface**: 6 attack vectors (Kubernetes API, DNS port 53, RNDC port 953, Container images, CRDs, Git repository)
-  - **Threat Scenarios**: 5 detailed scenarios (Compromised controller, cache poisoning, supply chain attack, insider threat, DDoS)
+  - **Threat Scenarios**: 5 detailed scenarios (Compromised operator, cache poisoning, supply chain attack, insider threat, DDoS)
   - **Mitigations**: 10 implemented + 10 planned mitigations with compliance mapping
-  - **Assets**: High-value asset inventory (DNS zone data, RNDC keys, controller binary, etc.)
+  - **Assets**: High-value asset inventory (DNS zone data, RNDC keys, operator binary, etc.)
   - **Trust Boundaries**: 5 security domains with trust level classification
 
 - **`docs/security/ARCHITECTURE.md`** (450 lines) - Security architecture documentation:
   - **Security Domains**: 5 domains (Development/CI-CD, Control Plane, dns-system, Tenant namespaces, External network)
   - **Data Flow Diagrams**: 4 Mermaid diagrams (DNS reconciliation, query flow, secret access, supply chain)
   - **Trust Boundaries**: Visual boundary map with trust levels
-  - **Authentication & Authorization**: RBAC architecture, controller permissions, user permissions
+  - **Authentication & Authorization**: RBAC architecture, operator permissions, user permissions
   - **Secrets Management**: Secret lifecycle, protection (at rest, in transit, in use)
   - **Network Security**: Network architecture, planned NetworkPolicies (L-1)
   - **Container Security**: Pod security hardening, image security (Chainguard zero-CVE)
@@ -17486,7 +17567,7 @@ Previously, compliance documentation was only available in `/docs/security/*.md`
 - **`docs/security/INCIDENT_RESPONSE.md`** (800 lines) - Incident response playbooks:
   - **7 Incident Playbooks**: P1-P7 covering all critical/high severity scenarios
   - **P1: Critical Vulnerability** - 24-hour remediation SLA, patch deployment procedure
-  - **P2: Compromised Controller** - Isolation, credential rotation, forensic preservation
+  - **P2: Compromised Operator** - Isolation, credential rotation, forensic preservation
   - **P3: DNS Service Outage** - Quick recovery procedures for common failures (OOM, config error, image pull)
   - **P4: RNDC Key Compromise** - Emergency key rotation, secret cleanup, access audit
   - **P5: Unauthorized DNS Changes** - Revert procedures, RBAC fixes, drift detection
@@ -17913,21 +17994,21 @@ This project operates in a **regulated banking environment** where compliance do
 **Author:** Erick Bourgeois
 
 ### Changed
-- `deploy/rbac/role.yaml`: **BREAKING** - Removed all delete permissions from controller ServiceAccount
-  - **Bind9Instance, DNSZone, and all DNS record CRDs**: Removed `delete` verb (controller can only read/write)
+- `deploy/rbac/role.yaml`: **BREAKING** - Removed all delete permissions from operator ServiceAccount
+  - **Bind9Instance, DNSZone, and all DNS record CRDs**: Removed `delete` verb (operator can only read/write)
   - **Secrets**: Changed to **READ-ONLY** (`get`, `list`, `watch` only) - PCI-DSS 7.1.2 compliance
   - **ConfigMaps, Deployments, Services, ServiceAccounts**: Removed `delete` verb
-  - Controller now operates with **minimum required permissions** (least privilege principle)
+  - Operator now operates with **minimum required permissions** (least privilege principle)
 
 ### Added
 - `deploy/rbac/role-admin.yaml`: New ClusterRole for administrative/destructive operations
-  - Contains all `delete` permissions removed from controller role
+  - Contains all `delete` permissions removed from operator role
   - **CRITICAL**: Must ONLY be bound to human administrators, NEVER to ServiceAccounts
   - Supports temporary bindings for specific admin tasks
   - Includes `deletecollection` for bulk operations
 - `deploy/rbac/README.md`: Comprehensive RBAC documentation (400+ lines)
   - Detailed role explanations and purpose
-  - Usage examples for controller and admin operations
+  - Usage examples for operator and admin operations
   - Verification commands using `kubectl auth can-i`
   - Compliance mapping (PCI-DSS 7.1.2, SOX 404, Basel III)
   - Migration guide from previous RBAC
@@ -17935,30 +18016,30 @@ This project operates in a **regulated banking environment** where compliance do
   - Security best practices
 - `deploy/rbac/verify-rbac.sh`: Automated verification test script
   - Tests 60+ permission scenarios
-  - Validates controller has NO delete permissions
+  - Validates operator has NO delete permissions
   - Validates Secrets are read-only
   - Exit code indicates pass/fail for CI/CD integration
 
 ### Why
 The previous RBAC configuration violated the **principle of least privilege** required by PCI-DSS 7.1.2, SOX 404, and Basel III operational risk controls. Specifically:
 
-1. **PCI-DSS 7.1.2 Violation**: Controller had delete permissions on Secrets containing sensitive RNDC keys
-2. **Operational Risk**: Compromised controller could delete all infrastructure (Deployments, Services, ConfigMaps)
+1. **PCI-DSS 7.1.2 Violation**: Operator had delete permissions on Secrets containing sensitive RNDC keys
+2. **Operational Risk**: Compromised operator could delete all infrastructure (Deployments, Services, ConfigMaps)
 3. **Change Control**: Automated system had destructive permissions without approval workflow
 4. **Blast Radius**: Single credential compromise could wipe entire DNS infrastructure
 
 **New Security Model**:
-- **Controller**: Minimum permissions for normal operation (create, read, update, patch)
-- **Secrets**: Read-only access to RNDC keys (controller never modifies secrets)
+- **Operator**: Minimum permissions for normal operation (create, read, update, patch)
+- **Secrets**: Read-only access to RNDC keys (operator never modifies secrets)
 - **Admin Role**: Separate role for deletions (requires explicit human binding)
-- **Defense in Depth**: Owner references handle cleanup, not controller delete permissions
+- **Defense in Depth**: Owner references handle cleanup, not operator delete permissions
 - **Audit Trail**: All destructive operations require admin role binding (logged in Kubernetes audit)
 
 ### Impact
-- [x] **BREAKING CHANGE** - Controller no longer has delete permissions
+- [x] **BREAKING CHANGE** - Operator no longer has delete permissions
 - [x] Requires RBAC redeployment: `kubectl replace --force -f deploy/rbac/`
 - [x] Admin operations now require temporary role binding (see README)
-- [ ] Cluster rollout NOT required (controller functionality unchanged)
+- [ ] Cluster rollout NOT required (operator functionality unchanged)
 
 **Migration Required**:
 1. Apply new RBAC: `kubectl apply -f deploy/rbac/role.yaml`
@@ -17972,9 +18053,9 @@ The previous RBAC configuration violated the **principle of least privilege** re
    ```
 
 **What Still Works**:
-- Creating/updating all resources (controller can still reconcile normally)
-- Reading Secrets for RNDC keys (controller has read access)
-- Cleanup via owner references (Kubernetes garbage collection, not controller delete)
+- Creating/updating all resources (operator can still reconcile normally)
+- Reading Secrets for RNDC keys (operator has read access)
+- Cleanup via owner references (Kubernetes garbage collection, not operator delete)
 - Status updates and reconciliation loops
 
 **What Requires Admin Role**:
@@ -17983,7 +18064,7 @@ The previous RBAC configuration violated the **principle of least privilege** re
 - Bulk delete operations (deletecollection)
 
 **Compliance Evidence**:
-- `deploy/rbac/role.yaml` - Minimal controller permissions
+- `deploy/rbac/role.yaml` - Minimal operator permissions
 - `deploy/rbac/role-admin.yaml` - Separation of duties
 - `deploy/rbac/README.md` - Documentation and procedures
 - `deploy/rbac/verify-rbac.sh` - Automated verification
@@ -17991,7 +18072,7 @@ The previous RBAC configuration violated the **principle of least privilege** re
 
 **Tests**:
 - RBAC verification script: 60+ permission tests
-- All controller operations validated without delete permissions
+- All operator operations validated without delete permissions
 - Multi-tenancy tests pass with new RBAC
 
 ## [2025-12-16 21:00] - Fix ServiceAccount label conflict in multi-tenancy scenarios
@@ -18316,12 +18397,12 @@ The implementation supports both namespace-scoped and cluster-scoped resources, 
 
 ### Changed
 - `docker/Dockerfile`: Removed COPY commands for `dig`, `nslookup`, and `host` binaries
-  - These DNS query tools are not needed by the controller
-  - The controller only needs BIND9 server (`named`) and RNDC control binaries
+  - These DNS query tools are not needed by the operator
+  - The operator only needs BIND9 server (`named`) and RNDC control binaries
   - Reduces image size and attack surface
 
 ### Why
-The Docker build was failing because Debian 12 doesn't place DNS query utilities (`dig`, `nslookup`, `host`) in `/usr/bin/` - they're provided by `bind9-dnsutils` and may be in different locations. Since the controller doesn't actually use these tools (it only manages BIND9 via RNDC), we removed them entirely. This makes the image smaller, more secure (fewer binaries = smaller attack surface), and fixes the build error.
+The Docker build was failing because Debian 12 doesn't place DNS query utilities (`dig`, `nslookup`, `host`) in `/usr/bin/` - they're provided by `bind9-dnsutils` and may be in different locations. Since the operator doesn't actually use these tools (it only manages BIND9 via RNDC), we removed them entirely. This makes the image smaller, more secure (fewer binaries = smaller attack surface), and fixes the build error.
 
 ### Impact
 - [ ] Breaking change
@@ -18375,27 +18456,27 @@ The Dockerfile was moved to the `docker/` directory, but the GitHub Actions work
 - [ ] Config change only
 - [x] Documentation only (CI/CD fix)
 
-## [2025-12-16 01:30] - Rename deploy/operator directory to deploy/controller
+## [2025-12-16 01:30] - Rename deploy/operator directory to deploy/operator
 
 **Author:** Erick Bourgeois
 
 ### Changed
-- **Directory structure**: Renamed `deploy/operator/` to `deploy/controller/` for clarity and consistency
-- `Makefile`: Updated all references from `deploy/operator` to `deploy/controller`
+- **Directory structure**: Renamed `deploy/operator/` to `deploy/operator/` for clarity and consistency
+- `Makefile`: Updated all references from `deploy/operator` to `deploy/operator`
 - `deploy/kind-deploy.sh`: Updated deployment path
 - `tests/integration_test.sh`: Updated deployment path
 - `README.md`: Updated installation instructions
 - Documentation files updated:
   - `docs/src/installation/quickstart.md`
   - `docs/src/installation/installation.md`
-  - `docs/src/installation/controller.md`
+  - `docs/src/installation/operator.md`
   - `docs/src/operations/migration-guide.md`
   - `docs/src/reference/examples-simple.md`
   - `deploy/README.md`
   - `deploy/TESTING.md`
 
 ### Why
-The directory name `operator` was ambiguous and could be confused with the operator pattern itself. Renaming to `controller` makes it clearer that this directory contains the controller deployment manifest, aligning with Kubernetes terminology where "controller" refers to the reconciliation loop implementation.
+The directory name `operator` was ambiguous and could be confused with the operator pattern itself. Renaming to `operator` makes it clearer that this directory contains the operator deployment manifest, aligning with Kubernetes terminology where "operator" refers to the reconciliation loop implementation.
 
 ### Impact
 - [ ] Breaking change
@@ -18504,8 +18585,8 @@ kubectl get dnszones -o custom-columns=NAME:.metadata.name,ZONE:.spec.zoneName
 
 ### Fixed
 - `src/main.rs`:
-  - Configured all record controllers (ARecord, TXTRecord, AAAARecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord) to use `.any_semantic()` watcher configuration
-  - This prevents controllers from triggering reconciliations when only the status subresource changes
+  - Configured all record operators (ARecord, TXTRecord, AAAARecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord) to use `.any_semantic()` watcher configuration
+  - This prevents operators from triggering reconciliations when only the status subresource changes
   - Previously used `Config::default()` which watches all changes including status updates
   - Status updates no longer trigger new reconciliation loops
 
@@ -18591,7 +18672,7 @@ Consolidates all Docker-related build files into a single directory, improving r
   - Implemented PATCH operation when `Bind9Cluster` already exists to propagate spec updates
   - When `Bind9GlobalCluster` spec changes (e.g., image version), the update now properly cascades to `Bind9Cluster`
   - Changed from "create-or-ignore" pattern to "create-or-patch" pattern
-  - Uses `PatchParams::apply("bindy-controller").force()` with server-side apply for consistent updates
+  - Uses `PatchParams::apply("bindy-operator").force()` with server-side apply for consistent updates
   - Added `force: true` to override field manager conflicts when updating existing resources
   - Fixed PATCH payload to include required `apiVersion` and `kind` fields for server-side apply
   - Uses constants from `src/constants.rs` (`API_GROUP_VERSION`, `KIND_BIND9_CLUSTER`) instead of hardcoded strings
@@ -18600,7 +18681,7 @@ Consolidates all Docker-related build files into a single directory, improving r
   - Implemented PATCH operation when `Bind9Instance` already exists to propagate spec updates
   - When `Bind9Cluster` spec changes, the update now properly cascades to `Bind9Instance` resources
   - Previously only updated labels/annotations on existing instances, now updates entire spec
-  - Uses `PatchParams::apply("bindy-controller").force()` with server-side apply for consistent updates
+  - Uses `PatchParams::apply("bindy-operator").force()` with server-side apply for consistent updates
   - Added `force: true` to override field manager conflicts when updating existing resources
   - Fixed PATCH payload to include required `apiVersion` and `kind` fields for server-side apply
   - Uses constants from `src/constants.rs` (`API_GROUP_VERSION`, `KIND_BIND9_CLUSTER`, `KIND_BIND9_INSTANCE`) instead of hardcoded strings
@@ -18684,7 +18765,7 @@ match api.create(&PostParams::default(), &resource).await {
     Ok(_) => info!("Created"),
     Err(e) if e.to_string().contains("AlreadyExists") => {
         // PATCH the existing resource with updated spec
-        api.patch(&name, &PatchParams::apply("bindy-controller"), &Patch::Apply(&patch)).await?;
+        api.patch(&name, &PatchParams::apply("bindy-operator"), &Patch::Apply(&patch)).await?;
     }
 }
 ```
@@ -18921,7 +19002,7 @@ The namespace-scoped `Bind9Cluster` reconciler already has all the logic for cre
 
 ### Impact
 - [x] Bug fix - Critical issue preventing GlobalCluster instances from starting
-- [x] Architectural improvement - Proper delegation pattern between controllers
+- [x] Architectural improvement - Proper delegation pattern between operators
 - [ ] Breaking change
 - [ ] Documentation only
 
@@ -19047,7 +19128,7 @@ api-example-com   example.com   api    600    True
   - Added proper error handling for missing HTTP endpoints
 
 ### Why
-After successfully reconciling DNS records via RFC 2136 (port 53), the controller attempted to notify
+After successfully reconciling DNS records via RFC 2136 (port 53), the operator attempted to notify
 secondaries about the change. However, the `notify_zone()` function calls the HTTP API endpoint
 `/api/v1/zones/{zone_name}/notify`, which runs on the HTTP API port (default 8080), not port 53.
 
@@ -19121,14 +19202,14 @@ This prevented records from transitioning from Progressing to Ready status after
   - Removed code that loaded key from first instance only (old lines 542-549)
 
 ### Why
-The controller was loading the RNDC key from the **first instance only**, then reusing that same key
+The operator was loading the RNDC key from the **first instance only**, then reusing that same key
 to authenticate with **all instances** in the cluster. This caused TSIG verification failures (BADSIG)
 on instances 2, 3, etc., because each instance has its own unique RNDC secret.
 
 **Root Cause:**
 - Each Bind9Instance creates its own RNDC secret: `{instance-name}-rndc-key`
 - This is correct for security isolation (each instance has independent credentials)
-- But the controller code called `load_rndc_key()` only once before the instance loop
+- But the operator code called `load_rndc_key()` only once before the instance loop
 - The same key was then passed to all endpoints via the closure
 - TSIG authentication failed on all instances except the first one
 
@@ -19138,7 +19219,7 @@ ERROR tsig verify failure (BADSIG) for production-dns-primary-1 (10.244.1.162)
 ```
 
 This also caused tight reconciliation loops because status conditions would constantly flip between
-Ready and Degraded as the controller repeatedly failed to update instances 2+.
+Ready and Degraded as the operator repeatedly failed to update instances 2+.
 
 ### Impact
 - [ ] Breaking change
@@ -19500,27 +19581,27 @@ spec:
 **New Behavior:**
 `Bind9GlobalCluster` now **automatically creates, updates, and deletes** `Bind9Instance` resources
 based on the replica counts in `spec.primary.replicas` and `spec.secondary.replicas`. Users no longer
-need to manually create instances - just specify the desired replica counts and the controller handles
+need to manually create instances - just specify the desired replica counts and the operator handles
 the rest.
 
 **Scaling:**
-- **Scale up**: Increase replica count → controller creates new instances
-- **Scale down**: Decrease replica count → controller deletes excess instances (highest index first)
+- **Scale up**: Increase replica count → operator creates new instances
+- **Scale down**: Decrease replica count → operator deletes excess instances (highest index first)
 - **Delete cluster**: Deletes all managed instances automatically via finalizers
 
-## [2025-12-14 22:45] - Register Bind9GlobalCluster Controller
+## [2025-12-14 22:45] - Register Bind9GlobalCluster Operator
 
 **Author:** Erick Bourgeois
 
 ### Fixed
-- `src/main.rs`: Registered the `Bind9GlobalCluster` controller that was missing
+- `src/main.rs`: Registered the `Bind9GlobalCluster` operator that was missing
   - Added `Bind9GlobalCluster` to imports
   - Added `reconcile_bind9globalcluster` function import
-  - Created `run_bind9globalcluster_controller()` function
+  - Created `run_bind9globalcluster_operator()` function
   - Created `reconcile_bind9globalcluster_wrapper()` function with metrics
   - Created `error_policy_globalcluster()` error handler
-  - Registered controller in `run_controllers_without_leader_election()`
-  - Registered controller in `run_all_controllers()`
+  - Registered operator in `run_operators_without_leader_election()`
+  - Registered operator in `run_all_operators()`
 - `src/constants.rs`: Added `KIND_BIND9_GLOBALCLUSTER` constant
 
 ### Why
@@ -19532,7 +19613,7 @@ The `Bind9GlobalCluster` reconciler existed in `src/reconcilers/bind9globalclust
 - The cluster would remain in a non-ready state indefinitely
 
 **Fix:**
-The controller is now registered and will:
+The operator is now registered and will:
 1. Watch for `Bind9GlobalCluster` resources
 2. Monitor instance health across all namespaces
 3. Update global cluster status based on instances
@@ -19543,7 +19624,7 @@ The controller is now registered and will:
 ### Impact
 - [ ] Breaking change
 - [ ] Requires cluster rollout
-- [x] Bug fix - controller now works as designed
+- [x] Bug fix - operator now works as designed
 - [ ] Documentation only
 
 ## [2025-12-14 22:30] - Add Service Annotations Support to Bind9Cluster and Bind9GlobalCluster
@@ -19583,8 +19664,8 @@ The controller is now registered and will:
 
 ### Why
 Users need the ability to configure Kubernetes Service annotations for integration with:
-- Load balancer controllers (`MetalLB`, cloud providers)
-- External DNS controllers for automatic DNS record creation
+- Load balancer operators (`MetalLB`, cloud providers)
+- External DNS operators for automatic DNS record creation
 - Service mesh implementations (Linkerd, Istio)
 - Other Kubernetes ecosystem tools that rely on Service annotations
 
@@ -19849,7 +19930,7 @@ $ kubectl apply --dry-run=client -f examples/multi-tenancy.yaml
 
 ### Changed
 - `Makefile`: Added `kind-integration-test-ci` target for CI mode integration tests
-  - Orchestrates full integration test flow: cluster creation, CRD/RBAC installation, controller deployment, test execution, and cleanup
+  - Orchestrates full integration test flow: cluster creation, CRD/RBAC installation, operator deployment, test execution, and cleanup
   - Accepts environment variables: `IMAGE_TAG`, `REGISTRY`, `IMAGE_NAME`, `NAMESPACE`, `KIND_CLUSTER`
   - Includes proper error handling and automatic cleanup on failure
   - Renamed `kind-integration-test` to clarify it uses local builds
@@ -19969,7 +20050,7 @@ $ kubectl apply --dry-run=client -f examples/multi-tenancy.yaml
 - `src/reconcilers/dnszone.rs`: Created `get_cluster_ref_from_spec()` helper for mutual exclusivity validation
 - `src/reconcilers/dnszone.rs`: Updated reconciler to handle both namespace-scoped and cluster-scoped cluster lookups
 - `src/reconcilers/mod.rs`: Exported new `bind9globalcluster` reconciler functions
-- `deploy/rbac/role.yaml`: Added `bind9globalclusters` and `bind9globalclusters/status` permissions to controller ClusterRole
+- `deploy/rbac/role.yaml`: Added `bind9globalclusters` and `bind9globalclusters/status` permissions to operator ClusterRole
 - `deploy/crds/*.crd.yaml`: Regenerated all CRD YAMLs to reflect schema changes
 - `docs/src/reference/api.md`: Regenerated API documentation
 - `tests/simple_integration.rs`: Expanded from 3 to 11 comprehensive integration tests covering all CRD types with full CRUD operations (100% test coverage)
@@ -20183,7 +20264,7 @@ The `Bind9Instance` CRD is 393KB, which causes `kubectl apply` to fail when stor
   - `METRICS_SERVER_BIND_ADDRESS`: "0.0.0.0"
 - `src/main.rs`: HTTP metrics server using Axum
   - Metrics endpoint at http://0.0.0.0:8080/metrics
-  - Async server running concurrently with controllers
+  - Async server running concurrently with operators
   - Instrumented Bind9Cluster reconciler wrapper (example implementation)
 - `Cargo.toml`: New dependencies
   - `prometheus = "0.13"`: Prometheus client library
@@ -20195,7 +20276,7 @@ The operator lacked observability into its operations. Without metrics, it was i
 - Track resource lifecycle events
 - Identify error patterns and failure modes
 - Observe leader election behavior in HA deployments
-- Measure controller lag and responsiveness
+- Measure operator lag and responsiveness
 
 The deployment manifest already had Prometheus scrape annotations configured on port 8080, but no metrics server was implemented.
 
@@ -20206,7 +20287,7 @@ The deployment manifest already had Prometheus scrape annotations configured on 
 - [x] New feature (opt-in)
 
 **Benefits:**
-1. **Full Observability** - Prometheus-compatible metrics for all controller operations
+1. **Full Observability** - Prometheus-compatible metrics for all operator operations
 2. **Performance Monitoring** - Track reconciliation duration and identify slow operations
 3. **Error Tracking** - Categorized error metrics for debugging and alerting
 4. **HA Monitoring** - Leader election status and failover events visible
@@ -20223,7 +20304,7 @@ The deployment manifest already had Prometheus scrape annotations configured on 
 - `bindy_firestoned_io_errors_total{resource_type, error_type}` - Error categorization
 - `bindy_firestoned_io_leader_elections_total{status}` - Leader election events
 - `bindy_firestoned_io_leader_status{pod_name}` - Current leader status (gauge, 1=leader, 0=follower)
-- `bindy_firestoned_io_generation_observation_lag_seconds{resource_type}` - Controller responsiveness
+- `bindy_firestoned_io_generation_observation_lag_seconds{resource_type}` - Operator responsiveness
 - `bindy_firestoned_io_requeues_total{resource_type, reason}` - Requeue event tracking
 
 **Next Steps:**
@@ -20531,16 +20612,16 @@ Progressing/SecondaryReconciling
   - ServiceAccount is now a shared resource across all Bind9Instance resources in the namespace
 
 ### Why
-Multiple Bind9Instance resources (primary and secondary) in the same namespace were trying to create the same ServiceAccount named "bind9", each setting themselves as the controller owner (`Controller: true` in ownerReferences).
+Multiple Bind9Instance resources (primary and secondary) in the same namespace were trying to create the same ServiceAccount named "bind9", each setting themselves as the operator owner (`Operator: true` in ownerReferences).
 
 **Kubernetes Constraint:**
-Only ONE ownerReference can have `Controller: true`. When multiple instances tried to claim controller ownership, Kubernetes rejected the updates with error:
+Only ONE ownerReference can have `Operator: true`. When multiple instances tried to claim operator ownership, Kubernetes rejected the updates with error:
 ```
-ServiceAccount "bind9" is invalid: metadata.ownerReferences: Only one reference can have Controller set to true
+ServiceAccount "bind9" is invalid: metadata.ownerReferences: Only one reference can have Operator set to true
 ```
 
 **Root Cause:**
-The `build_service_account()` function called `build_owner_references(instance)`, which always sets `controller: Some(true)`. Since all instances in a namespace share the same ServiceAccount name ("bind9"), this caused ownership conflicts.
+The `build_service_account()` function called `build_owner_references(instance)`, which always sets `operator: Some(true)`. Since all instances in a namespace share the same ServiceAccount name ("bind9"), this caused ownership conflicts.
 
 **Solution:**
 ServiceAccount is now created **without ownerReferences** (`owner_references: None`). This is the correct pattern for shared resources in Kubernetes:
@@ -20597,7 +20678,7 @@ Added resource existence check (drift detection):
    - AND resources exist (no drift)
 4. If resources are missing, reconcile regardless of generation
 
-This follows Kubernetes operator best practices where controllers continuously reconcile toward desired state, not just on spec changes.
+This follows Kubernetes operator best practices where operators continuously reconcile toward desired state, not just on spec changes.
 
 ### Impact
 - [x] Bug fix - No breaking changes
@@ -20664,12 +20745,12 @@ Making the deletion operation idempotent follows Kubernetes operator best practi
   - Imported `build_service_account` and `ServiceAccount`
 
 ### Why
-To enable secure service-to-service authentication between the bindy controller and the bindcar API sidecar using Kubernetes service account tokens. This improves security by:
+To enable secure service-to-service authentication between the bindy operator and the bindcar API sidecar using Kubernetes service account tokens. This improves security by:
 - Authenticating requests using Kubernetes-native mechanisms instead of external secrets
 - Restricting access to the bindcar API to only authorized service accounts
 - Following Kubernetes best practices for pod identity and authentication
 
-The `BIND_ALLOWED_SERVICE_ACCOUNTS` environment variable configures bindcar to accept connections from pods using the `bind9` service account, enabling the bindy controller to manage DNS zones securely.
+The `BIND_ALLOWED_SERVICE_ACCOUNTS` environment variable configures bindcar to accept connections from pods using the `bind9` service account, enabling the bindy operator to manage DNS zones securely.
 
 ### Impact
 - [ ] Breaking change
@@ -20761,7 +20842,7 @@ For BIND9 zone transfers to work properly:
 - **Primary zones** need: `also-notify` and `allow-transfer` configured with secondary IPs ✅ (already implemented)
 - **Secondary zones** need: Zone definition with `primaries` field listing primary server IPs ❌ (was missing)
 
-Bindcar 0.2.8 added support for the `primaries` field in `ZoneConfig`, enabling the controller to create properly configured secondary zones that will automatically transfer from their configured primary servers.
+Bindcar 0.2.8 added support for the `primaries` field in `ZoneConfig`, enabling the operator to create properly configured secondary zones that will automatically transfer from their configured primary servers.
 
 ### Impact
 - [ ] Breaking change
@@ -20776,9 +20857,9 @@ Bindcar 0.2.8 added support for the `primaries` field in `ZoneConfig`, enabling 
 - Status messages now show counts for both primary and secondary servers
 
 **Zone Transfer Flow:**
-1. Controller finds all primary pod IPs in the cluster
-2. Controller creates primary zones with `also-notify` and `allow-transfer` for secondary IPs
-3. Controller creates secondary zones with `primaries` configured to primary IPs
+1. Operator finds all primary pod IPs in the cluster
+2. Operator creates primary zones with `also-notify` and `allow-transfer` for secondary IPs
+3. Operator creates secondary zones with `primaries` configured to primary IPs
 4. BIND9 secondary servers automatically initiate zone transfers (AXFR) from configured primaries
 5. Primaries send NOTIFY messages to secondaries when zones change
 6. Secondaries respond by requesting fresh zone data via IXFR/AXFR
@@ -20800,7 +20881,7 @@ The DNSZone reconciler is fully idempotent - every reconciliation fetches curren
 **Current Limitations:**
 - Secondary zone updates wait for periodic reconciliation instead of immediate watch-based updates
 - Bindcar 0.2.8 doesn't support updating existing zones, so primaries are only set at creation
-- To update primaries on existing secondary zones, manually delete and let controller recreate them
+- To update primaries on existing secondary zones, manually delete and let operator recreate them
 
 **Future Enhancements:**
 - Add explicit Kubernetes watch on Bind9Instance resources to trigger immediate DNSZone reconciliation when primary instances change
@@ -20819,7 +20900,7 @@ The DNSZone reconciler is fully idempotent - every reconciliation fetches curren
   - Line 209-212: Changed INFO log from "Successfully added" to "Successfully reconciled"
 
 ### Why
-The previous log messages were confusing because they stated "Successfully added X record" even when the record already existed with the correct value and no changes were made. The controller's declarative reconciliation pattern (implemented in `should_update_record`) correctly skips updates when records match the desired state, logging "already exists with correct value - no changes needed". However, the reconciler's log messages incorrectly implied that an add operation always occurred.
+The previous log messages were confusing because they stated "Successfully added X record" even when the record already existed with the correct value and no changes were made. The operator's declarative reconciliation pattern (implemented in `should_update_record`) correctly skips updates when records match the desired state, logging "already exists with correct value - no changes needed". However, the reconciler's log messages incorrectly implied that an add operation always occurred.
 
 The new "reconciled" terminology accurately reflects that reconciliation can result in:
 - Creating a new record (if it doesn't exist)
@@ -21041,7 +21122,7 @@ continues to work without any changes.
   - `add_caa_record()` - CAA records (certificate authority authorization)
 
 ### Why
-The previous implementation only had declarative reconciliation for A records. All other record types were still sending DNS UPDATEs blindly on every reconciliation, even when records already matched desired state. This violated Kubernetes controller best practices.
+The previous implementation only had declarative reconciliation for A records. All other record types were still sending DNS UPDATEs blindly on every reconciliation, even when records already matched desired state. This violated Kubernetes operator best practices.
 
 **Problems with imperative approach:**
 - Every reconciliation sent a DNS UPDATE, even when record was already correct
@@ -21054,7 +21135,7 @@ The previous implementation only had declarative reconciliation for A records. A
 - **Idempotent**: Multiple reconciliations with same spec = no-op after first
 - **Efficient**: Only sends DNS UPDATE when value differs or record missing
 - **Clear**: Logs explain exactly what action is being taken and why
-- **Correct**: Follows standard Kubernetes controller pattern
+- **Correct**: Follows standard Kubernetes operator pattern
 - **Maintainable**: Generic abstraction eliminates code duplication
 
 ### Impact
@@ -21297,7 +21378,7 @@ This complexity led to:
 - Unnecessary secondary IP queries even when no work needed
 - Risk of status updates triggering more reconciliations
 
-The new logic follows standard Kubernetes controller patterns:
+The new logic follows standard Kubernetes operator patterns:
 1. **First reconciliation** (`observed_generation == None`)? → Do work, update status
 2. **Spec changed** (`generation != observed_generation`)? → Do work, update status
 3. **Otherwise** → Early return, do nothing
@@ -21507,9 +21588,9 @@ This duplication:
 - **Type Safety**: `#[must_use]` attribute ensures return value is always checked
 
 ### Technical Details
-The `should_reconcile()` function implements the standard Kubernetes controller pattern:
+The `should_reconcile()` function implements the standard Kubernetes operator pattern:
 - `metadata.generation`: Incremented by K8s API server when spec changes
-- `status.observed_generation`: Set by controller after processing spec
+- `status.observed_generation`: Set by operator after processing spec
 - When they match: spec unchanged → skip reconciliation
 - When they differ: spec changed → reconcile
 - When `observed_generation` is None: first reconciliation → reconcile
@@ -22130,7 +22211,7 @@ This prerequisite was added by `must_exist=true`. Now using `must_exist=false` t
 
 ### Impact
 - [ ] Breaking change
-- [x] Requires cluster rollout - **Controller image must be rebuilt with new dependencies**
+- [x] Requires cluster rollout - **Operator image must be rebuilt with new dependencies**
 - [ ] Config change only
 - [ ] Documentation only / Refactoring
 
@@ -22508,7 +22589,7 @@ The DNSZone reconciler was experiencing repeated reconciliation errors when zone
 2. `add_zone()` attempts to create the zone
 3. BIND9's `rndc addzone` command fails because zone already exists
 4. Bindcar returns the RNDC error to bindy
-5. Controller treats this as a failure and retries indefinitely
+5. Operator treats this as a failure and retries indefinitely
 
 This change makes zone creation fully idempotent by:
 - Catching BIND9's "zone already exists" error messages
@@ -22966,7 +23047,7 @@ When a DNSZone resource is deleted from Kubernetes, the zone must also be remove
 **Deletion Flow:**
 1. User deletes DNSZone resource
 2. Kubernetes adds `deletionTimestamp` but waits for finalizer to complete
-3. Controller receives Cleanup event
+3. Operator receives Cleanup event
 4. Calls `delete_dnszone()` which calls `zone_manager.delete_zone()`
 5. `Bind9Manager::delete_zone()` sends DELETE request to bindcar API at `/api/v1/zones/{zone_name}`
 6. Finalizer is removed, Kubernetes completes resource deletion
@@ -23274,7 +23355,7 @@ The bindcar API sidecar requires access to RNDC credentials to authenticate with
   - Updated `get_instance_and_key!` macro to lookup service port dynamically
 
 ### Why
-The controller was incorrectly using port 953 (RNDC port) to connect to the bindcar HTTP API. The bindcar API uses HTTP protocol and should connect via the Kubernetes Service port named "http". Instead of hardcoding any port number, the controller now queries the Kubernetes Service object to get the actual port number, making it flexible and correct.
+The operator was incorrectly using port 953 (RNDC port) to connect to the bindcar HTTP API. The bindcar API uses HTTP protocol and should connect via the Kubernetes Service port named "http". Instead of hardcoding any port number, the operator now queries the Kubernetes Service object to get the actual port number, making it flexible and correct.
 
 ### Technical Details
 - **Before**: Hardcoded port 953 (RNDC protocol port - WRONG!)
@@ -23287,7 +23368,7 @@ The controller was incorrectly using port 953 (RNDC port) to connect to the bind
 - **Architecture**:
   - The bindcar API sidecar listens on port 8080 (container port)
   - The Kubernetes Service exposes this as port 80 (service port) with name "http"
-  - Controller dynamically discovers the port 80 value at runtime
+  - Operator dynamically discovers the port 80 value at runtime
 
 ### Quality
 - ✅ `cargo build` - Successfully compiles
@@ -23302,8 +23383,8 @@ The controller was incorrectly using port 953 (RNDC port) to connect to the bind
 - [ ] Documentation only
 
 **Migration Notes:**
-- Existing clusters will fail to connect to bindcar API until pods are restarted with the new controller version
-- The controller will now correctly connect to the HTTP API port (80) instead of RNDC port (953)
+- Existing clusters will fail to connect to bindcar API until pods are restarted with the new operator version
+- The operator will now correctly connect to the HTTP API port (80) instead of RNDC port (953)
 - No configuration changes required - the port is discovered automatically
 
 ## [2025-12-05 17:20] - Upgrade bindcar to 0.2.2
@@ -24176,7 +24257,7 @@ All constants are now grouped by category in `src/constants.rs`:
 1. API Constants (CRD kinds, API group/version)
 2. DNS Protocol Constants (ports, TTLs, timeouts)
 3. Kubernetes Health Check Constants
-4. Controller Error Handling Constants
+4. Operator Error Handling Constants
 5. Leader Election Constants
 6. BIND9 Version Constants
 7. Runtime Constants
@@ -24257,7 +24338,7 @@ All record implementations use TSIG authentication for security and execute in `
 - [src/constants.rs](src/constants.rs): Created new global constants module with all numeric constants
   - DNS protocol constants (ports, TTLs, timeouts)
   - Kubernetes health check constants (probe delays, periods, thresholds)
-  - Controller error handling constants
+  - Operator error handling constants
   - Leader election constants
   - BIND9 version constants
   - Runtime constants
@@ -24291,7 +24372,7 @@ Magic numbers (numeric literals other than 0 or 1) scattered throughout code red
 
 ### Details
 **Constants Organization**:
-- Grouped by category (DNS, Kubernetes, Controller, etc.)
+- Grouped by category (DNS, Kubernetes, Operator, etc.)
 - Each constant has a descriptive name explaining its purpose
 - Rustdoc comments explain what each value represents
 - Constants use proper numeric separators for readability (e.g., `604_800` instead of `604800`)

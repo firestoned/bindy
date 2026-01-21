@@ -1,10 +1,10 @@
-# Deploying the Controller
+# Deploying the Operator
 
-The Bindy controller watches for DNS resources and manages BIND9 configurations.
+The Bindy operator watches for DNS resources and manages BIND9 configurations.
 
 ## Prerequisites
 
-Before deploying the controller:
+Before deploying the operator:
 
 1. [CRDs must be installed](./crds.md)
 2. RBAC must be configured
@@ -25,48 +25,48 @@ kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/
 ```
 
 This creates:
-- ServiceAccount for the controller
+- ServiceAccount for the operator
 - ClusterRole with required permissions
 - ClusterRoleBinding to bind them together
 
-### Deploy Controller
+### Deploy Operator
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/controller/deployment.yaml
+kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/operator/deployment.yaml
 ```
 
 ### Wait for Readiness
 
 ```bash
 kubectl wait --for=condition=available --timeout=300s \
-  deployment/bind9-controller -n dns-system
+  deployment/bind9-operator -n dns-system
 ```
 
 ## Verify Deployment
 
-Check controller pod status:
+Check operator pod status:
 
 ```bash
-kubectl get pods -n dns-system -l app=bind9-controller
+kubectl get pods -n dns-system -l app=bind9-operator
 ```
 
 Expected output:
 
 ```
 NAME                                READY   STATUS    RESTARTS   AGE
-bind9-controller-7d4b8c4f9b-x7k2m   1/1     Running   0          1m
+bind9-operator-7d4b8c4f9b-x7k2m   1/1     Running   0          1m
 ```
 
-Check controller logs:
+Check operator logs:
 
 ```bash
-kubectl logs -n dns-system -l app=bind9-controller -f
+kubectl logs -n dns-system -l app=bind9-operator -f
 ```
 
 You should see:
 
 ```
-{"timestamp":"2024-01-01T00:00:00Z","level":"INFO","message":"Starting Bindy controller"}
+{"timestamp":"2024-01-01T00:00:00Z","level":"INFO","message":"Starting Bindy operator"}
 {"timestamp":"2024-01-01T00:00:01Z","level":"INFO","message":"Watching DNSZone resources"}
 {"timestamp":"2024-01-01T00:00:01Z","level":"INFO","message":"Watching DNS record resources"}
 ```
@@ -75,7 +75,7 @@ You should see:
 
 ### Environment Variables
 
-Configure the controller via environment variables:
+Configure the operator via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -118,11 +118,11 @@ spec:
 
 ## Troubleshooting
 
-### Controller Not Starting
+### Operator Not Starting
 
 1. Check pod events:
    ```bash
-   kubectl describe pod -n dns-system -l app=bind9-controller
+   kubectl describe pod -n dns-system -l app=bind9-operator
    ```
 
 2. Check if CRDs are installed:
@@ -132,12 +132,12 @@ spec:
 
 3. Check RBAC permissions:
    ```bash
-   kubectl auth can-i list dnszones --as=system:serviceaccount:dns-system:bind9-controller
+   kubectl auth can-i list dnszones --as=system:serviceaccount:dns-system:bind9-operator
    ```
 
 ### High Memory Usage
 
-If the controller uses excessive memory:
+If the operator uses excessive memory:
 
 1. Reduce log level: `RUST_LOG=warn`
 2. Increase resource limits

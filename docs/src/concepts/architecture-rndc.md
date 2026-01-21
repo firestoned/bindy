@@ -18,7 +18,7 @@ graph TB
             zone --> records
         end
 
-        subgraph controller["Bindy Controller (Rust)"]
+        subgraph operator["Bindy Operator (Rust)"]
             rec1["Bind9Cluster<br/>Reconciler"]
             rec2["Bind9Instance<br/>Reconciler"]
             rec3["DNSZone<br/>Reconciler"]
@@ -48,8 +48,8 @@ graph TB
 
     clients["DNS Clients<br/>• Applications<br/>• Services<br/>• External users"]
 
-    crds -->|"watches<br/>(Kubernetes API)"| controller
-    controller -->|"HTTP API<br/>(REST/JSON)<br/>Port 80/TCP"| bind9
+    crds -->|"watches<br/>(Kubernetes API)"| operator
+    operator -->|"HTTP API<br/>(REST/JSON)<br/>Port 80/TCP"| bind9
     volumes -.->|"mounts"| primary_pod
     volumes -.->|"mounts"| secondary_pod
     primary_bind -->|"AXFR/IXFR"| secondary_bind
@@ -60,7 +60,7 @@ graph TB
 
     style k8s fill:#e1f5ff,stroke:#01579b,stroke-width:2px
     style crds fill:#fff9c4,stroke:#f57f17,stroke-width:2px
-    style controller fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    style operator fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
     style bind9 fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
     style secrets fill:#ffe0b2,stroke:#e65100,stroke-width:2px
     style clients fill:#fce4ec,stroke:#880e4f,stroke-width:2px
@@ -69,7 +69,7 @@ graph TB
 ## Key Architectural Changes from File-Based Approach
 
 ### Old Architecture (File-Based)
-- Controller generated zone files
+- Operator generated zone files
 - Files written to ConfigMaps
 - ConfigMaps mounted into BIND9 pods
 - Manual `rndc reload` triggered after file changes
@@ -77,7 +77,7 @@ graph TB
 
 ### New Architecture (RNDC Protocol + Cluster Hierarchy)
 - **Three-tier resource model**: Bind9Cluster → Bind9Instance → DNSZone
-- Controller uses native RNDC protocol
+- Operator uses native RNDC protocol
 - Direct communication with BIND9 via port 9530
 - Commands executed in real-time: `addzone`, `delzone`, `reload`
 - No file manipulation or ConfigMap management
@@ -156,7 +156,7 @@ spec:
 
 ```
 ┌──────────────────────┐                 ┌──────────────────────┐
-│  Bindy Controller    │                 │   BIND9 Instance     │
+│  Bindy Operator    │                 │   BIND9 Instance     │
 │                      │                 │   (Primary)          │
 │  ┌────────────────┐  │                 │                      │
 │  │ Bind9Manager   │  │                 │  ┌────────────────┐  │
@@ -185,7 +185,7 @@ spec:
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│  1. Controller Retrieves RNDC Key from Kubernetes Secret      │
+│  1. Operator Retrieves RNDC Key from Kubernetes Secret      │
 │                                                                │
 │  Secret: bind9-primary-rndc-key                              │
 │    data:                                                      │
@@ -247,7 +247,7 @@ User creates DNSZone resource
     │ Watch event
     ▼
 ┌─────────────────────────────────────────────────────────┐
-│ Bindy Controller receives event                         │
+│ Bindy Operator receives event                         │
 │   • DNSZone watcher triggers                            │
 │   • Event: Applied(dnszone)                             │
 └─────────────────────────────────────────────────────────┘
@@ -326,7 +326,7 @@ User creates ARecord resource
     │ Watch event
     ▼
 ┌─────────────────────────────────────────────────────────┐
-│ Bindy Controller receives event                         │
+│ Bindy Operator receives event                         │
 │   • ARecord watcher triggers                            │
 │   • Event: Applied(arecord)                             │
 └─────────────────────────────────────────────────────────┘
@@ -433,13 +433,13 @@ DNS updates, or via zone file manipulation + reload.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│ Controller discovers BIND9 pods using labels:              │
+│ Operator discovers BIND9 pods using labels:              │
 │                                                            │
 │   Pod labels:                                             │
 │     app: bind9                                            │
 │     instance: {cluster_ref}                               │
 │                                                            │
-│   Controller searches:                                    │
+│   Operator searches:                                    │
 │     List pods where app=bind9 AND instance={cluster_ref}  │
 │                                                            │
 │   Service DNS:                                            │
@@ -573,14 +573,14 @@ pub async fn reconcile_dnszone(
 │ • DNS queries on port 53/UDP+TCP (exposed via Service)    │
 │ • All RNDC communication within cluster network           │
 │ • No external RNDC access (ClusterIP services only)       │
-│ • NetworkPolicies can restrict RNDC access to controller  │
+│ • NetworkPolicies can restrict RNDC access to operator  │
 └────────────────────────────────────────────────────────────┘
 ```
 
 ### RBAC Requirements
 
 ```yaml
-# Controller needs access to:
+# Operator needs access to:
 - Secrets (get, list) - for RNDC keys
 - Pods (get, list) - for pod discovery
 - Services (get, list) - for DNS resolution

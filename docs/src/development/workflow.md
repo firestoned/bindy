@@ -118,7 +118,7 @@ kind create cluster --name bindy-dev
 make crds
 kubectl apply -k deploy/crds/
 
-# Run controller locally
+# Run operator locally
 RUST_LOG=debug cargo run
 ```
 

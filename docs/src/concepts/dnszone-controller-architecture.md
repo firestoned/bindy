@@ -1,10 +1,10 @@
-# DNSZone Controller Architecture
+# DNSZone Operator Architecture
 
-This page documents the unified DNSZone controller architecture following the Phase 1-8 consolidation (January 2026).
+This page documents the unified DNSZone operator architecture following the Phase 1-8 consolidation (January 2026).
 
 ## Overview
 
-The DNSZone controller is responsible for:
+The DNSZone operator is responsible for:
 1. Discovering Bind9Instances via `clusterRef` and/or `bind9InstancesFrom` label selectors
 2. Synchronizing zone configuration to selected instances
 3. Tracking per-instance synchronization status
@@ -12,7 +12,7 @@ The DNSZone controller is responsible for:
 
 ## Architecture Evolution
 
-### Before: Dual Controller Architecture (Deprecated)
+### Before: Dual Operator Architecture (Deprecated)
 
 ```mermaid
 graph TB
@@ -20,9 +20,9 @@ graph TB
         dnszone["DNSZone<br/>Resource"]
         instance["Bind9Instance<br/>Resource"]
         
-        subgraph controllers["Controllers"]
-            dnszoneCtrl["DNSZone Controller"]
-            zonesyncCtrl["ZoneSync Controller"]
+        subgraph operators["Operators"]
+            dnszoneCtrl["DNSZone Operator"]
+            zonesyncCtrl["ZoneSync Operator"]
         end
         
         subgraph status["Status Fields"]
@@ -39,18 +39,18 @@ graph TB
     dnszoneCtrl -->|updates| s3
     s3 -->|triggers| zonesyncCtrl
     
-    style controllers fill:#ffcccc,stroke:#cc0000,stroke-width:2px
+    style operators fill:#ffcccc,stroke:#cc0000,stroke-width:2px
     style status fill:#ffffcc,stroke:#cccc00,stroke-width:2px
 ```
 
 **Problems:**
-- Two controllers managing the same resource (DNSZone)
+- Two operators managing the same resource (DNSZone)
 - Circular dependencies: DNSZone → Bind9Instance.status.selectedZones → ZoneSync → DNSZone
 - Multiple status fields tracking the same information
 - Complex event-driven architecture with multiple reconciliation paths
 - ~915 lines of duplicate code
 
-### After: Unified Controller Architecture (Current)
+### After: Unified Operator Architecture (Current)
 
 ```mermaid
 graph TB
@@ -58,8 +58,8 @@ graph TB
         dnszone["DNSZone<br/>Resource"]
         instance["Bind9Instance<br/>Resource"]
         
-        subgraph controllers["Controllers"]
-            dnszoneCtrl["DNSZone Controller<br/>(Unified)"]
+        subgraph operators["Operators"]
+            dnszoneCtrl["DNSZone Operator<br/>(Unified)"]
         end
         
         subgraph status["Status Fields"]
@@ -72,12 +72,12 @@ graph TB
     dnszoneCtrl -->|updates| s1
     dnszoneCtrl -->|calls bindcar API| instance
     
-    style controllers fill:#ccffcc,stroke:#00cc00,stroke-width:2px
+    style operators fill:#ccffcc,stroke:#00cc00,stroke-width:2px
     style status fill:#ccffff,stroke:#00cccc,stroke-width:2px
 ```
 
 **Benefits:**
-- Single controller with clear responsibility
+- Single operator with clear responsibility
 - No circular dependencies
 - One status field: `status.instances[]`
 - Simplified reconciliation logic
@@ -193,7 +193,7 @@ graph TB
 ```mermaid
 sequenceDiagram
     participant K8s as Kubernetes API
-    participant Ctrl as DNSZone Controller
+    participant Ctrl as DNSZone Operator
     participant Store as Instance Store
     participant Bindcar as Bindcar HTTP API
     
@@ -318,12 +318,12 @@ status:
    kubectl replace --force -f deploy/crds/
    ```
 
-3. **After upgrade**: DNSZone controller repopulates `status.instances[]` automatically
+3. **After upgrade**: DNSZone operator repopulates `status.instances[]` automatically
 
 4. **Cleanup**: Old status fields are ignored and garbage collected
 
 ## See Also
 
-- [DNSZone Controller Consolidation Roadmap](../../roadmaps/dnszone-consolidation-roadmap.md)
+- [DNSZone Operator Consolidation Roadmap](../../roadmaps/dnszone-consolidation-roadmap.md)
 - [Integration Test Plan](../../roadmaps/integration-test-plan.md)
 - [API Reference](../reference/api.md)

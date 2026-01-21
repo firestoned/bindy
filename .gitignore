@@ -28,6 +28,9 @@ htmlcov/
 # Kubernetes
 *.kubeconfig
 
+# Generated CRDs
+/deploy/crds.yaml
+
 # OS
 .DS_Store
 Thumbs.db
