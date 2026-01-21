@@ -53,7 +53,7 @@ bindy/
 ├── deploy/           # Kubernetes manifests
 │   ├── crds/         # CRD definitions
 │   ├── rbac/         # RBAC resources
-│   └── controller/   # Controller deployment
+│   └── operator/   # Operator deployment
 ├── tests/            # Integration tests
 ├── examples/         # Example configurations
 ├── docs/             # Documentation
@@ -105,6 +105,6 @@ If all commands succeed, your development environment is ready!
 
 ## Next Steps
 
-- [Building from Source](./building.md) - Build the controller
+- [Building from Source](./building.md) - Build the operator
 - [Running Tests](./testing.md) - Test your changes
 - [Development Workflow](./workflow.md) - Daily development workflow

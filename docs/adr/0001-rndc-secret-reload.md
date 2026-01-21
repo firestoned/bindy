@@ -13,7 +13,7 @@ BIND9 instances use RNDC (Remote Name Daemon Control) for management operations.
 When an RNDC secret changes (manually updated or rotated):
 - BIND9 continues using the **old key** loaded at startup
 - The new key is mounted but BIND9 doesn't reload it
-- Management operations fail (controller has new key, BIND9 expects old)
+- Management operations fail (operator has new key, BIND9 expects old)
 - **Manual intervention required**: Restart pods or exec SIGHUP
 
 ### Problem
@@ -86,7 +86,7 @@ async fn send_sighup_to_bind9_pods(
 Add Secret watch to trigger reconciliation:
 
 ```rust
-let secret_watcher = Controller::new(
+let secret_watcher = Operator::new(
     Api::<Secret>::all(client.clone()),
     WatcherConfig::default()
         .labels("app.kubernetes.io/component=rndc-key")
@@ -162,7 +162,7 @@ Use `rndc reconfig` instead of SIGHUP.
 
 1. **RBAC**: Requires `pods/exec` permission (security risk)
 2. **Complexity**: Additional reconciliation logic
-3. **Timing Window**: Brief gap between controller and BIND9 having different keys
+3. **Timing Window**: Brief gap between operator and BIND9 having different keys
 4. **Error Handling**: SIGHUP could fail
 
 ### Risks & Mitigations
@@ -185,7 +185,7 @@ Use `rndc reconfig` instead of SIGHUP.
 - [ ] Add unit tests
 
 ### Phase 2: Secret Watch
-- [ ] Implement Secret controller
+- [ ] Implement Secret operator
 - [ ] Link Secret changes to reconciliation
 - [ ] Add metrics: `bind9_rndc_secret_reloads_total`
 

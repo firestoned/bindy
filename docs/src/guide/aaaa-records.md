@@ -259,7 +259,7 @@ status:
 
 ### Invalid IPv6 address
 
-The controller validates IPv6 addresses. Ensure your address is in valid format:
+The operator validates IPv6 addresses. Ensure your address is in valid format:
 - Use compressed notation: `2001:db8::1`
 - Do not mix uppercase/lowercase unnecessarily
 - Ensure all segments are valid hexadecimal

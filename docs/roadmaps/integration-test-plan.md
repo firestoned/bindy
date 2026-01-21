@@ -1,4 +1,4 @@
-# DNSZone Controller Consolidation - Integration Test Plan
+# DNSZone Operator Consolidation - Integration Test Plan
 
 **Date:** 2026-01-06
 **Author:** Erick Bourgeois
@@ -9,7 +9,7 @@
 
 ## Overview
 
-This document outlines the integration testing strategy for validating the DNSZone controller consolidation in a live Kubernetes cluster.
+This document outlines the integration testing strategy for validating the DNSZone operator consolidation in a live Kubernetes cluster.
 
 ## Prerequisites
 
@@ -19,7 +19,7 @@ This document outlines the integration testing strategy for validating the DNSZo
 - Namespace: `dns-system`
 
 ### Component Requirements
-- Bindy controller image built
+- Bindy operator image built
 - BIND9 instances with bindcar API
 - CRDs deployed
 

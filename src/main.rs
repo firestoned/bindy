@@ -21,7 +21,7 @@ use bindy::{
         delete_dnszone, reconcile_bind9cluster, reconcile_bind9instance,
         reconcile_clusterbind9provider, reconcile_dnszone,
     },
-    record_controller::run_generic_record_controller,
+    record_operator::run_generic_record_operator,
 };
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::Deployment;
@@ -43,7 +43,7 @@ fn main() -> Result<()> {
     // Build Tokio runtime with custom thread names
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(TOKIO_WORKER_THREADS)
-        .thread_name("bindy-controller")
+        .thread_name("bindy-operator")
         .enable_all()
         .build()?;
 
@@ -84,7 +84,7 @@ fn initialize_logging() {
         }
     }
 
-    info!("Starting BIND9 DNS Controller");
+    info!("Starting BIND9 DNS Operator");
     debug!("Logging initialized with file and line number tracking");
 }
 
@@ -504,21 +504,21 @@ fn semantic_watcher_config() -> Config {
     Config::default().any_semantic()
 }
 
-/// Run all controllers without leader election, with signal handling
-async fn run_controllers_without_leader_election(
+/// Run all operators without leader election, with signal handling
+async fn run_operators_without_leader_election(
     context: Arc<Context>,
     bind9_manager: Arc<Bind9Manager>,
 ) -> Result<()> {
     warn!("Leader election DISABLED - running without high availability");
-    info!("Starting all controllers with signal handling");
+    info!("Starting all operators with signal handling");
 
-    // Run controllers concurrently with signal handling
-    // Controllers should never exit - if one fails, we log it and exit the main process
+    // Run operators concurrently with signal handling
+    // Operators should never exit - if one fails, we log it and exit the main process
     let shutdown_result: Result<()> = tokio::select! {
         // Monitor for SIGINT (Ctrl+C)
         result = tokio::signal::ctrl_c() => {
             info!("Received SIGINT (Ctrl+C), initiating graceful shutdown...");
-            info!("Stopping all controllers...");
+            info!("Stopping all operators...");
             result.map_err(anyhow::Error::from)
         }
 
@@ -539,12 +539,12 @@ async fn run_controllers_without_leader_election(
             }
         } => {
             info!("Received SIGTERM (pod termination), initiating graceful shutdown...");
-            info!("Stopping all controllers...");
+            info!("Stopping all operators...");
             result
         }
 
-        // Run all controllers - delegate to shared function
-        result = run_all_controllers(context.clone(), bind9_manager.clone()) => {
+        // Run all operators - delegate to shared function
+        result = run_all_operators(context.clone(), bind9_manager.clone()) => {
             result
         }
     };
@@ -603,11 +603,10 @@ async fn async_main() -> Result<()> {
 
         info!("🎉 Leadership acquired! Starting controllers...");
 
-        // Run controllers with leader election monitoring and signal handling
-        run_controllers_with_leader_election(context, bind9_manager, leader_rx, lease_handle)
-            .await?;
+        // Run operators with leader election monitoring and signal handling
+        run_operators_with_leader_election(context, bind9_manager, leader_rx, lease_handle).await?;
     } else {
-        run_controllers_without_leader_election(context, bind9_manager).await?;
+        run_operators_without_leader_election(context, bind9_manager).await?;
     }
 
     Ok(())
@@ -626,80 +625,77 @@ async fn monitor_leadership(
     }
 }
 
-/// Run all DNS record controllers
-async fn run_all_controllers(
-    context: Arc<Context>,
-    bind9_manager: Arc<Bind9Manager>,
-) -> Result<()> {
+/// Run all DNS record operators
+async fn run_all_operators(context: Arc<Context>, bind9_manager: Arc<Bind9Manager>) -> Result<()> {
     tokio::select! {
-        result = run_bind9cluster_controller(context.clone()) => {
-            error!("CRITICAL: Bind9Cluster controller exited unexpectedly: {:?}", result);
+        result = run_bind9cluster_operator(context.clone()) => {
+            error!("CRITICAL: Bind9Cluster operator exited unexpectedly: {:?}", result);
             result?;
-            anyhow::bail!("Bind9Cluster controller exited unexpectedly without error")
+            anyhow::bail!("Bind9Cluster operator exited unexpectedly without error")
         }
-        result = run_clusterbind9provider_controller(context.clone()) => {
-            error!("CRITICAL: ClusterBind9Provider controller exited unexpectedly: {:?}", result);
+        result = run_clusterbind9provider_operator(context.clone()) => {
+            error!("CRITICAL: ClusterBind9Provider operator exited unexpectedly: {:?}", result);
             result?;
-            anyhow::bail!("ClusterBind9Provider controller exited unexpectedly without error")
+            anyhow::bail!("ClusterBind9Provider operator exited unexpectedly without error")
         }
-        result = run_bind9instance_controller(context.clone()) => {
-            error!("CRITICAL: Bind9Instance controller exited unexpectedly: {:?}", result);
+        result = run_bind9instance_operator(context.clone()) => {
+            error!("CRITICAL: Bind9Instance operator exited unexpectedly: {:?}", result);
             result?;
-            anyhow::bail!("Bind9Instance controller exited unexpectedly without error")
+            anyhow::bail!("Bind9Instance operator exited unexpectedly without error")
         }
-        result = run_dnszone_controller(context.clone(), bind9_manager.clone()) => {
-            error!("CRITICAL: DNSZone controller exited unexpectedly: {:?}", result);
+        result = run_dnszone_operator(context.clone(), bind9_manager.clone()) => {
+            error!("CRITICAL: DNSZone operator exited unexpectedly: {:?}", result);
             result?;
-            anyhow::bail!("DNSZone controller exited unexpectedly without error")
+            anyhow::bail!("DNSZone operator exited unexpectedly without error")
         }
-        result = run_generic_record_controller::<ARecord>(context.clone(), bind9_manager.clone()) => {
-            error!("CRITICAL: ARecord controller exited unexpectedly: {:?}", result);
+        result = run_generic_record_operator::<ARecord>(context.clone(), bind9_manager.clone()) => {
+            error!("CRITICAL: ARecord operator exited unexpectedly: {:?}", result);
             result?;
-            anyhow::bail!("ARecord controller exited unexpectedly without error")
+            anyhow::bail!("ARecord operator exited unexpectedly without error")
         }
-        result = run_generic_record_controller::<AAAARecord>(context.clone(), bind9_manager.clone()) => {
-            error!("CRITICAL: AAAARecord controller exited unexpectedly: {:?}", result);
+        result = run_generic_record_operator::<AAAARecord>(context.clone(), bind9_manager.clone()) => {
+            error!("CRITICAL: AAAARecord operator exited unexpectedly: {:?}", result);
             result?;
-            anyhow::bail!("AAAARecord controller exited unexpectedly without error")
+            anyhow::bail!("AAAARecord operator exited unexpectedly without error")
         }
-        result = run_generic_record_controller::<TXTRecord>(context.clone(), bind9_manager.clone()) => {
-            error!("CRITICAL: TXTRecord controller exited unexpectedly: {:?}", result);
+        result = run_generic_record_operator::<TXTRecord>(context.clone(), bind9_manager.clone()) => {
+            error!("CRITICAL: TXTRecord operator exited unexpectedly: {:?}", result);
             result?;
-            anyhow::bail!("TXTRecord controller exited unexpectedly without error")
+            anyhow::bail!("TXTRecord operator exited unexpectedly without error")
         }
-        result = run_generic_record_controller::<CNAMERecord>(context.clone(), bind9_manager.clone()) => {
-            error!("CRITICAL: CNAMERecord controller exited unexpectedly: {:?}", result);
+        result = run_generic_record_operator::<CNAMERecord>(context.clone(), bind9_manager.clone()) => {
+            error!("CRITICAL: CNAMERecord operator exited unexpectedly: {:?}", result);
             result?;
-            anyhow::bail!("CNAMERecord controller exited unexpectedly without error")
+            anyhow::bail!("CNAMERecord operator exited unexpectedly without error")
         }
-        result = run_generic_record_controller::<MXRecord>(context.clone(), bind9_manager.clone()) => {
-            error!("CRITICAL: MXRecord controller exited unexpectedly: {:?}", result);
+        result = run_generic_record_operator::<MXRecord>(context.clone(), bind9_manager.clone()) => {
+            error!("CRITICAL: MXRecord operator exited unexpectedly: {:?}", result);
             result?;
-            anyhow::bail!("MXRecord controller exited unexpectedly without error")
+            anyhow::bail!("MXRecord operator exited unexpectedly without error")
         }
-        result = run_generic_record_controller::<NSRecord>(context.clone(), bind9_manager.clone()) => {
-            error!("CRITICAL: NSRecord controller exited unexpectedly: {:?}", result);
+        result = run_generic_record_operator::<NSRecord>(context.clone(), bind9_manager.clone()) => {
+            error!("CRITICAL: NSRecord operator exited unexpectedly: {:?}", result);
             result?;
-            anyhow::bail!("NSRecord controller exited unexpectedly without error")
+            anyhow::bail!("NSRecord operator exited unexpectedly without error")
         }
-        result = run_generic_record_controller::<SRVRecord>(context.clone(), bind9_manager.clone()) => {
-            error!("CRITICAL: SRVRecord controller exited unexpectedly: {:?}", result);
+        result = run_generic_record_operator::<SRVRecord>(context.clone(), bind9_manager.clone()) => {
+            error!("CRITICAL: SRVRecord operator exited unexpectedly: {:?}", result);
             result?;
-            anyhow::bail!("SRVRecord controller exited unexpectedly without error")
+            anyhow::bail!("SRVRecord operator exited unexpectedly without error")
         }
-        result = run_generic_record_controller::<CAARecord>(context.clone(), bind9_manager.clone()) => {
-            error!("CRITICAL: CAARecord controller exited unexpectedly: {:?}", result);
+        result = run_generic_record_operator::<CAARecord>(context.clone(), bind9_manager.clone()) => {
+            error!("CRITICAL: CAARecord operator exited unexpectedly: {:?}", result);
             result?;
-            anyhow::bail!("CAARecord controller exited unexpectedly without error")
+            anyhow::bail!("CAARecord operator exited unexpectedly without error")
         }
     }
 }
 
-/// Run controllers with leader election
+/// Run operators with leader election
 ///
-/// This function runs all controllers while monitoring leadership status and handling signals.
-/// If leadership is lost or SIGTERM/SIGINT is received, all controllers are stopped and the process exits gracefully.
-async fn run_controllers_with_leader_election(
+/// This function runs all operators while monitoring leadership status and handling signals.
+/// If leadership is lost or SIGTERM/SIGINT is received, all operators are stopped and the process exits gracefully.
+async fn run_operators_with_leader_election(
     context: Arc<Context>,
     bind9_manager: Arc<Bind9Manager>,
     leader_rx: tokio::sync::watch::Receiver<bool>,
@@ -707,14 +703,14 @@ async fn run_controllers_with_leader_election(
         Result<LeaseManager, kube_lease_manager::LeaseManagerError>,
     >,
 ) -> Result<()> {
-    info!("Running controllers with leader election and signal handling");
+    info!("Running operators with leader election and signal handling");
 
     // Run controllers concurrently with leadership monitoring and signal handling
     let shutdown_result: Result<()> = tokio::select! {
         // Monitor for SIGINT (Ctrl+C)
         result = tokio::signal::ctrl_c() => {
             info!("Received SIGINT (Ctrl+C), initiating graceful shutdown...");
-            info!("Stopping all controllers and releasing leader election lease...");
+            info!("Stopping all operators and releasing leader election lease...");
             result.map_err(anyhow::Error::from)
         }
 
@@ -735,7 +731,7 @@ async fn run_controllers_with_leader_election(
             }
         } => {
             info!("Received SIGTERM (pod termination), initiating graceful shutdown...");
-            info!("Stopping all controllers and releasing leader election lease...");
+            info!("Stopping all operators and releasing leader election lease...");
             result
         }
 
@@ -743,7 +739,7 @@ async fn run_controllers_with_leader_election(
         result = monitor_leadership(leader_rx) => {
             match result {
                 Ok(()) => {
-                    warn!("Leadership lost! Stopping all controllers...");
+                    warn!("Leadership lost! Stopping all operators...");
                     anyhow::bail!("Leadership lost - stepping down")
                 }
                 Err(e) => {
@@ -753,8 +749,8 @@ async fn run_controllers_with_leader_election(
             }
         }
 
-        // Run all controllers
-        result = run_all_controllers(context, bind9_manager) => {
+        // Run all operators
+        result = run_all_operators(context, bind9_manager) => {
             result
         }
     };
@@ -765,9 +761,9 @@ async fn run_controllers_with_leader_election(
     Ok(())
 }
 
-/// Run the `ClusterBind9Provider` controller
-async fn run_clusterbind9provider_controller(context: Arc<Context>) -> Result<()> {
-    info!("Starting ClusterBind9Provider controller");
+/// Run the `ClusterBind9Provider` operator
+async fn run_clusterbind9provider_operator(context: Arc<Context>) -> Result<()> {
+    info!("Starting ClusterBind9Provider operator");
 
     let client = context.client.clone();
     let api = Api::<ClusterBind9Provider>::all(client.clone());
@@ -827,9 +823,9 @@ async fn reconcile_clusterbind9provider_wrapper(
     }
 }
 
-/// Run the `Bind9Cluster` controller
-async fn run_bind9cluster_controller(context: Arc<Context>) -> Result<()> {
-    info!("Starting Bind9Cluster controller");
+/// Run the `Bind9Cluster` operator
+async fn run_bind9cluster_operator(context: Arc<Context>) -> Result<()> {
+    info!("Starting Bind9Cluster operator");
 
     let client = context.client.clone();
     let api = Api::<Bind9Cluster>::all(client.clone());
@@ -886,10 +882,10 @@ async fn reconcile_bind9cluster_wrapper(
     }
 }
 
-/// Run the `Bind9Instance` controller
+/// Run the `Bind9Instance` operator
 #[allow(clippy::too_many_lines)]
-async fn run_bind9instance_controller(context: Arc<Context>) -> Result<()> {
-    info!("Starting Bind9Instance controller");
+async fn run_bind9instance_operator(context: Arc<Context>) -> Result<()> {
+    info!("Starting Bind9Instance operator");
 
     let client = context.client.clone();
     let api = Api::<Bind9Instance>::all(client.clone());
@@ -1016,13 +1012,13 @@ async fn reconcile_bind9instance_wrapper(
     }
 }
 
-/// Run the `DNSZone` controller
+/// Run the `DNSZone` operator
 #[allow(clippy::too_many_lines)]
-async fn run_dnszone_controller(
+async fn run_dnszone_operator(
     context: Arc<Context>,
     bind9_manager: Arc<Bind9Manager>,
 ) -> Result<()> {
-    info!("Starting DNSZone controller");
+    info!("Starting DNSZone operator");
 
     let client = context.client.clone();
     let api = Api::<DNSZone>::all(client.clone());

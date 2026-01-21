@@ -196,7 +196,7 @@ kubectl apply -k deploy/crds/
 ### 2. Deploy Bindy Operator
 
 ```bash
-kubectl apply -f deploy/controller/deployment.yaml
+kubectl apply -f deploy/operator/deployment.yaml
 ```
 
 ### 3. Apply Configuration
@@ -302,7 +302,7 @@ kubectl get arecord www-a-record -n dns-system -o yaml | grep -A 10 status
 ### View Logs
 
 ```bash
-# Controller logs
+# Operator logs
 kubectl logs -n dns-system deployment/bindy
 
 # BIND9 logs
@@ -373,7 +373,7 @@ kubectl delete namespace dns-system
 # Check pod events
 kubectl describe pod -n dns-system -l app=bindy
 
-# Check controller logs
+# Check operator logs
 kubectl logs -n dns-system deployment/bindy
 ```
 

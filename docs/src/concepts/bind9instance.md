@@ -97,7 +97,7 @@ spec:
 
 ## Status
 
-The controller updates status to reflect the instance state:
+The operator updates status to reflect the instance state:
 
 ```yaml
 status:

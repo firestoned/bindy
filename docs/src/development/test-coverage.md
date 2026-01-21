@@ -206,7 +206,7 @@ cargo tarpaulin --verbose --all-features --workspace --timeout 120 --out Xml
 - [ ] Stress tests with many concurrent updates
 - [ ] Property-based tests for configuration generation
 - [ ] Mock reconciler tests
-- [ ] Controller loop tests
+- [ ] Operator loop tests
 
 ### Test Infrastructure
 - [ ] Add benchmarks for critical paths

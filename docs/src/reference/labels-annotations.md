@@ -43,7 +43,7 @@ metadata:
 ```
 
 **Usage:**
-- Set automatically by Bind9Cluster controller when creating managed instances
+- Set automatically by Bind9Cluster operator when creating managed instances
 - Used to identify instances for self-healing (automatic recreation)
 - Used to filter managed vs. manual instances
 
@@ -74,7 +74,7 @@ metadata:
 ```
 
 **Usage:**
-- Set automatically by Bind9Cluster controller
+- Set automatically by Bind9Cluster operator
 - Used for cascade deletion (find all instances belonging to a cluster)
 - Used for grouping and filtering instances by cluster
 
@@ -107,7 +107,7 @@ metadata:
 ```
 
 **Usage:**
-- Set automatically by Bind9Cluster controller
+- Set automatically by Bind9Cluster operator
 - Used to differentiate between primary and secondary instances
 - Used for role-based filtering and monitoring
 
@@ -172,7 +172,7 @@ metadata:
 ```
 
 **Usage:**
-- Set automatically by Bind9Cluster controller
+- Set automatically by Bind9Cluster operator
 - Used to determine instance naming: `<cluster-name>-<role>-<index>`
 - Helps track instance order for primary/secondary relationships
 - Used for recreation to maintain consistent naming
@@ -311,7 +311,7 @@ count by (role) (
 ### Creation
 
 **Managed instances:**
-- Labels and annotations are set automatically by Bind9Cluster controller
+- Labels and annotations are set automatically by Bind9Cluster operator
 - Users should NOT manually set Bindy management labels/annotations
 - User-defined labels/annotations can be added
 
@@ -322,9 +322,9 @@ count by (role) (
 ### Updates
 
 **Managed instances:**
-- Bindy management labels/annotations are immutable (managed by controller)
+- Bindy management labels/annotations are immutable (managed by operator)
 - User-defined labels/annotations can be modified
-- Changes to management labels will be reverted by controller
+- Changes to management labels will be reverted by operator
 
 **Manual instances:**
 - All labels/annotations can be freely modified
@@ -332,7 +332,7 @@ count by (role) (
 ### Deletion
 
 When a Bind9Cluster is deleted:
-1. Controller finds all instances with matching `bindy.firestoned.io/cluster` label
+1. Operator finds all instances with matching `bindy.firestoned.io/cluster` label
 2. Deletes each instance (cascade deletion)
 3. Labels and annotations are removed with the instance
 
@@ -349,7 +349,7 @@ kubectl label bind9instance production-dns-primary-0 \
 
 **✅ Good:**
 ```bash
-# Let the controller manage these labels
+# Let the operator manage these labels
 # They are set based on cluster spec
 ```
 

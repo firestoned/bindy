@@ -171,7 +171,7 @@ config:
 
 ## Status
 
-The controller updates status to reflect cluster state:
+The operator updates status to reflect cluster state:
 
 ```yaml
 status:
@@ -266,13 +266,13 @@ Managed instances automatically inherit configuration from the cluster:
 
 ### Self-Healing
 
-The Bind9Cluster controller provides comprehensive self-healing for managed instances:
+The Bind9Cluster operator provides comprehensive self-healing for managed instances:
 
 **Instance-Level Self-Healing:**
-- If a managed instance (Bind9Instance CRD) is deleted (manually or accidentally), the controller automatically recreates it during the next reconciliation cycle
+- If a managed instance (Bind9Instance CRD) is deleted (manually or accidentally), the operator automatically recreates it during the next reconciliation cycle
 
 **Resource-Level Self-Healing:**
-- If any child resource is deleted, the controller automatically triggers recreation:
+- If any child resource is deleted, the operator automatically triggers recreation:
   - **ConfigMap** - BIND9 configuration files
   - **Secret** - RNDC key for remote control
   - **Service** - DNS traffic routing (TCP/UDP port 53)
@@ -285,7 +285,7 @@ This ensures complete desired state is maintained even if individual Kubernetes 
 # Manually delete a ConfigMap
 kubectl delete configmap production-dns-primary-0-config -n dns-system
 
-# During next reconciliation (~10 seconds), the controller:
+# During next reconciliation (~10 seconds), the operator:
 # 1. Detects missing ConfigMap
 # 2. Triggers Bind9Instance reconciliation
 # 3. Recreates ConfigMap with correct configuration
@@ -306,17 +306,17 @@ spec:
     replicas: 2
 EOF
 
-# Controller creates: production-dns-primary-0, production-dns-primary-1
+# Operator creates: production-dns-primary-0, production-dns-primary-1
 
 # Scale up to 4 primaries
 kubectl patch bind9cluster production-dns -n dns-system --type=merge -p '{"spec":{"primary":{"replicas":4}}}'
 
-# Controller creates: production-dns-primary-2, production-dns-primary-3
+# Operator creates: production-dns-primary-2, production-dns-primary-3
 
 # Scale down to 3 primaries
 kubectl patch bind9cluster production-dns -n dns-system --type=merge -p '{"spec":{"primary":{"replicas":3}}}'
 
-# Controller deletes: production-dns-primary-3 (highest index first)
+# Operator deletes: production-dns-primary-3 (highest index first)
 ```
 
 ### Manual vs Managed Instances

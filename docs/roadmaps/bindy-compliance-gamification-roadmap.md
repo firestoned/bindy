@@ -539,7 +539,7 @@ metadata:
       kind: DNSZone
       name: api.payments.example.com
       uid: abc-123
-      controller: true
+      operator: true
 spec:
   # Reference to the zone being evaluated
   zoneRef:
@@ -765,7 +765,7 @@ metadata:
       kind: DNSZone
       name: api.payments.example.com
       uid: abc-123
-      controller: true
+      operator: true
 spec:
   zoneRef:
     name: api.payments.example.com
@@ -1056,20 +1056,20 @@ src/
 
 ---
 
-### Milestone 3: Controllers (Week 5-6)
+### Milestone 3: Operators (Week 5-6)
 
 **Tasks:**
-1. [ ] Implement DNSSecurityPolicy controller (watches policies, triggers evaluations)
-2. [ ] Implement DNSCompliancePolicy controller
-3. [ ] Implement DNSSecurityReport controller (creates/updates reports per zone)
-4. [ ] Implement DNSComplianceReport controller
+1. [ ] Implement DNSSecurityPolicy operator (watches policies, triggers evaluations)
+2. [ ] Implement DNSCompliancePolicy operator
+3. [ ] Implement DNSSecurityReport operator (creates/updates reports per zone)
+4. [ ] Implement DNSComplianceReport operator
 5. [ ] Add reconciliation logic for policy changes
 6. [ ] Implement garbage collection for orphaned reports
 
 **Files to create:**
 ```
 src/
-├── controllers/
+├── operators/
 │   ├── mod.rs
 │   ├── security_policy.rs
 │   ├── compliance_policy.rs

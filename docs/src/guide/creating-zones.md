@@ -133,7 +133,7 @@ For detailed guidance, see [Zone Selection Guide](./zone-selection.md).
 
 When you create a DNSZone:
 
-1. **Zone selects instances** - Controller evaluates `clusterRef` and/or `bind9InstancesFrom` to select instances
+1. **Zone selects instances** - Operator evaluates `clusterRef` and/or `bind9InstancesFrom` to select instances
 2. **Deduplicates instances** - If using both methods, duplicates are removed (UID-based)
 3. **For each selected instance**:
    - Retrieves bindcar HTTP API endpoint for the instance

@@ -6,7 +6,7 @@
 [![Integration Tests](https://github.com/firestoned/bindy/actions/workflows/integration.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/integration.yaml)
 [![codecov](https://codecov.io/gh/firestoned/bindy/branch/main/graph/badge.svg)](https://codecov.io/gh/firestoned/bindy)
 
-**Bindy** is a high-performance Kubernetes controller written in Rust that manages BIND9 DNS infrastructure through Custom Resource Definitions (CRDs). It enables you to manage DNS zones and records as native Kubernetes resources, bringing the declarative Kubernetes paradigm to DNS management.
+**Bindy** is a high-performance Kubernetes operator written in Rust that manages BIND9 DNS infrastructure through Custom Resource Definitions (CRDs). It enables you to manage DNS zones and records as native Kubernetes resources, bringing the declarative Kubernetes paradigm to DNS management.
 
 ## What is Bindy?
 
@@ -111,7 +111,7 @@ Bindy automatically:
 - **Zone Creation Latency**: <500ms per zone (via RNDC)
 - **Record Addition Latency**: <200ms per record (via RNDC)
 - **RNDC Command Execution**: <100ms typical
-- **Controller Overhead**: Negligible CPU when idle
+- **Operator Overhead**: Negligible CPU when idle
 
 ## Project Status
 

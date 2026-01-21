@@ -211,8 +211,8 @@ Key log messages indicating leader election status:
 |-------------|---------|
 | `Attempting to acquire lease bindy-leader` | Instance trying to become leader |
 | `Lease acquired, this instance is now the leader` | Instance became leader |
-| `Starting all controllers` | Leader starting reconciliation |
-| `Leadership lost! Stopping all controllers...` | Leader detected lease loss |
+| `Starting all operators` | Leader starting reconciliation |
+| `Leadership lost! Stopping all operators...` | Leader detected lease loss |
 | `Lease already held by <pod-name>` | Another instance is leader |
 
 ### Prometheus Metrics
@@ -393,13 +393,13 @@ kubectl get pod -n dns-system $LEADER
 # Check leader logs
 kubectl logs -n dns-system $LEADER -f
 
-# Look for controller startup messages
-kubectl logs -n dns-system $LEADER | grep "Starting.*controller"
+# Look for operator startup messages
+kubectl logs -n dns-system $LEADER | grep "Starting.*operator"
 ```
 
 **Common causes:**
 - Leader pod stuck in initialization
-- Controller panic after acquiring leadership
+- Operator panic after acquiring leadership
 - Resource limits preventing reconciliation
 
 ### Operator Disabled Leader Election
@@ -569,7 +569,7 @@ Operator handles SIGTERM gracefully:
 1. Receives SIGTERM signal
 2. Stops renewing lease
 3. Waits for standby to acquire lease
-4. Shuts down controllers
+4. Shuts down operators
 5. Exits cleanly
 
 ### Debugging Leader Election

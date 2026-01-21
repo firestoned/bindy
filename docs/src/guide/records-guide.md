@@ -80,7 +80,7 @@ spec:
   ttl: 300
 ```
 
-The controller automatically discovers this record and adds it to the `example.com` zone.
+The operator automatically discovers this record and adds it to the `example.com` zone.
 
 ### Why Label Selectors?
 

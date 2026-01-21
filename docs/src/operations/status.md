@@ -58,7 +58,7 @@ status:
       reason: Ready            # Machine-readable reason (typically same as type)
       message: "Bind9Instance configured with 2 replicas"  # Human-readable message
       lastTransitionTime: "2024-11-26T10:00:00Z"          # RFC3339 timestamp
-  observedGeneration: 1        # Generation last observed by controller
+  observedGeneration: 1        # Generation last observed by operator
   # Resource-specific fields (replicas, recordCount, etc.)
 ```
 

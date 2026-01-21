@@ -9,7 +9,7 @@ Installing Bindy involves these steps:
 1. **Prerequisites** - Ensure your environment meets the requirements
 2. **Install CRDs** - Deploy Custom Resource Definitions
 3. **Create RBAC** - Set up service accounts and permissions
-4. **Deploy Controller** - Install the Bindy controller
+4. **Deploy Operator** - Install the Bindy operator
 5. **Create BIND9 Instances** - Deploy your DNS servers
 
 ## Installation Methods
@@ -28,8 +28,8 @@ kubectl create -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy
 # Install RBAC
 kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/rbac/
 
-# Deploy controller
-kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/controller/deployment.yaml
+# Deploy operator
+kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/operator/deployment.yaml
 ```
 
 ### Development Installation
@@ -41,7 +41,7 @@ For development or testing, you can build and deploy from source:
 git clone https://github.com/firestoned/bindy.git
 cd bindy
 
-# Build the controller
+# Build the operator
 cargo build --release
 
 # Build Docker image
@@ -59,18 +59,18 @@ After installation, verify that all components are running:
 # Check CRDs are installed
 kubectl get crd | grep bindy.firestoned.io
 
-# Check controller is running
+# Check operator is running
 kubectl get pods -n dns-system
 
-# Check controller logs
-kubectl logs -n dns-system -l app=bind9-controller
+# Check operator logs
+kubectl logs -n dns-system -l app=bind9-operator
 ```
 
 You should see output similar to:
 
 ```
 NAME                                READY   STATUS    RESTARTS   AGE
-bind9-controller-7d4b8c4f9b-x7k2m   1/1     Running   0          1m
+bind9-operator-7d4b8c4f9b-x7k2m   1/1     Running   0          1m
 ```
 
 ## Next Steps
@@ -78,4 +78,4 @@ bind9-controller-7d4b8c4f9b-x7k2m   1/1     Running   0          1m
 - [Quick Start](./quickstart.md) - Deploy your first DNS zone
 - [Prerequisites](./prerequisites.md) - Detailed system requirements
 - [Installing CRDs](./crds.md) - Understanding the Custom Resources
-- [Deploying the Controller](./controller.md) - Controller configuration options
+- [Deploying the Operator](./operator.md) - Operator configuration options

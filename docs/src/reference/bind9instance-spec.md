@@ -53,7 +53,7 @@ spec:
 **How It Works**:
 - Instance inherits `version` from cluster unless overridden
 - Instance inherits `global` config from cluster unless overridden
-- Controller uses cluster TSIG keys for zone transfers
+- Operator uses cluster TSIG keys for zone transfers
 - Instance can override cluster settings with its own spec
 
 ### replicas

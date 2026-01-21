@@ -265,7 +265,7 @@ For detailed incident response procedures, see **[Incident Response Playbooks](d
 ### Available Playbooks
 
 - **[P1: Critical Vulnerability Detected](docs/security/INCIDENT_RESPONSE.md#p1-critical-vulnerability-detected)** - CVSS 9.0-10.0 vulnerability, 24-hour remediation SLA
-- **[P2: Compromised Controller Pod](docs/security/INCIDENT_RESPONSE.md#p2-compromised-controller-pod)** - Unauthorized access, anomalous behavior
+- **[P2: Compromised Operator Pod](docs/security/INCIDENT_RESPONSE.md#p2-compromised-operator-pod)** - Unauthorized access, anomalous behavior
 - **[P3: DNS Service Outage](docs/security/INCIDENT_RESPONSE.md#p3-dns-service-outage)** - All BIND9 pods down, queries failing
 - **[P4: RNDC Key Compromise](docs/security/INCIDENT_RESPONSE.md#p4-rndc-key-compromise)** - Key leaked, unauthorized RNDC access
 - **[P5: Unauthorized DNS Changes](docs/security/INCIDENT_RESPONSE.md#p5-unauthorized-dns-changes)** - Unexpected zone modifications

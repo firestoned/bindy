@@ -91,7 +91,7 @@ Full audit trail, rollback capabilities, peer review via pull requests, and Kube
 2. **Event-Driven Architecture** - Watches Kubernetes API, reacts to changes instantly
 3. **HTTP REST API Sidecar** - `bindcar` sidecar translates HTTP to RNDC, simplifying communication
 4. **Kubernetes-Native** - Status conditions, events, RBAC, ServiceAccount authentication, all built-in
-5. **Written in Rust** - Memory-safe, high-performance, minimal overhead (both controller and sidecar)
+5. **Written in Rust** - Memory-safe, high-performance, minimal overhead (both operator and sidecar)
 6. **Production-Ready** - SOX, NIST, CIS compliant, SLSA Level 3 provenance, signed releases
 
 ---
@@ -102,7 +102,7 @@ Full audit trail, rollback capabilities, peer review via pull requests, and Kube
 
 ### The Sidecar Pattern: `bindcar` HTTP API
 
-Before diving into the three tiers, it's essential to understand how `bindy` communicates with BIND9. Rather than implementing the complex RNDC protocol directly in the controller, `bindy` uses a **sidecar container pattern** with `bindcar`:
+Before diving into the three tiers, it's essential to understand how `bindy` communicates with BIND9. Rather than implementing the complex RNDC protocol directly in the operator, `bindy` uses a **sidecar container pattern** with `bindcar`:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -127,7 +127,7 @@ Before diving into the three tiers, it's essential to understand how `bindy` com
           │ DNS queries                │ HTTP REST API
           │ (UDP/TCP 53)               │ (TCP 8080)
           │                            │
-    DNS Clients              bindy Controller
+    DNS Clients              bindy Operator
 ```
 
 **Why the sidecar pattern?**
@@ -145,7 +145,7 @@ kubectl apply -f dnszone.yaml
     ↓
 Kubernetes API (etcd)
     ↓ watch event
-bindy Controller
+bindy Operator
     ↓ HTTP POST /api/v1/zones (port 8080)
 bindcar Sidecar
     ↓ writes zone file to /var/cache/bind
@@ -205,13 +205,13 @@ spec:
     ttl: 3600
 ```
 
-The controller:
+The operator:
 1. Selects a primary Bind9Instance from the cluster
 2. Sends HTTP POST request to `bindcar` API sidecar (port 8080)
 3. `bindcar` writes zone file to `/var/cache/bind` (shared volume)
 4. `bindcar` executes RNDC `addzone` command locally (localhost:9530)
 5. BIND9 loads the zone and begins serving DNS queries
-6. Controller updates resource status with zone placement
+6. Operator updates resource status with zone placement
 
 **No zone files edited manually. No server SSH. Just Kubernetes API and REST.**
 
@@ -246,7 +246,7 @@ spec:
 ```
 Kubernetes API (etcd)
     ↓ Watch events
-bindy Controller (Rust)
+bindy Operator (Rust)
     ↓ HTTP REST API (port 8080)
 bindcar Sidecar
     ↓ RNDC protocol (localhost:9530)
@@ -261,22 +261,22 @@ Secondary Instances (multi-region)
 
 One of `bindy`'s key innovations is the `bindcar` sidecar - a lightweight Rust HTTP server that runs alongside every BIND9 instance. This architectural choice dramatically simplifies DNS management:
 
-**Why not use RNDC directly from the controller?**
+**Why not use RNDC directly from the operator?**
 
 RNDC (Remote Name Daemon Control) is BIND9's native management protocol, but it has significant challenges:
 - **Binary protocol**: Complex to implement correctly
 - **TSIG authentication**: Requires managing shared secrets and HMAC signing
-- **Network overhead**: Controller needs direct network access to every BIND9 pod
+- **Network overhead**: Operator needs direct network access to every BIND9 pod
 - **Error handling**: Cryptic error messages that are hard to parse
 - **State management**: Complex connection pooling and retry logic
 
 **How `bindcar` solves this:**
 
-Instead of implementing RNDC in the controller, `bindcar` acts as a translation layer:
+Instead of implementing RNDC in the operator, `bindcar` acts as a translation layer:
 
 ```
 ┌──────────────────────┐         ┌──────────────────────┐
-│ bindy Controller     │         │ bindcar Sidecar      │
+│ bindy Operator     │         │ bindcar Sidecar      │
 │                      │         │                      │
 │ Simple HTTP client   │  HTTP   │ HTTP REST API        │
 │ reqwest (Rust)       │────────▶│ Axum server (Rust)   │
@@ -297,13 +297,13 @@ Instead of implementing RNDC in the controller, `bindcar` acts as a translation 
 
 **Key advantages:**
 
-1. **Simplified controller**: `bindy` uses standard HTTP - no custom protocol implementation
+1. **Simplified operator**: `bindy` uses standard HTTP - no custom protocol implementation
 2. **Better errors**: Structured JSON responses with detailed error messages and stack traces
 3. **Native Kubernetes auth**: Uses ServiceAccount tokens instead of managing TSIG keys
 4. **Security**: RNDC port (9530) only exposed to localhost, not the cluster network
 5. **Observability**: Easy to add Prometheus metrics, request logging, and tracing
 6. **Language-agnostic**: Any tool that speaks HTTP can manage BIND9 (curl, Python, Go, etc.)
-7. **Testability**: API can be tested independently of the controller
+7. **Testability**: API can be tested independently of the operator
 
 **Example HTTP request:**
 ```bash
@@ -402,7 +402,7 @@ Traditional DNS change workflow:
    kubectl apply -f dns/
    ```
 
-5. `bindy` controller reconciles:
+5. `bindy` operator reconciles:
    - Detects new ARecord resource
    - Sends HTTP POST to `bindcar` sidecar
    - `bindcar` executes RNDC update command
@@ -451,7 +451,7 @@ GitOps Repository (FluxCD)
     ↓ Sync to cluster
 Kubernetes API
     ↓ Watch events
-bindy Controller
+bindy Operator
     ↓ HTTP REST API
 bindcar Sidecar
     ↓ RNDC protocol (local)
@@ -613,7 +613,7 @@ Automatic zone transfers, GeoDNS routing, transparent failover.
 # 1. Install CRDs
 kubectl create -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
 
-# 2. Deploy bindy controller
+# 2. Deploy bindy operator
 kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/bindy.yaml
 
 # 3. Create your first DNS cluster
@@ -670,7 +670,7 @@ kubectl describe arecord www
 
 ### 1. Try `bindy` Today
 
-- **bindy Controller GitHub:** [github.com/firestoned/bindy](https://github.com/firestoned/bindy)
+- **bindy Operator GitHub:** [github.com/firestoned/bindy](https://github.com/firestoned/bindy)
 - **bindcar Sidecar GitHub:** [github.com/firestoned/bindcar](https://github.com/firestoned/bindcar)
 - **Documentation:** [firestoned.github.io/bindy](https://firestoned.github.io/bindy)
 - **Quick Start Guide:** Get running in 5 minutes
@@ -721,7 +721,7 @@ DNS is critical infrastructure. Downtime is measured in millions. Manual process
 
 *`bindy` and `bindcar` are open-source, MIT licensed, and built in Rust.*
 
-*bindy Controller: [github.com/firestoned/bindy](https://github.com/firestoned/bindy)*
+*bindy Operator: [github.com/firestoned/bindy](https://github.com/firestoned/bindy)*
 
 *bindcar Sidecar: [github.com/firestoned/bindcar](https://github.com/firestoned/bindcar)*
 

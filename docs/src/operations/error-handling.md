@@ -118,7 +118,7 @@ Kubernetes API calls will automatically retry on transient failures (implementat
 2. **No Manual Intervention**: Operators don't need to manually requeue or restart failed operations
 3. **Smart Error Classification**: Permanent errors (404, 400, etc.) fail immediately without wasting time on retries
 4. **Exponential Backoff**: Prevents overwhelming services during recovery while still providing fast retries for quick issues
-5. **Thundering Herd Prevention**: Randomization (±10%) prevents all controllers retrying simultaneously
+5. **Thundering Herd Prevention**: Randomization (±10%) prevents all operators retrying simultaneously
 6. **Observability**: Structured logging provides visibility into retry attempts, duration, and outcomes
 
 ## Configuration
@@ -343,7 +343,7 @@ histogram_quantile(0.95, bindy_reconcile_duration_seconds_bucket{resource="AReco
 
 ## Idempotent Operations
 
-All BIND9 operations are idempotent, making them safe for controller retries:
+All BIND9 operations are idempotent, making them safe for operator retries:
 
 ### add_zones / add_primary_zone / add_secondary_zone
 - **add_zones**: Centralized dispatcher that routes to `add_primary_zone` or `add_secondary_zone` based on zone type
@@ -360,7 +360,7 @@ All BIND9 operations are idempotent, making them safe for controller retries:
 ### Record Operations
 - All record add/update operations are idempotent
 - Retrying a failed operation won't create duplicates
-- Controller can safely requeue failed reconciliations
+- Operator can safely requeue failed reconciliations
 
 ## Best Practices
 

@@ -59,7 +59,7 @@ spec:
 ```
 
 **How It Works**:
-- Controller finds Bind9Cluster with this name
+- Operator finds Bind9Cluster with this name
 - Discovers all Bind9Instance resources referencing this cluster
 - Identifies primary instances for zone hosting
 - Loads RNDC keys from cluster configuration
@@ -68,7 +68,7 @@ spec:
 
 **Validation**:
 - Referenced Bind9Cluster must exist in same namespace
-- Controller validates reference at admission time
+- Operator validates reference at admission time
 
 ### soaRecord
 **Type**: object
@@ -381,7 +381,7 @@ spec:
 When you create a DNSZone resource:
 
 1. **Admission** - Kubernetes validates the resource schema
-2. **Controller watches** - Bindy controller detects the new zone
+2. **Operator watches** - Bindy operator detects the new zone
 3. **Cluster lookup** - Finds Bind9Cluster referenced by `clusterRef`
 4. **Instance discovery** - Finds all Bind9Instance resources referencing the cluster
 5. **Primary identification** - Identifies primary instances (with `role: primary`)

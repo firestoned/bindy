@@ -2,7 +2,7 @@
 
 ## Overview
 
-Bindy uses a **centralized operator** pattern with native BIND9 zone transfer capabilities (AXFR/IXFR). This architecture eliminates the need for multiple controllers and leverages BIND's built-in primary-secondary replication.
+Bindy uses a **centralized operator** pattern with native BIND9 zone transfer capabilities (AXFR/IXFR). This architecture eliminates the need for multiple operators and leverages BIND's built-in primary-secondary replication.
 
 ## CRD Hierarchy
 
@@ -308,7 +308,7 @@ spec:
 ### 5. No "Many Watchers" Problem
 
 - Single operator watching all resources
-- No per-pod controllers
+- No per-pod operators
 - Efficient resource usage
 
 ## Configuration Example

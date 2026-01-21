@@ -6,7 +6,7 @@ set -euo pipefail
 
 # ClusterBind9Provider Resilience Integration Test
 #
-# This test verifies that the Bindy controller properly handles:
+# This test verifies that the Bindy operator properly handles:
 # 1. ClusterBind9Provider creation from examples/cluster-bind9-provider.yaml
 # 2. DNSZone creation with matching labels
 # 3. Creation of Bind9Cluster and Bind9Instances (3 total)
@@ -20,7 +20,7 @@ set -euo pipefail
 # Options:
 #   --image IMAGE_REF    Use pre-built image from registry (e.g., ghcr.io/firestoned/bindy:main)
 #                        If not specified, builds image locally from source
-#   --skip-deploy        Skip cluster and controller deployment (assumes already set up)
+#   --skip-deploy        Skip cluster and operator deployment (assumes already set up)
 #   --zone ZONE_NAME     DNS zone name to use for testing (default: test-example.com)
 
 # Colors for output
@@ -95,7 +95,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --image IMAGE_REF    Use pre-built image from registry (e.g., ghcr.io/firestoned/bindy:main)"
             echo "                       If not specified, builds image locally from source"
-            echo "  --skip-deploy        Skip cluster and controller deployment (assumes already set up)"
+            echo "  --skip-deploy        Skip cluster and operator deployment (assumes already set up)"
             echo "  --zone ZONE_NAME     DNS zone name to use for testing (default: test-example.com)"
             echo "  --help, -h           Show this help message"
             exit 0
@@ -242,12 +242,12 @@ if [ "$SKIP_DEPLOY" = false ]; then
 
     kubectl config use-context "kind-${CLUSTER_NAME}" > /dev/null
 
-    # Check if Bindy controller is running
+    # Check if Bindy operator is running
     echo ""
-    echo -e "${YELLOW}🔍 Checking if Bindy controller is deployed...${NC}"
+    echo -e "${YELLOW}🔍 Checking if Bindy operator is deployed...${NC}"
 
     if ! ${KUBECTL} get namespace dns-system &>/dev/null; then
-        echo -e "${YELLOW}📦 Bindy not deployed. Deploying Bindy controller...${NC}"
+        echo -e "${YELLOW}📦 Bindy not deployed. Deploying Bindy operator...${NC}"
 
         # Create dns-system namespace
         ${KUBECTL} create namespace dns-system || true
@@ -270,10 +270,10 @@ if [ "$SKIP_DEPLOY" = false ]; then
         if [ -n "$IMAGE_REF" ]; then
             echo -e "${GREEN}📦 Using pre-built image: ${IMAGE_REF}${NC}"
 
-            # Deploy controller with custom image
-            echo -e "${GREEN}🚀 Deploying controller...${NC}"
-            sed "s|ghcr.io/firestoned/bindy:latest|${IMAGE_REF}|g" "${PROJECT_ROOT}/deploy/controller/deployment.yaml" | ${KUBECTL} apply -f - || {
-                echo -e "${RED}❌ Failed to deploy controller${NC}"
+            # Deploy operator with custom image
+            echo -e "${GREEN}🚀 Deploying operator...${NC}"
+            sed "s|ghcr.io/firestoned/bindy:latest|${IMAGE_REF}|g" "${PROJECT_ROOT}/deploy/operator/deployment.yaml" | ${KUBECTL} apply -f - || {
+                echo -e "${RED}❌ Failed to deploy operator${NC}"
                 exit 1
             }
         else
@@ -290,25 +290,25 @@ if [ "$SKIP_DEPLOY" = false ]; then
                 exit 1
             }
 
-            # Deploy controller with local image
-            echo -e "${GREEN}🚀 Deploying controller...${NC}"
-            ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/controller/deployment.yaml" || {
-                echo -e "${RED}❌ Failed to deploy controller${NC}"
+            # Deploy operator with local image
+            echo -e "${GREEN}🚀 Deploying operator...${NC}"
+            ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/operator/deployment.yaml" || {
+                echo -e "${RED}❌ Failed to deploy operator${NC}"
                 exit 1
             }
         fi
 
-        # Wait for controller to be ready
-        echo -e "${GREEN}⏳ Waiting for controller to be ready...${NC}"
+        # Wait for operator to be ready
+        echo -e "${GREEN}⏳ Waiting for operator to be ready...${NC}"
         ${KUBECTL} wait --for=condition=available --timeout=300s deployment/bindy -n dns-system || {
-            echo -e "${RED}❌ Controller failed to start. Checking logs:${NC}"
+            echo -e "${RED}❌ Operator failed to start. Checking logs:${NC}"
             ${KUBECTL} logs -n dns-system -l app=bindy --tail=50
             exit 1
         }
 
-        echo -e "${GREEN}✓ Bindy controller deployed successfully${NC}"
+        echo -e "${GREEN}✓ Bindy operator deployed successfully${NC}"
     elif ! ${KUBECTL} get deployment bindy -n dns-system &>/dev/null; then
-        echo -e "${YELLOW}📦 Bindy namespace exists but controller not deployed. Deploying...${NC}"
+        echo -e "${YELLOW}📦 Bindy namespace exists but operator not deployed. Deploying...${NC}"
 
         # Deploy CRDs (may already exist)
         echo -e "${GREEN}📋 Installing/Updating CRDs...${NC}"
@@ -322,10 +322,10 @@ if [ "$SKIP_DEPLOY" = false ]; then
         if [ -n "$IMAGE_REF" ]; then
             echo -e "${GREEN}📦 Using pre-built image: ${IMAGE_REF}${NC}"
 
-            # Deploy controller with custom image
-            echo -e "${GREEN}🚀 Deploying controller...${NC}"
-            sed "s|ghcr.io/firestoned/bindy:latest|${IMAGE_REF}|g" "${PROJECT_ROOT}/deploy/controller/deployment.yaml" | ${KUBECTL} apply -f - || {
-                echo -e "${RED}❌ Failed to deploy controller${NC}"
+            # Deploy operator with custom image
+            echo -e "${GREEN}🚀 Deploying operator...${NC}"
+            sed "s|ghcr.io/firestoned/bindy:latest|${IMAGE_REF}|g" "${PROJECT_ROOT}/deploy/operator/deployment.yaml" | ${KUBECTL} apply -f - || {
+                echo -e "${RED}❌ Failed to deploy operator${NC}"
                 exit 1
             }
         else
@@ -342,30 +342,30 @@ if [ "$SKIP_DEPLOY" = false ]; then
                 exit 1
             }
 
-            # Deploy controller with local image
-            echo -e "${GREEN}🚀 Deploying controller...${NC}"
-            ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/controller/deployment.yaml" || {
-                echo -e "${RED}❌ Failed to deploy controller${NC}"
+            # Deploy operator with local image
+            echo -e "${GREEN}🚀 Deploying operator...${NC}"
+            ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/operator/deployment.yaml" || {
+                echo -e "${RED}❌ Failed to deploy operator${NC}"
                 exit 1
             }
         fi
 
-        # Wait for controller to be ready
-        echo -e "${GREEN}⏳ Waiting for controller to be ready...${NC}"
+        # Wait for operator to be ready
+        echo -e "${GREEN}⏳ Waiting for operator to be ready...${NC}"
         ${KUBECTL} wait --for=condition=available --timeout=300s deployment/bindy -n dns-system || {
-            echo -e "${RED}❌ Controller failed to start${NC}"
+            echo -e "${RED}❌ Operator failed to start${NC}"
             exit 1
         }
 
-        echo -e "${GREEN}✓ Bindy controller deployed successfully${NC}"
+        echo -e "${GREEN}✓ Bindy operator deployed successfully${NC}"
     else
-        # Controller exists, check if it's running
+        # Operator exists, check if it's running
         if ${KUBECTL} get deployment bindy -n dns-system -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null | grep -q "True"; then
-            echo -e "${GREEN}✓ Bindy controller is running${NC}"
+            echo -e "${GREEN}✓ Bindy operator is running${NC}"
         else
-            echo -e "${YELLOW}⚠️  Bindy controller exists but not ready. Waiting...${NC}"
+            echo -e "${YELLOW}⚠️  Bindy operator exists but not ready. Waiting...${NC}"
             ${KUBECTL} wait --for=condition=available --timeout=60s deployment/bindy -n dns-system || {
-                echo -e "${RED}❌ Controller not ready${NC}"
+                echo -e "${RED}❌ Operator not ready${NC}"
                 exit 1
             }
         fi

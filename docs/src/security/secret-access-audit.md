@@ -35,7 +35,7 @@ Bindy audit logging covers all Kubernetes Secrets in the `dns-system` namespace:
 
 | Secret Name | Purpose | Access Pattern |
 |-------------|---------|----------------|
-| `rndc-key-*` | RNDC authentication keys for BIND9 control | Controller reads on reconciliation (every 5 minutes) |
+| `rndc-key-*` | RNDC authentication keys for BIND9 control | Operator reads on reconciliation (every 5 minutes) |
 | `tls-cert-*` | TLS certificates for DNS-over-TLS/HTTPS | BIND9 pods read on startup |
 | Custom secrets | User-defined secrets for DNS credentials | Varies by use case |
 
@@ -44,7 +44,7 @@ Bindy audit logging covers all Kubernetes Secrets in the `dns-system` namespace:
 | Framework | Requirement | How We Comply |
 |-----------|-------------|---------------|
 | **SOX 404** | IT General Controls - Access Control | Audit logs show who accessed secrets and when (7-year retention) |
-| **PCI-DSS 7.1.2** | Restrict access to privileged user IDs | RBAC limits secret access to controller (read-only) + audit trail |
+| **PCI-DSS 7.1.2** | Restrict access to privileged user IDs | RBAC limits secret access to operator (read-only) + audit trail |
 | **PCI-DSS 10.2.1** | Audit log all access to cardholder data | Secret access logged with user, timestamp, action, outcome |
 | **Basel III** | Cyber Risk - Access Monitoring | Real-time alerting on anomalous secret access, quarterly reviews |
 
@@ -66,7 +66,7 @@ Every secret access operation generates an audit log entry with:
   "requestURI": "/api/v1/namespaces/dns-system/secrets/rndc-key-primary",
   "verb": "get",
   "user": {
-    "username": "system:serviceaccount:dns-system:bindy-controller",
+    "username": "system:serviceaccount:dns-system:bindy-operator",
     "uid": "abc123",
     "groups": ["system:serviceaccounts", "system:serviceaccounts:dns-system"]
   },
@@ -249,7 +249,7 @@ These queries are designed for use in Elasticsearch (Kibana) or direct S3 querie
     "by_service_account": {
       "buckets": [
         {
-          "key": "system:serviceaccount:dns-system:bindy-controller",
+          "key": "system:serviceaccount:dns-system:bindy-operator",
           "doc_count": 25920,
           "by_secret": {
             "buckets": [
@@ -273,13 +273,13 @@ These queries are designed for use in Elasticsearch (Kibana) or direct S3 querie
 ```
 
 **Interpretation:**
-- Controller accessed `rndc-key-primary` 12,960 times in 90 days
+- Operator accessed `rndc-key-primary` 12,960 times in 90 days
 - Expected: ~144 times/day (reconciliation every 10 minutes = 6 times/hour × 24 hours)
 - 12,960 / 90 days = 144 accesses/day ✅ **NORMAL**
 
 ---
 
-#### Q2: Secret Access by Non-Controller ServiceAccounts
+#### Q2: Secret Access by Non-Operator ServiceAccounts
 
 **Use Case:** Detect unauthorized secret access (should be ZERO)
 
@@ -294,7 +294,7 @@ These queries are designed for use in Elasticsearch (Kibana) or direct S3 querie
         { "term": { "objectRef.namespace": "dns-system" } }
       ],
       "must_not": [
-        { "term": { "user.username.keyword": "system:serviceaccount:dns-system:bindy-controller" } }
+        { "term": { "user.username.keyword": "system:serviceaccount:dns-system:bindy-operator" } }
       ]
     }
   },
@@ -305,7 +305,7 @@ These queries are designed for use in Elasticsearch (Kibana) or direct S3 querie
 }
 ```
 
-**Expected Output:** `0 hits` (only controller should access secrets)
+**Expected Output:** `0 hits` (only operator should access secrets)
 
 **If non-zero:** 🚨 **ALERT** - Unauthorized secret access detected, trigger incident response (see [INCIDENT_RESPONSE.md](INCIDENT_RESPONSE.md#p4-rndc-key-compromise))
 
@@ -463,7 +463,7 @@ These queries are designed for use in Elasticsearch (Kibana) or direct S3 querie
 }
 ```
 
-**Expected Output:** Daily access pattern showing controller accessing key ~144 times/day
+**Expected Output:** Daily access pattern showing operator accessing key ~144 times/day
 
 **Export for Auditors:**
 
@@ -500,13 +500,13 @@ groups:
   - name: bindy_secret_access
     interval: 1m
     rules:
-      # CRITICAL: Non-controller ServiceAccount accessed secrets
+      # CRITICAL: Non-operator ServiceAccount accessed secrets
       - alert: UnauthorizedSecretAccess
         expr: |
           sum(rate(kubernetes_audit_event_total{
             objectRef_resource="secrets",
             objectRef_namespace="dns-system",
-            user_username!~"system:serviceaccount:dns-system:bindy-controller"
+            user_username!~"system:serviceaccount:dns-system:bindy-operator"
           }[5m])) > 0
         for: 1m
         labels:
@@ -516,7 +516,7 @@ groups:
           summary: "Unauthorized secret access detected in dns-system namespace"
           description: |
             ServiceAccount {{ $labels.user_username }} accessed secret {{ $labels.objectRef_name }}.
-            This violates least privilege RBAC policy (only bindy-controller should access secrets).
+            This violates least privilege RBAC policy (only bindy-operator should access secrets).
 
             Investigate immediately:
             1. Check source IP: {{ $labels.sourceIP }}
@@ -525,29 +525,29 @@ groups:
             4. Follow incident response: docs/security/INCIDENT_RESPONSE.md#p4
           runbook_url: "https://github.com/firestoned/bindy/blob/main/docs/security/INCIDENT_RESPONSE.md#p4-rndc-key-compromise"
 
-      # HIGH: Excessive secret access (potential compromised controller)
+      # HIGH: Excessive secret access (potential compromised operator)
       - alert: ExcessiveSecretAccess
         expr: |
           sum(rate(kubernetes_audit_event_total{
             objectRef_resource="secrets",
             objectRef_namespace="dns-system",
-            user_username="system:serviceaccount:dns-system:bindy-controller"
+            user_username="system:serviceaccount:dns-system:bindy-operator"
           }[5m])) > 10
         for: 10m
         labels:
           severity: warning
           compliance: "SOX-404"
         annotations:
-          summary: "Controller accessing secrets at abnormally high rate"
+          summary: "Operator accessing secrets at abnormally high rate"
           description: |
-            Bindy controller is accessing secrets at {{ $value }}/sec (expected: ~0.5/sec).
+            Bindy operator is accessing secrets at {{ $value }}/sec (expected: ~0.5/sec).
             This may indicate:
             - Reconciliation loop bug (rapid retries)
-            - Compromised controller pod
+            - Compromised operator pod
             - Performance issue causing excessive reconciliations
 
             Actions:
-            1. Check controller logs for errors
+            1. Check operator logs for errors
             2. Verify reconciliation requeue times are correct
             3. Check for BIND9 pod restart loops
           runbook_url: "https://github.com/firestoned/bindy/blob/main/docs/troubleshooting.md"
@@ -641,17 +641,17 @@ receivers:
 | Access logs for all privileged accounts | ✅ Kubernetes audit logs capture all secret access | Query Q1 (quarterly review) |
 | Logs retained for 7 years | ✅ S3 Glacier with WORM (Object Lock) | [AUDIT_LOG_RETENTION.md](AUDIT_LOG_RETENTION.md) |
 | Quarterly access reviews | ✅ Run Query Q1, review access patterns | Scheduled Kibana report |
-| Separation of duties (no single person can access + modify) | ✅ Controller has read-only access (cannot create/update/delete) | RBAC policy verification |
+| Separation of duties (no single person can access + modify) | ✅ Operator has read-only access (cannot create/update/delete) | RBAC policy verification |
 
 **Quarterly Review Process:**
 
 1. **Week 1 of each quarter (Jan, Apr, Jul, Oct):**
    - Security team runs Query Q1 (All Secret Access by ServiceAccount)
    - Export results to CSV for offline review
-   - Verify only `bindy-controller` accessed secrets
+   - Verify only `bindy-operator` accessed secrets
 
 2. **Anomaly Investigation:**
-   - If non-controller access detected → Run Query Q2, follow incident response
+   - If non-operator access detected → Run Query Q2, follow incident response
    - If excessive access detected → Run Query Q3, check for reconciliation loop bugs
 
 3. **Document Review:**
@@ -670,13 +670,13 @@ receivers:
 
 ## Summary
 - **Total secret access events:** 25,920
-- **ServiceAccounts with access:** 1 (bindy-controller)
+- **ServiceAccounts with access:** 1 (bindy-operator)
 - **Secrets accessed:** 2 (rndc-key-primary, rndc-key-secondary-1)
 - **Unauthorized access:** 0 ✅
 - **Failed access attempts:** 12 (misconfigured test pod)
 
 ## Findings
-- ✅ **PASS** - Only authorized ServiceAccount (bindy-controller) accessed secrets
+- ✅ **PASS** - Only authorized ServiceAccount (bindy-operator) accessed secrets
 - ✅ **PASS** - Access frequency matches expected reconciliation rate (~144/day)
 - ⚠️ **MINOR** - 12 failed attempts from test pod (fixed on 2025-11-15)
 
@@ -699,8 +699,8 @@ receivers:
 
 | PCI-DSS Requirement | Bindy Implementation | Evidence |
 |---------------------|----------------------|----------|
-| Least privilege access | ✅ Only `bindy-controller` ServiceAccount can read secrets | RBAC policy (`deploy/rbac/`) |
-| No modify/delete permissions | ✅ Controller CANNOT create/update/patch/delete secrets | RBAC policy verification script |
+| Least privilege access | ✅ Only `bindy-operator` ServiceAccount can read secrets | RBAC policy (`deploy/rbac/`) |
+| No modify/delete permissions | ✅ Operator CANNOT create/update/patch/delete secrets | RBAC policy verification script |
 | Audit trail for all access | ✅ Kubernetes audit logs capture all secret access | Query Q1, Q5 |
 | Regular access reviews | ✅ Quarterly reviews using pre-built queries | Quarterly review reports |
 
@@ -753,7 +753,7 @@ Provide auditors with:
 Trigger **[P4: RNDC Key Compromise](INCIDENT_RESPONSE.md#p4-rndc-key-compromise)** if:
 
 1. **Unauthorized Secret Access** (Query Q2 returns results):
-   - Non-controller ServiceAccount accessed secrets
+   - Non-operator ServiceAccount accessed secrets
    - Human user accessed secrets via `kubectl get secret`
    - Unknown source IP accessed secrets
 

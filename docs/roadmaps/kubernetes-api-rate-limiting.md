@@ -14,7 +14,7 @@ This roadmap outlines improvements to ensure the Bindy operator respects Kuberne
 ### ✅ What's Working Well
 
 1. **Event-Driven Architecture**
-   - Controllers use watch API instead of polling (follows CLAUDE.md best practices)
+   - Operators use watch API instead of polling (follows CLAUDE.md best practices)
    - Efficient reconciliation triggered only on resource changes
    - No wasteful periodic listing
 
@@ -33,7 +33,7 @@ This roadmap outlines improvements to ensure the Bindy operator respects Kuberne
 1. **No Explicit Rate Limiter Configuration**
    - Client created with `Client::try_default()` uses default limits
    - No QPS (queries per second) or burst configuration
-   - Risk: Multiple controller replicas could overwhelm API server
+   - Risk: Multiple operator replicas could overwhelm API server
 
 2. **List Operations Without Pagination**
    - `ListParams::default()` used throughout codebase
@@ -64,7 +64,7 @@ This roadmap outlines improvements to ensure the Bindy operator respects Kuberne
 2. **Scale to Large Deployments**
    - Support hundreds of DNSZones per namespace
    - Support dozens of Bind9Instances per cluster
-   - Support multiple controller replicas (leader election)
+   - Support multiple operator replicas (leader election)
 
 3. **Improve Observability**
    - Add Prometheus metrics for API client performance
@@ -125,7 +125,7 @@ This roadmap outlines improvements to ensure the Bindy operator respects Kuberne
 4. **Testing**
    - Unit tests: Verify config is applied correctly
    - Integration tests: Create 100+ DNSZones, verify no 429 errors
-   - Load tests: Run multiple controller replicas, measure API pressure
+   - Load tests: Run multiple operator replicas, measure API pressure
 
 5. **Documentation**
    - Update `docs/src/configuration.md` with rate limit settings
@@ -332,7 +332,7 @@ This roadmap outlines improvements to ensure the Bindy operator respects Kuberne
 5. **Testing**
    - Unit tests: Mock API with intermittent 429 errors, verify retry
    - Integration tests: Simulate API server pressure, verify recovery
-   - Chaos tests: Inject random errors, ensure controllers stay healthy
+   - Chaos tests: Inject random errors, ensure operators stay healthy
 
 6. **Documentation**
    - Document retry behavior in architecture docs
@@ -540,15 +540,15 @@ This roadmap outlines improvements to ensure the Bindy operator respects Kuberne
      - 1000 DNSZones, 1 Bind9Instance (zone discovery)
      - 100 Bind9Instances, 10 DNSZones each (multi-instance)
      - 5 Bind9Clusters with 20 instances each (cluster scale)
-     - 10 controller replicas (multi-replica coordination)
+     - 10 operator replicas (multi-replica coordination)
 
 3. **Measure Performance**
    - Metrics to collect:
      - Reconciliation time (p50, p95, p99)
      - API requests per second
      - Rate limit hits (should be 0)
-     - Memory usage (controller pods)
-     - CPU usage (controller pods)
+     - Memory usage (operator pods)
+     - CPU usage (operator pods)
 
 4. **Compare Before/After**
    - Run load tests on:
@@ -564,7 +564,7 @@ This roadmap outlines improvements to ensure the Bindy operator respects Kuberne
      - Random API 429 errors (10% rate)
      - Random API 5xx errors (5% rate)
      - Random network delays (100-500ms)
-   - Verify controllers remain healthy and eventually consistent
+   - Verify operators remain healthy and eventually consistent
 
 6. **Documentation**
    - Create `docs/src/performance-testing.md`
@@ -575,7 +575,7 @@ This roadmap outlines improvements to ensure the Bindy operator respects Kuberne
 **Acceptance Criteria:**
 - Load tests pass with 1000+ resources per namespace
 - Zero 429 errors under normal load
-- Controllers remain healthy under chaos conditions
+- Operators remain healthy under chaos conditions
 - Performance benchmarks documented
 
 **Estimated Effort:** 3-5 days
@@ -594,7 +594,7 @@ This roadmap outlines improvements to ensure the Bindy operator respects Kuberne
 2. **Scalability**
    - Support 1000+ DNSZones per namespace
    - Support 100+ Bind9Instances per namespace
-   - Support 10+ controller replicas (with leader election)
+   - Support 10+ operator replicas (with leader election)
 
 3. **Reliability**
    - 99.9% reconciliation success rate
