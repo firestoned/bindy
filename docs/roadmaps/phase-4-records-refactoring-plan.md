@@ -176,7 +176,7 @@ Single generic function to replace all 8 specific functions:
 ///
 /// # Arguments
 ///
-/// * `ctx` - Controller context with Kubernetes client and reflector stores
+/// * `ctx` - Operator context with Kubernetes client and reflector stores
 /// * `record` - The DNS record resource to reconcile
 ///
 /// # Returns

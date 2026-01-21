@@ -1,6 +1,6 @@
-# Testing Guide for Bindy Controller
+# Testing Guide for Bindy Operator
 
-This guide provides comprehensive instructions for testing the Bindy controller locally using Kind (Kubernetes in Docker).
+This guide provides comprehensive instructions for testing the Bindy operator locally using Kind (Kubernetes in Docker).
 
 ## Prerequisites
 
@@ -34,7 +34,7 @@ Before you begin, ensure you have the following installed:
 The fastest way to get started is using the provided scripts:
 
 ```bash
-# 1. Deploy everything (creates cluster, builds image, deploys controller)
+# 1. Deploy everything (creates cluster, builds image, deploys operator)
 ./deploy/kind-deploy.sh
 
 # 2. Run integration tests
@@ -72,7 +72,7 @@ kind create cluster --config deploy/kind-config.yaml --name bindy-test
 
 This creates a 3-node cluster (1 control-plane, 2 workers) with port mappings for DNS testing.
 
-### Step 2: Build the Controller
+### Step 2: Build the Operator
 
 ```bash
 # Build the Rust binary
@@ -111,7 +111,7 @@ srvrecords.dns.firestoned.io
 txtrecords.dns.firestoned.io
 ```
 
-### Step 4: Deploy RBAC and Controller
+### Step 4: Deploy RBAC and Operator
 
 ```bash
 # Create namespace
@@ -120,14 +120,14 @@ kubectl create namespace dns-system
 # Deploy RBAC
 kubectl apply -f deploy/rbac/
 
-# Deploy controller
-kubectl apply -f deploy/controller/deployment.yaml
+# Deploy operator
+kubectl apply -f deploy/operator/deployment.yaml
 ```
 
 ### Step 5: Verify Deployment
 
 ```bash
-# Check controller pod
+# Check operator pod
 kubectl get pods -n dns-system
 
 # Check logs
@@ -136,9 +136,9 @@ kubectl logs -n dns-system -l app=bindy -f
 
 Expected log output:
 ```
-INFO bindy_controller: Starting Bindy DNS Controller
-INFO bindy_controller: Watching for DNSZone resources
-INFO bindy_controller: Watching for ARecord resources
+INFO bindy_operator: Starting Bindy DNS Operator
+INFO bindy_operator: Watching for DNSZone resources
+INFO bindy_operator: Watching for ARecord resources
 ...
 ```
 
@@ -205,7 +205,7 @@ kubectl get dnszones -n dns-system -o wide
 kubectl describe dnszone example-com -n dns-system
 ```
 
-Look for status conditions in the controller logs:
+Look for status conditions in the operator logs:
 ```bash
 kubectl logs -n dns-system -l app=bindy | grep "example-com"
 ```
@@ -327,14 +327,14 @@ Delete a record:
 kubectl delete arecord www-example -n dns-system
 ```
 
-Watch the controller handle the changes:
+Watch the operator handle the changes:
 ```bash
 kubectl logs -n dns-system -l app=bindy -f
 ```
 
 ## Debugging
 
-### Check Controller Status
+### Check Operator Status
 
 ```bash
 # Pod status
@@ -376,7 +376,7 @@ kubectl describe dnszone example-com -n dns-system
 ### Interactive Debugging
 
 ```bash
-# Shell into controller pod
+# Shell into operator pod
 kubectl exec -it -n dns-system <pod-name> -- /bin/sh
 
 # Run debug pod
@@ -385,12 +385,12 @@ kubectl run -it --rm debug --image=nicolaka/netshoot --restart=Never -- /bin/bas
 
 ### Common Issues
 
-**Controller not starting:**
+**Operator not starting:**
 - Check image is loaded: `docker exec -it bindy-test-control-plane crictl images | grep bindy`
 - Check RBAC permissions: `kubectl auth can-i list dnszones --as=system:serviceaccount:dns-system:bindy`
 
 **Resources not reconciling:**
-- Check controller logs for errors
+- Check operator logs for errors
 - Verify CRDs are installed: `kubectl get crd`
 - Check resource status: `kubectl describe <resource-type> <name> -n dns-system`
 
@@ -420,7 +420,7 @@ EOF
 done
 ```
 
-Monitor controller performance:
+Monitor operator performance:
 ```bash
 kubectl top pod -n dns-system -l app=bindy
 ```
@@ -442,10 +442,10 @@ kubectl logs -n dns-system -l app=bindy | grep "reconciled"
 kubectl delete arecords,txtrecords,cnamerecords,dnszones,bind9instances --all -n dns-system
 ```
 
-### Remove Controller
+### Remove Operator
 
 ```bash
-kubectl delete -f deploy/controller/deployment.yaml
+kubectl delete -f deploy/operator/deployment.yaml
 kubectl delete -f deploy/rbac/
 kubectl delete -f deploy/crds/dns-crds.yaml
 kubectl delete namespace dns-system
@@ -476,7 +476,7 @@ Example GitHub Actions workflow snippet:
     kind load docker-image bindy:test --name bindy-test
     kubectl apply -k deploy/crds/
     kubectl apply -f deploy/rbac/
-    kubectl apply -f deploy/controller/
+    kubectl apply -f deploy/operator/
 
 - name: Run Tests
   run: ./deploy/kind-test.sh

@@ -12,7 +12,7 @@ The metrics endpoint is exposed on all operator pods:
 
 ```bash
 # Port forward to the operator
-kubectl port-forward -n dns-system deployment/bindy-controller 8080:8080
+kubectl port-forward -n dns-system deployment/bindy-operator 8080:8080
 
 # View metrics
 curl http://localhost:8080/metrics
@@ -144,7 +144,7 @@ rate(bindy_firestoned_io_leader_elections_total[5m])
 #### Performance Metrics
 
 **`bindy_firestoned_io_generation_observation_lag_seconds`** (Histogram)
-Lag between resource spec generation change and controller observation.
+Lag between resource spec generation change and operator observation.
 
 Labels:
 - `resource_type`: Kind of resource

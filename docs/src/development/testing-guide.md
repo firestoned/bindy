@@ -1,6 +1,6 @@
-# Bindy DNS Controller - Testing Guide
+# Bindy DNS Operator - Testing Guide
 
-Complete guide for testing the Bindy DNS Controller, including unit tests and integration tests with Kind (Kubernetes in Docker).
+Complete guide for testing the Bindy DNS Operator, including unit tests and integration tests with Kind (Kubernetes in Docker).
 
 ## Quick Start
 
@@ -124,7 +124,7 @@ make kind-integration-test
 
 This automatically:
 1. Creates Kind cluster (if needed)
-2. Builds and deploys controller
+2. Builds and deploys operator
 3. Runs all integration tests
 4. Cleans up test resources
 
@@ -215,10 +215,10 @@ make test-cov-view        # Generate and open coverage
 
 ```bash
 make kind-create          # Create Kind cluster
-make kind-deploy          # Deploy controller
+make kind-deploy          # Deploy operator
 make kind-test            # Basic functional tests
 make kind-integration-test # Full integration suite
-make kind-logs            # View controller logs
+make kind-logs            # View operator logs
 make kind-cleanup         # Delete cluster
 ```
 
@@ -254,7 +254,7 @@ cargo test test_name -- --nocapture
 ./deploy/kind-deploy.sh
 ```
 
-**"Controller not ready"**
+**"Operator not ready"**
 ```bash
 # Check status
 kubectl get pods -n dns-system
@@ -277,7 +277,7 @@ kubectl apply -k deploy/crds
 
 **Resource creation fails**
 ```bash
-# Controller logs
+# Operator logs
 kubectl logs -n dns-system -l app=bindy --tail=50
 
 # Resource status
@@ -446,5 +446,5 @@ kubectl top pod -n dns-system
 ## Support
 
 - GitHub Issues: https://github.com/firestoned/bindy/issues
-- Controller logs: `make kind-logs`
+- Operator logs: `make kind-logs`
 - Test with output: `cargo test -- --nocapture`

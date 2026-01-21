@@ -499,7 +499,7 @@ pub struct DnsZoneStatus {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub secondary_status: HashMap<String, SecondaryStatus>,
     
-    /// Generation observed by controller
+    /// Generation observed by operator
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_generation: Option<i64>,
 }
@@ -607,7 +607,7 @@ impl ConditionManager {
 
 **Zone Reconciler Pattern**:
 ```rust
-// bindy/src/controller/zone.rs
+// bindy/src/operator/zone.rs
 
 use crate::error::ZoneReconcileError;
 use crate::conditions::ConditionManager;
@@ -960,8 +960,8 @@ lazy_static! {
 - `bindy/src/conditions.rs` - new ConditionManager helper
 - `bindy/src/crd/zone.rs` - update DnsZoneStatus
 - `bindy/src/crd/record.rs` - update DnsRecordStatus
-- `bindy/src/controller/zone.rs` - use new error types
-- `bindy/src/controller/record.rs` - use new error types
+- `bindy/src/operator/zone.rs` - use new error types
+- `bindy/src/operator/record.rs` - use new error types
 - `docs/status-conditions.md` - user documentation
 
 ---

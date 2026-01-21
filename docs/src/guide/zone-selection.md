@@ -104,7 +104,7 @@ spec:
 ```
 
 **How it works:**
-1. Controller finds all `Bind9Instance` resources with `spec.clusterRef: production-cluster` in the same namespace
+1. Operator finds all `Bind9Instance` resources with `spec.clusterRef: production-cluster` in the same namespace
 2. Zone is synchronized to all matching instances
 3. Status field `bind9InstancesCount` shows how many instances serve the zone
 
@@ -341,13 +341,13 @@ Zone-instance assignments are **self-healing** and update automatically:
 
 **When instances are added:**
 1. New instance labeled with matching labels is created
-2. Zone controller discovers the instance on next reconciliation (~60s)
+2. Zone operator discovers the instance on next reconciliation (~60s)
 3. Zone is automatically synchronized to the new instance
 4. `bind9InstancesCount` increments
 
 **When instances are deleted:**
 1. Instance is removed from the cluster
-2. Zone controller detects the deletion
+2. Zone operator detects the deletion
 3. Instance is removed from `status.bind9Instances`
 4. `bind9InstancesCount` decrements
 
@@ -604,7 +604,7 @@ my-zone   example.com     0         0           3600   False
 - Verify instance labels match zone selectors exactly (case-sensitive)
 - Ensure instances are in the same namespace as the zone
 - Check if `clusterRef` is specified and instances have matching `spec.clusterRef`
-- Review controller logs for selection errors
+- Review operator logs for selection errors
 
 ### Instance Count Mismatch
 
@@ -617,11 +617,11 @@ $ kubectl get dnszone my-zone -o jsonpath='{.status.bind9Instances}' | jq 'lengt
 ```
 
 **Diagnosis:**
-This should never happen - indicates a controller bug. The `bind9InstancesCount` is automatically computed from `bind9Instances.len()`.
+This should never happen - indicates a operator bug. The `bind9InstancesCount` is automatically computed from `bind9Instances.len()`.
 
 **Solution:**
 - Trigger reconciliation by adding an annotation to the zone
-- Check controller logs for errors
+- Check operator logs for errors
 - File a bug report if the issue persists
 
 ### Instances Not Updating After Label Changes
@@ -641,7 +641,7 @@ kubectl annotate dnszone my-zone -n dns-system reconcile-trigger="$(date +%s)" -
 **Solution:**
 - Wait up to 60 seconds for automatic reconciliation
 - Trigger manual reconciliation with annotation
-- Check controller logs for watch errors
+- Check operator logs for watch errors
 
 ### Zone Shows "Failed" Status on Some Instances
 
@@ -668,7 +668,7 @@ kubectl logs -n dns-system <instance-pod> -c bindcar
 
 **Solutions:**
 - Ensure bindcar sidecar is running
-- Check network policies allow zone controller → bindcar communication
+- Check network policies allow zone operator → bindcar communication
 - Verify bindcar API port is correct (default: 8080)
 - Review bindcar logs for configuration errors
 

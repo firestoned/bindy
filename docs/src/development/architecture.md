@@ -2,9 +2,9 @@
 
 > **⚠️ DEPRECATED ARCHITECTURE**
 >
-> This document describes the **legacy two-level operator architecture** (bindy-operator + bindy-controller sidecar) which was replaced in Phase 1-8 consolidation.
+> This document describes the **legacy two-level operator architecture** (bindy-operator + bindy-operator sidecar) which was replaced in Phase 1-8 consolidation.
 >
-> **Current Architecture:** See [DNSZone Controller Architecture](../concepts/dnszone-controller-architecture.md) for the unified controller design that replaced this architecture.
+> **Current Architecture:** See [DNSZone Operator Architecture](../concepts/dnszone-operator-architecture.md) for the unified operator design that replaced this architecture.
 >
 > This document is kept for historical reference and migration documentation only.
 
@@ -24,7 +24,7 @@ The **bindy-operator** is a cluster-scoped operator that watches `Bind9Instance`
 - Watches `Bind9Instance` resources across all namespaces
 - Creates and manages Kubernetes resources for each BIND9 instance:
   - ConfigMap with BIND9 configuration files
-  - Deployment with BIND9 container and bindy-controller sidecar
+  - Deployment with BIND9 container and bindy-operator sidecar
   - Service for DNS traffic (TCP/UDP port 53)
 - Updates instance status based on deployment health
 
@@ -33,9 +33,9 @@ The **bindy-operator** is a cluster-scoped operator that watches `Bind9Instance`
 - Uses `bindy-operator` ServiceAccount with cluster-level permissions
 - Manages Deployments, Services, and ConfigMaps
 
-### 2. bindy-controller (Namespace-scoped sidecar)
+### 2. bindy-operator (Namespace-scoped sidecar)
 
-The **bindy-controller** runs as a sidecar container alongside each BIND9 pod. It watches DNS zone and record resources and updates zone files in a shared volume.
+The **bindy-operator** runs as a sidecar container alongside each BIND9 pod. It watches DNS zone and record resources and updates zone files in a shared volume.
 
 **Responsibilities:**
 - Watches DNS resources in its namespace:
@@ -47,12 +47,12 @@ The **bindy-controller** runs as a sidecar container alongside each BIND9 pod. I
 
 **Deployment:**
 - Runs as a sidecar container in each BIND9 pod
-- Uses `bindy-controller` ServiceAccount with namespace-scoped permissions
+- Uses `bindy-operator` ServiceAccount with namespace-scoped permissions
 - Shares `/etc/bind/zones` volume with BIND9 container
 
 ## Data Flow (Legacy - Deprecated)
 
-> **⚠️ DEPRECATED:** This diagram shows the legacy two-level operator architecture which was replaced in Phase 1-8 consolidation. See [DNSZone Controller Architecture](../concepts/dnszone-controller-architecture.md) for the current unified controller design.
+> **⚠️ DEPRECATED:** This diagram shows the legacy two-level operator architecture which was replaced in Phase 1-8 consolidation. See [DNSZone Operator Architecture](../concepts/dnszone-operator-architecture.md) for the current unified operator design.
 
 ```mermaid
 graph TB
@@ -63,10 +63,10 @@ graph TB
     subgraph namespace["Namespace Level (per instance)"]
         subgraph pod["BIND9 Pod"]
             bind9["BIND9 Container<br/>- Serves DNS<br/>- Reads zones"]
-            controller["bindy-controller<br/>- Watches DNSZone<br/>- Watches Records<br/>- Writes zone files"]
+            operator["bindy-operator<br/>- Watches DNSZone<br/>- Watches Records<br/>- Writes zone files"]
             volume["Shared Volume<br/>/etc/bind/zones"]
 
-            controller -->|writes| volume
+            operator -->|writes| volume
             volume -->|reads| bind9
         end
     end
@@ -78,7 +78,7 @@ graph TB
     style pod fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
     style operator fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
     style bind9 fill:#ffe0b2,stroke:#e65100,stroke-width:2px
-    style controller fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style operator fill:#e1f5ff,stroke:#01579b,stroke-width:2px
     style volume fill:#fce4ec,stroke:#880e4f,stroke-width:2px
 ```
 
@@ -94,7 +94,7 @@ Bindy manages DNS zones dynamically using BIND9's RNDC (Remote Name Daemon Contr
    - No init containers or external dependencies required
 
 2. **Dynamic Zone Addition**:
-   - When a `DNSZone` resource is created, the controller uses RNDC to add the zone
+   - When a `DNSZone` resource is created, the operator uses RNDC to add the zone
    - BIND9 automatically creates/updates `named.conf.zones` in the writable `/etc/bind/zones/` directory
    - The file is managed entirely by BIND9 via RNDC commands
    - No restart required - zones are loaded dynamically
@@ -128,7 +128,7 @@ spec:
     recursion: false
     allowQuery: ["any"]
 
-# 2. Controller (sidecar) watches zones
+# 2. Operator (sidecar) watches zones
 apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
@@ -148,7 +148,7 @@ spec:
     expire: 604800
     negativeTtl: 86400
 
-# 3. Controller (sidecar) watches records
+# 3. Operator (sidecar) watches records
 apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
@@ -198,7 +198,7 @@ spec:
   replicas: 2
   template:
     spec:
-      serviceAccountName: bindy-controller
+      serviceAccountName: bindy-operator
       containers:
       # BIND9 DNS server
       - name: bind9
@@ -222,9 +222,9 @@ spec:
           name: dns-udp
           protocol: UDP
 
-      # bindy-controller sidecar
-      - name: bindy-controller
-        image: ghcr.io/firestoned/bindy-controller:latest
+      # bindy-operator sidecar
+      - name: bindy-operator
+        image: ghcr.io/firestoned/bindy-operator:latest
         volumeMounts:
         - name: zones
           mountPath: /etc/bind/zones
@@ -254,7 +254,7 @@ spec:
 - `ConfigMap` - full CRUD
 - `Event` - create, patch
 
-### Controller Permissions (Cluster-scoped, but operates per-namespace)
+### Operator Permissions (Cluster-scoped, but operates per-namespace)
 
 - `DNSZone` - read, watch, status updates
 - All record types - read, watch, status updates
@@ -262,8 +262,8 @@ spec:
 
 ## Benefits of This Architecture
 
-1. **Scalability**: Each BIND9 instance has its own controller, reducing contention
-2. **Isolation**: Controllers only watch resources in their namespace
-3. **Resilience**: If a controller fails, only one BIND9 instance is affected
+1. **Scalability**: Each BIND9 instance has its own operator, reducing contention
+2. **Isolation**: Operators only watch resources in their namespace
+3. **Resilience**: If a operator fails, only one BIND9 instance is affected
 4. **Performance**: Zone file updates happen locally in the pod without network calls
 5. **Simplicity**: Clear separation of concerns between instance management and record management

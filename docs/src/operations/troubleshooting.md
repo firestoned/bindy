@@ -51,7 +51,7 @@ See [FAQ](./faq.md) for answers to frequently asked questions.
 ### Check Logs
 
 ```bash
-# Controller logs
+# Operator logs
 kubectl logs -n dns-system deployment/bindy --tail=100
 
 # BIND9 instance logs
@@ -87,7 +87,7 @@ If issues persist:
    - Kubernetes version
    - Bindy version
    - Resource YAMLs
-   - Controller logs
+   - Operator logs
    - Error messages
 
 ## Next Steps

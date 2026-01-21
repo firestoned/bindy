@@ -67,16 +67,16 @@ status:
 
 When you create a DNSZone resource:
 
-1. **Controller discovers pods** - Finds BIND9 pods with label `instance={clusterRef}`
+1. **Operator discovers pods** - Finds BIND9 pods with label `instance={clusterRef}`
 2. **Loads RNDC key** - Retrieves Secret named `{clusterRef}-rndc-key`
 3. **Connects via RNDC** - Establishes connection to `{clusterRef}.{namespace}.svc.cluster.local:9530`
 4. **Executes addzone** - Runs `rndc addzone` command with zone configuration
 5. **BIND9 creates zone** - BIND9 creates the zone file and starts serving the zone
-6. **Updates status** - Controller updates DNSZone status to Ready
+6. **Updates status** - Operator updates DNSZone status to Ready
 
 ## Event-Driven Record Discovery
 
-The DNSZone controller uses an **event-driven architecture** to automatically discover and manage DNS records:
+The DNSZone operator uses an **event-driven architecture** to automatically discover and manage DNS records:
 
 ### How It Works
 
@@ -159,7 +159,7 @@ spec:
 
 ### RNDC Key Discovery
 
-The controller automatically finds the RNDC key using the cluster reference:
+The operator automatically finds the RNDC key using the cluster reference:
 
 ```
 DNSZone.spec.clusterRef = "my-dns-cluster"
@@ -171,7 +171,7 @@ RNDC authentication to: my-dns-cluster.dns-system.svc.cluster.local:9530
 
 ## Status
 
-The controller reports zone status with granular condition types that provide real-time visibility into the reconciliation process.
+The operator reports zone status with granular condition types that provide real-time visibility into the reconciliation process.
 
 ### Status During Reconciliation
 
@@ -342,9 +342,9 @@ status:
 #### Important Notes
 
 - **v1beta1 Only**: This field did not exist in the now-removed v1alpha1 API.
-- **Read-Only**: The `records` field is managed automatically by the controller. Do not manually edit it.
+- **Read-Only**: The `records` field is managed automatically by the operator. Do not manually edit it.
 - **Eventually Consistent**: After creating a new record, it may take a few seconds for it to appear in the zone's `status.records` list.
-- **Duplicate Prevention**: The controller automatically prevents duplicate record references from being added.
+- **Duplicate Prevention**: The operator automatically prevents duplicate record references from being added.
 - **Serialization**: When the `records` field is empty, it is omitted from the YAML/JSON output to reduce clutter.
 
 ### Benefits of Granular Status

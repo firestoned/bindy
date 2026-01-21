@@ -10,7 +10,7 @@ metadata:
     description: "Admin role for destructive operations - DO NOT bind to ServiceAccount"
 rules:
   # ADMIN ONLY: Delete permissions for Bindy CRDs
-  # This role should be bound to human administrators, NOT the controller ServiceAccount
+  # This role should be bound to human administrators, NOT the operator ServiceAccount
   # Usage: kubectl create rolebinding ... --clusterrole=bindy-admin-role --user=admin@example.com
 
   # Bind9Instance - admin delete permission

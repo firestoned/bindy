@@ -14,7 +14,7 @@
 FROM debian:bookworm-slim
 
 LABEL org.opencontainers.image.source="https://github.com/firestoned/bindy"
-LABEL org.opencontainers.image.description="BIND9 DNS Controller for Kubernetes (Local Dev Build)"
+LABEL org.opencontainers.image.description="BIND9 DNS Operator for Kubernetes (Local Dev Build)"
 LABEL org.opencontainers.image.licenses="MIT"
 
 # Install BIND9 and required libraries

@@ -59,7 +59,7 @@ The Basel Committee published **Cyber Risk Principles** in 2018, which define ex
 | **Repudiation** | Untracked DNS changes, no audit trail | HIGH | Signed commits, audit logs (7-year retention), WORM storage |
 | **Information Disclosure** | Secret leakage, DNS data exposure | CRITICAL | Kubernetes Secrets, RBAC, secret access audit trail |
 | **Denial of Service** | DNS query flood, pod resource exhaustion | HIGH | Rate limiting (planned), pod resource limits, DDoS playbook |
-| **Elevation of Privilege** | Controller pod compromise, RBAC bypass | CRITICAL | Non-root containers, read-only filesystem, minimal RBAC |
+| **Elevation of Privilege** | Operator pod compromise, RBAC bypass | CRITICAL | Non-root containers, read-only filesystem, minimal RBAC |
 
 **Attack Surface Analysis:**
 
@@ -89,7 +89,7 @@ The Basel Committee published **Cyber Risk Principles** in 2018, which define ex
 
 | Control | Implementation | Evidence |
 |---------|----------------|----------|
-| **Least Privilege RBAC** | Controller minimal RBAC (create/delete secrets for RNDC lifecycle, delete managed resources for cleanup) | `deploy/rbac/clusterrole.yaml` |
+| **Least Privilege RBAC** | Operator minimal RBAC (create/delete secrets for RNDC lifecycle, delete managed resources for cleanup) | `deploy/rbac/clusterrole.yaml` |
 | **Secret Access Monitoring** | All secret access logged and alerted | [Secret Access Audit Trail](../../security/SECRET_ACCESS_AUDIT.md) |
 | **Quarterly Access Reviews** | Security team reviews access every quarter | `docs/compliance/access-reviews/` |
 | **2FA Enforcement** | GitHub requires 2FA for all contributors | GitHub organization settings |
@@ -99,7 +99,7 @@ The Basel Committee published **Cyber Risk Principles** in 2018, which define ex
 
 | Role | Secrets | CRDs | Pods | ConfigMaps | Nodes |
 |------|---------|------|------|-----------|-------|
-| **Controller** | Create/Delete (RNDC keys) | Read/Write/Delete (managed) | Read | Read/Write/Delete | Read |
+| **Operator** | Create/Delete (RNDC keys) | Read/Write/Delete (managed) | Read | Read/Write/Delete | Read |
 | **BIND9 Pods** | Read-only | None | None | Read | None |
 | **Developers** | None | Read (kubectl) | Read (logs) | Read | None |
 | **Operators** | Read (kubectl) | Read/Write (kubectl) | Read/Write | Read/Write | Read |
@@ -159,7 +159,7 @@ The Basel Committee published **Cyber Risk Principles** in 2018, which define ex
 | Playbook | Scenario | Response Time | Recovery SLA |
 |----------|----------|---------------|--------------|
 | **P1: Critical Vulnerability** | CVSS 9.0-10.0 vulnerability detected | < 15 minutes | Patch within 24 hours |
-| **P2: Compromised Controller** | Controller pod shows anomalous behavior | < 15 minutes | Isolate within 1 hour |
+| **P2: Compromised Operator** | Operator pod shows anomalous behavior | < 15 minutes | Isolate within 1 hour |
 | **P3: DNS Service Outage** | All BIND9 pods down, queries failing | < 15 minutes | Restore within 4 hours |
 | **P4: RNDC Key Compromise** | RNDC key leaked or unauthorized access | < 15 minutes | Rotate keys within 1 hour |
 | **P5: Unauthorized DNS Changes** | Unexpected zone modifications detected | < 1 hour | Revert within 4 hours |

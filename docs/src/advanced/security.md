@@ -28,7 +28,7 @@ Secure your Bindy DNS infrastructure against threats and unauthorized access.
 
 1. **Principle of Least Privilege** - Minimal permissions
 2. **Defense in Depth** - Multiple security layers
-3. **Regular Updates** - Keep BIND9 and controller updated
+3. **Regular Updates** - Keep BIND9 and operator updated
 4. **Audit Logging** - Track all changes
 5. **Encryption** - TLS for management, DNSSEC for queries
 

@@ -6,7 +6,7 @@ metadata:
   labels:
     app: bindy
 data:
-  # Log level for the controller
+  # Log level for the operator
   # Options: error, warn, info, debug, trace
   # Production default: info
   # Change to debug for troubleshooting (requires pod restart)

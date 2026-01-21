@@ -52,7 +52,7 @@ The new `zone_ref` field provides a complete Kubernetes object reference includi
 
 **For Users:**
 - No action required - the operator maintains both fields for backward compatibility
-- The `DNSZone` controller sets both `status.zone` (string) and `status.zoneRef` (structured reference)
+- The `DNSZone` operator sets both `status.zone` (string) and `status.zoneRef` (structured reference)
 - Your existing queries using `.status.zone` will continue to work
 
 **For Developers/Integrations:**
@@ -86,7 +86,7 @@ let zone_namespace = zone_ref.map(|z| &z.namespace);
 
 #### Timeline
 
-- **v0.2.0 (2026-01-08)**: Field marked as deprecated, both `zone` and `zone_ref` set by controller
+- **v0.2.0 (2026-01-08)**: Field marked as deprecated, both `zone` and `zone_ref` set by operator
 - **v0.3.0 (Target: 2026-Q1)**: Add warning logs when `zone` is read by integrations
 - **v0.4.0 or v1.0.0 (Target: 2026-Q2)**: Remove `zone` field entirely (breaking change)
 

@@ -44,7 +44,7 @@ ARG TARGETARCH
 ARG VERSION=0.1.0
 
 LABEL org.opencontainers.image.source="https://github.com/firestoned/bindy"
-LABEL org.opencontainers.image.description="BIND9 DNS Controller for Kubernetes (Chainguard - Zero CVEs)"
+LABEL org.opencontainers.image.description="BIND9 DNS Operator for Kubernetes (Chainguard - Zero CVEs)"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.base.name="cgr.dev/chainguard/glibc-dynamic:latest"
@@ -74,5 +74,5 @@ USER 65532:65532
 # HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 #   CMD ["/usr/local/bin/bindy", "--health-check"] || exit 1
 
-# Start the controller
+# Start the operator
 ENTRYPOINT ["/usr/local/bin/bindy"]

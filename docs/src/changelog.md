@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bind9Instance CRD for managing BIND9 DNS server instances
 - DNSZone CRD with label selector support
 - DNS record CRDs: A, AAAA, CNAME, MX, TXT, NS, SRV, CAA
-- Reconciliation controllers for all resource types
+- Reconciliation operators for all resource types
 - BIND9 zone file generation
 - Status subresources for all CRDs
 - RBAC configuration

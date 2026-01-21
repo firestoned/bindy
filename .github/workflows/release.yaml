@@ -303,10 +303,34 @@ jobs:
       upload-assets: true
       provenance-name: "${{ needs.extract-version.outputs.version }}.intoto.jsonl"
 
+  generate-crds:
+    name: Generate Combined CRDs
+    runs-on: ubuntu-latest
+    needs: extract-version
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: Generate combined CRDs file
+        run: make crds-combined
+
+      - name: Upload CRDs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: crds
+          path: deploy/crds.yaml
+
   upload-release-assets:
     name: Upload Release Assets
     runs-on: ubuntu-latest
-    needs: [build, docker-release, sign-artifacts, slsa-provenance]
+    needs: [build, docker-release, sign-artifacts, slsa-provenance, generate-crds]
     permissions:
       contents: write
     steps:
@@ -319,6 +343,12 @@ jobs:
         run: |
           cd artifacts
           mkdir -p release sboms signatures provenance
+
+          # Copy CRDs file
+          if [ -d "crds" ] && [ -f "crds/crds.yaml" ]; then
+            echo "Copying combined CRDs file..."
+            cp crds/crds.yaml release/
+          fi
 
           # Copy signed tarballs and signature bundles
           for dir in bindy-linux-*-signed; do
@@ -365,6 +395,9 @@ jobs:
           # Generate SHA256 checksums for all release artifacts
           cd release
           sha256sum *.tar.gz > checksums.sha256
+          if [ -f "crds.yaml" ]; then
+            sha256sum crds.yaml >> checksums.sha256
+          fi
           cd ../sboms
           sha256sum *.json >> ../release/checksums.sha256
           cd ../signatures

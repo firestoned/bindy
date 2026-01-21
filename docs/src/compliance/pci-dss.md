@@ -104,7 +104,7 @@ cat docs/security/VULNERABILITY_MANAGEMENT.md
 | **A06: Vulnerable Components** | ✅ Daily `cargo audit`, Trivy container scanning |
 | **A07: Identification/Authentication** | ✅ Kubernetes ServiceAccount auth, signed commits |
 | **A08: Software/Data Integrity** | ✅ Signed commits, SBOM, reproducible builds |
-| **A09: Logging Failures** | ✅ Comprehensive logging (controller, audit, DNS queries) |
+| **A09: Logging Failures** | ✅ Comprehensive logging (operator, audit, DNS queries) |
 | **A10: Server-Side Request Forgery** | ✅ No external HTTP calls (only Kubernetes API, RNDC) |
 
 **Evidence for QSA:**
@@ -167,8 +167,8 @@ gh run list --workflow ci.yaml --limit 100
 
 | Control | Implementation | Evidence |
 |---------|----------------|----------|
-| **Least Privilege RBAC** | Controller minimal RBAC (create/delete secrets for RNDC lifecycle, delete managed resources for cleanup) | `deploy/rbac/clusterrole.yaml` |
-| **Minimal Delete Permissions** | Controller delete limited to managed resources (finalizer cleanup, scaling) | RBAC verification script |
+| **Least Privilege RBAC** | Operator minimal RBAC (create/delete secrets for RNDC lifecycle, delete managed resources for cleanup) | `deploy/rbac/clusterrole.yaml` |
+| **Minimal Delete Permissions** | Operator delete limited to managed resources (finalizer cleanup, scaling) | RBAC verification script |
 | **Secret Access Audit Trail** | All secret access logged (7-year retention) | [Secret Access Audit Trail](../../security/SECRET_ACCESS_AUDIT.md) |
 | **Quarterly Access Reviews** | Security team reviews access every quarter | Access review reports |
 | **Role-Based Access** | Different roles for dev, ops, security teams | GitHub team permissions |
@@ -176,21 +176,21 @@ gh run list --workflow ci.yaml --limit 100
 **RBAC Policy Verification:**
 
 ```bash
-# Verify controller has minimal permissions
+# Verify operator has minimal permissions
 ./deploy/rbac/verify-rbac.sh
 
 # Expected output:
-# ✅ Controller can READ secrets (get, list, watch)
-# ✅ Controller can CREATE/DELETE secrets (RNDC key lifecycle only)
-# ✅ Controller CANNOT UPDATE/PATCH secrets (immutable pattern)
-# ✅ Controller can DELETE managed resources (Bind9Instance, Bind9Cluster, finalizer cleanup)
-# ✅ Controller CANNOT DELETE user resources (DNSZone, Records, ClusterBind9Provider)
+# ✅ Operator can READ secrets (get, list, watch)
+# ✅ Operator can CREATE/DELETE secrets (RNDC key lifecycle only)
+# ✅ Operator CANNOT UPDATE/PATCH secrets (immutable pattern)
+# ✅ Operator can DELETE managed resources (Bind9Instance, Bind9Cluster, finalizer cleanup)
+# ✅ Operator CANNOT DELETE user resources (DNSZone, Records, ClusterBind9Provider)
 ```
 
 **Secret Access Monitoring:**
 
 ```bash
-# Query: Non-controller secret access (should return 0 results)
+# Query: Non-operator secret access (should return 0 results)
 curl -X POST "https://elasticsearch:9200/bindy-audit-*/_search" \
   -H 'Content-Type: application/json' \
   -d '{
@@ -201,13 +201,13 @@ curl -X POST "https://elasticsearch:9200/bindy-audit-*/_search" \
           { "term": { "objectRef.namespace": "dns-system" } }
         ],
         "must_not": [
-          { "term": { "user.username.keyword": "system:serviceaccount:dns-system:bindy-controller" } }
+          { "term": { "user.username.keyword": "system:serviceaccount:dns-system:bindy-operator" } }
         ]
       }
     }
   }'
 
-# Expected: 0 hits (only authorized controller accesses secrets)
+# Expected: 0 hits (only authorized operator accesses secrets)
 ```
 
 **Evidence for QSA:**
@@ -239,7 +239,7 @@ curl -X POST "https://elasticsearch:9200/bindy-audit-*/_search" \
 |---------|----------------|----------|
 | **Kubernetes Audit Logs** | All API requests logged (CRD ops, secret access) | Kubernetes audit policy |
 | **Secret Access Logging** | All secret get/list/watch logged | `docs/security/SECRET_ACCESS_AUDIT.md` |
-| **Controller Logs** | All reconciliation loops, DNS updates | Fluent Bit, S3 storage |
+| **Operator Logs** | All reconciliation loops, DNS updates | Fluent Bit, S3 storage |
 | **Access Attempts** | Failed secret access (403 Forbidden) logged | Kubernetes audit logs |
 | **Authentication Events** | ServiceAccount token usage logged | Kubernetes audit logs |
 
@@ -247,7 +247,7 @@ curl -X POST "https://elasticsearch:9200/bindy-audit-*/_search" \
 
 | PCI-DSS Requirement | Bindy Audit Log Field | Example Value |
 |---------------------|----------------------|---------------|
-| **User identification** | `user.username` | `system:serviceaccount:dns-system:bindy-controller` |
+| **User identification** | `user.username` | `system:serviceaccount:dns-system:bindy-operator` |
 | **Type of event** | `verb` | `get`, `list`, `watch`, `create`, `update`, `delete` |
 | **Date and time** | `requestReceivedTimestamp` | `2025-12-18T12:34:56.789Z` (ISO 8601 UTC) |
 | **Success/failure indication** | `responseStatus.code` | `200` (success), `403` (forbidden) |
@@ -266,7 +266,7 @@ curl -X POST "https://elasticsearch:9200/bindy-audit-*/_search" \
   "requestURI": "/api/v1/namespaces/dns-system/secrets/rndc-key-primary",
   "verb": "get",
   "user": {
-    "username": "system:serviceaccount:dns-system:bindy-controller",
+    "username": "system:serviceaccount:dns-system:bindy-operator",
     "uid": "abc123",
     "groups": ["system:serviceaccounts", "system:serviceaccounts:dns-system"]
   },
@@ -435,7 +435,7 @@ aws s3api get-object-lock-configuration --bucket bindy-audit-logs
 | Incident Type | Playbook | Response Time | SLA |
 |---------------|----------|---------------|-----|
 | **Critical Vulnerability (CVSS 9.0-10.0)** | [P1](../../security/INCIDENT_RESPONSE.md#p1-critical-vulnerability-detected) | < 15 minutes | Patch within 24 hours |
-| **Compromised Controller Pod** | [P2](../../security/INCIDENT_RESPONSE.md#p2-compromised-controller-pod) | < 15 minutes | Isolate within 1 hour |
+| **Compromised Operator Pod** | [P2](../../security/INCIDENT_RESPONSE.md#p2-compromised-operator-pod) | < 15 minutes | Isolate within 1 hour |
 | **DNS Service Outage** | [P3](../../security/INCIDENT_RESPONSE.md#p3-dns-service-outage) | < 15 minutes | Restore within 4 hours |
 | **RNDC Key Compromise** | [P4](../../security/INCIDENT_RESPONSE.md#p4-rndc-key-compromise) | < 15 minutes | Rotate keys within 1 hour |
 | **Unauthorized DNS Changes** | [P5](../../security/INCIDENT_RESPONSE.md#p5-unauthorized-dns-changes) | < 1 hour | Revert within 4 hours |

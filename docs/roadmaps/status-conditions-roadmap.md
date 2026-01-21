@@ -405,7 +405,7 @@ status:
 | HTTP Code | Condition Reason | Status | Meaning | Action |
 |-----------|------------------|--------|---------|--------|
 | **Connection Error** | `BindcarUnreachable` | False | Cannot establish TCP connection | Check if Bindcar container is running |
-| **400** | `BindcarBadRequest` | False | Invalid request format | Controller bug - report issue |
+| **400** | `BindcarBadRequest` | False | Invalid request format | Operator bug - report issue |
 | **401** | `BindcarAuthFailed` | False | Authentication required | Check RNDC credentials in Secret |
 | **403** | `BindcarAuthFailed` | False | Insufficient permissions | Check RBAC and service account |
 | **404** | `ZoneNotFound` | False | Zone/resource doesn't exist | Verify zone was created in BIND9 |

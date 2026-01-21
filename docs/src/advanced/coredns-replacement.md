@@ -181,7 +181,7 @@ spec:
 
 **Benefits:**
 - Service mesh can use DNS for routing
-- Dynamic record updates without mesh controller changes
+- Dynamic record updates without mesh operator changes
 - Platform team manages DNS infrastructure
 - Application teams manage their service records
 

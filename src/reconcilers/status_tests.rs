@@ -4,6 +4,7 @@
 //! Unit tests for `status.rs`
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use crate::crd::{Condition, DNSZone, DNSZoneSpec};
     use crate::reconcilers::status::{
@@ -374,6 +375,7 @@ mod tests {
                     negative_ttl: 86400,
                 },
                 ttl: None,
+                name_servers: None,
                 name_server_ips: None,
                 records_from: None,
                 bind9_instances_from: None,

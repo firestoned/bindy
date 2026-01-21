@@ -3,14 +3,14 @@
 
 #![allow(unexpected_cfgs)]
 
-//! # Bindy - BIND9 DNS Controller for Kubernetes
+//! # Bindy - BIND9 DNS Operator for Kubernetes
 //!
-//! Bindy is a high-performance Kubernetes controller written in Rust that manages BIND9 DNS
+//! Bindy is a high-performance Kubernetes operator written in Rust that manages BIND9 DNS
 //! infrastructure through Custom Resource Definitions (CRDs).
 //!
 //! ## Overview
 //!
-//! This library provides the core functionality for the Bindy DNS controller, including:
+//! This library provides the core functionality for the Bindy DNS operator, including:
 //!
 //! - Custom Resource Definitions (CRDs) for DNS zones and records
 //! - Reconciliation logic for managing BIND9 configurations
@@ -21,7 +21,7 @@
 //!
 //! - [`crd`] - Custom Resource Definition types for DNS resources
 //! - [`reconcilers`] - Reconciliation logic for each resource type
-//! - [`context`] - Shared context and reflector stores for controllers
+//! - [`context`] - Shared context and reflector stores for operators
 //! - [`selector`] - Label selector matching utilities
 //! - [`bind9`] - BIND9 zone file generation and management
 //! - [`bind9_resources`] - BIND9 instance resource management
@@ -29,6 +29,7 @@
 //! ## Example
 //!
 //! ```rust,no_run
+//! # #[allow(deprecated)]
 //! use bindy::crd::{DNSZone, DNSZoneSpec, SOARecord};
 //!
 //! // Create a DNS zone specification
@@ -47,6 +48,7 @@
 //!     cluster_ref: None,
 //!     soa_record: soa,
 //!     ttl: Some(3600),
+//!     name_servers: None,
 //!     name_server_ips: None,
 //!     records_from: None,
 //!     bind9_instances_from: None,
@@ -73,8 +75,8 @@ pub mod dns_errors;
 pub mod http_errors;
 pub mod labels;
 pub mod metrics;
-pub mod record_controller;
 pub mod record_impls;
+pub mod record_operator;
 
 #[macro_use]
 pub mod record_wrappers;
@@ -94,9 +96,9 @@ mod dns_errors_tests;
 #[cfg(test)]
 mod http_errors_tests;
 #[cfg(test)]
-mod record_controller_tests;
-#[cfg(test)]
 mod record_impls_tests;
+#[cfg(test)]
+mod record_operator_tests;
 #[cfg(test)]
 mod record_wrappers_tests;
 #[cfg(test)]

@@ -1,4 +1,4 @@
-# <img src="docs/images/bindy-the-bee.png" alt="Bindy the Bee" width="60" style="vertical-align: middle; margin-right: 5px;"/> Bindy - BIND9 DNS Controller for Kubernetes
+# <img src="docs/images/bindy-the-bee.png" alt="Bindy the Bee" width="60" style="vertical-align: middle; margin-right: 5px;"/> Bindy - BIND9 DNS Operator for Kubernetes
 ### *Pronounced: "bined-ee" (like BIND + ee)*
 
 ## Project Status
@@ -199,10 +199,10 @@ Application teams can then reference this global cluster from any namespace usin
 ### 1. Install CRDs
 ```bash
 kubectl create namespace dns-system
-kubectl create -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
 ```
 
-### 2. Deploy Controller
+### 2. Deploy Operator
 ```bash
 kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/bindy.yaml
 ```
@@ -366,7 +366,7 @@ Useful for testing or when you need full control over a single instance.
 
 ## Configuration
 
-The controller is configured via environment variables in the deployment:
+The operator is configured via environment variables in the deployment:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -374,7 +374,7 @@ The controller is configured via environment variables in the deployment:
 | `BINDY_ENABLE_LEADER_ELECTION` | `true` | Enable leader election for HA |
 | `BINDY_LEASE_DURATION_SECONDS` | `15` | Lease duration |
 
-See [deployment.yaml](deploy/controller/deployment.yaml) for all options.
+See [deployment.yaml](deploy/operator/deployment.yaml) for all options.
 
 ## Monitoring
 
@@ -415,7 +415,7 @@ status:
 
 ## Troubleshooting
 
-**Controller logs:**
+**Operator logs:**
 ```bash
 kubectl logs -n dns-system -l app=bindy -f
 ```

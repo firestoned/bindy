@@ -173,6 +173,97 @@ pub async fn generate_nameserver_ips(
     }
 }
 
+/// Get the effective nameservers list for a DNSZone, handling both new and deprecated fields.
+///
+/// This function provides backward compatibility by:
+/// 1. Preferring the new `name_servers` field if present
+/// 2. Falling back to the deprecated `name_server_ips` field with automatic migration
+/// 3. Logging deprecation warnings when the old field is used
+///
+/// # Arguments
+/// * `spec` - The DNSZone spec containing nameserver configuration
+///
+/// # Returns
+/// `Option<Vec<NameServer>>` - The effective list of nameservers, or `None` if neither field is set
+///
+/// # Examples
+///
+/// ```
+/// # #[allow(deprecated)]
+/// # use bindy::crd::{DNSZoneSpec, NameServer, SOARecord};
+/// # use std::collections::HashMap;
+/// // New field takes precedence
+/// let spec = DNSZoneSpec {
+///     zone_name: "example.com".into(),
+///     soa_record: SOARecord {
+///         primary_ns: "ns1.example.com.".into(),
+///         admin_email: "admin.example.com.".into(),
+///         serial: 1,
+///         refresh: 3600,
+///         retry: 600,
+///         expire: 604800,
+///         negative_ttl: 86400,
+///     },
+///     ttl: None,
+///     cluster_ref: None,
+///     name_servers: Some(vec![NameServer {
+///         hostname: "ns2.example.com.".into(),
+///         ipv4_address: None,
+///         ipv6_address: None,
+///     }]),
+///     name_server_ips: Some(HashMap::from([("ns3.example.com.".into(), "192.0.2.3".into())])),
+///     records_from: None,
+///     bind9_instances_from: None,
+/// };
+/// // Returns name_servers (new field), ignoring name_server_ips
+/// ```
+fn get_effective_name_servers(
+    spec: &crate::crd::DNSZoneSpec,
+) -> Option<Vec<crate::crd::NameServer>> {
+    use crate::crd::NameServer;
+
+    // New field takes precedence
+    if let Some(ref new_servers) = spec.name_servers {
+        debug!(
+            "Using new `nameServers` field with {} server(s)",
+            new_servers.len()
+        );
+        return Some(new_servers.clone());
+    }
+
+    // Fallback to deprecated field with migration warning
+    #[allow(deprecated)]
+    if let Some(ref old_ips) = spec.name_server_ips {
+        warn!(
+            "DNSZone uses deprecated `nameServerIps` field. \
+             Migrate to `nameServers` for better functionality and IPv6 support. \
+             See migration guide at docs/src/operations/migration-guide.md"
+        );
+
+        // Convert HashMap<String, String> to Vec<NameServer>
+        // Old format: {"ns2.example.com.": "192.0.2.2"}
+        // New format: vec![NameServer { hostname: "ns2.example.com.", ipv4_address: Some("192.0.2.2"), .. }]
+        let servers: Vec<NameServer> = old_ips
+            .iter()
+            .map(|(hostname, ip)| NameServer {
+                hostname: hostname.clone(),
+                ipv4_address: Some(ip.clone()),
+                ipv6_address: None, // Old field doesn't support IPv6
+            })
+            .collect();
+
+        debug!(
+            "Migrated {} server(s) from deprecated `nameServerIps` to new format",
+            servers.len()
+        );
+
+        return Some(servers);
+    }
+
+    // Neither field set
+    None
+}
+
 /// Re-fetch a DNSZone to get the latest status.
 ///
 /// The `dnszone` parameter from the watch event might have stale status from the cache.
@@ -728,11 +819,14 @@ pub async fn add_dnszone(
         );
     }
 
-    // Generate nameserver IPs if not explicitly provided
-    // Nameservers are generated from ALL instances (primaries first, then secondaries)
-    let name_server_ips = if spec.name_server_ips.is_none() {
+    // Get effective nameservers (supports both new `nameServers` and deprecated `nameServerIps`)
+    let effective_name_servers = get_effective_name_servers(spec);
+
+    // Generate legacy nameserver IPs format for backward compatibility with bindcar API
+    // If user didn't provide either field, auto-generate from instance IPs
+    let name_server_ips = if effective_name_servers.is_none() {
         info!(
-            "DNSZone {}/{} has no explicit nameServerIps - auto-generating from {} instance(s)",
+            "DNSZone {}/{} has no explicit nameServers - auto-generating from {} instance(s)",
             namespace,
             name,
             instance_refs.len()
@@ -769,11 +863,35 @@ pub async fn add_dnszone(
             }
         }
     } else {
+        // Convert effective_name_servers to HashMap<String, String> for bindcar API compatibility
+        // Only include IPv4 addresses (bindcar doesn't support IPv6 glue records in this field)
+        // SAFETY: We know effective_name_servers is Some because we're in the else block
+        let name_server_map: HashMap<String, String> = if let Some(ns_list) = effective_name_servers
+        {
+            ns_list
+                .iter()
+                .filter_map(|ns| {
+                    ns.ipv4_address
+                        .as_ref()
+                        .map(|ip| (ns.hostname.clone(), ip.clone()))
+                })
+                .collect()
+        } else {
+            HashMap::new()
+        };
+
         info!(
-            "Using explicit nameServerIps for DNSZone {}/{}",
-            namespace, name
+            "Using explicit nameServers for DNSZone {}/{} ({} with IPv4 glue records)",
+            namespace,
+            name,
+            name_server_map.len()
         );
-        spec.name_server_ips.clone()
+
+        if name_server_map.is_empty() {
+            None
+        } else {
+            Some(name_server_map)
+        }
     };
 
     // Process all primary instances concurrently using async streams

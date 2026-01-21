@@ -44,18 +44,18 @@ kubectl get storageclass
 # Create namespace
 kubectl create namespace dns-system
 
-# Install CRDs (use kubectl create to avoid annotation size limits)
-kubectl create -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/crds/
+# Install CRDs from latest release
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
 
 # Install RBAC
 kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/rbac/
 
-# Deploy controller
-kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/controller/deployment.yaml
+# Deploy operator
+kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/operator/deployment.yaml
 
-# Wait for controller to be ready
+# Wait for operator to be ready
 kubectl wait --for=condition=available --timeout=300s \
-  deployment/bind9-controller -n dns-system
+  deployment/bind9-operator -n dns-system
 ```
 
 ## Step 3: Create a BIND9 Cluster
@@ -218,7 +218,7 @@ kubectl apply -f dns-zone.yaml
 
 Create a file `dns-records.yaml`:
 
-> **Note**: DNS records reference zones using labels. The controller uses an **event-driven architecture** that watches all 8 record types (ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord). When you create a record, the DNSZone controller receives a watch event **immediately** (⚡ sub-second), evaluates label selectors, and sets `status.zoneRef` if the record matches. The record controller then watches for this status change and reconciles to BIND9 instantly. **Total time: ~500ms** from record creation to BIND9 update ✅
+> **Note**: DNS records reference zones using labels. The operator uses an **event-driven architecture** that watches all 8 record types (ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord). When you create a record, the DNSZone operator receives a watch event **immediately** (⚡ sub-second), evaluates label selectors, and sets `status.zoneRef` if the record matches. The record operator then watches for this status change and reconciles to BIND9 instantly. **Total time: ~500ms** from record creation to BIND9 update ✅
 
 ```yaml
 # Web server A record
@@ -351,7 +351,7 @@ You've successfully deployed Bindy and created your first DNS zone with records!
 
 Before going to production:
 
-- [ ] Deploy multiple controller replicas for HA
+- [ ] Deploy multiple operator replicas for HA
 - [ ] Set up primary and secondary DNS instances
 - [ ] Configure resource limits and requests
 - [ ] Enable monitoring and alerting
@@ -364,9 +364,9 @@ Before going to production:
 
 If something doesn't work:
 
-1. **Check controller logs**:
+1. **Check operator logs**:
    ```bash
-   kubectl logs -n dns-system -l app=bind9-controller -f
+   kubectl logs -n dns-system -l app=bind9-operator -f
    ```
 
 2. **Check resource status**:

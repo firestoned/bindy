@@ -13,10 +13,10 @@ This guide explains the Bindy architecture, focusing on the dual-cluster model t
 
 ## Architecture Principles
 
-Bindy follows Kubernetes controller pattern best practices:
+Bindy follows Kubernetes operator pattern best practices:
 
-1. **Declarative Configuration**: Users declare desired state via CRDs, controllers reconcile to match
-2. **Level-Based Reconciliation**: Controllers continuously ensure actual state matches desired state
+1. **Declarative Configuration**: Users declare desired state via CRDs, operators reconcile to match
+2. **Level-Based Reconciliation**: Operators continuously ensure actual state matches desired state
 3. **Status Subresources**: All CRDs expose status for observability
 4. **Finalizers**: Proper cleanup of dependent resources before deletion
 5. **Generation Tracking**: Reconcile only when spec changes (using `metadata.generation`)
@@ -184,7 +184,7 @@ graph TD
 
 3. **Bind9Instance → Cluster Reference**:
    - `spec.cluster_ref`: Can reference either `Bind9Cluster` or `ClusterBind9Provider`
-   - Controller auto-detects cluster type
+   - Operator auto-detects cluster type
    - Used for instance organization and management
 
 4. **DNSZone → DNS Records Association**:
@@ -203,7 +203,7 @@ graph TD
 ```mermaid
 sequenceDiagram
     participant K8s as Kubernetes API
-    participant ZoneCtrl as DNSZone Controller
+    participant ZoneCtrl as DNSZone Operator
     participant StatusUpd as DNSZoneStatusUpdater
     participant Instances as Bind9Instances
     participant Bindcar as Bindcar API (sidecar)
@@ -254,7 +254,7 @@ sequenceDiagram
 
 **Key Architectural Points:**
 
-1. **Event-Driven**: Controller reacts to zone changes via Kubernetes watch events
+1. **Event-Driven**: Operator reacts to zone changes via Kubernetes watch events
 2. **Instance Selection**: Zones select instances (not instances selecting zones)
 3. **Batched Status Updates**: All status changes collected in `DNSZoneStatusUpdater`, applied atomically
 4. **DIFF Detection**: Status only patched if values actually changed (prevents reconciliation storms)
@@ -266,16 +266,16 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant K8s as Kubernetes API
-    participant Controller as GlobalCluster Controller
+    participant Operator as GlobalCluster Operator
     participant Instances as Bind9Instances (all namespaces)
 
-    K8s->>Controller: ClusterBind9Provider created/updated
-    Controller->>Controller: Check generation changed
-    Controller->>Instances: List all instances across all namespaces
-    Controller->>Controller: Filter instances by cluster_ref
-    Controller->>Controller: Calculate cluster status
-    Note over Controller: - Count ready instances<br/>- Aggregate conditions<br/>- Format instance names as namespace/name
-    Controller->>K8s: Update status with aggregated health
+    K8s->>Operator: ClusterBind9Provider created/updated
+    Operator->>Operator: Check generation changed
+    Operator->>Instances: List all instances across all namespaces
+    Operator->>Operator: Filter instances by cluster_ref
+    Operator->>Operator: Calculate cluster status
+    Note over Operator: - Count ready instances<br/>- Aggregate conditions<br/>- Format instance names as namespace/name
+    Operator->>K8s: Update status with aggregated health
 ```
 
 ## Multi-Tenancy Model
@@ -432,7 +432,7 @@ graph TB
 **Isolation Rules:**
 
 1. **Records can ONLY reference zones in their own namespace**
-   - Controller uses `Api::namespaced()` to enforce this
+   - Operator uses `Api::namespaced()` to enforce this
    - Cross-namespace references are impossible
 
 2. **DNSZones are namespace-scoped**

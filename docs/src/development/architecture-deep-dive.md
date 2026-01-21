@@ -10,7 +10,7 @@ Technical architecture of the Bindy DNS operator.
 └──────────────┬──────────────────────┘
                │ Watch/Update
      ┌─────────▼────────────┐
-     │  Bindy Controller    │
+     │  Bindy Operator    │
      │  ┌────────────────┐  │
      │  │ Reconcilers    │  │
      │  │  - Bind9Inst   │  │
@@ -31,7 +31,7 @@ Technical architecture of the Bindy DNS operator.
 
 ## Components
 
-### Controller
+### Operator
 - Watches CRD resources
 - Reconciles desired vs actual state
 - Manages Kubernetes resources
@@ -47,6 +47,6 @@ Technical architecture of the Bindy DNS operator.
 - BIND9 lifecycle management
 
 See detailed docs:
-- [Controller Design](./controller-design.md)
+- [Operator Design](./operator-design.md)
 - [Reconciliation Logic](./reconciliation.md)
 - [BIND9 Integration](./bind9-integration.md)

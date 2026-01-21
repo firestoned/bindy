@@ -240,7 +240,7 @@ cosign verify-attestation \
 
 ## Kubernetes Deployment Verification
 
-When deploying to Kubernetes, use [policy-controller](https://docs.sigstore.dev/policy-controller/overview) or [Kyverno](https://kyverno.io/) to enforce signature verification:
+When deploying to Kubernetes, use [policy-operator](https://docs.sigstore.dev/policy-operator/overview) or [Kyverno](https://kyverno.io/) to enforce signature verification:
 
 ### Kyverno Policy Example
 

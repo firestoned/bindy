@@ -18,10 +18,10 @@ See [Status Conditions](./status.md) for detailed condition types.
 
 ## Logging
 
-View controller and BIND9 logs:
+View operator and BIND9 logs:
 
 ```bash
-# Controller logs
+# Operator logs
 kubectl logs -n dns-system deployment/bindy
 
 # BIND9 instance logs

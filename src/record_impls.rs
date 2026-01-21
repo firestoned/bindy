@@ -16,7 +16,7 @@ use crate::reconcilers::{
     reconcile_a_record, reconcile_aaaa_record, reconcile_caa_record, reconcile_cname_record,
     reconcile_mx_record, reconcile_ns_record, reconcile_srv_record, reconcile_txt_record,
 };
-use crate::record_controller::{DnsRecordType, ReconcileError};
+use crate::record_operator::{DnsRecordType, ReconcileError};
 use anyhow::Result;
 use hickory_client::rr::RecordType;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;

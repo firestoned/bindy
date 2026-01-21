@@ -12,7 +12,7 @@ NC='\033[0m' # No Color
 NAMESPACE="dns-system"
 CLUSTER_NAME="bindy-test"
 
-echo -e "${BLUE}🧪 Testing Bindy Controller${NC}"
+echo -e "${BLUE}🧪 Testing Bindy Operator${NC}"
 echo ""
 
 # Check if cluster exists
@@ -24,12 +24,12 @@ fi
 # Set context
 kubectl config use-context "kind-${CLUSTER_NAME}" > /dev/null
 
-echo -e "${GREEN}1️⃣  Checking controller status...${NC}"
+echo -e "${GREEN}1️⃣  Checking operator status...${NC}"
 if kubectl get deployment bindy -n "${NAMESPACE}" &>/dev/null; then
     kubectl get pods -n "${NAMESPACE}" -l app=bindy
-    echo -e "${GREEN}✅ Controller is running${NC}"
+    echo -e "${GREEN}✅ Operator is running${NC}"
 else
-    echo -e "${RED}❌ Controller not found${NC}"
+    echo -e "${RED}❌ Operator not found${NC}"
     exit 1
 fi
 echo ""
@@ -147,7 +147,7 @@ echo -e "${BLUE}TXTRecords:${NC}"
 kubectl get txtrecords -n "${NAMESPACE}" -o wide
 
 echo ""
-echo -e "${GREEN}6️⃣  Checking controller logs (last 20 lines)...${NC}"
+echo -e "${GREEN}6️⃣  Checking operator logs (last 20 lines)...${NC}"
 kubectl logs -n "${NAMESPACE}" -l app=bindy --tail=20
 
 echo ""
@@ -157,7 +157,7 @@ echo -e "${YELLOW}📋 Next Steps:${NC}"
 echo "1. Check resource details:"
 echo "   kubectl describe dnszone test-zone -n ${NAMESPACE}"
 echo ""
-echo "2. Watch controller logs:"
+echo "2. Watch operator logs:"
 echo "   kubectl logs -n ${NAMESPACE} -l app=bindy -f"
 echo ""
 echo "3. Clean up test resources:"

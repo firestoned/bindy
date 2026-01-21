@@ -187,7 +187,7 @@ spec:
 #             TXTRecord "spf-example-com"
 #
 # When a DNSZone is reconciled:
-# - Controller queries all DNS record types in the namespace
+# - Operator queries all DNS record types in the namespace
 # - Filters records using the recordsFrom label selectors
 # - For each matching record, adds it to the primary BIND9 instances
 # - Records with labels matching the selector are automatically included in the zone

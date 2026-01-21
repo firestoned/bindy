@@ -11,7 +11,7 @@ Key metrics to monitor:
 - **Cache hit ratio** - Percentage of cached responses
 - **Reconciliation loops** - Unnecessary status updates
 
-## Controller Performance
+## Operator Performance
 
 ### Status Update Optimization
 

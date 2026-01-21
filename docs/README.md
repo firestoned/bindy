@@ -1,6 +1,6 @@
 # Bindy Documentation
 
-This directory contains the comprehensive documentation for Bindy, the BIND9 DNS Controller for Kubernetes.
+This directory contains the comprehensive documentation for Bindy, the BIND9 DNS Operator for Kubernetes.
 
 ## Documentation Structure
 
@@ -89,7 +89,7 @@ Located in `book/src/`:
   - Development workflow
 
 - **Architecture**
-  - Controller design
+  - Operator design
   - Reconciliation logic
   - BIND9 integration
 

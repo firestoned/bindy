@@ -68,8 +68,8 @@ jobs:
           REGISTRY: ghcr.io
         run: make kind-integration-test-ci
 
-      - name: Check controller logs on failure
+      - name: Check operator logs on failure
         if: failure()
         run: |
-          echo "Controller logs:"
+          echo "Operator logs:"
           kubectl logs -n dns-system -l app=bindy --tail=100 || true

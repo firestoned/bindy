@@ -11,7 +11,7 @@ Bindy is a Kubernetes operator that manages BIND9 DNS servers using Custom Resou
 - **Declarative**: Define DNS infrastructure as Kubernetes resources
 - **GitOps-friendly**: Version control your DNS configuration
 - **Kubernetes-native**: Uses familiar kubectl commands
-- **Automated**: Controller handles BIND9 configuration and reloading
+- **Automated**: Operator handles BIND9 configuration and reloading
 - **Scalable**: Easy multi-region, multi-instance deployments
 
 ### What BIND9 versions are supported?
@@ -43,7 +43,7 @@ Edit the Bind9Instance resource:
 kubectl edit bind9instance primary-dns -n dns-system
 ```
 
-The controller will automatically update the ConfigMap and restart pods if needed.
+The operator will automatically update the ConfigMap and restart pods if needed.
 
 ### Can I use external BIND9 servers?
 
@@ -138,7 +138,7 @@ kubectl delete arecords,aaaarecords,cnamerecords,mxrecords,txtrecords \
 ### How do I upgrade Bindy?
 
 1. Update CRDs: `kubectl apply -k deploy/crds/`
-2. Update controller: `kubectl set image deployment/bindy controller=new-image`
+2. Update operator: `kubectl set image deployment/bindy operator=new-image`
 3. Monitor rollout: `kubectl rollout status deployment/bindy -n dns-system`
 
 ### How do I backup DNS configuration?
@@ -159,11 +159,11 @@ kubectl apply -f bindy-backup.yaml
 
 ### Can I run Bindy in high availability mode?
 
-Yes, run multiple controller replicas:
+Yes, run multiple operator replicas:
 
 ```yaml
 spec:
-  replicas: 2  # Multiple controller replicas
+  replicas: 2  # Multiple operator replicas
 ```
 
 Only one will be active (leader election), others are standby.

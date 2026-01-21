@@ -1,4 +1,4 @@
-# Audit Log Retention Policy - Bindy DNS Controller
+# Audit Log Retention Policy - Bindy DNS Operator
 
 **Version:** 1.0
 **Last Updated:** 2025-12-17
@@ -25,7 +25,7 @@
 
 ## Overview
 
-This document defines the audit log retention policy for the Bindy DNS Controller to ensure compliance with SOX 404 (7-year retention), PCI-DSS 10.5.1 (1-year retention), and Basel III operational risk management requirements.
+This document defines the audit log retention policy for the Bindy DNS Operator to ensure compliance with SOX 404 (7-year retention), PCI-DSS 10.5.1 (1-year retention), and Basel III operational risk management requirements.
 
 ### Objectives
 
@@ -53,7 +53,7 @@ This document defines the audit log retention policy for the Bindy DNS Controlle
 | Log Type | Active Storage | Archive Storage | Total Retention | Rationale |
 |----------|----------------|-----------------|-----------------|-----------|
 | **Kubernetes API Audit Logs** | 90 days | 7 years | 7 years | SOX 404 (IT controls change tracking) |
-| **Controller Application Logs** | 90 days | 1 year | 1 year | PCI-DSS (DNS changes, RNDC operations) |
+| **Operator Application Logs** | 90 days | 1 year | 1 year | PCI-DSS (DNS changes, RNDC operations) |
 | **Secret Access Logs** | 90 days | 7 years | 7 years | SOX 404 (access to sensitive data) |
 | **DNS Query Logs** | 30 days | 1 year | 1 year | PCI-DSS (network activity monitoring) |
 | **Security Scan Results** | 1 year | 7 years | 7 years | SOX 404 (vulnerability management evidence) |
@@ -116,9 +116,9 @@ This document defines the audit log retention policy for the Bindy DNS Controlle
 
 ---
 
-### 2. Controller Application Logs
+### 2. Operator Application Logs
 
-**Source:** Bindy controller pod (`kubectl logs`)
+**Source:** Bindy operator pod (`kubectl logs`)
 **Content:** Reconciliation events, RNDC commands, errors
 **Format:** JSON (structured with tracing spans)
 
@@ -310,7 +310,7 @@ kube-apiserver \
 
 ---
 
-### Controller Application Logs
+### Operator Application Logs
 
 **Collection:** `kubectl logs` forwarded to log aggregation system
 
@@ -332,7 +332,7 @@ data:
         Name              tail
         Path              /var/log/containers/bindy-*.log
         Parser            docker
-        Tag               bindy.controller
+        Tag               bindy.operator
         Refresh_Interval  5
 
     [FILTER]
@@ -350,7 +350,7 @@ data:
         store_dir /tmp/fluent-bit/s3
         total_file_size 100M
         upload_timeout 10m
-        s3_key_format /controller-logs/%Y/%m/%d/$UUID.gz
+        s3_key_format /operator-logs/%Y/%m/%d/$UUID.gz
 ```
 
 ---

@@ -36,7 +36,7 @@ kubectl describe dnszone example-com -n dns-system | grep -A10 Events
 ### 4. Examine Logs
 
 ```bash
-# Controller logs
+# Operator logs
 kubectl logs -n dns-system deployment/bindy --tail=100
 
 # BIND9 instance logs
@@ -73,7 +73,7 @@ kubectl describe deployment primary-dns -n dns-system
 # 1. List ConfigMaps
 kubectl get configmaps -n dns-system
 
-# 2. Check controller logs
+# 2. Check operator logs
 kubectl logs -n dns-system deployment/bindy | grep -i configmap
 
 # 3. Check RBAC permissions
@@ -201,17 +201,17 @@ kubectl logs -n dns-system -l dns-role=primary | grep -i notify
 
 ## Enable Debug Logging
 
-### Controller Debug Logging
+### Operator Debug Logging
 
 ```bash
-# Edit controller deployment
+# Edit operator deployment
 kubectl set env deployment/bindy RUST_LOG=debug -n dns-system
 
 # Or patch deployment
 kubectl patch deployment bindy -n dns-system \
-  -p '{"spec":{"template":{"spec":{"containers":[{"name":"controller","env":[{"name":"RUST_LOG","value":"debug"}]}]}}}}'
+  -p '{"spec":{"template":{"spec":{"containers":[{"name":"operator","env":[{"name":"RUST_LOG","value":"debug"}]}]}}}}'
 
-# Restart controller
+# Restart operator
 kubectl rollout restart deployment/bindy -n dns-system
 
 # View debug logs
@@ -228,9 +228,9 @@ kubectl set env deployment/bindy RUST_LOG_FORMAT=json -n dns-system
 
 # Or patch deployment for both debug level and JSON format
 kubectl patch deployment bindy -n dns-system \
-  -p '{"spec":{"template":{"spec":{"containers":[{"name":"controller","env":[{"name":"RUST_LOG","value":"debug"},{"name":"RUST_LOG_FORMAT","value":"json"}]}]}}}}'
+  -p '{"spec":{"template":{"spec":{"containers":[{"name":"operator","env":[{"name":"RUST_LOG","value":"debug"},{"name":"RUST_LOG_FORMAT","value":"json"}]}]}}}}'
 
-# Restart controller
+# Restart operator
 kubectl rollout restart deployment/bindy -n dns-system
 
 # View JSON logs (can be piped to jq for parsing)
@@ -324,7 +324,7 @@ kubectl get all -n $NAMESPACE -o yaml > $OUTPUT_DIR/resources.yaml
 kubectl get bind9instances,dnszones,arecords,aaaarecords,cnamerecords -A -o yaml > $OUTPUT_DIR/crds.yaml
 
 # Collect logs
-kubectl logs -n $NAMESPACE deployment/bindy --tail=1000 > $OUTPUT_DIR/controller.log
+kubectl logs -n $NAMESPACE deployment/bindy --tail=1000 > $OUTPUT_DIR/operator.log
 kubectl logs -n $NAMESPACE -l app=bind9 --tail=1000 > $OUTPUT_DIR/bind9.log
 
 # Collect events

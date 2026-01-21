@@ -9,9 +9,9 @@
 
 ## Overview
 
-This document provides a comprehensive implementation plan for rate limiting in the Bindy controller to prevent runaway reconciliation loops, API server overload, and BIND9 server exhaustion.
+This document provides a comprehensive implementation plan for rate limiting in the Bindy operator to prevent runaway reconciliation loops, API server overload, and BIND9 server exhaustion.
 
-**Problem:** Without rate limiting, the controller can:
+**Problem:** Without rate limiting, the operator can:
 - Overwhelm the Kubernetes API server with excessive requests
 - Flood BIND9 servers with RNDC commands during cascading failures
 - Exhaust pod CPU/memory during reconciliation storms
@@ -29,7 +29,7 @@ This document provides a comprehensive implementation plan for rate limiting in 
 
 ### Current Behavior
 
-The controller currently uses `kube-rs` default reconciliation behavior:
+The operator currently uses `kube-rs` default reconciliation behavior:
 - Reconcile immediately on resource changes (watch events)
 - Requeue on errors with exponential backoff (1s, 2s, 4s, 8s, ...)
 - No global rate limit across all resources
@@ -150,7 +150,7 @@ api_client_throttle_wait_seconds.observe(wait_duration.as_secs_f64());
 
 ### Current Behavior
 
-The controller makes RNDC calls to BIND9 servers without circuit breakers:
+The operator makes RNDC calls to BIND9 servers without circuit breakers:
 - Retries failed RNDC calls indefinitely
 - No timeout between retries
 - Can overwhelm a failing BIND9 server
@@ -244,7 +244,7 @@ async fn mark_server_unhealthy(server: &str) {
 - Prevents RNDC retry storms
 - Failing servers get 60-second cool-down period
 - Automatic recovery when server comes back
-- Protects BIND9 from controller-induced overload
+- Protects BIND9 from operator-induced overload
 
 ---
 
@@ -292,21 +292,21 @@ resources:
 
 Add Prometheus alerts for resource exhaustion:
 ```yaml
-- alert: ControllerHighCPUUsage
+- alert: OperatorHighCPUUsage
   expr: rate(container_cpu_usage_seconds_total{pod=~"bindy-.*"}[5m]) > 0.8
   for: 10m
   labels:
     severity: warning
   annotations:
-    summary: "Controller CPU usage > 80% for 10 minutes"
+    summary: "Operator CPU usage > 80% for 10 minutes"
 
-- alert: ControllerHighMemoryUsage
+- alert: OperatorHighMemoryUsage
   expr: container_memory_working_set_bytes{pod=~"bindy-.*"} / container_spec_memory_limit_bytes{pod=~"bindy-.*"} > 0.8
   for: 10m
   labels:
     severity: warning
   annotations:
-    summary: "Controller memory usage > 80% for 10 minutes"
+    summary: "Operator memory usage > 80% for 10 minutes"
 ```
 
 ---

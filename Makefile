@@ -26,6 +26,23 @@ crds: ## Generate CRD YAML files from Rust types
 	@cargo run --bin crdgen
 	@echo "✓ CRD YAML files generated in deploy/crds/"
 
+crds-combined: crds ## Generate combined crds.yaml file for releases
+	@echo "Creating combined crds.yaml file..."
+	@echo "# Copyright (c) 2025 Erick Bourgeois, firestoned" > deploy/crds.yaml
+	@echo "# SPDX-License-Identifier: MIT" >> deploy/crds.yaml
+	@echo "#" >> deploy/crds.yaml
+	@echo "# Combined CRD definitions for Bindy" >> deploy/crds.yaml
+	@echo "# Install with: kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml" >> deploy/crds.yaml
+	@echo "#" >> deploy/crds.yaml
+	@echo "# DO NOT EDIT MANUALLY - Generated from individual CRD files in deploy/crds/" >> deploy/crds.yaml
+	@echo "---" >> deploy/crds.yaml
+	@for file in deploy/crds/*.crd.yaml; do \
+		echo "Processing $$file..."; \
+		tail -n +4 "$$file" >> deploy/crds.yaml; \
+		echo "---" >> deploy/crds.yaml; \
+	done
+	@echo "✓ Combined CRD file generated: deploy/crds.yaml"
+
 test: ## Run unit tests
 	cargo test --all
 
@@ -82,12 +99,12 @@ deploy-rbac: ## Deploy RBAC resources
 	kubectl apply -f deploy/rbac/ -n $(NAMESPACE)
 
 deploy-operator: ## Deploy operator
-	kubectl apply -f deploy/controller/ -n $(NAMESPACE)
+	kubectl apply -f deploy/operator/ -n $(NAMESPACE)
 
 deploy: deploy-crds deploy-rbac deploy-operator ## Deploy everything
 
 undeploy: ## Remove operator
-	kubectl delete -f deploy/controller/ -n $(NAMESPACE) || true
+	kubectl delete -f deploy/operator/ -n $(NAMESPACE) || true
 	kubectl delete -f deploy/rbac/ -n $(NAMESPACE) || true
 	kubectl delete -f deploy/crds/ || true
 
@@ -95,7 +112,7 @@ clean: ## Clean build artifacts
 	cargo clean
 	rm -rf target/
 
-run-local: ## Run controller locally
+run-local: ## Run operator locally
 	RUST_LOG=info cargo run --release
 
 # Kind cluster targets
@@ -125,8 +142,8 @@ kind-integration-test-ci: ## Run integration tests in CI mode (requires IMAGE_TA
 	@kubectl --context $(KIND_CONTEXT) replace --force -f deploy/crds/ 2>/dev/null || kubectl --context $(KIND_CONTEXT) create -f deploy/crds/
 	@echo "Installing RBAC..."
 	@kubectl --context $(KIND_CONTEXT) apply -f deploy/rbac/
-	@echo "Deploying controller with image: $(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)"
-	@sed "s|ghcr.io/firestoned/bindy:latest|$(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)|g" deploy/controller/deployment.yaml | kubectl --context $(KIND_CONTEXT) apply -f -
+	@echo "Deploying operator with image: $(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)"
+	@sed "s|ghcr.io/firestoned/bindy:latest|$(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)|g" deploy/operator/deployment.yaml | kubectl --context $(KIND_CONTEXT) apply -f -
 	@kubectl --context $(KIND_CONTEXT) wait --for=condition=available --timeout=300s deployment/bindy -n $(NAMESPACE)
 	@echo ""
 	@echo "================================================"
@@ -148,7 +165,7 @@ kind-integration-test-ci: ## Run integration tests in CI mode (requires IMAGE_TA
 kind-cleanup: ## Delete Kind cluster
 	./deploy/kind-cleanup.sh
 
-kind-logs: ## Show controller logs from Kind cluster
+kind-logs: ## Show operator logs from Kind cluster
 	kubectl logs -n $(NAMESPACE) -l app=bindy -f --context kind-$(KIND_CLUSTER)
 
 # Build targets

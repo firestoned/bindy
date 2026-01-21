@@ -1,6 +1,8 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: MIT
 
+#![allow(deprecated)]
+
 //! Integration tests for Multi-Tenancy Dual-Cluster Model
 //!
 //! These tests verify:
@@ -422,6 +424,7 @@ async fn create_zone_with_cluster_ref(
                 negative_ttl: 86400,
             },
             ttl: Some(3600),
+            name_servers: None,
             name_server_ips: None,
             records_from: None,
             bind9_instances_from: None,
@@ -470,6 +473,7 @@ async fn create_zone_with_cluster_provider_ref(
                 negative_ttl: 86400,
             },
             ttl: Some(3600),
+            name_servers: None,
             name_server_ips: None,
             records_from: None,
             bind9_instances_from: None,

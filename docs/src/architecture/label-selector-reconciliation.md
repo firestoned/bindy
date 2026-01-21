@@ -10,7 +10,7 @@ The architecture follows a **discovery-delegation pattern** similar to how Kuber
 
 - **DNSZone Reconciler**: Watches all 8 record types, sets `record.status.zoneRef` when records match label selectors
 - **Record Reconcilers**: Watch for status changes, create/update/delete actual DNS records in BIND9 when selected
-- **Event-Driven**: Both controllers react immediately to changes (no polling delays)
+- **Event-Driven**: Both operators react immediately to changes (no polling delays)
 
 This separation provides:
 - ✅ **Instant responsiveness**: Sub-second reaction to record/zone changes
@@ -18,7 +18,7 @@ This separation provides:
 - ✅ **Clear ownership**: Each reconciler has a single responsibility
 - ✅ **Efficient updates**: Bulk zone transfers after all records are ready
 - ✅ **Better error handling**: Individual record failures don't block others
-- ✅ **Kubernetes-native**: Follows canonical controller watch patterns
+- ✅ **Kubernetes-native**: Follows canonical operator watch patterns
 
 ---
 
@@ -137,7 +137,7 @@ flowchart TB
 5. **Monitor zone health** and update conditions
 
 **Does NOT:**
-- ❌ Create individual DNS records in BIND9 (record controllers do this)
+- ❌ Create individual DNS records in BIND9 (record operators do this)
 - ❌ Manage record lifecycles
 - ❌ Poll for records (uses event-driven watches)
 
@@ -148,8 +148,8 @@ flowchart TB
 
 **Watch Configuration:**
 ```rust
-// DNSZone controller watches ALL 8 record types
-Controller::new(api, default_watcher_config())
+// DNSZone operator watches ALL 8 record types
+Operator::new(api, default_watcher_config())
     .watches(arecord_api, default_watcher_config(), move |record| {
         // When ARecord changes, find zones in same namespace
         zone_store.state().iter()
@@ -200,15 +200,15 @@ status:
 
 **Watch Configuration:**
 ```rust
-// Record controllers watch for ALL changes including status
-Controller::new(api, default_watcher_config())  // Watches spec + status
+// Record operators watch for ALL changes including status
+Operator::new(api, default_watcher_config())  // Watches spec + status
     .run(reconcile_arecord, error_policy, ctx)
 ```
 
 **Status Updates:**
 ```yaml
 status:
-  # NEW: Structured zone reference set by DNSZone controller
+  # NEW: Structured zone reference set by DNSZone operator
   zoneRef:
     apiVersion: bindy.firestoned.io/v1beta1
     kind: DNSZone
@@ -258,7 +258,7 @@ Record created/updated
 
 ```mermaid
 graph TB
-    subgraph "DNSZone Controller"
+    subgraph "DNSZone Operator"
         DZ[DNSZone Reconciler]
     end
 
@@ -273,7 +273,7 @@ graph TB
         CAA[CAARecord]
     end
 
-    subgraph "Record Controllers"
+    subgraph "Record Operators"
         ARC[ARecord Reconciler]
         AAARC[AAAARecord Reconciler]
         TXTRC[TXTRecord Reconciler]
@@ -419,13 +419,13 @@ spec:
   ipv4Address: 192.0.2.1
 ```
 
-When the DNSZone controller watches this ARecord change, it:
+When the DNSZone operator watches this ARecord change, it:
 1. ⚡ **Receives watch event** immediately (no polling)
 2. **Evaluates label selectors** against the record
 3. **Sets `status.zoneRef`** with full metadata if matched
 4. **Updates `status.records[]`** in the DNSZone
 
-When the ARecord controller sees the status change:
+When the ARecord operator sees the status change:
 1. ⚡ **Receives status watch event** immediately
 2. **Reads `status.zoneRef`** to find parent zone
 3. **Adds record to BIND9** primaries
@@ -685,7 +685,7 @@ status:
 
 ```rust
 // ❌ Old: Periodic reconciliation
-Controller::new(zones_api, Config::default())
+Operator::new(zones_api, Config::default())
     .run(reconcile_zone, error_policy, ctx)
     .await
 
@@ -703,7 +703,7 @@ Controller::new(zones_api, Config::default())
 
 ```rust
 // ✅ New: Event-driven watches
-Controller::new(zones_api, default_watcher_config())
+Operator::new(zones_api, default_watcher_config())
     .watches(arecord_api, default_watcher_config(), |record| {
         // Immediately react to record changes
         find_zones_in_namespace(&record)
@@ -729,6 +729,6 @@ Controller::new(zones_api, default_watcher_config())
 - [Kubernetes Label Selectors](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/)
 - [BIND9 Dynamic DNS Updates (RFC 2136)](https://datatracker.ietf.org/doc/html/rfc2136)
 - [BIND9 Zone Transfers (AXFR/IXFR)](https://bind9.readthedocs.io/en/latest/reference.html#zone-transfers)
-- [Kubernetes Controller Pattern](https://kubernetes.io/docs/concepts/architecture/controller/)
-- [kube-rs Controller Documentation](https://docs.rs/kube/latest/kube/runtime/controller/struct.Controller.html)
+- [Kubernetes Operator Pattern](https://kubernetes.io/docs/concepts/architecture/operator/)
+- [kube-rs Operator Documentation](https://docs.rs/kube/latest/kube/runtime/operator/struct.Operator.html)
 - [kube-rs Reflector/Store Pattern](https://docs.rs/kube/latest/kube/runtime/reflector/index.html)

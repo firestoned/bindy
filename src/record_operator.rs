@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: MIT
 
-//! Generic DNS record controller implementation.
+//! Generic DNS record operator implementation.
 //!
-//! This module provides a generic controller pattern for all DNS record types,
+//! This module provides a generic operator pattern for all DNS record types,
 //! eliminating code duplication across A, AAAA, TXT, CNAME, MX, NS, SRV, and CAA records.
 
 use crate::bind9::Bind9Manager;
@@ -31,7 +31,7 @@ use tracing::{error, info};
 #[error(transparent)]
 pub struct ReconcileError(#[from] anyhow::Error);
 
-/// Error policy for record controllers.
+/// Error policy for record operators.
 ///
 /// Returns an action to requeue the resource after a delay when reconciliation fails.
 #[allow(clippy::needless_pass_by_value)] // Signature required by kube::runtime::Controller
@@ -50,10 +50,10 @@ where
     ))
 }
 
-/// Trait for DNS record types that can be reconciled with a generic controller.
+/// Trait for DNS record types that can be reconciled with a generic operator.
 ///
 /// This trait abstracts over the common operations needed for all DNS record types,
-/// allowing a single controller implementation to handle all record types.
+/// allowing a single operator implementation to handle all record types.
 pub trait DnsRecordType:
     Resource<DynamicType = (), Scope = NamespaceResourceScope>
     + Clone
@@ -89,27 +89,27 @@ pub trait DnsRecordType:
     fn status(&self) -> &Option<RecordStatus>;
 }
 
-/// Run a generic DNS record controller.
+/// Run a generic DNS record operator.
 ///
-/// This function creates a controller that watches both the record type and `DNSZone` resources,
+/// This function creates an operator that watches both the record type and `DNSZone` resources,
 /// triggering reconciliation when zones discover new records that need configuration.
 ///
 /// # Arguments
 ///
-/// * `context` - The controller context with API client and stores
+/// * `context` - The operator context with API client and stores
 /// * `bind9_manager` - The BIND9 manager for zone operations
 ///
 /// # Errors
 ///
-/// Returns an error if the controller fails to start or encounters a fatal error.
-pub async fn run_generic_record_controller<T>(
+/// Returns an error if the operator fails to start or encounters a fatal error.
+pub async fn run_generic_record_operator<T>(
     context: Arc<Context>,
     bind9_manager: Arc<Bind9Manager>,
 ) -> Result<()>
 where
     T: DnsRecordType,
 {
-    info!("Starting {} controller", T::KIND);
+    info!("Starting {} operator", T::KIND);
 
     let client = context.client.clone();
     let api = Api::<T>::all(client.clone());

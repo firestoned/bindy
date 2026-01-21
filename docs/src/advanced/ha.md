@@ -423,8 +423,8 @@ kubectl logs -n dns-system deployment/bindy -f
 # Look for leadership events
 INFO Attempting to acquire lease bindy-leader
 INFO Lease acquired, this instance is now the leader
-INFO Starting all controllers
-WARN Leadership lost! Stopping all controllers...
+INFO Starting all operators
+WARN Leadership lost! Stopping all operators...
 INFO Lease acquired, this instance is now the leader
 ```
 

@@ -1,12 +1,12 @@
 # Changing Log Levels at Runtime
 
-This guide explains how to change the controller's log level without modifying code or redeploying the application.
+This guide explains how to change the operator's log level without modifying code or redeploying the application.
 
 ---
 
 ## Overview
 
-The Bindy controller's log level is configured via a ConfigMap (`bindy-config`), which allows runtime changes without code modifications. This is especially useful for:
+The Bindy operator's log level is configured via a ConfigMap (`bindy-config`), which allows runtime changes without code modifications. This is especially useful for:
 
 - **Troubleshooting**: Temporarily enable `debug` logging to investigate issues
 - **Performance**: Reduce log verbosity in production (`info` or `warn`)
@@ -33,7 +33,7 @@ The Bindy controller's log level is configured via a ConfigMap (`bindy-config`),
 kubectl patch configmap bindy-config -n dns-system \
   --patch '{"data": {"log-level": "debug"}}'
 
-# Restart controller pods to apply changes
+# Restart operator pods to apply changes
 kubectl rollout restart deployment/bindy -n dns-system
 
 # Verify new log level
@@ -130,20 +130,20 @@ kubectl logs -n dns-system -l app=bindy --tail=1000 | \
 
 **PCI-DSS 3.4 Requirement:** Mask or remove PAN (Primary Account Number) from all logs.
 
-**Bindy Compliance:** Controller does not handle payment card data directly, but RNDC keys and DNS zone data are considered sensitive.
+**Bindy Compliance:** Operator does not handle payment card data directly, but RNDC keys and DNS zone data are considered sensitive.
 
 ---
 
 ## Troubleshooting Scenarios
 
-### Scenario 1: Controller Not Reconciling Zones
+### Scenario 1: Operator Not Reconciling Zones
 
 ```bash
 # Enable debug logging
 kubectl patch configmap bindy-config -n dns-system \
   --patch '{"data": {"log-level": "debug"}}'
 
-# Restart controller
+# Restart operator
 kubectl rollout restart deployment/bindy -n dns-system
 
 # Watch logs for reconciliation details
@@ -162,7 +162,7 @@ kubectl logs -n dns-system -l app=bindy | grep -i error
 kubectl patch configmap bindy-config -n dns-system \
   --patch '{"data": {"log-level": "warn"}}'
 
-# Restart controller
+# Restart operator
 kubectl rollout restart deployment/bindy -n dns-system
 
 # Verify reduced log volume
@@ -178,7 +178,7 @@ kubectl logs -n dns-system -l app=bindy --tail=100
 kubectl patch configmap bindy-config -n dns-system \
   --patch '{"data": {"log-format": "json"}}'
 
-# Restart controller
+# Restart operator
 kubectl rollout restart deployment/bindy -n dns-system
 
 # Verify JSON output

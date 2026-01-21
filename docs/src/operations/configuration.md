@@ -2,15 +2,15 @@
 
 Configure the Bindy DNS operator and BIND9 instances for your environment.
 
-## Controller Configuration
+## Operator Configuration
 
-The Bindy controller is configured through environment variables set in the deployment.
+The Bindy operator is configured through environment variables set in the deployment.
 
 See [Environment Variables](./env-vars.md) for details on all available configuration options.
 
 ### Kubernetes API Rate Limiting
 
-The controller includes configurable rate limiting for Kubernetes API requests to prevent overwhelming the API server in large deployments.
+The operator includes configurable rate limiting for Kubernetes API requests to prevent overwhelming the API server in large deployments.
 
 **Environment Variables:**
 
@@ -45,11 +45,11 @@ env:
 
 - HTTP 429 (Too Many Requests) errors in logs
 - Slow reconciliation times
-- Controller falling behind on resource updates
+- Operator falling behind on resource updates
 
 **Pagination:**
 
-The controller automatically paginates Kubernetes API list operations to prevent memory issues and reduce API server load when working with large resource sets (e.g., 1000+ `DNSZone`s).
+The operator automatically paginates Kubernetes API list operations to prevent memory issues and reduce API server load when working with large resource sets (e.g., 1000+ `DNSZone`s).
 
 - **Page Size**: 100 items per page (configurable via `KUBE_LIST_PAGE_SIZE` constant)
 - **Memory Usage**: Constant O(1) relative to total resource count
@@ -62,7 +62,7 @@ Pagination is automatically applied to:
 
 **Automatic Retry with Exponential Backoff:**
 
-The controller automatically retries transient Kubernetes API errors with exponential backoff:
+The operator automatically retries transient Kubernetes API errors with exponential backoff:
 
 - **Retryable Errors**: HTTP 429 (rate limiting), 5xx (server errors), network failures
 - **Non-Retryable Errors**: 4xx client errors (except 429) - fail immediately
@@ -299,6 +299,6 @@ See [Resource Limits](./resources.md) for resource configuration.
 
 ## Next Steps
 
-- [Environment Variables](./env-vars.md) - Controller configuration
+- [Environment Variables](./env-vars.md) - Operator configuration
 - [RBAC Setup](./rbac.md) - Permissions and service accounts
 - [Resource Limits](./resources.md) - CPU and memory configuration

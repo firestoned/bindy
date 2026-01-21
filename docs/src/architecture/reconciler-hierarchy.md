@@ -1,6 +1,6 @@
 # Reconciler Hierarchy and Delegation
 
-This document describes the simplified reconciler architecture in Bindy, showing how each controller watches for resources and delegates to sub-resources.
+This document describes the simplified reconciler architecture in Bindy, showing how each operator watches for resources and delegates to sub-resources.
 
 ## Overview
 
@@ -296,7 +296,7 @@ pub fn should_reconcile(current_generation: Option<i64>, observed_generation: Op
 ### Kubernetes Generation Semantics
 
 - **`metadata.generation`**: Incremented by Kubernetes API server **only when spec changes**
-- **`status.observed_generation`**: Set by controller to match `metadata.generation` after successful reconciliation
+- **`status.observed_generation`**: Set by operator to match `metadata.generation` after successful reconciliation
 - **Status-only updates**: Do NOT increment `metadata.generation`, preventing unnecessary reconciliations
 
 ### Example: Reconciliation Flow
@@ -423,14 +423,14 @@ let owner_ref = OwnerReference {
     kind: KIND_BIND9_GLOBALCLUSTER.to_string(),
     name: global_cluster_name.clone(),
     uid: global_cluster.metadata.uid.clone().unwrap_or_default(),
-    controller: Some(true),
+    operator: Some(true),
     block_owner_deletion: Some(true),
 };
 ```
 
 **Key Points:**
 - Cluster-scoped resources CAN own namespace-scoped resources
-- `controller: true` means this is the primary controller for the child
+- `operator: true` means this is the primary operator for the child
 - `block_owner_deletion: true` prevents deleting parent while children exist
 - Finalizer ensures manual cleanup of `Bind9Cluster` resources before parent deletion
 
@@ -445,7 +445,7 @@ let owner_ref = OwnerReference {
     kind: KIND_BIND9_CLUSTER.to_string(),
     name: cluster_name.clone(),
     uid: cluster.metadata.uid.clone().unwrap_or_default(),
-    controller: Some(true),
+    operator: Some(true),
     block_owner_deletion: Some(true),
 };
 ```
@@ -466,7 +466,7 @@ pub fn build_owner_references(instance: &Bind9Instance) -> Vec<OwnerReference> {
         kind: KIND_BIND9_INSTANCE.to_string(),
         name: instance.name_any(),
         uid: instance.metadata.uid.clone().unwrap_or_default(),
-        controller: Some(true),
+        operator: Some(true),
         block_owner_deletion: Some(true),
     }]
 }
@@ -570,7 +570,7 @@ Expected output:
 ownerReferences:
 - apiVersion: bindy.firestoned.io/v1beta1
   blockOwnerDeletion: true
-  controller: true
+  operator: true
   kind: ClusterBind9Provider  # or Bind9Cluster, Bind9Instance
   name: global-dns
   uid: 12345678-1234-1234-1234-123456789abc

@@ -1,6 +1,6 @@
 # Building from Source
 
-Build the Bindy controller from source code.
+Build the Bindy operator from source code.
 
 ## Build Debug Version
 
@@ -28,7 +28,7 @@ Binary location: `target/release/bindy`
 # Set log level
 export RUST_LOG=info
 
-# Run controller (requires kubeconfig)
+# Run operator (requires kubeconfig)
 cargo run --release
 ```
 

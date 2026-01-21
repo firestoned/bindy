@@ -1,10 +1,10 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: MIT
 
-//! Shared context for all controllers with reflector stores.
+//! Shared context for all operators with reflector stores.
 //!
 //! This module provides the core infrastructure for the shared reflector store pattern.
-//! All controllers receive an `Arc<Context>` that contains:
+//! All operators receive an `Arc<Context>` that contains:
 //! - Kubernetes client
 //! - Reflector stores for all CRD types
 //! - Metrics registry
@@ -22,7 +22,7 @@ use kube::{Client, ResourceExt};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-/// Shared context passed to all controllers.
+/// Shared context passed to all operators.
 ///
 /// This context provides access to:
 /// - Kubernetes client for API operations
@@ -44,7 +44,7 @@ pub struct Context {
     pub metrics: Metrics,
 }
 
-/// Collection of all reflector stores for cross-controller queries.
+/// Collection of all reflector stores for cross-operator queries.
 ///
 /// Each store is populated by a dedicated reflector task and provides
 /// in-memory access to resources without API calls.
@@ -381,7 +381,7 @@ impl RecordRef {
 
 /// Metrics for observability.
 ///
-/// This struct will hold Prometheus metrics for monitoring controller behavior.
+/// This struct will hold Prometheus metrics for monitoring operator behavior.
 /// For now, it's a placeholder that can be extended with actual metrics.
 #[derive(Clone, Default)]
 pub struct Metrics {

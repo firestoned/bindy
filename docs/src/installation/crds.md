@@ -13,7 +13,28 @@ CRDs define the schema for custom resources in Kubernetes. Bindy uses CRDs to re
 
 ## Installation
 
-Install all Bindy CRDs:
+### Install from Release (Recommended)
+
+Install all Bindy CRDs from the latest release:
+
+```bash
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
+```
+
+Or install a specific version:
+
+```bash
+kubectl apply -f https://github.com/firestoned/bindy/releases/download/v0.3.0/crds.yaml
+```
+
+This is the **recommended method** as it:
+- Installs all CRDs in a single command
+- Uses stable, tagged releases
+- Avoids GitHub's annotation size limits for large CRDs
+
+### Install from Source
+
+Install all Bindy CRDs from the main branch:
 
 ```bash
 kubectl create -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/crds/
@@ -72,5 +93,5 @@ For detailed specifications of each CRD, see:
 
 ## Next Steps
 
-- [Deploy the Controller](./controller.md)
+- [Deploy the Operator](./operator.md)
 - [Quick Start Guide](./quickstart.md)

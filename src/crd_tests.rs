@@ -3,6 +3,7 @@
 
 #[cfg(test)]
 #[allow(clippy::unreadable_literal)]
+#[allow(deprecated)]
 mod tests {
     use crate::crd::*;
     use std::collections::BTreeMap;
@@ -131,6 +132,7 @@ mod tests {
             soa_record: soa,
             ttl: Some(3600),
             cluster_ref: None,
+            name_servers: None,
             name_server_ips: None,
             records_from: None,
             bind9_instances_from: None,

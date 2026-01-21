@@ -207,7 +207,7 @@ Split into modules under `src/bind9_resources/`:
 
 **Current Structure:**
 - CLI argument parsing
-- Controller setup for multiple resources
+- Operator setup for multiple resources
 - Watch configuration
 - Reflector store initialization
 - Metrics
@@ -215,7 +215,7 @@ Split into modules under `src/bind9_resources/`:
 **Potential Improvement:**
 Extract into modules:
 - `src/cli.rs` - Argument parsing
-- `src/controller_setup.rs` - Controller initialization
+- `src/operator_setup.rs` - Operator initialization
 - `src/watches.rs` - Watch configuration
 - `src/stores.rs` - Reflector setup
 

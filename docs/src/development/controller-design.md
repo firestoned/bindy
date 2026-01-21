@@ -1,10 +1,10 @@
-# Controller Design
+# Operator Design
 
-Design and implementation of the Bindy controller.
+Design and implementation of the Bindy operator.
 
-## Controller Pattern
+## Operator Pattern
 
-Bindy implements the Kubernetes controller pattern:
+Bindy implements the Kubernetes operator pattern:
 
 1. **Watch** - Monitor CRD resources
 2. **Reconcile** - Ensure actual state matches desired
@@ -33,7 +33,7 @@ loop {
 
 ## State Management
 
-Controller maintains no local state - all state in Kubernetes:
+Operator maintains no local state - all state in Kubernetes:
 - CRD resources (desired state)
 - Deployments, Services, ConfigMaps (actual state)
 - Status fields (observed state)

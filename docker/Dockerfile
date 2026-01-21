@@ -36,13 +36,13 @@ ARG TARGETARCH
 ARG VERSION=0.1.0
 
 LABEL org.opencontainers.image.source="https://github.com/firestoned/bindy"
-LABEL org.opencontainers.image.description="BIND9 DNS Controller for Kubernetes"
+LABEL org.opencontainers.image.description="BIND9 DNS Operator for Kubernetes"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.version="${VERSION}"
 
 # Copy BIND9 binaries from builder
 # Note: We only copy the essential BIND9 server and control binaries.
-# DNS query tools (dig, nslookup, host) are not needed for the controller.
+# DNS query tools (dig, nslookup, host) are not needed for the operator.
 COPY --from=builder /usr/sbin/named /usr/sbin/named
 COPY --from=builder /usr/sbin/rndc /usr/sbin/rndc
 COPY --from=builder /usr/sbin/rndc-confgen /usr/sbin/rndc-confgen
@@ -65,5 +65,5 @@ COPY --chmod=755 binaries/${TARGETARCH}/bindy /usr/local/bin/bindy
 # Distroless runs as nonroot user (UID 65532) by default
 # No need to specify USER
 
-# Start the controller
+# Start the operator
 ENTRYPOINT ["/usr/local/bin/bindy"]

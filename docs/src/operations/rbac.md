@@ -1,10 +1,10 @@
 # RBAC (Role-Based Access Control)
 
-Configure Kubernetes RBAC for the Bindy controller.
+Configure Kubernetes RBAC for the Bindy operator.
 
 ## Required Permissions
 
-The Bindy controller needs permissions to:
+The Bindy operator needs permissions to:
 - Manage Bind9Instance, DNSZone, and DNS record resources
 - Create and manage Deployments, Services, ConfigMaps, and ServiceAccounts
 - Update resource status fields
@@ -149,7 +149,7 @@ kubectl get clusterrolebinding bindy-rolebinding
 
 ## Troubleshooting RBAC
 
-Check if controller has required permissions:
+Check if operator has required permissions:
 
 ```bash
 # Check what the ServiceAccount can do
@@ -159,6 +159,6 @@ kubectl auth can-i list dnszones \
 # Describe the ClusterRoleBinding
 kubectl describe clusterrolebinding bindy-rolebinding
 
-# Check controller logs for permission errors
+# Check operator logs for permission errors
 kubectl logs -n dns-system deployment/bindy | grep -i forbidden
 ```

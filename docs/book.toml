@@ -1,7 +1,7 @@
 [book]
-title = "Bindy - BIND9 DNS Controller for Kubernetes"
+title = "Bindy - BIND9 DNS Operator for Kubernetes"
 authors = ["Erick Bourgeois"]
-description = "A high-performance Kubernetes controller written in Rust using kube-rs that manages BIND9 DNS infrastructure through Custom Resource Definitions (CRDs)."
+description = "A high-performance Kubernetes operator written in Rust using kube-rs that manages BIND9 DNS infrastructure through Custom Resource Definitions (CRDs)."
 language = "en"
 src = "src"
 

@@ -17,7 +17,7 @@ graph TB
             TR[TXTRecord]
         end
 
-        subgraph "Bindy Controller (Rust)"
+        subgraph "Bindy Operator (Rust)"
             WA[Watch API<br/>kube-rs]
 
             subgraph "Reconcilers"
@@ -306,7 +306,7 @@ sequenceDiagram
 stateDiagram-v2
     [*] --> ZoneCreated: User creates DNSZone
 
-    ZoneCreated --> Validating: Controller watches event
+    ZoneCreated --> Validating: Operator watches event
 
     Validating --> ValidatingInstance: Validate zone spec
     ValidatingInstance --> ValidatingCluster: Find Bind9Instance
@@ -349,7 +349,7 @@ stateDiagram-v2
 
 ```mermaid
 sequenceDiagram
-    participant Ctl as Bindy Controller
+    participant Ctl as Bindy Operator
     participant Pri as Primary BIND9<br/>(us-east)
     participant Sec1 as Secondary BIND9<br/>(us-west)
     participant Sec2 as Secondary BIND9<br/>(eu)

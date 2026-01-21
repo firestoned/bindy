@@ -54,7 +54,7 @@ metadata:
     environment: production
 
 ---
-# ConfigMap for Controller Configuration
+# ConfigMap for Operator Configuration
 apiVersion: v1
 kind: ConfigMap
 metadata:
