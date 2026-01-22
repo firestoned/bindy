@@ -47,11 +47,13 @@ kubectl create namespace dns-system
 # Install CRDs from latest release
 kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
 
-# Install RBAC
-kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/rbac/
+# Install RBAC from latest release
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/serviceaccount.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/role.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/rolebinding.yaml
 
-# Deploy operator
-kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/operator/deployment.yaml
+# Deploy operator from latest release
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/operator/deployment.yaml
 
 # Wait for operator to be ready
 kubectl wait --for=condition=available --timeout=300s \

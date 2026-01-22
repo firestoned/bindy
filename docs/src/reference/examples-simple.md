@@ -189,23 +189,55 @@ spec:
 
 ### 1. Install CRDs
 
+From latest release:
+
+```bash
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
+```
+
+Or from local files:
+
 ```bash
 kubectl apply -k deploy/crds/
 ```
 
-### 2. Deploy Bindy Operator
+### 2. Install RBAC
+
+From latest release:
+
+```bash
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/serviceaccount.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/role.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/rolebinding.yaml
+```
+
+Or from local files:
+
+```bash
+kubectl apply -f deploy/rbac/
+```
+
+### 3. Deploy Bindy Operator
+
+From latest release:
+
+```bash
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/operator/deployment.yaml
+```
+
+Or from local files:
 
 ```bash
 kubectl apply -f deploy/operator/deployment.yaml
 ```
 
-### 3. Apply Configuration
+### 4. Apply Configuration
 
 ```bash
 kubectl apply -f simple-dns.yaml
 ```
 
-### 4. Verify Deployment
+### 5. Verify Deployment
 
 ```bash
 # Check Bind9Instance

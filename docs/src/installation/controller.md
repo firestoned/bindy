@@ -18,7 +18,17 @@ Before deploying the operator:
 kubectl create namespace dns-system
 ```
 
-### Install RBAC
+### Install RBAC (Latest Release)
+
+Install from the latest stable release:
+
+```bash
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/serviceaccount.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/role.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/rolebinding.yaml
+```
+
+Or install from main branch:
 
 ```bash
 kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/rbac/
@@ -29,7 +39,15 @@ This creates:
 - ClusterRole with required permissions
 - ClusterRoleBinding to bind them together
 
-### Deploy Operator
+### Deploy Operator (Latest Release)
+
+Install from the latest stable release:
+
+```bash
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/operator/deployment.yaml
+```
+
+Or install from main branch:
 
 ```bash
 kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/operator/deployment.yaml
