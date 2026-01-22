@@ -1,3 +1,50 @@
+## [2026-01-22 11:45] - CI/CD: Include RBAC and Operator Manifests in Releases
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/release.yaml`: Updated release workflow to include RBAC and operator manifests
+  - Renamed `generate-crds` job to `package-deploy-manifests` (more accurate name)
+  - Changed from generating `crds.yaml` to simply uploading existing files from git
+  - Added `deploy/rbac/*.yaml` to release assets
+  - Added `deploy/operator/*.yaml` to release assets
+  - Updated checksums generation to include RBAC and operator manifests
+  - Updated release asset upload to include all deployment manifests
+
+- **Documentation**: Updated all installation documentation to use `releases/latest/download` URLs (recommended method)
+  - `README.md`: Updated installation section to include RBAC manifests and correct deployment name
+  - `docs/src/installation/installation.md`: Added "Standard Installation (From Latest Release)" section with release URLs
+  - `docs/src/installation/controller.md`: Added release URL options for RBAC and operator installation
+  - `docs/src/installation/quickstart.md`: Updated Step 2 to use release URLs for all components
+  - `docs/src/operations/rbac.md`: Added "Install from Latest Release" section
+  - `docs/src/reference/examples-simple.md`: Added release URL options for all deployment steps
+  - `examples/README.md`: Added prerequisites section with installation instructions
+  - `deploy/README.md`: Added "Install from Latest Release" as recommended option
+
+### Why
+Release artifacts only included CRDs (`deploy/crds.yaml`), but installation requires RBAC and operator manifests too. The workflow was unnecessarily re-generating files that are already maintained in git. Documentation previously pointed users to `raw.githubusercontent.com` URLs from main branch, which should be reserved for development installations.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+Users can now download complete deployment manifests from GitHub releases using the recommended `releases/latest/download` URLs:
+```bash
+# Recommended: Install from latest release
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/serviceaccount.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/role.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/rolebinding.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/operator/deployment.yaml
+
+# Development: Install from main branch
+kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/...
+```
+
+---
+
 ## [2026-01-22 06:35] - Fix: DNSZone Not Recreated on Secondary Instances After Pod Restart
 
 **Author:** Erick Bourgeois

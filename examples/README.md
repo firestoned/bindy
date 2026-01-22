@@ -170,15 +170,29 @@ metadata:
 
 ## Quick Start
 
+### Prerequisites: Install Bindy
+
+Before running the examples, install Bindy:
+
+```bash
+# Install from latest release (recommended)
+kubectl create namespace dns-system
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/serviceaccount.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/role.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/rolebinding.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/operator/deployment.yaml
+
+# Or install from local files (development)
+kubectl create namespace dns-system
+kubectl apply -k ../deploy/crds/
+kubectl apply -f ../deploy/rbac/
+kubectl apply -f ../deploy/operator/deployment.yaml
+```
+
 ### Option 1: Deploy Complete Example (Recommended)
 
 ```bash
-# Install CRDs
-kubectl apply -k ../deploy/crds/
-
-# Create namespace
-kubectl create namespace dns-system
-
 # Deploy complete working setup
 kubectl apply -f complete-setup.yaml
 ```
@@ -188,22 +202,16 @@ This creates everything with correct clusterRef relationships.
 ### Option 2: Deploy Step-by-Step
 
 ```bash
-# 1. Install CRDs
-kubectl apply -k ../deploy/crds/
-
-# 2. Create namespace
-kubectl create namespace dns-system
-
-# 3. Create cluster definition
+# 1. Create cluster definition
 kubectl apply -f bind9-cluster.yaml
 
-# 4. Create instances (references cluster via clusterRef)
+# 2. Create instances (references cluster via clusterRef)
 kubectl apply -f bind9-instance.yaml
 
-# 5. Create DNS zones (references cluster via clusterRef)
+# 3. Create DNS zones (references cluster via clusterRef)
 kubectl apply -f dns-zone.yaml
 
-# 6. Add DNS records (discovered by zones via label selectors)
+# 4. Add DNS records (discovered by zones via label selectors)
 kubectl apply -f dns-records.yaml
 ```
 

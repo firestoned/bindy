@@ -86,9 +86,35 @@ kubectl logs -n dns-system -l app=bindy -f
 
 ## Manual Deployment
 
-For production clusters or manual deployment:
+### Option 1: Install from Latest Release (Recommended)
 
-### 1. Install CRDs
+For production clusters, use the latest stable release:
+
+```bash
+# 1. Create namespace
+kubectl create namespace dns-system
+
+# 2. Install CRDs
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
+
+# 3. Install RBAC
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/serviceaccount.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/role.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/rolebinding.yaml
+
+# 4. Deploy operator
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/operator/deployment.yaml
+
+# 5. Verify deployment
+kubectl get pods -n dns-system
+kubectl logs -n dns-system -l app=bind9-operator
+```
+
+### Option 2: Install from Source (Development)
+
+For development or custom builds:
+
+#### 1. Install CRDs
 
 Use kustomize to apply the split CRD manifests:
 
@@ -96,19 +122,19 @@ Use kustomize to apply the split CRD manifests:
 kubectl apply -k deploy/crds
 ```
 
-### 2. Create Namespace
+#### 2. Create Namespace
 
 ```bash
 kubectl create namespace dns-system
 ```
 
-### 3. Install RBAC
+#### 3. Install RBAC
 
 ```bash
 kubectl apply -f deploy/rbac/
 ```
 
-### 4. Build and Push Image
+#### 4. Build and Push Image
 
 ```bash
 # Build the image
@@ -118,9 +144,9 @@ docker build -t <your-registry>/bindy:latest .
 docker push <your-registry>/bindy:latest
 ```
 
-### 5. Update Deployment
+#### 5. Update Deployment
 
-Edit `deploy/controller/deployment.yaml` to use your image:
+Edit `deploy/operator/deployment.yaml` to use your image:
 
 ```yaml
 spec:
@@ -131,17 +157,17 @@ spec:
         image: <your-registry>/bindy:latest
 ```
 
-### 6. Deploy Operator
+#### 6. Deploy Operator
 
 ```bash
-kubectl apply -f deploy/controller/deployment.yaml
+kubectl apply -f deploy/operator/deployment.yaml
 ```
 
-### 7. Verify Deployment
+#### 7. Verify Deployment
 
 ```bash
 kubectl get pods -n dns-system
-kubectl logs -n dns-system -l app=bindy
+kubectl logs -n dns-system -l app=bind9-operator
 ```
 
 ## Configuration
