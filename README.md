@@ -202,17 +202,26 @@ kubectl create namespace dns-system
 kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
 ```
 
-### 2. Deploy Operator
+### 2. Install RBAC
 ```bash
-kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/bindy.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/serviceaccount.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/role.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/rolebinding.yaml
 ```
 
-### 3. Verify
+### 3. Deploy Operator
 ```bash
-kubectl wait --for=condition=available --timeout=300s deployment/bindy -n dns-system
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/operator/deployment.yaml
+```
+
+### 4. Verify
+```bash
+kubectl wait --for=condition=available --timeout=300s deployment/bind9-operator -n dns-system
 ```
 
 That's it! Now create DNS resources.
+
+**See the [Installation Guide](https://firestoned.github.io/bindy/installation/installation.html) for more options.**
 
 ## Usage Examples
 

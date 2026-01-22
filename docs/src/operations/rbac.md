@@ -125,9 +125,13 @@ subjects:
 
 ## Applying RBAC
 
+### Install from Latest Release (Recommended)
+
 ```bash
-# Apply all RBAC resources
-kubectl apply -f deploy/rbac/
+# Apply all RBAC resources from latest release
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/serviceaccount.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/role.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/rolebinding.yaml
 
 # Verify ServiceAccount
 kubectl get serviceaccount bindy -n dns-system
@@ -137,6 +141,16 @@ kubectl get clusterrole bindy-role
 
 # Verify ClusterRoleBinding
 kubectl get clusterrolebinding bindy-rolebinding
+```
+
+### Install from Source
+
+```bash
+# Apply all RBAC resources from local files
+kubectl apply -f deploy/rbac/
+
+# Or from main branch
+kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/rbac/
 ```
 
 ## Security Best Practices

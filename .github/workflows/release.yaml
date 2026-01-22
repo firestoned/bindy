@@ -303,34 +303,27 @@ jobs:
       upload-assets: true
       provenance-name: "${{ needs.extract-version.outputs.version }}.intoto.jsonl"
 
-  generate-crds:
-    name: Generate Combined CRDs
+  package-deploy-manifests:
+    name: Package Deployment Manifests
     runs-on: ubuntu-latest
     needs: extract-version
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
-          override: true
-
-      - name: Generate combined CRDs file
-        run: make crds-combined
-
-      - name: Upload CRDs artifact
+      - name: Upload deploy manifests
         uses: actions/upload-artifact@v4
         with:
-          name: crds
-          path: deploy/crds.yaml
+          name: deploy-manifests
+          path: |
+            deploy/crds.yaml
+            deploy/rbac/*.yaml
+            deploy/operator/*.yaml
 
   upload-release-assets:
     name: Upload Release Assets
     runs-on: ubuntu-latest
-    needs: [build, docker-release, sign-artifacts, slsa-provenance, generate-crds]
+    needs: [build, docker-release, sign-artifacts, slsa-provenance, package-deploy-manifests]
     permissions:
       contents: write
     steps:
@@ -344,10 +337,23 @@ jobs:
           cd artifacts
           mkdir -p release sboms signatures provenance
 
-          # Copy CRDs file
-          if [ -d "crds" ] && [ -f "crds/crds.yaml" ]; then
-            echo "Copying combined CRDs file..."
-            cp crds/crds.yaml release/
+          # Copy deployment manifests
+          if [ -d "deploy-manifests" ]; then
+            echo "Copying deployment manifests..."
+            # Copy CRDs
+            if [ -f "deploy-manifests/crds.yaml" ]; then
+              cp deploy-manifests/crds.yaml release/
+            fi
+            # Copy RBAC manifests
+            if compgen -G "deploy-manifests/rbac/*.yaml" > /dev/null; then
+              mkdir -p release/rbac
+              cp deploy-manifests/rbac/*.yaml release/rbac/
+            fi
+            # Copy operator manifests
+            if compgen -G "deploy-manifests/operator/*.yaml" > /dev/null; then
+              mkdir -p release/operator
+              cp deploy-manifests/operator/*.yaml release/operator/
+            fi
           fi
 
           # Copy signed tarballs and signature bundles
@@ -398,6 +404,12 @@ jobs:
           if [ -f "crds.yaml" ]; then
             sha256sum crds.yaml >> checksums.sha256
           fi
+          if [ -d "rbac" ]; then
+            sha256sum rbac/*.yaml >> checksums.sha256
+          fi
+          if [ -d "operator" ]; then
+            sha256sum operator/*.yaml >> checksums.sha256
+          fi
           cd ../sboms
           sha256sum *.json >> ../release/checksums.sha256
           cd ../signatures
@@ -417,6 +429,9 @@ jobs:
         with:
           files: |
             artifacts/release/*.tar.gz
+            artifacts/release/crds.yaml
+            artifacts/release/rbac/*.yaml
+            artifacts/release/operator/*.yaml
             artifacts/sboms/*.json
             artifacts/signatures/*.bundle
             artifacts/provenance/*.intoto.jsonl

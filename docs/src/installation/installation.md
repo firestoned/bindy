@@ -14,9 +14,29 @@ Installing Bindy involves these steps:
 
 ## Installation Methods
 
-### Standard Installation
+### Standard Installation (From Latest Release)
 
-The standard installation uses kubectl to apply YAML manifests:
+Install the latest stable release using kubectl:
+
+```bash
+# Create namespace
+kubectl create namespace dns-system
+
+# Install CRDs
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
+
+# Install RBAC
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/serviceaccount.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/role.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/rolebinding.yaml
+
+# Deploy operator
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/operator/deployment.yaml
+```
+
+### Installation from Main Branch (Development)
+
+Install from the main branch for the latest development features:
 
 ```bash
 # Create namespace
