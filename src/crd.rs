@@ -1780,7 +1780,7 @@ impl RndcAlgorithm {
 ///
 /// The `rndc.conf` file includes `/etc/bind/keys/rndc.key`, so BIND9 only needs
 /// that one file to exist
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RndcSecretRef {
     /// Name of the Kubernetes Secret containing RNDC credentials
@@ -1829,7 +1829,7 @@ pub struct TSIGKey {
 ///
 /// These settings configure the BIND9 DNS server behavior including recursion,
 /// access control lists, DNSSEC, and network listeners.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Bind9Config {
     /// Enable or disable recursive DNS queries
@@ -1956,7 +1956,7 @@ pub struct Bind9Config {
 /// DNSSEC (DNS Security Extensions) configuration
 ///
 /// DNSSEC adds cryptographic signatures to DNS records to ensure authenticity and integrity.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DNSSECConfig {
     /// Enable DNSSEC validation of responses
@@ -2021,7 +2021,7 @@ pub struct ConfigMapRefs {
 /// Service configuration including spec and annotations
 ///
 /// Allows customization of both the Kubernetes Service spec and metadata annotations.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceConfig {
     /// Annotations to apply to the Service metadata
@@ -2063,7 +2063,7 @@ pub struct ServiceConfig {
 /// Primary instance configuration
 ///
 /// Groups all configuration specific to primary (authoritative) DNS instances.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PrimaryConfig {
     /// Number of primary instance replicas (default: 1)
@@ -2146,7 +2146,7 @@ pub struct PrimaryConfig {
 /// Secondary instance configuration
 ///
 /// Groups all configuration specific to secondary (replica) DNS instances.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SecondaryConfig {
     /// Number of secondary instance replicas (default: 1)
@@ -2231,7 +2231,7 @@ pub struct SecondaryConfig {
 /// This struct contains all configuration that is common to both `Bind9Cluster` (namespace-scoped)
 /// and `ClusterBind9Provider` (cluster-scoped). By using this shared struct, we avoid code duplication
 /// and ensure consistency between the two cluster types.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Bind9ClusterCommonSpec {
     /// Shared BIND9 version for the cluster

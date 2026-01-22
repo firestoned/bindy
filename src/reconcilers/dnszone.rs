@@ -866,19 +866,19 @@ pub async fn add_dnszone(
         // Convert effective_name_servers to HashMap<String, String> for bindcar API compatibility
         // Only include IPv4 addresses (bindcar doesn't support IPv6 glue records in this field)
         // SAFETY: We know effective_name_servers is Some because we're in the else block
-        let name_server_map: HashMap<String, String> = if let Some(ns_list) = effective_name_servers
-        {
-            ns_list
-                .iter()
-                .filter_map(|ns| {
-                    ns.ipv4_address
-                        .as_ref()
-                        .map(|ip| (ns.hostname.clone(), ip.clone()))
-                })
-                .collect()
-        } else {
-            HashMap::new()
-        };
+        let name_server_map: HashMap<String, String> =
+            if let Some(ref ns_list) = effective_name_servers {
+                ns_list
+                    .iter()
+                    .filter_map(|ns| {
+                        ns.ipv4_address
+                            .as_ref()
+                            .map(|ip| (ns.hostname.clone(), ip.clone()))
+                    })
+                    .collect()
+            } else {
+                HashMap::new()
+            };
 
         info!(
             "Using explicit nameServers for DNSZone {}/{} ({} with IPv4 glue records)",
@@ -894,6 +894,31 @@ pub async fn add_dnszone(
         }
     };
 
+    // Extract list of ALL nameserver hostnames (primary from SOA + all from nameServers field)
+    // This is used by bindcar to generate NS records in the zone file
+    let all_nameserver_hostnames: Vec<String> = {
+        let mut hostnames = vec![spec.soa_record.primary_ns.clone()];
+
+        if let Some(ref ns_list) = effective_name_servers {
+            for ns in ns_list {
+                // Avoid duplicates - don't add primary NS again if it's in the list
+                if ns.hostname != spec.soa_record.primary_ns {
+                    hostnames.push(ns.hostname.clone());
+                }
+            }
+        }
+
+        hostnames
+    };
+
+    info!(
+        "Zone {}/{} will be configured with {} nameserver(s): {:?}",
+        namespace,
+        name,
+        all_nameserver_hostnames.len(),
+        all_nameserver_hostnames
+    );
+
     // Process all primary instances concurrently using async streams
     // Mark each instance as reconciled immediately after first successful endpoint configuration
     let first_endpoint = Arc::new(Mutex::new(None::<String>));
@@ -908,6 +933,7 @@ pub async fn add_dnszone(
             let zone_manager = zone_manager.clone();
             let zone_name = spec.zone_name.clone();
             let soa_record = spec.soa_record.clone();
+            let all_nameserver_hostnames = all_nameserver_hostnames.clone();
             let name_server_ips = name_server_ips.clone();
             let secondary_ips = secondary_ips.clone();
             let first_endpoint = Arc::clone(&first_endpoint);
@@ -958,6 +984,7 @@ pub async fn add_dnszone(
                         let zone_name = zone_name.clone();
                         let key_data = key_data.clone();
                         let soa_record = soa_record.clone();
+                        let all_nameserver_hostnames = all_nameserver_hostnames.clone();
                         let name_server_ips = name_server_ips.clone();
                         let secondary_ips = secondary_ips.clone();
                         let first_endpoint = Arc::clone(&first_endpoint);
@@ -977,6 +1004,29 @@ pub async fn add_dnszone(
                                 }
                             }
 
+                            // Check if zone already exists before attempting creation
+                            let zone_exists = match zone_manager.zone_exists(&zone_name, &pod_endpoint).await {
+                                Ok(exists) => exists,
+                                Err(e) => {
+                                    error!(
+                                        "Failed to check if zone {} exists on endpoint {} (instance {}/{}): {}",
+                                        zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name, e
+                                    );
+                                    // Treat errors as "zone might not exist" - proceed with add_zones
+                                    false
+                                }
+                            };
+
+                            if zone_exists {
+                                debug!(
+                                    "Zone {} already exists on endpoint {} (instance {}/{}), skipping creation",
+                                    zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
+                                );
+                                *total_endpoints.lock().await += 1;
+                                // Return false to indicate zone was not newly added
+                                return Ok(false);
+                            }
+
                             // Pass secondary IPs for zone transfer configuration
                             let secondary_ips_ref = if secondary_ips.is_empty() {
                                 None
@@ -991,6 +1041,7 @@ pub async fn add_dnszone(
                                     &pod_endpoint,
                                     &key_data,
                                     Some(&soa_record),
+                                    Some(&all_nameserver_hostnames),
                                     name_server_ips.as_ref(),
                                     secondary_ips_ref,
                                     None, // primary_ips only for secondary zones
@@ -1087,6 +1138,34 @@ pub async fn add_dnszone(
         total_endpoints,
         primary_instance_refs.len()
     );
+
+    // Auto-generate NS records and glue records from nameServers field
+    if let Some(ref name_servers) = effective_name_servers {
+        if !name_servers.is_empty() {
+            info!(
+                "Auto-generating NS records for {} nameserver(s) in zone {}",
+                name_servers.len(),
+                spec.zone_name
+            );
+
+            if let Err(e) = auto_generate_ns_records(
+                &client,
+                name_servers,
+                &spec.zone_name,
+                spec.ttl,
+                &primary_instance_refs,
+            )
+            .await
+            {
+                warn!(
+                    "Failed to auto-generate some NS records for zone {}: {}. \
+                     Zone is functional but may have incomplete NS records.",
+                    spec.zone_name, e
+                );
+                // Don't fail reconciliation - zone is functional even without all NS records
+            }
+        }
+    }
 
     // Note: We don't need to reload after addzone because:
     // 1. rndc addzone immediately adds the zone to BIND9's running config
@@ -1261,86 +1340,112 @@ pub async fn add_dnszone_to_secondaries(
                         async move {
                             let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
 
-                            info!(
-                                "Adding secondary zone {} to endpoint {} (instance: {}/{}) with primaries: {:?}",
-                                zone_name,
-                                pod_endpoint,
-                                instance_ref.namespace,
-                                instance_ref.name,
-                                primary_ips
-                            );
-
-                            match zone_manager
-                                .add_zones(
-                                    &zone_name,
-                                    ZONE_TYPE_SECONDARY,
-                                    &pod_endpoint,
-                                    &key_data,
-                                    None, // No SOA record for secondary zones
-                                    None, // No name_server_ips for secondary zones
-                                    None, // No secondary_ips for secondary zones
-                                    Some(&primary_ips),
-                                )
-                                .await
-                            {
-                                Ok(was_added) => {
-                                    if was_added {
-                                        info!(
-                                            "Successfully added secondary zone {} to endpoint {} (instance: {}/{})",
-                                            zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
-                                        );
-                                    } else {
-                                        info!(
-                                            "Secondary zone {} already exists on endpoint {} (instance: {}/{})",
-                                            zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
-                                        );
-                                    }
-
-                                    // CRITICAL: Immediately trigger zone transfer to load the zone data
-                                    // This is necessary because:
-                                    // 1. `rndc addzone` only adds the zone to BIND9's config (in-memory)
-                                    // 2. The zone file doesn't exist yet on the secondary
-                                    // 3. Queries will return SERVFAIL until data is transferred from primary
-                                    // 4. `rndc retransfer` forces an immediate AXFR from primary to secondary
-                                    //
-                                    // This ensures the zone is LOADED and SERVING queries immediately after
-                                    // secondary pod restart or zone creation.
-                                    info!(
-                                        "Triggering immediate zone transfer for {} on secondary {} to load zone data",
-                                        zone_name, pod_endpoint
-                                    );
-                                    if let Err(e) = zone_manager
-                                        .retransfer_zone(&zone_name, &pod_endpoint)
-                                        .await
-                                    {
-                                        // Don't fail reconciliation if retransfer fails - zone will sync via SOA refresh
-                                        warn!(
-                                            "Failed to trigger immediate zone transfer for {} on {}: {}. Zone will sync via SOA refresh timer.",
-                                            zone_name, pod_endpoint, e
-                                        );
-                                    } else {
-                                        info!(
-                                            "Successfully triggered zone transfer for {} on {}",
-                                            zone_name, pod_endpoint
-                                        );
-                                    }
-
-                                    *total_endpoints.lock().await += 1;
-                                    // Return was_added so we can check if zone was actually configured
-                                    Ok(was_added)
-                                }
+                            // Check if zone already exists before attempting creation
+                            let zone_exists = match zone_manager.zone_exists(&zone_name, &pod_endpoint).await {
+                                Ok(exists) => exists,
                                 Err(e) => {
                                     error!(
-                                        "Failed to add secondary zone {} to endpoint {} (instance {}/{}): {}",
+                                        "Failed to check if zone {} exists on endpoint {} (instance {}/{}): {}",
                                         zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name, e
                                     );
-                                    errors.lock().await.push(format!(
-                                        "endpoint {pod_endpoint} (instance {}/{}): {e}",
-                                        instance_ref.namespace, instance_ref.name
-                                    ));
-                                    Err(())
+                                    // Treat errors as "zone might not exist" - proceed with add_zones
+                                    false
                                 }
+                            };
+
+                            // Variable to track if zone was added
+                            let was_added = if zone_exists {
+                                debug!(
+                                    "Secondary zone {} already exists on endpoint {} (instance {}/{}), skipping creation",
+                                    zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
+                                );
+                                *total_endpoints.lock().await += 1;
+                                false // Zone not newly added
+                            } else {
+                                info!(
+                                    "Adding secondary zone {} to endpoint {} (instance: {}/{}) with primaries: {:?}",
+                                    zone_name,
+                                    pod_endpoint,
+                                    instance_ref.namespace,
+                                    instance_ref.name,
+                                    primary_ips
+                                );
+
+                                match zone_manager
+                                    .add_zones(
+                                        &zone_name,
+                                        ZONE_TYPE_SECONDARY,
+                                        &pod_endpoint,
+                                        &key_data,
+                                        None, // No SOA record for secondary zones
+                                        None, // No name_servers for secondary zones
+                                        None, // No name_server_ips for secondary zones
+                                        None, // No secondary_ips for secondary zones
+                                        Some(&primary_ips),
+                                    )
+                                    .await
+                                {
+                                    Ok(added) => {
+                                        if added {
+                                            info!(
+                                                "Successfully added secondary zone {} to endpoint {} (instance: {}/{})",
+                                                zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
+                                            );
+                                        } else {
+                                            info!(
+                                                "Secondary zone {} already exists on endpoint {} (instance: {}/{})",
+                                                zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
+                                            );
+                                        }
+                                        *total_endpoints.lock().await += 1;
+                                        added
+                                    }
+                                    Err(e) => {
+                                        error!(
+                                            "Failed to add secondary zone {} to endpoint {} (instance {}/{}): {}",
+                                            zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name, e
+                                        );
+                                        errors.lock().await.push(format!(
+                                            "endpoint {pod_endpoint} (instance {}/{}): {e}",
+                                            instance_ref.namespace, instance_ref.name
+                                        ));
+                                        return Err(());
+                                    }
+                                }
+                            };
+
+                            // CRITICAL: Immediately trigger zone transfer to load the zone data
+                            // This is necessary because:
+                            // 1. `rndc addzone` only adds the zone to BIND9's config (in-memory)
+                            // 2. The zone file doesn't exist yet on the secondary
+                            // 3. Queries will return SERVFAIL until data is transferred from primary
+                            // 4. `rndc retransfer` forces an immediate AXFR from primary to secondary
+                            //
+                            // This ensures the zone is LOADED and SERVING queries immediately after
+                            // secondary pod restart or zone creation.
+                            // NOTE: We trigger transfer even if zone already existed to ensure it's up to date
+                            info!(
+                                "Triggering immediate zone transfer for {} on secondary {} to load zone data",
+                                zone_name, pod_endpoint
+                            );
+                            if let Err(e) = zone_manager
+                                .retransfer_zone(&zone_name, &pod_endpoint)
+                                .await
+                            {
+                                // Don't fail reconciliation if retransfer fails - zone will sync via SOA refresh
+                                warn!(
+                                    "Failed to trigger immediate zone transfer for {} on {}: {}. Zone will sync via SOA refresh timer.",
+                                    zone_name, pod_endpoint, e
+                                );
+                            } else {
+                                info!(
+                                    "Successfully triggered zone transfer for {} on {}",
+                                    zone_name, pod_endpoint
+                                );
                             }
+
+                            // Return was_added so we can check if zone was actually configured
+                            Ok(was_added)
                         }
                     })
                     .collect::<Vec<Result<bool, ()>>>()
@@ -1543,3 +1648,320 @@ pub async fn delete_dnszone(
 
     Ok(())
 }
+
+/// Auto-generates NS records for all nameservers in the zone.
+///
+/// This function is called after zone creation to add NS records for secondary nameservers
+/// specified in the `nameServers` field. The primary nameserver NS record is already created
+/// by bindcar during zone initialization (from SOA).
+///
+/// # Arguments
+/// * `client` - Kubernetes client for loading RNDC keys and getting endpoints
+/// * `effective_name_servers` - List of nameservers from `nameServers` field
+/// * `zone_name` - The DNS zone name
+/// * `ttl` - TTL for the NS and glue records
+/// * `primary_instance_refs` - List of primary instances to update
+///
+/// # Returns
+/// Result indicating success or failure
+///
+/// # Errors
+/// Returns error if NS record or glue record addition fails
+#[allow(clippy::too_many_lines)]
+async fn auto_generate_ns_records(
+    client: &kube::Client,
+    effective_name_servers: &[crate::crd::NameServer],
+    zone_name: &str,
+    ttl: Option<i32>,
+    primary_instance_refs: &[crate::crd::InstanceReference],
+) -> Result<()> {
+    if effective_name_servers.is_empty() {
+        return Ok(());
+    }
+
+    info!(
+        "Auto-generating {} NS record(s) for zone {}",
+        effective_name_servers.len(),
+        zone_name
+    );
+
+    for nameserver in effective_name_servers {
+        // Add NS record at zone apex (@)
+        info!(
+            "Adding NS record: {} IN NS {}",
+            zone_name, nameserver.hostname
+        );
+
+        for instance_ref in primary_instance_refs {
+            // Load RNDC key for this instance
+            let key_data = match helpers::load_rndc_key(
+                client,
+                &instance_ref.namespace,
+                &instance_ref.name,
+            )
+            .await
+            {
+                Ok(key) => key,
+                Err(e) => {
+                    warn!(
+                        "Failed to load RNDC key for instance {}/{}: {}. Skipping NS record addition.",
+                        instance_ref.namespace, instance_ref.name, e
+                    );
+                    continue;
+                }
+            };
+
+            // Get endpoints for this instance
+            let endpoints = match helpers::get_endpoint(
+                client,
+                &instance_ref.namespace,
+                &instance_ref.name,
+                "http",
+            )
+            .await
+            {
+                Ok(eps) => eps,
+                Err(e) => {
+                    warn!(
+                        "Failed to get endpoints for instance {}/{}: {}. Skipping NS record addition.",
+                        instance_ref.namespace, instance_ref.name, e
+                    );
+                    continue;
+                }
+            };
+
+            // Add NS record to all endpoints of this instance
+            for endpoint in &endpoints {
+                let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
+
+                if let Err(e) = crate::bind9::records::ns::add_ns_record(
+                    zone_name,
+                    "@", // Zone apex
+                    &nameserver.hostname,
+                    ttl,
+                    &pod_endpoint,
+                    &key_data,
+                )
+                .await
+                {
+                    warn!(
+                        "Failed to add NS record for {} to endpoint {} (instance {}/{}): {}",
+                        nameserver.hostname,
+                        pod_endpoint,
+                        instance_ref.namespace,
+                        instance_ref.name,
+                        e
+                    );
+                    // Continue with other endpoints - partial success is acceptable
+                }
+            }
+        }
+
+        // Add glue records if IPs provided (for in-zone nameservers)
+        if let Some(ref ipv4) = nameserver.ipv4_address {
+            add_glue_record(
+                client,
+                zone_name,
+                &nameserver.hostname,
+                ipv4,
+                hickory_client::rr::RecordType::A,
+                ttl,
+                primary_instance_refs,
+            )
+            .await?;
+        }
+
+        if let Some(ref ipv6) = nameserver.ipv6_address {
+            add_glue_record(
+                client,
+                zone_name,
+                &nameserver.hostname,
+                ipv6,
+                hickory_client::rr::RecordType::AAAA,
+                ttl,
+                primary_instance_refs,
+            )
+            .await?;
+        }
+    }
+
+    info!(
+        "Successfully auto-generated NS records and glue records for zone {}",
+        zone_name
+    );
+
+    Ok(())
+}
+
+/// Adds a glue record (A or AAAA) for an in-zone nameserver.
+///
+/// Glue records provide IP addresses for nameservers within the zone's own domain.
+/// This is necessary to avoid circular dependencies when resolving the nameserver itself.
+///
+/// # Arguments
+/// * `client` - Kubernetes client for loading RNDC keys and getting endpoints
+/// * `zone_name` - The DNS zone name
+/// * `hostname` - Full nameserver hostname (e.g., "ns2.example.com.")
+/// * `ip_address` - IP address (IPv4 or IPv6)
+/// * `record_type` - Type of glue record (A or AAAA)
+/// * `ttl` - TTL for the glue record
+/// * `primary_instance_refs` - List of primary instances to update
+///
+/// # Returns
+/// Result indicating success or failure
+///
+/// # Errors
+/// Returns error if glue record addition fails on all instances
+#[allow(clippy::too_many_lines)]
+async fn add_glue_record(
+    client: &kube::Client,
+    zone_name: &str,
+    hostname: &str,
+    ip_address: &str,
+    record_type: hickory_client::rr::RecordType,
+    ttl: Option<i32>,
+    primary_instance_refs: &[crate::crd::InstanceReference],
+) -> Result<()> {
+    // Extract record name from hostname
+    // Example: "ns2.example.com." in zone "example.com" → name = "ns2"
+    let name = hostname
+        .trim_end_matches('.')
+        .strip_suffix(&format!(".{}", zone_name.trim_end_matches('.')))
+        .unwrap_or_else(|| hostname.trim_end_matches('.'));
+
+    // Check if this is actually an in-zone nameserver
+    if name == hostname.trim_end_matches('.') {
+        // Hostname doesn't end with zone name - this is an out-of-zone nameserver
+        // No glue record needed
+        debug!(
+            "Skipping glue record for out-of-zone nameserver {} (not in zone {})",
+            hostname, zone_name
+        );
+        return Ok(());
+    }
+
+    info!(
+        "Adding {} glue record: {} IN {} {}",
+        if record_type == hickory_client::rr::RecordType::A {
+            "A"
+        } else {
+            "AAAA"
+        },
+        name,
+        if record_type == hickory_client::rr::RecordType::A {
+            "A"
+        } else {
+            "AAAA"
+        },
+        ip_address
+    );
+
+    let mut success_count = 0;
+    let mut errors = Vec::new();
+
+    for instance_ref in primary_instance_refs {
+        // Load RNDC key for this instance
+        let key_data = match helpers::load_rndc_key(
+            client,
+            &instance_ref.namespace,
+            &instance_ref.name,
+        )
+        .await
+        {
+            Ok(key) => key,
+            Err(e) => {
+                warn!(
+                    "Failed to load RNDC key for instance {}/{}: {}. Skipping glue record addition.",
+                    instance_ref.namespace, instance_ref.name, e
+                );
+                continue;
+            }
+        };
+
+        // Get endpoints for this instance
+        let endpoints = match helpers::get_endpoint(
+            client,
+            &instance_ref.namespace,
+            &instance_ref.name,
+            "http",
+        )
+        .await
+        {
+            Ok(eps) => eps,
+            Err(e) => {
+                warn!(
+                    "Failed to get endpoints for instance {}/{}: {}. Skipping glue record addition.",
+                    instance_ref.namespace, instance_ref.name, e
+                );
+                continue;
+            }
+        };
+
+        // Add glue record to all endpoints of this instance
+        for endpoint in &endpoints {
+            let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
+
+            let result = match record_type {
+                hickory_client::rr::RecordType::A => {
+                    crate::bind9::records::a::add_a_record(
+                        zone_name,
+                        name,
+                        ip_address,
+                        ttl,
+                        &pod_endpoint,
+                        &key_data,
+                    )
+                    .await
+                }
+                hickory_client::rr::RecordType::AAAA => {
+                    crate::bind9::records::a::add_aaaa_record(
+                        zone_name,
+                        name,
+                        ip_address,
+                        ttl,
+                        &pod_endpoint,
+                        &key_data,
+                    )
+                    .await
+                }
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "Invalid record type for glue record: {:?}",
+                        record_type
+                    ))
+                }
+            };
+
+            match result {
+                Ok(()) => {
+                    success_count += 1;
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to add glue record {} to endpoint {} (instance {}/{}): {}",
+                        name, pod_endpoint, instance_ref.namespace, instance_ref.name, e
+                    );
+                    errors.push(format!(
+                        "endpoint {} (instance {}/{}): {}",
+                        pod_endpoint, instance_ref.namespace, instance_ref.name, e
+                    ));
+                }
+            }
+        }
+    }
+
+    // Accept partial success - at least one endpoint updated
+    if success_count > 0 {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "Failed to add glue record {} to all instances. Errors: {}",
+            name,
+            errors.join("; ")
+        ))
+    }
+}
+
+#[cfg(test)]
+#[path = "dnszone_tests.rs"]
+mod dnszone_tests;

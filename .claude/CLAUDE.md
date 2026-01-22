@@ -601,6 +601,21 @@ This codebase operates in a **regulated banking environment**. All changes must 
 
 ## 📝 Documentation Requirements
 
+### 🚨 CRITICAL: Always Verify if Documentation Needs Updates
+
+**MANDATORY: Before considering ANY task complete, ALWAYS ask yourself: "Does documentation need to be updated?"**
+
+This verification applies to:
+- ✅ Code changes (new features, bug fixes, refactoring)
+- ✅ CRD modifications (fields added/removed/changed)
+- ✅ API changes (function signatures, behavior)
+- ✅ Configuration changes (new env vars, settings)
+- ✅ Architecture changes (new components, flows)
+
+**If YES to any above:** Documentation MUST be updated according to the checklist below.
+
+---
+
 ### Mandatory: Documentation Updates for Code Changes
 
 **CRITICAL: After ANY code change in the `src/` directory, you MUST update all relevant documentation.**

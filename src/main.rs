@@ -904,6 +904,10 @@ async fn run_bind9instance_operator(context: Arc<Context>) -> Result<()> {
     let dnszone_api = Api::<DNSZone>::all(client.clone());
 
     // Build the controller
+    // Note: We use .owns(deployment_api) which already triggers reconciliation
+    // when pod status changes (via deployment status). This provides immediate
+    // status updates without creating a chatty pod watch that triggers on every
+    // pod event regardless of whether status actually changed.
     Controller::new(api.clone(), semantic_watcher_config())
         .owns(service_account_api, default_watcher_config())
         .owns(secret_api, default_watcher_config())

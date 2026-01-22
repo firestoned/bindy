@@ -628,16 +628,34 @@ async fn detect_cluster_drift(
     let expected_count = 1;
     let actual_count = managed_clusters.len();
 
-    let drift = actual_count != expected_count;
-
-    if drift {
+    // Check count drift
+    if actual_count != expected_count {
         info!(
-            "Cluster drift detected for ClusterBind9Provider {}: expected {} Bind9Cluster in namespace {}, found {}",
+            "Cluster count drift detected for ClusterBind9Provider {}: expected {} Bind9Cluster in namespace {}, found {}",
             cluster_provider_name, expected_count, target_namespace, actual_count
         );
+        return Ok(true);
     }
 
-    Ok(drift)
+    // Check spec drift - compare managed cluster's spec with desired spec
+    if let Some(managed_cluster) = managed_clusters.first() {
+        // The desired spec is just the common spec from the cluster provider
+        let desired_common_spec = &cluster_provider.spec.common;
+        let actual_common_spec = &managed_cluster.spec.common;
+
+        // Compare specs - if they differ, drift is detected
+        if desired_common_spec != actual_common_spec {
+            info!(
+                "Cluster spec drift detected for ClusterBind9Provider {} in namespace {}: \
+                 managed Bind9Cluster spec differs from desired spec",
+                cluster_provider_name, target_namespace
+            );
+            return Ok(true);
+        }
+    }
+
+    // No drift detected
+    Ok(false)
 }
 
 /// Deletes a cluster-scoped `ClusterBind9Provider` resource.

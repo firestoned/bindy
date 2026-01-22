@@ -56,8 +56,7 @@ spec:
       envVars:
         - name: RATE_LIMIT_ENABLED
           value: "false"
-      #image: "ghcr.io/firestoned/bindcar:v0.5.1"
-      image: "ghcr.io/firestoned/bindcar:latest"
+      image: "ghcr.io/firestoned/bindcar:v0.5.3"
       imagePullPolicy: IfNotPresent
       logLevel: debug
       serviceSpec:

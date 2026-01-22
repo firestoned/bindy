@@ -8,10 +8,10 @@
 
 use crate::constants::{
     API_GROUP_VERSION, BIND9_MALLOC_CONF, BIND9_NONROOT_UID, BIND9_SERVICE_ACCOUNT,
-    DEFAULT_BIND9_VERSION, DNS_CONTAINER_PORT, DNS_PORT, KIND_BIND9_INSTANCE,
-    LIVENESS_FAILURE_THRESHOLD, LIVENESS_INITIAL_DELAY_SECS, LIVENESS_PERIOD_SECS,
-    LIVENESS_TIMEOUT_SECS, READINESS_FAILURE_THRESHOLD, READINESS_INITIAL_DELAY_SECS,
-    READINESS_PERIOD_SECS, READINESS_TIMEOUT_SECS, RNDC_PORT,
+    CONTAINER_NAME_BIND9, CONTAINER_NAME_BINDCAR, DEFAULT_BIND9_VERSION, DNS_CONTAINER_PORT,
+    DNS_PORT, KIND_BIND9_INSTANCE, LIVENESS_FAILURE_THRESHOLD, LIVENESS_INITIAL_DELAY_SECS,
+    LIVENESS_PERIOD_SECS, LIVENESS_TIMEOUT_SECS, READINESS_FAILURE_THRESHOLD,
+    READINESS_INITIAL_DELAY_SECS, READINESS_PERIOD_SECS, READINESS_TIMEOUT_SECS, RNDC_PORT,
 };
 use crate::crd::{Bind9Cluster, Bind9Instance, ConfigMapRefs, ImageConfig};
 use crate::labels::{
@@ -886,7 +886,7 @@ fn build_pod_spec(
 
     // BIND9 container
     let bind9_container = Container {
-        name: "bind9".into(),
+        name: CONTAINER_NAME_BIND9.into(),
         image: Some(image),
         image_pull_policy: Some(image_pull_policy),
         command: Some(vec!["named".into()]),
@@ -1097,7 +1097,7 @@ fn build_api_sidecar_container(
     }
 
     Container {
-        name: "api".into(),
+        name: CONTAINER_NAME_BINDCAR.into(),
         image: Some(image),
         image_pull_policy: Some(image_pull_policy),
         ports: Some(vec![ContainerPort {
