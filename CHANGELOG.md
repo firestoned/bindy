@@ -11,6 +11,13 @@
   - Updated checksums generation to include RBAC and operator manifests
   - Updated release asset upload to include all deployment manifests
 
+- `.github/workflows/pr.yaml`: Added conditional job execution based on changed files
+  - Added `changes` job using `dorny/paths-filter` to detect code vs docs changes
+  - Code jobs (build, test, clippy, docker, etc.) only run when Rust code changes
+  - Docs job only runs when documentation files change (`docs/`, `README.md`, `examples/`, `deploy/`)
+  - Prevents unnecessary builds when only docs change and vice versa
+  - Improves CI efficiency and reduces GitHub Actions minutes usage
+
 - **Documentation**: Updated all installation documentation to use `releases/latest/download` URLs (recommended method)
   - `README.md`: Updated installation section to include RBAC manifests and correct deployment name
   - `docs/src/installation/installation.md`: Added "Standard Installation (From Latest Release)" section with release URLs

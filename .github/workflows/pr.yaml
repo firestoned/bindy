@@ -7,11 +7,6 @@ on:
   pull_request:
     branches:
       - main
-    paths:
-      - 'src/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.github/workflows/pr.yaml'
 
 permissions:
   contents: read
@@ -24,9 +19,38 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  changes:
+    name: Detect Changed Files
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      docs: ${{ steps.filter.outputs.docs }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for changes
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'src/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/pr.yaml'
+            docs:
+              - 'docs/**'
+              - 'README.md'
+              - 'examples/**'
+              - 'deploy/**'
+              - 'src/crd.rs'
+
   license-check:
     name: Verify SPDX License Headers
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -40,6 +64,8 @@ jobs:
   verify-commits:
     name: Verify Signed Commits
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -72,6 +98,8 @@ jobs:
   docs:
     name: Build Documentation
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
