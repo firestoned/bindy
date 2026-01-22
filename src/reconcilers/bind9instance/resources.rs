@@ -14,7 +14,7 @@ use crate::bind9_resources::{
     build_configmap, build_deployment, build_service, build_service_account,
 };
 use crate::constants::{API_GROUP_VERSION, KIND_BIND9_INSTANCE};
-use crate::reconcilers::resources::{create_or_apply, create_or_replace};
+use crate::reconcilers::resources::create_or_apply;
 
 pub(super) async fn create_or_update_resources(
     client: &Client,
@@ -307,6 +307,91 @@ async fn create_or_update_configmap(
     Ok(())
 }
 
+/// Check if a deployment needs updating by comparing current and desired state.
+///
+/// Returns true if any of the following have changed:
+/// - Replicas count
+/// - API container image
+/// - API container environment variables
+/// - API container imagePullPolicy
+/// - API container resources
+fn deployment_needs_update(current: &Deployment, desired: &Deployment) -> bool {
+    // Compare desired replicas with current replicas
+    let desired_replicas = desired.spec.as_ref().and_then(|s| s.replicas);
+    let current_replicas = current.spec.as_ref().and_then(|s| s.replicas);
+
+    if desired_replicas != current_replicas {
+        debug!(
+            "Replicas changed: current={:?}, desired={:?}",
+            current_replicas, desired_replicas
+        );
+        return true;
+    }
+
+    // Get the current api container
+    let current_api_container = current
+        .spec
+        .as_ref()
+        .and_then(|s| s.template.spec.as_ref())
+        .and_then(|pod_spec| {
+            pod_spec
+                .containers
+                .iter()
+                .find(|c| c.name == crate::constants::CONTAINER_NAME_BINDCAR)
+        });
+
+    // Get the desired api container
+    let desired_api_container = desired
+        .spec
+        .as_ref()
+        .and_then(|s| s.template.spec.as_ref())
+        .and_then(|pod_spec| {
+            pod_spec
+                .containers
+                .iter()
+                .find(|c| c.name == crate::constants::CONTAINER_NAME_BINDCAR)
+        });
+
+    // Check api container fields if both exist
+    if let (Some(current_api), Some(desired_api)) = (current_api_container, desired_api_container) {
+        // Check image
+        if current_api.image != desired_api.image {
+            debug!(
+                "API container image changed: current={:?}, desired={:?}",
+                current_api.image, desired_api.image
+            );
+            return true;
+        }
+
+        // Check env variables
+        if current_api.env != desired_api.env {
+            debug!("API container env changed");
+            return true;
+        }
+
+        // Check imagePullPolicy
+        if current_api.image_pull_policy != desired_api.image_pull_policy {
+            debug!(
+                "API container imagePullPolicy changed: current={:?}, desired={:?}",
+                current_api.image_pull_policy, desired_api.image_pull_policy
+            );
+            return true;
+        }
+
+        // Check resources
+        if current_api.resources != desired_api.resources {
+            debug!("API container resources changed");
+            return true;
+        }
+    } else if current_api_container.is_some() != desired_api_container.is_some() {
+        // One exists but not the other - needs update
+        debug!("API container existence changed");
+        return true;
+    }
+
+    false
+}
+
 /// Create or update the Deployment for BIND9
 async fn create_or_update_deployment(
     client: &Client,
@@ -317,7 +402,126 @@ async fn create_or_update_deployment(
     cluster_provider: Option<&crate::crd::ClusterBind9Provider>,
 ) -> Result<()> {
     let deployment = build_deployment(name, namespace, instance, cluster, cluster_provider);
-    create_or_replace(client, namespace, &deployment).await
+    let api: Api<Deployment> = Api::namespaced(client.clone(), namespace);
+
+    // Check if deployment exists - if not, create it and return early
+    if api.get(name).await.is_err() {
+        info!("Creating Deployment {}/{}", namespace, name);
+        api.create(&PostParams::default(), &deployment).await?;
+        return Ok(());
+    }
+
+    // Deployment exists - check if it needs updating before patching
+    debug!(
+        "Checking if Deployment {}/{} needs updating",
+        namespace, name
+    );
+
+    // Get the current deployment from the cluster
+    let current_deployment = api.get(name).await?;
+
+    // Compare current and desired state using helper function
+    if !deployment_needs_update(&current_deployment, &deployment) {
+        debug!(
+            "Deployment {}/{} is up to date, skipping patch",
+            namespace, name
+        );
+        return Ok(());
+    }
+
+    // Deployment needs updating - use strategic merge patch
+    info!("Patching Deployment {}/{}", namespace, name);
+
+    let api_container = deployment
+        .spec
+        .as_ref()
+        .and_then(|s| s.template.spec.as_ref())
+        .and_then(|pod_spec| {
+            pod_spec
+                .containers
+                .iter()
+                .find(|c| c.name == crate::constants::CONTAINER_NAME_BINDCAR)
+        });
+
+    let mut patch_containers = vec![];
+
+    // Add bind9 container name to preserve ordering (strategic merge needs this)
+    patch_containers.push(json!({
+        "name": crate::constants::CONTAINER_NAME_BIND9
+    }));
+
+    // Add api container with only the fields we want to update
+    if let Some(api) = api_container {
+        let mut api_patch = json!({
+            "name": crate::constants::CONTAINER_NAME_BINDCAR
+        });
+
+        // Only include image if it exists (from bindcarConfig)
+        if let Some(ref image) = api.image {
+            api_patch["image"] = json!(image);
+        }
+
+        // Only include env if it exists (from bindcarConfig)
+        if let Some(ref env) = api.env {
+            api_patch["env"] = json!(env);
+        }
+
+        // Only include imagePullPolicy if it exists (from bindcarConfig)
+        if let Some(ref pull_policy) = api.image_pull_policy {
+            api_patch["imagePullPolicy"] = json!(pull_policy);
+        }
+
+        // Only include resources if they exist (from bindcarConfig)
+        if let Some(ref resources) = api.resources {
+            api_patch["resources"] = json!(resources);
+        }
+
+        patch_containers.push(api_patch);
+    }
+
+    // Get labels from desired deployment (includes role label if present on instance)
+    let labels = deployment.metadata.labels.as_ref();
+    let pod_labels = deployment
+        .spec
+        .as_ref()
+        .and_then(|s| s.template.metadata.as_ref())
+        .and_then(|m| m.labels.as_ref());
+
+    // NOTE: We do NOT patch spec.selector because it is immutable in Kubernetes
+    // Attempting to change selector labels will cause an API error: "field is immutable"
+
+    let mut patch = json!({
+        "spec": {
+            "replicas": deployment.spec.as_ref().and_then(|s| s.replicas),
+            "template": {
+                "spec": {
+                    "containers": patch_containers,
+                    "$setElementOrder/containers": [
+                        {"name": crate::constants::CONTAINER_NAME_BIND9},
+                        {"name": crate::constants::CONTAINER_NAME_BINDCAR}
+                    ]
+                }
+            }
+        }
+    });
+
+    // Add metadata labels if present
+    // NOTE: Strategic merge will update/add our labels but preserve any other labels
+    // added by other controllers (e.g., kubectl, Helm, etc.)
+    if let Some(labels) = labels {
+        patch["metadata"] = json!({"labels": labels});
+    }
+
+    // Add pod template labels if present
+    // When pod template labels change, Kubernetes will recreate pods with new labels
+    if let Some(pod_labels) = pod_labels {
+        patch["spec"]["template"]["metadata"] = json!({"labels": pod_labels});
+    }
+
+    api.patch(name, &PatchParams::default(), &Patch::Strategic(&patch))
+        .await?;
+
+    Ok(())
 }
 
 /// Create or update the Service for BIND9

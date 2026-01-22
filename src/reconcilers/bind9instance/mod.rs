@@ -145,10 +145,59 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
     let current_generation = instance.metadata.generation;
     let observed_generation = instance.status.as_ref().and_then(|s| s.observed_generation);
 
-    // Check if resources actually exist (drift detection)
-    let deployment_exists = {
+    // Check if this instance is managed by a Bind9Cluster
+    let is_managed: bool = instance
+        .metadata
+        .labels
+        .as_ref()
+        .and_then(|labels| labels.get(BINDY_MANAGED_BY_LABEL))
+        .is_some();
+
+    // Check if ALL required resources actually exist AND match desired state (drift detection)
+    let (all_resources_exist, deployment_labels_match) = {
         let deployment_api: Api<Deployment> = Api::namespaced(client.clone(), &namespace);
-        deployment_api.get(&name).await.is_ok()
+        let service_api: Api<Service> = Api::namespaced(client.clone(), &namespace);
+        let configmap_api: Api<ConfigMap> = Api::namespaced(client.clone(), &namespace);
+        let secret_api: Api<Secret> = Api::namespaced(client.clone(), &namespace);
+
+        // Fetch deployment to check if it exists AND if OUR labels match
+        let (deployment_exists, labels_match) = match deployment_api.get(&name).await {
+            Ok(deployment) => {
+                // Build desired labels from instance - these are the labels WE manage
+                let desired_labels =
+                    crate::bind9_resources::build_labels_from_instance(&name, &instance);
+
+                // Check if deployment has all OUR labels with correct values
+                // IMPORTANT: Only check labels we explicitly set via build_labels_from_instance()
+                // Other controllers or users may add additional labels - we don't care about those
+                let labels_match = if let Some(actual_labels) = &deployment.metadata.labels {
+                    desired_labels
+                        .iter()
+                        .all(|(key, value)| actual_labels.get(key) == Some(value))
+                } else {
+                    false // No labels at all = no match
+                };
+
+                (true, labels_match)
+            }
+            Err(_) => (false, false),
+        };
+
+        let service_exists = service_api.get(&name).await.is_ok();
+
+        // Check ConfigMap - managed instances use cluster ConfigMap, standalone use instance ConfigMap
+        let configmap_name = if is_managed {
+            format!("{}-config", spec.cluster_ref)
+        } else {
+            format!("{name}-config")
+        };
+        let configmap_exists = configmap_api.get(&configmap_name).await.is_ok();
+
+        let secret_name = format!("{name}-rndc-key");
+        let secret_exists = secret_api.get(&secret_name).await.is_ok();
+
+        let all_exist = deployment_exists && service_exists && configmap_exists && secret_exists;
+        (all_exist, labels_match)
     };
 
     // Fetch cluster information early for zone reconciliation
@@ -179,9 +228,9 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
     // Zone selection is now reversed: DNSZone.spec.bind9_instances_from selects instances
     // This logic was removed as part of the architectural change to reverse selector direction
 
-    if !should_reconcile && deployment_exists {
+    if !should_reconcile && all_resources_exist && deployment_labels_match {
         debug!(
-            "Spec unchanged (generation={:?}) and resources exist, skipping resource reconciliation",
+            "Spec unchanged (generation={:?}), all resources exist, and deployment labels match - skipping resource reconciliation",
             current_generation
         );
         // Update status from current deployment state (only patches if status changed)
@@ -195,9 +244,20 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
         return Ok(());
     }
 
-    if !should_reconcile && !deployment_exists {
+    // If we reach here, reconciliation is needed because:
+    // - Spec changed (generation mismatch), OR
+    // - Resources don't exist (drift), OR
+    // - Deployment labels don't match desired state (drift)
+    if !deployment_labels_match && all_resources_exist {
         info!(
-            "Drift detected for Bind9Instance {}/{}: Deployment missing, will recreate",
+            "Deployment labels don't match desired state for {}/{}, triggering reconciliation to update labels",
+            namespace, name
+        );
+    }
+
+    if !should_reconcile && !all_resources_exist {
+        info!(
+            "Drift detected for Bind9Instance {}/{}: One or more resources missing, will recreate",
             namespace, name
         );
     }

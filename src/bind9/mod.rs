@@ -364,6 +364,7 @@ impl Bind9Manager {
     /// * `server` - API endpoint (e.g., "bind9-primary-api:8080" or "bind9-secondary-api:8080")
     /// * `key_data` - RNDC key data
     /// * `soa_record` - Optional SOA record data (required for primary zones, ignored for secondary)
+    /// * `name_servers` - Optional list of ALL authoritative nameserver hostnames (for primary zones)
     /// * `name_server_ips` - Optional map of nameserver hostnames to IP addresses (for primary zones)
     /// * `secondary_ips` - Optional list of secondary server IPs for also-notify and allow-transfer (for primary zones)
     /// * `primary_ips` - Optional list of primary server IPs to transfer from (for secondary zones)
@@ -383,6 +384,7 @@ impl Bind9Manager {
         server: &str,
         key_data: &RndcKeyData,
         soa_record: Option<&crate::crd::SOARecord>,
+        name_servers: Option<&[String]>,
         name_server_ips: Option<&HashMap<String, String>>,
         secondary_ips: Option<&[String]>,
         primary_ips: Option<&[String]>,
@@ -396,6 +398,7 @@ impl Bind9Manager {
             server,
             key_data,
             soa_record,
+            name_servers,
             name_server_ips,
             secondary_ips,
             primary_ips,
@@ -419,6 +422,7 @@ impl Bind9Manager {
     /// * `server` - API endpoint (e.g., "bind9-primary-api:8080")
     /// * `key_data` - RNDC key data (used for allow-update configuration)
     /// * `soa_record` - SOA record data
+    /// * `name_servers` - Optional list of ALL authoritative nameserver hostnames
     /// * `name_server_ips` - Optional map of nameserver hostnames to IP addresses for glue records
     /// * `secondary_ips` - Optional list of secondary server IPs for also-notify and allow-transfer
     ///
@@ -440,6 +444,7 @@ impl Bind9Manager {
         server: &str,
         key_data: &RndcKeyData,
         soa_record: &crate::crd::SOARecord,
+        name_servers: Option<&[String]>,
         name_server_ips: Option<&HashMap<String, String>>,
         secondary_ips: Option<&[String]>,
     ) -> Result<bool> {
@@ -450,6 +455,7 @@ impl Bind9Manager {
             server,
             key_data,
             soa_record,
+            name_servers,
             name_server_ips,
             secondary_ips,
         )

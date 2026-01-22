@@ -26,6 +26,7 @@ use crate::reconcilers::pagination::list_all_paginated;
 /// # Errors
 ///
 /// Returns an error if Kubernetes API operations fail or status patching fails.
+#[allow(clippy::too_many_lines)]
 pub(super) async fn update_status_from_deployment(
     client: &Client,
     namespace: &str,
@@ -48,7 +49,14 @@ pub(super) async fn update_status_from_deployment(
             // Use the standard Kubernetes label for instance matching
             let label_selector = format!("{}={}", crate::labels::K8S_INSTANCE, name);
             let list_params = ListParams::default().labels(&label_selector);
-            let pods = list_all_paginated(&pod_api, list_params).await?;
+            let all_pods = list_all_paginated(&pod_api, list_params).await?;
+
+            // Filter to only non-terminating pods (exclude pods with deletionTimestamp)
+            // This prevents counting old pods during rollouts
+            let pods: Vec<_> = all_pods
+                .into_iter()
+                .filter(|pod| pod.metadata.deletion_timestamp.is_none())
+                .collect();
 
             // Create pod-level conditions
             let mut pod_conditions = Vec::new();

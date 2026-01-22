@@ -466,13 +466,15 @@ pub(super) async fn ensure_managed_instance_resources(
     let deployment_api: Api<Deployment> = Api::namespaced(client.clone(), &namespace);
     let instance_api: Api<Bind9Instance> = Api::namespaced(client.clone(), &namespace);
 
+    // Managed instances share the cluster ConfigMap, not instance-specific ones
+    let cluster_configmap_name = format!("{cluster_name}-config");
+
     for instance in managed_instances {
         let instance_name = instance.name_any();
         let mut missing_resources = Vec::new();
 
-        // Check ConfigMap
-        let configmap_name = format!("{instance_name}-config");
-        if configmap_api.get(&configmap_name).await.is_err() {
+        // Check ConfigMap - managed instances use the shared cluster ConfigMap
+        if configmap_api.get(&cluster_configmap_name).await.is_err() {
             missing_resources.push("ConfigMap");
         }
 

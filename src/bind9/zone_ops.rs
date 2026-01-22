@@ -497,6 +497,7 @@ pub async fn server_status(
 /// * `server` - API endpoint (e.g., "bind9-primary-api:8080")
 /// * `key_data` - RNDC key data (used for allow-update configuration)
 /// * `soa_record` - SOA record data
+/// * `name_servers` - Optional list of ALL authoritative nameserver hostnames (including primary from SOA)
 /// * `name_server_ips` - Optional map of nameserver hostnames to IP addresses for glue records
 /// * `secondary_ips` - Optional list of secondary server IPs for also-notify and allow-transfer
 ///
@@ -520,6 +521,7 @@ pub async fn add_primary_zone(
     server: &str,
     key_data: &RndcKeyData,
     soa_record: &crate::crd::SOARecord,
+    name_servers: Option<&[String]>,
     name_server_ips: Option<&HashMap<String, String>>,
     secondary_ips: Option<&[String]>,
 ) -> Result<bool> {
@@ -530,6 +532,15 @@ pub async fn add_primary_zone(
     // The bindcar API will handle zone file generation and allow-update configuration
     let base_url = build_api_url(server);
     let url = format!("{base_url}/api/v1/zones");
+
+    // Build list of all authoritative nameservers
+    // Priority: use provided name_servers list if available, otherwise fall back to primary NS from SOA
+    let all_name_servers = if let Some(ns_list) = name_servers {
+        ns_list.to_vec()
+    } else {
+        // Fallback: only primary NS from SOA
+        vec![soa_record.primary_ns.clone()]
+    };
 
     // Create zone configuration using SOA record from DNSZone spec
     let zone_config = ZoneConfig {
@@ -543,7 +554,7 @@ pub async fn add_primary_zone(
             expire: soa_record.expire as u32,
             negative_ttl: soa_record.negative_ttl as u32,
         },
-        name_servers: vec![soa_record.primary_ns.clone()],
+        name_servers: all_name_servers,
         name_server_ips: name_server_ips.cloned().unwrap_or_default(),
         records: vec![],
         // Configure zone transfers to secondary servers
@@ -818,6 +829,7 @@ pub async fn add_secondary_zone(
 /// * `server` - API endpoint (e.g., "bind9-primary-api:8080" or "bind9-secondary-api:8080")
 /// * `key_data` - RNDC key data
 /// * `soa_record` - Optional SOA record data (required for primary zones, ignored for secondary)
+/// * `name_servers` - Optional list of ALL authoritative nameserver hostnames (for primary zones)
 /// * `name_server_ips` - Optional map of nameserver hostnames to IP addresses (for primary zones)
 /// * `secondary_ips` - Optional list of secondary server IPs for also-notify and allow-transfer (for primary zones)
 /// * `primary_ips` - Optional list of primary server IPs to transfer from (for secondary zones)
@@ -843,6 +855,7 @@ pub async fn add_zones(
     server: &str,
     key_data: &RndcKeyData,
     soa_record: Option<&crate::crd::SOARecord>,
+    name_servers: Option<&[String]>,
     name_server_ips: Option<&HashMap<String, String>>,
     secondary_ips: Option<&[String]>,
     primary_ips: Option<&[String]>,
@@ -861,6 +874,7 @@ pub async fn add_zones(
                 server,
                 key_data,
                 soa,
+                name_servers,
                 name_server_ips,
                 secondary_ips,
             )

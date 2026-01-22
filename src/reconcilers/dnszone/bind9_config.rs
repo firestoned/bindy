@@ -51,7 +51,7 @@ pub async fn configure_zone_on_instances(
     zone_manager: &crate::bind9::Bind9Manager,
     status_updater: &mut crate::reconcilers::status::DNSZoneStatusUpdater,
     instance_refs: &[InstanceReference],
-    unreconciled_instances: &[InstanceReference],
+    _unreconciled_instances: &[InstanceReference],
 ) -> Result<(usize, usize)> {
     let client = ctx.client.clone();
     let namespace = dnszone.namespace().unwrap_or_default();
@@ -111,13 +111,14 @@ pub async fn configure_zone_on_instances(
 
     // Add/update zone on all primary instances
     // Primary instances are marked as reconciled inside add_dnszone() immediately after success
-    // PHASE 2 OPTIMIZATION: Only process instances that need reconciliation (lastReconciledAt == None)
+    // CRITICAL: We pass ALL instances (not just unreconciled ones) to ensure zones are recreated
+    // after pod restarts. The add_zones() function is idempotent (checks zone_exists first).
     let primary_count = match super::add_dnszone(
         ctx.clone(),
         dnszone.clone(),
         zone_manager,
         status_updater,
-        unreconciled_instances,
+        instance_refs,
     )
     .await
     {
@@ -157,14 +158,15 @@ pub async fn configure_zone_on_instances(
 
     // Add/update zone on all secondary instances with primaries configured
     // Secondary instances are marked as reconciled inside add_dnszone_to_secondaries() immediately after success
-    // PHASE 2 OPTIMIZATION: Only process instances that need reconciliation (lastReconciledAt == None)
+    // CRITICAL: We pass ALL instances (not just unreconciled ones) to ensure zones are recreated
+    // after pod restarts. The add_zones() function is idempotent (checks zone_exists first).
     let secondary_count = match super::add_dnszone_to_secondaries(
         ctx.clone(),
         dnszone.clone(),
         zone_manager,
         &primary_ips,
         status_updater,
-        unreconciled_instances,
+        instance_refs,
     )
     .await
     {

@@ -21,6 +21,12 @@ spec:
     retry: integer
     expire: integer
     negativeTtl: integer
+  nameServers:              # Optional (v0.4.0+)
+    - hostname: string
+      ipv4Address: string   # Optional
+      ipv6Address: string   # Optional
+  nameServerIps:            # DEPRECATED: use nameServers instead
+    hostname: ipAddress
   ttl: integer
 ```
 
@@ -207,6 +213,145 @@ soaRecord:
 - 3600 (1 hour) - Shorter caching
 - 300 (5 minutes) - Very short for dynamic zones
 
+### nameServers
+**Type**: array of objects
+**Required**: No
+**Since**: v0.4.0
+
+List of authoritative nameservers for this zone. NS records are automatically generated for all entries, eliminating the need to create manual NSRecord CRs for zone-level nameservers.
+
+```yaml
+spec:
+  nameServers:
+    - hostname: ns2.example.com.
+      ipv4Address: "192.0.2.2"
+    - hostname: ns3.example.com.
+      ipv4Address: "192.0.2.3"
+      ipv6Address: "2001:db8::3"
+    - hostname: ns4.external-provider.net.
+```
+
+**Automatic Record Generation**:
+- **NS Records**: Auto-generated for ALL nameservers (including primary from `soaRecord.primaryNs`)
+- **Glue Records**: A/AAAA records auto-generated for in-zone nameservers with IP addresses
+- **No Manual CRs**: No need to create separate NSRecord resources for zone-level nameservers
+
+**How It Works**:
+1. Operator reads `soaRecord.primaryNs` (e.g., ns1.example.com)
+2. Operator reads `nameServers` list (e.g., ns2, ns3, ns4)
+3. During zone reconciliation, NS records are added via dynamic DNS update (RFC 2136)
+4. Glue records (A/AAAA) are created for nameservers within the zone's domain
+
+**Result**:
+```
+@ IN NS ns1.example.com.  ; From soaRecord.primaryNs
+@ IN NS ns2.example.com.  ; From nameServers[0]
+@ IN NS ns3.example.com.  ; From nameServers[1]
+@ IN NS ns4.external-provider.net.  ; From nameServers[2]
+
+; Glue records (only for in-zone nameservers with IPs)
+ns2.example.com. IN A 192.0.2.2
+ns3.example.com. IN A 192.0.2.3
+ns3.example.com. IN AAAA 2001:db8::3
+```
+
+#### nameServers[].hostname
+**Type**: string
+**Required**: Yes
+
+Fully qualified domain name of the nameserver.
+
+```yaml
+nameServers:
+  - hostname: ns2.example.com.
+```
+
+**Requirements**:
+- Must be a fully qualified domain name (FQDN)
+- Must end with a dot (.)
+- Can be in-zone (e.g., ns2.example.com for zone example.com) or out-of-zone (e.g., ns.external.net)
+
+#### nameServers[].ipv4Address
+**Type**: string
+**Required**: No
+
+IPv4 address for glue record generation.
+
+```yaml
+nameServers:
+  - hostname: ns2.example.com.
+    ipv4Address: "192.0.2.2"
+```
+
+**When Required**:
+- Required when the nameserver is within the zone's own domain (in-zone nameserver)
+- Optional for out-of-zone nameservers (no glue records needed)
+
+**Format**:
+- Must be a valid IPv4 address in dotted-decimal notation
+- Example: "192.0.2.2", "10.0.0.1"
+
+**Glue Record Generation**:
+When provided for an in-zone nameserver, automatically generates:
+```
+ns2.example.com. IN A 192.0.2.2
+```
+
+#### nameServers[].ipv6Address
+**Type**: string
+**Required**: No
+
+IPv6 address for glue record generation (AAAA record).
+
+```yaml
+nameServers:
+  - hostname: ns2.example.com.
+    ipv4Address: "192.0.2.2"
+    ipv6Address: "2001:db8::2"
+```
+
+**Format**:
+- Must be a valid IPv6 address
+- Example: "2001:db8::2", "fd00::1"
+
+**Glue Record Generation**:
+When provided for an in-zone nameserver, automatically generates:
+```
+ns2.example.com. IN AAAA 2001:db8::2
+```
+
+**Dual-Stack Nameservers**:
+You can provide both IPv4 and IPv6 addresses for dual-stack support:
+```yaml
+nameServers:
+  - hostname: ns2.example.com.
+    ipv4Address: "192.0.2.2"
+    ipv6Address: "2001:db8::2"
+```
+
+This generates both A and AAAA glue records.
+
+### nameServerIps (Deprecated)
+**Type**: map of string to string
+**Required**: No
+**Deprecated**: Since v0.4.0, use `nameServers` instead
+
+> **⚠️ DEPRECATED**: This field is deprecated and will be removed in v1.0.0. Use `nameServers` instead.
+
+Old format for specifying nameserver IP addresses for glue records. The field name was misleading as it suggests only glue records, when it actually defines authoritative nameservers.
+
+```yaml
+# OLD FORMAT (deprecated)
+spec:
+  nameServerIps:
+    ns2.example.com: "192.0.2.2"
+    ns3.example.com: "192.0.2.3"
+```
+
+**Migration**: See [Migration Guide](../operations/migration-guide.md#migrating-from-nameserverips-to-nameservers) for how to migrate to `nameServers`.
+
+**Backward Compatibility**: Existing zones using `nameServerIps` will continue to work with a deprecation warning in operator logs.
+
 ### ttl
 **Type**: integer (32-bit)
 **Required**: No
@@ -312,6 +457,38 @@ spec:
     expire: 604800
     negativeTtl: 300  # Short negative cache
 ```
+
+### Zone with Multiple Nameservers
+
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: example-com-multi-ns
+  namespace: dns-system
+spec:
+  zoneName: example.com
+  clusterRef: production-dns
+  soaRecord:
+    primaryNs: ns1.example.com.
+    adminEmail: admin.example.com.
+    serial: 2025012101
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTtl: 86400
+  # Multiple nameservers with automatic NS record generation
+  nameServers:
+    - hostname: ns2.example.com.
+      ipv4Address: "192.0.2.2"
+    - hostname: ns3.example.com.
+      ipv4Address: "192.0.2.3"
+      ipv6Address: "2001:db8::3"  # Dual-stack nameserver
+    - hostname: ns4.external-provider.net.  # Out-of-zone NS
+  ttl: 3600
+```
+
+**Result**: Automatically generates 4 NS records (ns1 from SOA + 3 from nameServers) and glue records for in-zone nameservers.
 
 ### Reverse DNS Zone
 

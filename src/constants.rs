@@ -182,6 +182,16 @@ pub const BIND9_NONROOT_UID: i64 = 101;
 pub const DEFAULT_BINDCAR_IMAGE: &str = "ghcr.io/firestoned/bindcar:v0.5.1";
 
 // ============================================================================
+// Container Name Constants
+// ============================================================================
+
+/// Name of the BIND9 container in the pod
+pub const CONTAINER_NAME_BIND9: &str = "bind9";
+
+/// Name of the bindcar API sidecar container in the pod
+pub const CONTAINER_NAME_BINDCAR: &str = "api";
+
+// ============================================================================
 // Runtime Constants
 // ============================================================================
 
