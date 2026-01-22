@@ -344,9 +344,264 @@ If you need to rollback to v0.2.x:
    kubectl set image deployment/bindy bindy=ghcr.io/firestoned/bindy:v0.2.x -n dns-system
    ```
 
+## Migrating from nameServerIps to nameServers (v0.4.0)
+
+**What Changed:** The `nameServerIps` field is deprecated in favor of the new `nameServers` field, which provides better structure and clarity.
+
+### Why This Change?
+
+**Problems with `nameServerIps`:**
+1. **Misleading name:** Suggests only glue records, but actually defines authoritative nameservers
+2. **Limited structure:** HashMap format doesn't support IPv6 addresses
+3. **No IPv6 glue records:** Can't specify AAAA records for nameservers
+4. **Unclear purpose:** Name doesn't convey that NS records are auto-generated
+
+**Benefits of `nameServers`:**
+1. **Clear intent:** Explicitly represents authoritative nameservers
+2. **Structured data:** Separate fields for hostname, IPv4, and IPv6
+3. **Dual-stack support:** Both IPv4 and IPv6 glue records
+4. **Better documentation:** Field name matches DNS terminology
+
+### Old Format (Deprecated)
+
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: example-com
+  namespace: dns-system
+spec:
+  zoneName: example.com
+  clusterRef: production-dns
+  soaRecord:
+    primaryNs: ns1.example.com.
+    adminEmail: admin.example.com.
+    serial: 2025012101
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTtl: 86400
+  # OLD: nameServerIps (deprecated in v0.4.0)
+  nameServerIps:
+    ns2.example.com.: "192.0.2.2"
+    ns3.example.com.: "192.0.2.3"
+  ttl: 3600
+```
+
+### New Format (v0.4.0+)
+
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: example-com
+  namespace: dns-system
+spec:
+  zoneName: example.com
+  clusterRef: production-dns
+  soaRecord:
+    primaryNs: ns1.example.com.
+    adminEmail: admin.example.com.
+    serial: 2025012101
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTtl: 86400
+  # NEW: nameServers (v0.4.0+)
+  nameServers:
+    - hostname: ns2.example.com.
+      ipv4Address: "192.0.2.2"
+    - hostname: ns3.example.com.
+      ipv4Address: "192.0.2.3"
+      ipv6Address: "2001:db8::3"  # Now supports IPv6!
+  ttl: 3600
+```
+
+### Migration Steps
+
+#### 1. Update CRDs to v0.4.0+
+
+```bash
+# Update CRDs from latest release
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
+
+# Or from source
+make crds-combined
+kubectl replace --force -f deploy/crds.yaml
+```
+
+#### 2. Identify Zones Using nameServerIps
+
+```bash
+# Find all DNSZones with nameServerIps field
+kubectl get dnszones -A -o json | jq -r '.items[] | select(.spec.nameServerIps != null) | "\(.metadata.namespace)/\(.metadata.name)"'
+```
+
+#### 3. Convert Each Zone
+
+For each zone found, update the spec:
+
+**Manual Conversion:**
+
+```bash
+# Edit the zone
+kubectl edit dnszone example-com -n dns-system
+```
+
+Then change the format from HashMap to array:
+
+```yaml
+# Remove old field
+nameServerIps:
+  ns2.example.com.: "192.0.2.2"
+  ns3.example.com.: "192.0.2.3"
+
+# Add new field
+nameServers:
+  - hostname: ns2.example.com.
+    ipv4Address: "192.0.2.2"
+  - hostname: ns3.example.com.
+    ipv4Address: "192.0.2.3"
+```
+
+**Automated Conversion Script:**
+
+```bash
+#!/bin/bash
+# migrate-nameserverips.sh
+
+kubectl get dnszones -A -o json | jq -r '.items[] | select(.spec.nameServerIps != null) | "\(.metadata.namespace) \(.metadata.name)"' | while read ns name; do
+  echo "Migrating DNSZone $ns/$name"
+
+  # Get current nameServerIps as JSON
+  old_ips=$(kubectl get dnszone "$name" -n "$ns" -o json | jq -c '.spec.nameServerIps // {}')
+
+  # Convert to new nameServers format
+  new_servers=$(echo "$old_ips" | jq -c 'to_entries | map({hostname: .key, ipv4Address: .value})')
+
+  # Patch the DNSZone
+  kubectl patch dnszone "$name" -n "$ns" --type=json -p "[
+    {\"op\": \"add\", \"path\": \"/spec/nameServers\", \"value\": $new_servers},
+    {\"op\": \"remove\", \"path\": \"/spec/nameServerIps\"}
+  ]"
+
+  echo "  ✓ Migrated $ns/$name"
+done
+```
+
+#### 4. Add IPv6 Glue Records (Optional)
+
+If you have dual-stack nameservers, add IPv6 addresses:
+
+```yaml
+nameServers:
+  - hostname: ns2.example.com.
+    ipv4Address: "192.0.2.2"
+    ipv6Address: "2001:db8::2"  # Add IPv6 glue record
+```
+
+#### 5. Verify Migration
+
+```bash
+# Check that zones no longer use nameServerIps
+kubectl get dnszones -A -o json | jq '.items[] | select(.spec.nameServerIps != null) | "\(.metadata.namespace)/\(.metadata.name)"'
+
+# Should return nothing if migration is complete
+
+# Verify nameServers field is present
+kubectl get dnszone example-com -n dns-system -o jsonpath='{.spec.nameServers}'
+```
+
+#### 6. Check Operator Logs
+
+After migration, ensure no deprecation warnings:
+
+```bash
+kubectl logs -n dns-system -l app=bindy-operator -f | grep nameServerIps
+```
+
+You should NOT see any deprecation warnings after migration.
+
+### Backward Compatibility
+
+**Good News:** Existing zones using `nameServerIps` will continue to work in v0.4.0+. The operator automatically converts the old format internally.
+
+```rust
+// In src/reconcilers/dnszone.rs
+fn get_effective_name_servers(spec: &DNSZoneSpec) -> Option<Vec<NameServer>> {
+    if let Some(ref new_servers) = spec.name_servers {
+        // New field takes precedence
+        return Some(new_servers.clone());
+    }
+
+    // Fallback to deprecated field with automatic conversion
+    if let Some(ref old_ips) = spec.name_server_ips {
+        warn!("DNSZone uses deprecated `nameServerIps` field. Migrate to `nameServers`.");
+        let servers: Vec<NameServer> = old_ips
+            .iter()
+            .map(|(hostname, ip)| NameServer {
+                hostname: hostname.clone(),
+                ipv4_address: Some(ip.clone()),
+                ipv6_address: None,
+            })
+            .collect();
+        return Some(servers);
+    }
+
+    None
+}
+```
+
+**Deprecation Timeline:**
+- **v0.4.0**: `nameServerIps` deprecated, still functional with warnings
+- **v1.0.0**: `nameServerIps` will be removed entirely
+
+### Troubleshooting
+
+#### Deprecation Warnings in Logs
+
+**Symptom:** Operator logs show warnings about `nameServerIps`:
+
+```
+WARN DNSZone uses deprecated `nameServerIps` field. Migrate to `nameServers`.
+```
+
+**Solution:** Follow migration steps above to convert to `nameServers` format.
+
+#### Zone Still Has Both Fields
+
+**Symptom:** Zone has both `nameServers` and `nameServerIps` defined.
+
+**Diagnosis:**
+
+```bash
+kubectl get dnszone example-com -n dns-system -o yaml | grep -A 10 "nameServer"
+```
+
+**Solution:** Remove `nameServerIps` field - the new `nameServers` takes precedence:
+
+```bash
+kubectl patch dnszone example-com -n dns-system --type=json -p '[{"op": "remove", "path": "/spec/nameServerIps"}]'
+```
+
+#### Missing IPv6 Glue Records
+
+**Symptom:** Dual-stack nameservers only have A records, no AAAA records.
+
+**Solution:** Add `ipv6Address` to nameServers entries:
+
+```yaml
+nameServers:
+  - hostname: ns2.example.com.
+    ipv4Address: "192.0.2.2"
+    ipv6Address: "2001:db8::2"  # Add this
+```
+
 ## See Also
 
 - [DNSZone Concepts](../concepts/dnszone.md) - Detailed explanation of label selectors
+- [DNSZone Specification](../reference/dnszone-spec.md) - Complete field reference
+- [Multi-Nameserver Example](../../examples/dns-zone-multi-nameserver.yaml) - Working example
 - [Architecture Overview](../guide/architecture.md) - Event-driven reconciliation
 - [API Reference](../reference/api.md) - Complete CRD schemas
 - [GitHub Release Notes](https://github.com/firestoned/bindy/releases/tag/v0.3.0) - Full changelog

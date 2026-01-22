@@ -163,6 +163,7 @@ mod tests {
                 "localhost:8080",
                 &key_data,
                 Some(&soa_record),
+                None, // no name_servers
                 None, // no name_server_ips
                 None, // no secondary IPs
                 None, // no primary IPs for primary zones
@@ -182,6 +183,7 @@ mod tests {
                 "localhost:8080",
                 &key_data,
                 Some(&soa_record),
+                None, // no name_servers
                 None, // no name_server_ips
                 None, // no secondary IPs
                 None, // no primary IPs for primary zones

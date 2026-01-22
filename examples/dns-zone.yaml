@@ -26,8 +26,13 @@ spec:
             values:
               - primary
               - secondary
-  nameServerIps:
-    ns1.example.com.: 192.168.0.60
+  nameServers:
+    - hostname: ns1.example.com.
+      ipv4Address: "192.168.0.60"
+    - hostname: ns2.example.com.
+      ipv4Address: "192.168.0.61"
+    - hostname: ns3.example.com.
+      ipv4Address: "192.168.0.62"
   recordsFrom:
     - selector:
         matchLabels:
@@ -35,7 +40,7 @@ spec:
   soaRecord:
     primaryNs: ns1.example.com.
     adminEmail: admin.example.com.  # Note: @ replaced with .
-    serial: 2024010101
+    serial: 2025012101
     refresh: 3600
     retry: 600
     expire: 604800

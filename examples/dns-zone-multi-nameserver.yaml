@@ -1,0 +1,103 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# Example: Multi-Nameserver DNS Zone Configuration
+#
+# This example demonstrates how to configure a DNS zone with multiple authoritative nameservers
+# using the new `nameServers` field. NS records are automatically generated for all nameservers
+# listed in this field, including glue records (A/AAAA) for in-zone nameservers.
+#
+# Key Features:
+# - Auto-generates NS records for all nameservers in the zone
+# - Supports both IPv4 and IPv6 glue records
+# - Handles out-of-zone nameservers (no glue records needed)
+# - Primary nameserver (from soaRecord.primaryNs) is always included automatically
+---
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: example-com-multi-ns
+  namespace: dns-system
+  labels:
+    environment: prod
+    team: platform
+    zone: example.com
+spec:
+  zoneName: example.com
+
+  # Use label selector to find Bind9Instances
+  bind9InstancesFrom:
+    - selector:
+        matchLabels:
+          app.kubernetes.io/part-of: bindy
+          bindy.firestoned.io/cluster: production-dns
+          bindy.firestoned.io/managed-by: Bind9Cluster
+        matchExpressions:
+          - key: bindy.firestoned.io/role
+            operator: In
+            values:
+              - primary
+              - secondary
+
+  # SOA record - defines the primary nameserver
+  # The primary nameserver (ns1.example.com.) will automatically get an NS record
+  soaRecord:
+    primaryNs: ns1.example.com.     # Primary authoritative nameserver
+    adminEmail: admin.example.com.  # Zone administrator email (@ replaced with .)
+    serial: 2025012101              # Zone serial number (YYYYMMDDNN format)
+    refresh: 3600                   # Secondary refresh interval (1 hour)
+    retry: 600                      # Retry interval on failed refresh (10 minutes)
+    expire: 604800                  # Zone expiration time (7 days)
+    negativeTtl: 86400              # Negative caching TTL (24 hours)
+
+  # nameServers: List of additional authoritative nameservers for this zone
+  # NS records are auto-generated for ALL entries during zone reconciliation
+  # Glue records (A/AAAA) are auto-generated for in-zone nameservers with IP addresses
+  nameServers:
+    # In-zone nameserver with IPv4 glue record
+    # This generates:
+    #   @ IN NS ns2.example.com.
+    #   ns2.example.com. IN A 192.0.2.2
+    - hostname: ns2.example.com.
+      ipv4Address: "192.0.2.2"
+
+    # In-zone nameserver with both IPv4 and IPv6 glue records
+    # This generates:
+    #   @ IN NS ns3.example.com.
+    #   ns3.example.com. IN A 192.0.2.3
+    #   ns3.example.com. IN AAAA 2001:db8::3
+    - hostname: ns3.example.com.
+      ipv4Address: "192.0.2.3"
+      ipv6Address: "2001:db8::3"
+
+    # Out-of-zone nameserver (no glue records needed)
+    # This generates:
+    #   @ IN NS ns4.external-provider.net.
+    # No glue records are created because the nameserver is outside the zone
+    - hostname: ns4.external-provider.net.
+
+  # Use label selector to find DNS records that belong to this zone
+  recordsFrom:
+    - selector:
+        matchLabels:
+          bindy.firestoned.io/zone: example.com
+
+  # Default TTL for records in this zone
+  ttl: 3600
+
+---
+# Result: The zone will have the following NS records auto-generated:
+#
+# Zone: example.com
+# NS Records:
+#   @ IN NS ns1.example.com.  ; From soaRecord.primaryNs
+#   @ IN NS ns2.example.com.  ; From nameServers[0]
+#   @ IN NS ns3.example.com.  ; From nameServers[1]
+#   @ IN NS ns4.external-provider.net.  ; From nameServers[2]
+#
+# Glue Records (only for in-zone nameservers with IP addresses):
+#   ns2.example.com. IN A 192.0.2.2
+#   ns3.example.com. IN A 192.0.2.3
+#   ns3.example.com. IN AAAA 2001:db8::3
+#
+# No manual NSRecord CRs needed for zone-level authoritative nameservers!
