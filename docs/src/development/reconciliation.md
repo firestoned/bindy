@@ -13,10 +13,10 @@ All reconcilers implement status change detection to prevent tight reconciliatio
 - Status doesn't exist yet
 
 This optimization is implemented in:
-- `Bind9Cluster` reconciler ([src/reconcilers/bind9cluster.rs:394-430](../../../src/reconcilers/bind9cluster.rs#L394-L430))
-- `Bind9Instance` reconciler ([src/reconcilers/bind9instance.rs:736-758](../../../src/reconcilers/bind9instance.rs#L736-L758))
-- `DNSZone` reconciler ([src/reconcilers/dnszone.rs:535-565](../../../src/reconcilers/dnszone.rs#L535-L565))
-- All record reconcilers ([src/reconcilers/records.rs:1032-1072](../../../src/reconcilers/records.rs#L1032-L1072))
+- `Bind9Cluster` reconciler ([src/reconcilers/bind9cluster.rs:394-430](https://github.com/firestoned/bindy/blob/main/src/reconcilers/bind9cluster.rs#L394-L430))
+- `Bind9Instance` reconciler ([src/reconcilers/bind9instance.rs:736-758](https://github.com/firestoned/bindy/blob/main/src/reconcilers/bind9instance.rs#L736-L758))
+- `DNSZone` reconciler ([src/reconcilers/dnszone.rs:535-565](https://github.com/firestoned/bindy/blob/main/src/reconcilers/dnszone.rs#L535-L565))
+- All record reconcilers ([src/reconcilers/records.rs:1032-1072](https://github.com/firestoned/bindy/blob/main/src/reconcilers/records.rs#L1032-L1072))
 
 ## Bind9Instance Reconciliation
 
@@ -52,23 +52,23 @@ DNSZone reconciliation uses granular status updates to provide real-time progres
 The DNSZone reconciler has been refactored into a modular architecture for better maintainability and testability. As of v0.3.0, the reconciler is organized into focused modules:
 
 **Main Orchestration:**
-- [dnszone.rs](../../../src/reconcilers/dnszone.rs) - Main reconciliation entry point and orchestration logic
+- [dnszone.rs](https://github.com/firestoned/bindy/blob/main/src/reconcilers/dnszone.rs) - Main reconciliation entry point and orchestration logic
 
 **Core Modules:**
-- [dnszone/validation.rs](../../../src/reconcilers/dnszone/validation.rs) - Zone validation (duplicate detection, selector matching)
-- [dnszone/discovery.rs](../../../src/reconcilers/dnszone/discovery.rs) - Instance and resource discovery helpers
-- [dnszone/primary.rs](../../../src/reconcilers/dnszone/primary.rs) - Primary zone configuration logic
-- [dnszone/secondary.rs](../../../src/reconcilers/dnszone/secondary.rs) - Secondary zone configuration logic
+- [dnszone/validation.rs](https://github.com/firestoned/bindy/blob/main/src/reconcilers/dnszone/validation.rs) - Zone validation (duplicate detection, selector matching)
+- [dnszone/discovery.rs](https://github.com/firestoned/bindy/blob/main/src/reconcilers/dnszone/discovery.rs) - Instance and resource discovery helpers
+- [dnszone/primary.rs](https://github.com/firestoned/bindy/blob/main/src/reconcilers/dnszone/primary.rs) - Primary zone configuration logic
+- [dnszone/secondary.rs](https://github.com/firestoned/bindy/blob/main/src/reconcilers/dnszone/secondary.rs) - Secondary zone configuration logic
 
 **Support Modules:**
-- [dnszone/bind9_config.rs](../../../src/reconcilers/dnszone/bind9_config.rs) - BIND9 configuration generation
-- [dnszone/status_helpers.rs](../../../src/reconcilers/dnszone/status_helpers.rs) - Status update helpers
-- [dnszone/helpers.rs](../../../src/reconcilers/dnszone/helpers.rs) - Shared utility functions
-- [dnszone/cleanup.rs](../../../src/reconcilers/dnszone/cleanup.rs) - Resource cleanup and finalizer logic
+- [dnszone/bind9_config.rs](https://github.com/firestoned/bindy/blob/main/src/reconcilers/dnszone/bind9_config.rs) - BIND9 configuration generation
+- [dnszone/status_helpers.rs](https://github.com/firestoned/bindy/blob/main/src/reconcilers/dnszone/status_helpers.rs) - Status update helpers
+- [dnszone/helpers.rs](https://github.com/firestoned/bindy/blob/main/src/reconcilers/dnszone/helpers.rs) - Shared utility functions
+- [dnszone/cleanup.rs](https://github.com/firestoned/bindy/blob/main/src/reconcilers/dnszone/cleanup.rs) - Resource cleanup and finalizer logic
 
 **Shared:**
-- [dnszone/types.rs](../../../src/reconcilers/dnszone/types.rs) - Common types (DuplicateZoneInfo, EndpointAddress, etc.)
-- [dnszone/constants.rs](../../../src/reconcilers/dnszone/constants.rs) - Shared constants (finalizer names, timeouts)
+- [dnszone/types.rs](https://github.com/firestoned/bindy/blob/main/src/reconcilers/dnszone/types.rs) - Common types (DuplicateZoneInfo, EndpointAddress, etc.)
+- [dnszone/constants.rs](https://github.com/firestoned/bindy/blob/main/src/reconcilers/dnszone/constants.rs) - Shared constants (finalizer names, timeouts)
 
 **Benefits:**
 - **Code Organization**: Related functionality grouped logically (validation, discovery, configuration)

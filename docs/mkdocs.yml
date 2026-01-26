@@ -1,0 +1,348 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
+# Bindy Documentation - MkDocs Material Configuration
+
+site_name: Bindy - BIND9 DNS Operator for Kubernetes
+site_url: https://firestoned.github.io/bindy/
+site_description: A high-performance Kubernetes operator written in Rust using kube-rs that manages BIND9 DNS infrastructure through Custom Resource Definitions (CRDs).
+site_author: Erick Bourgeois
+
+# Repository
+repo_url: https://github.com/firestoned/bindy
+repo_name: firestoned/bindy
+edit_uri: edit/main/docs/src/
+
+# Documentation source directory (relative to mkdocs.yml location)
+docs_dir: src
+site_dir: site
+
+# Copyright
+copyright: Copyright &copy; 2025 Erick Bourgeois, firestoned
+
+# Configuration
+theme:
+  name: material
+  language: en
+
+  # Color palette with dark mode support
+  palette:
+    # Light mode
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+
+    # Dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+  # Font configuration
+  font:
+    text: Roboto
+    code: Roboto Mono
+
+  # Features
+  features:
+    # Navigation
+    - navigation.instant       # Instant loading (SPA-like)
+    - navigation.instant.progress  # Show loading progress
+    - navigation.tracking      # Update URL with active anchor
+    - navigation.tabs          # Top-level tabs
+    - navigation.tabs.sticky   # Sticky tabs
+    - navigation.sections      # Expand sections in sidebar
+    - navigation.expand        # Expand all sections by default
+    - navigation.path          # Show breadcrumb path
+    - navigation.indexes       # Section index pages
+    - navigation.top           # Back to top button
+
+    # Table of contents
+    - toc.follow               # TOC follows scroll
+    - toc.integrate            # Integrate TOC into navigation (can disable for right sidebar)
+
+    # Search
+    - search.suggest           # Search suggestions
+    - search.highlight         # Highlight search terms
+    - search.share             # Share search results
+
+    # Header
+    - header.autohide          # Auto-hide header on scroll
+
+    # Content
+    - content.code.copy        # Copy button for code blocks
+    - content.code.annotate    # Code annotations
+    - content.tabs.link        # Link content tabs
+    - content.tooltips         # Improved tooltips
+
+  # Logo and favicon
+  icon:
+    repo: fontawesome/brands/github
+    edit: material/pencil
+    view: material/eye
+
+# Plugins
+plugins:
+  # Search with advanced features
+  - search:
+      lang: en
+      separator: '[\s\-,:!=\[\]()"/]+|(?!\b)(?=[A-Z][a-z])|\.(?!\d)|&[lg]t;'
+
+  # Git revision date (last updated)
+  - git-revision-date-localized:
+      enable_creation_date: true
+      type: timeago
+      fallback_to_build_date: true
+      enable_git_follow: false
+
+  # Minification for production
+  # Can be enabled if needed (no longer conflicts with Mermaid)
+  # - minify:
+  #     minify_html: true
+  #     minify_js: true
+  #     minify_css: true
+  #     htmlmin_opts:
+  #       remove_comments: true
+  #     cache_safe: true
+
+# Extensions
+markdown_extensions:
+  # Python Markdown
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      permalink_title: Anchor link to this section
+      toc_depth: 3
+
+  # PyMdown Extensions
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_div_format
+  - pymdownx.tabbed:
+      alternate_style: true
+      combine_header_slug: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+# Extra CSS
+# Note: Paths are relative to docs_dir (src/)
+extra_css:
+  - stylesheets/extra.css
+
+# Extra JavaScript
+# Note: Paths are relative to docs_dir (src/)
+extra_javascript:
+  - https://unpkg.com/mermaid@11.12.2/dist/mermaid.min.js
+  - javascripts/mermaid-init.js
+
+# Extra configuration
+extra:
+  # Social links
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/firestoned/bindy
+      name: Bindy on GitHub
+
+  # Analytics (optional - uncomment if needed)
+  # analytics:
+  #   provider: google
+  #   property: G-XXXXXXXXXX
+
+  # Version selector (for future use with mike)
+  # version:
+  #   provider: mike
+
+  # Generator notice
+  generator: true
+
+# Navigation structure
+# This is converted from docs/src/SUMMARY.md
+nav:
+  - Home: index.md
+
+  - Getting Started:
+      - Quick Start: installation/quickstart.md
+      - Step-by-Step Guide: installation/step-by-step.md
+      - Prerequisites: installation/prerequisites.md
+      - Installing CRDs: installation/crds.md
+      - Deploying Operator: installation/controller.md
+      - Basic Concepts:
+          - Overview: concepts/index.md
+          - Custom Resources: concepts/crds.md
+          - Bind9Cluster: concepts/bind9cluster.md
+          - ClusterBind9Provider: concepts/clusterbind9provider.md
+          - Bind9Instance: concepts/bind9instance.md
+          - DNSZone: concepts/dnszone.md
+          - DNS Records: concepts/records.md
+
+  - User Guide:
+      - Architecture: guide/architecture.md
+      - Multi-Tenancy: guide/multi-tenancy.md
+      - Choosing Cluster Type: guide/choosing-cluster-type.md
+      - Creating Infrastructure:
+          - Overview: guide/infrastructure.md
+          - Primary Instances: guide/primary-instance.md
+          - Secondary Instances: guide/secondary-instance.md
+          - Multi-Region: guide/multi-region.md
+      - Managing Zones:
+          - Overview: guide/zones.md
+          - Creating Zones: guide/creating-zones.md
+          - Zone Selection: guide/zone-selection.md
+          - Cluster References: guide/label-selectors.md
+          - Zone Configuration: guide/zone-config.md
+      - Managing Records:
+          - Overview: guide/records-guide.md
+          - A Records: guide/a-records.md
+          - AAAA Records: guide/aaaa-records.md
+          - CNAME Records: guide/cname-records.md
+          - MX Records: guide/mx-records.md
+          - TXT Records: guide/txt-records.md
+          - NS Records: guide/ns-records.md
+          - SRV Records: guide/srv-records.md
+          - CAA Records: guide/caa-records.md
+
+  - Operations:
+      - Configuration:
+          - Overview: operations/configuration.md
+          - Environment Variables: operations/env-vars.md
+          - RBAC: operations/rbac.md
+          - Resource Limits: operations/resources.md
+          - High Availability: operations/operator-ha.md
+      - Monitoring:
+          - Overview: operations/monitoring.md
+          - Status Conditions: operations/status.md
+          - Logging: operations/logging.md
+          - Log Levels: operations/log-level-change.md
+          - Metrics: operations/metrics.md
+      - Troubleshooting:
+          - Overview: operations/troubleshooting.md
+          - Error Handling: operations/error-handling.md
+          - Common Issues: operations/common-issues.md
+          - DNSZone Migration: operations/dnszone-migration-troubleshooting.md
+          - Debugging: operations/debugging.md
+          - FAQ: operations/faq.md
+      - Migration:
+          - v0.2.x to v0.3.x: operations/migration-guide.md
+          - DNSZone Phase 5-6: operations/migration-guide-phase5-6.md
+
+  - Advanced Topics:
+      - Replacing CoreDNS: advanced/coredns-replacement.md
+      - High Availability:
+          - Overview: advanced/ha.md
+          - Zone Transfers: advanced/zone-transfers.md
+          - Replication: advanced/replication.md
+      - Security:
+          - Overview: advanced/security.md
+          - DNSSEC: advanced/dnssec.md
+          - Access Control: advanced/access-control.md
+      - Performance:
+          - Overview: advanced/performance.md
+          - Tuning: advanced/tuning.md
+          - Benchmarking: advanced/benchmarking.md
+      - Integration:
+          - Overview: advanced/integration.md
+          - External DNS: advanced/external-dns.md
+          - Service Discovery: advanced/service-discovery.md
+
+  - Developer Guide:
+      - Development Setup:
+          - Overview: development/setup.md
+          - Building: development/building.md
+          - Testing Guide: development/testing-guide.md
+          - Test Summary: development/TEST_SUMMARY.md
+          - Coverage: development/test-coverage.md
+          - Workflow: development/workflow.md
+          - GitHub Pages: development/github-pages-setup.md
+      - Architecture:
+          - Operator Design: development/controller-design.md
+          - Reconciliation: development/reconciliation.md
+          - Reconciler Hierarchy: architecture/reconciler-hierarchy.md
+          - Label Selector: architecture/label-selector-reconciliation.md
+          - BIND9 Integration: development/bind9-integration.md
+      - Technical Deep Dive:
+          - Architecture Overview: concepts/architecture.md
+          - Architecture Diagrams: concepts/architecture-diagrams.md
+          - Protocol Reference: concepts/architecture-protocols.md
+      - Security:
+          - Security Practices: development/security.md
+      - Contributing:
+          - Overview: development/contributing.md
+          - Code Style: development/code-style.md
+          - PR Process: development/pr-process.md
+
+  - Security & Compliance:
+      - Overview: security-compliance-overview.md
+      - Security:
+          - Architecture: security/architecture.md
+          - Threat Model: security/threat-model.md
+          - Signed Releases: security/signed-releases.md
+          - Incident Response: security/incident-response.md
+          - Vulnerability Management: security/vulnerability-management.md
+          - Build Reproducibility: security/build-reproducibility.md
+          - Secret Access Audit: security/secret-access-audit.md
+          - Audit Log Retention: security/audit-log-retention.md
+          - License Policy: security/license-policy.md
+          - Rate Limiting: security/rate-limiting.md
+      - Compliance:
+          - Overview: compliance/overview.md
+          - SOX 404: compliance/sox-404.md
+          - PCI-DSS: compliance/pci-dss.md
+          - Basel III: compliance/basel-iii.md
+          - SLSA: compliance/slsa.md
+          - NIST Framework: compliance/nist.md
+          - NIST 800-53: compliance/nist-800-53.md
+          - CIS Kubernetes: compliance/cis-kubernetes.md
+          - FIPS 140-2/3: compliance/fips.md
+          - SOX Controls: compliance/sox-controls.md
+          - Crypto Audit: compliance/crypto-audit.md
+
+  - Reference:
+      - Overview: reference/README.md
+      - CRD API Reference: reference/api.md
+      - API Overview: reference/api-reference.md
+      - Labels & Annotations: reference/labels-annotations.md
+      - Specifications:
+          - Bind9Cluster: reference/bind9cluster-spec.md
+          - Bind9Instance: reference/bind9instance-spec.md
+          - DNSZone: reference/dnszone-spec.md
+          - DNS Records: reference/record-specs.md
+          - Status Conditions: reference/status-conditions.md
+      - Examples:
+          - Overview: reference/examples.md
+          - Simple Setup: reference/examples-simple.md
+          - Production Setup: reference/examples-production.md
+          - Multi-Region: reference/examples-multi-region.md
+      - Rustdoc API: rustdoc.md
+      - Changelog: changelog.md
+      - License: license.md

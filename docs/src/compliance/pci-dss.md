@@ -50,7 +50,7 @@ PCI-DSS has 12 requirements organized into 6 control objectives. Bindy complies 
 | **Daily Vulnerability Scanning** | `cargo audit` runs daily at 00:00 UTC | GitHub Actions workflow logs |
 | **CI/CD Scanning** | `cargo audit --deny warnings` fails PR on CRITICAL/HIGH CVEs | GitHub Actions PR checks |
 | **Container Image Scanning** | Trivy scans all container images (CRITICAL, HIGH, MEDIUM, LOW) | GitHub Security tab, SARIF reports |
-| **Remediation SLAs** | CRITICAL (24h), HIGH (7d), MEDIUM (30d), LOW (90d) | [Vulnerability Management Policy](../../security/VULNERABILITY_MANAGEMENT.md) |
+| **Remediation SLAs** | CRITICAL (24h), HIGH (7d), MEDIUM (30d), LOW (90d) | [Vulnerability Management Policy](../security/vulnerability-management.md) |
 | **Automated Alerts** | GitHub Security Advisories create issues automatically | GitHub Security tab |
 
 **Remediation Tracking:**
@@ -64,7 +64,7 @@ gh api repos/firestoned/bindy/security-advisories
 
 # Show remediation SLA compliance
 # (All CRITICAL vulnerabilities patched within 24 hours)
-cat docs/security/VULNERABILITY_MANAGEMENT.md
+cat docs/security/vulnerability-management.md
 ```
 
 **Evidence for QSA (Qualified Security Assessor):**
@@ -111,7 +111,7 @@ cat docs/security/VULNERABILITY_MANAGEMENT.md
 - **Code Review Records**: GitHub PR approval history
 - **Static Analysis**: `cargo clippy` results (all PRs)
 - **Security Training**: `CONTRIBUTING.md` - secure coding guidelines
-- **Threat Model**: `docs/security/THREAT_MODEL.md` - STRIDE analysis
+- **Threat Model**: `docs/security/threat-model.md` - STRIDE analysis
 
 **Compliance Status:** ✅ **PASS** - Rust memory safety, OWASP Top 10 mitigations, secure coding guidelines
 
@@ -169,7 +169,7 @@ gh run list --workflow ci.yaml --limit 100
 |---------|----------------|----------|
 | **Least Privilege RBAC** | Operator minimal RBAC (create/delete secrets for RNDC lifecycle, delete managed resources for cleanup) | `deploy/rbac/clusterrole.yaml` |
 | **Minimal Delete Permissions** | Operator delete limited to managed resources (finalizer cleanup, scaling) | RBAC verification script |
-| **Secret Access Audit Trail** | All secret access logged (7-year retention) | [Secret Access Audit Trail](../../security/SECRET_ACCESS_AUDIT.md) |
+| **Secret Access Audit Trail** | All secret access logged (7-year retention) | [Secret Access Audit Trail](../security/secret-access-audit.md) |
 | **Quarterly Access Reviews** | Security team reviews access every quarter | Access review reports |
 | **Role-Based Access** | Different roles for dev, ops, security teams | GitHub team permissions |
 
@@ -238,7 +238,7 @@ curl -X POST "https://elasticsearch:9200/bindy-audit-*/_search" \
 | Control | Implementation | Evidence |
 |---------|----------------|----------|
 | **Kubernetes Audit Logs** | All API requests logged (CRD ops, secret access) | Kubernetes audit policy |
-| **Secret Access Logging** | All secret get/list/watch logged | `docs/security/SECRET_ACCESS_AUDIT.md` |
+| **Secret Access Logging** | All secret get/list/watch logged | `docs/security/secret-access-audit.md` |
 | **Operator Logs** | All reconciliation loops, DNS updates | Fluent Bit, S3 storage |
 | **Access Attempts** | Failed secret access (403 Forbidden) logged | Kubernetes audit logs |
 | **Authentication Events** | ServiceAccount token usage logged | Kubernetes audit logs |
@@ -410,12 +410,12 @@ aws s3api get-object-lock-configuration --bucket bindy-audit-logs
 
 | Policy Document | Location | Last Updated |
 |----------------|----------|--------------|
-| **Security Policy** | [SECURITY.md](../../../SECURITY.md) | 2025-12-18 |
-| **Threat Model** | [docs/security/THREAT_MODEL.md](../../security/THREAT_MODEL.md) | 2025-12-17 |
-| **Security Architecture** | [docs/security/ARCHITECTURE.md](../../security/ARCHITECTURE.md) | 2025-12-17 |
-| **Incident Response** | [docs/security/INCIDENT_RESPONSE.md](../../security/INCIDENT_RESPONSE.md) | 2025-12-17 |
-| **Vulnerability Management** | [docs/security/VULNERABILITY_MANAGEMENT.md](../../security/VULNERABILITY_MANAGEMENT.md) | 2025-12-15 |
-| **Audit Log Retention** | [docs/security/AUDIT_LOG_RETENTION.md](../../security/AUDIT_LOG_RETENTION.md) | 2025-12-18 |
+| **Security Policy** | [SECURITY.md](https://github.com/firestoned/bindy/blob/mahttps://github.com/firestoned/bindy/blob/main/SECURITY.md) | 2025-12-18 |
+| **Threat Model** | [docs/security/threat-model.md](../security/threat-model.md) | 2025-12-17 |
+| **Security Architecture** | [docs/security/architecture.md](../security/architecture.md) | 2025-12-17 |
+| **Incident Response** | [docs/security/incident-response.md](../security/incident-response.md) | 2025-12-17 |
+| **Vulnerability Management** | [docs/security/vulnerability-management.md](../security/vulnerability-management.md) | 2025-12-15 |
+| **Audit Log Retention** | [docs/security/audit-log-retention.md](../security/audit-log-retention.md) | 2025-12-18 |
 
 **Evidence for QSA:**
 - **Published Policies**: All policies in GitHub repository (public access)
@@ -434,13 +434,13 @@ aws s3api get-object-lock-configuration --bucket bindy-audit-logs
 
 | Incident Type | Playbook | Response Time | SLA |
 |---------------|----------|---------------|-----|
-| **Critical Vulnerability (CVSS 9.0-10.0)** | [P1](../../security/INCIDENT_RESPONSE.md#p1-critical-vulnerability-detected) | < 15 minutes | Patch within 24 hours |
-| **Compromised Operator Pod** | [P2](../../security/INCIDENT_RESPONSE.md#p2-compromised-operator-pod) | < 15 minutes | Isolate within 1 hour |
-| **DNS Service Outage** | [P3](../../security/INCIDENT_RESPONSE.md#p3-dns-service-outage) | < 15 minutes | Restore within 4 hours |
-| **RNDC Key Compromise** | [P4](../../security/INCIDENT_RESPONSE.md#p4-rndc-key-compromise) | < 15 minutes | Rotate keys within 1 hour |
-| **Unauthorized DNS Changes** | [P5](../../security/INCIDENT_RESPONSE.md#p5-unauthorized-dns-changes) | < 1 hour | Revert within 4 hours |
-| **DDoS Attack** | [P6](../../security/INCIDENT_RESPONSE.md#p6-ddos-attack) | < 15 minutes | Mitigate within 1 hour |
-| **Supply Chain Compromise** | [P7](../../security/INCIDENT_RESPONSE.md#p7-supply-chain-compromise) | < 15 minutes | Rebuild within 24 hours |
+| **Critical Vulnerability (CVSS 9.0-10.0)** | [P1](../security/incident-response.md#p1-critical-vulnerability-detected) | < 15 minutes | Patch within 24 hours |
+| **Compromised Operator Pod** | [P2](../security/incident-response.md#p2-compromised-operator-pod) | < 15 minutes | Isolate within 1 hour |
+| **DNS Service Outage** | [P3](../security/incident-response.md#p3-dns-service-outage) | < 15 minutes | Restore within 4 hours |
+| **RNDC Key Compromise** | [P4](../security/incident-response.md#p4-rndc-key-compromise) | < 15 minutes | Rotate keys within 1 hour |
+| **Unauthorized DNS Changes** | [P5](../security/incident-response.md#p5-unauthorized-dns-changes) | < 1 hour | Revert within 4 hours |
+| **DDoS Attack** | [P6](../security/incident-response.md#p6-ddos-attack) | < 15 minutes | Mitigate within 1 hour |
+| **Supply Chain Compromise** | [P7](../security/incident-response.md#p7-supply-chain-compromise) | < 15 minutes | Rebuild within 24 hours |
 
 **Incident Response Process (NIST Lifecycle):**
 
@@ -452,7 +452,7 @@ aws s3api get-object-lock-configuration --bucket bindy-audit-logs
 6. **Post-Incident Activity**: Document lessons learned, improve defenses
 
 **Evidence for QSA:**
-- **Incident Response Playbooks**: `docs/security/INCIDENT_RESPONSE.md`
+- **Incident Response Playbooks**: `docs/security/incident-response.md`
 - **Tabletop Exercise Results**: Semi-annual drill reports
 - **Incident Logs**: S3 `bindy-audit-logs/incidents/` (if any incidents occurred)
 

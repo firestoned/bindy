@@ -28,10 +28,12 @@ kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rb
 kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/rolebinding.yaml
 ```
 
-Or install from main branch:
+Or install from a specific version:
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/rbac/
+kubectl apply -f https://github.com/firestoned/bindy/releases/download/v0.3.0/rbac/serviceaccount.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/download/v0.3.0/rbac/role.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/download/v0.3.0/rbac/rolebinding.yaml
 ```
 
 This creates:
@@ -47,10 +49,10 @@ Install from the latest stable release:
 kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/operator/deployment.yaml
 ```
 
-Or install from main branch:
+Or install from a specific version:
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/operator/deployment.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/download/v0.3.0/operator/deployment.yaml
 ```
 
 ### Wait for Readiness
@@ -163,6 +165,6 @@ If the operator uses excessive memory:
 
 ## Next Steps
 
-- [Quick Start Guide](./quickstart.md) - Create your first DNS zone
+- [Step-by-Step Guide](./step-by-step.md) - Create your first DNS zone
 - [Configuration](../operations/configuration.md) - Advanced configuration
 - [Monitoring](../operations/monitoring.md) - Set up monitoring

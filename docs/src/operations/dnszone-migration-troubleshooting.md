@@ -348,12 +348,12 @@ If issues persist:
 
 3. **Check known issues**:
    - [GitHub Issues](https://github.com/firestoned/bindy/issues)
-   - [CHANGELOG.md](../../CHANGELOG.md)
-   - [DNSZone Consolidation Roadmap](../../roadmaps/dnszone-consolidation-roadmap.md)
+   - [CHANGELOG.md](https://github.com/firestoned/bindy/blob/main/CHANGELOG.md)
+   - [DNSZone Consolidation Roadmap](https://github.com/firestoned/bindy/blob/main/docs/roadmaps/dnszone-consolidation-roadmap.md)
 
 ## See Also
 
-- [DNSZone Operator Architecture](../concepts/dnszone-operator-architecture.md)
-- [Integration Test Plan](../../roadmaps/integration-test-plan.md)
+- [Architecture Overview](../concepts/architecture.md)
+- [Integration Test Plan](https://github.com/firestoned/bindy/blob/main/docs/roadmaps/integration-test-plan.md)
 - [API Reference](../reference/api.md)
 - [Common Issues](./common-issues.md)

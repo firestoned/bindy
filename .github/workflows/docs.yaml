@@ -7,6 +7,15 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'docs/**'
+      - 'src/**/*.rs'
+      - '.github/workflows/docs.yaml'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'src/**/*.rs'
+      - '.github/workflows/docs.yaml'
   workflow_dispatch:
 
 permissions:
@@ -26,22 +35,59 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for git-revision-date-localized plugin
 
       - name: Setup Rust build environment
         uses: firestoned/github-actions/rust/setup-rust-build@v1.3.2
         with:
           target: x86_64-unknown-linux-gnu
 
-      - name: Install mdBook and preprocessors
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Poetry
         run: |
-          mkdir -p ~/bin
-          curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.5.1/mdbook-v0.5.1-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C ~/bin
-          echo "$HOME/bin" >> "$GITHUB_PATH"
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          cargo install mdbook-mermaid --version 0.17.0
+          curl -sSL https://install.python-poetry.org | python3 -
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Configure Poetry
+        run: |
+          cd docs
+          poetry config virtualenvs.in-project true
+
+      - name: Cache Poetry dependencies
+        uses: actions/cache@v4
+        with:
+          path: docs/.venv
+          key: ${{ runner.os }}-poetry-${{ hashFiles('docs/poetry.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-poetry-
+
+      - name: Install documentation dependencies
+        run: |
+          cd docs
+          poetry install --no-interaction --no-ansi
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
       - name: Build documentation
         run: make docs
+
+      - name: Check for broken links
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: |
+          npm install -g linkinator
+          linkinator docs/site/ --recurse --skip "rustdoc/.*" --verbosity error
 
       - name: Setup Pages
         if: github.ref == 'refs/heads/main'
@@ -51,7 +97,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/target
+          path: docs/site
 
   deploy:
     name: Deploy to GitHub Pages

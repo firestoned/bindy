@@ -68,7 +68,7 @@ Key dependencies:
 - `serde` - Serialization
 - `tracing` - Logging
 
-See [Cargo.toml](../../Cargo.toml) for full list.
+See [Cargo.toml](https://github.com/firestoned/bindy/blob/main/Cargo.toml) for full list.
 
 ## IDE Setup
 
@@ -106,5 +106,5 @@ If all commands succeed, your development environment is ready!
 ## Next Steps
 
 - [Building from Source](./building.md) - Build the operator
-- [Running Tests](./testing.md) - Test your changes
+- [Testing Guide](./testing-guide.md) - Test your changes
 - [Development Workflow](./workflow.md) - Daily development workflow

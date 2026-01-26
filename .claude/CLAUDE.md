@@ -63,6 +63,40 @@ pub struct Bind9InstanceStatus {
 
 ---
 
+### 🚨 CRITICAL: Always Review Official Documentation When Unsure
+
+**MANDATORY REQUIREMENT:** When you are unsure of a decision, DO NOT take the easiest or fastest path. ALWAYS review the official documentation for the product, tool, or framework you are working with.
+
+**Why This Matters:**
+- Taking shortcuts leads to incorrect implementations that must be fixed later
+- Quick assumptions often miss critical configuration options or best practices
+- Official documentation is the authoritative source of truth
+- Proper research prevents technical debt and rework
+
+**What to Review:**
+- **Configuration Documentation**: For tools like MkDocs, mdbook, GitHub Actions, etc.
+- **CRD API Reference**: When working with Kubernetes resources
+- **Framework Documentation**: When using libraries or frameworks
+- **Best Practices Guides**: Official recommendations for tool usage
+- **Release Notes**: Changes in behavior between versions
+
+**Examples:**
+- ✅ Unsure about MkDocs configuration → Read the [MkDocs Configuration Reference](https://www.mkdocs.org/user-guide/configuration/)
+- ✅ Unsure about Kubernetes CRD fields → Read `/deploy/crds/*.crd.yaml` or `src/crd.rs`
+- ✅ Unsure about GitHub Actions syntax → Read the [GitHub Actions Documentation](https://docs.github.com/en/actions)
+- ✅ Unsure about Rust kube-rs API → Read the [kube-rs API documentation](https://docs.rs/kube/)
+
+**When to Stop and Research:**
+- You're about to make an assumption about how something works
+- Multiple approaches seem viable but you're not sure which is correct
+- You're implementing a feature you haven't used before
+- Documentation or configuration syntax is unfamiliar
+- You're debugging an issue and the root cause is unclear
+
+**REMEMBER:** Spending 5 minutes reading documentation prevents hours of debugging incorrect implementations. When in doubt, research first, implement second.
+
+---
+
 ### 🔍 MANDATORY SEARCH TOOL: ripgrep (rg)
 **OBLIGATORY RULE:** ALWAYS use `ripgrep` (command: `rg`) as your PRIMARY and FIRST tool for ANY code search, pattern matching, or grepping task. This is NON-NEGOTIABLE.
 
@@ -120,7 +154,7 @@ docker build -t ...
 kubectl rollout restart ...
 
 ✅ CORRECT:
-"I've fixed the issue in src/reconcilers/dnszone.rs and updated CHANGELOG.md.
+"I've fixed the issue in src/reconcilers/dnszone.rs and updated .claude/CHANGELOG.md.
 All tests pass. The changes are ready for you to build and deploy."
 ```
 
@@ -633,7 +667,7 @@ When adding, removing, or changing any feature in the Rust source code:
    - Are there new APIs, configuration options, or behaviors?
 
 2. **Update Documentation** (in this order):
-   - **`CHANGELOG.md`** - Document the change (see format below)
+   - **`.claude/CHANGELOG.md`** - Document the change (see format below)
    - **`docs/src/`** - Update all affected documentation pages:
      - User guides that reference the changed functionality
      - Quickstart guides with examples of the changed code
@@ -699,7 +733,7 @@ When adding, removing, or changing any feature in the Rust source code:
 - **Examples**: Include working examples for all features
 - **Clarity**: Write for users who haven't seen the code
 - **Diagrams**: Use Mermaid diagrams for complex flows
-- **Versioning**: Date all changes in CHANGELOG.md
+- **Versioning**: Date all changes in .claude/CHANGELOG.md
 
 #### Building Documentation
 
@@ -731,7 +765,7 @@ make docs
 #### Validation Checklist
 
 Before considering a task complete, verify:
-- [ ] CHANGELOG.md updated with change details
+- [ ] .claude/CHANGELOG.md updated with change details
 - [ ] All affected documentation pages updated
 - [ ] All YAML examples validate successfully
 - [ ] API documentation regenerated (if CRDs changed)
@@ -744,7 +778,7 @@ Before considering a task complete, verify:
 
 ### Mandatory: Update Changelog on Every Code Change
 
-After **ANY** code modification, update `CHANGELOG.md` with the following format:
+After **ANY** code modification, update `.claude/CHANGELOG.md` with the following format:
 
 ```markdown
 ## [YYYY-MM-DD HH:MM] - Brief Title
@@ -949,7 +983,7 @@ cargo audit 2>/dev/null || true
 3. **End-user documentation is updated**:
    - Update relevant files in `docs/` directory
    - Update examples in `examples/` directory
-   - Ensure `CHANGELOG.md` reflects the changes
+   - Ensure `.claude/CHANGELOG.md` reflects the changes
    - Verify example YAML files validate successfully
 
 ### Unit Testing Requirements
@@ -1242,7 +1276,7 @@ Before adding a new dependency:
 1. Check if existing deps solve the problem
 2. Verify the crate is actively maintained (commits in last 6 months)
 3. Prefer crates from well-known authors or the Rust ecosystem
-4. Document why the dependency was added in `CHANGELOG.md`
+4. Document why the dependency was added in `.claude/CHANGELOG.md`
 
 ---
 
@@ -1270,7 +1304,7 @@ CRD YAML files in `/deploy/crds/` are **AUTO-GENERATED** from the Rust types. Th
    cargo run --bin crddoc > docs/src/reference/api.md
    ```
 4. **Verify generated YAMLs** look correct
-5. **Update `CHANGELOG.md`** documenting the CRD change
+5. **Update `.claude/CHANGELOG.md`** documenting the CRD change
 6. **Deploy updated CRDs**:
    ```bash
    # Use replace --force to avoid annotation size limits
@@ -1450,7 +1484,7 @@ clusters/
 When modifying HelmRelease manifests:
 1. Bump the chart version or values checksum
 2. Add suspend annotation for breaking changes
-3. Document rollback procedure in `CHANGELOG.md`
+3. Document rollback procedure in `.claude/CHANGELOG.md`
 
 ---
 
@@ -1698,7 +1732,7 @@ Before committing:
   - [ ] Add examples showing the new functionality
   - [ ] Verify all examples still work with the changes
 - [ ] **Documentation verification** (CRITICAL):
-  - [ ] `CHANGELOG.md` updated with detailed change description **AND author attribution** (REQUIRED)
+  - [ ] `.claude/CHANGELOG.md` updated with detailed change description **AND author attribution** (REQUIRED)
   - [ ] Author name included in changelog entry (e.g., `**Author:** Erick Bourgeois`)
   - [ ] All affected documentation pages reviewed and updated
   - [ ] All YAML examples validate: `kubectl apply --dry-run=client -f examples/`

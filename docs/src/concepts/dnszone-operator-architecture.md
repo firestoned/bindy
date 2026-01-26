@@ -1,1 +1,0 @@
-# DNSZone Operator Architecture

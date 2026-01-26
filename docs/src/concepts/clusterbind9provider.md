@@ -317,12 +317,12 @@ metadata:
 rules:
 # Manage cluster providers
 - apiGroups: ["bindy.firestoned.io"]
-  resources: ["bind9globalclusters"]
+  resources: ["clusterbind9providers"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
 # View cluster provider status
 - apiGroups: ["bindy.firestoned.io"]
-  resources: ["bind9globalclusters/status"]
+  resources: ["clusterbind9providers/status"]
   verbs: ["get", "list", "watch"]
 
 # Manage instances across namespaces (for cluster providers)
@@ -562,7 +562,7 @@ To verify configuration is inherited correctly:
 
 ```bash
 # 1. Check ClusterBind9Provider spec
-kubectl get bind9globalcluster production-dns -o yaml | grep -A 5 bindcarConfig
+kubectl get clusterbind9provider production-dns -o yaml | grep -A 5 bindcarConfig
 
 # 2. Check Bind9Instance spec (should be empty if using global config)
 kubectl get bind9instance primary-0 -n production -o yaml | grep -A 5 bindcarConfig
@@ -644,7 +644,7 @@ status:
 | **Instance Names** | `name` | `namespace/name` |
 | **RBAC** | Role + RoleBinding | ClusterRole + ClusterRoleBinding |
 | **Zone Reference Field** | `spec.clusterRef` | `spec.clusterProviderRef` |
-| **Kubectl Get** | `kubectl get bind9cluster -n <namespace>` | `kubectl get bind9globalcluster` |
+| **Kubectl Get** | `kubectl get bind9cluster -n <namespace>` | `kubectl get clusterbind9provider` |
 
 ## Best Practices
 
@@ -711,10 +711,10 @@ metadata:
 
 ```bash
 # View cluster provider status
-kubectl get bind9globalcluster dns-production
+kubectl get clusterbind9provider dns-production
 
 # See instances across all namespaces
-kubectl get bind9globalcluster dns-production -o jsonpath='{.status.instances}'
+kubectl get clusterbind9provider dns-production -o jsonpath='{.status.instances}'
 
 # Check instance distribution
 kubectl get bind9instance -A -l cluster=dns-production
@@ -754,13 +754,13 @@ spec:
 
 ```bash
 # List all cluster providers
-kubectl get bind9globalclusters
+kubectl get clusterbind9providers
 
 # Describe a specific cluster provider
-kubectl describe bind9globalcluster production-dns
+kubectl describe clusterbind9provider production-dns
 
 # View status
-kubectl get bind9globalcluster production-dns -o yaml
+kubectl get clusterbind9provider production-dns -o yaml
 ```
 
 ### Common Issues
@@ -769,7 +769,7 @@ kubectl get bind9globalcluster production-dns -o yaml
 
 **Solution**: Check RBAC - requires ClusterRole, not Role
 ```bash
-kubectl auth can-i create bind9globalclusters --as=user@example.com
+kubectl auth can-i create clusterbind9providers --as=user@example.com
 ```
 
 **Issue**: Instances not showing in status

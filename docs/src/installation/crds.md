@@ -34,13 +34,7 @@ This is the **recommended method** as it:
 
 ### Install from Source
 
-Install all Bindy CRDs from the main branch:
-
-```bash
-kubectl create -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/crds/
-```
-
-Or install from local files:
+Install from local files:
 
 ```bash
 cd bindy
@@ -93,5 +87,5 @@ For detailed specifications of each CRD, see:
 
 ## Next Steps
 
-- [Deploy the Operator](./operator.md)
-- [Quick Start Guide](./quickstart.md)
+- [Deploy the Operator](./controller.md)
+- [Step-by-Step Guide](./step-by-step.md)

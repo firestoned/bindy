@@ -279,7 +279,7 @@ dependencies = [
 
 [[package]]
 name = "bindy"
-version = "0.3.0"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "async-trait",

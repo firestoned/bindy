@@ -21,12 +21,13 @@ CoreDNS is the default DNS solution for Kubernetes, but you might want an altern
 ┌─────────────────────────────────────────┐
 │ CoreDNS DaemonSet/Deployment            │
 │ - Serves cluster.local queries          │
-│ - Configured via ConfigMap               │
-│ - Limited to Corefile syntax             │
+│ - Configured via ConfigMap              │
+│ - Limited to Corefile syntax            │
 └─────────────────────────────────────────┘
 ```
 
 **Characteristics:**
+
 - Simple, built-in solution
 - ConfigMap-based configuration
 - Limited declarative management
@@ -36,7 +37,7 @@ CoreDNS is the default DNS solution for Kubernetes, but you might want an altern
 
 ```
 ┌──────────────────────────────────────────────────┐
-│ ClusterBind9Provider (cluster-scoped)             │
+│ ClusterBind9Provider (cluster-scoped)            │
 │ - Cluster-wide DNS infrastructure                │
 │ - Platform team managed                          │
 └──────────────────────────────────────────────────┘
@@ -49,6 +50,7 @@ CoreDNS is the default DNS solution for Kubernetes, but you might want an altern
 ```
 
 **Characteristics:**
+
 - Declarative infrastructure-as-code
 - GitOps-ready (all configuration in YAML)
 - Dynamic updates via RNDC API (no restarts)
@@ -90,6 +92,7 @@ spec:
 ```
 
 **Benefits:**
+
 - High availability with multiple replicas
 - Declarative configuration (no ConfigMap editing)
 - Version-controlled DNS infrastructure
@@ -128,6 +131,7 @@ spec:
 ```
 
 **Benefits:**
+
 - Zero risk to existing cluster DNS
 - Application teams get advanced DNS features
 - Incremental adoption
@@ -180,6 +184,7 @@ spec:
 ```
 
 **Benefits:**
+
 - Service mesh can use DNS for routing
 - Dynamic record updates without mesh operator changes
 - Platform team manages DNS infrastructure
@@ -272,6 +277,7 @@ Keep CoreDNS for cluster.local, migrate application zones:
    ```
 
 **Benefits:**
+
 - Zero risk to cluster stability
 - Incremental testing
 - Easy rollback
@@ -383,11 +389,13 @@ kind: DNSZone
 ### 2. Dynamic Updates
 
 **CoreDNS:**
+
 - Requires ConfigMap changes
 - Requires pod restarts
 - No programmatic API
 
 **Bindy:**
+
 - Dynamic record updates via RNDC
 - Zero downtime changes
 - Programmatic API (Kubernetes CRDs)
@@ -395,11 +403,13 @@ kind: DNSZone
 ### 3. Multi-Tenancy
 
 **CoreDNS:**
+
 - Single shared ConfigMap
 - No namespace isolation
 - Platform team controls everything
 
 **Bindy:**
+
 - Platform team: Manages `ClusterBind9Provider`
 - Application teams: Manage `DNSZone` and records in their namespace
 - RBAC-enforced isolation
@@ -407,6 +417,7 @@ kind: DNSZone
 ### 4. Enterprise Features
 
 **Bindy Provides:**
+
 - ✅ DNSSEC with automatic key management
 - ✅ Zone transfers (AXFR/IXFR)
 - ✅ Split-horizon DNS (views/ACLs)
@@ -415,6 +426,7 @@ kind: DNSZone
 - ✅ Full BIND9 feature set
 
 **CoreDNS:**
+
 - ❌ Limited DNSSEC support
 - ❌ No zone transfers
 - ❌ Basic view support
@@ -425,11 +437,13 @@ kind: DNSZone
 ### Performance
 
 **Memory Usage:**
+
 - CoreDNS: ~30-50 MB per pod
 - Bindy (BIND9): ~100-200 MB per pod
 - Trade-off: More features, slightly higher resource use
 
 **Query Performance:**
+
 - Both handle 10K+ queries/sec per pod
 - BIND9 excels at authoritative zones
 - CoreDNS excels at simple forwarding
@@ -461,7 +475,7 @@ spec:
 
 ```bash
 # Check DNS cluster status
-kubectl get bind9globalcluster -o wide
+kubectl get clusterbind9provider -o wide
 
 # Check instance health
 kubectl get bind9instances -n dns-system

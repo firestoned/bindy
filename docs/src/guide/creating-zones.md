@@ -194,4 +194,4 @@ Key status fields:
 
 - [Add DNS Records](./records-guide.md) to your zone
 - [Configure Zone Transfers](../advanced/zone-transfers.md) for secondaries
-- [Learn about the RNDC Protocol](../concepts/architecture-rndc.md)
+- [Learn about Communication Protocols](../concepts/architecture-protocols.md) - RNDC and HTTP API

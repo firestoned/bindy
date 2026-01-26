@@ -36,7 +36,7 @@ See [Common Issues](./common-issues.md) for frequently encountered problems and 
 If you're seeing "No matching DNSZone found" errors:
 - Records use labels to match DNSZones via label selectors
 - Common mistake: Record missing required labels or labels not matching DNSZone selector
-- See [DNS Record Issues - Record Not Matching DNSZone](./common-issues.md#record-not-matching-dnszone) for detailed troubleshooting
+- See [DNS Record Issues - Record Not Matching DNSZone](./common-issues.md#record-not-matching-dnszone-event-driven-architecture) for detailed troubleshooting
 
 ## Debugging Steps
 

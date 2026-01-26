@@ -213,4 +213,4 @@ spec:
 
 - [Creating Zones](./creating-zones.md) - Learn how to create zones with cluster references
 - [Multi-Region Setup](./multi-region.md) - Deploy zones across multiple regions
-- [RNDC-Based Architecture](../concepts/architecture-rndc.md) - Understand the RNDC protocol
+- [Protocol Reference](../concepts/architecture-protocols.md) - Understand RNDC and HTTP API protocols
