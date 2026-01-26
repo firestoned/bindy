@@ -474,4 +474,4 @@ For complete, production-ready configurations see:
 - [Bind9Instance Specification](./bind9instance-spec.md)
 - [DNSZone Specification](./dnszone-spec.md)
 - [Record Specifications](./record-specs.md)
-- [Quick Start Guide](../installation/quickstart.md)
+- [Step-by-Step Guide](../installation/step-by-step.md)

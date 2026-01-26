@@ -372,7 +372,7 @@ flowchart TD
 
 **Implementation Details:**
 
-1. **Secondary Discovery** - On every reconciliation (see [src/reconcilers/dnszone.rs:325-373](../../src/reconcilers/dnszone.rs)):
+1. **Secondary Discovery** - On every reconciliation (see [src/reconcilers/dnszone.rs:325-373](https://github.com/firestoned/bindy/blob/main/src/reconcilers/dnszone.rs)):
    ```rust
    // Step 1: Get all instances selected for this zone
    let instance_refs = get_instances_from_zone(dnszone, bind9_instances_store)?;
@@ -384,7 +384,7 @@ flowchart TD
    let secondary_ips = find_secondary_pod_ips_from_instances(&client, &secondary_instance_refs).await?;
    ```
 
-2. **Zone Transfer Configuration** - Secondary IPs are passed to primary zone creation (see [src/reconcilers/dnszone.rs:1340-1360](../../src/reconcilers/dnszone.rs)):
+2. **Zone Transfer Configuration** - Secondary IPs are passed to primary zone creation (see [src/reconcilers/dnszone.rs:1340-1360](https://github.com/firestoned/bindy/blob/main/src/reconcilers/dnszone.rs)):
    ```rust
    // Configuration includes secondary IPs for also-notify and allow-transfer
    // These are set when creating zones on PRIMARY instances
@@ -401,7 +401,7 @@ flowchart TD
    - The reconciliation loop detects changes in the list of selected instances
    - Zones are automatically reconfigured with the new secondary IP list
    - No manual intervention required when secondary pods are rescheduled
-   - See [src/reconcilers/dnszone.rs:1100-1250](../../src/reconcilers/dnszone.rs) for the full reconciliation flow
+   - See [src/reconcilers/dnszone.rs:1100-1250](https://github.com/firestoned/bindy/blob/main/src/reconcilers/dnszone.rs) for the full reconciliation flow
 
 **Why This Matters:**
 - **Self-healing**: When secondary pods are rescheduled/restarted and get new IPs, zones automatically update
@@ -673,8 +673,15 @@ Can handle:
 - **10,000+** DNS records
 - **<100ms** average reconciliation time
 
+## Additional Technical Diagrams
+
+For comprehensive visual architecture diagrams including component interactions, data flows, and reconciliation sequences, see:
+
+- [Architecture Diagrams](./architecture-diagrams.md) - Complete visual reference with 20+ Mermaid diagrams
+
 ## Next Steps
 
-- [Custom Resource Definitions](./crds.md) - CRD specifications
-- [Operator Design](../development/operator-design.md) - Implementation details
+- [Architecture Diagrams](./architecture-diagrams.md) - Comprehensive visual architecture reference
+- [Operator Design](../development/controller-design.md) - Implementation details
+- [Reconciler Hierarchy](../architecture/reconciler-hierarchy.md) - Reconciler structure and relationships
 - [Performance Tuning](../advanced/performance.md) - Optimization strategies

@@ -42,9 +42,9 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 **Status:** ✅ Complete (2025-12-17)
 
 **Documentation:**
-- [Threat Model](../../security/THREAT_MODEL.md) - STRIDE threat analysis, 15 threats, 5 scenarios
-- [Security Architecture](../../security/ARCHITECTURE.md) - 5 security domains, 4 data flow diagrams
-- [Incident Response Playbooks](../../security/INCIDENT_RESPONSE.md) - 7 playbooks (P1-P7)
+- [Threat Model](../security/threat-model.md) - STRIDE threat analysis, 15 threats, 5 scenarios
+- [Security Architecture](../security/architecture.md) - 5 security domains, 4 data flow diagrams
+- [Incident Response Playbooks](../security/incident-response.md) - 7 playbooks (P1-P7)
 
 **Frameworks:** SOX 404, PCI-DSS 6.4.1, Basel III
 
@@ -61,7 +61,7 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 **Status:** ✅ Complete (2025-12-18)
 
 **Documentation:**
-- [Audit Log Retention Policy](../../security/AUDIT_LOG_RETENTION.md) - 650 lines, SOX/PCI-DSS/Basel III compliant
+- [Audit Log Retention Policy](../security/audit-log-retention.md) - 650 lines, SOX/PCI-DSS/Basel III compliant
 
 **Frameworks:** SOX 404 (7-year retention), PCI-DSS 10.5.1 (1-year retention), Basel III (7-year retention)
 
@@ -79,7 +79,7 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 **Status:** ✅ Complete (2025-12-18)
 
 **Documentation:**
-- [Secret Access Audit Trail](../../security/SECRET_ACCESS_AUDIT.md) - 700 lines, real-time monitoring
+- [Secret Access Audit Trail](../security/secret-access-audit.md) - 700 lines, real-time monitoring
 
 **Frameworks:** SOX 404, PCI-DSS 7.1.2, PCI-DSS 10.2.1, Basel III
 
@@ -97,7 +97,7 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 **Status:** ✅ Complete (2025-12-18)
 
 **Documentation:**
-- [Build Reproducibility Verification](../../security/BUILD_REPRODUCIBILITY.md) - 850 lines, SLSA Level 3
+- [Build Reproducibility Verification](../security/build-reproducibility.md) - 850 lines, SLSA Level 3
 
 **Frameworks:** SLSA Level 3, SOX 404, PCI-DSS 6.4.6
 
@@ -115,8 +115,8 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 **Status:** ✅ Complete (2024-12-15)
 
 **Documentation:**
-- [RBAC Verification Script](../../../deploy/rbac/verify-rbac.sh)
-- [Security Architecture - RBAC](../../security/ARCHITECTURE.md#rbac-architecture)
+- [RBAC Verification Script](https://github.com/firestoned/bindy/blob/main/deploy/rbac/verify-rbac.sh)
+- [Security Architecture - RBAC](../security/architecture.md#rbac-architecture)
 
 **Frameworks:** SOX 404, PCI-DSS 7.1.2, Basel III
 
@@ -133,8 +133,8 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 **Status:** ✅ Complete (2024-12-15)
 
 **Documentation:**
-- [Vulnerability Management Policy](../../security/VULNERABILITY_MANAGEMENT.md)
-- [SECURITY.md - Dependency Management](../../../SECURITY.md#dependency-management--vulnerability-scanning)
+- [Vulnerability Management Policy](../security/vulnerability-management.md)
+- [SECURITY.md - Dependency Management](https://github.com/firestoned/bindy/blob/mahttps://github.com/firestoned/bindy/blob/main/SECURITY.md#dependency-management--vulnerability-scanning)
 
 **Frameworks:** SOX 404, PCI-DSS 6.2, Basel III
 
@@ -152,8 +152,8 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 **Status:** ✅ Complete (2024-12-10)
 
 **Documentation:**
-- [SECURITY.md - Commit Signing](../../../SECURITY.md#commit-signing-critical)
-- [CONTRIBUTING.md](../../../CONTRIBUTING.md)
+- [SECURITY.md - Commit Signing](https://github.com/firestoned/bindy/blob/mahttps://github.com/firestoned/bindy/blob/main/SECURITY.md#commit-signing-critical)
+- [CONTRIBUTING.md](https://github.com/firestoned/bindy/blob/mahttps://github.com/firestoned/bindy/blob/main/CONTRIBUTING.md)
 
 **Frameworks:** SOX 404, PCI-DSS 6.4.6, SLSA Level 2+
 
@@ -243,8 +243,8 @@ For compliance questions or audit support:
 
 ## See Also
 
-- [SECURITY.md](../../../SECURITY.md) - Main security policy document
-- [COMPLIANCE_ROADMAP.md](../../../.github/COMPLIANCE_ROADMAP.md) - Detailed compliance tracking
+- [SECURITY.md](https://github.com/firestoned/bindy/blob/mahttps://github.com/firestoned/bindy/blob/main/SECURITY.md) - Main security policy document
+- [COMPLIANCE_ROADMAP.md](https://github.com/firestoned/bindy/blob/main/.github/COMPLIANCE_ROADMAP.md) - Detailed compliance tracking
 - [Threat Model](../security/threat-model.md) - STRIDE threat analysis
 - [Incident Response](../security/incident-response.md) - P1-P7 playbooks
 - [Security Architecture](../security/architecture.md) - Security design principles

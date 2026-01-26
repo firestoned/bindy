@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 
-.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup docs docs-serve docs-mdbook docs-rustdoc docs-clean docs-watch docs-github-pages crds integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary
+.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup docs docs-serve docs-rustdoc docs-clean crds integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary
 
 REGISTRY ?= ghcr.io
 IMAGE_NAME ?= firestoned/bindy
@@ -181,53 +181,57 @@ build-aarch64-linux-debug: ## Build the Rust binary in debug mode
 
 # Documentation targets
 docs: export PATH := $(HOME)/.cargo/bin:$(PATH)
-docs: ## Build all documentation (mdBook + rustdoc + CRD API reference)
+docs: ## Build all documentation (MkDocs + rustdoc + CRD API reference)
 	@echo "Building all documentation..."
-	@command -v mdbook >/dev/null 2>&1 || { echo "Error: mdbook not found. Install with: cargo install mdbook"; exit 1; }
+	@echo "Checking Poetry installation..."
+	@command -v poetry >/dev/null 2>&1 || { echo "Error: Poetry not found. Install with: curl -sSL https://install.python-poetry.org | python3 -"; exit 1; }
+	@echo "Ensuring documentation dependencies are installed..."
+	@cd docs && poetry install --no-interaction --quiet
 	@echo "Generating CRD API reference documentation..."
 	@cargo run --bin crddoc > docs/src/reference/api.md
 	@echo "Building rustdoc API documentation..."
 	@cargo doc --no-deps --all-features
-	@echo "Build mdBook documentation..."
-	@cd docs && mdbook build
+	@echo "Building MkDocs documentation..."
+	@cd docs && poetry run mkdocs build
 	@echo "Copying rustdoc into documentation..."
-	@mkdir -p docs/target/rustdoc
-	@cp -r target/doc/* docs/target/rustdoc/
+	@mkdir -p docs/site/rustdoc
+	@cp -r target/doc/* docs/site/rustdoc/
 	@echo "Creating rustdoc index redirect..."
-	@echo '<!DOCTYPE html>' > docs/target/rustdoc/index.html
-	@echo '<html>' >> docs/target/rustdoc/index.html
-	@echo '<head>' >> docs/target/rustdoc/index.html
-	@echo '    <meta charset="utf-8">' >> docs/target/rustdoc/index.html
-	@echo '    <title>Bindy API Documentation</title>' >> docs/target/rustdoc/index.html
-	@echo '    <meta http-equiv="refresh" content="0; url=bindy/index.html">' >> docs/target/rustdoc/index.html
-	@echo '</head>' >> docs/target/rustdoc/index.html
-	@echo '<body>' >> docs/target/rustdoc/index.html
-	@echo '    <p>Redirecting to <a href="bindy/index.html">Bindy API Documentation</a>...</p>' >> docs/target/rustdoc/index.html
-	@echo '</body>' >> docs/target/rustdoc/index.html
-	@echo '</html>' >> docs/target/rustdoc/index.html
-	@echo "Documentation built successfully in docs/target/"
-	@echo "  - User guide: docs/target/index.html"
-	@echo "  - API reference: docs/target/rustdoc/bindy/index.html"
+	@echo '<!DOCTYPE html>' > docs/site/rustdoc/index.html
+	@echo '<html>' >> docs/site/rustdoc/index.html
+	@echo '<head>' >> docs/site/rustdoc/index.html
+	@echo '    <meta charset="utf-8">' >> docs/site/rustdoc/index.html
+	@echo '    <title>Bindy API Documentation</title>' >> docs/site/rustdoc/index.html
+	@echo '    <meta http-equiv="refresh" content="0; url=bindy/index.html">' >> docs/site/rustdoc/index.html
+	@echo '</head>' >> docs/site/rustdoc/index.html
+	@echo '<body>' >> docs/site/rustdoc/index.html
+	@echo '    <p>Redirecting to <a href="bindy/index.html">Bindy API Documentation</a>...</p>' >> docs/site/rustdoc/index.html
+	@echo '</body>' >> docs/site/rustdoc/index.html
+	@echo '</html>' >> docs/site/rustdoc/index.html
+	@echo "✓ Documentation built successfully in docs/site/"
+	@echo "  - User guide: docs/site/index.html"
+	@echo "  - API reference: docs/site/rustdoc/bindy/index.html"
 
-docs-serve: docs ## Build and serve documentation locally
-	@echo "Serving documentation at http://localhost:3000"
-	@cd docs/target && python3 -m http.server 3000
+docs-serve: ## Serve documentation locally with live reload (MkDocs)
+	@echo "Starting MkDocs development server..."
+	@command -v poetry >/dev/null 2>&1 || { echo "Error: Poetry not found. Run ./scripts/setup-docs-env.sh first."; exit 1; }
+	@echo "Ensuring documentation dependencies are installed..."
+	@cd docs && poetry install --no-interaction --quiet
+	@echo "Serving documentation at http://127.0.0.1:8000"
+	@echo "Press Ctrl+C to stop"
+	@cd docs && poetry run mkdocs serve
 
-docs-mdbook: ## Build mdBook documentation only
-	@command -v mdbook >/dev/null 2>&1 || { echo "Installing mdbook..."; cargo install mdbook; }
-	@mdbook build -d target docs
-	@echo "mdBook documentation built in docs/target/"
-
-docs-rustdoc: ## Build rustdoc API documentation only
-	cargo doc --no-deps --all-features --open
+docs-rustdoc: ## Build and open rustdoc API documentation only
+	@echo "Building rustdoc API documentation..."
+	@cargo doc --no-deps --all-features --open
 
 docs-clean: ## Clean documentation build artifacts
-	rm -rf docs/target/
-	rm -rf target/doc/
-
-docs-watch: ## Watch and rebuild mdBook documentation on changes
-	@command -v mdbook >/dev/null 2>&1 || { echo "Installing mdbook..."; cargo install mdbook; }
-	mdbook serve
+	@echo "Cleaning documentation build artifacts..."
+	@rm -rf docs/site/
+	@rm -rf target/doc/
+	@rm -rf docs/.venv/
+	@rm -rf docs/poetry.lock
+	@echo "✓ Documentation artifacts cleaned"
 
 # Signing and verification targets
 sign-verify-install: ## Install Cosign for signing and verification

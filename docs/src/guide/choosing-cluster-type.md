@@ -446,6 +446,7 @@ spec:
 **Recommendation**: Start with `Bind9Cluster` (namespace-scoped)
 
 **Why:**
+
 - Simpler RBAC (no ClusterRole needed)
 - Faster iteration and experimentation
 - Easy to recreate if configuration is wrong
@@ -459,6 +460,7 @@ When you grow, migrate production to `ClusterBind9Provider` while keeping dev on
 **Recommendation**: Use `ClusterBind9Provider` for production, `Bind9Cluster` for dev
 
 **Why:**
+
 - Platform team provides production DNS as a service
 - Development teams have autonomy in their namespaces
 - Clear separation of responsibilities
@@ -469,6 +471,7 @@ When you grow, migrate production to `ClusterBind9Provider` while keeping dev on
 **Recommendation**: Use `Bind9Cluster` per tenant namespace
 
 **Why:**
+
 - Complete isolation between customers
 - Tenant-specific configuration
 - Easier to delete customer data (namespace deletion)
@@ -479,6 +482,7 @@ When you grow, migrate production to `ClusterBind9Provider` while keeping dev on
 **Recommendation**: Use `Bind9Cluster` per environment
 
 **Why:**
+
 - Isolated DNS per PR/branch
 - Easy cleanup when PR closes
 - No impact on other environments
@@ -583,4 +587,4 @@ When you grow, migrate production to `ClusterBind9Provider` while keeping dev on
 
 - [Architecture Overview](architecture.md) - Understand the dual-cluster model
 - [Multi-Tenancy Guide](multi-tenancy.md) - RBAC setup and examples
-- [Quickstart Guide](quickstart.md) - Get started with examples
+- [Step-by-Step Guide](../installation/step-by-step.md) - Get started with examples

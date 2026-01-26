@@ -5,7 +5,7 @@ The complete API documentation is generated from Rust source code and is availab
 ## Viewing API Documentation
 
 ### Online
-Visit the [API Reference](rustdoc/bindy/index.html) section of the documentation site.
+The API Reference is available in the `rustdoc/bindy/index.html` section of the documentation site once built.
 
 ### Locally
 

@@ -601,7 +601,7 @@ nameServers:
 
 - [DNSZone Concepts](../concepts/dnszone.md) - Detailed explanation of label selectors
 - [DNSZone Specification](../reference/dnszone-spec.md) - Complete field reference
-- [Multi-Nameserver Example](../../examples/dns-zone-multi-nameserver.yaml) - Working example
+- [Multi-Nameserver Example](https://github.com/firestoned/bindy/blob/main/examples/dns-zone-multi-nameserver.yaml) - Working example
 - [Architecture Overview](../guide/architecture.md) - Event-driven reconciliation
 - [API Reference](../reference/api.md) - Complete CRD schemas
 - [GitHub Release Notes](https://github.com/firestoned/bindy/releases/tag/v0.3.0) - Full changelog

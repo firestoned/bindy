@@ -13,7 +13,7 @@
 - [Security Domains](#security-domains)
 - [Data Flow Diagrams](#data-flow-diagrams)
 - [Trust Boundaries](#trust-boundaries)
-- [Authentication & Authorization](#authentication--authorization)
+- [Authentication & Authorization](#authentication-authorization)
 - [Secrets Management](#secrets-management)
 - [Network Security](#network-security)
 - [Container Security](#container-security)
@@ -42,12 +42,14 @@ This document describes the security architecture of the Bindy DNS Operator, inc
 **Purpose:** Code development, review, build, and release
 
 **Components:**
+
 - GitHub repository (source code)
 - GitHub Actions (CI/CD pipelines)
 - Container Registry (ghcr.io)
 - Developer workstations
 
 **Security Controls:**
+
 - ✅ **Code Signing**: All commits cryptographically signed (GPG/SSH) - C-1
 - ✅ **Code Review**: 2+ reviewers required for all PRs
 - ✅ **Vulnerability Scanning**: cargo-audit + Trivy in CI/CD - C-3
@@ -64,12 +66,14 @@ This document describes the security architecture of the Bindy DNS Operator, inc
 **Purpose:** Kubernetes API server, scheduler, operator-manager, etcd
 
 **Components:**
+
 - Kubernetes API server
 - etcd (cluster state storage)
 - Scheduler
 - Operator-manager
 
 **Security Controls:**
+
 - ✅ **RBAC**: Role-Based Access Control enforced for all API requests
 - ✅ **Encryption at Rest**: etcd data encrypted (including Secrets)
 - ✅ **TLS**: All control plane communication encrypted
@@ -85,6 +89,7 @@ This document describes the security architecture of the Bindy DNS Operator, inc
 **Purpose:** Bindy operator and BIND9 pods
 
 **Components:**
+
 - Bindy operator (Deployment)
 - BIND9 primary (StatefulSet)
 - BIND9 secondaries (StatefulSet)
@@ -93,6 +98,7 @@ This document describes the security architecture of the Bindy DNS Operator, inc
 - Services (DNS, RNDC endpoints)
 
 **Security Controls:**
+
 - ✅ **RBAC Least Privilege**: Operator has minimal permissions - C-2
 - ✅ **Non-Root Containers**: All pods run as uid 1000+
 - ✅ **Read-Only Filesystem**: Immutable container filesystems
@@ -109,11 +115,13 @@ This document describes the security architecture of the Bindy DNS Operator, inc
 **Purpose:** DNS zone management by application teams
 
 **Components:**
+
 - DNSZone custom resources
 - DNS record custom resources (ARecord, CNAMERecord, etc.)
 - Application pods (may read DNS records)
 
 **Security Controls:**
+
 - ✅ **Namespace Isolation**: Teams cannot access other namespaces
 - ✅ **RBAC**: Teams can only manage their own DNS zones
 - ✅ **CRD Validation**: OpenAPI v3 schema validation on all CRs
@@ -128,10 +136,12 @@ This document describes the security architecture of the Bindy DNS Operator, inc
 **Purpose:** Public internet (DNS clients)
 
 **Components:**
+
 - DNS clients (recursive resolvers, end users)
 - LoadBalancer/NodePort services exposing port 53
 
 **Security Controls:**
+
 - ✅ **Rate Limiting**: BIND9 rate-limit directive prevents query floods
 - ✅ **AXFR Restrictions**: Zone transfers only to known secondaries
 - ❌ **DNSSEC** (planned): Cryptographic signing of DNS responses
@@ -170,6 +180,7 @@ sequenceDiagram
 ```
 
 **Security Notes:**
+
 - ✅ All API calls authenticated with ServiceAccount token (JWT)
 - ✅ RBAC enforced at every step (operator has least privilege)
 - ✅ Secret read is audited (H-3 planned)
@@ -203,6 +214,7 @@ sequenceDiagram
 ```
 
 **Security Notes:**
+
 - ✅ DNS port 53 is public (required for DNS service)
 - ✅ Rate limiting prevents query floods
 - ✅ AXFR restricted to known secondary IPs
@@ -230,6 +242,7 @@ sequenceDiagram
 ```
 
 **Security Notes:**
+
 - ✅ Secrets encrypted at rest in etcd
 - ✅ Secrets transmitted over TLS (in transit)
 - ✅ RBAC limits secret read access to operator only
@@ -262,6 +275,7 @@ flowchart TD
 ```
 
 **Security Controls:**
+
 - ✅ **C-1**: All commits signed (GPG/SSH)
 - ✅ **C-3**: Vulnerability scanning (cargo-audit + Trivy)
 - ✅ **SLSA Level 2**: Build provenance + SBOM
@@ -442,19 +456,23 @@ stateDiagram-v2
 ### Secret Protection
 
 **At Rest:**
+
 - ✅ etcd encryption enabled (AES-256-GCM)
 - ✅ Secrets stored in Kubernetes Secrets (not in code, env vars, or ConfigMaps)
 
 **In Transit:**
+
 - ✅ All Kubernetes API communication over TLS
 - ✅ ServiceAccount token transmitted over TLS
 
 **In Use:**
+
 - ✅ Operator runs as non-root (uid 1000+)
 - ✅ Read-only filesystem (secrets cannot be written to disk)
 - ✅ Memory protection (secrets cleared after use - Rust Drop trait)
 
 **Access Control:**
+
 - ✅ RBAC limits secret read to operator only
 - ✅ Kubernetes audit log captures all secret access
 - ❌ **H-3** (planned): Dedicated secret access audit trail with alerts
@@ -646,6 +664,7 @@ spec:
 ```
 
 **Security Features:**
+
 - ✅ Non-root user (uid 1000)
 - ✅ Read-only root filesystem (only /tmp writable)
 - ✅ No privileged escalation
@@ -668,6 +687,7 @@ ENTRYPOINT ["/usr/local/bin/bindy"]
 ```
 
 **Features:**
+
 - ✅ Chainguard static base (zero CVEs, no package manager)
 - ✅ Minimal attack surface (~15MB image size)
 - ✅ No shell, no utilities (static binary only)
@@ -676,6 +696,7 @@ ENTRYPOINT ["/usr/local/bin/bindy"]
 - ✅ SBOM included
 
 **Vulnerability Scanning:**
+
 - ✅ Trivy scans on every PR, main push, release
 - ✅ CI fails on CRITICAL/HIGH vulnerabilities
 - ✅ Daily scheduled scans detect new CVEs
@@ -718,6 +739,7 @@ flowchart LR
 ```
 
 **Supply Chain Threats Mitigated:**
+
 - ✅ **Code Injection**: Signed commits prevent unauthorized code changes
 - ✅ **Dependency Confusion**: cargo-audit verifies dependencies from crates.io
 - ✅ **Malicious Dependencies**: Vulnerability scanning detects known CVEs

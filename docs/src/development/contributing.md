@@ -14,7 +14,7 @@ Thank you for contributing to Bindy!
 
 1. [Set up development environment](./setup.md)
 2. Read [Code Style](./code-style.md)
-3. Check [Testing Guidelines](./testing-guidelines.md)
+3. Check [Testing Guide](./testing-guide.md)
 4. Follow [PR Process](./pr-process.md)
 
 ## Code of Conduct
@@ -130,7 +130,7 @@ Please ask in your pull request or open a discussion before submitting.
 
 ### Additional Resources
 
-- [Full Project License](../../LICENSE) - MIT License text
+- [Full Project License](../../../LICENSE) - MIT License text
 - [License Documentation](../license.md) - Comprehensive licensing information
 - [SPDX License List](https://spdx.org/licenses/) - Standard license identifiers
 - [Choose a License](https://choosealicense.com/) - Help choosing licenses for new projects

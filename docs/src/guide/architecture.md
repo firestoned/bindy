@@ -52,6 +52,7 @@ graph TB
 ```
 
 **Characteristics:**
+
 - Isolated to a single namespace
 - Teams manage their own DNS independently
 - RBAC scoped to namespace (Role/RoleBinding)
@@ -105,6 +106,7 @@ graph TB
 ```
 
 **Characteristics:**
+
 - Cluster-wide visibility (no namespace)
 - Platform team manages centralized DNS
 - RBAC requires ClusterRole/ClusterRoleBinding
@@ -161,6 +163,7 @@ graph TD
 ```
 
 **Relationship Legend:**
+
 - **Solid arrow** (-->) : Direct reference by name
 - **Dashed arrow** (-.->): Cluster-scoped reference
 - **Bold arrow** (==>) : Label selector-based selection
@@ -326,7 +329,7 @@ metadata:
   name: platform-dns-admin
 rules:
 - apiGroups: ["bindy.firestoned.io"]
-  resources: ["bind9globalclusters"]
+  resources: ["clusterbind9providers"]
   verbs: ["*"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -515,8 +518,202 @@ graph TD
     style ClusterDetails fill:#e3f2fd
 ```
 
+## Deployment Architecture
+
+### Operator Deployment
+
+The Bindy operator uses a **centralized operator pattern** - a single operator instance manages all BIND9 DNS infrastructure across the cluster.
+
+```mermaid
+graph TB
+    subgraph "Kubernetes Cluster"
+        subgraph "dns-system namespace"
+            Operator[Bindy Operator<br/>Single Deployment<br/>Watches all CRDs]
+            RBAC[ServiceAccount + RBAC<br/>ClusterRole/Binding]
+        end
+
+        subgraph "Managed Resources (all namespaces)"
+            Clusters[Bind9Clusters<br/>ClusterBind9Providers]
+            Zones[DNSZones]
+            Records[DNS Records]
+            Instances[Bind9Instances]
+        end
+
+        subgraph "BIND9 Pods"
+            Primary[Primary DNS Servers<br/>Write zone files]
+            Secondary[Secondary DNS Servers<br/>Zone transfer from primary]
+        end
+    end
+
+    Operator -->|watches| Clusters
+    Operator -->|watches| Zones
+    Operator -->|watches| Records
+    Operator -->|creates/manages| Instances
+    Operator -->|updates zones| Primary
+    Primary -->|AXFR/IXFR| Secondary
+
+    style Operator fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style Clusters fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style Instances fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    style Primary fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    style Secondary fill:#fce4ec,stroke:#880e4f,stroke-width:2px
+```
+
+**Key Deployment Characteristics:**
+
+- **Single Operator Instance**: One operator manages all DNS infrastructure
+- **Namespace**: Typically deployed in `dns-system` (configurable)
+- **Service Account**: `bindy-operator` with cluster-wide RBAC permissions
+- **Event-Driven**: Uses Kubernetes watch API (not polling) for efficient resource monitoring
+- **Zone Transfer**: Leverages native BIND9 AXFR/IXFR for primary-secondary replication
+- **No Sidecars**: Operator directly manages BIND9 configuration files via HTTP API
+
+### Deployment Components
+
+**1. CRDs (Custom Resource Definitions)**
+- Installed cluster-wide before operator deployment
+- Define schema for `Bind9Cluster`, `ClusterBind9Provider`, `DNSZone`, record types
+- See [CRD Installation](../installation/crds.md)
+
+**2. RBAC (Role-Based Access Control)**
+- **ClusterRole**: Grants operator permissions to manage CRDs across all namespaces
+- **ServiceAccount**: Identity for operator pod
+- **ClusterRoleBinding**: Links ServiceAccount to ClusterRole
+- See [RBAC Configuration](../operations/rbac.md) for details
+
+**3. Operator Deployment**
+- **Image**: `ghcr.io/firestoned/bindy:latest`
+- **Replicas**: 1 (high availability not yet supported - leader election planned)
+- **Resources**: 128Mi memory request, 512Mi limit; 100m CPU request, 500m limit
+- **Health Checks**: Liveness and readiness probes for pod health monitoring
+
+**4. Managed Resources**
+- **Secrets**: RNDC keys for secure BIND9 communication (auto-generated per instance)
+- **ConfigMaps**: BIND9 zone files and configuration (generated from DNSZone specs)
+- **Deployments**: BIND9 server pods (created from Bind9Instance specs)
+- **Services**: DNS endpoints (TCP/UDP port 53, LoadBalancer/NodePort/ClusterIP)
+
+### Deployment Workflow
+
+When you install Bindy, resources are deployed in this order:
+
+```mermaid
+graph LR
+    A[1. Deploy CRDs] --> B[2. Deploy RBAC]
+    B --> C[3. Deploy Operator]
+    C --> D[4. Operator Ready]
+    D --> E[5. Create Bind9Cluster]
+    E --> F[6. Create Bind9Instances]
+    F --> G[7. Create DNSZones]
+    G --> H[8. Create DNS Records]
+    H --> I[9. BIND9 Serving DNS]
+
+    style A fill:#fff9c4
+    style B fill:#fff9c4
+    style C fill:#e1f5ff
+    style D fill:#c8e6c9
+    style E fill:#e1f5ff
+    style F fill:#fff4e1
+    style G fill:#fff4e1
+    style H fill:#f0f0f0
+    style I fill:#c8e6c9
+```
+
+**Step-by-Step:**
+
+1. **Deploy CRDs**: Install Custom Resource Definitions (one-time setup)
+2. **Deploy RBAC**: Create ServiceAccount, ClusterRole, ClusterRoleBinding
+3. **Deploy Operator**: Start Bindy operator pod in `dns-system` namespace
+4. **Operator Ready**: Operator starts watching for Bind9Cluster and DNSZone resources
+5. **Create Bind9Cluster**: User creates cluster definition (namespace or cluster-scoped)
+6. **Create Bind9Instances**: Operator creates BIND9 Deployment/Service/ConfigMap resources
+7. **Create DNSZones**: User creates zone definitions referencing cluster
+8. **Create DNS Records**: User creates A, CNAME, MX, TXT records
+9. **BIND9 Serving DNS**: BIND9 pods respond to DNS queries on port 53
+
+### Zone Synchronization Architecture
+
+Bindy uses native BIND9 zone transfer for high availability:
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Operator
+    participant Primary as Primary BIND9
+    participant Secondary as Secondary BIND9
+
+    User->>Operator: Create/Update DNSZone
+    Operator->>Operator: Generate zone file content
+    Operator->>Primary: Update zone file via HTTP API
+    Primary->>Primary: Load updated zone
+    Primary->>Primary: Increment SOA serial
+    Secondary->>Primary: NOTIFY received (zone changed)
+    Secondary->>Primary: Request IXFR (incremental transfer)
+    Primary->>Secondary: Send zone updates
+    Secondary->>Secondary: Apply updates, serve DNS
+
+    Note over Operator,Secondary: Operator only updates PRIMARY instances<br/>Secondaries use native BIND9 zone transfer
+```
+
+**Key Points:**
+
+- **Operator Updates Primary Only**: Operator writes zone files to primary BIND9 instances
+- **BIND9 Handles Replication**: Native AXFR/IXFR zone transfer to secondaries
+- **TSIG Authentication**: Zone transfers secured with HMAC-SHA256 keys
+- **Automatic NOTIFY**: Primaries notify secondaries of zone changes
+- **Incremental Transfers**: IXFR transfers only changed records (efficient)
+
+### High Availability Considerations
+
+**BIND9 Instance HA:**
+
+- ✅ **Multiple Primaries**: Deploy 2-3 primary instances with `replicas: 2-3`
+- ✅ **Multiple Secondaries**: Deploy 2-3 secondary instances in different failure domains
+- ✅ **Zone Transfers**: Secondaries sync from all primaries automatically
+- ✅ **LoadBalancer Service**: Distribute DNS queries across all instances
+
+**Operator HA:**
+
+- ⚠️ **Single Replica Only**: Operator currently runs as single instance
+- 📋 **Leader Election**: Planned for future release (multi-replica support)
+- ✅ **Stateless Design**: Operator crashes are safe - all state in Kubernetes etcd
+
+For BIND9 high availability setup, see [High Availability Guide](../advanced/ha.md).
+
+### Resource Requirements
+
+**Operator Pod:**
+```yaml
+resources:
+  requests:
+    memory: "128Mi"
+    cpu: "100m"
+  limits:
+    memory: "512Mi"
+    cpu: "500m"
+```
+
+**BIND9 Pods (default):**
+```yaml
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "200m"
+  limits:
+    memory: "1Gi"
+    cpu: "1000m"
+```
+
+Adjust based on:
+- Number of zones managed
+- Query volume (QPS)
+- Zone transfer frequency
+- DNSSEC signing (if enabled)
+
 ## Next Steps
 
+- [Quick Start](../installation/quickstart.md) - Get started with Bindy in 5 minutes
+- [Step-by-Step Guide](../installation/step-by-step.md) - Detailed installation for both cluster types
 - [Multi-Tenancy Guide](multi-tenancy.md) - Detailed RBAC setup and examples
 - [Choosing a Cluster Type](choosing-cluster-type.md) - Decision guide for cluster selection
-- [Quickstart Guide](quickstart.md) - Getting started with both cluster types
+- [High Availability](../advanced/ha.md) - Production-ready HA configuration

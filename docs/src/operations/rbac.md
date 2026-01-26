@@ -148,9 +148,6 @@ kubectl get clusterrolebinding bindy-rolebinding
 ```bash
 # Apply all RBAC resources from local files
 kubectl apply -f deploy/rbac/
-
-# Or from main branch
-kubectl apply -f https://raw.githubusercontent.com/firestoned/bindy/main/deploy/rbac/
 ```
 
 ## Security Best Practices

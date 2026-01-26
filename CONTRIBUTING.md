@@ -40,7 +40,9 @@ This project operates in a professional banking/finance environment. All contrib
 2. Install development dependencies:
    ```bash
    cargo install cargo-audit
-   cargo install mdbook mdbook-mermaid
+
+   # Setup documentation environment (Poetry + MkDocs)
+   ./scripts/setup-docs-env.sh
    ```
 
 3. Set up commit signing (REQUIRED - see next section)

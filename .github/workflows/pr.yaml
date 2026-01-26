@@ -24,7 +24,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.filter.outputs.code }}
-      docs: ${{ steps.filter.outputs.docs }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -39,12 +38,6 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.github/workflows/pr.yaml'
-            docs:
-              - 'docs/**'
-              - 'README.md'
-              - 'examples/**'
-              - 'deploy/**'
-              - 'src/crd.rs'
 
   license-check:
     name: Verify SPDX License Headers
@@ -94,36 +87,6 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt -- --check
-
-  docs:
-    name: Build Documentation
-    runs-on: ubuntu-latest
-    needs: changes
-    if: needs.changes.outputs.docs == 'true'
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-
-      - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install mdBook and preprocessors
-        run: |
-          mkdir -p ~/bin
-          curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.5.1/mdbook-v0.5.1-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C ~/bin
-          echo "$HOME/bin" >> $GITHUB_PATH
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          cargo install mdbook-mermaid --version 0.17.0
-
-      - name: Build documentation
-        run: |
-          make docs
-          find docs -name '*toc*'
 
   clippy:
     name: Clippy

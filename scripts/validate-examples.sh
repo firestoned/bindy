@@ -24,26 +24,24 @@ TOTAL=0
 PASSED=0
 FAILED=0
 
-# Validate each YAML file
-for file in "$EXAMPLES_DIR"/*.yaml; do
-    if [ -f "$file" ]; then
-        TOTAL=$((TOTAL + 1))
-        filename=$(basename "$file")
+# Validate each YAML file (including subdirectories)
+while IFS= read -r file; do
+    TOTAL=$((TOTAL + 1))
+    relative_path="${file#$EXAMPLES_DIR/}"
 
-        echo -n "Validating $filename... "
+    echo -n "Validating $relative_path... "
 
-        if kubectl apply --dry-run=client -f "$file" > /dev/null 2>&1; then
-            echo -e "${GREEN}✓ PASS${NC}"
-            PASSED=$((PASSED + 1))
-        else
-            echo -e "${RED}✗ FAIL${NC}"
-            FAILED=$((FAILED + 1))
-            echo -e "${YELLOW}Error details:${NC}"
-            kubectl apply --dry-run=client -f "$file" 2>&1 | sed 's/^/  /'
-            echo
-        fi
+    if kubectl apply --dry-run=client -f "$file" > /dev/null 2>&1; then
+        echo -e "${GREEN}✓ PASS${NC}"
+        PASSED=$((PASSED + 1))
+    else
+        echo -e "${RED}✗ FAIL${NC}"
+        FAILED=$((FAILED + 1))
+        echo -e "${YELLOW}Error details:${NC}"
+        kubectl apply --dry-run=client -f "$file" 2>&1 | sed 's/^/  /'
+        echo
     fi
-done
+done < <(find "$EXAMPLES_DIR" -name "*.yaml" -o -name "*.yml" | sort)
 
 echo
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

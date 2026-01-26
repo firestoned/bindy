@@ -1,0 +1,31 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
+[tool.poetry]
+name = "bindy-docs"
+version = "0.1.0"
+description = "Documentation dependencies for Bindy - BIND9 DNS Operator for Kubernetes"
+authors = ["Erick Bourgeois <erick@firestoned.io>"]
+license = "MIT"
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.10"
+
+# Core MkDocs and Material theme
+mkdocs = "^1.5.3"
+mkdocs-material = "^9.5.0"
+
+# MkDocs plugins
+mkdocs-git-revision-date-localized-plugin = "^1.2.4"
+mkdocs-minify-plugin = "^0.8.0"
+mkdocs-redirects = "^1.2.1"
+mkdocs-macros-plugin = "^1.0.5"
+
+# Markdown extensions
+pymdown-extensions = "^10.7"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

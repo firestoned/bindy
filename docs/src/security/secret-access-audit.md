@@ -187,7 +187,7 @@ Audit logs are rotated and forwarded using Fluent Bit:
 - Audit logs filtered to only include secret access (`objectRef.resource secrets`)
 - Uploaded to S3 in `/audit/secrets/` prefix for easy querying
 - Compressed with gzip (10:1 compression ratio)
-- WORM protection via S3 Object Lock (see [AUDIT_LOG_RETENTION.md](AUDIT_LOG_RETENTION.md))
+- WORM protection via S3 Object Lock (see [audit-log-retention.md](audit-log-retention.md))
 
 ---
 
@@ -307,7 +307,7 @@ These queries are designed for use in Elasticsearch (Kibana) or direct S3 querie
 
 **Expected Output:** `0 hits` (only operator should access secrets)
 
-**If non-zero:** 🚨 **ALERT** - Unauthorized secret access detected, trigger incident response (see [INCIDENT_RESPONSE.md](INCIDENT_RESPONSE.md#p4-rndc-key-compromise))
+**If non-zero:** 🚨 **ALERT** - Unauthorized secret access detected, trigger incident response (see [incident-response.md](incident-response.md#p4-rndc-key-compromise))
 
 ---
 
@@ -522,8 +522,8 @@ groups:
             1. Check source IP: {{ $labels.sourceIP }}
             2. Review audit logs for full context
             3. Verify RBAC policy is applied correctly
-            4. Follow incident response: docs/security/INCIDENT_RESPONSE.md#p4
-          runbook_url: "https://github.com/firestoned/bindy/blob/main/docs/security/INCIDENT_RESPONSE.md#p4-rndc-key-compromise"
+            4. Follow incident response: docs/security/incident-response.md#p4
+          runbook_url: "https://github.com/firestoned/bindy/blob/main/docs/security/incident-response.md#p4-rndc-key-compromise"
 
       # HIGH: Excessive secret access (potential compromised operator)
       - alert: ExcessiveSecretAccess
@@ -577,7 +577,7 @@ groups:
             1. Review audit logs to identify source ServiceAccount/IP
             2. Verify RBAC policy is correct
             3. Check for recent RBAC changes
-          runbook_url: "https://github.com/firestoned/bindy/blob/main/docs/security/SECRET_ACCESS_AUDIT.md#q3-failed-secret-access-attempts-403-forbidden"
+          runbook_url: "https://github.com/firestoned/bindy/blob/main/docs/security/secret-access-audit.md#q3-failed-secret-access-attempts-403-forbidden"
 ```
 
 ### Alertmanager Routing
@@ -639,7 +639,7 @@ receivers:
 | SOX 404 Requirement | Bindy Implementation | Evidence |
 |---------------------|----------------------|----------|
 | Access logs for all privileged accounts | ✅ Kubernetes audit logs capture all secret access | Query Q1 (quarterly review) |
-| Logs retained for 7 years | ✅ S3 Glacier with WORM (Object Lock) | [AUDIT_LOG_RETENTION.md](AUDIT_LOG_RETENTION.md) |
+| Logs retained for 7 years | ✅ S3 Glacier with WORM (Object Lock) | [audit-log-retention.md](audit-log-retention.md) |
 | Quarterly access reviews | ✅ Run Query Q1, review access patterns | Scheduled Kibana report |
 | Separation of duties (no single person can access + modify) | ✅ Operator has read-only access (cannot create/update/delete) | RBAC policy verification |
 
@@ -740,8 +740,8 @@ Provide auditors with:
 | Basel III Requirement | Bindy Implementation | Evidence |
 |-----------------------|----------------------|----------|
 | Access monitoring | ✅ Real-time Prometheus alerts on unauthorized access | Alerting rules |
-| Incident response | ✅ Playbooks for secret compromise (P4) | [INCIDENT_RESPONSE.md](INCIDENT_RESPONSE.md#p4) |
-| Audit trail | ✅ Immutable audit logs (S3 WORM) | [AUDIT_LOG_RETENTION.md](AUDIT_LOG_RETENTION.md) |
+| Incident response | ✅ Playbooks for secret compromise (P4) | [incident-response.md](incident-response.md#p4-rndc-key-compromise) |
+| Audit trail | ✅ Immutable audit logs (S3 WORM) | [audit-log-retention.md](audit-log-retention.md) |
 | Quarterly risk reviews | ✅ Quarterly secret access reviews | Quarterly review reports |
 
 ---
@@ -750,7 +750,7 @@ Provide auditors with:
 
 ### When to Trigger Incident Response
 
-Trigger **[P4: RNDC Key Compromise](INCIDENT_RESPONSE.md#p4-rndc-key-compromise)** if:
+Trigger **[P4: RNDC Key Compromise](incident-response.md#p4-rndc-key-compromise)** if:
 
 1. **Unauthorized Secret Access** (Query Q2 returns results):
    - Non-operator ServiceAccount accessed secrets
@@ -767,7 +767,7 @@ Trigger **[P4: RNDC Key Compromise](INCIDENT_RESPONSE.md#p4-rndc-key-compromise)
 
 ### Incident Response Steps (Quick Reference)
 
-See full playbook: **[INCIDENT_RESPONSE.md - P4: RNDC Key Compromise](INCIDENT_RESPONSE.md#p4-rndc-key-compromise)**
+See full playbook: **[incident-response.md - P4: RNDC Key Compromise](incident-response.md#p4-rndc-key-compromise)**
 
 1. **Immediate (< 15 minutes):**
    - Rotate compromised secret (`kubectl create secret generic rndc-key-primary --from-literal=key=<new-key> --dry-run=client -o yaml | kubectl replace -f -`)
@@ -837,10 +837,10 @@ audit/secrets/2025/12/17/def456.json.gz: OK
 
 ## References
 
-- **[AUDIT_LOG_RETENTION.md](AUDIT_LOG_RETENTION.md)** - Audit log retention policy (7 years, S3 WORM)
-- **[INCIDENT_RESPONSE.md](INCIDENT_RESPONSE.md)** - P4: RNDC Key Compromise playbook
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - RBAC architecture and secrets management
-- **[THREAT_MODEL.md](THREAT_MODEL.md)** - STRIDE threat S2 (Tampered RNDC Keys)
+- **[audit-log-retention.md](audit-log-retention.md)** - Audit log retention policy (7 years, S3 WORM)
+- **[incident-response.md](incident-response.md)** - P4: RNDC Key Compromise playbook
+- **[architecture.md](architecture.md)** - RBAC architecture and secrets management
+- **[threat-model.md](threat-model.md)** - STRIDE threat S2 (Tampered RNDC Keys)
 - **PCI-DSS v4.0** - Requirement 7.1.2 (Least Privilege), 10.2.1 (Audit Logs)
 - **SOX 404** - IT General Controls (Access Control, Audit Logs)
 - **Basel III** - Cyber Risk Management Principles

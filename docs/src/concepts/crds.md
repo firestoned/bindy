@@ -157,5 +157,5 @@ All Bindy CRDs belong to the `bindy.firestoned.io` API group:
 - [Bind9Instance Details](./bind9instance.md)
 - [DNSZone Details](./dnszone.md)
 - [DNS Record Details](./records.md)
-- [RNDC-Based Architecture](./architecture-rndc.md)
+- [Protocol Reference](./architecture-protocols.md) - RNDC and HTTP API protocols
 - [API Reference](../reference/api.md)

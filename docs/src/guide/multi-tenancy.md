@@ -67,6 +67,7 @@ graph TB
 ```
 
 **Characteristics:**
+
 - Platform team manages `ClusterBind9Provider` (requires ClusterRole)
 - Application teams manage `DNSZone` and records in their namespace (requires Role)
 - Shared DNS infrastructure, distributed zone management
@@ -111,6 +112,7 @@ graph TB
 ```
 
 **Characteristics:**
+
 - Each team manages their own `Bind9Cluster` (namespace-scoped Role)
 - Complete isolation between teams
 - Teams have full autonomy over DNS configuration
@@ -128,12 +130,12 @@ metadata:
 rules:
 # Manage cluster-scoped cluster providers
 - apiGroups: ["bindy.firestoned.io"]
-  resources: ["bind9globalclusters"]
+  resources: ["clusterbind9providers"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
 # View cluster provider status
 - apiGroups: ["bindy.firestoned.io"]
-  resources: ["bind9globalclusters/status"]
+  resources: ["clusterbind9providers/status"]
   verbs: ["get", "list", "watch"]
 
 # Manage bind9 instances across all namespaces (for cluster providers)
@@ -553,7 +555,7 @@ rules:
   resources:
   - group: bindy.firestoned.io
     resources:
-    - bind9globalclusters
+    - clusterbind9providers
     - bind9clusters
     - dnszones
     - arecords
@@ -767,4 +769,4 @@ spec:
 
 - [Architecture Overview](architecture.md) - Understand the dual-cluster model
 - [Choosing a Cluster Type](choosing-cluster-type.md) - Decision guide
-- [Quickstart Guide](quickstart.md) - Get started with examples
+- [Step-by-Step Guide](../installation/step-by-step.md) - Get started with examples

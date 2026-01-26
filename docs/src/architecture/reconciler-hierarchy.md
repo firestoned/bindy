@@ -42,7 +42,7 @@ graph TD
 - **Spec changed**: Uses `should_reconcile()` to compare `metadata.generation` with `status.observed_generation`
 - **Desired vs actual state**: Verifies all `Bind9Cluster` resources exist in target namespaces
 
-**Implementation**: [`src/reconcilers/bind9globalcluster.rs`](../../src/reconcilers/bind9globalcluster.rs)
+**Implementation**: [`src/reconcilers/clusterbind9provider.rs`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/clusterbind9provider.rs)
 
 **Example**:
 ```yaml
@@ -82,7 +82,7 @@ Creates `Bind9Cluster` resources in each namespace: `platform-dns`, `team-web`, 
   - Verifies all `Bind9Instance` resources exist
   - Scales instances up/down based on `primaryReplicas` and `secondaryReplicas`
 
-**Implementation**: [`src/reconcilers/bind9cluster.rs`](../../src/reconcilers/bind9cluster.rs)
+**Implementation**: [`src/reconcilers/bind9cluster.rs`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/bind9cluster.rs)
 
 **Example**:
 ```yaml
@@ -123,7 +123,7 @@ Creates:
   - Checks if `Deployment` resource exists
   - Recreates missing resources if detected
 
-**Implementation**: [`src/reconcilers/bind9instance.rs`](../../src/reconcilers/bind9instance.rs)
+**Implementation**: [`src/reconcilers/bind9instance.rs`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/bind9instance.rs)
 
 **Drift Detection Logic**:
 ```rust
@@ -177,7 +177,7 @@ Creates: ServiceAccount, Secret, ConfigMap, Deployment, Service for `my-cluster-
   - Checks if zone exists using `zone_manager.zone_exists()` via HTTP API
   - Early returns if spec unchanged
 
-**Implementation**: [`src/reconcilers/dnszone.rs`](../../src/reconcilers/dnszone.rs)
+**Implementation**: [`src/reconcilers/dnszone.rs`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/dnszone.rs)
 
 **Protocol Details**:
 - **Zone operations**: HTTP API via bindcar sidecar (port 8080)
@@ -233,7 +233,7 @@ Creates zone `example.com` in all instances of `my-cluster` via HTTP API.
   - Checks if zone exists using HTTP API before adding records
   - Returns error if zone doesn't exist
 
-**Implementation**: [`src/reconcilers/records.rs`](../../src/reconcilers/records.rs)
+**Implementation**: [`src/reconcilers/records.rs`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/records.rs)
 
 **Protocol Details**:
 
@@ -281,7 +281,7 @@ All reconcilers implement the **"changed"** detection pattern, which means they 
 
 ### Implementation: `should_reconcile()`
 
-Located in [`src/reconcilers/mod.rs:127-133`](../../src/reconcilers/mod.rs#L127-L133):
+Located in [`src/reconcilers/mod.rs:127-133`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/mod.rs#L127-L133):
 
 ```rust
 pub fn should_reconcile(current_generation: Option<i64>, observed_generation: Option<i64>) -> bool {
@@ -414,7 +414,7 @@ graph TD
 
 #### 1. ClusterBind9Provider → Bind9Cluster
 
-**Location:** [`src/reconcilers/bind9globalcluster.rs:340-352`](../../src/reconcilers/bind9globalcluster.rs#L340-L352)
+**Location:** [`src/reconcilers/clusterbind9provider.rs:340-352`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/clusterbind9provider.rs#L340-L352)
 
 ```rust
 // Create ownerReference to cluster provider (cluster-scoped can own namespace-scoped)
@@ -436,7 +436,7 @@ let owner_ref = OwnerReference {
 
 #### 2. Bind9Cluster → Bind9Instance
 
-**Location:** [`src/reconcilers/bind9cluster.rs:592-599`](../../src/reconcilers/bind9cluster.rs#L592-L599)
+**Location:** [`src/reconcilers/bind9cluster.rs:592-599`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/bind9cluster.rs#L592-L599)
 
 ```rust
 // Create ownerReference to the Bind9Cluster
@@ -457,7 +457,7 @@ let owner_ref = OwnerReference {
 
 #### 3. Bind9Instance → Kubernetes Resources
 
-**Location:** [`src/bind9_resources.rs:188-197`](../../src/bind9_resources.rs#L188-L197)
+**Location:** [`src/bind9_resources.rs:188-197`](https://github.com/firestoned/bindy/blob/main/src/bind9_resources.rs#L188-L197)
 
 ```rust
 pub fn build_owner_references(instance: &Bind9Instance) -> Vec<OwnerReference> {
@@ -492,7 +492,7 @@ sequenceDiagram
     participant I as Bind9Instance<br/>Reconciler
     participant GC_Obj as Garbage<br/>Collector
 
-    User->>K8s: kubectl delete bind9globalcluster global-dns
+    User->>K8s: kubectl delete clusterbind9provider global-dns
     K8s->>GC: Reconcile (deletion_timestamp set)
     GC->>GC: Check finalizer present
 
@@ -601,7 +601,7 @@ ownerReferences:
 **Check Progress:**
 ```bash
 # Watch deletion progress
-kubectl get bind9globalcluster <name> -w
+kubectl get clusterbind9provider <name> -w
 
 # Check reconciler logs
 kubectl logs -n bindy-system -l app=bindy -f
@@ -609,10 +609,73 @@ kubectl logs -n bindy-system -l app=bindy -f
 
 ---
 
+## DNSZone Reconciliation Architecture Evolution
+
+### Before: Dual Operator Architecture (Deprecated)
+
+Prior to Phase 1-8 consolidation (January 2026), Bindy used a dual operator architecture with circular dependencies:
+
+**Problems:**
+- Two operators managing the same resource (DNSZone)
+- Circular dependencies: DNSZone → Bind9Instance.status.selectedZones → ZoneSync → DNSZone
+- Multiple status fields tracking the same information (`instances[]`, `syncStatus[]`, `selectedZones[]`)
+- Complex event-driven architecture with multiple reconciliation paths
+
+### After: Unified DNSZone Operator
+
+The consolidated architecture (current) uses a single DNSZone operator that:
+
+1. **Discovers Bind9Instances** via `clusterRef` and/or `bind9InstancesFrom` label selectors
+2. **Synchronizes zones** to selected instances via HTTP API
+3. **Tracks status** per instance in `status.bind9Instances[]`
+4. **Maintains conditions** based on instance health
+
+**Key Improvements:**
+- ✅ **Single reconciler**: DNSZone operator owns all zone operations
+- ✅ **No circular dependencies**: Unidirectional data flow
+- ✅ **Simplified status**: Single source of truth in `DNSZone.status`
+- ✅ **Better performance**: Fewer reconciliation loops
+- ✅ **Easier debugging**: Clear ownership and responsibility
+
+**Selection Methods:**
+
+DNSZone can select Bind9Instances in two ways:
+
+1. **Via clusterRef**: All instances with matching `spec.clusterRef`
+2. **Via bind9InstancesFrom**: Instances matching label selectors
+3. **BOTH**: UNION of instances from both methods (duplicates removed by UID)
+
+**Status Tracking:**
+
+```yaml
+status:
+  bind9Instances:
+    - name: primary-dns-0
+      namespace: dns-system
+      uid: abc-123
+      state: Configured
+      lastSyncTime: "2026-01-25T10:30:00Z"
+    - name: secondary-dns-0
+      namespace: dns-system
+      uid: def-456
+      state: Configured
+      lastSyncTime: "2026-01-25T10:30:05Z"
+  bind9InstancesCount: 2
+  observedGeneration: 5
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: AllInstancesConfigured
+```
+
+For detailed reconciliation flow, see [Architecture Overview](../guide/architecture.md#reconciliation-flow).
+
+---
+
 ## Related Documentation
 
-- [BIND9 HTTP API Architecture](../concepts/architecture-http-api.md)
-- [RNDC Authentication](../concepts/architecture-rndc.md)
-- [Custom Resource Definitions](../reference/api.md)
-- [Deployment Guide](../deployment/deployment.md)
-- [Labels and Annotations](../reference/labels-annotations.md)
+- [Architecture Overview](../concepts/architecture.md) - High-level system architecture
+- [Protocol Reference](../concepts/architecture-protocols.md) - HTTP API and RNDC protocols
+- [Label Selector Reconciliation](./label-selector-reconciliation.md) - Label selector logic details
+- [Custom Resource Definitions](../reference/api.md) - CRD API reference
+- [Labels and Annotations](../reference/labels-annotations.md) - Standard labels

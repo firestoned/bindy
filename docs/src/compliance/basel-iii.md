@@ -31,11 +31,11 @@ The Basel Committee published **Cyber Risk Principles** in 2018, which define ex
 
 | Control | Implementation | Evidence |
 |---------|----------------|----------|
-| **Security Policy** | Comprehensive security policy documented | [SECURITY.md](../../../SECURITY.md) |
-| **Threat Model** | STRIDE threat analysis with 15 threats | [Threat Model](../../security/THREAT_MODEL.md) |
-| **Security Architecture** | 5 security domains documented | [Security Architecture](../../security/ARCHITECTURE.md) |
-| **Incident Response** | 7 playbooks for critical/high incidents | [Incident Response](../../security/INCIDENT_RESPONSE.md) |
-| **Compliance Roadmap** | Tracking compliance implementation | [Compliance Roadmap](../../../.github/COMPLIANCE_ROADMAP.md) |
+| **Security Policy** | Comprehensive security policy documented | [SECURITY.md](https://github.com/firestoned/bindy/blob/mahttps://github.com/firestoned/bindy/blob/main/SECURITY.md) |
+| **Threat Model** | STRIDE threat analysis with 15 threats | [Threat Model](../security/threat-model.md) |
+| **Security Architecture** | 5 security domains documented | [Security Architecture](../security/architecture.md) |
+| **Incident Response** | 7 playbooks for critical/high incidents | [Incident Response](../security/incident-response.md) |
+| **Compliance Roadmap** | Tracking compliance implementation | [Compliance Roadmap](https://github.com/firestoned/bindy/blob/main/.github/COMPLIANCE_ROADMAP.md) |
 
 **Evidence:**
 - Security documentation (4,010 lines across 7 documents)
@@ -73,8 +73,8 @@ The Basel Committee published **Cyber Risk Principles** in 2018, which define ex
 | **Git Repository** | Public GitHub | LOW | ✅ Signed commits, branch protection, code review |
 
 **Evidence:**
-- [Threat Model](../../security/THREAT_MODEL.md) - 15 STRIDE threats, 5 attack scenarios
-- [Security Architecture](../../security/ARCHITECTURE.md) - Attack surface analysis
+- [Threat Model](../security/threat-model.md) - 15 STRIDE threats, 5 attack scenarios
+- [Security Architecture](../security/architecture.md) - Attack surface analysis
 - Quarterly risk reviews (documented in compliance roadmap)
 
 **Status:** ✅ **COMPLIANT** - Comprehensive risk identification and mitigation
@@ -90,7 +90,7 @@ The Basel Committee published **Cyber Risk Principles** in 2018, which define ex
 | Control | Implementation | Evidence |
 |---------|----------------|----------|
 | **Least Privilege RBAC** | Operator minimal RBAC (create/delete secrets for RNDC lifecycle, delete managed resources for cleanup) | `deploy/rbac/clusterrole.yaml` |
-| **Secret Access Monitoring** | All secret access logged and alerted | [Secret Access Audit Trail](../../security/SECRET_ACCESS_AUDIT.md) |
+| **Secret Access Monitoring** | All secret access logged and alerted | [Secret Access Audit Trail](../security/secret-access-audit.md) |
 | **Quarterly Access Reviews** | Security team reviews access every quarter | `docs/compliance/access-reviews/` |
 | **2FA Enforcement** | GitHub requires 2FA for all contributors | GitHub organization settings |
 | **Signed Commits** | Cryptographic proof of code authorship | Git commit signatures |
@@ -139,7 +139,7 @@ The Basel Committee published **Cyber Risk Principles** in 2018, which define ex
 | **LOW** | 0.1-3.9 | < 24 hours | 90 days | ✅ Enforced |
 
 **Evidence:**
-- [Vulnerability Management Policy](../../security/VULNERABILITY_MANAGEMENT.md)
+- [Vulnerability Management Policy](../security/vulnerability-management.md)
 - GitHub Security tab - Vulnerability scan results
 - `CHANGELOG.md` - Remediation history
 - Monthly vulnerability remediation reports
@@ -176,7 +176,7 @@ The Basel Committee published **Cyber Risk Principles** in 2018, which define ex
 | **Data Backup** | DNS zones in Git + etcd backups | < 4 hours | < 1 hour |
 
 **Evidence:**
-- [Incident Response Playbooks](../../security/INCIDENT_RESPONSE.md)
+- [Incident Response Playbooks](../security/incident-response.md)
 - Semi-annual tabletop exercise reports
 - Incident logs (if any occurred): S3 `bindy-audit-logs/incidents/`
 
@@ -204,7 +204,7 @@ The Basel Committee published **Cyber Risk Principles** in 2018, which define ex
 |---------|----------------|----------|
 | **Dependency Vetting** | Only use actively maintained dependencies (commits in last 6 months) | `Cargo.toml` review |
 | **Vulnerability Scanning** | Daily `cargo audit`, Trivy container scanning | GitHub Security tab |
-| **Supply Chain Security** | Signed commits, SBOM, reproducible builds | [Build Reproducibility](../../security/BUILD_REPRODUCIBILITY.md) |
+| **Supply Chain Security** | Signed commits, SBOM, reproducible builds | [Build Reproducibility](../security/build-reproducibility.md) |
 | **Vendor Assessments** | Annual review of critical vendors (BIND9, Kubernetes) | Vendor assessment reports |
 
 **Evidence:**
@@ -357,4 +357,4 @@ For Basel III operational risk reviews, provide:
 - [Incident Response](../security/incident-response.md) - 7 playbooks (P1-P7)
 - [Vulnerability Management](../security/vulnerability-management.md) - Remediation SLAs
 - [Audit Log Retention](../security/audit-log-retention.md) - Long-term log retention
-- [Compliance Roadmap](../../../.github/COMPLIANCE_ROADMAP.md) - Tracking compliance progress
+- [Compliance Roadmap](https://github.com/firestoned/bindy/blob/main/.github/COMPLIANCE_ROADMAP.md) - Tracking compliance progress

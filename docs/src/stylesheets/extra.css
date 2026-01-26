@@ -1,0 +1,246 @@
+/* Copyright (c) 2025 Erick Bourgeois, firestoned
+ * SPDX-License-Identifier: MIT
+ */
+
+/**
+ * Bindy Documentation - Custom Styles for MkDocs Material
+ *
+ * This file contains custom styles adapted from the mdBook theme to
+ * maintain visual consistency during the migration to MkDocs Material.
+ */
+
+/* ============================================
+   Right-side Page TOC (Table of Contents)
+   ============================================
+   Material theme has built-in TOC, but we can enhance it
+   to match the previous mdBook styling.
+*/
+
+/* Material already has a right TOC with toc.integrate: false in config
+   These styles enhance it to match our previous look */
+
+.md-sidebar--secondary {
+    /* Sticky positioning is already handled by Material */
+    /* We just need to adjust styling to match our previous theme */
+}
+
+.md-sidebar--secondary .md-sidebar__scrollwrap {
+    /* Scrollbar styling */
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+
+.md-sidebar--secondary .md-sidebar__scrollwrap::-webkit-scrollbar {
+    width: 6px;
+}
+
+.md-sidebar--secondary .md-sidebar__scrollwrap::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.md-sidebar--secondary .md-sidebar__scrollwrap::-webkit-scrollbar-thumb {
+    background-color: rgba(0, 0, 0, 0.2);
+    border-radius: 3px;
+}
+
+.md-sidebar--secondary .md-sidebar__scrollwrap::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(0, 0, 0, 0.3);
+}
+
+/* TOC link styling */
+.md-nav--secondary .md-nav__link {
+    transition: all 0.15s ease;
+}
+
+.md-nav--secondary .md-nav__link:hover {
+    color: var(--md-accent-fg-color);
+}
+
+.md-nav--secondary .md-nav__link.md-nav__link--active {
+    font-weight: 500;
+    color: var(--md-accent-fg-color);
+}
+
+/* ============================================
+   Mermaid Diagram Enhancements
+   ============================================ */
+
+/* Enable better display for Mermaid diagrams */
+.mermaid {
+    text-align: center;
+    margin: 1.5rem 0;
+}
+
+/* Allow diagrams to be scrollable if too wide */
+.mermaid svg {
+    max-width: 100%;
+    height: auto;
+}
+
+/* Mermaid container with overflow handling */
+pre.mermaid {
+    overflow-x: auto;
+    padding: 1rem;
+    border-radius: 0.2rem;
+    background-color: var(--md-code-bg-color);
+}
+
+/* Dark mode adjustments for Mermaid */
+[data-md-color-scheme="slate"] .mermaid {
+    filter: invert(0.9) hue-rotate(180deg);
+}
+
+/* ============================================
+   Code Block Enhancements
+   ============================================ */
+
+/* Ensure code blocks have consistent styling */
+.highlight pre {
+    padding: 1rem;
+    overflow-x: auto;
+    line-height: 1.5;
+}
+
+/* Copy button positioning */
+.md-clipboard {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+}
+
+/* ============================================
+   Admonition Customization
+   ============================================ */
+
+/* Ensure admonitions have appropriate spacing */
+.admonition {
+    margin: 1.5rem 0;
+}
+
+/* ============================================
+   Table Styling
+   ============================================ */
+
+/* Ensure tables are responsive */
+.md-typeset table:not([class]) {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+}
+
+.md-typeset table:not([class]) th {
+    font-weight: 600;
+    border-bottom: 2px solid var(--md-default-fg-color--lighter);
+}
+
+/* ============================================
+   Navigation Enhancements
+   ============================================ */
+
+/* Improve tab navigation visibility */
+.md-tabs {
+    background-color: var(--md-primary-fg-color);
+}
+
+.md-tabs__link {
+    transition: background-color 0.2s ease;
+}
+
+.md-tabs__link:hover {
+    background-color: rgba(0, 0, 0, 0.1);
+}
+
+/* ============================================
+   Mobile Responsiveness
+   ============================================ */
+
+/* Hide secondary sidebar on smaller screens (Material handles this by default) */
+@media screen and (max-width: 76.1875em) {
+    .md-sidebar--secondary {
+        display: none;
+    }
+}
+
+/* ============================================
+   Print Styles
+   ============================================ */
+
+@media print {
+    /* Hide navigation elements when printing */
+    .md-header,
+    .md-tabs,
+    .md-sidebar,
+    .md-footer {
+        display: none !important;
+    }
+
+    /* Ensure content is full width when printing */
+    .md-content {
+        max-width: 100% !important;
+    }
+
+    /* Improve code block printing */
+    .highlight pre {
+        white-space: pre-wrap;
+        word-wrap: break-word;
+    }
+}
+
+/* ============================================
+   Custom Improvements Beyond mdBook
+   ============================================ */
+
+/* Add smooth scrolling */
+html {
+    scroll-behavior: smooth;
+}
+
+/* Improve link hover effects */
+.md-content a:hover {
+    text-decoration: underline;
+}
+
+/* Better focus indicators for accessibility */
+a:focus,
+button:focus {
+    outline: 2px solid var(--md-accent-fg-color);
+    outline-offset: 2px;
+}
+
+/* Improve heading anchor links */
+.headerlink {
+    opacity: 0;
+    transition: opacity 0.2s ease;
+    margin-left: 0.5rem;
+}
+
+h1:hover .headerlink,
+h2:hover .headerlink,
+h3:hover .headerlink,
+h4:hover .headerlink,
+h5:hover .headerlink,
+h6:hover .headerlink {
+    opacity: 1;
+}
+
+/* ============================================
+   Version Banner (for future use)
+   ============================================ */
+
+.version-banner {
+    background-color: var(--md-accent-fg-color);
+    color: white;
+    padding: 0.75rem 1rem;
+    text-align: center;
+    font-weight: 500;
+}
+
+.version-banner a {
+    color: white;
+    text-decoration: underline;
+}
+
+.version-banner a:hover {
+    opacity: 0.9;
+}

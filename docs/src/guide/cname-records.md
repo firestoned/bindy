@@ -299,4 +299,4 @@ blog.example.com.  300  IN  CNAME  www.example.com
 - [A Records (IPv4)](./a-records.md)
 - [AAAA Records (IPv6)](./aaaa-records.md)
 - [DNS Records Guide](./records-guide.md)
-- [DNSZone Custom Resource](./dns-zones.md)
+- [DNSZone Custom Resource](./zones.md)
