@@ -298,13 +298,13 @@ CI/CD fails if vulnerabilities are found. Update dependencies promptly.
 
 ## Getting Help
 
-- **Setup Issues**: See [CONTRIBUTING.md](../CONTRIBUTING.md)
+- **Setup Issues**: See [CONTRIBUTING.md](https://github.com/firestoned/bindy/blob/main/CONTRIBUTING.md)
 - **Security Incidents**: Email security@firestoned.io
 - **Compliance Questions**: Email compliance@firestoned.io
 
 ## References
 
-- [CONTRIBUTING.md](../CONTRIBUTING.md) - Full contributing guide
-- [SECURITY.md](../SECURITY.md) - Security policy
+- [CONTRIBUTING.md](https://github.com/firestoned/bindy/blob/main/CONTRIBUTING.md) - Full contributing guide
+- [SECURITY.md](https://github.com/firestoned/bindy/blob/main/SECURITY.md) - Security policy
 - [GitHub Commit Signing Docs](https://docs.github.com/en/authentication/managing-commit-signature-verification)
 - [SLSA Framework](https://slsa.dev/)

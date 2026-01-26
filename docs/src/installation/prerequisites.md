@@ -217,5 +217,5 @@ yes
 Once your environment meets these prerequisites:
 
 1. [Install CRDs](./crds.md)
-2. [Deploy the Operator](./operator.md)
-3. [Quick Start Guide](./quickstart.md)
+2. [Deploy the Operator](./controller.md)
+3. [Step-by-Step Guide](./step-by-step.md)

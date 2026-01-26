@@ -401,6 +401,6 @@ spec:
 ## Next Steps
 
 - [DNS Records](./records.md) - Add records to zones
-- [RNDC-Based Architecture](./architecture-rndc.md) - Learn how RNDC protocol works
+- [Protocol Reference](./architecture-protocols.md) - Learn how RNDC and HTTP API protocols work
 - [Bind9Instance](./bind9instance.md) - Learn about BIND9 instance resources
 - [Creating Zones](../guide/creating-zones.md) - Zone management guide

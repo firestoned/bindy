@@ -348,7 +348,7 @@ spec:
     ns3.example.com: "192.0.2.3"
 ```
 
-**Migration**: See [Migration Guide](../operations/migration-guide.md#migrating-from-nameserverips-to-nameservers) for how to migrate to `nameServers`.
+**Migration**: See [Migration Guide](../operations/migration-guide.md#migrating-from-nameserverips-to-nameservers-v040) for how to migrate to `nameServers`.
 
 **Backward Compatibility**: Existing zones using `nameServerIps` will continue to work with a deprecation warning in operator logs.
 
@@ -574,4 +574,4 @@ When you create a DNSZone resource:
 - [Bind9Instance Specification](./bind9instance-spec.md)
 - [Record Specifications](./record-specs.md)
 - [Creating Zones Guide](../guide/creating-zones.md)
-- [RNDC-Based Architecture](../concepts/architecture-rndc.md)
+- [Protocol Reference](../concepts/architecture-protocols.md) - RNDC and HTTP API documentation

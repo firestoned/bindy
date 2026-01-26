@@ -150,5 +150,5 @@ apt-get install build-essential
 
 ## Next Steps
 
-- [Running Tests](./testing.md) - Test your build
+- [Testing Guide](./testing-guide.md) - Test your build
 - [Development Workflow](./workflow.md) - Daily development

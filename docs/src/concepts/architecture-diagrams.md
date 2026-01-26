@@ -590,6 +590,5 @@ graph TB
 ## Related Documentation
 
 - [Architecture Overview](./architecture.md) - Detailed text description
-- [RNDC Architecture](./architecture-rndc.md) - RNDC protocol details
-- [Technical Architecture](./architecture-technical.md) - Implementation specifics
+- [Protocol Reference](./architecture-protocols.md) - RNDC and HTTP API protocol details
 - [CRD Specifications](./crds.md) - Custom resource definitions

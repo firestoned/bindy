@@ -34,9 +34,9 @@ The NIST Cybersecurity Framework (CSF) is a voluntary framework developed by the
 | **ID.SC** (Supply Chain Risk Management) | Third-party dependencies assessed | Daily `cargo audit`, Trivy scanning, SBOM | ✅ Complete |
 
 **Evidence:**
-- [Threat Model](../../security/THREAT_MODEL.md) - STRIDE threat analysis
-- [Security Architecture](../../security/ARCHITECTURE.md) - Asset inventory, trust boundaries
-- [Compliance Roadmap](../../../.github/COMPLIANCE_ROADMAP.md) - Risk mitigation tracking
+- [Threat Model](../security/threat-model.md) - STRIDE threat analysis
+- [Security Architecture](../security/architecture.md) - Asset inventory, trust boundaries
+- [Compliance Roadmap](https://github.com/firestoned/bindy/blob/main/.github/COMPLIANCE_ROADMAP.md) - Risk mitigation tracking
 - `Cargo.toml`, `Cargo.lock`, SBOM - Dependency inventory
 
 **Identify Function:** ✅ **90% Complete** (Asset management, risk assessment done; needs supply chain deep dive)
@@ -60,8 +60,8 @@ The NIST Cybersecurity Framework (CSF) is a voluntary framework developed by the
 
 **Evidence:**
 - RBAC policy: `deploy/rbac/clusterrole.yaml`
-- [Secret Access Audit Trail](../../security/SECRET_ACCESS_AUDIT.md)
-- [Vulnerability Management Policy](../../security/VULNERABILITY_MANAGEMENT.md)
+- [Secret Access Audit Trail](../security/secret-access-audit.md)
+- [Vulnerability Management Policy](../security/vulnerability-management.md)
 - Kubernetes Security Context: `deploy/operator/deployment.yaml` (non-root, read-only FS)
 
 **Protect Function:** ✅ **80% Complete** (Strong access controls, data protection; needs NetworkPolicies L-1)
@@ -91,7 +91,7 @@ The NIST Cybersecurity Framework (CSF) is a voluntary framework developed by the
 
 **Evidence:**
 - Prometheus alerting rules: `deploy/monitoring/alerts/bindy-secret-access.yaml`
-- [Secret Access Audit Trail](../../security/SECRET_ACCESS_AUDIT.md) - Alert definitions
+- [Secret Access Audit Trail](../security/secret-access-audit.md) - Alert definitions
 - GitHub Actions workflows: Daily security scans
 
 **Detect Function:** ⚠️ **60% Complete** (Anomaly detection done; needs network monitoring L-1)
@@ -114,13 +114,13 @@ The NIST Cybersecurity Framework (CSF) is a voluntary framework developed by the
 
 | Playbook | NIST Phases Covered | Response Time | Evidence |
 |----------|---------------------|---------------|----------|
-| **P1: Critical Vulnerability** | Preparation, Detection, Containment, Eradication, Recovery | < 15 min | [P1 Playbook](../../security/INCIDENT_RESPONSE.md#p1) |
-| **P2: Compromised Operator** | All phases | < 15 min | [P2 Playbook](../../security/INCIDENT_RESPONSE.md#p2) |
-| **P3: DNS Service Outage** | Detection, Containment, Recovery | < 15 min | [P3 Playbook](../../security/INCIDENT_RESPONSE.md#p3) |
-| **P4: RNDC Key Compromise** | All phases | < 15 min | [P4 Playbook](../../security/INCIDENT_RESPONSE.md#p4) |
-| **P5: Unauthorized DNS Changes** | All phases | < 1 hour | [P5 Playbook](../../security/INCIDENT_RESPONSE.md#p5) |
-| **P6: DDoS Attack** | Detection, Containment, Recovery | < 15 min | [P6 Playbook](../../security/INCIDENT_RESPONSE.md#p6) |
-| **P7: Supply Chain Compromise** | All phases | < 15 min | [P7 Playbook](../../security/INCIDENT_RESPONSE.md#p7) |
+| **P1: Critical Vulnerability** | Preparation, Detection, Containment, Eradication, Recovery | < 15 min | [P1 Playbook](../security/incident-response.md#p1-critical-vulnerability-detected) |
+| **P2: Compromised Operator** | All phases | < 15 min | [P2 Playbook](../security/incident-response.md#p2-compromised-operator-pod) |
+| **P3: DNS Service Outage** | Detection, Containment, Recovery | < 15 min | [P3 Playbook](../security/incident-response.md#p3-dns-service-outage) |
+| **P4: RNDC Key Compromise** | All phases | < 15 min | [P4 Playbook](../security/incident-response.md#p4-rndc-key-compromise) |
+| **P5: Unauthorized DNS Changes** | All phases | < 1 hour | [P5 Playbook](../security/incident-response.md#p5-unauthorized-dns-changes) |
+| **P6: DDoS Attack** | Detection, Containment, Recovery | < 15 min | [P6 Playbook](../security/incident-response.md#p6-ddos-attack) |
+| **P7: Supply Chain Compromise** | All phases | < 15 min | [P7 Playbook](../security/incident-response.md#p7-supply-chain-compromise) |
 
 **NIST Incident Response Lifecycle:**
 
@@ -130,7 +130,7 @@ The NIST Cybersecurity Framework (CSF) is a voluntary framework developed by the
 4. **Post-Incident Activity** ✅ - Post-mortem template, lessons learned, action items
 
 **Evidence:**
-- [Incident Response Playbooks](../../security/INCIDENT_RESPONSE.md)
+- [Incident Response Playbooks](../security/incident-response.md)
 - Post-incident review template (in playbooks)
 - Semi-annual tabletop exercise reports
 

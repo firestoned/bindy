@@ -10,7 +10,8 @@ env/
 .venv
 
 # Poetry
-poetry.lock
+# NOTE: poetry.lock should be tracked for reproducible builds
+# Only ignore it in specific non-library projects if needed
 
 # IDE
 .vscode/
@@ -70,6 +71,10 @@ coverage/
 # Documentation
 /docs/target/
 /docs/book/
+/site
+# MkDocs build output
+/docs/site/
 
 # bind9-rndc-api
 bind9-rndc-api/target/
+docs/.venv/

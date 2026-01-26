@@ -72,7 +72,7 @@ gh api repos/firestoned/bindy/branches/main/protection | jq
 | **Ephemeral Environment** | Fresh GitHub-hosted runners for each build | GitHub Actions logs |
 | **Isolated** | Build cannot access secrets or network (after deps fetched) | GitHub Actions sandboxing |
 | **Hermetic** | ⚠️ Partial - `cargo fetch` uses network | Working toward full hermetic |
-| **Reproducible** | Two builds from same commit = identical binary | [Build Reproducibility](../../security/BUILD_REPRODUCIBILITY.md) |
+| **Reproducible** | Two builds from same commit = identical binary | [Build Reproducibility](../security/build-reproducibility.md) |
 
 **Build Reproducibility Verification:**
 
@@ -94,7 +94,7 @@ scripts/verify-build.sh v0.1.0
 5. **Base image updates** → Pin base image digests in Dockerfile
 
 **Evidence:**
-- [Build Reproducibility Documentation](../../security/BUILD_REPRODUCIBILITY.md)
+- [Build Reproducibility Documentation](../security/build-reproducibility.md)
 - CI/CD workflow: `.github/workflows/reproducibility-check.yaml`
 - Verification script: `scripts/verify-build.sh`
 
@@ -200,5 +200,5 @@ docker trust inspect ghcr.io/firestoned/bindy:v0.1.0
 - [Build Reproducibility Verification](../security/build-reproducibility.md) - SLSA Level 3 verification
 - [Security Architecture](../security/architecture.md) - Supply chain security
 - [Vulnerability Management](../security/vulnerability-management.md) - Dependency tracking
-- [SECURITY.md](../../../SECURITY.md) - Supply chain security section
+- [SECURITY.md](https://github.com/firestoned/bindy/blob/mahttps://github.com/firestoned/bindy/blob/main/SECURITY.md) - Supply chain security section
 - [SLSA Framework](https://slsa.dev/) - Official SLSA documentation

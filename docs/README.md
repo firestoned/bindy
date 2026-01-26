@@ -26,8 +26,8 @@ Build both mdBook and rustdoc:
 make docs
 ```
 
-This creates a combined documentation site in `docs/target/site/` with:
-- User and developer guides (mdBook)
+This creates a combined documentation site in `docs/site/` with:
+- User and developer guides (MkDocs Material)
 - API reference (rustdoc) at `/rustdoc/`
 
 ### Build and Serve Locally
