@@ -16,6 +16,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn create_test_instance(name: &str) -> Bind9Instance {
+        #[allow(deprecated)]
         Bind9Instance {
             metadata: ObjectMeta {
                 name: Some(name.into()),
@@ -46,6 +47,7 @@ mod tests {
                 volumes: None,
                 volume_mounts: None,
                 rndc_secret_ref: None,
+                rndc_keys: None,
                 storage: None,
                 bindcar_config: None,
             },

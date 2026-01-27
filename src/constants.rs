@@ -240,6 +240,73 @@ pub const ANNOTATION_ZONE_OWNER: &str = "bindy.firestoned.io/zone";
 pub const ANNOTATION_ZONE_PREVIOUS_OWNER: &str = "bindy.firestoned.io/previous-zone";
 
 // ============================================================================
+// RNDC Key Rotation Constants
+// ============================================================================
+
+/// Annotation key for RNDC key creation timestamp (ISO 8601 format)
+///
+/// Tracks when the current RNDC key was created or last rotated.
+/// Used by the rotation reconciler to determine when rotation is due.
+///
+/// Example value: `"2025-01-26T10:00:00Z"`
+pub const ANNOTATION_RNDC_CREATED_AT: &str = "bindy.firestoned.io/rndc-created-at";
+
+/// Annotation key for RNDC key rotation timestamp (ISO 8601 format)
+///
+/// Tracks when the RNDC key should be rotated next.
+/// Calculated as: `created_at + rotate_after`
+///
+/// Only present when `auto_rotate` is enabled.
+///
+/// Example value: `"2025-02-25T10:00:00Z"` (30 days after creation)
+pub const ANNOTATION_RNDC_ROTATE_AT: &str = "bindy.firestoned.io/rndc-rotate-at";
+
+/// Annotation key for RNDC key rotation count
+///
+/// Tracks the number of times the RNDC key has been rotated.
+/// Starts at `0` for newly-created keys and increments on each rotation.
+///
+/// Example value: `"5"` (key has been rotated 5 times)
+pub const ANNOTATION_RNDC_ROTATION_COUNT: &str = "bindy.firestoned.io/rndc-rotation-count";
+
+/// Annotation key for tracking pod restarts after RNDC rotation
+///
+/// Added to Deployment pod template to trigger rolling restart when RNDC key is rotated.
+/// Value is the timestamp when rotation occurred (ISO 8601 format).
+///
+/// Example value: `"2025-01-26T10:30:00Z"`
+pub const ANNOTATION_RNDC_ROTATED_AT: &str = "bindy.firestoned.io/rndc-rotated-at";
+
+/// Minimum rotation interval in hours (1 hour)
+///
+/// RNDC keys cannot be rotated more frequently than once per hour.
+/// This prevents infinite reconciliation loops and rate-limits rotation operations.
+pub const MIN_ROTATION_INTERVAL_HOURS: u64 = 1;
+
+/// Maximum rotation interval in hours (8760 hours = 365 days = 1 year)
+///
+/// RNDC keys must be rotated at least once per year for security compliance.
+/// This is the upper bound for the `rotate_after` configuration.
+pub const MAX_ROTATION_INTERVAL_HOURS: u64 = 8760;
+
+/// Default rotation interval (720 hours = 30 days)
+///
+/// Default value for the `rotate_after` field when `auto_rotate` is enabled.
+/// Balances security (regular rotation) with operational stability (not too frequent).
+///
+/// This is specified as a Go duration string: `"720h"`
+pub const DEFAULT_ROTATION_INTERVAL: &str = "720h";
+
+/// Minimum time between rotations in hours (1 hour)
+///
+/// Even if rotation is due (based on `rotate_at` timestamp), the reconciler
+/// will not rotate a key if it was created or rotated within the last hour.
+///
+/// This prevents rapid successive rotations in edge cases (e.g., clock skew,
+/// manual timestamp manipulation, reconciliation loops).
+pub const MIN_TIME_BETWEEN_ROTATIONS_HOURS: i64 = 1;
+
+// ============================================================================
 // Kubernetes API Client Rate Limiting Constants
 // ============================================================================
 

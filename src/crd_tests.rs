@@ -350,6 +350,7 @@ mod tests {
             volumes: None,
             volume_mounts: None,
             rndc_secret_ref: None,
+            rndc_keys: None,
             storage: None,
             bindcar_config: None,
         };
@@ -386,6 +387,7 @@ mod tests {
             cluster_ref: None,
             zones: Vec::new(),
             zones_count: None,
+            rndc_key_rotation: None,
         };
 
         assert_eq!(status.conditions.len(), 1);
@@ -405,6 +407,7 @@ mod tests {
             cluster_ref: None,
             zones: Vec::new(),
             zones_count: None,
+            rndc_key_rotation: None,
         };
 
         // Test that serialization works
@@ -504,6 +507,7 @@ mod tests {
             cluster_ref: None,
             zones: Vec::new(),
             zones_count: None,
+            rndc_key_rotation: None,
         };
 
         assert_eq!(status.conditions.len(), 2);
@@ -576,6 +580,7 @@ mod tests {
             cluster_ref: None,
             zones: Vec::new(),
             zones_count: None,
+            rndc_key_rotation: None,
         };
 
         assert_eq!(status.conditions[0].r#type, "Degraded");
@@ -599,6 +604,7 @@ mod tests {
             cluster_ref: None,
             zones: Vec::new(),
             zones_count: None,
+            rndc_key_rotation: None,
         };
 
         assert_eq!(status.conditions[0].r#type, "Failed");
@@ -669,6 +675,7 @@ mod tests {
             cluster_ref: None,
             zones: Vec::new(),
             zones_count: None,
+            rndc_key_rotation: None,
         };
 
         assert_eq!(status.conditions.len(), 0);
@@ -684,6 +691,7 @@ mod tests {
             cluster_ref: None,
             zones: Vec::new(),
             zones_count: None,
+            rndc_key_rotation: None,
         };
 
         // Observed generation tracks which generation of the resource was last reconciled

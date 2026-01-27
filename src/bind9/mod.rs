@@ -36,6 +36,7 @@
 //! ```
 
 // Module declarations
+pub mod duration;
 pub mod records;
 pub mod rndc;
 pub mod types;

@@ -120,6 +120,7 @@ mod tests {
                 cluster_ref: None,
                 zones: Vec::new(),
                 zones_count: None,
+                rndc_key_rotation: None,
             })
         } else {
             Some(Bind9InstanceStatus {
@@ -135,9 +136,11 @@ mod tests {
                 cluster_ref: None,
                 zones: Vec::new(),
                 zones_count: None,
+                rndc_key_rotation: None,
             })
         };
 
+        #[allow(deprecated)]
         Bind9Instance {
             metadata: ObjectMeta {
                 name: Some(name.to_string()),
@@ -156,6 +159,7 @@ mod tests {
                 volumes: None,
                 volume_mounts: None,
                 rndc_secret_ref: None,
+                rndc_keys: None,
                 storage: None,
                 bindcar_config: None,
             },

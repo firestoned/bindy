@@ -358,6 +358,8 @@ pub(super) async fn update_existing_managed_instances(
             );
 
             // Build updated instance spec - preserve instance-specific fields, update cluster-inherited fields
+            #[allow(deprecated)]
+            // Backward compatibility: preserve deprecated rndc_secret_ref if set
             let updated_spec = Bind9InstanceSpec {
                 cluster_ref: instance.spec.cluster_ref.clone(),
                 role: instance.spec.role.clone(),
@@ -369,7 +371,8 @@ pub(super) async fn update_existing_managed_instances(
                 primary_servers: instance.spec.primary_servers.clone(), // Preserve if set
                 volumes: common_spec.volumes.clone(),
                 volume_mounts: common_spec.volume_mounts.clone(),
-                rndc_secret_ref: instance.spec.rndc_secret_ref.clone(), // Preserve if set
+                rndc_secret_ref: instance.spec.rndc_secret_ref.clone(), // Preserve if set (deprecated)
+                rndc_keys: instance.spec.rndc_keys.clone(),             // Preserve if set
                 storage: instance.spec.storage.clone(),                 // Preserve if set
                 bindcar_config: desired_bindcar_config,
             };
@@ -646,6 +649,7 @@ async fn create_managed_instance_with_owner(
     );
 
     // Build instance spec - copy configuration from cluster
+    #[allow(deprecated)] // Backward compatibility: include deprecated rndc_secret_ref field
     let instance_spec = Bind9InstanceSpec {
         cluster_ref: cluster_name.to_string(),
         role,
@@ -657,7 +661,8 @@ async fn create_managed_instance_with_owner(
         primary_servers: None, // TODO: Could populate for secondaries
         volumes: common_spec.volumes.clone(),
         volume_mounts: common_spec.volume_mounts.clone(),
-        rndc_secret_ref: None, // Inherit from cluster/role config
+        rndc_secret_ref: None, // Inherit from cluster/role config (deprecated)
+        rndc_keys: None,       // Inherit from cluster/role config
         storage: None,         // Use default (emptyDir)
         bindcar_config: common_spec
             .global

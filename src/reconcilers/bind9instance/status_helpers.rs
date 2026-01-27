@@ -239,6 +239,7 @@ pub(super) async fn update_status(
         cluster_ref,
         zones,
         zones_count,
+        rndc_key_rotation: None, // Will be populated by rotation reconciler
     };
 
     let patch = json!({ "status": new_status });
