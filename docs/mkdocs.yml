@@ -64,7 +64,7 @@ theme:
 
     # Table of contents
     - toc.follow               # TOC follows scroll
-    - toc.integrate            # Integrate TOC into navigation (can disable for right sidebar)
+    # - toc.integrate          # Integrate TOC into navigation (disabled to show right sidebar)
 
     # Search
     - search.suggest           # Search suggestions
