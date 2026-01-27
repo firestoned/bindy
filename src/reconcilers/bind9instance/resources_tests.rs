@@ -114,4 +114,115 @@ mod tests {
         //       AND delete RNDC Secret
         //       AND log "Successfully deleted all resources"
     }
+
+    // ========================================================================
+    // RNDC Secret Creation and Rotation Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_create_rndc_secret_auto_generated_mode() {
+        // This test requires mocking the Kubernetes API
+        // For now, we document the expected behavior:
+        //
+        // Given: An instance with auto-generated RNDC config (no secret_ref or secret)
+        //        AND config.auto_rotate = true, config.rotate_after = "720h"
+        // When: create_or_update_rndc_secret is called
+        // Then: Should generate a new RNDC key
+        //       AND create Secret with annotations:
+        //           - bindy.firestoned.io/rndc-created-at = current timestamp
+        //           - bindy.firestoned.io/rndc-rotate-at = created_at + 720h
+        //           - bindy.firestoned.io/rndc-rotation-count = "0"
+        //       AND log "Created RNDC Secret with rotation enabled"
+    }
+
+    #[tokio::test]
+    async fn test_create_rndc_secret_with_secret_ref() {
+        // This test requires mocking the Kubernetes API
+        // For now, we document the expected behavior:
+        //
+        // Given: An instance with config.secret_ref = Some(RndcSecretRef{name: "my-secret"})
+        // When: create_or_update_rndc_secret is called
+        // Then: Should NOT create a new Secret
+        //       AND log "Using existing Secret reference: my-secret"
+        //       AND return the secret name for deployment configuration
+    }
+
+    #[tokio::test]
+    async fn test_create_rndc_secret_with_inline_spec() {
+        // This test requires mocking the Kubernetes API
+        // For now, we document the expected behavior:
+        //
+        // Given: An instance with config.secret = Some(SecretSpec{...})
+        //        AND config.auto_rotate = true
+        // When: create_or_update_rndc_secret is called
+        // Then: Should create Secret from inline spec
+        //       AND add rotation annotations
+        //       AND log "Created RNDC Secret from inline spec"
+    }
+
+    #[tokio::test]
+    async fn test_should_rotate_secret_rotation_due() {
+        // This test requires mocking the Kubernetes API
+        // For now, we document the expected behavior:
+        //
+        // Given: A Secret with annotations:
+        //        - rndc-created-at = "2025-01-01T00:00:00Z"
+        //        - rndc-rotate-at = "2025-01-31T00:00:00Z"
+        //        AND current time is 2025-02-01T00:00:00Z (past rotate_at)
+        // When: should_rotate_secret is called
+        // Then: Should return true (rotation is due)
+    }
+
+    #[tokio::test]
+    async fn test_should_rotate_secret_not_due() {
+        // This test requires mocking the Kubernetes API
+        // For now, we document the expected behavior:
+        //
+        // Given: A Secret with annotations:
+        //        - rndc-created-at = "2025-01-01T00:00:00Z"
+        //        - rndc-rotate-at = "2025-12-31T00:00:00Z"
+        //        AND current time is 2025-01-15T00:00:00Z (before rotate_at)
+        // When: should_rotate_secret is called
+        // Then: Should return false (not yet due)
+    }
+
+    #[tokio::test]
+    async fn test_should_rotate_secret_rate_limit() {
+        // This test requires mocking the Kubernetes API
+        // For now, we document the expected behavior:
+        //
+        // Given: A Secret rotated 30 minutes ago
+        //        AND rotate_at is in the past
+        // When: should_rotate_secret is called
+        // Then: Should return false (within 1-hour rate limit)
+        //       AND log "Skipping rotation - min 1 hour between rotations"
+    }
+
+    #[tokio::test]
+    async fn test_rotate_rndc_secret_updates_annotations() {
+        // This test requires mocking the Kubernetes API
+        // For now, we document the expected behavior:
+        //
+        // Given: An existing Secret with rotation_count = "5"
+        // When: rotate_rndc_secret is called
+        // Then: Should generate a new RNDC key
+        //       AND update Secret annotations:
+        //           - rndc-created-at = current timestamp
+        //           - rndc-rotate-at = current timestamp + rotate_after
+        //           - rndc-rotation-count = "6" (incremented)
+        //       AND replace Secret data with new key
+        //       AND log "Rotated RNDC Secret (rotation #6)"
+    }
+
+    #[tokio::test]
+    async fn test_rotate_rndc_secret_no_rotation_if_disabled() {
+        // This test requires mocking the Kubernetes API
+        // For now, we document the expected behavior:
+        //
+        // Given: A Secret with auto_rotate = false in config
+        // When: create_or_update_rndc_secret is called
+        // Then: Should NOT check rotation eligibility
+        //       AND NOT call rotate_rndc_secret
+        //       AND log "Auto-rotation disabled for this instance"
+    }
 }

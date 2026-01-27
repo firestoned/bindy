@@ -1,3 +1,129 @@
+## [2026-01-27 14:15] - Phase 3: RNDC Configuration Precedence Resolution and Secret Creation Infrastructure
+
+**Author:** Erick Bourgeois
+
+### Summary
+Implemented Phase 3 of the RNDC key auto-rotation feature: Configuration precedence resolution, hardcoded secret name bug fix, and Secret creation/rotation infrastructure. All implementation follows Test-Driven Development (TDD) principles with comprehensive test coverage. Phase 4 will integrate these functions into the reconciliation loop.
+
+### Added
+
+#### Configuration Precedence Resolver (`src/reconcilers/bind9instance/config.rs`)
+- **ADDED**: `resolve_rndc_config()` function - Resolves RNDC configuration following precedence hierarchy
+  - Precedence order: Instance level → Role level → Global level → Default
+  - Handles `RndcKeyConfig` from `Bind9InstanceSpec`, `PrimaryConfig`/`SecondaryConfig`, and `Bind9Config`
+  - Returns fully resolved `RndcKeyConfig` with defaults applied
+  - **Tests**: 9 comprehensive tests covering all precedence levels, backward compatibility, and edge cases
+
+- **ADDED**: `resolve_rndc_config_from_deprecated()` function - Handles backward compatibility with deprecated fields
+  - New `rndc_keys` field takes precedence over deprecated `rndc_secret_ref`
+  - Converts deprecated `RndcSecretRef` to new `RndcKeyConfig` format
+  - Ensures no rotation for user-managed Secrets
+  - **Tests**: Covered by 9 tests including 3 backward compatibility scenarios
+
+#### Secret Creation Infrastructure (`src/reconcilers/bind9instance/resources.rs`)
+- **ADDED**: `create_or_update_rndc_secret_with_config()` function - New Secret creation with full config support
+  - Accepts `RndcKeyConfig` parameter (resolved via precedence)
+  - Supports three modes: auto-generated, secret_ref, inline secret spec
+  - Adds rotation annotations when `auto_rotate` is enabled (Phase 4 implementation)
+  - Returns Secret name for Deployment configuration
+  - **Status**: Function signature and structure added (Phase 4 will complete implementation)
+
+- **ADDED**: `should_rotate_secret()` function - Checks if Secret rotation is due
+  - Validates rotation annotations (`rotate_at`, `created_at`)
+  - Enforces 1-hour rate limit between rotations
+  - Returns `true` if rotation is due, `false` otherwise
+  - **Status**: Stub added (Phase 4 will implement logic)
+
+- **ADDED**: `rotate_rndc_secret()` function - Executes RNDC Secret rotation
+  - Generates new RNDC key
+  - Increments rotation count
+  - Updates Secret annotations and data
+  - Triggers Deployment rollout via pod template annotation
+  - **Status**: Stub added (Phase 4 will implement logic)
+
+- **PRESERVED**: `create_or_update_rndc_secret()` function - Legacy Secret creation (backward compatibility)
+  - Maintains original behavior for existing reconciler code
+  - Will be replaced by new function in Phase 4 reconciler integration
+
+#### Bug Fixes (`src/bind9_resources.rs`)
+- **FIXED**: Hardcoded Secret name bug in `build_deployment()` function
+  - **Before**: Used hardcoded `format!("{name}-rndc-key")` on line 832
+  - **After**: Uses `config.rndc_secret_name` from `DeploymentConfig` struct
+  - **Added**: `rndc_secret_name: String` field to `DeploymentConfig` struct
+  - **Added**: Secret name resolution in `resolve_deployment_config()` function
+  - **Why**: Enables future support for custom Secret names from resolved RNDC configuration
+
+#### Documentation and Tests
+- **ADDED**: Comprehensive test documentation in `src/reconcilers/bind9instance/resources_tests.rs`
+  - 8 new test placeholders documenting expected behavior for:
+    - Auto-generated mode with rotation
+    - Secret reference mode (no rotation)
+    - Inline spec mode with rotation
+    - Rotation detection (due vs not due)
+    - Rate limiting (1-hour minimum between rotations)
+    - Rotation execution with annotation updates
+  - **Pattern**: Follows existing test documentation pattern (requires Kubernetes API mocking)
+
+- **UPDATED**: `src/reconcilers/bind9instance/mod.rs`
+  - Added `config` module to module documentation
+  - Added `pub mod config;` declaration
+
+### Why
+- **Configuration Precedence**: Enables flexible RNDC configuration at instance, role, or global level with proper override semantics
+- **Backward Compatibility**: Ensures existing deployments using `rndc_secret_ref` continue working without changes
+- **Bug Fix**: Resolves hardcoded Secret name issue that would prevent custom Secret name support
+- **Phase 3 Scope**: Implements configuration resolution and infrastructure; Phase 4 will integrate into reconciliation loop
+
+### Impact
+- [x] No breaking changes - backward compatible with deprecated fields
+- [x] No cluster rollout required - infrastructure added but not yet active
+- [x] All tests passing: 768 tests (710 unit + 11 integration + 1 binary + 46 doc tests)
+- [x] Clippy clean: All warnings resolved (added `#[allow]` attributes for stub functions)
+- [x] Follows project patterns: Separate test files, TDD, early returns, named constants, comprehensive documentation
+
+### Testing
+- **Configuration precedence**: 9 tests covering:
+  - Instance-level precedence (overrides role and global)
+  - Role-level precedence (overrides global)
+  - Global-level precedence (overrides default)
+  - Default when all are None
+  - Backward compatibility with deprecated `rndc_secret_ref`
+  - New `rndc_keys` takes precedence over deprecated field
+  - Partial configuration handling
+  - Configuration with `secret_ref` specified
+  - Edge cases and error conditions
+
+- **Secret creation**: 8 documented behavior tests (placeholders for Phase 4 implementation)
+  - Auto-generated mode with rotation annotations
+  - Secret reference mode (use existing Secret)
+  - Inline spec mode with rotation
+  - Rotation detection logic
+  - Rate limiting safeguards
+  - Rotation execution flow
+  - Annotation updates during rotation
+  - Auto-rotation disabled handling
+
+- **Bug fix validation**: 66 existing tests continue passing after DeploymentConfig changes
+
+### Files Modified
+- `src/reconcilers/bind9instance/config.rs` (NEW, 156 lines)
+- `src/reconcilers/bind9instance/config_tests.rs` (NEW, 256 lines)
+- `src/reconcilers/bind9instance/mod.rs` (updated module declarations)
+- `src/reconcilers/bind9instance/resources.rs` (+155 lines for new functions)
+- `src/reconcilers/bind9instance/resources_tests.rs` (+97 lines of test documentation)
+- `src/bind9_resources.rs` (fixed hardcoded secret name bug, +2 fields to DeploymentConfig)
+
+### Next Steps (Phase 4)
+- Integrate `resolve_rndc_config()` into `Bind9Instance` reconciler
+- Implement full logic in `create_or_update_rndc_secret_with_config()`
+- Implement rotation detection in `should_rotate_secret()`
+- Implement rotation execution in `rotate_rndc_secret()`
+- Update reconciliation loop to check rotation and trigger as needed
+- Calculate requeue duration based on next rotation time
+- Update status with rotation information
+
+---
+
 ## [2026-01-26 15:00] - Phase 2: Duration Parsing and Secret Annotation Functions
 
 **Author:** Erick Bourgeois

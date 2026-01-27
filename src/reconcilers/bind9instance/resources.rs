@@ -144,6 +144,133 @@ async fn create_or_update_service_account(
 }
 
 /// Create or update the RNDC Secret for BIND9 remote control
+/// Creates or updates RNDC Secret based on configuration.
+///
+/// Supports three modes:
+/// 1. **Auto-generated**: Operator creates and optionally rotates RNDC keys
+/// 2. **Secret reference**: Use existing Secret (no operator management)
+/// 3. **Inline spec**: Create Secret from inline specification
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes client
+/// * `namespace` - Namespace for the Secret
+/// * `name` - Instance name (used for Secret naming)
+/// * `instance` - `Bind9Instance` resource
+/// * `config` - RNDC configuration (resolved via precedence)
+///
+/// # Returns
+///
+/// Returns the Secret name to use in Deployment configuration.
+///
+/// # Errors
+///
+/// Returns error if Secret creation/update fails or API call fails.
+#[allow(dead_code)] // Will be used in Phase 4
+async fn create_or_update_rndc_secret_with_config(
+    client: &Client,
+    namespace: &str,
+    name: &str,
+    instance: &Bind9Instance,
+    _config: &crate::crd::RndcKeyConfig,
+) -> Result<String> {
+    // TODO(Phase 4): Implement full RNDC configuration modes:
+    // 1. If config.secret_ref is Some, use existing Secret
+    // 2. If config.secret is Some, create Secret from inline spec
+    // 3. Otherwise, auto-generate Secret with optional rotation
+
+    // For now, preserve existing behavior
+    let secret_name = format!("{name}-rndc-key");
+    let secret_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
+
+    // Check if secret already exists
+    match secret_api.get(&secret_name).await {
+        Ok(existing_secret) => {
+            // Secret exists, don't regenerate the key
+            info!(
+                "RNDC Secret {}/{} already exists, skipping",
+                namespace, secret_name
+            );
+            // Verify it has the required keys
+            if let Some(ref data) = existing_secret.data {
+                if !data.contains_key("key-name")
+                    || !data.contains_key("algorithm")
+                    || !data.contains_key("secret")
+                {
+                    warn!(
+                        "RNDC Secret {}/{} is missing required keys, will recreate",
+                        namespace, secret_name
+                    );
+                    // Delete and recreate
+                    secret_api
+                        .delete(&secret_name, &kube::api::DeleteParams::default())
+                        .await?;
+                } else {
+                    return Ok(secret_name);
+                }
+            } else {
+                warn!(
+                    "RNDC Secret {}/{} has no data, will recreate",
+                    namespace, secret_name
+                );
+                secret_api
+                    .delete(&secret_name, &kube::api::DeleteParams::default())
+                    .await?;
+            }
+        }
+        Err(_) => {
+            info!(
+                "RNDC Secret {}/{} does not exist, creating",
+                namespace, secret_name
+            );
+        }
+    }
+
+    // Generate new RNDC key
+    let mut key_data = Bind9Manager::generate_rndc_key();
+    key_data.name = "bindy-operator".to_string();
+
+    // Create Secret data
+    let secret_data = Bind9Manager::create_rndc_secret_data(&key_data);
+
+    // Create owner reference to the Bind9Instance
+    let owner_ref = OwnerReference {
+        api_version: API_GROUP_VERSION.to_string(),
+        kind: KIND_BIND9_INSTANCE.to_string(),
+        name: name.to_string(),
+        uid: instance.metadata.uid.clone().unwrap_or_default(),
+        controller: Some(true),
+        block_owner_deletion: Some(true),
+    };
+
+    // TODO(Phase 4): Add rotation annotations if config.auto_rotate is true:
+    // - bindy.firestoned.io/rndc-created-at
+    // - bindy.firestoned.io/rndc-rotate-at
+    // - bindy.firestoned.io/rndc-rotation-count
+
+    // Build Secret object
+    let secret = Secret {
+        metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+            name: Some(secret_name.clone()),
+            namespace: Some(namespace.to_string()),
+            owner_references: Some(vec![owner_ref]),
+            ..Default::default()
+        },
+        string_data: Some(secret_data),
+        ..Default::default()
+    };
+
+    // Create the secret
+    info!("Creating RNDC Secret {}/{}", namespace, secret_name);
+    secret_api.create(&PostParams::default(), &secret).await?;
+
+    Ok(secret_name)
+}
+
+/// Legacy Secret creation function (backward compatibility).
+///
+/// This function maintains the original behavior for existing reconciler code.
+/// New code should use `create_or_update_rndc_secret_with_config` instead.
 async fn create_or_update_rndc_secret(
     client: &Client,
     namespace: &str,
@@ -229,6 +356,78 @@ async fn create_or_update_rndc_secret(
     info!("Creating RNDC Secret {}/{}", namespace, secret_name);
     secret_api.create(&PostParams::default(), &secret).await?;
 
+    Ok(())
+}
+
+/// Checks if RNDC `Secret` rotation is due.
+///
+/// # Arguments
+///
+/// * `secret` - The RNDC `Secret` to check
+/// * `config` - RNDC configuration with rotation settings
+///
+/// # Returns
+///
+/// Returns `true` if rotation is due, `false` otherwise.
+///
+/// # Rotation Criteria
+///
+/// - Auto-rotation must be enabled in config
+/// - `rotate_at` annotation must be in the past
+/// - At least 1 hour must have passed since last rotation (rate limit)
+///
+/// # Errors
+///
+/// Returns error if annotation parsing fails.
+#[allow(dead_code)] // Will be used in Phase 4
+#[allow(clippy::unnecessary_wraps)] // Will return errors once implemented
+fn should_rotate_secret(_secret: &Secret, _config: &crate::crd::RndcKeyConfig) -> Result<bool> {
+    // TODO(Phase 4): Implement rotation detection logic:
+    // 1. Check if auto_rotate is enabled
+    // 2. Parse rndc-rotate-at annotation
+    // 3. Compare to current time
+    // 4. Ensure at least 1 hour has passed since created_at (rate limit)
+    Ok(false)
+}
+
+/// Rotates RNDC `Secret` by generating new key and updating annotations.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes client
+/// * `namespace` - `Secret` namespace
+/// * `secret_name` - Name of the `Secret` to rotate
+/// * `config` - RNDC configuration with rotation settings
+/// * `instance` - `Bind9Instance` for owner reference
+/// * `existing_secret` - Current `Secret` (for incrementing rotation count)
+///
+/// # Rotation Process
+///
+/// 1. Generate new RNDC key
+/// 2. Increment rotation count from existing `Secret`
+/// 3. Update `Secret` with new key data
+/// 4. Update annotations: `created_at`, `rotate_at`, `rotation_count`
+/// 5. Trigger `Deployment` rollout via annotation
+///
+/// # Errors
+///
+/// Returns error if `Secret` update fails or annotation parsing fails.
+#[allow(dead_code)] // Will be used in Phase 4
+#[allow(clippy::unused_async)] // Will have async calls once implemented
+async fn rotate_rndc_secret(
+    _client: &Client,
+    _namespace: &str,
+    _secret_name: &str,
+    _config: &crate::crd::RndcKeyConfig,
+    _instance: &Bind9Instance,
+    _existing_secret: &Secret,
+) -> Result<()> {
+    // TODO(Phase 4): Implement rotation logic:
+    // 1. Generate new RNDC key
+    // 2. Parse existing rotation_count and increment
+    // 3. Calculate new rotate_at timestamp
+    // 4. Update Secret with new key data and annotations
+    // 5. Trigger Deployment rollout (update pod template annotation)
     Ok(())
 }
 
