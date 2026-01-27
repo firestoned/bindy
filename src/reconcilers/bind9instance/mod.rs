@@ -36,6 +36,171 @@ use zones::reconcile_instance_zones as reconcile_zones_internal;
 
 use crate::reconcilers::finalizers::{ensure_finalizer, handle_deletion, FinalizerCleanup};
 
+/// Calculate the requeue duration for the next reconciliation based on RNDC rotation schedule.
+///
+/// If auto-rotation is enabled and a rotation time is scheduled, this function calculates
+/// the duration until that rotation time. If the rotation is overdue, it returns a minimal
+/// duration to trigger immediate reconciliation.
+///
+/// # Arguments
+///
+/// * `config` - RNDC configuration with rotation settings
+/// * `secret` - The RNDC Secret with rotation annotations
+///
+/// # Returns
+///
+/// Duration until next reconciliation. Returns `None` if rotation is disabled or Secret
+/// has no rotation annotations.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use bindy::crd::RndcKeyConfig;
+/// use k8s_openapi::api::core::v1::Secret;
+/// use bindy::reconcilers::bind9instance::calculate_requeue_duration;
+///
+/// let config = RndcKeyConfig {
+///     auto_rotate: true,
+///     rotate_after: "720h".to_string(),
+///     ..Default::default()
+/// };
+///
+/// // Create a secret with rotation annotations
+/// let secret = Secret {
+///     metadata: ObjectMeta {
+///         annotations: Some(BTreeMap::from([
+///             ("bindy.firestoned.io/rotation-created-at".to_string(), "2025-01-01T00:00:00Z".to_string()),
+///             ("bindy.firestoned.io/rotation-rotate-at".to_string(), "2025-02-01T00:00:00Z".to_string()),
+///         ])),
+///         ..Default::default()
+///     },
+///     ..Default::default()
+/// };
+///
+/// // Returns duration until rotate_at timestamp
+/// let duration = calculate_requeue_duration(&config, &secret);
+/// ```
+#[allow(dead_code)] // Will be used when requeue logic is integrated
+fn calculate_requeue_duration(
+    config: &crate::crd::RndcKeyConfig,
+    secret: &Secret,
+) -> Option<std::time::Duration> {
+    use chrono::Utc;
+
+    // Only calculate requeue if auto-rotation is enabled
+    if !config.auto_rotate {
+        return None;
+    }
+
+    // Extract rotation annotations from Secret
+    let annotations = secret.metadata.annotations.as_ref()?;
+    let (_created_at, rotate_at, _rotation_count) =
+        crate::bind9::rndc::parse_rotation_annotations(annotations).ok()?;
+
+    // If no rotation scheduled, no need for specific requeue
+    let rotate_at = rotate_at?;
+
+    let now = Utc::now();
+    let time_until_rotation = rotate_at.signed_duration_since(now);
+
+    // If rotation is overdue or very soon, reconcile quickly (30 seconds)
+    if time_until_rotation.num_seconds() <= 0 {
+        return Some(std::time::Duration::from_secs(30));
+    }
+
+    // Otherwise, schedule reconciliation slightly before rotation time (5 minutes early)
+    let requeue_secs = time_until_rotation
+        .num_seconds()
+        .saturating_sub(300) // 5 minutes early
+        .max(30); // At least 30 seconds
+
+    #[allow(clippy::cast_sign_loss)] // Value is guaranteed non-negative by max(30)
+    Some(std::time::Duration::from_secs(requeue_secs as u64))
+}
+
+/// Update the `Bind9Instance` status with RNDC key rotation information.
+///
+/// Reads rotation metadata from the RNDC Secret annotations and updates the instance
+/// status with current rotation state. This provides visibility into key age and
+/// rotation schedule.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `instance` - The `Bind9Instance` resource to update
+/// * `secret` - The RNDC Secret containing rotation annotations
+/// * `config` - RNDC configuration with rotation settings
+///
+/// # Returns
+///
+/// `Ok(())` on success, error if status update fails.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Secret annotations are missing or malformed
+/// - Status patch API call fails
+async fn update_rotation_status(
+    client: &Client,
+    instance: &Bind9Instance,
+    secret: &Secret,
+    config: &crate::crd::RndcKeyConfig,
+) -> Result<()> {
+    use crate::crd::RndcKeyRotationStatus;
+
+    // Only update status if auto-rotation is enabled
+    if !config.auto_rotate {
+        return Ok(());
+    }
+
+    let Some(annotations) = &secret.metadata.annotations else {
+        debug!("Secret has no annotations, skipping rotation status update");
+        return Ok(());
+    };
+
+    let (created_at, rotate_at, rotation_count) =
+        crate::bind9::rndc::parse_rotation_annotations(annotations)?;
+
+    // Determine last_rotated_at: if rotation_count > 0, the current created_at is when it was last rotated
+    let last_rotated_at = if rotation_count > 0 {
+        Some(created_at.to_rfc3339())
+    } else {
+        None
+    };
+
+    let rotation_status = RndcKeyRotationStatus {
+        created_at: created_at.to_rfc3339(),
+        rotate_at: rotate_at.map(|dt| dt.to_rfc3339()),
+        last_rotated_at,
+        rotation_count,
+    };
+
+    // Prepare status update
+    let namespace = instance.namespace().unwrap_or_default();
+    let name = instance.name_any();
+
+    let status = serde_json::json!({
+        "status": {
+            "rndcKeyRotation": rotation_status
+        }
+    });
+
+    let api: Api<Bind9Instance> = Api::namespaced(client.clone(), &namespace);
+    api.patch_status(
+        &name,
+        &PatchParams::default(),
+        &kube::api::Patch::Merge(&status),
+    )
+    .await?;
+
+    debug!(
+        "Updated rotation status for {}/{}: rotation_count={}, rotate_at={:?}",
+        namespace, name, rotation_count, rotate_at
+    );
+
+    Ok(())
+}
+
 /// Implement cleanup trait for `Bind9Instance` finalizer management.
 #[async_trait::async_trait]
 impl FinalizerCleanup for Bind9Instance {
@@ -271,7 +436,7 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
 
     // Create or update resources
     match create_or_update_resources(&client, &namespace, &name, &instance).await {
-        Ok((cluster, cluster_provider)) => {
+        Ok((cluster, cluster_provider, secret)) => {
             info!(
                 "Successfully created/updated resources for {}/{}",
                 namespace, name
@@ -283,6 +448,26 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
             // Update status based on actual deployment state
             update_status_from_deployment(&client, &namespace, &name, &instance, cluster_ref)
                 .await?;
+
+            // Update rotation status if Secret is available
+            if let Some(ref secret) = secret {
+                // Resolve RNDC config for rotation status update
+                let rndc_config = resources::resolve_full_rndc_config(
+                    &instance,
+                    cluster.as_ref(),
+                    cluster_provider.as_ref(),
+                );
+
+                if let Err(e) =
+                    update_rotation_status(&client, &instance, secret, &rndc_config).await
+                {
+                    warn!(
+                        "Failed to update rotation status for {}/{}: {}",
+                        namespace, name, e
+                    );
+                    // Non-fatal error, continue reconciliation
+                }
+            }
 
             // Reconcile zones after deployment creation/update
             reconcile_zones_internal(&client, &ctx.stores, &instance).await?;
@@ -332,3 +517,7 @@ pub async fn delete_bind9instance(ctx: Arc<Context>, instance: Bind9Instance) ->
     // Deletion is now handled by the finalizer in reconcile_bind9instance
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod mod_tests;
