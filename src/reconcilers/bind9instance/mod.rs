@@ -9,6 +9,7 @@
 //! ## Module Structure
 //!
 //! - [`cluster_helpers`] - Cluster integration and reference management
+//! - [`config`] - RNDC configuration precedence resolution
 //! - [`resources`] - Resource lifecycle (`ConfigMap`, Deployment, Service)
 //! - [`status_helpers`] - Status calculation and updates
 //! - [`types`] - Shared types and imports
@@ -16,6 +17,7 @@
 
 // Submodules
 pub mod cluster_helpers;
+pub mod config;
 pub mod resources;
 pub mod status_helpers;
 pub mod types;
