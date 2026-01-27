@@ -206,6 +206,236 @@ pub fn create_tsig_signer(key_data: &RndcKeyData) -> Result<TSigner> {
     Ok(signer)
 }
 
+/// Create a Kubernetes Secret with RNDC key data and rotation tracking annotations.
+///
+/// This function creates a Secret with the RNDC key data (via `create_rndc_secret_data`)
+/// and adds rotation tracking annotations for automatic key rotation.
+///
+/// # Arguments
+///
+/// * `namespace` - Kubernetes namespace for the Secret
+/// * `name` - Secret name
+/// * `key_data` - RNDC key data (name, algorithm, secret)
+/// * `created_at` - Timestamp when the key was created or last rotated
+/// * `rotate_after` - Optional duration after which to rotate (None = no rotation)
+/// * `rotation_count` - Number of times the key has been rotated (0 for new keys)
+///
+/// # Returns
+///
+/// A Kubernetes Secret resource with:
+/// - RNDC key data in `.data`
+/// - Rotation tracking annotations in `.metadata.annotations`
+///
+/// # Annotations
+///
+/// - `bindy.firestoned.io/rndc-created-at`: ISO 8601 timestamp (always present)
+/// - `bindy.firestoned.io/rndc-rotate-at`: ISO 8601 timestamp (only if `rotate_after` is Some)
+/// - `bindy.firestoned.io/rndc-rotation-count`: Number of rotations (always present)
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use bindy::bind9::rndc::{generate_rndc_key, create_rndc_secret_with_annotations};
+/// use chrono::Utc;
+/// use std::time::Duration;
+///
+/// let key_data = generate_rndc_key();
+/// let created_at = Utc::now();
+/// let rotate_after = Duration::from_secs(30 * 24 * 3600); // 30 days
+///
+/// let secret = create_rndc_secret_with_annotations(
+///     "dns-system",
+///     "bind9-primary-rndc-key",
+///     &key_data,
+///     created_at,
+///     Some(rotate_after),
+///     0, // First key, not rotated yet
+/// );
+/// ```
+///
+/// # Panics
+///
+/// May panic if the `rotate_after` duration cannot be converted to a chrono Duration.
+/// This should not happen for valid rotation intervals (1h - 8760h).
+#[must_use]
+pub fn create_rndc_secret_with_annotations(
+    namespace: &str,
+    name: &str,
+    key_data: &RndcKeyData,
+    created_at: chrono::DateTime<chrono::Utc>,
+    rotate_after: Option<std::time::Duration>,
+    rotation_count: u32,
+) -> k8s_openapi::api::core::v1::Secret {
+    use k8s_openapi::api::core::v1::Secret;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+    use k8s_openapi::ByteString;
+
+    // Create Secret data with RNDC key
+    let secret_data_map = create_rndc_secret_data(key_data);
+    let mut data = BTreeMap::new();
+    for (k, v) in secret_data_map {
+        data.insert(k, ByteString(v.into_bytes()));
+    }
+
+    // Create rotation tracking annotations
+    let mut annotations = BTreeMap::new();
+    annotations.insert(
+        crate::constants::ANNOTATION_RNDC_CREATED_AT.to_string(),
+        created_at.to_rfc3339(),
+    );
+
+    // Add rotate_at annotation if rotation is enabled
+    if let Some(duration) = rotate_after {
+        let rotate_at = created_at + chrono::Duration::from_std(duration).unwrap();
+        annotations.insert(
+            crate::constants::ANNOTATION_RNDC_ROTATE_AT.to_string(),
+            rotate_at.to_rfc3339(),
+        );
+    }
+
+    annotations.insert(
+        crate::constants::ANNOTATION_RNDC_ROTATION_COUNT.to_string(),
+        rotation_count.to_string(),
+    );
+
+    Secret {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            namespace: Some(namespace.to_string()),
+            annotations: Some(annotations),
+            ..Default::default()
+        },
+        data: Some(data),
+        ..Default::default()
+    }
+}
+
+/// Parse rotation tracking annotations from a Kubernetes Secret.
+///
+/// Extracts the `created_at`, `rotate_at`, and `rotation_count` annotations
+/// from a Secret's metadata.
+///
+/// # Arguments
+///
+/// * `annotations` - Secret annotations map
+///
+/// # Returns
+///
+/// A tuple of:
+/// - `created_at`: Timestamp when the key was created or last rotated
+/// - `rotate_at`: Optional timestamp when rotation is due (None if rotation disabled)
+/// - `rotation_count`: Number of times the key has been rotated
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The `created-at` annotation is missing
+/// - Any timestamp cannot be parsed as ISO 8601
+/// - The `rotation-count` annotation cannot be parsed as u32
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use std::collections::BTreeMap;
+/// use bindy::bind9::rndc::parse_rotation_annotations;
+///
+/// let mut annotations = BTreeMap::new();
+/// annotations.insert(
+///     "bindy.firestoned.io/rndc-created-at".to_string(),
+///     "2025-01-26T10:00:00Z".to_string()
+/// );
+/// annotations.insert(
+///     "bindy.firestoned.io/rndc-rotate-at".to_string(),
+///     "2025-02-25T10:00:00Z".to_string()
+/// );
+/// annotations.insert(
+///     "bindy.firestoned.io/rndc-rotation-count".to_string(),
+///     "5".to_string()
+/// );
+///
+/// let (created_at, rotate_at, count) = parse_rotation_annotations(&annotations).unwrap();
+/// assert_eq!(count, 5);
+/// ```
+pub fn parse_rotation_annotations(
+    annotations: &BTreeMap<String, String>,
+) -> Result<(
+    chrono::DateTime<chrono::Utc>,
+    Option<chrono::DateTime<chrono::Utc>>,
+    u32,
+)> {
+    // Parse created_at (required)
+    let created_at_str = annotations
+        .get(crate::constants::ANNOTATION_RNDC_CREATED_AT)
+        .context("Missing created-at annotation")?;
+    let created_at = chrono::DateTime::parse_from_rfc3339(created_at_str)
+        .context("Failed to parse created-at timestamp")?
+        .with_timezone(&chrono::Utc);
+
+    // Parse rotate_at (optional)
+    let rotate_at =
+        if let Some(rotate_at_str) = annotations.get(crate::constants::ANNOTATION_RNDC_ROTATE_AT) {
+            Some(
+                chrono::DateTime::parse_from_rfc3339(rotate_at_str)
+                    .context("Failed to parse rotate-at timestamp")?
+                    .with_timezone(&chrono::Utc),
+            )
+        } else {
+            None
+        };
+
+    // Parse rotation_count (default to 0 if missing)
+    let rotation_count = annotations
+        .get(crate::constants::ANNOTATION_RNDC_ROTATION_COUNT)
+        .map(|s| s.parse::<u32>().context("Failed to parse rotation-count"))
+        .transpose()?
+        .unwrap_or(0);
+
+    Ok((created_at, rotate_at, rotation_count))
+}
+
+/// Check if RNDC key rotation is due based on the rotation timestamp.
+///
+/// Rotation is due if:
+/// - `rotate_at` is Some AND
+/// - `rotate_at` is less than or equal to `now`
+///
+/// # Arguments
+///
+/// * `rotate_at` - Optional timestamp when rotation should occur (None = no rotation)
+/// * `now` - Current timestamp
+///
+/// # Returns
+///
+/// - `true` if rotation is due (`rotate_at` has passed)
+/// - `false` if rotation is not due or disabled (`rotate_at` is None)
+///
+/// # Examples
+///
+/// ```rust
+/// use bindy::bind9::rndc::is_rotation_due;
+/// use chrono::Utc;
+///
+/// let past_time = Utc::now() - chrono::Duration::hours(1);
+/// let now = Utc::now();
+///
+/// assert!(is_rotation_due(Some(past_time), now)); // Rotation is due
+///
+/// let future_time = Utc::now() + chrono::Duration::hours(1);
+/// assert!(!is_rotation_due(Some(future_time), now)); // Not due yet
+///
+/// assert!(!is_rotation_due(None, now)); // Rotation disabled
+/// ```
+#[must_use]
+pub fn is_rotation_due(
+    rotate_at: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    match rotate_at {
+        Some(rotate_time) => rotate_time <= now,
+        None => false, // No rotation scheduled
+    }
+}
+
 #[cfg(test)]
 #[path = "rndc_tests.rs"]
 mod rndc_tests;

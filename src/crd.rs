@@ -1807,6 +1807,214 @@ fn default_secret_key() -> String {
     "secret".to_string()
 }
 
+fn default_rotate_after() -> String {
+    crate::constants::DEFAULT_ROTATION_INTERVAL.to_string()
+}
+
+fn default_secret_type() -> String {
+    "Opaque".to_string()
+}
+
+/// RNDC key lifecycle configuration with automatic rotation support.
+///
+/// Provides three configuration modes:
+/// 1. **Auto-generated with optional rotation** (default) - Operator creates and manages keys
+/// 2. **Reference to existing Secret** - Use pre-existing Kubernetes Secret (no rotation)
+/// 3. **Inline Secret specification** - Define Secret inline with optional rotation
+///
+/// When `auto_rotate` is enabled, the operator automatically rotates keys after the
+/// `rotate_after` duration has elapsed. Rotation timestamps are tracked in Secret annotations.
+///
+/// # Examples
+///
+/// ```yaml
+/// # Auto-generated with 30-day rotation
+/// rndcKeys:
+///   autoRotate: true
+///   rotateAfter: 720h
+///   algorithm: hmac-sha256
+///
+/// # Reference existing Secret (no rotation)
+/// rndcKeys:
+///   secretRef:
+///     name: my-rndc-key
+///     algorithm: hmac-sha256
+///
+/// # Inline Secret with rotation
+/// rndcKeys:
+///   autoRotate: true
+///   rotateAfter: 2160h  # 90 days
+///   secret:
+///     metadata:
+///       name: custom-rndc-key
+///       labels:
+///         app: bindy
+/// ```
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RndcKeyConfig {
+    /// Enable automatic key rotation (default: false for backward compatibility).
+    ///
+    /// When `true`, the operator automatically rotates the RNDC key after the
+    /// `rotate_after` interval. When `false`, keys are generated once and never rotated.
+    ///
+    /// **Important**: Rotation only applies to operator-managed Secrets. If you
+    /// specify `secret_ref`, that Secret will NOT be rotated automatically.
+    ///
+    /// Default: `false`
+    #[serde(default)]
+    pub auto_rotate: bool,
+
+    /// Duration after which to rotate the key (Go duration format: "720h", "30d").
+    ///
+    /// Supported units:
+    /// - `h` (hours): "720h" = 30 days
+    /// - `d` (days): "30d" = 30 days
+    /// - `w` (weeks): "4w" = 28 days
+    ///
+    /// Constraints:
+    /// - Minimum: 1h (1 hour)
+    /// - Maximum: 8760h (365 days / 1 year)
+    ///
+    /// Only applies when `auto_rotate` is `true`.
+    ///
+    /// Default: `"720h"` (30 days)
+    #[serde(default = "default_rotate_after")]
+    pub rotate_after: String,
+
+    /// Reference to an existing Kubernetes Secret containing RNDC credentials.
+    ///
+    /// When specified, the operator uses this existing Secret instead of auto-generating
+    /// one. The Secret must contain the `rndc.key` field with BIND9 key file content.
+    ///
+    /// **Mutually exclusive with `secret`** - if both are specified, `secret_ref` takes
+    /// precedence and `secret` is ignored.
+    ///
+    /// **Rotation note**: User-managed Secrets (via `secret_ref`) are NOT automatically
+    /// rotated even if `auto_rotate` is `true`. You must rotate these manually.
+    ///
+    /// Default: `None` (auto-generate key)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_ref: Option<RndcSecretRef>,
+
+    /// Inline Secret specification for operator-managed Secret with optional rotation.
+    ///
+    /// Embeds a full Kubernetes Secret specification. The operator will create and
+    /// manage this Secret, and rotate it if `auto_rotate` is `true`.
+    ///
+    /// **Mutually exclusive with `secret_ref`** - if both are specified, `secret_ref`
+    /// takes precedence and this field is ignored.
+    ///
+    /// Default: `None` (auto-generate key)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<SecretSpec>,
+
+    /// HMAC algorithm for the RNDC key.
+    ///
+    /// Only used when auto-generating keys (when neither `secret_ref` nor `secret` are
+    /// specified). If using `secret_ref`, the algorithm is specified in that reference.
+    ///
+    /// Default: `hmac-sha256`
+    #[serde(default)]
+    pub algorithm: RndcAlgorithm,
+}
+
+/// Kubernetes Secret specification for inline Secret creation.
+///
+/// Used when the operator should create and manage the Secret (with optional rotation).
+/// This is a subset of the Kubernetes Secret API focusing on fields relevant for
+/// RNDC key management.
+///
+/// # Example
+///
+/// ```yaml
+/// secret:
+///   metadata:
+///     name: my-rndc-key
+///     labels:
+///       app: bindy
+///       tier: infrastructure
+///   stringData:
+///     rndc.key: |
+///       key "bindy-operator" {
+///           algorithm hmac-sha256;
+///           secret "dGVzdHNlY3JldA==";
+///       };
+/// ```
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretSpec {
+    /// Secret metadata (name, labels, annotations).
+    ///
+    /// **Required**: You must specify `metadata.name` for the Secret name.
+    pub metadata: SecretMetadata,
+
+    /// Secret type (default: "Opaque").
+    ///
+    /// For RNDC keys, use the default "Opaque" type.
+    #[serde(default = "default_secret_type")]
+    #[serde(rename = "type")]
+    pub type_: String,
+
+    /// String data (keys and values as strings).
+    ///
+    /// For RNDC keys, you should provide:
+    /// - `rndc.key`: Full BIND9 key file content (required by BIND9)
+    ///
+    /// Optional metadata (auto-populated by operator if omitted):
+    /// - `key-name`: Name of the TSIG key
+    /// - `algorithm`: HMAC algorithm
+    /// - `secret`: Base64-encoded key material
+    ///
+    /// Kubernetes automatically base64-encodes string data when creating the Secret.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub string_data: Option<std::collections::BTreeMap<String, String>>,
+
+    /// Binary data (keys and values as base64 strings).
+    ///
+    /// Alternative to `string_data` if you want to provide already-base64-encoded values.
+    /// Most users should use `string_data` instead for readability.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<std::collections::BTreeMap<String, String>>,
+}
+
+/// Minimal Secret metadata for inline Secret specifications.
+///
+/// This is a subset of Kubernetes `ObjectMeta` focusing on commonly-used fields.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretMetadata {
+    /// Secret name (required).
+    ///
+    /// Must be a valid Kubernetes resource name (lowercase alphanumeric, hyphens, dots).
+    pub name: String,
+
+    /// Labels to apply to the Secret.
+    ///
+    /// Useful for organizing and selecting Secrets via label selectors.
+    ///
+    /// Example:
+    /// ```yaml
+    /// labels:
+    ///   app: bindy
+    ///   tier: infrastructure
+    ///   environment: production
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub labels: Option<std::collections::BTreeMap<String, String>>,
+
+    /// Annotations to apply to the Secret.
+    ///
+    /// **Note**: The operator will add rotation tracking annotations:
+    /// - `bindy.firestoned.io/rndc-created-at` - Key creation timestamp
+    /// - `bindy.firestoned.io/rndc-rotate-at` - Next rotation timestamp
+    /// - `bindy.firestoned.io/rndc-rotation-count` - Number of rotations
+    ///
+    /// Do not manually set these rotation tracking annotations.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<std::collections::BTreeMap<String, String>>,
+}
+
 /// Default BIND9 version for clusters when not specified
 #[allow(clippy::unnecessary_wraps)]
 fn default_bind9_version() -> Option<String> {
@@ -2140,7 +2348,41 @@ pub struct PrimaryConfig {
     ///
     /// Can be overridden at the instance level via `spec.rndcSecretRef`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deprecated(
+        since = "0.6.0",
+        note = "Use `rndc_keys` instead. This field will be removed in v1.0.0"
+    )]
     pub rndc_secret_ref: Option<RndcSecretRef>,
+
+    /// RNDC key configuration for all primary instances with lifecycle management.
+    ///
+    /// Supports automatic key rotation, Secret references, and inline Secret specifications.
+    /// Overrides global RNDC configuration for primary instances.
+    ///
+    /// **Precedence order**:
+    /// 1. Instance level (`spec.rndcKeys`)
+    /// 2. Role level (`spec.primary.rndcKeys` or `spec.secondary.rndcKeys`)
+    /// 3. Global level (cluster-wide RNDC configuration)
+    /// 4. Auto-generated (default)
+    ///
+    /// Can be overridden at the instance level via `spec.rndcKeys`.
+    ///
+    /// **Backward compatibility**: If both `rndc_keys` and `rndc_secret_ref` are specified,
+    /// `rndc_keys` takes precedence. For smooth migration, `rndc_secret_ref` will continue
+    /// to work but is deprecated.
+    ///
+    /// # Example
+    ///
+    /// ```yaml
+    /// primary:
+    ///   replicas: 1
+    ///   rndcKeys:
+    ///     autoRotate: true
+    ///     rotateAfter: 720h  # 30 days
+    ///     algorithm: hmac-sha256
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rndc_keys: Option<RndcKeyConfig>,
 }
 
 /// Secondary instance configuration
@@ -2223,7 +2465,41 @@ pub struct SecondaryConfig {
     ///
     /// Can be overridden at the instance level via `spec.rndcSecretRef`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[deprecated(
+        since = "0.6.0",
+        note = "Use `rndc_keys` instead. This field will be removed in v1.0.0"
+    )]
     pub rndc_secret_ref: Option<RndcSecretRef>,
+
+    /// RNDC key configuration for all secondary instances with lifecycle management.
+    ///
+    /// Supports automatic key rotation, Secret references, and inline Secret specifications.
+    /// Overrides global RNDC configuration for secondary instances.
+    ///
+    /// **Precedence order**:
+    /// 1. Instance level (`spec.rndcKeys`)
+    /// 2. Role level (`spec.primary.rndcKeys` or `spec.secondary.rndcKeys`)
+    /// 3. Global level (cluster-wide RNDC configuration)
+    /// 4. Auto-generated (default)
+    ///
+    /// Can be overridden at the instance level via `spec.rndcKeys`.
+    ///
+    /// **Backward compatibility**: If both `rndc_keys` and `rndc_secret_ref` are specified,
+    /// `rndc_keys` takes precedence. For smooth migration, `rndc_secret_ref` will continue
+    /// to work but is deprecated.
+    ///
+    /// # Example
+    ///
+    /// ```yaml
+    /// secondary:
+    ///   replicas: 2
+    ///   rndcKeys:
+    ///     autoRotate: true
+    ///     rotateAfter: 720h  # 30 days
+    ///     algorithm: hmac-sha256
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rndc_keys: Option<RndcKeyConfig>,
 }
 
 /// Common specification fields shared between namespace-scoped and cluster-scoped BIND9 clusters.
@@ -2595,7 +2871,40 @@ pub struct Bind9InstanceSpec {
     ///
     /// If not specified, a Secret will be auto-generated for this instance.
     #[serde(default)]
+    #[deprecated(
+        since = "0.6.0",
+        note = "Use `rndc_keys` instead. This field will be removed in v1.0.0"
+    )]
     pub rndc_secret_ref: Option<RndcSecretRef>,
+
+    /// Instance-level RNDC key configuration with lifecycle management.
+    ///
+    /// Supports automatic key rotation, Secret references, and inline Secret specifications.
+    /// Overrides role-level and global RNDC configuration for this specific instance.
+    ///
+    /// **Precedence order**:
+    /// 1. **Instance level** (`spec.rndcKeys`) - Highest priority
+    /// 2. Role level (`spec.primary.rndcKeys` or `spec.secondary.rndcKeys`)
+    /// 3. Global level (cluster-wide RNDC configuration)
+    /// 4. Auto-generated (default)
+    ///
+    /// **Backward compatibility**: If both `rndc_keys` and `rndc_secret_ref` are specified,
+    /// `rndc_keys` takes precedence. For smooth migration, `rndc_secret_ref` will continue
+    /// to work but is deprecated.
+    ///
+    /// # Example
+    ///
+    /// ```yaml
+    /// apiVersion: bindy.firestoned.io/v1beta1
+    /// kind: Bind9Instance
+    /// spec:
+    ///   rndcKeys:
+    ///     autoRotate: true
+    ///     rotateAfter: 2160h  # 90 days
+    ///     algorithm: hmac-sha512
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rndc_keys: Option<RndcKeyConfig>,
 
     /// Storage configuration for zone files.
     ///
@@ -2653,6 +2962,92 @@ pub struct Bind9InstanceStatus {
     /// without having to count the array elements.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub zones_count: Option<i32>,
+
+    /// RNDC key rotation status and tracking information.
+    ///
+    /// Populated when `auto_rotate` is enabled in the RNDC configuration. Provides
+    /// visibility into key lifecycle: creation time, next rotation time, and rotation count.
+    ///
+    /// This field is automatically updated by the instance reconciler whenever:
+    /// - A new RNDC key is generated
+    /// - An RNDC key is rotated
+    /// - The rotation configuration changes
+    ///
+    /// **Note**: Only present when using operator-managed RNDC keys. If you specify
+    /// `secret_ref` to use an external Secret, this field will be empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rndc_key_rotation: Option<RndcKeyRotationStatus>,
+}
+
+/// RNDC key rotation status and tracking information.
+///
+/// Tracks the lifecycle of operator-managed RNDC keys including creation time,
+/// next rotation time, last rotation time, and rotation count.
+///
+/// This status is automatically updated by the instance reconciler whenever keys
+/// are created or rotated. It provides visibility into key age and rotation history
+/// for compliance and operational purposes.
+///
+/// # Examples
+///
+/// ```yaml
+/// # Initial key creation (no rotation yet)
+/// rndcKeyRotation:
+///   createdAt: "2025-01-26T10:00:00Z"
+///   rotateAt: "2025-02-25T10:00:00Z"
+///   rotationCount: 0
+///
+/// # After first rotation
+/// rndcKeyRotation:
+///   createdAt: "2025-02-25T10:00:00Z"
+///   rotateAt: "2025-03-27T10:00:00Z"
+///   lastRotatedAt: "2025-02-25T10:00:00Z"
+///   rotationCount: 1
+/// ```
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RndcKeyRotationStatus {
+    /// Timestamp when the current key was created (ISO 8601 format).
+    ///
+    /// This timestamp is set when:
+    /// - A new RNDC key is generated for the first time
+    /// - An existing key is rotated (timestamp updates to rotation time)
+    ///
+    /// Example: `"2025-01-26T10:00:00Z"`
+    pub created_at: String,
+
+    /// Timestamp when the key will be rotated next (ISO 8601 format).
+    ///
+    /// Calculated as: `created_at + rotate_after`
+    ///
+    /// Only present if `auto_rotate` is enabled. When `auto_rotate` is disabled,
+    /// this field will be empty as no automatic rotation is scheduled.
+    ///
+    /// Example: `"2025-02-25T10:00:00Z"` (30 days after creation)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rotate_at: Option<String>,
+
+    /// Timestamp of the last successful rotation (ISO 8601 format).
+    ///
+    /// Only present after at least one rotation has occurred. For newly-created
+    /// keys that have never been rotated, this field will be empty.
+    ///
+    /// This is useful for tracking the actual rotation history and verifying that
+    /// rotation is working as expected.
+    ///
+    /// Example: `"2025-02-25T10:00:00Z"`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_rotated_at: Option<String>,
+
+    /// Number of times the key has been rotated.
+    ///
+    /// Starts at `0` for newly-created keys and increments by 1 each time the
+    /// key is rotated. This counter persists across key rotations and provides
+    /// a historical count for compliance and audit purposes.
+    ///
+    /// Example: `5` (key has been rotated 5 times)
+    #[serde(default)]
+    pub rotation_count: u32,
 }
 
 /// Reference to a DNS zone selected by an instance.
