@@ -689,6 +689,7 @@ struct DeploymentConfig<'a> {
     volume_mounts: Option<&'a Vec<VolumeMount>>,
     bindcar_config: Option<&'a crate::crd::BindcarConfig>,
     configmap_name: String,
+    rndc_secret_name: String,
 }
 
 /// Extract and resolve deployment configuration from instance and cluster
@@ -772,6 +773,10 @@ fn resolve_deployment_config<'a>(
         format!("{}-config", instance.spec.cluster_ref)
     };
 
+    // Determine RNDC secret name
+    // TODO: Use actual RNDC config precedence resolution when implemented
+    let rndc_secret_name = format!("{name}-rndc-key");
+
     DeploymentConfig {
         image_config,
         config_map_refs,
@@ -780,6 +785,7 @@ fn resolve_deployment_config<'a>(
         volume_mounts,
         bindcar_config,
         configmap_name,
+        rndc_secret_name,
     }
 }
 
@@ -829,7 +835,7 @@ pub fn build_deployment(
                 spec: Some(build_pod_spec(
                     namespace,
                     &config.configmap_name,
-                    &format!("{name}-rndc-key"),
+                    &config.rndc_secret_name,
                     config.version,
                     config.image_config,
                     config.config_map_refs,
