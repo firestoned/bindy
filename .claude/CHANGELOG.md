@@ -1,3 +1,249 @@
+## [2026-01-26 15:00] - Phase 2: Duration Parsing and Secret Annotation Functions
+
+**Author:** Erick Bourgeois
+
+### Summary
+Implemented Phase 2 of the RNDC key auto-rotation feature: Duration parsing for Go-style duration strings and Secret annotation helper functions for rotation tracking. All implementation follows Test-Driven Development (TDD) principles with comprehensive test coverage.
+
+### Added
+
+#### Duration Parser (`src/bind9/duration.rs`)
+- **ADDED**: `parse_duration()` function - Parses Go-style duration strings ("720h", "30d", "4w") into Rust `Duration`
+  - Supports units: `h` (hours), `d` (days), `w` (weeks)
+  - Validates bounds: minimum 1 hour, maximum 8760 hours (365 days)
+  - Returns descriptive errors for invalid formats or out-of-range values
+  - **Tests**: 15 comprehensive tests covering valid parsing, invalid formats, boundary conditions, and edge cases
+
+#### Secret Annotation Functions (`src/bind9/rndc.rs`)
+- **ADDED**: `create_rndc_secret_with_annotations()` - Creates Kubernetes Secret with rotation tracking annotations
+  - Generates Secret data via `create_rndc_secret_data()`
+  - Adds `created_at`, `rotate_at` (optional), and `rotation_count` annotations
+  - Calculates `rotate_at` timestamp based on `created_at + rotate_after` duration
+  - **Tests**: 2 tests for with-rotation and no-rotation scenarios
+
+- **ADDED**: `parse_rotation_annotations()` - Parses rotation annotations from Secret metadata
+  - Extracts `created_at` (required), `rotate_at` (optional), `rotation_count` timestamps
+  - Validates ISO 8601 timestamp formats
+  - Returns tuple of `(DateTime<Utc>, Option<DateTime<Utc>>, u32)`
+  - **Tests**: 5 tests covering complete annotations, missing fields, and invalid formats
+
+- **ADDED**: `is_rotation_due()` - Checks if key rotation is due based on timestamp
+  - Returns `true` if `rotate_at` has passed current time
+  - Returns `false` if rotation disabled (None) or not yet due
+  - **Tests**: 4 tests for past/future timestamps, no rotation, and exact time
+
+### Why
+- **Duration Parser**: Required for parsing user-provided rotation intervals in CRD specs (e.g., `rotateAfter: "720h"`)
+- **Secret Annotations**: Enables tracking of key lifecycle state for automated rotation reconciliation
+- **TDD Approach**: Ensures all code is testable and has comprehensive coverage from the start
+
+### Impact
+- [x] No breaking changes - all new functionality
+- [x] No cluster rollout required - no deployment changes yet
+- [x] All tests passing: 748 tests (693 unit + 44 doc + 11 new rotation tests)
+- [x] Clippy clean: All warnings resolved
+- [x] Follows project patterns: Separate test files (`*_tests.rs`), early returns, named constants
+
+### Testing
+- **Duration parser**: 15 tests covering:
+  - Valid parsing: hours, days, weeks
+  - Invalid formats: empty string, missing unit, invalid unit, negative values
+  - Boundaries: minimum (1h), maximum (8760h), exceeding limits
+  - Edge cases: zero, large numbers, whitespace
+  - Real-world usage: common intervals (30d, 90d, 7d)
+
+- **Secret annotations**: 11 tests covering:
+  - Secret creation with and without rotation
+  - Annotation parsing (complete, partial, missing, invalid)
+  - Rotation due checking (past, future, disabled, exact time)
+  - Error handling for malformed data
+
+### Files Modified
+- `src/bind9/mod.rs` - Added `pub mod duration;` declaration
+- `src/bind9/duration.rs` - New file: Duration parser implementation (125 lines)
+- `src/bind9/duration_tests.rs` - New file: Comprehensive TDD tests (266 lines, 15 tests)
+- `src/bind9/rndc.rs` - Added 3 rotation annotation functions (190 lines)
+- `src/bind9/rndc_tests.rs` - Added 11 rotation annotation tests (236 lines)
+- `src/reconcilers/bind9cluster/instances.rs` - Added `#[allow(deprecated)]` for backward compat (2 locations)
+- Test files - Added `#[allow(deprecated)]` to 3 test helper functions
+
+### Verification Steps
+```bash
+# All validation passed:
+cargo fmt                  # Formatted code ✅
+cargo clippy --all-targets --all-features -- -D warnings  # No warnings ✅
+cargo test                 # 748 tests passing ✅
+```
+
+### Next Steps
+Phase 3: Precedence logic and configuration resolution (planned)
+
+---
+
+## [2026-01-26 12:00] - Phase 1: RNDC Key Auto-Rotation API Changes
+
+**Author:** Erick Bourgeois
+
+### Summary
+Implemented Phase 1 of the RNDC key auto-rotation feature: API changes and CRD schema evolution. Added new CRD structs for configuring automatic RNDC key rotation with lifecycle management, while maintaining full backward compatibility with existing deployments.
+
+### Changed
+
+#### New CRD Structs (`src/crd.rs`)
+- **ADDED**: `RndcKeyConfig` struct - Main configuration for RNDC key lifecycle management
+  - `auto_rotate: bool` - Enable automatic key rotation (default: false)
+  - `rotate_after: String` - Rotation interval in Go duration format (default: "720h" / 30 days)
+  - `secret_ref: Option<RndcSecretRef>` - Reference to existing Secret (user-managed, no rotation)
+  - `secret: Option<SecretSpec>` - Inline Secret specification (operator-managed, with rotation)
+  - `algorithm: RndcAlgorithm` - HMAC algorithm for auto-generated keys
+
+- **ADDED**: `SecretSpec` struct - Inline Kubernetes Secret specification
+  - `metadata: SecretMetadata` - Secret name, labels, annotations
+  - `type_: String` - Secret type (default: "Opaque")
+  - `string_data: Option<BTreeMap<String, String>>` - String data
+  - `data: Option<BTreeMap<String, String>>` - Binary data
+
+- **ADDED**: `SecretMetadata` struct - Minimal Secret metadata for inline specs
+  - `name: String` - Secret name (required)
+  - `labels: Option<BTreeMap<String, String>>` - Labels
+  - `annotations: Option<BTreeMap<String, String>>` - Annotations
+
+- **ADDED**: `RndcKeyRotationStatus` struct - Rotation status tracking for `Bind9InstanceStatus`
+  - `created_at: String` - ISO 8601 timestamp of key creation
+  - `rotate_at: Option<String>` - Next rotation timestamp (only if auto_rotate enabled)
+  - `last_rotated_at: Option<String>` - Last rotation timestamp (after first rotation)
+  - `rotation_count: u32` - Number of times key has been rotated
+
+#### Updated CRD Fields
+- **UPDATED**: `PrimaryConfig` - Added `rndc_keys: Option<RndcKeyConfig>` field
+  - **DEPRECATED**: `rndc_secret_ref` field (marked for removal in v1.0.0)
+
+- **UPDATED**: `SecondaryConfig` - Added `rndc_keys: Option<RndcKeyConfig>` field
+  - **DEPRECATED**: `rndc_secret_ref` field (marked for removal in v1.0.0)
+
+- **UPDATED**: `Bind9InstanceSpec` - Added `rndc_keys: Option<RndcKeyConfig>` field
+  - **DEPRECATED**: `rndc_secret_ref` field (marked for removal in v1.0.0)
+
+- **UPDATED**: `Bind9InstanceStatus` - Added `rndc_key_rotation: Option<RndcKeyRotationStatus>` field
+
+#### Rotation Annotation Constants (`src/constants.rs`)
+- **ADDED**: `ANNOTATION_RNDC_CREATED_AT` - Tracks key creation timestamp
+- **ADDED**: `ANNOTATION_RNDC_ROTATE_AT` - Tracks next rotation timestamp
+- **ADDED**: `ANNOTATION_RNDC_ROTATION_COUNT` - Tracks rotation count
+- **ADDED**: `ANNOTATION_RNDC_ROTATED_AT` - Triggers pod restart after rotation
+- **ADDED**: `MIN_ROTATION_INTERVAL_HOURS` - Minimum interval (1 hour)
+- **ADDED**: `MAX_ROTATION_INTERVAL_HOURS` - Maximum interval (8760 hours / 1 year)
+- **ADDED**: `DEFAULT_ROTATION_INTERVAL` - Default interval ("720h" / 30 days)
+- **ADDED**: `MIN_TIME_BETWEEN_ROTATIONS_HOURS` - Rate limit (1 hour between rotations)
+
+#### CRD YAML Files
+- **REGENERATED**: All CRD YAML files in `deploy/crds/` from updated Rust types
+  - `bind9clusters.crd.yaml`
+  - `clusterbind9providers.crd.yaml`
+  - `bind9instances.crd.yaml`
+
+#### Test Files Updated
+Fixed compilation errors in test files by adding new required fields:
+- `src/reconcilers/bind9cluster/instances.rs` - Added `rndc_keys` field
+- `src/reconcilers/bind9cluster/status_helpers_tests.rs` - Added `rndc_keys` field
+- `src/reconcilers/clusterbind9provider_tests.rs` - Added `rndc_keys` and `rndc_key_rotation` fields
+- `src/bind9_resources_tests.rs` - Added `rndc_keys` field
+- `src/crd_tests.rs` - Added `rndc_keys` and `rndc_key_rotation` fields (7 test functions)
+- `src/reconcilers/bind9instance/status_helpers.rs` - Added `rndc_key_rotation` field
+- `tests/multi_tenancy_integration.rs` - Added `rndc_keys` field
+- `tests/simple_integration.rs` - Added `rndc_keys` field (2 locations)
+
+### Why
+
+**Regulatory Compliance Requirements:**
+This feature addresses critical requirements for regulated environments (banking, healthcare, government):
+- **NIST SP 800-57 Compliance** - Cryptographic key management lifecycle
+- **NIST SP 800-53 AC-2 Compliance** - Account management and credential lifecycle
+- **PCI DSS 3.2 Requirement 8.2.4** - Automated password/key changes at defined intervals
+- **SOC 2 Trust Service Criteria** - Access control and key management
+- **HIPAA Security Rule** - Technical safeguards for secure communication
+
+**Architectural Goals:**
+- Enable automatic RNDC key rotation based on configurable intervals
+- Provide three configuration modes: auto-generated, secret-ref, inline secret
+- Maintain full backward compatibility with existing `rndc_secret_ref` field
+- Track rotation history and status for auditing and compliance
+
+**Precedence Order (Unchanged):**
+1. Instance level (`spec.rndcKeys` or deprecated `spec.rndcSecretRef`)
+2. Role level (`spec.primary.rndcKeys` or `spec.secondary.rndcKeys`)
+3. Global level (cluster-wide RNDC configuration)
+4. Auto-generated (default)
+
+### Impact
+- [X] Breaking change (API evolution - deprecated fields)
+- [X] CRD schema change (requires CRD redeployment)
+- [ ] Requires cluster rollout (behavior unchanged - rotation not yet implemented)
+- [ ] Config change only
+
+### Backward Compatibility
+
+**Full Backward Compatibility Maintained:**
+- Existing `rndc_secret_ref` fields continue to work (marked as deprecated)
+- No behavior changes in this phase (rotation logic in Phase 2-4)
+- New `rndc_keys` field takes precedence when both are specified
+- Deprecation timeline: v0.6.0 (deprecated) → v1.0.0 (removed)
+
+**Migration Path:**
+Users can migrate from `rndcSecretRef` to `rndcKeys` at their own pace. Both work in v0.6.0.
+
+### Verification
+
+**Validation Completed:**
+- ✅ `cargo fmt` - All code formatted
+- ✅ `cargo clippy` - No warnings (deprecated field warnings expected for backward compat)
+- ✅ `cargo test` - All 667 tests passed
+- ✅ `cargo run --bin crdgen` - CRD YAMLs regenerated successfully
+- ✅ All test files updated to include new required fields
+- ✅ Deprecation warnings present for backward compatibility code (expected)
+
+**CRDs Generated:**
+- ✅ `arecords.crd.yaml`
+- ✅ `aaaarecords.crd.yaml`
+- ✅ `cnamerecords.crd.yaml`
+- ✅ `mxrecords.crd.yaml`
+- ✅ `nsrecords.crd.yaml`
+- ✅ `txtrecords.crd.yaml`
+- ✅ `srvrecords.crd.yaml`
+- ✅ `caarecords.crd.yaml`
+- ✅ `dnszones.crd.yaml`
+- ✅ `bind9clusters.crd.yaml`
+- ✅ `clusterbind9providers.crd.yaml`
+- ✅ `bind9instances.crd.yaml`
+
+### Next Steps
+
+**Phase 2: Duration Parsing and Secret Creation** (not yet implemented)
+- Implement Go duration parser for `rotate_after` field
+- Add rotation annotation helper functions
+- Update Secret creation logic to add timestamps
+
+**Phase 3: Precedence Logic** (not yet implemented)
+- Implement RNDC configuration resolver
+- Fix hardcoded secret name bug in deployment builder
+- Update Secret creation to support three modes
+
+**Phase 4: Rotation Reconciler** (not yet implemented)
+- Integrate rotation logic into Bind9Instance reconciler
+- Implement expiration checking and rotation execution
+- Add status updates for rotation tracking
+
+**Phase 5: Pod Restart After Rotation** (not yet implemented)
+- Implement deployment rollout triggering
+- Add annotation-based pod restart mechanism
+
+**Phase 6: Documentation** (not yet implemented)
+- Update user guide with rotation examples
+- Create migration guide from old to new API
+- Regenerate API documentation
+
+---
+
 ## [2026-01-25 17:15] - Remove Duplicate Documentation Build from PR Workflow
 
 **Author:** Erick Bourgeois

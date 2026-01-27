@@ -509,4 +509,241 @@ mod tests {
             assert_eq!(parsed.secret, secret);
         }
     }
+
+    // ========================================================================
+    // Rotation Annotation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_create_rndc_secret_with_annotations_no_rotation() {
+        use chrono::Utc;
+
+        let key_data = RndcKeyData {
+            name: "test-instance".to_string(),
+            algorithm: crate::crd::RndcAlgorithm::HmacSha256,
+            secret: "dGVzdHNlY3JldA==".to_string(),
+        };
+
+        let created_at = Utc::now();
+        let secret = crate::bind9::rndc::create_rndc_secret_with_annotations(
+            "dns-system",
+            "test-rndc-key",
+            &key_data,
+            created_at,
+            None, // No rotation
+            0,
+        );
+
+        // Verify basic Secret structure
+        assert_eq!(secret.metadata.name, Some("test-rndc-key".to_string()));
+        assert_eq!(secret.metadata.namespace, Some("dns-system".to_string()));
+
+        // Verify annotations
+        let annotations = secret.metadata.annotations.as_ref().unwrap();
+        assert!(annotations.contains_key(crate::constants::ANNOTATION_RNDC_CREATED_AT));
+        assert!(!annotations.contains_key(crate::constants::ANNOTATION_RNDC_ROTATE_AT)); // No rotation
+        assert_eq!(
+            annotations.get(crate::constants::ANNOTATION_RNDC_ROTATION_COUNT),
+            Some(&"0".to_string())
+        );
+
+        // Verify Secret data contains RNDC key
+        let data = secret.data.as_ref().unwrap();
+        assert!(data.contains_key("key-name"));
+        assert!(data.contains_key("algorithm"));
+        assert!(data.contains_key("secret"));
+        assert!(data.contains_key("rndc.key"));
+    }
+
+    #[test]
+    fn test_create_rndc_secret_with_annotations_with_rotation() {
+        use chrono::{DateTime, Utc};
+        use std::time::Duration;
+
+        let key_data = RndcKeyData {
+            name: "test-instance".to_string(),
+            algorithm: crate::crd::RndcAlgorithm::HmacSha256,
+            secret: "dGVzdHNlY3JldA==".to_string(),
+        };
+
+        let created_at = Utc::now();
+        let rotate_after = Duration::from_secs(30 * 24 * 3600); // 30 days
+        let secret = crate::bind9::rndc::create_rndc_secret_with_annotations(
+            "dns-system",
+            "test-rndc-key",
+            &key_data,
+            created_at,
+            Some(rotate_after),
+            5, // Fifth rotation
+        );
+
+        // Verify annotations
+        let annotations = secret.metadata.annotations.as_ref().unwrap();
+        assert!(annotations.contains_key(crate::constants::ANNOTATION_RNDC_CREATED_AT));
+        assert!(annotations.contains_key(crate::constants::ANNOTATION_RNDC_ROTATE_AT)); // Rotation enabled
+        assert_eq!(
+            annotations.get(crate::constants::ANNOTATION_RNDC_ROTATION_COUNT),
+            Some(&"5".to_string())
+        );
+
+        // Verify rotate_at is in the future (created_at + 30 days)
+        let created_str = annotations
+            .get(crate::constants::ANNOTATION_RNDC_CREATED_AT)
+            .unwrap();
+        let rotate_str = annotations
+            .get(crate::constants::ANNOTATION_RNDC_ROTATE_AT)
+            .unwrap();
+
+        let created_parsed: DateTime<Utc> = created_str.parse().unwrap();
+        let rotate_parsed: DateTime<Utc> = rotate_str.parse().unwrap();
+
+        // rotate_at should be exactly 30 days after created_at
+        let expected_rotate_at = created_parsed + chrono::Duration::seconds(30 * 24 * 3600);
+        assert_eq!(rotate_parsed, expected_rotate_at);
+    }
+
+    #[test]
+    fn test_parse_rotation_annotations_complete() {
+        use chrono::Utc;
+        use std::collections::BTreeMap;
+
+        let created_at = Utc::now();
+        let rotate_at = created_at + chrono::Duration::days(30);
+
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            crate::constants::ANNOTATION_RNDC_CREATED_AT.to_string(),
+            created_at.to_rfc3339(),
+        );
+        annotations.insert(
+            crate::constants::ANNOTATION_RNDC_ROTATE_AT.to_string(),
+            rotate_at.to_rfc3339(),
+        );
+        annotations.insert(
+            crate::constants::ANNOTATION_RNDC_ROTATION_COUNT.to_string(),
+            "3".to_string(),
+        );
+
+        let result = crate::bind9::rndc::parse_rotation_annotations(&annotations);
+        assert!(result.is_ok());
+
+        let (parsed_created, parsed_rotate, count) = result.unwrap();
+        assert_eq!(parsed_created.to_rfc3339(), created_at.to_rfc3339());
+        assert_eq!(parsed_rotate.unwrap().to_rfc3339(), rotate_at.to_rfc3339());
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn test_parse_rotation_annotations_no_rotation() {
+        use chrono::Utc;
+        use std::collections::BTreeMap;
+
+        let created_at = Utc::now();
+
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            crate::constants::ANNOTATION_RNDC_CREATED_AT.to_string(),
+            created_at.to_rfc3339(),
+        );
+        annotations.insert(
+            crate::constants::ANNOTATION_RNDC_ROTATION_COUNT.to_string(),
+            "0".to_string(),
+        );
+        // No rotate_at annotation
+
+        let result = crate::bind9::rndc::parse_rotation_annotations(&annotations);
+        assert!(result.is_ok());
+
+        let (parsed_created, parsed_rotate, count) = result.unwrap();
+        assert_eq!(parsed_created.to_rfc3339(), created_at.to_rfc3339());
+        assert!(parsed_rotate.is_none());
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_parse_rotation_annotations_missing_created_at() {
+        use std::collections::BTreeMap;
+
+        let annotations = BTreeMap::new();
+
+        let result = crate::bind9::rndc::parse_rotation_annotations(&annotations);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("created-at annotation"));
+    }
+
+    #[test]
+    fn test_parse_rotation_annotations_invalid_timestamp() {
+        use std::collections::BTreeMap;
+
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            crate::constants::ANNOTATION_RNDC_CREATED_AT.to_string(),
+            "not-a-valid-timestamp".to_string(),
+        );
+
+        let result = crate::bind9::rndc::parse_rotation_annotations(&annotations);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_rotation_annotations_invalid_count() {
+        use chrono::Utc;
+        use std::collections::BTreeMap;
+
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            crate::constants::ANNOTATION_RNDC_CREATED_AT.to_string(),
+            Utc::now().to_rfc3339(),
+        );
+        annotations.insert(
+            crate::constants::ANNOTATION_RNDC_ROTATION_COUNT.to_string(),
+            "not-a-number".to_string(),
+        );
+
+        let result = crate::bind9::rndc::parse_rotation_annotations(&annotations);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_is_rotation_due_past_timestamp() {
+        use chrono::Utc;
+
+        let past_time = Utc::now() - chrono::Duration::hours(1);
+        let now = Utc::now();
+
+        assert!(crate::bind9::rndc::is_rotation_due(Some(past_time), now));
+    }
+
+    #[test]
+    fn test_is_rotation_due_future_timestamp() {
+        use chrono::Utc;
+
+        let future_time = Utc::now() + chrono::Duration::hours(1);
+        let now = Utc::now();
+
+        assert!(!crate::bind9::rndc::is_rotation_due(Some(future_time), now));
+    }
+
+    #[test]
+    fn test_is_rotation_due_no_rotate_at() {
+        use chrono::Utc;
+
+        let now = Utc::now();
+
+        // No rotate_at means rotation is disabled
+        assert!(!crate::bind9::rndc::is_rotation_due(None, now));
+    }
+
+    #[test]
+    fn test_is_rotation_due_exact_time() {
+        use chrono::Utc;
+
+        let now = Utc::now();
+
+        // Rotation at exactly current time should be considered due
+        assert!(crate::bind9::rndc::is_rotation_due(Some(now), now));
+    }
 }

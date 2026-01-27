@@ -355,7 +355,7 @@ spec:
                   **Benefits over `nameServerIps` (deprecated):**
                   - Clearer purpose: authoritative nameservers, not just glue records
                   - IPv6 support via `ipv6Address` field
-                  - Automatic NS record generation (no manual NSRecord CRs needed)
+                  - Automatic NS record generation (no manual `NSRecord` CRs needed)
 
                   **Migration:** See [docs/src/operations/migration-guide.md](../operations/migration-guide.md)
                 items:

@@ -1841,6 +1841,223 @@ spec:
                     minimum: 0.0
                     nullable: true
                     type: integer
+                  rndcKeys:
+                    description: |-
+                      RNDC key configuration for all primary instances with lifecycle management.
+
+                      Supports automatic key rotation, Secret references, and inline Secret specifications.
+                      Overrides global RNDC configuration for primary instances.
+
+                      **Precedence order**:
+                      1. Instance level (`spec.rndcKeys`)
+                      2. Role level (`spec.primary.rndcKeys` or `spec.secondary.rndcKeys`)
+                      3. Global level (cluster-wide RNDC configuration)
+                      4. Auto-generated (default)
+
+                      Can be overridden at the instance level via `spec.rndcKeys`.
+
+                      **Backward compatibility**: If both `rndc_keys` and `rndc_secret_ref` are specified,
+                      `rndc_keys` takes precedence. For smooth migration, `rndc_secret_ref` will continue
+                      to work but is deprecated.
+
+                      # Example
+
+                      ```yaml
+                      primary:
+                        replicas: 1
+                        rndcKeys:
+                          autoRotate: true
+                          rotateAfter: 720h  # 30 days
+                          algorithm: hmac-sha256
+                      ```
+                    nullable: true
+                    properties:
+                      algorithm:
+                        default: hmac-sha256
+                        description: |-
+                          HMAC algorithm for the RNDC key.
+
+                          Only used when auto-generating keys (when neither `secret_ref` nor `secret` are
+                          specified). If using `secret_ref`, the algorithm is specified in that reference.
+
+                          Default: `hmac-sha256`
+                        enum:
+                        - hmac-md5
+                        - hmac-sha1
+                        - hmac-sha224
+                        - hmac-sha256
+                        - hmac-sha384
+                        - hmac-sha512
+                        type: string
+                      autoRotate:
+                        default: false
+                        description: |-
+                          Enable automatic key rotation (default: false for backward compatibility).
+
+                          When `true`, the operator automatically rotates the RNDC key after the
+                          `rotate_after` interval. When `false`, keys are generated once and never rotated.
+
+                          **Important**: Rotation only applies to operator-managed Secrets. If you
+                          specify `secret_ref`, that Secret will NOT be rotated automatically.
+
+                          Default: `false`
+                        type: boolean
+                      rotateAfter:
+                        default: 720h
+                        description: |-
+                          Duration after which to rotate the key (Go duration format: "720h", "30d").
+
+                          Supported units:
+                          - `h` (hours): "720h" = 30 days
+                          - `d` (days): "30d" = 30 days
+                          - `w` (weeks): "4w" = 28 days
+
+                          Constraints:
+                          - Minimum: 1h (1 hour)
+                          - Maximum: 8760h (365 days / 1 year)
+
+                          Only applies when `auto_rotate` is `true`.
+
+                          Default: `"720h"` (30 days)
+                        type: string
+                      secret:
+                        description: |-
+                          Inline Secret specification for operator-managed Secret with optional rotation.
+
+                          Embeds a full Kubernetes Secret specification. The operator will create and
+                          manage this Secret, and rotate it if `auto_rotate` is `true`.
+
+                          **Mutually exclusive with `secret_ref`** - if both are specified, `secret_ref`
+                          takes precedence and this field is ignored.
+
+                          Default: `None` (auto-generate key)
+                        nullable: true
+                        properties:
+                          data:
+                            additionalProperties:
+                              type: string
+                            description: |-
+                              Binary data (keys and values as base64 strings).
+
+                              Alternative to `string_data` if you want to provide already-base64-encoded values.
+                              Most users should use `string_data` instead for readability.
+                            nullable: true
+                            type: object
+                          metadata:
+                            description: |-
+                              Secret metadata (name, labels, annotations).
+
+                              **Required**: You must specify `metadata.name` for the Secret name.
+                            properties:
+                              annotations:
+                                additionalProperties:
+                                  type: string
+                                description: |-
+                                  Annotations to apply to the Secret.
+
+                                  **Note**: The operator will add rotation tracking annotations:
+                                  - `bindy.firestoned.io/rndc-created-at` - Key creation timestamp
+                                  - `bindy.firestoned.io/rndc-rotate-at` - Next rotation timestamp
+                                  - `bindy.firestoned.io/rndc-rotation-count` - Number of rotations
+
+                                  Do not manually set these rotation tracking annotations.
+                                nullable: true
+                                type: object
+                              labels:
+                                additionalProperties:
+                                  type: string
+                                description: |-
+                                  Labels to apply to the Secret.
+
+                                  Useful for organizing and selecting Secrets via label selectors.
+
+                                  Example:
+                                  ```yaml
+                                  labels:
+                                    app: bindy
+                                    tier: infrastructure
+                                    environment: production
+                                  ```
+                                nullable: true
+                                type: object
+                              name:
+                                description: |-
+                                  Secret name (required).
+
+                                  Must be a valid Kubernetes resource name (lowercase alphanumeric, hyphens, dots).
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          stringData:
+                            additionalProperties:
+                              type: string
+                            description: |-
+                              String data (keys and values as strings).
+
+                              For RNDC keys, you should provide:
+                              - `rndc.key`: Full BIND9 key file content (required by BIND9)
+
+                              Optional metadata (auto-populated by operator if omitted):
+                              - `key-name`: Name of the TSIG key
+                              - `algorithm`: HMAC algorithm
+                              - `secret`: Base64-encoded key material
+
+                              Kubernetes automatically base64-encodes string data when creating the Secret.
+                            nullable: true
+                            type: object
+                          type:
+                            default: Opaque
+                            description: |-
+                              Secret type (default: "Opaque").
+
+                              For RNDC keys, use the default "Opaque" type.
+                            type: string
+                        required:
+                        - metadata
+                        type: object
+                      secretRef:
+                        description: |-
+                          Reference to an existing Kubernetes Secret containing RNDC credentials.
+
+                          When specified, the operator uses this existing Secret instead of auto-generating
+                          one. The Secret must contain the `rndc.key` field with BIND9 key file content.
+
+                          **Mutually exclusive with `secret`** - if both are specified, `secret_ref` takes
+                          precedence and `secret` is ignored.
+
+                          **Rotation note**: User-managed Secrets (via `secret_ref`) are NOT automatically
+                          rotated even if `auto_rotate` is `true`. You must rotate these manually.
+
+                          Default: `None` (auto-generate key)
+                        nullable: true
+                        properties:
+                          algorithm:
+                            default: hmac-sha256
+                            description: HMAC algorithm for this key
+                            enum:
+                            - hmac-md5
+                            - hmac-sha1
+                            - hmac-sha224
+                            - hmac-sha256
+                            - hmac-sha384
+                            - hmac-sha512
+                            type: string
+                          keyNameKey:
+                            default: key-name
+                            description: 'Key within the secret for the key name (default: "key-name")'
+                            type: string
+                          name:
+                            description: Name of the Kubernetes Secret containing RNDC credentials
+                            type: string
+                          secretKey:
+                            default: secret
+                            description: 'Key within the secret for the secret value (default: "secret")'
+                            type: string
+                        required:
+                        - name
+                        type: object
+                    type: object
                   rndcSecretRef:
                     description: |-
                       Reference to an existing Kubernetes Secret containing RNDC key for all primary instances.
@@ -2240,6 +2457,223 @@ spec:
                     minimum: 0.0
                     nullable: true
                     type: integer
+                  rndcKeys:
+                    description: |-
+                      RNDC key configuration for all secondary instances with lifecycle management.
+
+                      Supports automatic key rotation, Secret references, and inline Secret specifications.
+                      Overrides global RNDC configuration for secondary instances.
+
+                      **Precedence order**:
+                      1. Instance level (`spec.rndcKeys`)
+                      2. Role level (`spec.primary.rndcKeys` or `spec.secondary.rndcKeys`)
+                      3. Global level (cluster-wide RNDC configuration)
+                      4. Auto-generated (default)
+
+                      Can be overridden at the instance level via `spec.rndcKeys`.
+
+                      **Backward compatibility**: If both `rndc_keys` and `rndc_secret_ref` are specified,
+                      `rndc_keys` takes precedence. For smooth migration, `rndc_secret_ref` will continue
+                      to work but is deprecated.
+
+                      # Example
+
+                      ```yaml
+                      secondary:
+                        replicas: 2
+                        rndcKeys:
+                          autoRotate: true
+                          rotateAfter: 720h  # 30 days
+                          algorithm: hmac-sha256
+                      ```
+                    nullable: true
+                    properties:
+                      algorithm:
+                        default: hmac-sha256
+                        description: |-
+                          HMAC algorithm for the RNDC key.
+
+                          Only used when auto-generating keys (when neither `secret_ref` nor `secret` are
+                          specified). If using `secret_ref`, the algorithm is specified in that reference.
+
+                          Default: `hmac-sha256`
+                        enum:
+                        - hmac-md5
+                        - hmac-sha1
+                        - hmac-sha224
+                        - hmac-sha256
+                        - hmac-sha384
+                        - hmac-sha512
+                        type: string
+                      autoRotate:
+                        default: false
+                        description: |-
+                          Enable automatic key rotation (default: false for backward compatibility).
+
+                          When `true`, the operator automatically rotates the RNDC key after the
+                          `rotate_after` interval. When `false`, keys are generated once and never rotated.
+
+                          **Important**: Rotation only applies to operator-managed Secrets. If you
+                          specify `secret_ref`, that Secret will NOT be rotated automatically.
+
+                          Default: `false`
+                        type: boolean
+                      rotateAfter:
+                        default: 720h
+                        description: |-
+                          Duration after which to rotate the key (Go duration format: "720h", "30d").
+
+                          Supported units:
+                          - `h` (hours): "720h" = 30 days
+                          - `d` (days): "30d" = 30 days
+                          - `w` (weeks): "4w" = 28 days
+
+                          Constraints:
+                          - Minimum: 1h (1 hour)
+                          - Maximum: 8760h (365 days / 1 year)
+
+                          Only applies when `auto_rotate` is `true`.
+
+                          Default: `"720h"` (30 days)
+                        type: string
+                      secret:
+                        description: |-
+                          Inline Secret specification for operator-managed Secret with optional rotation.
+
+                          Embeds a full Kubernetes Secret specification. The operator will create and
+                          manage this Secret, and rotate it if `auto_rotate` is `true`.
+
+                          **Mutually exclusive with `secret_ref`** - if both are specified, `secret_ref`
+                          takes precedence and this field is ignored.
+
+                          Default: `None` (auto-generate key)
+                        nullable: true
+                        properties:
+                          data:
+                            additionalProperties:
+                              type: string
+                            description: |-
+                              Binary data (keys and values as base64 strings).
+
+                              Alternative to `string_data` if you want to provide already-base64-encoded values.
+                              Most users should use `string_data` instead for readability.
+                            nullable: true
+                            type: object
+                          metadata:
+                            description: |-
+                              Secret metadata (name, labels, annotations).
+
+                              **Required**: You must specify `metadata.name` for the Secret name.
+                            properties:
+                              annotations:
+                                additionalProperties:
+                                  type: string
+                                description: |-
+                                  Annotations to apply to the Secret.
+
+                                  **Note**: The operator will add rotation tracking annotations:
+                                  - `bindy.firestoned.io/rndc-created-at` - Key creation timestamp
+                                  - `bindy.firestoned.io/rndc-rotate-at` - Next rotation timestamp
+                                  - `bindy.firestoned.io/rndc-rotation-count` - Number of rotations
+
+                                  Do not manually set these rotation tracking annotations.
+                                nullable: true
+                                type: object
+                              labels:
+                                additionalProperties:
+                                  type: string
+                                description: |-
+                                  Labels to apply to the Secret.
+
+                                  Useful for organizing and selecting Secrets via label selectors.
+
+                                  Example:
+                                  ```yaml
+                                  labels:
+                                    app: bindy
+                                    tier: infrastructure
+                                    environment: production
+                                  ```
+                                nullable: true
+                                type: object
+                              name:
+                                description: |-
+                                  Secret name (required).
+
+                                  Must be a valid Kubernetes resource name (lowercase alphanumeric, hyphens, dots).
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          stringData:
+                            additionalProperties:
+                              type: string
+                            description: |-
+                              String data (keys and values as strings).
+
+                              For RNDC keys, you should provide:
+                              - `rndc.key`: Full BIND9 key file content (required by BIND9)
+
+                              Optional metadata (auto-populated by operator if omitted):
+                              - `key-name`: Name of the TSIG key
+                              - `algorithm`: HMAC algorithm
+                              - `secret`: Base64-encoded key material
+
+                              Kubernetes automatically base64-encodes string data when creating the Secret.
+                            nullable: true
+                            type: object
+                          type:
+                            default: Opaque
+                            description: |-
+                              Secret type (default: "Opaque").
+
+                              For RNDC keys, use the default "Opaque" type.
+                            type: string
+                        required:
+                        - metadata
+                        type: object
+                      secretRef:
+                        description: |-
+                          Reference to an existing Kubernetes Secret containing RNDC credentials.
+
+                          When specified, the operator uses this existing Secret instead of auto-generating
+                          one. The Secret must contain the `rndc.key` field with BIND9 key file content.
+
+                          **Mutually exclusive with `secret`** - if both are specified, `secret_ref` takes
+                          precedence and `secret` is ignored.
+
+                          **Rotation note**: User-managed Secrets (via `secret_ref`) are NOT automatically
+                          rotated even if `auto_rotate` is `true`. You must rotate these manually.
+
+                          Default: `None` (auto-generate key)
+                        nullable: true
+                        properties:
+                          algorithm:
+                            default: hmac-sha256
+                            description: HMAC algorithm for this key
+                            enum:
+                            - hmac-md5
+                            - hmac-sha1
+                            - hmac-sha224
+                            - hmac-sha256
+                            - hmac-sha384
+                            - hmac-sha512
+                            type: string
+                          keyNameKey:
+                            default: key-name
+                            description: 'Key within the secret for the key name (default: "key-name")'
+                            type: string
+                          name:
+                            description: Name of the Kubernetes Secret containing RNDC credentials
+                            type: string
+                          secretKey:
+                            default: secret
+                            description: 'Key within the secret for the secret value (default: "secret")'
+                            type: string
+                        required:
+                        - name
+                        type: object
+                    type: object
                   rndcSecretRef:
                     description: |-
                       Reference to an existing Kubernetes Secret containing RNDC key for all secondary instances.
