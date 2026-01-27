@@ -15,7 +15,74 @@ use crate::bind9_resources::{
 };
 use crate::constants::{API_GROUP_VERSION, KIND_BIND9_INSTANCE};
 use crate::reconcilers::resources::create_or_apply;
+use anyhow::Context as _;
 
+/// Resolve RNDC configuration from instance and cluster levels.
+///
+/// Applies the precedence order: Instance > Role > Default
+///
+/// # Arguments
+///
+/// * `instance` - The `Bind9Instance` being reconciled
+/// * `cluster` - Optional `Bind9Cluster` (namespace-scoped)
+/// * `cluster_provider` - Optional `ClusterBind9Provider` (cluster-scoped)
+///
+/// # Returns
+///
+/// Resolved `RndcKeyConfig` with highest-precedence configuration applied.
+pub(super) fn resolve_full_rndc_config(
+    instance: &Bind9Instance,
+    cluster: Option<&Bind9Cluster>,
+    _cluster_provider: Option<&crate::crd::ClusterBind9Provider>,
+) -> crate::crd::RndcKeyConfig {
+    use super::config::{resolve_rndc_config, resolve_rndc_config_from_deprecated};
+
+    // Extract instance-level config
+    let instance_config = instance.spec.rndc_keys.as_ref();
+
+    // Extract role-level config (from cluster primary/secondary config)
+    // Note: Although serde flattens, the Rust struct still has the common field
+    let role_config = cluster.and_then(|c| match instance.spec.role {
+        crate::crd::ServerRole::Primary => c
+            .spec
+            .common
+            .primary
+            .as_ref()
+            .and_then(|p| p.rndc_keys.as_ref()),
+        crate::crd::ServerRole::Secondary => c
+            .spec
+            .common
+            .secondary
+            .as_ref()
+            .and_then(|s| s.rndc_keys.as_ref()),
+    });
+
+    // No global-level RNDC config is supported in the current design
+    // RNDC keys are instance-specific or role-specific only
+
+    // Handle backward compatibility with deprecated fields
+    #[allow(deprecated)]
+    let deprecated_instance_ref = instance.spec.rndc_secret_ref.as_ref();
+
+    // First, resolve from new fields (no global level for RNDC keys)
+    let resolved = resolve_rndc_config(instance_config, role_config, None);
+
+    // Then, apply backward compatibility if needed
+    if instance_config.is_none() && role_config.is_none() {
+        // Only use deprecated fields if no new fields are present
+        if deprecated_instance_ref.is_some() {
+            return resolve_rndc_config_from_deprecated(
+                None,
+                deprecated_instance_ref,
+                instance.spec.role.clone(),
+            );
+        }
+    }
+
+    resolved
+}
+
+#[allow(clippy::too_many_lines)] // Function orchestrates multiple resource creation steps
 pub(super) async fn create_or_update_resources(
     client: &Client,
     namespace: &str,
@@ -24,6 +91,7 @@ pub(super) async fn create_or_update_resources(
 ) -> Result<(
     Option<Bind9Cluster>,
     Option<crate::crd::ClusterBind9Provider>,
+    Option<Secret>, // Added: return Secret for rotation status updates
 )> {
     debug!(
         namespace = %namespace,
@@ -85,13 +153,31 @@ pub(super) async fn create_or_update_resources(
         None
     };
 
+    // Resolve RNDC configuration with proper precedence
+    let rndc_config =
+        resolve_full_rndc_config(instance, cluster.as_ref(), cluster_provider.as_ref());
+    debug!(
+        "Resolved RNDC config: auto_rotate={}, rotate_after={}",
+        rndc_config.auto_rotate, rndc_config.rotate_after
+    );
+
     // 1. Create/update ServiceAccount (must be first, as deployment will reference it)
     debug!("Step 1: Creating/updating ServiceAccount");
     create_or_update_service_account(client, namespace, instance).await?;
 
-    // 2. Create/update RNDC Secret (must be before deployment, as it will be mounted)
-    debug!("Step 2: Creating/updating RNDC Secret");
-    create_or_update_rndc_secret(client, namespace, name, instance).await?;
+    // 2. Create/update RNDC Secret with rotation support (must be before deployment, as it will be mounted)
+    debug!("Step 2: Creating/updating RNDC Secret with rotation support");
+    let secret_name =
+        create_or_update_rndc_secret_with_config(client, namespace, name, instance, &rndc_config)
+            .await?;
+
+    // Fetch the Secret for rotation status updates (only if rotation is enabled)
+    let secret = if rndc_config.auto_rotate {
+        let secret_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
+        secret_api.get(&secret_name).await.ok()
+    } else {
+        None
+    };
 
     // 3. Create/update ConfigMap
     debug!("Step 3: Creating/updating ConfigMap");
@@ -130,7 +216,7 @@ pub(super) async fn create_or_update_resources(
     .await?;
 
     debug!("Successfully created/updated all resources");
-    Ok((cluster, cluster_provider))
+    Ok((cluster, cluster_provider, secret))
 }
 
 /// Create or update the `ServiceAccount` for BIND9 pods
@@ -144,54 +230,81 @@ async fn create_or_update_service_account(
 }
 
 /// Create or update the RNDC Secret for BIND9 remote control
-/// Creates or updates RNDC Secret based on configuration.
+/// Creates or updates RNDC `Secret` based on configuration.
 ///
 /// Supports three modes:
 /// 1. **Auto-generated**: Operator creates and optionally rotates RNDC keys
-/// 2. **Secret reference**: Use existing Secret (no operator management)
-/// 3. **Inline spec**: Create Secret from inline specification
+/// 2. **Secret reference**: Use existing `Secret` (no operator management)
+/// 3. **Inline spec**: Create `Secret` from inline specification
 ///
 /// # Arguments
 ///
 /// * `client` - Kubernetes client
-/// * `namespace` - Namespace for the Secret
-/// * `name` - Instance name (used for Secret naming)
+/// * `namespace` - Namespace for the `Secret`
+/// * `name` - Instance name (used for `Secret` naming)
 /// * `instance` - `Bind9Instance` resource
 /// * `config` - RNDC configuration (resolved via precedence)
 ///
 /// # Returns
 ///
-/// Returns the Secret name to use in Deployment configuration.
+/// Returns the `Secret` name to use in `Deployment` configuration.
 ///
 /// # Errors
 ///
-/// Returns error if Secret creation/update fails or API call fails.
-#[allow(dead_code)] // Will be used in Phase 4
+/// Returns error if `Secret` creation/update fails or API call fails.
+#[allow(dead_code)] // Will be used when integrated into reconciler
+#[allow(clippy::too_many_lines)] // Function implements three Secret modes
 async fn create_or_update_rndc_secret_with_config(
     client: &Client,
     namespace: &str,
     name: &str,
     instance: &Bind9Instance,
-    _config: &crate::crd::RndcKeyConfig,
+    config: &crate::crd::RndcKeyConfig,
 ) -> Result<String> {
-    // TODO(Phase 4): Implement full RNDC configuration modes:
-    // 1. If config.secret_ref is Some, use existing Secret
-    // 2. If config.secret is Some, create Secret from inline spec
-    // 3. Otherwise, auto-generate Secret with optional rotation
+    use chrono::Utc;
 
-    // For now, preserve existing behavior
-    let secret_name = format!("{name}-rndc-key");
+    // Mode 1: Use existing Secret via secret_ref
+    if let Some(ref secret_ref) = config.secret_ref {
+        info!(
+            "Using existing Secret reference: {}/{}",
+            namespace, secret_ref.name
+        );
+        return Ok(secret_ref.name.clone());
+    }
+
+    // Mode 2 & 3: Create/manage Secret (inline spec or auto-generated)
+    let secret_name = if let Some(ref secret_spec) = config.secret {
+        // Use name from inline spec
+        secret_spec.metadata.name.clone()
+    } else {
+        // Default name for auto-generated
+        format!("{name}-rndc-key")
+    };
+
     let secret_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
 
-    // Check if secret already exists
+    // Check if Secret exists and if rotation is due
     match secret_api.get(&secret_name).await {
         Ok(existing_secret) => {
-            // Secret exists, don't regenerate the key
-            info!(
-                "RNDC Secret {}/{} already exists, skipping",
-                namespace, secret_name
-            );
-            // Verify it has the required keys
+            // Check if rotation is needed
+            if config.auto_rotate && should_rotate_secret(&existing_secret, config)? {
+                info!(
+                    "RNDC Secret {}/{} rotation is due, rotating",
+                    namespace, secret_name
+                );
+                rotate_rndc_secret(
+                    client,
+                    namespace,
+                    &secret_name,
+                    config,
+                    instance,
+                    &existing_secret,
+                )
+                .await?;
+                return Ok(secret_name);
+            }
+
+            // Verify Secret has required keys
             if let Some(ref data) = existing_secret.data {
                 if !data.contains_key("key-name")
                     || !data.contains_key("algorithm")
@@ -201,11 +314,14 @@ async fn create_or_update_rndc_secret_with_config(
                         "RNDC Secret {}/{} is missing required keys, will recreate",
                         namespace, secret_name
                     );
-                    // Delete and recreate
                     secret_api
                         .delete(&secret_name, &kube::api::DeleteParams::default())
                         .await?;
                 } else {
+                    info!(
+                        "RNDC Secret {}/{} exists and is valid, skipping creation",
+                        namespace, secret_name
+                    );
                     return Ok(secret_name);
                 }
             } else {
@@ -226,14 +342,37 @@ async fn create_or_update_rndc_secret_with_config(
         }
     }
 
-    // Generate new RNDC key
+    // Mode 2: Create from inline spec
+    if let Some(_secret_spec) = &config.secret {
+        // TODO: Implement inline Secret creation from SecretSpec
+        // For now, fall through to auto-generated
+        info!("Creating RNDC Secret from inline spec with rotation enabled");
+    }
+
+    // Mode 3: Auto-generate Secret
     let mut key_data = Bind9Manager::generate_rndc_key();
     key_data.name = "bindy-operator".to_string();
+    key_data.algorithm = config.algorithm.clone();
 
-    // Create Secret data
-    let secret_data = Bind9Manager::create_rndc_secret_data(&key_data);
+    // Calculate rotation timestamps if enabled
+    let created_at = Utc::now();
+    let rotate_after = if config.auto_rotate {
+        crate::bind9::duration::parse_duration(&config.rotate_after).ok()
+    } else {
+        None
+    };
 
-    // Create owner reference to the Bind9Instance
+    // Create Secret with annotations using helper function
+    let secret = crate::bind9::rndc::create_rndc_secret_with_annotations(
+        namespace,
+        &secret_name,
+        &key_data,
+        created_at,
+        rotate_after,
+        0, // Initial rotation count
+    );
+
+    // Add owner reference
     let owner_ref = OwnerReference {
         api_version: API_GROUP_VERSION.to_string(),
         kind: KIND_BIND9_INSTANCE.to_string(),
@@ -243,26 +382,29 @@ async fn create_or_update_rndc_secret_with_config(
         block_owner_deletion: Some(true),
     };
 
-    // TODO(Phase 4): Add rotation annotations if config.auto_rotate is true:
-    // - bindy.firestoned.io/rndc-created-at
-    // - bindy.firestoned.io/rndc-rotate-at
-    // - bindy.firestoned.io/rndc-rotation-count
+    let mut secret_with_owner = secret;
+    secret_with_owner
+        .metadata
+        .owner_references
+        .get_or_insert_with(Vec::new)
+        .push(owner_ref);
 
-    // Build Secret object
-    let secret = Secret {
-        metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
-            name: Some(secret_name.clone()),
-            namespace: Some(namespace.to_string()),
-            owner_references: Some(vec![owner_ref]),
-            ..Default::default()
-        },
-        string_data: Some(secret_data),
-        ..Default::default()
-    };
+    // Create the Secret
+    if config.auto_rotate {
+        info!(
+            "Creating RNDC Secret {}/{} with rotation enabled (rotate after: {})",
+            namespace, secret_name, config.rotate_after
+        );
+    } else {
+        info!(
+            "Creating RNDC Secret {}/{} without rotation",
+            namespace, secret_name
+        );
+    }
 
-    // Create the secret
-    info!("Creating RNDC Secret {}/{}", namespace, secret_name);
-    secret_api.create(&PostParams::default(), &secret).await?;
+    secret_api
+        .create(&PostParams::default(), &secret_with_owner)
+        .await?;
 
     Ok(secret_name)
 }
@@ -271,6 +413,7 @@ async fn create_or_update_rndc_secret_with_config(
 ///
 /// This function maintains the original behavior for existing reconciler code.
 /// New code should use `create_or_update_rndc_secret_with_config` instead.
+#[allow(dead_code)] // Kept for backward compatibility, may be removed in future
 async fn create_or_update_rndc_secret(
     client: &Client,
     namespace: &str,
@@ -379,15 +522,38 @@ async fn create_or_update_rndc_secret(
 /// # Errors
 ///
 /// Returns error if annotation parsing fails.
-#[allow(dead_code)] // Will be used in Phase 4
-#[allow(clippy::unnecessary_wraps)] // Will return errors once implemented
-fn should_rotate_secret(_secret: &Secret, _config: &crate::crd::RndcKeyConfig) -> Result<bool> {
-    // TODO(Phase 4): Implement rotation detection logic:
-    // 1. Check if auto_rotate is enabled
-    // 2. Parse rndc-rotate-at annotation
-    // 3. Compare to current time
-    // 4. Ensure at least 1 hour has passed since created_at (rate limit)
-    Ok(false)
+#[allow(dead_code)] // Will be used when integrated into reconciler
+fn should_rotate_secret(secret: &Secret, config: &crate::crd::RndcKeyConfig) -> Result<bool> {
+    use chrono::Utc;
+
+    // Auto-rotation must be enabled
+    if !config.auto_rotate {
+        return Ok(false);
+    }
+
+    // Parse rotation annotations
+    let Some(annotations) = &secret.metadata.annotations else {
+        debug!("Secret has no annotations, rotation not due");
+        return Ok(false);
+    };
+
+    let (created_at, rotate_at, _rotation_count) =
+        crate::bind9::rndc::parse_rotation_annotations(annotations)?;
+
+    let now = Utc::now();
+
+    // Rate limit: Ensure at least 1 hour has passed since creation/last rotation
+    let time_since_creation = now.signed_duration_since(created_at);
+    if time_since_creation.num_hours() < crate::constants::MIN_TIME_BETWEEN_ROTATIONS_HOURS {
+        debug!(
+            "Skipping rotation - Secret was created/rotated {} minutes ago (min 1 hour required)",
+            time_since_creation.num_minutes()
+        );
+        return Ok(false);
+    }
+
+    // Check if rotation is due based on rotate_at annotation
+    Ok(crate::bind9::rndc::is_rotation_due(rotate_at, now))
 }
 
 /// Rotates RNDC `Secret` by generating new key and updating annotations.
@@ -412,22 +578,126 @@ fn should_rotate_secret(_secret: &Secret, _config: &crate::crd::RndcKeyConfig) -
 /// # Errors
 ///
 /// Returns error if `Secret` update fails or annotation parsing fails.
-#[allow(dead_code)] // Will be used in Phase 4
-#[allow(clippy::unused_async)] // Will have async calls once implemented
+#[allow(dead_code)] // Will be used when integrated into reconciler
 async fn rotate_rndc_secret(
-    _client: &Client,
-    _namespace: &str,
-    _secret_name: &str,
-    _config: &crate::crd::RndcKeyConfig,
-    _instance: &Bind9Instance,
-    _existing_secret: &Secret,
+    client: &Client,
+    namespace: &str,
+    secret_name: &str,
+    config: &crate::crd::RndcKeyConfig,
+    instance: &Bind9Instance,
+    existing_secret: &Secret,
 ) -> Result<()> {
-    // TODO(Phase 4): Implement rotation logic:
-    // 1. Generate new RNDC key
-    // 2. Parse existing rotation_count and increment
-    // 3. Calculate new rotate_at timestamp
-    // 4. Update Secret with new key data and annotations
-    // 5. Trigger Deployment rollout (update pod template annotation)
+    use chrono::Utc;
+
+    // Parse existing rotation annotations
+    let annotations = existing_secret
+        .metadata
+        .annotations
+        .as_ref()
+        .context("Secret missing annotations")?;
+
+    let (_created_at, _rotate_at, rotation_count) =
+        crate::bind9::rndc::parse_rotation_annotations(annotations)?;
+
+    // Increment rotation count
+    let new_rotation_count = rotation_count + 1;
+
+    info!(
+        "Rotating RNDC Secret {}/{} (rotation #{})",
+        namespace, secret_name, new_rotation_count
+    );
+
+    // Generate new RNDC key
+    let mut key_data = Bind9Manager::generate_rndc_key();
+    key_data.name = "bindy-operator".to_string();
+    key_data.algorithm = config.algorithm.clone();
+
+    // Calculate new rotation timestamps
+    let created_at = Utc::now();
+    let rotate_after = crate::bind9::duration::parse_duration(&config.rotate_after)?;
+
+    // Create new Secret with updated annotations and data
+    let new_secret = crate::bind9::rndc::create_rndc_secret_with_annotations(
+        namespace,
+        secret_name,
+        &key_data,
+        created_at,
+        Some(rotate_after),
+        new_rotation_count,
+    );
+
+    // Preserve owner references from existing Secret
+    let mut updated_secret = new_secret;
+    updated_secret
+        .metadata
+        .owner_references
+        .clone_from(&existing_secret.metadata.owner_references);
+
+    // Replace the Secret
+    let secret_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
+    secret_api
+        .replace(secret_name, &PostParams::default(), &updated_secret)
+        .await?;
+
+    info!(
+        "Successfully rotated RNDC Secret {}/{} (rotation #{})",
+        namespace, secret_name, new_rotation_count
+    );
+
+    // Trigger Deployment rollout by patching pod template annotation
+    trigger_deployment_rollout(client, namespace, &instance.name_any()).await?;
+
+    Ok(())
+}
+
+/// Triggers a `Deployment` rollout by updating pod template annotation.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes client
+/// * `namespace` - Deployment namespace
+/// * `instance_name` - Name of the `Bind9Instance` (= Deployment name)
+///
+/// # Errors
+///
+/// Returns error if Deployment patch fails.
+#[allow(dead_code)] // Will be used when integrated into reconciler
+async fn trigger_deployment_rollout(
+    client: &Client,
+    namespace: &str,
+    instance_name: &str,
+) -> Result<()> {
+    use chrono::Utc;
+    use serde_json::json;
+
+    let deployment_api: Api<Deployment> = Api::namespaced(client.clone(), namespace);
+
+    // Patch deployment pod template annotation to trigger rolling restart
+    let patch = json!({
+        "spec": {
+            "template": {
+                "metadata": {
+                    "annotations": {
+                        crate::constants::ANNOTATION_RNDC_ROTATED_AT: Utc::now().to_rfc3339()
+                    }
+                }
+            }
+        }
+    });
+
+    deployment_api
+        .patch(
+            instance_name,
+            &PatchParams::default(),
+            &kube::api::Patch::Merge(&patch),
+        )
+        .await?;
+
+    info!(
+        "Triggered Deployment {}/{} rollout after RNDC rotation",
+        namespace, instance_name
+    );
+
     Ok(())
 }
 

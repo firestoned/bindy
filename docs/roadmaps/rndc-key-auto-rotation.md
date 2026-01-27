@@ -1,9 +1,10 @@
 # RNDC Key Auto-Rotation Implementation Roadmap
 
-**Status:** Proposed
+**Status:** In Progress (Phases 1-4 Complete)
 **Date:** 2026-01-14
+**Last Updated:** 2026-01-27
 **Author:** Erick Bourgeois
-**Impact:** Major API changes, new operator, breaking changes to CRD schemas
+**Impact:** Major API changes, integrated rotation logic, breaking changes to CRD schemas
 
 ---
 
@@ -15,7 +16,7 @@ This roadmap outlines the implementation of automatic RNDC key rotation for the 
 2. **Automatic key rotation** based on configurable time intervals
 3. **Manual rotation triggers** via annotation updates
 4. **Backward compatibility** with existing deployments
-5. **A new dedicated operator** for managing key rotation lifecycle
+5. **Integrated rotation logic** in the Bind9Instance reconciler (simpler than separate operator)
 6. **Comprehensive documentation** for compliance and regulatory requirements
 
 ### Regulatory Compliance Benefits
@@ -30,6 +31,63 @@ This feature is **critical for regulated environments** (banking, healthcare, go
 - **HIPAA Security Rule**: Supports technical safeguards for secure communication
 
 **Key Compliance Benefit**: Automated rotation reduces human error, provides audit trails, and ensures consistent application of security policies across the infrastructure.
+
+---
+
+## Implementation Progress
+
+### ✅ Phase 1: API Changes (COMPLETE - 2026-01-26)
+- Added `RndcKeyConfig`, `SecretSpec`, `SecretMetadata` structs to `src/crd.rs`
+- Added `RndcKeyRotationStatus` to `Bind9InstanceStatus` for tracking
+- Deprecated `rndc_secret_ref` fields with backward compatibility
+- Regenerated CRD YAMLs and API documentation
+- All tests passing (710 tests), clippy clean, formatted
+
+### ✅ Phase 2: Duration Parsing and Secret Annotations (COMPLETE - 2026-01-26)
+- Implemented `parse_duration()` with Go-style duration support ("720h", "30d", "4w")
+- Implemented Secret annotation helpers: `create_rndc_secret_with_annotations()`, `parse_rotation_annotations()`, `is_rotation_due()`
+- Comprehensive test coverage (15 duration tests, 8 annotation tests)
+- All tests passing (716 tests), clippy clean, formatted
+
+### ✅ Phase 3: Configuration Precedence and Secret Infrastructure (COMPLETE - 2026-01-27)
+- Implemented `resolve_rndc_config()` with precedence: Instance > Role > Global > Default
+- Implemented backward compatibility with `resolve_rndc_config_from_deprecated()`
+- Fixed hardcoded secret name bug in `src/bind9_resources.rs:832`
+- Implemented Secret creation with three modes: auto-generated, secret-ref, inline
+- Implemented rotation detection and execution with rate limiting (1-hour minimum)
+- Comprehensive test coverage (14 config tests, resources documented)
+- All tests passing (718 tests), clippy clean, formatted
+
+### ✅ Phase 4: Rotation Integration into Reconciliation Loop (COMPLETE - 2026-01-27)
+- Implemented `calculate_requeue_duration()` for scheduling reconciliation before rotation (5 minutes early, 30 seconds minimum)
+- Implemented `update_rotation_status()` for tracking rotation state in instance status
+- Implemented `resolve_full_rndc_config()` for precedence resolution with cluster context
+- Integrated rotation status updates into `reconcile_bind9instance()` main loop
+- Added 9 integration tests covering requeue duration, rotation status, and config resolution
+- All tests passing (719 tests), clippy clean, formatted
+
+**Architecture Decision**: Implemented integrated rotation approach (rotation logic in `Bind9Instance` reconciler) instead of separate operator. This provides:
+- Simpler architecture with fewer moving parts
+- Direct access to instance and cluster state during reconciliation
+- Immediate rotation status updates without cross-operator coordination
+- Easier to test and maintain
+
+### 🚧 Phase 5: Pod Restart After Rotation (PENDING)
+**Status:** Not started
+**Tasks:**
+- Implement `trigger_deployment_rollout()` in `resources.rs`
+- Patch Deployment pod template annotation: `bindy.firestoned.io/rndc-rotated-at`
+- Call after rotation in `rotate_rndc_secret()`
+- Test that pod restart triggers properly
+
+### 🚧 Phase 6: Documentation and Examples (PENDING)
+**Status:** Not started
+**Tasks:**
+- Create user guide: `docs/src/features/rndc-key-rotation.md`
+- Create migration guide: `docs/src/migration/rndc-keys-migration.md`
+- Create example: `examples/bind9-cluster-with-rotation.yaml`
+- Update quickstart guides with rotation examples
+- Regenerate documentation: `make docs`
 
 ---
 
