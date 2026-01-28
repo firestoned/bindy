@@ -1,3 +1,148 @@
+## [2026-01-27 19:30] - Phase 5 (Complete): Pod Restart After RNDC Key Rotation
+
+**Author:** Erick Bourgeois
+
+### Summary
+Completed Phase 5 by verifying and documenting the pod restart functionality after RNDC key rotation. The implementation was already present from previous work - this phase focused on removing dead code warnings and adding comprehensive test documentation.
+
+### Changed
+- `src/reconcilers/bind9instance/resources.rs`: Removed `#[allow(dead_code)]` attribute from `trigger_deployment_rollout()`
+  - Function is actively used in `rotate_rndc_secret()` after line 648
+  - No longer flagged as dead code since it's integrated into rotation workflow
+
+- `src/reconcilers/bind9instance/resources_tests.rs`: Added 4 new test documentation entries for pod restart functionality
+  - `test_trigger_deployment_rollout_after_rotation` - Documents Deployment patch behavior
+  - `test_trigger_deployment_rollout_updates_annotation` - Documents annotation update flow
+  - `test_rotate_rndc_secret_triggers_pod_restart` - Documents end-to-end rotation and restart
+  - `test_trigger_deployment_rollout_fails_gracefully` - Documents error handling
+
+### Implementation Details
+
+**Pod Restart Mechanism:**
+1. After successful RNDC Secret rotation in `rotate_rndc_secret()`, the function calls `trigger_deployment_rollout()`
+2. `trigger_deployment_rollout()` patches the Deployment pod template annotation: `bindy.firestoned.io/rndc-rotated-at` = current timestamp
+3. Kubernetes detects the pod template change and triggers a rolling restart
+4. New pods mount the updated RNDC Secret with the new key
+5. Old pods are gracefully terminated after new pods are ready
+
+**Error Handling:**
+- If Deployment patch fails, the Secret rotation is ALREADY COMPLETE (not rolled back)
+- The operator will retry the Deployment patch on the next reconciliation
+- This ensures Secret rotation is atomic and not dependent on Deployment availability
+
+**Graceful Restart:**
+- Kubernetes performs a rolling restart (RollingUpdate strategy)
+- Pods restart one at a time (or according to maxUnavailable/maxSurge)
+- DNS service remains available during the restart
+- New RNDC key is loaded by new pods automatically
+
+### Test Results
+- ✅ Total Tests: 723 passing (up from 719)
+- ✅ New Tests: 4 pod restart documentation tests
+- ✅ Clippy: Clean (no warnings)
+- ✅ Formatting: Applied with cargo fmt
+
+### Why
+Phase 5 completes the RNDC key rotation feature by ensuring pods automatically restart and load new RNDC keys after rotation. This is critical for the rotation to be fully automated without manual intervention.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Feature completion (Phase 5)
+- [x] Test documentation
+
+---
+
+## [2026-01-27 19:07] - Add Bindy Bee Favicon to Documentation
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/src/images/favicons/favicon.png` - Main favicon (32x32) generated from Bindy bee mascot
+- `docs/src/images/favicons/favicon-16x16.png` - Small favicon for older browsers
+- `docs/src/images/favicons/favicon-32x32.png` - Standard favicon size
+- `docs/src/images/favicons/apple-touch-icon.png` - 180x180 icon for iOS devices
+- `docs/src/images/favicons/android-chrome-192x192.png` - Android home screen icon
+- `docs/src/images/favicons/android-chrome-512x512.png` - High-res Android icon
+- `docs/src/site.webmanifest` - PWA manifest for installable web app support
+
+### Changed
+- `docs/mkdocs.yml`: Configured logo and favicon to use Bindy bee mascot
+  - Set `theme.logo` to favicon image
+  - Set `theme.favicon` to favicon image
+  - Both browser tab and site header now display the bee
+
+### Why
+The Bindy bee mascot should appear as the favicon in browser tabs and bookmarks, reinforcing brand identity. Multiple sizes ensure optimal display across all devices and platforms (desktop browsers, mobile devices, PWA installations).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
+## [2026-01-27 19:15] - Fix docs-serve Makefile Target for Poetry 2.x and Enable Hot Reload
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Makefile`: Updated `docs-serve` target to include `~/.local/bin` in PATH
+  - Added `export PATH := $(HOME)/.local/bin:$(PATH)` to docs-serve target
+- `Makefile`: Updated `docs` target to include both Poetry and Cargo paths
+  - Changed from `$(HOME)/.cargo/bin:$(PATH)` to `$(HOME)/.local/bin:$(HOME)/.cargo/bin:$(PATH)`
+- `Makefile`: Enhanced `docs-serve` with live reload and theme watching
+  - Added `--watch-theme` flag to watch `docs/theme/` directory for changes
+  - Added `--livereload` flag (explicit) for browser auto-refresh
+  - Added informative output showing what directories are being watched
+- Moved `docs/images/` directory to `docs/src/images/` to match MkDocs `docs_dir` configuration
+  - Fixes 404 error for `bindy-the-bee.png` image in documentation
+
+### Why
+Poetry 2.x installs to `~/.local/bin` by default, while older versions installed via Homebrew use `/opt/homebrew/bin`. The `pyproject.toml` requires Poetry 1.8.0+ for the `package-mode = false` configuration option. Without the correct PATH, `make docs-serve` fails with "Additional properties are not allowed ('package-mode' was unexpected)" error when using Poetry 1.2.2.
+
+The MkDocs configuration sets `docs_dir: src`, meaning all content (including images) must be under `docs/src/`. The images directory was in `docs/images/`, causing 404 errors when MkDocs tried to serve the image.
+
+Hot reload functionality allows developers to see documentation changes immediately in the browser without manual refresh. The `--watch-theme` flag ensures changes to custom theme files trigger rebuilds.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation tooling fix
+- [x] Developer experience improvement
+
+---
+
+## [2026-01-27 18:54] - Update Documentation Theme to Bindy Bee Colors
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/mkdocs.yml`: Updated color palette from indigo to amber/deep orange to match Bindy the Bee
+  - Light mode: primary=amber, accent=deep orange
+  - Dark mode: primary=amber, accent=deep orange
+- `docs/src/stylesheets/extra.css`: Added custom CSS color overrides with exact bee colors
+  - Primary (Amber/Gold): #FFA726 - bee's body and wings
+  - Accent (Deep Orange): #FF6F00 - bee's hat/cap
+  - Adjusted colors for dark mode readability
+- `docs/src/index.md`: Added Bindy the Bee image to documentation homepage
+  - Image positioned inline with "Introduction" heading
+  - 60px width with vertical alignment
+
+### Why
+The documentation colors should reflect the Bindy bee branding from the README. The bee mascot uses warm yellow/amber and orange colors that are more distinctive and friendly than the generic indigo theme.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
 ## [2026-01-27 18:15] - Fix Failing Doctest in calculate_requeue_duration
 
 **Author:** Erick Bourgeois

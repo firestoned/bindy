@@ -7,7 +7,34 @@
  *
  * This file contains custom styles adapted from the mdBook theme to
  * maintain visual consistency during the migration to MkDocs Material.
+ *
+ * Color Palette: Inspired by Bindy the Bee
+ * - Primary (Amber/Gold): #FFC107 - bee's body and wings
+ * - Accent (Deep Orange): #FF6F00 - bee's hat/cap
+ * - Dark (Black/Brown): #2C1810 - bee's stripes
  */
+
+/* ============================================
+   Custom Color Overrides - Bindy Bee Theme
+   ============================================ */
+
+:root {
+    /* Light mode bee colors */
+    --md-primary-fg-color: #FFA726;        /* Amber/gold - bee body */
+    --md-primary-fg-color--light: #FFB74D; /* Lighter amber */
+    --md-primary-fg-color--dark: #F57C00;  /* Darker amber */
+    --md-accent-fg-color: #FF6F00;         /* Deep orange - bee hat */
+    --md-accent-fg-color--transparent: rgba(255, 111, 0, 0.1);
+}
+
+[data-md-color-scheme="slate"] {
+    /* Dark mode bee colors - slightly adjusted for readability */
+    --md-primary-fg-color: #FFB74D;        /* Lighter amber for dark mode */
+    --md-primary-fg-color--light: #FFCC80; /* Even lighter amber */
+    --md-primary-fg-color--dark: #FFA726;  /* Medium amber */
+    --md-accent-fg-color: #FF8A50;         /* Softer orange for dark mode */
+    --md-accent-fg-color--transparent: rgba(255, 138, 80, 0.1);
+}
 
 /* ============================================
    Right-side Page TOC (Table of Contents)
