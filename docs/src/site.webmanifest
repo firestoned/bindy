@@ -1,0 +1,21 @@
+{
+  "name": "Bindy - BIND9 DNS Operator for Kubernetes",
+  "short_name": "Bindy",
+  "description": "A high-performance Kubernetes operator written in Rust that manages BIND9 DNS infrastructure through Custom Resource Definitions (CRDs)",
+  "icons": [
+    {
+      "src": "/images/favicons/android-chrome-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/images/favicons/android-chrome-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ],
+  "theme_color": "#ffa726",
+  "background_color": "#ffffff",
+  "display": "standalone",
+  "start_url": "/bindy/"
+}

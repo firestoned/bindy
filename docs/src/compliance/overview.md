@@ -15,6 +15,7 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 - **NIST CSF**: Cybersecurity Framework for critical infrastructure
 
 **Failure to comply** can result in:
+
 - 🚨 Failed audits (SOX 404, PCI-DSS)
 - 💰 Financial penalties (up to $100k/day for PCI-DSS violations)
 - ⚖️ Legal liability (Sarbanes-Oxley criminal penalties)
@@ -42,6 +43,7 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 **Status:** ✅ Complete (2025-12-17)
 
 **Documentation:**
+
 - [Threat Model](../security/threat-model.md) - STRIDE threat analysis, 15 threats, 5 scenarios
 - [Security Architecture](../security/architecture.md) - 5 security domains, 4 data flow diagrams
 - [Incident Response Playbooks](../security/incident-response.md) - 7 playbooks (P1-P7)
@@ -49,6 +51,7 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 **Frameworks:** SOX 404, PCI-DSS 6.4.1, Basel III
 
 **Key Controls:**
+
 - ✅ Comprehensive STRIDE threat analysis (Spoofing, Tampering, Repudiation, Information Disclosure, DoS, Privilege Escalation)
 - ✅ 7 incident response playbooks following NIST Incident Response Lifecycle
 - ✅ 5 security domains with trust boundaries
@@ -66,6 +69,7 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 **Frameworks:** SOX 404 (7-year retention), PCI-DSS 10.5.1 (1-year retention), Basel III (7-year retention)
 
 **Key Controls:**
+
 - ✅ 7-year immutable audit log retention (SOX 404, Basel III)
 - ✅ S3 Object Lock (WORM) for tamper-proof storage
 - ✅ SHA-256 checksums for log integrity verification
@@ -84,6 +88,7 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 **Frameworks:** SOX 404, PCI-DSS 7.1.2, PCI-DSS 10.2.1, Basel III
 
 **Key Controls:**
+
 - ✅ Kubernetes audit logs capture all secret access (get, list, watch)
 - ✅ 5 pre-built Elasticsearch queries for compliance reviews
 - ✅ 3 Prometheus alerting rules for unauthorized access detection
@@ -102,6 +107,7 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 **Frameworks:** SLSA Level 3, SOX 404, PCI-DSS 6.4.6
 
 **Key Controls:**
+
 - ✅ Bit-for-bit reproducible builds (deterministic)
 - ✅ Verification script for external auditors (`scripts/verify-build.sh`)
 - ✅ Automated daily reproducibility checks in CI/CD
@@ -115,12 +121,14 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 **Status:** ✅ Complete (2024-12-15)
 
 **Documentation:**
+
 - [RBAC Verification Script](https://github.com/firestoned/bindy/blob/main/deploy/rbac/verify-rbac.sh)
 - [Security Architecture - RBAC](../security/architecture.md#rbac-architecture)
 
 **Frameworks:** SOX 404, PCI-DSS 7.1.2, Basel III
 
 **Key Controls:**
+
 - ✅ Operator has minimal required permissions (create/delete secrets for RNDC lifecycle, delete managed resources for finalizer cleanup)
 - ✅ Operator cannot delete user resources (DNSZone, Records, ClusterBind9Provider - least privilege)
 - ✅ Automated RBAC verification script (CI/CD)
@@ -133,12 +141,14 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 **Status:** ✅ Complete (2024-12-15)
 
 **Documentation:**
+
 - [Vulnerability Management Policy](../security/vulnerability-management.md)
 - [SECURITY.md - Dependency Management](https://github.com/firestoned/bindy/blob/mahttps://github.com/firestoned/bindy/blob/main/SECURITY.md#dependency-management--vulnerability-scanning)
 
 **Frameworks:** SOX 404, PCI-DSS 6.2, Basel III
 
 **Key Controls:**
+
 - ✅ Daily `cargo audit` scans (00:00 UTC)
 - ✅ CI/CD fails on CRITICAL/HIGH vulnerabilities
 - ✅ Trivy container image scanning
@@ -152,12 +162,14 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 **Status:** ✅ Complete (2024-12-10)
 
 **Documentation:**
+
 - [SECURITY.md - Commit Signing](https://github.com/firestoned/bindy/blob/mahttps://github.com/firestoned/bindy/blob/main/SECURITY.md#commit-signing-critical)
 - [CONTRIBUTING.md](https://github.com/firestoned/bindy/blob/mahttps://github.com/firestoned/bindy/blob/main/CONTRIBUTING.md)
 
 **Frameworks:** SOX 404, PCI-DSS 6.4.6, SLSA Level 2+
 
 **Key Controls:**
+
 - ✅ All commits cryptographically signed (GPG/SSH)
 - ✅ Branch protection enforces signed commits on `main`
 - ✅ CI/CD verifies commit signatures
@@ -212,6 +224,7 @@ For external auditors and compliance reviews, all evidence is documented and ver
 **Time to Complete:** ~12 hours (vs 9-12 weeks estimated - 96% faster)
 
 **Compliance Frameworks Addressed:**
+
 - ✅ SOX 404 (IT General Controls, Change Management, Access Controls)
 - ✅ PCI-DSS (6.2, 6.4.1, 6.4.6, 7.1.2, 10.2.1, 10.5.1, 12.10)
 - ✅ Basel III (Cyber Risk Management, Operational Risk)

@@ -661,7 +661,6 @@ async fn rotate_rndc_secret(
 /// # Errors
 ///
 /// Returns error if Deployment patch fails.
-#[allow(dead_code)] // Will be used when integrated into reconciler
 async fn trigger_deployment_rollout(
     client: &Client,
     namespace: &str,

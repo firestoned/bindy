@@ -225,4 +225,64 @@ mod tests {
         //       AND NOT call rotate_rndc_secret
         //       AND log "Auto-rotation disabled for this instance"
     }
+
+    // ========================================================================
+    // Pod Restart After Rotation Tests (Phase 5)
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_trigger_deployment_rollout_after_rotation() {
+        // This test requires mocking the Kubernetes API
+        // For now, we document the expected behavior:
+        //
+        // Given: A successful RNDC Secret rotation
+        //        AND a Deployment exists for the instance
+        // When: trigger_deployment_rollout is called
+        // Then: Should patch Deployment pod template annotation:
+        //           - bindy.firestoned.io/rndc-rotated-at = current timestamp
+        //       AND trigger rolling restart of all pods
+        //       AND log "Triggered Deployment rollout after RNDC rotation"
+    }
+
+    #[tokio::test]
+    async fn test_trigger_deployment_rollout_updates_annotation() {
+        // This test requires mocking the Kubernetes API
+        // For now, we document the expected behavior:
+        //
+        // Given: A Deployment with existing rndc-rotated-at annotation = "2025-01-01T00:00:00Z"
+        // When: trigger_deployment_rollout is called after rotation
+        // Then: Should update annotation to current timestamp
+        //       AND Kubernetes will detect annotation change
+        //       AND trigger rolling restart of pods
+    }
+
+    #[tokio::test]
+    async fn test_rotate_rndc_secret_triggers_pod_restart() {
+        // This test requires mocking the Kubernetes API
+        // For now, we document the expected behavior:
+        //
+        // Given: A Secret rotation is due
+        //        AND auto_rotate = true
+        // When: rotate_rndc_secret is called
+        // Then: Should generate new RNDC key
+        //       AND replace Secret with new key
+        //       AND call trigger_deployment_rollout
+        //       AND pods will restart with new RNDC key
+        //       AND log "Successfully rotated RNDC Secret (rotation #N)"
+        //       AND log "Triggered Deployment rollout after RNDC rotation"
+    }
+
+    #[tokio::test]
+    async fn test_trigger_deployment_rollout_fails_gracefully() {
+        // This test requires mocking the Kubernetes API
+        // For now, we document the expected behavior:
+        //
+        // Given: RNDC Secret rotation succeeded
+        //        BUT Deployment patch fails (e.g., Deployment not found)
+        // When: trigger_deployment_rollout is called
+        // Then: Should return error
+        //       AND Secret rotation is ALREADY COMPLETE (not rolled back)
+        //       AND operator will retry on next reconciliation
+        //       AND log error message with details
+    }
 }

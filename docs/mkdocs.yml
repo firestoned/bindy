@@ -26,19 +26,20 @@ theme:
   language: en
 
   # Color palette with dark mode support
+  # Colors match Bindy the Bee: amber/yellow body with orange accents
   palette:
     # Light mode
     - scheme: default
-      primary: indigo
-      accent: indigo
+      primary: amber
+      accent: deep orange
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
 
     # Dark mode
     - scheme: slate
-      primary: indigo
-      accent: indigo
+      primary: amber
+      accent: deep orange
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
@@ -81,6 +82,8 @@ theme:
     - content.tooltips         # Improved tooltips
 
   # Logo and favicon
+  logo: images/favicons/favicon.png
+  favicon: images/favicons/favicon.png
   icon:
     repo: fontawesome/brands/github
     edit: material/pencil
