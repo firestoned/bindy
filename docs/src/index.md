@@ -1,4 +1,4 @@
-# Introduction
+# <img src="images/bindy-the-bee.png" alt="Bindy the Bee" width="60" style="vertical-align: middle; margin-right: 10px;"/> Introduction
 ### *Pronounced: "bined-ee" (like BIND + ee)*
 
 [![Main Branch CI/CD](https://github.com/firestoned/bindy/actions/workflows/main.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/main.yaml)

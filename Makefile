@@ -180,7 +180,7 @@ build-aarch64-linux-debug: ## Build the Rust binary in debug mode
 	cargo build --target aarch64-unknown-linux-gnu
 
 # Documentation targets
-docs: export PATH := $(HOME)/.cargo/bin:$(PATH)
+docs: export PATH := $(HOME)/.local/bin:$(HOME)/.cargo/bin:$(PATH)
 docs: ## Build all documentation (MkDocs + rustdoc + CRD API reference)
 	@echo "Building all documentation..."
 	@echo "Checking Poetry installation..."
@@ -212,14 +212,24 @@ docs: ## Build all documentation (MkDocs + rustdoc + CRD API reference)
 	@echo "  - User guide: docs/site/index.html"
 	@echo "  - API reference: docs/site/rustdoc/bindy/index.html"
 
+docs-serve: export PATH := $(HOME)/.local/bin:$(PATH)
 docs-serve: ## Serve documentation locally with live reload (MkDocs)
-	@echo "Starting MkDocs development server..."
+	@echo "Starting MkDocs development server with live reload..."
 	@command -v poetry >/dev/null 2>&1 || { echo "Error: Poetry not found. Run ./scripts/setup-docs-env.sh first."; exit 1; }
 	@echo "Ensuring documentation dependencies are installed..."
 	@cd docs && poetry install --no-interaction --quiet
-	@echo "Serving documentation at http://127.0.0.1:8000"
+	@echo ""
+	@echo "Documentation server starting at http://127.0.0.1:8000"
+	@echo "Live reload enabled - changes will auto-refresh your browser"
+	@echo ""
+	@echo "Watching:"
+	@echo "  - Documentation content: docs/src/"
+	@echo "  - Configuration: docs/mkdocs.yml"
+	@echo "  - Theme files: docs/theme/"
+	@echo ""
 	@echo "Press Ctrl+C to stop"
-	@cd docs && poetry run mkdocs serve
+	@echo ""
+	@cd docs && poetry run mkdocs serve --watch-theme --livereload
 
 docs-rustdoc: ## Build and open rustdoc API documentation only
 	@echo "Building rustdoc API documentation..."
