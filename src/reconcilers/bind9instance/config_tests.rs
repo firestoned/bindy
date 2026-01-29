@@ -116,8 +116,8 @@ mod tests {
 
     #[test]
     fn test_resolve_rndc_config_from_deprecated_new_field_wins() {
-        // new rndc_keys should take precedence over deprecated rndc_secret_ref
-        let rndc_keys = Some(RndcKeyConfig {
+        // new rndc_key should take precedence over deprecated rndc_secret_ref
+        let rndc_key = Some(RndcKeyConfig {
             auto_rotate: true,
             rotate_after: "30d".to_string(),
             secret_ref: None,
@@ -134,12 +134,12 @@ mod tests {
         });
 
         let result = resolve_rndc_config_from_deprecated(
-            rndc_keys.as_ref(),
+            rndc_key.as_ref(),
             rndc_secret_ref.as_ref(),
             ServerRole::Primary,
         );
 
-        // Should use new rndc_keys config
+        // Should use new rndc_key config
         assert!(result.auto_rotate);
         assert_eq!(result.rotate_after, "30d");
         assert_eq!(result.algorithm, RndcAlgorithm::HmacSha512);
@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn test_resolve_rndc_config_from_deprecated_fallback_to_old() {
-        // Should fall back to deprecated rndc_secret_ref when rndc_keys is None
+        // Should fall back to deprecated rndc_secret_ref when rndc_key is None
         #[allow(deprecated)]
         let rndc_secret_ref = Some(RndcSecretRef {
             name: "old-secret".to_string(),

@@ -377,7 +377,7 @@ async fn create_instance(
             volumes: None,
             volume_mounts: None,
             rndc_secret_ref: None,
-            rndc_keys: None,
+            rndc_key: None,
             storage: None,
             bindcar_config: None,
         },
