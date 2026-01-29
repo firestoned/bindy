@@ -234,6 +234,7 @@ nav:
           - NS Records: guide/ns-records.md
           - SRV Records: guide/srv-records.md
           - CAA Records: guide/caa-records.md
+      - RNDC Key Rotation: guide/rndc-key-rotation.md
 
   - Operations:
       - Configuration:
@@ -258,6 +259,7 @@ nav:
       - Migration:
           - v0.2.x to v0.3.x: operations/migration-guide.md
           - DNSZone Phase 5-6: operations/migration-guide-phase5-6.md
+          - RNDC Key Rotation: operations/rndc-key-rotation-migration.md
 
   - Advanced Topics:
       - Replacing CoreDNS: advanced/coredns-replacement.md

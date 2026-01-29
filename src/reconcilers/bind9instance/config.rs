@@ -4,8 +4,8 @@
 //! RNDC configuration precedence resolution.
 //!
 //! Resolves RNDC key configuration from multiple sources following the precedence order:
-//! 1. Instance level (`Bind9InstanceSpec.rndc_keys`)
-//! 2. Role level (`PrimaryConfig.rndc_keys` or `SecondaryConfig.rndc_keys`)
+//! 1. Instance level (`Bind9InstanceSpec.rndc_key`)
+//! 2. Role level (`PrimaryConfig.rndc_key` or `SecondaryConfig.rndc_key`)
 //! 3. Global level (`Bind9Config.rndc_secret_ref` - deprecated)
 //! 4. Default (auto-generated with defaults from constants)
 
@@ -23,8 +23,8 @@ use crate::crd::{RndcAlgorithm, RndcKeyConfig, RndcSecretRef, ServerRole};
 ///
 /// # Arguments
 ///
-/// * `instance_config` - Instance-level RNDC configuration (`Bind9InstanceSpec.rndc_keys`)
-/// * `role_config` - Role-level RNDC configuration (`PrimaryConfig.rndc_keys` or `SecondaryConfig.rndc_keys`)
+/// * `instance_config` - Instance-level RNDC configuration (`Bind9InstanceSpec.rndc_key`)
+/// * `role_config` - Role-level RNDC configuration (`PrimaryConfig.rndc_key` or `SecondaryConfig.rndc_key`)
 /// * `global_config` - Global RNDC configuration (from `Bind9ClusterCommonSpec`)
 ///
 /// # Returns

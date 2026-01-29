@@ -320,8 +320,65 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
         .and_then(|labels| labels.get(BINDY_MANAGED_BY_LABEL))
         .is_some();
 
+    // Fetch cluster information early for rotation checking and zone reconciliation
+    // We need this to set the cluster reference in DNSZone status
+    let (cluster, cluster_provider) = fetch_cluster_info(&client, &namespace, &instance).await;
+
+    // Check if parent cluster configuration has changed since last reconciliation
+    // This is critical for detecting when RNDC config is added/changed at the cluster level
+    let parent_config_changed = {
+        // Check Bind9Cluster generation
+        let cluster_changed = if let Some(ref c) = cluster {
+            let cluster_generation = c.metadata.generation.unwrap_or(0);
+            let instance_observed_gen = observed_generation.unwrap_or(0);
+
+            // If cluster generation is newer than when we last reconciled, parent config may have changed
+            // Note: This is a heuristic since we don't track parent's observed generation separately
+            // We compare against instance's observed_generation as a proxy for "last reconciliation time"
+            if cluster_generation > instance_observed_gen {
+                debug!(
+                    "Parent Bind9Cluster generation ({}) is newer than instance observed generation ({}), checking for config changes",
+                    cluster_generation, instance_observed_gen
+                );
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        // Check ClusterBind9Provider generation
+        let provider_changed = if let Some(ref cp) = cluster_provider {
+            let provider_generation = cp.metadata.generation.unwrap_or(0);
+            let instance_observed_gen = observed_generation.unwrap_or(0);
+
+            // Same heuristic: if provider generation is newer, config may have changed
+            if provider_generation > instance_observed_gen {
+                debug!(
+                    "Parent ClusterBind9Provider generation ({}) is newer than instance observed generation ({}), checking for config changes",
+                    provider_generation, instance_observed_gen
+                );
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        cluster_changed || provider_changed
+    };
+
+    if parent_config_changed {
+        info!(
+            "Parent cluster configuration may have changed for Bind9Instance {}/{}, will check for drift",
+            namespace, name
+        );
+    }
+
     // Check if ALL required resources actually exist AND match desired state (drift detection)
-    let (all_resources_exist, deployment_labels_match) = {
+    let (all_resources_exist, deployment_labels_match, rotation_needed) = {
         let deployment_api: Api<Deployment> = Api::namespaced(client.clone(), &namespace);
         let service_api: Api<Service> = Api::namespaced(client.clone(), &namespace);
         let configmap_api: Api<ConfigMap> = Api::namespaced(client.clone(), &namespace);
@@ -360,16 +417,36 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
         };
         let configmap_exists = configmap_api.get(&configmap_name).await.is_ok();
 
+        // Check Secret existence AND rotation status
         let secret_name = format!("{name}-rndc-key");
-        let secret_exists = secret_api.get(&secret_name).await.is_ok();
+        let (secret_exists, needs_rotation) = match secret_api.get(&secret_name).await {
+            Ok(secret) => {
+                // Resolve RNDC config to check if rotation is due
+                let rndc_config = resources::resolve_full_rndc_config(
+                    &instance,
+                    cluster.as_ref(),
+                    cluster_provider.as_ref(),
+                );
+
+                // Check if rotation is needed using the existing function
+                let needs_rotation =
+                    resources::should_rotate_secret(&secret, &rndc_config).unwrap_or(false);
+
+                if needs_rotation {
+                    debug!(
+                        "RNDC Secret {}/{} rotation is due, will trigger reconciliation",
+                        namespace, secret_name
+                    );
+                }
+
+                (true, needs_rotation)
+            }
+            Err(_) => (false, false),
+        };
 
         let all_exist = deployment_exists && service_exists && configmap_exists && secret_exists;
-        (all_exist, labels_match)
+        (all_exist, labels_match, needs_rotation)
     };
-
-    // Fetch cluster information early for zone reconciliation
-    // We need this to set the cluster reference in DNSZone status
-    let (cluster, cluster_provider) = fetch_cluster_info(&client, &namespace, &instance).await;
     let cluster_ref = build_cluster_reference(cluster.as_ref(), cluster_provider.as_ref());
 
     if let Some(ref cr) = cluster_ref {
@@ -387,7 +464,9 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
     // Only reconcile resources if:
     // 1. Spec changed (generation mismatch), OR
     // 2. We haven't processed this resource yet (no observed_generation), OR
-    // 3. Resources are missing (drift detected)
+    // 3. Resources are missing (drift detected), OR
+    // 4. RNDC Secret rotation is due, OR
+    // 5. Parent cluster configuration has changed
     let should_reconcile =
         crate::reconcilers::should_reconcile(current_generation, observed_generation);
 
@@ -395,9 +474,14 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
     // Zone selection is now reversed: DNSZone.spec.bind9_instances_from selects instances
     // This logic was removed as part of the architectural change to reverse selector direction
 
-    if !should_reconcile && all_resources_exist && deployment_labels_match {
+    if !should_reconcile
+        && all_resources_exist
+        && deployment_labels_match
+        && !rotation_needed
+        && !parent_config_changed
+    {
         debug!(
-            "Spec unchanged (generation={:?}), all resources exist, and deployment labels match - skipping resource reconciliation",
+            "Spec unchanged (generation={:?}), all resources exist, deployment labels match, no rotation needed, and parent config unchanged - skipping resource reconciliation",
             current_generation
         );
         // Update status from current deployment state (only patches if status changed)
@@ -414,7 +498,9 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
     // If we reach here, reconciliation is needed because:
     // - Spec changed (generation mismatch), OR
     // - Resources don't exist (drift), OR
-    // - Deployment labels don't match desired state (drift)
+    // - Deployment labels don't match desired state (drift), OR
+    // - RNDC Secret rotation is due, OR
+    // - Parent cluster configuration has changed
     if !deployment_labels_match && all_resources_exist {
         info!(
             "Deployment labels don't match desired state for {}/{}, triggering reconciliation to update labels",
@@ -425,6 +511,20 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
     if !should_reconcile && !all_resources_exist {
         info!(
             "Drift detected for Bind9Instance {}/{}: One or more resources missing, will recreate",
+            namespace, name
+        );
+    }
+
+    if rotation_needed {
+        info!(
+            "RNDC Secret rotation is due for Bind9Instance {}/{}, triggering reconciliation",
+            namespace, name
+        );
+    }
+
+    if parent_config_changed {
+        info!(
+            "Parent cluster configuration changed for Bind9Instance {}/{}, triggering reconciliation to apply new config",
             namespace, name
         );
     }

@@ -3258,7 +3258,7 @@ spec:
                 minimum: 0.0
                 nullable: true
                 type: integer
-              rndcKeys:
+              rndcKey:
                 description: |-
                   Instance-level RNDC key configuration with lifecycle management.
 
@@ -3266,13 +3266,13 @@ spec:
                   Overrides role-level and global RNDC configuration for this specific instance.
 
                   **Precedence order**:
-                  1. **Instance level** (`spec.rndcKeys`) - Highest priority
-                  2. Role level (`spec.primary.rndcKeys` or `spec.secondary.rndcKeys`)
+                  1. **Instance level** (`spec.rndcKey`) - Highest priority
+                  2. Role level (`spec.primary.rndcKey` or `spec.secondary.rndcKey`)
                   3. Global level (cluster-wide RNDC configuration)
                   4. Auto-generated (default)
 
-                  **Backward compatibility**: If both `rndc_keys` and `rndc_secret_ref` are specified,
-                  `rndc_keys` takes precedence. For smooth migration, `rndc_secret_ref` will continue
+                  **Backward compatibility**: If both `rndc_key` and `rndc_secret_ref` are specified,
+                  `rndc_key` takes precedence. For smooth migration, `rndc_secret_ref` will continue
                   to work but is deprecated.
 
                   # Example
@@ -3281,7 +3281,7 @@ spec:
                   apiVersion: bindy.firestoned.io/v1beta1
                   kind: Bind9Instance
                   spec:
-                    rndcKeys:
+                    rndcKey:
                       autoRotate: true
                       rotateAfter: 2160h  # 90 days
                       algorithm: hmac-sha512

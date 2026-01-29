@@ -38,7 +38,7 @@ pub(super) fn resolve_full_rndc_config(
     use super::config::{resolve_rndc_config, resolve_rndc_config_from_deprecated};
 
     // Extract instance-level config
-    let instance_config = instance.spec.rndc_keys.as_ref();
+    let instance_config = instance.spec.rndc_key.as_ref();
 
     // Extract role-level config (from cluster primary/secondary config)
     // Note: Although serde flattens, the Rust struct still has the common field
@@ -48,13 +48,13 @@ pub(super) fn resolve_full_rndc_config(
             .common
             .primary
             .as_ref()
-            .and_then(|p| p.rndc_keys.as_ref()),
+            .and_then(|p| p.rndc_key.as_ref()),
         crate::crd::ServerRole::Secondary => c
             .spec
             .common
             .secondary
             .as_ref()
-            .and_then(|s| s.rndc_keys.as_ref()),
+            .and_then(|s| s.rndc_key.as_ref()),
     });
 
     // No global-level RNDC config is supported in the current design
@@ -286,6 +286,49 @@ async fn create_or_update_rndc_secret_with_config(
     // Check if Secret exists and if rotation is due
     match secret_api.get(&secret_name).await {
         Ok(existing_secret) => {
+            // Verify Secret has required keys first
+            if let Some(ref data) = existing_secret.data {
+                if !data.contains_key("key-name")
+                    || !data.contains_key("algorithm")
+                    || !data.contains_key("secret")
+                {
+                    warn!(
+                        "RNDC Secret {}/{} is missing required keys, will recreate",
+                        namespace, secret_name
+                    );
+                    secret_api
+                        .delete(&secret_name, &kube::api::DeleteParams::default())
+                        .await?;
+                    // Fall through to create new Secret
+                }
+            } else {
+                warn!(
+                    "RNDC Secret {}/{} has no data, will recreate",
+                    namespace, secret_name
+                );
+                secret_api
+                    .delete(&secret_name, &kube::api::DeleteParams::default())
+                    .await?;
+                // Fall through to create new Secret
+            }
+
+            // Check if rotation annotations need to be added or updated
+            let has_annotations = existing_secret
+                .metadata
+                .annotations
+                .as_ref()
+                .and_then(|a| a.get(crate::constants::ANNOTATION_RNDC_CREATED_AT))
+                .is_some();
+
+            if config.auto_rotate && !has_annotations {
+                info!(
+                    "RNDC Secret {}/{} missing rotation annotations, adding them",
+                    namespace, secret_name
+                );
+                add_rotation_annotations_to_secret(&secret_api, &secret_name, config).await?;
+                return Ok(secret_name);
+            }
+
             // Check if rotation is needed
             if config.auto_rotate && should_rotate_secret(&existing_secret, config)? {
                 info!(
@@ -304,34 +347,29 @@ async fn create_or_update_rndc_secret_with_config(
                 return Ok(secret_name);
             }
 
-            // Verify Secret has required keys
+            // Check for configuration drift (algorithm changed)
             if let Some(ref data) = existing_secret.data {
-                if !data.contains_key("key-name")
-                    || !data.contains_key("algorithm")
-                    || !data.contains_key("secret")
-                {
+                if data.contains_key("algorithm") {
+                    let current_algorithm =
+                        std::str::from_utf8(&data.get("algorithm").unwrap().0).unwrap_or("unknown");
+                    let desired_algorithm = config.algorithm.as_str();
+
+                    if current_algorithm == desired_algorithm {
+                        info!(
+                            "RNDC Secret {}/{} exists and is valid, skipping creation",
+                            namespace, secret_name
+                        );
+                        return Ok(secret_name);
+                    }
                     warn!(
-                        "RNDC Secret {}/{} is missing required keys, will recreate",
-                        namespace, secret_name
+                        "RNDC Secret {}/{} algorithm mismatch (current: {}, desired: {}), will recreate",
+                        namespace, secret_name, current_algorithm, desired_algorithm
                     );
                     secret_api
                         .delete(&secret_name, &kube::api::DeleteParams::default())
                         .await?;
-                } else {
-                    info!(
-                        "RNDC Secret {}/{} exists and is valid, skipping creation",
-                        namespace, secret_name
-                    );
-                    return Ok(secret_name);
+                    // Fall through to create new Secret
                 }
-            } else {
-                warn!(
-                    "RNDC Secret {}/{} has no data, will recreate",
-                    namespace, secret_name
-                );
-                secret_api
-                    .delete(&secret_name, &kube::api::DeleteParams::default())
-                    .await?;
             }
         }
         Err(_) => {
@@ -502,6 +540,69 @@ async fn create_or_update_rndc_secret(
     Ok(())
 }
 
+/// Adds rotation annotations to an existing RNDC `Secret` without regenerating the key.
+///
+/// This is used when rotation is enabled for a Secret that was created without rotation.
+///
+/// # Arguments
+///
+/// * `secret_api` - Kubernetes API client for Secrets
+/// * `secret_name` - Name of the Secret to update
+/// * `config` - RNDC configuration with rotation settings
+///
+/// # Errors
+///
+/// Returns error if Secret patch fails or duration parsing fails.
+async fn add_rotation_annotations_to_secret(
+    secret_api: &Api<Secret>,
+    secret_name: &str,
+    config: &crate::crd::RndcKeyConfig,
+) -> Result<()> {
+    use chrono::Utc;
+    use kube::api::{Patch, PatchParams};
+    use std::collections::BTreeMap;
+
+    let created_at = Utc::now();
+    let rotate_after = crate::bind9::duration::parse_duration(&config.rotate_after)?;
+    let rotate_at = created_at + chrono::Duration::from_std(rotate_after)?;
+
+    let mut annotations = BTreeMap::new();
+    annotations.insert(
+        crate::constants::ANNOTATION_RNDC_CREATED_AT.to_string(),
+        created_at.to_rfc3339(),
+    );
+    annotations.insert(
+        crate::constants::ANNOTATION_RNDC_ROTATE_AT.to_string(),
+        rotate_at.to_rfc3339(),
+    );
+    annotations.insert(
+        crate::constants::ANNOTATION_RNDC_ROTATION_COUNT.to_string(),
+        "0".to_string(),
+    );
+
+    let patch = serde_json::json!({
+        "metadata": {
+            "annotations": annotations
+        }
+    });
+
+    info!(
+        "Adding rotation annotations to existing Secret {} (rotate at: {})",
+        secret_name,
+        rotate_at.to_rfc3339()
+    );
+
+    secret_api
+        .patch(
+            secret_name,
+            &PatchParams::apply("bindy-operator"),
+            &Patch::Merge(&patch),
+        )
+        .await?;
+
+    Ok(())
+}
+
 /// Checks if RNDC `Secret` rotation is due.
 ///
 /// # Arguments
@@ -522,8 +623,10 @@ async fn create_or_update_rndc_secret(
 /// # Errors
 ///
 /// Returns error if annotation parsing fails.
-#[allow(dead_code)] // Will be used when integrated into reconciler
-fn should_rotate_secret(secret: &Secret, config: &crate::crd::RndcKeyConfig) -> Result<bool> {
+pub(super) fn should_rotate_secret(
+    secret: &Secret,
+    config: &crate::crd::RndcKeyConfig,
+) -> Result<bool> {
     use chrono::Utc;
 
     // Auto-rotation must be enabled

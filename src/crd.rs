@@ -2350,7 +2350,7 @@ pub struct PrimaryConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[deprecated(
         since = "0.6.0",
-        note = "Use `rndc_keys` instead. This field will be removed in v1.0.0"
+        note = "Use `rndc_key` instead. This field will be removed in v1.0.0"
     )]
     pub rndc_secret_ref: Option<RndcSecretRef>,
 
@@ -2360,15 +2360,15 @@ pub struct PrimaryConfig {
     /// Overrides global RNDC configuration for primary instances.
     ///
     /// **Precedence order**:
-    /// 1. Instance level (`spec.rndcKeys`)
-    /// 2. Role level (`spec.primary.rndcKeys` or `spec.secondary.rndcKeys`)
+    /// 1. Instance level (`spec.rndcKey`)
+    /// 2. Role level (`spec.primary.rndcKey` or `spec.secondary.rndcKey`)
     /// 3. Global level (cluster-wide RNDC configuration)
     /// 4. Auto-generated (default)
     ///
-    /// Can be overridden at the instance level via `spec.rndcKeys`.
+    /// Can be overridden at the instance level via `spec.rndcKey`.
     ///
-    /// **Backward compatibility**: If both `rndc_keys` and `rndc_secret_ref` are specified,
-    /// `rndc_keys` takes precedence. For smooth migration, `rndc_secret_ref` will continue
+    /// **Backward compatibility**: If both `rndc_key` and `rndc_secret_ref` are specified,
+    /// `rndc_key` takes precedence. For smooth migration, `rndc_secret_ref` will continue
     /// to work but is deprecated.
     ///
     /// # Example
@@ -2376,13 +2376,13 @@ pub struct PrimaryConfig {
     /// ```yaml
     /// primary:
     ///   replicas: 1
-    ///   rndcKeys:
+    ///   rndcKey:
     ///     autoRotate: true
     ///     rotateAfter: 720h  # 30 days
     ///     algorithm: hmac-sha256
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub rndc_keys: Option<RndcKeyConfig>,
+    pub rndc_key: Option<RndcKeyConfig>,
 }
 
 /// Secondary instance configuration
@@ -2467,7 +2467,7 @@ pub struct SecondaryConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[deprecated(
         since = "0.6.0",
-        note = "Use `rndc_keys` instead. This field will be removed in v1.0.0"
+        note = "Use `rndc_key` instead. This field will be removed in v1.0.0"
     )]
     pub rndc_secret_ref: Option<RndcSecretRef>,
 
@@ -2477,15 +2477,15 @@ pub struct SecondaryConfig {
     /// Overrides global RNDC configuration for secondary instances.
     ///
     /// **Precedence order**:
-    /// 1. Instance level (`spec.rndcKeys`)
-    /// 2. Role level (`spec.primary.rndcKeys` or `spec.secondary.rndcKeys`)
+    /// 1. Instance level (`spec.rndcKey`)
+    /// 2. Role level (`spec.primary.rndcKey` or `spec.secondary.rndcKey`)
     /// 3. Global level (cluster-wide RNDC configuration)
     /// 4. Auto-generated (default)
     ///
-    /// Can be overridden at the instance level via `spec.rndcKeys`.
+    /// Can be overridden at the instance level via `spec.rndcKey`.
     ///
-    /// **Backward compatibility**: If both `rndc_keys` and `rndc_secret_ref` are specified,
-    /// `rndc_keys` takes precedence. For smooth migration, `rndc_secret_ref` will continue
+    /// **Backward compatibility**: If both `rndc_key` and `rndc_secret_ref` are specified,
+    /// `rndc_key` takes precedence. For smooth migration, `rndc_secret_ref` will continue
     /// to work but is deprecated.
     ///
     /// # Example
@@ -2493,13 +2493,13 @@ pub struct SecondaryConfig {
     /// ```yaml
     /// secondary:
     ///   replicas: 2
-    ///   rndcKeys:
+    ///   rndcKey:
     ///     autoRotate: true
     ///     rotateAfter: 720h  # 30 days
     ///     algorithm: hmac-sha256
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub rndc_keys: Option<RndcKeyConfig>,
+    pub rndc_key: Option<RndcKeyConfig>,
 }
 
 /// Common specification fields shared between namespace-scoped and cluster-scoped BIND9 clusters.
@@ -2873,7 +2873,7 @@ pub struct Bind9InstanceSpec {
     #[serde(default)]
     #[deprecated(
         since = "0.6.0",
-        note = "Use `rndc_keys` instead. This field will be removed in v1.0.0"
+        note = "Use `rndc_key` instead. This field will be removed in v1.0.0"
     )]
     pub rndc_secret_ref: Option<RndcSecretRef>,
 
@@ -2883,13 +2883,13 @@ pub struct Bind9InstanceSpec {
     /// Overrides role-level and global RNDC configuration for this specific instance.
     ///
     /// **Precedence order**:
-    /// 1. **Instance level** (`spec.rndcKeys`) - Highest priority
-    /// 2. Role level (`spec.primary.rndcKeys` or `spec.secondary.rndcKeys`)
+    /// 1. **Instance level** (`spec.rndcKey`) - Highest priority
+    /// 2. Role level (`spec.primary.rndcKey` or `spec.secondary.rndcKey`)
     /// 3. Global level (cluster-wide RNDC configuration)
     /// 4. Auto-generated (default)
     ///
-    /// **Backward compatibility**: If both `rndc_keys` and `rndc_secret_ref` are specified,
-    /// `rndc_keys` takes precedence. For smooth migration, `rndc_secret_ref` will continue
+    /// **Backward compatibility**: If both `rndc_key` and `rndc_secret_ref` are specified,
+    /// `rndc_key` takes precedence. For smooth migration, `rndc_secret_ref` will continue
     /// to work but is deprecated.
     ///
     /// # Example
@@ -2898,13 +2898,13 @@ pub struct Bind9InstanceSpec {
     /// apiVersion: bindy.firestoned.io/v1beta1
     /// kind: Bind9Instance
     /// spec:
-    ///   rndcKeys:
+    ///   rndcKey:
     ///     autoRotate: true
     ///     rotateAfter: 2160h  # 90 days
     ///     algorithm: hmac-sha512
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub rndc_keys: Option<RndcKeyConfig>,
+    pub rndc_key: Option<RndcKeyConfig>,
 
     /// Storage configuration for zone files.
     ///
