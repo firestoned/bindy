@@ -188,13 +188,13 @@ mod tests {
     fn test_resolve_full_rndc_config_instance_level() {
         use crate::crd::{Bind9Instance, Bind9InstanceSpec, ServerRole};
 
-        // Given: Instance with rndc_keys config
+        // Given: Instance with rndc_key config
         let instance = Bind9Instance {
             metadata: ObjectMeta::default(),
             spec: Bind9InstanceSpec {
                 cluster_ref: String::new(),
                 role: ServerRole::Primary,
-                rndc_keys: Some(RndcKeyConfig {
+                rndc_key: Some(RndcKeyConfig {
                     auto_rotate: true,
                     rotate_after: "24h".to_string(),
                     secret_ref: None,
@@ -230,13 +230,13 @@ mod tests {
     fn test_resolve_full_rndc_config_default() {
         use crate::crd::{Bind9Instance, Bind9InstanceSpec, ServerRole};
 
-        // Given: Instance with no rndc_keys config
+        // Given: Instance with no rndc_key config
         let instance = Bind9Instance {
             metadata: ObjectMeta::default(),
             spec: Bind9InstanceSpec {
                 cluster_ref: String::new(),
                 role: ServerRole::Primary,
-                rndc_keys: None,
+                rndc_key: None,
                 replicas: None,
                 version: None,
                 image: None,

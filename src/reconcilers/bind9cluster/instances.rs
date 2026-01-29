@@ -372,7 +372,7 @@ pub(super) async fn update_existing_managed_instances(
                 volumes: common_spec.volumes.clone(),
                 volume_mounts: common_spec.volume_mounts.clone(),
                 rndc_secret_ref: instance.spec.rndc_secret_ref.clone(), // Preserve if set (deprecated)
-                rndc_keys: instance.spec.rndc_keys.clone(),             // Preserve if set
+                rndc_key: instance.spec.rndc_key.clone(),               // Preserve if set
                 storage: instance.spec.storage.clone(),                 // Preserve if set
                 bindcar_config: desired_bindcar_config,
             };
@@ -662,7 +662,7 @@ async fn create_managed_instance_with_owner(
         volumes: common_spec.volumes.clone(),
         volume_mounts: common_spec.volume_mounts.clone(),
         rndc_secret_ref: None, // Inherit from cluster/role config (deprecated)
-        rndc_keys: None,       // Inherit from cluster/role config
+        rndc_key: None,        // Inherit from cluster/role config
         storage: None,         // Use default (emptyDir)
         bindcar_config: common_spec
             .global

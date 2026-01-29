@@ -1,0 +1,241 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# Example: Bind9Cluster with RNDC Key Auto-Rotation
+#
+# This example demonstrates automatic RNDC key rotation for compliance with
+# NIST SP 800-57, PCI DSS, SOC 2, and HIPAA requirements.
+#
+# Features shown:
+# - Auto-rotation enabled for primary and secondary instances
+# - Different rotation intervals by role (primary: 30 days, secondary: 60 days)
+# - Strong cryptographic algorithms (HMAC-SHA-512 for primary, SHA-256 for secondary)
+# - Configuration precedence (cluster-level config, can be overridden at instance level)
+#
+# Apply this example:
+#   kubectl apply -f examples/bind9-cluster-with-rotation.yaml
+#
+# Monitor rotation status:
+#   kubectl get bind9instance -n dns-system -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.rndcKeyRotationStatus.rotationCount}{"\n"}{end}'
+#
+---
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Cluster
+metadata:
+  name: production-dns-cluster
+  namespace: dns-system
+  labels:
+    environment: production
+    compliance: nist-800-57
+spec:
+  # Primary server configuration with aggressive rotation for high-security
+  primary:
+    replicas: 1
+    rndcKeys:
+      autoRotate: true
+      rotateAfter: "720h"        # Rotate every 30 days (high security)
+      algorithm: hmac-sha512     # Strongest algorithm
+    config:
+      recursion: false           # Authoritative server - no recursion
+      allowTransfer:
+        - "10.0.0.0/8"           # Allow zone transfers to secondaries
+      allowQuery:
+        - "any"
+
+  # Secondary server configuration with standard rotation
+  secondary:
+    replicas: 2                  # 2 secondary instances for HA
+    rndcKeys:
+      autoRotate: true
+      rotateAfter: "1440h"       # Rotate every 60 days (standard)
+      algorithm: hmac-sha256     # Strong, widely compatible
+    config:
+      recursion: false
+      allowQuery:
+        - "any"
+
+  # Shared configuration (applies to both primary and secondary)
+  common:
+    version: "9.18.24"
+    image: internetsystemsconsortium/bind9:9.18
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+
+---
+# Example instance that overrides cluster-level RNDC rotation config
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Instance
+metadata:
+  name: production-primary
+  namespace: dns-system
+  labels:
+    cluster: production-dns-cluster
+    role: primary
+    compliance: pci-dss
+spec:
+  clusterRef: production-dns-cluster
+  role: Primary
+  replicas: 1
+
+  # Instance-level RNDC config (OVERRIDES cluster-level)
+  # Use this for instances requiring more frequent rotation
+  rndcKeys:
+    autoRotate: true
+    rotateAfter: "360h"          # Override cluster: 15 days (very high security)
+    algorithm: hmac-sha512
+
+  # Storage for zone files
+  storage:
+    size: 10Gi
+    storageClassName: fast-ssd
+
+---
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Instance
+metadata:
+  name: production-secondary-1
+  namespace: dns-system
+  labels:
+    cluster: production-dns-cluster
+    role: secondary
+spec:
+  clusterRef: production-dns-cluster
+  role: Secondary
+  replicas: 1
+
+  # No instance-level rndcKeys - inherits from cluster.spec.secondary
+  # Will rotate every 60 days (1440h) with hmac-sha256
+
+  storage:
+    size: 10Gi
+    storageClassName: standard
+
+---
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Instance
+metadata:
+  name: production-secondary-2
+  namespace: dns-system
+  labels:
+    cluster: production-dns-cluster
+    role: secondary
+spec:
+  clusterRef: production-dns-cluster
+  role: Secondary
+  replicas: 1
+
+  # No instance-level rndcKeys - inherits from cluster.spec.secondary
+  # Will rotate every 60 days (1440h) with hmac-sha256
+
+  storage:
+    size: 10Gi
+    storageClassName: standard
+
+---
+# Example DNSZone to manage with the cluster
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: example-com
+  namespace: dns-system
+  labels:
+    environment: production
+spec:
+  zoneName: example.com
+  instanceRef:
+    name: production-primary
+    namespace: dns-system
+  records:
+    - name: "@"
+      type: A
+      ttl: 3600
+      values:
+        - "192.0.2.1"
+    - name: "www"
+      type: CNAME
+      ttl: 3600
+      values:
+        - "example.com."
+    - name: "@"
+      type: MX
+      ttl: 3600
+      values:
+        - "10 mail.example.com."
+    - name: "@"
+      type: TXT
+      ttl: 3600
+      values:
+        - "v=spf1 mx ~all"
+
+---
+# ConfigMap with monitoring queries to verify RNDC rotation
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rndc-rotation-monitoring
+  namespace: dns-system
+data:
+  check-rotation-status.sh: |
+    #!/bin/bash
+    # Script to check RNDC rotation status across all instances
+
+    echo "=== RNDC Rotation Status Report ==="
+    echo ""
+
+    for instance in $(kubectl get bind9instance -n dns-system -o jsonpath='{.items[*].metadata.name}'); do
+      echo "Instance: $instance"
+
+      # Get rotation status
+      created_at=$(kubectl get bind9instance $instance -n dns-system -o jsonpath='{.status.rndcKeyRotationStatus.createdAt}')
+      rotate_at=$(kubectl get bind9instance $instance -n dns-system -o jsonpath='{.status.rndcKeyRotationStatus.rotateAt}')
+      rotation_count=$(kubectl get bind9instance $instance -n dns-system -o jsonpath='{.status.rndcKeyRotationStatus.rotationCount}')
+
+      echo "  Created At: $created_at"
+      echo "  Rotate At: $rotate_at"
+      echo "  Rotation Count: $rotation_count"
+
+      # Calculate days until rotation
+      if [ -n "$rotate_at" ]; then
+        rotate_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$rotate_at" "+%s" 2>/dev/null || echo "0")
+        current_epoch=$(date "+%s")
+        days_until=$((($rotate_epoch - $current_epoch) / 86400))
+        echo "  Days Until Rotation: $days_until"
+      fi
+
+      echo ""
+    done
+
+  trigger-manual-rotation.sh: |
+    #!/bin/bash
+    # Script to trigger manual RNDC rotation for an instance
+    # Usage: ./trigger-manual-rotation.sh <instance-name>
+
+    if [ -z "$1" ]; then
+      echo "Usage: $0 <instance-name>"
+      exit 1
+    fi
+
+    INSTANCE=$1
+    SECRET="${INSTANCE}-rndc"
+
+    echo "Triggering manual rotation for instance: $INSTANCE"
+    echo "Secret: $SECRET"
+
+    # Update created-at annotation to past timestamp to trigger rotation
+    kubectl annotate secret $SECRET \
+      bindy.firestoned.io/rndc-created-at="2020-01-01T00:00:00Z" \
+      --overwrite \
+      -n dns-system
+
+    echo "Manual rotation triggered. Wait ~60 seconds for reconciliation."
+    echo ""
+    echo "Monitor rotation:"
+    echo "  kubectl logs -n dns-system -l app.kubernetes.io/name=bindy-operator | grep 'Rotating RNDC Secret'"
+    echo ""
+    echo "Verify rotation count:"
+    echo "  kubectl get secret $SECRET -n dns-system -o jsonpath='{.metadata.annotations.bindy\.firestoned\.io/rndc-rotation-count}'"

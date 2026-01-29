@@ -21,6 +21,10 @@ spec:
       team: platform
     # Default number of replicas for primary instances (can be overridden per instance)
     replicas: 2
+    rndcKeys:
+      autoRotate: true
+      rotateAfter: "720h"  # 30 days
+      algorithm: hmac-sha512
     # Service configuration with annotations for load balancer integration
     service:
       annotations:
@@ -38,6 +42,10 @@ spec:
       team: platform
     # Default number of replicas for secondary instances (can be overridden per instance)
     replicas: 1
+    rndcKeys:
+      autoRotate: true
+      rotateAfter: "720h"  # 30 days
+      algorithm: hmac-sha512
     service:
       annotations:
         # Use different pool for secondaries

@@ -556,6 +556,123 @@ async fn run_operators_without_leader_election(
     Ok(())
 }
 
+/// Performs startup drift detection across all managed resources.
+///
+/// This function is called once on operator startup to detect configuration drift
+/// that may have occurred while the operator was down or being upgraded.
+///
+/// It checks:
+/// - `ClusterBind9Provider`: Triggers reconciliation for all providers
+/// - `Bind9Cluster`: Triggers reconciliation for all clusters
+/// - `Bind9Instance`: Checks for RNDC configuration drift and triggers reconciliation if needed
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `context` - Shared operator context
+///
+/// # Errors
+///
+/// Returns error if Kubernetes API calls fail.
+async fn perform_startup_drift_detection(client: Client, context: Arc<Context>) -> Result<()> {
+    info!("Starting drift detection for ClusterBind9Provider resources...");
+    let cluster_providers_api: Api<ClusterBind9Provider> = Api::all(client.clone());
+    match cluster_providers_api
+        .list(&kube::api::ListParams::default())
+        .await
+    {
+        Ok(providers) => {
+            info!(
+                "Found {} ClusterBind9Provider resources",
+                providers.items.len()
+            );
+            for provider in providers.items {
+                let name = provider.name_any();
+                debug!(
+                    "Triggering reconciliation for ClusterBind9Provider: {}",
+                    name
+                );
+
+                // Call reconcile directly
+                match reconcile_clusterbind9provider(context.clone(), provider.clone()).await {
+                    Ok(()) => debug!("ClusterBind9Provider {} reconciled successfully", name),
+                    Err(e) => warn!("Failed to reconcile ClusterBind9Provider {}: {}", name, e),
+                }
+            }
+        }
+        Err(e) => {
+            warn!("Failed to list ClusterBind9Provider resources: {}", e);
+        }
+    }
+
+    info!("Starting drift detection for Bind9Cluster resources...");
+    let clusters_api: Api<Bind9Cluster> = Api::all(client.clone());
+    match clusters_api.list(&kube::api::ListParams::default()).await {
+        Ok(clusters) => {
+            info!("Found {} Bind9Cluster resources", clusters.items.len());
+            for cluster in clusters.items {
+                let name = cluster.name_any();
+                let namespace = cluster.namespace().unwrap_or_else(|| "default".to_string());
+                debug!(
+                    "Triggering reconciliation for Bind9Cluster: {}/{}",
+                    namespace, name
+                );
+
+                // Call reconcile directly
+                match reconcile_bind9cluster(context.clone(), cluster.clone()).await {
+                    Ok(()) => debug!(
+                        "Bind9Cluster {}/{} reconciled successfully",
+                        namespace, name
+                    ),
+                    Err(e) => warn!(
+                        "Failed to reconcile Bind9Cluster {}/{}: {}",
+                        namespace, name, e
+                    ),
+                }
+            }
+        }
+        Err(e) => {
+            warn!("Failed to list Bind9Cluster resources: {}", e);
+        }
+    }
+
+    info!("Starting drift detection for Bind9Instance resources...");
+    let instances_api: Api<Bind9Instance> = Api::all(client.clone());
+    match instances_api.list(&kube::api::ListParams::default()).await {
+        Ok(instances) => {
+            info!("Found {} Bind9Instance resources", instances.items.len());
+            for instance in instances.items {
+                let name = instance.name_any();
+                let namespace = instance
+                    .namespace()
+                    .unwrap_or_else(|| "default".to_string());
+                debug!(
+                    "Triggering reconciliation for Bind9Instance: {}/{}",
+                    namespace, name
+                );
+
+                // Call reconcile directly
+                match Box::pin(reconcile_bind9instance(context.clone(), instance.clone())).await {
+                    Ok(()) => debug!(
+                        "Bind9Instance {}/{} reconciled successfully",
+                        namespace, name
+                    ),
+                    Err(e) => warn!(
+                        "Failed to reconcile Bind9Instance {}/{}: {}",
+                        namespace, name, e
+                    ),
+                }
+            }
+        }
+        Err(e) => {
+            warn!("Failed to list Bind9Instance resources: {}", e);
+        }
+    }
+
+    info!("Startup drift detection completed");
+    Ok(())
+}
+
 async fn async_main() -> Result<()> {
     initialize_logging();
 
@@ -603,9 +720,39 @@ async fn async_main() -> Result<()> {
 
         info!("🎉 Leadership acquired! Starting controllers...");
 
+        // Perform startup drift detection before starting controllers
+        info!("Performing startup drift detection across all managed resources...");
+        if let Err(e) = Box::pin(perform_startup_drift_detection(
+            client.clone(),
+            context.clone(),
+        ))
+        .await
+        {
+            warn!(
+                "Startup drift detection failed: {}. Continuing with controller startup.",
+                e
+            );
+        }
+
         // Run operators with leader election monitoring and signal handling
         run_operators_with_leader_election(context, bind9_manager, leader_rx, lease_handle).await?;
     } else {
+        info!("Leader election disabled, starting controllers immediately...");
+
+        // Perform startup drift detection before starting controllers
+        info!("Performing startup drift detection across all managed resources...");
+        if let Err(e) = Box::pin(perform_startup_drift_detection(
+            client.clone(),
+            context.clone(),
+        ))
+        .await
+        {
+            warn!(
+                "Startup drift detection failed: {}. Continuing with controller startup.",
+                e
+            );
+        }
+
         run_operators_without_leader_election(context, bind9_manager).await?;
     }
 
