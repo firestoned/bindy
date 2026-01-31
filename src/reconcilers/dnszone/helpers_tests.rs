@@ -36,6 +36,7 @@ mod tests {
                 name_server_ips: None,
                 records_from: None,
                 bind9_instances_from: None,
+                dnssec_policy: None,
             },
             status: None,
         }
@@ -56,6 +57,7 @@ mod tests {
             conditions: vec![],
             records: vec![],
             records_count: 0,
+            dnssec: None,
         });
         zone
     }

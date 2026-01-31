@@ -286,6 +286,42 @@ spec:
                   ```
                 nullable: true
                 type: string
+              dnssecPolicy:
+                description: |-
+                  Override DNSSEC policy for this zone
+
+                  Allows per-zone override of the cluster's global DNSSEC signing policy.
+                  If not specified, the zone inherits the DNSSEC configuration from the
+                  cluster's `global.dnssec.signing.policy`.
+
+                  Use this to:
+                  - Disable signing for specific zones in a signing-enabled cluster
+                  - Use stricter security policies for sensitive zones
+                  - Test different signing algorithms on specific zones
+
+                  # Example: Custom High-Security Policy
+
+                  ```yaml
+                  apiVersion: bindy.firestoned.io/v1beta1
+                  kind: DNSZone
+                  metadata:
+                    name: secure-zone
+                  spec:
+                    zoneName: secure.example.com
+                    clusterRef: production-dns
+                    dnssecPolicy: "high-security"  # Override cluster default
+                  ```
+
+                  # Example: Disable Signing for One Zone
+
+                  ```yaml
+                  dnssecPolicy: "none"  # Disable signing (cluster has signing enabled)
+                  ```
+
+                  **Note**: Custom policies require BIND9 `dnssec-policy` configuration.
+                  Built-in policies: `"default"`, `"none"`
+                nullable: true
+                type: string
               nameServerIps:
                 additionalProperties:
                   type: string
@@ -773,6 +809,84 @@ spec:
                   - type
                   type: object
                 type: array
+              dnssec:
+                description: |-
+                  DNSSEC signing status for this zone
+
+                  Populated when DNSSEC signing is enabled. Contains DS records,
+                  key tags, and rotation information.
+
+                  **Important**: DS records must be published in the parent zone
+                  to complete the DNSSEC chain of trust.
+
+                  # Example
+
+                  ```yaml
+                  dnssec:
+                    signed: true
+                    dsRecords:
+                      - "example.com. IN DS 12345 13 2 ABC123..."
+                    keyTag: 12345
+                    algorithm: "ECDSAP256SHA256"
+                    nextKeyRollover: "2026-04-02T00:00:00Z"
+                  ```
+                nullable: true
+                properties:
+                  algorithm:
+                    description: |-
+                      DNSSEC algorithm name
+
+                      Example: `"ECDSAP256SHA256"`, `"RSASHA256"`
+                    nullable: true
+                    type: string
+                  dsRecords:
+                    default: []
+                    description: |-
+                      DS (Delegation Signer) records for parent zone delegation
+
+                      These records must be published in the parent zone to complete
+                      the DNSSEC chain of trust.
+
+                      Format: `<zone> IN DS <keytag> <algorithm> <digesttype> <digest>`
+
+                      Example: `["example.com. IN DS 12345 13 2 ABC123..."]`
+                    items:
+                      type: string
+                    type: array
+                  keyTag:
+                    description: |-
+                      KSK key tag (numeric identifier)
+
+                      Identifies the Key Signing Key used to sign the DNSKEY `RRset`.
+                      This value appears in the DS record.
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  lastKeyRollover:
+                    description: |-
+                      Last key rollover timestamp (ISO 8601)
+
+                      When the most recent key rotation occurred.
+
+                      Example: `"2025-04-02T00:00:00Z"`
+                    nullable: true
+                    type: string
+                  nextKeyRollover:
+                    description: |-
+                      Next scheduled key rollover timestamp (ISO 8601)
+
+                      When the next automatic key rotation will occur.
+
+                      Example: `"2026-04-02T00:00:00Z"`
+                    nullable: true
+                    type: string
+                  signed:
+                    description: Zone is signed with DNSSEC
+                    type: boolean
+                required:
+                - signed
+                type: object
               observedGeneration:
                 format: int64
                 nullable: true

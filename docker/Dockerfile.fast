@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 # Build stage - optimized for faster local builds
-FROM rust:1.91.0 as builder
+FROM rust:1.91.0@sha256:06373ba3453f4e6f3e799aad206cb10a935cf1126a8843139cfacf3ac32fbff5 as builder
 
 # Accept version as build argument (e.g., 1.0.0)
 ARG VERSION=0.1.0
@@ -52,7 +52,7 @@ RUN touch src/main.rs && \
     cp target/$TARGET/release/bindy target/release/bindy
 
 # Runtime stage
-FROM alpine:3.20
+FROM alpine:3.20@sha256:b0cb30c51c47cdfde647364301758b14c335dea2fddc9490d4f007d67ecb2538
 
 LABEL org.opencontainers.image.source="https://github.com/firestoned/bindy"
 LABEL org.opencontainers.image.description="BIND9 DNS Operator for Kubernetes"
