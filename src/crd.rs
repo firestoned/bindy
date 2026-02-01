@@ -791,6 +791,28 @@ pub struct DNSZoneStatus {
     /// requiring clients to count array elements.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bind9_instances_count: Option<i32>,
+
+    /// DNSSEC signing status for this zone
+    ///
+    /// Populated when DNSSEC signing is enabled. Contains DS records,
+    /// key tags, and rotation information.
+    ///
+    /// **Important**: DS records must be published in the parent zone
+    /// to complete the DNSSEC chain of trust.
+    ///
+    /// # Example
+    ///
+    /// ```yaml
+    /// dnssec:
+    ///   signed: true
+    ///   dsRecords:
+    ///     - "example.com. IN DS 12345 13 2 ABC123..."
+    ///   keyTag: 12345
+    ///   algorithm: "ECDSAP256SHA256"
+    ///   nextKeyRollover: "2026-04-02T00:00:00Z"
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dnssec: Option<DNSSECStatus>,
 }
 
 /// Secondary Zone configuration
@@ -1117,6 +1139,41 @@ pub struct DNSZoneSpec {
     /// 3. Removes zone configuration from instances that no longer match
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bind9_instances_from: Option<Vec<InstanceSource>>,
+
+    /// Override DNSSEC policy for this zone
+    ///
+    /// Allows per-zone override of the cluster's global DNSSEC signing policy.
+    /// If not specified, the zone inherits the DNSSEC configuration from the
+    /// cluster's `global.dnssec.signing.policy`.
+    ///
+    /// Use this to:
+    /// - Disable signing for specific zones in a signing-enabled cluster
+    /// - Use stricter security policies for sensitive zones
+    /// - Test different signing algorithms on specific zones
+    ///
+    /// # Example: Custom High-Security Policy
+    ///
+    /// ```yaml
+    /// apiVersion: bindy.firestoned.io/v1beta1
+    /// kind: DNSZone
+    /// metadata:
+    ///   name: secure-zone
+    /// spec:
+    ///   zoneName: secure.example.com
+    ///   clusterRef: production-dns
+    ///   dnssecPolicy: "high-security"  # Override cluster default
+    /// ```
+    ///
+    /// # Example: Disable Signing for One Zone
+    ///
+    /// ```yaml
+    /// dnssecPolicy: "none"  # Disable signing (cluster has signing enabled)
+    /// ```
+    ///
+    /// **Note**: Custom policies require BIND9 `dnssec-policy` configuration.
+    /// Built-in policies: `"default"`, `"none"`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dnssec_policy: Option<String>,
 }
 
 /// `ARecord` maps a DNS name to an IPv4 address.
@@ -2164,6 +2221,21 @@ pub struct Bind9Config {
 /// DNSSEC (DNS Security Extensions) configuration
 ///
 /// DNSSEC adds cryptographic signatures to DNS records to ensure authenticity and integrity.
+/// This configuration supports both DNSSEC validation (verifying signatures from upstream)
+/// and DNSSEC signing (cryptographically signing your own zones).
+///
+/// # Example
+///
+/// ```yaml
+/// dnssec:
+///   validation: true  # Validate upstream DNSSEC responses
+///   signing:
+///     enabled: true
+///     policy: "default"
+///     algorithm: "ECDSAP256SHA256"
+///     kskLifetime: "365d"
+///     zskLifetime: "90d"
+/// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DNSSECConfig {
@@ -2178,6 +2250,280 @@ pub struct DNSSECConfig {
     /// to root DNS servers. May cause resolution failures if DNSSEC is broken upstream.
     #[serde(default)]
     pub validation: Option<bool>,
+
+    /// Enable DNSSEC zone signing configuration
+    ///
+    /// Configures automatic DNSSEC signing for zones served by this cluster.
+    /// When enabled, BIND9 will automatically generate keys, sign zones, and
+    /// rotate keys based on the configured policy.
+    ///
+    /// **Important**: Requires BIND 9.16+ for modern `dnssec-policy` support.
+    #[serde(default)]
+    pub signing: Option<DNSSECSigningConfig>,
+}
+
+/// DNSSEC zone signing configuration
+///
+/// Configures automatic DNSSEC key generation, zone signing, and key rotation.
+/// Uses BIND9's modern `dnssec-policy` for declarative key management.
+///
+/// # Key Management Options
+///
+/// 1. **User-Supplied Keys** (Production): Keys managed externally via Secrets
+/// 2. **Auto-Generated Keys** (Dev/Test): BIND9 generates keys, operator backs up to Secrets
+/// 3. **Persistent Storage** (Legacy): Keys stored in `PersistentVolume`
+///
+/// # Example
+///
+/// ```yaml
+/// signing:
+///   enabled: true
+///   policy: "default"
+///   algorithm: "ECDSAP256SHA256"
+///   kskLifetime: "365d"
+///   zskLifetime: "90d"
+///   nsec3: true
+///   nsec3Iterations: 0
+/// ```
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DNSSECSigningConfig {
+    /// Enable DNSSEC signing for zones
+    ///
+    /// When true, zones will be automatically signed with DNSSEC.
+    /// Keys are generated and managed according to the configured policy.
+    ///
+    /// Default: `false`
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// DNSSEC policy name
+    ///
+    /// Name of the DNSSEC policy to apply. Built-in policies:
+    /// - `"default"` - Standard policy with ECDSA P-256, 365d KSK, 90d ZSK
+    ///
+    /// Custom policies can be defined in future enhancements.
+    ///
+    /// Default: `"default"`
+    #[serde(default)]
+    pub policy: Option<String>,
+
+    /// DNSSEC algorithm
+    ///
+    /// Cryptographic algorithm for DNSSEC signing. Supported algorithms:
+    /// - `"ECDSAP256SHA256"` (13) - ECDSA P-256 with SHA-256 (recommended, fast)
+    /// - `"ECDSAP384SHA384"` (14) - ECDSA P-384 with SHA-384 (higher security)
+    /// - `"RSASHA256"` (8) - RSA with SHA-256 (widely compatible)
+    ///
+    /// ECDSA algorithms are recommended for performance and smaller key sizes.
+    ///
+    /// Default: `"ECDSAP256SHA256"`
+    #[serde(default)]
+    pub algorithm: Option<String>,
+
+    /// Key Signing Key (KSK) lifetime
+    ///
+    /// Duration before KSK is rotated. Format: "365d", "1y", "8760h"
+    ///
+    /// KSK signs the `DNSKEY` `RRset` and is published in the parent zone as a `DS` record.
+    /// Longer lifetimes reduce `DS` update frequency but increase impact of key compromise.
+    ///
+    /// Default: `"365d"` (1 year)
+    #[serde(default)]
+    pub ksk_lifetime: Option<String>,
+
+    /// Zone Signing Key (ZSK) lifetime
+    ///
+    /// Duration before ZSK is rotated. Format: "90d", "3m", "2160h"
+    ///
+    /// ZSK signs all other records in the zone. Shorter lifetimes improve security
+    /// but increase signing overhead.
+    ///
+    /// Default: `"90d"` (3 months)
+    #[serde(default)]
+    pub zsk_lifetime: Option<String>,
+
+    /// Use NSEC3 instead of NSEC for authenticated denial of existence
+    ///
+    /// NSEC3 hashes zone names to prevent zone enumeration attacks.
+    /// Recommended for privacy-sensitive zones.
+    ///
+    /// Default: `false` (use NSEC)
+    #[serde(default)]
+    pub nsec3: Option<bool>,
+
+    /// NSEC3 salt (hex string)
+    ///
+    /// Salt value for NSEC3 hashing. If not specified, BIND9 auto-generates.
+    /// Format: hex string (e.g., "AABBCCDD")
+    ///
+    /// Default: Auto-generated by BIND9
+    #[serde(default)]
+    pub nsec3_salt: Option<String>,
+
+    /// NSEC3 iterations
+    ///
+    /// Number of hash iterations for NSEC3. RFC 9276 recommends 0 for performance.
+    ///
+    /// **Important**: Higher values significantly impact query performance.
+    ///
+    /// Default: `0` (per RFC 9276 recommendation)
+    #[serde(default)]
+    pub nsec3_iterations: Option<u32>,
+
+    /// DNSSEC key source configuration
+    ///
+    /// Specifies where DNSSEC keys come from:
+    /// - User-supplied Secret (recommended for production)
+    /// - Persistent storage (legacy)
+    ///
+    /// If not specified and `auto_generate` is true, keys are generated in emptyDir
+    /// and optionally backed up to Secrets.
+    #[serde(default)]
+    pub keys_from: Option<DNSSECKeySource>,
+
+    /// Auto-generate DNSSEC keys if no `keys_from` specified
+    ///
+    /// When true, BIND9 generates keys automatically using the configured policy.
+    /// Recommended for development and testing.
+    ///
+    /// Default: `true`
+    #[serde(default)]
+    pub auto_generate: Option<bool>,
+
+    /// Export auto-generated keys to Secret for backup/restore
+    ///
+    /// When true, operator exports BIND9-generated keys to a Kubernetes Secret.
+    /// Enables self-healing: keys are restored from Secret on pod restart.
+    ///
+    /// Secret name format: `dnssec-keys-<zone-name>-generated`
+    ///
+    /// Default: `true`
+    #[serde(default)]
+    pub export_to_secret: Option<bool>,
+}
+
+/// DNSSEC key source configuration
+///
+/// Defines where DNSSEC keys are loaded from. Supports multiple patterns:
+///
+/// 1. **User-Supplied Secret** (Production):
+///    - Keys managed externally (`Vault`, `ExternalSecrets`, `sealed-secrets`)
+///    - User controls rotation timing
+///    - `GitOps` friendly
+///
+/// 2. **Persistent Storage** (Legacy):
+///    - Keys stored in `PersistentVolume`
+///    - Traditional BIND9 pattern
+///
+/// # Example: User-Supplied Keys
+///
+/// ```yaml
+/// keysFrom:
+///   secretRef:
+///     name: "dnssec-keys-example-com"
+/// ```
+///
+/// # Example: Persistent Storage
+///
+/// ```yaml
+/// keysFrom:
+///   persistentVolume:
+///     accessModes:
+///       - ReadWriteOnce
+///     resources:
+///       requests:
+///         storage: 100Mi
+/// ```
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DNSSECKeySource {
+    /// Secret containing DNSSEC keys
+    ///
+    /// Reference to a Kubernetes Secret with DNSSEC key files.
+    ///
+    /// Secret data format:
+    /// - `K<zone>.+<alg>+<tag>.key` - Public key file
+    /// - `K<zone>.+<alg>+<tag>.private` - Private key file
+    ///
+    /// Example: `Kexample.com.+013+12345.key`
+    #[serde(default)]
+    pub secret_ref: Option<SecretReference>,
+
+    /// Persistent volume for DNSSEC keys (legacy/compatibility)
+    ///
+    /// **Note**: Not cloud-native. Use `secret_ref` for production.
+    #[serde(default)]
+    pub persistent_volume: Option<k8s_openapi::api::core::v1::PersistentVolumeClaimSpec>,
+}
+
+/// Reference to a Kubernetes Secret
+///
+/// Used for referencing external Secrets containing DNSSEC keys,
+/// certificates, or other sensitive data.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretReference {
+    /// Secret name
+    pub name: String,
+
+    /// Optional namespace (defaults to same namespace as the resource)
+    #[serde(default)]
+    pub namespace: Option<String>,
+}
+
+/// DNSSEC status information for a signed zone
+///
+/// Tracks DNSSEC signing status, DS records for parent zones,
+/// and key rotation timestamps.
+///
+/// This status is populated by the `DNSZone` controller after
+/// successful zone signing.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DNSSECStatus {
+    /// Zone is signed with DNSSEC
+    pub signed: bool,
+
+    /// DS (Delegation Signer) records for parent zone delegation
+    ///
+    /// These records must be published in the parent zone to complete
+    /// the DNSSEC chain of trust.
+    ///
+    /// Format: `<zone> IN DS <keytag> <algorithm> <digesttype> <digest>`
+    ///
+    /// Example: `["example.com. IN DS 12345 13 2 ABC123..."]`
+    #[serde(default)]
+    pub ds_records: Vec<String>,
+
+    /// KSK key tag (numeric identifier)
+    ///
+    /// Identifies the Key Signing Key used to sign the DNSKEY `RRset`.
+    /// This value appears in the DS record.
+    #[serde(default)]
+    pub key_tag: Option<u32>,
+
+    /// DNSSEC algorithm name
+    ///
+    /// Example: `"ECDSAP256SHA256"`, `"RSASHA256"`
+    #[serde(default)]
+    pub algorithm: Option<String>,
+
+    /// Next scheduled key rollover timestamp (ISO 8601)
+    ///
+    /// When the next automatic key rotation will occur.
+    ///
+    /// Example: `"2026-04-02T00:00:00Z"`
+    #[serde(default)]
+    pub next_key_rollover: Option<String>,
+
+    /// Last key rollover timestamp (ISO 8601)
+    ///
+    /// When the most recent key rotation occurred.
+    ///
+    /// Example: `"2025-04-02T00:00:00Z"`
+    #[serde(default)]
+    pub last_key_rollover: Option<String>,
 }
 
 /// Container image configuration for BIND9 instances

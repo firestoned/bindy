@@ -542,6 +542,7 @@ async fn test_dnszone_create_read_delete() {
             name_server_ips: None,
             records_from: None,
             bind9_instances_from: None,
+            dnssec_policy: None,
         },
         status: None,
     };

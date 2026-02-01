@@ -1,3 +1,192 @@
+## [2026-01-31 23:59] - Fix Multi-Arch Docker Builds (ARM64 QEMU Emulation Failures)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docker/Dockerfile.chainguard`: Updated `cgr.dev/chainguard/wolfi-base` builder digest from `b9bcdb04...` (AMD64-only) to `17ab0709...` (multi-arch manifest list)
+- `docker/Dockerfile`: Updated `debian:12-slim` builder digest from `09c53e50...` (AMD64-only) to `56ff6d36...` (multi-arch manifest list)
+
+### Why
+The previous base image digests pinned to single-architecture manifests (AMD64 only) instead of multi-arch manifest lists. This caused ARM64 builds to fail with QEMU emulation errors:
+```
+.buildkit_qemu_emulator: /bin/sh: Invalid ELF image for this architecture
+```
+
+When Docker BuildKit attempted to build ARM64 images using AMD64-only base images, QEMU could not properly emulate the architecture, resulting in build failures for both Chainguard and Distroless variants.
+
+**Root Cause:** When upgrading Wolfi/Debian base images, the digest captured was from `docker pull` which defaults to the current platform (AMD64), not the multi-arch manifest list digest.
+
+**Solution:** Use `docker buildx imagetools inspect <image>:<tag>` to get the multi-arch manifest list digest (MediaType: `application/vnd.oci.image.index.v1+json`) instead of single-arch manifests.
+
+### Impact
+- [x] Bug fix (multi-arch builds)
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+**Verification:**
+```bash
+# Verify Chainguard multi-arch manifest
+docker buildx imagetools inspect cgr.dev/chainguard/wolfi-base:latest@sha256:17ab0709456ce1a2aedd85e95f72e58d73133bb70c33ae945a4d4b2424e984f1
+# Should show: MediaType: application/vnd.oci.image.index.v1+json
+# Platforms: linux/amd64, linux/arm64
+
+# Verify Debian multi-arch manifest
+docker buildx imagetools inspect debian:12-slim@sha256:56ff6d36d4eb3db13a741b342ec466f121480b5edded42e4b7ee850ce7a418ee
+# Should show: MediaType: application/vnd.oci.image.index.v1+json
+# Platforms: linux/amd64, linux/arm64, ...
+```
+
+---
+
+## [2026-01-31] - Security: Update Container Base Images to Fix CVE-2026-0861
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docker/Dockerfile.chainguard`: Updated `cgr.dev/chainguard/glibc-dynamic` base image from digest `ce2066b5...` to `4ccbfa62...` (includes glibc 2.42-r6)
+- `docker/Dockerfile.chainguard`: Pinned `cgr.dev/chainguard/wolfi-base` builder image to digest `b9bcdb04...` (AMD64-only - INCORRECT, fixed in next entry)
+- `docker/Dockerfile`: Pinned `debian:12-slim` and `gcr.io/distroless/cc-debian12:nonroot` base images (AMD64-only digests - INCORRECT, fixed in next entry)
+- `docker/Dockerfile.chef`, `docker/Dockerfile.fast`, `docker/Dockerfile.local`: Pinned `rust:1.91.0` and `alpine:3.20` base images
+
+### Why
+Fixed HIGH severity vulnerability CVE-2026-0861 in glibc 2.42-r4 (integer overflow in memalign leading to heap corruption). Updated all Dockerfiles to use latest base image digests that include the patched glibc 2.42-r6 version.
+
+**NOTE:** This entry inadvertently pinned to AMD64-only image digests, breaking multi-arch builds. See the next changelog entry for the fix.
+
+### Impact
+- [x] Security fix (CVE-2026-0861)
+- [x] Introduced bug (broke ARM64 builds - fixed in next entry)
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-01-28 23:45] - DNSSEC Zone Signing Phase 1: CRD Schema Extensions
+
+**Author:** Erick Bourgeois
+
+### Added
+
+**CRD Schema Extensions:**
+- `src/crd.rs`: Extended `DNSSECConfig` struct with `signing` field for zone signing configuration
+- `src/crd.rs`: Added `DNSSECSigningConfig` struct with comprehensive signing options:
+  - `enabled`: Enable/disable DNSSEC zone signing
+  - `policy`: DNSSEC policy name (e.g., "default")
+  - `algorithm`: Signing algorithm (ECDSAP256SHA256, ECDSAP384SHA384, RSASHA256)
+  - `ksk_lifetime`: Key Signing Key lifetime (e.g., "365d")
+  - `zsk_lifetime`: Zone Signing Key lifetime (e.g., "90d")
+  - `nsec3`: Use NSEC3 instead of NSEC for authenticated denial
+  - `nsec3_salt`: Optional NSEC3 salt value
+  - `nsec3_iterations`: NSEC3 iterations (default: 0 per RFC 9276)
+  - `keys_from`: Key source configuration
+  - `auto_generate`: Auto-generate keys (self-healing)
+  - `export_to_secret`: Export keys to Secret for backup/restore
+- `src/crd.rs`: Added `DNSSECKeySource` struct for flexible key management:
+  - `secret_ref`: User-supplied keys from Secrets (production)
+  - `persistent_volume`: Keys in PersistentVolume (legacy)
+- `src/crd.rs`: Added `SecretReference` struct for Secret references
+- `src/crd.rs`: Added `DNSSECStatus` struct to `DNSZoneStatus`:
+  - `signed`: Zone is signed with DNSSEC
+  - `ds_records`: DS records for parent zone delegation
+  - `key_tag`: KSK key tag identifier
+  - `algorithm`: DNSSEC algorithm name
+  - `next_key_rollover`: Next scheduled key rollover timestamp
+  - `last_key_rollover`: Last key rollover timestamp
+- `src/crd.rs`: Added `dnssec_policy` field to `DNSZoneSpec` for per-zone policy override
+- `examples/dnssec-signing-enabled.yaml`: Comprehensive example showing DNSSEC signing configuration
+
+**Documentation:**
+- `docs/src/advanced/dnssec.md`: Completely rewritten to clearly separate DNSSEC validation (implemented) from DNSSEC signing (planned)
+  - Removed invalid YAML examples showing unimplemented features
+  - Added comprehensive DNSSEC validation documentation
+  - Added links to roadmap for signing implementation
+  - Added troubleshooting guide for DNSSEC validation
+  - Added RFC references and external tools
+
+**Generated Files:**
+- `deploy/crds/*.crd.yaml`: Regenerated all CRD YAML files with DNSSEC signing schema
+- `docs/src/reference/api.md`: Regenerated API documentation with DNSSEC signing fields
+
+### Changed
+
+**Test Files (Updated for New Schema):**
+- All test files updated to initialize new optional fields:
+  - `dnssec_policy: None` added to `DNSZoneSpec` initializations
+  - `dnssec: None` added to `DNSZoneStatus` initializations
+  - `signing: None` added to `DNSSECConfig` initializations
+- Fixed doc examples in `src/crd_docs.rs`, `src/lib.rs`, `src/reconcilers/dnszone.rs`
+- Fixed integration tests in `tests/simple_integration.rs`, `tests/multi_tenancy_integration.rs`
+
+### Why
+
+**Complete DNSSEC Roadmap Phase 1:**
+This implements the CRD schema extensions from the DNSSEC Zone Signing Roadmap Phase 1. The schema now supports:
+1. Comprehensive DNSSEC signing configuration at the cluster level
+2. Per-zone DNSSEC policy overrides
+3. Multiple key management options (user-supplied, auto-generated, persistent storage)
+4. DS record status reporting structure for parent zone delegation
+5. Self-healing architecture with automatic key backup/restore
+
+**Schema-Only Implementation:**
+Phase 1 establishes the API contract but does NOT implement the actual signing logic. This allows:
+- Users to prepare YAML configurations
+- Future phases to build on stable API
+- Documentation to reference correct schema
+- No breaking changes when implementation is added
+
+**Next Steps:** Phases 2-7 will implement the actual signing functionality per the roadmap.
+
+### Impact
+
+- [ ] Breaking change (new optional fields)
+- [x] Non-breaking (all new fields are optional)
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation updated
+- [x] API documentation regenerated
+- [x] Example YAML provided
+
+**Note:** This is a schema-only change. DNSSEC signing functionality is not yet implemented.
+The schema is ready for Phases 2-7 implementation.
+
+---
+
+## [2026-01-28 21:30] - DNSSEC Roadmap Analysis and Validation
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/roadmaps/dnssec-roadmap-vs-current-state-analysis.md`: Comprehensive analysis comparing the DNSSEC Zone Signing Implementation Roadmap against the current codebase
+
+### Analysis Summary
+
+**Key Findings:**
+- ✅ DNSSEC roadmap is 100% accurate and remains fully relevant - **NONE of the 7 phases have been implemented**
+- ✅ Clarified confusion: Recent "key rotation" work refers to **RNDC key rotation** (remote admin), NOT DNSSEC key rotation (zone signing)
+- ⚠️ Documentation issue identified: `docs/src/advanced/dnssec.md` contains placeholder examples showing features that don't exist in the CRD schema
+- ✅ All prerequisites for starting Phase 1 are met (CRD generation tooling, duration parsing, test patterns)
+
+**Current DNSSEC Implementation Status:**
+- **Validation Only:** `DNSSECConfig.validation` field exists for validating upstream DNSSEC responses
+- **Signing:** NOT implemented - no signing fields, no policy generation, no key management, no DS record extraction
+
+**Recommendation:** Proceed with implementing the DNSSEC roadmap starting with Phase 1 (CRD Schema Extensions)
+
+### Why
+Needed to validate whether the DNSSEC roadmap was still relevant after recent RNDC key rotation work. Analysis confirms the roadmap is accurate and ready for implementation.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
 ## [2026-01-28 16:00] - Rename rndcKeys to rndcKey (Singular)
 
 **Author:** Erick Bourgeois
