@@ -30,7 +30,7 @@
 
 # Build stage to install BIND9
 # NOTE: This digest points to the multi-arch manifest list (supports both AMD64 and ARM64)
-FROM cgr.dev/chainguard/wolfi-base:latest@sha256:17ab0709456ce1a2aedd85e95f72e58d73133bb70c33ae945a4d4b2424e984f1 AS builder
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:b9bcdb04c2dd6fc720a86ce02c9d4442541cbdfe0871b1ea23d0a0b8d12c216c AS builder
 
 # Install BIND9 and tools
 RUN apk add --no-cache \
