@@ -9,6 +9,7 @@
 > - **Test-Driven Development (TDD)**: ALWAYS write tests FIRST before implementing functionality. Write failing tests that define the expected behavior, then implement code to make tests pass. This ensures all code is testable and has comprehensive test coverage from the start.
 > - **Event-Driven Programming**: In Kubernetes controller development, ALWAYS use or recommend event-driven programming (e.g., "watch" on kube API) as opposed to polling. Controllers must react to cluster state changes efficiently.
 > - **Early Returns**: Use as few `else` statements as possible. Return from functions as soon as you can to minimize nesting and improve code clarity (see Early Return / Guard Clause Pattern section).
+> - **ALWAYS Run cargo fmt**: At the end of EVERY task or phase involving Rust code, you MUST run `cargo fmt` (and `cargo clippy`, `cargo test`). This is NON-NEGOTIABLE and MANDATORY. See "CRITICAL: Always Run cargo fmt and clippy After Code Changes" section for full requirements.
 
 ---
 

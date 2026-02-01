@@ -1031,6 +1031,8 @@ mod tests {
                 records: vec![],
                 bind9_instances: vec![],
                 bind9_instances_count: None,
+
+                dnssec: None,
             };
 
             assert!(status.records.is_empty());
@@ -1072,6 +1074,8 @@ mod tests {
                 records: records.clone(),
                 bind9_instances: vec![],
                 bind9_instances_count: None,
+
+                dnssec: None,
             };
 
             assert_eq!(status.records.len(), 3);
@@ -1089,6 +1093,8 @@ mod tests {
                 records: vec![],
                 bind9_instances: vec![],
                 bind9_instances_count: None,
+
+                dnssec: None,
             };
 
             let json = serde_json::to_value(&status).unwrap();
@@ -1115,6 +1121,8 @@ mod tests {
                 records: records.clone(),
                 bind9_instances: vec![],
                 bind9_instances_count: None,
+
+                dnssec: None,
             };
 
             let json = serde_json::to_value(&status).unwrap();
@@ -1311,6 +1319,8 @@ mod tests {
                 records: existing_records.clone(),
                 bind9_instances: vec![],
                 bind9_instances_count: None,
+
+                dnssec: None,
             });
 
             // Simulate DNSZone reconciler creating new status
@@ -1325,6 +1335,8 @@ mod tests {
                 records,
                 bind9_instances: vec![],
                 bind9_instances_count: None,
+
+                dnssec: None,
             };
 
             // Verify all fields preserved
@@ -1348,6 +1360,8 @@ mod tests {
                 records,
                 bind9_instances: vec![],
                 bind9_instances_count: None,
+
+                dnssec: None,
             };
 
             assert!(new_status.records.is_empty());

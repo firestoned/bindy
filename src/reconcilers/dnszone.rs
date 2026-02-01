@@ -214,6 +214,7 @@ pub async fn generate_nameserver_ips(
 ///     name_server_ips: Some(HashMap::from([("ns3.example.com.".into(), "192.0.2.3".into())])),
 ///     records_from: None,
 ///     bind9_instances_from: None,
+///     dnssec_policy: None,
 /// };
 /// // Returns name_servers (new field), ignoring name_server_ips
 /// ```

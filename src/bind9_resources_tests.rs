@@ -36,6 +36,7 @@ mod tests {
                     allow_transfer: Some(vec!["10.0.0.0/8".into()]),
                     dnssec: Some(DNSSECConfig {
                         validation: Some(true),
+                        signing: None,
                     }),
                     forwarders: None,
                     listen_on: None,
@@ -573,6 +574,7 @@ mod tests {
         let mut instance = create_test_instance("test");
         instance.spec.config.as_mut().unwrap().dnssec = Some(DNSSECConfig {
             validation: Some(false),
+            signing: None,
         });
 
         let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
@@ -588,6 +590,7 @@ mod tests {
         let mut instance = create_test_instance("test");
         instance.spec.config.as_mut().unwrap().dnssec = Some(DNSSECConfig {
             validation: Some(true),
+            signing: None,
         });
 
         let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();

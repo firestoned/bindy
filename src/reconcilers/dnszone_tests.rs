@@ -34,6 +34,7 @@ mod tests {
             name_server_ips: None,
             bind9_instances_from: None,
             records_from: None,
+            dnssec_policy: None,
         }
     }
 

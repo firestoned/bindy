@@ -429,6 +429,7 @@ async fn create_zone_with_cluster_ref(
             name_server_ips: None,
             records_from: None,
             bind9_instances_from: None,
+            dnssec_policy: None,
         },
         status: None,
     };
@@ -478,6 +479,7 @@ async fn create_zone_with_cluster_provider_ref(
             name_server_ips: None,
             records_from: None,
             bind9_instances_from: None,
+            dnssec_policy: None,
         },
         status: None,
     };

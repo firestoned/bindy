@@ -1,0 +1,82 @@
+# DNSSEC Zone Signing Example
+#
+# This example demonstrates enabling DNSSEC zone signing in bindy.
+# DNSSEC provides cryptographic authentication of DNS data to prevent
+# cache poisoning and man-in-the-middle attacks.
+#
+# IMPORTANT: This example shows the CRD schema for Phase 1 (schema only).
+# The actual signing implementation (Phases 2-7) is not yet complete.
+# See: docs/roadmaps/dnssec-zone-signing-implementation.md
+
+---
+# Bind9Cluster with DNSSEC Signing Enabled
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Cluster
+metadata:
+  name: dnssec-cluster
+  namespace: dns-system
+spec:
+  version: "9.18"
+  primary:
+    replicas: 2
+  secondary:
+    replicas: 1
+  global:
+    recursion: false
+    allowQuery:
+      - "any"
+    # DNSSEC configuration
+    dnssec:
+      # Enable DNSSEC validation of upstream responses (currently implemented)
+      validation: true
+
+      # Enable DNSSEC zone signing (Phase 1: schema only - not yet functional)
+      signing:
+        enabled: true
+        policy: "default"  # Built-in DNSSEC policy
+        algorithm: "ECDSAP256SHA256"  # ECDSA P-256 (recommended)
+        kskLifetime: "365d"  # Key Signing Key lifetime (1 year)
+        zskLifetime: "90d"   # Zone Signing Key lifetime (3 months)
+        nsec3: true          # Use NSEC3 for privacy
+        nsec3Iterations: 0   # Per RFC 9276 recommendation
+
+        # Key management: auto-generate with Secret backup (self-healing)
+        autoGenerate: true
+        exportToSecret: true
+
+---
+# DNSZone with DNSSEC Signing
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: example-com
+  namespace: dns-system
+spec:
+  zoneName: example.com
+  clusterRef: dnssec-cluster
+  soaRecord:
+    primaryNs: ns1.example.com.
+    adminEmail: admin.example.com.
+    serial: 2026012801
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTtl: 86400
+  ttl: 3600
+
+  # Per-zone DNSSEC policy override (optional)
+  # Uncomment to use different policy for this zone:
+  # dnssecPolicy: "high-security"
+
+---
+# Expected DNSZone Status After Signing (Phase 5 - not yet implemented)
+# This is what the status will look like once DS record extraction is implemented:
+#
+# status:
+#   dnssec:
+#     signed: true
+#     dsRecords:
+#       - "example.com. IN DS 12345 13 2 ABC123456789ABCDEF..."
+#     keyTag: 12345
+#     algorithm: "ECDSAP256SHA256"
+#     nextKeyRollover: "2027-01-28T00:00:00Z"

@@ -136,6 +136,7 @@ mod tests {
             name_server_ips: None,
             records_from: None,
             bind9_instances_from: None,
+            dnssec_policy: None,
         };
 
         assert_eq!(spec.zone_name, "example.com");
@@ -303,6 +304,7 @@ mod tests {
             allow_transfer: Some(vec!["10.0.0.0/8".into()]),
             dnssec: Some(DNSSECConfig {
                 validation: Some(true),
+                signing: None,
             }),
             forwarders: Some(vec!["8.8.8.8".into(), "8.8.4.4".into()]),
             listen_on: Some(vec!["any".into()]),
@@ -321,6 +323,7 @@ mod tests {
     fn test_dnssec_config() {
         let config = DNSSECConfig {
             validation: Some(false),
+            signing: None,
         };
 
         assert_eq!(config.validation, Some(false));
@@ -532,6 +535,7 @@ mod tests {
             records: vec![],
             bind9_instances: vec![],
             bind9_instances_count: None,
+            dnssec: None,
         };
 
         assert_eq!(status.conditions.len(), 1);
