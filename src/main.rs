@@ -594,7 +594,12 @@ async fn perform_startup_drift_detection(client: Client, context: Arc<Context>) 
                 );
 
                 // Call reconcile directly
-                match reconcile_clusterbind9provider(context.clone(), provider.clone()).await {
+                match Box::pin(reconcile_clusterbind9provider(
+                    context.clone(),
+                    provider.clone(),
+                ))
+                .await
+                {
                     Ok(()) => debug!("ClusterBind9Provider {} reconciled successfully", name),
                     Err(e) => warn!("Failed to reconcile ClusterBind9Provider {}: {}", name, e),
                 }
@@ -619,7 +624,7 @@ async fn perform_startup_drift_detection(client: Client, context: Arc<Context>) 
                 );
 
                 // Call reconcile directly
-                match reconcile_bind9cluster(context.clone(), cluster.clone()).await {
+                match Box::pin(reconcile_bind9cluster(context.clone(), cluster.clone())).await {
                     Ok(()) => debug!(
                         "Bind9Cluster {}/{} reconciled successfully",
                         namespace, name
@@ -942,7 +947,11 @@ async fn reconcile_clusterbind9provider_wrapper(
         "Reconcile wrapper called for ClusterBind9Provider"
     );
 
-    let result = reconcile_clusterbind9provider(ctx.clone(), (*cluster).clone()).await;
+    let result = Box::pin(reconcile_clusterbind9provider(
+        ctx.clone(),
+        (*cluster).clone(),
+    ))
+    .await;
     let duration = start.elapsed();
 
     match result {
@@ -1001,7 +1010,7 @@ async fn reconcile_bind9cluster_wrapper(
         "Reconcile wrapper called for Bind9Cluster"
     );
 
-    let result = reconcile_bind9cluster(ctx.clone(), (*cluster).clone()).await;
+    let result = Box::pin(reconcile_bind9cluster(ctx.clone(), (*cluster).clone())).await;
     let duration = start.elapsed();
 
     match result {

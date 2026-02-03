@@ -1,3 +1,60 @@
+## [2026-02-01 00:45] - Phase 2: DNSSEC Policy Configuration
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/bind9_resources.rs`: DNSSEC policy template constant `DNSSEC_POLICY_TEMPLATE`
+- `src/bind9_resources.rs`: Default DNSSEC constants (`DEFAULT_DNSSEC_POLICY_NAME`, `DEFAULT_DNSSEC_ALGORITHM`, `DEFAULT_KSK_LIFETIME`, `DEFAULT_ZSK_LIFETIME`, `DEFAULT_NSEC3_SALT_LENGTH`)
+- `src/bind9_resources.rs`: Function `generate_dnssec_policies()` to generate DNSSEC policy configuration from cluster/instance config
+- `templates/named.conf.options.tmpl`: `{{DNSSEC_POLICIES}}` placeholder for policy injection
+- `src/bind9_resources_tests.rs`: Comprehensive unit tests for DNSSEC policy generation (5 test cases)
+
+### Changed
+- `src/bind9_resources.rs`: Updated `build_options_conf()` to generate and substitute DNSSEC policies
+- `src/bind9_resources.rs`: Updated `build_cluster_options_conf()` to generate and substitute DNSSEC policies
+- `src/main.rs`: Fixed clippy `large_futures` warnings by wrapping async calls with `Box::pin()` (4 instances)
+- `src/reconcilers/clusterbind9provider.rs`: Fixed clippy `large_futures` warning with `Box::pin()`
+
+### Why
+Phase 2 of the DNSSEC Zone Signing Implementation Roadmap adds support for generating BIND9 `dnssec-policy` configurations from Kubernetes CRD specs. This enables declarative DNSSEC policy management through the operator.
+
+**Implementation Details:**
+- Policy generation respects instance config > global config precedence
+- Supports custom policy names, algorithms (ECDSAP256SHA256, ECDSAP384SHA384, RSASHA256), key lifetimes, and NSEC/NSEC3 configuration
+- Uses modern BIND9 9.16+ `dnssec-policy` declarative approach instead of legacy manual key management
+- Policies are injected into `named.conf.options` at the top level (outside the `options {}` block)
+
+**Default Policy:**
+```
+dnssec-policy "default" {
+    keys {
+        ksk lifetime unlimited algorithm ECDSAP256SHA256;
+        zsk lifetime unlimited algorithm ECDSAP256SHA256;
+    };
+    nsec;
+    signatures-refresh 5d;
+    signatures-validity 30d;
+    ...
+}
+```
+
+**Note:** This is configuration-only. Actual zone signing functionality (Phase 3-5) is not yet implemented.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (DNSSEC policies generated but not yet applied to zones)
+- [ ] Documentation only
+
+**Testing:**
+- 5 new unit tests covering disabled signing, default values, custom values, NSEC3, and config precedence
+- All 776 existing tests pass
+- `cargo fmt`, `cargo clippy`, and `cargo test` pass
+
+**Next Phase:** Phase 3 will implement DNSSEC key source handling (user-supplied Secrets, auto-generation, persistent storage).
+
+---
+
 ## [2026-01-31 23:59] - Fix Multi-Arch Docker Builds (ARM64 QEMU Emulation Failures)
 
 **Author:** Erick Bourgeois
