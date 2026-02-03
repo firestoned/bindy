@@ -1658,4 +1658,331 @@ mod tests {
             "Should not contain global algorithm"
         );
     }
+
+    // DNSSEC Key Volume Configuration Tests
+
+    #[test]
+    fn test_dnssec_key_volumes_disabled() {
+        use crate::bind9_resources::build_dnssec_key_volumes;
+
+        // No DNSSEC config
+        let (volumes, volume_mounts) = build_dnssec_key_volumes(None, None);
+        assert!(
+            volumes.is_empty(),
+            "Should return empty volumes when DNSSEC signing is disabled"
+        );
+        assert!(
+            volume_mounts.is_empty(),
+            "Should return empty volume mounts when DNSSEC signing is disabled"
+        );
+
+        // DNSSEC signing explicitly disabled
+        let config = Bind9Config {
+            recursion: Some(false),
+            allow_query: None,
+            allow_transfer: None,
+            dnssec: Some(DNSSECConfig {
+                validation: Some(true),
+                signing: Some(crate::crd::DNSSECSigningConfig {
+                    enabled: false,
+                    policy: None,
+                    algorithm: None,
+                    ksk_lifetime: None,
+                    zsk_lifetime: None,
+                    nsec3: None,
+                    nsec3_salt: None,
+                    nsec3_iterations: None,
+                    keys_from: None,
+                    auto_generate: None,
+                    export_to_secret: None,
+                }),
+            }),
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        };
+
+        let (volumes, volume_mounts) = build_dnssec_key_volumes(Some(&config), None);
+        assert!(
+            volumes.is_empty(),
+            "Should return empty volumes when signing is explicitly disabled"
+        );
+        assert!(
+            volume_mounts.is_empty(),
+            "Should return empty volume mounts when signing is explicitly disabled"
+        );
+    }
+
+    #[test]
+    fn test_dnssec_key_volumes_user_supplied_secret() {
+        use crate::bind9_resources::build_dnssec_key_volumes;
+
+        // DNSSEC signing with user-supplied Secret
+        let config = Bind9Config {
+            recursion: Some(false),
+            allow_query: None,
+            allow_transfer: None,
+            dnssec: Some(DNSSECConfig {
+                validation: Some(true),
+                signing: Some(crate::crd::DNSSECSigningConfig {
+                    enabled: true,
+                    policy: None,
+                    algorithm: None,
+                    ksk_lifetime: None,
+                    zsk_lifetime: None,
+                    nsec3: None,
+                    nsec3_salt: None,
+                    nsec3_iterations: None,
+                    keys_from: Some(crate::crd::DNSSECKeySource {
+                        secret_ref: Some(crate::crd::SecretReference {
+                            name: "my-dnssec-keys".to_string(),
+                            namespace: None,
+                        }),
+                        persistent_volume: None,
+                    }),
+                    auto_generate: None,
+                    export_to_secret: None,
+                }),
+            }),
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        };
+
+        let (volumes, volume_mounts) = build_dnssec_key_volumes(Some(&config), None);
+
+        assert_eq!(
+            volumes.len(),
+            1,
+            "Should have 1 volume for user-supplied keys"
+        );
+        assert_eq!(
+            volume_mounts.len(),
+            1,
+            "Should have 1 volume mount for user-supplied keys"
+        );
+
+        // Verify volume configuration
+        let volume = &volumes[0];
+        assert_eq!(volume.name, "dnssec-keys");
+        assert!(volume.secret.is_some(), "Volume should be backed by Secret");
+        let secret = volume.secret.as_ref().unwrap();
+        assert_eq!(secret.secret_name, Some("my-dnssec-keys".to_string()));
+        assert_eq!(
+            secret.default_mode,
+            Some(0o600),
+            "Secret should have secure permissions"
+        );
+
+        // Verify volume mount configuration
+        let mount = &volume_mounts[0];
+        assert_eq!(mount.name, "dnssec-keys");
+        assert_eq!(mount.mount_path, "/var/cache/bind/keys");
+        assert_eq!(
+            mount.read_only,
+            Some(false),
+            "Mount should be writable for .state files"
+        );
+    }
+
+    #[test]
+    fn test_dnssec_key_volumes_auto_generated() {
+        use crate::bind9_resources::build_dnssec_key_volumes;
+
+        // DNSSEC signing with auto-generated keys
+        let config = Bind9Config {
+            recursion: Some(false),
+            allow_query: None,
+            allow_transfer: None,
+            dnssec: Some(DNSSECConfig {
+                validation: Some(true),
+                signing: Some(crate::crd::DNSSECSigningConfig {
+                    enabled: true,
+                    policy: None,
+                    algorithm: None,
+                    ksk_lifetime: None,
+                    zsk_lifetime: None,
+                    nsec3: None,
+                    nsec3_salt: None,
+                    nsec3_iterations: None,
+                    keys_from: None, // No explicit source, triggers auto-generate
+                    auto_generate: Some(true),
+                    export_to_secret: Some(true),
+                }),
+            }),
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        };
+
+        let (volumes, volume_mounts) = build_dnssec_key_volumes(Some(&config), None);
+
+        assert_eq!(
+            volumes.len(),
+            1,
+            "Should have 1 volume for auto-generated keys"
+        );
+        assert_eq!(
+            volume_mounts.len(),
+            1,
+            "Should have 1 volume mount for auto-generated keys"
+        );
+
+        // Verify volume configuration
+        let volume = &volumes[0];
+        assert_eq!(volume.name, "dnssec-keys");
+        assert!(
+            volume.empty_dir.is_some(),
+            "Volume should be emptyDir for auto-generation"
+        );
+        assert!(
+            volume.secret.is_none(),
+            "Volume should not be backed by Secret"
+        );
+
+        // Verify volume mount configuration
+        let mount = &volume_mounts[0];
+        assert_eq!(mount.name, "dnssec-keys");
+        assert_eq!(mount.mount_path, "/var/cache/bind/keys");
+    }
+
+    #[test]
+    fn test_dnssec_key_volumes_auto_generate_default() {
+        use crate::bind9_resources::build_dnssec_key_volumes;
+
+        // DNSSEC signing enabled with minimal config - should default to auto-generate
+        let config = Bind9Config {
+            recursion: Some(false),
+            allow_query: None,
+            allow_transfer: None,
+            dnssec: Some(DNSSECConfig {
+                validation: Some(true),
+                signing: Some(crate::crd::DNSSECSigningConfig {
+                    enabled: true,
+                    policy: None,
+                    algorithm: None,
+                    ksk_lifetime: None,
+                    zsk_lifetime: None,
+                    nsec3: None,
+                    nsec3_salt: None,
+                    nsec3_iterations: None,
+                    keys_from: None,        // Default: auto-generate
+                    auto_generate: None,    // Default: true
+                    export_to_secret: None, // Default: true
+                }),
+            }),
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        };
+
+        let (volumes, volume_mounts) = build_dnssec_key_volumes(Some(&config), None);
+
+        assert_eq!(
+            volumes.len(),
+            1,
+            "Should have 1 volume with default auto-generate"
+        );
+        assert_eq!(
+            volume_mounts.len(),
+            1,
+            "Should have 1 volume mount with default auto-generate"
+        );
+
+        // Verify it uses emptyDir (auto-generate pattern)
+        let volume = &volumes[0];
+        assert!(volume.empty_dir.is_some(), "Should use emptyDir by default");
+    }
+
+    #[test]
+    fn test_dnssec_key_volumes_instance_overrides_global() {
+        use crate::bind9_resources::build_dnssec_key_volumes;
+
+        // Global config with auto-generate
+        let global_config = Bind9Config {
+            recursion: Some(false),
+            allow_query: None,
+            allow_transfer: None,
+            dnssec: Some(DNSSECConfig {
+                validation: Some(true),
+                signing: Some(crate::crd::DNSSECSigningConfig {
+                    enabled: true,
+                    policy: None,
+                    algorithm: None,
+                    ksk_lifetime: None,
+                    zsk_lifetime: None,
+                    nsec3: None,
+                    nsec3_salt: None,
+                    nsec3_iterations: None,
+                    keys_from: None, // Auto-generate
+                    auto_generate: Some(true),
+                    export_to_secret: None,
+                }),
+            }),
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        };
+
+        // Instance config with user-supplied Secret (overrides global)
+        let instance_config = Bind9Config {
+            recursion: Some(false),
+            allow_query: None,
+            allow_transfer: None,
+            dnssec: Some(DNSSECConfig {
+                validation: Some(true),
+                signing: Some(crate::crd::DNSSECSigningConfig {
+                    enabled: true,
+                    policy: None,
+                    algorithm: None,
+                    ksk_lifetime: None,
+                    zsk_lifetime: None,
+                    nsec3: None,
+                    nsec3_salt: None,
+                    nsec3_iterations: None,
+                    keys_from: Some(crate::crd::DNSSECKeySource {
+                        secret_ref: Some(crate::crd::SecretReference {
+                            name: "instance-keys".to_string(),
+                            namespace: None,
+                        }),
+                        persistent_volume: None,
+                    }),
+                    auto_generate: None,
+                    export_to_secret: None,
+                }),
+            }),
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        };
+
+        let (volumes, _volume_mounts) =
+            build_dnssec_key_volumes(Some(&global_config), Some(&instance_config));
+
+        // Should use instance config (Secret) not global (emptyDir)
+        assert_eq!(volumes.len(), 1);
+        let volume = &volumes[0];
+        assert!(
+            volume.secret.is_some(),
+            "Should use Secret from instance config"
+        );
+        assert!(
+            volume.empty_dir.is_none(),
+            "Should not use emptyDir from global config"
+        );
+        let secret = volume.secret.as_ref().unwrap();
+        assert_eq!(secret.secret_name, Some("instance-keys".to_string()));
+    }
 }
