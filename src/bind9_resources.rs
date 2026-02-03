@@ -33,7 +33,7 @@ use k8s_openapi::apimachinery::pkg::{
 };
 use kube::ResourceExt;
 use std::collections::BTreeMap;
-use tracing::debug;
+use tracing::{debug, warn};
 
 // Embed configuration templates at compile time
 const NAMED_CONF_TEMPLATE: &str = include_str!("../templates/named.conf.tmpl");
@@ -72,6 +72,7 @@ dnssec-policy "{{POLICY_NAME}}" {
 const BIND_ZONES_PATH: &str = "/etc/bind/zones";
 const BIND_CACHE_PATH: &str = "/var/cache/bind";
 const BIND_KEYS_PATH: &str = "/etc/bind/keys";
+const BIND_DNSSEC_KEYS_PATH: &str = "/var/cache/bind/keys";
 const BIND_NAMED_CONF_PATH: &str = "/etc/bind/named.conf";
 const BIND_NAMED_CONF_OPTIONS_PATH: &str = "/etc/bind/named.conf.options";
 const BIND_NAMED_CONF_ZONES_PATH: &str = "/etc/bind/named.conf.zones";
@@ -91,6 +92,7 @@ const VOLUME_CONFIG: &str = "config";
 const VOLUME_NAMED_CONF: &str = "named-conf";
 const VOLUME_NAMED_CONF_OPTIONS: &str = "named-conf-options";
 const VOLUME_NAMED_CONF_ZONES: &str = "named-conf-zones";
+const VOLUME_DNSSEC_KEYS: &str = "dnssec-keys";
 
 // Default DNSSEC signing parameters
 const DEFAULT_DNSSEC_POLICY_NAME: &str = "default";
@@ -166,6 +168,174 @@ pub(crate) fn generate_dnssec_policies(
         .replace("{{KSK_LIFETIME}}", ksk_lifetime)
         .replace("{{ZSK_LIFETIME}}", zsk_lifetime)
         .replace("{{NSEC_CONFIG}}", &nsec_config)
+}
+
+/// Check if DNSSEC signing is enabled in either instance or global config
+///
+/// Instance config takes precedence over global config.
+///
+/// # Arguments
+///
+/// * `global_config` - Optional global cluster configuration
+/// * `instance_config` - Optional instance-specific configuration
+///
+/// # Returns
+///
+/// `true` if DNSSEC signing is enabled, `false` otherwise
+#[allow(dead_code)]
+pub(crate) fn is_dnssec_signing_enabled(
+    global_config: Option<&crate::crd::Bind9Config>,
+    instance_config: Option<&crate::crd::Bind9Config>,
+) -> bool {
+    // Check instance config first, then fall back to global config
+    let dnssec_config = if let Some(instance) = instance_config {
+        instance.dnssec.as_ref().and_then(|d| d.signing.as_ref())
+    } else {
+        global_config.and_then(|g| g.dnssec.as_ref().and_then(|d| d.signing.as_ref()))
+    };
+
+    dnssec_config.is_some_and(|signing| signing.enabled)
+}
+
+/// Get DNSSEC signing configuration from either instance or global config
+///
+/// Instance config takes precedence over global config.
+///
+/// # Arguments
+///
+/// * `global_config` - Optional global cluster configuration
+/// * `instance_config` - Optional instance-specific configuration
+///
+/// # Returns
+///
+/// Reference to `DNSSECSigningConfig` if signing is enabled, `None` otherwise
+pub(crate) fn get_dnssec_signing_config<'a>(
+    global_config: Option<&'a crate::crd::Bind9Config>,
+    instance_config: Option<&'a crate::crd::Bind9Config>,
+) -> Option<&'a crate::crd::DNSSECSigningConfig> {
+    // Check instance config first, then fall back to global config
+    if let Some(instance) = instance_config {
+        if let Some(config) = instance.dnssec.as_ref().and_then(|d| d.signing.as_ref()) {
+            if config.enabled {
+                return Some(config);
+            }
+        }
+    }
+
+    global_config
+        .and_then(|g| g.dnssec.as_ref().and_then(|d| d.signing.as_ref()))
+        .filter(|config| config.enabled)
+}
+
+/// Build DNSSEC key volumes and volume mounts based on configuration
+///
+/// Creates appropriate volumes for DNSSEC keys based on the key source configuration:
+/// - User-supplied Secret: Mount keys from Secret (read-only for keys, writable for state files)
+/// - Auto-generated: Use `emptyDir` for BIND9 to generate keys
+/// - Persistent storage: Use `PersistentVolumeClaim` for keys
+///
+/// # Arguments
+///
+/// * `global_config` - Optional global cluster configuration
+/// * `instance_config` - Optional instance-specific configuration
+///
+/// # Returns
+///
+/// Tuple of (volumes, `volume_mounts`) to add to the pod spec
+pub(crate) fn build_dnssec_key_volumes(
+    global_config: Option<&crate::crd::Bind9Config>,
+    instance_config: Option<&crate::crd::Bind9Config>,
+) -> (Vec<Volume>, Vec<VolumeMount>) {
+    use k8s_openapi::api::core::v1::{
+        EmptyDirVolumeSource, SecretVolumeSource, Volume, VolumeMount,
+    };
+
+    let Some(signing_config) = get_dnssec_signing_config(global_config, instance_config) else {
+        return (vec![], vec![]);
+    };
+
+    let mut volumes = Vec::new();
+    let mut volume_mounts = Vec::new();
+
+    // Determine key source and create appropriate volume
+    match &signing_config.keys_from {
+        // Option 1: User-supplied keys from Secret
+        Some(crate::crd::DNSSECKeySource {
+            secret_ref: Some(secret),
+            ..
+        }) => {
+            volumes.push(Volume {
+                name: VOLUME_DNSSEC_KEYS.to_string(),
+                secret: Some(SecretVolumeSource {
+                    secret_name: Some(secret.name.clone()),
+                    default_mode: Some(0o600), // Secure permissions for key files
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+
+            volume_mounts.push(VolumeMount {
+                name: VOLUME_DNSSEC_KEYS.to_string(),
+                mount_path: BIND_DNSSEC_KEYS_PATH.to_string(),
+                read_only: Some(false), // BIND9 may update .state files
+                ..Default::default()
+            });
+
+            debug!(
+                secret_name = %secret.name,
+                "Mounting user-supplied DNSSEC keys from Secret"
+            );
+        }
+
+        // Option 2: Auto-generated keys (emptyDir + Secret backup)
+        // This is also the default if no keys_from is specified
+        None
+        | Some(crate::crd::DNSSECKeySource {
+            secret_ref: None,
+            persistent_volume: None,
+        }) => {
+            if signing_config.auto_generate.unwrap_or(true) {
+                volumes.push(Volume {
+                    name: VOLUME_DNSSEC_KEYS.to_string(),
+                    empty_dir: Some(EmptyDirVolumeSource::default()),
+                    ..Default::default()
+                });
+
+                volume_mounts.push(VolumeMount {
+                    name: VOLUME_DNSSEC_KEYS.to_string(),
+                    mount_path: BIND_DNSSEC_KEYS_PATH.to_string(),
+                    ..Default::default()
+                });
+
+                debug!("DNSSEC keys will be auto-generated by BIND9 in emptyDir");
+
+                if signing_config.export_to_secret.unwrap_or(true) {
+                    debug!("Auto-generated keys will be exported to Secret for backup/restore");
+                }
+            }
+        }
+
+        // Option 3: Persistent storage (not implemented yet - requires StatefulSet)
+        Some(crate::crd::DNSSECKeySource {
+            persistent_volume: Some(_pvc),
+            ..
+        }) => {
+            warn!("Persistent storage for DNSSEC keys is not yet implemented - using emptyDir");
+            volumes.push(Volume {
+                name: VOLUME_DNSSEC_KEYS.to_string(),
+                empty_dir: Some(EmptyDirVolumeSource::default()),
+                ..Default::default()
+            });
+
+            volume_mounts.push(VolumeMount {
+                name: VOLUME_DNSSEC_KEYS.to_string(),
+                mount_path: BIND_DNSSEC_KEYS_PATH.to_string(),
+                ..Default::default()
+            });
+        }
+    }
+
+    (volumes, volume_mounts)
 }
 
 /// Builds standardized Kubernetes labels for BIND9 instance resources.
@@ -925,6 +1095,36 @@ pub fn build_deployment(
 
     let owner_refs = build_owner_references(instance);
 
+    // Get global and instance configs for DNSSEC
+    let global_config = cluster.and_then(|c| c.spec.common.global.as_ref());
+    let instance_config = instance.spec.config.as_ref();
+
+    // Build DNSSEC key volumes if signing is enabled
+    let (dnssec_volumes, dnssec_volume_mounts) =
+        build_dnssec_key_volumes(global_config, instance_config);
+
+    // Merge DNSSEC volumes with custom volumes from spec
+    let all_volumes = if dnssec_volumes.is_empty() {
+        config.volumes.map(std::borrow::ToOwned::to_owned)
+    } else {
+        let mut merged = dnssec_volumes;
+        if let Some(custom) = config.volumes {
+            merged.extend(custom.iter().cloned());
+        }
+        Some(merged)
+    };
+
+    // Merge DNSSEC volume mounts with custom volume mounts from spec
+    let all_volume_mounts = if dnssec_volume_mounts.is_empty() {
+        config.volume_mounts.map(std::borrow::ToOwned::to_owned)
+    } else {
+        let mut merged = dnssec_volume_mounts;
+        if let Some(custom) = config.volume_mounts {
+            merged.extend(custom.iter().cloned());
+        }
+        Some(merged)
+    };
+
     Deployment {
         metadata: ObjectMeta {
             name: Some(name.into()),
@@ -951,8 +1151,8 @@ pub fn build_deployment(
                     config.version,
                     config.image_config,
                     config.config_map_refs,
-                    config.volumes,
-                    config.volume_mounts,
+                    all_volumes.as_ref(),
+                    all_volume_mounts.as_ref(),
                     config.bindcar_config,
                 )),
             },
