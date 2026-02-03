@@ -40,6 +40,34 @@ const NAMED_CONF_TEMPLATE: &str = include_str!("../templates/named.conf.tmpl");
 const NAMED_CONF_OPTIONS_TEMPLATE: &str = include_str!("../templates/named.conf.options.tmpl");
 const RNDC_CONF_TEMPLATE: &str = include_str!("../templates/rndc.conf.tmpl");
 
+// DNSSEC policy template for zone signing
+const DNSSEC_POLICY_TEMPLATE: &str = r#"
+dnssec-policy "{{POLICY_NAME}}" {
+    // Key configuration
+    keys {
+        ksk lifetime {{KSK_LIFETIME}} algorithm {{ALGORITHM}};
+        zsk lifetime {{ZSK_LIFETIME}} algorithm {{ALGORITHM}};
+    };
+
+    // Authenticated denial of existence
+    {{NSEC_CONFIG}};
+
+    // Signature validity periods
+    signatures-refresh 5d;
+    signatures-validity 30d;
+    signatures-validity-dnskey 30d;
+
+    // Zone propagation delay (time for zone updates to reach all servers)
+    zone-propagation-delay 300;  // 5 minutes
+
+    // Parent propagation delay (time for DS updates in parent zone)
+    parent-propagation-delay 3600;  // 1 hour
+
+    // Maximum zone TTL (affects key rollover timing)
+    max-zone-ttl 86400;  // 24 hours
+};
+"#;
+
 // BIND configuration file paths and mount points
 const BIND_ZONES_PATH: &str = "/etc/bind/zones";
 const BIND_CACHE_PATH: &str = "/var/cache/bind";
@@ -63,6 +91,82 @@ const VOLUME_CONFIG: &str = "config";
 const VOLUME_NAMED_CONF: &str = "named-conf";
 const VOLUME_NAMED_CONF_OPTIONS: &str = "named-conf-options";
 const VOLUME_NAMED_CONF_ZONES: &str = "named-conf-zones";
+
+// Default DNSSEC signing parameters
+const DEFAULT_DNSSEC_POLICY_NAME: &str = "default";
+const DEFAULT_DNSSEC_ALGORITHM: &str = "ECDSAP256SHA256";
+const DEFAULT_KSK_LIFETIME: &str = "unlimited";
+const DEFAULT_ZSK_LIFETIME: &str = "unlimited";
+const DEFAULT_NSEC3_SALT_LENGTH: u8 = 16;
+
+/// Generate DNSSEC policy configuration from cluster or instance config
+///
+/// Checks both instance and global configuration for DNSSEC signing settings.
+/// Instance config takes precedence over global config.
+///
+/// # Arguments
+///
+/// * `global_config` - Optional global cluster configuration
+/// * `instance_config` - Optional instance-specific configuration
+///
+/// # Returns
+///
+/// A string containing DNSSEC policy definitions, or empty string if signing is not enabled
+pub(crate) fn generate_dnssec_policies(
+    global_config: Option<&crate::crd::Bind9Config>,
+    instance_config: Option<&crate::crd::Bind9Config>,
+) -> String {
+    // Check instance config first, then fall back to global config
+    let dnssec_config = if let Some(instance) = instance_config {
+        instance.dnssec.as_ref().and_then(|d| d.signing.as_ref())
+    } else {
+        global_config.and_then(|g| g.dnssec.as_ref().and_then(|d| d.signing.as_ref()))
+    };
+
+    // If no DNSSEC signing config or not enabled, return empty string
+    let Some(signing) = dnssec_config else {
+        return String::new();
+    };
+
+    if !signing.enabled {
+        return String::new();
+    }
+
+    // Extract policy parameters with defaults
+    let policy_name = signing
+        .policy
+        .as_deref()
+        .unwrap_or(DEFAULT_DNSSEC_POLICY_NAME);
+    let algorithm = signing
+        .algorithm
+        .as_deref()
+        .unwrap_or(DEFAULT_DNSSEC_ALGORITHM);
+    let ksk_lifetime = signing
+        .ksk_lifetime
+        .as_deref()
+        .unwrap_or(DEFAULT_KSK_LIFETIME);
+    let zsk_lifetime = signing
+        .zsk_lifetime
+        .as_deref()
+        .unwrap_or(DEFAULT_ZSK_LIFETIME);
+
+    // Configure NSEC/NSEC3
+    let nsec_config = if signing.nsec3.unwrap_or(false) {
+        let iterations = signing.nsec3_iterations.unwrap_or(0);
+        let salt_length = DEFAULT_NSEC3_SALT_LENGTH;
+        format!("nsec3param iterations {iterations} optout no salt-length {salt_length}")
+    } else {
+        "nsec".to_string()
+    };
+
+    // Substitute template variables
+    DNSSEC_POLICY_TEMPLATE
+        .replace("{{POLICY_NAME}}", policy_name)
+        .replace("{{ALGORITHM}}", algorithm)
+        .replace("{{KSK_LIFETIME}}", ksk_lifetime)
+        .replace("{{ZSK_LIFETIME}}", zsk_lifetime)
+        .replace("{{NSEC_CONFIG}}", &nsec_config)
+}
 
 /// Builds standardized Kubernetes labels for BIND9 instance resources.
 ///
@@ -544,12 +648,16 @@ fn build_options_conf(
         }
     }
 
+    // Generate DNSSEC policies (instance config overrides global)
+    let dnssec_policies = generate_dnssec_policies(global_config, instance.spec.config.as_ref());
+
     // Perform template substitutions
     NAMED_CONF_OPTIONS_TEMPLATE
         .replace("{{RECURSION}}", &recursion)
         .replace("{{ALLOW_QUERY}}", &allow_query)
         .replace("{{ALLOW_TRANSFER}}", &allow_transfer)
         .replace("{{DNSSEC_VALIDATE}}", &dnssec_validate)
+        .replace("{{DNSSEC_POLICIES}}", &dnssec_policies)
 }
 
 /// Build the main named.conf configuration for a cluster from template
@@ -653,11 +761,15 @@ fn build_cluster_options_conf(cluster: &Bind9Cluster) -> String {
         recursion = "recursion no;".to_string();
     }
 
+    // Generate DNSSEC policies from global config
+    let dnssec_policies = generate_dnssec_policies(cluster.spec.common.global.as_ref(), None);
+
     NAMED_CONF_OPTIONS_TEMPLATE
         .replace("{{RECURSION}}", &recursion)
         .replace("{{ALLOW_QUERY}}", &allow_query)
         .replace("{{ALLOW_TRANSFER}}", &allow_transfer)
         .replace("{{DNSSEC_VALIDATE}}", &dnssec_validate)
+        .replace("{{DNSSEC_POLICIES}}", &dnssec_policies)
 }
 
 /// Builds a Kubernetes Deployment for running BIND9 pods.
