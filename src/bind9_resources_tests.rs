@@ -1355,4 +1355,307 @@ mod tests {
             "RNDC key volume should be read-only for API"
         );
     }
+
+    // DNSSEC Policy Generation Tests
+
+    #[test]
+    fn test_dnssec_policies_disabled() {
+        use crate::bind9_resources::generate_dnssec_policies;
+
+        // No DNSSEC config at all
+        let result = generate_dnssec_policies(None, None);
+        assert_eq!(
+            result, "",
+            "Should return empty string when no DNSSEC config"
+        );
+
+        // DNSSEC config exists but signing is not enabled
+        let config = Bind9Config {
+            recursion: Some(false),
+            allow_query: None,
+            allow_transfer: None,
+            dnssec: Some(DNSSECConfig {
+                validation: Some(true),
+                signing: None,
+            }),
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        };
+        let result = generate_dnssec_policies(Some(&config), None);
+        assert_eq!(
+            result, "",
+            "Should return empty string when signing is not configured"
+        );
+
+        // DNSSEC signing explicitly disabled
+        let config = Bind9Config {
+            recursion: Some(false),
+            allow_query: None,
+            allow_transfer: None,
+            dnssec: Some(DNSSECConfig {
+                validation: Some(true),
+                signing: Some(crate::crd::DNSSECSigningConfig {
+                    enabled: false,
+                    policy: None,
+                    algorithm: None,
+                    ksk_lifetime: None,
+                    zsk_lifetime: None,
+                    nsec3: None,
+                    nsec3_salt: None,
+                    nsec3_iterations: None,
+                    keys_from: None,
+                    auto_generate: None,
+                    export_to_secret: None,
+                }),
+            }),
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        };
+        let result = generate_dnssec_policies(Some(&config), None);
+        assert_eq!(
+            result, "",
+            "Should return empty string when signing is explicitly disabled"
+        );
+    }
+
+    #[test]
+    fn test_dnssec_policies_enabled_with_defaults() {
+        use crate::bind9_resources::generate_dnssec_policies;
+
+        // DNSSEC signing enabled with minimal config (all defaults)
+        let config = Bind9Config {
+            recursion: Some(false),
+            allow_query: None,
+            allow_transfer: None,
+            dnssec: Some(DNSSECConfig {
+                validation: Some(true),
+                signing: Some(crate::crd::DNSSECSigningConfig {
+                    enabled: true,
+                    policy: None,
+                    algorithm: None,
+                    ksk_lifetime: None,
+                    zsk_lifetime: None,
+                    nsec3: None,
+                    nsec3_salt: None,
+                    nsec3_iterations: None,
+                    keys_from: None,
+                    auto_generate: None,
+                    export_to_secret: None,
+                }),
+            }),
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        };
+        let result = generate_dnssec_policies(Some(&config), None);
+
+        // Verify the result contains expected default values
+        assert!(
+            result.contains("dnssec-policy \"default\""),
+            "Should use default policy name"
+        );
+        assert!(
+            result.contains("algorithm ECDSAP256SHA256"),
+            "Should use default algorithm"
+        );
+        assert!(
+            result.contains("lifetime unlimited"),
+            "Should use unlimited lifetime by default"
+        );
+        assert!(result.contains("nsec;"), "Should use NSEC by default");
+    }
+
+    #[test]
+    fn test_dnssec_policies_enabled_with_custom_values() {
+        use crate::bind9_resources::generate_dnssec_policies;
+
+        // DNSSEC signing enabled with custom values
+        let config = Bind9Config {
+            recursion: Some(false),
+            allow_query: None,
+            allow_transfer: None,
+            dnssec: Some(DNSSECConfig {
+                validation: Some(true),
+                signing: Some(crate::crd::DNSSECSigningConfig {
+                    enabled: true,
+                    policy: Some("high-security".to_string()),
+                    algorithm: Some("ECDSAP384SHA384".to_string()),
+                    ksk_lifetime: Some("365d".to_string()),
+                    zsk_lifetime: Some("90d".to_string()),
+                    nsec3: Some(false), // Explicitly use NSEC
+                    nsec3_salt: None,
+                    nsec3_iterations: None,
+                    keys_from: None,
+                    auto_generate: None,
+                    export_to_secret: None,
+                }),
+            }),
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        };
+        let result = generate_dnssec_policies(Some(&config), None);
+
+        // Verify the result contains custom values
+        assert!(
+            result.contains("dnssec-policy \"high-security\""),
+            "Should use custom policy name"
+        );
+        assert!(
+            result.contains("algorithm ECDSAP384SHA384"),
+            "Should use custom algorithm"
+        );
+        assert!(
+            result.contains("ksk lifetime 365d"),
+            "Should use custom KSK lifetime"
+        );
+        assert!(
+            result.contains("zsk lifetime 90d"),
+            "Should use custom ZSK lifetime"
+        );
+        assert!(
+            result.contains("nsec;"),
+            "Should use NSEC when nsec3 is false"
+        );
+    }
+
+    #[test]
+    fn test_dnssec_policies_with_nsec3() {
+        use crate::bind9_resources::generate_dnssec_policies;
+
+        // DNSSEC signing enabled with NSEC3
+        let config = Bind9Config {
+            recursion: Some(false),
+            allow_query: None,
+            allow_transfer: None,
+            dnssec: Some(DNSSECConfig {
+                validation: Some(true),
+                signing: Some(crate::crd::DNSSECSigningConfig {
+                    enabled: true,
+                    policy: None,
+                    algorithm: None,
+                    ksk_lifetime: None,
+                    zsk_lifetime: None,
+                    nsec3: Some(true),
+                    nsec3_salt: None,
+                    nsec3_iterations: Some(5),
+                    keys_from: None,
+                    auto_generate: None,
+                    export_to_secret: None,
+                }),
+            }),
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        };
+        let result = generate_dnssec_policies(Some(&config), None);
+
+        // Verify NSEC3 configuration
+        assert!(
+            result.contains("nsec3param"),
+            "Should use NSEC3 when enabled"
+        );
+        assert!(
+            result.contains("iterations 5"),
+            "Should use custom NSEC3 iterations"
+        );
+        assert!(result.contains("optout no"), "Should have optout disabled");
+        assert!(
+            result.contains("salt-length 16"),
+            "Should use default salt length"
+        );
+    }
+
+    #[test]
+    fn test_dnssec_policies_instance_overrides_global() {
+        use crate::bind9_resources::generate_dnssec_policies;
+
+        // Global config with DNSSEC signing
+        let global_config = Bind9Config {
+            recursion: Some(false),
+            allow_query: None,
+            allow_transfer: None,
+            dnssec: Some(DNSSECConfig {
+                validation: Some(true),
+                signing: Some(crate::crd::DNSSECSigningConfig {
+                    enabled: true,
+                    policy: Some("global-policy".to_string()),
+                    algorithm: Some("ECDSAP256SHA256".to_string()),
+                    ksk_lifetime: None,
+                    zsk_lifetime: None,
+                    nsec3: None,
+                    nsec3_salt: None,
+                    nsec3_iterations: None,
+                    keys_from: None,
+                    auto_generate: None,
+                    export_to_secret: None,
+                }),
+            }),
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        };
+
+        // Instance config overrides with different policy
+        let instance_config = Bind9Config {
+            recursion: Some(false),
+            allow_query: None,
+            allow_transfer: None,
+            dnssec: Some(DNSSECConfig {
+                validation: Some(true),
+                signing: Some(crate::crd::DNSSECSigningConfig {
+                    enabled: true,
+                    policy: Some("instance-policy".to_string()),
+                    algorithm: Some("ECDSAP384SHA384".to_string()),
+                    ksk_lifetime: None,
+                    zsk_lifetime: None,
+                    nsec3: None,
+                    nsec3_salt: None,
+                    nsec3_iterations: None,
+                    keys_from: None,
+                    auto_generate: None,
+                    export_to_secret: None,
+                }),
+            }),
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        };
+
+        let result = generate_dnssec_policies(Some(&global_config), Some(&instance_config));
+
+        // Verify instance config takes precedence
+        assert!(
+            result.contains("dnssec-policy \"instance-policy\""),
+            "Should use instance policy name, not global"
+        );
+        assert!(
+            result.contains("algorithm ECDSAP384SHA384"),
+            "Should use instance algorithm, not global"
+        );
+        assert!(
+            !result.contains("global-policy"),
+            "Should not contain global policy name"
+        );
+        assert!(
+            !result.contains("ECDSAP256SHA256"),
+            "Should not contain global algorithm"
+        );
+    }
 }

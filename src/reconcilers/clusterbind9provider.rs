@@ -684,5 +684,5 @@ pub async fn delete_clusterbind9provider(
     info!("Deleting ClusterBind9Provider: {}", name);
 
     // Deletion is handled via the reconciler through finalizers
-    reconcile_clusterbind9provider(ctx, cluster).await
+    Box::pin(reconcile_clusterbind9provider(ctx, cluster)).await
 }
