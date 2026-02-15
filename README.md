@@ -1,4 +1,4 @@
-# <img src="docs/images/bindy-the-bee.png" alt="Bindy the Bee" width="60" style="vertical-align: middle; margin-right: 5px;"/> Bindy - BIND9 DNS Operator for Kubernetes
+# <img src="docs/src/images/bindy-the-bee.png" alt="Bindy the Bee" width="60" style="vertical-align: middle; margin-right: 5px;"/> Bindy - BIND9 DNS Operator for Kubernetes
 ### *Pronounced: "bined-ee" (like BIND + ee)*
 
 ## Project Status

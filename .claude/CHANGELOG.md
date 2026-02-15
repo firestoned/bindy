@@ -1,3 +1,110 @@
+## [2026-02-15 15:30] - Fix Bindy the Bee Image Path in README
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `README.md`: Fixed bindy-the-bee.png image path from `docs/images/bindy-the-bee.png` to `docs/src/images/bindy-the-bee.png`
+
+### Why
+The image file exists at `docs/src/images/bindy-the-bee.png` but the README was referencing the incorrect path `docs/images/bindy-the-bee.png`, causing the logo to not display.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
+## [2026-02-03 04:15] - Phase 4: DNSSEC Zone Configuration and Signing
+
+**Author:** Erick Bourgeois
+
+### Added
+- `~/dev/bindcar/src/zones.rs`: Added `dnssec_policy: Option<String>` field to `ZoneConfig` struct for DNSSEC policy name (bindcar 0.6.0+)
+- `~/dev/bindcar/src/zones.rs`: Added `inline_signing: Option<bool>` field to `ZoneConfig` struct to enable inline signing (required for DNSSEC with dynamic zones)
+- `~/dev/bindcar/src/zones.rs`: Updated zone creation logic to include `dnssec-policy` and `inline-signing` directives in `rndc addzone` config block
+- `src/bind9/zone_ops.rs`: Added `verify_zone_signed()` function to verify DNSSEC zone signing by querying for DNSKEY records (lines 1143-1231)
+- `src/bind9/zone_ops_tests.rs`: Added 5 comprehensive unit tests for DNSSEC configuration:
+  - `test_zone_config_with_dnssec_policy`: Verifies ZoneConfig with DNSSEC policy and inline signing
+  - `test_zone_config_without_dnssec`: Verifies backward compatibility without DNSSEC
+  - `test_zone_config_dnssec_policy_names`: Tests various DNSSEC policy names (default, custom, high-security, fast-rotation)
+  - `test_zone_config_inline_signing_without_policy`: Tests inline signing without policy (edge case)
+  - `test_zone_config_secondary_no_dnssec`: Verifies secondary zones don't get DNSSEC policy
+
+### Changed
+- `Cargo.toml`: Updated bindcar dependency from version `0.5.1` to local path `{ path = "../bindcar" }` for DNSSEC support
+- `src/bind9/zone_ops.rs`: Updated `add_primary_zone()` function signature to accept `dnssec_policy: Option<&str>` parameter
+- `src/bind9/zone_ops.rs`: Updated `add_zones()` function signature to accept `dnssec_policy: Option<&str>` parameter
+- `src/bind9/zone_ops.rs`: Modified `ZoneConfig` initialization to include `dnssec_policy` and `inline_signing` fields (lines 574-575)
+- `src/bind9/zone_ops.rs`: Added DNSSEC configuration logging when policy is provided (line 547-549)
+- `src/bind9/zone_ops.rs`: Updated secondary zone `ZoneConfig` to include `dnssec_policy: None` and `inline_signing: None` (lines 779-780)
+- `src/bind9/mod.rs`: Updated `Bind9Manager::add_zones()` wrapper method signature to accept `dnssec_policy: Option<&str>` parameter
+- `src/bind9/mod.rs`: Updated `Bind9Manager::add_primary_zone()` wrapper method signature to accept `dnssec_policy: Option<&str>` parameter
+- `src/reconcilers/dnszone.rs`: Added DNSSEC policy extraction from `spec.dnssec_policy` (line 924-930)
+- `src/reconcilers/dnszone.rs`: Updated `add_zones()` call for primary zones to pass `dnssec_policy` parameter (line 1060)
+- `src/reconcilers/dnszone.rs`: Updated `add_zones()` call for secondary zones to pass `None` for DNSSEC policy (line 1399)
+- `src/bind9/zone_ops_tests.rs`: Updated all `add_zones()` test calls to include `dnssec_policy: None` parameter
+- `src/bind9/zone_ops_tests.rs`: Updated all `ZoneConfig` test initializations to include `dnssec_policy: None` and `inline_signing: None` fields
+
+### Why
+Phase 4 of the DNSSEC Zone Signing Implementation Roadmap applies DNSSEC policy to zones via the bindcar API. This completes the integration between the CRD DNSSEC configuration (Phases 1-3) and the actual zone signing in BIND9.
+
+**Implementation Flow:**
+1. DNSZone reconciler extracts `dnssec_policy` from `spec.dnssec_policy` (zone-level configuration)
+2. Policy passed through reconciler → zone manager → zone_ops → bindcar API
+3. Bindcar generates `rndc addzone` command with DNSSEC directives:
+   ```bind
+   zone "example.com" {
+       type primary;
+       file "/var/cache/bind/db.example.com";
+       dnssec-policy "default";
+       inline-signing yes;
+   };
+   ```
+4. BIND9 automatically signs the zone using the configured policy
+
+**Key Changes:**
+- **bindcar Enhancement**: Added DNSSEC fields to `ZoneConfig` struct (version 0.6.0)
+- **Zone-Level Control**: Each DNSZone can specify its own DNSSEC policy via `spec.dnssec_policy`
+- **Inline Signing**: Automatically enabled when DNSSEC policy is present (required for dynamic zones)
+- **Secondary Zones**: DNSSEC policy is NOT applied to secondary zones (they receive signed zones via transfer)
+
+**Example DNSZone with DNSSEC:**
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: signed-zone
+spec:
+  zoneName: example.com
+  dnssecPolicy: "default"  # Applies the "default" DNSSEC policy configured in Phase 2
+  soaRecord:
+    primaryNs: ns1.example.com.
+    adminEmail: admin@example.com
+```
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (new zones created with DNSSEC policy will be signed)
+- [x] Config change (DNSZone CRD now supports `dnssecPolicy` field)
+- [ ] Documentation only
+
+**Testing:**
+- All 796 unit tests pass (10 tests added: 7 updated for DNSSEC parameters + 5 new DNSSEC-specific tests)
+- Updated 7 existing test cases in `zone_ops_tests.rs` to include new DNSSEC parameters
+- Added 5 new comprehensive DNSSEC unit tests for ZoneConfig validation
+- Added `verify_zone_signed()` function with documentation and examples
+- `cargo fmt`, `cargo clippy` (strict mode), and `cargo test` pass successfully
+
+**Dependencies:**
+- bindcar 0.6.0+ (updated to local path dependency for development)
+- BIND9 9.16+ (for `dnssec-policy` support)
+
+**Next Phase:** Phase 5 will implement DS record extraction and status reporting, enabling parent zone delegation.
+
+---
+
 ## [2026-02-03 02:30] - Phase 3: DNSSEC Key Source Configuration
 
 **Author:** Erick Bourgeois
