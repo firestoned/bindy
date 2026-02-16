@@ -31,7 +31,8 @@ metadata:
 spec:
   zoneRef: example-com  # ❌ This field no longer exists!
   name: www
-  ipv4Address: "192.0.2.1"
+  ipv4Addresses:
+    - "192.0.2.1"
 ```
 
 #### After (v0.3.0+): Label-Based Selection
@@ -63,7 +64,8 @@ metadata:
 spec:
   # NO zoneRef field - selection is via labels
   name: www
-  ipv4Address: "192.0.2.1"
+  ipv4Addresses:
+    - "192.0.2.1"
 ```
 
 ### Why This Change?
@@ -260,7 +262,8 @@ metadata:
     environment: dev
 spec:
   name: api
-  ipv4Address: "192.0.2.10"
+  ipv4Addresses:
+    - "192.0.2.10"
 ```
 
 ### Team-Based Isolation

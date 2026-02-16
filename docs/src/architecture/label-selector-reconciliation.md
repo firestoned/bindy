@@ -416,7 +416,8 @@ metadata:
     environment: production    # Matches matchExpressions
 spec:
   name: www
-  ipv4Address: 192.0.2.1
+  ipv4Addresses:
+    - "192.0.2.1"
 ```
 
 When the DNSZone operator watches this ARecord change, it:
