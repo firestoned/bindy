@@ -1,3 +1,99 @@
+## [2026-02-16 17:00] - Round-Robin DNS Support (BREAKING CHANGE)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **BREAKING**: `src/crd.rs` (lines 1230-1298): Changed `ARecordSpec.ipv4_address: String` → `ipv4_addresses: Vec<String>`
+- **BREAKING**: `src/crd.rs` (lines 1285-1298): Changed `AAAARecordSpec.ipv6_address: String` → `ipv6_addresses: Vec<String>`
+- `src/crd.rs`: Updated CRD print columns to display "Addresses" (plural) for both A and AAAA records
+- `deploy/crds/arecords.crd.yaml`: Regenerated with array schema validation (`minItems: 1`)
+- `deploy/crds/aaaarecords.crd.yaml`: Regenerated with array schema validation (`minItems: 1`)
+
+### Added
+- `src/bind9/records/a.rs`: Added `compare_ip_rrset()` function for order-independent A record comparison using HashSet
+- `src/bind9/records/a.rs`: Added `compare_ipv6_rrset()` function for order-independent AAAA record comparison
+- `src/bind9/records/a.rs`: Implemented RRset synchronization with delete + recreate pattern for declarative DNS management
+- Round-robin DNS support: Single ARecord/AAAARecord resource can now manage multiple IP addresses
+
+### Modified
+- `src/bind9/records/a.rs`: Updated `add_a_record()` signature to accept `&[String]` instead of `&str`
+- `src/bind9/records/a.rs`: Updated `add_aaaa_record()` signature to accept `&[String]` instead of `&str`
+- `src/bind9/mod.rs`: Updated wrapper functions to match new signatures
+- `src/reconcilers/records/mod.rs`: Updated `ARecordOp` and `AAAARecordOp` to use `Vec<String>`
+- `src/reconcilers/dnszone.rs`: Updated glue record additions to wrap single IPs in arrays
+- All test files: Updated to use array syntax `vec!["192.0.2.1".to_string()]`
+
+### Why
+**Problem**: The previous implementation only supported one IP address per ARecord/AAAARecord resource. Users wanting round-robin DNS had to create multiple resources with the same DNS name, which was cumbersome and non-intuitive.
+
+**Solution**: Changed the CRD schema to support arrays of IP addresses, allowing a single Kubernetes resource to manage all IPs for a DNS name. This provides:
+- Native round-robin DNS support
+- Better alignment with DNS RRset semantics
+- Simpler API (one resource = one DNS name with N IPs)
+- Order-independent comparison (HashSet-based) prevents unnecessary DNS updates
+
+**Technical Implementation**:
+- Delete + recreate pattern ensures atomic RRset updates
+- Declarative reconciliation compares existing DNS state with desired state
+- Only updates DNS when RRsets differ (idempotent)
+- HashSet comparison handles duplicate IPs and order independence automatically
+
+### Impact
+- [x] **BREAKING CHANGE** - Requires CRD schema update and resource migration
+- [x] Requires cluster rollout (CRDs must be updated before operator deployment)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Migration Required
+Users must update existing ARecord and AAAARecord resources:
+
+**Before (v1beta1)**:
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: ARecord
+spec:
+  name: www
+  ipv4_address: "192.0.2.1"  # Old: single IP string
+  ttl: 300
+```
+
+**After (v1beta2 - current)**:
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: ARecord
+spec:
+  name: www
+  ipv4_addresses:              # New: array of IPs
+    - "192.0.2.1"
+  ttl: 300
+```
+
+**For round-robin DNS** (new capability):
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: ARecord
+spec:
+  name: www
+  ipv4_addresses:
+    - "192.0.2.1"
+    - "192.0.2.2"
+    - "192.0.2.3"
+  ttl: 300
+```
+
+### Testing
+- All 733 unit tests pass
+- cargo fmt: clean
+- cargo clippy: no warnings
+- Validated: CRD schema generation, RRset synchronization, test coverage
+
+### Next Steps
+- Phase 5: Implement conversion webhook for v1beta1 → v1beta2 migration
+- Phase 6: Update user documentation and examples
+- Provide migration script for automated resource updates
+
+---
+
 ## [2026-02-16 HH:MM] - Fix ARecordSpec Documentation Examples
 
 **Author:** Erick Bourgeois

@@ -1,5 +1,6 @@
+   Compiling bindcar v0.5.4
    Compiling bindy v0.3.4 (/Users/erick/dev/bindy)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.89s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 18.99s
      Running `target/debug/crddoc`
 # API Reference
 
@@ -73,7 +74,7 @@ ARecord maps a DNS hostname to an IPv4 address. Multiple A records for the same 
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
-| `ipv4Address` | string | Yes | IPv4 address in dotted-decimal notation.  Must be a valid IPv4 address (e.g., "192.0.2.1"). |
+| `ipv4Addresses` | array | Yes | List of IPv4 addresses for this DNS record.  Multiple addresses create round-robin DNS (load balancing). All addresses in the list belong to the same DNS name.  Must contain at least one valid IPv4 address in dotted-decimal notation.  Examples: \`["192.0.2.1"]\`, \`["192.0.2.1", "192.0.2.2", "192.0.2.3"]\` |
 | `name` | string | Yes | Record name within the zone. Use "@" for the zone apex.  Examples: "www", "mail", "ftp", "@" The full DNS name will be: {name}.{zone} |
 | `ttl` | integer | No | Time To Live in seconds. Overrides zone default TTL if specified.  Typical values: 60-86400 (1 minute to 1 day). |
 
@@ -100,7 +101,7 @@ AAAARecord maps a DNS hostname to an IPv6 address. This is the IPv6 equivalent o
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
-| `ipv6Address` | string | Yes | IPv6 address in standard notation.  Examples: \`2001:db8::1\`, \`fe80::1\`, \`::1\` |
+| `ipv6Addresses` | array | Yes | List of IPv6 addresses for this DNS record.  Multiple addresses create round-robin DNS (load balancing). All addresses in the list belong to the same DNS name.  Must contain at least one valid IPv6 address in standard notation.  Examples: \`["2001:db8::1"]\`, \`["2001:db8::1", "2001:db8::2"]\` |
 | `name` | string | Yes | Record name within the zone. |
 | `ttl` | integer | No | Time To Live in seconds. |
 

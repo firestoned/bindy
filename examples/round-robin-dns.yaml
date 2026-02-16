@@ -1,0 +1,69 @@
+---
+# Round-Robin DNS Example
+# Demonstrates using multiple IP addresses for load balancing
+# DNS queries will return all IPs, and clients will typically rotate between them
+
+apiVersion: bindy.firestoned.io/v1beta1
+kind: ARecord
+metadata:
+  name: www-load-balanced
+  namespace: dns-system
+  labels:
+    bindy.firestoned.io/zone: example.com
+spec:
+  name: www
+  # Multiple IPs for round-robin DNS load balancing
+  ipv4Addresses:
+    - "192.0.2.1"
+    - "192.0.2.2"
+    - "192.0.2.3"
+  ttl: 60  # Lower TTL for faster failover
+
+---
+apiVersion: bindy.firestoned.io/v1beta1
+kind: AAAARecord
+metadata:
+  name: www-ipv6-load-balanced
+  namespace: dns-system
+  labels:
+    bindy.firestoned.io/zone: example.com
+spec:
+  name: www
+  # Multiple IPv6 addresses for round-robin DNS
+  ipv6Addresses:
+    - "2001:db8::1"
+    - "2001:db8::2"
+    - "2001:db8::3"
+  ttl: 60
+
+---
+# Mixed IPv4 and IPv6 round-robin
+# Separate A and AAAA records with same name
+apiVersion: bindy.firestoned.io/v1beta1
+kind: ARecord
+metadata:
+  name: api-dual-stack-ipv4
+  namespace: dns-system
+  labels:
+    bindy.firestoned.io/zone: example.com
+spec:
+  name: api
+  ipv4Addresses:
+    - "192.0.2.10"
+    - "192.0.2.11"
+  ttl: 300
+
+---
+apiVersion: bindy.firestoned.io/v1beta1
+kind: AAAARecord
+metadata:
+  name: api-dual-stack-ipv6
+  namespace: dns-system
+  labels:
+    bindy.firestoned.io/zone: example.com
+spec:
+  name: api
+  ipv6Addresses:
+    - "2001:db8::10"
+    - "2001:db8::11"
+  ttl: 300
