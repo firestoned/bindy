@@ -524,6 +524,7 @@ pub async fn add_primary_zone(
     name_servers: Option<&[String]>,
     name_server_ips: Option<&HashMap<String, String>>,
     secondary_ips: Option<&[String]>,
+    dnssec_policy: Option<&str>,
 ) -> Result<bool> {
     use bindcar::ZONE_TYPE_PRIMARY;
 
@@ -541,6 +542,11 @@ pub async fn add_primary_zone(
         // Fallback: only primary NS from SOA
         vec![soa_record.primary_ns.clone()]
     };
+
+    // Log DNSSEC configuration if provided
+    if let Some(policy) = dnssec_policy {
+        info!("DNSSEC policy '{policy}' will be applied to zone {zone_name} on {server}");
+    }
 
     // Create zone configuration using SOA record from DNSZone spec
     let zone_config = ZoneConfig {
@@ -562,6 +568,9 @@ pub async fn add_primary_zone(
         allow_transfer: secondary_ips.map(<[String]>::to_vec),
         // Primary zones don't have primaries field (only secondary zones do)
         primaries: None,
+        // DNSSEC configuration (bindcar 0.6.0+)
+        dnssec_policy: dnssec_policy.map(String::from),
+        inline_signing: dnssec_policy.map(|_| true),
     };
 
     let request = CreateZoneRequest {
@@ -768,6 +777,9 @@ pub async fn add_secondary_zone(
         also_notify: None,
         allow_transfer: None,
         primaries: Some(primaries_with_port),
+        // Secondary zones don't need DNSSEC policy (they receive signed zones via transfer)
+        dnssec_policy: None,
+        inline_signing: None,
     };
 
     let request = CreateZoneRequest {
@@ -859,6 +871,7 @@ pub async fn add_zones(
     name_server_ips: Option<&HashMap<String, String>>,
     secondary_ips: Option<&[String]>,
     primary_ips: Option<&[String]>,
+    dnssec_policy: Option<&str>,
 ) -> Result<bool> {
     use bindcar::{ZONE_TYPE_PRIMARY, ZONE_TYPE_SECONDARY};
 
@@ -877,6 +890,7 @@ pub async fn add_zones(
                 name_servers,
                 name_server_ips,
                 secondary_ips,
+                dnssec_policy,
             )
             .await
         }
@@ -1122,6 +1136,103 @@ pub async fn notify_zone(
 
     info!("Notified secondaries for zone {zone_name} from {server}");
     Ok(())
+}
+
+/// Verify that a zone is signed with DNSSEC by querying for DNSKEY records.
+///
+/// This function performs a DNS query to check if the zone has been signed
+/// with DNSSEC. It queries for DNSKEY records, which are present in signed zones.
+///
+/// # Arguments
+///
+/// * `zone_name` - The DNS zone name to verify (e.g., "example.com")
+/// * `server` - The DNS server address (e.g., "bind9-primary.dns-system.svc.cluster.local:5353")
+///
+/// # Returns
+///
+/// * `Ok(true)` - Zone is signed (DNSKEY records found)
+/// * `Ok(false)` - Zone is not signed (no DNSKEY records)
+/// * `Err(_)` - Query failed (network error, invalid zone name, etc.)
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The DNS server address cannot be parsed
+/// - The zone name is invalid
+/// - The DNS query fails (network error, timeout, etc.)
+///
+/// # Example
+///
+/// ```no_run
+/// use bindy::bind9::zone_ops::verify_zone_signed;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let signed = verify_zone_signed(
+///     "example.com",
+///     "10.0.0.1:5353"
+/// ).await?;
+///
+/// if signed {
+///     println!("Zone is signed with DNSSEC");
+/// } else {
+///     println!("Zone is not signed");
+/// }
+/// # Ok(())
+/// # }
+/// ```
+pub async fn verify_zone_signed(zone_name: &str, server: &str) -> Result<bool> {
+    use hickory_client::client::{AsyncClient, ClientHandle};
+    use hickory_client::rr::{DNSClass, Name, RecordType};
+    use hickory_client::udp::UdpClientStream;
+    use std::net::SocketAddr;
+    use std::str::FromStr;
+
+    // Parse server address
+    let server_addr: SocketAddr = server
+        .parse()
+        .with_context(|| format!("Invalid DNS server address: {server}"))?;
+
+    debug!(
+        "Verifying DNSSEC signing for zone {} on {}",
+        zone_name, server_addr
+    );
+
+    // Create UDP client connection
+    let stream = UdpClientStream::<tokio::net::UdpSocket>::new(server_addr);
+    let (mut client, bg) = AsyncClient::connect(stream).await?;
+
+    // Spawn the background task
+    tokio::spawn(bg);
+
+    // Parse zone name
+    let name =
+        Name::from_str(zone_name).with_context(|| format!("Invalid zone name: {zone_name}"))?;
+
+    // Query for DNSKEY records
+    let response = client
+        .query(name.clone(), DNSClass::IN, RecordType::DNSKEY)
+        .await
+        .with_context(|| {
+            format!("Failed to query DNSKEY records for zone {zone_name} on {server_addr}")
+        })?;
+
+    // If we got DNSKEY records, the zone is signed
+    let is_signed = !response.answers().is_empty();
+
+    if is_signed {
+        debug!(
+            "Zone {} is signed with DNSSEC (found {} DNSKEY record(s))",
+            zone_name,
+            response.answers().len()
+        );
+    } else {
+        debug!(
+            "Zone {} is not signed with DNSSEC (no DNSKEY records found)",
+            zone_name
+        );
+    }
+
+    Ok(is_signed)
 }
 
 #[cfg(test)]

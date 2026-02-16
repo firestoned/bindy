@@ -920,6 +920,15 @@ pub async fn add_dnszone(
         all_nameserver_hostnames
     );
 
+    // Extract DNSSEC policy if configured
+    let dnssec_policy = spec.dnssec_policy.as_deref();
+    if let Some(policy) = dnssec_policy {
+        info!(
+            "DNSSEC policy '{}' will be applied to zone {}/{}",
+            policy, namespace, name
+        );
+    }
+
     // Process all primary instances concurrently using async streams
     // Mark each instance as reconciled immediately after first successful endpoint configuration
     let first_endpoint = Arc::new(Mutex::new(None::<String>));
@@ -1046,6 +1055,7 @@ pub async fn add_dnszone(
                                     name_server_ips.as_ref(),
                                     secondary_ips_ref,
                                     None, // primary_ips only for secondary zones
+                                    dnssec_policy,
                                 )
                                 .await
                             {
@@ -1383,6 +1393,7 @@ pub async fn add_dnszone_to_secondaries(
                                         None, // No name_server_ips for secondary zones
                                         None, // No secondary_ips for secondary zones
                                         Some(&primary_ips),
+                                        None, // No DNSSEC policy for secondary zones
                                     )
                                     .await
                                 {
