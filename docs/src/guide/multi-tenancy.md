@@ -401,7 +401,8 @@ metadata:
     zone: dev.local  # Matches DNSZone selector
 spec:
   name: test-server
-  ipv4Address: "10.244.1.100"
+  ipv4Addresses:
+    - "10.244.1.100"
   ttl: 60
 ```
 
@@ -497,7 +498,8 @@ metadata:
     zone: team-a.example.com  # ✅ Matches DNSZone in same namespace
 spec:
   name: www
-  ipv4Address: "192.0.2.1"
+  ipv4Addresses:
+    - "192.0.2.1"
 ---
 # This FAILS - cross-namespace reference blocked
 # Even if labels match, DNSZone must be in same namespace
@@ -510,7 +512,8 @@ metadata:
     zone: team-b.example.com  # ❌ No DNSZone in team-a with matching selector
 spec:
   name: www
-  ipv4Address: "192.0.2.1"
+  ipv4Addresses:
+    - "192.0.2.1"
 ```
 
 ### 2. Least Privilege RBAC

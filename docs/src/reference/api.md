@@ -1,9 +1,3 @@
-   Compiling bindcar v0.5.4
-   Compiling bindy v0.3.4 (/Users/erick/dev/bindy)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 18.99s
-     Running `target/debug/crddoc`
-# API Reference
-
 This document describes the Custom Resource Definitions (CRDs) provided by Bindy.
 
 > **Note**: This file is AUTO-GENERATED from `src/crd.rs`
@@ -359,4 +353,3 @@ Bind9Instance represents a BIND9 DNS server deployment in Kubernetes. Each insta
 | `zonesCount` | integer | No | Number of zones in the \`zones\` list.  This field is automatically updated whenever the \`zones\` list changes. It provides a quick way to see how many zones are selecting this instance without having to count the array elements. |
 
 ---
-

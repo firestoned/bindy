@@ -164,7 +164,8 @@ metadata:
 spec:
   zone: example.com  # No DNSZone with zoneName: example.com exists
   name: www
-  ipv4Address: 192.0.2.1
+  ipv4Addresses:
+    - "192.0.2.1"
 ```
 
 **Status:**
@@ -419,7 +420,8 @@ metadata:
 spec:
   zone: example.com
   name: www
-  ipv4Address: 192.0.2.1
+  ipv4Addresses:
+    - "192.0.2.1"
 ```
 
 Then filter:
