@@ -389,6 +389,7 @@ impl Bind9Manager {
         name_server_ips: Option<&HashMap<String, String>>,
         secondary_ips: Option<&[String]>,
         primary_ips: Option<&[String]>,
+        dnssec_policy: Option<&str>,
     ) -> Result<bool> {
         let token = self.get_token();
         zone_ops::add_zones(
@@ -403,6 +404,7 @@ impl Bind9Manager {
             name_server_ips,
             secondary_ips,
             primary_ips,
+            dnssec_policy,
         )
         .await
     }
@@ -448,6 +450,7 @@ impl Bind9Manager {
         name_servers: Option<&[String]>,
         name_server_ips: Option<&HashMap<String, String>>,
         secondary_ips: Option<&[String]>,
+        dnssec_policy: Option<&str>,
     ) -> Result<bool> {
         zone_ops::add_primary_zone(
             &self.client,
@@ -459,6 +462,7 @@ impl Bind9Manager {
             name_servers,
             name_server_ips,
             secondary_ips,
+            dnssec_policy,
         )
         .await
     }

@@ -167,6 +167,7 @@ mod tests {
                 None, // no name_server_ips
                 None, // no secondary IPs
                 None, // no primary IPs for primary zones
+                None, // no DNSSEC policy for this test
             )
             .await;
         assert!(result1.is_ok());
@@ -187,6 +188,7 @@ mod tests {
                 None, // no name_server_ips
                 None, // no secondary IPs
                 None, // no primary IPs for primary zones
+                None, // no DNSSEC policy for this test
             )
             .await;
         assert!(result2.is_ok());
@@ -266,6 +268,8 @@ mod tests {
             also_notify: None,
             allow_transfer: None,
             primaries: None,
+            dnssec_policy: None,
+            inline_signing: None,
         };
 
         let zone_file = zone_config.to_zone_file();
@@ -316,6 +320,8 @@ mod tests {
             also_notify: None,
             allow_transfer: None,
             primaries: None,
+            dnssec_policy: None,
+            inline_signing: None,
         };
 
         let zone_file = zone_config.to_zone_file();
@@ -346,6 +352,8 @@ mod tests {
             also_notify: None,
             allow_transfer: None,
             primaries: None,
+            dnssec_policy: None,
+            inline_signing: None,
         };
 
         let zone_file = zone_config.to_zone_file();
@@ -376,6 +384,8 @@ mod tests {
             also_notify: None,
             allow_transfer: None,
             primaries: None,
+            dnssec_policy: None,
+            inline_signing: None,
         };
 
         let request = CreateZoneRequest {
@@ -482,5 +492,182 @@ mod tests {
         };
 
         assert_eq!(record.priority, None);
+    }
+
+    // =====================================================
+    // DNSSEC Zone Configuration Tests (Phase 4)
+    // =====================================================
+
+    #[test]
+    fn test_zone_config_with_dnssec_policy() {
+        use bindcar::{SoaRecord, ZoneConfig};
+        use std::collections::HashMap;
+
+        // Test that ZoneConfig correctly includes DNSSEC policy and inline signing
+        let zone_config = ZoneConfig {
+            ttl: 3600,
+            soa: SoaRecord {
+                primary_ns: "ns1.example.com.".to_string(),
+                admin_email: "admin.example.com.".to_string(),
+                serial: 1,
+                refresh: 3600,
+                retry: 600,
+                expire: 604_800,
+                negative_ttl: 86400,
+            },
+            name_servers: vec!["ns1.example.com.".to_string()],
+            name_server_ips: HashMap::new(),
+            records: vec![],
+            also_notify: None,
+            allow_transfer: None,
+            primaries: None,
+            dnssec_policy: Some("default".to_string()),
+            inline_signing: Some(true),
+        };
+
+        // Verify DNSSEC fields are set correctly
+        assert_eq!(zone_config.dnssec_policy, Some("default".to_string()));
+        assert_eq!(zone_config.inline_signing, Some(true));
+    }
+
+    #[test]
+    fn test_zone_config_without_dnssec() {
+        use bindcar::{SoaRecord, ZoneConfig};
+        use std::collections::HashMap;
+
+        // Test that ZoneConfig works without DNSSEC (backward compatibility)
+        let zone_config = ZoneConfig {
+            ttl: 3600,
+            soa: SoaRecord {
+                primary_ns: "ns1.example.com.".to_string(),
+                admin_email: "admin.example.com.".to_string(),
+                serial: 1,
+                refresh: 3600,
+                retry: 600,
+                expire: 604_800,
+                negative_ttl: 86400,
+            },
+            name_servers: vec!["ns1.example.com.".to_string()],
+            name_server_ips: HashMap::new(),
+            records: vec![],
+            also_notify: None,
+            allow_transfer: None,
+            primaries: None,
+            dnssec_policy: None,
+            inline_signing: None,
+        };
+
+        // Verify DNSSEC fields are None
+        assert_eq!(zone_config.dnssec_policy, None);
+        assert_eq!(zone_config.inline_signing, None);
+    }
+
+    #[test]
+    fn test_zone_config_dnssec_policy_names() {
+        use bindcar::{SoaRecord, ZoneConfig};
+        use std::collections::HashMap;
+
+        // Test various DNSSEC policy names
+        let test_policies = vec!["default", "custom", "high-security", "fast-rotation"];
+
+        for policy_name in test_policies {
+            let zone_config = ZoneConfig {
+                ttl: 3600,
+                soa: SoaRecord {
+                    primary_ns: "ns1.example.com.".to_string(),
+                    admin_email: "admin.example.com.".to_string(),
+                    serial: 1,
+                    refresh: 3600,
+                    retry: 600,
+                    expire: 604_800,
+                    negative_ttl: 86400,
+                },
+                name_servers: vec!["ns1.example.com.".to_string()],
+                name_server_ips: HashMap::new(),
+                records: vec![],
+                also_notify: None,
+                allow_transfer: None,
+                primaries: None,
+                dnssec_policy: Some(policy_name.to_string()),
+                inline_signing: Some(true),
+            };
+
+            assert_eq!(
+                zone_config.dnssec_policy,
+                Some(policy_name.to_string()),
+                "Policy name {policy_name} should be preserved"
+            );
+            assert_eq!(
+                zone_config.inline_signing,
+                Some(true),
+                "Inline signing should be enabled for DNSSEC policy {policy_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_zone_config_inline_signing_without_policy() {
+        use bindcar::{SoaRecord, ZoneConfig};
+        use std::collections::HashMap;
+
+        // Test that inline signing can be set independently (edge case)
+        let zone_config = ZoneConfig {
+            ttl: 3600,
+            soa: SoaRecord {
+                primary_ns: "ns1.example.com.".to_string(),
+                admin_email: "admin.example.com.".to_string(),
+                serial: 1,
+                refresh: 3600,
+                retry: 600,
+                expire: 604_800,
+                negative_ttl: 86400,
+            },
+            name_servers: vec!["ns1.example.com.".to_string()],
+            name_server_ips: HashMap::new(),
+            records: vec![],
+            also_notify: None,
+            allow_transfer: None,
+            primaries: None,
+            dnssec_policy: None,
+            inline_signing: Some(true),
+        };
+
+        // Verify fields
+        assert_eq!(zone_config.dnssec_policy, None);
+        assert_eq!(zone_config.inline_signing, Some(true));
+    }
+
+    #[test]
+    fn test_zone_config_secondary_no_dnssec() {
+        use bindcar::{SoaRecord, ZoneConfig};
+        use std::collections::HashMap;
+
+        // Test that secondary zones should NOT have DNSSEC policy
+        // (they receive signed zones via zone transfer)
+        let zone_config = ZoneConfig {
+            ttl: 3600,
+            soa: SoaRecord {
+                primary_ns: "ns1.example.com.".to_string(),
+                admin_email: "admin.example.com.".to_string(),
+                serial: 1,
+                refresh: 3600,
+                retry: 600,
+                expire: 604_800,
+                negative_ttl: 86400,
+            },
+            name_servers: vec![],
+            name_server_ips: HashMap::new(),
+            records: vec![],
+            also_notify: None,
+            allow_transfer: None,
+            primaries: Some(vec!["10.0.0.1 port 5353".to_string()]),
+            dnssec_policy: None, // Secondary zones should not have DNSSEC policy
+            inline_signing: None,
+        };
+
+        // Verify secondary zone has primaries but no DNSSEC
+        assert!(zone_config.primaries.is_some());
+        assert_eq!(zone_config.dnssec_policy, None);
+        assert_eq!(zone_config.inline_signing, None);
     }
 }
