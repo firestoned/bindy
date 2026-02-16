@@ -32,7 +32,7 @@
 //! # fn main() {
 //! let spec = ARecordSpec {
 //!     name: "www".to_string(),
-//!     ipv4_address: "192.0.2.1".to_string(),
+//!     ipv4_addresses: vec!["192.0.2.1".to_string()],
 //!     ttl: Some(300),
 //! };
 //!
@@ -72,7 +72,7 @@ use sha2::{Digest, Sha256};
 ///     metadata: ObjectMeta::default(),
 ///     spec: ARecordSpec {
 ///         name: "www".to_string(),
-///         ipv4_address: "192.0.2.1".to_string(),
+///         ipv4_addresses: vec!["192.0.2.1".to_string()],
 ///         ttl: Some(300),
 ///     },
 ///     status: None,
@@ -113,7 +113,7 @@ pub fn calculate_record_hash<T: Serialize>(data: &T) -> String {
 ///     metadata: ObjectMeta::default(),
 ///     spec: ARecordSpec {
 ///         name: "www".to_string(),
-///         ipv4_address: "192.0.2.1".to_string(),
+///         ipv4_addresses: vec!["192.0.2.1".to_string()],
 ///         ttl: Some(300),
 #[cfg(test)]
 #[path = "ddns_tests.rs"]

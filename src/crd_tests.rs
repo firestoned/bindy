@@ -190,12 +190,12 @@ mod tests {
     fn test_arecord_spec() {
         let spec = ARecordSpec {
             name: "www".into(),
-            ipv4_address: "192.0.2.1".into(),
+            ipv4_addresses: vec!["192.0.2.1".into()],
             ttl: Some(300),
         };
 
         assert_eq!(spec.name, "www");
-        assert_eq!(spec.ipv4_address, "192.0.2.1");
+        assert_eq!(spec.ipv4_addresses[0], "192.0.2.1");
         assert_eq!(spec.ttl.unwrap(), 300);
     }
 
@@ -203,11 +203,11 @@ mod tests {
     fn test_aaaarecord_spec() {
         let spec = AAAARecordSpec {
             name: "www".into(),
-            ipv6_address: "2001:db8::1".into(),
+            ipv6_addresses: vec!["2001:db8::1".into()],
             ttl: Some(300),
         };
 
-        assert_eq!(spec.ipv6_address, "2001:db8::1");
+        assert_eq!(spec.ipv6_addresses[0], "2001:db8::1");
     }
 
     #[test]

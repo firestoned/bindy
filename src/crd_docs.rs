@@ -44,7 +44,7 @@
 /// // A Record
 /// let a_record = ARecordSpec {
 ///     name: "www".to_string(),
-///     ipv4_address: "192.0.2.1".to_string(),
+///     ipv4_addresses: vec!["192.0.2.1".to_string()],
 ///     ttl: Some(300),
 /// };
 ///

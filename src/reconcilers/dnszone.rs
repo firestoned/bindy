@@ -1918,7 +1918,7 @@ async fn add_glue_record(
                     crate::bind9::records::a::add_a_record(
                         zone_name,
                         name,
-                        ip_address,
+                        &[ip_address.to_string()],
                         ttl,
                         &pod_endpoint,
                         &key_data,
@@ -1929,7 +1929,7 @@ async fn add_glue_record(
                     crate::bind9::records::a::add_aaaa_record(
                         zone_name,
                         name,
-                        ip_address,
+                        &[ip_address.to_string()],
                         ttl,
                         &pod_endpoint,
                         &key_data,

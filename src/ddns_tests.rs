@@ -11,12 +11,12 @@ fn test_calculate_record_hash_consistency() {
     // Same data should produce same hash
     let spec1 = ARecordSpec {
         name: "www".to_string(),
-        ipv4_address: "192.0.2.1".to_string(),
+        ipv4_addresses: vec!["192.0.2.1".to_string()],
         ttl: Some(300),
     };
     let spec2 = ARecordSpec {
         name: "www".to_string(),
-        ipv4_address: "192.0.2.1".to_string(),
+        ipv4_addresses: vec!["192.0.2.1".to_string()],
         ttl: Some(300),
     };
 
@@ -32,12 +32,12 @@ fn test_calculate_record_hash_changes() {
     // Different data should produce different hashes
     let spec1 = ARecordSpec {
         name: "www".to_string(),
-        ipv4_address: "192.0.2.1".to_string(),
+        ipv4_addresses: vec!["192.0.2.1".to_string()],
         ttl: Some(300),
     };
     let spec2 = ARecordSpec {
         name: "www".to_string(),
-        ipv4_address: "192.0.2.2".to_string(), // Different IP
+        ipv4_addresses: vec!["192.0.2.2".to_string()], // Different IP
         ttl: Some(300),
     };
 
