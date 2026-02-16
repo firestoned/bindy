@@ -22,7 +22,7 @@ mod tests {
             .add_a_record(
                 "example.com",
                 "www",
-                "192.0.2.1",
+                &["192.0.2.1".to_string()],
                 Some(300),
                 "127.0.0.1:53",
                 &key_data,
@@ -47,7 +47,7 @@ mod tests {
             .add_aaaa_record(
                 "example.com",
                 "www",
-                "2001:db8::1",
+                &["2001:db8::1".to_string()],
                 Some(300),
                 "localhost:9530",
                 &key_data,

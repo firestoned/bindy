@@ -615,7 +615,7 @@ async fn test_arecord_create_read_delete() {
         },
         spec: ARecordSpec {
             name: "www".to_string(),
-            ipv4_address: "192.0.2.1".to_string(),
+            ipv4_addresses: vec!["192.0.2.1".to_string()],
             ttl: Some(3600),
         },
         status: None,
@@ -624,7 +624,7 @@ async fn test_arecord_create_read_delete() {
     match records.create(&PostParams::default(), &record).await {
         Ok(created) => {
             println!("✓ Created ARecord: {namespace}/{record_name}");
-            assert_eq!(created.spec.ipv4_address, "192.0.2.1");
+            assert_eq!(created.spec.ipv4_addresses[0], "192.0.2.1");
         }
         Err(kube::Error::Api(ae)) if ae.code == 409 => {
             println!("  ARecord already exists");

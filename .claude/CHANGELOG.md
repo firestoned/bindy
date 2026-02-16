@@ -1,3 +1,25 @@
+## [2026-02-16 HH:MM] - Fix ARecordSpec Documentation Examples
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/ddns.rs`: Fixed rustdoc examples to use `ipv4_addresses: Vec<String>` instead of deprecated `ipv4_address: String` (lines 35, 75, 116)
+- `src/crd.rs`: Fixed rustdoc example to use `ipv4_addresses: vec![...]` instead of `ipv4_address: "..."` (line 64)
+- `src/crd_docs.rs`: Fixed rustdoc example to use `ipv4_addresses: vec![...]` instead of `ipv4_address: "..."` (line 47)
+
+### Why
+The `ARecordSpec` schema was changed to support multiple IPv4 addresses (round-robin DNS) via the `ipv4_addresses: Vec<String>` field. The rustdoc examples were still using the old singular `ipv4_address: String` field, causing documentation tests to fail.
+
+This violates the CRITICAL project requirement: "Documentation Examples Must Reference CRDs" - all examples must match the actual CRD schema defined in `src/crd.rs`.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
 ## [2026-02-15 15:30] - Fix Bindy the Bee Image Path in README
 
 **Author:** Erick Bourgeois

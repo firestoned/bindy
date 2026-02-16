@@ -61,7 +61,7 @@
 //! // A Record for www.example.com
 //! let a_record = ARecordSpec {
 //!     name: "www".to_string(),
-//!     ipv4_address: "192.0.2.1".to_string(),
+//!     ipv4_addresses: vec!["192.0.2.1".to_string()],
 //!     ttl: Some(300),
 //! };
 //!
@@ -1208,7 +1208,7 @@ pub struct DNSZoneSpec {
     shortname = "a",
     doc = "ARecord maps a DNS hostname to an IPv4 address. Multiple A records for the same name enable round-robin DNS load balancing.",
     printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
-    printcolumn = r#"{"name":"Address","type":"string","jsonPath":".spec.ipv4Address"}"#,
+    printcolumn = r#"{"name":"Addresses","type":"string","jsonPath":".spec.ipv4Addresses"}"#,
     printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
@@ -1221,13 +1221,16 @@ pub struct ARecordSpec {
     /// The full DNS name will be: {name}.{zone}
     pub name: String,
 
-    /// IPv4 address in dotted-decimal notation.
+    /// List of IPv4 addresses for this DNS record.
     ///
-    /// Must be a valid IPv4 address (e.g., "192.0.2.1").
-    #[schemars(regex(
-        pattern = r"^((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.){3}(25[0-5]|(2[0-4]|1\d|[1-9]|)\d)$"
-    ))]
-    pub ipv4_address: String,
+    /// Multiple addresses create round-robin DNS (load balancing).
+    /// All addresses in the list belong to the same DNS name.
+    ///
+    /// Must contain at least one valid IPv4 address in dotted-decimal notation.
+    ///
+    /// Examples: `["192.0.2.1"]`, `["192.0.2.1", "192.0.2.2", "192.0.2.3"]`
+    #[schemars(length(min = 1))]
+    pub ipv4_addresses: Vec<String>,
 
     /// Time To Live in seconds. Overrides zone default TTL if specified.
     ///
@@ -1268,6 +1271,7 @@ pub struct ARecordSpec {
     shortname = "aaaa",
     doc = "AAAARecord maps a DNS hostname to an IPv6 address. This is the IPv6 equivalent of an A record.",
     printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
+    printcolumn = r#"{"name":"Addresses","type":"string","jsonPath":".spec.ipv6Addresses"}"#,
     printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
@@ -1277,10 +1281,16 @@ pub struct AAAARecordSpec {
     /// Record name within the zone.
     pub name: String,
 
-    /// IPv6 address in standard notation.
+    /// List of IPv6 addresses for this DNS record.
     ///
-    /// Examples: `2001:db8::1`, `fe80::1`, `::1`
-    pub ipv6_address: String,
+    /// Multiple addresses create round-robin DNS (load balancing).
+    /// All addresses in the list belong to the same DNS name.
+    ///
+    /// Must contain at least one valid IPv6 address in standard notation.
+    ///
+    /// Examples: `["2001:db8::1"]`, `["2001:db8::1", "2001:db8::2"]`
+    #[schemars(length(min = 1))]
+    pub ipv6_addresses: Vec<String>,
 
     /// Time To Live in seconds.
     #[serde(default)]
