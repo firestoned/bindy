@@ -487,7 +487,7 @@ where
 /// A record operation wrapper.
 #[derive(Clone)]
 struct ARecordOp {
-    ipv4_address: String,
+    ipv4_addresses: Vec<String>,
 }
 
 impl RecordOperation for ARecordOp {
@@ -508,7 +508,7 @@ impl RecordOperation for ARecordOp {
             .add_a_record(
                 zone_name,
                 record_name,
-                &self.ipv4_address,
+                &self.ipv4_addresses,
                 ttl,
                 server,
                 key_data,
@@ -532,7 +532,7 @@ impl ReconcilableRecord for ARecord {
 
     fn create_operation(spec: &Self::Spec) -> Self::Operation {
         ARecordOp {
-            ipv4_address: spec.ipv4_address.clone(),
+            ipv4_addresses: spec.ipv4_addresses.clone(),
         }
     }
 
@@ -548,7 +548,7 @@ impl ReconcilableRecord for ARecord {
 /// AAAA record operation wrapper.
 #[derive(Clone)]
 struct AAAARecordOp {
-    ipv6_address: String,
+    ipv6_addresses: Vec<String>,
 }
 
 impl RecordOperation for AAAARecordOp {
@@ -569,7 +569,7 @@ impl RecordOperation for AAAARecordOp {
             .add_aaaa_record(
                 zone_name,
                 record_name,
-                &self.ipv6_address,
+                &self.ipv6_addresses,
                 ttl,
                 server,
                 key_data,
@@ -593,7 +593,7 @@ impl ReconcilableRecord for AAAARecord {
 
     fn create_operation(spec: &Self::Spec) -> Self::Operation {
         AAAARecordOp {
-            ipv6_address: spec.ipv6_address.clone(),
+            ipv6_addresses: spec.ipv6_addresses.clone(),
         }
     }
 
@@ -1265,7 +1265,7 @@ pub async fn reconcile_aaaa_record(
 
     // Add record to BIND9 primaries using generic helper
     let record_op = AAAARecordOp {
-        ipv6_address: spec.ipv6_address.clone(),
+        ipv6_addresses: spec.ipv6_addresses.clone(),
     };
     match add_record_to_instances_generic(
         &client,

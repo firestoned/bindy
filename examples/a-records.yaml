@@ -11,7 +11,8 @@ metadata:
     bindy.firestoned.io/zone: example.com
 spec:
   name: www
-  ipv4Address: "192.0.2.1"
+  ipv4Address:
+    - "192.0.2.1"
   ttl: 300
 ---
 apiVersion: bindy.firestoned.io/v1beta1
@@ -23,7 +24,8 @@ metadata:
     bindy.firestoned.io/zone: example.com
 spec:
   name: api
-  ipv4Address: "192.0.2.2"
+  ipv4Address:
+    -  "192.0.2.2"
   ttl: 300
 ---
 apiVersion: bindy.firestoned.io/v1beta1
@@ -35,7 +37,8 @@ metadata:
     bindy.firestoned.io/zone: example.com
 spec:
   name: mail
-  ipv4Address: "192.0.2.2"
+  ipv4Address:
+    - "192.0.2.2"
   ttl: 300
 ---
 # A Records for cluster.internal zone
@@ -50,5 +53,6 @@ metadata:
     bindy.firestoned.io/zone: cluster.local
 spec:
   name: mail
-  ipv4Address: "192.0.2.1"
+  ipv4Address:
+    - "192.0.2.1"
   ttl: 300

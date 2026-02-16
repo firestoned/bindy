@@ -23,8 +23,8 @@ spec:
     - jsonPath: .spec.name
       name: Name
       type: string
-    - jsonPath: .spec.ipv4Address
-      name: Address
+    - jsonPath: .spec.ipv4Addresses
+      name: Addresses
       type: string
     - jsonPath: .spec.ttl
       name: TTL
@@ -63,13 +63,20 @@ spec:
               Records are associated with `DNSZones` via label selectors.
               The `DNSZone` must have a `recordsFrom` selector that matches this record's labels.
             properties:
-              ipv4Address:
+              ipv4Addresses:
                 description: |-
-                  IPv4 address in dotted-decimal notation.
+                  List of IPv4 addresses for this DNS record.
 
-                  Must be a valid IPv4 address (e.g., "192.0.2.1").
-                pattern: ^((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.){3}(25[0-5]|(2[0-4]|1\d|[1-9]|)\d)$
-                type: string
+                  Multiple addresses create round-robin DNS (load balancing).
+                  All addresses in the list belong to the same DNS name.
+
+                  Must contain at least one valid IPv4 address in dotted-decimal notation.
+
+                  Examples: `["192.0.2.1"]`, `["192.0.2.1", "192.0.2.2", "192.0.2.3"]`
+                items:
+                  type: string
+                minItems: 1
+                type: array
               name:
                 description: |-
                   Record name within the zone. Use "@" for the zone apex.
@@ -88,7 +95,7 @@ spec:
                 nullable: true
                 type: integer
             required:
-            - ipv4Address
+            - ipv4Addresses
             - name
             type: object
           status:

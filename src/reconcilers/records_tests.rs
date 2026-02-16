@@ -21,12 +21,12 @@ mod tests {
     fn test_arecord_spec_creation() {
         let spec = ARecordSpec {
             name: "www".to_string(),
-            ipv4_address: "192.0.2.1".to_string(),
+            ipv4_addresses: vec!["192.0.2.1".to_string()],
             ttl: Some(300),
         };
 
         assert_eq!(spec.name, "www");
-        assert_eq!(spec.ipv4_address, "192.0.2.1");
+        assert_eq!(spec.ipv4_addresses[0], "192.0.2.1");
         assert_eq!(spec.ttl, Some(300));
     }
 
@@ -34,7 +34,7 @@ mod tests {
     fn test_arecord_without_ttl() {
         let spec = ARecordSpec {
             name: "mail".to_string(),
-            ipv4_address: "192.0.2.2".to_string(),
+            ipv4_addresses: vec!["192.0.2.2".to_string()],
             ttl: None,
         };
 
@@ -56,11 +56,11 @@ mod tests {
         for ip in valid_ips {
             let spec = ARecordSpec {
                 name: "test".to_string(),
-                ipv4_address: ip.to_string(),
+                ipv4_addresses: vec![ip.to_string()],
                 ttl: None,
             };
 
-            assert_eq!(spec.ipv4_address, ip);
+            assert_eq!(spec.ipv4_addresses[0], ip);
         }
     }
 
@@ -69,7 +69,7 @@ mod tests {
         // Test that name field works correctly
         let spec = ARecordSpec {
             name: "www".to_string(),
-            ipv4_address: "192.0.2.1".to_string(),
+            ipv4_addresses: vec!["192.0.2.1".to_string()],
             ttl: None,
         };
 
@@ -84,11 +84,11 @@ mod tests {
     fn test_aaaa_record_spec_creation() {
         let spec = AAAARecordSpec {
             name: "www".to_string(),
-            ipv6_address: "2001:db8::1".to_string(),
+            ipv6_addresses: vec!["2001:db8::1".to_string()],
             ttl: Some(300),
         };
 
-        assert_eq!(spec.ipv6_address, "2001:db8::1");
+        assert_eq!(spec.ipv6_addresses[0], "2001:db8::1");
         assert_eq!(spec.ttl, Some(300));
     }
 
@@ -106,11 +106,11 @@ mod tests {
         for ipv6 in ipv6_addresses {
             let spec = AAAARecordSpec {
                 name: "test".to_string(),
-                ipv6_address: ipv6.to_string(),
+                ipv6_addresses: vec![ipv6.to_string()],
                 ttl: None,
             };
 
-            assert_eq!(spec.ipv6_address, ipv6);
+            assert_eq!(spec.ipv6_addresses[0], ipv6);
         }
     }
 
@@ -609,7 +609,7 @@ mod tests {
             },
             spec: ARecordSpec {
                 name: "www".to_string(),
-                ipv4_address: "192.0.2.1".to_string(),
+                ipv4_addresses: vec!["192.0.2.1".to_string()],
                 ttl: Some(300),
             },
             status: None,
@@ -637,7 +637,7 @@ mod tests {
             },
             spec: ARecordSpec {
                 name: "www".to_string(),
-                ipv4_address: "192.0.2.1".to_string(),
+                ipv4_addresses: vec!["192.0.2.1".to_string()],
                 ttl: None,
             },
             status: None,
@@ -669,7 +669,7 @@ mod tests {
             },
             spec: ARecordSpec {
                 name: "www".to_string(),
-                ipv4_address: "192.0.2.1".to_string(),
+                ipv4_addresses: vec!["192.0.2.1".to_string()],
                 ttl: None,
             },
             status: None,
@@ -689,7 +689,7 @@ mod tests {
         for ttl in ttl_values {
             let spec = ARecordSpec {
                 name: "test".to_string(),
-                ipv4_address: "192.0.2.1".to_string(),
+                ipv4_addresses: vec!["192.0.2.1".to_string()],
                 ttl,
             };
 
@@ -701,13 +701,13 @@ mod tests {
     fn test_apex_vs_subdomain_naming() {
         let apex_record = ARecordSpec {
             name: "@".to_string(),
-            ipv4_address: "192.0.2.1".to_string(),
+            ipv4_addresses: vec!["192.0.2.1".to_string()],
             ttl: None,
         };
 
         let subdomain_record = ARecordSpec {
             name: "www".to_string(),
-            ipv4_address: "192.0.2.2".to_string(),
+            ipv4_addresses: vec!["192.0.2.2".to_string()],
             ttl: None,
         };
 
@@ -721,13 +721,13 @@ mod tests {
         let name = "test".to_string();
         let a_spec = ARecordSpec {
             name: name.clone(),
-            ipv4_address: "192.0.2.1".to_string(),
+            ipv4_addresses: vec!["192.0.2.1".to_string()],
             ttl: None,
         };
 
         let aaaa_spec = AAAARecordSpec {
             name: name.clone(),
-            ipv6_address: "2001:db8::1".to_string(),
+            ipv6_addresses: vec!["2001:db8::1".to_string()],
             ttl: None,
         };
 
@@ -750,7 +750,7 @@ mod tests {
         // Empty name is allowed by the type system but would fail at runtime
         let spec = ARecordSpec {
             name: String::new(),
-            ipv4_address: "192.0.2.1".to_string(),
+            ipv4_addresses: vec!["192.0.2.1".to_string()],
             ttl: None,
         };
 
@@ -762,7 +762,7 @@ mod tests {
         let long_name = "a".repeat(63); // Maximum label length in DNS
         let spec = ARecordSpec {
             name: long_name.clone(),
-            ipv4_address: "192.0.2.1".to_string(),
+            ipv4_addresses: vec!["192.0.2.1".to_string()],
             ttl: None,
         };
 
@@ -773,7 +773,7 @@ mod tests {
     fn test_wildcard_record_name() {
         let spec = ARecordSpec {
             name: "*".to_string(),
-            ipv4_address: "192.0.2.1".to_string(),
+            ipv4_addresses: vec!["192.0.2.1".to_string()],
             ttl: None,
         };
 
@@ -787,7 +787,7 @@ mod tests {
         for name in names {
             let spec = ARecordSpec {
                 name: name.to_string(),
-                ipv4_address: "192.0.2.1".to_string(),
+                ipv4_addresses: vec!["192.0.2.1".to_string()],
                 ttl: None,
             };
 
@@ -879,22 +879,22 @@ mod tests {
         // The struct will accept invalid IPs - validation happens at reconciliation time
         let spec = ARecordSpec {
             name: "test".to_string(),
-            ipv4_address: "not-an-ip".to_string(),
+            ipv4_addresses: vec!["not-an-ip".to_string()],
             ttl: None,
         };
 
-        assert_eq!(spec.ipv4_address, "not-an-ip");
+        assert_eq!(spec.ipv4_addresses[0], "not-an-ip");
     }
 
     #[test]
     fn test_invalid_ipv6_format_still_parses() {
         let spec = AAAARecordSpec {
             name: "test".to_string(),
-            ipv6_address: "not-an-ipv6".to_string(),
+            ipv6_addresses: vec!["not-an-ipv6".to_string()],
             ttl: None,
         };
 
-        assert_eq!(spec.ipv6_address, "not-an-ipv6");
+        assert_eq!(spec.ipv6_addresses[0], "not-an-ipv6");
     }
 
     #[test]
@@ -914,7 +914,7 @@ mod tests {
         // Negative TTL is technically invalid, but struct accepts it
         let spec = ARecordSpec {
             name: "test".to_string(),
-            ipv4_address: "192.0.2.1".to_string(),
+            ipv4_addresses: vec!["192.0.2.1".to_string()],
             ttl: Some(-1),
         };
 

@@ -576,12 +576,12 @@ impl Bind9Manager {
 
     // ===== DNS record management methods =====
 
-    /// Add an A record using dynamic DNS update (RFC 2136).
+    /// Add A records using dynamic DNS update (RFC 2136) with `RRset` synchronization.
     ///
     /// # Arguments
     /// * `zone_name` - DNS zone name (e.g., "example.com")
     /// * `name` - Record name (e.g., "www" for www.example.com, or "@" for apex)
-    /// * `ipv4` - IPv4 address
+    /// * `ipv4_addresses` - List of IPv4 addresses for round-robin DNS
     /// * `ttl` - Time to live in seconds (None = use zone default)
     /// * `server` - DNS server address with port (e.g., "10.0.0.1:53")
     /// * `key_data` - TSIG key for authentication
@@ -594,15 +594,23 @@ impl Bind9Manager {
         &self,
         zone_name: &str,
         name: &str,
-        ipv4: &str,
+        ipv4_addresses: &[String],
         ttl: Option<i32>,
         server: &str,
         key_data: &RndcKeyData,
     ) -> Result<()> {
-        records::a::add_a_record(zone_name, name, ipv4, ttl, server, key_data).await
+        records::a::add_a_record(zone_name, name, ipv4_addresses, ttl, server, key_data).await
     }
 
-    /// Add an AAAA record using dynamic DNS update (RFC 2136).
+    /// Add AAAA records using dynamic DNS update (RFC 2136) with `RRset` synchronization.
+    ///
+    /// # Arguments
+    /// * `zone_name` - DNS zone name (e.g., "example.com")
+    /// * `name` - Record name (e.g., "www" for www.example.com, or "@" for apex)
+    /// * `ipv6_addresses` - List of IPv6 addresses for round-robin DNS
+    /// * `ttl` - Time to live in seconds (None = use zone default)
+    /// * `server` - DNS server address with port (e.g., "10.0.0.1:53")
+    /// * `key_data` - TSIG key for authentication
     ///
     /// # Errors
     ///
@@ -612,12 +620,12 @@ impl Bind9Manager {
         &self,
         zone_name: &str,
         name: &str,
-        ipv6: &str,
+        ipv6_addresses: &[String],
         ttl: Option<i32>,
         server: &str,
         key_data: &RndcKeyData,
     ) -> Result<()> {
-        records::a::add_aaaa_record(zone_name, name, ipv6, ttl, server, key_data).await
+        records::a::add_aaaa_record(zone_name, name, ipv6_addresses, ttl, server, key_data).await
     }
 
     /// Add a CNAME record using dynamic DNS update (RFC 2136).
