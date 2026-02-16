@@ -65,8 +65,7 @@ metadata:
     zone: example.com  # ✅ Matches the DNSZone selector
 spec:
   name: www
-  ipv4Addresses:
-    - "192.0.2.1"
+  ipv4Address: "192.0.2.1"
 ```
 
 **Benefits of Label Selectors:**
@@ -174,8 +173,7 @@ metadata:
     zone: example.com
 spec:
   name: www
-  ipv4Addresses:
-    - "192.0.2.1"
+  ipv4Address: "192.0.2.1"
   ttl: 300
 ```
 
@@ -193,8 +191,7 @@ metadata:
     zone: example.com
 spec:
   name: www
-  ipv6Addresses:
-    - "2001:db8::1"
+  ipv6Address: "2001:db8::1"
   ttl: 300
 ```
 

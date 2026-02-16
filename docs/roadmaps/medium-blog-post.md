@@ -57,7 +57,8 @@ metadata:
   name: www
 spec:
   zoneRef: example-com
-  ipv4Address: "192.0.2.1"
+  ipv4Addresses:
+    - "192.0.2.1"
 ```
 
 Then:
@@ -226,7 +227,8 @@ metadata:
   name: www
 spec:
   zoneRef: example-com
-  ipv4Address: "192.0.2.1"
+  ipv4Addresses:
+    - "192.0.2.1"
   ttl: 300
 
 ---
@@ -390,7 +392,8 @@ Traditional DNS change workflow:
      name: api
    spec:
      zoneRef: example-com
-     ipv4Address: "192.0.2.50"
+     ipv4Addresses:
+    - "192.0.2.50"
    ```
 
 2. Team reviews PR (peer review, approval gates)
@@ -486,7 +489,8 @@ BIND9 Infrastructure
      namespace: prod-dns
    spec:
      zoneRef: example-com
-     ipv4Address: "192.0.2.1"
+     ipv4Addresses:
+    - "192.0.2.1"
    ```
 
 4. **`bindy` reconciles to BIND9**
@@ -650,7 +654,8 @@ metadata:
   name: www
 spec:
   zoneRef: example-com
-  ipv4Address: "192.0.2.1"
+  ipv4Addresses:
+    - "192.0.2.1"
 EOF
 ```
 

@@ -406,7 +406,8 @@ metadata:
 spec:
   zone: example.com
   name: host-${i}
-  ipv4Address: "192.0.2.${i}"
+  ipv4Addresses:
+    - "192.0.2.${i}"
 EOF
 done
 

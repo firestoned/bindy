@@ -117,7 +117,8 @@ metadata:
     zone: example.com
 spec:
   name: www  # Same name as CNAME - not allowed
-  ipv4Address: "192.0.2.1"
+  ipv4Addresses:
+    - "192.0.2.1"
 ```
 
 ## Common Use Cases

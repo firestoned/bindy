@@ -477,7 +477,8 @@ metadata:
     zone: team-a.com  # ✅ Matches DNSZone selector in same namespace
 spec:
   name: www
-  ipv4Address: "192.0.2.1"
+  ipv4Addresses:
+    - "192.0.2.1"
 ---
 # This would NOT be selected - namespace isolation prevents cross-namespace selection
 apiVersion: bindy.firestoned.io/v1beta1
@@ -489,7 +490,8 @@ metadata:
     zone: team-b.com  # ❌ No DNSZone in team-a with this selector
 spec:
   name: www
-  ipv4Address: "192.0.2.1"
+  ipv4Addresses:
+    - "192.0.2.1"
 ```
 
 ## Decision Tree: Choosing a Cluster Model

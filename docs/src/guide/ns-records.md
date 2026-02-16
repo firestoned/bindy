@@ -184,7 +184,8 @@ metadata:
     zone: example.com
 spec:
   name: ns1.sub
-  ipv4Address: "203.0.113.10"
+  ipv4Addresses:
+    - "203.0.113.10"
 ```
 
 ## Best Practices

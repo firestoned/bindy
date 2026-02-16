@@ -112,7 +112,8 @@ metadata:
     zone: example.com  # ← Matches DNSZone's recordsFrom selector
 spec:
   name: www  # Creates www.example.com
-  ipv4Address: 192.168.1.10
+  ipv4Addresses:
+    - "192.168.1.10"
   ttl: 300
 
 ---
@@ -125,7 +126,8 @@ metadata:
     zone: example.com
 spec:
   name: api  # Creates api.example.com
-  ipv4Address: 192.168.1.20
+  ipv4Addresses:
+    - "192.168.1.20"
   ttl: 300
 
 ---

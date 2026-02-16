@@ -286,7 +286,8 @@ metadata:
     zone: example.com
 spec:
   name: mail
-  ipv4Address: "203.0.113.10"
+  ipv4Addresses:
+    - "203.0.113.10"
 ```
 
 ## Best Practices
@@ -325,7 +326,8 @@ metadata:
     zone: example.com
 spec:
   name: mail
-  ipv4Address: "203.0.113.10"
+  ipv4Addresses:
+    - "203.0.113.10"
 ---
 # AAAA record for IPv6
 apiVersion: bindy.firestoned.io/v1beta1
@@ -337,7 +339,8 @@ metadata:
     zone: example.com
 spec:
   name: mail
-  ipv6Address: "2001:db8::10"
+  ipv6Addresses:
+    - "2001:db8::10"
 ```
 
 ## Status Monitoring

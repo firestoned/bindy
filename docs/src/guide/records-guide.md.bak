@@ -76,8 +76,7 @@ metadata:
     zone: example.com  # ✅ Matches the DNSZone selector
 spec:
   name: www
-  ipv4Addresses:
-    - "192.0.2.1"
+  ipv4Address: "192.0.2.1"
   ttl: 300
 ```
 
@@ -117,8 +116,7 @@ metadata:
     team: platform
 spec:
   name: api             # Creates api.example.com
-  ipv4Addresses:
-    - "192.0.2.10"
+  ipv4Address: "192.0.2.10"
   ttl: 300              # Optional - overrides zone default
 ```
 

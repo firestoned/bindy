@@ -202,7 +202,8 @@ metadata:
 spec:
   zone: "example-com-primary"
   name: "ns1"
-  ipv4Address: "192.0.2.1"
+  ipv4Addresses:
+    - "192.0.2.1"
   ttl: 86400  # 24 hours for NS records
 
 ---
@@ -214,7 +215,8 @@ metadata:
 spec:
   zone: "example-com-primary"
   name: "ns2"
-  ipv4Address: "192.0.2.2"
+  ipv4Addresses:
+    - "192.0.2.2"
   ttl: 86400
 
 ---
@@ -227,7 +229,8 @@ metadata:
 spec:
   zone: "example-com-primary"
   name: "www"
-  ipv4Address: "192.0.2.10"
+  ipv4Addresses:
+    - "192.0.2.10"
   ttl: 60  # 1 minute for load balanced IPs
 
 ---
@@ -239,7 +242,8 @@ metadata:
 spec:
   zone: "example-com-primary"
   name: "www"
-  ipv4Address: "192.0.2.11"
+  ipv4Addresses:
+    - "192.0.2.11"
   ttl: 60
 
 ---
@@ -251,7 +255,8 @@ metadata:
 spec:
   zone: "example-com-primary"
   name: "www"
-  ipv4Address: "192.0.2.12"
+  ipv4Addresses:
+    - "192.0.2.12"
   ttl: 60
 
 ---
@@ -264,7 +269,8 @@ metadata:
 spec:
   zone: "example-com-primary"
   name: "www"
-  ipv6Address: "2001:db8::10"
+  ipv6Addresses:
+    - "2001:db8::10"
   ttl: 60
 
 ---
@@ -276,7 +282,8 @@ metadata:
 spec:
   zone: "example-com-primary"
   name: "www"
-  ipv6Address: "2001:db8::11"
+  ipv6Addresses:
+    - "2001:db8::11"
   ttl: 60
 
 ---
@@ -289,7 +296,8 @@ metadata:
 spec:
   zone: "example-com-primary"
   name: "mail1"
-  ipv4Address: "192.0.2.20"
+  ipv4Addresses:
+    - "192.0.2.20"
   ttl: 3600
 
 ---
@@ -301,7 +309,8 @@ metadata:
 spec:
   zone: "example-com-primary"
   name: "mail2"
-  ipv4Address: "192.0.2.21"
+  ipv4Addresses:
+    - "192.0.2.21"
   ttl: 3600
 
 ---

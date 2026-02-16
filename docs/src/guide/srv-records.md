@@ -318,7 +318,8 @@ metadata:
     zone: example.com
 spec:
   name: server
-  ipv4Address: "203.0.113.50"
+  ipv4Addresses:
+    - "203.0.113.50"
 ```
 
 ## Best Practices

@@ -180,7 +180,8 @@ metadata:
     zone: api.mesh.local  # Matches DNSZone selector
 spec:
   name: v1
-  ipv4Address: "10.0.1.100"
+  ipv4Addresses:
+    - "10.0.1.100"
 ```
 
 **Benefits:**

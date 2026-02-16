@@ -80,7 +80,8 @@ metadata:
 spec:
   zone: example-com
   name: www
-  ipv4Address: "192.0.2.1"
+  ipv4Addresses:
+    - "192.0.2.1"
   ttl: 300
 ```
 

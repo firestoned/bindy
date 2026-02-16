@@ -129,7 +129,8 @@ metadata:
 spec:
   zone: "example-com-primary"
   name: "ns1.us-east-1"
-  ipv4Address: "192.0.2.1"
+  ipv4Addresses:
+    - "192.0.2.1"
   ttl: 86400
 
 ---
@@ -141,7 +142,8 @@ metadata:
 spec:
   zone: "example-com-primary"
   name: "ns2.us-west-2"
-  ipv4Address: "192.0.2.2"
+  ipv4Addresses:
+    - "192.0.2.2"
   ttl: 86400
 
 ---
@@ -153,7 +155,8 @@ metadata:
 spec:
   zone: "example-com-primary"
   name: "ns3.eu-west-1"
-  ipv4Address: "192.0.2.3"
+  ipv4Addresses:
+    - "192.0.2.3"
   ttl: 86400
 
 ---
@@ -166,7 +169,8 @@ metadata:
 spec:
   zone: "example-com-primary"
   name: "www.us-east-1"
-  ipv4Address: "192.0.2.10"
+  ipv4Addresses:
+    - "192.0.2.10"
   ttl: 60
 
 ---
@@ -178,7 +182,8 @@ metadata:
 spec:
   zone: "example-com-primary"
   name: "www.us-west-2"
-  ipv4Address: "192.0.2.20"
+  ipv4Addresses:
+    - "192.0.2.20"
   ttl: 60
 
 ---
@@ -190,7 +195,8 @@ metadata:
 spec:
   zone: "example-com-primary"
   name: "www.eu-west-1"
-  ipv4Address: "192.0.2.30"
+  ipv4Addresses:
+    - "192.0.2.30"
   ttl: 60
 
 ---

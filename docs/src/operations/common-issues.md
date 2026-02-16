@@ -319,7 +319,8 @@ metadata:
   # ✗ Missing labels!
 spec:
   name: www
-  ipv4Address: "192.0.2.1"
+  ipv4Addresses:
+    - "192.0.2.1"
 ```
 
 **Correct:**
@@ -334,7 +335,8 @@ metadata:
     zone: example.com  # ✓ Matches DNSZone selector
 spec:
   name: www
-  ipv4Address: "192.0.2.1"
+  ipv4Addresses:
+    - "192.0.2.1"
 ```
 
 **Verification:**

@@ -28,7 +28,8 @@ metadata:
 spec:
   zone: internal-local
   name: myapp.production
-  ipv4Address: "10.100.5.10"  # Service ClusterIP
+  ipv4Addresses:
+    - "10.100.5.10"  # Service ClusterIP
 ```
 
 ### Service Discovery Pattern

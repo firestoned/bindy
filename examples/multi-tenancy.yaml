@@ -261,7 +261,8 @@ metadata:
     tier: frontend
 spec:
   name: www
-  ipv4Address: "10.0.10.100"
+  ipv4Addresses:
+    - "10.0.10.100"
   ttl: 300
 
 ---
@@ -276,7 +277,8 @@ metadata:
     tier: frontend
 spec:
   name: app
-  ipv4Address: "10.0.10.101"
+  ipv4Addresses:
+    - "10.0.10.101"
   ttl: 300
 
 ---
@@ -382,7 +384,8 @@ metadata:
     tier: gateway
 spec:
   name: gateway
-  ipv4Address: "10.1.20.50"
+  ipv4Addresses:
+    - "10.1.20.50"
   ttl: 60
 
 ---
@@ -397,7 +400,8 @@ metadata:
     version: v1
 spec:
   name: api-v1
-  ipv4Address: "10.1.20.51"
+  ipv4Addresses:
+    - "10.1.20.51"
   ttl: 60
 
 ---
@@ -412,7 +416,8 @@ metadata:
     version: v2
 spec:
   name: api-v2
-  ipv4Address: "10.1.20.52"
+  ipv4Addresses:
+    - "10.1.20.52"
   ttl: 60
 
 ---
@@ -494,7 +499,8 @@ metadata:
     environment: production
 spec:
   name: gateway
-  ipv4Address: "10.0.20.100"
+  ipv4Addresses:
+    - "10.0.20.100"
   ttl: 300
 
 ---

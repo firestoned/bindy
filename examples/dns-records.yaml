@@ -12,7 +12,8 @@ metadata:
     zone: example.com
 spec:
   name: www
-  ipv4Address: "192.0.2.1"
+  ipv4Addresses:
+    - "192.0.2.1"
   ttl: 300
 ---
 apiVersion: bindy.firestoned.io/v1beta1
@@ -24,7 +25,8 @@ metadata:
     zone: example.com
 spec:
   name: api
-  ipv4Address: "192.0.2.2"
+  ipv4Addresses:
+    - "192.0.2.2"
   ttl: 300
 ---
 apiVersion: bindy.firestoned.io/v1beta1
@@ -36,7 +38,8 @@ metadata:
     zone: example.com
 spec:
   name: mail
-  ipv4Address: "192.0.2.2"
+  ipv4Addresses:
+    - "192.0.2.2"
   ttl: 300
 ---
 # MX Records for example.com zone
@@ -103,7 +106,8 @@ metadata:
     zone: internal.local
 spec:
   name: db
-  ipv4Address: "10.0.1.10"
+  ipv4Addresses:
+    - "10.0.1.10"
   ttl: 300
 ---
 apiVersion: bindy.firestoned.io/v1beta1
@@ -115,7 +119,8 @@ metadata:
     zone: internal.local
 spec:
   name: app
-  ipv4Address: "10.0.1.11"
+  ipv4Addresses:
+    - "10.0.1.11"
   ttl: 300
 ---
 apiVersion: bindy.firestoned.io/v1beta1

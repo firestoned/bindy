@@ -87,7 +87,8 @@ metadata:
 spec:
   zone: "example-com"
   name: "ns1"
-  ipv4Address: "192.0.2.1"
+  ipv4Addresses:
+    - "192.0.2.1"
   ttl: 3600
 
 ---
@@ -100,7 +101,8 @@ metadata:
 spec:
   zone: "example-com"
   name: "www"
-  ipv4Address: "192.0.2.10"
+  ipv4Addresses:
+    - "192.0.2.10"
   ttl: 300
 
 ---
@@ -113,7 +115,8 @@ metadata:
 spec:
   zone: "example-com"
   name: "www"
-  ipv6Address: "2001:db8::10"
+  ipv6Addresses:
+    - "2001:db8::10"
   ttl: 300
 
 ---
@@ -126,7 +129,8 @@ metadata:
 spec:
   zone: "example-com"
   name: "mail"
-  ipv4Address: "192.0.2.20"
+  ipv4Addresses:
+    - "192.0.2.20"
   ttl: 3600
 
 ---
@@ -355,7 +359,8 @@ metadata:
 spec:
   zone: "example-com"
   name: "app"
-  ipv4Address: "192.0.2.30"
+  ipv4Addresses:
+    - "192.0.2.30"
   ttl: 300
 EOF
 ```
