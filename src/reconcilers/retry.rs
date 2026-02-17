@@ -7,7 +7,7 @@
 //! with exponential backoff, while failing fast on permanent errors (4xx client errors).
 
 use anyhow::Result;
-use rand::Rng;
+use rand::RngExt;
 use reqwest::StatusCode;
 use std::time::{Duration, Instant};
 use tracing::{debug, error, warn};
@@ -108,8 +108,8 @@ impl ExponentialBackoff {
         let min = secs - delta;
         let max = secs + delta;
 
-        let mut rng = rand::thread_rng();
-        let jittered = rng.gen_range(min..=max);
+        let mut rng = rand::rng();
+        let jittered = rng.random_range(min..=max);
 
         Duration::from_secs_f64(jittered.max(0.0))
     }
