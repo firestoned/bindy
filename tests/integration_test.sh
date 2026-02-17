@@ -237,7 +237,8 @@ metadata:
     bindy.firestoned.io/zone: integration.test
 spec:
   name: www
-  ipv4Address: "192.0.2.10"
+  ipv4Addresses:
+    - "192.0.2.10"
   ttl: 300
 EOF
 
@@ -252,7 +253,8 @@ metadata:
     bindy.firestoned.io/zone: integration.test
 spec:
   name: www
-  ipv6Address: "2001:db8::1"
+  ipv6Addresses:
+    - "2001:db8::1"
   ttl: 300
 EOF
 
