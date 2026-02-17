@@ -20,9 +20,9 @@ use crate::constants::TSIG_FUDGE_TIME_SECS;
 /// Returns a base64-encoded 256-bit (32-byte) key suitable for rndc authentication.
 #[must_use]
 pub fn generate_rndc_key() -> RndcKeyData {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut key_bytes = [0u8; 32]; // 256 bits for HMAC-SHA256
-    rng.fill(&mut key_bytes);
+    rng.fill_bytes(&mut key_bytes);
 
     RndcKeyData {
         name: String::new(), // Will be set by caller
