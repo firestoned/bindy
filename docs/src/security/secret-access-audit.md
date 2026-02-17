@@ -523,7 +523,7 @@ groups:
             2. Review audit logs for full context
             3. Verify RBAC policy is applied correctly
             4. Follow incident response: docs/security/incident-response.md#p4
-          runbook_url: "https://github.com/firestoned/bindy/blob/main/docs/security/incident-response.md#p4-rndc-key-compromise"
+          runbook_url: "./incident-response.md#p4-rndc-key-compromise"
 
       # HIGH: Excessive secret access (potential compromised operator)
       - alert: ExcessiveSecretAccess
@@ -550,7 +550,7 @@ groups:
             1. Check operator logs for errors
             2. Verify reconciliation requeue times are correct
             3. Check for BIND9 pod restart loops
-          runbook_url: "https://github.com/firestoned/bindy/blob/main/docs/troubleshooting.md"
+          runbook_url: "../operations/troubleshooting.md"
 
       # MEDIUM: Failed secret access attempts (brute force detection)
       - alert: FailedSecretAccessAttempts
@@ -577,7 +577,7 @@ groups:
             1. Review audit logs to identify source ServiceAccount/IP
             2. Verify RBAC policy is correct
             3. Check for recent RBAC changes
-          runbook_url: "https://github.com/firestoned/bindy/blob/main/docs/security/secret-access-audit.md#q3-failed-secret-access-attempts-403-forbidden"
+          runbook_url: "#q3-failed-secret-access-attempts-403-forbidden"
 ```
 
 ### Alertmanager Routing
@@ -707,7 +707,7 @@ receivers:
 **Annual PCI-DSS Audit Evidence:**
 
 Provide auditors with:
-1. **RBAC Policy:** `deploy/rbac/clusterrole.yaml` (shows read-only secret access)
+1. **RBAC Policy:** `deploy/rbac/role.yaml` (shows read-only secret access)
 2. **RBAC Verification:** `deploy/rbac/verify-rbac.sh` output (proves no modify permissions)
 3. **Audit Logs:** Query Q5 results for last 365 days (shows all access)
 4. **Quarterly Reviews:** 4 quarterly review reports (proves regular monitoring)

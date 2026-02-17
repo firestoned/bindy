@@ -39,6 +39,7 @@ base64 = "0.22"
 rand = "0.10"
 hickory-client = { version = "0.24", features = ["dnssec", "dnssec-ring"] }
 hickory-proto = { version = "0.24", features = ["dnssec", "dnssec-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 url = "2.5.7"
 bindcar = "0.5.4"
 prometheus = "0.14"

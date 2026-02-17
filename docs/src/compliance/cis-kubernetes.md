@@ -159,7 +159,7 @@ kubectl get deployment bindy-operator -o jsonpath='{.spec.template.spec.serviceA
 - Bindy is compatible with Pod Security Standards (PSS)
 - Tested with `restricted` policy
 
-**Evidence:** [src/bind9_resources.rs:427-440](../../src/bind9_resources.rs#L427-L440) - SecurityContext meets restricted PSS
+**Evidence:** [src/bind9_resources.rs:427-440](https://github.com/firestoned/bindy/blob/main/src/bind9_resources.rs#L427-L440) - SecurityContext meets restricted PSS
 
 **Deployment Notes:**
 ```yaml
@@ -185,7 +185,7 @@ metadata:
 - `securityContext.privileged: false` (default)
 - No `SYS_ADMIN` or other dangerous capabilities
 
-**Evidence:** [src/bind9_resources.rs:427-440](../../src/bind9_resources.rs#L427-L440)
+**Evidence:** [src/bind9_resources.rs:427-440](https://github.com/firestoned/bindy/blob/main/src/bind9_resources.rs#L427-L440)
 ```rust
 SecurityContext {
     run_as_non_root: Some(true),
@@ -214,7 +214,7 @@ kubectl get pods -l app=bind9 -o jsonpath='{.items[*].spec.containers[*].securit
 - ✅ **PASS** - No host PID namespace sharing
 - `hostPID: false` (default, not set)
 
-**Evidence:** [src/bind9_resources.rs](../../src/bind9_resources.rs) - no `host_pid` field set
+**Evidence:** [src/bind9_resources.rs](https://github.com/firestoned/bindy/blob/main/src/bind9_resources.rs) - no `host_pid` field set
 
 **Verification:**
 ```bash
@@ -232,7 +232,7 @@ kubectl get statefulset bind9-primary -o jsonpath='{.spec.template.spec.hostPID}
 - ✅ **PASS** - No host IPC namespace sharing
 - `hostIPC: false` (default, not set)
 
-**Evidence:** [src/bind9_resources.rs](../../src/bind9_resources.rs) - no `host_ipc` field set
+**Evidence:** [src/bind9_resources.rs](https://github.com/firestoned/bindy/blob/main/src/bind9_resources.rs) - no `host_ipc` field set
 
 **Verification:**
 ```bash
@@ -251,7 +251,7 @@ kubectl get statefulset bind9-primary -o jsonpath='{.spec.template.spec.hostIPC}
 - `hostNetwork: false` (default, not set)
 - DNS service uses ClusterIP (not hostPort)
 
-**Evidence:** [src/bind9_resources.rs](../../src/bind9_resources.rs) - no `host_network` field set
+**Evidence:** [src/bind9_resources.rs](https://github.com/firestoned/bindy/blob/main/src/bind9_resources.rs) - no `host_network` field set
 
 **Verification:**
 ```bash
@@ -269,7 +269,7 @@ kubectl get statefulset bind9-primary -o jsonpath='{.spec.template.spec.hostNetw
 - ✅ **PASS** - Privilege escalation disabled
 - `allowPrivilegeEscalation: false` explicitly set
 
-**Evidence:** [src/bind9_resources.rs:435](../../src/bind9_resources.rs#L435)
+**Evidence:** [src/bind9_resources.rs:435](https://github.com/firestoned/bindy/blob/main/src/bind9_resources.rs#L435)
 ```rust
 allow_privilege_escalation: Some(false),
 ```
@@ -291,7 +291,7 @@ kubectl get pods -l app=bind9 -o jsonpath='{.items[*].spec.containers[*].securit
 - `runAsNonRoot: true` enforced
 - `runAsUser: 1000` explicit UID
 
-**Evidence:** [src/bind9_resources.rs:427-428](../../src/bind9_resources.rs#L427-L428)
+**Evidence:** [src/bind9_resources.rs:427-428](https://github.com/firestoned/bindy/blob/main/src/bind9_resources.rs#L427-L428)
 ```rust
 run_as_non_root: Some(true),
 run_as_user: Some(1000),
@@ -317,7 +317,7 @@ kubectl get pods -l app=bind9 -o jsonpath='{.items[*].spec.containers[*].securit
 - `capabilities.drop: ["ALL"]`
 - No NET_RAW capability
 
-**Evidence:** [src/bind9_resources.rs:429-433](../../src/bind9_resources.rs#L429-L433)
+**Evidence:** [src/bind9_resources.rs:429-433](https://github.com/firestoned/bindy/blob/main/src/bind9_resources.rs#L429-L433)
 ```rust
 capabilities: Some(Capabilities {
     drop: Some(vec!["ALL".to_string()]),
@@ -342,7 +342,7 @@ kubectl get pods -l app=bind9 -o jsonpath='{.items[*].spec.containers[*].securit
 - `capabilities.add` not set
 - All capabilities dropped
 
-**Evidence:** [src/bind9_resources.rs:429-433](../../src/bind9_resources.rs#L429-L433) - only `drop` set, no `add`
+**Evidence:** [src/bind9_resources.rs:429-433](https://github.com/firestoned/bindy/blob/main/src/bind9_resources.rs#L429-L433) - only `drop` set, no `add`
 
 **Verification:**
 ```bash
@@ -383,7 +383,7 @@ kubectl get pods -l app=bind9 -o jsonpath='{.items[*].spec.containers[*].securit
 - Uses PersistentVolumeClaims for storage
 - ConfigMaps for configuration
 
-**Evidence:** [src/bind9_resources.rs](../../src/bind9_resources.rs) - only PVC, ConfigMap, and EmptyDir volumes
+**Evidence:** [src/bind9_resources.rs](https://github.com/firestoned/bindy/blob/main/src/bind9_resources.rs) - only PVC, ConfigMap, and EmptyDir volumes
 
 **Verification:**
 ```bash
@@ -402,7 +402,7 @@ kubectl get statefulset bind9-primary -o jsonpath='{.spec.template.spec.volumes[
 - Services use ClusterIP/LoadBalancer
 - No direct host port binding
 
-**Evidence:** [src/bind9_resources.rs](../../src/bind9_resources.rs) - no `host_port` in container ports
+**Evidence:** [src/bind9_resources.rs](https://github.com/firestoned/bindy/blob/main/src/bind9_resources.rs) - no `host_port` in container ports
 
 **Verification:**
 ```bash
@@ -487,7 +487,7 @@ spec:
 - ✅ **PASS** - Secrets mounted as volumes, not environment variables
 - TSIG keys mounted as files in `/etc/bind/secrets`
 
-**Evidence:** [src/bind9_resources.rs](../../src/bind9_resources.rs) - Secret volumes mounted to filesystem
+**Evidence:** [src/bind9_resources.rs](https://github.com/firestoned/bindy/blob/main/src/bind9_resources.rs) - Secret volumes mounted to filesystem
 
 **Verification:**
 ```bash
@@ -578,7 +578,7 @@ spec:
 - Bind9Instances deployed per namespace
 - Zones scoped to namespaces
 
-**Evidence:** [src/reconcilers/dnszone.rs](../../src/reconcilers/dnszone.rs) - namespace-aware reconciliation
+**Evidence:** [src/reconcilers/dnszone.rs](https://github.com/firestoned/bindy/blob/main/src/reconcilers/dnszone.rs) - namespace-aware reconciliation
 
 ---
 
@@ -610,7 +610,7 @@ seccomp_profile: Some(SeccompProfile {
 - ✅ **PASS** - SecurityContext configured on all containers
 - Pod-level and container-level security contexts set
 
-**Evidence:** [src/bind9_resources.rs:427-440](../../src/bind9_resources.rs#L427-L440)
+**Evidence:** [src/bind9_resources.rs:427-440](https://github.com/firestoned/bindy/blob/main/src/bind9_resources.rs#L427-L440)
 
 ---
 
