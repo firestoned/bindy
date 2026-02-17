@@ -41,6 +41,10 @@ const POLLING_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Get Kubernetes client or skip test
 async fn get_client_or_skip() -> Option<Client> {
+    // Install ring as the TLS crypto provider. Uses .ok() since concurrent tests in the same
+    // process may each attempt installation; only the first call succeeds.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     match Client::try_default().await {
         Ok(client) => {
             println!("✓ Connected to Kubernetes cluster");

@@ -62,7 +62,7 @@ let client = Client::try_default().await?;
 
 **Evidence:**
 - [Cargo.toml](../../Cargo.toml) - dependency declaration
-- [src/main.rs](../../src/main.rs) - client initialization
+- [src/main.rs](https://github.com/firestoned/bindy/blob/main/src/main.rs) - client initialization
 
 ---
 
@@ -116,7 +116,7 @@ let secret = Secret {
 - ✅ Default algorithm is FIPS-compliant
 
 **Evidence:**
-- [src/bind9_resources.rs](../../src/bind9_resources.rs) - Secret generation
+- [src/bind9_resources.rs](https://github.com/firestoned/bindy/blob/main/src/bind9_resources.rs) - Secret generation
 - [deploy/crds/bind9instances.crd.yaml](../../deploy/crds/bind9instances.crd.yaml) - TSIG configuration
 
 ---
@@ -226,7 +226,7 @@ metadata:
 - ✅ TLS certificates managed by Kubernetes (automatic rotation)
 
 **Evidence:**
-- [src/bind9_resources.rs](../../src/bind9_resources.rs) - Secret volume mounts
+- [src/bind9_resources.rs](https://github.com/firestoned/bindy/blob/main/src/bind9_resources.rs) - Secret volume mounts
 - [deploy/rbac/role.yaml](../../deploy/rbac/role.yaml) - RBAC for secrets
 
 ---
@@ -497,7 +497,7 @@ spec:
    - Confirm FIPS compliance restored
 
 4. **Post-Incident:**
-   - Update [CHANGELOG.md](../../CHANGELOG.md)
+   - Update [CHANGELOG.md](../changelog.md)
    - Publish security advisory (if customer-facing)
    - Document lessons learned
 

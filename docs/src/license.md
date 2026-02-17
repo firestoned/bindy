@@ -162,7 +162,7 @@ Please open a [GitHub Discussion](https://github.com/firestoned/bindy/discussion
 
 ## Additional Resources
 
-- [Full License Text](../../LICENSE)
+- [Full License Text](https://github.com/firestoned/bindy/blob/main/LICENSE)
 - [MIT License on OSI](https://opensource.org/licenses/MIT)
 - [SPDX MIT License](https://spdx.org/licenses/MIT.html)
 - [GitHub's Choose a License - MIT](https://choosealicense.com/licenses/mit/)

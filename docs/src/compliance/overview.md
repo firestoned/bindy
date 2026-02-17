@@ -122,7 +122,7 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 
 **Documentation:**
 
-- [RBAC Verification Script](https://github.com/firestoned/bindy/blob/main/deploy/rbac/verify-rbac.sh)
+- [RBAC Verification Script](../../../deploy/rbac/verify-rbac.sh)
 - [Security Architecture - RBAC](../security/architecture.md#rbac-architecture)
 
 **Frameworks:** SOX 404, PCI-DSS 7.1.2, Basel III
@@ -143,7 +143,7 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 **Documentation:**
 
 - [Vulnerability Management Policy](../security/vulnerability-management.md)
-- [SECURITY.md - Dependency Management](https://github.com/firestoned/bindy/blob/mahttps://github.com/firestoned/bindy/blob/main/SECURITY.md#dependency-management--vulnerability-scanning)
+- [SECURITY.md - Dependency Management](../../../SECURITY.md#dependency-management--vulnerability-scanning)
 
 **Frameworks:** SOX 404, PCI-DSS 6.2, Basel III
 
@@ -163,8 +163,8 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 
 **Documentation:**
 
-- [SECURITY.md - Commit Signing](https://github.com/firestoned/bindy/blob/mahttps://github.com/firestoned/bindy/blob/main/SECURITY.md#commit-signing-critical)
-- [CONTRIBUTING.md](https://github.com/firestoned/bindy/blob/mahttps://github.com/firestoned/bindy/blob/main/CONTRIBUTING.md)
+- [SECURITY.md - Commit Signing](../../../SECURITY.md#commit-signing-critical)
+- [CONTRIBUTING.md](../../../CONTRIBUTING.md)
 
 **Frameworks:** SOX 404, PCI-DSS 6.4.6, SLSA Level 2+
 
@@ -256,8 +256,8 @@ For compliance questions or audit support:
 
 ## See Also
 
-- [SECURITY.md](https://github.com/firestoned/bindy/blob/mahttps://github.com/firestoned/bindy/blob/main/SECURITY.md) - Main security policy document
-- [COMPLIANCE_ROADMAP.md](https://github.com/firestoned/bindy/blob/main/.github/COMPLIANCE_ROADMAP.md) - Detailed compliance tracking
+- [SECURITY.md](../../../SECURITY.md) - Main security policy document
+- [COMPLIANCE_ROADMAP.md](./overview.md) - Detailed compliance tracking
 - [Threat Model](../security/threat-model.md) - STRIDE threat analysis
 - [Incident Response](../security/incident-response.md) - P1-P7 playbooks
 - [Security Architecture](../security/architecture.md) - Security design principles

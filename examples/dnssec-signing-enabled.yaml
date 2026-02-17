@@ -4,8 +4,13 @@
 # DNSSEC provides cryptographic authentication of DNS data to prevent
 # cache poisoning and man-in-the-middle attacks.
 #
-# IMPORTANT: This example shows the CRD schema for Phase 1 (schema only).
-# The actual signing implementation (Phases 2-7) is not yet complete.
+# Phases 1-4 are fully implemented:
+#   Phase 1: CRD schema (DNSSECConfig, DNSSECSigningConfig, DNSSECKeySource)
+#   Phase 2: dnssec-policy block generation in named.conf
+#   Phase 3: Key source configuration (Secret-backed and auto-generated)
+#   Phase 4: Per-zone dnssecPolicy field with inline-signing
+#
+# Phase 5 (DS record status reporting) is not yet implemented.
 # See: docs/roadmaps/dnssec-zone-signing-implementation.md
 
 ---
@@ -30,7 +35,7 @@ spec:
       # Enable DNSSEC validation of upstream responses (currently implemented)
       validation: true
 
-      # Enable DNSSEC zone signing (Phase 1: schema only - not yet functional)
+      # Enable DNSSEC zone signing (Phases 1-4 implemented)
       signing:
         enabled: true
         policy: "default"  # Built-in DNSSEC policy
@@ -69,8 +74,8 @@ spec:
   # dnssecPolicy: "high-security"
 
 ---
-# Expected DNSZone Status After Signing (Phase 5 - not yet implemented)
-# This is what the status will look like once DS record extraction is implemented:
+# DNSZone Status After Signing (Phase 5 - DS record extraction not yet implemented)
+# Once Phase 5 is complete, the status will look like:
 #
 # status:
 #   dnssec:

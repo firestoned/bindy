@@ -1,3 +1,29 @@
+## [2026-02-17] - Fix rustls CryptoProvider panic in tests and main binary
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: Added `rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }` as a direct dependency
+- `src/main.rs`: Call `rustls::crypto::ring::default_provider().install_default()` before creating the Tokio runtime
+- `tests/simple_integration.rs`: Install ring provider in `get_kube_client_or_skip()` before any TLS operation
+- `tests/multi_tenancy_integration.rs`: Install ring provider in `get_client_or_skip()` before any TLS operation
+- `tests/common/mod.rs`: Install ring provider in `get_kube_client_or_skip()` before any TLS operation
+
+### Why
+`hickory-client` with `dnssec-ring` and `reqwest` with `rustls` both pull in different rustls crypto
+providers (`ring` and `aws-lc-rs` respectively) as transitive dependencies. rustls 0.23+ panics at
+runtime when both providers are compiled in but none has been explicitly installed via
+`CryptoProvider::install_default()`. The fix installs `ring` as the single default provider at
+process startup in all entry points (main binary and integration test binaries).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Bug fix — resolves panic in all test binaries and the main operator binary
+
+---
+
 ## [2026-02-17 00:40] - Fixed Tight Reconciliation Loop with Rate Limiting
 
 **Author:** Erick Bourgeois

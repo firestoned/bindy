@@ -313,7 +313,7 @@ If you discover a security issue with signed releases:
 - Report to: [security@firestoned.io](mailto:security@firestoned.io)
 - Include: artifact name, version, verification output, and steps to reproduce
 
-See [https://github.com/firestoned/bindy/blob/main/SECURITY.md](https://github.com/firestoned/bindy/blob/main/SECURITY.md) for our security policy and vulnerability disclosure process.
+See [SECURITY.md](../../../SECURITY.md) for our security policy and vulnerability disclosure process.
 
 ## SPDX License Headers
 

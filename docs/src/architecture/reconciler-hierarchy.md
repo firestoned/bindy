@@ -82,7 +82,7 @@ Creates `Bind9Cluster` resources in each namespace: `platform-dns`, `team-web`, 
   - Verifies all `Bind9Instance` resources exist
   - Scales instances up/down based on `primaryReplicas` and `secondaryReplicas`
 
-**Implementation**: [`src/reconcilers/bind9cluster.rs`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/bind9cluster.rs)
+**Implementation**: [`src/reconcilers/bind9cluster/mod.rs`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/bind9cluster/mod.rs)
 
 **Example**:
 ```yaml
@@ -123,7 +123,7 @@ Creates:
   - Checks if `Deployment` resource exists
   - Recreates missing resources if detected
 
-**Implementation**: [`src/reconcilers/bind9instance.rs`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/bind9instance.rs)
+**Implementation**: [`src/reconcilers/bind9instance/mod.rs`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/bind9instance/mod.rs)
 
 **Drift Detection Logic**:
 ```rust
@@ -233,7 +233,7 @@ Creates zone `example.com` in all instances of `my-cluster` via HTTP API.
   - Checks if zone exists using HTTP API before adding records
   - Returns error if zone doesn't exist
 
-**Implementation**: [`src/reconcilers/records.rs`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/records.rs)
+**Implementation**: [`src/reconcilers/records/mod.rs`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/records/mod.rs)
 
 **Protocol Details**:
 
@@ -436,7 +436,7 @@ let owner_ref = OwnerReference {
 
 #### 2. Bind9Cluster → Bind9Instance
 
-**Location:** [`src/reconcilers/bind9cluster.rs:592-599`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/bind9cluster.rs#L592-L599)
+**Location:** [`src/reconcilers/bind9cluster/mod.rs:592-599`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/bind9cluster/mod.rs#L592-L599)
 
 ```rust
 // Create ownerReference to the Bind9Cluster

@@ -36,6 +36,10 @@ use std::collections::BTreeMap;
 
 /// Test helper to check if running in a Kubernetes cluster
 async fn get_kube_client_or_skip() -> Option<Client> {
+    // Install ring as the TLS crypto provider. Uses .ok() since concurrent tests in the same
+    // process may each attempt installation; only the first call succeeds.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     match Client::try_default().await {
         Ok(client) => {
             println!("✓ Successfully connected to Kubernetes cluster");

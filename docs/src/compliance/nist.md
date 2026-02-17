@@ -36,7 +36,7 @@ The NIST Cybersecurity Framework (CSF) is a voluntary framework developed by the
 **Evidence:**
 - [Threat Model](../security/threat-model.md) - STRIDE threat analysis
 - [Security Architecture](../security/architecture.md) - Asset inventory, trust boundaries
-- [Compliance Roadmap](https://github.com/firestoned/bindy/blob/main/.github/COMPLIANCE_ROADMAP.md) - Risk mitigation tracking
+- [Compliance Roadmap](./overview.md) - Risk mitigation tracking
 - `Cargo.toml`, `Cargo.lock`, SBOM - Dependency inventory
 
 **Identify Function:** ✅ **90% Complete** (Asset management, risk assessment done; needs supply chain deep dive)
@@ -59,7 +59,7 @@ The NIST Cybersecurity Framework (CSF) is a voluntary framework developed by the
 | **PR.PT** (Protective Technology) | Security controls | Non-root containers, read-only filesystem, RBAC | ✅ Complete |
 
 **Evidence:**
-- RBAC policy: `deploy/rbac/clusterrole.yaml`
+- RBAC policy: `deploy/rbac/role.yaml`
 - [Secret Access Audit Trail](../security/secret-access-audit.md)
 - [Vulnerability Management Policy](../security/vulnerability-management.md)
 - Kubernetes Security Context: `deploy/operator/deployment.yaml` (non-root, read-only FS)

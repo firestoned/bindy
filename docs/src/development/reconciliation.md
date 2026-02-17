@@ -13,10 +13,10 @@ All reconcilers implement status change detection to prevent tight reconciliatio
 - Status doesn't exist yet
 
 This optimization is implemented in:
-- `Bind9Cluster` reconciler ([src/reconcilers/bind9cluster.rs:394-430](https://github.com/firestoned/bindy/blob/main/src/reconcilers/bind9cluster.rs#L394-L430))
-- `Bind9Instance` reconciler ([src/reconcilers/bind9instance.rs:736-758](https://github.com/firestoned/bindy/blob/main/src/reconcilers/bind9instance.rs#L736-L758))
+- `Bind9Cluster` reconciler ([src/reconcilers/bind9cluster/mod.rs:394-430](https://github.com/firestoned/bindy/blob/main/src/reconcilers/bind9cluster/mod.rs#L394-L430))
+- `Bind9Instance` reconciler ([src/reconcilers/bind9instance/mod.rs:736-758](https://github.com/firestoned/bindy/blob/main/src/reconcilers/bind9instance/mod.rs#L736-L758))
 - `DNSZone` reconciler ([src/reconcilers/dnszone.rs:535-565](https://github.com/firestoned/bindy/blob/main/src/reconcilers/dnszone.rs#L535-L565))
-- All record reconcilers ([src/reconcilers/records.rs:1032-1072](https://github.com/firestoned/bindy/blob/main/src/reconcilers/records.rs#L1032-L1072))
+- All record reconcilers ([src/reconcilers/records/mod.rs:1032-1072](https://github.com/firestoned/bindy/blob/main/src/reconcilers/records/mod.rs#L1032-L1072))
 
 ## Bind9Instance Reconciliation
 
