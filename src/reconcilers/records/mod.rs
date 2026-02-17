@@ -151,6 +151,7 @@ where
             current_generation,
             None, // record_hash
             None, // last_updated
+            None, // addresses
         )
         .await?;
         return Ok(None);
@@ -180,6 +181,7 @@ where
                 current_generation,
                 None, // record_hash
                 None, // last_updated
+                None, // addresses
             )
             .await?;
             return Ok(None);
@@ -207,6 +209,7 @@ where
                 current_generation,
                 None, // record_hash
                 None, // last_updated
+                None, // addresses
             )
             .await?;
             return Ok(None);
@@ -236,6 +239,7 @@ where
                 current_generation,
                 None, // record_hash
                 None, // last_updated
+                None, // addresses
             )
             .await?;
             return Ok(None);
@@ -257,6 +261,7 @@ where
             current_generation,
             None, // record_hash
             None, // last_updated
+            None, // addresses
         )
         .await?;
         return Ok(None);
@@ -1088,6 +1093,7 @@ where
                 current_generation,
                 Some(rec_ctx.current_hash),
                 Some(chrono::Utc::now().to_rfc3339()),
+                None, // addresses
             )
             .await?;
         }
@@ -1109,6 +1115,7 @@ where
                 current_generation,
                 None, // record_hash
                 None, // last_updated
+                None, // addresses
             )
             .await?;
         }
@@ -1130,7 +1137,30 @@ pub async fn reconcile_a_record(
     ctx: std::sync::Arc<crate::context::Context>,
     record: ARecord,
 ) -> Result<()> {
-    reconcile_record(ctx, record).await
+    // Reconcile the record
+    reconcile_record(ctx.clone(), record.clone()).await?;
+
+    // Update status with comma-separated addresses for kubectl output
+    let client = ctx.client.clone();
+    let namespace = record.namespace().unwrap_or_default();
+    let name = record.name_any();
+    let api: Api<ARecord> = Api::namespaced(client.clone(), &namespace);
+
+    // Format addresses as comma-separated list
+    let addresses = record.spec.ipv4_addresses.join(",");
+
+    // Patch just the addresses field in status
+    let status_patch = serde_json::json!({
+        "status": {
+            "addresses": addresses
+        }
+    });
+
+    api.patch_status(&name, &PatchParams::default(), &Patch::Merge(&status_patch))
+        .await
+        .context("Failed to update addresses in status")?;
+
+    Ok(())
 }
 
 /// Reconciles a `TXTRecord` (text) resource.
@@ -1207,6 +1237,7 @@ pub async fn reconcile_txt_record(
                 current_generation,
                 Some(rec_ctx.current_hash),
                 Some(chrono::Utc::now().to_rfc3339()),
+                None, // addresses
             )
             .await?;
         }
@@ -1225,6 +1256,7 @@ pub async fn reconcile_txt_record(
                 current_generation,
                 None, // record_hash
                 None, // last_updated
+                None, // addresses
             )
             .await?;
         }
@@ -1297,6 +1329,9 @@ pub async fn reconcile_aaaa_record(
             )
             .await?;
 
+            // Format addresses as comma-separated list for kubectl output
+            let addresses = record.spec.ipv6_addresses.join(",");
+
             update_record_status(
                 &client,
                 &record,
@@ -1307,6 +1342,7 @@ pub async fn reconcile_aaaa_record(
                 current_generation,
                 Some(rec_ctx.current_hash),
                 Some(chrono::Utc::now().to_rfc3339()),
+                Some(addresses),
             )
             .await?;
         }
@@ -1325,6 +1361,7 @@ pub async fn reconcile_aaaa_record(
                 current_generation,
                 None, // record_hash
                 None, // last_updated
+                None, // addresses
             )
             .await?;
         }
@@ -1409,6 +1446,7 @@ pub async fn reconcile_cname_record(
                 current_generation,
                 Some(rec_ctx.current_hash),
                 Some(chrono::Utc::now().to_rfc3339()),
+                None, // addresses
             )
             .await?;
         }
@@ -1427,6 +1465,7 @@ pub async fn reconcile_cname_record(
                 current_generation,
                 None, // record_hash
                 None, // last_updated
+                None, // addresses
             )
             .await?;
         }
@@ -1511,6 +1550,7 @@ pub async fn reconcile_mx_record(
                 current_generation,
                 Some(rec_ctx.current_hash),
                 Some(chrono::Utc::now().to_rfc3339()),
+                None, // addresses
             )
             .await?;
         }
@@ -1529,6 +1569,7 @@ pub async fn reconcile_mx_record(
                 current_generation,
                 None, // record_hash
                 None, // last_updated
+                None, // addresses
             )
             .await?;
         }
@@ -1612,6 +1653,7 @@ pub async fn reconcile_ns_record(
                 current_generation,
                 Some(rec_ctx.current_hash),
                 Some(chrono::Utc::now().to_rfc3339()),
+                None, // addresses
             )
             .await?;
         }
@@ -1630,6 +1672,7 @@ pub async fn reconcile_ns_record(
                 current_generation,
                 None, // record_hash
                 None, // last_updated
+                None, // addresses
             )
             .await?;
         }
@@ -1716,6 +1759,7 @@ pub async fn reconcile_srv_record(
                 current_generation,
                 Some(rec_ctx.current_hash),
                 Some(chrono::Utc::now().to_rfc3339()),
+                None, // addresses
             )
             .await?;
         }
@@ -1734,6 +1778,7 @@ pub async fn reconcile_srv_record(
                 current_generation,
                 None, // record_hash
                 None, // last_updated
+                None, // addresses
             )
             .await?;
         }
@@ -1820,6 +1865,7 @@ pub async fn reconcile_caa_record(
                 current_generation,
                 Some(rec_ctx.current_hash),
                 Some(chrono::Utc::now().to_rfc3339()),
+                None, // addresses
             )
             .await?;
         }
@@ -1838,6 +1884,7 @@ pub async fn reconcile_caa_record(
                 current_generation,
                 None, // record_hash
                 None, // last_updated
+                None, // addresses
             )
             .await?;
         }

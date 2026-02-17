@@ -29,6 +29,7 @@ mod tests {
             zone: None,
             zone_ref: None,
             record_hash: Some("hash123".to_string()),
+            addresses: None,
         }
     }
 

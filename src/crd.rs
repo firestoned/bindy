@@ -1208,7 +1208,8 @@ pub struct DNSZoneSpec {
     shortname = "a",
     doc = "ARecord maps a DNS hostname to an IPv4 address. Multiple A records for the same name enable round-robin DNS load balancing.",
     printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
-    printcolumn = r#"{"name":"Addresses","type":"string","jsonPath":".spec.ipv4Addresses"}"#,
+    printcolumn = r#"{"name":"Zone","type":"string","jsonPath":".status.zoneRef.zoneName"}"#,
+    printcolumn = r#"{"name":"Addresses","type":"string","jsonPath":".status.addresses"}"#,
     printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
@@ -1271,7 +1272,8 @@ pub struct ARecordSpec {
     shortname = "aaaa",
     doc = "AAAARecord maps a DNS hostname to an IPv6 address. This is the IPv6 equivalent of an A record.",
     printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
-    printcolumn = r#"{"name":"Addresses","type":"string","jsonPath":".spec.ipv6Addresses"}"#,
+    printcolumn = r#"{"name":"Zone","type":"string","jsonPath":".status.zoneRef.zoneName"}"#,
+    printcolumn = r#"{"name":"Addresses","type":"string","jsonPath":".status.addresses"}"#,
     printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
@@ -1331,6 +1333,7 @@ pub struct AAAARecordSpec {
     shortname = "txt",
     doc = "TXTRecord stores arbitrary text data in DNS. Commonly used for SPF, DKIM, DMARC policies, and domain verification.",
     printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
+    printcolumn = r#"{"name":"Zone","type":"string","jsonPath":".status.zoneRef.zoneName"}"#,
     printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
@@ -1386,6 +1389,8 @@ pub struct TXTRecordSpec {
     shortname = "cname",
     doc = "CNAMERecord creates a DNS alias from one hostname to another. A CNAME cannot coexist with other record types for the same name.",
     printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
+    printcolumn = r#"{"name":"Zone","type":"string","jsonPath":".status.zoneRef.zoneName"}"#,
+    printcolumn = r#"{"name":"Target","type":"string","jsonPath":".spec.target"}"#,
     printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
@@ -1442,6 +1447,9 @@ pub struct CNAMERecordSpec {
     shortname = "mx",
     doc = "MXRecord specifies mail exchange servers for a domain. Lower priority values indicate higher preference for mail delivery.",
     printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
+    printcolumn = r#"{"name":"Zone","type":"string","jsonPath":".status.zoneRef.zoneName"}"#,
+    printcolumn = r#"{"name":"Priority","type":"integer","jsonPath":".spec.priority"}"#,
+    printcolumn = r#"{"name":"Mail Server","type":"string","jsonPath":".spec.mailServer"}"#,
     printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
@@ -1500,6 +1508,8 @@ pub struct MXRecordSpec {
     shortname = "ns",
     doc = "NSRecord delegates a subdomain to authoritative nameservers. Used for subdomain delegation to different DNS providers or servers.",
     printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
+    printcolumn = r#"{"name":"Zone","type":"string","jsonPath":".status.zoneRef.zoneName"}"#,
+    printcolumn = r#"{"name":"Nameserver","type":"string","jsonPath":".spec.nameserver"}"#,
     printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
@@ -1555,6 +1565,9 @@ pub struct NSRecordSpec {
     shortname = "srv",
     doc = "SRVRecord specifies the hostname and port of servers for specific services. The record name follows the format _service._proto (e.g., _ldap._tcp).",
     printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
+    printcolumn = r#"{"name":"Zone","type":"string","jsonPath":".status.zoneRef.zoneName"}"#,
+    printcolumn = r#"{"name":"Target","type":"string","jsonPath":".spec.target"}"#,
+    printcolumn = r#"{"name":"Port","type":"integer","jsonPath":".spec.port"}"#,
     printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
@@ -1625,6 +1638,9 @@ pub struct SRVRecordSpec {
     shortname = "caa",
     doc = "CAARecord specifies which certificate authorities are authorized to issue certificates for a domain. Enhances domain security and certificate issuance control.",
     printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
+    printcolumn = r#"{"name":"Zone","type":"string","jsonPath":".status.zoneRef.zoneName"}"#,
+    printcolumn = r#"{"name":"Tag","type":"string","jsonPath":".spec.tag"}"#,
+    printcolumn = r#"{"name":"Value","type":"string","jsonPath":".spec.value"}"#,
     printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
     printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
 )]
@@ -1714,6 +1730,17 @@ pub struct RecordStatus {
     /// Uses RFC 3339 format (e.g., "2025-12-26T10:30:00Z").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_updated: Option<String>,
+    /// Comma-separated list of addresses for display purposes.
+    ///
+    /// For `ARecord` and `AAAARecord` resources, this field contains the IP addresses
+    /// from `spec.ipv4Addresses` or `spec.ipv6Addresses` joined with commas.
+    /// This is used for prettier kubectl output instead of showing JSON arrays.
+    ///
+    /// Example: "192.0.2.1,192.0.2.2,192.0.2.3"
+    ///
+    /// For other record types, this field is not used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub addresses: Option<String>,
 }
 
 /// RNDC/TSIG algorithm for authenticated communication and zone transfers.

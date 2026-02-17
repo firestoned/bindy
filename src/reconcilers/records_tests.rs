@@ -526,6 +526,7 @@ mod tests {
             zone_ref: None,
             record_hash: None,
             last_updated: None,
+            addresses: None,
         };
 
         assert_eq!(status.conditions.len(), 1);
@@ -560,6 +561,7 @@ mod tests {
             zone_ref: None,
             record_hash: None,
             last_updated: None,
+            addresses: None,
         };
 
         assert_eq!(status.conditions.len(), 2);
@@ -585,6 +587,7 @@ mod tests {
             zone_ref: None,
             record_hash: None,
             last_updated: None,
+            addresses: None,
         };
 
         assert_eq!(status.conditions[0].status, "False");
