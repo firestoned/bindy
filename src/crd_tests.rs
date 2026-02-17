@@ -560,6 +560,7 @@ mod tests {
             zone_ref: None,
             record_hash: None,
             last_updated: None,
+            addresses: None,
         };
 
         assert_eq!(status.conditions.len(), 1);
