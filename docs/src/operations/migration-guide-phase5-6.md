@@ -275,7 +275,7 @@ kubectl replace -f old-dnszone.yaml --force
 - [Label Selectors](../guide/label-selectors.md) - Understanding Kubernetes label selectors
 - [DNSZone Troubleshooting](dnszone-migration-troubleshooting.md) - Common migration issues
 - [DNSZone API Reference](../reference/dnszone-spec.md) - Complete API specification
-- [Changelog](https://github.com/firestoned/bindy/blob/main/CHANGELOG.md) - Full migration history
+- [Changelog](../changelog.md) - Full migration history
 
 ## Support
 

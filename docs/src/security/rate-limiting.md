@@ -386,7 +386,7 @@ pub async fn reconcile(zone: Arc<DNSZone>, ctx: Arc<Context>) -> Result<Action, 
   annotations:
     summary: "Runaway reconciliation loop detected"
     description: "{{ $value }} reconciliation errors per second (> 10/sec threshold)"
-    runbook_url: "https://github.com/firestoned/bindy/blob/main/docs/operations/runaway-reconciliation.md"
+    runbook_url: "../operations/error-handling.md"
 ```
 
 ---
@@ -484,7 +484,7 @@ kubectl logs -n dns-system -l app=bindy --follow | grep -i circuit
 
 ## See Also
 
-- [Compliance Roadmap - M-3](../../.github/COMPLIANCE_ROADMAP.md#m-3-implement-rate-limiting)
+- [Compliance Roadmap - M-3](../compliance/overview.md)
 - [Operational Resilience (Basel III)](../compliance/basel-iii.md#principle-5-cyber-resilience-and-response)
 - [Troubleshooting](../operations/troubleshooting.md)
 - [Performance Tuning](../advanced/tuning.md)

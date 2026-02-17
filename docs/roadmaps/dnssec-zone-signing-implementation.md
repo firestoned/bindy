@@ -1,12 +1,12 @@
 # DNSSEC Zone Signing Implementation Roadmap
 
-**Status:** Planning
+**Status:** Phases 1–4 Complete / Phase 5 In Progress
 **Priority:** Medium
 **Complexity:** High
 **Impact:** Security enhancement - cryptographic validation of DNS records
-**Target Completion:** TBD
 **Author:** Erick Bourgeois
 **Created:** 2026-01-02
+**Last Updated:** 2026-02-17
 
 ---
 
@@ -16,9 +16,10 @@ Implement full DNSSEC zone signing capabilities in bindy to enable cryptographic
 
 ### Current State
 - ✅ DNSSEC validation of upstream responses (`dnssec-validation yes/no`)
-- ❌ DNSSEC zone signing (zones are served unsigned)
-- ❌ DNSSEC key management
-- ❌ DNSSEC policy configuration
+- ✅ DNSSEC zone signing — CRD schema, policy config, key sources, zone config (Phases 1–4)
+- ✅ DNSSEC key management — Secret-backed and auto-generated key sources
+- ✅ DNSSEC policy configuration — `dnssec-policy` blocks generated in `named.conf`
+- 🚧 DS record status reporting — status struct exists; extraction logic pending (Phase 5)
 
 ### Target State
 - ✅ Automatic DNSSEC key generation (KSK + ZSK)
@@ -275,7 +276,7 @@ spec:
 
 ## Implementation Phases
 
-### Phase 1: CRD Schema Extensions (Week 1)
+### Phase 1: CRD Schema Extensions ✅ Complete
 
 **Goal:** Add DNSSEC signing configuration to CRDs
 
@@ -398,7 +399,7 @@ spec:
 
 ---
 
-### Phase 2: DNSSEC Policy Configuration (Week 2)
+### Phase 2: DNSSEC Policy Configuration ✅ Complete
 
 **Goal:** Generate `dnssec-policy` declarations in named.conf
 
@@ -542,7 +543,7 @@ spec:
 
 ---
 
-### Phase 3: Key Source Configuration (Week 3)
+### Phase 3: Key Source Configuration ✅ Complete
 
 **Goal:** Support multiple DNSSEC key sources (user-supplied Secrets, auto-generated, persistent storage)
 
@@ -887,7 +888,7 @@ spec:
 
 ---
 
-### Phase 4: Zone Configuration for Signing (Week 4)
+### Phase 4: Zone Configuration for Signing ✅ Complete
 
 **Goal:** Apply DNSSEC policy to zones via bindcar API
 
@@ -1028,7 +1029,7 @@ spec:
 
 ---
 
-### Phase 5: DS Record Status Reporting (Week 5)
+### Phase 5: DS Record Status Reporting 🚧 In Progress
 
 **Goal:** Extract DS records from signed zones and publish in status
 
@@ -1224,7 +1225,7 @@ spec:
 
 ---
 
-### Phase 6: Integration Testing & Validation (Week 6)
+### Phase 6: Integration Testing & Validation 🚧 Planned
 
 **Goal:** Comprehensive testing of DNSSEC signing functionality
 
@@ -1514,7 +1515,7 @@ spec:
 
 ---
 
-### Phase 7: Documentation & Examples (Week 7)
+### Phase 7: Documentation & Examples 🚧 Planned
 
 **Goal:** Complete user-facing documentation for DNSSEC feature
 

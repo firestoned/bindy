@@ -178,7 +178,7 @@ kubectl get pods -n dns-system -l app.kubernetes.io/name=bindy -o jsonpath='{.it
 **Step 1.4: Determine Impact**
 - **If Bindy is NOT vulnerable** (code path not reachable):
   - Update to patched version at next release (non-urgent)
-  - Document exception in https://github.com/firestoned/bindy/blob/main/SECURITY.md
+  - Document exception in ../../../SECURITY.md
   - Close incident as FALSE POSITIVE
 
 - **If Bindy IS vulnerable** (exploitable in production):
@@ -249,7 +249,7 @@ docker push ghcr.io/firestoned/bindy:hotfix-$(date +%s)
 **Option C: Apply Workaround (if no patch available)**
 - Disable vulnerable feature flag
 - Add input validation to prevent exploit
-- Document workaround in https://github.com/firestoned/bindy/blob/main/SECURITY.md
+- Document workaround in ../../../SECURITY.md
 
 **Step 3.2: Verify Fix**
 ```bash
@@ -323,7 +323,7 @@ trivy image ghcr.io/firestoned/bindy:hotfix-v0.1.1
 **Step 5.1: Document Incident**
 - Update `CHANGELOG.md` with hotfix details
 - Document root cause in incident report
-- Update `https://github.com/firestoned/bindy/blob/main/SECURITY.md` if needed (known issues, exceptions)
+- Update [SECURITY.md](../../../SECURITY.md) if needed (known issues, exceptions)
 
 **Step 5.2: Notify Stakeholders**
 - Update status page: "Resolved - Security patch deployed"
@@ -905,7 +905,7 @@ dig @<bind9-ip> example.com
 
 **Step 4.2: Update Documentation**
 ```bash
-# Update secret rotation procedure in https://github.com/firestoned/bindy/blob/main/SECURITY.md
+# Update secret rotation procedure in ../../../SECURITY.md
 # Document rotation frequency (e.g., quarterly, or after incident)
 ```
 
@@ -1534,7 +1534,7 @@ updates:
 
 **Step 5.4: Update Documentation**
 - Document supply chain incident in threat model
-- Update supply chain security controls in https://github.com/firestoned/bindy/blob/main/SECURITY.md
+- Update supply chain security controls in ../../../SECURITY.md
 - Add supply chain attack scenarios to threat model
 
 ---

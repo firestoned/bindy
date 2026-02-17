@@ -68,7 +68,7 @@ Key dependencies:
 - `serde` - Serialization
 - `tracing` - Logging
 
-See [Cargo.toml](https://github.com/firestoned/bindy/blob/main/Cargo.toml) for full list.
+See [Cargo.toml](../../../Cargo.toml) for full list.
 
 ## IDE Setup
 

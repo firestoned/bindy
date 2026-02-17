@@ -167,7 +167,7 @@ gh run list --workflow ci.yaml --limit 100
 
 | Control | Implementation | Evidence |
 |---------|----------------|----------|
-| **Least Privilege RBAC** | Operator minimal RBAC (create/delete secrets for RNDC lifecycle, delete managed resources for cleanup) | `deploy/rbac/clusterrole.yaml` |
+| **Least Privilege RBAC** | Operator minimal RBAC (create/delete secrets for RNDC lifecycle, delete managed resources for cleanup) | `deploy/rbac/role.yaml` |
 | **Minimal Delete Permissions** | Operator delete limited to managed resources (finalizer cleanup, scaling) | RBAC verification script |
 | **Secret Access Audit Trail** | All secret access logged (7-year retention) | [Secret Access Audit Trail](../security/secret-access-audit.md) |
 | **Quarterly Access Reviews** | Security team reviews access every quarter | Access review reports |
@@ -211,7 +211,7 @@ curl -X POST "https://elasticsearch:9200/bindy-audit-*/_search" \
 ```
 
 **Evidence for QSA:**
-- **RBAC Policy**: `deploy/rbac/clusterrole.yaml`
+- **RBAC Policy**: `deploy/rbac/role.yaml`
 - **RBAC Verification**: CI/CD artifact `rbac-verification.txt`
 - **Secret Access Logs**: Elasticsearch query results (quarterly)
 - **Access Reviews**: `docs/compliance/access-reviews/YYYY-QN.md`
@@ -410,7 +410,7 @@ aws s3api get-object-lock-configuration --bucket bindy-audit-logs
 
 | Policy Document | Location | Last Updated |
 |----------------|----------|--------------|
-| **Security Policy** | [SECURITY.md](https://github.com/firestoned/bindy/blob/mahttps://github.com/firestoned/bindy/blob/main/SECURITY.md) | 2025-12-18 |
+| **Security Policy** | [SECURITY.md](../../../SECURITY.md) | 2025-12-18 |
 | **Threat Model** | [docs/security/threat-model.md](../security/threat-model.md) | 2025-12-17 |
 | **Security Architecture** | [docs/security/architecture.md](../security/architecture.md) | 2025-12-17 |
 | **Incident Response** | [docs/security/incident-response.md](../security/incident-response.md) | 2025-12-17 |
@@ -471,7 +471,7 @@ For your annual PCI-DSS assessment, provide the QSA with:
    - Static analysis results (cargo clippy, cargo audit)
 
 2. **Requirement 7 (Access Controls)**:
-   - RBAC policy (`deploy/rbac/clusterrole.yaml`)
+   - RBAC policy (`deploy/rbac/role.yaml`)
    - RBAC verification output (CI/CD artifact)
    - Quarterly access review reports
    - Secret access audit logs (Elasticsearch query results)

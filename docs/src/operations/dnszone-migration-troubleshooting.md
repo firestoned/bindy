@@ -348,8 +348,8 @@ If issues persist:
 
 3. **Check known issues**:
    - [GitHub Issues](https://github.com/firestoned/bindy/issues)
-   - [CHANGELOG.md](https://github.com/firestoned/bindy/blob/main/CHANGELOG.md)
-   - [DNSZone Consolidation Roadmap](https://github.com/firestoned/bindy/blob/main/docs/roadmaps/dnszone-consolidation-roadmap.md)
+   - [CHANGELOG.md](../changelog.md)
+   - [DNSZone Migration Troubleshooting](../operations/dnszone-migration-troubleshooting.md)
 
 ## See Also
 

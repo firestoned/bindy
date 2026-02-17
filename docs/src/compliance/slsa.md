@@ -200,5 +200,5 @@ docker trust inspect ghcr.io/firestoned/bindy:v0.1.0
 - [Build Reproducibility Verification](../security/build-reproducibility.md) - SLSA Level 3 verification
 - [Security Architecture](../security/architecture.md) - Supply chain security
 - [Vulnerability Management](../security/vulnerability-management.md) - Dependency tracking
-- [SECURITY.md](https://github.com/firestoned/bindy/blob/mahttps://github.com/firestoned/bindy/blob/main/SECURITY.md) - Supply chain security section
+- [SECURITY.md](../../../SECURITY.md) - Supply chain security section
 - [SLSA Framework](https://slsa.dev/) - Official SLSA documentation

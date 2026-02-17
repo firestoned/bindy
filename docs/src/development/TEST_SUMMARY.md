@@ -152,7 +152,7 @@ When contributing code:
 4. Run `cargo test` before committing
 5. Update this summary if adding significant test coverage
 
-See [Contributing Guide](https://github.com/firestoned/bindy/blob/main/CONTRIBUTING.md) for detailed requirements.
+See [Contributing Guide](../../../CONTRIBUTING.md) for detailed requirements.
 
 ## Related Documentation
 

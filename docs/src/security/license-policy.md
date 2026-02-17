@@ -241,6 +241,6 @@ cat LICENSE
 ## See Also
 
 - [License Scan Workflow](../../.github/workflows/license-scan.yaml) - Automated license scanning
-- [Compliance Roadmap](../../.github/COMPLIANCE_ROADMAP.md) - M-2: Dependency License Scanning
+- [Compliance Roadmap](../compliance/overview.md) - M-2: Dependency License Scanning
 - [SECURITY.md](../../SECURITY.md) - Dependency management policy
 - [Basel III Compliance](../compliance/basel-iii.md) - Legal risk management

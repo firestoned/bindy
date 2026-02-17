@@ -31,11 +31,11 @@ The Basel Committee published **Cyber Risk Principles** in 2018, which define ex
 
 | Control | Implementation | Evidence |
 |---------|----------------|----------|
-| **Security Policy** | Comprehensive security policy documented | [SECURITY.md](https://github.com/firestoned/bindy/blob/mahttps://github.com/firestoned/bindy/blob/main/SECURITY.md) |
+| **Security Policy** | Comprehensive security policy documented | [SECURITY.md](../../../SECURITY.md) |
 | **Threat Model** | STRIDE threat analysis with 15 threats | [Threat Model](../security/threat-model.md) |
 | **Security Architecture** | 5 security domains documented | [Security Architecture](../security/architecture.md) |
 | **Incident Response** | 7 playbooks for critical/high incidents | [Incident Response](../security/incident-response.md) |
-| **Compliance Roadmap** | Tracking compliance implementation | [Compliance Roadmap](https://github.com/firestoned/bindy/blob/main/.github/COMPLIANCE_ROADMAP.md) |
+| **Compliance Roadmap** | Tracking compliance implementation | [Compliance Roadmap](./overview.md) |
 
 **Evidence:**
 - Security documentation (4,010 lines across 7 documents)
@@ -89,7 +89,7 @@ The Basel Committee published **Cyber Risk Principles** in 2018, which define ex
 
 | Control | Implementation | Evidence |
 |---------|----------------|----------|
-| **Least Privilege RBAC** | Operator minimal RBAC (create/delete secrets for RNDC lifecycle, delete managed resources for cleanup) | `deploy/rbac/clusterrole.yaml` |
+| **Least Privilege RBAC** | Operator minimal RBAC (create/delete secrets for RNDC lifecycle, delete managed resources for cleanup) | `deploy/rbac/role.yaml` |
 | **Secret Access Monitoring** | All secret access logged and alerted | [Secret Access Audit Trail](../security/secret-access-audit.md) |
 | **Quarterly Access Reviews** | Security team reviews access every quarter | `docs/compliance/access-reviews/` |
 | **2FA Enforcement** | GitHub requires 2FA for all contributors | GitHub organization settings |
@@ -106,7 +106,7 @@ The Basel Committee published **Cyber Risk Principles** in 2018, which define ex
 | **Security Team** | Read (audit logs) | Read | Read | Read | Read |
 
 **Evidence:**
-- RBAC policy: `deploy/rbac/clusterrole.yaml`
+- RBAC policy: `deploy/rbac/role.yaml`
 - RBAC verification: `./deploy/rbac/verify-rbac.sh`
 - Secret access logs: Elasticsearch query Q1 (quarterly)
 - Access review reports: `docs/compliance/access-reviews/YYYY-QN.md`
@@ -357,4 +357,4 @@ For Basel III operational risk reviews, provide:
 - [Incident Response](../security/incident-response.md) - 7 playbooks (P1-P7)
 - [Vulnerability Management](../security/vulnerability-management.md) - Remediation SLAs
 - [Audit Log Retention](../security/audit-log-retention.md) - Long-term log retention
-- [Compliance Roadmap](https://github.com/firestoned/bindy/blob/main/.github/COMPLIANCE_ROADMAP.md) - Tracking compliance progress
+- [Compliance Roadmap](./overview.md) - Tracking compliance progress

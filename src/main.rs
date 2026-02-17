@@ -40,6 +40,13 @@ use tracing::{debug, error, info, warn};
 struct ReconcileError(#[from] anyhow::Error);
 
 fn main() -> Result<()> {
+    // Install ring as the default TLS crypto provider. Both ring (via hickory-client/dnssec-ring)
+    // and aws-lc-rs (via reqwest) are compiled in as transitive dependencies, so rustls 0.23+
+    // requires an explicit provider to be installed before any TLS operation.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install ring CryptoProvider");
+
     // Build Tokio runtime with custom thread names
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(TOKIO_WORKER_THREADS)

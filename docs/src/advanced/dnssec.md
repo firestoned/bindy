@@ -2,32 +2,30 @@
 
 DNS Security Extensions (DNSSEC) provides cryptographic authentication of DNS data.
 
-## Current Implementation Status
+## Implementation Status
 
-**✅ DNSSEC Validation:** Bindy currently supports DNSSEC **validation** of responses from upstream nameservers.
-
-**🚧 DNSSEC Zone Signing:** Automatic zone signing is planned but not yet implemented. See [DNSSEC Zone Signing Roadmap](../roadmaps/dnssec-zone-signing-implementation.md) for implementation timeline.
+| Feature | Status | Notes |
+|---------|--------|-------|
+| DNSSEC Validation | ✅ Implemented | Validate upstream responses via `dnssec.validation` |
+| CRD Schema (Phase 1) | ✅ Implemented | `DNSSECConfig`, `DNSSECSigningConfig`, `DNSSECKeySource` types |
+| Policy Configuration (Phase 2) | ✅ Implemented | `dnssec-policy` blocks generated in `named.conf` |
+| Key Source Configuration (Phase 3) | ✅ Implemented | Secret-backed and auto-generated keys |
+| Zone Signing Configuration (Phase 4) | ✅ Implemented | Per-zone `dnssecPolicy` field, inline signing via bindcar |
+| DS Record Status Reporting (Phase 5) | 🚧 Planned | Status struct exists; extraction logic not yet implemented |
+| Integration Tests (Phase 6) | 🚧 Planned | Unit tests exist; end-to-end suite pending |
 
 ---
 
-## DNSSEC Validation (Current Feature)
+## DNSSEC Validation
 
-### Overview
+When DNSSEC validation is enabled, BIND9 verifies cryptographic signatures on DNS responses from upstream nameservers. This protects against cache poisoning, man-in-the-middle tampering, and spoofed DNS responses.
 
-When DNSSEC validation is enabled, BIND9 will verify cryptographic signatures on DNS responses from other nameservers. This protects against:
-- Cache poisoning attacks
-- Man-in-the-middle tampering
-- Spoofed DNS responses
-
-**Important:** DNSSEC validation requires:
-
-- Valid DNSSEC trust anchors
-- Proper network connectivity to root DNS servers
+**Requirements:**
+- Valid DNSSEC trust anchors (managed automatically by BIND9 via RFC 5011)
+- Network connectivity to root DNS servers
 - Accurate system time (NTP synchronization)
 
-Invalid or missing DNSSEC signatures will cause queries to fail when validation is enabled.
-
-### Enabling DNSSEC Validation
+### Configuration
 
 Configure validation in the `Bind9Cluster` global configuration:
 
@@ -55,174 +53,248 @@ spec:
   clusterRef: production-dns
   config:
     dnssec:
-      validation: true  # Instance-specific override
+      validation: true
 ```
 
 ### Verification
 
-Check that DNSSEC validation is working:
-
 ```bash
-# Get BIND9 pod IP or service IP
 SERVICE_IP=$(kubectl get svc -n dns-system production-dns-primary -o jsonpath='{.spec.clusterIP}')
 
-# Query a DNSSEC-signed domain
+# Query a DNSSEC-signed domain - look for 'ad' (authentic data) flag
 dig @$SERVICE_IP cloudflare.com +dnssec
-
-# Look for the 'ad' (authentic data) flag in the response
 # flags: qr rd ra ad; QUERY: 1, ANSWER: 1, ...
-#                ^^-- This indicates successful DNSSEC validation
+#                ^^-- successful DNSSEC validation
 
-# Query a domain known to have broken DNSSEC
-# This should FAIL if validation is working correctly
+# Query a domain with broken DNSSEC - should FAIL with SERVFAIL
 dig @$SERVICE_IP dnssec-failed.org
 ```
 
-### Troubleshooting DNSSEC Validation
-
-#### Validation Failures
-
-If queries fail with validation enabled:
+### Troubleshooting Validation
 
 ```bash
 # Check BIND9 logs for DNSSEC errors
 kubectl logs -n dns-system -l app.kubernetes.io/component=bind9 | grep -i dnssec
 
 # Common errors:
-# - "broken trust chain" - Missing or invalid DS records
-# - "no valid signature found" - Expired or missing RRSIG
-# - "validation failed" - Signature verification failed
+# "broken trust chain"      - Missing or invalid DS records in parent zone
+# "no valid signature found" - Expired or missing RRSIG records
+# "validation failed"        - Signature verification failed
+
+# Query without validation for debugging
+dig @$SERVICE_IP example.com +cd  # +cd = checking disabled
 ```
 
-#### Bypass Validation for Testing
-
-To query without DNSSEC validation (for debugging):
-
 ```bash
-# Use +cd (checking disabled) flag
-dig @$SERVICE_IP example.com +cd
-
-# This retrieves the response without validating signatures
-```
-
-#### Time Synchronization Issues
-
-DNSSEC signatures have validity periods and will fail if system time is incorrect:
-
-```bash
-# Check BIND9 pod time
+# Verify NTP sync - DNSSEC signatures have validity periods
 kubectl exec -n dns-system -l app.kubernetes.io/component=bind9 -- date
-
-# Compare with actual time
-date
-
-# If time is off, ensure NTP is configured on nodes
 ```
 
 ---
 
-## DNSSEC Zone Signing (Planned Feature)
+## DNSSEC Zone Signing
 
-**Status:** 🚧 Not yet implemented
+Bindy supports declarative DNSSEC zone signing using BIND9's modern `dnssec-policy` mechanism. Configuration is via `Bind9Cluster` (global policy) and optionally overridden per `DNSZone`.
 
-Bindy will support automatic DNSSEC zone signing in a future release, including:
+### How It Works
 
-- Automatic key generation (KSK and ZSK)
-- Configurable signing policies
-- Automatic key rotation
-- DS record generation for parent zones
-- NSEC3 support for authenticated denial
+1. The operator generates a `dnssec-policy` block in `named.conf` from your CRD config
+2. BIND9 handles key generation, signing, and automatic key rotation
+3. Each `DNSZone` can specify a policy via `spec.dnssecPolicy` (or inherit the cluster default)
 
-For details, see:
+### Cluster-Level Signing Configuration
 
-- [DNSSEC Zone Signing Roadmap](../roadmaps/dnssec-zone-signing-implementation.md)
-- [Roadmap vs Current State Analysis](../roadmaps/dnssec-roadmap-vs-current-state-analysis.md)
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Cluster
+metadata:
+  name: production-dns
+  namespace: dns-system
+spec:
+  global:
+    dnssec:
+      validation: true
+      signing:
+        enabled: true
+        policy: "default"          # Policy name referenced by zones
+        algorithm: "ECDSAP256SHA256"  # Recommended: ECDSA P-256
+        kskLifetime: "365d"        # Key Signing Key lifetime
+        zskLifetime: "90d"         # Zone Signing Key lifetime
+        nsec3: true                # Use NSEC3 (privacy-preserving)
+        nsec3Iterations: 0         # Per RFC 9276 recommendation
 
-### Manual Zone Signing (Workaround)
+        # Key management
+        autoGenerate: true         # BIND9 generates keys automatically
+        exportToSecret: true       # Back up generated keys to a Secret
+```
 
-Until automatic signing is implemented, you can manually sign zones inside BIND9 pods:
+This generates a `dnssec-policy` block in `named.conf` similar to:
+
+```bind
+dnssec-policy "default" {
+    keys {
+        ksk lifetime 365d algorithm ECDSAP256SHA256;
+        zsk lifetime 90d algorithm ECDSAP256SHA256;
+    };
+    nsec3param iterations 0 optout no salt-length 16;
+    signatures-refresh 5d;
+    signatures-validity 30d;
+    signatures-validity-dnskey 30d;
+    zone-propagation-delay 300;
+    parent-propagation-delay 3600;
+    max-zone-ttl 86400;
+};
+```
+
+### Per-Zone Policy Override
+
+Each `DNSZone` inherits the cluster's DNSSEC signing policy by default. Override it with `spec.dnssecPolicy`:
+
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: example-com
+  namespace: dns-system
+spec:
+  zoneName: example.com
+  clusterRef: production-dns
+  soaRecord:
+    primaryNs: ns1.example.com.
+    adminEmail: admin.example.com.
+    serial: 2026012801
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTtl: 86400
+  ttl: 3600
+
+  # Override cluster default or disable signing for this zone:
+  # dnssecPolicy: "high-security"  # Use a different named policy
+  # dnssecPolicy: "none"           # Disable signing for this zone
+```
+
+When `dnssecPolicy` is set, `inline-signing yes;` is automatically added to the zone configuration.
+
+### Key Source Options
+
+#### Option 1: Auto-Generated Keys (Recommended for Development)
+
+```yaml
+signing:
+  enabled: true
+  policy: "default"
+  autoGenerate: true
+  exportToSecret: true  # Back up keys to a Kubernetes Secret
+```
+
+BIND9 generates KSK and ZSK keys automatically. With `exportToSecret: true`, the operator exports the generated keys to a Secret for backup and recovery.
+
+#### Option 2: User-Supplied Keys (Recommended for Production)
+
+```yaml
+signing:
+  enabled: true
+  policy: "default"
+  keysFrom:
+    secretRef:
+      name: my-dnssec-keys
+      namespace: dns-system
+```
+
+Supply pre-generated keys via a Kubernetes Secret. The Secret is mounted read-only at `/var/cache/bind/keys`. This is the recommended production approach as it gives full control over key material.
+
+### Algorithm Selection
+
+| Algorithm | OID | Recommended Use |
+|-----------|-----|-----------------|
+| `ECDSAP256SHA256` | 13 | **Default — modern, fast, small keys** |
+| `ECDSAP384SHA384` | 14 | Higher security margin, slightly larger |
+| `RSASHA256` | 8 | Legacy compatibility only |
+
+Use `ECDSAP256SHA256` unless you have a specific compatibility requirement. Per [RFC 8624](https://www.rfc-editor.org/rfc/rfc8624.html), ECDSA algorithms are MUST implement for modern resolvers.
+
+### NSEC vs NSEC3
+
+| Setting | Privacy | Notes |
+|---------|---------|-------|
+| `nsec3: false` | ❌ Zone enumerable | Simpler, lower overhead |
+| `nsec3: true` | ✅ Hashed names | Recommended; use `nsec3Iterations: 0` per RFC 9276 |
+
+---
+
+## Completing the Chain of Trust
+
+After zones are signed, publish DS records in the parent zone to complete the DNSSEC chain of trust. The DS record links the child zone's KSK to the parent zone's trust.
+
+**Note:** DS record extraction (Phase 5) is not yet automated. Extract DS records manually:
 
 ```bash
-# 1. Generate keys (inside BIND9 pod)
+# Get DS records from signed zone
 kubectl exec -n dns-system -l app.kubernetes.io/component=bind9 -- \
-  dnssec-keygen -a ECDSAP256SHA256 -n ZONE example.com
+  dig @localhost example.com DNSKEY | dnssec-dsfromkey -f - example.com
 
-# 2. Sign the zone file
+# Or extract from BIND9's key directory
 kubectl exec -n dns-system -l app.kubernetes.io/component=bind9 -- \
-  dnssec-signzone -o example.com /var/cache/bind/db.example.com
-
-# 3. Extract DS record for parent zone
-kubectl exec -n dns-system -l app.kubernetes.io/component=bind9 -- \
-  cat dsset-example.com.
+  cat /var/cache/bind/keys/dsset-example.com.
 ```
 
-**Important:** Manual signing is not persistent across pod restarts and does not integrate with Bindy's declarative zone management. Use only for testing or temporary purposes.
+Publish the output DS records at your domain registrar or parent zone operator.
 
 ---
 
-## DNSSEC Record Types
+## DNSSEC Record Types Reference
 
-Understanding DNSSEC record types:
-
-| Record Type | Purpose | Example |
-|-------------|---------|---------|
-| **DNSKEY** | Public signing keys (KSK and ZSK) | `example.com. IN DNSKEY 257 3 13 ...` |
-| **RRSIG** | Cryptographic signatures for records | `example.com. IN RRSIG A 13 2 3600 ...` |
-| **NSEC** | Proof of non-existence (shows what doesn't exist) | `example.com. IN NSEC www.example.com. A RRSIG` |
-| **NSEC3** | Privacy-preserving proof of non-existence (hashed) | `abc123.example.com. IN NSEC3 1 0 10 ...` |
-| **DS** | Delegation signer (published in parent zone) | `example.com. IN DS 12345 13 2 ABC...` |
-
-**Note:** When DNSSEC signing is implemented, Bindy will automatically generate and manage these records.
+| Record | Purpose |
+|--------|---------|
+| **DNSKEY** | Public signing keys (KSK and ZSK) |
+| **RRSIG** | Cryptographic signatures for each RRset |
+| **NSEC** | Proof of non-existence (zone-enumerable) |
+| **NSEC3** | Privacy-preserving proof of non-existence (hashed names) |
+| **DS** | Delegation signer — published in the parent zone |
 
 ---
 
 ## Best Practices
 
-### For DNSSEC Validation (Current)
-
-1. **Test before production** - Enable validation in staging first to identify upstream DNSSEC issues
-2. **Monitor query failures** - Alert on increased SERVFAIL responses after enabling
-3. **Keep trust anchors updated** - BIND9 manages this automatically via RFC 5011
-4. **Ensure NTP sync** - DNSSEC signature validation requires accurate time
-5. **Document upstream dependencies** - Know which upstream resolvers support DNSSEC
-
-### For DNSSEC Signing (Future)
-
-When zone signing is implemented:
-
-1. **Start with test zones** - Validate DS record publication process
-2. **Monitor key expiration** - Alert before keys expire
-3. **Automate DS updates** - Integrate with domain registrar APIs where possible
-4. **Use NSEC3** - Provides better privacy than NSEC for zone enumeration
-5. **Plan for emergencies** - Have procedures for emergency key rollovers
+1. **Test in staging first** — Enable signing on non-critical zones before production
+2. **Use NSEC3** — Set `nsec3: true` and `nsec3Iterations: 0` per RFC 9276
+3. **Use ECDSAP256SHA256** — Modern, compact, widely supported
+4. **Back up keys** — Set `exportToSecret: true` or use `keysFrom.secretRef` for user-managed keys
+5. **Publish DS records promptly** — Signed zones without a parent DS record are signed but not validated by resolvers
+6. **Monitor for expiry** — Alert on RRSIG validity windows; BIND9 auto-renews but monitor for issues
+7. **Plan DS rollovers** — KSK rollovers require coordinating DS record updates with the parent zone
 
 ---
 
 ## Reference
 
-### DNSSEC RFCs
+### RFCs
 
 - [RFC 4033](https://www.rfc-editor.org/rfc/rfc4033.html) - DNS Security Introduction and Requirements
 - [RFC 4034](https://www.rfc-editor.org/rfc/rfc4034.html) - Resource Records for DNSSEC
 - [RFC 4035](https://www.rfc-editor.org/rfc/rfc4035.html) - Protocol Modifications for DNSSEC
 - [RFC 5155](https://www.rfc-editor.org/rfc/rfc5155.html) - NSEC3 (Hashed Authenticated Denial)
 - [RFC 8624](https://www.rfc-editor.org/rfc/rfc8624.html) - Algorithm Requirements and Usage
+- [RFC 9276](https://www.rfc-editor.org/rfc/rfc9276.html) - NSEC3 Parameter Guidance
 
 ### BIND9 Documentation
 
 - [BIND9 DNSSEC Guide](https://bind9.readthedocs.io/en/latest/dnssec-guide.html)
+- [BIND9 dnssec-policy Reference](https://bind9.readthedocs.io/en/latest/reference.html#dnssec-policy)
 - [DNSSEC Validation Configuration](https://bind9.readthedocs.io/en/latest/reference.html#dnssec-validation)
 
 ### External Tools
 
-- [DNSViz](https://dnsviz.net/) - DNSSEC visualization and debugging
-- [Verisign DNSSEC Analyzer](https://dnssec-analyzer.verisignlabs.com/) - DNSSEC chain validation
+- [DNSViz](https://dnsviz.net/) - DNSSEC chain visualization and debugging
+- [Verisign DNSSEC Analyzer](https://dnssec-analyzer.verisignlabs.com/) - Full chain validation
 - [DNSSEC Debugger](https://dnssec-debugger.verisignlabs.com/) - Interactive DNSSEC testing
 
 ---
 
-## Next Steps
+## See Also
 
-- [Security Overview](./security.md) - Overall security strategy
-- [Access Control](./access-control.md) - Query restrictions and ACLs
-- [RNDC Key Rotation](../guide/rndc-key-rotation.md) - Automatic RNDC key rotation (implemented)
+- [Security Overview](./security.md)
+- [Access Control](./access-control.md)
+- [RNDC Key Rotation](../guide/rndc-key-rotation.md)
+- [DNSSEC Zone Signing Implementation Roadmap](https://github.com/firestoned/bindy/blob/main/docs/roadmaps/dnssec-zone-signing-implementation.md)
