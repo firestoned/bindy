@@ -23,6 +23,12 @@ spec:
     - jsonPath: .spec.name
       name: Name
       type: string
+    - jsonPath: .status.zoneRef.zoneName
+      name: Zone
+      type: string
+    - jsonPath: .spec.target
+      name: Target
+      type: string
     - jsonPath: .spec.ttl
       name: TTL
       type: integer
@@ -90,6 +96,19 @@ spec:
             description: Generic record status
             nullable: true
             properties:
+              addresses:
+                description: |-
+                  Comma-separated list of addresses for display purposes.
+
+                  For `ARecord` and `AAAARecord` resources, this field contains the IP addresses
+                  from `spec.ipv4Addresses` or `spec.ipv6Addresses` joined with commas.
+                  This is used for prettier kubectl output instead of showing JSON arrays.
+
+                  Example: "192.0.2.1,192.0.2.2,192.0.2.3"
+
+                  For other record types, this field is not used.
+                nullable: true
+                type: string
               conditions:
                 default: []
                 items:

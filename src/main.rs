@@ -1394,6 +1394,8 @@ async fn reconcile_dnszone_wrapper(
     use bindy::constants::KIND_DNS_ZONE;
     use bindy::labels::FINALIZER_DNS_ZONE;
     const FINALIZER_NAME: &str = FINALIZER_DNS_ZONE;
+    // Minimum interval between reconciliations to prevent tight loops
+    const MIN_RECONCILE_INTERVAL_SECS: i64 = 2;
     let start = std::time::Instant::now();
 
     let context = ctx.0.clone();
@@ -1402,60 +1404,57 @@ async fn reconcile_dnszone_wrapper(
     let namespace = dnszone.namespace().unwrap_or_default();
     let api: Api<DNSZone> = Api::namespaced(client.clone(), &namespace);
 
-    // Smart reconciliation skip logic:
-    // - Skip if generation is unchanged AND no new records might be pending
-    // - Always reconcile if records might have been created (triggered by record watches)
-    // This prevents tight loops from status updates while ensuring record discovery runs
-    if let Some(status) = &dnszone.status {
-        if let (Some(observed_gen), Some(current_gen)) =
-            (status.observed_generation, dnszone.metadata.generation)
-        {
-            if observed_gen == current_gen {
-                // Generation unchanged - check if there might be new records to discover
-                // Use the reflector store to quickly check if any records exist that match
-                // this zone's recordsFrom selectors but aren't in status.records[]
-                let has_pending_records = if let Some(records_from) = &dnszone.spec.records_from {
-                    // Check if any record with matching labels exists that's not in status
-                    let known_records: std::collections::HashSet<String> = status
-                        .records
-                        .iter()
-                        .map(|r| format!("{}/{}/{}", r.kind, r.namespace, r.name))
-                        .collect();
+    // Smart reconciliation skip logic with rate limiting (uses early returns to avoid nesting)
 
-                    // Quick check: if status.records is empty but recordsFrom is configured,
-                    // there might be records to discover
-                    if known_records.is_empty() && !records_from.is_empty() {
-                        true
-                    } else {
-                        // Could add more sophisticated checks here, but for now
-                        // we'll be conservative and assume no pending records if generation
-                        // hasn't changed and we have some records already
-                        false
-                    }
-                } else {
-                    false
-                };
+    // Helper function to determine if we should skip reconciliation
+    let should_skip_reconciliation = || -> Option<i64> {
+        // Guard clause: No status? First reconciliation - don't skip
+        let status = dnszone.status.as_ref()?;
 
-                if has_pending_records {
-                    debug!(
-                        "Reconciling DNSZone {}/{} despite unchanged generation - potential new records to discover",
-                        namespace,
-                        dnszone.name_any()
-                    );
-                } else {
-                    debug!(
-                        "Skipping reconciliation for DNSZone {}/{} - status-only update (generation {} already reconciled, no pending records)",
-                        namespace,
-                        dnszone.name_any(),
-                        current_gen
-                    );
-                    // Re-check after 5 minutes for health monitoring
-                    return Ok(Action::requeue(Duration::from_secs(
-                        bindy::record_wrappers::REQUEUE_WHEN_READY_SECS,
-                    )));
-                }
-            }
+        // Guard clause: Missing generation info? Don't skip
+        let observed_gen = status.observed_generation?;
+        let current_gen = dnszone.metadata.generation?;
+
+        // Guard clause: Generation changed? Spec changed - don't skip
+        if observed_gen != current_gen {
+            return None;
         }
+
+        // Generation unchanged - check rate limiting to prevent tight loops
+        // Guard clause: No last reconciliation timestamp? Don't skip
+        let last_reconciled = status
+            .bind9_instances
+            .first()
+            .and_then(|inst| inst.last_reconciled_at.as_ref())?;
+
+        // Guard clause: Invalid timestamp? Don't skip
+        let last_time = chrono::DateTime::parse_from_rfc3339(last_reconciled).ok()?;
+
+        // Calculate elapsed time since last reconciliation
+        let now = chrono::Utc::now();
+        let elapsed = now.signed_duration_since(last_time.with_timezone(&chrono::Utc));
+
+        // Return elapsed seconds if we should skip (within rate limit window)
+        if elapsed.num_seconds() < MIN_RECONCILE_INTERVAL_SECS {
+            Some(elapsed.num_seconds())
+        } else {
+            None
+        }
+    };
+
+    // Check if we should skip due to rate limiting
+    if let Some(elapsed_secs) = should_skip_reconciliation() {
+        debug!(
+            "Skipping reconciliation for DNSZone {}/{} - rate limited (last reconciled {} seconds ago)",
+            namespace,
+            dnszone.name_any(),
+            elapsed_secs
+        );
+        // Re-check after interval expires
+        let remaining_secs = (MIN_RECONCILE_INTERVAL_SECS - elapsed_secs).max(0);
+        return Ok(Action::requeue(Duration::from_secs(
+            u64::try_from(remaining_secs).unwrap_or(1) + 1,
+        )));
     }
 
     // Handle deletion with finalizer

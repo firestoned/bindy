@@ -84,6 +84,7 @@ pub(super) async fn update_record_status<T>(
     observed_generation: Option<i64>,
     record_hash: Option<String>,
     last_updated: Option<String>,
+    addresses: Option<String>,
 ) -> Result<()>
 where
     T: Resource<DynamicType = (), Scope = k8s_openapi::NamespaceResourceScope>
@@ -200,6 +201,15 @@ where
         .and_then(|s| s.get("zoneRef"))
         .and_then(|z| serde_json::from_value::<crate::crd::ZoneReference>(z.clone()).ok());
 
+    // Use provided addresses if available, otherwise preserve existing
+    let status_addresses = addresses.or_else(|| {
+        current_json
+            .get("status")
+            .and_then(|s| s.get("addresses"))
+            .and_then(|a| a.as_str())
+            .map(ToString::to_string)
+    });
+
     #[allow(deprecated)] // Maintain backward compatibility with deprecated zone field
     let record_status = RecordStatus {
         conditions: vec![condition],
@@ -208,6 +218,7 @@ where
         zone_ref, // Preserved from existing status (set by DNSZone controller)
         record_hash,
         last_updated,
+        addresses: status_addresses, // Set by A/AAAA record reconcilers or preserved from existing
     };
 
     let status_patch = json!({

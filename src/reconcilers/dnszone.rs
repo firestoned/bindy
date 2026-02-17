@@ -1728,7 +1728,7 @@ async fn auto_generate_ns_records(
                 client,
                 &instance_ref.namespace,
                 &instance_ref.name,
-                "http",
+                "dns-tcp",
             )
             .await
             {
@@ -1895,7 +1895,7 @@ async fn add_glue_record(
             client,
             &instance_ref.namespace,
             &instance_ref.name,
-            "http",
+            "dns-tcp",
         )
         .await
         {

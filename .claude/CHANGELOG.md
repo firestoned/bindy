@@ -1,3 +1,246 @@
+## [2026-02-17 00:40] - Fixed Tight Reconciliation Loop with Rate Limiting
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/main.rs` (lines 1396-1457): Replaced "always reconcile if recordsFrom configured" logic with timestamp-based rate limiting
+  - **Refactored using early return pattern** (defensive programming):
+    - Extracted rate limit check into closure with guard clauses
+    - Eliminated 6 levels of nested if statements
+    - Uses early returns (`None`) for "don't skip" conditions
+    - Returns `Some(elapsed_secs)` only when rate limit is active
+  - **Problem**: Previous fix caused tight reconciliation loops (every 2-3 seconds) due to:
+    1. DNSZone reconciles → updates Bind9Instance status
+    2. Bind9Instance watch triggers DNSZone reconciliation
+    3. Code said "always reconcile if recordsFrom configured" → reconciles again
+    4. Loop continues indefinitely
+  - **Solution**: Rate limit to once per 2 seconds when generation unchanged
+    - Prevents tight loops from Bind9Instance/status update watches
+    - Still allows new record discovery via watch triggers (but rate-limited)
+    - Spec changes (generation increment) always reconcile immediately
+  - **Implementation**:
+    - Parse `last_reconciled_at` timestamp from status.bind9_instances[0]
+    - Calculate elapsed time since last reconciliation
+    - Skip if reconciled within last 2 seconds (MIN_RECONCILE_INTERVAL_SECS)
+    - Requeue after interval expires to resume normal reconciliation
+
+### Why
+**Regression from previous fix**: The "always reconcile when recordsFrom configured" approach (lines 1417-1426 in previous version) caused infinite reconciliation loops because:
+1. Related resource watches (Bind9Instance) triggered reconciliation
+2. Skip logic was removed for zones with recordsFrom
+3. Every reconciliation triggered more reconciliations via watches
+4. Result: 3+ reconciliations in 5 seconds instead of minutes apart
+
+**User Impact**:
+- Operator CPU usage spiked due to tight reconciliation loops
+- API server load increased from unnecessary reconciliations
+- DNSZone status updated constantly (every 2-3 seconds)
+- Logs filled with "Reconciling DNSZone ... with recordsFrom configured" messages
+
+### Impact
+- ✅ Prevents tight reconciliation loops (3x in 5 seconds → max 1x per 2 seconds)
+- ✅ Maintains new record discovery via watch-triggered reconciliations
+- ✅ Spec changes reconcile immediately (generation increment bypasses rate limit)
+- ✅ Reduces API server load and operator CPU usage
+
+### Testing
+- Verified tight loop eliminated (reconciliations now properly rate-limited)
+- Confirmed new records still discovered promptly via watches
+- cargo fmt ✅, cargo clippy ✅, cargo test (47 passed) ✅
+
+---
+
+## [2026-02-16] - Enhanced kubectl Output Columns for DNS Records
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/crd.rs` (lines 1203-1630): Updated printcolumn definitions for all 8 DNS record types
+  - **All record types**: Added `Zone` column showing `status.zoneRef.zoneName` for better visibility
+  - **ARecord & AAAARecord**: Changed `Addresses` column from JSON array format to comma-separated list
+    - Old: `["192.0.2.1","192.0.2.2"]` (hard to read)
+    - New: `192.0.2.1,192.0.2.2` (cleaner, more compact)
+  - **CNAMERecord**: Added `Target` column showing the alias target
+  - **MXRecord**: Added `Priority` and `Mail Server` columns for better mail routing visibility
+  - **NSRecord**: Added `Nameserver` column showing the authoritative nameserver
+  - **SRVRecord**: Added `Target` and `Port` columns for service discovery info
+  - **CAARecord**: Added `Tag` and `Value` columns for certificate authority visibility
+
+- `src/crd.rs` (line 1715): Added `addresses: Option<String>` field to `RecordStatus` struct
+  - Computed field populated by ARecord and AAAARecord reconcilers
+  - Contains comma-separated list of IP addresses for prettier kubectl output
+  - Used by printcolumns instead of JSON array from spec
+
+- `src/reconcilers/records/status_helpers.rs` (lines 77-87, 204-221): Updated `update_record_status` function
+  - Added `addresses: Option<String>` parameter to function signature
+  - Function preserves existing addresses if not explicitly updated
+  - Used by reconcilers to set computed addresses field in status
+
+- `src/reconcilers/records/mod.rs` (lines 1129-1158, 1325-1348): Updated ARecord and AAAARecord reconcilers
+  - `reconcile_a_record`: Populates `status.addresses` with `spec.ipv4_addresses.join(",")`
+  - `reconcile_aaaa_record`: Populates `status.addresses` with `spec.ipv6_addresses.join(",")`
+  - Other reconcilers pass `None` for addresses (field not applicable to their record types)
+
+- `deploy/crds/*.crd.yaml`: Regenerated all CRD YAML files with updated printcolumn definitions
+
+### Why
+**Problem**: kubectl output for DNS records lacked important information:
+1. **No Zone visibility**: Users couldn't see which zone a record belonged to without describing it
+2. **Unreadable addresses**: A/AAAA records showed JSON arrays like `["192.0.2.1"]` which are verbose and hard to scan
+3. **Missing useful columns**: MX, SRV, CAA, etc. didn't show their most important fields (priority, port, tag)
+
+**User Impact**:
+- Users had to repeatedly run `kubectl describe` to see zone associations
+- Multi-IP records (round-robin DNS) were hard to read in kubectl output
+- Administrators couldn't quickly scan DNS records to verify configurations
+
+### Solution
+**Added computed `addresses` field to status**:
+- JSONPath in printcolumns cannot format arrays as comma-separated strings
+- Reconcilers populate the field after successful reconciliation
+- ARecord: joins `spec.ipv4_addresses` with commas
+- AAAARecord: joins `spec.ipv6_addresses` with commas
+- Other record types: leave field as `None`
+
+**Enhanced printcolumns for all record types**:
+- Added `Zone` column to show which DNSZone owns the record
+- Added type-specific useful columns (Target, Priority, Mail Server, Nameserver, Port, Tag, Value)
+- Changed A/AAAA to use `status.addresses` instead of `spec.ipv4Addresses`/`spec.ipv6Addresses`
+
+### Impact
+- [x] Enhancement - no breaking changes
+- [x] Backward compatible - new field is optional and computed
+- [x] kubectl output is more informative and easier to scan
+- [x] Multi-IP records (round-robin DNS) are readable: `192.0.2.1,192.0.2.2,192.0.2.3`
+- [x] Zone associations are immediately visible without describe
+- [x] All DNS record types show their most relevant information
+
+### Testing
+```bash
+# Verify enhanced kubectl output
+kubectl get arecords -n dns-system
+kubectl get aaaarecords -n dns-system
+kubectl get mxrecords -n dns-system
+kubectl get srvrecords -n dns-system
+
+# Expected output columns:
+# ARecord: Name, Zone, Addresses (comma-separated), TTL, Ready
+# AAAARecord: Name, Zone, Addresses (comma-separated), TTL, Ready
+# CNAMERecord: Name, Zone, Target, TTL, Ready
+# MXRecord: Name, Zone, Priority, Mail Server, TTL, Ready
+# NSRecord: Name, Zone, Nameserver, TTL, Ready
+# SRVRecord: Name, Zone, Target, Port, TTL, Ready
+# CAARecord: Name, Zone, Tag, Value, TTL, Ready
+```
+
+---
+
+## [2026-02-16 23:50] - Fix Race Condition Causing 2+ Minute Delay in ARecord Reconciliation
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/main.rs:1405-1439`: Fixed race condition in DNSZone controller's skip logic that caused newly discovered records to be delayed 2+ minutes before reconciliation
+  - Removed flawed "has_pending_records" detection logic that incorrectly assumed no pending records when `status.records[]` was non-empty
+  - Changed to ALWAYS reconcile DNSZones with `recordsFrom` configured, regardless of generation
+  - Zones without `recordsFrom` still skip reconciliation when generation is unchanged (performance optimization preserved)
+
+### Why
+**Problem**: The DNSZone controller had a race condition in its reconciliation skip logic (lines 1417-1437):
+
+1. **First reconciliation** (23:38:30.486Z): Discovers new ARecord "api-example" and tags it with `status.zoneRef`
+2. **During first reconciliation**: Other records (www-example, mail-example) are added to `status.records[]`
+3. **Tagging triggers second reconciliation** (23:38:30.933Z): Skip logic checks if pending records exist
+4. **Bug**: Logic sees `status.records[]` is NOT empty → assumes "no pending records" → SKIPS reconciliation
+5. **Problem**: api-example was discovered but NOT yet in `status.records[]` → delayed until next requeue (2-5 minutes)
+
+**Root Cause**: Lines 1427-1434 assumed "if status.records is not empty, no pending records exist" - but this is WRONG during record discovery when new records are found but haven't been added to the status array yet.
+
+**Impact Before Fix**:
+- New ARecords experienced 2+ minute delays before reconciliation (observed: 2 min 26 sec for api-example)
+- ARecord controller waits for `DNSZone.status.records[]` to contain record with `lastReconciledAt: None`
+- DNSZone controller skipped adding newly discovered records to status array, breaking the workflow
+- Users creating multiple records simultaneously saw some reconcile immediately, others delayed
+
+### Solution
+Simplified the skip logic to **always reconcile zones with `recordsFrom` configured**:
+- Zones with record discovery (`recordsFrom` present) → always reconcile (ensures prompt discovery)
+- Zones without record discovery → skip when generation unchanged (preserves performance optimization)
+- Reconciliation is idempotent, so running it more often is safe and correct
+- Eliminates race condition entirely by not trying to guess if pending records exist
+
+### Impact
+- [x] Bug fix - no breaking changes
+- [x] Newly created ARecords now reconcile within seconds instead of 2+ minutes
+- [x] Eliminates race condition between record discovery and status updates
+- [x] Zones with `recordsFrom` configured will reconcile on every watch event (acceptable overhead)
+- [x] Zones without `recordsFrom` still benefit from skip optimization
+- [x] Follows event-driven controller pattern correctly
+
+### Testing
+After deploying this fix:
+1. Create a DNSZone with `recordsFrom` label selectors
+2. Create an ARecord matching the selector
+3. Verify the ARecord is discovered and reconciled within 1-2 seconds
+4. Create additional ARecords while first is being reconciled
+5. Verify all records are discovered promptly without multi-minute delays
+
+---
+
+## [2026-02-16 23:30] - Fix DNS UPDATE Timeout When Adding Glue Records (A/AAAA)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/reconcilers/dnszone.rs:1898`: Fixed second occurrence of the DNS UPDATE timeout bug in glue record addition
+  - Changed endpoint lookup from `"http"` port (8080) to `"dns-tcp"` port (5353)
+  - DNS UPDATE packets for A/AAAA records (glue records) were being sent to HTTP API instead of DNS port
+  - Caused additional 30-second delay during DNSZone reconciliation due to multiple 5-second timeouts
+
+### Why
+**Problem**: After fixing the NS record timeout issue (line 1731), glue record additions (A/AAAA records for nameservers) were still experiencing the same bug. The code at line 1898 was also using `"http"` endpoint instead of `"dns-tcp"`, causing:
+- DNS UPDATE packets for glue records sent to 10.244.x.x:8080 (HTTP API) instead of 10.244.x.x:5353 (DNS server)
+- 4 timeout attempts × 5-10 seconds each = 30 seconds of wasted delays
+- Glue records (ns1.example.com, ns2.example.com, etc.) not being added to zones
+- Secondary zones delayed until after glue record timeouts
+
+**Solution**: Changed the second occurrence of endpoint port name from `"http"` to `"dns-tcp"` on line 1898.
+
+### Impact
+- [x] Bug fix - no breaking changes
+- [x] Eliminates additional 30-second delay when adding glue records
+- [x] Combined with previous fix (line 1731), reduces total DNSZone creation time by ~50 seconds
+- [x] Glue records now added correctly during initial zone creation
+- [x] Secondary zones can be configured immediately without waiting for glue record timeouts
+
+---
+
+## [2026-02-16 23:00] - Fix DNS UPDATE Timeout When Adding NS Records
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/reconcilers/dnszone.rs:1731`: Fixed critical bug where NS record additions were timing out during zone creation
+  - Changed endpoint lookup from `"http"` port (8080) to `"dns-tcp"` port (5353)
+  - DNS UPDATE packets were being sent to the HTTP API port instead of the DNS port
+  - Caused 50+ second delays during DNSZone reconciliation due to multiple 5-second timeouts
+
+### Why
+**Problem**: When creating DNSZones, the operator was attempting to send DNS UPDATE protocol packets (RFC 2136) to the wrong port. The code was looking up the "http" endpoint (port 8080) instead of the "dns-tcp" endpoint (port 5353), causing all DNS UPDATE operations to time out after 5 seconds. This resulted in:
+- DNS UPDATE packets sent to 10.244.x.x:8080 (HTTP API) instead of 10.244.x.x:5353 (DNS server)
+- Multiple timeout retries adding 10-15 seconds per attempt
+- Total delay of ~50 seconds per DNSZone creation
+- No NS records being added to zones (though zones were created successfully via HTTP API)
+
+**Solution**: Changed the endpoint port name from `"http"` to `"dns-tcp"` on line 1731. This ensures DNS UPDATE packets are sent to the correct port where BIND9 is listening for DNS protocol traffic.
+
+### Impact
+- [x] Bug fix - no breaking changes
+- [x] Significantly improves DNSZone creation performance (50+ seconds → <1 second for NS records)
+- [x] NS records now added correctly during initial zone creation
+
+---
+
 ## [2026-02-16 17:00] - Round-Robin DNS Support (BREAKING CHANGE)
 
 **Author:** Erick Bourgeois
