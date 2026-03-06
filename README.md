@@ -20,6 +20,7 @@
 
 [![codecov](https://codecov.io/gh/firestoned/bindy/branch/main/graph/badge.svg)](https://codecov.io/gh/firestoned/bindy)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/firestoned/bindy/badge)](https://api.securityscorecards.dev/projects/github.com/firestoned/bindy)
+[![CodeQL](https://github.com/firestoned/bindy/actions/workflows/codeql.yml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/codeql.yml)
 [![Security Scan](https://github.com/firestoned/bindy/actions/workflows/security-scan.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/security-scan.yaml)
 
 ## Technology & Compatibility
@@ -504,6 +505,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 - **SLSA Level 3**: Build provenance for supply chain security
 - **SBOM**: CycloneDX SBOM included with every release
 - **Multi-Layer Security Scanning**:
+  - **CodeQL**: Static application security testing (SAST) for Rust code
   - **cargo-deny**: Dependency security, license compliance, and supply chain validation
   - **Gitleaks**: Pre-commit and CI secret scanning
   - **Trivy**: Container image and Kubernetes manifest vulnerability scanning
