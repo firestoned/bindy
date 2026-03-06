@@ -415,7 +415,7 @@ jobs:
           ls -lh ../provenance/ || echo "No provenance files found"
 
       - name: Upload release assets
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             artifacts/release/*.tar.gz
