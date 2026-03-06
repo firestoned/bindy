@@ -311,14 +311,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Setup Rust build environment
+        uses: firestoned/github-actions/rust/setup-rust-build@v1.3.2
+        with:
+          target: x86_64-unknown-linux-gnu
+          cache-key: release-${{ needs.extract-version.outputs.version }}
+
+      - name: Generate install.yaml
+        run: make install-yaml VERSION=${{ github.event.release.tag_name }}
+
       - name: Upload deploy manifests
         uses: actions/upload-artifact@v4
         with:
           name: deploy-manifests
           path: |
-            deploy/crds.yaml
-            deploy/rbac/*.yaml
-            deploy/operator/*.yaml
+            deploy/install.yaml
 
   upload-release-assets:
     name: Upload Release Assets
@@ -340,19 +347,8 @@ jobs:
           # Copy deployment manifests
           if [ -d "deploy-manifests" ]; then
             echo "Copying deployment manifests..."
-            # Copy CRDs
-            if [ -f "deploy-manifests/crds.yaml" ]; then
-              cp deploy-manifests/crds.yaml release/
-            fi
-            # Copy RBAC manifests
-            if compgen -G "deploy-manifests/rbac/*.yaml" > /dev/null; then
-              mkdir -p release/rbac
-              cp deploy-manifests/rbac/*.yaml release/rbac/
-            fi
-            # Copy operator manifests
-            if compgen -G "deploy-manifests/operator/*.yaml" > /dev/null; then
-              mkdir -p release/operator
-              cp deploy-manifests/operator/*.yaml release/operator/
+            if [ -f "deploy-manifests/install.yaml" ]; then
+              cp deploy-manifests/install.yaml release/
             fi
           fi
 
@@ -401,14 +397,8 @@ jobs:
           # Generate SHA256 checksums for all release artifacts
           cd release
           sha256sum *.tar.gz > checksums.sha256
-          if [ -f "crds.yaml" ]; then
-            sha256sum crds.yaml >> checksums.sha256
-          fi
-          if [ -d "rbac" ]; then
-            sha256sum rbac/*.yaml >> checksums.sha256
-          fi
-          if [ -d "operator" ]; then
-            sha256sum operator/*.yaml >> checksums.sha256
+          if [ -f "install.yaml" ]; then
+            sha256sum install.yaml >> checksums.sha256
           fi
           cd ../sboms
           sha256sum *.json >> ../release/checksums.sha256
@@ -429,9 +419,7 @@ jobs:
         with:
           files: |
             artifacts/release/*.tar.gz
-            artifacts/release/crds.yaml
-            artifacts/release/rbac/*.yaml
-            artifacts/release/operator/*.yaml
+            artifacts/release/install.yaml
             artifacts/sboms/*.json
             artifacts/signatures/*.bundle
             artifacts/provenance/*.intoto.jsonl

@@ -1,0 +1,12 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    kubernetes.io/metadata.name: dns-system
+  name: dns-system
+spec:
+  finalizers:
+  - kubernetes

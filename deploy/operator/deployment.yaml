@@ -1,3 +1,6 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -35,17 +38,9 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - name: RUST_LOG
-              valueFrom:
-                configMapKeyRef:
-                  name: bindy-config
-                  key: log-level
-                  optional: true
+              value: "info"
             - name: RUST_LOG_FORMAT
-              valueFrom:
-                configMapKeyRef:
-                  name: bindy-config
-                  key: log-format
-                  optional: true
+              value: "text"
             - name: POD_NAME
               valueFrom:
                 fieldRef:
