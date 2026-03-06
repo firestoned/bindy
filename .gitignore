@@ -29,8 +29,9 @@ htmlcov/
 # Kubernetes
 *.kubeconfig
 
-# Generated CRDs
+# Generated deploy artifacts
 /deploy/crds.yaml
+/deploy/install.yaml
 
 # OS
 .DS_Store
