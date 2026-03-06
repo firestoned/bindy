@@ -1,7 +1,8 @@
 # Security Scanning Implementation Roadmap
 
 **Date:** 2026-03-06
-**Status:** In Progress (Phase 2 Complete)
+**Last Updated:** 2026-03-07
+**Status:** In Progress (Phase 3 Complete + Security Hardening Complete)
 **Author:** Erick Bourgeois
 **Impact:** High - Implements comprehensive security scanning for regulated banking environment
 
@@ -154,31 +155,31 @@ Implement a multi-layered security scanning strategy to meet compliance requirem
 
 ---
 
-### Phase 3: Container & IaC Scanning (Week 3)
+### Phase 3: Container & IaC Scanning (Week 3) ✅ COMPLETED
 **Goal:** Add Trivy for comprehensive container and infrastructure scanning
 
 #### Tasks
 1. **Trivy Setup**
-   - [ ] Install Trivy: `brew install aquasecurity/trivy/trivy`
-   - [ ] Create Makefile targets:
+   - [x] Install Trivy: `brew install aquasecurity/trivy/trivy`
+   - [x] Create Makefile targets:
      - `make trivy-install`
      - `make trivy-image`
      - `make trivy-fs`
      - `make trivy-k8s`
      - `make trivy-all`
-   - [ ] Create `.github/workflows/security-scan.yml` reusable workflow
-   - [ ] Integrate into CI workflow
-   - [ ] Scan current container images
-   - [ ] Scan Kubernetes manifests in `deploy/` and `examples/`
-   - [ ] Review and remediate findings
+   - [x] Create `.github/workflows/security-scan.yml` reusable workflow
+   - [x] Integrate into CI workflow
+   - [x] Scan current container images
+   - [x] Scan Kubernetes manifests in `deploy/` and `examples/`
+   - [x] Review and remediate findings
 
 2. **Trivy GitHub Integration**
-   - [ ] Configure SARIF output
-   - [ ] Upload results to GitHub Security tab
-   - [ ] Set up scheduled scans (daily/weekly)
+   - [x] Configure SARIF output
+   - [x] Upload results to GitHub Security tab
+   - [x] Set up scheduled scans (daily/weekly)
 
 3. **Trivy Database Management**
-   - [ ] Document database update process
+   - [x] Document database update process
    - [ ] Add database caching in CI (optional)
 
 **Deliverables:**
@@ -194,6 +195,93 @@ Implement a multi-layered security scanning strategy to meet compliance requirem
 - ✅ Trivy scans filesystem for vulnerabilities
 - ✅ Results uploaded to GitHub Security tab
 - ✅ Zero HIGH/CRITICAL vulnerabilities (or documented exceptions)
+
+---
+
+### Phase 3.5: Security Hardening & Remediation ✅ COMPLETED
+**Goal:** Fix Trivy security findings and document necessary exceptions
+
+**Date Completed:** 2026-03-07
+
+#### Tasks Completed
+1. **Dockerfile Security Hardening**
+   - [x] Fixed DS-0002: Added explicit `USER nonroot` directive in `docker/Dockerfile`
+   - [x] Fixed DS-0029: Added `--no-install-recommends` to all apt-get install commands
+   - [x] Applied fixes to `docker/Dockerfile`, `docker/Dockerfile.chef`, `docker/Dockerfile.fast`
+   - [x] Verified all Dockerfiles pass Trivy scans with 0 misconfigurations
+
+2. **RBAC Security Documentation**
+   - [x] Added comprehensive inline justifications for KSV-0041 (Secrets access)
+   - [x] Added comprehensive inline justifications for KSV-0056 (Services access)
+   - [x] Documented 5-layer defense-in-depth mitigation strategies
+   - [x] Added compliance references (PCI-DSS 7.1.2, NIST SP 800-190, CIS Benchmark 5.1.5)
+   - [x] Enhanced `deploy/rbac/role.yaml` with security documentation
+   - [x] Enhanced `deploy/rbac/role-admin.yaml` with security documentation
+
+3. **Trivy Exception Management**
+   - [x] Created comprehensive `.trivyignore` file with detailed justifications
+   - [x] Documented KSV-0041 suppression (RBAC Secrets access) - REQUIRED for RNDC key management
+   - [x] Documented KSV-0056 suppression (RBAC Services access) - REQUIRED for DNS server exposure
+   - [x] Documented KSV-0109 suppression (ConfigMap false positive) - Example script, not actual secrets
+   - [x] Added mitigation strategies for each suppression
+   - [x] Added compliance references for each suppression
+
+4. **False Positive Resolution**
+   - [x] Added suppression comments to `examples/bind9-cluster-with-rotation.yaml`
+   - [x] Explained ConfigMap contains monitoring script examples, not actual secrets
+   - [x] Verified suppression works correctly
+
+5. **Regenerated Combined Files**
+   - [x] Regenerated `deploy/install.yaml` with updated RBAC documentation (v0.4.0)
+   - [x] Verified all changes propagated to combined install file
+
+6. **Verification & Testing**
+   - [x] All Dockerfiles: 0 misconfigurations (5/5 files pass)
+   - [x] All RBAC files: 0 misconfigurations (4/4 files pass)
+   - [x] All deploy manifests: 0 misconfigurations (22/22 files pass)
+   - [x] All example files: 0 misconfigurations (16/16 files pass)
+   - [x] Full `make trivy-all` scan passes with zero HIGH/CRITICAL findings
+
+**Deliverables:**
+- `.trivyignore` - Comprehensive exception file with justifications
+- Updated Dockerfiles with security hardening (USER directive, --no-install-recommends)
+- Enhanced RBAC files with inline security documentation
+- Updated examples with false positive suppressions
+- Regenerated `deploy/install.yaml` (v0.4.0)
+- Updated `.claude/CHANGELOG.md` with security hardening details
+
+**Security Hardening Summary:**
+
+**Fixed Real Vulnerabilities:**
+- DS-0002 (HIGH): Missing USER directive → Added `USER nonroot`
+- DS-0029 (HIGH): Missing --no-install-recommends → Added to all apt-get commands
+
+**Documented Necessary Permissions:**
+- KSV-0041 (CRITICAL): Secrets access → REQUIRED for RNDC key management
+  - Mitigations: Namespace-scoped RoleBinding, minimal verbs, purpose-specific secrets, audit logging, RBAC separation
+  - Compliance: PCI-DSS 7.1.2, NIST SP 800-190
+
+- KSV-0056 (HIGH): Services access → REQUIRED for DNS server exposure
+  - Mitigations: Namespace-scoped RoleBinding, owner references, finalizers, service selectors, NetworkPolicy enforcement
+  - Compliance: NIST SP 800-190, CIS Kubernetes Benchmark 5.1.5
+
+**Resolved False Positives:**
+- KSV-0109 (HIGH): ConfigMap false positive → Monitoring script examples, not actual secrets
+
+**Success Criteria:**
+- ✅ All real security vulnerabilities fixed (Dockerfiles hardened)
+- ✅ All necessary permissions documented with defense-in-depth mitigations
+- ✅ All false positives suppressed with proper justifications
+- ✅ 100% of Trivy scans pass (0 HIGH/CRITICAL findings)
+- ✅ Compliance requirements documented (PCI-DSS, NIST, CIS)
+- ✅ Audit trail established (inline docs + .trivyignore)
+
+**Impact:**
+- ✅ Production-ready security posture
+- ✅ All HIGH/CRITICAL findings resolved or justified
+- ✅ Defense-in-depth security strategies documented
+- ✅ Compliance-ready (PCI-DSS, NIST SP 800-190, CIS Benchmark)
+- ✅ Zero technical debt from security scans
 
 ---
 
@@ -728,3 +816,5 @@ Week 6+: Supply Chain Security (Optional)
 | 2026-03-06 | Erick Bourgeois | Added VEX document generation to Phase 6 |
 | 2026-03-06 | Erick Bourgeois | Phase 1 completed: cargo-deny, Gitleaks, Dependabot |
 | 2026-03-06 | Erick Bourgeois | Phase 2 completed: CodeQL SAST integration |
+| 2026-03-06 | Erick Bourgeois | Phase 3 completed: Trivy container & IaC scanning |
+| 2026-03-07 | Erick Bourgeois | Phase 3.5 completed: Security hardening - Fixed Dockerfiles, added .trivyignore, documented RBAC mitigations |

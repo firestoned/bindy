@@ -174,11 +174,20 @@ spec:
 
 ---
 # ConfigMap with monitoring queries to verify RNDC rotation
+# trivy:ignore:KSV-0109
+# Suppression Justification (KSV-0109 - ConfigMap Stores Secrets):
+#   FALSE POSITIVE - This ConfigMap contains example kubectl commands for monitoring RNDC rotation.
+#   The bash script references Kubernetes Secret resource names (e.g., "kubectl get secret $SECRET")
+#   but does NOT store actual secret values. Trivy incorrectly detects the word "Secret" in the script.
+#   Content: Monitoring script that demonstrates how to check RNDC rotation status using kubectl.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: rndc-rotation-monitoring
   namespace: dns-system
+  annotations:
+    # Trivy suppression - see comments above for justification
+    trivy.aquasecurity.com/ignore: KSV-0109
 data:
   check-rotation-status.sh: |
     #!/bin/bash
@@ -224,7 +233,7 @@ data:
     SECRET="${INSTANCE}-rndc"
 
     echo "Triggering manual rotation for instance: $INSTANCE"
-    echo "Secret: $SECRET"
+    echo "RNDC Secret Name: $SECRET"
 
     # Update created-at annotation to past timestamp to trigger rotation
     kubectl annotate secret $SECRET \

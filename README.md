@@ -481,6 +481,8 @@ cargo test
 ```bash
 make cargo-deny           # Check dependencies & licenses
 make gitleaks             # Scan for secrets
+make trivy-fs             # Scan filesystem for vulnerabilities
+make trivy-k8s            # Scan Kubernetes manifests
 make install-git-hooks    # Install pre-commit hooks
 make security-scan-full   # Run all security scans
 ```

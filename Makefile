@@ -13,6 +13,7 @@ KIND_CONTEXT ?= "kind-$(KIND_CLUSTER)"
 
 # Security tool versions
 GITLEAKS_VERSION ?= 8.21.2
+TRIVY_VERSION ?= 0.69.3
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -167,13 +168,147 @@ gitleaks: gitleaks-install ## Scan for hardcoded secrets and credentials
 	@echo "Scanning for secrets with gitleaks..."
 	@gitleaks detect --source . --verbose --redact
 
+trivy-install: ## Install Trivy scanner from GitHub with checksum verification
+	@if ! command -v trivy >/dev/null 2>&1; then \
+		echo "Installing Trivy v$(TRIVY_VERSION)..."; \
+		OS=$$(uname -s); \
+		ARCH=$$(uname -m); \
+		case "$$ARCH" in \
+			x86_64) ARCH="64bit" ;; \
+			aarch64|arm64) ARCH="ARM64" ;; \
+		esac; \
+		case "$$OS" in \
+			Linux) PLATFORM="Linux-$${ARCH}" ;; \
+			Darwin) PLATFORM="macOS-$${ARCH}" ;; \
+			*) echo "Unsupported platform: $$OS"; exit 1 ;; \
+		esac; \
+		TARBALL="trivy_$(TRIVY_VERSION)_$${PLATFORM}.tar.gz"; \
+		BASE_URL="https://github.com/aquasecurity/trivy/releases/download/v$(TRIVY_VERSION)"; \
+		echo "Downloading Trivy for $${PLATFORM}..."; \
+		curl -sSL -o /tmp/$${TARBALL} $${BASE_URL}/$${TARBALL}; \
+		echo "Downloading checksums..."; \
+		curl -sSL -o /tmp/trivy_checksums.txt $${BASE_URL}/trivy_$(TRIVY_VERSION)_checksums.txt; \
+		echo "Verifying checksum..."; \
+		EXPECTED_CHECKSUM=$$(grep "$${TARBALL}" /tmp/trivy_checksums.txt | awk '{print $$1}'); \
+		if [ -z "$$EXPECTED_CHECKSUM" ]; then \
+			echo "Error: Could not find checksum for $${TARBALL}"; \
+			rm -f /tmp/$${TARBALL} /tmp/trivy_checksums.txt; \
+			exit 1; \
+		fi; \
+		if [ "$$OS" = "Darwin" ]; then \
+			ACTUAL_CHECKSUM=$$(shasum -a 256 /tmp/$${TARBALL} | awk '{print $$1}'); \
+		else \
+			ACTUAL_CHECKSUM=$$(sha256sum /tmp/$${TARBALL} | awk '{print $$1}'); \
+		fi; \
+		if [ "$$EXPECTED_CHECKSUM" != "$$ACTUAL_CHECKSUM" ]; then \
+			echo "Checksum verification failed!"; \
+			echo "Expected: $$EXPECTED_CHECKSUM"; \
+			echo "Actual:   $$ACTUAL_CHECKSUM"; \
+			rm -f /tmp/$${TARBALL} /tmp/trivy_checksums.txt; \
+			exit 1; \
+		fi; \
+		echo "✓ Checksum verified"; \
+		tar -xzf /tmp/$${TARBALL} -C /tmp; \
+		if [ -w /usr/local/bin ]; then \
+			mv /tmp/trivy /usr/local/bin/; \
+		else \
+			echo "Installing to ~/.local/bin (need sudo for /usr/local/bin)..."; \
+			mkdir -p ~/.local/bin; \
+			mv /tmp/trivy ~/.local/bin/; \
+			export PATH="$$HOME/.local/bin:$$PATH"; \
+		fi; \
+		rm -f /tmp/$${TARBALL} /tmp/trivy_checksums.txt; \
+		echo "✓ Trivy v$(TRIVY_VERSION) installed successfully"; \
+	else \
+		echo "✓ Trivy already installed: $$(trivy --version)"; \
+	fi
+
+trivy-image: trivy-install ## Scan container image for vulnerabilities (usage: make trivy-image IMAGE_TAG=latest)
+	@if [ -z "$(IMAGE_TAG)" ]; then \
+		echo "Error: IMAGE_TAG parameter required. Usage: make trivy-image IMAGE_TAG=latest"; \
+		exit 1; \
+	fi
+	@echo "Scanning container image: $(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)"
+	@trivy image \
+		--severity HIGH,CRITICAL \
+		--format table \
+		--exit-code 0 \
+		$(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)
+
+trivy-image-sarif: trivy-install ## Scan container image and output SARIF (for GitHub Security)
+	@if [ -z "$(IMAGE_TAG)" ]; then \
+		echo "Error: IMAGE_TAG parameter required. Usage: make trivy-image-sarif IMAGE_TAG=latest"; \
+		exit 1; \
+	fi
+	@echo "Scanning container image: $(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)"
+	@trivy image \
+		--severity HIGH,CRITICAL \
+		--format sarif \
+		--output trivy-image-results.sarif \
+		$(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)
+	@echo "✓ SARIF results written to trivy-image-results.sarif"
+
+trivy-fs: trivy-install ## Scan filesystem for vulnerabilities and misconfigurations
+	@echo "Scanning filesystem for vulnerabilities..."
+	@trivy fs \
+		--severity HIGH,CRITICAL \
+		--scanners vuln,secret,misconfig \
+		--format table \
+		--exit-code 0 \
+		.
+
+trivy-fs-sarif: trivy-install ## Scan filesystem and output SARIF (for GitHub Security)
+	@echo "Scanning filesystem for vulnerabilities..."
+	@trivy fs \
+		--severity HIGH,CRITICAL \
+		--scanners vuln,secret,misconfig \
+		--format sarif \
+		--output trivy-fs-results.sarif \
+		.
+	@echo "✓ SARIF results written to trivy-fs-results.sarif"
+
+trivy-k8s: trivy-install ## Scan Kubernetes manifests for misconfigurations
+	@echo "Scanning Kubernetes manifests in deploy/..."
+	@trivy config \
+		--severity HIGH,CRITICAL \
+		--format table \
+		--exit-code 0 \
+		deploy/
+	@echo ""
+	@echo "Scanning Kubernetes manifests in examples/..."
+	@trivy config \
+		--severity HIGH,CRITICAL \
+		--format table \
+		--exit-code 0 \
+		examples/
+
+trivy-k8s-sarif: trivy-install ## Scan Kubernetes manifests and output SARIF (for GitHub Security)
+	@echo "Scanning Kubernetes manifests in deploy/..."
+	@trivy config \
+		--severity HIGH,CRITICAL \
+		--format sarif \
+		--output trivy-k8s-deploy-results.sarif \
+		deploy/
+	@echo "✓ SARIF results written to trivy-k8s-deploy-results.sarif"
+	@echo ""
+	@echo "Scanning Kubernetes manifests in examples/..."
+	@trivy config \
+		--severity HIGH,CRITICAL \
+		--format sarif \
+		--output trivy-k8s-examples-results.sarif \
+		examples/
+	@echo "✓ SARIF results written to trivy-k8s-examples-results.sarif"
+
+trivy-all: trivy-fs trivy-k8s ## Run all Trivy security scans (filesystem + Kubernetes manifests)
+	@echo "✓ All Trivy scans completed"
+
 security-scan-local: cargo-deny gitleaks ## Run local security scans (pre-commit)
 	@echo "✓ Local security scans completed"
 
 security-scan-quick: cargo-deny gitleaks ## Run quick security scans (for CI)
 	@echo "✓ Quick security scans completed"
 
-security-scan-full: cargo-deny gitleaks ## Run all security scans (Phase 1 only)
+security-scan-full: cargo-deny gitleaks trivy-all ## Run all security scans (includes Trivy)
 	@echo "✓ All security scans completed"
 
 install-git-hooks: ## Install git pre-commit hooks (gitleaks secret scanning)

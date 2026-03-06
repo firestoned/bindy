@@ -30,7 +30,7 @@ ARG VERSION=0.1.0
 # Install musl target and cross-compilation tools for static linking
 RUN rustup target add aarch64-unknown-linux-musl x86_64-unknown-linux-musl && \
     apt-get update && \
-    apt-get install -y musl-tools && \
+    apt-get install -y --no-install-recommends musl-tools && \
     rm -rf /var/lib/apt/lists/*
 
 # Determine the musl target based on architecture
