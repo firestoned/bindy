@@ -1,0 +1,173 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
+name: CodeQL Security Analysis
+
+on:
+  # Reusable workflow - can be called by other workflows
+  workflow_call:
+    inputs:
+      languages:
+        description: 'Languages to analyze (comma-separated)'
+        required: false
+        type: string
+        default: 'rust'
+      config-file:
+        description: 'Path to CodeQL config file'
+        required: false
+        type: string
+        default: ''
+    outputs:
+      sarif-file:
+        description: 'Path to generated SARIF file'
+        value: ${{ jobs.analyze.outputs.sarif-file }}
+
+  # Scheduled scan - weekly on Monday at 9 AM UTC
+  schedule:
+    - cron: '0 9 * * 1'
+
+  # Run on push to main branch
+  push:
+    branches: [ main ]
+
+  # Run on pull requests
+  pull_request:
+    branches: [ main ]
+
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      languages:
+        description: 'Languages to analyze (comma-separated)'
+        required: false
+        type: string
+        default: 'rust'
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  analyze:
+    name: Analyze Rust Code
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      sarif-file: ${{ steps.upload.outputs.sarif-file }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ 'rust' ]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for better analysis
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-index-
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-codeql-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-codeql-
+            ${{ runner.os }}-cargo-build-
+
+      # Initialize CodeQL for Rust analysis
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          config-file: ${{ inputs.config-file || '' }}
+          # Use default Rust query suite
+          # Available suites: security-extended, security-and-quality
+          queries: security-and-quality
+
+      # Build the Rust project
+      # CodeQL analyzes the build process to understand the code
+      - name: Build Rust project
+        run: cargo build --all-features --all-targets
+
+      # Perform CodeQL analysis
+      - name: Perform CodeQL Analysis
+        id: analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
+          upload: true
+
+      # Upload SARIF file as artifact for offline review
+      - name: Upload SARIF as artifact
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeql-sarif-${{ matrix.language }}-${{ github.run_number }}
+          path: ${{ steps.analyze.outputs.sarif-output }}/${{ matrix.language }}.sarif
+          retention-days: 30
+
+      # Create summary of findings
+      - name: Generate summary
+        if: always()
+        run: |
+          echo "## CodeQL Security Analysis Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Language:** ${{ matrix.language }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Date:** $(date -u +"%Y-%m-%d %H:%M UTC")" >> $GITHUB_STEP_SUMMARY
+          echo "**Run:** [${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          SARIF_FILE="${{ steps.analyze.outputs.sarif-output }}/${{ matrix.language }}.sarif"
+          if [ -f "$SARIF_FILE" ]; then
+            # Count alerts by severity from SARIF
+            CRITICAL=$(jq '[.runs[].results[]? | select(.level=="error")] | length' "$SARIF_FILE" 2>/dev/null || echo "0")
+            HIGH=$(jq '[.runs[].results[]? | select(.level=="warning")] | length' "$SARIF_FILE" 2>/dev/null || echo "0")
+            MEDIUM=$(jq '[.runs[].results[]? | select(.level=="note")] | length' "$SARIF_FILE" 2>/dev/null || echo "0")
+            TOTAL=$((CRITICAL + HIGH + MEDIUM))
+
+            echo "- 🔴 **CRITICAL/HIGH:** $CRITICAL" >> $GITHUB_STEP_SUMMARY
+            echo "- 🟡 **MEDIUM:** $HIGH" >> $GITHUB_STEP_SUMMARY
+            echo "- 🔵 **LOW/INFO:** $MEDIUM" >> $GITHUB_STEP_SUMMARY
+            echo "- **Total:** $TOTAL" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            if [ "$TOTAL" -gt "0" ]; then
+              echo "⚠️ **Action Required:** Review findings in the [Security tab](${{ github.server_url }}/${{ github.repository }}/security/code-scanning)" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "✅ **No security issues detected**" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "⚠️ SARIF file not found - check CodeQL analysis logs" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "View detailed results: [GitHub Security Tab](${{ github.server_url }}/${{ github.repository }}/security/code-scanning)" >> $GITHUB_STEP_SUMMARY

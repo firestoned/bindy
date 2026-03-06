@@ -1,7 +1,7 @@
 # Security Scanning Implementation Roadmap
 
 **Date:** 2026-03-06
-**Status:** Proposed
+**Status:** In Progress (Phase 2 Complete)
 **Author:** Erick Bourgeois
 **Impact:** High - Implements comprehensive security scanning for regulated banking environment
 
@@ -38,6 +38,7 @@ Implement a multi-layered security scanning strategy to meet compliance requirem
 - ✅ License compliance enforcement
 - ✅ SAST for security bug detection
 - ✅ Supply chain security (SBOM generation)
+- ✅ Vulnerability communication (VEX documents)
 
 ### Business Drivers
 1. **Regulatory Compliance**: Banking regulations require auditable security practices
@@ -120,19 +121,19 @@ Implement a multi-layered security scanning strategy to meet compliance requirem
 
 ---
 
-### Phase 2: SAST Integration (Week 2)
+### Phase 2: SAST Integration (Week 2) ✅ COMPLETED
 **Goal:** Add static application security testing with CodeQL
 
 #### Tasks
 1. **CodeQL Setup**
-   - [ ] Create `.github/workflows/codeql.yml` workflow
-   - [ ] Configure Rust language analysis
-   - [ ] Enable scheduled scans (weekly)
-   - [ ] Enable on push to main and PRs
-   - [ ] Test on current codebase
-   - [ ] Review and triage any findings
-   - [ ] Enable GitHub Security tab integration
-   - [ ] Document in README.md
+   - [x] Create `.github/workflows/codeql.yml` workflow
+   - [x] Configure Rust language analysis
+   - [x] Enable scheduled scans (weekly)
+   - [x] Enable on push to main and PRs
+   - [x] Test on current codebase
+   - [x] Review and triage any findings
+   - [x] Enable GitHub Security tab integration
+   - [x] Document in README.md
 
 2. **CodeQL Custom Queries** (Optional)
    - [ ] Create `.github/codeql/` directory
@@ -277,7 +278,7 @@ Implement a multi-layered security scanning strategy to meet compliance requirem
 ---
 
 ### Phase 6: Supply Chain Security (Week 6+)
-**Goal:** Implement SBOM generation and image signing (Optional)
+**Goal:** Implement SBOM generation, VEX documents, and image signing (Optional)
 
 #### Tasks
 1. **Syft SBOM Generation**
@@ -287,13 +288,23 @@ Implement a multi-layered security scanning strategy to meet compliance requirem
    - [ ] Add SBOM generation to release workflow
    - [ ] Store SBOMs as release artifacts
 
-2. **Grype Scanning** (Alternative to Trivy)
+2. **VEX Document Generation**
+   - [ ] Install vexctl: `go install github.com/openvex/vexctl@latest` or use Trivy VEX support
+   - [ ] Create Makefile target: `make vex-generate`
+   - [ ] Generate VEX documents for known vulnerabilities
+   - [ ] Document exploitability status (exploitable, not_affected, under_investigation, fixed)
+   - [ ] Reference SBOMs in VEX documents
+   - [ ] Add VEX generation to release workflow
+   - [ ] Store VEX documents as release artifacts
+   - [ ] Create process for updating VEX documents when vulnerability status changes
+
+3. **Grype Scanning** (Alternative to Trivy)
    - [ ] Install Grype: `brew install grype`
    - [ ] Create Makefile target: `make grype-scan`
    - [ ] Scan generated SBOMs
    - [ ] Compare Grype vs Trivy results
 
-3. **Cosign Image Signing**
+4. **Cosign Image Signing**
    - [ ] Install Cosign: `brew install cosign`
    - [ ] Generate signing key pair
    - [ ] Create Makefile targets: `make cosign-sign`, `make cosign-verify`
@@ -301,21 +312,26 @@ Implement a multi-layered security scanning strategy to meet compliance requirem
    - [ ] Document signature verification process
    - [ ] Add signature verification to deployment process
 
-4. **Polaris Best Practices**
+5. **Polaris Best Practices**
    - [ ] Install Polaris: `brew install fairwindsops/tap/polaris`
    - [ ] Create Makefile target: `make polaris`
    - [ ] Scan Kubernetes manifests
    - [ ] Review and remediate findings
 
 **Deliverables:**
-- Makefile targets: `syft-sbom`, `grype-scan`, `cosign-sign`, `cosign-verify`, `polaris`
+- Makefile targets: `syft-sbom`, `vex-generate`, `grype-scan`, `cosign-sign`, `cosign-verify`, `polaris`
 - SBOM generation in release workflow
+- VEX document generation in release workflow
 - Image signing in release workflow
 - Polaris scan results
+- VEX document update process documentation
 - Updated `.claude/CHANGELOG.md`
 
 **Success Criteria:**
 - ✅ SBOMs generated for all releases
+- ✅ VEX documents generated for all releases
+- ✅ VEX documents reference corresponding SBOMs
+- ✅ All known vulnerabilities have documented exploitability status
 - ✅ Container images signed with Cosign
 - ✅ Signature verification documented
 - ✅ Polaris validates all Kubernetes manifests
@@ -368,6 +384,9 @@ license-check: ## Check dependency licenses
 
 .PHONY: syft-sbom
 syft-sbom: ## Generate SBOM for container image
+
+.PHONY: vex-generate
+vex-generate: ## Generate VEX document for vulnerabilities
 
 .PHONY: grype-scan
 grype-scan: ## Scan SBOM with Grype
@@ -474,6 +493,8 @@ polaris: ## Check Kubernetes manifests with Polaris
    - CI/CD integration
    - Troubleshooting common issues
    - Remediation guidelines
+   - VEX document generation and management
+   - SBOM and VEX integration
 
 2. **`docs/src/development/license-compliance.md`**
    - License policy
@@ -611,6 +632,7 @@ Week 5: License Compliance
 
 Week 6+: Supply Chain Security (Optional)
 ├── SBOM generation (Syft)
+├── VEX document generation
 ├── Image signing (Cosign)
 ├── Polaris best practices
 └── Final documentation
@@ -663,11 +685,13 @@ Week 6+: Supply Chain Security (Optional)
 
 1. **GitHub Advanced Security**: Do we have access to GitHub Advanced Security features (CodeQL, Secret Scanning)?
 2. **SBOM Requirements**: Are SBOM reports required by regulators? If so, what format (SPDX, CycloneDX)?
-3. **Image Signing**: Is image signing required for production deployments?
-4. **Severity Thresholds**: What severity levels should block CI/CD? (Recommendation: CRITICAL + HIGH)
-5. **Exception Process**: What is the approval process for security exceptions?
-6. **Audit Frequency**: How often are security audit reports required for compliance?
-7. **Tool Budget**: Are there budget constraints for commercial tools (if needed)?
+3. **VEX Requirements**: Are VEX documents required by regulators or customers? What format (OpenVEX, CSAF)?
+4. **VEX Update Frequency**: How often should VEX documents be updated when vulnerability status changes?
+5. **Image Signing**: Is image signing required for production deployments?
+6. **Severity Thresholds**: What severity levels should block CI/CD? (Recommendation: CRITICAL + HIGH)
+7. **Exception Process**: What is the approval process for security exceptions?
+8. **Audit Frequency**: How often are security audit reports required for compliance?
+9. **Tool Budget**: Are there budget constraints for commercial tools (if needed)?
 
 ---
 
@@ -681,6 +705,8 @@ Week 6+: Supply Chain Security (Optional)
 - [Kubesec Documentation](https://kubesec.io/)
 - [Syft Documentation](https://github.com/anchore/syft)
 - [Cosign Documentation](https://docs.sigstore.dev/cosign/overview/)
+- [OpenVEX Documentation](https://openvex.dev/)
+- [VEX Specification](https://www.cisa.gov/sites/default/files/publications/VEX_Use_Cases_Document_508c.pdf)
 - [OWASP Top 10](https://owasp.org/www-project-top-ten/)
 
 ---
@@ -699,3 +725,6 @@ Week 6+: Supply Chain Security (Optional)
 | Date | Author | Change |
 |------|--------|--------|
 | 2026-03-06 | Erick Bourgeois | Initial roadmap created |
+| 2026-03-06 | Erick Bourgeois | Added VEX document generation to Phase 6 |
+| 2026-03-06 | Erick Bourgeois | Phase 1 completed: cargo-deny, Gitleaks, Dependabot |
+| 2026-03-06 | Erick Bourgeois | Phase 2 completed: CodeQL SAST integration |

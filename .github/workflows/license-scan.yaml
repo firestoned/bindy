@@ -231,13 +231,40 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const report = fs.readFileSync('license-report.md', 'utf8');
+            const fullReport = fs.readFileSync('license-report.md', 'utf8');
+
+            // Extract the dependency table section
+            const tableMatch = fullReport.match(/## All Dependencies\n\n([\s\S]*?)\n\n##/);
+            const dependencyTable = tableMatch ? tableMatch[1] : '';
+
+            // Extract compliance check and summary sections (everything after the table)
+            const summaryMatch = fullReport.match(/## License Compliance Check([\s\S]*)/);
+            const summary = summaryMatch ? summaryMatch[0] : '';
+
+            // Build compact PR comment with collapsible full table
+            const compactReport = `# Dependency License Report
+
+            **Generated:** ${new Date().toISOString()}
+            **Full Report:** [Download Artifact](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
+
+            ${summary}
+
+            ---
+
+            <details>
+            <summary><b>📋 Full Dependency List</b> (click to expand)</summary>
+
+            ## All Dependencies
+
+            ${dependencyTable}
+
+            </details>`;
 
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: report
+              body: compactReport
             });
 
       - name: Fail on unapproved licenses

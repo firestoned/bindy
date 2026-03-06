@@ -1,3 +1,89 @@
+## [2026-03-06 18:10] - Updated CodeQL Action to v4 and Fixed SARIF Output Path
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/codeql.yml`: Updated CodeQL Action from v3 to v4 and fixed SARIF file path handling
+  - Line 106: `github/codeql-action/init@v3` → `github/codeql-action/init@v4`
+  - Line 122: `github/codeql-action/analyze@v3` → `github/codeql-action/analyze@v4`
+  - Removed deprecated `output` parameter from analyze step
+  - Updated artifact upload to use `${{ steps.analyze.outputs.sarif-output }}` (v4 output parameter)
+  - Updated summary generation to correctly locate SARIF file using v4 output path
+
+### Why
+- CodeQL Action v3 will be deprecated in December 2026
+- GitHub is encouraging migration to v4 to ensure continued support
+- **SARIF file path issue**: v4 changed how SARIF files are output - now uses `sarif-output` output parameter
+- The `output` input parameter is no longer the reliable way to specify SARIF file location in v4
+- Previous configuration caused "SARIF file not found" warnings because hardcoded path didn't match v4 behavior
+- Proactive update prevents future deprecation warnings and potential workflow failures
+
+### Why This Fixes "SARIF file not found"
+In CodeQL Action v4:
+- The analyze action now exposes `sarif-output` as an **output parameter** (directory path)
+- SARIF files are generated in the output directory with predictable naming (`<language>.sarif`)
+- Hardcoded paths like `results-rust.sarif` no longer work reliably
+- Must use `${{ steps.analyze.outputs.sarif-output }}/<language>.sarif` to access files
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Maintenance - Updates to latest supported version
+- [x] Bug fix - Resolves "SARIF file not found" warning
+- [x] Future-proofing - Prevents deprecation issues
+
+---
+
+## [2026-03-06 16:30] - Implemented Phase 2 Security Scanning (SAST Integration)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `.github/workflows/codeql.yml`: CodeQL static application security testing (SAST) workflow for Rust code
+  - Runs on schedule (weekly on Monday at 9 AM UTC)
+  - Runs on push to main branch
+  - Runs on all pull requests
+  - Supports manual trigger via workflow_dispatch
+  - Reusable workflow (can be called by other workflows via workflow_call)
+  - Uploads SARIF results to GitHub Security tab
+  - Generates human-readable summary with finding counts by severity
+  - Includes cargo caching for faster analysis
+  - Uses `security-and-quality` query suite for comprehensive coverage
+
+### Changed
+- `README.md`:
+  - Added CodeQL badge to "Code Quality" section
+  - Added CodeQL to "Multi-Layer Security Scanning" list in Security section
+
+### Why
+Implemented Phase 2 of the Security Scanning Roadmap to provide static application security testing (SAST) for Rust code:
+- **CodeQL** is GitHub's semantic code analysis engine that finds security vulnerabilities
+- Detects common security issues like SQL injection, XSS, path traversal, insecure deserialization
+- Provides security-specific analysis beyond what cargo clippy offers
+- Integrates with GitHub Security tab for centralized vulnerability tracking
+- Scheduled scans ensure continuous monitoring of the codebase
+- Reusable workflow design enables composition with other security workflows
+
+### Testing
+- ✅ CodeQL workflow created with proper SPDX headers
+- ✅ Workflow supports multiple invocation methods (schedule, push, PR, manual, reusable)
+- ✅ SARIF upload configured for GitHub Security tab integration
+- ✅ Cargo caching configured to speed up analysis
+- ✅ Summary generation provides actionable insights
+- ✅ README.md updated with CodeQL documentation
+
+### Impact
+- [x] Security enhancement - Adds SAST to detect security vulnerabilities in Rust code
+- [x] Compliance - Provides automated security analysis for audit trail
+- [x] Developer workflow - Security findings visible in PR checks
+- [x] Visibility - Centralized security findings in GitHub Security tab
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+
+---
+
 ## [2026-03-06 15:55] - Fixed cargo-deny Config Path and Enforced Makefile-Driven Workflows
 
 **Author:** Erick Bourgeois
