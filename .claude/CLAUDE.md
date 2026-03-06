@@ -448,10 +448,28 @@ jobs:
 
 **Requirements:**
 - Workflows MUST NOT contain multi-line bash scripts (except simple tool setup)
+- **All workflow run commands MUST call Makefile targets** - Never call tools directly (e.g., use `make cargo-deny` not `cargo deny check`)
 - All test orchestration MUST be in Makefile targets
 - All deployment logic MUST be in Makefile targets
 - Makefile targets MUST work identically locally and in CI
 - Document Makefile targets with `## comments` for `make help`
+
+**Examples:**
+```yaml
+# ✅ CORRECT - Use Makefile targets
+- name: Run security scans
+  run: make cargo-deny
+
+- name: Scan for secrets
+  run: make gitleaks
+
+# ❌ WRONG - Direct tool invocation
+- name: Run security scans
+  run: cargo deny check
+
+- name: Scan for secrets
+  run: gitleaks detect --source .
+```
 
 **Available Integration Test Targets:**
 - `make kind-integration-test` - Run full integration tests with local build

@@ -277,10 +277,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Run security scan
-        uses: firestoned/github-actions/rust/security-scan@v1.3.2
-        with:
-          cargo-audit-version: "0.22.0"
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run cargo-deny (dependencies, licenses, supply chain)
+        run: make cargo-deny
+
+      - name: Run gitleaks (secret scanning)
+        run: make gitleaks
 
   trivy:
     name: Container Security Scan - ${{ matrix.variant.name }}

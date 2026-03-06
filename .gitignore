@@ -43,7 +43,8 @@ Thumbs.db
 **/*.rs.bk
 **/*.rs.bak
 **/*.rs.backup
-.cargo/
+.cargo/registry/
+.cargo/git/
 
 # IDE
 .idea/
