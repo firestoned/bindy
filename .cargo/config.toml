@@ -1,0 +1,43 @@
+# Cargo configuration for the bindy project
+
+[build]
+# Enable pipelined compilation (Rust 1.70+)
+pipelining = true
+
+# Use faster linker on macOS
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-fuse-ld=/usr/bin/ld"]
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-fuse-ld=/usr/bin/ld"]
+
+[alias]
+# Fast check - just syntax and type checking, no codegen
+check-fast = "check --all-targets"
+
+# Build for development (optimized dependencies)
+dev = "build"
+
+# Quick test - just lib tests, no integration
+test-quick = "test --lib"
+
+# Alias for running tests with coverage
+coverage = "tarpaulin"
+
+# Alias for running tests
+test-lib = "test --lib"
+
+# Alias for running all tests including integration tests
+test-all = "test"
+
+# Alias for checking code without building
+check-lint = "clippy --all-targets -- -D warnings"
+
+# Alias for formatting check
+fmt-check = "fmt -- --check"
+
+# Alias for formatting and fixing
+fmt-fix = "fmt --all"
+
+# Quick quality check (check + clippy, no tests)
+qc = "clippy -- -D warnings -W clippy::pedantic -A clippy::module_name_repetitions"

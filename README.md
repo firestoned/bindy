@@ -476,6 +476,14 @@ cargo build
 cargo test
 ```
 
+**Security Scanning:**
+```bash
+make cargo-deny           # Check dependencies & licenses
+make gitleaks             # Scan for secrets
+make install-git-hooks    # Install pre-commit hooks
+make security-scan-full   # Run all security scans
+```
+
 See the [Developer Guide](https://firestoned.github.io/bindy/development/setup.html) for detailed development instructions.
 
 ## Contributing
@@ -484,6 +492,8 @@ Contributions welcome! Please:
 1. Sign commits with GPG/SSH (required for compliance)
 2. Run `cargo fmt` and `cargo clippy`
 3. Add tests for new features
+4. Install git hooks: `make install-git-hooks` (prevents committing secrets)
+5. Ensure security scans pass: `make security-scan-local`
 4. Update CHANGELOG.md
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
@@ -493,7 +503,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 - **Signed Releases**: All releases signed with Cosign (keyless). [Verify releases →](docs/security/SIGNED_RELEASES.md)
 - **SLSA Level 3**: Build provenance for supply chain security
 - **SBOM**: CycloneDX SBOM included with every release
-- **Vulnerability Scanning**: Daily `cargo audit` runs
+- **Multi-Layer Security Scanning**:
+  - **cargo-deny**: Dependency security, license compliance, and supply chain validation
+  - **Gitleaks**: Pre-commit and CI secret scanning
+  - **Trivy**: Container image and Kubernetes manifest vulnerability scanning
+  - **Dependabot**: Automated dependency updates
 
 Report security issues to: security@firestoned.io
 

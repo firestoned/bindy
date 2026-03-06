@@ -1,0 +1,68 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# Gitleaks configuration
+# https://github.com/gitleaks/gitleaks#configuration
+
+title = "Bindy Gitleaks Configuration"
+
+# Extend default configuration
+[extend]
+# Use default gitleaks rules
+useDefault = true
+
+# Additional custom rules for Kubernetes/Rust projects
+[[rules]]
+id = "kubernetes-secret-data"
+description = "Kubernetes Secret data field (base64 encoded values)"
+regex = '''(?i)data:\s*\n\s+[a-zA-Z0-9-_]+:\s+[A-Za-z0-9+/]{20,}={0,2}'''
+tags = ["kubernetes", "secret"]
+
+[[rules]]
+id = "rust-private-key"
+description = "Private key in Rust code"
+regex = '''(?i)(private[_-]?key|secret[_-]?key)\s*[=:]\s*["']([A-Za-z0-9+/]{40,})["']'''
+tags = ["key", "rust"]
+
+# Allowlist for common false positives
+[allowlist]
+description = "Allowlisted files and patterns"
+paths = [
+    '''\.git/''',
+    '''target/''',
+    '''\.cargo/''',
+    '''tests/fixtures/''',
+    '''examples/.*\.yaml''',  # Example files often have dummy tokens
+    '''docs/book/.*''',       # Generated documentation
+    '''docs/deprecation-policy\.md''',  # Example code in docs
+    '''docs/src/.*\.md''',    # Documentation source files with examples
+    '''deploy/crds/.*\.crd\.yaml''',  # CRD YAML files contain example values in descriptions
+]
+
+regexes = [
+    # Git commit SHAs
+    '''[a-f0-9]{40}''',
+    # Kubernetes example tokens
+    '''example-token-[a-z0-9]+''',
+    '''dummy-secret-[a-z0-9]+''',
+    # Common test patterns
+    '''test[_-]?secret''',
+    '''fake[_-]?key''',
+    # Base64 encoded "test" or "example"
+    '''dGVzdA==''',
+    '''ZXhhbXBsZQ==''',
+    # Documentation example secrets (patterns like "secret12345")
+    '''secret12345''',
+    '''secret\d+''',
+    '''password123''',
+    # RNDC examples (hash patterns used in examples/docs)
+    '''7fGwCVEUFp5A8X\+\+\+R67''',
+    '''[A-Za-z0-9+/]{16,}={0,2}''',  # Generic base64 in docs/examples
+    # CRD example data
+    '''data:\n\s+secret:''',
+]
+
+# Ignore specific commits (if needed)
+# commits = [
+#     "commit-sha-to-ignore",
+# ]
