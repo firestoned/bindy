@@ -43,7 +43,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 url = "2.5.7"
 bindcar = "0.5.4"
 prometheus = "0.14"
-axum = "0.7"
+axum = "0.8"
 sha2 = "0.10"
 
 [dev-dependencies]
