@@ -1,3 +1,111 @@
+## [2026-03-06 15:55] - Fixed cargo-deny Config Path and Enforced Makefile-Driven Workflows
+
+**Author:** Erick Bourgeois
+
+### Added
+- `Makefile`: New `cargo-deny-json` target for JSON output (used by CI automation)
+
+### Changed
+- `Makefile`: Updated `cargo-deny` target to explicitly specify config path: `cargo deny check --config .cargo/deny.toml`
+- `.github/workflows/security-scan.yaml`:
+  - Removed direct `cargo deny` invocation (violated CLAUDE.md requirements)
+  - Now uses `make cargo-deny-json` to ensure consistency between CI and local environments
+  - Removed separate `cargo install cargo-deny` step (handled by Makefile target)
+
+### Why
+1. The `cargo deny check` command in workflows was not finding the configuration file at `.cargo/deny.toml`, causing it to fall back to the default config. This resulted in license check failures because the default config doesn't include our approved licenses (OpenSSL, Unicode-3.0, MPL-2.0, CDLA-Permissive-2.0).
+
+2. **CRITICAL**: The workflow was violating CLAUDE.md requirements by calling `cargo deny` directly instead of using Makefile targets. This breaks the principle that "All workflow run commands MUST call Makefile targets - Never call tools directly."
+
+### Testing
+- ✅ Tested `make cargo-deny` locally and confirmed it finds the config
+- ✅ Tested `make cargo-deny-json` locally and confirmed JSON output works
+- ✅ Warning message "unable to find a config path" no longer appears
+- ✅ Workflow now uses Makefile target for consistency
+
+### Impact
+- [x] Bug fix - Ensures cargo-deny uses project-specific license allowlist
+- [x] Compliance - Enforces Makefile-driven workflow requirement from CLAUDE.md
+- [x] Maintainability - Business logic now in one place (Makefile), not scattered across workflows
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+
+---
+
+## [2026-03-06 14:55] - Implemented Phase 1 Security Scanning (Foundation)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `.cargo/deny.toml`: cargo-deny configuration for dependency security, license compliance, and supply chain validation
+- `.gitleaks.toml`: Gitleaks configuration for secret scanning with allowlists for documentation examples
+- `.github/dependabot.yml`: Dependabot configuration for automated dependency updates (Cargo, GitHub Actions, Docker)
+- `scripts/pre-commit-gitleaks.sh`: Pre-commit hook script for secret scanning
+- `Makefile` targets:
+  - `cargo-deny`: Run cargo-deny checks (dependencies, licenses, advisories, sources)
+  - `gitleaks`: Run gitleaks secret scanning
+  - `install-git-hooks`: Install pre-commit hooks
+  - `security-scan-local`: Run local security scans (pre-commit)
+  - `security-scan-quick`: Run quick security scans (for CI)
+  - `security-scan-full`: Run all security scans
+
+### Changed
+- `.github/workflows/pr.yaml`: Updated security job to use cargo-deny and gitleaks instead of cargo-audit
+- `.github/workflows/security-scan.yaml`:
+  - Replaced cargo-audit job with cargo-deny job
+  - Added gitleaks job with GitHub issue creation for findings
+- `README.md`:
+  - Updated "Security" section to document multi-layer security scanning
+  - Added "Security Scanning" commands to Development section
+  - Updated "Contributing" section with security scanning requirements
+
+### Why
+Implemented Phase 1 of the Security Scanning Roadmap to meet compliance requirements for a regulated banking environment:
+- **cargo-deny** replaces cargo-audit with more comprehensive dependency checking including license compliance
+- **Gitleaks** prevents secrets from being committed to the repository
+- **Dependabot** automates dependency updates to reduce security debt
+- Pre-commit hooks provide immediate feedback to developers before CI/CD
+
+### Testing
+- ✅ cargo-deny passes with all allowed licenses configured (MIT, Apache-2.0, BSD, ISC, OpenSSL, Unicode-3.0, MPL-2.0, CDLA-Permissive-2.0)
+- ✅ Gitleaks passes with no secrets detected (false positives from documentation filtered)
+- ✅ Pre-commit hook script created and tested
+- ✅ Makefile targets tested and working
+
+### Impact
+- [x] Compliance enhancement - Implements audit trail for dependencies and secrets
+- [x] Developer workflow improvement - Pre-commit hooks prevent secret commits
+- [x] CI/CD enhancement - Automated security scanning in all workflows
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+
+---
+
+## [2026-03-06] - Created Security Scanning Implementation Roadmap
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/roadmaps/security-scanning-implementation.md`: Created comprehensive 6-phase roadmap for implementing multi-layered security scanning
+
+### Why
+Operating in a regulated banking environment requires auditable, comprehensive security scanning. This roadmap implements:
+- Tier 1 (P0): cargo-deny, Gitleaks, Dependabot, CodeQL, Trivy
+- Tier 2 (P1): Semgrep, Kubesec, cargo-license
+- Tier 3 (P2): Syft, Cosign, Polaris
+
+The phased approach enables quick wins (secret scanning, dependency checking) while building toward comprehensive coverage (SBOM, image signing).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only - Planning document for future security enhancements
+
+---
+
 ## [2026-02-17] - Fix rustls CryptoProvider panic in tests and main binary
 
 **Author:** Erick Bourgeois

@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 
-.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary
+.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny gitleaks gitleaks-install security-scan-local security-scan-quick security-scan-full install-git-hooks
 
 REGISTRY ?= ghcr.io
 IMAGE_NAME ?= firestoned/bindy
@@ -10,6 +10,9 @@ IMAGE_TAG ?= latest
 NAMESPACE ?= dns-system
 KIND_CLUSTER ?= bindy-test
 KIND_CONTEXT ?= "kind-$(KIND_CLUSTER)"
+
+# Security tool versions
+GITLEAKS_VERSION ?= 8.21.2
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -110,6 +113,81 @@ test-cov-view: test-cov ## Run coverage and open report
 test-cov-ci: ## Run coverage for CI (text output)
 	@command -v cargo-tarpaulin >/dev/null 2>&1 || { echo "Installing cargo-tarpaulin..."; cargo install cargo-tarpaulin; }
 	cargo tarpaulin --out Stdout --exclude-files tests.rs --timeout 300
+
+# Security scanning targets
+cargo-deny: ## Check dependencies for security, licenses, and supply chain issues
+	@command -v cargo-deny >/dev/null 2>&1 || { echo "Installing cargo-deny..."; cargo install cargo-deny; }
+	@echo "Running cargo-deny checks..."
+	@cargo deny check --config .cargo/deny.toml
+
+cargo-deny-json: ## Run cargo-deny with JSON output (for CI automation)
+	@command -v cargo-deny >/dev/null 2>&1 || { echo "Installing cargo-deny..."; cargo install cargo-deny; }
+	@echo "Running cargo-deny checks (JSON output)..."
+	@cargo deny --format json check --config .cargo/deny.toml
+
+gitleaks-install: ## Install gitleaks from GitHub with checksum verification
+	@if ! command -v gitleaks >/dev/null 2>&1; then \
+		echo "Installing gitleaks v$(GITLEAKS_VERSION)..."; \
+		OS=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
+		ARCH=$$(uname -m); \
+		case "$$ARCH" in \
+			x86_64) ARCH="x64" ;; \
+			aarch64|arm64) ARCH="arm64" ;; \
+		esac; \
+		PLATFORM="$${OS}_$${ARCH}"; \
+		TARBALL="gitleaks_$(GITLEAKS_VERSION)_$${PLATFORM}.tar.gz"; \
+		BASE_URL="https://github.com/gitleaks/gitleaks/releases/download/v$(GITLEAKS_VERSION)"; \
+		echo "Downloading gitleaks for $${PLATFORM}..."; \
+		curl -sSL -o /tmp/$${TARBALL} $${BASE_URL}/$${TARBALL}; \
+		echo "Downloading checksums..."; \
+		curl -sSL -o /tmp/gitleaks_checksums.txt $${BASE_URL}/gitleaks_$(GITLEAKS_VERSION)_checksums.txt; \
+		echo "Verifying checksum..."; \
+		cd /tmp && grep "$${TARBALL}" gitleaks_checksums.txt > checksum_file.txt; \
+		if [ "$$OS" = "darwin" ]; then \
+			shasum -a 256 -c checksum_file.txt || { echo "Checksum verification failed!"; rm -f $${TARBALL} gitleaks_checksums.txt checksum_file.txt; exit 1; }; \
+		else \
+			sha256sum -c checksum_file.txt || { echo "Checksum verification failed!"; rm -f $${TARBALL} gitleaks_checksums.txt checksum_file.txt; exit 1; }; \
+		fi; \
+		tar -xzf /tmp/$${TARBALL} -C /tmp; \
+		if [ -w /usr/local/bin ]; then \
+			mv /tmp/gitleaks /usr/local/bin/; \
+		else \
+			echo "Installing to ~/.local/bin (need sudo for /usr/local/bin)..."; \
+			mkdir -p ~/.local/bin; \
+			mv /tmp/gitleaks ~/.local/bin/; \
+			export PATH="$$HOME/.local/bin:$$PATH"; \
+		fi; \
+		rm -f /tmp/$${TARBALL} /tmp/gitleaks_checksums.txt /tmp/checksum_file.txt; \
+		echo "✓ Gitleaks v$(GITLEAKS_VERSION) installed successfully"; \
+	else \
+		echo "✓ Gitleaks already installed"; \
+	fi
+
+gitleaks: gitleaks-install ## Scan for hardcoded secrets and credentials
+	@echo "Scanning for secrets with gitleaks..."
+	@gitleaks detect --source . --verbose --redact
+
+security-scan-local: cargo-deny gitleaks ## Run local security scans (pre-commit)
+	@echo "✓ Local security scans completed"
+
+security-scan-quick: cargo-deny gitleaks ## Run quick security scans (for CI)
+	@echo "✓ Quick security scans completed"
+
+security-scan-full: cargo-deny gitleaks ## Run all security scans (Phase 1 only)
+	@echo "✓ All security scans completed"
+
+install-git-hooks: ## Install git pre-commit hooks (gitleaks secret scanning)
+	@echo "Installing git pre-commit hooks..."
+	@if [ ! -d .git ]; then \
+		echo "Error: Not a git repository"; \
+		exit 1; \
+	fi
+	@ln -sf ../../scripts/pre-commit-gitleaks.sh .git/hooks/pre-commit
+	@chmod +x .git/hooks/pre-commit
+	@echo "✓ Git hooks installed successfully"
+	@echo "  - Pre-commit hook: gitleaks secret scanning"
+	@echo ""
+	@echo "To bypass the hook (NOT RECOMMENDED): git commit --no-verify"
 
 lint: ## Run linting and checks
 	cargo fmt -- --check
