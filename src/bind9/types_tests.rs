@@ -32,10 +32,13 @@ mod tests {
 
         let debug_str = format!("{key:?}");
 
-        // Verify debug output contains all fields
+        // Verify debug output contains name and algorithm
         assert!(debug_str.contains("test"));
         assert!(debug_str.contains("HmacSha512")); // Enum variant name in debug output
-        assert!(debug_str.contains("c2VjcmV0"));
+
+        // CRITICAL: Verify secret is redacted, not exposed
+        assert!(!debug_str.contains("c2VjcmV0"));
+        assert!(debug_str.contains("<redacted>"));
     }
 
     #[test]

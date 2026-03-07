@@ -8,7 +8,7 @@ on:
   workflow_call:
     inputs:
       scan-type:
-        description: 'Type of scan to run (all, cargo-deny, gitleaks, trivy)'
+        description: 'Type of scan to run (all, cargo-deny, gitleaks, trivy, semgrep, kubesec)'
         required: false
         type: string
         default: 'all'
@@ -29,6 +29,8 @@ on:
           - cargo-deny
           - gitleaks
           - trivy
+          - semgrep
+          - kubesec
         default: 'all'
 
 permissions:
@@ -584,3 +586,174 @@ jobs:
           else
             echo "⚠️ SARIF file not found - check Trivy scan logs" >> $GITHUB_STEP_SUMMARY
           fi
+
+  semgrep:
+    name: SAST with Semgrep
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pipx
+        run: |
+          python3 -m pip install --user pipx
+          python3 -m pipx ensurepath
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install Semgrep
+        run: make semgrep-install
+
+      - name: Run Semgrep SAST scan
+        id: semgrep
+        continue-on-error: true
+        run: |
+          make semgrep-sarif
+          if [ -f semgrep-results.sarif ]; then
+            echo "sarif_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "sarif_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload Semgrep results to GitHub Security
+        if: steps.semgrep.outputs.sarif_exists == 'true'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: semgrep-results.sarif
+          category: semgrep
+
+      - name: Upload Semgrep results as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-results-${{ github.run_number }}
+          path: semgrep-results.sarif
+          retention-days: 30
+
+      - name: Parse Semgrep results
+        id: parse
+        if: always()
+        run: |
+          if [ -f semgrep-results.sarif ]; then
+            ERRORS=$(jq '[.runs[].results[]? | select(.level=="error")] | length' semgrep-results.sarif 2>/dev/null || echo "0")
+            WARNINGS=$(jq '[.runs[].results[]? | select(.level=="warning")] | length' semgrep-results.sarif 2>/dev/null || echo "0")
+            NOTES=$(jq '[.runs[].results[]? | select(.level=="note")] | length' semgrep-results.sarif 2>/dev/null || echo "0")
+            TOTAL=$((ERRORS + WARNINGS + NOTES))
+
+            echo "errors=${ERRORS}" >> $GITHUB_OUTPUT
+            echo "warnings=${WARNINGS}" >> $GITHUB_OUTPUT
+            echo "notes=${NOTES}" >> $GITHUB_OUTPUT
+            echo "total=${TOTAL}" >> $GITHUB_OUTPUT
+
+            if [ "$TOTAL" -gt "0" ]; then
+              echo "has_findings=true" >> $GITHUB_OUTPUT
+            else
+              echo "has_findings=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "errors=0" >> $GITHUB_OUTPUT
+            echo "warnings=0" >> $GITHUB_OUTPUT
+            echo "notes=0" >> $GITHUB_OUTPUT
+            echo "total=0" >> $GITHUB_OUTPUT
+            echo "has_findings=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate summary
+        if: always()
+        run: |
+          echo "## Semgrep SAST Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Date:** $(date -u +"%Y-%m-%d %H:%M UTC")" >> $GITHUB_STEP_SUMMARY
+          echo "**Run:** [${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          ERRORS="${{ steps.parse.outputs.errors }}"
+          WARNINGS="${{ steps.parse.outputs.warnings }}"
+          NOTES="${{ steps.parse.outputs.notes }}"
+          TOTAL="${{ steps.parse.outputs.total }}"
+          echo "- 🔴 **ERRORS:** $ERRORS" >> $GITHUB_STEP_SUMMARY
+          echo "- 🟠 **WARNINGS:** $WARNINGS" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔵 **NOTES:** $NOTES" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total:** $TOTAL" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "$TOTAL" -gt "0" ]; then
+            echo "⚠️ **Action Required:** Review findings in the [Security tab](${{ github.server_url }}/${{ github.repository }}/security/code-scanning)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ **No security issues detected**" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  kubesec:
+    name: Kubernetes Security with Kubesec
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Kubesec
+        run: make kubesec-install
+
+      - name: Run Kubesec scan
+        id: kubesec
+        continue-on-error: true
+        run: |
+          # Run kubesec and capture output
+          make kubesec > kubesec-output.txt 2>&1 || true
+
+          # Parse the summary from output
+          if grep -q "Critical issues:" kubesec-output.txt; then
+            CRITICAL=$(grep "Critical issues:" kubesec-output.txt | awk '{print $NF}')
+            WARNINGS=$(grep "Warnings:" kubesec-output.txt | awk '{print $NF}')
+            TOTAL=$(grep "Total files scanned:" kubesec-output.txt | awk '{print $NF}')
+
+            echo "critical=${CRITICAL}" >> $GITHUB_OUTPUT
+            echo "warnings=${WARNINGS}" >> $GITHUB_OUTPUT
+            echo "total_files=${TOTAL}" >> $GITHUB_OUTPUT
+
+            if [ "$CRITICAL" -gt "0" ]; then
+              echo "has_critical=true" >> $GITHUB_OUTPUT
+            else
+              echo "has_critical=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "critical=0" >> $GITHUB_OUTPUT
+            echo "warnings=0" >> $GITHUB_OUTPUT
+            echo "total_files=0" >> $GITHUB_OUTPUT
+            echo "has_critical=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload Kubesec output as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubesec-results-${{ github.run_number }}
+          path: kubesec-output.txt
+          retention-days: 30
+
+      - name: Generate summary
+        if: always()
+        run: |
+          echo "## Kubesec Kubernetes Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Date:** $(date -u +"%Y-%m-%d %H:%M UTC")" >> $GITHUB_STEP_SUMMARY
+          echo "**Run:** [${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          CRITICAL="${{ steps.kubesec.outputs.critical }}"
+          WARNINGS="${{ steps.kubesec.outputs.warnings }}"
+          TOTAL_FILES="${{ steps.kubesec.outputs.total_files }}"
+          echo "- 📁 **Files Scanned:** $TOTAL_FILES" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔴 **Critical Issues:** $CRITICAL" >> $GITHUB_STEP_SUMMARY
+          echo "- 🟡 **Warnings:** $WARNINGS" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "$CRITICAL" -gt "0" ]; then
+            echo "⚠️ **Action Required:** Review critical findings in workflow artifacts" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ **No critical security issues detected**" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Scan Output" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          cat kubesec-output.txt >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

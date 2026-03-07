@@ -14,6 +14,8 @@ KIND_CONTEXT ?= "kind-$(KIND_CLUSTER)"
 # Security tool versions
 GITLEAKS_VERSION ?= 8.21.2
 TRIVY_VERSION ?= 0.69.3
+SEMGREP_VERSION ?= 1.154.0
+KUBESEC_VERSION ?= 2.14.2
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -302,13 +304,161 @@ trivy-k8s-sarif: trivy-install ## Scan Kubernetes manifests and output SARIF (fo
 trivy-all: trivy-fs trivy-k8s ## Run all Trivy security scans (filesystem + Kubernetes manifests)
 	@echo "✓ All Trivy scans completed"
 
+semgrep-install: ## Install Semgrep via pipx (isolated Python app installer)
+	@if ! command -v semgrep >/dev/null 2>&1; then \
+		echo "Installing Semgrep v$(SEMGREP_VERSION) via pipx..."; \
+		if ! command -v python3 >/dev/null 2>&1; then \
+			echo "Error: Python 3 is required but not found. Please install Python 3.10 or later."; \
+			exit 1; \
+		fi; \
+		if ! command -v pipx >/dev/null 2>&1; then \
+			echo "Error: pipx is required but not found."; \
+			echo "Install pipx with: python3 -m pip install --user pipx && python3 -m pipx ensurepath"; \
+			echo "Or see: https://pipx.pypa.io/stable/installation/"; \
+			exit 1; \
+		fi; \
+		pipx install "semgrep==$(SEMGREP_VERSION)"; \
+		if ! command -v semgrep >/dev/null 2>&1; then \
+			echo "⚠️  Semgrep installed but not found in PATH."; \
+			echo "  Run: pipx ensurepath"; \
+			echo "  Then restart your shell or run: source ~/.bashrc (or ~/.zshrc)"; \
+			exit 1; \
+		else \
+			echo "✓ Semgrep v$(SEMGREP_VERSION) installed successfully"; \
+		fi; \
+	else \
+		INSTALLED_VERSION=$$(semgrep --version | head -n1 | awk '{print $$1}'); \
+		echo "✓ Semgrep already installed: $$INSTALLED_VERSION"; \
+		if [ "$$INSTALLED_VERSION" != "$(SEMGREP_VERSION)" ]; then \
+			echo "  (target version: $(SEMGREP_VERSION))"; \
+		fi; \
+	fi
+
+semgrep: semgrep-install ## Run Semgrep SAST analysis with Rust, Kubernetes, and Docker rulesets
+	@echo "Running Semgrep security analysis..."
+	@semgrep scan \
+		--config=p/rust \
+		--config=p/kubernetes \
+		--config=p/docker \
+		--severity=ERROR \
+		--severity=WARNING \
+		--exclude='target/' \
+		--exclude='*.lock' \
+		--exclude='docs/' \
+		--metrics=off \
+		. || echo "⚠️  Semgrep found potential issues (see output above)"
+	@echo "✓ Semgrep scan completed"
+
+semgrep-sarif: semgrep-install ## Run Semgrep and output SARIF format (for GitHub Security)
+	@echo "Running Semgrep security analysis (SARIF output)..."
+	@semgrep scan \
+		--config=p/rust \
+		--config=p/kubernetes \
+		--config=p/docker \
+		--severity=ERROR \
+		--severity=WARNING \
+		--exclude='target/' \
+		--exclude='*.lock' \
+		--exclude='docs/' \
+		--sarif \
+		--output=semgrep-results.sarif \
+		--metrics=off \
+		. || true
+	@echo "✓ SARIF results written to semgrep-results.sarif"
+
+kubesec-install: ## Install Kubesec from GitHub with checksum verification
+	@if ! command -v kubesec >/dev/null 2>&1; then \
+		echo "Installing Kubesec v$(KUBESEC_VERSION)..."; \
+		OS=$$(uname -s); \
+		ARCH=$$(uname -m); \
+		case "$$ARCH" in \
+			x86_64) ARCH="amd64" ;; \
+			aarch64|arm64) ARCH="arm64" ;; \
+		esac; \
+		case "$$OS" in \
+			Linux) PLATFORM="linux_$${ARCH}" ;; \
+			Darwin) PLATFORM="darwin_$${ARCH}" ;; \
+			*) echo "Unsupported platform: $$OS"; exit 1 ;; \
+		esac; \
+		TARBALL="kubesec_$${PLATFORM}.tar.gz"; \
+		BASE_URL="https://github.com/controlplaneio/kubesec/releases/download/v$(KUBESEC_VERSION)"; \
+		echo "Downloading Kubesec for $${PLATFORM}..."; \
+		curl -sSL -o /tmp/$${TARBALL} $${BASE_URL}/$${TARBALL}; \
+		echo "Downloading checksums..."; \
+		curl -sSL -o /tmp/kubesec_checksums.txt $${BASE_URL}/kubesec_checksums.txt; \
+		echo "Verifying checksum..."; \
+		EXPECTED_CHECKSUM=$$(grep "$${TARBALL}" /tmp/kubesec_checksums.txt | awk '{print $$1}'); \
+		if [ -z "$$EXPECTED_CHECKSUM" ]; then \
+			echo "Error: Could not find checksum for $${TARBALL}"; \
+			rm -f /tmp/$${TARBALL} /tmp/kubesec_checksums.txt; \
+			exit 1; \
+		fi; \
+		if [ "$$OS" = "Darwin" ]; then \
+			ACTUAL_CHECKSUM=$$(shasum -a 256 /tmp/$${TARBALL} | awk '{print $$1}'); \
+		else \
+			ACTUAL_CHECKSUM=$$(sha256sum /tmp/$${TARBALL} | awk '{print $$1}'); \
+		fi; \
+		if [ "$$EXPECTED_CHECKSUM" != "$$ACTUAL_CHECKSUM" ]; then \
+			echo "Checksum verification failed!"; \
+			echo "Expected: $$EXPECTED_CHECKSUM"; \
+			echo "Actual:   $$ACTUAL_CHECKSUM"; \
+			rm -f /tmp/$${TARBALL} /tmp/kubesec_checksums.txt; \
+			exit 1; \
+		fi; \
+		echo "✓ Checksum verified"; \
+		tar -xzf /tmp/$${TARBALL} -C /tmp; \
+		if [ -w /usr/local/bin ]; then \
+			mv /tmp/kubesec /usr/local/bin/; \
+		else \
+			echo "Installing to ~/.local/bin (need sudo for /usr/local/bin)..."; \
+			mkdir -p ~/.local/bin; \
+			mv /tmp/kubesec ~/.local/bin/; \
+			export PATH="$$HOME/.local/bin:$$PATH"; \
+		fi; \
+		rm -f /tmp/$${TARBALL} /tmp/kubesec_checksums.txt; \
+		echo "✓ Kubesec v$(KUBESEC_VERSION) installed successfully"; \
+	else \
+		echo "✓ Kubesec already installed: $$(kubesec version 2>/dev/null || echo 'version unknown')"; \
+	fi
+
+kubesec: kubesec-install ## Scan Kubernetes manifests with Kubesec for security best practices
+	@echo "Scanning Kubernetes manifests with Kubesec..."
+	@TOTAL=0; CRITICAL=0; WARNING=0; \
+	for file in deploy/operator/*.yaml deploy/rbac/*.yaml examples/*.yaml; do \
+		if [ -f "$$file" ]; then \
+			echo "Scanning $$file..."; \
+			RESULT=$$(kubesec scan "$$file" 2>&1); \
+			SCORE=$$(echo "$$RESULT" | grep -o '"score":[0-9-]*' | head -1 | cut -d':' -f2 || echo ""); \
+			if [ -n "$$SCORE" ]; then \
+				if [ "$$SCORE" -lt 0 ]; then \
+					echo "  ⚠️  Critical issues (Score: $$SCORE)"; \
+					CRITICAL=$$((CRITICAL + 1)); \
+				elif [ "$$SCORE" -lt 5 ]; then \
+					echo "  ⚠️  Needs improvement (Score: $$SCORE)"; \
+					WARNING=$$((WARNING + 1)); \
+				else \
+					echo "  ✓ Good (Score: $$SCORE)"; \
+				fi; \
+			else \
+				echo "  ℹ️  CRD or multi-resource file (not scored)"; \
+			fi; \
+			TOTAL=$$((TOTAL + 1)); \
+		fi; \
+	done; \
+	echo ""; \
+	echo "Kubesec scan summary:"; \
+	echo "  - Total files scanned: $$TOTAL"; \
+	echo "  - Critical issues: $$CRITICAL"; \
+	echo "  - Warnings: $$WARNING"; \
+	echo "✓ Kubesec scan completed"
+
 security-scan-local: cargo-deny gitleaks ## Run local security scans (pre-commit)
 	@echo "✓ Local security scans completed"
 
 security-scan-quick: cargo-deny gitleaks ## Run quick security scans (for CI)
 	@echo "✓ Quick security scans completed"
 
-security-scan-full: cargo-deny gitleaks trivy-all ## Run all security scans (includes Trivy)
+security-scan-full: cargo-deny gitleaks trivy-all semgrep kubesec ## Run all security scans (Phase 1-4 complete)
 	@echo "✓ All security scans completed"
 
 install-git-hooks: ## Install git pre-commit hooks (gitleaks secret scanning)
