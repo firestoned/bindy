@@ -4,7 +4,7 @@
 //! Types and constants for BIND9 management.
 
 /// RNDC key data for authentication.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RndcKeyData {
     /// Key name (typically the instance name)
     pub name: String,
@@ -12,6 +12,17 @@ pub struct RndcKeyData {
     pub algorithm: crate::crd::RndcAlgorithm,
     /// Base64-encoded secret key
     pub secret: String,
+}
+
+// Custom Debug implementation to prevent logging the secret in cleartext
+impl std::fmt::Debug for RndcKeyData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RndcKeyData")
+            .field("name", &self.name)
+            .field("algorithm", &self.algorithm)
+            .field("secret", &"<redacted>")
+            .finish()
+    }
 }
 
 /// RNDC command error with structured information.
