@@ -255,7 +255,7 @@ jobs:
             latest=false
 
       - name: Build and push Docker image (${{ matrix.variant.name }})
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.variant.dockerfile }}
