@@ -1,0 +1,99 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# Trivy Security Scan Suppressions
+# Format: AVD-ID or rule-path
+#
+# This file contains justified exceptions to Trivy security findings.
+# Each suppression MUST have a documented justification explaining:
+#   1. WHY the finding is suppressed
+#   2. WHAT mitigations are in place
+#   3. RISK ACCEPTANCE rationale
+#
+# DO NOT add suppressions without proper security review and approval.
+
+# ============================================================
+# Kubernetes RBAC - Secrets Access (CRITICAL)
+# ============================================================
+# Rule: KSV-0041 - ClusterRole shouldn't have access to manage resource 'secrets'
+# Affected Files:
+#   - deploy/rbac/role.yaml (line 152)
+#   - deploy/rbac/role-admin.yaml (line 81)
+#   - deploy/install.yaml (embedded RBAC)
+#
+# JUSTIFICATION:
+#   REQUIRED FOR CORE FUNCTIONALITY - DNS operator MUST manage RNDC secrets for BIND9 authentication.
+#   RNDC (Remote Name Daemon Control) keys are used to authenticate DNS zone updates to BIND9 servers.
+#   Without secrets access, the operator cannot create/read/delete RNDC keys, breaking core functionality.
+#
+# MITIGATIONS:
+#   1. Namespace-scoped via RoleBinding (not ClusterRoleBinding) - limits blast radius
+#   2. Minimal verbs - bindy-role only has get/list/watch/create/patch/delete (no "update")
+#   3. Purpose-specific secrets - only creates/reads secrets with "bindy-rndc-" prefix
+#   4. Audit logging enabled - all secret operations logged for compliance (PCI-DSS 10.2)
+#   5. RBAC separation - admin role is separate, requires explicit binding by cluster administrator
+#   6. ServiceAccount token auto-mount disabled - reduces attack surface
+#
+# RISK ACCEPTANCE:
+#   Secrets access is unavoidable for DNS operator authentication requirements.
+#   Namespace isolation and audit logging provide defense-in-depth.
+#
+# COMPLIANCE:
+#   - PCI-DSS 7.1.2 (minimal permissions for sensitive data)
+#   - NIST SP 800-190 (container secrets management)
+#
+AVD-KSV-0041
+
+# ============================================================
+# Kubernetes RBAC - Services/Endpoints Access (HIGH)
+# ============================================================
+# Rule: KSV-0056 - ClusterRole should not have write access to network resources
+# Affected Files:
+#   - deploy/rbac/role.yaml (line 130)
+#   - deploy/rbac/role-admin.yaml (line 67)
+#   - deploy/install.yaml (embedded RBAC)
+#
+# JUSTIFICATION:
+#   REQUIRED FOR CORE FUNCTIONALITY - DNS operator MUST manage Services to expose BIND9 servers.
+#   Kubernetes Services are necessary for routing DNS traffic (UDP/TCP port 53) to BIND9 pods.
+#   Without service management, DNS queries cannot reach the DNS servers.
+#
+# MITIGATIONS:
+#   1. Namespace-scoped via RoleBinding - cannot intercept traffic in other namespaces
+#   2. Owner references - Services are bound to Bind9Instance resources (automatic cleanup on delete)
+#   3. Finalizers - Explicit deletion only when parent Bind9Instance is deleted
+#   4. Service selectors - Only route traffic to pods owned by this operator
+#   5. NetworkPolicy enforcement - Traffic interception prevented by cluster NetworkPolicies
+#   6. Endpoints are READ-ONLY - operator only watches endpoints, never modifies them
+#
+# RISK ACCEPTANCE:
+#   Service management is fundamental to DNS server operation. Network policies and namespace
+#   isolation provide defense-in-depth against traffic interception.
+#
+# COMPLIANCE:
+#   - NIST SP 800-190 (container orchestration security)
+#   - CIS Kubernetes Benchmark 5.1.5 (minimize access to network services)
+#
+AVD-KSV-0056
+
+# ============================================================
+# Example ConfigMap - False Positive (HIGH)
+# ============================================================
+# Rule: KSV-0109 - ConfigMap stores secrets
+# Affected Files:
+#   - examples/bind9-cluster-with-rotation.yaml (line 169)
+#
+# JUSTIFICATION:
+#   FALSE POSITIVE - This ConfigMap contains example kubectl commands for monitoring RNDC rotation.
+#   The bash script references Kubernetes Secret resource names (e.g., "kubectl get secret $SECRET")
+#   but does NOT store actual secret values. Trivy incorrectly detects the word "Secret" in the
+#   variable names and kubectl commands.
+#
+# CONTENT:
+#   Monitoring script that demonstrates how to check RNDC rotation status using kubectl commands.
+#   Example: kubectl annotate secret $SECRET bindy.firestoned.io/force-rotation="true"
+#
+# VERIFICATION:
+#   Inspect examples/bind9-cluster-with-rotation.yaml lines 183-241 to verify no secret data is stored.
+#
+AVD-KSV-0109
