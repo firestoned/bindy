@@ -11,6 +11,8 @@ metadata:
     app.kubernetes.io/role: admin
   annotations:
     description: "Admin role for destructive operations - DO NOT bind to ServiceAccount"
+    # Trivy suppressions - see inline justifications at affected rules
+    trivy.aquasecurity.com/ignore: KSV-0041,KSV-0056
 rules:
   # ADMIN ONLY: Delete permissions for Bindy CRDs
   # This role should be bound to human administrators, NOT the operator ServiceAccount
@@ -54,11 +56,31 @@ rules:
     resources: ["deployments"]
     verbs: ["delete"]
 
+  # trivy:ignore:KSV-0056
+  # Suppression Justification (KSV-0056 - Services Delete):
+  #   ADMIN ROLE - Intentionally grants delete permissions for emergency operations.
+  #   Mitigation Strategy:
+  #     1. NOT bound to operator ServiceAccount - human administrators only
+  #     2. Requires explicit RoleBinding by cluster administrator
+  #     3. Audit logging captures all delete operations (PCI-DSS 10.2)
+  #     4. Namespace-scoped via RoleBinding - cannot delete services cluster-wide
+  #   Usage: kubectl create rolebinding bindy-admin --clusterrole=bindy-admin-role --user=admin@example.com
   - apiGroups: [""]
     resources: ["services", "configmaps", "serviceaccounts"]
     verbs: ["delete"]
 
   # Secrets - admin delete permission (CRITICAL: use with extreme caution)
+  # trivy:ignore:KSV-0041
+  # Suppression Justification (KSV-0041 - Secrets Delete):
+  #   ADMIN ROLE - Intentionally grants delete permissions for emergency secret cleanup.
+  #   Mitigation Strategy:
+  #     1. NOT bound to operator ServiceAccount - human administrators only
+  #     2. Requires explicit RoleBinding by cluster administrator
+  #     3. Delete-only - no read/list/watch permissions (minimal exposure)
+  #     4. Audit logging captures all secret operations (PCI-DSS 10.2.7)
+  #     5. Namespace-scoped via RoleBinding - cannot delete secrets cluster-wide
+  #   Risk Acceptance: Admin role for break-glass scenarios (e.g., compromised RNDC keys).
+  #   Usage: kubectl create rolebinding bindy-admin --clusterrole=bindy-admin-role --user=admin@example.com
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["delete"]

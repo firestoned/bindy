@@ -25,7 +25,7 @@
 FROM debian:12-slim@sha256:56ff6d36d4eb3db13a741b342ec466f121480b5edded42e4b7ee850ce7a418ee AS builder
 
 RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     bind9 \
     bind9utils \
     && rm -rf /var/lib/apt/lists/*
@@ -64,7 +64,8 @@ COPY --from=builder --chown=nonroot:nonroot /etc/bind /etc/bind
 COPY --chmod=755 binaries/${TARGETARCH}/bindy /usr/local/bin/bindy
 
 # Distroless runs as nonroot user (UID 65532) by default
-# No need to specify USER
+# Explicitly specify USER for security scanning compliance
+USER nonroot
 
 # Start the operator
 ENTRYPOINT ["/usr/local/bin/bindy"]

@@ -4,9 +4,32 @@
 name: Scheduled Security Scan
 
 on:
+  # Reusable workflow - can be called by other workflows
+  workflow_call:
+    inputs:
+      scan-type:
+        description: 'Type of scan to run (all, cargo-deny, gitleaks, trivy)'
+        required: false
+        type: string
+        default: 'all'
+
+  # Scheduled scan - daily at midnight UTC
   schedule:
     - cron: '0 0 * * *'  # Daily at midnight UTC
-  workflow_dispatch:  # Allow manual trigger
+
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      scan-type:
+        description: 'Type of scan to run'
+        required: false
+        type: choice
+        options:
+          - all
+          - cargo-deny
+          - gitleaks
+          - trivy
+        default: 'all'
 
 permissions:
   contents: read
@@ -435,3 +458,129 @@ jobs:
               });
               console.log(`Created new issue #${issue.data.number}`);
             }
+
+  trivy-fs:
+    name: Scan Filesystem
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Trivy
+        run: make trivy-install
+
+      - name: Run Trivy filesystem scan
+        id: trivy-fs
+        continue-on-error: true
+        run: |
+          make trivy-fs-sarif
+          if [ -f trivy-fs-results.sarif ]; then
+            echo "sarif_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "sarif_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload Trivy filesystem results to GitHub Security
+        if: steps.trivy-fs.outputs.sarif_exists == 'true'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-fs-results.sarif
+          category: trivy-fs
+
+      - name: Upload Trivy filesystem results as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-fs-results-${{ github.run_number }}
+          path: trivy-fs-results.sarif
+          retention-days: 30
+
+      - name: Generate summary
+        if: always()
+        run: |
+          echo "## Trivy Filesystem Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Date:** $(date -u +"%Y-%m-%d %H:%M UTC")" >> $GITHUB_STEP_SUMMARY
+          echo "**Run:** [${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f trivy-fs-results.sarif ]; then
+            CRITICAL=$(jq '[.runs[].results[]? | select(.level=="error")] | length' trivy-fs-results.sarif 2>/dev/null || echo "0")
+            HIGH=$(jq '[.runs[].results[]? | select(.level=="warning")] | length' trivy-fs-results.sarif 2>/dev/null || echo "0")
+            MEDIUM=$(jq '[.runs[].results[]? | select(.level=="note")] | length' trivy-fs-results.sarif 2>/dev/null || echo "0")
+            TOTAL=$((CRITICAL + HIGH + MEDIUM))
+            echo "- 🔴 **CRITICAL:** $CRITICAL" >> $GITHUB_STEP_SUMMARY
+            echo "- 🟠 **HIGH:** $HIGH" >> $GITHUB_STEP_SUMMARY
+            echo "- 🟡 **MEDIUM:** $MEDIUM" >> $GITHUB_STEP_SUMMARY
+            echo "- **Total:** $TOTAL" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            if [ "$TOTAL" -gt "0" ]; then
+              echo "⚠️ **Action Required:** Review findings in the [Security tab](${{ github.server_url }}/${{ github.repository }}/security/code-scanning)" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "✅ **No vulnerabilities detected**" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "⚠️ SARIF file not found - check Trivy scan logs" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  trivy-k8s:
+    name: Scan Kubernetes Manifests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Trivy
+        run: make trivy-install
+
+      - name: Run Trivy Kubernetes manifest scan
+        id: trivy-k8s
+        continue-on-error: true
+        run: |
+          make trivy-k8s-sarif
+          if [ -f trivy-k8s-results.sarif ]; then
+            echo "sarif_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "sarif_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload Trivy Kubernetes results to GitHub Security
+        if: steps.trivy-k8s.outputs.sarif_exists == 'true'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-k8s-results.sarif
+          category: trivy-k8s
+
+      - name: Upload Trivy Kubernetes results as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-k8s-results-${{ github.run_number }}
+          path: trivy-k8s-results.sarif
+          retention-days: 30
+
+      - name: Generate summary
+        if: always()
+        run: |
+          echo "## Trivy Kubernetes Manifest Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Date:** $(date -u +"%Y-%m-%d %H:%M UTC")" >> $GITHUB_STEP_SUMMARY
+          echo "**Run:** [${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f trivy-k8s-results.sarif ]; then
+            CRITICAL=$(jq '[.runs[].results[]? | select(.level=="error")] | length' trivy-k8s-results.sarif 2>/dev/null || echo "0")
+            HIGH=$(jq '[.runs[].results[]? | select(.level=="warning")] | length' trivy-k8s-results.sarif 2>/dev/null || echo "0")
+            MEDIUM=$(jq '[.runs[].results[]? | select(.level=="note")] | length' trivy-k8s-results.sarif 2>/dev/null || echo "0")
+            TOTAL=$((CRITICAL + HIGH + MEDIUM))
+            echo "- 🔴 **CRITICAL:** $CRITICAL" >> $GITHUB_STEP_SUMMARY
+            echo "- 🟠 **HIGH:** $HIGH" >> $GITHUB_STEP_SUMMARY
+            echo "- 🟡 **MEDIUM:** $MEDIUM" >> $GITHUB_STEP_SUMMARY
+            echo "- **Total:** $TOTAL" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            if [ "$TOTAL" -gt "0" ]; then
+              echo "⚠️ **Action Required:** Review findings in the [Security tab](${{ github.server_url }}/${{ github.repository }}/security/code-scanning)" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "✅ **No misconfigurations detected**" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "⚠️ SARIF file not found - check Trivy scan logs" >> $GITHUB_STEP_SUMMARY
+          fi
