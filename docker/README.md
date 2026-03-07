@@ -36,7 +36,7 @@ docker pull ghcr.io/firestoned/bindy:latest-fips
 
 ### 2. Distroless (Alternative)
 
-**Image Tag:** `ghcr.io/firestoned/bindy-distroless:latest`
+**Image Tag:** `ghcr.io/firestoned/bindy:latest-distroless`
 
 **Base Image:** Google Distroless (cc-debian12:nonroot)
 - **Size:** ~20MB
@@ -55,7 +55,7 @@ docker pull ghcr.io/firestoned/bindy:latest-fips
 **Example:**
 ```bash
 # Pull the Distroless variant
-docker pull ghcr.io/firestoned/bindy-distroless:latest
+docker pull ghcr.io/firestoned/bindy:latest-distroless
 ```
 
 ---
@@ -76,25 +76,25 @@ docker pull ghcr.io/firestoned/bindy-distroless:latest
 
 ## Available Tags
 
-### Chainguard (Default) - Repository: `ghcr.io/firestoned/bindy`
+### Chainguard (Default)
 
 | Tag | Description | Stability | Example |
 |-----|-------------|-----------|---------|
 | `latest` | Latest release (Chainguard) | Stable | `ghcr.io/firestoned/bindy:latest` |
 | `v1.2.3` | Specific version (Chainguard) | Stable | `ghcr.io/firestoned/bindy:v0.2.0` |
-| `main-YYYY.MM.DD` | Latest main branch (Chainguard) | Development | `ghcr.io/firestoned/bindy:main-2025.12.17` |
+| `main` | Latest main branch (Chainguard) | Development | `ghcr.io/firestoned/bindy:main` |
 | `pr-N` | Pull request build (Chainguard) | Testing | `ghcr.io/firestoned/bindy:pr-42` |
 | `sha-abc123` | Specific commit (Chainguard) | Debugging | `ghcr.io/firestoned/bindy:sha-abc123` |
 
-### Distroless (Alternative) - Repository: `ghcr.io/firestoned/bindy-distroless`
+### Distroless (Alternative) - Same Repository with `-distroless` Suffix
 
 | Tag | Description | Stability | Example |
 |-----|-------------|-----------|---------|
-| `latest` | Latest release (Distroless) | Stable | `ghcr.io/firestoned/bindy-distroless:latest` |
-| `v1.2.3` | Specific version (Distroless) | Stable | `ghcr.io/firestoned/bindy-distroless:v0.2.0` |
-| `main-YYYY.MM.DD` | Latest main branch (Distroless) | Development | `ghcr.io/firestoned/bindy-distroless:main-2025.12.17` |
-| `pr-N` | Pull request build (Distroless) | Testing | `ghcr.io/firestoned/bindy-distroless:pr-42` |
-| `sha-abc123` | Specific commit (Distroless) | Debugging | `ghcr.io/firestoned/bindy-distroless:sha-abc123` |
+| `latest-distroless` | Latest release (Distroless) | Stable | `ghcr.io/firestoned/bindy:latest-distroless` |
+| `v1.2.3-distroless` | Specific version (Distroless) | Stable | `ghcr.io/firestoned/bindy:v0.2.0-distroless` |
+| `main-distroless` | Latest main branch (Distroless) | Development | `ghcr.io/firestoned/bindy:main-distroless` |
+| `pr-N-distroless` | Pull request build (Distroless) | Testing | `ghcr.io/firestoned/bindy:pr-42-distroless` |
+| `sha-abc123-distroless` | Specific commit (Distroless) | Debugging | `ghcr.io/firestoned/bindy:sha-abc123-distroless` |
 
 ---
 
@@ -169,7 +169,7 @@ spec:
 
 ```yaml
 # ... same as above but with:
-        image: ghcr.io/firestoned/bindy-distroless:latest
+        image: ghcr.io/firestoned/bindy:latest-distroless
 ```
 
 ### Docker Compose
@@ -181,7 +181,7 @@ services:
   bindy:
     image: ghcr.io/firestoned/bindy:latest  # Chainguard default
     # OR
-    # image: ghcr.io/firestoned/bindy-distroless:latest
+    # image: ghcr.io/firestoned/bindy:latest-distroless
     restart: unless-stopped
     environment:
       - RUST_LOG=info
@@ -269,7 +269,7 @@ Chainguard provides **zero known CVEs** and is designed specifically for regulat
 
 ### Can I switch between variants?
 
-Yes! Both variants are functionally identical. Simply change your image from `ghcr.io/firestoned/bindy:latest` to `ghcr.io/firestoned/bindy-distroless:latest` or vice versa.
+Yes! Both variants are functionally identical. Simply change your image from `ghcr.io/firestoned/bindy:latest` to `ghcr.io/firestoned/bindy:latest-distroless` or vice versa.
 
 ### Which variant should I use?
 

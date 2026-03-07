@@ -1,3 +1,134 @@
+## [2026-03-07 22:00] - Fix: Standardize Distroless Image Naming Convention
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/release.yaml`: Fixed distroless version extraction to use `image-suffix: "-distroless"` instead of modifying `release-tag`
+- `docker/README.md`: Updated all distroless image references from `ghcr.io/firestoned/bindy-distroless:*` to `ghcr.io/firestoned/bindy:*-distroless`
+- `docs/src/security/signed-releases.md`: Updated distroless image references to use tag suffix notation
+
+### Why
+The documentation was incorrectly showing distroless images as a separate repository (`bindy-distroless`), but the actual CI/CD pipeline uses the same repository with a `-distroless` tag suffix. This inconsistency was confusing and would cause pull/verification commands in the docs to fail.
+
+**Before (Incorrect Documentation):**
+- ❌ `ghcr.io/firestoned/bindy-distroless:latest` (separate repository - doesn't exist)
+- ❌ `ghcr.io/firestoned/bindy-distroless:v1.0.0` (separate repository - doesn't exist)
+
+**After (Correct Convention):**
+- ✅ `ghcr.io/firestoned/bindy:latest-distroless` (same repository, tag suffix)
+- ✅ `ghcr.io/firestoned/bindy:v1.0.0-distroless` (same repository, tag suffix)
+
+**Why Tag Suffix (not separate repo):**
+- Simpler CI/CD - one repository, two variants
+- Easier to manage permissions and rate limits
+- Clear relationship between variants (same base name)
+- Follows Docker Hub conventions for variant tags
+
+### Impact
+- [x] Documentation now matches actual image locations
+- [x] Users can successfully pull distroless images using documented commands
+- [x] Cosign verification examples now work correctly
+- [x] Release workflow correctly applies `-distroless` suffix to image tags
+
+### Implementation Details
+
+**Release Workflow Fix:**
+```yaml
+# Before (wrong - tries to use non-existent git tag)
+release-tag: ${{ github.event.release.tag_name }}-distroless
+image-suffix: ""
+
+# After (correct - uses image suffix)
+release-tag: ${{ github.event.release.tag_name }}
+image-suffix: "-distroless"
+```
+
+**Tag Examples:**
+| Release | Chainguard Tag | Distroless Tag |
+|---------|----------------|----------------|
+| v1.0.0 | `ghcr.io/firestoned/bindy:v1.0.0` | `ghcr.io/firestoned/bindy:v1.0.0-distroless` |
+| latest | `ghcr.io/firestoned/bindy:latest` | `ghcr.io/firestoned/bindy:latest-distroless` |
+| main | `ghcr.io/firestoned/bindy:main` | `ghcr.io/firestoned/bindy:main-distroless` |
+| pr-42 | `ghcr.io/firestoned/bindy:pr-42` | `ghcr.io/firestoned/bindy:pr-42-distroless` |
+
+---
+
+## [2026-03-07 21:45] - Security: Scan Both Chainguard and Distroless Container Variants
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/security-scan.yaml`: Updated `trivy-scan` job to scan both Chainguard and Distroless image variants separately
+
+### Why
+The previous security scan only scanned `latest` and `main` tags without distinguishing between the Chainguard (zero-CVE) and Distroless (Debian-based) variants. This made it unclear which variant had vulnerabilities.
+
+**Current Situation:**
+- **Chainguard variant** (`latest`, `main`): Zero known CVEs, daily security rebuilds
+- **Distroless variant** (`latest-distroless`, `main-distroless`): Has CVE-2026-0861 (HIGH) - glibc integer overflow in memalign
+
+Debian 12's glibc (2.36-9+deb12u13) has CVE-2026-0861 with no fix available yet. The Chainguard variant is built on a different base that doesn't have this vulnerability.
+
+### Impact
+- [x] Separate security reports for each image variant
+- [x] Clear visibility into which variant has vulnerabilities
+- [x] SARIF results categorized by variant name (e.g., `trivy-scheduled-chainguard`, `trivy-scheduled-distroless`)
+- [x] GitHub issues created separately for each variant with vulnerabilities
+- [x] Issues include recommendation to use Chainguard variant if Distroless has CVEs
+
+### Implementation Details
+
+**Before:**
+```yaml
+matrix:
+  tag: ['latest', 'main']  # Unclear which variant
+```
+
+**After:**
+```yaml
+matrix:
+  variant:
+    - name: chainguard
+      tag: latest
+      description: "Chainguard Zero-CVE"
+    - name: distroless
+      tag: latest-distroless
+      description: "Google Distroless"
+    - name: chainguard-main
+      tag: main
+      description: "Chainguard Main Branch"
+    - name: distroless-main
+      tag: main-distroless
+      description: "Distroless Main Branch"
+```
+
+### Recommendations for CVE-2026-0861
+
+**Option 1 (Recommended)**: Use Chainguard variant
+```bash
+# Pull Chainguard variant (zero CVEs)
+docker pull ghcr.io/firestoned/bindy:latest
+# or
+docker pull ghcr.io/firestoned/bindy:1.0.0
+```
+
+**Option 2**: Wait for Debian to patch glibc
+- Monitor: https://security-tracker.debian.org/tracker/CVE-2026-0861
+- When Debian releases patched glibc, Google will rebuild distroless images
+- Update base image digest in Dockerfile
+
+**Option 3**: Accept the risk
+- Document risk acceptance for CVE-2026-0861
+- Monitor for exploitation in the wild
+- Plan remediation timeline
+
+### References
+- [Chainguard Zero-CVE Images](https://www.chainguard.dev/)
+- [CVE-2026-0861 Details](https://nvd.nist.gov/vuln/detail/CVE-2026-0861)
+- [Google Distroless Images](https://github.com/GoogleContainerTools/distroless)
+
+---
+
 ## [2026-03-07 21:15] - Fix: Semgrep Installation via pipx Instead of GitHub Releases
 
 **Author:** Erick Bourgeois

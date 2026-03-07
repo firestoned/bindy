@@ -320,29 +320,41 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        tag: ['latest', 'main']
+        variant:
+          - name: chainguard
+            tag: latest
+            description: "Chainguard Zero-CVE"
+          - name: distroless
+            tag: latest-distroless
+            description: "Google Distroless"
+          - name: chainguard-main
+            tag: main
+            description: "Chainguard Main Branch"
+          - name: distroless-main
+            tag: main-distroless
+            description: "Distroless Main Branch"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Run Trivy scan on ${{ matrix.tag }}
+      - name: Run Trivy scan on ${{ matrix.variant.description }}
         continue-on-error: true
         id: trivy
         uses: firestoned/github-actions/security/trivy-scan@v1.3.4
         with:
-          image-ref: ghcr.io/${{ github.repository }}:${{ matrix.tag }}
-          sarif-category: trivy-scheduled-${{ matrix.tag }}
-          upload-artifact-name: trivy-scan-${{ matrix.tag }}-${{ github.run_number }}
-          output-filename: trivy-${{ matrix.tag }}.json
+          image-ref: ghcr.io/${{ github.repository }}:${{ matrix.variant.tag }}
+          sarif-category: trivy-scheduled-${{ matrix.variant.name }}
+          upload-artifact-name: trivy-scan-${{ matrix.variant.name }}-${{ github.run_number }}
+          output-filename: trivy-${{ matrix.variant.name }}.json
 
       - name: Parse Trivy results
         id: parse
         if: always()
         run: |
-          if [ -f trivy-${{ matrix.tag }}.json ]; then
-            CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-${{ matrix.tag }}.json || echo "0")
-            HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' trivy-${{ matrix.tag }}.json || echo "0")
-            MEDIUM=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="MEDIUM")] | length' trivy-${{ matrix.tag }}.json || echo "0")
+          if [ -f trivy-${{ matrix.variant.name }}.json ]; then
+            CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-${{ matrix.variant.name }}.json || echo "0")
+            HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' trivy-${{ matrix.variant.name }}.json || echo "0")
+            MEDIUM=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="MEDIUM")] | length' trivy-${{ matrix.variant.name }}.json || echo "0")
 
             echo "critical=${CRITICAL}" >> $GITHUB_OUTPUT
             echo "high=${HIGH}" >> $GITHUB_OUTPUT
@@ -364,8 +376,10 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const tag = '${{ matrix.tag }}';
-            const report = JSON.parse(fs.readFileSync(`trivy-${tag}.json`, 'utf8'));
+            const variantName = '${{ matrix.variant.name }}';
+            const variantTag = '${{ matrix.variant.tag }}';
+            const variantDesc = '${{ matrix.variant.description }}';
+            const report = JSON.parse(fs.readFileSync(`trivy-${variantName}.json`, 'utf8'));
 
             const critical = ${{ steps.parse.outputs.critical }};
             const high = ${{ steps.parse.outputs.high }};
@@ -407,7 +421,7 @@ jobs:
 
             const body = `## 🚨 Container Image Vulnerabilities Detected
 
-            **Image**: \`ghcr.io/${{ github.repository }}:${tag}\`
+            **Image**: \`ghcr.io/${{ github.repository }}:${variantTag}\` (${variantDesc})
             **Scan Date**: ${new Date().toISOString()}
 
             ### Summary
@@ -425,6 +439,8 @@ jobs:
 
             **Compliance**: PCI-DSS 6.2, SOX IT Controls, Basel III Cyber Risk
             **Full Report**: Check workflow artifacts for complete Trivy scan results
+
+            **Note**: If this is the Distroless variant, consider switching to the Chainguard variant which has daily security updates and zero known CVEs.
             `;
 
             // Check for existing issue
@@ -438,7 +454,7 @@ jobs:
             const todayStr = new Date().toISOString().split('T')[0];
             const existingIssue = existingIssues.data.find(i =>
               i.title.includes('Container vulnerabilities') &&
-              i.title.includes(tag) &&
+              i.title.includes(variantName) &&
               i.title.includes(todayStr)
             );
 
@@ -454,7 +470,7 @@ jobs:
               const issue = await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                title: `[SECURITY] Container vulnerabilities in ${tag} image (${todayStr})`,
+                title: `[SECURITY] Container vulnerabilities in ${variantName} (${todayStr})`,
                 body: body,
                 labels: ['security', 'container-vulnerability', 'automated']
               });

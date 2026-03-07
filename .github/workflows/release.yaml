@@ -78,8 +78,8 @@ jobs:
         with:
           repository: firestoned/bindy
           workflow-type: release
-          release-tag: ${{ github.event.release.tag_name }}
-          image-suffix: "-distroless"
+          release-tag: ${{ github.event.release.tag_name }}-distroless
+          image-suffix: ""
 
   build:
     name: Build - ${{ matrix.platform.name }}
