@@ -205,8 +205,8 @@ jobs:
         with:
           repository: firestoned/bindy
           workflow-type: pr
-          pr-number: ${{ github.event.pull_request.number }}
-          image-suffix: "-distroless"
+          pr-number: ${{ github.event.pull_request.number }}-distroless
+          image-suffix: ""
 
   docker:
     name: Build and Push Docker Image - ${{ matrix.variant.name }}
@@ -221,13 +221,11 @@ jobs:
         variant:
           - name: Chainguard
             dockerfile: docker/Dockerfile.chainguard
-            suffix: ""
             description: "Chainguard Zero-CVE (glibc, ~15MB, FIPS-ready)"
             image-tag: ${{ needs.extract-version.outputs.image-tag-chainguard }}
             image-repository: ${{ needs.extract-version.outputs.image-repository-chainguard }}
           - name: Distroless
             dockerfile: docker/Dockerfile
-            suffix: "-distroless"
             description: "Google Distroless (glibc, ~20MB)"
             image-tag: ${{ needs.extract-version.outputs.image-tag-distroless }}
             image-repository: ${{ needs.extract-version.outputs.image-repository-distroless }}

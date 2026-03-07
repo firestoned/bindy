@@ -12,8 +12,8 @@ Bindy releases are cryptographically signed using [Cosign](https://github.com/si
 Every Bindy release includes signed artifacts:
 
 1. **Container Images**:
-   - `ghcr.io/firestoned/bindy:*` (Chainguard base)
-   - `ghcr.io/firestoned/bindy-distroless:*` (Google Distroless base)
+   - `ghcr.io/firestoned/bindy:*` (Chainguard base - default)
+   - `ghcr.io/firestoned/bindy:*-distroless` (Google Distroless base - alternative)
 
 2. **Binary Tarballs**:
    - `bindy-linux-amd64.tar.gz`
@@ -67,7 +67,7 @@ cosign verify \
 cosign verify \
   --certificate-identity-regexp='https://github.com/firestoned/bindy' \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
-  ghcr.io/firestoned/bindy-distroless:latest
+  ghcr.io/firestoned/bindy:latest-distroless
 ```
 
 ### Understanding the Verification Output
