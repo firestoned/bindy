@@ -120,8 +120,8 @@ jobs:
         uses: firestoned/github-actions/versioning/extract-version@v1.3.4
         with:
           repository: firestoned/bindy
-          workflow-type: main
-          image-suffix: "-distroless"
+          workflow-type: main-distroless
+          image-suffix: ""
 
   docker:
     name: Build and Push Docker Image - ${{ matrix.variant.name }}
@@ -136,13 +136,11 @@ jobs:
         variant:
           - name: Chainguard
             dockerfile: docker/Dockerfile.chainguard
-            suffix: ""
             description: "Chainguard Zero-CVE (glibc, ~15MB, FIPS-ready)"
             image-tag: ${{ needs.extract-version.outputs.image-tag-chainguard }}
             image-repository: ${{ needs.extract-version.outputs.image-repository-chainguard }}
           - name: Distroless
             dockerfile: docker/Dockerfile
-            suffix: "-distroless"
             description: "Google Distroless (glibc, ~20MB)"
             image-tag: ${{ needs.extract-version.outputs.image-tag-distroless }}
             image-repository: ${{ needs.extract-version.outputs.image-repository-distroless }}
