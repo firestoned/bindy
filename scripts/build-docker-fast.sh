@@ -13,29 +13,58 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+# Parse command line arguments
+NO_CACHE=""
+STRATEGY=""
+TAG=""
+
+# Process arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --no-cache)
+            NO_CACHE="--no-cache"
+            shift
+            ;;
+        --help|-h)
+            STRATEGY="--help"
+            shift
+            ;;
+        *)
+            if [ -z "$STRATEGY" ]; then
+                STRATEGY="$1"
+            elif [ -z "$TAG" ]; then
+                TAG="$1"
+            fi
+            shift
+            ;;
+    esac
+done
+
 # Default values
-STRATEGY="${1:-local}"
-TAG="${2:-latest}"
+STRATEGY="${STRATEGY:-local}"
+TAG="${TAG:-latest}"
 IMAGE_NAME=firestoned/bindy
 REGISTRY="${REGISTRY:-ghcr.io}"
 KIND_CLUSTER="${KIND_CLUSTER:-bindy-test}"
 FULL_IMAGE="${REGISTRY}/${IMAGE_NAME}:${TAG}"
 
 print_usage() {
-    echo "Usage: $0 [strategy] [tag]"
+    echo "Usage: $0 [options] [strategy] [tag]"
+    echo ""
+    echo "Options:"
+    echo "  --no-cache    - Build without using Docker cache (useful for GPG signature issues)"
     echo ""
     echo "Strategies:"
     echo "  local     - Build locally then copy binary (fastest: ~10s)"
     echo "  kind      - Build locally, copy binary, and load into kind (fastest: ~15s)"
     echo "  fast      - Use Dockerfile.fast with better caching (~1-2min)"
-    echo "  chef      - Use cargo-chef for optimal caching (first: ~5min, subsequent: ~30s)"
     echo "  ci        - Use production Dockerfile with pre-built binaries (~30s, requires binaries/)"
     echo ""
     echo "Examples:"
     echo "  $0 local              # Fastest, builds locally first"
     echo "  $0 kind               # Build locally and load into kind cluster"
+    echo "  $0 --no-cache local   # Build without cache (fixes GPG signature errors)"
     echo "  $0 fast               # Fast Docker build with caching"
-    echo "  $0 chef               # Best for repeated builds"
     echo "  $0 ci                 # Production build (requires binaries/amd64/ and binaries/arm64/)"
     echo ""
     echo "Environment variables:"
@@ -49,6 +78,9 @@ fi
 
 echo -e "${GREEN}Building Docker image with strategy: ${STRATEGY}${NC}"
 echo -e "${GREEN}Image: ${FULL_IMAGE}${NC}"
+if [ -n "$NO_CACHE" ]; then
+    echo -e "${YELLOW}Cache: Disabled (--no-cache)${NC}"
+fi
 echo ""
 
 case "$STRATEGY" in
@@ -58,7 +90,7 @@ case "$STRATEGY" in
         make build-aarch64-linux-debug
         echo ""
         echo "Step 2/2: Building Docker image..."
-        docker build -f docker/Dockerfile.local -t "$FULL_IMAGE" .
+        docker build $NO_CACHE -f docker/Dockerfile.local -t "$FULL_IMAGE" .
         ;;
 
     kind)
@@ -67,7 +99,7 @@ case "$STRATEGY" in
         make build-aarch64-linux-debug
         echo ""
         echo "Step 2/3: Building Docker image..."
-        docker build -f docker/Dockerfile.local -t "$FULL_IMAGE" .
+        docker build $NO_CACHE -f docker/Dockerfile.local -t "$FULL_IMAGE" .
         echo ""
         echo "Step 3/3: Loading image $FULL_IMAGE into kind cluster..."
         kind load docker-image "$FULL_IMAGE" --name $KIND_CLUSTER
@@ -75,13 +107,7 @@ case "$STRATEGY" in
 
     fast)
         echo -e "${YELLOW}Strategy: Fast (optimized Dockerfile)${NC}"
-        docker build -f docker/Dockerfile.fast -t "$FULL_IMAGE" .
-        ;;
-
-    chef)
-        echo -e "${YELLOW}Strategy: Cargo-chef (best caching)${NC}"
-        echo "Note: First build will be slow (~5min), subsequent builds are fast (~30s)"
-        docker build -f docker/Dockerfile.chef -t "$FULL_IMAGE" .
+        docker build $NO_CACHE -f docker/Dockerfile.fast -t "$FULL_IMAGE" .
         ;;
 
     ci)
@@ -101,7 +127,7 @@ case "$STRATEGY" in
             echo "  cp target/aarch64-unknown-linux-gnu/release/bindy binaries/arm64/"
             exit 1
         fi
-        docker build -f docker/Dockerfile -t "$FULL_IMAGE" .
+        docker build $NO_CACHE -f docker/Dockerfile -t "$FULL_IMAGE" .
         ;;
 
     *)

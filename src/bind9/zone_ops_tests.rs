@@ -210,8 +210,8 @@ mod tests {
             .await;
 
         // Should either succeed or return specific "not found" error
-        if result.is_err() {
-            let err_msg = result.unwrap_err().to_string();
+        if let Err(e) = result {
+            let err_msg = e.to_string();
             assert!(err_msg.contains("not found") || err_msg.contains("404"));
         }
     }

@@ -98,6 +98,81 @@ pub struct Bind9InstanceStatus {
 
 ---
 
+### 🚨 CRITICAL: Docker Base Image Digests Must Be Multi-Arch
+
+**MANDATORY REQUIREMENT:** When updating Docker base images in Dockerfiles, ALWAYS use multi-arch manifest list digests, NOT platform-specific digests.
+
+**Why This Matters:**
+- Platform-specific digests (e.g., AMD64-only) force Docker BuildKit to use QEMU emulation for other architectures
+- QEMU emulation often fails with cryptic errors like: `.buildkit_qemu_emulator: Invalid ELF image for this architecture`
+- Multi-arch manifest list digests allow Docker BuildKit to select the correct platform-native image automatically
+- This ensures builds work correctly for both `linux/amd64` and `linux/arm64` without emulation
+
+**How to Get Multi-Arch Manifest List Digests:**
+```bash
+# Get the digest of the multi-arch manifest list (NOT platform-specific digest)
+docker buildx imagetools inspect <image>:<tag> --raw | sha256sum | awk '{print "sha256:"$1}'
+
+# Example for common base images:
+docker buildx imagetools inspect debian:12-slim --raw | sha256sum | awk '{print "sha256:"$1}'
+docker buildx imagetools inspect alpine:3.21 --raw | sha256sum | awk '{print "sha256:"$1}'
+docker buildx imagetools inspect rust:1.94.0 --raw | sha256sum | awk '{print "sha256:"$1}'
+docker buildx imagetools inspect gcr.io/distroless/cc-debian12:nonroot --raw | sha256sum | awk '{print "sha256:"$1}'
+docker buildx imagetools inspect cgr.dev/chainguard/wolfi-base:latest --raw | sha256sum | awk '{print "sha256:"$1}'
+docker buildx imagetools inspect cgr.dev/chainguard/glibc-dynamic:latest --raw | sha256sum | awk '{print "sha256:"$1}'
+```
+
+**Dockerfile Pattern:**
+```dockerfile
+# ✅ CORRECT - Multi-arch manifest list digest
+# NOTE: This digest points to the multi-arch manifest list (supports both AMD64 and ARM64)
+FROM debian:12-slim@sha256:74d56e3931e0d5a1dd51f8c8a2466d21de84a271cd3b5a733b803aa91abf4421 AS builder
+
+# ❌ WRONG - Platform-specific digest (AMD64 only)
+FROM debian:12-slim@sha256:0836c58489cd1baee1f617ab06a4fb1b908604d4416022173e4da43ff12399de AS builder
+```
+
+**Verification:**
+After updating digests, verify they work for both platforms:
+```bash
+# Check that the digest is a multi-arch manifest list (not platform-specific)
+docker buildx imagetools inspect <image>@<digest>
+
+# Look for multiple platforms in the output:
+# Platform: linux/amd64
+# Platform: linux/arm64
+```
+
+**Required Dockerfiles:**
+When updating base images, you MUST update ALL Dockerfiles that use the same base image:
+- ✅ `docker/Dockerfile` (Distroless variant)
+- ✅ `docker/Dockerfile.chainguard` (Chainguard variant)
+- ✅ `docker/Dockerfile.chef` (cargo-chef variant)
+- ✅ `docker/Dockerfile.fast` (fast build variant)
+- ✅ `docker/Dockerfile.local` (local development - usually no digest)
+
+**Checklist for Docker Base Image Updates:**
+- [ ] Get multi-arch manifest list digest using `docker buildx imagetools inspect --raw | sha256sum`
+- [ ] Verify digest supports both `linux/amd64` and `linux/arm64` platforms
+- [ ] Update ALL Dockerfiles that use the base image
+- [ ] Add comment: `# NOTE: This digest points to the multi-arch manifest list (supports both AMD64 and ARM64)`
+- [ ] Update `.claude/CHANGELOG.md` with the digest changes
+- [ ] Test multi-arch build: `docker buildx build --platform linux/amd64,linux/arm64 ...`
+
+**Common Mistake to Avoid:**
+```bash
+# ❌ WRONG - This gives you the platform-specific digest for your current architecture
+docker pull debian:12-slim
+docker inspect debian:12-slim | grep -A 5 RepoDigests
+
+# ✅ CORRECT - This gives you the multi-arch manifest list digest
+docker buildx imagetools inspect debian:12-slim --raw | sha256sum
+```
+
+**REMEMBER:** Multi-arch manifest list digests prevent ARM64 build failures and QEMU emulation errors while maintaining supply chain security through digest pinning.
+
+---
+
 ### 🔍 MANDATORY SEARCH TOOL: ripgrep (rg)
 **OBLIGATORY RULE:** ALWAYS use `ripgrep` (command: `rg`) as your PRIMARY and FIRST tool for ANY code search, pattern matching, or grepping task. This is NON-NEGOTIABLE.
 

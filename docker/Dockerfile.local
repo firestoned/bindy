@@ -11,7 +11,9 @@
 #
 # IMPORTANT: This is for local development only. Do NOT use in CI/CD.
 
-FROM debian:bookworm-slim
+# Local development: use platform-native image (auto-detects amd64 or arm64)
+# No digest pin - always pulls latest for your platform
+FROM debian:12-slim
 
 LABEL org.opencontainers.image.source="https://github.com/firestoned/bindy"
 LABEL org.opencontainers.image.description="BIND9 DNS Operator for Kubernetes (Local Dev Build)"
@@ -20,7 +22,7 @@ LABEL org.opencontainers.image.licenses="MIT"
 # Install BIND9 and required libraries
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bind9 \
-    bind9-utils \
+    bind9utils \
     dnsutils \
     ca-certificates \
     curl \

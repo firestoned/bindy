@@ -30,7 +30,7 @@
 
 # Build stage to install BIND9
 # NOTE: This digest points to the multi-arch manifest list (supports both AMD64 and ARM64)
-FROM cgr.dev/chainguard/wolfi-base:latest@sha256:17ab0709456ce1a2aedd85e95f72e58d73133bb70c33ae945a4d4b2424e984f1 AS builder
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:00f9662b838432de5f24eabe5dc86f20d1510d158eda1bcaf68bbba8412544cc AS builder
 
 # Install BIND9 and tools
 RUN apk add --no-cache \
@@ -39,7 +39,8 @@ RUN apk add --no-cache \
     ca-certificates
 
 # Runtime stage - Chainguard glibc-dynamic (zero CVEs)
-FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:4ccbfa62dee17b2439c0973e8711f3b0d3bd93a25f304b1b06bcdad1738591ad
+# NOTE: This digest points to the multi-arch manifest list (supports both AMD64 and ARM64)
+FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:32a62ef6ed1a741a7e764ec7b049da6a844699e0d51004bf1cb532ebb7479d8c
 
 ARG TARGETARCH
 ARG VERSION=0.1.0
