@@ -6,7 +6,7 @@
 REGISTRY ?= ghcr.io
 IMAGE_NAME ?= firestoned/bindy
 IMAGE_REPOSITORY ?= firestoned/bindy
-IMAGE_TAG ?= latest
+IMAGE_TAG ?= latest-dev
 NAMESPACE ?= dns-system
 KIND_CLUSTER ?= bindy-test
 KIND_CONTEXT ?= "kind-$(KIND_CLUSTER)"
@@ -482,10 +482,13 @@ format: ## Format code
 	cargo fmt
 
 docker-build: ## Build Docker image
-	./scripts/build-docker-fast.sh chef
+	./scripts/build-docker-fast.sh local
 
 docker-build-kind:
 	KIND_CLUSTER=$(KIND_CLUSTER) ./scripts/build-docker-fast.sh kind
+
+docker-build-no-cache-kind:
+	KIND_CLUSTER=$(KIND_CLUSTER) ./scripts/build-docker-fast.sh --no-cache kind
 
 docker-push: ## Push Docker image
 	docker push $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)

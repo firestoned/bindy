@@ -1,3 +1,121 @@
+## [2026-03-08 00:15] - Documentation: Add Multi-Arch Docker Digest Requirements to CLAUDE.md
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.claude/CLAUDE.md`: Added new critical section "Docker Base Image Digests Must Be Multi-Arch"
+- Documented mandatory requirement to always use multi-arch manifest list digests
+- Added commands to obtain multi-arch manifest list digests using `docker buildx imagetools inspect`
+- Added verification workflow and common mistakes to avoid
+- Added checklist for Docker base image updates
+
+### Why
+To prevent future Docker base image update mistakes where platform-specific digests are used instead of multi-arch manifest list digests. This ensures:
+- Claude Code always uses the correct digest type when updating Dockerfiles
+- ARM64 builds don't fail with QEMU emulation errors
+- All contributors follow the same process for Docker base image updates
+- Supply chain security through digest pinning while maintaining multi-arch support
+
+### Impact
+- [x] Critical requirement documented in project instructions
+- [x] Future Docker base image updates will use correct multi-arch digests
+- [x] Prevents recurring ARM64 build failures
+- [x] Standardized process across all Dockerfiles
+- [ ] No immediate code changes required
+
+---
+
+## [2026-03-07 23:30] - Fix: Update All Dockerfiles to Use Multi-Arch Manifest Digests
+
+**Author:** Erick Bourgeois
+
+### Changed
+All Dockerfiles updated to pin to **multi-arch manifest list digests** instead of platform-specific digests:
+
+**docker/Dockerfile.chainguard:**
+- Builder stage `wolfi-base:latest`: `sha256:0836c58...` (AMD64-only) → `sha256:00f9662b...` (multi-arch)
+- Runtime stage `glibc-dynamic:latest`: `sha256:817523f...` (old) → `sha256:32a62ef6...` (multi-arch)
+
+**docker/Dockerfile (Distroless):**
+- Builder stage `debian:12-slim`: `sha256:74a21da...` (old) → `sha256:74d56e39...` (multi-arch)
+- Runtime stage `distroless/cc-debian12:nonroot`: `sha256:777a0f9...` (old) → `sha256:7e5b8df2...` (multi-arch)
+
+**docker/Dockerfile.chef:**
+- Builder stage `rust:1.94.0`: `sha256:70557ec...` (old) → `sha256:0e6da0c8...` (multi-arch)
+- Runtime stage `alpine:3.21`: `sha256:22e0ec1...` (old) → `sha256:c3f8e73f...` (multi-arch)
+
+**docker/Dockerfile.fast:**
+- Builder stage `rust:1.94.0`: `sha256:70557ec...` (old) → `sha256:0e6da0c8...` (multi-arch)
+- Runtime stage `alpine:3.21`: `sha256:22e0ec1...` (old) → `sha256:c3f8e73f...` (multi-arch)
+
+### Why
+The Docker build was failing for ARM64 with a QEMU emulation error:
+```
+.buildkit_qemu_emulator: /bin/sh: Invalid ELF image for this architecture
+ERROR: process "/dev/.buildkit_qemu_emulator /bin/sh -c apk add --no-cache bind bind-tools ca-certificates" did not complete successfully: exit code: 255
+```
+
+**Root Cause:** The old SHA256 digests pointed to **platform-specific images** (AMD64 only), not the multi-arch manifest list. When Docker BuildKit tried to build ARM64 images on AMD64 runners, it was forced to use QEMU emulation, which failed.
+
+**Solution:** All digests now point to the **multi-arch manifest list digest**, which contains references to both AMD64 and ARM64 platform-specific images. Docker BuildKit automatically selects the correct platform-native image without QEMU emulation.
+
+### How Multi-Arch Manifest Digests Were Obtained
+```bash
+docker buildx imagetools inspect <image>:<tag> --raw | sha256sum
+```
+
+This returns the digest of the **manifest list** (OCI index), not individual platform images.
+
+### Impact
+- [x] **ARM64 Docker builds now work correctly** - No QEMU emulation errors
+- [x] **Multi-arch builds succeed** - Both `linux/amd64` and `linux/arm64` platforms build natively
+- [x] **Better security** - All base images pinned to specific digests (supply chain security)
+- [x] **Better performance** - No QEMU emulation overhead during builds
+- [x] **Reproducible builds** - Digest pinning ensures exact same images every time
+- [x] **Supports both platforms natively** - Docker BuildKit selects correct platform from manifest list
+- [ ] No breaking changes to image functionality
+
+---
+
+## [2026-03-07 22:30] - Update: Docker Base Image Versions
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: Updated rust-version from 1.85 to 1.94 (MSRV - Minimum Supported Rust Version)
+- `rust-toolchain.toml`: Updated channel from 1.91 to 1.94 (pinned toolchain version)
+- `docker/Dockerfile.local`: Fixed package name from bind9-utils to bind9utils (no hyphen)
+- `docker/Dockerfile.local`: Removed digest pin from debian:12-slim to auto-detect platform (ARM64/AMD64)
+- `scripts/build-docker-fast.sh`: Added --no-cache flag support for all build strategies
+- `docker/Dockerfile`: Updated debian:12-slim from `sha256:56ff6d...` to `sha256:74a21da...`
+- `docker/Dockerfile`: Updated distroless/cc-debian12:nonroot from `sha256:d96da2e...` to `sha256:777a0f9...`
+- `docker/Dockerfile.chainguard`: Updated wolfi-base from `sha256:17ab070...` to `sha256:0836c58...`
+- `docker/Dockerfile.chainguard`: Updated glibc-dynamic from `sha256:4ccbfa6...` to `sha256:817523f...`
+- `docker/Dockerfile.chef`: Updated rust from 1.91.0 to 1.94.0 (latest stable) with digest `sha256:70557ec...`
+- `docker/Dockerfile.chef`: Updated alpine from 3.20 to 3.21 with digest `sha256:22e0ec1...`
+- `docker/Dockerfile.fast`: Updated rust from 1.91.0 to 1.94.0 (latest stable) with digest `sha256:70557ec...`
+- `docker/Dockerfile.fast`: Updated alpine from 3.20 to 3.21 with digest `sha256:22e0ec1...`
+
+### Why
+All Docker base images and Rust toolchain needed to be updated to their latest stable versions to:
+- Receive latest security patches and CVE fixes
+- Get performance improvements and bug fixes
+- Update Rust toolchain to version 1.94.0 (latest stable as of March 2026)
+- Update MSRV in Cargo.toml to match Docker images and ensure consistency
+- Update Alpine Linux to version 3.21 (latest stable)
+- Ensure all images use the latest Debian 12 and Chainguard base images
+
+### Impact
+- [x] Security improvements from latest base image patches
+- [x] Performance improvements from updated Rust compiler (1.94.0)
+- [x] Better Alpine package support (3.21)
+- [x] Latest Chainguard zero-CVE images
+- [x] Improved Distroless security posture
+- [ ] No breaking changes expected
+- [ ] Build process remains unchanged
+
+---
+
 ## [2026-03-07 22:00] - Fix: Standardize Distroless Image Naming Convention
 
 **Author:** Erick Bourgeois

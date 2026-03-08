@@ -102,8 +102,6 @@ IMAGES_TO_PIN=(
   "docker/Dockerfile:gcr.io/distroless/cc-debian12:nonroot"
   "docker/Dockerfile.chainguard:cgr.dev/chainguard/wolfi-base:latest"
   "docker/Dockerfile.chainguard:cgr.dev/chainguard/glibc-dynamic:latest"
-  "docker/Dockerfile.chef:rust:1.91.0"
-  "docker/Dockerfile.chef:alpine:3.20"
   "docker/Dockerfile.fast:rust:1.91.0"
   "docker/Dockerfile.fast:alpine:3.20"
   "docker/Dockerfile.local:alpine:3.20"
