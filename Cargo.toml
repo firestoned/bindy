@@ -2,7 +2,7 @@
 name = "bindy"
 version = "0.3.4"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.94"
 authors = ["Erick Bourgeois <erick@hjeb.ca>"]
 description = "BIND9 DNS Operator for Kubernetes"
 license = "MIT"
