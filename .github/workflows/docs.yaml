@@ -39,7 +39,7 @@ jobs:
           fetch-depth: 0  # Full history for git-revision-date-localized plugin
 
       - name: Setup Rust build environment
-        uses: firestoned/github-actions/rust/setup-rust-build@v1.3.4
+        uses: firestoned/github-actions/rust/setup-rust-build@v1.3.5
         with:
           target: x86_64-unknown-linux-gnu
 
