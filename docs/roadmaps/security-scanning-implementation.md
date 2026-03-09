@@ -1,8 +1,8 @@
 # Security Scanning Implementation Roadmap
 
 **Date:** 2026-03-06
-**Last Updated:** 2026-03-07 17:00
-**Status:** In Progress (Phase 4.2 Complete - GitHub Actions Integration)
+**Last Updated:** 2026-03-08 09:00
+**Status:** In Progress (Phase 5 Complete - License Compliance)
 **Author:** Erick Bourgeois
 **Impact:** High - Implements comprehensive security scanning for regulated banking environment
 
@@ -654,26 +654,28 @@ workflow_dispatch:
 
 ---
 
-### Phase 5: License Compliance (Week 5)
+### Phase 5: License Compliance (Week 5) ✅ COMPLETED
 **Goal:** Implement license compliance tracking and enforcement
+
+**Date Completed:** 2026-03-08
 
 #### Tasks
 1. **cargo-license Setup**
-   - [ ] Install: `cargo install cargo-license`
-   - [ ] Create Makefile target: `make license-check`
-   - [ ] Generate license report: `licenses.json`
-   - [ ] Document allowed licenses in `.cargo-deny.toml`
-   - [ ] Add license check to CI workflow
+   - [x] Install: `cargo install cargo-license`
+   - [x] Create Makefile target: `make license-check`
+   - [x] Generate license report: `licenses.json` via `make license-report`
+   - [x] Document allowed licenses in `.cargo-deny.toml` (already in place)
+   - [x] Add license check to CI workflow
 
 2. **License Policy Definition**
-   - [ ] Define allowed licenses (MIT, Apache-2.0, BSD-3-Clause)
-   - [ ] Define denied licenses (GPL, AGPL, SSPL)
-   - [ ] Document license policy in `docs/`
+   - [x] Define allowed licenses (MIT, Apache-2.0, BSD-2/3-Clause, ISC, MPL-2.0, etc.)
+   - [x] Define denied licenses (GPL, AGPL, SSPL, EUPL, CDDL)
+   - [x] Document license policy in `docs/src/development/license-compliance.md`
 
 3. **License Compliance Workflow**
-   - [ ] Create GitHub Action for license checking
-   - [ ] Fail CI on GPL/AGPL/SSPL licenses
-   - [ ] Generate license report on releases
+   - [x] `make license-check` fails CI on prohibited licenses
+   - [x] Added to `security` job in `.github/workflows/pr.yaml`
+   - [x] `make license-report` generates `licenses.json` for release artifacts
 
 **Deliverables:**
 - Makefile target: `license-check`
@@ -1144,3 +1146,6 @@ Week 6+: Supply Chain Security (Optional)
 | 2026-03-06 | Erick Bourgeois | Phase 3 completed: Trivy container & IaC scanning |
 | 2026-03-07 | Erick Bourgeois | Phase 3.5 completed: Security hardening - Fixed Dockerfiles, added .trivyignore, documented RBAC mitigations |
 | 2026-03-07 | Erick Bourgeois | Phase 4 completed: Semgrep (v1.154.0) and Kubesec (v2.14.2) - 0 findings! |
+| 2026-03-07 | Erick Bourgeois | Phase 4.1 completed: semgrep-install and kubesec-install Makefile targets |
+| 2026-03-07 | Erick Bourgeois | Phase 4.2 completed: Semgrep + Kubesec jobs in security-scan.yaml workflow |
+| 2026-03-08 | Erick Bourgeois | Phase 5 completed: license-check + license-report targets, PR gate, policy docs |

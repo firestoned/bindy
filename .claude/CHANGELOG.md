@@ -1,3 +1,58 @@
+## [2026-03-08 10:00] - Move license-check to dedicated license-scan.yaml workflow
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/pr.yaml`: Removed `make license-check` step from the `security` job
+- `.github/workflows/license-scan.yaml`: Rewrote as a dedicated, Makefile-driven, reusable workflow with:
+  - `workflow_call` output (`compliant`) for composability
+  - `schedule` (weekly Monday 09:00 UTC), `pull_request` (on Cargo/deny changes), `workflow_dispatch`
+  - Delegates to `make license-check` and `make license-report`
+  - Uploads `licenses.json` artifact (30-day retention)
+  - Generates a GitHub Step Summary with license breakdown
+
+### Why
+Separate concern: dependency license compliance is an independent audit gate that should run on its own schedule and be callable as a reusable workflow, not bundled into the general `security` job.
+
+### Impact
+- [ ] Breaking change
+- [x] CI/CD change only — behavior identical, organization improved
+
+## [2026-03-08 09:00] - Implemented Phase 5 Security Scanning (License Compliance)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `Makefile` targets:
+  - `license-check`: Checks all dependency licenses, fails on GPL/AGPL/SSPL/EUPL/CDDL
+  - `license-report`: Generates `licenses.json` artifact and prints a summary
+- `docs/src/development/license-compliance.md`: License policy documentation covering allowed/prohibited licenses, enforcement strategy, exception handling process, and compliance references (PCI-DSS, SOX, NIST SP 800-53)
+
+### Changed
+- `Makefile`:
+  - `security-scan-quick` now includes `license-check`
+  - `security-scan-full` now includes `license-check` (comment updated to Phase 1-5)
+- `.github/workflows/pr.yaml`:
+  - Added cargo registry cache to `security` job for faster `cargo-license` installation
+  - Added `make license-check` step to the `security` job — runs on every PR
+
+### Why
+Phase 5 of the Security Scanning Roadmap. `cargo-deny` already enforces the license policy at the crate level; `cargo-license` adds human-readable reporting and a dedicated CI gate that clearly identifies any GPL/AGPL/SSPL violations by name and version for audit trail purposes.
+
+### Testing
+- ✅ `license-check` target installed `cargo-license` and reported 0 violations
+- ✅ `license-report` generated `licenses.json` with all dependency licenses
+- ✅ PR security job updated to call `make license-check`
+- ✅ `security-scan-quick` and `security-scan-full` updated
+
+### Impact
+- [x] Compliance enhancement — adds explicit license gate to every PR
+- [x] Audit trail — `license-report` generates release artifact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+
+---
+
 ## [2026-03-08 00:15] - Documentation: Add Multi-Arch Docker Digest Requirements to CLAUDE.md
 
 **Author:** Erick Bourgeois
