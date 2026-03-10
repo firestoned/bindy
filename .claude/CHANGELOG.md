@@ -1,3 +1,24 @@
+## [2026-03-09 00:00] - Fix r-efi license false positive in cargo-deny
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.cargo/deny.toml`: Added `exceptions` entry for `r-efi` allowing `LGPL-2.1-or-later`
+
+### Why
+`r-efi` (UEFI interface, transitive dep) has SPDX expression `Apache-2.0 OR LGPL-2.1-or-later OR MIT`.
+cargo-deny 0.19.x requires ALL terms in an OR expression to be in the allow list, even when the
+expression is satisfiable via Apache-2.0 or MIT alone. The exception acknowledges the LGPL option
+exists but does not impose any LGPL obligations — we use the crate under Apache-2.0 or MIT.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-03-08 10:00] - Move license-check to dedicated license-scan.yaml workflow
 
 **Author:** Erick Bourgeois
