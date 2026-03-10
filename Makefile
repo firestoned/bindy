@@ -456,7 +456,7 @@ license-check: ## Check all dependency licenses against policy (fails on GPL/AGP
 	@command -v cargo-license >/dev/null 2>&1 || { echo "Installing cargo-license..."; cargo install cargo-license; }
 	@echo "Checking dependency licenses..."
 	@VIOLATIONS=$$(cargo license --json 2>/dev/null | \
-		jq -r '.[] | select(.license | test("GPL|AGPL|SSPL|EUPL|CDDL"; "i")) | "\(.name) \(.version): \(.license)"'); \
+		jq -r '.[] | select(.license | test("(^| )GPL|AGPL|SSPL|EUPL|CDDL"; "i")) | "\(.name) \(.version): \(.license)"'); \
 	if [ -n "$$VIOLATIONS" ]; then \
 		echo "❌ Prohibited license(s) found:"; \
 		echo "$$VIOLATIONS"; \
