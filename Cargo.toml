@@ -19,7 +19,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 kube = { version = "2.0", features = ["runtime", "derive", "client"] }
-kube-lease-manager = "0.10"
+kube-lease-manager = "0.11"
 # Only include needed tokio features for faster compilation
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "signal"] }
 serde = { version = "1", features = ["derive"] }
