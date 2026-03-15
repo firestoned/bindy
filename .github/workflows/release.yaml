@@ -126,7 +126,7 @@ jobs:
           target: ${{ matrix.platform.target }}
 
       - name: Upload binary and SBOM artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.platform.artifact_name }}
           path: |
@@ -218,7 +218,7 @@ jobs:
           output-file: docker-sbom-${{ matrix.variant.name }}.json
 
       - name: Upload Docker SBOM as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: docker-sbom-${{ matrix.variant.name }}
           path: docker-sbom-${{ matrix.variant.name }}.json
@@ -260,7 +260,7 @@ jobs:
           artifact-path: artifacts/${{ matrix.platform.artifact_name }}/${{ matrix.platform.artifact_name }}.tar.gz
 
       - name: Upload signed artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.platform.artifact_name }}-signed
           path: |
@@ -321,7 +321,7 @@ jobs:
         run: make install-yaml VERSION=${{ github.event.release.tag_name }}
 
       - name: Upload deploy manifests
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: deploy-manifests
           path: |

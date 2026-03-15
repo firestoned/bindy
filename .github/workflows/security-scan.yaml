@@ -66,7 +66,7 @@ jobs:
 
       - name: Upload cargo-deny report
         if: steps.deny.outputs.report_exists == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: scheduled-cargo-deny-${{ github.run_number }}
           path: cargo-deny-report.json
@@ -218,7 +218,7 @@ jobs:
 
       - name: Upload gitleaks report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: scheduled-gitleaks-${{ github.run_number }}
           path: gitleaks-report.json
@@ -507,7 +507,7 @@ jobs:
 
       - name: Upload Trivy filesystem results as artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: trivy-fs-results-${{ github.run_number }}
           path: trivy-fs-results.sarif
@@ -570,7 +570,7 @@ jobs:
 
       - name: Upload Trivy Kubernetes results as artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: trivy-k8s-results-${{ github.run_number }}
           path: trivy-k8s-results.sarif
@@ -644,7 +644,7 @@ jobs:
 
       - name: Upload Semgrep results as artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: semgrep-results-${{ github.run_number }}
           path: semgrep-results.sarif
@@ -742,7 +742,7 @@ jobs:
 
       - name: Upload Kubesec output as artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: kubesec-results-${{ github.run_number }}
           path: kubesec-output.txt
