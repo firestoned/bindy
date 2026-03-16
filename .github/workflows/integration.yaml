@@ -28,7 +28,7 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Rust build environment
         uses: firestoned/github-actions/rust/setup-rust-build@v1.3.5
@@ -52,7 +52,7 @@ jobs:
         with:
           repository: firestoned/bindy
           workflow-type: main
-          image-suffix: ""
+          image-tag-suffix: ""
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3

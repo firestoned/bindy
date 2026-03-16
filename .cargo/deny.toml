@@ -31,8 +31,11 @@ allow = [
 # List of explicitly disallowed licenses
 # Banking/proprietary software is incompatible with copyleft licenses
 exceptions = [
-    # Add specific exceptions here if needed
-    # { allow = ["GPL-3.0"], crate = "some-crate" },
+    # r-efi: UEFI interface crate used as a transitive dependency.
+    # License is "Apache-2.0 OR LGPL-2.1-or-later OR MIT" — we use it under
+    # Apache-2.0 or MIT; the LGPL option is never exercised. cargo-deny v2
+    # requires all terms of an OR expression to be explicitly allowed.
+    { name = "r-efi", allow = ["LGPL-2.1-or-later"] },
 ]
 confidence-threshold = 0.8
 

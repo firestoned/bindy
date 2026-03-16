@@ -452,13 +452,35 @@ kubesec: kubesec-install ## Scan Kubernetes manifests with Kubesec for security 
 	echo "  - Warnings: $$WARNING"; \
 	echo "✓ Kubesec scan completed"
 
+license-check: ## Check all dependency licenses against policy (fails on GPL/AGPL/SSPL)
+	@command -v cargo-license >/dev/null 2>&1 || { echo "Installing cargo-license..."; cargo install cargo-license; }
+	@echo "Checking dependency licenses..."
+	@VIOLATIONS=$$(cargo license --json 2>/dev/null | \
+		jq -r '.[] | select(.license | test("(^| )GPL|AGPL|SSPL|EUPL|CDDL"; "i")) | "\(.name) \(.version): \(.license)"'); \
+	if [ -n "$$VIOLATIONS" ]; then \
+		echo "❌ Prohibited license(s) found:"; \
+		echo "$$VIOLATIONS"; \
+		exit 1; \
+	else \
+		echo "✓ All dependency licenses are compliant"; \
+	fi
+
+license-report: ## Generate full license report for all dependencies (outputs licenses.json)
+	@command -v cargo-license >/dev/null 2>&1 || { echo "Installing cargo-license..."; cargo install cargo-license; }
+	@echo "Generating license report..."
+	@cargo license --json > licenses.json
+	@echo "✓ License report written to licenses.json"
+	@echo ""
+	@echo "License Summary:"
+	@cargo license 2>/dev/null | sort | uniq -c | sort -rn | head -20
+
 security-scan-local: cargo-deny gitleaks ## Run local security scans (pre-commit)
 	@echo "✓ Local security scans completed"
 
-security-scan-quick: cargo-deny gitleaks ## Run quick security scans (for CI)
+security-scan-quick: cargo-deny gitleaks license-check ## Run quick security scans (for CI)
 	@echo "✓ Quick security scans completed"
 
-security-scan-full: cargo-deny gitleaks trivy-all semgrep kubesec ## Run all security scans (Phase 1-4 complete)
+security-scan-full: cargo-deny gitleaks trivy-all semgrep kubesec license-check ## Run all security scans (Phase 1-5 complete)
 	@echo "✓ All security scans completed"
 
 install-git-hooks: ## Install git pre-commit hooks (gitleaks secret scanning)
