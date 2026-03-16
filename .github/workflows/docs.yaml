@@ -59,7 +59,7 @@ jobs:
           poetry config virtualenvs.in-project true
 
       - name: Cache Poetry dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: docs/.venv
           key: ${{ runner.os }}-poetry-${{ hashFiles('docs/poetry.lock') }}
@@ -72,7 +72,7 @@ jobs:
           poetry install --no-interaction --no-ansi
 
       - name: Cache cargo build
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
