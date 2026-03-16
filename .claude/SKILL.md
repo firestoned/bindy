@@ -1,290 +1,360 @@
-# Claude Code Skills
+# Claude Skills Reference
 
-Step-by-step procedures for common tasks. Referenced from `CLAUDE.md` as `@.claude/SKILL.md`.
+Reusable procedural skills extracted from CLAUDE.md. Each skill has a canonical name (kebab-case), trigger conditions, ordered steps, and a verification check. Invoke a skill by name: *"run the cargo-quality skill"* or *"do a verify-crd-sync"*.
 
 ---
 
-## Skill: `cargo-quality`
+## `verify-crd-sync`
 
-Run after **every** Rust code change. Task is NOT complete until all three pass.
+**When to use:**
+- Before investigating reconciliation loops or infinite loops
+- Before debugging "field not appearing in kubectl output" issues
+- After ANY modification to structs in `src/crd.rs`
+- When status patches succeed but data doesn't persist
+- When user reports unexpected controller behavior
 
+**Steps:**
 ```bash
-cargo fmt
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
-```
+# 1. Check deployed CRD schema in cluster
+kubectl get crd <crd-name>.bindy.firestoned.io -o yaml | grep -A 20 "<field-name>:"
 
-- Fix ALL clippy warnings — do not suppress them
-- Fix ALL test failures — do not skip tests
-- If `cargo fmt` changes files, those changes must be committed
+# 2. Check Rust struct definition
+rg -A 10 "pub struct <StructName>" src/crd.rs
 
----
-
-## Skill: `tdd-workflow`
-
-**RED → GREEN → REFACTOR** — always in this order.
-
-### Step 1: RED — Write a failing test
-
-1. Identify the function/behavior to implement
-2. Create or open `src/<module>_tests.rs`
-3. Write a test that defines the expected behavior:
-
-```rust
-// src/reconcilers/dnszone_tests.rs
-#[cfg(test)]
-mod tests {
-    use super::super::*;
-
-    #[test]
-    fn test_<descriptive_name>() {
-        // Arrange
-        let input = ...;
-
-        // Act
-        let result = function_under_test(input);
-
-        // Assert
-        assert_eq!(result, expected);
-    }
-}
-```
-
-4. In the source file, declare the test module at the bottom:
-
-```rust
-// src/reconcilers/dnszone.rs
-#[cfg(test)]
-mod dnszone_tests;
-```
-
-5. Run the test — it MUST fail: `cargo test test_<name>`
-
-### Step 2: GREEN — Write minimal implementation
-
-Write only enough code to make the test pass. No extras.
-
-Run: `cargo test test_<name>` — it MUST pass.
-
-### Step 3: REFACTOR
-
-Clean up the implementation without changing behavior. Tests must still pass after refactoring.
-
-Run: `cargo test` — ALL tests must pass.
-
-**Then run the `cargo-quality` skill.**
-
----
-
-## Skill: `verify-crd-sync`
-
-Run before investigating ANY Kubernetes behavior issue.
-
-```bash
-# 1. Check the Rust struct definition (source of truth)
-rg -A 20 "pub struct Bind9InstanceSpec" src/crd.rs
-
-# 2. Check the deployed CRD schema in the cluster
-kubectl get crd bind9instances.bindy.firestoned.io -o yaml | grep -A 20 "spec:"
-
-# 3. Check the generated YAML in deploy/crds/
-grep -A 10 "<field-name>" deploy/crds/*.crd.yaml
-```
-
-If there is a mismatch, run the `regen-crds` skill, then `kubectl replace --force`.
-
-**REMEMBER:** `kubectl apply` will fail for large CRDs (>256KB annotation limit). Always use `kubectl replace --force`.
-
----
-
-## Skill: `regen-crds`
-
-Regenerate CRD YAML files after any change to `src/crd.rs`.
-
-```bash
+# 3. If mismatch detected, regenerate CRDs
 cargo run --bin crdgen
+
+# 4. Apply updated CRDs (use replace --force to avoid annotation size limits)
+kubectl replace --force -f deploy/crds/<crd-name>.crd.yaml
 ```
 
-Verify generated files in `deploy/crds/`. Then apply to the cluster:
-
-```bash
-kubectl replace --force -f deploy/crds/
-```
-
-**Do NOT run `regen-api-docs` yet** — wait until all CRD changes, example updates, and validations are complete.
+**Verification:** Field appears in `kubectl get` output after patch; no infinite reconciliation loop.
 
 ---
 
-## Skill: `regen-api-docs`
+## `regen-crds`
 
-Run **LAST**, after all CRD changes and example validations are complete.
+**When to use:**
+- After ANY edit to Rust types in `src/crd.rs`
+- Before deploying CRD changes to a cluster
 
+**Steps:**
 ```bash
+# 1. Regenerate all CRD YAML files from Rust types
+cargo run --bin crdgen
+
+# 2. Verify generated YAMLs
+for file in deploy/crds/*.crd.yaml; do
+  echo "Checking $file"
+  kubectl apply --dry-run=client -f "$file"
+done
+
+# 3. Update examples to match new schema (see validate-examples skill)
+
+# 4. Deploy
+kubectl replace --force -f deploy/crds/
+# Or for first install:
+kubectl create -f deploy/crds/
+```
+
+**Verification:** `kubectl apply --dry-run=client -f deploy/crds/` succeeds for all files.
+
+---
+
+## `regen-api-docs`
+
+**When to use:**
+- After all CRD changes, example updates, and validations are complete (run this LAST)
+- Before any documentation release
+
+**Steps:**
+```bash
+# Regenerate API reference from CRD types
 cargo run --bin crddoc > docs/src/reference/api.md
 ```
 
-Then run the `build-docs` skill to verify the documentation builds.
+**Verification:** `docs/src/reference/api.md` reflects the current CRD schema. Run `make docs` to confirm the full docs build succeeds.
 
 ---
 
-## Skill: `validate-examples`
+## `cargo-quality`
 
-Validate all YAML examples against the cluster (dry-run).
+**When to use:**
+- After adding or modifying ANY `.rs` file
+- Before committing any Rust code changes
+- At the end of EVERY task involving Rust code (NON-NEGOTIABLE)
 
+**Steps:**
 ```bash
-kubectl apply --dry-run=client -f examples/
+# 0. Ensure cargo is in PATH
+source ~/.zshrc
+
+# 1. Format
+cargo fmt
+
+# 2. Lint with strict warnings (fix ALL warnings)
+cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic -A clippy::module_name_repetitions
+
+# 3. Test (ALL tests must pass)
+cargo test
+
+# 4. Security audit (optional, if installed)
+cargo audit 2>/dev/null || true
 ```
 
-Fix any validation errors before proceeding. If CRDs changed, verify each example field name against `src/crd.rs` or `deploy/crds/*.crd.yaml` first.
+**Verification:** All three commands exit with code 0. No warnings, no test failures.
 
 ---
 
-## Skill: `build-docs`
+## `tdd-workflow`
 
-Build the documentation. Always use the Makefile target — never `mdbook build` directly.
+**When to use:**
+- Adding any new feature or function
+- Fixing a bug
+- Refactoring existing code
 
+**Steps:**
+
+**RED — Write failing tests first (before any implementation):**
 ```bash
+# Edit src/<module>_tests.rs — add test(s) that define expected behavior
+cargo test <test_name>   # Must FAIL at this point
+```
+
+**GREEN — Implement minimum code to pass tests:**
+```bash
+# Edit src/<module>.rs — write simplest code that makes tests pass
+cargo test <test_name>   # Must PASS now
+```
+
+**REFACTOR — Improve while keeping tests green:**
+```bash
+# Extract constants, add docs, improve error handling
+cargo test               # Must still PASS
+cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic -A clippy::module_name_repetitions
+```
+
+**Test file pattern:**
+- Source: `src/foo.rs` → declare `#[cfg(test)] mod foo_tests;` at the bottom
+- Tests: `src/foo_tests.rs` → wrap in `#[cfg(test)] mod tests { use super::super::*; ... }`
+
+**Verification:** All tests pass, clippy is clean, test covers success path + error paths + edge cases.
+
+---
+
+## `update-changelog`
+
+**When to use:**
+- After ANY code modification (mandatory for auditing in a regulated environment)
+
+**Steps:**
+
+Open `.claude/CHANGELOG.md` and prepend an entry in this exact format:
+
+```markdown
+## [YYYY-MM-DD HH:MM] - Brief Title
+
+**Author:** <Name of requester or approver>
+
+### Changed
+- `path/to/file.rs`: Description of the change
+
+### Why
+Brief explanation of the business or technical reason.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+```
+
+**Verification:** Entry has `**Author:**` line (MANDATORY — no exceptions), timestamp, and at least one `### Changed` item.
+
+---
+
+## `update-docs`
+
+**When to use:**
+- After any code change in `src/`
+- After CRD changes, API changes, configuration changes, or new features
+
+**Steps:**
+1. Identify what changed (feature, CRD field, behavior, error condition).
+2. Update `.claude/CHANGELOG.md` (see `update-changelog` skill).
+3. Update affected pages in `docs/src/`:
+   - User guides, quickstart guides, configuration references, troubleshooting guides
+4. Update `examples/*.yaml` to reflect schema or behavior changes.
+5. Update architecture diagrams if structure changed (Mermaid in `docs/src/architecture/`).
+6. If CRDs changed: run `regen-api-docs` skill (LAST step).
+7. If README getting-started or features changed: update `README.md`.
+8. Run `build-docs` skill to confirm no broken references.
+
+**Verification checklist:**
+- [ ] `.claude/CHANGELOG.md` updated with author
+- [ ] All affected `docs/src/` pages updated
+- [ ] All YAML examples validate: `kubectl apply --dry-run=client -f examples/`
+- [ ] API docs regenerated if CRDs changed
+- [ ] Architecture diagrams match current implementation
+- [ ] `make docs` succeeds
+
+---
+
+## `build-docs`
+
+**When to use:**
+- After any documentation change
+- Before any documentation release
+- To verify docs are not broken
+
+**Steps:**
+```bash
+# Build all documentation components in the correct order
 make docs
 ```
 
-Fix any errors (broken links, invalid includes, missing files) before considering the task complete.
+What `make docs` does:
+1. Generates CRD API reference: `cargo run --bin crddoc > docs/src/reference/api.md`
+2. Builds rustdoc: `cargo doc --no-deps --all-features`
+3. Installs mermaid assets and builds mdBook: `cd docs && mdbook-mermaid install && mdbook build`
+4. Copies rustdoc into output and creates index redirects
+
+**Verification:** `make docs` exits 0 with no errors. Output site is viewable at `docs/book/`.
 
 ---
 
-## Skill: `get-multiarch-digest`
+## `get-multiarch-digest`
 
-Get the multi-arch manifest list digest for a Docker base image. Use this whenever updating a `FROM` line in a Dockerfile.
+**When to use:**
+- Before pinning a Docker base image digest in any Dockerfile
+- When updating base image versions
 
+**Steps:**
 ```bash
-# ✅ CORRECT — multi-arch manifest list digest
-docker buildx imagetools inspect <image>:<tag> --raw | sha256sum
+# Get the multi-arch manifest list digest (NOT platform-specific)
+docker buildx imagetools inspect <image>:<tag> --raw | sha256sum | awk '{print "sha256:"$1}'
 
-# Example:
-docker buildx imagetools inspect debian:12-slim --raw | sha256sum
-# → outputs: abc123...  -
-# Use as: FROM debian:12-slim@sha256:abc123...
+# Examples:
+docker buildx imagetools inspect debian:12-slim --raw | sha256sum | awk '{print "sha256:"$1}'
+docker buildx imagetools inspect rust:1.94.0 --raw | sha256sum | awk '{print "sha256:"$1}'
+docker buildx imagetools inspect gcr.io/distroless/cc-debian12:nonroot --raw | sha256sum | awk '{print "sha256:"$1}'
 ```
 
-**Never use `docker inspect` or `docker pull` to get the digest** — those return the platform-specific (AMD64-only) digest, which breaks ARM64 builds with QEMU emulation errors.
+Use the digest in Dockerfiles as:
+```dockerfile
+# NOTE: This digest points to the multi-arch manifest list (supports both AMD64 and ARM64)
+FROM debian:12-slim@sha256:<digest> AS builder
+```
 
 Update ALL Dockerfiles that use the same base image:
 - `docker/Dockerfile`
 - `docker/Dockerfile.chainguard`
 - `docker/Dockerfile.chef`
 - `docker/Dockerfile.fast`
-- `docker/Dockerfile.local` (usually no digest needed here)
+- `docker/Dockerfile.local` (usually no digest)
+
+**Verification:**
+```bash
+docker buildx imagetools inspect <image>@<digest>
+# Output must show BOTH: Platform: linux/amd64 AND Platform: linux/arm64
+```
 
 ---
 
-## Skill: `add-new-crd`
+## `validate-examples`
 
-Steps to add a new Custom Resource Definition.
+**When to use:**
+- After any CRD schema change
+- Before committing changes to `examples/`
+- As part of the `pre-commit-checklist`
 
-### Step 1: Define the Rust types in `src/crd.rs`
-
-```rust
-/// Spec for MyNewResource
-#[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
-#[kube(
-    kind = "MyNewResource",
-    group = "bindy.firestoned.io",
-    version = "v1beta1",
-    namespaced,
-    status = "MyNewResourceStatus",
-    printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
-)]
-#[serde(rename_all = "camelCase")]
-pub struct MyNewResourceSpec {
-    // fields...
-}
-
-#[derive(Deserialize, Serialize, Clone, Debug, Default, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct MyNewResourceStatus {
-    pub conditions: Option<Vec<Condition>>,
-    pub observed_generation: Option<i64>,
-}
-```
-
-### Step 2: Write tests first (TDD)
-
-Follow the `tdd-workflow` skill. Create `src/crd_tests.rs` tests for the new types.
-
-### Step 3: Generate the CRD YAML
-
-Run the `regen-crds` skill.
-
-### Step 4: Create an example manifest
-
-Create `examples/my-new-resource.yaml` verified against the generated CRD schema.
-
-### Step 5: Validate
-
-Run the `validate-examples` skill.
-
-### Step 6: Create the reconciler
-
-Create `src/reconcilers/mynewresource.rs` and `src/reconcilers/mynewresource_tests.rs`.
-
-### Step 7: Regenerate API docs (LAST)
-
-Run the `regen-api-docs` skill.
-
-### Step 8: Run quality checks
-
-Run the `cargo-quality` skill.
-
----
-
-## Skill: `pre-commit-checklist`
-
-Run this checklist before every commit. A task is **NOT complete** until all items pass.
-
-### Gate 1: Rust Quality
-
+**Steps:**
 ```bash
-cargo fmt
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
-```
-
-All three must pass with zero warnings and zero failures.
-
-### Gate 2: CRD Sync (if `src/crd.rs` was changed)
-
-```bash
-cargo run --bin crdgen
-git diff --stat deploy/crds/
-```
-
-If CRDs changed, run `regen-api-docs` last.
-
-### Gate 3: Examples Valid (if CRDs or examples changed)
-
-```bash
+# Validate all example YAML files
 kubectl apply --dry-run=client -f examples/
+
+# Or validate individually
+for file in examples/*.yaml; do
+  echo "Validating $file"
+  kubectl apply --dry-run=client -f "$file"
+done
 ```
 
-### Gate 4: Documentation
+**Verification:** All files pass dry-run with no errors. No `unknown field` or `required field missing` errors.
 
-- [ ] `.claude/CHANGELOG.md` updated with **Author**, Changed, Why, Impact
-- [ ] `docs/src/` pages updated for any user-visible changes
-- [ ] `docs/roadmaps/` updated if a phase/milestone was completed
-- [ ] Documentation builds: `make docs`
+---
 
-### Gate 5: Security (if `Cargo.toml` or `Cargo.lock` changed)
+## `add-new-crd`
 
-```bash
-make cargo-deny
-make license-check
-```
+**When to use:**
+- When adding a new Custom Resource Definition to the operator
 
-### Gate 6: No Forbidden Patterns
+**Steps:**
+1. Add the new `CustomResource` struct to `src/crd.rs`:
+   ```rust
+   #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
+   #[kube(
+       group = "bindy.firestoned.io",
+       version = "v1beta1",
+       kind = "MyNewResource",
+       namespaced
+   )]
+   #[serde(rename_all = "camelCase")]
+   pub struct MyNewResourceSpec {
+       pub field_name: String,
+   }
+   ```
+2. Register it in `src/bin/crdgen.rs`:
+   ```rust
+   generate_crd::<MyNewResource>("mynewresources.crd.yaml", output_dir)?;
+   ```
+3. Run `regen-crds` skill.
+4. Add examples to `examples/`.
+5. Run `validate-examples` skill.
+6. Add documentation in `docs/src/`.
+7. Run `regen-api-docs` skill (LAST).
+8. Run `cargo-quality` skill.
+9. Run `update-changelog` skill.
 
-- [ ] No `unwrap()` in production code (`src/` excluding `_tests.rs`)
-- [ ] No hardcoded namespaces
-- [ ] No magic numbers (literals other than `0` or `1`) in `src/`
-- [ ] No secrets, tokens, or internal hostnames
-- [ ] No `docker build`, `docker push`, or `kubectl rollout restart`
+**Verification:** `kubectl apply --dry-run=client -f deploy/crds/mynewresources.crd.yaml` succeeds; API docs include the new resource.
 
-**If any gate fails, fix it before committing.**
+---
+
+## `pre-commit-checklist`
+
+**When to use:**
+- Before committing any change (mandatory gate)
+
+**Checklist:**
+
+### If ANY `.rs` file was modified:
+- [ ] Tests updated/added/deleted to match changes (TDD — see `tdd-workflow`)
+- [ ] All new public functions have tests
+- [ ] All deleted functions have tests removed
+- [ ] `cargo fmt` passes
+- [ ] `cargo clippy --all-targets --all-features -- -D warnings` passes (fix ALL warnings)
+- [ ] `cargo test` passes (ALL tests green)
+- [ ] Rustdoc comments on all public items, accurate to actual behavior
+- [ ] `docs/src/` updated for user-facing changes
+
+### If `src/crd.rs` was modified:
+- [ ] `cargo run --bin crdgen` run
+- [ ] `examples/*.yaml` updated to match new schema
+- [ ] `docs/src/` documentation updated
+- [ ] `kubectl apply --dry-run=client -f examples/` passes
+- [ ] `cargo run --bin crddoc > docs/src/reference/api.md` run (LAST)
+
+### If `src/reconcilers/` was modified:
+- [ ] Reconciliation flow diagrams updated in `docs/src/architecture/`
+- [ ] New behaviors documented in user guides
+- [ ] Troubleshooting guides updated for new error conditions
+
+### Always:
+- [ ] `.claude/CHANGELOG.md` updated with **Author:** line (MANDATORY)
+- [ ] `make docs` succeeds
+- [ ] All YAML examples validate: `kubectl apply --dry-run=client -f examples/`
+- [ ] `kubectl apply --dry-run=client -f deploy/crds/` succeeds
+- [ ] No secrets, tokens, credentials, internal hostnames, or IP addresses committed
+- [ ] No `.unwrap()` in production code
+
+**Verification:** Every checked box above passes. A task is NOT complete until the full checklist is green.
