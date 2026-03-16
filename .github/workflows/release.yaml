@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Check license headers
         uses: firestoned/github-actions/security/license-check@v1.3.5
@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0  # Fetch all history for verification
 
@@ -61,7 +61,7 @@ jobs:
       short-sha: ${{ steps.version-chainguard.outputs.short-sha }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Extract version for Chainguard
         id: version-chainguard
@@ -101,7 +101,7 @@ jobs:
             binary_name: bindy
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Update Cargo.toml version
         run: |
@@ -159,7 +159,7 @@ jobs:
             image-repository: ${{ needs.extract-version.outputs.image-repository-distroless }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Prepare Docker binaries
         uses: ./.github/actions/prepare-docker-binaries
@@ -239,7 +239,7 @@ jobs:
             artifact_name: bindy-linux-arm64
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download binary artifact
         uses: actions/download-artifact@v8
@@ -309,7 +309,7 @@ jobs:
     needs: extract-version
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Rust build environment
         uses: firestoned/github-actions/rust/setup-rust-build@v1.3.5
@@ -431,7 +431,7 @@ jobs:
     needs: extract-version
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Run security scan
         uses: firestoned/github-actions/rust/security-scan@v1.3.5
@@ -455,7 +455,7 @@ jobs:
             image-repository: ${{ needs.extract-version.outputs.image-repository-distroless }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Run Trivy scan on ${{ matrix.variant.name }} image
         uses: firestoned/github-actions/security/trivy-scan@v1.3.5
