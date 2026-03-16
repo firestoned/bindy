@@ -99,7 +99,7 @@ jobs:
     needs: [license-check, verify-commits]
     outputs:
       image-tag-chainguard: ${{ steps.version-chainguard.outputs.image-tag }}
-      image-tag-distroless: ${{ steps.version-distroless.outputs.image-tag }}-distroless
+      image-tag-distroless: ${{ steps.version-distroless.outputs.image-tag }}
       image-repository-chainguard: ${{ steps.version-chainguard.outputs.image-repository }}
       image-repository-distroless: ${{ steps.version-distroless.outputs.image-repository }}
       short-sha: ${{ steps.version-chainguard.outputs.short-sha }}

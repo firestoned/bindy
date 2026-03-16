@@ -182,7 +182,7 @@ jobs:
     needs: format
     outputs:
       image-tag-chainguard: ${{ steps.version-chainguard.outputs.image-tag }}
-      image-tag-distroless: ${{ steps.version-distroless.outputs.image-tag }}-distroless
+      image-tag-distroless: ${{ steps.version-distroless.outputs.image-tag }}
       image-repository-chainguard: ${{ steps.version-chainguard.outputs.image-repository }}
       image-repository-distroless: ${{ steps.version-distroless.outputs.image-repository }}
       short-sha: ${{ steps.version-chainguard.outputs.short-sha }}
@@ -277,6 +277,13 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-registry-
 
       - name: Run cargo-deny (dependencies, licenses, supply chain)
         run: make cargo-deny
