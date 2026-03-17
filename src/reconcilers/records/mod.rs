@@ -20,7 +20,7 @@ use crate::crd::{
 };
 use anyhow::{Context, Result};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
-use k8s_openapi::chrono::Utc;
+
 use kube::{
     api::{Patch, PatchParams},
     client::Client,
@@ -2128,7 +2128,7 @@ pub async fn update_record_reconciled_timestamp(
                 && record_ref.name == record_name
                 && record_ref.namespace == record_namespace
             {
-                record_ref.last_reconciled_at = Some(Time(Utc::now()));
+                record_ref.last_reconciled_at = Some(Time(k8s_openapi::jiff::Timestamp::now()));
                 found = true;
                 break;
             }

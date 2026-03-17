@@ -11,9 +11,9 @@ pub use crate::crd::{
     RecordStatus, SRVRecord, TXTRecord, ZoneReference,
 };
 pub use anyhow::{Context as AnyhowContext, Result};
+pub use chrono::Utc;
 pub use k8s_openapi::api::core::v1::{Event, ObjectReference};
 pub use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
-pub use k8s_openapi::chrono::Utc;
 pub use kube::{
     api::{Patch, PatchParams, PostParams},
     client::Client,

@@ -132,7 +132,7 @@ Using these composite actions has significantly reduced code duplication:
 - name: Cache cross binary
   if: matrix.platform.target == 'aarch64-unknown-linux-gnu'
   id: cache-cross
-  uses: actions/cache@v4
+  uses: actions/cache@v5
   with:
     path: ~/.cargo/bin/cross
     key: ${{ runner.os }}-cross-v0.2.5

@@ -259,6 +259,15 @@ trivy-fs: trivy-install ## Scan filesystem for vulnerabilities and misconfigurat
 		--exit-code 0 \
 		.
 
+trivy-fs-ci: trivy-install ## Scan filesystem for CVEs (exit-code 1 on HIGH/CRITICAL — for CI gates)
+	@echo "Scanning filesystem for vulnerabilities (CI mode)..."
+	@trivy fs \
+		--severity HIGH,CRITICAL \
+		--scanners vuln,secret,misconfig \
+		--format table \
+		--exit-code 1 \
+		.
+
 trivy-fs-sarif: trivy-install ## Scan filesystem and output SARIF (for GitHub Security)
 	@echo "Scanning filesystem for vulnerabilities..."
 	@trivy fs \
@@ -473,6 +482,12 @@ license-report: ## Generate full license report for all dependencies (outputs li
 	@echo ""
 	@echo "License Summary:"
 	@cargo license 2>/dev/null | sort | uniq -c | sort -rn | head -20
+
+update-image-digests: ## Update all Docker base image digests to latest multi-arch manifest list digests
+	@./scripts/pin-image-digests.sh
+
+update-image-digests-dry-run: ## Show what update-image-digests would change without modifying files
+	@./scripts/pin-image-digests.sh --dry-run
 
 security-scan-local: cargo-deny gitleaks ## Run local security scans (pre-commit)
 	@echo "✓ Local security scans completed"
