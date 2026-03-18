@@ -20,7 +20,7 @@ where
     let name = record.name_any();
     let event_api: Api<Event> = Api::namespaced(client.clone(), &namespace);
 
-    let now = Time(Utc::now());
+    let now = Time(k8s_openapi::jiff::Timestamp::now());
     let event = Event {
         metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
             generate_name: Some(format!("{name}-")),

@@ -559,11 +559,9 @@ where
             .and_then(|s| s.last_updated.as_ref())
             .and_then(|ts| {
                 // Parse ISO8601 timestamp string into k8s Time
-                chrono::DateTime::parse_from_rfc3339(ts).ok().map(|dt| {
-                    k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
-                        dt.with_timezone(&chrono::Utc),
-                    )
-                })
+                ts.parse::<k8s_openapi::jiff::Timestamp>()
+                    .ok()
+                    .map(k8s_openapi::apimachinery::pkg::apis::meta::v1::Time)
             });
 
         record_refs.push(crate::crd::RecordReferenceWithTimestamp {

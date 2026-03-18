@@ -53,16 +53,21 @@ mod tests {
         }
     }
 
+    fn api_error(code: u16) -> kube::Error {
+        kube::Error::Api(Box::new(kube::core::Status {
+            code,
+            status: None,
+            message: String::new(),
+            reason: String::new(),
+            details: None,
+            metadata: Default::default(),
+        }))
+    }
+
     /// Test that HTTP 429 errors are retryable
     #[test]
     fn test_429_is_retryable() {
-        let err = kube::Error::Api(kube::error::ErrorResponse {
-            status: "Too Many Requests".to_string(),
-            message: "Rate limit exceeded".to_string(),
-            reason: "TooManyRequests".to_string(),
-            code: 429,
-        });
-
+        let err = api_error(429);
         assert!(
             is_retryable_error(&err),
             "HTTP 429 (rate limiting) should be retryable"
@@ -72,70 +77,33 @@ mod tests {
     /// Test that 5xx server errors are retryable
     #[test]
     fn test_5xx_is_retryable() {
-        // Test 500 Internal Server Error
-        let err_500 = kube::Error::Api(kube::error::ErrorResponse {
-            status: "Internal Server Error".to_string(),
-            message: "Server error".to_string(),
-            reason: "InternalServerError".to_string(),
-            code: 500,
-        });
-        assert!(is_retryable_error(&err_500), "HTTP 500 should be retryable");
-
-        // Test 503 Service Unavailable
-        let err_503 = kube::Error::Api(kube::error::ErrorResponse {
-            status: "Service Unavailable".to_string(),
-            message: "Service temporarily unavailable".to_string(),
-            reason: "ServiceUnavailable".to_string(),
-            code: 503,
-        });
-        assert!(is_retryable_error(&err_503), "HTTP 503 should be retryable");
-
-        // Test 599 (upper bound)
-        let err_599 = kube::Error::Api(kube::error::ErrorResponse {
-            status: "Server Error".to_string(),
-            message: "Server error".to_string(),
-            reason: "ServerError".to_string(),
-            code: 599,
-        });
-        assert!(is_retryable_error(&err_599), "HTTP 599 should be retryable");
+        assert!(
+            is_retryable_error(&api_error(500)),
+            "HTTP 500 should be retryable"
+        );
+        assert!(
+            is_retryable_error(&api_error(503)),
+            "HTTP 503 should be retryable"
+        );
+        assert!(
+            is_retryable_error(&api_error(599)),
+            "HTTP 599 should be retryable"
+        );
     }
 
     /// Test that 4xx client errors (except 429) are not retryable
     #[test]
     fn test_4xx_not_retryable() {
-        // Test 400 Bad Request
-        let err_400 = kube::Error::Api(kube::error::ErrorResponse {
-            status: "Bad Request".to_string(),
-            message: "Invalid request".to_string(),
-            reason: "BadRequest".to_string(),
-            code: 400,
-        });
         assert!(
-            !is_retryable_error(&err_400),
+            !is_retryable_error(&api_error(400)),
             "HTTP 400 should not be retryable"
         );
-
-        // Test 404 Not Found
-        let err_404 = kube::Error::Api(kube::error::ErrorResponse {
-            status: "Not Found".to_string(),
-            message: "Resource not found".to_string(),
-            reason: "NotFound".to_string(),
-            code: 404,
-        });
         assert!(
-            !is_retryable_error(&err_404),
+            !is_retryable_error(&api_error(404)),
             "HTTP 404 should not be retryable"
         );
-
-        // Test 401 Unauthorized
-        let err_401 = kube::Error::Api(kube::error::ErrorResponse {
-            status: "Unauthorized".to_string(),
-            message: "Authentication required".to_string(),
-            reason: "Unauthorized".to_string(),
-            code: 401,
-        });
         assert!(
-            !is_retryable_error(&err_401),
+            !is_retryable_error(&api_error(401)),
             "HTTP 401 should not be retryable"
         );
     }

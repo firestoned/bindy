@@ -10,7 +10,6 @@ mod tests {
     };
     use crate::reconcilers::finalizers::FinalizerCleanup;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, Time};
-    use k8s_openapi::chrono::Utc;
     use kube::Client;
 
     const TEST_FINALIZER: &str = "test.firestoned.io/finalizer";
@@ -82,7 +81,7 @@ mod tests {
                 name: Some(TEST_NAME.to_string()),
                 namespace: Some(TEST_NAMESPACE.to_string()),
                 finalizers: Some(finalizers),
-                deletion_timestamp: Some(Time(Utc::now())),
+                deletion_timestamp: Some(Time(k8s_openapi::jiff::Timestamp::now())),
                 generation: Some(1),
                 ..Default::default()
             },
@@ -176,7 +175,7 @@ mod tests {
                 name: Some(TEST_NAME.to_string()),
                 namespace: None, // Cluster-scoped
                 finalizers: Some(finalizers),
-                deletion_timestamp: Some(Time(Utc::now())),
+                deletion_timestamp: Some(Time(k8s_openapi::jiff::Timestamp::now())),
                 generation: Some(1),
                 ..Default::default()
             },

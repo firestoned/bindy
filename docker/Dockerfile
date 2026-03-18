@@ -22,7 +22,7 @@
 
 # Build stage to install BIND9 and create user
 # NOTE: This digest points to the multi-arch manifest list (supports AMD64, ARM64, etc.)
-FROM debian:12-slim@sha256:74d56e3931e0d5a1dd51f8c8a2466d21de84a271cd3b5a733b803aa91abf4421 AS builder
+FROM debian:12-slim AS builder
 
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -32,7 +32,7 @@ RUN apt-get update && \
 
 # Runtime stage - Distroless with glibc
 # NOTE: This digest points to the multi-arch manifest list (supports AMD64, ARM64, etc.)
-FROM gcr.io/distroless/cc-debian12:nonroot@sha256:7e5b8df2f4d36f5599ef4ab856d7d444922531709becb03f3368c6d797d0a5eb
+FROM gcr.io/distroless/cc-debian12:nonroot
 
 ARG TARGETARCH
 ARG VERSION=0.1.0

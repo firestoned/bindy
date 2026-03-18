@@ -3,8 +3,9 @@
 # SPDX-License-Identifier: MIT
 # Pin container image digests for reproducible builds (M-1)
 #
-# This script fetches the current digests for all base images used in Dockerfiles
-# and updates the Dockerfiles to pin them. This ensures reproducible builds.
+# Fetches multi-arch manifest list digests and updates all Dockerfiles.
+# Uses `docker buildx imagetools inspect --raw | sha256sum` to get the
+# correct multi-arch manifest list digest (NOT platform-specific).
 #
 # Usage:
 #   ./scripts/pin-image-digests.sh [--dry-run]
@@ -21,139 +22,102 @@ if [[ "${1:-}" == "--dry-run" ]]; then
   echo ""
 fi
 
-# Function to get image digest
-get_digest() {
+# Get multi-arch manifest list digest (NOT platform-specific).
+# docker manifest inspect gives platform-specific digests — wrong.
+# docker buildx imagetools inspect --raw gives the manifest list JSON,
+# and sha256sum of that JSON is the correct multi-arch digest.
+get_multiarch_digest() {
   local image="$1"
-  echo "Fetching digest for: $image" >&2
+  echo "Fetching multi-arch digest for: $image" >&2
 
-  # Try docker manifest first (faster)
-  if command -v docker >/dev/null 2>&1; then
-    digest=$(docker manifest inspect "$image" 2>/dev/null | jq -r '.config.digest // .manifests[0].digest' || echo "")
-    if [ -n "$digest" ] && [ "$digest" != "null" ]; then
-      echo "$digest"
-      return 0
-    fi
+  local digest
+  digest=$(docker buildx imagetools inspect "$image" --raw 2>/dev/null | sha256sum | awk '{print "sha256:"$1}')
+
+  # sha256 of empty string — means the inspect returned nothing
+  local empty_sha="sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  if [[ -z "$digest" || "$digest" == "$empty_sha" ]]; then
+    echo "ERROR: Could not fetch digest for $image" >&2
+    return 1
   fi
 
-  # Fallback to skopeo (if available)
-  if command -v skopeo >/dev/null 2>&1; then
-    digest=$(skopeo inspect "docker://$image" 2>/dev/null | jq -r '.Digest' || echo "")
-    if [ -n "$digest" ] && [ "$digest" != "null" ]; then
-      echo "$digest"
-      return 0
-    fi
-  fi
-
-  # Fallback to crane (if available)
-  if command -v crane >/dev/null 2>&1; then
-    digest=$(crane digest "$image" 2>/dev/null || echo "")
-    if [ -n "$digest" ]; then
-      echo "$digest"
-      return 0
-    fi
-  fi
-
-  echo "ERROR: Could not fetch digest for $image" >&2
-  echo "Install docker, skopeo, or crane" >&2
-  return 1
+  echo "$digest"
 }
 
-# Function to pin digest in Dockerfile
-pin_digest() {
-  local dockerfile="$1"
-  local image="$2"
-  local digest="$3"
+# Update digest in all Dockerfiles that reference the given image
+update_digest() {
+  local image="$1"
+  local new_digest="$2"
+  local any_changed=false
 
-  echo "📌 Pinning $image to digest $digest"
+  for dockerfile in docker/Dockerfile docker/Dockerfile.chainguard docker/Dockerfile.fast; do
+    [[ -f "$dockerfile" ]] || continue
+    grep -q "FROM ${image}@sha256:" "$dockerfile" || continue
 
-  if [ "$DRY_RUN" = true ]; then
-    echo "   Would update: $dockerfile"
-    echo "   FROM $image"
-    echo "   TO:   FROM $image@$digest"
-    echo ""
-    return 0
-  fi
+    local old_digest
+    old_digest=$(grep "FROM ${image}@sha256:" "$dockerfile" | sed 's/.*@\(sha256:[a-f0-9]*\).*/\1/' | head -1)
 
-  # Check if image already has a digest pinned
-  if grep -q "FROM ${image}@sha256:" "$dockerfile"; then
-    echo "   Updating existing digest in $dockerfile"
-    # Update existing digest
-    sed -i.bak "s|FROM ${image}@sha256:[a-f0-9]*|FROM ${image}@${digest}|g" "$dockerfile"
-  else
-    echo "   Adding digest to $dockerfile"
-    # Add digest to unpinned image
-    sed -i.bak "s|FROM ${image}|FROM ${image}@${digest}|g" "$dockerfile"
-  fi
+    if [[ "$old_digest" == "$new_digest" ]]; then
+      echo "   ↔ $dockerfile: unchanged"
+      continue
+    fi
 
-  # Remove backup file
-  rm -f "${dockerfile}.bak"
-  echo "   ✅ Updated $dockerfile"
-  echo ""
+    echo "   ✅ $dockerfile: ${old_digest:7:12}... → ${new_digest:7:12}..."
+    if [[ "$DRY_RUN" == false ]]; then
+      sed -i.bak "s|FROM ${image}@sha256:[a-f0-9]*|FROM ${image}@${new_digest}|g" "$dockerfile"
+      rm -f "${dockerfile}.bak"
+    fi
+    any_changed=true
+  done
+
+  echo "$any_changed"
 }
 
 echo "============================================"
-echo "Pin Container Image Digests (M-1)"
+echo "Pin Container Image Digests (Nightly)"
 echo "============================================"
 echo ""
 
-# Array of images to pin: "dockerfile:image"
-IMAGES_TO_PIN=(
-  "docker/Dockerfile:debian:12-slim"
-  "docker/Dockerfile:gcr.io/distroless/cc-debian12:nonroot"
-  "docker/Dockerfile.chainguard:cgr.dev/chainguard/wolfi-base:latest"
-  "docker/Dockerfile.chainguard:cgr.dev/chainguard/glibc-dynamic:latest"
-  "docker/Dockerfile.fast:rust:1.91.0"
-  "docker/Dockerfile.fast:alpine:3.20"
-  "docker/Dockerfile.local:alpine:3.20"
+# Images to update: must match exactly what appears in FROM lines
+IMAGES=(
+  "debian:12-slim"
+  "gcr.io/distroless/cc-debian12:nonroot"
+  "cgr.dev/chainguard/wolfi-base:latest"
+  "cgr.dev/chainguard/glibc-dynamic:latest"
+  "rust:1.94.0"
+  "alpine:3.21"
 )
 
 FAILED=()
-UPDATED=0
+ANY_CHANGED=false
 
-for entry in "${IMAGES_TO_PIN[@]}"; do
-  IFS=':' read -r dockerfile_image <<< "$entry"
-  IFS=':' read -r dockerfile image_name image_tag <<< "$dockerfile_image"
-
-  image="${image_name}:${image_tag}"
-
-  echo "Processing: $image (in $dockerfile)"
-
-  # Get digest
-  if digest=$(get_digest "$image"); then
-    pin_digest "$dockerfile" "$image" "$digest"
-    UPDATED=$((UPDATED + 1))
+for image in "${IMAGES[@]}"; do
+  echo "Processing: $image"
+  if digest=$(get_multiarch_digest "$image"); then
+    result=$(update_digest "$image" "$digest")
+    [[ "$result" == "true" ]] && ANY_CHANGED=true
   else
-    echo "❌ Failed to fetch digest for $image"
+    echo "   ❌ Failed to fetch digest"
     FAILED+=("$image")
   fi
+  echo ""
 done
 
-echo ""
 echo "============================================"
 echo "Summary"
 echo "============================================"
-echo "Updated: $UPDATED images"
-echo "Failed:  ${#FAILED[@]} images"
 
-if [ ${#FAILED[@]} -gt 0 ]; then
-  echo ""
+if [[ ${#FAILED[@]} -gt 0 ]]; then
   echo "Failed images:"
-  for failed in "${FAILED[@]}"; do
-    echo "  - $failed"
+  for f in "${FAILED[@]}"; do
+    echo "  - $f"
   done
   exit 1
 fi
 
-if [ "$DRY_RUN" = true ]; then
-  echo ""
+if [[ "$ANY_CHANGED" == false ]]; then
+  echo "✓ All digests are already up to date"
+elif [[ "$DRY_RUN" == true ]]; then
   echo "🔍 DRY RUN COMPLETE - No files were modified"
-  echo "Run without --dry-run to apply changes"
 else
-  echo ""
-  echo "✅ All images pinned successfully"
-  echo ""
-  echo "Next steps:"
-  echo "1. Review changes: git diff docker/"
-  echo "2. Test builds:    make docker-build"
-  echo "3. Commit changes: git add docker/ && git commit -m 'Pin container image digests (M-1)'"
+  echo "✅ Digests updated. Review with: git diff docker/"
 fi

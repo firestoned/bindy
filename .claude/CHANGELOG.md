@@ -1,3 +1,22 @@
+## [2026-03-09 10:00] - Bump kube-lease-manager 0.10 → 0.11.1 (kube 2→3, k8s-openapi 0.26→0.27)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: `kube-lease-manager` 0.10 → 0.11.1; `kube` 2.0 → 3.0; `k8s-openapi` 0.26 → 0.27 (v1_30 → v1_31 feature)
+- `src/reconcilers/records/types.rs`: `k8s_openapi::chrono::Utc` → `chrono::Utc`
+- `src/reconcilers/records/mod.rs`: same import fix; removed now-unused `chrono::Utc` import
+- `src/reconcilers/records/status_helpers.rs`: `Time(Utc::now())` → `Time(k8s_openapi::jiff::Timestamp::now())`
+- `src/reconcilers/dnszone/discovery.rs`: chrono RFC3339 parse → `ts.parse::<k8s_openapi::jiff::Timestamp>()`
+- `src/reconcilers/finalizers_tests.rs`: chrono import fix; `Time(Utc::now())` → jiff; removed unused `Utc`
+- `src/reconcilers/retry_tests.rs`: `kube::error::ErrorResponse` → `kube::core::Status` + `Box::new(...)` (kube 3.0); extracted `api_error(code)` helper
+
+### Why
+`kube-lease-manager 0.11.1` requires `kube 3.0` + `k8s-openapi 0.27`. k8s-openapi 0.27 dropped `k8s_openapi::chrono` re-export and switched `Time` to wrap `jiff::Timestamp`. kube 3.0 boxed `Error::Api` and renamed `ErrorResponse` → `Status`.
+
+### Impact
+- [x] Dependency bump; source-level compatibility fixes; behaviour unchanged
+
 ## [2026-03-09 00:00] - Fix r-efi license false positive in cargo-deny
 
 **Author:** Erick Bourgeois
