@@ -1,6 +1,11 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: MIT
 
+//! Bindy binary entry point — CLI parsing and Tokio runtime setup.
+//!
+//! For full CLI documentation, environment variables, and the Scout guide, see the
+//! [Bindy documentation](https://firestoned.github.io/bindy/).
+
 use anyhow::Result;
 use axum::{routing::get, Router};
 use bindy::{
@@ -23,6 +28,8 @@ use bindy::{
     },
     record_operator::run_generic_record_operator,
 };
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{ConfigMap, Secret, Service, ServiceAccount};
@@ -39,6 +46,37 @@ use tracing::{debug, error, info, warn};
 #[error(transparent)]
 struct ReconcileError(#[from] anyhow::Error);
 
+/// BIND9 DNS Operator for Kubernetes
+#[derive(Parser)]
+#[command(name = "bindy", about = "BIND9 DNS Operator for Kubernetes")]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Run the BIND9 DNS operator
+    Run,
+    /// Run the ingress scout controller (creates ARecords from annotated Ingresses)
+    Scout {
+        /// Logical name of this cluster stamped on created ARecord labels.
+        /// Overrides the BINDY_SCOUT_CLUSTER_NAME environment variable.
+        #[arg(long)]
+        bind9_cluster_name: Option<String>,
+        /// Namespace where ARecords are created.
+        /// Overrides the BINDY_SCOUT_NAMESPACE environment variable.
+        #[arg(long)]
+        namespace: Option<String>,
+    },
+    /// Output shell completion code for the specified shell
+    Completion {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: Shell,
+    },
+}
+
 fn main() -> Result<()> {
     // Install ring as the default TLS crypto provider. Both ring (via hickory-client/dnssec-ring)
     // and aws-lc-rs (via reqwest) are compiled in as transitive dependencies, so rustls 0.23+
@@ -47,14 +85,35 @@ fn main() -> Result<()> {
         .install_default()
         .expect("Failed to install ring CryptoProvider");
 
+    let cli = Cli::parse();
+
+    // Shell completion is synchronous — no Tokio runtime needed.
+    if let Commands::Completion { shell } = cli.command {
+        clap_complete::generate(shell, &mut Cli::command(), "bindy", &mut std::io::stdout());
+        return Ok(());
+    }
+
+    let thread_name = match &cli.command {
+        Commands::Run => "bindy-run",
+        Commands::Scout { .. } => "bindy-scout",
+        Commands::Completion { .. } => unreachable!("handled above"),
+    };
+
     // Build Tokio runtime with custom thread names
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(TOKIO_WORKER_THREADS)
-        .thread_name("bindy-operator")
+        .thread_name(thread_name)
         .enable_all()
         .build()?;
 
-    runtime.block_on(async_main())
+    match cli.command {
+        Commands::Run => runtime.block_on(run_command()),
+        Commands::Scout {
+            bind9_cluster_name,
+            namespace,
+        } => runtime.block_on(scout_command(bind9_cluster_name, namespace)),
+        Commands::Completion { .. } => unreachable!("handled above"),
+    }
 }
 
 /// Initialize logging with custom format
@@ -685,7 +744,19 @@ async fn perform_startup_drift_detection(client: Client, context: Arc<Context>) 
     Ok(())
 }
 
-async fn async_main() -> Result<()> {
+/// Entry point for `bindy scout` — watches Ingresses and creates ARecords on the bindy cluster.
+///
+/// Phase 1 (same-cluster) and Phase 2 (remote cluster) are tracked in
+/// `docs/roadmaps/bindy-scout-ingress-controller.md`.
+async fn scout_command(
+    bind9_cluster_name: Option<String>,
+    namespace: Option<String>,
+) -> Result<()> {
+    initialize_logging();
+    bindy::scout::run_scout(bind9_cluster_name, namespace).await
+}
+
+async fn run_command() -> Result<()> {
     initialize_logging();
 
     let (client, bind9_manager) = initialize_services().await?;

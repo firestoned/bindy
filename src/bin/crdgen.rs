@@ -4,12 +4,12 @@
 //! CRD YAML Generator
 //!
 //! Generates Kubernetes CRD YAML files from Rust types defined in src/crd.rs.
-//! This ensures the YAML files in deploy/crds/ are always in sync with the Rust code.
+//! This ensures the YAML files in deploy/operator/crds/ are always in sync with the Rust code.
 //!
 //! Usage:
 //!   cargo run --bin crdgen
 //!
-//! Generated files will be written to deploy/crds/ with proper headers.
+//! Generated files will be written to deploy/operator/crds/ with proper headers.
 
 use bindy::crd::{
     AAAARecord, ARecord, Bind9Cluster, Bind9Instance, CAARecord, CNAMERecord, ClusterBind9Provider,
@@ -29,7 +29,7 @@ const COPYRIGHT_HEADER: &str = "# Copyright (c) 2025 Erick Bourgeois, firestoned
 ";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let output_dir = Path::new("deploy/crds");
+    let output_dir = Path::new("deploy/operator/crds");
 
     // Ensure output directory exists
     fs::create_dir_all(output_dir)?;
@@ -50,10 +50,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     generate_crd::<ClusterBind9Provider>("clusterbind9providers.crd.yaml", output_dir)?;
     generate_crd::<Bind9Instance>("bind9instances.crd.yaml", output_dir)?;
 
-    println!("✓ Successfully generated CRD YAML files in deploy/crds/");
+    println!("✓ Successfully generated CRD YAML files in deploy/operator/crds/");
     println!("\nNext steps:");
     println!("  1. Review the generated files");
-    println!("  2. Deploy with: kubectl apply -f deploy/crds/");
+    println!("  2. Deploy with: kubectl apply -f deploy/operator/crds/");
 
     Ok(())
 }

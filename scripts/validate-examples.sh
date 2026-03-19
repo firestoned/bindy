@@ -52,7 +52,7 @@ if [ $FAILED -gt 0 ]; then
     echo
     echo "To fix:"
     echo "1. Check the error messages above"
-    echo "2. Update examples to match CRD schemas in deploy/crds/"
+    echo "2. Update examples to match CRD schemas in deploy/operator/crds/"
     echo "3. Run: cargo run --bin crdgen (if CRDs changed)"
     exit 1
 else

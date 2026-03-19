@@ -1,0 +1,15 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: bindy-scout
+subjects:
+  - kind: ServiceAccount
+    name: bindy-scout
+    namespace: dns-system
+roleRef:
+  kind: ClusterRole
+  name: bindy-scout
+  apiGroup: rbac.authorization.k8s.io

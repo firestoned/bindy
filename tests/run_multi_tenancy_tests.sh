@@ -47,16 +47,16 @@ CRD_COUNT=$(kubectl get crd -o name | grep -c "bindy.firestoned.io" || true)
 if [ "$CRD_COUNT" -eq 0 ]; then
     echo -e "${YELLOW}⚠ Bindy CRDs not found. Installing...${NC}"
 
-    # Check if deploy/crds directory exists
-    if [ ! -d "deploy/crds" ]; then
-        echo -e "${RED}✗ deploy/crds directory not found.${NC}"
+    # Check if deploy/operator/crds directory exists
+    if [ ! -d "deploy/operator/crds" ]; then
+        echo -e "${RED}✗ deploy/operator/crds directory not found.${NC}"
         echo "Please run this script from the project root directory."
         exit 1
     fi
 
     # Install CRDs
     echo "Installing CRDs..."
-    kubectl create -f deploy/crds/ 2>/dev/null || kubectl replace --force -f deploy/crds/
+    kubectl create -f deploy/operator/crds/ 2>/dev/null || kubectl replace --force -f deploy/operator/crds/
 
     echo -e "${GREEN}✓ CRDs installed${NC}"
 else

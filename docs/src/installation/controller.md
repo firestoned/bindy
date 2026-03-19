@@ -168,3 +168,11 @@ If the operator uses excessive memory:
 - [Step-by-Step Guide](./step-by-step.md) - Create your first DNS zone
 - [Configuration](../operations/configuration.md) - Advanced configuration
 - [Monitoring](../operations/monitoring.md) - Set up monitoring
+
+---
+
+## What's Next: Scout
+
+Want application teams to get DNS records automatically from their `Ingress` resources — without needing write access to the bindy namespace? Deploy the optional **Bindy Scout** controller.
+
+→ **[Deploying Scout](./scout.md)**
