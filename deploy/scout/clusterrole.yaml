@@ -10,6 +10,11 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
     verbs: ["get", "list", "watch"]
+  # Write finalizers on Ingresses (Phase 1.5: cleanup on deletion)
+  # Required to add/remove bindy.firestoned.io/arecord-finalizer
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses/finalizers"]
+    verbs: ["update"]
   # Read DNSZones for zone validation
   - apiGroups: ["bindy.firestoned.io"]
     resources: ["dnszones"]

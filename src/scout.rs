@@ -17,6 +17,7 @@
 
 use crate::crd::{ARecord, ARecordSpec, DNSZone};
 use anyhow::{anyhow, Result};
+use kube::api::{DeleteParams, ListParams, Patch, PatchParams};
 
 /// Reconcile error type — wraps `anyhow::Error` so that it satisfies the
 /// `std::error::Error` bound required by `kube::runtime::Controller::run`.
@@ -250,6 +251,37 @@ fn sanitize_k8s_name(s: &str) -> String {
     trimmed.trim_start_matches('-').to_string()
 }
 
+/// Returns `true` if the Scout finalizer is present on the Ingress.
+pub fn has_finalizer(ingress: &Ingress) -> bool {
+    ingress
+        .metadata
+        .finalizers
+        .as_ref()
+        .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
+        .unwrap_or(false)
+}
+
+/// Returns `true` if the Ingress has been marked for deletion.
+pub fn is_being_deleted(ingress: &Ingress) -> bool {
+    ingress.metadata.deletion_timestamp.is_some()
+}
+
+/// Builds a Kubernetes label selector string matching all ARecords created
+/// by Scout for a specific Ingress.
+///
+/// Selects on `managed-by=scout`, `source-cluster`, `source-namespace`, and
+/// `source-ingress` to precisely target only the records owned by this Ingress.
+pub fn arecord_label_selector(cluster: &str, namespace: &str, ingress_name: &str) -> String {
+    format!(
+        "{}={},{cluster_key}={cluster},{ns_key}={namespace},{ingress_key}={ingress_name}",
+        LABEL_MANAGED_BY,
+        LABEL_MANAGED_BY_SCOUT,
+        cluster_key = LABEL_SOURCE_CLUSTER,
+        ns_key = LABEL_SOURCE_NAMESPACE,
+        ingress_key = LABEL_SOURCE_INGRESS,
+    )
+}
+
 // ============================================================================
 // ARecord builder
 // ============================================================================
@@ -316,10 +348,89 @@ pub fn build_arecord(params: ARecordParams<'_>) -> ARecord {
 }
 
 // ============================================================================
+// Finalizer helpers (async — require Kubernetes API access)
+// ============================================================================
+
+/// Adds the Scout finalizer to an Ingress.
+///
+/// Merges the finalizer into the existing list so any other finalizers
+/// already present are preserved.
+async fn add_finalizer(client: &Client, ingress: &Ingress) -> Result<()> {
+    let namespace = ingress.namespace().unwrap_or_default();
+    let name = ingress.name_any();
+    let api: Api<Ingress> = Api::namespaced(client.clone(), &namespace);
+
+    let mut finalizers = ingress.metadata.finalizers.clone().unwrap_or_default();
+    if !finalizers.contains(&FINALIZER_SCOUT.to_string()) {
+        finalizers.push(FINALIZER_SCOUT.to_string());
+    }
+
+    let patch = serde_json::json!({ "metadata": { "finalizers": finalizers } });
+    api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await?;
+    Ok(())
+}
+
+/// Removes the Scout finalizer from an Ingress.
+///
+/// Preserves any other finalizers that may be present.
+async fn remove_finalizer(client: &Client, ingress: &Ingress) -> Result<()> {
+    let namespace = ingress.namespace().unwrap_or_default();
+    let name = ingress.name_any();
+    let api: Api<Ingress> = Api::namespaced(client.clone(), &namespace);
+
+    let finalizers: Vec<String> = ingress
+        .metadata
+        .finalizers
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|f| f != FINALIZER_SCOUT)
+        .collect();
+
+    let patch = serde_json::json!({ "metadata": { "finalizers": finalizers } });
+    api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await?;
+    Ok(())
+}
+
+/// Deletes all ARecords in `target_namespace` that were created by Scout for
+/// the given Ingress (identified by cluster + namespace + ingress name labels).
+async fn delete_arecords_for_ingress(
+    client: &Client,
+    target_namespace: &str,
+    cluster: &str,
+    ingress_namespace: &str,
+    ingress_name: &str,
+) -> Result<()> {
+    let api: Api<ARecord> = Api::namespaced(client.clone(), target_namespace);
+    let selector = arecord_label_selector(cluster, ingress_namespace, ingress_name);
+    let lp = ListParams::default().labels(&selector);
+
+    let arecords = api.list(&lp).await?;
+    for ar in arecords.items {
+        let ar_name = ar.name_any();
+        api.delete(&ar_name, &DeleteParams::default()).await?;
+        info!(
+            arecord = %ar_name,
+            ingress = %ingress_name,
+            ns = %ingress_namespace,
+            "Deleted ARecord during Ingress cleanup"
+        );
+    }
+    Ok(())
+}
+
+// ============================================================================
 // Reconciler
 // ============================================================================
 
 /// Reconciles a single Ingress, creating or updating ARecord CRs as needed.
+///
+/// Handles the full lifecycle:
+/// - Adds a finalizer to opted-in Ingresses so deletion is intercepted.
+/// - On deletion, removes all ARecords Scout created then releases the finalizer.
+/// - If the opt-in annotation is removed, cleans up ARecords and the finalizer.
 ///
 /// # Errors
 ///
@@ -334,6 +445,27 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
         return Ok(Action::await_change());
     }
 
+    // Handle Ingress deletion — remove ARecords and release the finalizer
+    if is_being_deleted(&ingress) {
+        if has_finalizer(&ingress) {
+            info!(ingress = %name, ns = %namespace, "Ingress deleting — cleaning up ARecords");
+            delete_arecords_for_ingress(
+                &ctx.client,
+                &ctx.target_namespace,
+                &ctx.cluster_name,
+                &namespace,
+                &name,
+            )
+            .await
+            .map_err(ScoutError::from)?;
+            remove_finalizer(&ctx.client, &ingress)
+                .await
+                .map_err(ScoutError::from)?;
+            info!(ingress = %name, ns = %namespace, "Finalizer removed — Ingress deletion unblocked");
+        }
+        return Ok(Action::await_change());
+    }
+
     let annotations = ingress
         .metadata
         .annotations
@@ -343,7 +475,34 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
 
     // Guard: opt-in annotation required
     if !is_arecord_enabled(&annotations) {
+        // Annotation may have been removed after a finalizer was added — clean up
+        if has_finalizer(&ingress) {
+            info!(ingress = %name, ns = %namespace, "ARecord annotation removed — cleaning up ARecords and finalizer");
+            delete_arecords_for_ingress(
+                &ctx.client,
+                &ctx.target_namespace,
+                &ctx.cluster_name,
+                &namespace,
+                &name,
+            )
+            .await
+            .map_err(ScoutError::from)?;
+            remove_finalizer(&ctx.client, &ingress)
+                .await
+                .map_err(ScoutError::from)?;
+        }
         debug!(ingress = %name, ns = %namespace, "No arecord annotation — skipping");
+        return Ok(Action::await_change());
+    }
+
+    // Ensure our finalizer is present before creating any ARecords.
+    // Adding the finalizer triggers a re-reconcile; return early to avoid
+    // doing record creation twice.
+    if !has_finalizer(&ingress) {
+        add_finalizer(&ctx.client, &ingress)
+            .await
+            .map_err(ScoutError::from)?;
+        debug!(ingress = %name, ns = %namespace, "Finalizer added — re-queuing for record creation");
         return Ok(Action::await_change());
     }
 
