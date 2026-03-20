@@ -1,0 +1,73 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bindy-scout
+  namespace: dns-system
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/component: scout
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bindy
+      app.kubernetes.io/component: scout
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bindy
+        app.kubernetes.io/component: scout
+    spec:
+      serviceAccountName: bindy-scout
+      securityContext:
+        fsGroup: 65534
+        runAsNonRoot: true
+      containers:
+        - name: scout
+          image: ghcr.io/firestoned/bindy:latest
+          imagePullPolicy: IfNotPresent
+          args: ["scout"]
+          env:
+            # Required: logical cluster name stamped on all created ARecord labels.
+            # Set this to identify which cluster Scout is running in.
+            - name: BINDY_SCOUT_CLUSTER_NAME
+              value: "test-cluster.example.com"
+            # Namespace where ARecord CRs are created (must match the bindy operator namespace)
+            - name: BINDY_SCOUT_NAMESPACE
+              value: "dns-system"
+            # Scout's own namespace — always excluded from Ingress watching
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # Optional: comma-separated list of additional namespaces to exclude
+            # - name: BINDY_SCOUT_EXCLUDE_NAMESPACES
+            #   value: "kube-system,kube-public,kube-node-lease"
+            - name: RUST_LOG
+              value: "info"
+            - name: RUST_LOG_FORMAT
+              value: "text"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+          resources:
+            limits:
+              cpu: 200m
+              memory: 128Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

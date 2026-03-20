@@ -87,11 +87,11 @@ fi
 
 echo -e "${GREEN}📋 Installing CRDs...${NC}"
 # Use 'kubectl replace --force' to avoid annotation size limits with large CRDs
-kubectl replace --force -f deploy/crds 2>/dev/null || kubectl create -f deploy/crds
+kubectl replace --force -f deploy/operator/crds 2>/dev/null || kubectl create -f deploy/operator/crds
 
 echo -e "${GREEN}🔐 Creating namespace and RBAC...${NC}"
 kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -f deploy/rbac/
+kubectl apply -f deploy/operator/rbac/
 
 #echo -e "${GREEN}🏗️  Building Docker image...${NC}"
 #docker build -t bindy:latest .

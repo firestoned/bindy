@@ -155,16 +155,17 @@ rules:
   #   Compliance: PCI-DSS 7.1.2 (minimal permissions), NIST SP 800-190 (container secrets management)
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "list", "watch", "create", "patch", "delete"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
     # Permissions needed:
     # - "get": Load RNDC keys for zone updates (DNSZone reconciler)
     # - "list": Check if RNDC secrets exist (Bind9Cluster reconciler)
     # - "watch": Monitor RNDC secret changes
     # - "create": Generate RNDC keys for new Bind9Instance resources
-    # - "patch": Add rotation annotations to existing Secrets without regenerating keys
-    #            (RNDC key rotation feature - adds metadata only, preserves key data)
+    # - "update": RNDC key rotation — kube::Api::replace() (HTTP PUT) replaces the entire
+    #             Secret with new key material + updated rotation count + annotations.
+    #             patch is insufficient here because key data itself changes during rotation.
+    # - "patch": Metadata-only changes (e.g. adding annotations without touching key data)
     # - "delete": Clean up RNDC keys when Bind9Instance is deleted (finalizer)
-    # Removed: "update" - Full updates not needed, patch is sufficient for annotation changes
     # PCI-DSS 7.1.2: Minimal permissions for RNDC secret lifecycle management
 
   # Kubernetes ServiceAccounts

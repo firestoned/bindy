@@ -27,7 +27,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Check license headers
-        uses: firestoned/github-actions/security/license-check@v1.3.5
+        uses: firestoned/github-actions/security/license-check@v1.3.6
         with:
           copyright-holder: "Erick Bourgeois, firestoned"
           license-id: "MIT"
@@ -42,7 +42,7 @@ jobs:
           fetch-depth: 0  # Fetch all history for verification
 
       - name: Verify release tag commit is signed
-        uses: firestoned/github-actions/security/verify-signed-commits@v1.3.5
+        uses: firestoned/github-actions/security/verify-signed-commits@v1.3.6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           verify-mode: release
@@ -65,7 +65,7 @@ jobs:
 
       - name: Extract version for Chainguard
         id: version-chainguard
-        uses: firestoned/github-actions/versioning/extract-version@v1.3.5
+        uses: firestoned/github-actions/versioning/extract-version@v1.3.6
         with:
           repository: firestoned/bindy
           workflow-type: release
@@ -74,7 +74,7 @@ jobs:
 
       - name: Extract version for Distroless
         id: version-distroless
-        uses: firestoned/github-actions/versioning/extract-version@v1.3.5
+        uses: firestoned/github-actions/versioning/extract-version@v1.3.6
         with:
           repository: firestoned/bindy
           workflow-type: release
@@ -99,29 +99,70 @@ jobs:
             target: aarch64-unknown-linux-gnu
             artifact_name: bindy-linux-arm64
             binary_name: bindy
+          - name: macOS x86_64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: bindy-macos-amd64
+            binary_name: bindy
+          - name: macOS ARM64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: bindy-macos-arm64
+            binary_name: bindy
+          - name: Windows x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: bindy-windows-amd64
+            binary_name: bindy.exe
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
 
       - name: Update Cargo.toml version
+        shell: bash
         run: |
-          sed -i 's/^version = ".*"/version = "${{ needs.extract-version.outputs.version }}"/' Cargo.toml
+          perl -i -pe 's/^version = ".*"/version = "${{ needs.extract-version.outputs.version }}"/' Cargo.toml
           echo "Updated Cargo.toml to version ${{ needs.extract-version.outputs.version }}"
           grep '^version = ' Cargo.toml
 
-      - name: Setup Rust build environment
-        uses: firestoned/github-actions/rust/setup-rust-build@v1.3.5
+      # Linux: custom action handles cross-compilation setup for ARM64
+      - name: Setup Rust build environment (Linux)
+        if: runner.os == 'Linux'
+        uses: firestoned/github-actions/rust/setup-rust-build@v1.3.6
         with:
           target: ${{ matrix.platform.target }}
           cache-key: release-${{ needs.extract-version.outputs.version }}
 
-      - name: Build binary
-        uses: firestoned/github-actions/rust/build-binary@v1.3.5
+      # macOS/Windows: native build; macOS x86_64 is cross-compiled on ARM64 macos-latest runner
+      - name: Setup Rust toolchain (macOS/Windows)
+        if: runner.os != 'Linux'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform.target }}
+
+      # macos-latest is ARM64; x86_64-apple-darwin requires explicit target addition
+      - name: Add x86_64 target for cross-compilation (macOS)
+        if: matrix.platform.target == 'x86_64-apple-darwin'
+        run: rustup target add x86_64-apple-darwin
+
+      - name: Cache cargo dependencies (macOS/Windows)
+        if: runner.os != 'Linux'
+        uses: firestoned/github-actions/rust/cache-cargo@v1.3.6
+
+      - name: Build binary (Linux)
+        if: runner.os == 'Linux'
+        uses: firestoned/github-actions/rust/build-binary@v1.3.6
         with:
           target: ${{ matrix.platform.target }}
 
-      - name: Generate SBOM
-        uses: firestoned/github-actions/rust/generate-sbom@v1.3.5
+      - name: Build binary (macOS/Windows)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: cargo build --release --target ${{ matrix.platform.target }}
+
+      - name: Generate SBOM (Linux only)
+        if: runner.os == 'Linux'
+        uses: firestoned/github-actions/rust/generate-sbom@v1.3.6
         with:
           target: ${{ matrix.platform.target }}
 
@@ -165,7 +206,7 @@ jobs:
         uses: ./.github/actions/prepare-docker-binaries
 
       - name: Setup Docker environment
-        uses: firestoned/github-actions/docker/setup-docker@v1.3.5
+        uses: firestoned/github-actions/docker/setup-docker@v1.3.6
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -203,7 +244,7 @@ jobs:
           provenance: true
 
       - name: Sign container image with Cosign
-        uses: firestoned/github-actions/security/cosign-sign@v1.3.5
+        uses: firestoned/github-actions/security/cosign-sign@v1.3.6
         with:
           image-digest: ${{ steps.docker_build.outputs.digest }}
           image-tags: ${{ needs.extract-version.outputs.tag_name }}
@@ -235,8 +276,19 @@ jobs:
         platform:
           - name: Linux x86_64
             artifact_name: bindy-linux-amd64
+            binary_name: bindy
           - name: Linux ARM64
             artifact_name: bindy-linux-arm64
+            binary_name: bindy
+          - name: macOS x86_64
+            artifact_name: bindy-macos-amd64
+            binary_name: bindy
+          - name: macOS ARM64
+            artifact_name: bindy-macos-arm64
+            binary_name: bindy
+          - name: Windows x86_64
+            artifact_name: bindy-windows-amd64
+            binary_name: bindy.exe
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -250,12 +302,12 @@ jobs:
       - name: Create tarball for signing
         run: |
           cd artifacts/${{ matrix.platform.artifact_name }}
-          chmod +x bindy
-          tar czf ${{ matrix.platform.artifact_name }}.tar.gz bindy
+          chmod +x ${{ matrix.platform.binary_name }} 2>/dev/null || true
+          tar czf ${{ matrix.platform.artifact_name }}.tar.gz ${{ matrix.platform.binary_name }}
           ls -lh ${{ matrix.platform.artifact_name }}.tar.gz
 
       - name: Sign binary tarball with Cosign
-        uses: firestoned/github-actions/security/cosign-sign@v1.3.5
+        uses: firestoned/github-actions/security/cosign-sign@v1.3.6
         with:
           artifact-path: artifacts/${{ matrix.platform.artifact_name }}/${{ matrix.platform.artifact_name }}.tar.gz
 
@@ -277,7 +329,7 @@ jobs:
       - name: Download signed artifacts
         uses: actions/download-artifact@v8
         with:
-          pattern: bindy-linux-*-signed
+          pattern: bindy-*-signed
           path: ./artifacts
           merge-multiple: true
 
@@ -312,13 +364,13 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup Rust build environment
-        uses: firestoned/github-actions/rust/setup-rust-build@v1.3.5
+        uses: firestoned/github-actions/rust/setup-rust-build@v1.3.6
         with:
           target: x86_64-unknown-linux-gnu
           cache-key: release-${{ needs.extract-version.outputs.version }}
 
-      - name: Generate install.yaml
-        run: make install-yaml VERSION=${{ github.event.release.tag_name }}
+      - name: Generate release manifests
+        run: make release-manifests VERSION=${{ github.event.release.tag_name }}
 
       - name: Upload deploy manifests
         uses: actions/upload-artifact@v7
@@ -326,6 +378,7 @@ jobs:
           name: deploy-manifests
           path: |
             deploy/install.yaml
+            deploy/scout.yaml
 
   upload-release-assets:
     name: Upload Release Assets
@@ -350,10 +403,13 @@ jobs:
             if [ -f "deploy-manifests/install.yaml" ]; then
               cp deploy-manifests/install.yaml release/
             fi
+            if [ -f "deploy-manifests/scout.yaml" ]; then
+              cp deploy-manifests/scout.yaml release/
+            fi
           fi
 
           # Copy signed tarballs and signature bundles
-          for dir in bindy-linux-*-signed; do
+          for dir in bindy-*-signed; do
             if [ -d "$dir" ]; then
               platform="${dir%-signed}"
               echo "Processing signed artifacts for $platform..."
@@ -370,8 +426,8 @@ jobs:
             fi
           done
 
-          # Collect all SBOM files (using default cargo-cyclonedx naming)
-          for dir in bindy-linux-amd64 bindy-linux-arm64; do
+          # Collect all SBOM files (using default cargo-cyclonedx naming, Linux builds only)
+          for dir in bindy-linux-amd64 bindy-linux-arm64 bindy-macos-amd64 bindy-macos-arm64 bindy-windows-amd64; do
             if [ -d "$dir" ]; then
               # Find any .cdx.json files (cargo-cyclonedx default naming)
               if compgen -G "$dir/*.cdx.json" > /dev/null; then
@@ -400,6 +456,9 @@ jobs:
           if [ -f "install.yaml" ]; then
             sha256sum install.yaml >> checksums.sha256
           fi
+          if [ -f "scout.yaml" ]; then
+            sha256sum scout.yaml >> checksums.sha256
+          fi
           cd ../sboms
           sha256sum *.json >> ../release/checksums.sha256
           cd ../signatures
@@ -420,6 +479,7 @@ jobs:
           files: |
             artifacts/release/*.tar.gz
             artifacts/release/install.yaml
+            artifacts/release/scout.yaml
             artifacts/sboms/*.json
             artifacts/signatures/*.bundle
             artifacts/provenance/*.intoto.jsonl
@@ -434,7 +494,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Run security scan
-        uses: firestoned/github-actions/rust/security-scan@v1.3.5
+        uses: firestoned/github-actions/rust/security-scan@v1.3.6
         with:
           cargo-audit-version: "0.22.0"
           upload-artifact-name: cargo-audit-report-release
@@ -458,7 +518,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Run Trivy scan on ${{ matrix.variant.name }} image
-        uses: firestoned/github-actions/security/trivy-scan@v1.3.5
+        uses: firestoned/github-actions/security/trivy-scan@v1.3.6
         with:
           image-ref: ghcr.io/${{ matrix.variant.image-repository }}:${{ matrix.variant.image-tag }}
           sarif-category: trivy-release-${{ matrix.variant.name }}

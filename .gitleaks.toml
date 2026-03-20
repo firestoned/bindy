@@ -36,7 +36,7 @@ paths = [
     '''docs/book/.*''',       # Generated documentation
     '''docs/deprecation-policy\.md''',  # Example code in docs
     '''docs/src/.*\.md''',    # Documentation source files with examples
-    '''deploy/crds/.*\.crd\.yaml''',  # CRD YAML files contain example values in descriptions
+    '''deploy/operator/crds/.*\.crd\.yaml''',  # CRD YAML files contain example values in descriptions
 ]
 
 regexes = [

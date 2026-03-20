@@ -36,6 +36,7 @@ spec:
         - name: bindy
           image: ghcr.io/firestoned/bindy:latest
           imagePullPolicy: IfNotPresent
+          args: ["run"]
           env:
             - name: RUST_LOG
               value: "info"

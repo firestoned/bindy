@@ -49,7 +49,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Check license headers
-        uses: firestoned/github-actions/security/license-check@v1.3.5
+        uses: firestoned/github-actions/security/license-check@v1.3.6
         with:
           copyright-holder: "Erick Bourgeois, firestoned"
           license-id: "MIT"
@@ -66,7 +66,7 @@ jobs:
           fetch-depth: 0  # Fetch all history for verification
 
       - name: Verify all commits are signed
-        uses: firestoned/github-actions/security/verify-signed-commits@v1.3.5
+        uses: firestoned/github-actions/security/verify-signed-commits@v1.3.6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           base-ref: origin/${{ github.base_ref }}
@@ -102,7 +102,7 @@ jobs:
           components: clippy
 
       - name: Cache cargo dependencies
-        uses: firestoned/github-actions/rust/cache-cargo@v1.3.5
+        uses: firestoned/github-actions/rust/cache-cargo@v1.3.6
 
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
@@ -125,22 +125,62 @@ jobs:
             target: aarch64-unknown-linux-gnu
             artifact_name: bindy-linux-arm64
             binary_name: bindy
+          - name: macOS x86_64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: bindy-macos-amd64
+            binary_name: bindy
+          - name: macOS ARM64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: bindy-macos-arm64
+            binary_name: bindy
+          - name: Windows x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: bindy-windows-amd64
+            binary_name: bindy.exe
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Setup Rust build environment
-        uses: firestoned/github-actions/rust/setup-rust-build@v1.3.5
+      # Linux: custom action handles cross-compilation setup for ARM64
+      - name: Setup Rust build environment (Linux)
+        if: runner.os == 'Linux'
+        uses: firestoned/github-actions/rust/setup-rust-build@v1.3.6
         with:
           target: ${{ matrix.platform.target }}
 
-      - name: Build binary
-        uses: firestoned/github-actions/rust/build-binary@v1.3.5
+      # macOS/Windows: native build; macOS x86_64 is cross-compiled on ARM64 macos-latest runner
+      - name: Setup Rust toolchain (macOS/Windows)
+        if: runner.os != 'Linux'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform.target }}
+
+      # macos-latest is ARM64; x86_64-apple-darwin requires explicit target addition
+      - name: Add x86_64 target for cross-compilation (macOS)
+        if: matrix.platform.target == 'x86_64-apple-darwin'
+        run: rustup target add x86_64-apple-darwin
+
+      - name: Cache cargo dependencies (macOS/Windows)
+        if: runner.os != 'Linux'
+        uses: firestoned/github-actions/rust/cache-cargo@v1.3.6
+
+      - name: Build binary (Linux)
+        if: runner.os == 'Linux'
+        uses: firestoned/github-actions/rust/build-binary@v1.3.6
         with:
           target: ${{ matrix.platform.target }}
 
-      - name: Generate SBOM
-        uses: firestoned/github-actions/rust/generate-sbom@v1.3.5
+      - name: Build binary (macOS/Windows)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: cargo build --release --target ${{ matrix.platform.target }}
+
+      - name: Generate SBOM (Linux only)
+        if: runner.os == 'Linux'
+        uses: firestoned/github-actions/rust/generate-sbom@v1.3.6
         with:
           target: ${{ matrix.platform.target }}
 
@@ -150,7 +190,7 @@ jobs:
           name: ${{ matrix.platform.artifact_name }}
           path: |
             target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}
-            *.cdx.json
+            target/${{ matrix.platform.target }}/release/*.cdx.json
           retention-days: 1
 
   test:
@@ -171,7 +211,7 @@ jobs:
           path: target/x86_64-unknown-linux-gnu/release/
 
       - name: Cache cargo dependencies
-        uses: firestoned/github-actions/rust/cache-cargo@v1.3.5
+        uses: firestoned/github-actions/rust/cache-cargo@v1.3.6
 
       - name: Run tests
         run: cargo test --all --verbose
@@ -192,7 +232,7 @@ jobs:
 
       - name: Extract version for Chainguard
         id: version-chainguard
-        uses: firestoned/github-actions/versioning/extract-version@v1.3.5
+        uses: firestoned/github-actions/versioning/extract-version@v1.3.6
         with:
           repository: firestoned/bindy
           workflow-type: pr
@@ -201,7 +241,7 @@ jobs:
 
       - name: Extract version for Distroless
         id: version-distroless
-        uses: firestoned/github-actions/versioning/extract-version@v1.3.5
+        uses: firestoned/github-actions/versioning/extract-version@v1.3.6
         with:
           repository: firestoned/bindy
           workflow-type: pr
@@ -237,7 +277,7 @@ jobs:
         uses: ./.github/actions/prepare-docker-binaries
 
       - name: Setup Docker environment
-        uses: firestoned/github-actions/docker/setup-docker@v1.3.5
+        uses: firestoned/github-actions/docker/setup-docker@v1.3.6
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -310,7 +350,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Run Trivy scan on ${{ matrix.variant.name }} image
-        uses: firestoned/github-actions/security/trivy-scan@v1.3.5
+        uses: firestoned/github-actions/security/trivy-scan@v1.3.6
         with:
           image-ref: ghcr.io/${{ matrix.variant.image-repository }}:${{ matrix.variant.image-tag }}
           sarif-category: trivy-pr-${{ matrix.variant.name }}

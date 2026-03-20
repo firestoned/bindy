@@ -200,6 +200,7 @@ nav:
       - Prerequisites: installation/prerequisites.md
       - Installing CRDs: installation/crds.md
       - Deploying Operator: installation/controller.md
+      - Deploying Scout: installation/scout.md
       - Basic Concepts:
           - Overview: concepts/index.md
           - Custom Resources: concepts/crds.md
@@ -235,6 +236,7 @@ nav:
           - SRV Records: guide/srv-records.md
           - CAA Records: guide/caa-records.md
       - RNDC Key Rotation: guide/rndc-key-rotation.md
+      - Scout (Ingress → ARecord): guide/scout.md
 
   - Operations:
       - Configuration:
@@ -348,6 +350,7 @@ nav:
           - Simple Setup: reference/examples-simple.md
           - Production Setup: reference/examples-production.md
           - Multi-Region: reference/examples-multi-region.md
+      - CLI Reference: reference/cli.md
       - Rustdoc API: rustdoc.md
       - Changelog: changelog.md
       - License: license.md
