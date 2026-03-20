@@ -6,9 +6,13 @@
 #[cfg(test)]
 mod tests {
     use crate::scout::{
-        arecord_cr_name, derive_record_name, get_zone_annotation, is_arecord_enabled,
-        resolve_ip_from_annotation,
+        arecord_cr_name, arecord_label_selector, derive_record_name, get_zone_annotation,
+        has_finalizer, is_arecord_enabled, is_being_deleted, resolve_ip_from_annotation,
+        FINALIZER_SCOUT, LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER,
+        LABEL_SOURCE_INGRESS, LABEL_SOURCE_NAMESPACE,
     };
+    use k8s_openapi::api::networking::v1::Ingress;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
     use std::collections::BTreeMap;
 
     // =========================================================================
@@ -189,5 +193,118 @@ mod tests {
     fn test_arecord_cr_name_no_trailing_hyphen() {
         let name = arecord_cr_name("prod", "default", "ingress", 0);
         assert!(!name.ends_with('-'));
+    }
+
+    // =========================================================================
+    // has_finalizer
+    // =========================================================================
+
+    #[test]
+    fn test_has_finalizer_present() {
+        let ingress = Ingress {
+            metadata: kube::api::ObjectMeta {
+                finalizers: Some(vec![FINALIZER_SCOUT.to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(has_finalizer(&ingress));
+    }
+
+    #[test]
+    fn test_has_finalizer_absent() {
+        let ingress = Ingress {
+            metadata: kube::api::ObjectMeta {
+                finalizers: Some(vec!["other.io/finalizer".to_string()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(!has_finalizer(&ingress));
+    }
+
+    #[test]
+    fn test_has_finalizer_none() {
+        let ingress = Ingress {
+            metadata: kube::api::ObjectMeta {
+                finalizers: None,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(!has_finalizer(&ingress));
+    }
+
+    #[test]
+    fn test_has_finalizer_among_others() {
+        let ingress = Ingress {
+            metadata: kube::api::ObjectMeta {
+                finalizers: Some(vec![
+                    "other.io/finalizer".to_string(),
+                    FINALIZER_SCOUT.to_string(),
+                    "another.io/finalizer".to_string(),
+                ]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(has_finalizer(&ingress));
+    }
+
+    // =========================================================================
+    // is_being_deleted
+    // =========================================================================
+
+    #[test]
+    fn test_is_being_deleted_with_timestamp() {
+        let ingress = Ingress {
+            metadata: kube::api::ObjectMeta {
+                deletion_timestamp: Some(Time(k8s_openapi::jiff::Timestamp::now())),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(is_being_deleted(&ingress));
+    }
+
+    #[test]
+    fn test_is_being_deleted_without_timestamp() {
+        let ingress = Ingress {
+            metadata: kube::api::ObjectMeta {
+                deletion_timestamp: None,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(!is_being_deleted(&ingress));
+    }
+
+    // =========================================================================
+    // arecord_label_selector
+    // =========================================================================
+
+    #[test]
+    fn test_arecord_label_selector_format() {
+        let selector = arecord_label_selector("prod", "my-ns", "my-ingress");
+        assert_eq!(
+            selector,
+            format!(
+                "{}={},{}=prod,{}=my-ns,{}=my-ingress",
+                LABEL_MANAGED_BY,
+                LABEL_MANAGED_BY_SCOUT,
+                LABEL_SOURCE_CLUSTER,
+                LABEL_SOURCE_NAMESPACE,
+                LABEL_SOURCE_INGRESS,
+            )
+        );
+    }
+
+    #[test]
+    fn test_arecord_label_selector_contains_all_keys() {
+        let selector = arecord_label_selector("prod", "ns", "ing");
+        assert!(selector.contains(LABEL_MANAGED_BY));
+        assert!(selector.contains(LABEL_SOURCE_CLUSTER));
+        assert!(selector.contains(LABEL_SOURCE_NAMESPACE));
+        assert!(selector.contains(LABEL_SOURCE_INGRESS));
     }
 }
