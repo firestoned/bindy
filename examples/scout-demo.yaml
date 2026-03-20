@@ -1,0 +1,104 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# Scout Demo — Python HTTP server with automatic DNS via Bindy Scout
+#
+# This example shows how Scout watches an Ingress and automatically creates
+# an ARecord CR in the bindy namespace — no direct interaction with bindy required.
+#
+# Prerequisites:
+#   1. Bindy operator running with a Bind9Cluster + Bind9Instance
+#   2. A DNSZone for "example.com" applied (see examples/dns-zone.yaml)
+#   3. Bindy Scout deployed (kubectl apply -f deploy/scout.yaml)
+#
+# Apply:
+#   kubectl apply -f examples/scout-demo.yaml
+#
+# Verify Scout created the ARecord:
+#   kubectl get arecords -n dns-system -l bindy.firestoned.io/managed-by=scout
+#
+# Clean up:
+#   kubectl delete -f examples/scout-demo.yaml
+#
+# ---
+# IP note:
+#   On a real cluster, remove the ip annotation and let Scout read the
+#   LoadBalancer IP from Ingress status automatically.
+#   On kind/local clusters there is no LB, so the annotation is required.
+# ---
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo-apps
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: python-http-server
+  namespace: demo-apps
+  labels:
+    app: python-http-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: python-http-server
+  template:
+    metadata:
+      labels:
+        app: python-http-server
+    spec:
+      containers:
+        - name: http-server
+          image: python:3.12-alpine
+          command: ["python3", "-m", "http.server", "8000"]
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: python-http-server
+  namespace: demo-apps
+spec:
+  selector:
+    app: python-http-server
+  ports:
+    - port: 80
+      targetPort: 8000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: python-http-server
+  namespace: demo-apps
+  annotations:
+    # Tell Scout which record kind to create for this Ingress
+    bindy.firestoned.io/recordKind: "ARecord"
+    # DNS zone that owns this host — a DNSZone CR for this zone must already exist
+    bindy.firestoned.io/zone: "example.com"
+    # Explicit IP override — required on kind/local clusters where LB status is never populated.
+    # On a real cloud cluster, remove this annotation and Scout reads the LB IP automatically.
+    bindy.firestoned.io/ip: "192.168.1.100"
+    # Optional: override the TTL on the created ARecord (default is zone TTL)
+    bindy.firestoned.io/ttl: "300"
+spec:
+  rules:
+    - host: demo.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: python-http-server
+                port:
+                  number: 80

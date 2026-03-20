@@ -407,6 +407,56 @@ spec:
 
 ## 🔧 GitHub Workflows & CI/CD
 
+### 🚨 CRITICAL: Never Replace `firestoned/github-actions` With Direct Action Calls
+
+**Status:** ✅ Required Standard
+**Impact:** Consistency, maintainability, and vendor control
+
+**MANDATORY REQUIREMENT:** ALL GitHub Actions workflows in this repository MUST use composite actions from the `firestoned/github-actions` library. NEVER replace them with direct action calls, even if the underlying action version is outdated.
+
+**Why This Matters:**
+- `firestoned/github-actions` is owned and maintained by the user (Erick Bourgeois)
+- It provides centralized, opinionated wrappers around third-party actions (e.g., `actions/cache`, `actions/upload-artifact`)
+- Inlining direct action calls bypasses organizational control and creates inconsistency
+- When an underlying action needs a version bump (e.g., `actions/cache@v4` → `actions/cache@v5`), the fix belongs in the `firestoned/github-actions` repo — NOT inlined here
+
+**Repository:** `firestoned/github-actions` (user owns this repo)
+
+**Correct Fix When an Underlying Action Needs Updating:**
+1. Update the action version inside the `firestoned/github-actions` repository
+2. Tag a new release of `firestoned/github-actions` (e.g., v1.3.7)
+3. Update the version reference in this repo's workflows (`@v1.3.6` → `@v1.3.7`)
+
+**Examples:**
+```yaml
+# ✅ CORRECT - Use firestoned composite action
+- name: Cache cargo dependencies
+  uses: firestoned/github-actions/rust/cache-cargo@v1.3.6
+
+# ❌ WRONG - Never inline the direct action call
+- name: Cache cargo dependencies
+  uses: actions/cache@v5
+  with:
+    path: ~/.cargo/registry
+    key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+```
+
+**Pattern of Action Families:**
+- `firestoned/github-actions/rust/cache-cargo` — Cargo dependency caching
+- `firestoned/github-actions/rust/setup-rust-build` — Linux cross-compilation setup
+- `firestoned/github-actions/rust/build-binary` — Binary compilation
+- `firestoned/github-actions/rust/generate-sbom` — SBOM generation
+- `firestoned/github-actions/rust/security-scan` — Cargo audit
+- `firestoned/github-actions/docker/setup-docker` — Docker login + buildx
+- `firestoned/github-actions/security/license-check` — SPDX header verification
+- `firestoned/github-actions/security/verify-signed-commits` — Commit signature verification
+- `firestoned/github-actions/security/trivy-scan` — Container vulnerability scan
+- `firestoned/github-actions/versioning/extract-version` — Image tag generation
+
+**REMEMBER:** When you see a deprecation warning about an underlying action (e.g., Node.js version), recommend updating `firestoned/github-actions`. Never bypass it.
+
+---
+
 ### CRITICAL: All Workflows Must Be Makefile-Driven
 
 **Status:** ✅ Required Standard

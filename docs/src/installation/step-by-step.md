@@ -44,21 +44,19 @@ kubectl get storageclass
 # Create namespace
 kubectl create namespace dns-system
 
-# Install CRDs from latest release
-kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
-
-# Install RBAC from latest release
-kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/serviceaccount.yaml
-kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/role.yaml
-kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/rolebinding.yaml
-
-# Deploy operator from latest release
-kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/operator/deployment.yaml
+# Install everything from the latest release (CRDs, RBAC, and operator)
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/install.yaml
 
 # Wait for operator to be ready
 kubectl wait --for=condition=available --timeout=300s \
   deployment/bind9-operator -n dns-system
 ```
+
+!!! tip "Specific version"
+    To pin to a specific release instead of `latest`:
+    ```bash
+    kubectl apply -f https://github.com/firestoned/bindy/releases/download/v0.3.0/install.yaml
+    ```
 
 ## Step 3: Create a BIND9 Cluster
 

@@ -65,10 +65,10 @@ if [ "$SKIP_DEPLOY" = false ]; then
         echo -e "${GREEN}📋 Installing CRDs...${NC}"
         ${KUBECTL} create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
         # Use 'kubectl replace --force' to avoid annotation size limits with large CRDs
-        ${KUBECTL} replace --force -f "${PROJECT_ROOT}/deploy/crds/" 2>/dev/null || ${KUBECTL} create -f "${PROJECT_ROOT}/deploy/crds/"
+        ${KUBECTL} replace --force -f "${PROJECT_ROOT}/deploy/operator/crds/" 2>/dev/null || ${KUBECTL} create -f "${PROJECT_ROOT}/deploy/operator/crds/"
 
         echo -e "${GREEN}🔐 Creating RBAC...${NC}"
-        ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/rbac/"
+        ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/operator/rbac/"
 
         if [ -z "$IMAGE_REF" ]; then
             # No image reference specified, build and deploy locally

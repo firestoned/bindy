@@ -254,14 +254,14 @@ if [ "$SKIP_DEPLOY" = false ]; then
 
         # Deploy CRDs
         echo -e "${GREEN}📋 Installing CRDs...${NC}"
-        ${KUBECTL} replace --force -f "${PROJECT_ROOT}/deploy/crds/" 2>/dev/null || ${KUBECTL} create -f "${PROJECT_ROOT}/deploy/crds/" || {
+        ${KUBECTL} replace --force -f "${PROJECT_ROOT}/deploy/operator/crds/" 2>/dev/null || ${KUBECTL} create -f "${PROJECT_ROOT}/deploy/operator/crds/" || {
             echo -e "${RED}❌ Failed to install CRDs${NC}"
             exit 1
         }
 
         # Deploy RBAC
         echo -e "${GREEN}🔐 Installing RBAC...${NC}"
-        ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/rbac/" || {
+        ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/operator/rbac/" || {
             echo -e "${RED}❌ Failed to install RBAC${NC}"
             exit 1
         }
@@ -312,11 +312,11 @@ if [ "$SKIP_DEPLOY" = false ]; then
 
         # Deploy CRDs (may already exist)
         echo -e "${GREEN}📋 Installing/Updating CRDs...${NC}"
-        ${KUBECTL} replace --force -f "${PROJECT_ROOT}/deploy/crds/" 2>/dev/null || ${KUBECTL} create -f "${PROJECT_ROOT}/deploy/crds/" || true
+        ${KUBECTL} replace --force -f "${PROJECT_ROOT}/deploy/operator/crds/" 2>/dev/null || ${KUBECTL} create -f "${PROJECT_ROOT}/deploy/operator/crds/" || true
 
         # Deploy RBAC
         echo -e "${GREEN}🔐 Installing RBAC...${NC}"
-        ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/rbac/" || true
+        ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/operator/rbac/" || true
 
         # Handle Docker image - either use provided image or build locally
         if [ -n "$IMAGE_REF" ]; then

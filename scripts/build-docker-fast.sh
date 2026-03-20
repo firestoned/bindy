@@ -90,7 +90,7 @@ case "$STRATEGY" in
         make build-aarch64-linux-debug
         echo ""
         echo "Step 2/2: Building Docker image..."
-        docker build $NO_CACHE -f docker/Dockerfile.local -t "$FULL_IMAGE" .
+        docker build --pull $NO_CACHE -f docker/Dockerfile.local -t "$FULL_IMAGE" .
         ;;
 
     kind)
@@ -99,7 +99,7 @@ case "$STRATEGY" in
         make build-aarch64-linux-debug
         echo ""
         echo "Step 2/3: Building Docker image..."
-        docker build $NO_CACHE -f docker/Dockerfile.local -t "$FULL_IMAGE" .
+        docker build --pull $NO_CACHE -f docker/Dockerfile.local -t "$FULL_IMAGE" .
         echo ""
         echo "Step 3/3: Loading image $FULL_IMAGE into kind cluster..."
         kind load docker-image "$FULL_IMAGE" --name $KIND_CLUSTER
@@ -107,7 +107,7 @@ case "$STRATEGY" in
 
     fast)
         echo -e "${YELLOW}Strategy: Fast (optimized Dockerfile)${NC}"
-        docker build $NO_CACHE -f docker/Dockerfile.fast -t "$FULL_IMAGE" .
+        docker build --pull $NO_CACHE -f docker/Dockerfile.fast -t "$FULL_IMAGE" .
         ;;
 
     ci)
@@ -127,7 +127,7 @@ case "$STRATEGY" in
             echo "  cp target/aarch64-unknown-linux-gnu/release/bindy binaries/arm64/"
             exit 1
         fi
-        docker build $NO_CACHE -f docker/Dockerfile -t "$FULL_IMAGE" .
+        docker build --pull $NO_CACHE -f docker/Dockerfile -t "$FULL_IMAGE" .
         ;;
 
     *)

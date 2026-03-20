@@ -83,6 +83,7 @@ pub mod record_operator;
 pub mod record_wrappers;
 
 pub mod reconcilers;
+pub mod scout;
 pub mod selector;
 pub mod status_reasons;
 
@@ -102,5 +103,7 @@ mod record_impls_tests;
 mod record_operator_tests;
 #[cfg(test)]
 mod record_wrappers_tests;
+#[cfg(test)]
+mod scout_tests;
 #[cfg(test)]
 mod status_reasons_tests;

@@ -103,7 +103,7 @@ FIXES=$((FIXES + 1))
 echo -e "${YELLOW}5. Fixing deploy/ references...${NC}"
 
 # ../../../deploy/rbac/ -> GitHub links
-find . -name "*.md" -exec sed -i '' 's|../../../deploy/rbac/|https://github.com/firestoned/bindy/blob/main/deploy/rbac/|g' {} \;
+find . -name "*.md" -exec sed -i '' 's|../../../deploy/operator/rbac/|https://github.com/firestoned/bindy/blob/main/deploy/operator/rbac/|g' {} \;
 FIXES=$((FIXES + 1))
 
 # 6. Fix roadmaps references (../../roadmaps -> ../roadmaps)

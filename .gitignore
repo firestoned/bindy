@@ -32,6 +32,7 @@ htmlcov/
 # Generated deploy artifacts
 /deploy/crds.yaml
 /deploy/install.yaml
+/deploy/scout.yaml
 
 # OS
 .DS_Store
