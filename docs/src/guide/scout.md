@@ -370,5 +370,5 @@ Scout is currently in **Phase 1 — same-cluster mode**. All features are tracke
 | Phase | Status | Description |
 |---|---|---|
 | Phase 1 | ✅ Current | Same-cluster mode. Scout and bindy run in the same cluster. ARecords are created in the same cluster. |
-| Phase 1.5 | Planned | Finalizer on Ingress. When an annotated Ingress is deleted, Scout removes the corresponding ARecord. |
+| Phase 1.5 | ✅ Complete | Finalizer on Ingress. When an annotated Ingress is deleted, Scout removes the corresponding ARecord. |
 | Phase 2 | Planned | Remote cluster mode. Scout runs in the workload cluster and writes ARecords to a remote bindy cluster via a separate kubeconfig. |

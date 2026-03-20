@@ -229,12 +229,12 @@ Also adds `bindy completion <shell>` for shell completion (bash, zsh, fish, powe
   - [x] Validate zone exists (local DNSZone reflector for same-cluster mode)
   - [x] Derive ARecord name and spec from Ingress host rules
   - [x] Create / update ARecord CR (server-side apply)
-  - [ ] Add finalizer to Ingress (Phase 1.5 — deferred)
-  - [ ] Handle deletion (finalizer cleanup, delete ARecords) (Phase 1.5 — deferred)
+  - [x] Add finalizer to Ingress (Phase 1.5 — complete 2026-03-20)
+  - [x] Handle deletion (finalizer cleanup, delete ARecords) (Phase 1.5 — complete 2026-03-20)
   - [x] Log warnings for all error conditions
-- [x] Write tests (`src/scout_tests.rs`) — 16 unit tests, TDD-first
+- [x] Write tests (`src/scout_tests.rs`) — 28 unit tests, TDD-first
 - [x] Add `clap_complete = "4"` and `bindy completion` subcommand
-- [ ] RBAC manifest for scout ServiceAccount (same cluster)
+- [x] RBAC manifest for scout ServiceAccount (same cluster)
 - [x] Update `.claude/CHANGELOG.md`
 
 ### New `BINDY_SCOUT_` env vars
