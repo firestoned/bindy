@@ -57,7 +57,7 @@ spec:
               kind: MXRecord
               metadata:
                 name: mail-example-com
-                namespace: dns-system
+                namespace: bindy-system
                 labels:
                   zone: example.com
               spec:

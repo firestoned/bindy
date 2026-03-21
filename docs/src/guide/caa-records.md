@@ -9,7 +9,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: letsencrypt-caa
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com  # Used by DNSZone selector
 spec:
@@ -71,7 +71,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-issue
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -90,7 +90,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-wildcard
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -109,7 +109,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-iodef-email
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -122,7 +122,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-iodef-url
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -142,7 +142,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-le-issue
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -156,7 +156,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-le-wildcard
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -173,7 +173,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-digicert
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -190,7 +190,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-aws
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -203,7 +203,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-aws-wildcard
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -223,7 +223,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-letsencrypt
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -237,7 +237,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-digicert
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -256,7 +256,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-deny-all
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -282,7 +282,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-staging
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:

@@ -22,7 +22,7 @@ Install the latest stable release using kubectl:
 
 ```bash
 # Create namespace
-kubectl create namespace dns-system
+kubectl create namespace bindy-system
 
 # Install CRDs
 kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
@@ -42,7 +42,7 @@ Install from a specific version:
 
 ```bash
 # Create namespace
-kubectl create namespace dns-system
+kubectl create namespace bindy-system
 
 # Install CRDs from a specific version (e.g., v0.3.0)
 kubectl apply -f https://github.com/firestoned/bindy/releases/download/v0.3.0/crds.yaml
@@ -84,10 +84,10 @@ After installation, verify that all components are running:
 kubectl get crd | grep bindy.firestoned.io
 
 # Check operator is running
-kubectl get pods -n dns-system
+kubectl get pods -n bindy-system
 
 # Check operator logs
-kubectl logs -n dns-system -l app=bind9-operator
+kubectl logs -n bindy-system -l app=bind9-operator
 ```
 
 You should see output similar to:

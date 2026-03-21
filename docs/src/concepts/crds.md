@@ -13,7 +13,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   version: "9.18"
   config:
@@ -41,7 +41,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: production-dns  # References Bind9Cluster
   replicas: 2
@@ -60,7 +60,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: primary-dns  # References Bind9Instance
@@ -124,7 +124,7 @@ All Bindy CRDs share these common fields:
 ```yaml
 metadata:
   name: resource-name
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     key: value
   annotations:

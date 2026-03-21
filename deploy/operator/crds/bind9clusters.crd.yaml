@@ -2582,7 +2582,7 @@ spec:
                     kind: Secret
                     metadata:
                       name: my-rndc-key
-                      namespace: dns-system
+                      namespace: bindy-system
                     type: Opaque
                     stringData:
                       rndc.key: |
@@ -2602,7 +2602,7 @@ spec:
                     kind: Secret
                     metadata:
                       name: bind9-instance-rndc
-                      namespace: dns-system
+                      namespace: bindy-system
                     type: Opaque
                     stringData:
                       key-name: "bindy-operator"     # Operator metadata

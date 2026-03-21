@@ -16,13 +16,13 @@ Deploy 3 operator replicas with leader election:
 
 ```bash
 # Update deployment to 3 replicas
-kubectl scale deployment -n dns-system bindy --replicas=3
+kubectl scale deployment -n bindy-system bindy --replicas=3
 
 # Verify all replicas are running
-kubectl get pods -n dns-system -l app=bindy
+kubectl get pods -n bindy-system -l app=bindy
 
 # Check which instance is the leader
-kubectl get lease -n dns-system bindy-leader -o jsonpath='{.spec.holderIdentity}'
+kubectl get lease -n bindy-system bindy-leader -o jsonpath='{.spec.holderIdentity}'
 ```
 
 ## Architecture
@@ -65,7 +65,7 @@ Configure leader election behavior via environment variables:
 |----------|---------|-------------|-------------|
 | `ENABLE_LEADER_ELECTION` | `true` | Enable/disable leader election | `true` (always) |
 | `LEASE_NAME` | `bindy-leader` | Name of the Lease resource | `bindy-leader` |
-| `LEASE_NAMESPACE` | `dns-system` | Namespace for Lease | Match operator namespace |
+| `LEASE_NAMESPACE` | `bindy-system` | Namespace for Lease | Match operator namespace |
 | `LEASE_DURATION_SECONDS` | `15` | How long leader holds lease | `15` (production) |
 | `LEASE_RENEW_DEADLINE_SECONDS` | `10` | Leader must renew before this | `10` |
 | `LEASE_RETRY_PERIOD_SECONDS` | `2` | Attempt acquisition frequency | `2` |
@@ -80,7 +80,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: bindy
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   replicas: 3  # Run 3 instances for HA
   selector:
@@ -115,7 +115,7 @@ spec:
         - name: LEASE_NAME
           value: "bindy-leader"
         - name: LEASE_NAMESPACE
-          value: "dns-system"
+          value: "bindy-system"
         - name: LEASE_DURATION_SECONDS
           value: "15"
         - name: LEASE_RENEW_DEADLINE_SECONDS
@@ -144,7 +144,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: bindy
-  namespace: dns-system
+  namespace: bindy-system
 rules:
 # Leases for leader election (required)
 - apiGroups: ["coordination.k8s.io"]
@@ -160,13 +160,13 @@ View which operator instance is currently the leader:
 
 ```bash
 # Get leader identity
-kubectl get lease -n dns-system bindy-leader \
+kubectl get lease -n bindy-system bindy-leader \
   -o jsonpath='{.spec.holderIdentity}'
 
 # Output: bindy-7d8f9c5b4d-x7k2m
 
 # Verify that pod is running
-kubectl get pod -n dns-system bindy-7d8f9c5b4d-x7k2m
+kubectl get pod -n bindy-system bindy-7d8f9c5b4d-x7k2m
 ```
 
 ### View Lease Details
@@ -174,7 +174,7 @@ kubectl get pod -n dns-system bindy-7d8f9c5b4d-x7k2m
 Inspect the full lease object:
 
 ```bash
-kubectl get lease -n dns-system bindy-leader -o yaml
+kubectl get lease -n bindy-system bindy-leader -o yaml
 ```
 
 Output:
@@ -183,7 +183,7 @@ apiVersion: coordination.k8s.io/v1
 kind: Lease
 metadata:
   name: bindy-leader
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   acquireTime: "2025-11-30T12:34:56Z"
   holderIdentity: bindy-7d8f9c5b4d-x7k2m
@@ -197,10 +197,10 @@ Watch for leadership transitions:
 
 ```bash
 # Watch lease changes
-kubectl get lease -n dns-system bindy-leader -w
+kubectl get lease -n bindy-system bindy-leader -w
 
 # Watch operator logs for leadership events
-kubectl logs -n dns-system deployment/bindy -f | grep -i "leader\|lease"
+kubectl logs -n bindy-system deployment/bindy -f | grep -i "leader\|lease"
 ```
 
 ### Leader Election Metrics
@@ -238,15 +238,15 @@ Test automatic failover by deleting the leader pod:
 
 ```bash
 # 1. Find current leader
-LEADER=$(kubectl get lease -n dns-system bindy-leader \
+LEADER=$(kubectl get lease -n bindy-system bindy-leader \
   -o jsonpath='{.spec.holderIdentity}')
 echo "Current leader: $LEADER"
 
 # 2. Delete leader pod
-kubectl delete pod -n dns-system $LEADER
+kubectl delete pod -n bindy-system $LEADER
 
 # 3. Watch for new leader (typically 10-20 seconds)
-watch kubectl get lease -n dns-system bindy-leader
+watch kubectl get lease -n bindy-system bindy-leader
 
 # 4. Verify DNS operations continue
 kubectl get bind9instances -A
@@ -270,7 +270,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: block-leader
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   podSelector:
     matchLabels:
@@ -284,10 +284,10 @@ EOF
 sleep 20
 
 # Verify new leader elected
-kubectl get lease -n dns-system bindy-leader
+kubectl get lease -n bindy-system bindy-leader
 
 # Cleanup
-kubectl delete networkpolicy -n dns-system block-leader
+kubectl delete networkpolicy -n bindy-system block-leader
 ```
 
 ## Troubleshooting
@@ -299,15 +299,15 @@ kubectl delete networkpolicy -n dns-system block-leader
 **Check:**
 ```bash
 # Verify lease exists
-kubectl get lease -n dns-system bindy-leader
+kubectl get lease -n bindy-system bindy-leader
 
 # Check operator logs
-kubectl logs -n dns-system deployment/bindy --all-containers=true
+kubectl logs -n bindy-system deployment/bindy --all-containers=true
 
 # Verify RBAC permissions
 kubectl auth can-i get leases \
-  --namespace=dns-system \
-  --as=system:serviceaccount:dns-system:bindy
+  --namespace=bindy-system \
+  --as=system:serviceaccount:bindy-system:bindy
 ```
 
 **Common causes:**
@@ -321,7 +321,7 @@ kubectl auth can-i get leases \
 kubectl apply -f deploy/rbac/role.yaml
 
 # Restart operators
-kubectl rollout restart deployment -n dns-system bindy
+kubectl rollout restart deployment -n bindy-system bindy
 ```
 
 ### Multiple Leaders (Split Brain)
@@ -332,19 +332,19 @@ kubectl rollout restart deployment -n dns-system bindy
 
 ```bash
 # Check if all operators use the same LEASE_NAME
-kubectl get deployment -n dns-system bindy -o yaml | grep LEASE_NAME
+kubectl get deployment -n bindy-system bindy -o yaml | grep LEASE_NAME
 
 # Delete and recreate lease to force re-election
-kubectl delete lease -n dns-system bindy-leader
+kubectl delete lease -n bindy-system bindy-leader
 
 # Watch for single leader election
-kubectl get lease -n dns-system bindy-leader -w
+kubectl get lease -n bindy-system bindy-leader -w
 ```
 
 **Verify:**
 ```bash
 # All operators should show the same lease holder
-kubectl logs -n dns-system deployment/bindy --all-containers=true \
+kubectl logs -n bindy-system deployment/bindy --all-containers=true \
   | grep "holderIdentity"
 ```
 
@@ -355,13 +355,13 @@ kubectl logs -n dns-system deployment/bindy --all-containers=true \
 **Check:**
 ```bash
 # Monitor lease renewals
-kubectl get lease -n dns-system bindy-leader -w
+kubectl get lease -n bindy-system bindy-leader -w
 
 # Check operator resource usage (may be OOMKilled)
-kubectl top pods -n dns-system -l app=bindy
+kubectl top pods -n bindy-system -l app=bindy
 
 # Check operator logs for crashes
-kubectl logs -n dns-system deployment/bindy --previous
+kubectl logs -n bindy-system deployment/bindy --previous
 ```
 
 **Common causes:**
@@ -374,7 +374,7 @@ kubectl logs -n dns-system deployment/bindy --previous
 ```bash
 # Increase lease duration for unstable environments
 kubectl set env deployment/bindy \
-  -n dns-system \
+  -n bindy-system \
   LEASE_DURATION_SECONDS=30 \
   LEASE_RENEW_DEADLINE_SECONDS=20
 ```
@@ -386,15 +386,15 @@ kubectl set env deployment/bindy \
 **Check:**
 ```bash
 # Verify leader pod is running
-LEADER=$(kubectl get lease -n dns-system bindy-leader \
+LEADER=$(kubectl get lease -n bindy-system bindy-leader \
   -o jsonpath='{.spec.holderIdentity}')
-kubectl get pod -n dns-system $LEADER
+kubectl get pod -n bindy-system $LEADER
 
 # Check leader logs
-kubectl logs -n dns-system $LEADER -f
+kubectl logs -n bindy-system $LEADER -f
 
 # Look for operator startup messages
-kubectl logs -n dns-system $LEADER | grep "Starting.*operator"
+kubectl logs -n bindy-system $LEADER | grep "Starting.*operator"
 ```
 
 **Common causes:**
@@ -411,13 +411,13 @@ kubectl logs -n dns-system $LEADER | grep "Starting.*operator"
 **Option 1: Enable leader election (recommended)**
 ```bash
 kubectl set env deployment/bindy \
-  -n dns-system \
+  -n bindy-system \
   ENABLE_LEADER_ELECTION=true
 ```
 
 **Option 2: Scale to single replica**
 ```bash
-kubectl scale deployment -n dns-system bindy --replicas=1
+kubectl scale deployment -n bindy-system bindy --replicas=1
 ```
 
 ## Best Practices
@@ -555,7 +555,7 @@ metadata:
 subjects:
 - kind: ServiceAccount
   name: bindy
-  namespace: dns-system
+  namespace: bindy-system
 roleRef:
   kind: Role
   name: bindy-lease
@@ -578,11 +578,11 @@ Enable debug logging:
 
 ```bash
 kubectl set env deployment/bindy \
-  -n dns-system \
+  -n bindy-system \
   RUST_LOG=debug
 
 # Watch detailed logs
-kubectl logs -n dns-system deployment/bindy -f
+kubectl logs -n bindy-system deployment/bindy -f
 ```
 
 ## See Also

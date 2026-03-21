@@ -16,7 +16,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: my-dns
@@ -27,7 +27,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneRef: example-com  # ❌ This field no longer exists!
   name: www
@@ -43,7 +43,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: my-dns
@@ -58,7 +58,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www
-  namespace: dns-system
+  namespace: bindy-system
   labels:  # ✅ New: Labels for selection
     zone: example.com
 spec:
@@ -114,7 +114,7 @@ Add `recordsFrom` selectors to all DNSZone resources:
 
 ```bash
 # For each DNSZone, add recordsFrom selector
-kubectl edit dnszone example-com -n dns-system
+kubectl edit dnszone example-com -n bindy-system
 ```
 
 Add this to the spec:
@@ -160,7 +160,7 @@ Add labels to all DNS records matching the zone they belong to:
 
 ```bash
 # For each record, add the zone label
-kubectl label arecord www -n dns-system zone=example.com
+kubectl label arecord www -n bindy-system zone=example.com
 ```
 
 **Automation Script:**
@@ -197,7 +197,7 @@ The `spec.zoneRef` field no longer exists in v0.3.0 CRDs. After migration, you c
 
 ```bash
 # Update the Bindy operator to v0.3.0
-kubectl set image deployment/bindy bindy=ghcr.io/firestoned/bindy:v0.3.0 -n dns-system
+kubectl set image deployment/bindy bindy=ghcr.io/firestoned/bindy:v0.3.0 -n bindy-system
 
 # Or apply the new deployment
 kubectl apply -f https://github.com/firestoned/bindy/releases/download/v0.3.0/bindy.yaml
@@ -213,7 +213,7 @@ kubectl get dnszones -A -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.st
 kubectl get arecords,cnamerecords,mxrecords -A --show-labels
 
 # Verify DNS resolution still works
-kubectl port-forward -n dns-system svc/<bind9-service> 5353:53
+kubectl port-forward -n bindy-system svc/<bind9-service> 5353:53
 dig @localhost -p 5353 www.example.com
 ```
 
@@ -294,10 +294,10 @@ metadata:
 
 ```bash
 # Check if zone selected the records
-kubectl get dnszone example-com -n dns-system -o jsonpath='{.status.recordsCount}'
+kubectl get dnszone example-com -n bindy-system -o jsonpath='{.status.recordsCount}'
 
 # Check if records have the right labels
-kubectl get arecords -n dns-system --show-labels
+kubectl get arecords -n bindy-system --show-labels
 ```
 
 **Solution:**
@@ -312,7 +312,7 @@ kubectl get arecords -n dns-system --show-labels
 
 ```bash
 # Check the zone's selector
-kubectl get dnszone example-com -n dns-system -o yaml | grep -A 5 recordsFrom
+kubectl get dnszone example-com -n bindy-system -o yaml | grep -A 5 recordsFrom
 ```
 
 **Solution:**
@@ -344,7 +344,7 @@ If you need to rollback to v0.2.x:
 
 3. **Downgrade operator:**
    ```bash
-   kubectl set image deployment/bindy bindy=ghcr.io/firestoned/bindy:v0.2.x -n dns-system
+   kubectl set image deployment/bindy bindy=ghcr.io/firestoned/bindy:v0.2.x -n bindy-system
    ```
 
 ## Migrating from nameServerIps to nameServers (v0.4.0)
@@ -372,7 +372,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: production-dns
@@ -398,7 +398,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: production-dns
@@ -448,7 +448,7 @@ For each zone found, update the spec:
 
 ```bash
 # Edit the zone
-kubectl edit dnszone example-com -n dns-system
+kubectl edit dnszone example-com -n bindy-system
 ```
 
 Then change the format from HashMap to array:
@@ -512,7 +512,7 @@ kubectl get dnszones -A -o json | jq '.items[] | select(.spec.nameServerIps != n
 # Should return nothing if migration is complete
 
 # Verify nameServers field is present
-kubectl get dnszone example-com -n dns-system -o jsonpath='{.spec.nameServers}'
+kubectl get dnszone example-com -n bindy-system -o jsonpath='{.spec.nameServers}'
 ```
 
 #### 6. Check Operator Logs
@@ -520,7 +520,7 @@ kubectl get dnszone example-com -n dns-system -o jsonpath='{.spec.nameServers}'
 After migration, ensure no deprecation warnings:
 
 ```bash
-kubectl logs -n dns-system -l app=bindy-operator -f | grep nameServerIps
+kubectl logs -n bindy-system -l app=bindy-operator -f | grep nameServerIps
 ```
 
 You should NOT see any deprecation warnings after migration.
@@ -578,13 +578,13 @@ WARN DNSZone uses deprecated `nameServerIps` field. Migrate to `nameServers`.
 **Diagnosis:**
 
 ```bash
-kubectl get dnszone example-com -n dns-system -o yaml | grep -A 10 "nameServer"
+kubectl get dnszone example-com -n bindy-system -o yaml | grep -A 10 "nameServer"
 ```
 
 **Solution:** Remove `nameServerIps` field - the new `nameServers` takes precedence:
 
 ```bash
-kubectl patch dnszone example-com -n dns-system --type=json -p '[{"op": "remove", "path": "/spec/nameServerIps"}]'
+kubectl patch dnszone example-com -n bindy-system --type=json -p '[{"op": "remove", "path": "/spec/nameServerIps"}]'
 ```
 
 #### Missing IPv6 Glue Records

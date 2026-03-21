@@ -13,7 +13,7 @@ RED='\033[0;31m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-NAMESPACE="dns-system"
+NAMESPACE="bindy-system"
 SERVICEACCOUNT="system:serviceaccount:${NAMESPACE}:bindy"
 
 PASSED=0

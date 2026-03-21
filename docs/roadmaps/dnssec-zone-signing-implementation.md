@@ -782,7 +782,7 @@ spec:
    kind: Bind9Cluster
    metadata:
      name: dnssec-cluster
-     namespace: dns-system
+     namespace: bindy-system
    spec:
      global:
        dnssec:
@@ -807,7 +807,7 @@ spec:
    kind: Bind9Cluster
    metadata:
      name: dnssec-cluster-auto
-     namespace: dns-system
+     namespace: bindy-system
    spec:
      global:
        dnssec:
@@ -827,7 +827,7 @@ spec:
    kind: ExternalSecret
    metadata:
      name: dnssec-keys-sync
-     namespace: dns-system
+     namespace: bindy-system
    spec:
      refreshInterval: 1h
      secretStoreRef:
@@ -1197,7 +1197,7 @@ spec:
    View DS records in the DNSZone status:
 
    ```bash
-   kubectl get dnszone example-com -n dns-system -o jsonpath='{.status.dnssec.dsRecords[*]}'
+   kubectl get dnszone example-com -n bindy-system -o jsonpath='{.status.dnssec.dsRecords[*]}'
    ```
 
    Example output:
@@ -1501,8 +1501,8 @@ spec:
          - name: Collect logs on failure
            if: failure()
            run: |
-             kubectl logs -n dns-system -l app=bind9 --tail=100
-             kubectl get all -n dns-system
+             kubectl logs -n bindy-system -l app=bind9 --tail=100
+             kubectl get all -n bindy-system
    ```
 
 **Deliverables:**
@@ -1893,7 +1893,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: dnssec-cluster
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   global:
     dnssec:
@@ -1924,7 +1924,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: dnssec-nsec3-cluster
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   global:
     dnssec:
@@ -1957,7 +1957,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: special-zone
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: "special.example.com"
   clusterRef: "dnssec-cluster"

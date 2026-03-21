@@ -5,7 +5,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: bindy
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     app: bindy
     version: v1

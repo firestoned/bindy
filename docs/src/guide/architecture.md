@@ -529,7 +529,7 @@ The Bindy operator uses a **centralized operator pattern** - a single operator i
 ```mermaid
 graph TB
     subgraph "Kubernetes Cluster"
-        subgraph "dns-system namespace"
+        subgraph "bindy-system namespace"
             Operator[Bindy Operator<br/>Single Deployment<br/>Watches all CRDs]
             RBAC[ServiceAccount + RBAC<br/>ClusterRole/Binding]
         end
@@ -564,7 +564,7 @@ graph TB
 **Key Deployment Characteristics:**
 
 - **Single Operator Instance**: One operator manages all DNS infrastructure
-- **Namespace**: Typically deployed in `dns-system` (configurable)
+- **Namespace**: Typically deployed in `bindy-system` (configurable)
 - **Service Account**: `bindy-operator` with cluster-wide RBAC permissions
 - **Event-Driven**: Uses Kubernetes watch API (not polling) for efficient resource monitoring
 - **Zone Transfer**: Leverages native BIND9 AXFR/IXFR for primary-secondary replication
@@ -625,7 +625,7 @@ graph LR
 
 1. **Deploy CRDs**: Install Custom Resource Definitions (one-time setup)
 2. **Deploy RBAC**: Create ServiceAccount, ClusterRole, ClusterRoleBinding
-3. **Deploy Operator**: Start Bindy operator pod in `dns-system` namespace
+3. **Deploy Operator**: Start Bindy operator pod in `bindy-system` namespace
 4. **Operator Ready**: Operator starts watching for Bind9Cluster and DNSZone resources
 5. **Create Bind9Cluster**: User creates cluster definition (namespace or cluster-scoped)
 6. **Create Bind9Instances**: Operator creates BIND9 Deployment/Service/ConfigMap resources

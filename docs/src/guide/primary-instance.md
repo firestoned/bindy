@@ -11,7 +11,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     dns-role: primary
     environment: production
@@ -120,21 +120,21 @@ These labels are used by DNSZone resources to select which instances should host
 Check the instance status:
 
 ```bash
-kubectl get bind9instances -n dns-system
-kubectl describe bind9instance primary-dns -n dns-system
+kubectl get bind9instances -n bindy-system
+kubectl describe bind9instance primary-dns -n bindy-system
 ```
 
 Check the created resources:
 
 ```bash
 # View the deployment
-kubectl get deployment -n dns-system -l instance=primary-dns
+kubectl get deployment -n bindy-system -l instance=primary-dns
 
 # View the pods
-kubectl get pods -n dns-system -l instance=primary-dns
+kubectl get pods -n bindy-system -l instance=primary-dns
 
 # View the service
-kubectl get service -n dns-system -l instance=primary-dns
+kubectl get service -n bindy-system -l instance=primary-dns
 ```
 
 ## Testing DNS Resolution
@@ -143,7 +143,7 @@ Once deployed, test DNS queries:
 
 ```bash
 # Get the service IP
-SERVICE_IP=$(kubectl get svc -n dns-system primary-dns -o jsonpath='{.spec.clusterIP}')
+SERVICE_IP=$(kubectl get svc -n bindy-system primary-dns -o jsonpath='{.spec.clusterIP}')
 
 # Test DNS query
 dig @$SERVICE_IP example.com

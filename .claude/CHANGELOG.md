@@ -1,3 +1,62 @@
+## [2026-03-20 13:00] - Scout: simplified opt-in + default zone
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/scout.rs`: `ANNOTATION_SCOUT_ENABLED = "bindy.firestoned.io/scout-enabled"` constant
+- `src/scout.rs`: `is_scout_opted_in(annotations)` — accepts `scout-enabled: "true"` OR legacy `recordKind: "ARecord"` (backward compat)
+- `src/scout.rs`: `resolve_zone(annotations, default_zone)` — zone annotation → operator default zone → None
+- `src/scout.rs`: `default_zone: Option<String>` on `ScoutContext` and `ScoutConfig`
+- `src/scout.rs`: `BINDY_SCOUT_DEFAULT_ZONE` env var support; CLI `--default-zone` arg
+- `src/main.rs`: `--default-zone <ZONE>` clap arg on `Commands::Scout`
+- `src/scout_tests.rs`: 10 unit tests (TDD-first) — 5 for `is_scout_opted_in`, 5 for `resolve_zone`
+- Docs updated across guide, installation, and roadmap
+
+### Changed
+- Reconciler opt-in check: `is_arecord_enabled` → `is_scout_opted_in`
+- Zone resolution: `get_zone_annotation` → `resolve_zone` (supports default zone fallback)
+
+### Why
+Application teams should only need one annotation: `bindy.firestoned.io/scout-enabled: "true"`. In shared-ingress topologies, zone and IPs are platform constants — externalising them to Scout startup config keeps application manifests clean.
+
+### Impact
+- [ ] Breaking change (legacy `recordKind: "ARecord"` still accepted)
+- [x] Config change only (new optional env var / CLI flags)
+- [x] Documentation updated
+
+---
+
+## [2026-03-20 12:00] - Scout: default IPs for shared-ingress topologies
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/scout.rs`: `resolve_ips(annotations, default_ips, ingress) -> Option<Vec<String>>` — resolves ARecord IPs with priority: annotation override → operator-configured default IPs → LB status
+- `src/scout.rs`: `default_ips: Vec<String>` field on `ScoutContext` and `ScoutConfig`
+- `src/scout.rs`: `BINDY_SCOUT_DEFAULT_IPS` env var support (comma-separated IPs) in `ScoutConfig::from_env`
+- `src/scout.rs`: `--default-ips` CLI flag on `run_scout` (takes precedence over env var)
+- `src/main.rs`: `--default-ips <IP[,IP]>` clap arg on `Commands::Scout` with `value_delimiter = ','`
+- `src/scout_tests.rs`: 6 unit tests for `resolve_ips` (TDD-first, written before implementation)
+- `docs/src/guide/scout.md`: `--default-ips` in CLI flags table; `BINDY_SCOUT_DEFAULT_IPS` in env vars table
+- `docs/src/installation/scout.md`: `BINDY_SCOUT_DEFAULT_IPS` / `--default-ips` in configuration reference
+- `docs/roadmaps/bindy-scout-ingress-controller.md`: Updated IP resolution order (3 levels), added default IPs description; `BINDY_SCOUT_DEFAULT_IPS` added to Phase 1 env vars table
+
+### Changed
+- `src/scout.rs`: `ARecordParams.ip: &str` → `ips: &[String]` to support multi-IP ARecords
+- `src/scout.rs`: `build_arecord` sets `ipv4_addresses` from `ips` slice instead of single string
+- `src/scout.rs`: Reconciler IP resolution replaced with `resolve_ips()` call
+
+### Why
+Traefik and similar shared-ingress controllers act as a single entry point for all tenant services in N namespaces. All Ingresses should resolve to the same VIP(s) (one or more for HA). The per-Ingress `bindy.firestoned.io/ip` annotation requires every team to know the VIP — `BINDY_SCOUT_DEFAULT_IPS` externalises that to the platform operator at Scout startup, keeping application manifests clean.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (new optional env var / CLI flag; existing behavior unchanged)
+- [x] Documentation updated
+
+---
+
 ## [2026-03-18 14:00] - CI/CD: Multi-platform binary builds (macOS + Windows)
 
 **Author:** Erick Bourgeois
@@ -1392,10 +1451,10 @@ process startup in all entry points (main binary and integration test binaries).
 ### Testing
 ```bash
 # Verify enhanced kubectl output
-kubectl get arecords -n dns-system
-kubectl get aaaarecords -n dns-system
-kubectl get mxrecords -n dns-system
-kubectl get srvrecords -n dns-system
+kubectl get arecords -n bindy-system
+kubectl get aaaarecords -n bindy-system
+kubectl get mxrecords -n bindy-system
+kubectl get srvrecords -n bindy-system
 
 # Expected output columns:
 # ARecord: Name, Zone, Addresses (comma-separated), TTL, Ready
@@ -2112,8 +2171,8 @@ The CRD schema has been updated, so `kubectl apply` will reject manifests using 
 **The Error:**
 ```
 ApiError: secrets "production-dns-secondary-0-rndc-key" is forbidden:
-User "system:serviceaccount:dns-system:bindy" cannot patch resource "secrets"
-in API group "" in the namespace "dns-system": Forbidden (ErrorResponse { code: 403 })
+User "system:serviceaccount:bindy-system:bindy" cannot patch resource "secrets"
+in API group "" in the namespace "bindy-system": Forbidden (ErrorResponse { code: 403 })
 ```
 
 **Root Cause:**
@@ -2157,11 +2216,11 @@ This still maintains least-privilege principles:
 kubectl apply -f deploy/rbac/role.yaml
 
 # Verify permissions
-kubectl auth can-i patch secrets --as=system:serviceaccount:dns-system:bindy -n dns-system
+kubectl auth can-i patch secrets --as=system:serviceaccount:bindy-system:bindy -n bindy-system
 # Should output: yes
 
 # Restart operator to pick up changes (if already running)
-kubectl rollout restart deployment/bindy-operator -n dns-system
+kubectl rollout restart deployment/bindy-operator -n bindy-system
 ```
 
 ---
@@ -2228,9 +2287,9 @@ kubectl edit clusterbind9provider production-dns
 # Startup drift detection reconciles ClusterBind9Provider and Bind9Cluster
 # Bind9Instance reconciler detects parent change:
 DEBUG Parent ClusterBind9Provider generation (12) is newer than instance observed generation (11), checking for config changes
-INFO Parent cluster configuration may have changed for Bind9Instance dns-system/production-dns-primary-0, will check for drift
-INFO Parent cluster configuration changed for Bind9Instance dns-system/production-dns-primary-0, triggering reconciliation to apply new config
-INFO RNDC Secret dns-system/production-dns-primary-0-rndc-key missing rotation annotations, adding them
+INFO Parent cluster configuration may have changed for Bind9Instance bindy-system/production-dns-primary-0, will check for drift
+INFO Parent cluster configuration changed for Bind9Instance bindy-system/production-dns-primary-0, triggering reconciliation to apply new config
+INFO RNDC Secret bindy-system/production-dns-primary-0-rndc-key missing rotation annotations, adding them
 INFO Adding rotation annotations to existing Secret (rotate at: 2026-02-27T01:30:00Z)
 # Result: Secret gets rotation annotations, rotation will trigger at rotate-at timestamp
 ```
@@ -2304,13 +2363,13 @@ kubectl edit clusterbind9provider production-dns
 2026-01-28T01:00:00Z DEBUG Triggering reconciliation for ClusterBind9Provider: production-dns
 2026-01-28T01:00:01Z DEBUG ClusterBind9Provider production-dns reconciled successfully
 2026-01-28T01:00:01Z INFO Found 1 Bind9Cluster resources
-2026-01-28T01:00:01Z DEBUG Triggering reconciliation for Bind9Cluster: dns-system/production-dns
-2026-01-28T01:00:02Z DEBUG Bind9Cluster dns-system/production-dns reconciled successfully
+2026-01-28T01:00:01Z DEBUG Triggering reconciliation for Bind9Cluster: bindy-system/production-dns
+2026-01-28T01:00:02Z DEBUG Bind9Cluster bindy-system/production-dns reconciled successfully
 2026-01-28T01:00:02Z INFO Found 3 Bind9Instance resources
-2026-01-28T01:00:02Z DEBUG Triggering reconciliation for Bind9Instance: dns-system/production-dns-primary-0
-2026-01-28T01:00:02Z INFO RNDC Secret dns-system/production-dns-primary-0-rndc-key missing rotation annotations, adding them
+2026-01-28T01:00:02Z DEBUG Triggering reconciliation for Bind9Instance: bindy-system/production-dns-primary-0
+2026-01-28T01:00:02Z INFO RNDC Secret bindy-system/production-dns-primary-0-rndc-key missing rotation annotations, adding them
 2026-01-28T01:00:03Z INFO Adding rotation annotations to existing Secret production-dns-primary-0-rndc-key (rotate at: 2026-02-27T01:00:03Z)
-2026-01-28T01:00:03Z DEBUG Bind9Instance dns-system/production-dns-primary-0 reconciled successfully
+2026-01-28T01:00:03Z DEBUG Bind9Instance bindy-system/production-dns-primary-0 reconciled successfully
 # ... repeats for each instance
 2026-01-28T01:00:05Z INFO Startup drift detection completed
 2026-01-28T01:00:05Z INFO Starting controllers...
@@ -5310,7 +5369,7 @@ ERROR HTTP 409 Conflict: {"error":"Zone already exists: example.com"}
 INFO Zone example.com already exists on 10.244.3.3:8080, treating as success
 
 # But kubectl exec shows zone is missing on secondary
-$ kubectl exec -n dns-system production-dns-secondary-0-... -c bind9 -- rndc zonestatus example.com
+$ kubectl exec -n bindy-system production-dns-secondary-0-... -c bind9 -- rndc zonestatus example.com
 rndc: 'zonestatus' failed: not found
 no matching zone 'example.com' in any view
 ```
@@ -5631,9 +5690,9 @@ Root cause analysis revealed:
 
 Logs showed:
 ```
-WARN Missing resources for managed instance dns-system/production-dns-primary-0: ConfigMap. Triggering reconciliation.
-INFO Reconciling Bind9Instance: dns-system/production-dns-primary-0 [object.reason=object updated]
-DEBUG Status unchanged for Bind9Instance dns-system/production-dns-primary-0, skipping patch
+WARN Missing resources for managed instance bindy-system/production-dns-primary-0: ConfigMap. Triggering reconciliation.
+INFO Reconciling Bind9Instance: bindy-system/production-dns-primary-0 [object.reason=object updated]
+DEBUG Status unchanged for Bind9Instance bindy-system/production-dns-primary-0, skipping patch
 ```
 
 This pattern repeated continuously, creating excessive reconciliation activity.
@@ -10088,9 +10147,9 @@ The bindcar HTTP API endpoint must be constructed from the **actual deployed Ser
 
 **Log Evidence** (from ~/logs.txt):
 ```
-[INFO] DNSZone dns-system/example-com: Instance diff - added: 3, removed: 0, existing: 0
-[INFO] DNSZone dns-system/example-com: Adding instance ... (status: Claimed)  # ← NOT synced!
-[INFO] DNSZone dns-system/example-com: Reconciliation complete - Configured: 0/3 instances
+[INFO] DNSZone bindy-system/example-com: Instance diff - added: 3, removed: 0, existing: 0
+[INFO] DNSZone bindy-system/example-com: Adding instance ... (status: Claimed)  # ← NOT synced!
+[INFO] DNSZone bindy-system/example-com: Reconciliation complete - Configured: 0/3 instances
 # ... tight loop continues, status never reaches Ready ...
 ```
 
@@ -10238,7 +10297,7 @@ The field name change is automatic when the CRD is updated. No manual migration 
 status:
   bind9Instances:
     - name: dns-primary
-      namespace: dns-system
+      namespace: bindy-system
       status: Configured
       lastStatusUpdate: "2026-01-06T10:00:00Z"
 
@@ -10246,7 +10305,7 @@ status:
 status:
   bind9Instances:
     - name: dns-primary
-      namespace: dns-system
+      namespace: bindy-system
       status: Configured
       lastReconciledAt: "2026-01-06T10:00:00Z"
 ```
@@ -10493,7 +10552,7 @@ status:
     - apiVersion: bindy.firestoned.io/v1beta1
       kind: Bind9Instance
       name: dns-primary
-      namespace: dns-system
+      namespace: bindy-system
 
 # NEW (required)
 status:
@@ -10501,7 +10560,7 @@ status:
     - apiVersion: bindy.firestoned.io/v1beta1
       kind: Bind9Instance
       name: dns-primary
-      namespace: dns-system
+      namespace: bindy-system
 ```
 
 **Upgrade Steps:**
@@ -10577,7 +10636,7 @@ status:
     - apiVersion: bindy.firestoned.io/v1beta1
       kind: Bind9Instance
       name: primary-dns-0
-      namespace: dns-system
+      namespace: bindy-system
       status: Configured           # Claimed | Configured | Failed | Unclaimed
       lastReconciledAt: "2026-01-06T10:00:00Z"
       message: null                # Error message if status=Failed
@@ -10642,7 +10701,7 @@ kubectl get dnszone example-com -n your-namespace \
 #### Step 5: Monitor Reconciliation
 ```bash
 # Watch operator logs
-kubectl logs -n dns-system -l app=bindy-operator -f
+kubectl logs -n bindy-system -l app=bindy-operator -f
 
 # Verify zones are synced to instances
 # (Check your BIND9 instances for zone files)
@@ -10718,7 +10777,7 @@ If you need to rollback:
 ### Support & Questions
 
 If you encounter issues during migration:
-1. Check operator logs: `kubectl logs -n dns-system -l app=bindy-operator`
+1. Check operator logs: `kubectl logs -n bindy-system -l app=bindy-operator`
 2. Verify CRD schemas: `kubectl get crd dnszones.bindy.firestoned.io -o yaml`
 3. Check DNSZone status: `kubectl describe dnszone <name> -n <namespace>`
 4. Report issues: https://github.com/anthropics/claude-code/issues
@@ -12899,7 +12958,7 @@ Consolidate into a single source of truth (`instances`) with explicit status tra
 ```
 2026-01-03T20:25:43.125910Z ERROR bindy-operator reconciling object: src/bind9/zone_ops.rs:97: HTTP API request failed method=GET url=http://10.244.3.107:8080/api/v1/zones/example.com/status status=429 Too Many Requests error=Too Many Requests! Wait for 0s
 2026-01-03T20:25:43.125914Z DEBUG bindy-operator reconciling object: src/bind9/zone_ops.rs:281: Zone example.com does not exist on 10.244.3.107:8080: Failed to get zone status
-2026-01-03T20:25:43.125919Z ERROR bindy-operator reconciling object: src/reconcilers/dnszone.rs:1462: Failed to add zone example.com to endpoint 10.244.3.107:8080 (instance dns-system/production-dns-primary-0): Failed to add zone
+2026-01-03T20:25:43.125919Z ERROR bindy-operator reconciling object: src/reconcilers/dnszone.rs:1462: Failed to add zone example.com to endpoint 10.244.3.107:8080 (instance bindy-system/production-dns-primary-0): Failed to add zone
 ```
 
 **Root Cause:**
@@ -13059,7 +13118,7 @@ Bind9Instance reconciler was constantly resetting zone timestamps from `Some→N
 ```
 [INFO] Zone timestamp reset (Some → None), triggering reconciliation (pod restart detected)
 [INFO] Bind9Instance has zones needing reconciliation, triggering DNSZone operator zone_count=2
-[INFO] Reconciling Bind9Instance: dns-system/production-dns-primary-0 object.reason=object updated
+[INFO] Reconciling Bind9Instance: bindy-system/production-dns-primary-0 object.reason=object updated
 ```
 
 ### Root Cause
@@ -14693,9 +14752,9 @@ When `production-dns-primary-0` was deleted, the Bind9Cluster reconciler would:
 **Evidence from logs:**
 ```
 Existing instances: 1 primary, 1 secondary
-Creating managed instance dns-system/production-dns-primary-1 (index: 1)
+Creating managed instance bindy-system/production-dns-primary-1 (index: 1)
 bind9instances.bindy.firestoned.io "production-dns-primary-1" already exists
-Managed instance dns-system/production-dns-primary-1 already exists, patching with updated spec
+Managed instance bindy-system/production-dns-primary-1 already exists, patching with updated spec
 ```
 
 **Root Cause:**
@@ -14763,8 +14822,8 @@ The cleanup logic was positioned **AFTER** the early return, so it never execute
 
 **Evidence from logs:**
 ```
-DNSZone dns-system/example-com is assigned to 3 instance(s): ["production-dns-secondary-0", "production-dns-primary-0", "production-dns-primary-1"]
-Spec and instances unchanged, all instances reconciled - skipping reconciliation for zone dns-system/example-com
+DNSZone bindy-system/example-com is assigned to 3 instance(s): ["production-dns-secondary-0", "production-dns-primary-0", "production-dns-primary-1"]
+Spec and instances unchanged, all instances reconciled - skipping reconciliation for zone bindy-system/example-com
 ```
 
 Even though `production-dns-primary-0` was deleted (confirmed with `kubectl get`), it remained in status because:
@@ -15010,7 +15069,7 @@ Provide comprehensive integration testing for ClusterBind9Provider to validate:
 - Manual DNS zone validation instructions
 
 **Shell Script Tests** (`tests/cluster_provider_resilience_test.sh`):
-- Applies `examples/cluster-bind9-provider.yaml` in `test-dns-system` namespace
+- Applies `examples/cluster-bind9-provider.yaml` in `test-bindy-system` namespace
 - Waits up to 3 minutes for all resources to be created
 - Validates each resource reaches Ready state
 - Deletes `production-dns-secondary-0` deployment
@@ -15353,16 +15412,16 @@ pub fn has_changes(&self) -> bool {
 status:
   bind9Instances:
   - name: production-dns-primary-0
-    namespace: dns-system
+    namespace: bindy-system
     lastReconciledAt: null
   - name: production-dns-primary-0  # DUPLICATE!
-    namespace: dns-system
+    namespace: bindy-system
     lastReconciledAt: "2026-01-01T21:43:50Z"
   - name: production-dns-primary-1
-    namespace: dns-system
+    namespace: bindy-system
     lastReconciledAt: null
   - name: production-dns-primary-1  # DUPLICATE!
-    namespace: dns-system
+    namespace: bindy-system
     lastReconciledAt: "2026-01-01T21:43:50Z"
   # ... 6 instances total (should be 3)
 ```
@@ -15372,13 +15431,13 @@ status:
 status:
   bind9Instances:
   - name: production-dns-primary-0
-    namespace: dns-system
+    namespace: bindy-system
     lastReconciledAt: "2026-01-01T22:15:30Z"
   - name: production-dns-primary-1
-    namespace: dns-system
+    namespace: bindy-system
     lastReconciledAt: "2026-01-01T22:15:30Z"
   - name: production-dns-secondary-0
-    namespace: dns-system
+    namespace: bindy-system
     lastReconciledAt: "2026-01-01T22:15:30Z"
   # 3 instances total ✅
 ```
@@ -15868,11 +15927,11 @@ spec:
   zoneName: example.com
   bind9Instances:
     - name: primary-0
-      namespace: dns-system
+      namespace: bindy-system
     - name: primary-1
-      namespace: dns-system
+      namespace: bindy-system
     - name: secondary-0
-      namespace: dns-system
+      namespace: bindy-system
   # nameServerIps: OPTIONAL - auto-generated if not provided
 ```
 
@@ -16184,13 +16243,13 @@ operator
 
 ### Test Case
 **Before this fix:**
-1. Delete `primary-0` pod: `kubectl delete pod primary-0 -n dns-system`
+1. Delete `primary-0` pod: `kubectl delete pod primary-0 -n bindy-system`
 2. Wait for pod to restart
 3. `example.com` zone created (has records → triggers reconciliation)
 4. `internal.local` zone **NOT created** ❌ (no records, no trigger)
 
 **After this fix:**
-1. Delete `primary-0` pod: `kubectl delete pod primary-0 -n dns-system`
+1. Delete `primary-0` pod: `kubectl delete pod primary-0 -n bindy-system`
 2. Wait for pod to restart
 3. **ALL zones created** ✅ (Bind9Instance watch triggers DNSZone reconciliation)
 
@@ -16542,8 +16601,8 @@ The cleanup function uses these reliable stored values to query BIND9 directly:
 ### Why
 **Problem:** The cleanup logic in `untag_record_from_zone()` was still using annotations (`ANNOTATION_ZONE_OWNER`, `ANNOTATION_ZONE_PREVIOUS_OWNER`) to untag records that no longer matched a zone's selector. This was causing warnings in logs:
 ```
-WARN Failed to untag record ARecord dns-system/api-example from zone example.com:
-Failed to remove zone annotation from ARecord dns-system/api-example
+WARN Failed to untag record ARecord bindy-system/api-example from zone example.com:
+Failed to remove zone annotation from ARecord bindy-system/api-example
 ```
 
 The issue occurred when trying to untag deleted records (404 errors) or when using the new event-driven architecture that relies on `status.zoneRef` instead of annotations.
@@ -16873,7 +16932,7 @@ Provide visibility into how many DNS zones each Bind9Instance has selected via i
 
 ### Example Output
 ```bash
-$ kubectl get bind9instances -n dns-system
+$ kubectl get bind9instances -n bindy-system
 NAME                      CLUSTER          ROLE       REPLICAS   ZONES   READY
 production-dns-primary-0  production-dns   primary    1          1       True
 production-dns-primary-1  production-dns   primary    1          1       True
@@ -16954,9 +17013,9 @@ The DNSZone reconciler was in a tight loop because it was using a **stale cached
 
 **Log Evidence:**
 ```
-[DEBUG] Updated DNSZone dns-system/example-com status.bind9Instances to include instance ...
-[INFO] Reconciling DNSZone: dns-system/example-com
-[ERROR] DNSZone dns-system/example-com has no instances assigned
+[DEBUG] Updated DNSZone bindy-system/example-com status.bind9Instances to include instance ...
+[INFO] Reconciling DNSZone: bindy-system/example-com
+[ERROR] DNSZone bindy-system/example-com has no instances assigned
 ```
 
 The zone object had `bind9_instances: []` in the logs, but the Bind9Instance reconciler clearly updated it milliseconds earlier.
@@ -17044,9 +17103,9 @@ This caused a **tight reconciliation loop**:
 
 **Log Evidence:**
 ```
-[DEBUG] Updated DNSZone dns-system/example-com status.bind9Instances to include instance dns-system/production-dns-primary-1
-[INFO] Reconciling DNSZone: dns-system/example-com
-[WARN] DNSZone dns-system/example-com has neither clusterRef/clusterProviderRef nor is selected by any Bind9Instance
+[DEBUG] Updated DNSZone bindy-system/example-com status.bind9Instances to include instance bindy-system/production-dns-primary-1
+[INFO] Reconciling DNSZone: bindy-system/example-com
+[WARN] DNSZone bindy-system/example-com has neither clusterRef/clusterProviderRef nor is selected by any Bind9Instance
 [ERROR] Reconciliation error - will retry in 30s error=DNSZone not selected
 ```
 
@@ -17148,11 +17207,11 @@ Using consistent naming across `spec` and `status` makes the API clearer and mor
 spec:
   instances:  # Explicit assignment
     - name: primary-dns-0
-      namespace: dns-system
+      namespace: bindy-system
 status:
   servedBy:  # Different name for same concept!
     - name: primary-dns-0
-      namespace: dns-system
+      namespace: bindy-system
 ```
 
 **After:**
@@ -17160,11 +17219,11 @@ status:
 spec:
   bind9Instances:  # Consistent naming
     - name: primary-dns-0
-      namespace: dns-system
+      namespace: bindy-system
 status:
   bind9Instances:  # Same field name in status
     - name: primary-dns-0
-      namespace: dns-system
+      namespace: bindy-system
 ```
 
 ### Impact
@@ -17374,14 +17433,14 @@ spec:
     - apiVersion: bindy.firestoned.io/v1beta1
       kind: Bind9Instance
       name: primary-dns-0
-      namespace: dns-system
+      namespace: bindy-system
 
 status:
   servedBy:  # auto-populated by instance reconciler
     - apiVersion: bindy.firestoned.io/v1beta1
       kind: Bind9Instance
       name: primary-dns-0
-      namespace: dns-system
+      namespace: bindy-system
 ```
 
 **Priority for Instance Selection:**
@@ -17599,7 +17658,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: "production-dns"  # Manual string reference
 ```
@@ -17610,7 +17669,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
-  namespace: dns-system
+  namespace: bindy-system
   ownerReferences:  # Automatic via .owns()
     - apiVersion: bindy.firestoned.io/v1beta1
       kind: Bind9Cluster
@@ -18634,7 +18693,7 @@ The crates.io v0.5.0 release includes the latest stable features from bindcar.
 ### Why
 Integration tests were failing in CI with error:
 ```
-error: resource mapping not found for name: "integration-test-cluster" namespace: "dns-system" from "STDIN": no matches for kind "Bind9Cluster" in version "bindy.firestoned.io/v1alpha1"
+error: resource mapping not found for name: "integration-test-cluster" namespace: "bindy-system" from "STDIN": no matches for kind "Bind9Cluster" in version "bindy.firestoned.io/v1alpha1"
 ensure CRDs are installed first
 ```
 
@@ -19034,7 +19093,7 @@ The roadmap document now includes:
 - `src/bind9_resources.rs:1052-1055`: Updated `BIND_ALLOWED_SERVICE_ACCOUNTS` environment variable to use fully qualified format: `system:serviceaccount:<namespace>:<name>`
 
 ### Why
-Kubernetes service account authentication requires the fully qualified name format `system:serviceaccount:<namespace>:<name>` (e.g., `system:serviceaccount:dns-system:bind9`) for proper authentication and authorization. The previous implementation used only the short service account name (`bind9`), which would not work correctly with Kubernetes RBAC and service account token authentication.
+Kubernetes service account authentication requires the fully qualified name format `system:serviceaccount:<namespace>:<name>` (e.g., `system:serviceaccount:bindy-system:bind9`) for proper authentication and authorization. The previous implementation used only the short service account name (`bind9`), which would not work correctly with Kubernetes RBAC and service account token authentication.
 
 ### Impact
 - [x] Breaking change
@@ -19045,15 +19104,15 @@ Kubernetes service account authentication requires the fully qualified name form
 ### Technical Details
 The bindcar API sidecar now receives the fully qualified service account name in the format:
 ```
-system:serviceaccount:dns-system:bind9
+system:serviceaccount:bindy-system:bind9
 ```
 
 This allows bindcar to properly validate service account tokens from BIND9 pods using Kubernetes service account authentication. The namespace is dynamically injected based on where the `Bind9Instance` is deployed.
 
-**Example:** For a `Bind9Instance` in namespace `dns-system`, the environment variable will be:
+**Example:** For a `Bind9Instance` in namespace `bindy-system`, the environment variable will be:
 ```yaml
 - name: BIND_ALLOWED_SERVICE_ACCOUNTS
-  value: "system:serviceaccount:dns-system:bind9"
+  value: "system:serviceaccount:bindy-system:bind9"
 ```
 
 ---
@@ -20922,12 +20981,12 @@ After deploying this fix, verify the loop is eliminated:
 
 ```bash
 # Watch reconciliation frequency
-kubectl logs -f deployment/bindy-operator -n dns-system | grep "Reconciling DNSZone"
+kubectl logs -f deployment/bindy-operator -n bindy-system | grep "Reconciling DNSZone"
 
 # Should see reconciliation every 5 minutes (when Ready), NOT continuously every 100ms
 
 # Check status updates
-kubectl logs -f deployment/bindy-operator -n dns-system | grep "PATCH.*dnszones.*status"
+kubectl logs -f deployment/bindy-operator -n bindy-system | grep "PATCH.*dnszones.*status"
 
 # Should see SINGLE PATCH per reconciliation, NOT 13 PATCHes
 ```
@@ -21225,16 +21284,16 @@ To verify the hybrid architecture is working:
 
 ```bash
 # 1. Check DNSZone discovered records
-kubectl get dnszone example-com -n dns-system -o jsonpath='{.status.records}'
+kubectl get dnszone example-com -n bindy-system -o jsonpath='{.status.records}'
 
 # 2. Check individual record status
-kubectl get arecord www-example -n dns-system -o jsonpath='{.status.conditions[?(@.type=="Ready")]}'
+kubectl get arecord www-example -n bindy-system -o jsonpath='{.status.conditions[?(@.type=="Ready")]}'
 
 # 3. Check BIND9 zone file contains records
-kubectl exec -n dns-system <primary-pod> -- cat /etc/bind/zones/db.example.com
+kubectl exec -n bindy-system <primary-pod> -- cat /etc/bind/zones/db.example.com
 
 # 4. Verify zone transfer occurred
-kubectl logs -n dns-system <secondary-pod> | grep "transfer of 'example.com'"
+kubectl logs -n bindy-system <secondary-pod> | grep "transfer of 'example.com'"
 ```
 
 ### Impact
@@ -21335,7 +21394,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: production-dns
@@ -21345,7 +21404,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneRef: example-com  # ← Record references zone
   name: www
@@ -21358,7 +21417,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: production-dns
@@ -21372,7 +21431,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com  # ← Record has labels that match zone selector
 spec:
@@ -21673,7 +21732,7 @@ Implementing least-privilege RBAC for status subresources:
 kubectl apply -f deploy/rbac/role.yaml
 
 # Verify permissions are applied
-kubectl auth can-i update bind9instances/status --as=system:serviceaccount:dns-system:bindy-operator
+kubectl auth can-i update bind9instances/status --as=system:serviceaccount:bindy-system:bindy-operator
 ```
 
 ## [2025-12-23 23:45] - Breaking: Upgrade All CRD APIs from v1alpha1 to v1beta1
@@ -21944,12 +22003,12 @@ This meant the pod listing returned zero pods, so `ready_pod_count` was always 0
 
 **Evidence from logs:**
 ```
-Bind9Cluster dns-system/my-dns has 4 instances, 0 ready
+Bind9Cluster bindy-system/my-dns has 4 instances, 0 ready
 ```
 
 But when checking the actual pod:
 ```bash
-kubectl get pods -n dns-system -l instance=my-dns-primary-0
+kubectl get pods -n bindy-system -l instance=my-dns-primary-0
 # Shows: my-dns-primary-0-6bbbff46fc-kjfbt   2/2     Running   0   93m
 ```
 
@@ -22668,7 +22727,7 @@ Searched all compliance documentation for outdated RBAC permission statements:
 ### Why
 **User Requests:**
 1. "at some point, when implementing the compliance roadmap, we removed the creation of secrets in rbac. Please revist the minimal requirements for rbac, based on each reconciler"
-2. "looks like we removed allowing delete of bind9instances too, please verify this" (error: `User "system:serviceaccount:dns-system:bindy" cannot delete resource "bind9instances"`)
+2. "looks like we removed allowing delete of bind9instances too, please verify this" (error: `User "system:serviceaccount:bindy-system:bindy" cannot delete resource "bind9instances"`)
 
 **Analysis:**
 Performed systematic review of all reconcilers to determine actual RBAC requirements:
@@ -23446,7 +23505,7 @@ Previously, compliance documentation was only available in `/docs/security/*.md`
 
 ### Added
 - **`docs/security/SECRET_ACCESS_AUDIT.md`** (700 lines) - Secret access audit trail documentation:
-  - **Kubernetes Audit Policy**: Logs all secret access (get, list, watch) in `dns-system` namespace
+  - **Kubernetes Audit Policy**: Logs all secret access (get, list, watch) in `bindy-system` namespace
   - **Audit Queries**: 5 pre-built Elasticsearch queries for compliance reviews:
     - **Q1**: All secret access by ServiceAccount (quarterly reviews)
     - **Q2**: Non-operator secret access (unauthorized access detection)
@@ -23561,7 +23620,7 @@ Previously, compliance documentation was only available in `/docs/security/*.md`
   - **Trust Boundaries**: 5 security domains with trust level classification
 
 - **`docs/security/ARCHITECTURE.md`** (450 lines) - Security architecture documentation:
-  - **Security Domains**: 5 domains (Development/CI-CD, Control Plane, dns-system, Tenant namespaces, External network)
+  - **Security Domains**: 5 domains (Development/CI-CD, Control Plane, bindy-system, Tenant namespaces, External network)
   - **Data Flow Diagrams**: 4 Mermaid diagrams (DNS reconciliation, query flow, secret access, supply chain)
   - **Trust Boundaries**: Visual boundary map with trust levels
   - **Authentication & Authorization**: RBAC architecture, operator permissions, user permissions
@@ -24053,9 +24112,9 @@ The previous RBAC configuration violated the **principle of least privilege** re
 3. Verify permissions: `./deploy/rbac/verify-rbac.sh`
 4. For deletions, bind admin role temporarily:
    ```bash
-   kubectl create rolebinding my-admin --clusterrole=bindy-admin-role --user=$USER --namespace=dns-system
+   kubectl create rolebinding my-admin --clusterrole=bindy-admin-role --user=$USER --namespace=bindy-system
    kubectl delete bind9instance example
-   kubectl delete rolebinding my-admin --namespace=dns-system
+   kubectl delete rolebinding my-admin --namespace=bindy-system
    ```
 
 **What Still Works**:
@@ -25410,12 +25469,12 @@ show as "NotReady" even though all pods were actually running and healthy.
 **Example:**
 ```bash
 # Before fix:
-$ kubectl get bind9instances -n dns-system
+$ kubectl get bind9instances -n bindy-system
 NAME                       READY   REPLICAS
 production-dns-primary-0   False   0/1      # Pods actually running!
 
 # After fix:
-$ kubectl get bind9instances -n dns-system
+$ kubectl get bind9instances -n bindy-system
 NAME                       READY   REPLICAS
 production-dns-primary-0   True    1/1
 ```
@@ -25473,12 +25532,12 @@ External DNS, and cloud load balancers.
 - `src/crd.rs`: Made `namespace` field optional in `Bind9GlobalClusterSpec`
   - Changed from `pub namespace: String` to `pub namespace: Option<String>`
   - If not specified, defaults to the namespace where the Bindy operator is running
-  - Default is determined from `POD_NAMESPACE` environment variable (fallback: `dns-system`)
+  - Default is determined from `POD_NAMESPACE` environment variable (fallback: `bindy-system`)
   - Updated documentation to explain the default behavior
 - `src/reconcilers/bind9globalcluster.rs`: Updated to handle optional namespace
   - Added logic to resolve namespace: use `spec.namespace` if provided, else use operator's namespace
   - Reads `POD_NAMESPACE` environment variable for default
-  - Falls back to `dns-system` if environment variable not set
+  - Falls back to `bindy-system` if environment variable not set
 - `examples/bind9-cluster.yaml`: Updated comments to indicate namespace is optional
   - Clarified that namespace defaults to operator's namespace if not specified
 - `tests/simple_integration.rs`: Updated test to use `namespace: None`
@@ -25501,7 +25560,7 @@ controlling component when not explicitly specified.
 - [x] CRD regenerated
 
 **Backward Compatibility:**
-Existing `Bind9GlobalCluster` resources with `namespace: dns-system` (or any other value) continue
+Existing `Bind9GlobalCluster` resources with `namespace: bindy-system` (or any other value) continue
 to work exactly as before. The field is now optional, so new deployments can omit it and instances
 will be created in the operator's namespace.
 
@@ -25509,7 +25568,7 @@ will be created in the operator's namespace.
 ```yaml
 # Option 1: Explicit namespace (existing behavior)
 spec:
-  namespace: dns-system
+  namespace: bindy-system
   # ... rest of spec
 
 # Option 2: Use operator's namespace (new default behavior)
@@ -25541,10 +25600,10 @@ spec:
 - `src/crd.rs`: Added required `namespace` field to `Bind9GlobalClusterSpec`
   - Global clusters are cluster-scoped resources but instances must be created in a namespace
   - Users specify the target namespace where `Bind9Instance` resources will live
-  - Typically this would be a platform-managed namespace like `dns-system`
+  - Typically this would be a platform-managed namespace like `bindy-system`
   - DNSZones from any namespace can still reference the global cluster via `clusterProviderRef`
 - `examples/bind9-cluster.yaml`: Updated with required namespace field
-  - Added `namespace: dns-system` to spec
+  - Added `namespace: bindy-system` to spec
   - Documented that this specifies where instances will be created
   - Added examples showing automatic instance creation with replica counts
 - `deploy/crds/bind9globalclusters.crd.yaml`: Regenerated CRD with namespace field
@@ -25557,7 +25616,7 @@ should be created.
 This enables:
 - **Automatic instance management**: Users no longer need to manually create `Bind9Instance` resources
 - **Declarative scaling**: Set `spec.primary.replicas` and `spec.secondary.replicas` to scale instances
-- **Platform teams** to manage DNS infrastructure in a dedicated namespace (e.g., `dns-system`)
+- **Platform teams** to manage DNS infrastructure in a dedicated namespace (e.g., `bindy-system`)
 - **Application teams** to reference the global cluster from any namespace via `clusterProviderRef`
 - **Clear separation** between cluster-level DNS configuration and namespace-scoped instances
 - **Code reuse** between `Bind9Cluster` and `Bind9GlobalCluster` reconcilers
@@ -25575,7 +25634,7 @@ Existing `Bind9GlobalCluster` resources will fail validation without the `namesp
 Update existing resources:
 ```yaml
 spec:
-  namespace: dns-system  # Add this required field
+  namespace: bindy-system  # Add this required field
   primary:
     replicas: 2  # Optional: auto-create 2 primary instances
   secondary:
@@ -25720,7 +25779,7 @@ This change is backward compatible. Existing configurations without annotations 
 
 ### Why
 **Recommended Architecture for Platform DNS:**
-- `dns-system` namespace should host Bind9Instance resources for cluster-scoped `Bind9GlobalCluster`
+- `bindy-system` namespace should host Bind9Instance resources for cluster-scoped `Bind9GlobalCluster`
 - Global clusters can be referenced from DNSZones in any namespace using `clusterProviderRef`
 - This enables multi-tenancy: platform team manages DNS infrastructure, application teams manage zones
 - Namespace-scoped `Bind9Cluster` is for tenant-managed, isolated DNS (development/testing)
@@ -25734,7 +25793,7 @@ This change is backward compatible. Existing configurations without annotations 
 **Migration Steps:**
 ```bash
 # Delete existing namespace-scoped cluster
-kubectl delete bind9cluster production-dns -n dns-system
+kubectl delete bind9cluster production-dns -n bindy-system
 
 # Deploy new global cluster
 kubectl apply -f examples/bind9-cluster.yaml
@@ -28013,11 +28072,11 @@ zone "example.com" {
 **Verification**:
 ```bash
 # Check zone configuration on primary
-kubectl exec -it bind9-primary-0 -n dns-system -- \
+kubectl exec -it bind9-primary-0 -n bindy-system -- \
   rndc showzone example.com | grep -E "also-notify|allow-transfer"
 
 # Check zone exists on secondary
-kubectl exec -it bind9-secondary-0 -n dns-system -- \
+kubectl exec -it bind9-secondary-0 -n bindy-system -- \
   rndc zonestatus example.com
 ```
 
@@ -28245,7 +28304,7 @@ This prerequisite was added by `must_exist=true`. Now using `must_exist=false` t
 
 ### Why
 **Fix Service Address Error:**
-- Error log showed: `Invalid server address: production-dns-primary-1.dns-system.svc.cluster.local:53`
+- Error log showed: `Invalid server address: production-dns-primary-1.bindy-system.svc.cluster.local:53`
 - The records reconciler was still using service addresses instead of pod endpoints
 - Service addresses don't work with per-pod EmptyDir storage (bindcar API needs pod-specific access)
 

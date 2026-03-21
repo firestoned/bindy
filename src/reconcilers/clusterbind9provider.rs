@@ -257,7 +257,7 @@ async fn reconcile_namespace_clusters(
 
     // Get target namespace from spec or default to operator's namespace
     let target_namespace = cluster_provider.spec.namespace.as_ref().map_or_else(
-        || std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "dns-system".to_string()),
+        || std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "bindy-system".to_string()),
         std::clone::Clone::clone,
     );
 
@@ -603,7 +603,7 @@ async fn detect_cluster_drift(
 
     // Get target namespace from spec or default
     let target_namespace = cluster_provider.spec.namespace.as_ref().map_or_else(
-        || std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "dns-system".to_string()),
+        || std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "bindy-system".to_string()),
         std::clone::Clone::clone,
     );
 

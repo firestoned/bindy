@@ -16,14 +16,14 @@
 #   kubectl apply -f examples/bind9-cluster-with-rotation.yaml
 #
 # Monitor rotation status:
-#   kubectl get bind9instance -n dns-system -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.rndcKeyRotationStatus.rotationCount}{"\n"}{end}'
+#   kubectl get bind9instance -n bindy-system -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.rndcKeyRotationStatus.rotationCount}{"\n"}{end}'
 #
 ---
 apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns-cluster
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     environment: production
     compliance: nist-800-57
@@ -72,7 +72,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: production-primary
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     cluster: production-dns-cluster
     role: primary
@@ -99,7 +99,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: production-secondary-1
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     cluster: production-dns-cluster
     role: secondary
@@ -120,7 +120,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: production-secondary-2
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     cluster: production-dns-cluster
     role: secondary
@@ -142,14 +142,14 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     environment: production
 spec:
   zoneName: example.com
   instanceRef:
     name: production-primary
-    namespace: dns-system
+    namespace: bindy-system
   records:
     - name: "@"
       type: A
@@ -184,7 +184,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: rndc-rotation-monitoring
-  namespace: dns-system
+  namespace: bindy-system
   annotations:
     # Trivy suppression - see comments above for justification
     trivy.aquasecurity.com/ignore: KSV-0109
@@ -196,13 +196,13 @@ data:
     echo "=== RNDC Rotation Status Report ==="
     echo ""
 
-    for instance in $(kubectl get bind9instance -n dns-system -o jsonpath='{.items[*].metadata.name}'); do
+    for instance in $(kubectl get bind9instance -n bindy-system -o jsonpath='{.items[*].metadata.name}'); do
       echo "Instance: $instance"
 
       # Get rotation status
-      created_at=$(kubectl get bind9instance $instance -n dns-system -o jsonpath='{.status.rndcKeyRotationStatus.createdAt}')
-      rotate_at=$(kubectl get bind9instance $instance -n dns-system -o jsonpath='{.status.rndcKeyRotationStatus.rotateAt}')
-      rotation_count=$(kubectl get bind9instance $instance -n dns-system -o jsonpath='{.status.rndcKeyRotationStatus.rotationCount}')
+      created_at=$(kubectl get bind9instance $instance -n bindy-system -o jsonpath='{.status.rndcKeyRotationStatus.createdAt}')
+      rotate_at=$(kubectl get bind9instance $instance -n bindy-system -o jsonpath='{.status.rndcKeyRotationStatus.rotateAt}')
+      rotation_count=$(kubectl get bind9instance $instance -n bindy-system -o jsonpath='{.status.rndcKeyRotationStatus.rotationCount}')
 
       echo "  Created At: $created_at"
       echo "  Rotate At: $rotate_at"
@@ -239,12 +239,12 @@ data:
     kubectl annotate secret $SECRET \
       bindy.firestoned.io/rndc-created-at="2020-01-01T00:00:00Z" \
       --overwrite \
-      -n dns-system
+      -n bindy-system
 
     echo "Manual rotation triggered. Wait ~60 seconds for reconciliation."
     echo ""
     echo "Monitor rotation:"
-    echo "  kubectl logs -n dns-system -l app.kubernetes.io/name=bindy-operator | grep 'Rotating RNDC Secret'"
+    echo "  kubectl logs -n bindy-system -l app.kubernetes.io/name=bindy-operator | grep 'Rotating RNDC Secret'"
     echo ""
     echo "Verify rotation count:"
-    echo "  kubectl get secret $SECRET -n dns-system -o jsonpath='{.metadata.annotations.bindy\.firestoned\.io/rndc-rotation-count}'"
+    echo "  kubectl get secret $SECRET -n bindy-system -o jsonpath='{.metadata.annotations.bindy\.firestoned\.io/rndc-rotation-count}'"

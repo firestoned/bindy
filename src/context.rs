@@ -278,7 +278,7 @@ impl Stores {
     /// # fn example(stores: &Stores) {
     /// let manager = stores.create_bind9_manager_for_instance(
     ///     "my-instance",
-    ///     "dns-system"
+    ///     "bindy-system"
     /// );
     /// # }
     /// ```

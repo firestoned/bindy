@@ -8,10 +8,10 @@ All Bindy resources report their status using standardized conditions:
 
 ```bash
 # Check Bind9Instance status
-kubectl get bind9instance primary-dns -n dns-system -o jsonpath='{.status.conditions}'
+kubectl get bind9instance primary-dns -n bindy-system -o jsonpath='{.status.conditions}'
 
 # Check DNSZone status
-kubectl get dnszone example-com -n dns-system -o jsonpath='{.status.conditions}'
+kubectl get dnszone example-com -n bindy-system -o jsonpath='{.status.conditions}'
 ```
 
 See [Status Conditions](./status.md) for detailed condition types.
@@ -22,13 +22,13 @@ View operator and BIND9 logs:
 
 ```bash
 # Operator logs
-kubectl logs -n dns-system deployment/bindy
+kubectl logs -n bindy-system deployment/bindy
 
 # BIND9 instance logs
-kubectl logs -n dns-system -l instance=primary-dns
+kubectl logs -n bindy-system -l instance=primary-dns
 
 # Follow logs
-kubectl logs -n dns-system deployment/bindy -f
+kubectl logs -n bindy-system deployment/bindy -f
 ```
 
 See [Logging](./logging.md) for log configuration.
@@ -39,7 +39,7 @@ Monitor resource usage and performance:
 
 ```bash
 # Pod resource usage
-kubectl top pods -n dns-system
+kubectl top pods -n bindy-system
 
 # Node resource usage
 kubectl top nodes
@@ -68,7 +68,7 @@ readinessProbe:
 Check probe status:
 
 ```bash
-kubectl describe pod -n dns-system <bind9-pod-name>
+kubectl describe pod -n bindy-system <bind9-pod-name>
 ```
 
 ## Monitoring Tools

@@ -1146,7 +1146,7 @@ pub async fn notify_zone(
 /// # Arguments
 ///
 /// * `zone_name` - The DNS zone name to verify (e.g., "example.com")
-/// * `server` - The DNS server address (e.g., "bind9-primary.dns-system.svc.cluster.local:5353")
+/// * `server` - The DNS server address (e.g., "bind9-primary.bindy-system.svc.cluster.local:5353")
 ///
 /// # Returns
 ///

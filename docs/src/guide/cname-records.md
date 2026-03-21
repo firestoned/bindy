@@ -9,7 +9,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: blog-example-com
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com  # Used by DNSZone selector
 spec:
@@ -80,7 +80,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: apex-cname
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -100,7 +100,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: www-alias
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -112,7 +112,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-a-record
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -132,7 +132,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: cdn-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -150,7 +150,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: shop-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -170,7 +170,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: cache-internal
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: internal.local
 spec:
@@ -188,7 +188,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: www-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -219,7 +219,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: blog-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -233,7 +233,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: blog-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -257,7 +257,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: cname-a
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -268,7 +268,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: cname-b
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -282,7 +282,7 @@ If your CNAME doesn't resolve correctly, check for the trailing dot:
 
 ```bash
 # Check the BIND9 zone file
-kubectl exec -n dns-system bindy-primary-0 -- cat /etc/bind/zones/example.com.zone
+kubectl exec -n bindy-system bindy-primary-0 -- cat /etc/bind/zones/example.com.zone
 
 # Should show:
 # blog.example.com.  300  IN  CNAME  www.example.com.

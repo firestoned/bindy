@@ -54,7 +54,7 @@ spec:
               kind: NSRecord
               metadata:
                 name: subdomain-ns
-                namespace: dns-system
+                namespace: bindy-system
                 labels:
                   zone: example.com
               spec:

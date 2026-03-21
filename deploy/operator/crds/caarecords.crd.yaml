@@ -57,7 +57,7 @@ spec:
               kind: CAARecord
               metadata:
                 name: caa-letsencrypt
-                namespace: dns-system
+                namespace: bindy-system
                 labels:
                   zone: example.com
               spec:

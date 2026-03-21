@@ -20,7 +20,7 @@ All DNS record types share these fields:
 ```yaml
 metadata:
   name: record-name
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: <zone-name>  # Used by DNSZone selector
 spec:
@@ -39,7 +39,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: primary-dns
@@ -60,7 +60,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com  # ✅ Matches the DNSZone selector
 spec:
@@ -95,7 +95,7 @@ All 8 record types use an **event-driven architecture** for immediate reconcilia
          apiVersion: bindy.firestoned.io/v1beta1
          kind: DNSZone
          name: example-com
-         namespace: dns-system
+         namespace: bindy-system
          zoneName: example.com
      ```
 
@@ -139,7 +139,7 @@ status:
     apiVersion: bindy.firestoned.io/v1beta1
     kind: DNSZone
     name: example-com
-    namespace: dns-system
+    namespace: bindy-system
     zoneName: example.com
 
   # DEPRECATED: String-based zone (kept for backward compatibility)
@@ -169,7 +169,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -188,7 +188,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: www-example-ipv6
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -207,7 +207,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: blog-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -225,7 +225,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mail-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -244,7 +244,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: spf-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -263,7 +263,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: delegate-subdomain
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -281,7 +281,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: sip-service
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -302,7 +302,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: letsencrypt-caa
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:

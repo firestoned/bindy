@@ -104,7 +104,7 @@ Individual records can override this with their own TTL values.
 Check zone status:
 
 ```bash
-kubectl get dnszone -n dns-system
+kubectl get dnszone -n bindy-system
 ```
 
 Example output:
@@ -122,7 +122,7 @@ The **Instances** column shows how many `Bind9Instance` resources are serving th
 View detailed status information:
 
 ```bash
-kubectl describe dnszone example-com -n dns-system
+kubectl describe dnszone example-com -n bindy-system
 ```
 
 Key status fields:
@@ -146,15 +146,15 @@ Lists each instance serving the zone with its status:
 status:
   bind9Instances:
     - name: primary-west
-      namespace: dns-system
+      namespace: bindy-system
       status: Configured
       message: "Zone synchronized successfully"
     - name: primary-east
-      namespace: dns-system
+      namespace: bindy-system
       status: Configured
       message: "Zone synchronized successfully"
     - name: primary-central
-      namespace: dns-system
+      namespace: bindy-system
       status: Configured
       message: "Zone synchronized successfully"
 ```
@@ -197,10 +197,10 @@ Possible conditions:
 
 ```bash
 # List all zones
-kubectl get dnszones -n dns-system
+kubectl get dnszones -n bindy-system
 
 # Show zones with custom columns
-kubectl get dnszones -n dns-system -o custom-columns=\
+kubectl get dnszones -n bindy-system -o custom-columns=\
 NAME:.metadata.name,\
 ZONE:.spec.zoneName,\
 RECORDS:.status.recordCount,\
@@ -220,7 +220,7 @@ dev-zone      dev.local      8        1          True
 ### Viewing Zone Details
 
 ```bash
-kubectl describe dnszone example-com -n dns-system
+kubectl describe dnszone example-com -n bindy-system
 ```
 
 ### Updating Zones
@@ -228,7 +228,7 @@ kubectl describe dnszone example-com -n dns-system
 Edit the zone configuration:
 
 ```bash
-kubectl edit dnszone example-com -n dns-system
+kubectl edit dnszone example-com -n bindy-system
 ```
 
 Or apply an updated YAML file:
@@ -240,7 +240,7 @@ kubectl apply -f zone.yaml
 ### Deleting Zones
 
 ```bash
-kubectl delete dnszone example-com -n dns-system
+kubectl delete dnszone example-com -n bindy-system
 ```
 
 This removes the zone from all instances but doesn't delete the instance itself.

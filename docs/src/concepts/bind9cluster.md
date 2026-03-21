@@ -18,7 +18,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   version: "9.18"
   global:
@@ -203,7 +203,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   version: "9.18"
   primary:
@@ -240,7 +240,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: production-dns-primary-0
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     bindy.firestoned.io/managed-by: "Bind9Cluster"
     bindy.firestoned.io/cluster: "production-dns"
@@ -283,7 +283,7 @@ This ensures complete desired state is maintained even if individual Kubernetes 
 **Example self-healing scenario:**
 ```bash
 # Manually delete a ConfigMap
-kubectl delete configmap production-dns-primary-0-config -n dns-system
+kubectl delete configmap production-dns-primary-0-config -n bindy-system
 
 # During next reconciliation (~10 seconds), the operator:
 # 1. Detects missing ConfigMap
@@ -300,7 +300,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   primary:
     replicas: 2
@@ -309,12 +309,12 @@ EOF
 # Operator creates: production-dns-primary-0, production-dns-primary-1
 
 # Scale up to 4 primaries
-kubectl patch bind9cluster production-dns -n dns-system --type=merge -p '{"spec":{"primary":{"replicas":4}}}'
+kubectl patch bind9cluster production-dns -n bindy-system --type=merge -p '{"spec":{"primary":{"replicas":4}}}'
 
 # Operator creates: production-dns-primary-2, production-dns-primary-3
 
 # Scale down to 3 primaries
-kubectl patch bind9cluster production-dns -n dns-system --type=merge -p '{"spec":{"primary":{"replicas":3}}}'
+kubectl patch bind9cluster production-dns -n bindy-system --type=merge -p '{"spec":{"primary":{"replicas":3}}}'
 
 # Operator deletes: production-dns-primary-3 (highest index first)
 ```
@@ -410,7 +410,7 @@ If a cluster is stuck in `Terminating` state:
 kubectl get bind9cluster production-dns -o jsonpath='{.metadata.finalizers}'
 
 # Check operator logs
-kubectl logs -n dns-system deployment/bindy -f
+kubectl logs -n bindy-system deployment/bindy -f
 
 # If operator is not running, manually remove finalizer (last resort)
 kubectl patch bind9cluster production-dns -p '{"metadata":{"finalizers":null}}' --type=merge
@@ -452,7 +452,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: dev-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   version: "9.18"
   global:
@@ -476,7 +476,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: custom-image-cluster
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   version: "9.18"
   # Custom image with organization-specific patches
@@ -502,7 +502,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: shared-bind9-options
-  namespace: dns-system
+  namespace: bindy-system
 data:
   named.conf.options: |
     options {
@@ -526,7 +526,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: custom-config-cluster
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   version: "9.18"
   configMapRefs:

@@ -12,4 +12,4 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: bindy
-    namespace: dns-system
+    namespace: bindy-system

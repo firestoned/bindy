@@ -29,7 +29,7 @@
 //! // Manage zones via HTTP API
 //! manager.reload_zone(
 //!     "example.com",
-//!     "bind9-primary-api.dns-system.svc.cluster.local:8080"
+//!     "bind9-primary-api.bindy-system.svc.cluster.local:8080"
 //! ).await?;
 //! # Ok(())
 //! # }
@@ -133,7 +133,7 @@ impl Bind9Manager {
     /// let manager = Bind9Manager::new_with_deployment(
     ///     deployment,
     ///     "my-instance".to_string(),
-    ///     "dns-system".to_string()
+    ///     "bindy-system".to_string()
     /// );
     /// # }
     /// ```

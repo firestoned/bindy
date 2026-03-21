@@ -38,7 +38,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
-  namespace: dns-system
+  namespace: bindy-system
 
 ---
 # Bind9Instance (namespace-scoped)
@@ -46,7 +46,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: production-dns-primary
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: production-dns  # ← String reference to cluster name
   role: primary
@@ -82,7 +82,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
-  namespace: dns-system
+  namespace: bindy-system
   uid: 12345-67890-abcdef  # ← Kubernetes assigns UID
 
 ---
@@ -91,7 +91,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: production-dns-primary
-  namespace: dns-system
+  namespace: bindy-system
   ownerReferences:  # ← Kubernetes-native ownership
     - apiVersion: bindy.firestoned.io/v1beta1
       kind: Bind9Cluster
@@ -109,7 +109,7 @@ status:
     kind: Bind9Cluster
     apiVersion: bindy.firestoned.io/v1beta1
     name: production-dns
-    namespace: dns-system  # Empty for ClusterBind9Provider
+    namespace: bindy-system  # Empty for ClusterBind9Provider
 ```
 
 ### Discovery Pattern
@@ -669,7 +669,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: production-dns-primary
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: production-dns  # ← REMOVE THIS
   role: primary
@@ -680,7 +680,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: production-dns-primary
-  namespace: dns-system
+  namespace: bindy-system
   # ownerReferences are set automatically by the Bind9Cluster operator
   # when it creates instances. DO NOT set manually unless creating standalone.
 spec:

@@ -574,7 +574,7 @@ kubectl label arecord www-example zone=example.com
 **Diagnosis:**
 ```bash
 # Check secondary logs
-kubectl logs -l app=bind9,role=secondary -n dns-system
+kubectl logs -l app=bind9,role=secondary -n bindy-system
 
 # Check zone serial numbers
 kubectl exec -it bind9-primary-0 -- rndc status | grep "zone example.com"

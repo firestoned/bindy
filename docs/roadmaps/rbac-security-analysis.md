@@ -239,7 +239,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: bindy
-    namespace: dns-system
+    namespace: bindy-system
 
 ---
 # RoleBinding (per namespace)
@@ -253,7 +253,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: bindy
-    namespace: dns-system
+    namespace: bindy-system
 ```
 
 **Operational Challenges:**
@@ -350,7 +350,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: bindy-operator-netpol
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   podSelector:
     matchLabels:
@@ -362,7 +362,7 @@ spec:
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: dns-system
+              kubernetes.io/metadata.name: bindy-system
       ports:
         - protocol: TCP
           port: 8080  # Metrics
@@ -401,7 +401,7 @@ package k8ssecretaccess
 violation[{"msg": msg}] {
   input.review.kind.kind == "Secret"
   input.review.operation == "GET"
-  input.review.userInfo.username == "system:serviceaccount:dns-system:bindy"
+  input.review.userInfo.username == "system:serviceaccount:bindy-system:bindy"
   input.review.namespace != input.review.object.metadata.namespace
   msg := sprintf("bindy operator attempted cross-namespace Secret access: %v", [input.review.object.metadata.name])
 }

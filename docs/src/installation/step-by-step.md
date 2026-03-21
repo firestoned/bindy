@@ -42,14 +42,14 @@ kubectl get storageclass
 
 ```bash
 # Create namespace
-kubectl create namespace dns-system
+kubectl create namespace bindy-system
 
 # Install everything from the latest release (CRDs, RBAC, and operator)
 kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/install.yaml
 
 # Wait for operator to be ready
 kubectl wait --for=condition=available --timeout=300s \
-  deployment/bind9-operator -n dns-system
+  deployment/bind9-operator -n bindy-system
 ```
 
 !!! tip "Specific version"
@@ -69,7 +69,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   version: "9.18"
   global:
@@ -99,7 +99,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: bind9-zones-pvc
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   accessModes:
     - ReadWriteOnce
@@ -117,7 +117,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   version: "9.18"
   global:
@@ -143,7 +143,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: production-dns
   role: primary  # Required: primary or secondary
@@ -171,7 +171,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: production-dns  # References the Bind9Cluster
   role: primary  # Required: primary or secondary
@@ -193,7 +193,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: production-dns  # References the Bind9Cluster
@@ -226,7 +226,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com  # Matches DNSZone selector
 spec:
@@ -241,7 +241,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: blog-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com  # Matches DNSZone selector
 spec:
@@ -255,7 +255,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mail-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com  # Matches DNSZone selector
 spec:
@@ -270,7 +270,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: spf-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com  # Matches DNSZone selector
 spec:
@@ -292,19 +292,19 @@ Check the status of your resources:
 
 ```bash
 # Check BIND9 cluster
-kubectl get bind9clusters -n dns-system
+kubectl get bind9clusters -n bindy-system
 
 # Check BIND9 instance
-kubectl get bind9instances -n dns-system
+kubectl get bind9instances -n bindy-system
 
 # Check DNS zone
-kubectl get dnszones -n dns-system
+kubectl get dnszones -n bindy-system
 
 # Check DNS records
-kubectl get arecords,cnamerecords,mxrecords,txtrecords -n dns-system
+kubectl get arecords,cnamerecords,mxrecords,txtrecords -n bindy-system
 
 # View detailed status
-kubectl describe dnszone example-com -n dns-system
+kubectl describe dnszone example-com -n bindy-system
 ```
 
 You should see output like:
@@ -320,7 +320,7 @@ If your BIND9 instance is exposed (via LoadBalancer or NodePort):
 
 ```bash
 # Get the BIND9 service IP
-kubectl get svc -n dns-system
+kubectl get svc -n bindy-system
 
 # Test DNS query (replace <BIND9-IP> with actual IP)
 dig @<BIND9-IP> www.example.com
@@ -367,12 +367,12 @@ If something doesn't work:
 
 1. **Check operator logs**:
    ```bash
-   kubectl logs -n dns-system -l app=bindy -f
+   kubectl logs -n bindy-system -l app=bindy -f
    ```
 
 2. **Check resource status**:
    ```bash
-   kubectl describe dnszone example-com -n dns-system
+   kubectl describe dnszone example-com -n bindy-system
    ```
 
 3. **Verify CRDs are installed**:

@@ -1,7 +1,7 @@
 # Deploying Scout
 
-!!! warning "Same-Cluster Mode Only (Phase 1)"
-    Scout must run in the **same Kubernetes cluster** as the Bindy operator. It watches Ingresses in the local cluster and writes `ARecord` CRs to the local `bindy-system` namespace. Cross-cluster support is planned for Phase 2.
+!!! info "Same-Cluster Mode is the Default"
+    Without additional configuration, Scout and the Bindy operator must run in the **same Kubernetes cluster**. For cross-cluster deployments, set `BINDY_SCOUT_REMOTE_SECRET` to a Secret containing a kubeconfig for the remote Bindy cluster. See the [Scout guide](../guide/scout.md) for details.
 
 **Bindy Scout** is an optional companion controller that watches `Ingress` resources across your cluster and automatically creates `ARecord` CRs on behalf of application teams — without requiring them to have write access to the bindy namespace.
 
@@ -73,6 +73,8 @@ Scout requires one mandatory setting: the **logical cluster name** that is stamp
 | `BINDY_SCOUT_NAMESPACE` | `--namespace` | `bindy-system` | Namespace where `ARecord` CRs are created. |
 | `POD_NAMESPACE` | — | `default` | Scout's own namespace. Always excluded from Ingress watching. Inject via downward API. |
 | `BINDY_SCOUT_EXCLUDE_NAMESPACES` | — | — | Comma-separated list of additional namespaces to skip. |
+| `BINDY_SCOUT_DEFAULT_ZONE` | `--default-zone` | — | Default DNS zone when no `bindy.firestoned.io/zone` annotation is present. With `DEFAULT_IPS`, Ingresses only need `scout-enabled: "true"`. |
+| `BINDY_SCOUT_DEFAULT_IPS` | `--default-ips` | — | Comma-separated default IP(s) used when no per-Ingress annotation or LB status IP is available. For shared-ingress topologies (e.g. Traefik). |
 | `RUST_LOG` | — | `info` | Log level: `trace`, `debug`, `info`, `warn`, `error`. |
 | `RUST_LOG_FORMAT` | — | `text` | Log format: `text` or `json`. |
 

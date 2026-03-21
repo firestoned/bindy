@@ -80,7 +80,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: my-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   primary:
     replicas: 2
@@ -93,7 +93,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: my-dns
@@ -108,7 +108,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com  # Selected by DNSZone
 spec:
@@ -199,7 +199,7 @@ Application teams can then reference this global cluster from any namespace usin
 
 ### 1. Install CRDs
 ```bash
-kubectl create namespace dns-system
+kubectl create namespace bindy-system
 kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
 ```
 
@@ -217,7 +217,7 @@ kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/op
 
 ### 4. Verify
 ```bash
-kubectl wait --for=condition=available --timeout=300s deployment/bind9-operator -n dns-system
+kubectl wait --for=condition=available --timeout=300s deployment/bind9-operator -n bindy-system
 ```
 
 That's it! Now create DNS resources.
@@ -233,7 +233,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: simple-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   primary:
     replicas: 1
@@ -248,7 +248,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: prod-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   global:
     recursion: false
@@ -273,7 +273,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: prod-dns
@@ -292,7 +292,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -306,7 +306,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: blog
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -319,7 +319,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mail
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -333,7 +333,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: spf
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -351,7 +351,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: standalone
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   replicas: 1
   version: "9.18"
@@ -391,21 +391,21 @@ See [deployment.yaml](deploy/operator/deployment.yaml) for all options.
 Check resource status:
 ```bash
 # Clusters
-kubectl get bind9clusters -n dns-system
+kubectl get bind9clusters -n bindy-system
 
 # Instances
-kubectl get bind9instances -n dns-system
+kubectl get bind9instances -n bindy-system
 
 # Zones
-kubectl get dnszones -n dns-system
+kubectl get dnszones -n bindy-system
 
 # Records
-kubectl get arecords,cnamerecords,mxrecords,txtrecords -n dns-system
+kubectl get arecords,cnamerecords,mxrecords,txtrecords -n bindy-system
 ```
 
 View detailed status:
 ```bash
-kubectl describe arecord www -n dns-system
+kubectl describe arecord www -n bindy-system
 ```
 
 Output includes annotations showing cluster, instance, and zone:
@@ -427,13 +427,13 @@ status:
 
 **Operator logs:**
 ```bash
-kubectl logs -n dns-system -l app=bindy -f
+kubectl logs -n bindy-system -l app=bindy -f
 ```
 
 **Test DNS resolution:**
 ```bash
 # Get service IP
-kubectl get svc -n dns-system
+kubectl get svc -n bindy-system
 
 # Query DNS
 dig @<service-ip> www.example.com A
@@ -442,15 +442,15 @@ dig @<service-ip> www.example.com A
 **Verify BIND9 config:**
 ```bash
 # Find BIND9 pod
-kubectl get pods -n dns-system -l app.kubernetes.io/name=bind9
+kubectl get pods -n bindy-system -l app.kubernetes.io/name=bind9
 
 # Check config
-kubectl exec -it <pod> -n dns-system -- named-checkconf /etc/bind/named.conf
+kubectl exec -it <pod> -n bindy-system -- named-checkconf /etc/bind/named.conf
 ```
 
 **Common issues:**
 - Records not appearing? Check `kubectl describe <record>` for error status
-- BIND9 not starting? Check RNDC key in Secret: `kubectl get secret -n dns-system`
+- BIND9 not starting? Check RNDC key in Secret: `kubectl get secret -n bindy-system`
 - Cluster not creating instances? Check Bind9Cluster status: `kubectl describe bind9cluster`
 
 ## Documentation

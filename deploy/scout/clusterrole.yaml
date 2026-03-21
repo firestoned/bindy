@@ -15,7 +15,12 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses/finalizers"]
     verbs: ["update"]
-  # Read DNSZones for zone validation
+  # Read DNSZones for zone validation (same-cluster mode only; remote mode uses remote client)
   - apiGroups: ["bindy.firestoned.io"]
     resources: ["dnszones"]
     verbs: ["get", "list", "watch"]
+  # Read kubeconfig Secret for remote cluster connection (Phase 2 only)
+  # Scope this to a Role in the specific Secret's namespace for production deployments
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]

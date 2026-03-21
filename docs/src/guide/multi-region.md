@@ -19,7 +19,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-us-east
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     dns-role: primary
     region: us-east-1
@@ -44,7 +44,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary-us-west
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     dns-role: secondary
     region: us-west-2
@@ -65,7 +65,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary-eu-west
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     dns-role: secondary
     region: eu-west-1
@@ -88,7 +88,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   type: primary
@@ -193,17 +193,17 @@ Check instance distribution:
 
 ```bash
 # View all instances and their regions
-kubectl get bind9instances -n dns-system -L region
+kubectl get bind9instances -n bindy-system -L region
 
 # Check zone distribution
-kubectl describe dnszone example-com -n dns-system
+kubectl describe dnszone example-com -n bindy-system
 ```
 
 Monitor zone transfers:
 
 ```bash
 # Check transfer logs on secondaries
-kubectl logs -n dns-system -l dns-role=secondary | grep "transfer of"
+kubectl logs -n bindy-system -l dns-role=secondary | grep "transfer of"
 ```
 
 ## Best Practices

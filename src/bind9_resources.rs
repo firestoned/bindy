@@ -1731,7 +1731,7 @@ fn build_volumes(
 ///     spec: None,
 /// };
 ///
-/// let service = build_service("dns-primary", "dns-system", &instance, Some(&config));
+/// let service = build_service("dns-primary", "bindy-system", &instance, Some(&config));
 /// # }
 /// ```
 #[must_use]
@@ -1846,7 +1846,7 @@ pub fn build_service(
 /// use bindy::crd::Bind9Instance;
 ///
 /// # fn example(instance: Bind9Instance) {
-/// let service_account = build_service_account("dns-system", &instance);
+/// let service_account = build_service_account("bindy-system", &instance);
 /// assert_eq!(service_account.metadata.name, Some("bind9".to_string()));
 /// # }
 /// ```

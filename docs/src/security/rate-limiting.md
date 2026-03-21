@@ -451,8 +451,8 @@ EOF
 done
 
 # Monitor reconciliation rate
-kubectl top pod -n dns-system
-watch -n 1 'kubectl get events -n dns-system --sort-by=.lastTimestamp | tail -20'
+kubectl top pod -n bindy-system
+watch -n 1 'kubectl get events -n bindy-system --sort-by=.lastTimestamp | tail -20'
 
 # Check Prometheus metrics
 curl -s localhost:8080/metrics | grep bindy_reconcile
@@ -470,10 +470,10 @@ curl -s localhost:8080/metrics | grep bindy_reconcile
 
 ```bash
 # Kill BIND9 pod
-kubectl delete pod -n dns-system bind9-primary-0
+kubectl delete pod -n bindy-system bind9-primary-0
 
 # Watch circuit breaker logs
-kubectl logs -n dns-system -l app=bindy --follow | grep -i circuit
+kubectl logs -n bindy-system -l app=bindy --follow | grep -i circuit
 
 # Expected logs:
 # WARN Circuit breaker OPEN for server bind9-primary-0.bind9-primary:9530

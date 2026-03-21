@@ -1,6 +1,6 @@
 # Bindy Scout — Ingress-to-ARecord Controller
 
-**Status:** Planning
+**Status:** Phase 1.5 Complete — Phase 2 In Progress
 **Created:** 2026-03-18
 **Author:** Erick Bourgeois
 
@@ -25,7 +25,30 @@ bindy scout      # new ingress watcher
 
 ## Architecture
 
-### Topology
+### Phase 1 / 1.5 Topology (Current — Same-Cluster)
+
+Scout and Bindy run in the same cluster. A single in-cluster client handles everything.
+
+```
+┌──────────────────────────────────────────────────┐
+│  Single Cluster (Scout + Bindy co-located)       │
+│                                                  │
+│   bindy-scout                                    │
+│   └── LOCAL client (in-cluster ServiceAccount)  │
+│       ├── Watches Ingresses (all ns except own) │
+│       ├── Manages finalizers on Ingresses        │
+│       ├── Reads DNSZones (zone validation)       │
+│       └── Creates / deletes ARecords            │
+│                                                  │
+│   bindy run                                      │
+│   └── Reconciles ARecords → BIND9 zone files    │
+└──────────────────────────────────────────────────┘
+```
+
+### Phase 2 Topology (Planned — Remote Cluster)
+
+Scout runs in the workload cluster; Bindy runs in a dedicated DNS cluster. Scout holds
+two independent clients: local (Ingress/finalizer management) and remote (ARecord + DNSZone).
 
 ```
 ┌──────────────────────────────────────────────────┐
@@ -35,37 +58,39 @@ bindy scout      # new ingress watcher
 │   ├── LOCAL client (in-cluster ServiceAccount)  │
 │   │   ├── Watches Ingresses (all ns except own) │
 │   │   ├── Manages finalizers on Ingresses        │
-│   │   └── Reads remote kubeconfig Secret (P1)   │
+│   │   └── Reads kubeconfig Secret               │
 │   │                                              │
-│   └── REMOTE client                             │
-│       ├── Phase 1: kubeconfig from Secret        │
-│       ├── Phase 2: Linkerd mTLS service mirror   │
-│       ├── Reads DNSZones (validation cache)      │
+│   └── REMOTE client (kubeconfig from Secret)    │
+│       ├── Reads DNSZones (zone validation)       │
 │       └── Creates / deletes ARecords            │
 └──────────────────────────────────────────────────┘
                         │
-          Phase 1: kubeconfig Secret
-          Phase 2: Linkerd mTLS
+              kubeconfig Secret → HTTPS
                         ▼
 ┌──────────────────────────────────────────────────┐
 │  Bindy Cluster (dedicated DNS management cluster)│
 │                                                  │
-│   bindy run                                 │
-│   ├── ServiceAccount per child cluster           │
-│   │   (scoped to ARecords + DNSZones read-only)  │
-│   └── Reconciles ARecords → BIND9 zone files     │
+│   bindy run                                      │
+│   ├── ServiceAccount per workload cluster        │
+│   │   (scoped to ARecords CRUD + DNSZones read) │
+│   └── Reconciles ARecords → BIND9 zone files    │
 └──────────────────────────────────────────────────┘
 ```
 
-### Two-client model
+### Phase 3 Topology (Planned — Linkerd mTLS)
 
-Scout requires two independent Kubernetes clients:
+Same as Phase 2, but the kubeconfig Secret is replaced by a Linkerd multicluster
+service mirror. Scout uses its local ServiceAccount token authenticated via mTLS.
+
+### Client model by phase
 
 | | Local client | Remote client |
 |---|---|---|
-| **Auth** | In-cluster ServiceAccount | Kubeconfig Secret (Phase 1) / Linkerd (Phase 2) |
-| **Watches** | Ingresses | DNSZones (reflector cache for validation) |
-| **Writes** | Finalizers on Ingresses | ARecords |
+| **Phase 1/1.5** | In-cluster ServiceAccount | *(same as local)* |
+| **Phase 2** | In-cluster ServiceAccount | Kubeconfig Secret |
+| **Phase 3** | In-cluster ServiceAccount | Linkerd mTLS service mirror |
+| **Watches** | Ingresses (always local) | DNSZones (remote in Phase 2+) |
+| **Writes** | Finalizers on Ingresses | ARecords (remote in Phase 2+) |
 
 ---
 
@@ -73,14 +98,23 @@ Scout requires two independent Kubernetes clients:
 
 ### Opt-in annotation (required)
 
+Preferred (new deployments):
+```yaml
+bindy.firestoned.io/scout-enabled: "true"
+```
+
+Legacy (backward-compatible):
 ```yaml
 bindy.firestoned.io/recordKind: "ARecord"
 ```
 
-### Zone label (required)
+When `BINDY_SCOUT_DEFAULT_ZONE` and `BINDY_SCOUT_DEFAULT_IPS` are configured at Scout startup,
+`scout-enabled: "true"` is the **only** annotation required per Ingress.
 
-Identifies which bindy-managed DNS zone owns this hostname. Scout does not auto-detect zones from
-hostname suffixes; the zone must be stated explicitly to avoid ambiguity.
+### Zone annotation (per-Ingress override)
+
+When `BINDY_SCOUT_DEFAULT_ZONE` is not set, this annotation is required. When the default zone is
+set, this annotation overrides it for a specific Ingress.
 
 ```yaml
 bindy.firestoned.io/zone: "example.com"
@@ -104,11 +138,16 @@ Scout's own namespace is always excluded. Additional exclusions are configurable
 
 ### IP resolution (in order)
 
-1. `bindy.firestoned.io/ip` annotation — explicit override
-2. `status.loadBalancer.ingress[].ip` — first non-empty IP from the LB status
-3. `status.loadBalancer.ingress[].hostname` — not used for A records; emits a warning event and skips
+1. `bindy.firestoned.io/ip` annotation — explicit single-IP override
+2. `BINDY_SCOUT_DEFAULT_IPS` / `--default-ips` — operator-configured default IPs (e.g. shared Traefik VIP)
+3. `status.loadBalancer.ingress[].ip` — first non-empty IP from the LB status
+4. `status.loadBalancer.ingress[].hostname` — not used for A records; emits a warning event and skips
 
-If no IP can be resolved, scout emits a Kubernetes warning event on the Ingress and skips the record.
+If no IP can be resolved, scout requeues the Ingress with a warning log.
+
+Default IPs support the shared-ingress topology where all Ingresses in the cluster route through
+a single ingress controller (e.g. Traefik) and all A records should point to the same VIP(s).
+Multiple IPs are supported, producing a multi-value `ARecord` (round-robin DNS).
 
 ### ARecord name derivation
 
@@ -244,6 +283,8 @@ Also adds `bindy completion <shell>` for shell completion (bash, zsh, fish, powe
 | `BINDY_SCOUT_NAMESPACE` | `bindy-system` | Namespace on target cluster where ARecords are created |
 | `BINDY_SCOUT_EXCLUDE_NAMESPACES` | scout's own namespace | Comma-separated list of namespaces to skip |
 | `BINDY_SCOUT_CLUSTER_NAME` | `""` (required) | Logical name of this cluster, used in ARecord CR labels |
+| `BINDY_SCOUT_DEFAULT_ZONE` | `""` | Default DNS zone for all Ingresses. CLI: `--default-zone`. |
+| `BINDY_SCOUT_DEFAULT_IPS` | `""` | Comma-separated default IP(s) for shared-ingress topologies (e.g. Traefik). CLI: `--default-ips`. |
 
 ---
 
@@ -252,21 +293,23 @@ Also adds `bindy completion <shell>` for shell completion (bash, zsh, fish, powe
 **Goal:** `bindy scout` creates ARecords on a **remote** bindy cluster using a kubeconfig stored in
 a Kubernetes Secret on the local cluster.
 
+**Status:** ✅ Complete (2026-03-20)
+
 ### Tasks
 
-- [ ] Implement `RemoteClientBuilder`:
-  - [ ] Read Secret named by `BINDY_SCOUT_REMOTE_SECRET` from local cluster
-  - [ ] Parse kubeconfig from `Secret.data["kubeconfig"]`
-  - [ ] Build `kube::Client` from parsed config
-  - [ ] Implement health check / reconnect on startup
-- [ ] Extend `ScoutContext` with `remote_client` and `remote_zone_store`
-- [ ] Switch ARecord and DNSZone API calls to use `remote_client`
-- [ ] Keep local client for Ingress watch and finalizer management
-- [ ] RBAC manifests:
-  - [ ] Local cluster: add `secrets: get` for the remote kubeconfig Secret
-  - [ ] Remote (bindy) cluster: ServiceAccount scoped to `arecords` (crud) + `dnszones` (read)
-- [ ] Example Secret manifest (redacted kubeconfig) in `deploy/scout/`
-- [ ] Update `.claude/CHANGELOG.md`
+- [x] Implement `build_remote_client`:
+  - [x] Read Secret named by `BINDY_SCOUT_REMOTE_SECRET` from local cluster
+  - [x] Parse kubeconfig from `Secret.data["kubeconfig"]`
+  - [x] Build `kube::Client` from parsed config
+- [x] Extend `ScoutContext` with `remote_client` field
+- [x] Switch ARecord and DNSZone API calls to use `remote_client`
+- [x] Keep local client for Ingress watch and finalizer management
+- [x] DNSZone reflector now uses `remote_client` (validates zones against bindy cluster)
+- [x] RBAC manifests:
+  - [x] Local cluster: `secrets: get` added to `deploy/scout/clusterrole.yaml`
+  - [x] Remote (bindy) cluster: `deploy/scout/remote-cluster-rbac.yaml` with ServiceAccount scoped to `arecords` (crud) + `dnszones` (read)
+- [x] Same-cluster mode preserved: when `BINDY_SCOUT_REMOTE_SECRET` is unset, `remote_client == client`
+- [x] Update `.claude/CHANGELOG.md`
 
 ### New `BINDY_SCOUT_` env vars
 

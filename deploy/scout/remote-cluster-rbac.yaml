@@ -1,0 +1,71 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# Phase 2: Remote cluster RBAC
+#
+# Apply this manifest to the BINDY (remote) cluster to allow Scout (running
+# in a separate workload cluster) to create/delete ARecords and read DNSZones.
+#
+# One ServiceAccount per workload cluster is recommended so that access can be
+# revoked per-cluster without affecting other scouts.
+#
+# Usage:
+#   kubectl --context=<bindy-cluster> apply -f remote-cluster-rbac.yaml
+#
+# After applying, export the kubeconfig for the bindy-scout-remote ServiceAccount
+# and store it in a Secret on the workload cluster:
+#
+#   kubectl --context=<workload-cluster> create secret generic bindy-scout-remote-kubeconfig \
+#     --from-file=kubeconfig=./remote-kubeconfig.yaml \
+#     -n bindy-system
+#
+# Then set in the Scout Deployment:
+#   env:
+#     - name: BINDY_SCOUT_REMOTE_SECRET
+#       value: "bindy-scout-remote-kubeconfig"
+#     - name: BINDY_SCOUT_REMOTE_SECRET_NAMESPACE
+#       value: "bindy-system"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bindy-scout-remote
+  namespace: bindy-system
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/component: scout-remote
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: bindy-scout-remote
+  namespace: bindy-system
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/component: scout-remote
+rules:
+  # Create, update, and delete ARecords created by Scout
+  - apiGroups: ["bindy.firestoned.io"]
+    resources: ["arecords"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Read DNSZones for zone validation before creating ARecords
+  - apiGroups: ["bindy.firestoned.io"]
+    resources: ["dnszones"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bindy-scout-remote
+  namespace: bindy-system
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/component: scout-remote
+subjects:
+  - kind: ServiceAccount
+    name: bindy-scout-remote
+    namespace: bindy-system
+roleRef:
+  kind: Role
+  name: bindy-scout-remote
+  apiGroup: rbac.authorization.k8s.io

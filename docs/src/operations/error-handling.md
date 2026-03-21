@@ -160,7 +160,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zone: example.com  # No DNSZone with zoneName: example.com exists
   name: www
@@ -175,7 +175,7 @@ status:
   - type: Ready
     status: "False"
     reason: ZoneNotFound
-    message: "No DNSZone found for zone example.com in namespace dns-system"
+    message: "No DNSZone found for zone example.com in namespace bindy-system"
     lastTransitionTime: "2025-11-29T23:45:00Z"
   observedGeneration: 1
 ```
@@ -183,7 +183,7 @@ status:
 **Event:**
 ```
 Type     Reason         Message
-Warning  ZoneNotFound   No DNSZone found for zone example.com in namespace dns-system
+Warning  ZoneNotFound   No DNSZone found for zone example.com in namespace bindy-system
 ```
 
 **Resolution:**
@@ -193,7 +193,7 @@ Warning  ZoneNotFound   No DNSZone found for zone example.com in namespace dns-s
    kind: DNSZone
    metadata:
      name: example-com
-     namespace: dns-system
+     namespace: bindy-system
    spec:
      zoneName: example.com
      clusterRef: bind9-primary
@@ -224,11 +224,11 @@ Warning  RndcKeyLoadFailed   Failed to load RNDC key for cluster bind9-primary
 **Resolution:**
 1. Check if the Secret exists:
    ```bash
-   kubectl get secret -n dns-system bind9-primary-rndc-key
+   kubectl get secret -n bindy-system bind9-primary-rndc-key
    ```
 2. Verify the Bind9Instance is running and has created its Secret:
    ```bash
-   kubectl get bind9instance -n dns-system bind9-primary -o yaml
+   kubectl get bind9instance -n bindy-system bind9-primary -o yaml
    ```
 3. If missing, the Bind9Instance reconciler should create it automatically
 
@@ -243,29 +243,29 @@ status:
   - type: Ready
     status: "False"
     reason: RecordAddFailed
-    message: "Cannot connect to BIND9 server at bind9-primary.dns-system.svc.cluster.local:9530: connection refused. Will retry in 30s"
+    message: "Cannot connect to BIND9 server at bind9-primary.bindy-system.svc.cluster.local:9530: connection refused. Will retry in 30s"
     lastTransitionTime: "2025-11-29T23:45:00Z"
 ```
 
 **Event:**
 ```
 Type     Reason           Message
-Warning  RecordAddFailed  Cannot connect to BIND9 server at bind9-primary.dns-system.svc.cluster.local:9530
+Warning  RecordAddFailed  Cannot connect to BIND9 server at bind9-primary.bindy-system.svc.cluster.local:9530
 ```
 
 **Resolution:**
 1. Check BIND9 pod status:
    ```bash
-   kubectl get pods -n dns-system -l app=bind9-primary
+   kubectl get pods -n bindy-system -l app=bind9-primary
    ```
 2. Check BIND9 logs:
    ```bash
-   kubectl logs -n dns-system -l app=bind9-primary --tail=50
+   kubectl logs -n bindy-system -l app=bind9-primary --tail=50
    ```
 3. Verify network connectivity:
    ```bash
    kubectl run -it --rm debug --image=nicolaka/netshoot --restart=Never -- \
-     nc -zv bind9-primary.dns-system.svc.cluster.local 9530
+     nc -zv bind9-primary.bindy-system.svc.cluster.local 9530
    ```
 4. The operator will automatically retry after the configured interval
 
@@ -300,7 +300,7 @@ Normal  RecordCreated  A record www.example.com created successfully
 kubectl get arecords,aaaarecords,cnamerecords,mxrecords,txtrecords -A
 
 # Check specific record status
-kubectl get arecord www-example -n dns-system -o jsonpath='{.status.conditions[0]}' | jq .
+kubectl get arecord www-example -n bindy-system -o jsonpath='{.status.conditions[0]}' | jq .
 
 # Find failing records
 kubectl get arecords -A -o json | \
@@ -312,13 +312,13 @@ kubectl get arecords -A -o json | \
 
 ```bash
 # Recent events in namespace
-kubectl get events -n dns-system --sort-by='.lastTimestamp' | tail -20
+kubectl get events -n bindy-system --sort-by='.lastTimestamp' | tail -20
 
 # Watch events in real-time
-kubectl get events -n dns-system --watch
+kubectl get events -n bindy-system --watch
 
 # Filter for DNS record events
-kubectl get events -n dns-system --field-selector involvedObject.kind=ARecord
+kubectl get events -n bindy-system --field-selector involvedObject.kind=ARecord
 ```
 
 ### Prometheus Metrics
@@ -370,7 +370,7 @@ All BIND9 operations are idempotent, making them safe for operator retries:
 Always check status conditions when debugging DNS record issues:
 
 ```bash
-kubectl describe arecord www-example -n dns-system
+kubectl describe arecord www-example -n bindy-system
 ```
 
 Look for the `Status` section showing current conditions.
@@ -380,7 +380,7 @@ Look for the `Status` section showing current conditions.
 Events provide a timeline of what happened:
 
 ```bash
-kubectl get events -n dns-system --field-selector involvedObject.name=www-example
+kubectl get events -n bindy-system --field-selector involvedObject.name=www-example
 ```
 
 ### 3. Adjust Retry Interval for Your Needs
@@ -398,7 +398,7 @@ To avoid `ZoneNotFound` errors, always create DNSZone resources before creating 
 kubectl apply -f dnszone.yaml
 
 # 2. Wait for it to be ready
-kubectl wait --for=condition=Ready dnszone/example-com -n dns-system --timeout=60s
+kubectl wait --for=condition=Ready dnszone/example-com -n bindy-system --timeout=60s
 
 # 3. Create DNS records
 kubectl apply -f records/
@@ -413,7 +413,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     app: web-frontend
     environment: production
@@ -426,7 +426,7 @@ spec:
 
 Then filter:
 ```bash
-kubectl get arecords -n dns-system -l environment=production
+kubectl get arecords -n bindy-system -l environment=production
 ```
 
 ## Troubleshooting Guide
@@ -439,7 +439,7 @@ kubectl get arecords -n dns-system -l environment=production
    ```
 2. Check zone name matches:
    ```bash
-   kubectl get dnszone example-com -n dns-system -o jsonpath='{.spec.zoneName}'
+   kubectl get dnszone example-com -n bindy-system -o jsonpath='{.spec.zoneName}'
    ```
 3. Ensure they're in the same namespace
 
@@ -447,11 +447,11 @@ kubectl get arecords -n dns-system -l environment=production
 
 1. Check Secret exists:
    ```bash
-   kubectl get secret -n dns-system {cluster-name}-rndc-key
+   kubectl get secret -n bindy-system {cluster-name}-rndc-key
    ```
 2. Verify Bind9Instance is Ready:
    ```bash
-   kubectl get bind9instance -n dns-system
+   kubectl get bind9instance -n bindy-system
    ```
 3. Check Bind9Instance logs:
    ```bash
@@ -462,20 +462,20 @@ kubectl get arecords -n dns-system -l environment=production
 
 1. Check BIND9 pod is running:
    ```bash
-   kubectl get pods -n dns-system -l app={cluster-name}
+   kubectl get pods -n bindy-system -l app={cluster-name}
    ```
 2. Test network connectivity:
    ```bash
    kubectl run -it --rm debug --image=nicolaka/netshoot -- \
-     nc -zv {cluster-name}.dns-system.svc.cluster.local 9530
+     nc -zv {cluster-name}.bindy-system.svc.cluster.local 9530
    ```
 3. Check BIND9 logs for errors:
    ```bash
-   kubectl logs -n dns-system -l app={cluster-name} | grep -i error
+   kubectl logs -n bindy-system -l app={cluster-name} | grep -i error
    ```
 4. Verify RNDC is listening on port 9530:
    ```bash
-   kubectl exec -n dns-system {bind9-pod} -- ss -tlnp | grep 9530
+   kubectl exec -n bindy-system {bind9-pod} -- ss -tlnp | grep 9530
    ```
 
 ## See Also

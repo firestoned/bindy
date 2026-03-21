@@ -75,7 +75,7 @@ kubectl apply -f examples/dns-zone.yaml
 kubectl apply -f examples/dns-records.yaml
 
 # Watch the operator logs
-kubectl logs -n dns-system -l app=bindy -f
+kubectl logs -n bindy-system -l app=bindy -f
 ```
 
 ### Cleanup
@@ -92,7 +92,7 @@ For production clusters, use the latest stable release:
 
 ```bash
 # 1. Create namespace
-kubectl create namespace dns-system
+kubectl create namespace bindy-system
 
 # 2. Install CRDs
 kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
@@ -106,8 +106,8 @@ kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rb
 kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/operator/deployment.yaml
 
 # 5. Verify deployment
-kubectl get pods -n dns-system
-kubectl logs -n dns-system -l app=bind9-operator
+kubectl get pods -n bindy-system
+kubectl logs -n bindy-system -l app=bind9-operator
 ```
 
 ### Option 2: Install from Source (Development)
@@ -125,7 +125,7 @@ kubectl apply -k deploy/crds
 #### 2. Create Namespace
 
 ```bash
-kubectl create namespace dns-system
+kubectl create namespace bindy-system
 ```
 
 #### 3. Install RBAC
@@ -166,8 +166,8 @@ kubectl apply -f deploy/operator/deployment.yaml
 #### 7. Verify Deployment
 
 ```bash
-kubectl get pods -n dns-system
-kubectl logs -n dns-system -l app=bind9-operator
+kubectl get pods -n bindy-system
+kubectl logs -n bindy-system -l app=bind9-operator
 ```
 
 ## Configuration
@@ -201,13 +201,13 @@ Adjust based on your needs.
 
 ```bash
 # Check pod status
-kubectl get pods -n dns-system
+kubectl get pods -n bindy-system
 
 # Check pod events
-kubectl describe pod -n dns-system -l app=bindy
+kubectl describe pod -n bindy-system -l app=bindy
 
 # Check logs
-kubectl logs -n dns-system -l app=bindy --previous
+kubectl logs -n bindy-system -l app=bindy --previous
 ```
 
 ### CRD Issues
@@ -224,25 +224,25 @@ kubectl describe crd dnszones.dns.firestoned.io
 
 ```bash
 # Check service account
-kubectl get sa -n dns-system
+kubectl get sa -n bindy-system
 
 # Check role binding
 kubectl describe clusterrolebinding bindy-rolebinding
 
 # Check permissions
-kubectl auth can-i list dnszones --as=system:serviceaccount:dns-system:bindy
-kubectl auth can-i list bind9instances --as=system:serviceaccount:dns-system:bindy
+kubectl auth can-i list dnszones --as=system:serviceaccount:bindy-system:bindy
+kubectl auth can-i list bind9instances --as=system:serviceaccount:bindy-system:bindy
 ```
 
 ### Resource Not Reconciling
 
 ```bash
 # Check resource status
-kubectl get dnszones -n dns-system
-kubectl describe dnszone <name> -n dns-system
+kubectl get dnszones -n bindy-system
+kubectl describe dnszone <name> -n bindy-system
 
 # Check operator logs for errors
-kubectl logs -n dns-system -l app=bindy | grep ERROR
+kubectl logs -n bindy-system -l app=bindy | grep ERROR
 ```
 
 ## Upgrading
@@ -263,10 +263,10 @@ docker push <your-registry>/bindy:v1.1.0
 # Update deployment
 kubectl set image deployment/bindy \
   bindy=<your-registry>/bindy:v1.1.0 \
-  -n dns-system
+  -n bindy-system
 
 # Watch rollout
-kubectl rollout status deployment/bindy -n dns-system
+kubectl rollout status deployment/bindy -n bindy-system
 ```
 
 ## Uninstall
@@ -282,7 +282,7 @@ kubectl delete -f deploy/rbac/
 kubectl delete -k deploy/crds
 
 # Delete namespace
-kubectl delete namespace dns-system
+kubectl delete namespace bindy-system
 ```
 
 ## Security Considerations

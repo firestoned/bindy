@@ -19,7 +19,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: bind9-zones-pvc
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     app: bind9
     component: storage
@@ -38,7 +38,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: bind9-primary-zones-pvc
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     app: bind9
     component: storage
@@ -58,7 +58,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: bind9-secondary-zones-pvc
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     app: bind9
     component: storage
@@ -80,7 +80,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: bind9-shared-zones-pvc
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     app: bind9
     component: storage

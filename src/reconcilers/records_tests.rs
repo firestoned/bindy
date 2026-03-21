@@ -946,7 +946,7 @@ mod tests {
                 api_version: API_GROUP_VERSION.to_string(),
                 kind: KIND_A_RECORD.to_string(),
                 name: "test-a-record".to_string(),
-                namespace: "dns-system".to_string(),
+                namespace: "bindy-system".to_string(),
                 record_name: None,
                 zone_name: None,
             };
@@ -962,7 +962,7 @@ mod tests {
                 api_version: API_GROUP_VERSION.to_string(),
                 kind: KIND_A_RECORD.to_string(),
                 name: "test-record".to_string(),
-                namespace: "dns-system".to_string(),
+                namespace: "bindy-system".to_string(),
                 record_name: None,
                 zone_name: None,
             };
@@ -971,7 +971,7 @@ mod tests {
                 api_version: API_GROUP_VERSION.to_string(),
                 kind: KIND_A_RECORD.to_string(),
                 name: "test-record".to_string(),
-                namespace: "dns-system".to_string(),
+                namespace: "bindy-system".to_string(),
                 record_name: None,
                 zone_name: None,
             };
@@ -980,7 +980,7 @@ mod tests {
                 api_version: API_GROUP_VERSION.to_string(),
                 kind: KIND_AAAA_RECORD.to_string(),
                 name: "test-record".to_string(),
-                namespace: "dns-system".to_string(),
+                namespace: "bindy-system".to_string(),
                 record_name: None,
                 zone_name: None,
             };
@@ -995,7 +995,7 @@ mod tests {
                 api_version: "bindy.firestoned.io/v1beta1".to_string(),
                 kind: "ARecord".to_string(),
                 name: "test-a-record".to_string(),
-                namespace: "dns-system".to_string(),
+                namespace: "bindy-system".to_string(),
                 record_name: None,
                 zone_name: None,
             };
@@ -1012,7 +1012,7 @@ mod tests {
                 "apiVersion": "bindy.firestoned.io/v1beta1",
                 "kind": "CNAMERecord",
                 "name": "test-cname-record",
-                "namespace": "dns-system"
+                "namespace": "bindy-system"
             });
 
             let record_ref: RecordReference = serde_json::from_value(json).unwrap();
@@ -1048,7 +1048,7 @@ mod tests {
                     api_version: API_GROUP_VERSION.to_string(),
                     kind: KIND_A_RECORD.to_string(),
                     name: "web-a-record".to_string(),
-                    namespace: "dns-system".to_string(),
+                    namespace: "bindy-system".to_string(),
                     record_name: None,
                     last_reconciled_at: None,
                 },
@@ -1056,7 +1056,7 @@ mod tests {
                     api_version: API_GROUP_VERSION.to_string(),
                     kind: KIND_AAAA_RECORD.to_string(),
                     name: "web-aaaa-record".to_string(),
-                    namespace: "dns-system".to_string(),
+                    namespace: "bindy-system".to_string(),
                     record_name: None,
                     last_reconciled_at: None,
                 },
@@ -1064,7 +1064,7 @@ mod tests {
                     api_version: API_GROUP_VERSION.to_string(),
                     kind: KIND_CNAME_RECORD.to_string(),
                     name: "www-cname-record".to_string(),
-                    namespace: "dns-system".to_string(),
+                    namespace: "bindy-system".to_string(),
                     record_name: None,
                     last_reconciled_at: None,
                 },
@@ -1112,7 +1112,7 @@ mod tests {
                 api_version: API_GROUP_VERSION.to_string(),
                 kind: KIND_A_RECORD.to_string(),
                 name: "test-a-record".to_string(),
-                namespace: "dns-system".to_string(),
+                namespace: "bindy-system".to_string(),
                 record_name: None,
                 last_reconciled_at: None,
             }];
@@ -1183,7 +1183,7 @@ mod tests {
                     api_version: API_GROUP_VERSION.to_string(),
                     kind: kind.to_string(),
                     name: name.to_string(),
-                    namespace: "dns-system".to_string(),
+                    namespace: "bindy-system".to_string(),
                     record_name: None,
                     zone_name: None,
                 };
@@ -1205,7 +1205,7 @@ mod tests {
                     api_version: API_GROUP_VERSION.to_string(),
                     kind: KIND_A_RECORD.to_string(),
                     name: "web-a-record".to_string(),
-                    namespace: "dns-system".to_string(),
+                    namespace: "bindy-system".to_string(),
                     record_name: None,
                     zone_name: None,
                 },
@@ -1213,7 +1213,7 @@ mod tests {
                     api_version: API_GROUP_VERSION.to_string(),
                     kind: KIND_AAAA_RECORD.to_string(),
                     name: "web-aaaa-record".to_string(),
-                    namespace: "dns-system".to_string(),
+                    namespace: "bindy-system".to_string(),
                     record_name: None,
                     zone_name: None,
                 },
@@ -1223,7 +1223,7 @@ mod tests {
                 api_version: API_GROUP_VERSION.to_string(),
                 kind: KIND_A_RECORD.to_string(),
                 name: "web-a-record".to_string(),
-                namespace: "dns-system".to_string(),
+                namespace: "bindy-system".to_string(),
                 record_name: None,
                 zone_name: None,
             };
@@ -1236,7 +1236,7 @@ mod tests {
                 api_version: API_GROUP_VERSION.to_string(),
                 kind: KIND_MX_RECORD.to_string(),
                 name: "mail-mx-record".to_string(),
-                namespace: "dns-system".to_string(),
+                namespace: "bindy-system".to_string(),
                 record_name: None,
                 zone_name: None,
             };
@@ -1251,7 +1251,7 @@ mod tests {
                 api_version: API_GROUP_VERSION.to_string(),
                 kind: KIND_A_RECORD.to_string(),
                 name: "web-a-record".to_string(),
-                namespace: "dns-system".to_string(),
+                namespace: "bindy-system".to_string(),
                 record_name: None,
                 zone_name: None,
             }];
@@ -1260,7 +1260,7 @@ mod tests {
                 api_version: API_GROUP_VERSION.to_string(),
                 kind: KIND_A_RECORD.to_string(),
                 name: "web-a-record".to_string(),
-                namespace: "dns-system".to_string(),
+                namespace: "bindy-system".to_string(),
                 record_name: None,
                 zone_name: None,
             };
@@ -1277,7 +1277,7 @@ mod tests {
                 api_version: API_GROUP_VERSION.to_string(),
                 kind: KIND_AAAA_RECORD.to_string(),
                 name: "web-aaaa-record".to_string(),
-                namespace: "dns-system".to_string(),
+                namespace: "bindy-system".to_string(),
                 record_name: None,
                 zone_name: None,
             };
@@ -1301,7 +1301,7 @@ mod tests {
                     api_version: API_GROUP_VERSION.to_string(),
                     kind: KIND_A_RECORD.to_string(),
                     name: "existing-a-record".to_string(),
-                    namespace: "dns-system".to_string(),
+                    namespace: "bindy-system".to_string(),
                     record_name: None,
                     last_reconciled_at: None,
                 },
@@ -1309,7 +1309,7 @@ mod tests {
                     api_version: API_GROUP_VERSION.to_string(),
                     kind: KIND_AAAA_RECORD.to_string(),
                     name: "existing-aaaa-record".to_string(),
-                    namespace: "dns-system".to_string(),
+                    namespace: "bindy-system".to_string(),
                     record_name: None,
                     last_reconciled_at: None,
                 },

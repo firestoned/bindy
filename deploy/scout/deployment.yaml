@@ -5,7 +5,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: bindy-scout
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     app.kubernetes.io/name: bindy
     app.kubernetes.io/component: scout
@@ -37,7 +37,7 @@ spec:
               value: "test-cluster.example.com"
             # Namespace where ARecord CRs are created (must match the bindy operator namespace)
             - name: BINDY_SCOUT_NAMESPACE
-              value: "dns-system"
+              value: "bindy-system"
             # Scout's own namespace — always excluded from Ingress watching
             - name: POD_NAMESPACE
               valueFrom:

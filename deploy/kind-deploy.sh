@@ -12,7 +12,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 CLUSTER_NAME="bindy-test"
-NAMESPACE="dns-system"
+NAMESPACE="bindy-system"
 
 echo -e "${GREEN}🚀 Deploying Bindy Operator to Kind cluster${NC}"
 

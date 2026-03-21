@@ -8,14 +8,14 @@ Before deploying the operator:
 
 1. [CRDs must be installed](./crds.md)
 2. RBAC must be configured
-3. Namespace must exist (`dns-system` recommended)
+3. Namespace must exist (`bindy-system` recommended)
 
 ## Installation
 
 ### Create Namespace
 
 ```bash
-kubectl create namespace dns-system
+kubectl create namespace bindy-system
 ```
 
 ### Install RBAC (Latest Release)
@@ -59,7 +59,7 @@ kubectl apply -f https://github.com/firestoned/bindy/releases/download/v0.3.0/op
 
 ```bash
 kubectl wait --for=condition=available --timeout=300s \
-  deployment/bind9-operator -n dns-system
+  deployment/bind9-operator -n bindy-system
 ```
 
 ## Verify Deployment
@@ -67,7 +67,7 @@ kubectl wait --for=condition=available --timeout=300s \
 Check operator pod status:
 
 ```bash
-kubectl get pods -n dns-system -l app=bind9-operator
+kubectl get pods -n bindy-system -l app=bind9-operator
 ```
 
 Expected output:
@@ -80,7 +80,7 @@ bind9-operator-7d4b8c4f9b-x7k2m   1/1     Running   0          1m
 Check operator logs:
 
 ```bash
-kubectl logs -n dns-system -l app=bind9-operator -f
+kubectl logs -n bindy-system -l app=bind9-operator -f
 ```
 
 You should see:
@@ -142,7 +142,7 @@ spec:
 
 1. Check pod events:
    ```bash
-   kubectl describe pod -n dns-system -l app=bind9-operator
+   kubectl describe pod -n bindy-system -l app=bind9-operator
    ```
 
 2. Check if CRDs are installed:
@@ -152,7 +152,7 @@ spec:
 
 3. Check RBAC permissions:
    ```bash
-   kubectl auth can-i list dnszones --as=system:serviceaccount:dns-system:bind9-operator
+   kubectl auth can-i list dnszones --as=system:serviceaccount:bindy-system:bind9-operator
    ```
 
 ### High Memory Usage

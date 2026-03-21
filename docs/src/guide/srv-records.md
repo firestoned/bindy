@@ -9,7 +9,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: xmpp-server
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com  # Used by DNSZone selector
 spec:
@@ -88,7 +88,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: xmpp-client
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -105,7 +105,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: xmpp-server
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -126,7 +126,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: sip-tcp
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -143,7 +143,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: sip-udp
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -163,7 +163,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: ldap-service
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -183,7 +183,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: minecraft
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -206,7 +206,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: sip-primary
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -223,7 +223,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: sip-backup
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -244,7 +244,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: srv-1
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -261,7 +261,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: srv-2
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -296,7 +296,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: service-srv
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -313,7 +313,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: server
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:

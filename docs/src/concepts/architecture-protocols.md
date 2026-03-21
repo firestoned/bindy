@@ -335,7 +335,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: bind9-primary-rndc-key
-  namespace: dns-system
+  namespace: bindy-system
 type: Opaque
 stringData:
   rndc.key: |
@@ -522,7 +522,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: bindy-operator-secrets
-  namespace: dns-system
+  namespace: bindy-system
 rules:
 - apiGroups: [""]
   resources: ["secrets"]

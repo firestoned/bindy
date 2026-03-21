@@ -72,4 +72,4 @@ jobs:
         if: failure()
         run: |
           echo "Operator logs:"
-          kubectl logs -n dns-system -l app=bindy --tail=100 || true
+          kubectl logs -n bindy-system -l app=bindy --tail=100 || true

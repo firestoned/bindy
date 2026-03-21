@@ -268,10 +268,10 @@ spec:
 kubectl get bind9instances -A -L region
 
 # View pod distribution
-kubectl get pods -n dns-system -o wide
+kubectl get pods -n bindy-system -o wide
 
 # Check zone spread
-kubectl get pods -n dns-system \
+kubectl get pods -n bindy-system \
   -o custom-columns=NAME:.metadata.name,NODE:.spec.nodeName,ZONE:.spec.nodeSelector
 ```
 
@@ -279,10 +279,10 @@ kubectl get pods -n dns-system \
 
 ```bash
 # Simulate pod failure
-kubectl delete pod -n dns-system <pod-name>
+kubectl delete pod -n bindy-system <pod-name>
 
 # Verify automatic recovery
-kubectl get pods -n dns-system -w
+kubectl get pods -n bindy-system -w
 
 # Test DNS during failover
 while true; do dig @$SERVICE_IP example.com +short; sleep 1; done
@@ -350,7 +350,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: bindy
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   replicas: 3  # Run 3 instances for HA
   selector:
@@ -372,7 +372,7 @@ spec:
         - name: LEASE_NAME
           value: "bindy-leader"
         - name: LEASE_NAMESPACE
-          value: "dns-system"
+          value: "bindy-system"
         - name: LEASE_DURATION_SECONDS
           value: "15"
         - name: LEASE_RENEW_DEADLINE_SECONDS
@@ -393,7 +393,7 @@ Environment variables for leader election:
 |----------|---------|-------------|
 | `ENABLE_LEADER_ELECTION` | `true` | Enable/disable leader election |
 | `LEASE_NAME` | `bindy-leader` | Name of the Lease resource |
-| `LEASE_NAMESPACE` | `dns-system` | Namespace for the Lease |
+| `LEASE_NAMESPACE` | `bindy-system` | Namespace for the Lease |
 | `LEASE_DURATION_SECONDS` | `15` | How long leader holds lease |
 | `LEASE_RENEW_DEADLINE_SECONDS` | `10` | Leader must renew before this |
 | `LEASE_RETRY_PERIOD_SECONDS` | `2` | How often to attempt lease acquisition |
@@ -405,7 +405,7 @@ Check which operator instance is the current leader:
 
 ```bash
 # View the lease object
-kubectl get lease -n dns-system bindy-leader -o yaml
+kubectl get lease -n bindy-system bindy-leader -o yaml
 
 # Output shows current leader
 spec:
@@ -418,7 +418,7 @@ Monitor operator logs to see leadership changes:
 
 ```bash
 # Watch operator logs
-kubectl logs -n dns-system deployment/bindy -f
+kubectl logs -n bindy-system deployment/bindy -f
 
 # Look for leadership events
 INFO Attempting to acquire lease bindy-leader
@@ -434,14 +434,14 @@ Test automatic failover:
 
 ```bash
 # Find current leader
-LEADER=$(kubectl get lease -n dns-system bindy-leader -o jsonpath='{.spec.holderIdentity}')
+LEADER=$(kubectl get lease -n bindy-system bindy-leader -o jsonpath='{.spec.holderIdentity}')
 echo "Current leader: $LEADER"
 
 # Delete the leader pod
-kubectl delete pod -n dns-system $LEADER
+kubectl delete pod -n bindy-system $LEADER
 
 # Watch for new leader election (typically ~15 seconds)
-kubectl get lease -n dns-system bindy-leader -w
+kubectl get lease -n bindy-system bindy-leader -w
 
 # Verify DNS operations continue uninterrupted
 kubectl get bind9instances -A
@@ -456,7 +456,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: bindy
-  namespace: dns-system
+  namespace: bindy-system
 rules:
 # Leases for leader election
 - apiGroups: ["coordination.k8s.io"]
@@ -470,13 +470,13 @@ rules:
 
 ```bash
 # Check which instance is leader
-kubectl get lease -n dns-system bindy-leader -o jsonpath='{.spec.holderIdentity}'
+kubectl get lease -n bindy-system bindy-leader -o jsonpath='{.spec.holderIdentity}'
 
 # Verify that pod exists and is running
-kubectl get pods -n dns-system
+kubectl get pods -n bindy-system
 
 # Check operator logs
-kubectl logs -n dns-system deployment/bindy -f
+kubectl logs -n bindy-system deployment/bindy -f
 ```
 
 **Multiple operators reconciling (split brain):**
@@ -485,13 +485,13 @@ This should never happen with proper leader election. If you suspect it:
 
 ```bash
 # Check lease configuration
-kubectl get lease -n dns-system bindy-leader -o yaml
+kubectl get lease -n bindy-system bindy-leader -o yaml
 
 # Verify all operators use the same LEASE_NAME
-kubectl get deployment -n dns-system bindy -o yaml | grep LEASE_NAME
+kubectl get deployment -n bindy-system bindy -o yaml | grep LEASE_NAME
 
 # Force lease release (recreate it)
-kubectl delete lease -n dns-system bindy-leader
+kubectl delete lease -n bindy-system bindy-leader
 ```
 
 **Leader election disabled but multiple replicas running:**

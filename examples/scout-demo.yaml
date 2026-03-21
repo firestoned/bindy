@@ -15,7 +15,7 @@
 #   kubectl apply -f examples/scout-demo.yaml
 #
 # Verify Scout created the ARecord:
-#   kubectl get arecords -n dns-system -l bindy.firestoned.io/managed-by=scout
+#   kubectl get arecords -n bindy-system -l bindy.firestoned.io/managed-by=scout
 #
 # Clean up:
 #   kubectl delete -f examples/scout-demo.yaml

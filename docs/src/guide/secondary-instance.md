@@ -9,7 +9,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary-dns
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     dns-role: secondary
     environment: production
@@ -66,7 +66,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com-secondary
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   type: secondary
@@ -98,7 +98,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary-dns
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     role: secondary          # Required for discovery
     cluster: production      # Must match cluster name
@@ -115,7 +115,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: production  # Matches cluster label
@@ -123,7 +123,7 @@ spec:
 EOF
 
 # Verify automatic configuration
-kubectl get dnszone example-com -n dns-system -o jsonpath='{.status.secondaryIps}'
+kubectl get dnszone example-com -n bindy-system -o jsonpath='{.status.secondaryIps}'
 # Output: ["10.244.1.5","10.244.2.8"]
 ```
 
@@ -139,13 +139,13 @@ Check that zones are being transferred:
 
 ```bash
 # Check zone files on secondary
-kubectl exec -n dns-system deployment/secondary-dns -- ls -la /var/lib/bind/zones/
+kubectl exec -n bindy-system deployment/secondary-dns -- ls -la /var/lib/bind/zones/
 
 # Check BIND9 logs for transfer messages
-kubectl logs -n dns-system -l instance=secondary-dns | grep "transfer of"
+kubectl logs -n bindy-system -l instance=secondary-dns | grep "transfer of"
 
 # Verify secondary IPs are configured on primary zones
-kubectl get dnszone -n dns-system -o yaml | yq '.items[].status.secondaryIps'
+kubectl get dnszone -n bindy-system -o yaml | yq '.items[].status.secondaryIps'
 ```
 
 ## Best Practices
@@ -171,7 +171,7 @@ Primary servers send NOTIFY messages to secondaries when zones change. Ensure ne
 Watch for failed transfers in logs:
 
 ```bash
-kubectl logs -n dns-system -l instance=secondary-dns --tail=100 | grep -i transfer
+kubectl logs -n bindy-system -l instance=secondary-dns --tail=100 | grep -i transfer
 ```
 
 ## Network Requirements

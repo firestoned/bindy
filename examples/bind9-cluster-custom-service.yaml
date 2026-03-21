@@ -2,7 +2,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   # Primary instance configuration
   primary:
@@ -44,7 +44,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: cloud-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   # Primary instance configuration
   primary:

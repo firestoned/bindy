@@ -6,7 +6,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     bindy.firestoned.io/zone: example.com
 spec:
@@ -20,7 +20,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: api-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     bindy.firestoned.io/zone: example.com
 spec:
@@ -33,7 +33,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: mail-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     bindy.firestoned.io/zone: example.com
 spec:
@@ -49,7 +49,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: mail-cluster
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     bindy.firestoned.io/zone: cluster.local
 spec:

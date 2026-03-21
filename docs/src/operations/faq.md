@@ -20,7 +20,7 @@ Bindy supports BIND 9.16 and 9.18. The version is configurable per Bind9Instance
 
 ## Installation
 
-### Can I run Bindy in a namespace other than dns-system?
+### Can I run Bindy in a namespace other than bindy-system?
 
 Yes, you can deploy Bindy in any namespace. Update the namespace in deployment YAMLs and RBAC resources.
 
@@ -40,7 +40,7 @@ A cluster administrator can pre-install CRDs and RBAC, then delegate namespace m
 Edit the Bind9Instance resource:
 
 ```bash
-kubectl edit bind9instance primary-dns -n dns-system
+kubectl edit bind9instance primary-dns -n bindy-system
 ```
 
 The operator will automatically update the ConfigMap and restart pods if needed.
@@ -54,7 +54,7 @@ No, Bindy manages BIND9 instances running in Kubernetes. For external servers, c
 Currently, enable it manually in the BIND9 pod:
 
 ```bash
-kubectl exec -n dns-system deployment/primary-dns -- rndc querylog on
+kubectl exec -n bindy-system deployment/primary-dns -- rndc querylog on
 ```
 
 Future versions may support configuration through Bind9Instance spec.
@@ -130,7 +130,7 @@ Not directly. You need to convert zone files to Bindy CRD resources. Future vers
 
 ```bash
 kubectl delete arecords,aaaarecords,cnamerecords,mxrecords,txtrecords \
-  -n dns-system -l zone=example-com
+  -n bindy-system -l zone=example-com
 ```
 
 (If you label records with their zone)
@@ -141,7 +141,7 @@ kubectl delete arecords,aaaarecords,cnamerecords,mxrecords,txtrecords \
 
 1. Update CRDs: `kubectl apply -k deploy/crds/`
 2. Update operator: `kubectl set image deployment/bindy operator=new-image`
-3. Monitor rollout: `kubectl rollout status deployment/bindy -n dns-system`
+3. Monitor rollout: `kubectl rollout status deployment/bindy -n bindy-system`
 
 ### How do I backup DNS configuration?
 
@@ -177,8 +177,8 @@ Only one will be active (leader election), others are standby.
 Check pod logs and events:
 
 ```bash
-kubectl logs -n dns-system <pod-name>
-kubectl describe pod -n dns-system <pod-name>
+kubectl logs -n bindy-system <pod-name>
+kubectl describe pod -n bindy-system <pod-name>
 ```
 
 Common causes:
@@ -196,9 +196,9 @@ Check:
 5. Record exists
 
 ```bash
-kubectl get svc -n dns-system
-kubectl get pods -n dns-system
-kubectl logs -n dns-system -l instance=primary-dns
+kubectl get svc -n bindy-system
+kubectl get pods -n bindy-system
+kubectl logs -n bindy-system -l instance=primary-dns
 ```
 
 ### Zone transfers not working

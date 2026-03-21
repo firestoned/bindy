@@ -31,7 +31,7 @@ This document describes Bindy's secret access audit trail implementation, which 
 
 ### Secrets Covered
 
-Bindy audit logging covers all Kubernetes Secrets in the `dns-system` namespace:
+Bindy audit logging covers all Kubernetes Secrets in the `bindy-system` namespace:
 
 | Secret Name | Purpose | Access Pattern |
 |-------------|---------|----------------|
@@ -63,18 +63,18 @@ Every secret access operation generates an audit log entry with:
   "level": "Metadata",
   "auditID": "a4b5c6d7-e8f9-0a1b-2c3d-4e5f6a7b8c9d",
   "stage": "ResponseComplete",
-  "requestURI": "/api/v1/namespaces/dns-system/secrets/rndc-key-primary",
+  "requestURI": "/api/v1/namespaces/bindy-system/secrets/rndc-key-primary",
   "verb": "get",
   "user": {
-    "username": "system:serviceaccount:dns-system:bindy-operator",
+    "username": "system:serviceaccount:bindy-system:bindy-operator",
     "uid": "abc123",
-    "groups": ["system:serviceaccounts", "system:serviceaccounts:dns-system"]
+    "groups": ["system:serviceaccounts", "system:serviceaccounts:bindy-system"]
   },
   "sourceIPs": ["10.244.1.15"],
   "userAgent": "bindy/v0.1.0 (linux/amd64) kubernetes/abc123",
   "objectRef": {
     "resource": "secrets",
-    "namespace": "dns-system",
+    "namespace": "bindy-system",
     "name": "rndc-key-primary",
     "apiVersion": "v1"
   },
@@ -118,13 +118,13 @@ rules:
   # H-3: Secret Access Audit Trail
   # ============================================================================
 
-  # Log ALL secret access in dns-system namespace (read operations)
+  # Log ALL secret access in bindy-system namespace (read operations)
   - level: Metadata
     verbs: ["get", "list", "watch"]
     resources:
       - group: ""
         resources: ["secrets"]
-    namespaces: ["dns-system"]
+    namespaces: ["bindy-system"]
     omitStages:
       - "RequestReceived"  # Only log after response is sent
 
@@ -134,7 +134,7 @@ rules:
     resources:
       - group: ""
         resources: ["secrets"]
-    namespaces: ["dns-system"]
+    namespaces: ["bindy-system"]
     omitStages:
       - "RequestReceived"
 
@@ -145,7 +145,7 @@ rules:
     resources:
       - group: ""
         resources: ["secrets"]
-    namespaces: ["dns-system"]
+    namespaces: ["bindy-system"]
     omitStages:
       - "RequestReceived"
 ```
@@ -209,7 +209,7 @@ These queries are designed for use in Elasticsearch (Kibana) or direct S3 querie
     "bool": {
       "must": [
         { "term": { "objectRef.resource": "secrets" } },
-        { "term": { "objectRef.namespace": "dns-system" } },
+        { "term": { "objectRef.namespace": "bindy-system" } },
         { "range": { "requestReceivedTimestamp": { "gte": "now-90d" } } }
       ]
     }
@@ -249,7 +249,7 @@ These queries are designed for use in Elasticsearch (Kibana) or direct S3 querie
     "by_service_account": {
       "buckets": [
         {
-          "key": "system:serviceaccount:dns-system:bindy-operator",
+          "key": "system:serviceaccount:bindy-system:bindy-operator",
           "doc_count": 25920,
           "by_secret": {
             "buckets": [
@@ -291,10 +291,10 @@ These queries are designed for use in Elasticsearch (Kibana) or direct S3 querie
     "bool": {
       "must": [
         { "term": { "objectRef.resource": "secrets" } },
-        { "term": { "objectRef.namespace": "dns-system" } }
+        { "term": { "objectRef.namespace": "bindy-system" } }
       ],
       "must_not": [
-        { "term": { "user.username.keyword": "system:serviceaccount:dns-system:bindy-operator" } }
+        { "term": { "user.username.keyword": "system:serviceaccount:bindy-system:bindy-operator" } }
       ]
     }
   },
@@ -323,7 +323,7 @@ These queries are designed for use in Elasticsearch (Kibana) or direct S3 querie
     "bool": {
       "must": [
         { "term": { "objectRef.resource": "secrets" } },
-        { "term": { "objectRef.namespace": "dns-system" } },
+        { "term": { "objectRef.namespace": "bindy-system" } },
         { "term": { "responseStatus.code": 403 } }
       ]
     }
@@ -369,7 +369,7 @@ These queries are designed for use in Elasticsearch (Kibana) or direct S3 querie
     "bool": {
       "must": [
         { "term": { "objectRef.resource": "secrets" } },
-        { "term": { "objectRef.namespace": "dns-system" } }
+        { "term": { "objectRef.namespace": "bindy-system" } }
       ],
       "should": [
         {
@@ -428,7 +428,7 @@ These queries are designed for use in Elasticsearch (Kibana) or direct S3 querie
       "must": [
         { "term": { "objectRef.resource": "secrets" } },
         { "term": { "objectRef.name.keyword": "rndc-key-primary" } },
-        { "term": { "objectRef.namespace": "dns-system" } },
+        { "term": { "objectRef.namespace": "bindy-system" } },
         {
           "range": {
             "requestReceivedTimestamp": {
@@ -505,15 +505,15 @@ groups:
         expr: |
           sum(rate(kubernetes_audit_event_total{
             objectRef_resource="secrets",
-            objectRef_namespace="dns-system",
-            user_username!~"system:serviceaccount:dns-system:bindy-operator"
+            objectRef_namespace="bindy-system",
+            user_username!~"system:serviceaccount:bindy-system:bindy-operator"
           }[5m])) > 0
         for: 1m
         labels:
           severity: critical
           compliance: "SOX-404,PCI-DSS-7.1.2"
         annotations:
-          summary: "Unauthorized secret access detected in dns-system namespace"
+          summary: "Unauthorized secret access detected in bindy-system namespace"
           description: |
             ServiceAccount {{ $labels.user_username }} accessed secret {{ $labels.objectRef_name }}.
             This violates least privilege RBAC policy (only bindy-operator should access secrets).
@@ -530,8 +530,8 @@ groups:
         expr: |
           sum(rate(kubernetes_audit_event_total{
             objectRef_resource="secrets",
-            objectRef_namespace="dns-system",
-            user_username="system:serviceaccount:dns-system:bindy-operator"
+            objectRef_namespace="bindy-system",
+            user_username="system:serviceaccount:bindy-system:bindy-operator"
           }[5m])) > 10
         for: 10m
         labels:
@@ -557,7 +557,7 @@ groups:
         expr: |
           sum(rate(kubernetes_audit_event_total{
             objectRef_resource="secrets",
-            objectRef_namespace="dns-system",
+            objectRef_namespace="bindy-system",
             responseStatus_code="403"
           }[5m])) > 1
         for: 5m

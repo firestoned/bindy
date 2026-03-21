@@ -167,7 +167,7 @@ kubectl get deployment bindy-operator -o jsonpath='{.spec.template.spec.serviceA
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: dns-system
+  name: bindy-system
   labels:
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/audit: restricted
@@ -445,7 +445,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: bindy-operator-netpol
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   podSelector:
     matchLabels:
@@ -619,7 +619,7 @@ seccomp_profile: Some(SeccompProfile {
 **Type:** Manual
 
 **Implementation:**
-- ✅ **PASS** - Operator deployed to `dns-system` namespace (recommended)
+- ✅ **PASS** - Operator deployed to `bindy-system` namespace (recommended)
 - Documentation specifies dedicated namespace
 - No use of `default` namespace
 

@@ -242,7 +242,7 @@ Full changelog entry with `**Author:**` attribution, added/changed sections, why
     "message": "Secret operation completed successfully",
     "operation": "rotate",
     "resource_type": "Secret",
-    "namespace": "dns-system",
+    "namespace": "bindy-system",
     "name": "primary-bind9-rndc-key",
     "component": "bind9instance::rotate_rndc_secret",
     "result": "success",
@@ -256,7 +256,7 @@ Full changelog entry with `**Author:**` attribution, added/changed sections, why
 
 ```
 2026-03-09T10:15:30.123456Z  INFO audit: Secret operation completed successfully
-  operation="rotate" resource_type="Secret" namespace="dns-system"
+  operation="rotate" resource_type="Secret" namespace="bindy-system"
   name="primary-bind9-rndc-key" component="bind9instance::rotate_rndc_secret"
   result="success" audit.rotation_count="5" audit.algorithm="hmac-sha256"
 ```
@@ -265,16 +265,16 @@ Full changelog entry with `**Author:**` attribution, added/changed sections, why
 
 ```bash
 # All audit events
-kubectl logs deploy/bindy-operator -n dns-system | jq 'select(.target == "audit")'
+kubectl logs deploy/bindy-operator -n bindy-system | jq 'select(.target == "audit")'
 
 # Only rotations
-kubectl logs deploy/bindy-operator -n dns-system | jq 'select(.target == "audit" and .fields.operation == "rotate")'
+kubectl logs deploy/bindy-operator -n bindy-system | jq 'select(.target == "audit" and .fields.operation == "rotate")'
 
 # All failures
-kubectl logs deploy/bindy-operator -n dns-system | jq 'select(.target == "audit" and .fields.result == "failure")'
+kubectl logs deploy/bindy-operator -n bindy-system | jq 'select(.target == "audit" and .fields.result == "failure")'
 
 # CSV export for compliance report
-kubectl logs deploy/bindy-operator -n dns-system | \
+kubectl logs deploy/bindy-operator -n bindy-system | \
   jq -r 'select(.target == "audit") | [.timestamp, .fields.operation, .fields.namespace, .fields.name, .fields.result] | @csv' \
   > audit_report.csv
 ```

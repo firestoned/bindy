@@ -167,10 +167,10 @@ trivy image ghcr.io/firestoned/bindy:latest --severity CRITICAL,HIGH
 **Step 1.3: Check Production Exposure**
 ```bash
 # Verify if vulnerable version is deployed
-kubectl get deploy -n dns-system bindy -o jsonpath='{.spec.template.spec.containers[0].image}'
+kubectl get deploy -n bindy-system bindy -o jsonpath='{.spec.template.spec.containers[0].image}'
 
 # Check image digest
-kubectl get pods -n dns-system -l app.kubernetes.io/name=bindy -o jsonpath='{.items[0].spec.containers[0].image}'
+kubectl get pods -n bindy-system -l app.kubernetes.io/name=bindy -o jsonpath='{.items[0].spec.containers[0].image}'
 
 # Compare with vulnerable version from security advisory
 ```
@@ -191,7 +191,7 @@ kubectl get pods -n dns-system -l app.kubernetes.io/name=bindy -o jsonpath='{.it
 **Step 2.1: Isolate Vulnerable Pods (if actively exploited)**
 ```bash
 # Scale down operator to prevent further exploitation
-kubectl scale deploy -n dns-system bindy --replicas=0
+kubectl scale deploy -n bindy-system bindy --replicas=0
 
 # NOTE: This stops DNS updates but does NOT affect DNS queries
 # BIND9 continues serving existing zones
@@ -200,7 +200,7 @@ kubectl scale deploy -n dns-system bindy --replicas=0
 **Step 2.2: Review Audit Logs**
 ```bash
 # Check for signs of exploitation
-kubectl logs -n dns-system -l app.kubernetes.io/name=bindy --tail=1000 | grep -i "error\|panic\|exploit"
+kubectl logs -n bindy-system -l app.kubernetes.io/name=bindy --tail=1000 | grep -i "error\|panic\|exploit"
 
 # Review Kubernetes audit logs (if available)
 # Look for: Unusual API calls, secret reads, privilege escalation attempts
@@ -288,16 +288,16 @@ spec:
 kubectl apply -f deploy/operator/deployment.yaml
 
 # Verify rollout
-kubectl rollout status deploy/bindy -n dns-system
+kubectl rollout status deploy/bindy -n bindy-system
 
 # Confirm pods running patched version
-kubectl get pods -n dns-system -l app.kubernetes.io/name=bindy -o jsonpath='{.items[0].spec.containers[0].image}'
+kubectl get pods -n bindy-system -l app.kubernetes.io/name=bindy -o jsonpath='{.items[0].spec.containers[0].image}'
 ```
 
 **Step 4.2: Verify Service Health**
 ```bash
 # Check operator logs
-kubectl logs -n dns-system -l app.kubernetes.io/name=bindy --tail=100
+kubectl logs -n bindy-system -l app.kubernetes.io/name=bindy --tail=100
 
 # Verify reconciliation working
 kubectl get dnszones --all-namespaces
@@ -369,10 +369,10 @@ trivy image ghcr.io/firestoned/bindy:hotfix-v0.1.1
 
 ```bash
 # Monitor operator logs for anomalies
-kubectl logs -n dns-system -l app.kubernetes.io/name=bindy --tail=500 | grep -E "(shell|wget|curl|nc|bash)"
+kubectl logs -n bindy-system -l app.kubernetes.io/name=bindy --tail=500 | grep -E "(shell|wget|curl|nc|bash)"
 
 # Check for unexpected processes in pod
-kubectl exec -n dns-system <operator-pod> -- ps aux
+kubectl exec -n bindy-system <operator-pod> -- ps aux
 
 # Review Kubernetes audit logs
 # Look for: Unusual secret reads, excessive API calls, privilege escalation attempts
@@ -385,7 +385,7 @@ kubectl exec -n dns-system <operator-pod> -- ps aux
 **Step 1.1: Confirm Compromise**
 ```bash
 # Check operator logs
-kubectl logs -n dns-system <operator-pod> --tail=1000 > /tmp/operator-logs.txt
+kubectl logs -n bindy-system <operator-pod> --tail=1000 > /tmp/operator-logs.txt
 
 # Indicators of compromise (IOCs):
 # - Reverse shell activity (nc, bash -i, /dev/tcp/)
@@ -403,7 +403,7 @@ kubectl get dnszones --all-namespaces -o yaml > /tmp/dnszones-snapshot.yaml
 diff /tmp/dnszones-snapshot.yaml /path/to/gitops/dnszones/
 
 # Check for secret reads
-# Review Kubernetes audit logs for GET /api/v1/namespaces/dns-system/secrets/*
+# Review Kubernetes audit logs for GET /api/v1/namespaces/bindy-system/secrets/*
 ```
 
 ---
@@ -418,7 +418,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: bindy-operator-quarantine
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   podSelector:
     matchLabels:
@@ -429,7 +429,7 @@ spec:
 EOF
 
 # Delete compromised pod (force recreation)
-kubectl delete pod -n dns-system <operator-pod> --force --grace-period=0
+kubectl delete pod -n bindy-system <operator-pod> --force --grace-period=0
 ```
 
 **Step 2.2: Rotate Credentials**
@@ -441,27 +441,27 @@ tsig-keygen -a hmac-sha256 rndc-key > /tmp/new-rndc-key.conf
 # Update secret
 kubectl create secret generic rndc-key-new \
   --from-file=rndc.key=/tmp/new-rndc-key.conf \
-  -n dns-system \
+  -n bindy-system \
   --dry-run=client -o yaml | kubectl apply -f -
 
 # Update BIND9 pods to use new key (restart required)
-kubectl rollout restart statefulset/bind9-primary -n dns-system
-kubectl rollout restart statefulset/bind9-secondary -n dns-system
+kubectl rollout restart statefulset/bind9-primary -n bindy-system
+kubectl rollout restart statefulset/bind9-secondary -n bindy-system
 
 # Delete old secret
-kubectl delete secret rndc-key -n dns-system
+kubectl delete secret rndc-key -n bindy-system
 ```
 
 **Step 2.3: Preserve Evidence**
 ```bash
 # Save pod logs before deletion
-kubectl logs -n dns-system <operator-pod> --all-containers > /tmp/forensics/operator-logs-$(date +%s).txt
+kubectl logs -n bindy-system <operator-pod> --all-containers > /tmp/forensics/operator-logs-$(date +%s).txt
 
 # Capture pod manifest
-kubectl get pod -n dns-system <operator-pod> -o yaml > /tmp/forensics/operator-pod-manifest.yaml
+kubectl get pod -n bindy-system <operator-pod> -o yaml > /tmp/forensics/operator-pod-manifest.yaml
 
 # Save Kubernetes events
-kubectl get events -n dns-system --sort-by='.lastTimestamp' > /tmp/forensics/events.txt
+kubectl get events -n bindy-system --sort-by='.lastTimestamp' > /tmp/forensics/events.txt
 
 # Export audit logs (if available)
 # - ServiceAccount API calls
@@ -483,7 +483,7 @@ kubectl get events -n dns-system --sort-by='.lastTimestamp' > /tmp/forensics/eve
 # - Misconfigured RBAC (excessive permissions)
 
 # Check image provenance
-kubectl get pod -n dns-system <operator-pod> -o jsonpath='{.spec.containers[0].image}'
+kubectl get pod -n bindy-system <operator-pod> -o jsonpath='{.spec.containers[0].image}'
 
 # Verify image signature and SBOM
 # If signature invalid or SBOM shows unexpected dependencies → supply chain attack
@@ -500,8 +500,8 @@ kubectl get pod -n dns-system <operator-pod> -o jsonpath='{.spec.containers[0].i
 trivy image ghcr.io/firestoned/bindy:latest --scanners vuln,secret,misconfig
 
 # Check for unauthorized SSH keys, cron jobs, persistence mechanisms
-kubectl exec -n dns-system <new-operator-pod> -- ls -la /root/.ssh/
-kubectl exec -n dns-system <new-operator-pod> -- cat /etc/crontab
+kubectl exec -n bindy-system <new-operator-pod> -- ls -la /root/.ssh/
+kubectl exec -n bindy-system <new-operator-pod> -- cat /etc/crontab
 ```
 
 ---
@@ -516,14 +516,14 @@ kubectl exec -n dns-system <new-operator-pod> -- cat /etc/crontab
 # - Clean vulnerability scan
 
 # Deploy patched operator
-kubectl rollout restart deploy/bindy -n dns-system
+kubectl rollout restart deploy/bindy -n bindy-system
 
 # Remove quarantine network policy
-kubectl delete networkpolicy bindy-operator-quarantine -n dns-system
+kubectl delete networkpolicy bindy-operator-quarantine -n bindy-system
 
 # Verify health
-kubectl get pods -n dns-system -l app.kubernetes.io/name=bindy
-kubectl logs -n dns-system -l app.kubernetes.io/name=bindy --tail=100
+kubectl get pods -n bindy-system -l app.kubernetes.io/name=bindy
+kubectl logs -n bindy-system -l app.kubernetes.io/name=bindy --tail=100
 ```
 
 **Step 4.2: Verify DNS Zones**
@@ -607,17 +607,17 @@ kubectl describe dnszone -n team-web example-com | grep "Ready.*True"
 dig @<bind9-loadbalancer-ip> example.com
 
 # Check pod status
-kubectl get pods -n dns-system -l app.kubernetes.io/name=bind9
+kubectl get pods -n bindy-system -l app.kubernetes.io/name=bind9
 
 # Check service endpoints
-kubectl get svc -n dns-system bind9-dns -o wide
-kubectl get endpoints -n dns-system bind9-dns
+kubectl get svc -n bindy-system bind9-dns -o wide
+kubectl get endpoints -n bindy-system bind9-dns
 ```
 
 **Step 1.2: Identify Root Cause**
 ```bash
 # Check pod logs
-kubectl logs -n dns-system <bind9-pod> --tail=200
+kubectl logs -n bindy-system <bind9-pod> --tail=200
 
 # Common root causes:
 # - OOMKilled (memory exhaustion)
@@ -626,7 +626,7 @@ kubectl logs -n dns-system <bind9-pod> --tail=200
 # - Pending (insufficient resources, node failure)
 
 # Check events
-kubectl describe pod -n dns-system <bind9-pod>
+kubectl describe pod -n bindy-system <bind9-pod>
 ```
 
 ---
@@ -636,7 +636,7 @@ kubectl describe pod -n dns-system <bind9-pod>
 **Scenario A: OOMKilled (Memory Exhaustion)**
 ```bash
 # Increase memory limit
-kubectl patch statefulset bind9-primary -n dns-system -p '
+kubectl patch statefulset bind9-primary -n bindy-system -p '
 spec:
   template:
     spec:
@@ -648,13 +648,13 @@ spec:
 '
 
 # Restart pods
-kubectl rollout restart statefulset/bind9-primary -n dns-system
+kubectl rollout restart statefulset/bind9-primary -n bindy-system
 ```
 
 **Scenario B: Configuration Error**
 ```bash
 # Check ConfigMap
-kubectl get cm -n dns-system bind9-config -o yaml
+kubectl get cm -n bindy-system bind9-config -o yaml
 
 # Common issues:
 # - Syntax error in named.conf
@@ -662,22 +662,22 @@ kubectl get cm -n dns-system bind9-config -o yaml
 # - Invalid RNDC key
 
 # Fix configuration (update ConfigMap)
-kubectl edit cm bind9-config -n dns-system
+kubectl edit cm bind9-config -n bindy-system
 
 # Restart pods to apply new config
-kubectl rollout restart statefulset/bind9-primary -n dns-system
+kubectl rollout restart statefulset/bind9-primary -n bindy-system
 ```
 
 **Scenario C: Image Pull Failure**
 ```bash
 # Check image pull secret
-kubectl get secret -n dns-system ghcr-pull-secret
+kubectl get secret -n bindy-system ghcr-pull-secret
 
 # Verify image exists
 docker pull ghcr.io/firestoned/bindy:latest
 
 # If image missing, rollback to previous version
-kubectl rollout undo statefulset/bind9-primary -n dns-system
+kubectl rollout undo statefulset/bind9-primary -n bindy-system
 ```
 
 ---
@@ -687,21 +687,21 @@ kubectl rollout undo statefulset/bind9-primary -n dns-system
 **Step 3.1: Verify Service Restoration**
 ```bash
 # Check all pods healthy
-kubectl get pods -n dns-system -l app.kubernetes.io/name=bind9
+kubectl get pods -n bindy-system -l app.kubernetes.io/name=bind9
 
 # Test DNS resolution (all zones)
 dig @<bind9-ip> example.com
 dig @<bind9-ip> test.example.com
 
 # Check service endpoints
-kubectl get endpoints -n dns-system bind9-dns
+kubectl get endpoints -n bindy-system bind9-dns
 # Should show all healthy pod IPs
 ```
 
 **Step 3.2: Validate Data Integrity**
 ```bash
 # Verify all zones loaded
-kubectl exec -n dns-system <bind9-pod> -- rndc status
+kubectl exec -n bindy-system <bind9-pod> -- rndc status
 
 # Check zone serial numbers (ensure no data loss)
 dig @<bind9-ip> example.com SOA
@@ -772,7 +772,7 @@ git log -S "rndc-key" --all
 **Step 1.2: Assess Impact**
 ```bash
 # Check BIND9 logs for unauthorized RNDC commands
-kubectl logs -n dns-system <bind9-pod> --tail=1000 | grep "rndc command"
+kubectl logs -n bindy-system <bind9-pod> --tail=1000 | grep "rndc command"
 
 # Check for malicious activity:
 # - rndc freeze (stop zone updates)
@@ -795,13 +795,13 @@ cat /tmp/rndc-key-new.conf
 # Create new Kubernetes secret
 kubectl create secret generic rndc-key-rotated \
   --from-literal=key="<new-key-here>" \
-  -n dns-system
+  -n bindy-system
 
 # Update operator deployment to use new secret
-kubectl set env deploy/bindy -n dns-system RNDC_KEY_SECRET=rndc-key-rotated
+kubectl set env deploy/bindy -n bindy-system RNDC_KEY_SECRET=rndc-key-rotated
 
 # Update BIND9 StatefulSets
-kubectl set volume statefulset/bind9-primary -n dns-system \
+kubectl set volume statefulset/bind9-primary -n bindy-system \
   --add --name=rndc-key \
   --type=secret \
   --secret-name=rndc-key-rotated \
@@ -809,11 +809,11 @@ kubectl set volume statefulset/bind9-primary -n dns-system \
   --sub-path=rndc.key
 
 # Restart all BIND9 pods
-kubectl rollout restart statefulset/bind9-primary -n dns-system
-kubectl rollout restart statefulset/bind9-secondary -n dns-system
+kubectl rollout restart statefulset/bind9-primary -n bindy-system
+kubectl rollout restart statefulset/bind9-secondary -n bindy-system
 
 # Delete compromised secret
-kubectl delete secret rndc-key -n dns-system
+kubectl delete secret rndc-key -n bindy-system
 ```
 
 **Step 2.2: Block Network Access (if attacker active)**
@@ -824,7 +824,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: bind9-rndc-deny-external
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   podSelector:
     matchLabels:
@@ -872,7 +872,7 @@ git push --force
 **If secret in logs:**
 ```bash
 # Rotate logs immediately
-kubectl delete pod -n dns-system <operator-pod>  # Forces log rotation
+kubectl delete pod -n bindy-system <operator-pod>  # Forces log rotation
 
 # Purge old logs from log aggregation system
 # (Depends on logging backend: Elasticsearch, CloudWatch, etc.)
@@ -892,7 +892,7 @@ kubectl delete pod -n dns-system <operator-pod>  # Forces log rotation
 **Step 4.1: Verify Key Rotation**
 ```bash
 # Test RNDC with new key
-kubectl exec -n dns-system <operator-pod> -- \
+kubectl exec -n bindy-system <operator-pod> -- \
   rndc -s <bind9-ip> -k /etc/bindy/rndc/rndc.key status
 
 # Expected: Command succeeds with new key
@@ -1131,14 +1131,14 @@ kubectl apply -f /path/to/gitops/rbac/team-web/alice-rolebinding.yaml
 **Step 1.1: Confirm DDoS Attack**
 ```bash
 # Check BIND9 query rate
-kubectl exec -n dns-system <bind9-pod> -- rndc status | grep "queries resulted"
+kubectl exec -n bindy-system <bind9-pod> -- rndc status | grep "queries resulted"
 
 # Check pod resource utilization
-kubectl top pods -n dns-system -l app.kubernetes.io/name=bind9
+kubectl top pods -n bindy-system -l app.kubernetes.io/name=bind9
 
 # Analyze query patterns
-kubectl exec -n dns-system <bind9-pod> -- rndc dumpdb -zones
-kubectl exec -n dns-system <bind9-pod> -- cat /var/cache/bind/named_dump.db | head -100
+kubectl exec -n bindy-system <bind9-pod> -- rndc dumpdb -zones
+kubectl exec -n bindy-system <bind9-pod> -- cat /var/cache/bind/named_dump.db | head -100
 ```
 
 **Step 1.2: Identify Attack Type**
@@ -1153,7 +1153,7 @@ kubectl exec -n dns-system <bind9-pod> -- cat /var/cache/bind/named_dump.db | he
 **Step 2.1: Enable Rate Limiting (BIND9)**
 ```bash
 # Update BIND9 configuration
-kubectl edit cm -n dns-system bind9-config
+kubectl edit cm -n bindy-system bind9-config
 
 # Add rate-limit directive:
 # named.conf:
@@ -1165,16 +1165,16 @@ rate-limit {
 };
 
 # Restart BIND9 to apply config
-kubectl rollout restart statefulset/bind9-primary -n dns-system
+kubectl rollout restart statefulset/bind9-primary -n bindy-system
 ```
 
 **Step 2.2: Scale Up BIND9 Pods**
 ```bash
 # Horizontal scaling
-kubectl scale statefulset bind9-secondary -n dns-system --replicas=5
+kubectl scale statefulset bind9-secondary -n bindy-system --replicas=5
 
 # Vertical scaling (if needed)
-kubectl patch statefulset bind9-primary -n dns-system -p '
+kubectl patch statefulset bind9-primary -n bindy-system -p '
 spec:
   template:
     spec:
@@ -1201,7 +1201,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: block-attacker-ips
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   podSelector:
     matchLabels:
@@ -1259,10 +1259,10 @@ rate-limit {
 **Step 4.1: Monitor Service Health**
 ```bash
 # Check query rate stabilized
-kubectl exec -n dns-system <bind9-pod> -- rndc status
+kubectl exec -n bindy-system <bind9-pod> -- rndc status
 
 # Check pod resource utilization
-kubectl top pods -n dns-system
+kubectl top pods -n bindy-system
 
 # Test DNS resolution
 dig @<bind9-ip> example.com
@@ -1273,7 +1273,7 @@ dig @<bind9-ip> example.com
 **Step 4.2: Scale Down (if attack subsided)**
 ```bash
 # Return to normal replica count
-kubectl scale statefulset bind9-secondary -n dns-system --replicas=2
+kubectl scale statefulset bind9-secondary -n bindy-system --replicas=2
 ```
 
 ---
@@ -1350,7 +1350,7 @@ curl -L https://github.com/firestoned/bindy/releases/download/v1.0.0/sbom.json |
 **Step 1.2: Assess Impact**
 ```bash
 # Check if compromised version deployed to production
-kubectl get deploy -n dns-system bindy -o jsonpath='{.spec.template.spec.containers[0].image}'
+kubectl get deploy -n bindy-system bindy -o jsonpath='{.spec.template.spec.containers[0].image}'
 
 # If compromised image is running → **CRITICAL** (proceed to containment)
 # If compromised image NOT deployed → **HIGH** (patch and prevent deployment)
@@ -1363,7 +1363,7 @@ kubectl get deploy -n dns-system bindy -o jsonpath='{.spec.template.spec.contain
 **Step 2.1: Isolate Compromised Operator**
 ```bash
 # Scale down compromised operator
-kubectl scale deploy -n dns-system bindy --replicas=0
+kubectl scale deploy -n bindy-system bindy --replicas=0
 
 # Apply network policy to block egress (prevent exfiltration)
 kubectl apply -f - <<EOF
@@ -1371,7 +1371,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: bindy-quarantine
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   podSelector:
     matchLabels:
@@ -1385,7 +1385,7 @@ EOF
 **Step 2.2: Preserve Evidence**
 ```bash
 # Save pod logs
-kubectl logs -n dns-system -l app.kubernetes.io/name=bindy --all-containers > /tmp/forensics/operator-logs.txt
+kubectl logs -n bindy-system -l app.kubernetes.io/name=bindy --all-containers > /tmp/forensics/operator-logs.txt
 
 # Save compromised image for analysis
 docker pull ghcr.io/firestoned/bindy:compromised-tag
@@ -1401,8 +1401,8 @@ trivy image ghcr.io/firestoned/bindy:compromised-tag --scanners vuln,secret,misc
 # See P4: RNDC Key Compromise
 
 # Rotate ServiceAccount tokens (if operator potentially stole them)
-kubectl delete secret -n dns-system $(kubectl get secrets -n dns-system | grep bindy-token | awk '{print $1}')
-kubectl rollout restart deploy/bindy -n dns-system  # Will generate new token
+kubectl delete secret -n bindy-system $(kubectl get secrets -n bindy-system | grep bindy-token | awk '{print $1}')
+kubectl rollout restart deploy/bindy -n bindy-system  # Will generate new token
 ```
 
 ---
@@ -1471,15 +1471,15 @@ docker push ghcr.io/firestoned/bindy:clean-$(date +%s)
 **Step 4.1: Deploy Clean Operator**
 ```bash
 # Update deployment manifest
-kubectl set image deploy/bindy -n dns-system \
+kubectl set image deploy/bindy -n bindy-system \
   bindy=ghcr.io/firestoned/bindy:clean-$(date +%s)
 
 # Remove quarantine network policy
-kubectl delete networkpolicy bindy-quarantine -n dns-system
+kubectl delete networkpolicy bindy-quarantine -n bindy-system
 
 # Verify health
-kubectl get pods -n dns-system -l app.kubernetes.io/name=bindy
-kubectl logs -n dns-system -l app.kubernetes.io/name=bindy --tail=100
+kubectl get pods -n bindy-system -l app.kubernetes.io/name=bindy
+kubectl logs -n bindy-system -l app.kubernetes.io/name=bindy --tail=100
 ```
 
 **Step 4.2: Verify Service Integrity**

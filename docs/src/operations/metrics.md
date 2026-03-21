@@ -12,7 +12,7 @@ The metrics endpoint is exposed on all operator pods:
 
 ```bash
 # Port forward to the operator
-kubectl port-forward -n dns-system deployment/bindy-operator 8080:8080
+kubectl port-forward -n bindy-system deployment/bindy-operator 8080:8080
 
 # View metrics
 curl http://localhost:8080/metrics
@@ -214,16 +214,16 @@ View CPU and memory usage:
 
 ```bash
 # All DNS pods
-kubectl top pods -n dns-system
+kubectl top pods -n bindy-system
 
 # Specific instance
-kubectl top pods -n dns-system -l instance=primary-dns
+kubectl top pods -n bindy-system -l instance=primary-dns
 
 # Sort by CPU
-kubectl top pods -n dns-system --sort-by=cpu
+kubectl top pods -n bindy-system --sort-by=cpu
 
 # Sort by memory
-kubectl top pods -n dns-system --sort-by=memory
+kubectl top pods -n bindy-system --sort-by=memory
 ```
 
 ### Node Metrics
@@ -286,17 +286,17 @@ Monitor zone transfer performance:
 
 ```yaml
 # View resource requests vs limits
-kubectl describe pod -n dns-system <pod-name> | grep -A5 "Limits:\|Requests:"
+kubectl describe pod -n bindy-system <pod-name> | grep -A5 "Limits:\|Requests:"
 ```
 
 ### Pod Health
 
 ```yaml
 # Pod status and restarts
-kubectl get pods -n dns-system -o wide
+kubectl get pods -n bindy-system -o wide
 
 # Events
-kubectl get events -n dns-system --sort-by='.lastTimestamp'
+kubectl get events -n bindy-system --sort-by='.lastTimestamp'
 ```
 
 ## Prometheus Integration

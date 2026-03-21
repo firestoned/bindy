@@ -500,7 +500,7 @@ jobs:
       - name: Create cluster
         run: |
           kind create cluster --config deploy/kind-config.yaml
-          kubectl create namespace dns-system
+          kubectl create namespace bindy-system
           kubectl apply -f deploy/crds/
           # ... 50+ lines of bash ...
 ```

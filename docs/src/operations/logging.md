@@ -39,16 +39,16 @@ env:
 
 ```bash
 # View recent logs
-kubectl logs -n dns-system deployment/bindy --tail=100
+kubectl logs -n bindy-system deployment/bindy --tail=100
 
 # Follow logs in real-time
-kubectl logs -n dns-system deployment/bindy -f
+kubectl logs -n bindy-system deployment/bindy -f
 
 # Filter by log level
-kubectl logs -n dns-system deployment/bindy | grep ERROR
+kubectl logs -n bindy-system deployment/bindy | grep ERROR
 
 # Search for specific resource
-kubectl logs -n dns-system deployment/bindy | grep "example-com"
+kubectl logs -n bindy-system deployment/bindy | grep "example-com"
 ```
 
 ## BIND9 Instance Logging
@@ -68,13 +68,13 @@ Bindy automatically configures BIND9 with the following logging channels:
 
 ```bash
 # Logs from all BIND9 pods
-kubectl logs -n dns-system -l app=bind9
+kubectl logs -n bindy-system -l app=bind9
 
 # Logs from specific instance
-kubectl logs -n dns-system -l instance=primary-dns
+kubectl logs -n bindy-system -l instance=primary-dns
 
 # Follow logs
-kubectl logs -n dns-system -l instance=primary-dns -f --tail=50
+kubectl logs -n bindy-system -l instance=primary-dns -f --tail=50
 ```
 
 ### Common Log Messages
@@ -111,10 +111,10 @@ Store and query logs with Grafana Loki:
 
 ```bash
 # Query logs for DNS zone
-{namespace="dns-system", app="bind9"} |= "example.com"
+{namespace="bindy-system", app="bind9"} |= "example.com"
 
 # Query for errors
-{namespace="dns-system"} |= "ERROR"
+{namespace="bindy-system"} |= "ERROR"
 ```
 
 ## Structured Logging
@@ -135,7 +135,7 @@ env:
 {
   "timestamp": "2025-11-30T10:00:00.123456Z",
   "level": "INFO",
-  "message": "Reconciling DNSZone: dns-system/example-com",
+  "message": "Reconciling DNSZone: bindy-system/example-com",
   "file": "dnszone.rs",
   "line": 142,
   "threadName": "bindy-operator"
@@ -147,7 +147,7 @@ env:
 Default human-readable format (RUST_LOG_FORMAT=text or unset):
 
 ```
-2025-11-30T10:00:00.123456Z dnszone.rs:142 INFO bindy-operator Reconciling DNSZone: dns-system/example-com
+2025-11-30T10:00:00.123456Z dnszone.rs:142 INFO bindy-operator Reconciling DNSZone: bindy-system/example-com
 ```
 
 ## Log Retention
@@ -163,19 +163,19 @@ Configure log retention based on your needs:
 ### Find Failed Reconciliations
 
 ```bash
-kubectl logs -n dns-system deployment/bindy | grep "ERROR\|Failed"
+kubectl logs -n bindy-system deployment/bindy | grep "ERROR\|Failed"
 ```
 
 ### Track Zone Transfer Issues
 
 ```bash
-kubectl logs -n dns-system -l dns-role=secondary | grep "transfer"
+kubectl logs -n bindy-system -l dns-role=secondary | grep "transfer"
 ```
 
 ### Monitor Resource Creation
 
 ```bash
-kubectl logs -n dns-system deployment/bindy | grep "Creating\|Updating"
+kubectl logs -n bindy-system deployment/bindy | grep "Creating\|Updating"
 ```
 
 ## Best Practices

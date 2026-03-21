@@ -22,7 +22,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-zone
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: production-cluster  # All instances in this cluster serve the zone
@@ -42,7 +42,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: us-west-zone
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: us-west.example.com
   bind9InstancesFrom:
@@ -66,7 +66,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: hybrid-zone
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: hybrid.example.com
   clusterRef: production-cluster
@@ -94,7 +94,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: corporate-zone
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: corporate.example.com
   clusterRef: production-cluster  # Namespace-scoped cluster
@@ -110,7 +110,7 @@ spec:
 
 **Check instance count:**
 ```bash
-kubectl get dnszone corporate-zone -n dns-system
+kubectl get dnszone corporate-zone -n bindy-system
 ```
 
 Output:
@@ -130,7 +130,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: global-zone
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: global.example.com
   clusterProviderRef: global-dns-provider  # Cluster-scoped provider
@@ -157,7 +157,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: api-zone
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: api.example.com
   bind9InstancesFrom:
@@ -177,7 +177,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: platform-dns-west
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     environment: production  # ✓ Matches zone selector
     team: platform           # ✓ Matches zone selector
@@ -266,7 +266,7 @@ spec:
 ### View Instances Serving a Zone
 
 ```bash
-kubectl get dnszone example-zone -n dns-system -o jsonpath='{.status.bind9Instances}' | jq
+kubectl get dnszone example-zone -n bindy-system -o jsonpath='{.status.bind9Instances}' | jq
 ```
 
 Output:
@@ -276,7 +276,7 @@ Output:
     "apiVersion": "bindy.firestoned.io/v1beta1",
     "kind": "Bind9Instance",
     "name": "primary-dns-west",
-    "namespace": "dns-system",
+    "namespace": "bindy-system",
     "status": "Configured",
     "lastReconciledAt": "2026-01-08T17:00:00Z"
   },
@@ -284,7 +284,7 @@ Output:
     "apiVersion": "bindy.firestoned.io/v1beta1",
     "kind": "Bind9Instance",
     "name": "secondary-dns-east",
-    "namespace": "dns-system",
+    "namespace": "bindy-system",
     "status": "Configured",
     "lastReconciledAt": "2026-01-08T17:01:30Z"
   }
@@ -294,7 +294,7 @@ Output:
 ### Quick Instance Count
 
 ```bash
-kubectl get dnszone example-zone -n dns-system -o jsonpath='{.status.bind9InstancesCount}'
+kubectl get dnszone example-zone -n bindy-system -o jsonpath='{.status.bind9InstancesCount}'
 ```
 
 Output: `2`
@@ -302,13 +302,13 @@ Output: `2`
 ### View Zones on an Instance
 
 ```bash
-kubectl get bind9instance primary-dns-west -n dns-system -o jsonpath='{.status.zones}' | jq
+kubectl get bind9instance primary-dns-west -n bindy-system -o jsonpath='{.status.zones}' | jq
 ```
 
 ### Quick Zone Count
 
 ```bash
-kubectl get bind9instance primary-dns-west -n dns-system -o jsonpath='{.status.zonesCount}'
+kubectl get bind9instance primary-dns-west -n bindy-system -o jsonpath='{.status.zonesCount}'
 ```
 
 ---
@@ -370,13 +370,13 @@ status:
   bind9InstancesCount: 3  # Zone is on 3 instances
   bind9Instances:
     - name: primary-west
-      namespace: dns-system
+      namespace: bindy-system
       status: Configured
     - name: secondary-east
-      namespace: dns-system
+      namespace: bindy-system
       status: Configured
     - name: edge-caching
-      namespace: dns-system
+      namespace: bindy-system
       status: Configured
 ```
 
@@ -393,13 +393,13 @@ Each instance in `bind9Instances` has a status:
 
 ```bash
 # View all instances and their status
-kubectl get dnszone example-zone -n dns-system -o yaml | yq '.status.bind9Instances'
+kubectl get dnszone example-zone -n bindy-system -o yaml | yq '.status.bind9Instances'
 
 # Check for failed instances
-kubectl get dnszone example-zone -n dns-system -o yaml | yq '.status.bind9Instances[] | select(.status == "Failed")'
+kubectl get dnszone example-zone -n bindy-system -o yaml | yq '.status.bind9Instances[] | select(.status == "Failed")'
 
 # Count configured instances
-kubectl get dnszone example-zone -n dns-system -o jsonpath='{.status.bind9Instances[?(@.status=="Configured")]}' | jq 'length'
+kubectl get dnszone example-zone -n bindy-system -o jsonpath='{.status.bind9Instances[?(@.status=="Configured")]}' | jq 'length'
 ```
 
 ---
@@ -416,7 +416,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: us-west-api
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: api.us-west.example.com
   bind9InstancesFrom:
@@ -433,7 +433,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: us-east-api
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: api.us-east.example.com
   bind9InstancesFrom:
@@ -452,7 +452,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: dns-west-primary
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     region: us-west-2        # Will serve us-west-api zone
     environment: production
@@ -464,7 +464,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: dns-east-primary
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     region: us-east-1        # Will serve us-east-api zone
     environment: production
@@ -483,7 +483,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: platform-services
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: platform.example.com
   bind9InstancesFrom:
@@ -499,7 +499,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: app-services
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: app.example.com
   bind9InstancesFrom:
@@ -520,7 +520,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: critical-api
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: api.example.com
   bind9InstancesFrom:
@@ -551,7 +551,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: hybrid-deployment
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: hybrid.example.com
   clusterRef: production-cluster  # All production cluster instances
@@ -577,7 +577,7 @@ spec:
 
 **Symptom:**
 ```bash
-$ kubectl get dnszone my-zone -n dns-system
+$ kubectl get dnszone my-zone -n bindy-system
 NAME      ZONE            RECORDS   INSTANCES   TTL    READY
 my-zone   example.com     0         0           3600   False
 ```
@@ -586,18 +586,18 @@ my-zone   example.com     0         0           3600   False
 
 1. **Check zone selectors:**
    ```bash
-   kubectl get dnszone my-zone -n dns-system -o yaml | yq '.spec.bind9InstancesFrom'
+   kubectl get dnszone my-zone -n bindy-system -o yaml | yq '.spec.bind9InstancesFrom'
    ```
 
 2. **Check available instances:**
    ```bash
-   kubectl get bind9instance -n dns-system --show-labels
+   kubectl get bind9instance -n bindy-system --show-labels
    ```
 
 3. **Test selector manually:**
    ```bash
    # If selector is matchLabels: {environment: production}
-   kubectl get bind9instance -n dns-system -l environment=production
+   kubectl get bind9instance -n bindy-system -l environment=production
    ```
 
 **Solutions:**
@@ -632,10 +632,10 @@ Instance labels changed but zone not selecting/deselecting instances.
 **Diagnosis:**
 ```bash
 # Check when zone was last reconciled
-kubectl get dnszone my-zone -n dns-system -o jsonpath='{.status.observedGeneration}'
+kubectl get dnszone my-zone -n bindy-system -o jsonpath='{.status.observedGeneration}'
 
 # Trigger manual reconciliation
-kubectl annotate dnszone my-zone -n dns-system reconcile-trigger="$(date +%s)" --overwrite
+kubectl annotate dnszone my-zone -n bindy-system reconcile-trigger="$(date +%s)" --overwrite
 ```
 
 **Solution:**
@@ -660,10 +660,10 @@ status:
 Check instance and bindcar sidecar status:
 ```bash
 # Check instance pods
-kubectl get pods -n dns-system -l app.kubernetes.io/name=bind9-instance,app.kubernetes.io/instance=secondary-east
+kubectl get pods -n bindy-system -l app.kubernetes.io/name=bind9-instance,app.kubernetes.io/instance=secondary-east
 
 # Check bindcar sidecar logs
-kubectl logs -n dns-system <instance-pod> -c bindcar
+kubectl logs -n bindy-system <instance-pod> -c bindcar
 ```
 
 **Solutions:**
@@ -773,10 +773,10 @@ Set up monitoring for zone-instance assignments:
 
 ```promql
 # Alert when zone has no instances
-bindy_dnszone_instance_count{namespace="dns-system"} == 0
+bindy_dnszone_instance_count{namespace="bindy-system"} == 0
 
 # Alert when instance count drops below expected
-bindy_dnszone_instance_count{namespace="dns-system",zone_name="api-production"} < 3
+bindy_dnszone_instance_count{namespace="bindy-system",zone_name="api-production"} < 3
 
 # Alert when instance shows Failed status
 bindy_dnszone_instance_status{status="Failed"} > 0
@@ -794,7 +794,7 @@ kubectl label bind9instance dev-instance -n dev-dns new-label=value
 kubectl get dnszone -n dev-dns -o custom-columns=NAME:.metadata.name,INSTANCES:.status.bind9InstancesCount
 
 # 3. If successful, apply to production
-kubectl label bind9instance prod-instance -n dns-system new-label=value
+kubectl label bind9instance prod-instance -n bindy-system new-label=value
 ```
 
 ### 6. Document Your Labeling Strategy

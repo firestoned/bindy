@@ -56,7 +56,7 @@ bindy run
 |---|---|---|
 | `BINDY_ENABLE_LEADER_ELECTION` | `true` | Set to `false` to disable. Only disable for local development. |
 | `BINDY_LEASE_NAME` | `bindy-leader` | Name of the Kubernetes `Lease` object used for leader election. |
-| `BINDY_LEASE_NAMESPACE` | `$POD_NAMESPACE` or `dns-system` | Namespace where the `Lease` object lives. |
+| `BINDY_LEASE_NAMESPACE` | `$POD_NAMESPACE` or `bindy-system` | Namespace where the `Lease` object lives. |
 | `BINDY_LEASE_DURATION_SECONDS` | `15` | Lease duration. A new leader cannot be elected until this expires. |
 | `BINDY_LEASE_RENEW_DEADLINE_SECONDS` | `10` | Time within which the leader must renew its lease. |
 | `BINDY_LEASE_RETRY_PERIOD_SECONDS` | `2` | How often non-leaders attempt to acquire the lease. |
@@ -114,7 +114,7 @@ bindy scout [OPTIONS]
 bindy scout --bind9-cluster-name prod
 
 # Explicit namespace
-bindy scout --bind9-cluster-name prod --namespace dns-system
+bindy scout --bind9-cluster-name prod --namespace bindy-system
 
 # Using environment variables only (typical Kubernetes deployment)
 BINDY_SCOUT_CLUSTER_NAME=prod BINDY_SCOUT_NAMESPACE=bindy-system bindy scout

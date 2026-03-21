@@ -9,7 +9,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com  # Used by DNSZone selector
 spec:
@@ -67,7 +67,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: root-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -89,7 +89,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-load-balanced
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -163,7 +163,7 @@ spec:
 Check record status with:
 
 ```bash
-kubectl get arecords -n dns-system
+kubectl get arecords -n bindy-system
 ```
 
 Output shows:
@@ -176,7 +176,7 @@ Output shows:
 For detailed status:
 
 ```bash
-kubectl describe arecord www-example -n dns-system
+kubectl describe arecord www-example -n bindy-system
 ```
 
 ## Common Patterns
@@ -188,7 +188,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-prod
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
     environment: production
@@ -208,7 +208,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: dev-api
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: dev.example.com
     environment: development
@@ -226,7 +226,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: root-load-balanced
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -257,7 +257,7 @@ spec:
 
 1. **Check record status**: `kubectl describe arecord <name>`
 2. **Verify TSIG key**: Ensure Bind9Instance has valid rndc key
-3. **Check pod logs**: `kubectl logs -n dns-system <bind9-pod>`
+3. **Check pod logs**: `kubectl logs -n bindy-system <bind9-pod>`
 4. **Test DNS update**: Use `nsupdate` manually to verify BIND9 accepts updates
 
 ## Related Documentation

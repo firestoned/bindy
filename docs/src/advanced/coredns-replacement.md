@@ -219,7 +219,7 @@ Run Bindy alongside CoreDNS during migration:
 2. **Test DNS Resolution**:
    ```bash
    # Get Bindy DNS service IP
-   kubectl get svc -n dns-system -l app.kubernetes.io/name=bind9
+   kubectl get svc -n bindy-system -l app.kubernetes.io/name=bind9
 
    # Test queries
    dig @<bindy-service-ip> kubernetes.default.svc.cluster.local
@@ -334,7 +334,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: cluster-local
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: cluster.local
   clusterProviderRef: cluster-dns
@@ -346,7 +346,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: svc-cluster-local
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: svc.cluster.local
   clusterProviderRef: cluster-dns
@@ -479,10 +479,10 @@ spec:
 kubectl get clusterbind9provider -o wide
 
 # Check instance health
-kubectl get bind9instances -n dns-system
+kubectl get bind9instances -n bindy-system
 
 # Query metrics (if Prometheus enabled)
-kubectl port-forward -n dns-system svc/bindy-metrics 8080:8080
+kubectl port-forward -n bindy-system svc/bindy-metrics 8080:8080
 curl localhost:8080/metrics | grep bindy_
 ```
 

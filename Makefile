@@ -7,7 +7,7 @@ REGISTRY ?= ghcr.io
 IMAGE_NAME ?= firestoned/bindy
 IMAGE_REPOSITORY ?= firestoned/bindy
 IMAGE_TAG ?= latest-dev
-NAMESPACE ?= dns-system
+NAMESPACE ?= bindy-system
 KIND_CLUSTER ?= bindy-test
 KIND_CONTEXT ?= "kind-$(KIND_CLUSTER)"
 

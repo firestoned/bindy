@@ -139,14 +139,14 @@ sysctl -w net.core.wmem_max=8388608
 
 ```bash
 # Before tuning - baseline
-kubectl top pods -n dns-system
+kubectl top pods -n bindy-system
 time dig @$SERVICE_IP example.com
 
 # Apply tuning
 kubectl apply -f tuned-config.yaml
 
 # After tuning - compare
-kubectl top pods -n dns-system
+kubectl top pods -n bindy-system
 time dig @$SERVICE_IP example.com
 ```
 

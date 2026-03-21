@@ -387,7 +387,7 @@ mod tests {
 
     #[test]
     fn test_status_updater_clear_degraded_condition_when_none_exists() {
-        let dnszone = create_test_dnszone("test-zone", "dns-system");
+        let dnszone = create_test_dnszone("test-zone", "bindy-system");
         let mut updater = DNSZoneStatusUpdater::new(&dnszone);
 
         // No degraded condition exists yet
@@ -408,7 +408,7 @@ mod tests {
 
     #[test]
     fn test_status_updater_clear_degraded_condition_when_true() {
-        let dnszone = create_test_dnszone("test-zone", "dns-system");
+        let dnszone = create_test_dnszone("test-zone", "bindy-system");
         let mut updater = DNSZoneStatusUpdater::new(&dnszone);
 
         // Set a Degraded=True condition first
@@ -438,7 +438,7 @@ mod tests {
 
     #[test]
     fn test_status_updater_has_degraded_condition_returns_false_initially() {
-        let dnszone = create_test_dnszone("test-zone", "dns-system");
+        let dnszone = create_test_dnszone("test-zone", "bindy-system");
         let updater = DNSZoneStatusUpdater::new(&dnszone);
 
         assert!(!updater.has_degraded_condition());
@@ -446,7 +446,7 @@ mod tests {
 
     #[test]
     fn test_status_updater_has_degraded_condition_returns_true_when_set() {
-        let dnszone = create_test_dnszone("test-zone", "dns-system");
+        let dnszone = create_test_dnszone("test-zone", "bindy-system");
         let mut updater = DNSZoneStatusUpdater::new(&dnszone);
 
         updater.set_condition("Degraded", "True", "PrimaryFailed", "Primary failed");
@@ -456,7 +456,7 @@ mod tests {
 
     #[test]
     fn test_status_updater_has_degraded_condition_returns_false_when_false() {
-        let dnszone = create_test_dnszone("test-zone", "dns-system");
+        let dnszone = create_test_dnszone("test-zone", "bindy-system");
         let mut updater = DNSZoneStatusUpdater::new(&dnszone);
 
         updater.set_condition("Degraded", "False", "Healthy", "Healthy");
@@ -466,7 +466,7 @@ mod tests {
 
     #[test]
     fn test_status_updater_clear_degraded_preserves_other_conditions() {
-        let dnszone = create_test_dnszone("test-zone", "dns-system");
+        let dnszone = create_test_dnszone("test-zone", "bindy-system");
         let mut updater = DNSZoneStatusUpdater::new(&dnszone);
 
         // Set multiple conditions
@@ -494,7 +494,7 @@ mod tests {
 
     #[test]
     fn test_status_updater_multiple_degraded_clears() {
-        let dnszone = create_test_dnszone("test-zone", "dns-system");
+        let dnszone = create_test_dnszone("test-zone", "bindy-system");
         let mut updater = DNSZoneStatusUpdater::new(&dnszone);
 
         // Set degraded multiple times and clear each time

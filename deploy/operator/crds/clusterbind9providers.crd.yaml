@@ -2060,7 +2060,7 @@ spec:
                   Namespace where `Bind9Instance` resources will be created
 
                   Since `ClusterBind9Provider` is cluster-scoped, instances need to be created in a specific namespace.
-                  Typically this would be a platform-managed namespace like `dns-system`.
+                  Typically this would be a platform-managed namespace like `bindy-system`.
 
                   All managed instances (primary and secondary) will be created in this namespace.
                   `DNSZones` from any namespace can reference this provider via `clusterProviderRef`.
@@ -2068,7 +2068,7 @@ spec:
                   **Default:** If not specified, instances will be created in the same namespace where the
                   Bindy operator is running (from `POD_NAMESPACE` environment variable).
 
-                  Example: `dns-system` for platform DNS infrastructure
+                  Example: `bindy-system` for platform DNS infrastructure
                 nullable: true
                 type: string
               primary:
@@ -2600,7 +2600,7 @@ spec:
                     kind: Secret
                     metadata:
                       name: my-rndc-key
-                      namespace: dns-system
+                      namespace: bindy-system
                     type: Opaque
                     stringData:
                       rndc.key: |
@@ -2620,7 +2620,7 @@ spec:
                     kind: Secret
                     metadata:
                       name: bind9-instance-rndc
-                      namespace: dns-system
+                      namespace: bindy-system
                     type: Opaque
                     stringData:
                       key-name: "bindy-operator"     # Operator metadata

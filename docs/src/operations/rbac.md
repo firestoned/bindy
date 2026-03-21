@@ -64,7 +64,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: bindy
-  namespace: dns-system
+  namespace: bindy-system
 ```
 
 ## ClusterRoleBinding
@@ -81,7 +81,7 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: bindy
-  namespace: dns-system
+  namespace: bindy-system
 ```
 
 ## Namespace-Scoped RBAC
@@ -93,7 +93,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: bindy-role
-  namespace: dns-system
+  namespace: bindy-system
 rules:
   # Same rules as ClusterRole
   - apiGroups: ["bindy.firestoned.io"]
@@ -112,7 +112,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: bindy-rolebinding
-  namespace: dns-system
+  namespace: bindy-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -120,7 +120,7 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: bindy
-  namespace: dns-system
+  namespace: bindy-system
 ```
 
 ## Applying RBAC
@@ -134,7 +134,7 @@ kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rb
 kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/rolebinding.yaml
 
 # Verify ServiceAccount
-kubectl get serviceaccount bindy -n dns-system
+kubectl get serviceaccount bindy -n bindy-system
 
 # Verify ClusterRole
 kubectl get clusterrole bindy-role
@@ -165,11 +165,11 @@ Check if operator has required permissions:
 ```bash
 # Check what the ServiceAccount can do
 kubectl auth can-i list dnszones \
-  --as=system:serviceaccount:dns-system:bindy
+  --as=system:serviceaccount:bindy-system:bindy
 
 # Describe the ClusterRoleBinding
 kubectl describe clusterrolebinding bindy-rolebinding
 
 # Check operator logs for permission errors
-kubectl logs -n dns-system deployment/bindy | grep -i forbidden
+kubectl logs -n bindy-system deployment/bindy | grep -i forbidden
 ```

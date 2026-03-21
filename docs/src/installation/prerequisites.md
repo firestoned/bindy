@@ -6,7 +6,7 @@ Before installing Bindy, ensure your environment meets these requirements.
 
 - **Kubernetes Version**: 1.24 or later
 - **Access Level**: Cluster admin access (for CRD and RBAC installation)
-- **Namespace**: Ability to create namespaces (recommended: `dns-system`)
+- **Namespace**: Ability to create namespaces (recommended: `bindy-system`)
 
 ### Supported Kubernetes Distributions
 

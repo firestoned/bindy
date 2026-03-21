@@ -72,8 +72,8 @@ resources:
 
 ```bash
 # View pod resource usage
-kubectl top pods -n dns-system -l app=bind9
+kubectl top pods -n bindy-system -l app=bind9
 
 # Describe pod to see limits
-kubectl describe pod -n dns-system <pod-name>
+kubectl describe pod -n bindy-system <pod-name>
 ```

@@ -50,8 +50,8 @@ mod tests {
 
     #[test]
     fn test_build_api_url_dns_name() {
-        let url = Bind9Manager::build_api_url("bind9-api.dns-system.svc.cluster.local:8080");
-        assert_eq!(url, "http://bind9-api.dns-system.svc.cluster.local:8080");
+        let url = Bind9Manager::build_api_url("bind9-api.bindy-system.svc.cluster.local:8080");
+        assert_eq!(url, "http://bind9-api.bindy-system.svc.cluster.local:8080");
     }
 
     #[test]

@@ -10,8 +10,8 @@ Solutions to frequently encountered problems.
 
 **Diagnosis:**
 ```bash
-kubectl get pods -n dns-system -l instance=primary-dns
-kubectl describe pod -n dns-system <pod-name>
+kubectl get pods -n bindy-system -l instance=primary-dns
+kubectl describe pod -n bindy-system <pod-name>
 ```
 
 **Common Causes:**
@@ -22,15 +22,15 @@ kubectl describe pod -n dns-system <pod-name>
 **Solution:**
 ```bash
 # Check events
-kubectl get events -n dns-system
+kubectl get events -n bindy-system
 
 # Fix resource limits
-kubectl edit bind9instance primary-dns -n dns-system
+kubectl edit bind9instance primary-dns -n bindy-system
 # Increase resources.requests and resources.limits
 
 # Verify RBAC
 kubectl auth can-i create deployments \
-  --as=system:serviceaccount:dns-system:bindy
+  --as=system:serviceaccount:bindy-system:bindy
 ```
 
 ### ConfigMap Not Created
@@ -39,17 +39,17 @@ kubectl auth can-i create deployments \
 
 **Diagnosis:**
 ```bash
-kubectl get configmap -n dns-system
-kubectl logs -n dns-system deployment/bindy | grep ConfigMap
+kubectl get configmap -n bindy-system
+kubectl logs -n bindy-system deployment/bindy | grep ConfigMap
 ```
 
 **Solution:**
 ```bash
 # Check operator logs for errors
-kubectl logs -n dns-system deployment/bindy --tail=50
+kubectl logs -n bindy-system deployment/bindy --tail=50
 
 # Delete and recreate instance
-kubectl delete bind9instance primary-dns -n dns-system
+kubectl delete bind9instance primary-dns -n bindy-system
 kubectl apply -f instance.yaml
 ```
 
@@ -65,10 +65,10 @@ Multiple DNSZone custom resources are trying to manage the same DNS zone name (e
 **Diagnosis:**
 ```bash
 # Check the DNSZone status
-kubectl get dnszone <zone-name> -n dns-system -o yaml
+kubectl get dnszone <zone-name> -n bindy-system -o yaml
 
 # Look for the condition
-kubectl get dnszone <zone-name> -n dns-system -o jsonpath='{.status.conditions[?(@.type=="Ready")]}'
+kubectl get dnszone <zone-name> -n bindy-system -o jsonpath='{.status.conditions[?(@.type=="Ready")]}'
 
 # Expected output showing the conflict:
 # {
@@ -123,7 +123,7 @@ kubectl get dnszone <zone-name> -n dns-system -o jsonpath='{.status.conditions[?
 3. **Verify resolution**: Check that the intended zone is now reconciling
    ```bash
    # Watch the zone status update
-   kubectl get dnszone <intended-zone-name> -n dns-system -w
+   kubectl get dnszone <intended-zone-name> -n bindy-system -w
 
    # Expected: Status should transition from DuplicateZone to Ready
    # Ready     False   DuplicateZone   ...  (before)
@@ -139,7 +139,7 @@ kubectl get dnszone <zone-name> -n dns-system -o jsonpath='{.status.conditions[?
    kind: DNSZone
    metadata:
      name: example-com-production  # ← Unique name
-     namespace: dns-system
+     namespace: bindy-system
    spec:
      zoneName: example.com  # ← Shared zone name (but only one should exist)
    ```
@@ -176,17 +176,17 @@ This validation ensures DNS consistency and prevents:
 
 **Diagnosis:**
 ```bash
-kubectl get bind9instances -n dns-system --show-labels
-kubectl get dnszone example-com -n dns-system -o yaml | yq '.spec.instanceSelector'
+kubectl get bind9instances -n bindy-system --show-labels
+kubectl get dnszone example-com -n bindy-system -o yaml | yq '.spec.instanceSelector'
 ```
 
 **Solution:**
 ```bash
 # Verify labels on instances
-kubectl label bind9instance primary-dns dns-role=primary -n dns-system
+kubectl label bind9instance primary-dns dns-role=primary -n bindy-system
 
 # Or update zone selector
-kubectl edit dnszone example-com -n dns-system
+kubectl edit dnszone example-com -n bindy-system
 ```
 
 ### Zone File Not Created
@@ -195,17 +195,17 @@ kubectl edit dnszone example-com -n dns-system
 
 **Diagnosis:**
 ```bash
-kubectl exec -n dns-system deployment/primary-dns -- ls -la /var/lib/bind/zones/
-kubectl logs -n dns-system deployment/bindy | grep "example-com"
+kubectl exec -n bindy-system deployment/primary-dns -- ls -la /var/lib/bind/zones/
+kubectl logs -n bindy-system deployment/bindy | grep "example-com"
 ```
 
 **Solution:**
 ```bash
 # Check if zone reconciliation succeeded
-kubectl describe dnszone example-com -n dns-system
+kubectl describe dnszone example-com -n bindy-system
 
 # Trigger reconciliation by updating zone
-kubectl annotate dnszone example-com reconcile=true -n dns-system
+kubectl annotate dnszone example-com reconcile=true -n bindy-system
 ```
 
 ## DNS Record Issues
@@ -217,19 +217,19 @@ kubectl annotate dnszone example-com reconcile=true -n dns-system
 **Diagnosis:**
 ```bash
 # Check if record has been selected by a zone
-kubectl get arecord www-example -n dns-system -o jsonpath='{.status.zoneRef}'
+kubectl get arecord www-example -n bindy-system -o jsonpath='{.status.zoneRef}'
 
 # Check record status conditions
-kubectl get arecord www-example -n dns-system -o jsonpath='{.status.conditions[?(@.type=="Ready")]}'
+kubectl get arecord www-example -n bindy-system -o jsonpath='{.status.conditions[?(@.type=="Ready")]}'
 
 # Check the record's labels
-kubectl get arecord www-example -n dns-system -o jsonpath='{.metadata.labels}'
+kubectl get arecord www-example -n bindy-system -o jsonpath='{.metadata.labels}'
 
 # Check available DNSZones and their selectors
-kubectl get dnszones -n dns-system
+kubectl get dnszones -n bindy-system
 
 # Check the DNSZone's label selector
-kubectl get dnszone example-com -n dns-system -o jsonpath='{.spec.recordsFrom[*].selector}'
+kubectl get dnszone example-com -n bindy-system -o jsonpath='{.spec.recordsFrom[*].selector}'
 ```
 
 **Understanding the Problem:**
@@ -273,13 +273,13 @@ Total time: ~500ms ✅
 
 2. **Check if record is in the same namespace as the zone:**
    ```bash
-   kubectl get arecord www-example -n dns-system
-   kubectl get dnszone example-com -n dns-system
+   kubectl get arecord www-example -n bindy-system
+   kubectl get dnszone example-com -n bindy-system
    ```
 
 3. **Verify DNSZone operator is running:**
    ```bash
-   kubectl logs -n dns-system deployment/bindy | grep "DNSZone watch"
+   kubectl logs -n bindy-system deployment/bindy | grep "DNSZone watch"
    ```
 
 4. **Check record status.zoneRef field:**
@@ -300,7 +300,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   recordSelector:
@@ -315,7 +315,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example
-  namespace: dns-system
+  namespace: bindy-system
   # ✗ Missing labels!
 spec:
   name: www
@@ -330,7 +330,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com  # ✓ Matches DNSZone selector
 spec:
@@ -342,13 +342,13 @@ spec:
 **Verification:**
 ```bash
 # After fixing, check the record reconciles
-kubectl describe arecord www-example -n dns-system
+kubectl describe arecord www-example -n bindy-system
 
 # Check which DNSZone the record matched
-kubectl get arecord www-example -n dns-system -o yaml | yq '.status.zone'
+kubectl get arecord www-example -n bindy-system -o yaml | yq '.status.zone'
 
 # Should see no errors in events
-kubectl get events -n dns-system --sort-by='.lastTimestamp' | tail -10
+kubectl get events -n bindy-system --sort-by='.lastTimestamp' | tail -10
 ```
 
 See the [Label Selectors Guide](../guide/label-selectors.md) for more details.
@@ -360,22 +360,22 @@ See the [Label Selectors Guide](../guide/label-selectors.md) for more details.
 **Diagnosis:**
 ```bash
 # Check record status
-kubectl get arecord www-example -n dns-system -o yaml
+kubectl get arecord www-example -n bindy-system -o yaml
 
 # Check zone file
-kubectl exec -n dns-system deployment/primary-dns -- cat /var/lib/bind/zones/example.com.zone
+kubectl exec -n bindy-system deployment/primary-dns -- cat /var/lib/bind/zones/example.com.zone
 ```
 
 **Solution:**
 ```bash
 # Verify record has the correct labels
-kubectl get arecord www-example -n dns-system -o yaml | yq '.metadata.labels'
+kubectl get arecord www-example -n bindy-system -o yaml | yq '.metadata.labels'
 
 # Check DNSZone selector
-kubectl get dnszone example-com -n dns-system -o yaml | yq '.spec.recordSelector'
+kubectl get dnszone example-com -n bindy-system -o yaml | yq '.spec.recordSelector'
 
 # Update labels to match selector
-kubectl label arecord www-example zone=example.com -n dns-system --overwrite
+kubectl label arecord www-example zone=example.com -n bindy-system --overwrite
 ```
 
 ### DNS Query Not Resolving
@@ -385,31 +385,31 @@ kubectl label arecord www-example zone=example.com -n dns-system --overwrite
 **Diagnosis:**
 ```bash
 # Get DNS service IP
-SERVICE_IP=$(kubectl get svc primary-dns -n dns-system -o jsonpath='{.spec.clusterIP}')
+SERVICE_IP=$(kubectl get svc primary-dns -n bindy-system -o jsonpath='{.spec.clusterIP}')
 
 # Test query
 dig @$SERVICE_IP www.example.com
 
 # Check BIND9 logs
-kubectl logs -n dns-system -l instance=primary-dns | tail -20
+kubectl logs -n bindy-system -l instance=primary-dns | tail -20
 ```
 
 **Solutions:**
 
 1. **Record doesn't exist:**
 ```bash
-kubectl get arecords -n dns-system
+kubectl get arecords -n bindy-system
 kubectl apply -f record.yaml
 ```
 
 2. **Zone not loaded:**
 ```bash
-kubectl logs -n dns-system -l instance=primary-dns | grep "loaded serial"
+kubectl logs -n bindy-system -l instance=primary-dns | grep "loaded serial"
 ```
 
 3. **Network policy blocking:**
 ```bash
-kubectl get networkpolicies -n dns-system
+kubectl get networkpolicies -n bindy-system
 ```
 
 ## Zone Transfer Issues
@@ -421,13 +421,13 @@ kubectl get networkpolicies -n dns-system
 **Diagnosis:**
 ```bash
 # Check secondary logs
-kubectl logs -n dns-system -l dns-role=secondary | grep transfer
+kubectl logs -n bindy-system -l dns-role=secondary | grep transfer
 
 # Check if zone has secondary IPs configured
-kubectl get dnszone example-com -n dns-system -o jsonpath='{.status.secondaryIps}'
+kubectl get dnszone example-com -n bindy-system -o jsonpath='{.status.secondaryIps}'
 
 # Check if secondaries are discovered
-kubectl get bind9instance -n dns-system -l role=secondary -o jsonpath='{.items[*].status.podIP}'
+kubectl get bind9instance -n bindy-system -l role=secondary -o jsonpath='{.items[*].status.podIP}'
 ```
 
 **Automatic Configuration:**
@@ -441,14 +441,14 @@ As of v0.1.0, Bindy **automatically discovers secondary IPs** and configures zon
 **Manual Verification:**
 ```bash
 # Check if zone has secondary IPs in status
-kubectl get dnszone example-com -n dns-system -o yaml | yq '.status.secondaryIps'
+kubectl get dnszone example-com -n bindy-system -o yaml | yq '.status.secondaryIps'
 
 # Expected output: List of secondary pod IPs
 # - 10.244.1.5
 # - 10.244.2.8
 
 # Verify zone configuration on primary
-kubectl exec -n dns-system deployment/primary-dns -- \
+kubectl exec -n bindy-system deployment/primary-dns -- \
   curl -s localhost:8080/api/zones/example.com | jq '.alsoNotify, .allowTransfer'
 ```
 
@@ -456,7 +456,7 @@ kubectl exec -n dns-system deployment/primary-dns -- \
 
 1. **Verify secondary instances are labeled correctly:**
    ```bash
-   kubectl get bind9instance -n dns-system -o yaml | yq '.items[].metadata.labels'
+   kubectl get bind9instance -n bindy-system -o yaml | yq '.items[].metadata.labels'
 
    # Expected labels for secondaries:
    # role: secondary
@@ -465,13 +465,13 @@ kubectl exec -n dns-system deployment/primary-dns -- \
 
 2. **Check DNSZone reconciler logs:**
    ```bash
-   kubectl logs -n dns-system deployment/bindy | grep "secondary"
+   kubectl logs -n bindy-system deployment/bindy | grep "secondary"
    ```
 
 3. **Verify network connectivity:**
    ```bash
    # Test AXFR from secondary to primary
-   kubectl exec -n dns-system deployment/secondary-dns -- \
+   kubectl exec -n bindy-system deployment/secondary-dns -- \
      dig @primary-dns-service AXFR example.com
    ```
 
@@ -485,7 +485,7 @@ When secondary pods are rescheduled and get new IPs:
 **Manual Trigger (if needed):**
 ```bash
 # Force reconciliation by updating zone annotation
-kubectl annotate dnszone example-com -n dns-system \
+kubectl annotate dnszone example-com -n bindy-system \
   reconcile.bindy.firestoned.io/trigger="$(date +%s)" --overwrite
 ```
 
@@ -501,7 +501,7 @@ kubectl annotate dnszone example-com -n dns-system \
 time dig @$SERVICE_IP example.com
 
 # Check resource usage
-kubectl top pods -n dns-system -l instance=primary-dns
+kubectl top pods -n bindy-system -l instance=primary-dns
 ```
 
 **Solutions:**
@@ -531,12 +531,12 @@ spec:
 
 **Diagnosis:**
 ```bash
-kubectl logs -n dns-system deployment/bindy | grep Forbidden
+kubectl logs -n bindy-system deployment/bindy | grep Forbidden
 
 # Check permissions
 kubectl auth can-i create deployments \
-  --as=system:serviceaccount:dns-system:bindy \
-  -n dns-system
+  --as=system:serviceaccount:bindy-system:bindy \
+  -n bindy-system
 ```
 
 **Solution:**
@@ -548,7 +548,7 @@ kubectl apply -f deploy/rbac/
 kubectl get clusterrolebinding bindy-rolebinding -o yaml
 
 # Restart operator
-kubectl rollout restart deployment/bindy -n dns-system
+kubectl rollout restart deployment/bindy -n bindy-system
 ```
 
 ## Next Steps

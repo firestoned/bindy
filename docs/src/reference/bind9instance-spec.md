@@ -214,7 +214,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: my-named-conf
-  namespace: dns-system
+  namespace: bindy-system
 data:
   named.conf: |
     // Custom BIND9 configuration
@@ -250,7 +250,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: my-options
-  namespace: dns-system
+  namespace: bindy-system
 data:
   named.conf.options: |
     options {
@@ -480,7 +480,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   version: "9.18"
   global:
@@ -498,7 +498,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     dns-role: primary
     environment: production
@@ -516,7 +516,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary-dns
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     dns-role: secondary
     environment: production
@@ -540,7 +540,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: resolver-cluster
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   version: "9.18"
   global:
@@ -559,7 +559,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: resolver
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     dns-role: resolver
 spec:

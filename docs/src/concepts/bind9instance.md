@@ -19,7 +19,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     dns-role: primary
     environment: production
@@ -143,7 +143,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: custom-image-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   replicas: 2
   image:
@@ -164,7 +164,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: custom-dns-config
-  namespace: dns-system
+  namespace: bindy-system
 data:
   named.conf.options: |
     options {
@@ -182,7 +182,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: custom-config-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   replicas: 2
   configMapRefs:
@@ -196,7 +196,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: prod-cluster
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   version: "9.18"
   image:
@@ -210,7 +210,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: prod-instance-1
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: prod-cluster
   replicas: 2
@@ -224,7 +224,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: canary-instance
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: prod-cluster  # Inherits most settings from cluster
   replicas: 1

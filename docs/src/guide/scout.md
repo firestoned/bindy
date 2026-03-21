@@ -1,9 +1,9 @@
 # Bindy Scout
 
-!!! warning "Same-Cluster Mode Only (Phase 1)"
-    This version of Scout requires **Scout and the Bindy operator to run in the same Kubernetes cluster**. Scout watches Ingresses in the local cluster and writes `ARecord` CRs to the same cluster's `bindy-system` namespace.
+!!! info "Same-Cluster Mode is the Default (Phase 1)"
+    When `BINDY_SCOUT_REMOTE_SECRET` is **not set**, Scout and the Bindy operator must run in the **same Kubernetes cluster**. This is the default mode and requires no additional configuration.
 
-    Cross-cluster mode (Scout in a workload cluster writing to a remote Bindy cluster) is planned for **Phase 2** and is not yet implemented.
+    **Phase 2 (remote cluster mode)** is also available: set `BINDY_SCOUT_REMOTE_SECRET` to a Secret containing a kubeconfig for the dedicated Bindy cluster. Scout will use that kubeconfig to create ARecords and validate zones on the remote cluster while still watching local Ingresses.
 
 ## The Scout Bee
 
@@ -66,6 +66,8 @@ sequenceDiagram
 
 ### 1. Annotate your Ingress
 
+**Minimal** — when Scout is configured with `--default-zone` and `--default-ips`:
+
 ```yaml
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -73,11 +75,26 @@ metadata:
   name: my-app
   namespace: my-app-ns
   annotations:
-    # Required: opt into Scout ARecord creation
-    bindy.firestoned.io/recordKind: "ARecord"
-    # Required: which DNS zone owns this host
+    bindy.firestoned.io/scout-enabled: "true"
+spec:
+  rules:
+    - host: my-app.example.com
+      ...
+```
+
+**With overrides** — per-Ingress zone and IP take precedence over Scout defaults:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: my-app
+  namespace: my-app-ns
+  annotations:
+    bindy.firestoned.io/scout-enabled: "true"
+    # Override the default zone for this Ingress (optional when --default-zone is set)
     bindy.firestoned.io/zone: "example.com"
-    # Optional: explicit IP override (defaults to LoadBalancer .status.ingress[0].ip)
+    # Optional: explicit IP override (overrides --default-ips and LB status)
     # bindy.firestoned.io/ip: "10.0.1.42"
     # Optional: TTL override in seconds (defaults to zone TTL)
     # bindy.firestoned.io/ttl: "300"
@@ -143,9 +160,10 @@ spec:
 
 | Annotation | Required | Description |
 |---|---|---|
-| `bindy.firestoned.io/recordKind` | **Yes** — must be `"ARecord"` | Specifies the DNS record kind Scout should create. Currently only `"ARecord"` is supported. Any other value (or absent) is ignored. |
-| `bindy.firestoned.io/zone` | **Yes** | The DNS zone that owns the Ingress hosts (e.g. `example.com`). All hosts in the Ingress rules must belong to this zone. Hosts outside the zone are skipped with a warning. |
-| `bindy.firestoned.io/ip` | No | Explicit IP address for the A record. When set, overrides the IP resolved from the Ingress LoadBalancer status. Useful when the IP is managed externally (e.g. a MetalLB address pool) or on clusters without a real load balancer (kind, minikube). |
+| `bindy.firestoned.io/scout-enabled` | **Yes** (preferred) | Set to `"true"` to opt this Ingress into Scout management. The record kind always defaults to `ARecord`. |
+| `bindy.firestoned.io/recordKind` | *(legacy)* | Accepted for backward compatibility. `"ARecord"` opts in. Prefer `scout-enabled: "true"` for new deployments. |
+| `bindy.firestoned.io/zone` | **Yes** (unless `--default-zone` is set) | The DNS zone that owns the Ingress hosts (e.g. `example.com`). Overrides the operator's `--default-zone`. Hosts outside the zone are skipped with a warning. |
+| `bindy.firestoned.io/ip` | No | Explicit IP address for the A record. When set, overrides both `--default-ips` and the Ingress LoadBalancer status. |
 | `bindy.firestoned.io/ttl` | No | TTL override in seconds. When absent, the created `ARecord` inherits the TTL from the `DNSZone` spec. |
 
 ---
@@ -211,6 +229,8 @@ spec:
 |---|---|
 | `--bind9-cluster-name <NAME>` | **Required** (unless env var set). Logical name of this cluster stamped on all created ARecord labels. Used to distinguish records created by different clusters writing to the same bindy namespace. |
 | `--namespace <NS>` | Namespace where ARecords are created. Defaults to `bindy-system`. |
+| `--default-zone <ZONE>` | Default DNS zone applied to all Ingresses when no `bindy.firestoned.io/zone` annotation is present (e.g. `example.com`). When combined with `--default-ips`, Ingresses only need `bindy.firestoned.io/scout-enabled: "true"`. |
+| `--default-ips <IP[,IP]>` | Comma-separated default IP address(es) used for all Ingresses when no per-Ingress `bindy.firestoned.io/ip` annotation or LoadBalancer status IP is available. Useful for shared-ingress topologies (e.g. Traefik). |
 
 CLI flags take precedence over the corresponding environment variables.
 
@@ -222,6 +242,10 @@ CLI flags take precedence over the corresponding environment variables.
 | `BINDY_SCOUT_NAMESPACE` | `bindy-system` | Namespace where ARecords are created. |
 | `POD_NAMESPACE` | `default` | Scout's own namespace. Always excluded from Ingress watching to prevent Scout from watching resources in its own namespace. Injected automatically by the Kubernetes downward API. |
 | `BINDY_SCOUT_EXCLUDE_NAMESPACES` | — | Comma-separated list of additional namespaces to skip. Useful to exclude system namespaces (`kube-system`, `kube-public`, etc.) that will never have Scout-annotated Ingresses. |
+| `BINDY_SCOUT_DEFAULT_ZONE` | — | Default DNS zone for all Ingresses when no `bindy.firestoned.io/zone` annotation is present. Overridden by `--default-zone`. When set alongside `BINDY_SCOUT_DEFAULT_IPS`, Ingresses only need `bindy.firestoned.io/scout-enabled: "true"`. |
+| `BINDY_SCOUT_DEFAULT_IPS` | — | Comma-separated default IP address(es) used when no per-Ingress annotation override or LoadBalancer status IP is available. Useful for shared-ingress topologies (e.g. Traefik) where all Ingresses resolve to the same VIP(s). Overridden by `--default-ips`. |
+| `BINDY_SCOUT_REMOTE_SECRET` | — | **(Phase 2)** Name of a Secret in the local cluster containing a `kubeconfig` key. When set, Scout targets the remote Bindy cluster for ARecord creation and zone validation. When unset, same-cluster mode is used. |
+| `BINDY_SCOUT_REMOTE_SECRET_NAMESPACE` | Scout's own namespace | **(Phase 2)** Namespace of the `BINDY_SCOUT_REMOTE_SECRET`. Defaults to Scout's own namespace (`POD_NAMESPACE`). |
 | `RUST_LOG` | `info` | Log level: `trace`, `debug`, `info`, `warn`, `error`. |
 | `RUST_LOG_FORMAT` | `text` | Log format: `text` (compact, human-readable) or `json` (structured, for log aggregators). |
 
@@ -371,4 +395,4 @@ Scout is currently in **Phase 1 — same-cluster mode**. All features are tracke
 |---|---|---|
 | Phase 1 | ✅ Current | Same-cluster mode. Scout and bindy run in the same cluster. ARecords are created in the same cluster. |
 | Phase 1.5 | ✅ Complete | Finalizer on Ingress. When an annotated Ingress is deleted, Scout removes the corresponding ARecord. |
-| Phase 2 | Planned | Remote cluster mode. Scout runs in the workload cluster and writes ARecords to a remote bindy cluster via a separate kubeconfig. |
+| Phase 2 | ✅ Complete | Remote cluster mode. Set `BINDY_SCOUT_REMOTE_SECRET` to a Secret containing a kubeconfig for the Bindy cluster. Scout uses it to write ARecords and validate zones remotely. |

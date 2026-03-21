@@ -20,7 +20,7 @@ Bindy implements **least privilege** RBAC to comply with PCI-DSS 7.1.2, SOX 404,
 
 **File:** [`role.yaml`](role.yaml)
 **Type:** ClusterRole
-**Bound To:** ServiceAccount `bindy` in `dns-system` namespace
+**Bound To:** ServiceAccount `bindy` in `bindy-system` namespace
 
 **Purpose:** Minimal permissions required for controller operation.
 
@@ -72,16 +72,16 @@ kubectl apply -f deploy/rbac/role-admin.yaml
 kubectl create rolebinding bindy-admin-binding \
   --clusterrole=bindy-admin-role \
   --user=admin@example.com \
-  --namespace=dns-system
+  --namespace=bindy-system
 
 # Or bind temporarily for a specific task
 kubectl create rolebinding bindy-admin-temp \
   --clusterrole=bindy-admin-role \
   --user=$(kubectl config view --minify -o jsonpath='{.contexts[0].context.user}') \
-  --namespace=dns-system
+  --namespace=bindy-system
 
 # Delete the binding after task completion
-kubectl delete rolebinding bindy-admin-temp --namespace=dns-system
+kubectl delete rolebinding bindy-admin-temp --namespace=bindy-system
 ```
 
 ---
@@ -100,7 +100,7 @@ kubectl apply -f examples/bind9-instance.yaml
 kubectl patch bind9instance example --type=merge -p '{"spec":{"replicas":3}}'
 
 # Controller can read secrets
-kubectl logs -n dns-system deployment/bindy | grep "Reading secret"
+kubectl logs -n bindy-system deployment/bindy | grep "Reading secret"
 ```
 
 ### Admin Operations (Destructive)
@@ -112,14 +112,14 @@ Admins must bind the admin role for deletions:
 kubectl create rolebinding my-admin-binding \
   --clusterrole=bindy-admin-role \
   --user=$(kubectl config view --minify -o jsonpath='{.contexts[0].context.user}') \
-  --namespace=dns-system
+  --namespace=bindy-system
 
 # 2. Perform admin operations
 kubectl delete bind9instance example
 kubectl delete dnszone example.com
 
 # 3. Remove admin binding when done
-kubectl delete rolebinding my-admin-binding --namespace=dns-system
+kubectl delete rolebinding my-admin-binding --namespace=bindy-system
 ```
 
 ---
@@ -133,29 +133,29 @@ Verify the controller has **minimum required** permissions:
 ```bash
 # Controller can read/write CRDs
 kubectl auth can-i get bind9instances \
-  --as=system:serviceaccount:dns-system:bindy
+  --as=system:serviceaccount:bindy-system:bindy
 # Expected: yes
 
 kubectl auth can-i update bind9instances \
-  --as=system:serviceaccount:dns-system:bindy
+  --as=system:serviceaccount:bindy-system:bindy
 # Expected: yes
 
 # Controller CANNOT delete CRDs
 kubectl auth can-i delete bind9instances \
-  --as=system:serviceaccount:dns-system:bindy
+  --as=system:serviceaccount:bindy-system:bindy
 # Expected: no
 
 # Controller can ONLY READ secrets
 kubectl auth can-i get secrets \
-  --as=system:serviceaccount:dns-system:bindy
+  --as=system:serviceaccount:bindy-system:bindy
 # Expected: yes
 
 kubectl auth can-i delete secrets \
-  --as=system:serviceaccount:dns-system:bindy
+  --as=system:serviceaccount:bindy-system:bindy
 # Expected: no
 
 kubectl auth can-i update secrets \
-  --as=system:serviceaccount:dns-system:bindy
+  --as=system:serviceaccount:bindy-system:bindy
 # Expected: no
 ```
 
@@ -171,7 +171,7 @@ kubectl auth can-i delete bind9instances
 # Expected: yes
 
 # Admin can delete secrets
-kubectl auth can-i delete secrets --namespace=dns-system
+kubectl auth can-i delete secrets --namespace=bindy-system
 # Expected: yes
 ```
 
@@ -258,7 +258,7 @@ kubectl auth can-i delete secrets --namespace=dns-system
 3. **Verify permissions:**
    ```bash
    # Run verification tests (see Verification section)
-   kubectl auth can-i delete secrets --as=system:serviceaccount:dns-system:bindy
+   kubectl auth can-i delete secrets --as=system:serviceaccount:bindy-system:bindy
    # Should return: no
    ```
 
@@ -281,13 +281,13 @@ kubectl auth can-i delete secrets --namespace=dns-system
    kubectl create rolebinding cleanup-binding \
      --clusterrole=bindy-admin-role \
      --user=$(kubectl config view --minify -o jsonpath='{.contexts[0].context.user}') \
-     --namespace=dns-system
+     --namespace=bindy-system
 
    # Delete orphaned resources
-   kubectl delete configmap orphaned-cm --namespace=dns-system
+   kubectl delete configmap orphaned-cm --namespace=bindy-system
 
    # Remove admin binding
-   kubectl delete rolebinding cleanup-binding --namespace=dns-system
+   kubectl delete rolebinding cleanup-binding --namespace=bindy-system
    ```
 
 ### Rollback
@@ -296,7 +296,7 @@ If issues occur, rollback to previous RBAC:
 
 ```bash
 kubectl apply -f role-backup.yaml
-kubectl rollout restart deployment/bindy -n dns-system
+kubectl rollout restart deployment/bindy -n bindy-system
 ```
 
 ---
@@ -312,10 +312,10 @@ kubectl rollout restart deployment/bindy -n dns-system
 **Solution:**
 ```bash
 # Verify RoleBinding exists
-kubectl get rolebinding bindy-binding -n dns-system
+kubectl get rolebinding bindy-binding -n bindy-system
 
 # Verify it references correct ServiceAccount
-kubectl get rolebinding bindy-binding -n dns-system -o yaml
+kubectl get rolebinding bindy-binding -n bindy-system -o yaml
 
 # Reapply if needed
 kubectl apply -f deploy/rbac/rolebinding.yaml
@@ -333,13 +333,13 @@ kubectl apply -f deploy/rbac/rolebinding.yaml
 kubectl create rolebinding my-admin \
   --clusterrole=bindy-admin-role \
   --user=$(kubectl config view --minify -o jsonpath='{.contexts[0].context.user}') \
-  --namespace=dns-system
+  --namespace=bindy-system
 
 # Try delete again
 kubectl delete bind9instance example
 
 # Remove binding when done
-kubectl delete rolebinding my-admin --namespace=dns-system
+kubectl delete rolebinding my-admin --namespace=bindy-system
 ```
 
 ### Controller Cannot Create Resources
@@ -352,8 +352,8 @@ kubectl delete rolebinding my-admin --namespace=dns-system
 ```bash
 # Verify controller has create permission
 kubectl auth can-i create deployments \
-  --as=system:serviceaccount:dns-system:bindy \
-  --namespace=dns-system
+  --as=system:serviceaccount:bindy-system:bindy \
+  --namespace=bindy-system
 
 # If "no", reapply role
 kubectl apply -f deploy/rbac/role.yaml
@@ -368,7 +368,7 @@ kubectl apply -f deploy/rbac/role.yaml
    # ❌ NEVER DO THIS
    kubectl create clusterrolebinding bad-binding \
      --clusterrole=bindy-admin-role \
-     --serviceaccount=dns-system:bindy
+     --serviceaccount=bindy-system:bindy
    ```
 
 2. **Use temporary admin bindings:**
@@ -377,13 +377,13 @@ kubectl apply -f deploy/rbac/role.yaml
    kubectl create rolebinding temp-admin \
      --clusterrole=bindy-admin-role \
      --user=$USER \
-     --namespace=dns-system
+     --namespace=bindy-system
 
    # Perform admin task
    kubectl delete bind9instance example
 
    # Immediately remove binding
-   kubectl delete rolebinding temp-admin --namespace=dns-system
+   kubectl delete rolebinding temp-admin --namespace=bindy-system
    ```
 
 3. **Audit admin role usage:**

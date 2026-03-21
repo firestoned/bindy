@@ -17,7 +17,7 @@ RED='\033[0;31m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-NAMESPACE="dns-system"
+NAMESPACE="bindy-system"
 CLUSTER_NAME="${CLUSTER_NAME:=bindy-test}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"

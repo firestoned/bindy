@@ -198,10 +198,10 @@ curl -X POST "https://elasticsearch:9200/bindy-audit-*/_search" \
       "bool": {
         "must": [
           { "term": { "objectRef.resource": "secrets" } },
-          { "term": { "objectRef.namespace": "dns-system" } }
+          { "term": { "objectRef.namespace": "bindy-system" } }
         ],
         "must_not": [
-          { "term": { "user.username.keyword": "system:serviceaccount:dns-system:bindy-operator" } }
+          { "term": { "user.username.keyword": "system:serviceaccount:bindy-system:bindy-operator" } }
         ]
       }
     }
@@ -247,7 +247,7 @@ curl -X POST "https://elasticsearch:9200/bindy-audit-*/_search" \
 
 | PCI-DSS Requirement | Bindy Audit Log Field | Example Value |
 |---------------------|----------------------|---------------|
-| **User identification** | `user.username` | `system:serviceaccount:dns-system:bindy-operator` |
+| **User identification** | `user.username` | `system:serviceaccount:bindy-system:bindy-operator` |
 | **Type of event** | `verb` | `get`, `list`, `watch`, `create`, `update`, `delete` |
 | **Date and time** | `requestReceivedTimestamp` | `2025-12-18T12:34:56.789Z` (ISO 8601 UTC) |
 | **Success/failure indication** | `responseStatus.code` | `200` (success), `403` (forbidden) |
@@ -263,17 +263,17 @@ curl -X POST "https://elasticsearch:9200/bindy-audit-*/_search" \
   "level": "Metadata",
   "auditID": "a4b5c6d7-e8f9-0a1b-2c3d-4e5f6a7b8c9d",
   "stage": "ResponseComplete",
-  "requestURI": "/api/v1/namespaces/dns-system/secrets/rndc-key-primary",
+  "requestURI": "/api/v1/namespaces/bindy-system/secrets/rndc-key-primary",
   "verb": "get",
   "user": {
-    "username": "system:serviceaccount:dns-system:bindy-operator",
+    "username": "system:serviceaccount:bindy-system:bindy-operator",
     "uid": "abc123",
-    "groups": ["system:serviceaccounts", "system:serviceaccounts:dns-system"]
+    "groups": ["system:serviceaccounts", "system:serviceaccounts:bindy-system"]
   },
   "sourceIPs": ["10.244.1.15"],
   "objectRef": {
     "resource": "secrets",
-    "namespace": "dns-system",
+    "namespace": "bindy-system",
     "name": "rndc-key-primary",
     "apiVersion": "v1"
   },

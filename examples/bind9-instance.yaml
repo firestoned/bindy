@@ -2,7 +2,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     dns-role: primary
     environment: production
@@ -15,7 +15,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary-dns
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     dns-role: secondary
     environment: production

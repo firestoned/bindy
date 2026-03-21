@@ -128,7 +128,7 @@ spec:
                   kind: DNSZone
                   metadata:
                     name: example-com
-                    namespace: dns-system
+                    namespace: bindy-system
                   spec:
                     zoneName: example.com
                     bind9InstancesFrom:
@@ -715,13 +715,13 @@ spec:
                       - apiVersion: bindy.firestoned.io/v1beta1
                         kind: Bind9Instance
                         name: primary-dns-0
-                        namespace: dns-system
+                        namespace: bindy-system
                         status: Configured
                         lastReconciledAt: "2026-01-03T20:00:00Z"
                       - apiVersion: bindy.firestoned.io/v1beta1
                         kind: Bind9Instance
                         name: secondary-dns-0
-                        namespace: dns-system
+                        namespace: bindy-system
                         status: Claimed
                         lastReconciledAt: "2026-01-03T20:01:00Z"
                   ```

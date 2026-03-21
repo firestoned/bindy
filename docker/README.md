@@ -134,7 +134,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: bindy-operator
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   replicas: 2
   selector:
