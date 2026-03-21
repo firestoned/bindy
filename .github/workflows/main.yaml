@@ -226,6 +226,23 @@ jobs:
           sbom: true
           provenance: true
 
+  vex-validate:
+    name: Validate VEX Documents
+    runs-on: ubuntu-latest
+    needs: [license-check, verify-commits]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Validate VEX documents
+        run: make vex-validate
+
   security:
     name: Security Vulnerability Scan
     runs-on: ubuntu-latest

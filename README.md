@@ -70,12 +70,36 @@ Bindy is a Kubernetes operator that manages BIND9 DNS infrastructure declarative
 - Adding/updating DNS records dynamically via RNDC
 - Platform-managed DNS accessible cluster-wide
 
-## Quick Example
+## Getting Started
 
-> **⚠️ Breaking Change from v0.2.x**: Records now use **label selectors** instead of `zoneRef`. Zones select records via `recordsFrom` using labels. See [Migration Guide](https://firestoned.github.io/bindy/operations/migration-guide.html) for upgrading from v0.2.x.
+### 1. Download the bindy binary
+
+```bash
+# Linux (amd64)
+curl -Lo bindy https://github.com/firestoned/bindy/releases/latest/download/bindy-linux-amd64
+chmod +x bindy && sudo mv bindy /usr/local/bin/
+
+# macOS (arm64)
+curl -Lo bindy https://github.com/firestoned/bindy/releases/latest/download/bindy-darwin-arm64
+chmod +x bindy && sudo mv bindy /usr/local/bin/
+```
+
+### 2. Bootstrap the cluster
+
+This creates the `bindy-system` namespace, installs CRDs, sets up RBAC, and deploys the operator — all in one command:
+
+```bash
+bindy bootstrap
+```
+
+The operator image tag matches the binary version (e.g. `ghcr.io/firestoned/bindy:v0.5.0`). Override with `--version` if needed.
+
+### 3. Create a BIND9 instance, zone, and record
+
+Save this as `dns.yaml`:
 
 ```yaml
-# 1. Create a DNS cluster
+# A single-primary BIND9 cluster
 apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
@@ -83,12 +107,10 @@ metadata:
   namespace: bindy-system
 spec:
   primary:
-    replicas: 2
-  secondary:
-    replicas: 2
+    replicas: 1
 
 ---
-# 2. Create a zone with label selector
+# A DNS zone that picks up records by label
 apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
@@ -103,24 +125,27 @@ spec:
           zone: example.com
 
 ---
-# 3. Add DNS records with matching labels
+# An A record for www.example.com
 apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www
   namespace: bindy-system
   labels:
-    zone: example.com  # Selected by DNSZone
+    zone: example.com
 spec:
   name: www
   ipv4Address: "192.0.2.1"
 ```
 
-Apply and you're done:
 ```bash
 kubectl apply -f dns.yaml
-dig @<dns-service-ip> www.example.com  # Works!
+
+# Test it
+dig @$(kubectl get svc -n bindy-system -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}') www.example.com A
 ```
+
+That's it. See the [full documentation](https://firestoned.github.io/bindy/) for HA setup, DNSSEC, multi-tenancy, and more.
 
 ## Architecture
 
@@ -195,36 +220,7 @@ spec:
 
 Application teams can then reference this global cluster from any namespace using `clusterProviderRef`. See [Multi-Tenancy Guide](https://firestoned.github.io/bindy/guide/multi-tenancy.html) for details.
 
-## Installation
-
-### 1. Install CRDs
-```bash
-kubectl create namespace bindy-system
-kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
-```
-
-### 2. Install RBAC
-```bash
-kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/serviceaccount.yaml
-kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/role.yaml
-kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/rolebinding.yaml
-```
-
-### 3. Deploy Operator
-```bash
-kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/operator/deployment.yaml
-```
-
-### 4. Verify
-```bash
-kubectl wait --for=condition=available --timeout=300s deployment/bind9-operator -n bindy-system
-```
-
-That's it! Now create DNS resources.
-
-**See the [Installation Guide](https://firestoned.github.io/bindy/installation/installation.html) for more options.**
-
-## Usage Examples
+## More Examples
 
 ### Simple DNS Cluster
 

@@ -67,6 +67,7 @@
 
 pub mod bind9;
 pub mod bind9_resources;
+pub mod bootstrap;
 pub mod constants;
 pub mod context;
 pub mod crd;
@@ -89,6 +90,8 @@ pub mod status_reasons;
 
 #[cfg(test)]
 mod bind9_resources_tests;
+#[cfg(test)]
+mod bootstrap_tests;
 #[cfg(test)]
 mod crd_docs_tests;
 #[cfg(test)]

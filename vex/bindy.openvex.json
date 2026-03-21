@@ -1,0 +1,81 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/firestoned/bindy/blob/main/vex/bindy.openvex.json",
+  "author": "Erick Bourgeois <erick@firestoned.io>",
+  "role": "Project Maintainer",
+  "timestamp": "2026-03-21T00:00:00Z",
+  "version": 1,
+  "tooling": "vexctl https://github.com/openvex/vexctl",
+  "statements": [
+    {
+      "vulnerability": {
+        "name": "CVE-2023-45288",
+        "description": "HTTP/2 CONTINUATION frame flood in Go net/http and golang.org/x/net/http2",
+        "aliases": ["GHSA-4v7x-pqxf-cx7m"]
+      },
+      "timestamp": "2026-03-21T00:00:00Z",
+      "products": [
+        { "@id": "pkg:github/firestoned/bindy" }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "bindy is written in Rust and does not include the Go runtime or golang.org/x/net/http2. The HTTP/2 server in bindy uses the Rust h2 crate (not Go), which is not affected by this CVE."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2024-24791",
+        "description": "net/http: Denial of service due to improper 100-continue handling in Go net/http",
+        "aliases": ["GHSA-hw49-2p59-3mhj"]
+      },
+      "timestamp": "2026-03-21T00:00:00Z",
+      "products": [
+        { "@id": "pkg:github/firestoned/bindy" }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "bindy is written in Rust and does not use the Go net/http package. HTTP handling is implemented via the Rust axum/hyper stack, which is not affected by this CVE."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2023-0464",
+        "description": "OpenSSL: Excessive Resource Usage Verifying X.509 Policy Constraints",
+        "aliases": ["GHSA-w3px-rvjf-gwpf"]
+      },
+      "timestamp": "2026-03-21T00:00:00Z",
+      "products": [
+        { "@id": "pkg:github/firestoned/bindy" }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "bindy uses rustls (with the ring or aws-lc-rs backend) for all TLS operations and does not link against or call into OpenSSL or libssl. The container base images (distroless/cc-debian12, chainguard/glibc-dynamic) do not include libssl. This CVE is not applicable."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2024-0727",
+        "description": "OpenSSL: PKCS12 Decoding crashes",
+        "aliases": ["GHSA-qrmm-w75w-3wpx"]
+      },
+      "timestamp": "2026-03-21T00:00:00Z",
+      "products": [
+        { "@id": "pkg:github/firestoned/bindy" }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "bindy does not use OpenSSL for TLS or certificate handling; it uses the Rust rustls crate exclusively. No PKCS#12 parsing via OpenSSL occurs. The container base images do not include libssl."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2024-2961",
+        "description": "glibc: Out-of-bounds write in iconv() with ISO-2022-CN-EXT charset",
+        "aliases": ["GHSA-p5rh-6xw5-j43c"]
+      },
+      "timestamp": "2026-03-21T00:00:00Z",
+      "products": [
+        { "@id": "pkg:github/firestoned/bindy" }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "bindy does not call the glibc iconv() function and does not process ISO-2022-CN-EXT encoded data. All string and character set handling uses Rust standard library types (str, String, Vec<u8>). This CVE is not reachable through bindy's code paths."
+    }
+  ]
+}
