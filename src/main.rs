@@ -46,9 +46,31 @@ use tracing::{debug, error, info, warn};
 #[error(transparent)]
 struct ReconcileError(#[from] anyhow::Error);
 
+const BANNER: &str = "
+
+        ()           ()
+         \\\\    ^    //
+       ~~~~\\\\~^^^~//~~~~~~
+     /     (  o o  )      \\
+    /   ___/  ~~~  \\___    \\
+    | /    \\   v   /    \\  |
+    |/   __/|=====|\\__   \\ |
+    |   /   |=====|   \\   ||
+    |  /    |=====|    \\  |/
+    \\ /     |=====|     \\ /
+            |=====|
+             \\===/
+              \\=/
+               *
+";
+
 /// BIND9 DNS Operator for Kubernetes
 #[derive(Parser)]
-#[command(name = "bindy", about = "BIND9 DNS Operator for Kubernetes")]
+#[command(
+    name = "bindy",
+    about = "Bindy - BIND9 DNS Operator for Kubernetes",
+    before_help = BANNER,
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -56,6 +78,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Bootstrap bindy into the cluster: apply namespace, CRDs, RBAC, and deploy the operator
+    Bootstrap {
+        /// Namespace to install bindy into
+        #[arg(long, default_value = bindy::bootstrap::DEFAULT_NAMESPACE)]
+        namespace: String,
+        /// Print what would be applied without connecting to a cluster
+        #[arg(long)]
+        dry_run: bool,
+        /// Version (image tag) for the operator Deployment.
+        /// Defaults to the binary's own version in release builds (e.g. "v0.5.0"),
+        /// or "latest" in debug builds.
+        #[arg(long, default_value = bindy::bootstrap::DEFAULT_IMAGE_TAG)]
+        version: String,
+    },
     /// Run the BIND9 DNS operator
     Run,
     /// Run the ingress scout controller (creates ARecords from annotated Ingresses)
@@ -106,6 +142,7 @@ fn main() -> Result<()> {
     }
 
     let thread_name = match &cli.command {
+        Commands::Bootstrap { .. } => "bindy-bootstrap",
         Commands::Run => "bindy-run",
         Commands::Scout { .. } => "bindy-scout",
         Commands::Completion { .. } => unreachable!("handled above"),
@@ -119,6 +156,11 @@ fn main() -> Result<()> {
         .build()?;
 
     match cli.command {
+        Commands::Bootstrap {
+            namespace,
+            dry_run,
+            version,
+        } => runtime.block_on(bootstrap_command(namespace, dry_run, version)),
         Commands::Run => runtime.block_on(run_command()),
         Commands::Scout {
             bind9_cluster_name,
@@ -761,6 +803,12 @@ async fn perform_startup_drift_detection(client: Client, context: Arc<Context>) 
 
     info!("Startup drift detection completed");
     Ok(())
+}
+
+/// Entry point for `bindy bootstrap` — applies namespace, CRDs, RBAC, and the operator Deployment.
+async fn bootstrap_command(namespace: String, dry_run: bool, version: String) -> Result<()> {
+    initialize_logging();
+    bindy::bootstrap::run_bootstrap(&namespace, dry_run, &version).await
 }
 
 /// Entry point for `bindy scout` — watches Ingresses and creates ARecords on the bindy cluster.

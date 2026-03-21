@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 
-.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny gitleaks gitleaks-install security-scan-local security-scan-quick security-scan-full install-git-hooks
+.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks
 
 REGISTRY ?= ghcr.io
 IMAGE_NAME ?= firestoned/bindy
@@ -13,6 +13,7 @@ KIND_CONTEXT ?= "kind-$(KIND_CLUSTER)"
 
 # Security tool versions
 GITLEAKS_VERSION ?= 8.21.2
+VEXCTL_VERSION ?= 0.3.0
 TRIVY_VERSION ?= 0.69.3
 SEMGREP_VERSION ?= 1.154.0
 KUBESEC_VERSION ?= 2.14.2
@@ -204,6 +205,26 @@ gitleaks-install: ## Install gitleaks from GitHub with checksum verification
 gitleaks: gitleaks-install ## Scan for hardcoded secrets and credentials
 	@echo "Scanning for secrets with gitleaks..."
 	@gitleaks detect --source . --verbose --redact
+
+vexctl-install: ## Install vexctl OpenVEX CLI tool (requires Go)
+	@if ! command -v vexctl >/dev/null 2>&1; then \
+		echo "Installing vexctl v$(VEXCTL_VERSION)..."; \
+		go install github.com/openvex/vexctl@v$(VEXCTL_VERSION) || { \
+			echo "ERROR: go install failed. Ensure Go is installed: https://go.dev/doc/install"; \
+			exit 1; \
+		}; \
+		echo "✓ vexctl v$(VEXCTL_VERSION) installed"; \
+	else \
+		echo "✓ vexctl already installed"; \
+	fi
+
+vex-validate: vexctl-install ## Validate VEX documents in vex/ with vexctl
+	@echo "Validating VEX documents..."
+	@for f in vex/*.openvex.json; do \
+		echo "  Validating $$f..."; \
+		vexctl merge "$$f" > /dev/null || exit 1; \
+	done
+	@echo "✓ All VEX documents are valid"
 
 trivy-install: ## Install Trivy scanner from GitHub with checksum verification
 	@if ! command -v trivy >/dev/null 2>&1; then \
@@ -530,7 +551,7 @@ security-scan-local: cargo-deny gitleaks ## Run local security scans (pre-commit
 security-scan-quick: cargo-deny gitleaks license-check ## Run quick security scans (for CI)
 	@echo "✓ Quick security scans completed"
 
-security-scan-full: cargo-deny gitleaks trivy-all semgrep kubesec license-check ## Run all security scans (Phase 1-5 complete)
+security-scan-full: cargo-deny gitleaks vex-validate trivy-all semgrep kubesec license-check ## Run all security scans (Phase 1-5 complete)
 	@echo "✓ All security scans completed"
 
 install-git-hooks: ## Install git pre-commit hooks (gitleaks secret scanning)
