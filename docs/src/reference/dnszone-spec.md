@@ -421,7 +421,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: primary-dns
@@ -443,7 +443,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: api-example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: api.example.com
   clusterRef: production-dns
@@ -465,7 +465,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com-multi-ns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: production-dns
@@ -497,7 +497,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: reverse-zone
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: 1.0.10.in-addr.arpa
   clusterRef: primary-dns
@@ -520,7 +520,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com-east
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: dns-east  # References east instance
@@ -539,7 +539,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com-west
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: dns-west  # References west instance

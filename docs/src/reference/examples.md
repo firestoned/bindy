@@ -22,7 +22,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: dns
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     dns-role: primary
 spec:
@@ -33,7 +33,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: "example.com"
   instanceSelector:
@@ -53,7 +53,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zone: "example-com"
   name: "www"
@@ -150,7 +150,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: custom-image-cluster
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   # Default image for all instances in this cluster
   image:
@@ -163,7 +163,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: custom-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: custom-image-cluster
   replicas: 2
@@ -179,7 +179,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: prod-cluster
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   image:
     image: "internetsystemsconsortium/bind9:9.18"
@@ -188,7 +188,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: canary-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: prod-cluster
   replicas: 1
@@ -208,7 +208,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: my-custom-named-conf
-  namespace: dns-system
+  namespace: bindy-system
 data:
   named.conf: |
     // Custom BIND9 configuration
@@ -230,7 +230,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: my-custom-options
-  namespace: dns-system
+  namespace: bindy-system
 data:
   named.conf.options: |
     options {
@@ -250,7 +250,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: custom-config-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   replicas: 2
   configMapRefs:
@@ -267,7 +267,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: shared-options
-  namespace: dns-system
+  namespace: bindy-system
 data:
   named.conf.options: |
     options {
@@ -281,7 +281,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: shared-config-cluster
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   configMapRefs:
     namedConfOptions: "shared-options"
@@ -290,7 +290,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: instance-1
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: shared-config-cluster
   replicas: 2
@@ -300,7 +300,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: instance-2
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: shared-config-cluster
   replicas: 2
@@ -343,9 +343,9 @@ spec:
 
 ```yaml
 # Separate namespaces by environment
-dns-system-prod      # Production DNS
-dns-system-staging   # Staging DNS
-dns-system-dev       # Development DNS
+bindy-system-prod      # Production DNS
+bindy-system-staging   # Staging DNS
+bindy-system-dev       # Development DNS
 ```
 
 ### Label Strategy
@@ -392,7 +392,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: dev-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   replicas: 1
   config:

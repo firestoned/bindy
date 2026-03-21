@@ -27,7 +27,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   version: "9.18"
   global:
@@ -41,7 +41,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: production-dns  # Direct reference to Bind9Cluster name
   role: primary  # Required: primary or secondary
@@ -55,7 +55,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: production-dns  # Direct reference to Bind9Cluster name
@@ -85,7 +85,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: dns-cluster-east
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   version: "9.18"
 
@@ -95,7 +95,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: dns-east
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: dns-cluster-east
   role: primary  # Required: primary or secondary
@@ -107,7 +107,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com-east
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: dns-cluster-east  # Targets east cluster
@@ -121,7 +121,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: dns-cluster-west
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   version: "9.18"
 
@@ -131,7 +131,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: dns-west
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: dns-cluster-west
   role: primary  # Required: primary or secondary
@@ -143,7 +143,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com-west
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: dns-cluster-west  # Targets west cluster

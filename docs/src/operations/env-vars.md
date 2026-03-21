@@ -19,7 +19,7 @@ Configure Bindy using environment variables. See also the [CLI Reference](../ref
 |---|---|---|
 | `BINDY_ENABLE_LEADER_ELECTION` | `true` | Set to `false` to disable. Only disable for local development — production deployments should always use leader election. |
 | `BINDY_LEASE_NAME` | `bindy-leader` | Name of the Kubernetes `Lease` object. |
-| `BINDY_LEASE_NAMESPACE` | `$POD_NAMESPACE` or `dns-system` | Namespace where the `Lease` object lives. |
+| `BINDY_LEASE_NAMESPACE` | `$POD_NAMESPACE` or `bindy-system` | Namespace where the `Lease` object lives. |
 | `BINDY_LEASE_DURATION_SECONDS` | `15` | How long a lease is held before it expires. A new leader cannot be elected until this expires. |
 | `BINDY_LEASE_RENEW_DEADLINE_SECONDS` | `10` | Deadline within which the current leader must renew its lease. |
 | `BINDY_LEASE_RETRY_PERIOD_SECONDS` | `2` | How often non-leaders attempt to acquire the lease. |

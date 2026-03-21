@@ -15,7 +15,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: production-dns
@@ -43,7 +43,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com  # ✅ Matches DNSZone selector
 spec:
@@ -139,7 +139,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example-com
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -175,7 +175,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example-com-1
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -188,7 +188,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example-com-2
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -213,7 +213,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: www-example-com-v6
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -254,7 +254,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-v4
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -268,7 +268,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: www-v6
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -293,7 +293,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: blog-alias
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -330,7 +330,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: cdn-alias
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -352,7 +352,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mail-primary
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -399,7 +399,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mail-primary
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -413,7 +413,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mail-backup
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -438,7 +438,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: spf-record
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -482,7 +482,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: spf
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -496,7 +496,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: dkim
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -510,7 +510,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: dmarc
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -533,7 +533,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: subdomain-delegation
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -566,7 +566,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: sub-ns1
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -579,7 +579,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: sub-ns2
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -603,7 +603,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: ldap-service
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -681,7 +681,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: srv-primary
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -697,7 +697,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: srv-secondary
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -722,7 +722,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-letsencrypt
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -795,7 +795,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-issue
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -810,7 +810,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-issuewild
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -825,7 +825,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-iodef
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:

@@ -19,7 +19,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: my-dns-cluster  # References Bind9Instance name
@@ -151,7 +151,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: my-dns-cluster  # Referenced by DNSZone
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   role: primary
   replicas: 2
@@ -166,7 +166,7 @@ DNSZone.spec.clusterRef = "my-dns-cluster"
     ↓
 Secret name = "my-dns-cluster-rndc-key"
     ↓
-RNDC authentication to: my-dns-cluster.dns-system.svc.cluster.local:9530
+RNDC authentication to: my-dns-cluster.bindy-system.svc.cluster.local:9530
 ```
 
 ## Status
@@ -290,7 +290,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 status:
   conditions:
     - type: Ready

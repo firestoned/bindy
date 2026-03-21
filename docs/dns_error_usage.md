@@ -117,7 +117,7 @@ let error = TsigError::TsigConnectionError {
 // TSIG key secret not found in Kubernetes
 let error = TsigError::TsigKeyNotFound {
     secret_name: "my-instance-rndc-key".to_string(),
-    namespace: "dns-system".to_string(),
+    namespace: "bindy-system".to_string(),
 };
 
 // Invalid TSIG key data in secret

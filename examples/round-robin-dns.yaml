@@ -7,7 +7,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-load-balanced
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     bindy.firestoned.io/zone: example.com
 spec:
@@ -24,7 +24,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: www-ipv6-load-balanced
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     bindy.firestoned.io/zone: example.com
 spec:
@@ -43,7 +43,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: api-dual-stack-ipv4
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     bindy.firestoned.io/zone: example.com
 spec:
@@ -58,7 +58,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: api-dual-stack-ipv6
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     bindy.firestoned.io/zone: example.com
 spec:

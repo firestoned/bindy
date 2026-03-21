@@ -28,7 +28,7 @@ Save as `simple-dns.yaml`:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: dns-system
+  name: bindy-system
 
 ---
 # Bind9Instance - Single DNS Server
@@ -36,7 +36,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: simple-dns
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     app: bindy
     dns-role: primary
@@ -60,7 +60,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: "example.com"
   zoneType: "primary"
@@ -83,7 +83,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: ns1-a-record
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zone: "example-com"
   name: "ns1"
@@ -97,7 +97,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-a-record
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zone: "example-com"
   name: "www"
@@ -111,7 +111,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: www-aaaa-record
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zone: "example-com"
   name: "www"
@@ -125,7 +125,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: mail-a-record
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zone: "example-com"
   name: "mail"
@@ -139,7 +139,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-record
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zone: "example-com"
   name: "@"
@@ -153,7 +153,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: spf-record
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zone: "example-com"
   name: "@"
@@ -167,7 +167,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: dmarc-record
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zone: "example-com"
   name: "_dmarc"
@@ -181,7 +181,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: api-cname-record
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zone: "example-com"
   name: "api"
@@ -245,21 +245,21 @@ kubectl apply -f simple-dns.yaml
 
 ```bash
 # Check Bind9Instance
-kubectl get bind9instances -n dns-system
-kubectl describe bind9instance simple-dns -n dns-system
+kubectl get bind9instances -n bindy-system
+kubectl describe bind9instance simple-dns -n bindy-system
 
 # Check DNSZone
-kubectl get dnszones -n dns-system
-kubectl describe dnszone example-com -n dns-system
+kubectl get dnszones -n bindy-system
+kubectl describe dnszone example-com -n bindy-system
 
 # Check DNS Records
-kubectl get arecords,aaaarecords,cnamerecords,mxrecords,txtrecords -n dns-system
+kubectl get arecords,aaaarecords,cnamerecords,mxrecords,txtrecords -n bindy-system
 
 # Check pods
-kubectl get pods -n dns-system
+kubectl get pods -n bindy-system
 
 # Check logs
-kubectl logs -n dns-system -l app=bindy
+kubectl logs -n bindy-system -l app=bindy
 ```
 
 ## Testing
@@ -269,7 +269,7 @@ kubectl logs -n dns-system -l app=bindy
 Get the DNS service IP:
 
 ```bash
-DNS_IP=$(kubectl get svc -n dns-system simple-dns -o jsonpath='{.spec.clusterIP}')
+DNS_IP=$(kubectl get svc -n bindy-system simple-dns -o jsonpath='{.spec.clusterIP}')
 ```
 
 Test DNS resolution:
@@ -314,7 +314,7 @@ api.example.com.    3600   IN    CNAME www.example.com.
 
 ```bash
 # Forward DNS port to localhost
-kubectl port-forward -n dns-system svc/simple-dns 5353:53
+kubectl port-forward -n bindy-system svc/simple-dns 5353:53
 
 # Test from local machine
 dig @localhost -p 5353 www.example.com
@@ -326,23 +326,23 @@ dig @localhost -p 5353 www.example.com
 
 ```bash
 # Instance status
-kubectl get bind9instance simple-dns -n dns-system -o yaml | grep -A 10 status
+kubectl get bind9instance simple-dns -n bindy-system -o yaml | grep -A 10 status
 
 # Zone status
-kubectl get dnszone example-com -n dns-system -o yaml | grep -A 10 status
+kubectl get dnszone example-com -n bindy-system -o yaml | grep -A 10 status
 
 # Record status
-kubectl get arecord www-a-record -n dns-system -o yaml | grep -A 10 status
+kubectl get arecord www-a-record -n bindy-system -o yaml | grep -A 10 status
 ```
 
 ### View Logs
 
 ```bash
 # Operator logs
-kubectl logs -n dns-system deployment/bindy
+kubectl logs -n bindy-system deployment/bindy
 
 # BIND9 logs
-kubectl logs -n dns-system -l app=bindy,dns-role=primary
+kubectl logs -n bindy-system -l app=bindy,dns-role=primary
 ```
 
 ## Updating Configuration
@@ -355,7 +355,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: app-a-record
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zone: "example-com"
   name: "app"
@@ -368,7 +368,7 @@ EOF
 ### Update SOA Serial
 
 ```bash
-kubectl edit dnszone example-com -n dns-system
+kubectl edit dnszone example-com -n bindy-system
 
 # Update serial field:
 # serial: 2024010102
@@ -377,7 +377,7 @@ kubectl edit dnszone example-com -n dns-system
 ### Scale Instance
 
 ```bash
-kubectl patch bind9instance simple-dns -n dns-system \
+kubectl patch bind9instance simple-dns -n bindy-system \
   --type merge \
   --patch '{"spec":{"replicas":2}}'
 ```
@@ -393,7 +393,7 @@ kubectl delete -f simple-dns.yaml
 ### Remove Namespace
 
 ```bash
-kubectl delete namespace dns-system
+kubectl delete namespace bindy-system
 ```
 
 ## Next Steps
@@ -408,31 +408,31 @@ kubectl delete namespace dns-system
 
 ```bash
 # Check pod events
-kubectl describe pod -n dns-system -l app=bindy
+kubectl describe pod -n bindy-system -l app=bindy
 
 # Check operator logs
-kubectl logs -n dns-system deployment/bindy
+kubectl logs -n bindy-system deployment/bindy
 ```
 
 ### DNS Not Resolving
 
 ```bash
 # Check zone status
-kubectl get dnszone example-com -n dns-system -o yaml
+kubectl get dnszone example-com -n bindy-system -o yaml
 
 # Check BIND9 logs
-kubectl logs -n dns-system -l app=bindy,dns-role=primary
+kubectl logs -n bindy-system -l app=bindy,dns-role=primary
 
 # Verify zone file
-kubectl exec -n dns-system -it <pod-name> -- cat /var/lib/bind/zones/example.com.zone
+kubectl exec -n bindy-system -it <pod-name> -- cat /var/lib/bind/zones/example.com.zone
 ```
 
 ### Record Not Appearing
 
 ```bash
 # Check record status
-kubectl get arecord www-a-record -n dns-system -o yaml
+kubectl get arecord www-a-record -n bindy-system -o yaml
 
 # Check zone record count
-kubectl get dnszone example-com -n dns-system -o jsonpath='{.status.recordCount}'
+kubectl get dnszone example-com -n bindy-system -o jsonpath='{.status.recordCount}'
 ```

@@ -57,7 +57,7 @@ spec:
               kind: SRVRecord
               metadata:
                 name: ldap-srv
-                namespace: dns-system
+                namespace: bindy-system
                 labels:
                   zone: example.com
               spec:

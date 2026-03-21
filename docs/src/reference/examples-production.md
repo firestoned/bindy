@@ -49,7 +49,7 @@ Save as `production-dns.yaml`:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: dns-system-prod
+  name: bindy-system-prod
   labels:
     environment: production
 
@@ -59,7 +59,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: bindy-config
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 data:
   RUST_LOG: "info"
   RECONCILE_INTERVAL: "300"
@@ -70,7 +70,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
   labels:
     app: bindy
     dns-role: primary
@@ -99,7 +99,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary-dns
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
   labels:
     app: bindy
     dns-role: secondary
@@ -126,7 +126,7 @@ apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: primary-dns-pdb
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   minAvailable: 1
   selector:
@@ -140,7 +140,7 @@ apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: secondary-dns-pdb
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   minAvailable: 1
   selector:
@@ -154,7 +154,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com-primary
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   zoneName: "example.com"
   zoneType: "primary"
@@ -177,7 +177,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com-secondary
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   zoneName: "example.com"
   zoneType: "secondary"
@@ -198,7 +198,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: ns1-primary
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   zone: "example-com-primary"
   name: "ns1"
@@ -211,7 +211,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: ns2-secondary
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   zone: "example-com-primary"
   name: "ns2"
@@ -225,7 +225,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-lb-1
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   zone: "example-com-primary"
   name: "www"
@@ -238,7 +238,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-lb-2
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   zone: "example-com-primary"
   name: "www"
@@ -251,7 +251,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-lb-3
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   zone: "example-com-primary"
   name: "www"
@@ -265,7 +265,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: www-v6-1
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   zone: "example-com-primary"
   name: "www"
@@ -278,7 +278,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: www-v6-2
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   zone: "example-com-primary"
   name: "www"
@@ -292,7 +292,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: mail1
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   zone: "example-com-primary"
   name: "mail1"
@@ -305,7 +305,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: mail2
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   zone: "example-com-primary"
   name: "mail2"
@@ -319,7 +319,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-primary
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   zone: "example-com-primary"
   name: "@"
@@ -332,7 +332,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mx-backup
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   zone: "example-com-primary"
   name: "@"
@@ -346,7 +346,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: spf
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   zone: "example-com-primary"
   name: "@"
@@ -360,7 +360,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: dkim
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   zone: "example-com-primary"
   name: "default._domainkey"
@@ -374,7 +374,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: dmarc
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   zone: "example-com-primary"
   name: "_dmarc"
@@ -388,7 +388,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-issue
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   zone: "example-com-primary"
   name: "@"
@@ -402,7 +402,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-issuewild
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   zone: "example-com-primary"
   name: "@"
@@ -416,7 +416,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CAARecord
 metadata:
   name: caa-iodef
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   zone: "example-com-primary"
   name: "@"
@@ -431,7 +431,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: srv-sip-tcp
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   zone: "example-com-primary"
   name: "_sip._tcp"
@@ -447,7 +447,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: cdn
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   zone: "example-com-primary"
   name: "cdn"
@@ -461,7 +461,7 @@ spec:
 
 ```bash
 # Create namespace
-kubectl create namespace dns-system-prod
+kubectl create namespace bindy-system-prod
 
 # Label nodes for DNS pods (optional but recommended)
 kubectl label nodes node1 dns-zone=primary
@@ -480,15 +480,15 @@ kubectl apply -f production-dns.yaml
 
 ```bash
 # Check all instances
-kubectl get bind9instances -n dns-system-prod
-kubectl get dnszones -n dns-system-prod
-kubectl get pods -n dns-system-prod -o wide
+kubectl get bind9instances -n bindy-system-prod
+kubectl get dnszones -n bindy-system-prod
+kubectl get pods -n bindy-system-prod -o wide
 
 # Check PodDisruptionBudgets
-kubectl get pdb -n dns-system-prod
+kubectl get pdb -n bindy-system-prod
 
 # Verify HA distribution
-kubectl get pods -n dns-system-prod -o custom-columns=\
+kubectl get pods -n bindy-system-prod -o custom-columns=\
 NAME:.metadata.name,\
 NODE:.spec.nodeName,\
 ROLE:.metadata.labels.dns-role
@@ -503,7 +503,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: bindy-metrics
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
   labels:
     app: bindy
 spec:
@@ -522,7 +522,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: bindy-dns
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   selector:
     matchLabels:
@@ -540,7 +540,7 @@ spec:
 #!/bin/bash
 # backup-zones.sh
 
-NAMESPACE="dns-system-prod"
+NAMESPACE="bindy-system-prod"
 BACKUP_DIR="./dns-backups/$(date +%Y%m%d)"
 
 mkdir -p "$BACKUP_DIR"
@@ -571,7 +571,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: dns-allow-queries
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   podSelector:
     matchLabels:
@@ -592,7 +592,7 @@ spec:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: dns-system-prod
+  name: bindy-system-prod
   labels:
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/audit: restricted
@@ -621,7 +621,7 @@ apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: primary-dns-hpa
-  namespace: dns-system-prod
+  namespace: bindy-system-prod
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
@@ -656,7 +656,7 @@ dnsperf -s <DNS_IP> -d queries.txt -c 100 -l 60
 
 ```bash
 # Delete primary pod to test failover
-kubectl delete pod -n dns-system-prod -l dns-role=primary --force
+kubectl delete pod -n bindy-system-prod -l dns-role=primary --force
 
 # Monitor DNS continues to serve
 dig @<DNS_IP> www.example.com

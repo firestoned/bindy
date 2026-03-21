@@ -13,7 +13,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: app1-example-com
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     environment: prod
     team: app1
@@ -43,7 +43,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: app2-example-com
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     environment: staging
     team: app2
@@ -83,7 +83,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: app3-example-com
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     environment: prod
     team: app3
@@ -120,7 +120,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: multi-region-example-com
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     environment: prod
     team: platform

@@ -575,7 +575,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: bind9-network-policy
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   podSelector:
     matchLabels:

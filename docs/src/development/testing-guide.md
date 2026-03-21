@@ -257,10 +257,10 @@ cargo test test_name -- --nocapture
 **"Operator not ready"**
 ```bash
 # Check status
-kubectl get pods -n dns-system
+kubectl get pods -n bindy-system
 
 # View logs
-kubectl logs -n dns-system -l app=bindy
+kubectl logs -n bindy-system -l app=bindy
 
 # Redeploy
 ./deploy/kind-deploy.sh
@@ -278,20 +278,20 @@ kubectl apply -k deploy/crds
 **Resource creation fails**
 ```bash
 # Operator logs
-kubectl logs -n dns-system -l app=bindy --tail=50
+kubectl logs -n bindy-system -l app=bindy --tail=50
 
 # Resource status
-kubectl describe bind9instance <name> -n dns-system
+kubectl describe bind9instance <name> -n bindy-system
 
 # Events
-kubectl get events -n dns-system --sort-by='.lastTimestamp'
+kubectl get events -n bindy-system --sort-by='.lastTimestamp'
 ```
 
 ### Manual Cleanup
 
 ```bash
 # Delete test resources
-kubectl delete bind9instances,dnszones,arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords --all -n dns-system
+kubectl delete bind9instances,dnszones,arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords --all -n bindy-system
 
 # Delete cluster
 kind delete cluster --name bindy-test
@@ -402,7 +402,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: test-${i}
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zone: example.com
   name: host-${i}
@@ -412,7 +412,7 @@ EOF
 done
 
 # Monitor
-kubectl top pod -n dns-system
+kubectl top pod -n bindy-system
 ```
 
 ## Best Practices

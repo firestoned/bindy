@@ -115,7 +115,7 @@ txtrecords.dns.firestoned.io
 
 ```bash
 # Create namespace
-kubectl create namespace dns-system
+kubectl create namespace bindy-system
 
 # Deploy RBAC
 kubectl apply -f deploy/rbac/
@@ -128,10 +128,10 @@ kubectl apply -f deploy/operator/deployment.yaml
 
 ```bash
 # Check operator pod
-kubectl get pods -n dns-system
+kubectl get pods -n bindy-system
 
 # Check logs
-kubectl logs -n dns-system -l app=bindy -f
+kubectl logs -n bindy-system -l app=bindy -f
 ```
 
 Expected log output:
@@ -154,7 +154,7 @@ apiVersion: dns.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: test-primary
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     role: primary
     environment: test
@@ -166,8 +166,8 @@ EOF
 
 Verify:
 ```bash
-kubectl get bind9instances -n dns-system
-kubectl describe bind9instance test-primary -n dns-system
+kubectl get bind9instances -n bindy-system
+kubectl describe bind9instance test-primary -n bindy-system
 ```
 
 ### Test 2: Create a DNS Zone
@@ -180,7 +180,7 @@ apiVersion: dns.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   type: primary
@@ -201,13 +201,13 @@ EOF
 
 Check the zone status:
 ```bash
-kubectl get dnszones -n dns-system -o wide
-kubectl describe dnszone example-com -n dns-system
+kubectl get dnszones -n bindy-system -o wide
+kubectl describe dnszone example-com -n bindy-system
 ```
 
 Look for status conditions in the operator logs:
 ```bash
-kubectl logs -n dns-system -l app=bindy | grep "example-com"
+kubectl logs -n bindy-system -l app=bindy | grep "example-com"
 ```
 
 ### Test 3: Add DNS Records
@@ -220,7 +220,7 @@ apiVersion: dns.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zone: example-com
   name: www
@@ -237,7 +237,7 @@ apiVersion: dns.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: spf-example
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zone: example-com
   name: "@"
@@ -255,7 +255,7 @@ apiVersion: dns.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: blog-example
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zone: example-com
   name: blog
@@ -266,7 +266,7 @@ EOF
 
 Verify all records:
 ```bash
-kubectl get arecords,txtrecords,cnamerecords -n dns-system
+kubectl get arecords,txtrecords,cnamerecords -n bindy-system
 ```
 
 ### Test 4: Label Selector Testing
@@ -279,7 +279,7 @@ apiVersion: dns.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: test-secondary
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     role: secondary
     environment: test
@@ -294,7 +294,7 @@ apiVersion: dns.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: internal-local
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: internal.local
   type: primary
@@ -319,17 +319,17 @@ The zone should be reconciled for both instances (check status).
 
 Update a record:
 ```bash
-kubectl patch arecord www-example -n dns-system --type merge -p '{"spec":{"ipv4Address":"192.0.2.100"}}'
+kubectl patch arecord www-example -n bindy-system --type merge -p '{"spec":{"ipv4Address":"192.0.2.100"}}'
 ```
 
 Delete a record:
 ```bash
-kubectl delete arecord www-example -n dns-system
+kubectl delete arecord www-example -n bindy-system
 ```
 
 Watch the operator handle the changes:
 ```bash
-kubectl logs -n dns-system -l app=bindy -f
+kubectl logs -n bindy-system -l app=bindy -f
 ```
 
 ## Debugging
@@ -338,46 +338,46 @@ kubectl logs -n dns-system -l app=bindy -f
 
 ```bash
 # Pod status
-kubectl get pods -n dns-system -o wide
+kubectl get pods -n bindy-system -o wide
 
 # Detailed pod info
-kubectl describe pod -n dns-system -l app=bindy
+kubectl describe pod -n bindy-system -l app=bindy
 
 # Resource usage
-kubectl top pod -n dns-system -l app=bindy
+kubectl top pod -n bindy-system -l app=bindy
 ```
 
 ### View Logs
 
 ```bash
 # Follow logs
-kubectl logs -n dns-system -l app=bindy -f
+kubectl logs -n bindy-system -l app=bindy -f
 
 # Last 100 lines
-kubectl logs -n dns-system -l app=bindy --tail=100
+kubectl logs -n bindy-system -l app=bindy --tail=100
 
 # Search for errors
-kubectl logs -n dns-system -l app=bindy | grep -i error
+kubectl logs -n bindy-system -l app=bindy | grep -i error
 
 # Previous container logs (if crashed)
-kubectl logs -n dns-system -l app=bindy --previous
+kubectl logs -n bindy-system -l app=bindy --previous
 ```
 
 ### Check Events
 
 ```bash
 # All events in namespace
-kubectl get events -n dns-system --sort-by='.lastTimestamp'
+kubectl get events -n bindy-system --sort-by='.lastTimestamp'
 
 # Events for a specific resource
-kubectl describe dnszone example-com -n dns-system
+kubectl describe dnszone example-com -n bindy-system
 ```
 
 ### Interactive Debugging
 
 ```bash
 # Shell into operator pod
-kubectl exec -it -n dns-system <pod-name> -- /bin/sh
+kubectl exec -it -n bindy-system <pod-name> -- /bin/sh
 
 # Run debug pod
 kubectl run -it --rm debug --image=nicolaka/netshoot --restart=Never -- /bin/bash
@@ -387,12 +387,12 @@ kubectl run -it --rm debug --image=nicolaka/netshoot --restart=Never -- /bin/bas
 
 **Operator not starting:**
 - Check image is loaded: `docker exec -it bindy-test-control-plane crictl images | grep bindy`
-- Check RBAC permissions: `kubectl auth can-i list dnszones --as=system:serviceaccount:dns-system:bindy`
+- Check RBAC permissions: `kubectl auth can-i list dnszones --as=system:serviceaccount:bindy-system:bindy`
 
 **Resources not reconciling:**
 - Check operator logs for errors
 - Verify CRDs are installed: `kubectl get crd`
-- Check resource status: `kubectl describe <resource-type> <name> -n dns-system`
+- Check resource status: `kubectl describe <resource-type> <name> -n bindy-system`
 
 **Port conflicts:**
 - Ensure ports 30053 and 30953 are available on your host
@@ -410,7 +410,7 @@ apiVersion: dns.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: test-${i}
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zone: example-com
   name: test-${i}
@@ -422,7 +422,7 @@ done
 
 Monitor operator performance:
 ```bash
-kubectl top pod -n dns-system -l app=bindy
+kubectl top pod -n bindy-system -l app=bindy
 ```
 
 ### Reconciliation Speed
@@ -431,7 +431,7 @@ Time how long it takes to reconcile:
 
 ```bash
 time kubectl apply -f examples/dns-zone.yaml
-kubectl logs -n dns-system -l app=bindy | grep "reconciled"
+kubectl logs -n bindy-system -l app=bindy | grep "reconciled"
 ```
 
 ## Cleanup
@@ -439,7 +439,7 @@ kubectl logs -n dns-system -l app=bindy | grep "reconciled"
 ### Remove Test Resources
 
 ```bash
-kubectl delete arecords,txtrecords,cnamerecords,dnszones,bind9instances --all -n dns-system
+kubectl delete arecords,txtrecords,cnamerecords,dnszones,bind9instances --all -n bindy-system
 ```
 
 ### Remove Operator
@@ -448,7 +448,7 @@ kubectl delete arecords,txtrecords,cnamerecords,dnszones,bind9instances --all -n
 kubectl delete -f deploy/operator/deployment.yaml
 kubectl delete -f deploy/rbac/
 kubectl delete -f deploy/crds/dns-crds.yaml
-kubectl delete namespace dns-system
+kubectl delete namespace bindy-system
 ```
 
 ### Delete Cluster

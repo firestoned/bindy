@@ -19,7 +19,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: dnssec-cluster
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   version: "9.18"
   primary:
@@ -55,7 +55,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: dnssec-cluster

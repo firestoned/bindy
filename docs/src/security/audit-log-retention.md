@@ -90,7 +90,7 @@ This document defines the audit log retention policy for the Bindy DNS Operator 
   "requestURI": "/apis/bindy.firestoned.io/v1beta1/namespaces/team-web/dnszones/example-com",
   "verb": "update",
   "user": {
-    "username": "system:serviceaccount:dns-system:bindy",
+    "username": "system:serviceaccount:bindy-system:bindy",
     "uid": "12345678-90ab-cdef-1234-567890abcdef",
     "groups": ["system:serviceaccounts", "system:authenticated"]
   },
@@ -155,7 +155,7 @@ This document defines the audit log retention policy for the Bindy DNS Operator 
 ### 3. Secret Access Logs
 
 **Source:** Kubernetes audit logs (filtered)
-**Content:** All reads of Secrets in `dns-system` namespace
+**Content:** All reads of Secrets in `bindy-system` namespace
 **Format:** JSON (structured)
 
 **What is Logged:**
@@ -170,11 +170,11 @@ This document defines the audit log retention policy for the Bindy DNS Operator 
   "kind": "Event",
   "verb": "get",
   "user": {
-    "username": "system:serviceaccount:dns-system:bindy"
+    "username": "system:serviceaccount:bindy-system:bindy"
   },
   "objectRef": {
     "resource": "secrets",
-    "namespace": "dns-system",
+    "namespace": "bindy-system",
     "name": "rndc-key"
   },
   "responseStatus": {
@@ -267,7 +267,7 @@ rules:
     resources:
       - group: ""
         resources: ["secrets"]
-    namespaces: ["dns-system"]
+    namespaces: ["bindy-system"]
 
   # Log all DNSZone CRD operations
   - level: Metadata
@@ -686,7 +686,7 @@ gpg --verify audit-2025-12-17.log.gz.sig audit-2025-12-17.log.gz
   "hits": [
     {
       "_source": {
-        "user": { "username": "system:serviceaccount:dns-system:bindy" },
+        "user": { "username": "system:serviceaccount:bindy-system:bindy" },
         "verb": "update",
         "requestReceivedTimestamp": "2025-12-15T14:32:10Z",
         "responseStatus": { "code": 200 }

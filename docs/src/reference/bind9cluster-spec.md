@@ -459,7 +459,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   version: "9.18"
   global:
@@ -483,7 +483,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: custom-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   version: "9.18"
   image:
@@ -504,7 +504,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: resolver-cluster
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   version: "9.18"
   global:
@@ -532,7 +532,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: global-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   version: "9.18"
   global:
@@ -566,7 +566,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: persistent-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   version: "9.18"
   global:
@@ -593,7 +593,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: bind-zone-storage
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   accessModes:
     - ReadWriteOnce

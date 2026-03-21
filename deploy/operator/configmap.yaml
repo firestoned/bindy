@@ -5,7 +5,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: bindy-config
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     app: bindy
 data:

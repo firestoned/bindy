@@ -196,17 +196,17 @@ Testing all DNS record types...
 kubectl get crds | grep dns.firestoned.io
 
 # Check operator status
-kubectl get pods -n dns-system
+kubectl get pods -n bindy-system
 
 # View operator logs
-kubectl logs -n dns-system -l app=bindy
+kubectl logs -n bindy-system -l app=bindy
 ```
 
 ### Manual Cleanup
 
 ```bash
 # Delete test resources
-kubectl delete bind9instances,dnszones,arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords --all -n dns-system
+kubectl delete bind9instances,dnszones,arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords --all -n bindy-system
 
 # Delete cluster
 kind delete cluster --name bindy-test

@@ -36,7 +36,7 @@ graph TD
 
 **Watches**: `ClusterBind9Provider` resources
 
-**Creates**: `Bind9Cluster` resources in the namespace specified in the spec, or defaults to `dns-system`
+**Creates**: `Bind9Cluster` resources in the namespace specified in the spec, or defaults to `bindy-system`
 
 **Change Detection**:
 - **Spec changed**: Uses `should_reconcile()` to compare `metadata.generation` with `status.observed_generation`
@@ -651,12 +651,12 @@ DNSZone can select Bind9Instances in two ways:
 status:
   bind9Instances:
     - name: primary-dns-0
-      namespace: dns-system
+      namespace: bindy-system
       uid: abc-123
       state: Configured
       lastSyncTime: "2026-01-25T10:30:00Z"
     - name: secondary-dns-0
-      namespace: dns-system
+      namespace: bindy-system
       uid: def-456
       state: Configured
       lastSyncTime: "2026-01-25T10:30:05Z"

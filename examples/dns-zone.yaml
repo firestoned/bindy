@@ -3,7 +3,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     environment: prod
     team: platform
@@ -51,7 +51,7 @@ spec:
 # kind: DNSZone
 # metadata:
 #   name: cluster-local
-#   namespace: dns-system
+#   namespace: bindy-system
 #   labels:
 #     environment: prod
 #     team: platform

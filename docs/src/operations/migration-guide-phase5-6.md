@@ -26,7 +26,7 @@ spec:
   # Option 1: Direct cluster reference
   clusterRef:
     name: my-cluster
-    namespace: dns-system
+    namespace: bindy-system
 
   # Option 2: IP addresses
   nameserverIPs:
@@ -88,13 +88,13 @@ Before migrating DNSZones, ensure all Bind9Clusters and Bind9Instances have appr
 kubectl label bind9cluster my-cluster \
   environment=production \
   region=us-west \
-  -n dns-system
+  -n bindy-system
 
 # Add labels to existing instances
 kubectl label bind9instance my-instance \
   role=primary \
   zone=example-com \
-  -n dns-system
+  -n bindy-system
 ```
 
 ### Step 3: Migrate DNSZone Definitions
@@ -106,7 +106,7 @@ kubectl label bind9instance my-instance \
 spec:
   clusterRef:
     name: production-cluster
-    namespace: dns-system
+    namespace: bindy-system
 
 # NEW - Add labels to the cluster first, then use selector
 spec:
@@ -163,11 +163,11 @@ kubectl get dnszone example-com -o yaml | grep -A10 status
 
 ```bash
 # Check that BIND9 instances have correct zone configuration
-kubectl exec -it <bind9-pod> -n dns-system -- \
+kubectl exec -it <bind9-pod> -n bindy-system -- \
   named-checkconf /etc/bind/named.conf
 
 # Verify zone file exists
-kubectl exec -it <bind9-pod> -n dns-system -- \
+kubectl exec -it <bind9-pod> -n bindy-system -- \
   ls -l /etc/bind/zones/
 
 # Test DNS resolution
@@ -243,7 +243,7 @@ kubectl label bind9cluster my-cluster zone-group=example --overwrite
 diff -u old-dnszone.yaml new-dnszone.yaml
 
 # Check operator logs for reconciliation
-kubectl logs -n dns-system deployment/bindy-operator -f
+kubectl logs -n bindy-system deployment/bindy-operator -f
 ```
 
 ## Rollback Procedure

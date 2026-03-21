@@ -55,7 +55,7 @@ spec:
               kind: Bind9Instance
               metadata:
                 name: dns-primary
-                namespace: dns-system
+                namespace: bindy-system
               spec:
                 clusterRef: my-dns-cluster
                 role: primary

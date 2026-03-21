@@ -290,7 +290,7 @@ mod tests {
         Secret {
             metadata: ObjectMeta {
                 name: Some("test-rndc-key".to_string()),
-                namespace: Some("dns-system".to_string()),
+                namespace: Some("bindy-system".to_string()),
                 annotations: Some(annotations),
                 ..Default::default()
             },

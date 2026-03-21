@@ -17,7 +17,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: custom-zones-config
-  namespace: dns-system
+  namespace: bindy-system
 data:
   named.conf.zones: |
     // Custom zone definitions
@@ -47,7 +47,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: dns-with-custom-zones
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     app: dns
     role: primary

@@ -30,7 +30,7 @@ RED='\033[0;31m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-NAMESPACE="test-dns-system"
+NAMESPACE="test-bindy-system"
 CLUSTER_NAME="${CLUSTER_NAME:=bindy-test}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -246,11 +246,11 @@ if [ "$SKIP_DEPLOY" = false ]; then
     echo ""
     echo -e "${YELLOW}🔍 Checking if Bindy operator is deployed...${NC}"
 
-    if ! ${KUBECTL} get namespace dns-system &>/dev/null; then
+    if ! ${KUBECTL} get namespace bindy-system &>/dev/null; then
         echo -e "${YELLOW}📦 Bindy not deployed. Deploying Bindy operator...${NC}"
 
-        # Create dns-system namespace
-        ${KUBECTL} create namespace dns-system || true
+        # Create bindy-system namespace
+        ${KUBECTL} create namespace bindy-system || true
 
         # Deploy CRDs
         echo -e "${GREEN}📋 Installing CRDs...${NC}"
@@ -300,14 +300,14 @@ if [ "$SKIP_DEPLOY" = false ]; then
 
         # Wait for operator to be ready
         echo -e "${GREEN}⏳ Waiting for operator to be ready...${NC}"
-        ${KUBECTL} wait --for=condition=available --timeout=300s deployment/bindy -n dns-system || {
+        ${KUBECTL} wait --for=condition=available --timeout=300s deployment/bindy -n bindy-system || {
             echo -e "${RED}❌ Operator failed to start. Checking logs:${NC}"
-            ${KUBECTL} logs -n dns-system -l app=bindy --tail=50
+            ${KUBECTL} logs -n bindy-system -l app=bindy --tail=50
             exit 1
         }
 
         echo -e "${GREEN}✓ Bindy operator deployed successfully${NC}"
-    elif ! ${KUBECTL} get deployment bindy -n dns-system &>/dev/null; then
+    elif ! ${KUBECTL} get deployment bindy -n bindy-system &>/dev/null; then
         echo -e "${YELLOW}📦 Bindy namespace exists but operator not deployed. Deploying...${NC}"
 
         # Deploy CRDs (may already exist)
@@ -352,7 +352,7 @@ if [ "$SKIP_DEPLOY" = false ]; then
 
         # Wait for operator to be ready
         echo -e "${GREEN}⏳ Waiting for operator to be ready...${NC}"
-        ${KUBECTL} wait --for=condition=available --timeout=300s deployment/bindy -n dns-system || {
+        ${KUBECTL} wait --for=condition=available --timeout=300s deployment/bindy -n bindy-system || {
             echo -e "${RED}❌ Operator failed to start${NC}"
             exit 1
         }
@@ -360,11 +360,11 @@ if [ "$SKIP_DEPLOY" = false ]; then
         echo -e "${GREEN}✓ Bindy operator deployed successfully${NC}"
     else
         # Operator exists, check if it's running
-        if ${KUBECTL} get deployment bindy -n dns-system -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null | grep -q "True"; then
+        if ${KUBECTL} get deployment bindy -n bindy-system -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null | grep -q "True"; then
             echo -e "${GREEN}✓ Bindy operator is running${NC}"
         else
             echo -e "${YELLOW}⚠️  Bindy operator exists but not ready. Waiting...${NC}"
-            ${KUBECTL} wait --for=condition=available --timeout=60s deployment/bindy -n dns-system || {
+            ${KUBECTL} wait --for=condition=available --timeout=60s deployment/bindy -n bindy-system || {
                 echo -e "${RED}❌ Operator not ready${NC}"
                 exit 1
             }
@@ -384,7 +384,7 @@ echo ""
 echo -e "${GREEN}📦 Step 2: Applying ClusterBind9Provider from examples/cluster-bind9-provider.yaml...${NC}"
 
 # Modify the example to use test namespace and rename to avoid conflicts
-sed -e "s/namespace: dns-system/namespace: ${NAMESPACE}/g" \
+sed -e "s/namespace: bindy-system/namespace: ${NAMESPACE}/g" \
     -e "s/name: production-dns$/name: ${CLUSTER_PROVIDER_NAME}/g" \
     "${PROJECT_ROOT}/examples/cluster-bind9-provider.yaml" | ${KUBECTL} apply -f - || {
     echo -e "${RED}❌ Failed to apply ClusterBind9Provider${NC}"

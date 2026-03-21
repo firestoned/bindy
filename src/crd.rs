@@ -772,13 +772,13 @@ pub struct DNSZoneStatus {
     ///     - apiVersion: bindy.firestoned.io/v1beta1
     ///       kind: Bind9Instance
     ///       name: primary-dns-0
-    ///       namespace: dns-system
+    ///       namespace: bindy-system
     ///       status: Configured
     ///       lastReconciledAt: "2026-01-03T20:00:00Z"
     ///     - apiVersion: bindy.firestoned.io/v1beta1
     ///       kind: Bind9Instance
     ///       name: secondary-dns-0
-    ///       namespace: dns-system
+    ///       namespace: bindy-system
     ///       status: Claimed
     ///       lastReconciledAt: "2026-01-03T20:01:00Z"
     /// ```
@@ -1081,7 +1081,7 @@ pub struct DNSZoneSpec {
     /// kind: DNSZone
     /// metadata:
     ///   name: example-com
-    ///   namespace: dns-system
+    ///   namespace: bindy-system
     /// spec:
     ///   zoneName: example.com
     ///   bind9InstancesFrom:
@@ -1188,7 +1188,7 @@ pub struct DNSZoneSpec {
 /// kind: ARecord
 /// metadata:
 ///   name: www-example-com
-///   namespace: dns-system
+///   namespace: bindy-system
 ///   labels:
 ///     zone: example.com
 /// spec:
@@ -1252,7 +1252,7 @@ pub struct ARecordSpec {
 /// kind: AAAARecord
 /// metadata:
 ///   name: www-example-com-ipv6
-///   namespace: dns-system
+///   namespace: bindy-system
 ///   labels:
 ///     zone: example.com
 /// spec:
@@ -1312,7 +1312,7 @@ pub struct AAAARecordSpec {
 /// kind: TXTRecord
 /// metadata:
 ///   name: spf-example-com
-///   namespace: dns-system
+///   namespace: bindy-system
 ///   labels:
 ///     zone: example.com
 /// spec:
@@ -1369,7 +1369,7 @@ pub struct TXTRecordSpec {
 /// kind: CNAMERecord
 /// metadata:
 ///   name: blog-example-com
-///   namespace: dns-system
+///   namespace: bindy-system
 ///   labels:
 ///     zone: example.com
 /// spec:
@@ -1426,7 +1426,7 @@ pub struct CNAMERecordSpec {
 /// kind: MXRecord
 /// metadata:
 ///   name: mail-example-com
-///   namespace: dns-system
+///   namespace: bindy-system
 ///   labels:
 ///     zone: example.com
 /// spec:
@@ -1488,7 +1488,7 @@ pub struct MXRecordSpec {
 /// kind: NSRecord
 /// metadata:
 ///   name: subdomain-ns
-///   namespace: dns-system
+///   namespace: bindy-system
 ///   labels:
 ///     zone: example.com
 /// spec:
@@ -1542,7 +1542,7 @@ pub struct NSRecordSpec {
 /// kind: SRVRecord
 /// metadata:
 ///   name: ldap-srv
-///   namespace: dns-system
+///   namespace: bindy-system
 ///   labels:
 ///     zone: example.com
 /// spec:
@@ -1616,7 +1616,7 @@ pub struct SRVRecordSpec {
 /// kind: CAARecord
 /// metadata:
 ///   name: caa-letsencrypt
-///   namespace: dns-system
+///   namespace: bindy-system
 ///   labels:
 ///     zone: example.com
 /// spec:
@@ -1815,7 +1815,7 @@ impl RndcAlgorithm {
 /// kind: Secret
 /// metadata:
 ///   name: my-rndc-key
-///   namespace: dns-system
+///   namespace: bindy-system
 /// type: Opaque
 /// stringData:
 ///   rndc.key: |
@@ -1835,7 +1835,7 @@ impl RndcAlgorithm {
 /// kind: Secret
 /// metadata:
 ///   name: bind9-instance-rndc
-///   namespace: dns-system
+///   namespace: bindy-system
 /// type: Opaque
 /// stringData:
 ///   key-name: "bindy-operator"     # Operator metadata
@@ -3057,7 +3057,7 @@ pub struct ClusterBind9ProviderSpec {
     /// Namespace where `Bind9Instance` resources will be created
     ///
     /// Since `ClusterBind9Provider` is cluster-scoped, instances need to be created in a specific namespace.
-    /// Typically this would be a platform-managed namespace like `dns-system`.
+    /// Typically this would be a platform-managed namespace like `bindy-system`.
     ///
     /// All managed instances (primary and secondary) will be created in this namespace.
     /// `DNSZones` from any namespace can reference this provider via `clusterProviderRef`.
@@ -3065,7 +3065,7 @@ pub struct ClusterBind9ProviderSpec {
     /// **Default:** If not specified, instances will be created in the same namespace where the
     /// Bindy operator is running (from `POD_NAMESPACE` environment variable).
     ///
-    /// Example: `dns-system` for platform DNS infrastructure
+    /// Example: `bindy-system` for platform DNS infrastructure
     #[serde(skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
 
@@ -3157,7 +3157,7 @@ impl ServerRole {
 /// kind: Bind9Instance
 /// metadata:
 ///   name: dns-primary
-///   namespace: dns-system
+///   namespace: bindy-system
 /// spec:
 ///   clusterRef: my-dns-cluster
 ///   role: primary

@@ -18,8 +18,8 @@ mod tests {
 
     #[test]
     fn test_record_ref_namespace() {
-        let record = RecordRef::A("test-record".to_string(), "dns-system".to_string());
-        assert_eq!(record.namespace(), "dns-system");
+        let record = RecordRef::A("test-record".to_string(), "bindy-system".to_string());
+        assert_eq!(record.namespace(), "bindy-system");
 
         let record = RecordRef::TXT("txt-record".to_string(), "other-ns".to_string());
         assert_eq!(record.namespace(), "other-ns");
