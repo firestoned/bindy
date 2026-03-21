@@ -55,7 +55,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: dns-primary
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: my-cluster
   role: Primary
@@ -120,7 +120,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: my-cluster
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   primary:
     rndcKey:
@@ -141,7 +141,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: dns-primary
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: my-cluster
   role: Primary
@@ -323,7 +323,7 @@ If rotation is triggered multiple times within 1 hour (e.g., due to operator res
 ### View Rotation Metadata
 
 ```bash
-kubectl get bind9instance dns-primary -n dns-system -o yaml
+kubectl get bind9instance dns-primary -n bindy-system -o yaml
 ```
 
 **Output:**
@@ -340,7 +340,7 @@ status:
 ### Check Secret Annotations
 
 ```bash
-kubectl get secret dns-primary-rndc -n dns-system -o yaml
+kubectl get secret dns-primary-rndc -n bindy-system -o yaml
 ```
 
 **Annotations:**
@@ -356,15 +356,15 @@ metadata:
 ### Monitor Rotation Events
 
 ```bash
-kubectl logs -n dns-system -l app.kubernetes.io/name=bindy-operator | grep "Rotating RNDC Secret"
+kubectl logs -n bindy-system -l app.kubernetes.io/name=bindy-operator | grep "Rotating RNDC Secret"
 ```
 
 **Expected Logs:**
 
 ```
-INFO Rotating RNDC Secret dns-system/dns-primary-rndc (rotation #5)
-INFO Successfully rotated RNDC Secret dns-system/dns-primary-rndc (rotation #5)
-INFO Triggered Deployment dns-system/dns-primary rollout after RNDC rotation
+INFO Rotating RNDC Secret bindy-system/dns-primary-rndc (rotation #5)
+INFO Successfully rotated RNDC Secret bindy-system/dns-primary-rndc (rotation #5)
+INFO Triggered Deployment bindy-system/dns-primary rollout after RNDC rotation
 ```
 
 ---
@@ -379,7 +379,7 @@ To force immediate rotation (e.g., suspected key compromise):
 kubectl annotate secret dns-primary-rndc \
   bindy.firestoned.io/rndc-created-at="2020-01-01T00:00:00Z" \
   --overwrite \
-  -n dns-system
+  -n bindy-system
 ```
 
 2. **Wait for next reconciliation** (usually within 30-60 seconds)
@@ -387,7 +387,7 @@ kubectl annotate secret dns-primary-rndc \
 3. **Verify rotation occurred**:
 
 ```bash
-kubectl get secret dns-primary-rndc -n dns-system -o jsonpath='{.metadata.annotations.bindy\.firestoned\.io/rndc-rotation-count}'
+kubectl get secret dns-primary-rndc -n bindy-system -o jsonpath='{.metadata.annotations.bindy\.firestoned\.io/rndc-rotation-count}'
 ```
 
 **Result**: Rotation count increments, new key generated, pods restart.
@@ -404,12 +404,12 @@ kubectl get secret dns-primary-rndc -n dns-system -o jsonpath='{.metadata.annota
 
 1. **Rate limiting**: Check if last rotation was < 1 hour ago
    ```bash
-   kubectl get secret dns-primary-rndc -n dns-system -o jsonpath='{.metadata.annotations.bindy\.firestoned\.io/rndc-created-at}'
+   kubectl get secret dns-primary-rndc -n bindy-system -o jsonpath='{.metadata.annotations.bindy\.firestoned\.io/rndc-created-at}'
    ```
 
 2. **Auto-rotation disabled**: Verify `autoRotate: true`
    ```bash
-   kubectl get bind9instance dns-primary -n dns-system -o jsonpath='{.spec.rndcKey.autoRotate}'
+   kubectl get bind9instance dns-primary -n bindy-system -o jsonpath='{.spec.rndcKey.autoRotate}'
    ```
 
 3. **Using `secretRef`**: Secret references are NOT rotated automatically
@@ -421,13 +421,13 @@ kubectl get secret dns-primary-rndc -n dns-system -o jsonpath='{.metadata.annota
 **Check Deployment annotation**:
 
 ```bash
-kubectl get deployment dns-primary -n dns-system -o jsonpath='{.spec.template.metadata.annotations.bindy\.firestoned\.io/rndc-rotated-at}'
+kubectl get deployment dns-primary -n bindy-system -o jsonpath='{.spec.template.metadata.annotations.bindy\.firestoned\.io/rndc-rotated-at}'
 ```
 
 If annotation is missing or not updated, check operator logs:
 
 ```bash
-kubectl logs -n dns-system -l app.kubernetes.io/name=bindy-operator | grep "Triggered Deployment"
+kubectl logs -n bindy-system -l app.kubernetes.io/name=bindy-operator | grep "Triggered Deployment"
 ```
 
 ### Infinite Rotation Loop
@@ -497,7 +497,7 @@ For compliance audits, provide:
 
 ```
 Instance: dns-primary
-Namespace: dns-system
+Namespace: bindy-system
 Rotation Policy: Automatic every 90 days (2160h)
 Current Key Created: 2025-01-15T10:30:00Z
 Next Rotation: 2025-04-15T10:30:00Z

@@ -20,7 +20,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns  # ← This is the cluster name referenced by others
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     environment: production
 spec:
@@ -55,7 +55,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com  # ← Zone resource name (can be anything)
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com  # ← Actual DNS zone name
   clusterRef: production-dns  # ← Must match Bind9Cluster name (NOT instance name!)
@@ -79,7 +79,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: internal-local
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: internal.local
   clusterRef: production-dns  # ← Must match Bind9Cluster name
@@ -107,7 +107,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example-com
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com  # ← Matches DNSZone's recordsFrom selector
 spec:
@@ -121,7 +121,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: api-example-com
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -135,7 +135,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: CNAMERecord
 metadata:
   name: blog-example-com
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -148,7 +148,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: MXRecord
 metadata:
   name: mail-example-com
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -162,7 +162,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: TXTRecord
 metadata:
   name: spf-example-com
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:

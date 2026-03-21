@@ -135,11 +135,11 @@ spec:
 kubectl apply -f new-record.yaml
 
 # Check serial on primary
-PRIMARY_SERIAL=$(kubectl exec -n dns-system deployment/global-primary -- \
+PRIMARY_SERIAL=$(kubectl exec -n bindy-system deployment/global-primary -- \
   dig @localhost example.com SOA +short | awk '{print $3}')
 
 # Wait and check secondary
-SECONDARY_SERIAL=$(kubectl exec -n dns-system deployment/secondary-eu-west -- \
+SECONDARY_SERIAL=$(kubectl exec -n bindy-system deployment/secondary-eu-west -- \
   dig @localhost example.com SOA +short | awk '{print $3}')
 
 # Calculate lag
@@ -167,11 +167,11 @@ When you create a `DNSZone` resource, Bindy automatically:
 **Example:**
 ```bash
 # Check automatically configured secondary IPs
-kubectl get dnszone example-com -n dns-system -o jsonpath='{.status.secondaryIps}'
+kubectl get dnszone example-com -n bindy-system -o jsonpath='{.status.secondaryIps}'
 # Output: ["10.244.1.5","10.244.2.8"]
 
 # Verify zone configuration on primary
-kubectl exec -n dns-system deployment/primary-dns -- \
+kubectl exec -n bindy-system deployment/primary-dns -- \
   curl -s localhost:8080/api/zones/example.com | jq '.alsoNotify, .allowTransfer'
 ```
 

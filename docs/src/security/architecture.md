@@ -84,7 +84,7 @@ This document describes the security architecture of the Bindy DNS Operator, inc
 
 ---
 
-### Domain 3: dns-system Namespace
+### Domain 3: bindy-system Namespace
 
 **Purpose:** Bindy operator and BIND9 pods
 
@@ -232,9 +232,9 @@ sequenceDiagram
     participant etcd as etcd<br/>(Encrypted at Rest)
     participant Audit as Audit Log
 
-    Ctrl->>K8s: GET /api/v1/namespaces/dns-system/secrets/rndc-key
+    Ctrl->>K8s: GET /api/v1/namespaces/bindy-system/secrets/rndc-key
     Note over K8s: Authentication: JWT<br/>Authorization: RBAC
-    K8s->>Audit: Log API request<br/>User: system:serviceaccount:dns-system:bindy<br/>Verb: get<br/>Resource: secrets/rndc-key<br/>Result: allowed
+    K8s->>Audit: Log API request<br/>User: system:serviceaccount:bindy-system:bindy<br/>Verb: get<br/>Resource: secrets/rndc-key<br/>Result: allowed
     K8s->>etcd: Read secret (encrypted)
     etcd-->>K8s: Return encrypted data
     K8s-->>Ctrl: Return secret (decrypted)
@@ -305,7 +305,7 @@ graph TB
             etcd[etcd]
         end
 
-        subgraph DNSNamespace["🟠 dns-system Namespace<br/>(High Privilege)"]
+        subgraph DNSNamespace["🟠 bindy-system Namespace<br/>(High Privilege)"]
             Ctrl[Bindy Operator]
             BIND[BIND9 Pods]
             Secrets[Secrets]
@@ -336,8 +336,8 @@ graph TB
 **Trust Boundary Rules:**
 
 1. **Untrusted → Perimeter**: All traffic rate-limited, DDoS protection (planned)
-2. **Perimeter → dns-system**: Only port 53 allowed, no direct access to operator
-3. **dns-system → Control Plane**: Authenticated with ServiceAccount token, RBAC enforced
+2. **Perimeter → bindy-system**: Only port 53 allowed, no direct access to operator
+3. **bindy-system → Control Plane**: Authenticated with ServiceAccount token, RBAC enforced
 4. **Tenant Namespaces → Control Plane**: Authenticated with user credentials, RBAC enforced
 5. **Secrets Access**: Only operator ServiceAccount can read, audit logged
 
@@ -350,7 +350,7 @@ graph TB
 ```mermaid
 graph LR
     subgraph Identities
-        SA[ServiceAccount: bindy<br/>ns: dns-system]
+        SA[ServiceAccount: bindy<br/>ns: bindy-system]
         User1[User: alice<br/>Team: web]
         User2[User: bob<br/>Team: api]
     end
@@ -368,7 +368,7 @@ graph LR
     subgraph Resources
         CRD[CRDs<br/>Bind9Cluster]
         Zone[DNSZone<br/>ns: team-web]
-        Sec[Secrets<br/>ns: dns-system]
+        Sec[Secrets<br/>ns: bindy-system]
     end
 
     SA -->|bound to| CRB
@@ -395,7 +395,7 @@ graph LR
 | `bind9instances.bindy.firestoned.io` | get, list, watch, create, update, patch | Manage BIND9 instances |
 | ❌ **delete on ANY resource** | **DENIED** | ✅ C-2: Least privilege, prevent accidental deletion |
 
-**Namespaced Resources (dns-system):**
+**Namespaced Resources (bindy-system):**
 
 | Resource | Verbs | Rationale |
 |----------|-------|-----------|
@@ -494,7 +494,7 @@ graph TB
             LB[LoadBalancer<br/>Port 53 UDP/TCP]
         end
 
-        subgraph dns-system["dns-system Namespace"]
+        subgraph bindy-system["bindy-system Namespace"]
             Ctrl[Bindy Operator]
             BIND1[BIND9 Primary<br/>Port 53, 9530]
             BIND2[BIND9 Secondary<br/>Port 53]
@@ -531,7 +531,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: bindy-operator-egress
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   podSelector:
     matchLabels:
@@ -572,7 +572,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: bind9-ingress
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   podSelector:
     matchLabels:

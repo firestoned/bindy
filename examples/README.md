@@ -176,7 +176,7 @@ Before running the examples, install Bindy:
 
 ```bash
 # Install from latest release (recommended)
-kubectl create namespace dns-system
+kubectl create namespace bindy-system
 kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
 kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/serviceaccount.yaml
 kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/role.yaml
@@ -184,7 +184,7 @@ kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rb
 kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/operator/deployment.yaml
 
 # Or install from local files (development)
-kubectl create namespace dns-system
+kubectl create namespace bindy-system
 kubectl apply -k ../deploy/crds/
 kubectl apply -f ../deploy/rbac/
 kubectl apply -f ../deploy/operator/deployment.yaml
@@ -218,16 +218,16 @@ kubectl apply -f dns-records.yaml
 **IMPORTANT:** Ensure all clusterRef values match and records have proper labels:
 ```bash
 # Verify the cluster name
-kubectl get bind9cluster -n dns-system
+kubectl get bind9cluster -n bindy-system
 
 # Verify instances reference the correct cluster
-kubectl get bind9instance -n dns-system -o yaml | grep clusterRef
+kubectl get bind9instance -n bindy-system -o yaml | grep clusterRef
 
 # Verify zones reference the correct cluster
-kubectl get dnszone -n dns-system -o yaml | grep clusterRef
+kubectl get dnszone -n bindy-system -o yaml | grep clusterRef
 
 # Verify records are selected by zones (check DNSZone status)
-kubectl get dnszone -n dns-system -o yaml | grep -A10 "status:"
+kubectl get dnszone -n bindy-system -o yaml | grep -A10 "status:"
 ```
 
 ### With Persistent Storage
@@ -261,7 +261,7 @@ kubectl apply --dry-run=client -f dns-records.yaml
 
 These examples use placeholder values. Customize them for your environment:
 
-- **Namespaces**: Change from `dns-system` to your namespace
+- **Namespaces**: Change from `bindy-system` to your namespace
 - **IP Addresses**: Replace example IPs with your actual IPs
 - **Zone Names**: Use your actual domain names
 - **Storage Sizes**: Adjust PVC sizes based on your needs

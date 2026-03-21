@@ -62,7 +62,7 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
 │                     Kubernetes Cluster                       │
 │                                                              │
 │  ┌────────────────────────────────────────────────────┐    │
-│  │              dns-system Namespace                   │    │
+│  │              bindy-system Namespace                   │    │
 │  │                                                      │    │
 │  │  ┌──────────────────────────────────────────────┐  │    │
 │  │  │        Bindy Operator (Deployment)         │  │    │
@@ -188,7 +188,7 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
 
 ---
 
-### Boundary 2: dns-system Namespace
+### Boundary 2: bindy-system Namespace
 
 **Trust Level:** High
 **Description:** Namespace containing Bindy operator and BIND9 pods
@@ -388,7 +388,7 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
 **Likelihood:** LOW (RBAC protects ConfigMaps/Secrets)
 
 **Attack Scenario:**
-1. Attacker gains elevated privileges in `dns-system` namespace
+1. Attacker gains elevated privileges in `bindy-system` namespace
 2. Modifies BIND9 ConfigMap to disable security features or add backdoor zones
 3. BIND9 pod restarts with malicious configuration
 

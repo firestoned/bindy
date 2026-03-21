@@ -51,7 +51,7 @@ spec:
               kind: TXTRecord
               metadata:
                 name: spf-example-com
-                namespace: dns-system
+                namespace: bindy-system
                 labels:
                   zone: example.com
               spec:

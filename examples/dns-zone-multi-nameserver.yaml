@@ -17,7 +17,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com-multi-ns
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     environment: prod
     team: platform

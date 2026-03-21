@@ -9,7 +9,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: subdomain-ns
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com  # Used by DNSZone selector
 spec:
@@ -66,7 +66,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: dev-ns1
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -78,7 +78,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: dev-ns2
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -98,7 +98,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: aws-ns1
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -109,7 +109,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: aws-ns2
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -125,7 +125,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: prod-ns1
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -137,7 +137,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: staging-ns1
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -167,7 +167,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: NSRecord
 metadata:
   name: sub-ns
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -179,7 +179,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: sub-ns-glue
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:

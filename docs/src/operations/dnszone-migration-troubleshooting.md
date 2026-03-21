@@ -14,7 +14,7 @@ Before upgrading, verify:
 
 2. **Check Bindy operator version**:
    ```bash
-   kubectl get deployment -n dns-system bindy-operator -o jsonpath='{.spec.template.spec.containers[0].image}'
+   kubectl get deployment -n bindy-system bindy-operator -o jsonpath='{.spec.template.spec.containers[0].image}'
    ```
 
 3. **Verify all zones are healthy before upgrade**:
@@ -37,8 +37,8 @@ These fields were removed as part of the consolidation. The new architecture use
 **Resolution:**
 1. Verify the new operator is running:
    ```bash
-   kubectl get pods -n dns-system -l app=bindy-operator
-   kubectl logs -n dns-system -l app=bindy-operator --tail=100
+   kubectl get pods -n bindy-system -l app=bindy-operator
+   kubectl logs -n bindy-system -l app=bindy-operator --tail=100
    ```
 
 2. Check `status.instances[]` field instead:
@@ -58,7 +58,7 @@ status:
     - apiVersion: bindy.firestoned.io/v1beta1
       kind: Bind9Instance
       name: primary-dns-0
-      namespace: dns-system
+      namespace: bindy-system
       status: Configured
       lastReconciledAt: "2026-01-06T10:00:00Z"
 ```
@@ -113,7 +113,7 @@ This is an intentional breaking change. The DNSZone operator now owns the instan
 
 4. **Check operator logs**:
    ```bash
-   kubectl logs -n dns-system -l app=bindy-operator --tail=100 | grep -E "(ERROR|WARN|add_zones)"
+   kubectl logs -n bindy-system -l app=bindy-operator --tail=100 | grep -E "(ERROR|WARN|add_zones)"
    ```
 
 **Common Root Causes:**
@@ -167,14 +167,14 @@ This is an intentional breaking change. The DNSZone operator now owns the instan
 
 #### C. Operator RBAC Permissions Missing
 
-**Error**: `"Forbidden: User system:serviceaccount:dns-system:bindy-operator cannot update resource..."`
+**Error**: `"Forbidden: User system:serviceaccount:bindy-system:bindy-operator cannot update resource..."`
 
 **Resolution**:
 1. Verify RBAC is deployed:
    ```bash
    kubectl get clusterrole bindy-operator
    kubectl get clusterrolebinding bindy-operator
-   kubectl get serviceaccount -n dns-system bindy-operator
+   kubectl get serviceaccount -n bindy-system bindy-operator
    ```
 
 2. Redeploy RBAC if needed:
@@ -244,28 +244,28 @@ This should not happen (deduplication is automatic), but if it does:
 **Diagnosis:**
 ```bash
 # Check for multiple bindy operator pods
-kubectl get pods -n dns-system -l app=bindy-operator
+kubectl get pods -n bindy-system -l app=bindy-operator
 
 # Check operator version
-kubectl get deployment -n dns-system bindy-operator -o jsonpath='{.spec.template.spec.containers[0].image}'
+kubectl get deployment -n bindy-system bindy-operator -o jsonpath='{.spec.template.spec.containers[0].image}'
 ```
 
 **Resolution:**
 
 1. **Verify correct image version**:
    ```bash
-   kubectl set image deployment/bindy-operator -n dns-system bindy-operator=ghcr.io/firestoned/bindy:v0.X.Y
+   kubectl set image deployment/bindy-operator -n bindy-system bindy-operator=ghcr.io/firestoned/bindy:v0.X.Y
    ```
 
 2. **Force rollout**:
    ```bash
-   kubectl rollout restart deployment/bindy-operator -n dns-system
-   kubectl rollout status deployment/bindy-operator -n dns-system
+   kubectl rollout restart deployment/bindy-operator -n bindy-system
+   kubectl rollout status deployment/bindy-operator -n bindy-system
    ```
 
 3. **Verify old pods are terminated**:
    ```bash
-   kubectl get pods -n dns-system -l app=bindy-operator --show-labels
+   kubectl get pods -n bindy-system -l app=bindy-operator --show-labels
    ```
 
 ## Rollback Procedure
@@ -274,8 +274,8 @@ If migration fails and you need to rollback:
 
 1. **Restore previous operator version**:
    ```bash
-   kubectl set image deployment/bindy-operator -n dns-system bindy-operator=ghcr.io/firestoned/bindy:v0.PREVIOUS.VERSION
-   kubectl rollout status deployment/bindy-operator -n dns-system
+   kubectl set image deployment/bindy-operator -n bindy-system bindy-operator=ghcr.io/firestoned/bindy:v0.PREVIOUS.VERSION
+   kubectl rollout status deployment/bindy-operator -n bindy-system
    ```
 
 2. **Restore old CRDs** (if CRD update was applied):
@@ -334,7 +334,7 @@ If issues persist:
    kubectl get dnszones -A -o yaml > dnszones-debug.yaml
    
    # Save operator logs
-   kubectl logs -n dns-system -l app=bindy-operator --tail=500 > operator-logs.txt
+   kubectl logs -n bindy-system -l app=bindy-operator --tail=500 > operator-logs.txt
    
    # Save events
    kubectl get events -A --sort-by='.lastTimestamp' | grep -i dnszone > dnszone-events.txt

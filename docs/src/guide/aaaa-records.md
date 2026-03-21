@@ -9,7 +9,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: www-example-ipv6
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com  # Used by DNSZone selector
 spec:
@@ -67,7 +67,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: root-example-ipv6
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -89,7 +89,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: www-ipv6-load-balanced
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -149,7 +149,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-ipv4
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -163,7 +163,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: www-ipv6
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -185,7 +185,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-ipv4-rr
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -201,7 +201,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: www-ipv6-rr
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -267,7 +267,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: www-ipv6-prod
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
     environment: production
@@ -287,7 +287,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: api-ipv6
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -304,7 +304,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: AAAARecord
 metadata:
   name: mail-ipv6
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -327,7 +327,7 @@ spec:
 Check record status with:
 
 ```bash
-kubectl get aaaarecords -n dns-system
+kubectl get aaaarecords -n bindy-system
 ```
 
 Output shows:
@@ -340,7 +340,7 @@ Output shows:
 For detailed status:
 
 ```bash
-kubectl describe aaaarecord www-ipv6 -n dns-system
+kubectl describe aaaarecord www-ipv6 -n bindy-system
 ```
 
 ## Troubleshooting

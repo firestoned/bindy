@@ -244,7 +244,7 @@ pub fn create_tsig_signer(key_data: &RndcKeyData) -> Result<TSigner> {
 /// let rotate_after = Duration::from_secs(30 * 24 * 3600); // 30 days
 ///
 /// let secret = create_rndc_secret_with_annotations(
-///     "dns-system",
+///     "bindy-system",
 ///     "bind9-primary-rndc-key",
 ///     &key_data,
 ///     created_at,

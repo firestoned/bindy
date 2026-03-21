@@ -8,7 +8,7 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: bindy-scout
-    namespace: dns-system
+    namespace: bindy-system
 roleRef:
   kind: ClusterRole
   name: bindy-scout

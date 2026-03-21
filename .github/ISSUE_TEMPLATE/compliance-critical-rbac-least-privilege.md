@@ -133,7 +133,7 @@ rules:
 kubectl create rolebinding bindy-admin-binding \
   --clusterrole=bindy-admin-role \
   --user=admin@example.com \
-  --namespace=dns-system
+  --namespace=bindy-system
 ```
 
 ### Phase 3: Implement Namespace Scoping (Week 2)
@@ -146,7 +146,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: bindy-role
-  namespace: dns-system  # ✅ Scoped to dns-system namespace only
+  namespace: bindy-system  # ✅ Scoped to bindy-system namespace only
 rules:
   # Same rules as ClusterRole, but scoped to namespace
   - apiGroups: ["bindy.firestoned.io"]
@@ -303,7 +303,7 @@ rules:
 2. **Test secret read-only access:**
    ```bash
    # Controller should read secrets
-   kubectl logs -n dns-system deployment/bindy | grep "Reading secret"
+   kubectl logs -n bindy-system deployment/bindy | grep "Reading secret"
 
    # But should NOT delete secrets (test manually via kubectl exec if needed)
    ```
@@ -315,7 +315,7 @@ rules:
 
    # But verify controller doesn't auto-delete on conflicts
    # (Check controller logs for any "delete" operations)
-   kubectl logs -n dns-system deployment/bindy | grep -i "delet"
+   kubectl logs -n bindy-system deployment/bindy | grep -i "delet"
    ```
 
 ### Security Testing
@@ -324,15 +324,15 @@ rules:
    ```bash
    # Check what controller can do
    kubectl auth can-i delete secrets \
-     --as=system:serviceaccount:dns-system:bindy
+     --as=system:serviceaccount:bindy-system:bindy
    # Should return "no"
 
    kubectl auth can-i delete dnszones \
-     --as=system:serviceaccount:dns-system:bindy
+     --as=system:serviceaccount:bindy-system:bindy
    # Should return "no"
 
    kubectl auth can-i update dnszones \
-     --as=system:serviceaccount:dns-system:bindy
+     --as=system:serviceaccount:bindy-system:bindy
    # Should return "yes"
    ```
 
@@ -345,7 +345,7 @@ rules:
 
    # Controller ServiceAccount cannot delete
    kubectl auth can-i delete bind9instances \
-     --as=system:serviceaccount:dns-system:bindy
+     --as=system:serviceaccount:bindy-system:bindy
    # Should return "no"
    ```
 
@@ -392,7 +392,7 @@ If issues found:
 ```bash
 # Rollback to old RBAC
 kubectl apply -f deploy/rbac/role.yaml.backup
-kubectl rollout restart deployment/bindy -n dns-system
+kubectl rollout restart deployment/bindy -n bindy-system
 ```
 
 ## Breaking Changes

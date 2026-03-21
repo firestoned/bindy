@@ -16,7 +16,7 @@ This document outlines the integration testing strategy for validating the DNSZo
 ### Cluster Requirements
 - Kubernetes cluster (v1.24+)
 - kubectl configured with cluster access  
-- Namespace: `dns-system`
+- Namespace: `bindy-system`
 
 ### Component Requirements
 - Bindy operator image built

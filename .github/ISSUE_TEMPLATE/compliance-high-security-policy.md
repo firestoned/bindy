@@ -588,10 +588,10 @@ Create `docs/security/INCIDENT_RESPONSE.md`:
 **For Compromised Controller:**
 ```bash
 # Isolate controller pod
-kubectl scale deployment/bindy -n dns-system --replicas=0
+kubectl scale deployment/bindy -n bindy-system --replicas=0
 
 # Review audit logs
-kubectl logs -n dns-system deployment/bindy --tail=1000 > incident.log
+kubectl logs -n bindy-system deployment/bindy --tail=1000 > incident.log
 
 # Check for unauthorized zone changes
 kubectl get dnszones --all-namespaces -o yaml > zones-snapshot.yaml
@@ -600,13 +600,13 @@ kubectl get dnszones --all-namespaces -o yaml > zones-snapshot.yaml
 **For Secret Compromise:**
 ```bash
 # Rotate RNDC keys immediately
-kubectl delete secret <instance>-rndc-key -n dns-system
+kubectl delete secret <instance>-rndc-key -n bindy-system
 
 # Controller will regenerate new key
 kubectl wait --for=condition=Ready bind9instance/<instance>
 
 # Verify new key in use
-kubectl exec -n dns-system <bind9-pod> -- rndc status
+kubectl exec -n bindy-system <bind9-pod> -- rndc status
 ```
 
 **For DNS Hijacking:**
@@ -643,7 +643,7 @@ kubectl rollout restart statefulset/<instance>-bind9
 dig @<bind9-service-ip> example.com
 
 # Monitor for stability (1 hour)
-kubectl logs -n dns-system -l app=bindy -f
+kubectl logs -n bindy-system -l app=bindy -f
 ```
 
 ### Step 5: Post-Incident Review (Within 7 days)
@@ -686,10 +686,10 @@ kubectl logs -n dns-system -l app=bindy -f
 1. **Save logs immediately:**
    ```bash
    # Controller logs
-   kubectl logs -n dns-system deployment/bindy --all-containers > controller-logs.txt
+   kubectl logs -n bindy-system deployment/bindy --all-containers > controller-logs.txt
 
    # BIND9 logs
-   kubectl logs -n dns-system -l app=bind9 --tail=-1 > bind9-logs.txt
+   kubectl logs -n bindy-system -l app=bind9 --tail=-1 > bind9-logs.txt
 
    # Kubernetes audit logs
    kubectl get events --all-namespaces --sort-by='.lastTimestamp' > k8s-events.txt

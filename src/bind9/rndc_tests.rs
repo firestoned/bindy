@@ -526,7 +526,7 @@ mod tests {
 
         let created_at = Utc::now();
         let secret = crate::bind9::rndc::create_rndc_secret_with_annotations(
-            "dns-system",
+            "bindy-system",
             "test-rndc-key",
             &key_data,
             created_at,
@@ -536,7 +536,7 @@ mod tests {
 
         // Verify basic Secret structure
         assert_eq!(secret.metadata.name, Some("test-rndc-key".to_string()));
-        assert_eq!(secret.metadata.namespace, Some("dns-system".to_string()));
+        assert_eq!(secret.metadata.namespace, Some("bindy-system".to_string()));
 
         // Verify annotations
         let annotations = secret.metadata.annotations.as_ref().unwrap();
@@ -569,7 +569,7 @@ mod tests {
         let created_at = Utc::now();
         let rotate_after = Duration::from_secs(30 * 24 * 3600); // 30 days
         let secret = crate::bind9::rndc::create_rndc_secret_with_annotations(
-            "dns-system",
+            "bindy-system",
             "test-rndc-key",
             &key_data,
             created_at,

@@ -30,14 +30,14 @@ The Bindy operator's log level is configured via a ConfigMap (`bindy-config`), w
 
 ```bash
 # Change log level to debug
-kubectl patch configmap bindy-config -n dns-system \
+kubectl patch configmap bindy-config -n bindy-system \
   --patch '{"data": {"log-level": "debug"}}'
 
 # Restart operator pods to apply changes
-kubectl rollout restart deployment/bindy -n dns-system
+kubectl rollout restart deployment/bindy -n bindy-system
 
 # Verify new log level
-kubectl logs -n dns-system -l app=bindy --tail=20
+kubectl logs -n bindy-system -l app=bindy --tail=20
 ```
 
 **Available Log Levels:**
@@ -55,10 +55,10 @@ For temporary debugging without ConfigMap changes:
 
 ```bash
 # Enable debug logging (overrides ConfigMap)
-kubectl set env deployment/bindy RUST_LOG=debug -n dns-system
+kubectl set env deployment/bindy RUST_LOG=debug -n bindy-system
 
 # Revert to ConfigMap value
-kubectl set env deployment/bindy RUST_LOG- -n dns-system
+kubectl set env deployment/bindy RUST_LOG- -n bindy-system
 ```
 
 **Warning:** This method bypasses the ConfigMap and is lost on next deployment. Use for quick debugging only.
@@ -69,15 +69,15 @@ kubectl set env deployment/bindy RUST_LOG- -n dns-system
 
 ```bash
 # Change to JSON format (production)
-kubectl patch configmap bindy-config -n dns-system \
+kubectl patch configmap bindy-config -n bindy-system \
   --patch '{"data": {"log-format": "json"}}'
 
 # Change to text format (development)
-kubectl patch configmap bindy-config -n dns-system \
+kubectl patch configmap bindy-config -n bindy-system \
   --patch '{"data": {"log-format": "text"}}'
 
 # Restart to apply
-kubectl rollout restart deployment/bindy -n dns-system
+kubectl rollout restart deployment/bindy -n bindy-system
 ```
 
 **Log Formats:**
@@ -90,13 +90,13 @@ kubectl rollout restart deployment/bindy -n dns-system
 
 ```bash
 # Check current ConfigMap values
-kubectl get configmap bindy-config -n dns-system -o yaml
+kubectl get configmap bindy-config -n bindy-system -o yaml
 
 # Check environment variables in running pod
-kubectl exec -n dns-system deployment/bindy -- printenv | grep RUST_LOG
+kubectl exec -n bindy-system deployment/bindy -- printenv | grep RUST_LOG
 
 # View recent logs to confirm verbosity
-kubectl logs -n dns-system -l app=bindy --tail=100
+kubectl logs -n bindy-system -l app=bindy --tail=100
 ```
 
 ---
@@ -122,7 +122,7 @@ Before enabling `debug` logging in production, verify no sensitive data is logge
 
 ```bash
 # Audit debug logs for secrets, passwords, keys
-kubectl logs -n dns-system -l app=bindy --tail=1000 | \
+kubectl logs -n bindy-system -l app=bindy --tail=1000 | \
   grep -iE '(password|secret|key|token|credential)'
 
 # If sensitive data found, fix in code before enabling debug
@@ -140,17 +140,17 @@ kubectl logs -n dns-system -l app=bindy --tail=1000 | \
 
 ```bash
 # Enable debug logging
-kubectl patch configmap bindy-config -n dns-system \
+kubectl patch configmap bindy-config -n bindy-system \
   --patch '{"data": {"log-level": "debug"}}'
 
 # Restart operator
-kubectl rollout restart deployment/bindy -n dns-system
+kubectl rollout restart deployment/bindy -n bindy-system
 
 # Watch logs for reconciliation details
-kubectl logs -n dns-system -l app=bindy --follow
+kubectl logs -n bindy-system -l app=bindy --follow
 
 # Look for errors in reconciliation loop
-kubectl logs -n dns-system -l app=bindy | grep -i error
+kubectl logs -n bindy-system -l app=bindy | grep -i error
 ```
 
 ---
@@ -159,14 +159,14 @@ kubectl logs -n dns-system -l app=bindy | grep -i error
 
 ```bash
 # Reduce log level to warn
-kubectl patch configmap bindy-config -n dns-system \
+kubectl patch configmap bindy-config -n bindy-system \
   --patch '{"data": {"log-level": "warn"}}'
 
 # Restart operator
-kubectl rollout restart deployment/bindy -n dns-system
+kubectl rollout restart deployment/bindy -n bindy-system
 
 # Verify reduced log volume
-kubectl logs -n dns-system -l app=bindy --tail=100
+kubectl logs -n bindy-system -l app=bindy --tail=100
 ```
 
 ---
@@ -175,14 +175,14 @@ kubectl logs -n dns-system -l app=bindy --tail=100
 
 ```bash
 # Ensure JSON format for SIEM
-kubectl patch configmap bindy-config -n dns-system \
+kubectl patch configmap bindy-config -n bindy-system \
   --patch '{"data": {"log-format": "json"}}'
 
 # Restart operator
-kubectl rollout restart deployment/bindy -n dns-system
+kubectl rollout restart deployment/bindy -n bindy-system
 
 # Verify JSON output
-kubectl logs -n dns-system -l app=bindy --tail=10 | jq .
+kubectl logs -n bindy-system -l app=bindy --tail=10 | jq .
 ```
 
 ---

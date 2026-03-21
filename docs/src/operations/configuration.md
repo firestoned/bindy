@@ -100,7 +100,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: my-cluster
   role: primary
@@ -174,7 +174,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: my-custom-named-conf
-  namespace: dns-system
+  namespace: bindy-system
 data:
   named.conf: |
     // Custom BIND9 configuration
@@ -199,7 +199,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: my-custom-zones
-  namespace: dns-system
+  namespace: bindy-system
 data:
   named.conf.zones: |
     // Zone definitions

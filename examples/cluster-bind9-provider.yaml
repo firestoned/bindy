@@ -12,7 +12,7 @@ spec:
   # Namespace where Bind9Instance resources will be created (optional)
   # Cluster providers are cluster-scoped, but instances must live in a namespace
   # If not specified, defaults to the namespace where the Bindy operator is running
-  namespace: dns-system
+  namespace: bindy-system
   version: "9.18"
   # Primary instance configuration
   primary:

@@ -56,7 +56,7 @@ spec:
               kind: CNAMERecord
               metadata:
                 name: blog-example-com
-                namespace: dns-system
+                namespace: bindy-system
                 labels:
                   zone: example.com
               spec:

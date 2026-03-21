@@ -24,7 +24,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: <RecordType>
 metadata:
   name: <unique-name>
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: <zone-name>  # Used by DNSZone selector
 spec:
@@ -47,7 +47,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: production-dns
@@ -71,7 +71,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-example
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com  # ✅ Matches the DNSZone selector
 spec:
@@ -110,7 +110,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: api-server
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
     env: production

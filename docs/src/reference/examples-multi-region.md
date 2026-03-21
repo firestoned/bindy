@@ -46,7 +46,7 @@ Save as `region-us-east-1.yaml`:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: dns-system
+  name: bindy-system
   labels:
     region: us-east-1
     role: primary
@@ -57,7 +57,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-us-east-1
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     app: bindy
     dns-role: primary
@@ -87,7 +87,7 @@ apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: primary-dns-pdb
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   minAvailable: 1
   selector:
@@ -101,7 +101,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com-primary
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: "example.com"
   zoneType: "primary"
@@ -125,7 +125,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: ns1-us-east-1
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zone: "example-com-primary"
   name: "ns1.us-east-1"
@@ -138,7 +138,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: ns2-us-west-2
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zone: "example-com-primary"
   name: "ns2.us-west-2"
@@ -151,7 +151,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: ns3-eu-west-1
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zone: "example-com-primary"
   name: "ns3.eu-west-1"
@@ -165,7 +165,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-us-east-1
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zone: "example-com-primary"
   name: "www.us-east-1"
@@ -178,7 +178,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-us-west-2
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zone: "example-com-primary"
   name: "www.us-west-2"
@@ -191,7 +191,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: ARecord
 metadata:
   name: www-eu-west-1
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zone: "example-com-primary"
   name: "www.eu-west-1"
@@ -205,7 +205,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: SRVRecord
 metadata:
   name: srv-web-us-east
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zone: "example-com-primary"
   name: "_http._tcp.us-east-1"
@@ -226,7 +226,7 @@ Save as `region-us-west-2.yaml`:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: dns-system
+  name: bindy-system
   labels:
     region: us-west-2
     role: secondary
@@ -237,7 +237,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary-us-west-2
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     app: bindy
     dns-role: secondary
@@ -264,7 +264,7 @@ apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: secondary-dns-pdb
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   minAvailable: 1
   selector:
@@ -278,7 +278,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com-secondary
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: "example.com"
   zoneType: "secondary"
@@ -303,7 +303,7 @@ Save as `region-eu-west-1.yaml`:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: dns-system
+  name: bindy-system
   labels:
     region: eu-west-1
     role: secondary
@@ -314,7 +314,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: secondary-eu-west-1
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     app: bindy
     dns-role: secondary
@@ -341,7 +341,7 @@ apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: secondary-dns-pdb
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   minAvailable: 1
   selector:
@@ -355,7 +355,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com-secondary
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: "example.com"
   zoneType: "secondary"
@@ -389,11 +389,11 @@ kubectl apply -f region-eu-west-1.yaml --context eu-west-1
 
 ```bash
 # Check zone transfer from primary
-kubectl exec -n dns-system -it <primary-pod> -- \
+kubectl exec -n bindy-system -it <primary-pod> -- \
   dig @localhost example.com AXFR
 
 # Verify secondary received zone
-kubectl exec -n dns-system -it <secondary-pod> -- \
+kubectl exec -n bindy-system -it <secondary-pod> -- \
   dig @localhost example.com SOA
 ```
 
@@ -407,7 +407,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: dns-anycast
-  namespace: dns-system
+  namespace: bindy-system
   annotations:
     metallb.universe.tf/address-pool: anycast-pool
 spec:
@@ -478,7 +478,7 @@ for region in "${REGIONS[@]}"; do
   echo "Checking $region..."
   
   # Get DNS service IP
-  DNS_IP=$(kubectl get svc -n dns-system --context $region \
+  DNS_IP=$(kubectl get svc -n bindy-system --context $region \
     -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}')
   
   # Test query
@@ -497,13 +497,13 @@ done
 ```bash
 # Promote secondary in us-west-2 to primary
 kubectl patch bind9instance secondary-us-west-2 \
-  -n dns-system --context us-west-2 \
+  -n bindy-system --context us-west-2 \
   --type merge \
   --patch '{"metadata":{"labels":{"dns-role":"primary"}}}'
 
 # Update zone to primary
 kubectl patch dnszone example-com-secondary \
-  -n dns-system --context us-west-2 \
+  -n bindy-system --context us-west-2 \
   --type merge \
   --patch '{"spec":{"zoneType":"primary"}}'
 ```
@@ -523,7 +523,7 @@ for region in "${REGIONS[@]}"; do
   echo "Backing up $region..."
   
   kubectl get dnszones,arecords,aaaarecords,cnamerecords,mxrecords,txtrecords \
-    -n dns-system --context $region -o yaml \
+    -n bindy-system --context $region -o yaml \
     > "$BACKUP_DIR/$region.yaml"
 done
 
@@ -575,7 +575,7 @@ apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: dns-hpa-us-east-1
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
@@ -602,7 +602,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: eu-example-com
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     compliance: gdpr
 spec:

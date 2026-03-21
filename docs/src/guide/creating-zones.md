@@ -30,7 +30,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   version: "9.18"
   global:
@@ -46,7 +46,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: production-dns  # References the Bind9Cluster above
   role: primary
@@ -58,7 +58,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: production-dns  # Selects all instances with spec.clusterRef: production-dns
@@ -95,7 +95,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     zone: example.com
 spec:
@@ -148,7 +148,7 @@ When you create a DNSZone:
 Check the zone status:
 
 ```bash
-kubectl get dnszones -n dns-system
+kubectl get dnszones -n bindy-system
 ```
 
 Expected output:
@@ -163,7 +163,7 @@ The **Instances** column shows how many `Bind9Instance` resources are serving th
 View detailed status:
 
 ```bash
-kubectl describe dnszone example-com -n dns-system
+kubectl describe dnszone example-com -n bindy-system
 ```
 
 Expected status output:
@@ -172,7 +172,7 @@ Expected status output:
 Status:
   Bind9 Instances:
     Name:       primary-dns
-    Namespace:  dns-system
+    Namespace:  bindy-system
     Status:     Configured
     Message:    Zone synchronized successfully
   Bind9 Instances Count:  1

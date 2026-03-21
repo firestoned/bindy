@@ -386,7 +386,7 @@ mod tests {
         let status = Bind9InstanceStatus {
             conditions: vec![condition],
             observed_generation: Some(1),
-            service_address: Some("my-instance.dns-system.svc.cluster.local".into()),
+            service_address: Some("my-instance.bindy-system.svc.cluster.local".into()),
             cluster_ref: None,
             zones: Vec::new(),
             zones_count: None,
@@ -396,7 +396,7 @@ mod tests {
         assert_eq!(status.conditions.len(), 1);
         assert_eq!(
             status.service_address.as_deref(),
-            Some("my-instance.dns-system.svc.cluster.local")
+            Some("my-instance.bindy-system.svc.cluster.local")
         );
     }
 

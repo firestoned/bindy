@@ -202,12 +202,12 @@ mod tests {
     fn test_tsig_key_not_found_error() {
         let error = TsigError::TsigKeyNotFound {
             secret_name: "my-instance-rndc-key".to_string(),
-            namespace: "dns-system".to_string(),
+            namespace: "bindy-system".to_string(),
         };
 
         assert_eq!(
             error.to_string(),
-            "TSIG key secret 'my-instance-rndc-key' not found in namespace 'dns-system'"
+            "TSIG key secret 'my-instance-rndc-key' not found in namespace 'bindy-system'"
         );
     }
 

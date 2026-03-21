@@ -47,7 +47,7 @@
 # ============================================================================
 # Namespaces
 # ============================================================================
-# Note: dns-system namespace is created separately when deploying the platform cluster
+# Note: bindy-system namespace is created separately when deploying the platform cluster
 
 apiVersion: v1
 kind: Namespace
@@ -70,7 +70,7 @@ metadata:
 # ============================================================================
 # RBAC: Platform Team
 # ============================================================================
-# Note: Platform team manages dns-system namespace and Bind9Cluster there
+# Note: Platform team manages bindy-system namespace and Bind9Cluster there
 # These RBAC resources would typically be deployed separately with the platform cluster
 
 

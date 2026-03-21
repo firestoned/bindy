@@ -9,7 +9,7 @@ RED='\033[0;31m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-NAMESPACE="dns-system"
+NAMESPACE="bindy-system"
 CLUSTER_NAME="bindy-test"
 
 echo -e "${BLUE}🧪 Testing Bindy Operator${NC}"

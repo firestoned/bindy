@@ -8,23 +8,23 @@ Diagnose and resolve common issues with Bindy DNS operator.
 
 ```bash
 # Check all resources
-kubectl get all -n dns-system
+kubectl get all -n bindy-system
 
 # Check CRDs
 kubectl get bind9instances,dnszones,arecords -A
 
 # Check events
-kubectl get events -n dns-system --sort-by='.lastTimestamp' | tail -20
+kubectl get events -n bindy-system --sort-by='.lastTimestamp' | tail -20
 ```
 
 ### View Status Conditions
 
 ```bash
 # Bind9Instance status
-kubectl get bind9instance primary-dns -n dns-system -o yaml | yq '.status'
+kubectl get bind9instance primary-dns -n bindy-system -o yaml | yq '.status'
 
 # DNSZone status
-kubectl get dnszone example-com -n dns-system -o yaml | yq '.status'
+kubectl get dnszone example-com -n bindy-system -o yaml | yq '.status'
 ```
 
 ## Common Issues
@@ -52,27 +52,27 @@ See [FAQ](./faq.md) for answers to frequently asked questions.
 
 ```bash
 # Operator logs
-kubectl logs -n dns-system deployment/bindy --tail=100
+kubectl logs -n bindy-system deployment/bindy --tail=100
 
 # BIND9 instance logs
-kubectl logs -n dns-system -l instance=primary-dns
+kubectl logs -n bindy-system -l instance=primary-dns
 ```
 
 ### Describe Resources
 
 ```bash
 # Describe Bind9Instance
-kubectl describe bind9instance primary-dns -n dns-system
+kubectl describe bind9instance primary-dns -n bindy-system
 
 # Describe pods
-kubectl describe pod -n dns-system <pod-name>
+kubectl describe pod -n bindy-system <pod-name>
 ```
 
 ### Check Resource Status
 
 ```bash
 # Get detailed status
-kubectl get bind9instance primary-dns -n dns-system -o jsonpath='{.status}' | jq
+kubectl get bind9instance primary-dns -n bindy-system -o jsonpath='{.status}' | jq
 ```
 
 ## Escalation

@@ -64,7 +64,7 @@ The new `zone_ref` field provides a complete Kubernetes object reference includi
       apiVersion: dns.firestoned.io/v1beta1
       kind: DNSZone
       name: example-com
-      namespace: dns-system
+      namespace: bindy-system
       zoneName: example.com
   ```
 
@@ -133,7 +133,7 @@ spec:
 spec:
   rndcSecretRef:
     name: bind9-rndc-secret
-    namespace: dns-system
+    namespace: bindy-system
 ```
 
 #### Migration Path
@@ -158,7 +158,7 @@ spec:
    spec:
      rndcSecretRef:
        name: bind9-rndc-secret
-       namespace: dns-system
+       namespace: bindy-system
    ```
 
 #### Timeline

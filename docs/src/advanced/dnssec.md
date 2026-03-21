@@ -34,7 +34,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   global:
     dnssec:
@@ -48,7 +48,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: primary-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: production-dns
   config:
@@ -59,7 +59,7 @@ spec:
 ### Verification
 
 ```bash
-SERVICE_IP=$(kubectl get svc -n dns-system production-dns-primary -o jsonpath='{.spec.clusterIP}')
+SERVICE_IP=$(kubectl get svc -n bindy-system production-dns-primary -o jsonpath='{.spec.clusterIP}')
 
 # Query a DNSSEC-signed domain - look for 'ad' (authentic data) flag
 dig @$SERVICE_IP cloudflare.com +dnssec
@@ -74,7 +74,7 @@ dig @$SERVICE_IP dnssec-failed.org
 
 ```bash
 # Check BIND9 logs for DNSSEC errors
-kubectl logs -n dns-system -l app.kubernetes.io/component=bind9 | grep -i dnssec
+kubectl logs -n bindy-system -l app.kubernetes.io/component=bind9 | grep -i dnssec
 
 # Common errors:
 # "broken trust chain"      - Missing or invalid DS records in parent zone
@@ -87,7 +87,7 @@ dig @$SERVICE_IP example.com +cd  # +cd = checking disabled
 
 ```bash
 # Verify NTP sync - DNSSEC signatures have validity periods
-kubectl exec -n dns-system -l app.kubernetes.io/component=bind9 -- date
+kubectl exec -n bindy-system -l app.kubernetes.io/component=bind9 -- date
 ```
 
 ---
@@ -109,7 +109,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   global:
     dnssec:
@@ -155,7 +155,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: DNSZone
 metadata:
   name: example-com
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   zoneName: example.com
   clusterRef: production-dns
@@ -199,7 +199,7 @@ signing:
   keysFrom:
     secretRef:
       name: my-dnssec-keys
-      namespace: dns-system
+      namespace: bindy-system
 ```
 
 Supply pre-generated keys via a Kubernetes Secret. The Secret is mounted read-only at `/var/cache/bind/keys`. This is the recommended production approach as it gives full control over key material.
@@ -231,11 +231,11 @@ After zones are signed, publish DS records in the parent zone to complete the DN
 
 ```bash
 # Get DS records from signed zone
-kubectl exec -n dns-system -l app.kubernetes.io/component=bind9 -- \
+kubectl exec -n bindy-system -l app.kubernetes.io/component=bind9 -- \
   dig @localhost example.com DNSKEY | dnssec-dsfromkey -f - example.com
 
 # Or extract from BIND9's key directory
-kubectl exec -n dns-system -l app.kubernetes.io/component=bind9 -- \
+kubectl exec -n bindy-system -l app.kubernetes.io/component=bind9 -- \
   cat /var/cache/bind/keys/dsset-example.com.
 ```
 

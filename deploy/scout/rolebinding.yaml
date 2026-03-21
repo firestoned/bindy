@@ -5,11 +5,11 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: bindy-scout-writer
-  namespace: dns-system
+  namespace: bindy-system
 subjects:
   - kind: ServiceAccount
     name: bindy-scout
-    namespace: dns-system
+    namespace: bindy-system
 roleRef:
   kind: Role
   name: bindy-scout-writer

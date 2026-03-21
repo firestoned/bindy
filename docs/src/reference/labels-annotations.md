@@ -220,7 +220,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: production-dns-primary-0
-  namespace: dns-system
+  namespace: bindy-system
   labels:
     # Bindy management labels
     bindy.firestoned.io/managed-by: "Bind9Cluster"

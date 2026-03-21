@@ -68,6 +68,18 @@ enum Commands {
         /// Overrides the BINDY_SCOUT_NAMESPACE environment variable.
         #[arg(long)]
         namespace: Option<String>,
+        /// Default IP addresses used for all Ingresses when no per-Ingress annotation override
+        /// or LoadBalancer status IP is available. Accepts one or more comma-separated values.
+        /// Overrides the BINDY_SCOUT_DEFAULT_IPS environment variable.
+        /// Useful for shared-ingress topologies (e.g. Traefik) where all Ingresses resolve
+        /// to the same IP(s).
+        #[arg(long, value_delimiter = ',')]
+        default_ips: Vec<String>,
+        /// Default DNS zone applied to all Ingresses when no bindy.firestoned.io/zone annotation
+        /// is present. Overrides the BINDY_SCOUT_DEFAULT_ZONE environment variable.
+        /// When combined with --default-ips, Ingresses only need: bindy.firestoned.io/scout-enabled: "true"
+        #[arg(long)]
+        default_zone: Option<String>,
     },
     /// Output shell completion code for the specified shell
     Completion {
@@ -111,7 +123,14 @@ fn main() -> Result<()> {
         Commands::Scout {
             bind9_cluster_name,
             namespace,
-        } => runtime.block_on(scout_command(bind9_cluster_name, namespace)),
+            default_ips,
+            default_zone,
+        } => runtime.block_on(scout_command(
+            bind9_cluster_name,
+            namespace,
+            default_ips,
+            default_zone,
+        )),
         Commands::Completion { .. } => unreachable!("handled above"),
     }
 }
@@ -511,7 +530,7 @@ fn load_leader_election_config() -> LeaderElectionConfig {
 
     let lease_namespace = std::env::var("BINDY_LEASE_NAMESPACE")
         .or_else(|_| std::env::var("POD_NAMESPACE"))
-        .unwrap_or_else(|_| "dns-system".to_string());
+        .unwrap_or_else(|_| "bindy-system".to_string());
 
     let lease_duration = std::env::var("BINDY_LEASE_DURATION_SECONDS")
         .ok()
@@ -751,9 +770,11 @@ async fn perform_startup_drift_detection(client: Client, context: Arc<Context>) 
 async fn scout_command(
     bind9_cluster_name: Option<String>,
     namespace: Option<String>,
+    default_ips: Vec<String>,
+    default_zone: Option<String>,
 ) -> Result<()> {
     initialize_logging();
-    bindy::scout::run_scout(bind9_cluster_name, namespace).await
+    bindy::scout::run_scout(bind9_cluster_name, namespace, default_ips, default_zone).await
 }
 
 async fn run_command() -> Result<()> {

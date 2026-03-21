@@ -124,14 +124,14 @@ wait
 
 ```bash
 # Real-time resource usage
-kubectl top pods -n dns-system -l app=bind9
+kubectl top pods -n bindy-system -l app=bind9
 
 # Query statistics
-kubectl exec -n dns-system deployment/primary-dns -- \
+kubectl exec -n bindy-system deployment/primary-dns -- \
   rndc stats
 
 # View statistics file
-kubectl exec -n dns-system deployment/primary-dns -- \
+kubectl exec -n bindy-system deployment/primary-dns -- \
   cat /var/cache/bind/named.stats
 ```
 

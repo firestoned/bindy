@@ -31,7 +31,7 @@ Before migrating, ensure:
    ```
 3. **Backup existing Secrets**:
    ```bash
-   kubectl get secrets -n dns-system -l app.kubernetes.io/component=rndc -o yaml > rndc-secrets-backup.yaml
+   kubectl get secrets -n bindy-system -l app.kubernetes.io/component=rndc -o yaml > rndc-secrets-backup.yaml
    ```
 
 ---
@@ -47,7 +47,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: dns-primary
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: my-cluster
   role: Primary
@@ -65,7 +65,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: dns-primary
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: my-cluster
   role: Primary
@@ -80,7 +80,7 @@ spec:
 
 1. **Remove `rndcSecretRef` field**:
    ```bash
-   kubectl edit bind9instance dns-primary -n dns-system
+   kubectl edit bind9instance dns-primary -n bindy-system
    # Delete the rndcSecretRef section
    ```
 
@@ -100,12 +100,12 @@ spec:
 
 4. **Verify new Secret created**:
    ```bash
-   kubectl get secret dns-primary-rndc -n dns-system -o yaml
+   kubectl get secret dns-primary-rndc -n bindy-system -o yaml
    ```
 
 5. **Check rotation annotations**:
    ```bash
-   kubectl get secret dns-primary-rndc -n dns-system -o jsonpath='{.metadata.annotations}'
+   kubectl get secret dns-primary-rndc -n bindy-system -o jsonpath='{.metadata.annotations}'
    ```
 
    Expected:
@@ -119,7 +119,7 @@ spec:
 
 6. **Delete old Secret** (after verifying new one works):
    ```bash
-   kubectl delete secret my-rndc-secret -n dns-system
+   kubectl delete secret my-rndc-secret -n bindy-system
    ```
 
 ---
@@ -133,7 +133,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: dns-primary
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: my-cluster
   role: Primary
@@ -159,7 +159,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: my-cluster
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   primary:
     rndcSecretRef:  # DEPRECATED
@@ -182,7 +182,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: my-cluster
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   primary:
     rndcKey:  # NEW
@@ -200,7 +200,7 @@ spec:
 
 1. **Update cluster manifest**:
    ```bash
-   kubectl edit bind9cluster my-cluster -n dns-system
+   kubectl edit bind9cluster my-cluster -n bindy-system
    ```
 
 2. **Replace `rndcSecretRef` with `rndcKey`** for each role
@@ -212,13 +212,13 @@ spec:
 
 4. **Restart instances** to pick up new configuration:
    ```bash
-   kubectl rollout restart deployment/dns-primary -n dns-system
-   kubectl rollout restart deployment/dns-secondary-1 -n dns-system
+   kubectl rollout restart deployment/dns-primary -n bindy-system
+   kubectl rollout restart deployment/dns-secondary-1 -n bindy-system
    ```
 
 5. **Verify rotation status**:
    ```bash
-   kubectl get bind9instance -n dns-system -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.rndcKeyRotationStatus}{"\n"}{end}'
+   kubectl get bind9instance -n bindy-system -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.rndcKeyRotationStatus}{"\n"}{end}'
    ```
 
 ---
@@ -234,7 +234,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: dns-secondary-1  # Start with secondary
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: my-cluster
   role: Secondary
@@ -253,13 +253,13 @@ Wait for first rotation or trigger manual rotation:
 kubectl annotate secret dns-secondary-1-rndc \
   bindy.firestoned.io/rndc-created-at="2020-01-01T00:00:00Z" \
   --overwrite \
-  -n dns-system
+  -n bindy-system
 
 # Wait 1 minute for reconciliation
 sleep 60
 
 # Verify rotation occurred
-kubectl get secret dns-secondary-1-rndc -n dns-system -o jsonpath='{.metadata.annotations.bindy\.firestoned\.io/rndc-rotation-count}'
+kubectl get secret dns-secondary-1-rndc -n bindy-system -o jsonpath='{.metadata.annotations.bindy\.firestoned\.io/rndc-rotation-count}'
 # Output should be "1"
 ```
 
@@ -284,7 +284,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
   name: dns-primary
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   clusterRef: my-cluster
   role: Primary
@@ -305,13 +305,13 @@ kubectl apply -f rndc-secrets-backup.yaml
 **Step 3: Restart pods**
 
 ```bash
-kubectl rollout restart deployment/dns-primary -n dns-system
+kubectl rollout restart deployment/dns-primary -n bindy-system
 ```
 
 **Step 4: Delete new Secret** (if created)
 
 ```bash
-kubectl delete secret dns-primary-rndc -n dns-system
+kubectl delete secret dns-primary-rndc -n bindy-system
 ```
 
 ---
@@ -327,27 +327,27 @@ After migration, verify:
 
 - [ ] **Instances updated** with `rndcKey` field:
   ```bash
-  kubectl get bind9instance -n dns-system -o yaml | grep -A 5 "rndcKey"
+  kubectl get bind9instance -n bindy-system -o yaml | grep -A 5 "rndcKey"
   ```
 
 - [ ] **Secrets have rotation annotations**:
   ```bash
-  kubectl get secrets -n dns-system -l app.kubernetes.io/component=rndc -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.bindy\.firestoned\.io/rndc-rotation-count}{"\n"}{end}'
+  kubectl get secrets -n bindy-system -l app.kubernetes.io/component=rndc -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.bindy\.firestoned\.io/rndc-rotation-count}{"\n"}{end}'
   ```
 
 - [ ] **Rotation status populated**:
   ```bash
-  kubectl get bind9instance dns-primary -n dns-system -o jsonpath='{.status.rndcKeyRotationStatus}'
+  kubectl get bind9instance dns-primary -n bindy-system -o jsonpath='{.status.rndcKeyRotationStatus}'
   ```
 
 - [ ] **Pods restarted successfully**:
   ```bash
-  kubectl get pods -n dns-system -l app.kubernetes.io/name=dns-primary
+  kubectl get pods -n bindy-system -l app.kubernetes.io/name=dns-primary
   ```
 
 - [ ] **RNDC communication working**:
   ```bash
-  kubectl exec -n dns-system deployment/dns-primary -- rndc status
+  kubectl exec -n bindy-system deployment/dns-primary -- rndc status
   ```
 
 ---
@@ -362,10 +362,10 @@ After migration, verify:
 
 ```bash
 # Manually trigger pod restart
-kubectl rollout restart deployment/dns-primary -n dns-system
+kubectl rollout restart deployment/dns-primary -n bindy-system
 
 # Verify new Secret mounted
-kubectl exec -n dns-system deployment/dns-primary -- cat /etc/bind/rndc.key
+kubectl exec -n bindy-system deployment/dns-primary -- cat /etc/bind/rndc.key
 ```
 
 ### Issue 2: Rotation Status Not Showing
@@ -381,13 +381,13 @@ kubectl exec -n dns-system deployment/dns-primary -- cat /etc/bind/rndc.key
 
 2. **Auto-rotation disabled**:
    ```bash
-   kubectl get bind9instance dns-primary -n dns-system -o jsonpath='{.spec.rndcKey.autoRotate}'
+   kubectl get bind9instance dns-primary -n bindy-system -o jsonpath='{.spec.rndcKey.autoRotate}'
    # Output should be "true"
    ```
 
 3. **Secret missing annotations**:
    ```bash
-   kubectl get secret dns-primary-rndc -n dns-system -o jsonpath='{.metadata.annotations}'
+   kubectl get secret dns-primary-rndc -n bindy-system -o jsonpath='{.metadata.annotations}'
    ```
 
    If empty, manually add annotations (operator will update on next reconciliation):
@@ -396,7 +396,7 @@ kubectl exec -n dns-system deployment/dns-primary -- cat /etc/bind/rndc.key
      bindy.firestoned.io/rndc-created-at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
      bindy.firestoned.io/rndc-rotate-at="$(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ)" \
      bindy.firestoned.io/rndc-rotation-count="0" \
-     -n dns-system
+     -n bindy-system
    ```
 
 ### Issue 3: Instance Using Wrong Configuration Level
@@ -407,13 +407,13 @@ kubectl exec -n dns-system deployment/dns-primary -- cat /etc/bind/rndc.key
 
 ```bash
 # Check instance-level config (highest precedence)
-kubectl get bind9instance dns-primary -n dns-system -o jsonpath='{.spec.rndcKey}'
+kubectl get bind9instance dns-primary -n bindy-system -o jsonpath='{.spec.rndcKey}'
 
 # Check cluster role-level config
-kubectl get bind9cluster my-cluster -n dns-system -o jsonpath='{.spec.primary.rndcKey}'
+kubectl get bind9cluster my-cluster -n bindy-system -o jsonpath='{.spec.primary.rndcKey}'
 
 # Check operator logs for precedence resolution
-kubectl logs -n dns-system -l app.kubernetes.io/name=bindy-operator | grep "Resolved RNDC config"
+kubectl logs -n bindy-system -l app.kubernetes.io/name=bindy-operator | grep "Resolved RNDC config"
 ```
 
 **Solution**: Ensure instance-level config doesn't override cluster config unintentionally.
@@ -449,7 +449,7 @@ kubectl logs -n dns-system -l app.kubernetes.io/name=bindy-operator | grep "Reso
 
 4. **Review rotation logs** monthly:
    ```bash
-   kubectl logs -n dns-system -l app.kubernetes.io/name=bindy-operator --since=720h | grep "Rotating RNDC Secret"
+   kubectl logs -n bindy-system -l app.kubernetes.io/name=bindy-operator --since=720h | grep "Rotating RNDC Secret"
    ```
 
 5. **Update runbooks** with new troubleshooting steps

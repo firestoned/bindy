@@ -99,10 +99,10 @@ resperf -s $SERVICE_IP -d queries.txt -m 50000
 
 ```bash
 # During benchmark
-kubectl top pods -n dns-system
+kubectl top pods -n bindy-system
 
 # CPU and memory trends
-kubectl top pods -n dns-system --use-protocol-buffers
+kubectl top pods -n bindy-system --use-protocol-buffers
 ```
 
 ## Sample Benchmark Report

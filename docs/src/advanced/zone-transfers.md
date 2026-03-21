@@ -107,7 +107,7 @@ Force zone transfer:
 
 ```bash
 # On secondary pod
-kubectl exec -n dns-system deployment/secondary-dns -- \
+kubectl exec -n bindy-system deployment/secondary-dns -- \
   rndc retransfer example.com
 ```
 
@@ -117,13 +117,13 @@ kubectl exec -n dns-system deployment/secondary-dns -- \
 
 ```bash
 # View transfer logs
-kubectl logs -n dns-system -l dns-role=secondary | grep "transfer of"
+kubectl logs -n bindy-system -l dns-role=secondary | grep "transfer of"
 
 # Successful transfer
 # transfer of 'example.com/IN' from 10.0.1.10#53: Transfer completed: 1 messages, 42 records
 
 # Check zone status
-kubectl exec -n dns-system deployment/secondary-dns -- \
+kubectl exec -n bindy-system deployment/secondary-dns -- \
   rndc zonestatus example.com
 ```
 
@@ -131,11 +131,11 @@ kubectl exec -n dns-system deployment/secondary-dns -- \
 
 ```bash
 # Primary serial
-kubectl exec -n dns-system deployment/primary-dns -- \
+kubectl exec -n bindy-system deployment/primary-dns -- \
   dig @localhost example.com SOA +short | awk '{print $3}'
 
 # Secondary serial  
-kubectl exec -n dns-system deployment/secondary-dns -- \
+kubectl exec -n bindy-system deployment/secondary-dns -- \
   dig @localhost example.com SOA +short | awk '{print $3}'
 
 # Should match when in sync
@@ -185,7 +185,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: transfer-key-secret
-  namespace: dns-system
+  namespace: bindy-system
 type: Opaque
 stringData:
   key-name: transfer-key
@@ -197,7 +197,7 @@ apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Cluster
 metadata:
   name: production-dns
-  namespace: dns-system
+  namespace: bindy-system
 spec:
   rndcSecretRefs:
     - name: transfer-key-secret
@@ -212,13 +212,13 @@ The secret will be used for authenticated zone transfers between primary and sec
 
 **Check network connectivity:**
 ```bash
-kubectl exec -n dns-system deployment/secondary-dns -- \
+kubectl exec -n bindy-system deployment/secondary-dns -- \
   nc -zv primary-dns-service 53
 ```
 
 **Test manual transfer:**
 ```bash
-kubectl exec -n dns-system deployment/secondary-dns -- \
+kubectl exec -n bindy-system deployment/secondary-dns -- \
   dig @primary-dns-service example.com AXFR
 ```
 
@@ -231,13 +231,13 @@ kubectl get bind9instance primary-dns -o jsonpath='{.spec.config.allowTransfer}'
 
 **Check zone size:**
 ```bash
-kubectl exec -n dns-system deployment/primary-dns -- \
+kubectl exec -n bindy-system deployment/primary-dns -- \
   wc -l /var/lib/bind/zones/example.com.zone
 ```
 
 **Monitor transfer time:**
 ```bash
-kubectl logs -n dns-system -l dns-role=secondary | \
+kubectl logs -n bindy-system -l dns-role=secondary | \
   grep "transfer of" | grep "msecs"
 ```
 
@@ -250,7 +250,7 @@ kubectl get dnszone example-com -o jsonpath='{.spec.soaRecord.refresh}'
 
 **Force immediate transfer:**
 ```bash
-kubectl exec -n dns-system deployment/secondary-dns -- \
+kubectl exec -n bindy-system deployment/secondary-dns -- \
   rndc retransfer example.com
 ```
 
@@ -323,7 +323,7 @@ spec:
       dns-role: secondary
   secondaryConfig:
     primaryServers:
-      - "primary-dns-service.dns-system.svc.cluster.local"
+      - "primary-dns-service.bindy-system.svc.cluster.local"
 ```
 
 ## Next Steps
