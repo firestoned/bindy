@@ -81,6 +81,29 @@ jobs:
           release-tag: ${{ github.event.release.tag_name }}
           image-tag-suffix: "-distroless"
 
+  vex-validate:
+    name: Validate VEX Documents
+    runs-on: ubuntu-latest
+    needs: extract-version
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Validate VEX documents
+        run: make vex-validate
+
+      - name: Upload VEX documents as artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: vex-documents
+          path: vex/*.openvex.json
+
   build:
     name: Build - ${{ matrix.platform.name }}
     runs-on: ${{ matrix.platform.os }}
@@ -383,7 +406,7 @@ jobs:
   upload-release-assets:
     name: Upload Release Assets
     runs-on: ubuntu-latest
-    needs: [build, docker-release, sign-artifacts, slsa-provenance, package-deploy-manifests]
+    needs: [build, docker-release, sign-artifacts, slsa-provenance, package-deploy-manifests, vex-validate]
     permissions:
       contents: write
     steps:
@@ -395,7 +418,7 @@ jobs:
       - name: Organize release artifacts
         run: |
           cd artifacts
-          mkdir -p release sboms signatures provenance
+          mkdir -p release sboms signatures provenance vex
 
           # Copy deployment manifests
           if [ -d "deploy-manifests" ]; then
@@ -450,6 +473,12 @@ jobs:
             find . -name "*.intoto.jsonl" -type f -exec cp {} provenance/ \;
           fi
 
+          # Copy VEX documents
+          if [ -d "vex-documents" ]; then
+            echo "Copying VEX documents..."
+            cp vex-documents/*.openvex.json vex/
+          fi
+
           # Generate SHA256 checksums for all release artifacts
           cd release
           sha256sum *.tar.gz > checksums.sha256
@@ -467,11 +496,17 @@ jobs:
           if compgen -G "*.intoto.jsonl" > /dev/null; then
             sha256sum *.intoto.jsonl >> ../release/checksums.sha256
           fi
+          cd ../vex
+          if compgen -G "*.openvex.json" > /dev/null; then
+            sha256sum *.openvex.json >> ../release/checksums.sha256
+          fi
 
           echo "Release artifacts prepared:"
           ls -lh ../release/
           echo "Provenance files:"
           ls -lh ../provenance/ || echo "No provenance files found"
+          echo "VEX documents:"
+          ls -lh ../vex/ || echo "No VEX documents found"
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
@@ -481,6 +516,7 @@ jobs:
             artifacts/release/install.yaml
             artifacts/release/scout.yaml
             artifacts/sboms/*.json
+            artifacts/vex/*.openvex.json
             artifacts/signatures/*.bundle
             artifacts/provenance/*.intoto.jsonl
             artifacts/release/checksums.sha256
