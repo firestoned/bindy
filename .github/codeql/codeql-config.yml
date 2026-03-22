@@ -1,0 +1,13 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
+name: "bindy CodeQL configuration"
+
+# Exclude test files from security analysis.
+# Tests use synthetic placeholder values (foo/bar/baz) that are not real
+# credentials or sensitive data. Scanning them produces false positives such
+# as "cleartext logging of sensitive information" triggered by function names
+# like build_service_account() in test assertions.
+paths-ignore:
+  - "src/**/*_tests.rs"
+  - "tests/**"

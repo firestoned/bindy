@@ -106,7 +106,7 @@ jobs:
         uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
-          config-file: ${{ inputs.config-file || '' }}
+          config-file: ${{ inputs.config-file || '.github/codeql/codeql-config.yml' }}
           # Use default Rust query suite
           # Available suites: security-extended, security-and-quality
           queries: security-and-quality

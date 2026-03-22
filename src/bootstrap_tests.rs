@@ -14,19 +14,19 @@ mod tests {
 
     #[test]
     fn test_build_namespace_sets_name() {
-        let ns = build_namespace("test-system");
-        assert_eq!(ns.metadata.name.as_deref(), Some("test-system"));
+        let ns = build_namespace("foo");
+        assert_eq!(ns.metadata.name.as_deref(), Some("foo"));
     }
 
     #[test]
     fn test_build_namespace_sets_metadata_label() {
-        let ns = build_namespace("test-system");
+        let ns = build_namespace("foo");
         let labels = ns.metadata.labels.unwrap();
         assert_eq!(
             labels
                 .get("kubernetes.io/metadata.name")
                 .map(String::as_str),
-            Some("test-system")
+            Some("foo")
         );
     }
 
@@ -40,19 +40,19 @@ mod tests {
 
     #[test]
     fn test_build_service_account_name() {
-        let sa = build_service_account("any-ns");
+        let sa = build_service_account("foo");
         assert_eq!(sa.metadata.name.as_deref(), Some(SERVICE_ACCOUNT_NAME));
     }
 
     #[test]
     fn test_build_service_account_namespace() {
-        let sa = build_service_account("custom-namespace");
-        assert_eq!(sa.metadata.namespace.as_deref(), Some("custom-namespace"));
+        let sa = build_service_account("bar");
+        assert_eq!(sa.metadata.namespace.as_deref(), Some("bar"));
     }
 
     #[test]
     fn test_build_service_account_has_app_labels() {
-        let sa = build_service_account("bindy-system");
+        let sa = build_service_account("foobar");
         let labels = sa.metadata.labels.unwrap();
         assert_eq!(
             labels.get("app.kubernetes.io/name").map(String::as_str),
@@ -70,7 +70,7 @@ mod tests {
 
     #[test]
     fn test_build_cluster_role_binding_name() {
-        let crb = build_cluster_role_binding("bindy-system");
+        let crb = build_cluster_role_binding("foo");
         assert_eq!(
             crb.metadata.name.as_deref(),
             Some(CLUSTER_ROLE_BINDING_NAME)
@@ -79,7 +79,7 @@ mod tests {
 
     #[test]
     fn test_build_cluster_role_binding_references_operator_role() {
-        let crb = build_cluster_role_binding("bindy-system");
+        let crb = build_cluster_role_binding("foo");
         assert_eq!(crb.role_ref.name, OPERATOR_ROLE_NAME);
         assert_eq!(crb.role_ref.kind, "ClusterRole");
         assert_eq!(crb.role_ref.api_group, "rbac.authorization.k8s.io");
@@ -87,19 +87,19 @@ mod tests {
 
     #[test]
     fn test_build_cluster_role_binding_subject_namespace() {
-        let crb = build_cluster_role_binding("my-namespace");
+        let crb = build_cluster_role_binding("baz");
         let subjects = crb.subjects.unwrap();
         let subject = subjects.first().unwrap();
-        assert_eq!(subject.namespace.as_deref(), Some("my-namespace"));
+        assert_eq!(subject.namespace.as_deref(), Some("baz"));
         assert_eq!(subject.name, SERVICE_ACCOUNT_NAME);
         assert_eq!(subject.kind, "ServiceAccount");
     }
 
     #[test]
     fn test_build_cluster_role_binding_custom_namespace_propagates() {
-        let crb = build_cluster_role_binding("prod-dns");
+        let crb = build_cluster_role_binding("bar");
         let subject = crb.subjects.unwrap().into_iter().next().unwrap();
-        assert_eq!(subject.namespace.as_deref(), Some("prod-dns"));
+        assert_eq!(subject.namespace.as_deref(), Some("bar"));
     }
 
     // --- ClusterRole YAML parsing ---
@@ -136,19 +136,19 @@ mod tests {
 
     #[test]
     fn test_build_deployment_name() {
-        let d = build_deployment("bindy-system", "latest").unwrap();
+        let d = build_deployment("foo", "latest").unwrap();
         assert_eq!(d.metadata.name.as_deref(), Some(OPERATOR_DEPLOYMENT_NAME));
     }
 
     #[test]
     fn test_build_deployment_namespace() {
-        let d = build_deployment("custom-ns", "latest").unwrap();
-        assert_eq!(d.metadata.namespace.as_deref(), Some("custom-ns"));
+        let d = build_deployment("bar", "latest").unwrap();
+        assert_eq!(d.metadata.namespace.as_deref(), Some("bar"));
     }
 
     #[test]
     fn test_build_deployment_image_tag() {
-        let d = build_deployment("bindy-system", "v0.5.0").unwrap();
+        let d = build_deployment("foo", "v0.5.0").unwrap();
         let image = d
             .spec
             .unwrap()
@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn test_build_deployment_latest_tag() {
-        let d = build_deployment("bindy-system", "latest").unwrap();
+        let d = build_deployment("foo", "latest").unwrap();
         let image = d
             .spec
             .unwrap()
