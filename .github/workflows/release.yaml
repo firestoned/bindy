@@ -271,14 +271,14 @@ jobs:
         uses: firestoned/github-actions/security/cosign-sign@v1.3.6
         with:
           image-digest: ${{ steps.docker_build.outputs.digest }}
-          image-tags: ${{ needs.extract-version.outputs.tag_name }}
+          image-tags: ${{ matrix.variant.image-tag }}
           registry: ghcr.io
           repository: ${{ matrix.variant.image-repository }}
 
       - name: Generate Docker SBOM for ${{ matrix.variant.name }}
         uses: anchore/sbom-action@v0
         with:
-          image: ghcr.io/${{ matrix.variant.image-repository }}:${{ needs.extract-version.outputs.tag_name }}
+          image: ghcr.io/${{ matrix.variant.image-repository }}:${{ matrix.variant.image-tag }}
           format: cyclonedx-json
           output-file: docker-sbom-${{ matrix.variant.name }}.json
 
