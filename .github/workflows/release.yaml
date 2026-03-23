@@ -242,11 +242,11 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}
-            type=raw,value=${{ matrix.variant.image-tag }}
+            type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}${{ matrix.variant.suffix }}
           flavor: |
             latest=false
             prefix=v
+            suffix=${{ matrix.variant.suffix }}
 
       - name: Build and push Docker image (${{ matrix.variant.name }})
         id: docker_build
