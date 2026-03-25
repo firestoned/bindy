@@ -1,3 +1,5 @@
+# API Reference
+
 This document describes the Custom Resource Definitions (CRDs) provided by Bindy.
 
 > **Note**: This file is AUTO-GENERATED from `src/crd.rs`
@@ -76,6 +78,7 @@ ARecord maps a DNS hostname to an IPv4 address. Multiple A records for the same 
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
+| `addresses` | string | No | Comma-separated list of addresses for display purposes.  For \`ARecord\` and \`AAAARecord\` resources, this field contains the IP addresses from \`spec.ipv4Addresses\` or \`spec.ipv6Addresses\` joined with commas. This is used for prettier kubectl output instead of showing JSON arrays.  Example: "192.0.2.1,192.0.2.2,192.0.2.3"  For other record types, this field is not used. |
 | `conditions` | array | No |  |
 | `lastUpdated` | string | No | Timestamp of the last successful update to BIND9.  This is updated after a successful nsupdate operation. Uses RFC 3339 format (e.g., "2025-12-26T10:30:00Z"). |
 | `observedGeneration` | integer | No |  |
@@ -103,6 +106,7 @@ AAAARecord maps a DNS hostname to an IPv6 address. This is the IPv6 equivalent o
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
+| `addresses` | string | No | Comma-separated list of addresses for display purposes.  For \`ARecord\` and \`AAAARecord\` resources, this field contains the IP addresses from \`spec.ipv4Addresses\` or \`spec.ipv6Addresses\` joined with commas. This is used for prettier kubectl output instead of showing JSON arrays.  Example: "192.0.2.1,192.0.2.2,192.0.2.3"  For other record types, this field is not used. |
 | `conditions` | array | No |  |
 | `lastUpdated` | string | No | Timestamp of the last successful update to BIND9.  This is updated after a successful nsupdate operation. Uses RFC 3339 format (e.g., "2025-12-26T10:30:00Z"). |
 | `observedGeneration` | integer | No |  |
@@ -130,6 +134,7 @@ CNAMERecord creates a DNS alias from one hostname to another. A CNAME cannot coe
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
+| `addresses` | string | No | Comma-separated list of addresses for display purposes.  For \`ARecord\` and \`AAAARecord\` resources, this field contains the IP addresses from \`spec.ipv4Addresses\` or \`spec.ipv6Addresses\` joined with commas. This is used for prettier kubectl output instead of showing JSON arrays.  Example: "192.0.2.1,192.0.2.2,192.0.2.3"  For other record types, this field is not used. |
 | `conditions` | array | No |  |
 | `lastUpdated` | string | No | Timestamp of the last successful update to BIND9.  This is updated after a successful nsupdate operation. Uses RFC 3339 format (e.g., "2025-12-26T10:30:00Z"). |
 | `observedGeneration` | integer | No |  |
@@ -158,6 +163,7 @@ MXRecord specifies mail exchange servers for a domain. Lower priority values ind
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
+| `addresses` | string | No | Comma-separated list of addresses for display purposes.  For \`ARecord\` and \`AAAARecord\` resources, this field contains the IP addresses from \`spec.ipv4Addresses\` or \`spec.ipv6Addresses\` joined with commas. This is used for prettier kubectl output instead of showing JSON arrays.  Example: "192.0.2.1,192.0.2.2,192.0.2.3"  For other record types, this field is not used. |
 | `conditions` | array | No |  |
 | `lastUpdated` | string | No | Timestamp of the last successful update to BIND9.  This is updated after a successful nsupdate operation. Uses RFC 3339 format (e.g., "2025-12-26T10:30:00Z"). |
 | `observedGeneration` | integer | No |  |
@@ -185,6 +191,7 @@ NSRecord delegates a subdomain to authoritative nameservers. Used for subdomain 
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
+| `addresses` | string | No | Comma-separated list of addresses for display purposes.  For \`ARecord\` and \`AAAARecord\` resources, this field contains the IP addresses from \`spec.ipv4Addresses\` or \`spec.ipv6Addresses\` joined with commas. This is used for prettier kubectl output instead of showing JSON arrays.  Example: "192.0.2.1,192.0.2.2,192.0.2.3"  For other record types, this field is not used. |
 | `conditions` | array | No |  |
 | `lastUpdated` | string | No | Timestamp of the last successful update to BIND9.  This is updated after a successful nsupdate operation. Uses RFC 3339 format (e.g., "2025-12-26T10:30:00Z"). |
 | `observedGeneration` | integer | No |  |
@@ -212,6 +219,7 @@ TXTRecord stores arbitrary text data in DNS. Commonly used for SPF, DKIM, DMARC 
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
+| `addresses` | string | No | Comma-separated list of addresses for display purposes.  For \`ARecord\` and \`AAAARecord\` resources, this field contains the IP addresses from \`spec.ipv4Addresses\` or \`spec.ipv6Addresses\` joined with commas. This is used for prettier kubectl output instead of showing JSON arrays.  Example: "192.0.2.1,192.0.2.2,192.0.2.3"  For other record types, this field is not used. |
 | `conditions` | array | No |  |
 | `lastUpdated` | string | No | Timestamp of the last successful update to BIND9.  This is updated after a successful nsupdate operation. Uses RFC 3339 format (e.g., "2025-12-26T10:30:00Z"). |
 | `observedGeneration` | integer | No |  |
@@ -242,6 +250,7 @@ SRVRecord specifies the hostname and port of servers for specific services. The 
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
+| `addresses` | string | No | Comma-separated list of addresses for display purposes.  For \`ARecord\` and \`AAAARecord\` resources, this field contains the IP addresses from \`spec.ipv4Addresses\` or \`spec.ipv6Addresses\` joined with commas. This is used for prettier kubectl output instead of showing JSON arrays.  Example: "192.0.2.1,192.0.2.2,192.0.2.3"  For other record types, this field is not used. |
 | `conditions` | array | No |  |
 | `lastUpdated` | string | No | Timestamp of the last successful update to BIND9.  This is updated after a successful nsupdate operation. Uses RFC 3339 format (e.g., "2025-12-26T10:30:00Z"). |
 | `observedGeneration` | integer | No |  |
@@ -271,6 +280,7 @@ CAARecord specifies which certificate authorities are authorized to issue certif
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
+| `addresses` | string | No | Comma-separated list of addresses for display purposes.  For \`ARecord\` and \`AAAARecord\` resources, this field contains the IP addresses from \`spec.ipv4Addresses\` or \`spec.ipv6Addresses\` joined with commas. This is used for prettier kubectl output instead of showing JSON arrays.  Example: "192.0.2.1,192.0.2.2,192.0.2.3"  For other record types, this field is not used. |
 | `conditions` | array | No |  |
 | `lastUpdated` | string | No | Timestamp of the last successful update to BIND9.  This is updated after a successful nsupdate operation. Uses RFC 3339 format (e.g., "2025-12-26T10:30:00Z"). |
 | `observedGeneration` | integer | No |  |
@@ -353,3 +363,4 @@ Bind9Instance represents a BIND9 DNS server deployment in Kubernetes. Each insta
 | `zonesCount` | integer | No | Number of zones in the \`zones\` list.  This field is automatically updated whenever the \`zones\` list changes. It provides a quick way to see how many zones are selecting this instance without having to count the array elements. |
 
 ---
+
