@@ -6,12 +6,20 @@ Get up and running with Bindy in four steps.
 
 ```bash
 # Linux (amd64)
-curl -Lo bindy https://github.com/firestoned/bindy/releases/latest/download/bindy-linux-amd64
-chmod +x bindy && sudo mv bindy /usr/local/bin/
+curl -Lo bindy.tar.gz https://github.com/firestoned/bindy/releases/latest/download/bindy-linux-amd64.tar.gz
+tar xzf bindy.tar.gz && chmod +x bindy && sudo mv bindy /usr/local/bin/
 
-# macOS (arm64)
-curl -Lo bindy https://github.com/firestoned/bindy/releases/latest/download/bindy-darwin-arm64
-chmod +x bindy && sudo mv bindy /usr/local/bin/
+# Linux (arm64)
+curl -Lo bindy.tar.gz https://github.com/firestoned/bindy/releases/latest/download/bindy-linux-arm64.tar.gz
+tar xzf bindy.tar.gz && chmod +x bindy && sudo mv bindy /usr/local/bin/
+
+# macOS (arm64 / Apple Silicon)
+curl -Lo bindy.tar.gz https://github.com/firestoned/bindy/releases/latest/download/bindy-macos-arm64.tar.gz
+tar xzf bindy.tar.gz && chmod +x bindy && sudo mv bindy /usr/local/bin/
+
+# macOS (amd64 / Intel)
+curl -Lo bindy.tar.gz https://github.com/firestoned/bindy/releases/latest/download/bindy-macos-amd64.tar.gz
+tar xzf bindy.tar.gz && chmod +x bindy && sudo mv bindy /usr/local/bin/
 ```
 
 ## 2. Bootstrap the cluster
