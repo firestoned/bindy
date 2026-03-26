@@ -22,7 +22,7 @@
 
 # Build stage to install BIND9 and create user
 # NOTE: This digest points to the multi-arch manifest list (supports AMD64, ARM64, etc.)
-FROM debian:12-slim@sha256:f06537653ac770703bc45b4b113475bd402f451e85223f0f2837acbf89ab020a AS builder
+FROM debian:12-slim AS builder
 
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \

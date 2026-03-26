@@ -77,9 +77,9 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
-enum Commands {
-    /// Bootstrap bindy into the cluster: apply namespace, CRDs, RBAC, and deploy the operator
-    Bootstrap {
+enum BootstrapCommands {
+    /// Bootstrap the BIND9 operator: apply namespace, CRDs, RBAC, and deploy the operator
+    Operator {
         /// Namespace to install bindy into
         #[arg(long, default_value = bindy::bootstrap::DEFAULT_NAMESPACE)]
         namespace: String,
@@ -91,6 +91,78 @@ enum Commands {
         /// or "latest" in debug builds.
         #[arg(long, default_value = bindy::bootstrap::DEFAULT_IMAGE_TAG)]
         version: String,
+        /// Override the container registry used for the operator image.
+        /// Useful for air-gapped environments where images are mirrored to a private registry.
+        /// When set, the image becomes `<registry>/bindy:<version>` instead of
+        /// `ghcr.io/firestoned/bindy:<version>`.
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Bootstrap the Scout controller: apply RBAC and deploy scout
+    Scout {
+        /// Namespace to install scout into
+        #[arg(long, default_value = bindy::bootstrap::DEFAULT_NAMESPACE)]
+        namespace: String,
+        /// Print what would be applied without connecting to a cluster
+        #[arg(long)]
+        dry_run: bool,
+        /// Version (image tag) for the Scout Deployment.
+        /// Defaults to the binary's own version in release builds (e.g. "v0.5.0"),
+        /// or "latest" in debug builds.
+        #[arg(long, default_value = bindy::bootstrap::DEFAULT_IMAGE_TAG)]
+        version: String,
+        /// Override the container registry used for the scout image.
+        /// Useful for air-gapped environments where images are mirrored to a private registry.
+        /// When set, the image becomes `<registry>/bindy:<version>` instead of
+        /// `ghcr.io/firestoned/bindy:<version>`.
+        #[arg(long)]
+        registry: Option<String>,
+        /// Logical name of this cluster stamped on created ARecord labels.
+        /// Passed to the scout container as `--bind9-cluster-name`.
+        /// Overrides the BINDY_SCOUT_CLUSTER_NAME environment variable inside the pod.
+        #[arg(long, default_value = bindy::bootstrap::DEFAULT_SCOUT_CLUSTER_NAME)]
+        bind9_cluster_name: String,
+        /// Default IP addresses for all Ingresses when no per-Ingress annotation override
+        /// or LoadBalancer status IP is available. Accepts one or more comma-separated values.
+        /// Passed to the scout container as `--default-ips`.
+        #[arg(long, value_delimiter = ',')]
+        default_ips: Vec<String>,
+        /// Default DNS zone applied to all Ingresses when no annotation is present.
+        /// Passed to the scout container as `--default-zone`.
+        #[arg(long)]
+        default_zone: Option<String>,
+        /// Name of the Secret containing the remote cluster kubeconfig (Phase 2 / multi-cluster).
+        /// The Secret must already exist in the same namespace as the scout (created by
+        /// `bindy bootstrap multi-cluster`). When set, the scout connects to the remote bindy
+        /// cluster to look up DNSZones and write ARecords.
+        /// Sets `BINDY_SCOUT_REMOTE_SECRET` in the scout Deployment.
+        #[arg(long)]
+        remote_secret: Option<String>,
+    },
+    /// Bootstrap multi-cluster access: create a service account on the queen-ship
+    /// and write a `bindy.firestoned.io/remote-kubeconfig` Secret YAML to stdout.
+    ///
+    /// Run this command against the queen-ship (bindy operator) cluster. Pipe the
+    /// output to each child cluster so the scout can connect back to the queen-ship.
+    #[command(alias = "mc")]
+    MultiCluster {
+        /// Namespace on the queen-ship where the SA, Role, and token Secret are created.
+        /// This should be the same namespace the scout is configured to write ARecords into.
+        #[arg(long, default_value = bindy::bootstrap::DEFAULT_NAMESPACE)]
+        namespace: String,
+        /// Name of the service account to create on the queen-ship cluster.
+        /// Use one account per child cluster so access can be revoked independently.
+        #[arg(long, default_value = "bindy-scout")]
+        service_account: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Bootstrap bindy components into the cluster
+    Bootstrap {
+        #[command(subcommand)]
+        subcommand: BootstrapCommands,
     },
     /// Run the BIND9 DNS operator
     Run,
@@ -142,7 +214,15 @@ fn main() -> Result<()> {
     }
 
     let thread_name = match &cli.command {
-        Commands::Bootstrap { .. } => "bindy-bootstrap",
+        Commands::Bootstrap {
+            subcommand: BootstrapCommands::Operator { .. },
+        } => "bindy-bootstrap-operator",
+        Commands::Bootstrap {
+            subcommand: BootstrapCommands::Scout { .. },
+        } => "bindy-bootstrap-scout",
+        Commands::Bootstrap {
+            subcommand: BootstrapCommands::MultiCluster { .. },
+        } => "bindy-bootstrap-mc",
         Commands::Run => "bindy-run",
         Commands::Scout { .. } => "bindy-scout",
         Commands::Completion { .. } => unreachable!("handled above"),
@@ -157,10 +237,45 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Bootstrap {
+            subcommand:
+                BootstrapCommands::Operator {
+                    namespace,
+                    dry_run,
+                    version,
+                    registry,
+                },
+        } => runtime.block_on(bootstrap_operator_command(
+            namespace, dry_run, version, registry,
+        )),
+        Commands::Bootstrap {
+            subcommand:
+                BootstrapCommands::Scout {
+                    namespace,
+                    dry_run,
+                    version,
+                    registry,
+                    bind9_cluster_name,
+                    default_ips,
+                    default_zone,
+                    remote_secret,
+                },
+        } => runtime.block_on(bootstrap_scout_command(
             namespace,
             dry_run,
             version,
-        } => runtime.block_on(bootstrap_command(namespace, dry_run, version)),
+            registry,
+            bind9_cluster_name,
+            default_ips,
+            default_zone,
+            remote_secret,
+        )),
+        Commands::Bootstrap {
+            subcommand:
+                BootstrapCommands::MultiCluster {
+                    namespace,
+                    service_account,
+                },
+        } => runtime.block_on(bootstrap_multi_cluster_command(namespace, service_account)),
         Commands::Run => runtime.block_on(run_command()),
         Commands::Scout {
             bind9_cluster_name,
@@ -211,7 +326,6 @@ fn initialize_logging() {
         }
     }
 
-    info!("Starting BIND9 DNS Operator");
     debug!("Logging initialized with file and line number tracking");
 }
 
@@ -805,10 +919,48 @@ async fn perform_startup_drift_detection(client: Client, context: Arc<Context>) 
     Ok(())
 }
 
-/// Entry point for `bindy bootstrap` — applies namespace, CRDs, RBAC, and the operator Deployment.
-async fn bootstrap_command(namespace: String, dry_run: bool, version: String) -> Result<()> {
+/// Entry point for `bindy bootstrap operator` — applies namespace, CRDs, RBAC, and the operator Deployment.
+async fn bootstrap_operator_command(
+    namespace: String,
+    dry_run: bool,
+    version: String,
+    registry: Option<String>,
+) -> Result<()> {
     initialize_logging();
-    bindy::bootstrap::run_bootstrap(&namespace, dry_run, &version).await
+    bindy::bootstrap::run_bootstrap_operator(&namespace, dry_run, &version, registry.as_deref())
+        .await
+}
+
+/// Entry point for `bindy bootstrap scout` — applies scout RBAC and the scout Deployment.
+// Each parameter maps 1-to-1 to a CLI flag; they cannot be bundled into a struct at this layer.
+#[allow(clippy::too_many_arguments)]
+async fn bootstrap_scout_command(
+    namespace: String,
+    dry_run: bool,
+    version: String,
+    registry: Option<String>,
+    bind9_cluster_name: String,
+    default_ips: Vec<String>,
+    default_zone: Option<String>,
+    remote_secret: Option<String>,
+) -> Result<()> {
+    initialize_logging();
+    let opts = bindy::bootstrap::ScoutDeploymentOptions {
+        image_tag: &version,
+        registry: registry.as_deref(),
+        bind9_cluster_name: &bind9_cluster_name,
+        default_ips: &default_ips,
+        default_zone: default_zone.as_deref(),
+        remote_secret: remote_secret.as_deref(),
+    };
+    bindy::bootstrap::run_bootstrap_scout(&namespace, dry_run, &opts).await
+}
+
+/// Entry point for `bindy bootstrap multi-cluster` — creates SA + RBAC on the queen-ship and
+/// writes a `bindy.firestoned.io/remote-kubeconfig` Secret manifest to stdout.
+async fn bootstrap_multi_cluster_command(namespace: String, service_account: String) -> Result<()> {
+    initialize_logging();
+    bindy::bootstrap::run_bootstrap_multi_cluster(&namespace, &service_account).await
 }
 
 /// Entry point for `bindy scout` — watches Ingresses and creates ARecords on the bindy cluster.
@@ -822,11 +974,13 @@ async fn scout_command(
     default_zone: Option<String>,
 ) -> Result<()> {
     initialize_logging();
+    info!("Starting Scout controller");
     bindy::scout::run_scout(bind9_cluster_name, namespace, default_ips, default_zone).await
 }
 
 async fn run_command() -> Result<()> {
     initialize_logging();
+    info!("Starting BIND9 DNS Operator");
 
     let (client, bind9_manager) = initialize_services().await?;
 

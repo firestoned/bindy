@@ -17,6 +17,36 @@
 
 ## ⚙️ Claude Code Configuration
 
+### 🚨 CRITICAL: Keep Bootstrap RBAC in Sync With Static YAML Files and Docs
+
+**MANDATORY REQUIREMENT:** Any time you modify ClusterRole, Role, ClusterRoleBinding, or RoleBinding definitions in `src/bootstrap.rs`, you MUST update ALL of the following in the same change:
+
+| File | What to update |
+|------|---------------|
+| `deploy/scout/clusterrole.yaml` | Mirror the exact rules from `build_scout_cluster_role` |
+| `deploy/scout/clusterrolebinding.yaml` | Mirror any binding changes |
+| `deploy/scout/role.yaml` | Mirror rules from `build_scout_role` (if exists) |
+| `deploy/scout/rolebinding.yaml` | Mirror any role binding changes |
+| `deploy/scout.yaml` | The single-file install — update the same RBAC sections inline |
+| `docs/src/guide/scout.md` | Update any ClusterRole/Role YAML examples shown to users |
+
+**Why This Matters:**
+- `src/bootstrap.rs` generates RBAC at runtime via `bindy bootstrap scout`
+- The static YAML files in `deploy/scout/` are used for manual installs (`kubectl apply -f`)
+- `deploy/scout.yaml` is the single-file "quick install" published in releases
+- If they diverge, manually-installed scouts will have different permissions than bootstrapped ones
+- Permission gaps cause 403 errors that are hard to diagnose (as seen with the `ingresses patch` bug)
+
+**Verification Checklist:**
+- [ ] `deploy/scout/clusterrole.yaml` matches `build_scout_cluster_role` in `bootstrap.rs`
+- [ ] `deploy/scout.yaml` ClusterRole section matches the above
+- [ ] `docs/src/guide/scout.md` ClusterRole YAML example matches the above
+- [ ] Tests in `bootstrap_tests.rs` cover the updated rules
+
+**REMEMBER:** `bootstrap.rs` and the static YAML files are THREE separate representations of the same RBAC policy. They must always be kept in sync.
+
+---
+
 ### 🚨 CRITICAL: Always Verify CRD Schema Sync
 
 **MANDATORY REQUIREMENT:** Before investigating any Kubernetes-related issue, ALWAYS verify that deployed CRDs match the Rust code definitions.
