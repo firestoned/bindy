@@ -2,12 +2,17 @@
 # SPDX-License-Identifier: MIT
 
 # ULTRA-FAST LOCAL DEVELOPMENT DOCKERFILE
-# This assumes you've already built the binary locally with `cargo build --release`
+# Build the binary locally with `make build-linux-debug`, then let the script
+# pass the path via --build-arg BINARY_PATH=target/<target>/debug/bindy.
 # Build time: ~5 seconds (just copies the pre-built binary)
 #
-# Usage:
-#   1. Build locally: cargo build --release
-#   2. Build image: docker build -f Dockerfile.local -t bindy:latest .
+# Usage (via Makefile — preferred):
+#   make docker-build-kind
+#
+# Manual usage:
+#   make build-linux-debug
+#   docker build -f docker/Dockerfile.local -t bindy:latest \
+#                target/aarch64-unknown-linux-gnu/debug/
 #
 # IMPORTANT: This is for local development only. Do NOT use in CI/CD.
 
@@ -42,8 +47,8 @@ RUN groupadd --system bindy && useradd --system --gid bindy bindy && \
     mkdir -p /run/named && \
     chown -R bindy:bindy /etc/bind /var/cache/bind /var/lib/bind /run/named
 
-# Copy the pre-built binary from your local target directory
-COPY target/aarch64-unknown-linux-gnu/debug/bindy /usr/local/bin/
+# Binary is the only file in the build context (the directory it lives in)
+COPY bindy /usr/local/bin/bindy
 
 # Set permissions
 RUN chmod +x /usr/local/bin/bindy

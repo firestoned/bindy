@@ -8,8 +8,9 @@ mod tests {
     use crate::scout::{
         arecord_cr_name, arecord_label_selector, derive_record_name, get_zone_annotation,
         has_finalizer, is_arecord_enabled, is_being_deleted, is_scout_opted_in,
-        resolve_ip_from_annotation, resolve_ips, resolve_zone, FINALIZER_SCOUT, LABEL_MANAGED_BY,
-        LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER, LABEL_SOURCE_INGRESS, LABEL_SOURCE_NAMESPACE,
+        resolve_ip_from_annotation, resolve_ips, resolve_zone, stale_arecord_label_selector,
+        FINALIZER_SCOUT, LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER,
+        LABEL_SOURCE_INGRESS, LABEL_SOURCE_NAMESPACE,
     };
     use k8s_openapi::api::networking::v1::{
         Ingress, IngressLoadBalancerIngress, IngressLoadBalancerStatus, IngressStatus,
@@ -393,6 +394,48 @@ mod tests {
         assert!(selector.contains(LABEL_SOURCE_CLUSTER));
         assert!(selector.contains(LABEL_SOURCE_NAMESPACE));
         assert!(selector.contains(LABEL_SOURCE_INGRESS));
+    }
+
+    // =========================================================================
+    // stale_arecord_label_selector
+    // =========================================================================
+
+    #[test]
+    fn test_stale_arecord_label_selector_uses_not_equal_for_cluster() {
+        // Must use != so it matches ARecords from any previous cluster name,
+        // regardless of what that name was.
+        let selector = stale_arecord_label_selector("new-cluster", "my-ns", "my-ingress");
+        assert!(
+            selector.contains(&format!("{}!=new-cluster", LABEL_SOURCE_CLUSTER)),
+            "selector must use != for source-cluster: got {selector}"
+        );
+    }
+
+    #[test]
+    fn test_stale_arecord_label_selector_still_filters_by_managed_by() {
+        let selector = stale_arecord_label_selector("new-cluster", "my-ns", "my-ingress");
+        assert!(
+            selector.contains(&format!("{}={}", LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT)),
+            "selector must still filter managed-by=scout"
+        );
+    }
+
+    #[test]
+    fn test_stale_arecord_label_selector_contains_namespace_and_ingress() {
+        let selector = stale_arecord_label_selector("new-cluster", "my-ns", "my-ingress");
+        assert!(selector.contains(&format!("{}=my-ns", LABEL_SOURCE_NAMESPACE)));
+        assert!(selector.contains(&format!("{}=my-ingress", LABEL_SOURCE_INGRESS)));
+    }
+
+    #[test]
+    fn test_stale_arecord_label_selector_does_not_match_current_cluster() {
+        // The whole point: current cluster is excluded, not selected.
+        let selector = stale_arecord_label_selector("current", "ns", "ing");
+        // Must NOT contain an equality match on the current cluster
+        assert!(
+            !selector.contains(&format!("{}=current", LABEL_SOURCE_CLUSTER)),
+            "selector must NOT positively select current cluster"
+        );
     }
 
     // =========================================================================

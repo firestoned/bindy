@@ -38,7 +38,7 @@ use kube::{
     runtime::{
         controller::Action, reflector, watcher, watcher::Config as WatcherConfig, Controller,
     },
-    Api, Client, ResourceExt,
+    Api, Client, Error as KubeError, ResourceExt,
 };
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tracing::{debug, error, info, warn};
@@ -102,6 +102,11 @@ const ARECORD_NAME_PREFIX: &str = "scout";
 
 /// Requeue delay for non-fatal errors (seconds)
 const SCOUT_ERROR_REQUEUE_SECS: u64 = 30;
+
+/// Backoff delay before re-polling the DNSZone reflector after a connection error (seconds).
+/// The kube-runtime watcher has no built-in backoff — consumers must apply their own by
+/// delaying the next poll. Without this, a failed LIST/WATCH causes a tight retry loop.
+const REFLECTOR_ERROR_BACKOFF_SECS: u64 = 5;
 
 // ============================================================================
 // Context
@@ -359,6 +364,27 @@ pub fn arecord_label_selector(cluster: &str, namespace: &str, ingress_name: &str
     )
 }
 
+/// Builds a label selector string matching ARecords for the given Ingress that
+/// belong to **any cluster other than `current_cluster`**.
+///
+/// Used to detect and clean up stale ARecords left behind when the scout is
+/// restarted with a different `--cluster-name`.  The `!=` operator is supported
+/// by the Kubernetes label selector language for equality-based requirements.
+pub fn stale_arecord_label_selector(
+    current_cluster: &str,
+    namespace: &str,
+    ingress_name: &str,
+) -> String {
+    format!(
+        "{}={},{cluster_key}!={current_cluster},{ns_key}={namespace},{ingress_key}={ingress_name}",
+        LABEL_MANAGED_BY,
+        LABEL_MANAGED_BY_SCOUT,
+        cluster_key = LABEL_SOURCE_CLUSTER,
+        ns_key = LABEL_SOURCE_NAMESPACE,
+        ingress_key = LABEL_SOURCE_INGRESS,
+    )
+}
+
 // ============================================================================
 // ARecord builder
 // ============================================================================
@@ -501,6 +527,47 @@ async fn delete_arecords_for_ingress(
     Ok(())
 }
 
+/// Deletes all ARecords in `target_namespace` that were created by Scout for
+/// the given Ingress by a **previous** cluster name — i.e., any ARecord whose
+/// `source-cluster` label differs from `current_cluster`.
+///
+/// This is called after every successful reconcile so that a scout restarted
+/// with a new `--cluster-name` automatically cleans up the orphaned records
+/// it left behind under the old name.
+async fn delete_stale_cluster_arecords(
+    remote_client: &Client,
+    target_namespace: &str,
+    current_cluster: &str,
+    ingress_namespace: &str,
+    ingress_name: &str,
+) -> Result<()> {
+    let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
+    let selector = stale_arecord_label_selector(current_cluster, ingress_namespace, ingress_name);
+    let lp = ListParams::default().labels(&selector);
+
+    let arecords = api.list(&lp).await?;
+    for ar in arecords.items {
+        let ar_name = ar.name_any();
+        let old_cluster = ar
+            .metadata
+            .labels
+            .as_ref()
+            .and_then(|l| l.get(LABEL_SOURCE_CLUSTER))
+            .map(String::as_str)
+            .unwrap_or("unknown");
+        api.delete(&ar_name, &DeleteParams::default()).await?;
+        info!(
+            arecord = %ar_name,
+            old_cluster = %old_cluster,
+            new_cluster = %current_cluster,
+            ingress = %ingress_name,
+            ns = %ingress_namespace,
+            "Deleted stale ARecord after cluster-name change"
+        );
+    }
+    Ok(())
+}
+
 // ============================================================================
 // Reconciler
 // ============================================================================
@@ -538,6 +605,15 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
             )
             .await
             .map_err(ScoutError::from)?;
+            delete_stale_cluster_arecords(
+                &ctx.remote_client,
+                &ctx.target_namespace,
+                &ctx.cluster_name,
+                &namespace,
+                &name,
+            )
+            .await
+            .map_err(ScoutError::from)?;
             remove_finalizer(&ctx.client, &ingress)
                 .await
                 .map_err(ScoutError::from)?;
@@ -559,6 +635,15 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
         if has_finalizer(&ingress) {
             info!(ingress = %name, ns = %namespace, "Scout opt-in annotation removed — cleaning up ARecords and finalizer");
             delete_arecords_for_ingress(
+                &ctx.remote_client,
+                &ctx.target_namespace,
+                &ctx.cluster_name,
+                &namespace,
+                &name,
+            )
+            .await
+            .map_err(ScoutError::from)?;
+            delete_stale_cluster_arecords(
                 &ctx.remote_client,
                 &ctx.target_namespace,
                 &ctx.cluster_name,
@@ -636,8 +721,6 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
         .cloned()
         .unwrap_or_default();
 
-    // Use the remote client — ARecords live on the bindy cluster (Phase 2+)
-    // or the same cluster (Phase 1, where remote_client == client)
     let arecord_api: Api<ARecord> =
         Api::namespaced(ctx.remote_client.clone(), &ctx.target_namespace);
 
@@ -688,6 +771,18 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
             }
         }
     }
+
+    // Clean up any ARecords that were created by a previous cluster name for
+    // this same Ingress — happens when scout is restarted with a new --cluster-name.
+    delete_stale_cluster_arecords(
+        &ctx.remote_client,
+        &ctx.target_namespace,
+        &ctx.cluster_name,
+        &namespace,
+        &name,
+    )
+    .await
+    .map_err(ScoutError::from)?;
 
     Ok(Action::await_change())
 }
@@ -784,9 +879,7 @@ impl ScoutConfig {
             .filter(|s| !s.is_empty())
             .or_else(|| std::env::var("BINDY_SCOUT_CLUSTER_NAME").ok())
             .ok_or_else(|| {
-                anyhow!(
-                    "BINDY_SCOUT_CLUSTER_NAME is required (set via --bind9-cluster-name or env var)"
-                )
+                anyhow!("BINDY_SCOUT_CLUSTER_NAME is required (set via --cluster-name or env var)")
             })?;
 
         let own_namespace =
@@ -844,23 +937,55 @@ impl ScoutConfig {
     }
 }
 
+// ============================================================================
+// Internal helpers
+// ============================================================================
+
+/// Converts a [`watcher::Error`] into a short, human-readable diagnosis string.
+///
+/// The kube-runtime watcher wraps all errors in a thin enum. This function
+/// peels back the layers to surface the actionable cause: connection refused,
+/// unauthorized, RBAC-forbidden, or a generic API / transport error.
+fn diagnose_reflector_error(e: &watcher::Error) -> String {
+    // Extract the phase label and the inner kube client error, handling the
+    // two variants that don't carry a kube::Error directly.
+    let (phase, client_err) = match e {
+        watcher::Error::InitialListFailed(e) => ("initial list", e),
+        watcher::Error::WatchStartFailed(e) => ("watch start", e),
+        watcher::Error::WatchFailed(e) => ("watch stream", e),
+        watcher::Error::WatchError(status) => {
+            return format!(
+                "API server returned error during watch: {} (HTTP {})",
+                status.message, status.code
+            );
+        }
+        watcher::Error::NoResourceVersion => {
+            return "resource does not support watch (no resourceVersion returned)".to_string();
+        }
+    };
+
+    let detail = match client_err {
+        KubeError::Api(status) => match status.code {
+            401 => format!(
+                "unauthorized — check credentials/token ({})",
+                status.message
+            ),
+            403 => format!("forbidden — check RBAC permissions ({})", status.message),
+            code => format!("API error HTTP {code} — {}", status.message),
+        },
+        KubeError::Auth(e) => format!("authentication error — {e}"),
+        KubeError::Service(e) => format!("cannot connect to API server — {e}"),
+        KubeError::HyperError(e) => format!("HTTP transport error — {e}"),
+        other => format!("{other}"),
+    };
+
+    format!("{phase} failed: {detail}")
+}
+
 /// Entry point for the `bindy scout` subcommand.
 ///
 /// Initialises the Kubernetes client, builds reflector stores for `DNSZone`
 /// resources (for zone validation), then runs the Ingress controller loop.
-///
-/// # Arguments
-///
-/// * `cli_cluster_name` — Optional cluster name from `--bind9-cluster-name` CLI arg.
-///   Takes precedence over the `BINDY_SCOUT_CLUSTER_NAME` environment variable.
-/// * `cli_namespace` — Optional namespace from `--namespace` CLI arg.
-///   Takes precedence over the `BINDY_SCOUT_NAMESPACE` environment variable.
-/// * `cli_default_ips` — Default IPs from `--default-ips` CLI arg (comma-separated values).
-///   Takes precedence over the `BINDY_SCOUT_DEFAULT_IPS` environment variable.
-///   Used in shared-ingress topologies (e.g. Traefik) where all Ingresses resolve to the same IP(s).
-/// * `cli_default_zone` — Default DNS zone from `--default-zone` CLI arg.
-///   Takes precedence over the `BINDY_SCOUT_DEFAULT_ZONE` environment variable.
-///   When set, Ingresses only need `bindy.firestoned.io/scout-enabled: "true"` — no zone annotation needed.
 ///
 /// # Errors
 ///
@@ -881,8 +1006,6 @@ pub async fn run_scout(
 
     let local_client = Client::try_default().await?;
 
-    // Build remote client — either from a kubeconfig Secret (Phase 2) or
-    // the same in-cluster client (Phase 1, same-cluster mode).
     let remote_client = if let Some(ref secret_name) = config.remote_secret_name {
         info!(
             cluster = %config.cluster_name,
@@ -892,7 +1015,7 @@ pub async fn run_scout(
             excluded = ?config.excluded_namespaces,
             default_ips = ?config.default_ips,
             default_zone = ?config.default_zone,
-            "Starting bindy scout (Phase 2 — remote cluster mode)"
+            "Starting bindy scout in remote cluster mode"
         );
         build_remote_client(&local_client, secret_name, &config.remote_secret_namespace).await?
     } else {
@@ -902,27 +1025,40 @@ pub async fn run_scout(
             excluded = ?config.excluded_namespaces,
             default_ips = ?config.default_ips,
             default_zone = ?config.default_zone,
-            "Starting bindy scout (Phase 1 — same-cluster mode)"
+            "Starting bindy scout in same-cluster mode"
         );
         local_client.clone()
     };
 
     // Build a reflector store for DNSZone resources using the REMOTE client.
     // In same-cluster mode this is the local cluster; in Phase 2 this is the bindy cluster.
-    let dnszone_api: Api<DNSZone> = Api::all(remote_client.clone());
+    // Scoped to the target namespace: DNSZones and ARecords always live in the same namespace
+    // on the bindy cluster, so a namespaced watch is sufficient and avoids the need for a
+    // cluster-scoped ClusterRole.
+    let dnszone_api: Api<DNSZone> =
+        Api::namespaced(remote_client.clone(), &config.target_namespace);
     let (dnszone_reader, dnszone_writer) = reflector::store();
     let dnszone_reflector = reflector(
         dnszone_writer,
         watcher(dnszone_api, WatcherConfig::default()),
     );
 
-    // Start the DNSZone reflector in the background
+    // Start the DNSZone reflector in the background.
+    // The kube-runtime watcher relies on the consumer to apply backoff: "You can apply your own
+    // backoff by not polling the stream for a duration after errors." We sleep on each error so
+    // that a repeated Connect failure doesn't spin in a tight logging loop.
     tokio::spawn(async move {
         dnszone_reflector
             .for_each(|event| async move {
                 match event {
                     Ok(_) => {}
-                    Err(e) => error!(error = %e, "DNSZone reflector error"),
+                    Err(e) => {
+                        error!(diagnosis = %diagnose_reflector_error(&e), "DNSZone reflector error");
+                        tokio::time::sleep(tokio::time::Duration::from_secs(
+                            REFLECTOR_ERROR_BACKOFF_SECS,
+                        ))
+                        .await;
+                    }
                 }
             })
             .await;
