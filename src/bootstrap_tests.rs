@@ -11,11 +11,12 @@ mod tests {
         build_scout_service_account, build_scout_writer_role, build_scout_writer_role_binding,
         build_service_account, parse_cluster_role, resolve_image, ScoutDeploymentOptions,
         BINDY_ADMIN_ROLE_YAML, BINDY_ROLE_YAML, CLUSTER_ROLE_BINDING_NAME, DEFAULT_IMAGE_TAG,
-        DEFAULT_NAMESPACE, DEFAULT_SCOUT_CLUSTER_NAME, OPERATOR_DEPLOYMENT_NAME,
-        OPERATOR_IMAGE_BASE, OPERATOR_ROLE_NAME, REMOTE_KUBECONFIG_SECRET_SUFFIX,
-        REMOTE_KUBECONFIG_SECRET_TYPE, SA_TOKEN_SECRET_SUFFIX, SCOUT_CLUSTER_ROLE_BINDING_NAME,
-        SCOUT_CLUSTER_ROLE_NAME, SCOUT_DEPLOYMENT_NAME, SCOUT_SERVICE_ACCOUNT_NAME,
-        SCOUT_WRITER_ROLE_BINDING_NAME, SCOUT_WRITER_ROLE_NAME, SERVICE_ACCOUNT_NAME,
+        DEFAULT_NAMESPACE, DEFAULT_SCOUT_CLUSTER_NAME, MC_DEFAULT_SERVICE_ACCOUNT_NAME,
+        OPERATOR_DEPLOYMENT_NAME, OPERATOR_IMAGE_BASE, OPERATOR_ROLE_NAME,
+        REMOTE_KUBECONFIG_SECRET_SUFFIX, REMOTE_KUBECONFIG_SECRET_TYPE, SA_TOKEN_SECRET_SUFFIX,
+        SCOUT_CLUSTER_ROLE_BINDING_NAME, SCOUT_CLUSTER_ROLE_NAME, SCOUT_DEPLOYMENT_NAME,
+        SCOUT_SERVICE_ACCOUNT_NAME, SCOUT_WRITER_ROLE_BINDING_NAME, SCOUT_WRITER_ROLE_NAME,
+        SERVICE_ACCOUNT_NAME,
     };
 
     /// Convenience helper: build a minimal `ScoutDeploymentOptions` for tests.
@@ -30,7 +31,7 @@ mod tests {
         ScoutDeploymentOptions {
             image_tag,
             registry,
-            bind9_cluster_name: cluster_name,
+            cluster_name,
             default_ips,
             default_zone,
             remote_secret,
@@ -540,7 +541,7 @@ mod tests {
         let args = scout_container_args(d);
         assert_eq!(
             args,
-            vec!["scout", "--bind9-cluster-name", DEFAULT_SCOUT_CLUSTER_NAME]
+            vec!["scout", "--cluster-name", DEFAULT_SCOUT_CLUSTER_NAME]
         );
     }
 
@@ -549,7 +550,7 @@ mod tests {
         let opts = scout_opts("latest", None, "prod-cluster", &[], None, None);
         let d = build_scout_deployment("foo", &opts).unwrap();
         let args = scout_container_args(d);
-        assert_eq!(args, vec!["scout", "--bind9-cluster-name", "prod-cluster"]);
+        assert_eq!(args, vec!["scout", "--cluster-name", "prod-cluster"]);
     }
 
     #[test]
@@ -562,7 +563,7 @@ mod tests {
             args,
             vec![
                 "scout",
-                "--bind9-cluster-name",
+                "--cluster-name",
                 DEFAULT_SCOUT_CLUSTER_NAME,
                 "--default-ips",
                 "10.0.0.1,10.0.0.2"
@@ -586,7 +587,7 @@ mod tests {
             args,
             vec![
                 "scout",
-                "--bind9-cluster-name",
+                "--cluster-name",
                 DEFAULT_SCOUT_CLUSTER_NAME,
                 "--default-zone",
                 "example.com"
@@ -611,7 +612,7 @@ mod tests {
             args,
             vec![
                 "scout",
-                "--bind9-cluster-name",
+                "--cluster-name",
                 "staging",
                 "--default-ips",
                 "192.168.1.1",
@@ -838,7 +839,8 @@ mod tests {
 
     #[test]
     fn test_build_mc_writer_role_grants_dnszones_read() {
-        // Scout reads DNSZones via the remote client for zone validation.
+        // Scout watches DNSZones via Api::namespaced (not Api::all) so the namespaced
+        // Role is sufficient — no ClusterRole required.
         let role = build_mc_writer_role("bindy-system", "scout");
         let rules = role.rules.unwrap();
         let has_dnszone_rule = rules.iter().any(|r| {
@@ -848,7 +850,7 @@ mod tests {
         });
         assert!(
             has_dnszone_rule,
-            "MC Role must include a dnszones rule for zone validation"
+            "MC writer Role must include a dnszones rule for zone validation"
         );
     }
 
@@ -865,7 +867,6 @@ mod tests {
             })
             .expect("dnszones rule must exist");
         let verbs = &dnszone_rule.verbs;
-        // Must have read verbs
         assert!(verbs.iter().any(|v| v == "get"), "dnszones: must allow get");
         assert!(
             verbs.iter().any(|v| v == "list"),
@@ -875,7 +876,6 @@ mod tests {
             verbs.iter().any(|v| v == "watch"),
             "dnszones: must allow watch"
         );
-        // Must NOT have write verbs
         assert!(
             !verbs.iter().any(|v| v == "create"),
             "dnszones: must NOT allow create"
@@ -1221,6 +1221,46 @@ mod tests {
         assert_eq!(
             parsed["contexts"][0]["context"]["user"].as_str(),
             Some("scout")
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // run_revoke_multi_cluster — resource name derivation
+    // -------------------------------------------------------------------------
+
+    /// Verify the exact resource names that `run_revoke_multi_cluster` would delete
+    /// for the default service account name.  If the suffix constants change, this
+    /// test catches the drift before it reaches a cluster.
+    #[test]
+    fn test_revoke_mc_resource_names_default_sa() {
+        // Arrange
+        let sa = MC_DEFAULT_SERVICE_ACCOUNT_NAME;
+
+        // Act — derive the same names the revoke function uses
+        let token_secret = format!("{sa}{SA_TOKEN_SECRET_SUFFIX}");
+        let kubeconfig_secret = format!("{sa}{REMOTE_KUBECONFIG_SECRET_SUFFIX}");
+
+        // Assert
+        assert_eq!(sa, "bindy-scout-remote");
+        assert_eq!(token_secret, "bindy-scout-remote-token");
+        assert_eq!(kubeconfig_secret, "bindy-scout-remote-remote-kubeconfig");
+    }
+
+    /// Verify resource names for a custom per-cluster service account name.
+    #[test]
+    fn test_revoke_mc_resource_names_custom_sa() {
+        // Arrange
+        let sa = "bindy-scout-prod-us-east";
+
+        // Act
+        let token_secret = format!("{sa}{SA_TOKEN_SECRET_SUFFIX}");
+        let kubeconfig_secret = format!("{sa}{REMOTE_KUBECONFIG_SECRET_SUFFIX}");
+
+        // Assert
+        assert_eq!(token_secret, "bindy-scout-prod-us-east-token");
+        assert_eq!(
+            kubeconfig_secret,
+            "bindy-scout-prod-us-east-remote-kubeconfig"
         );
     }
 }

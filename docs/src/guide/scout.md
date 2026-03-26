@@ -140,7 +140,7 @@ spec:
       containers:
         - name: scout
           image: ghcr.io/firestoned/bindy:latest
-          args: ["scout", "--bind9-cluster-name", "prod"]
+          args: ["scout", "--cluster-name", "prod"]
           env:
             - name: BINDY_SCOUT_NAMESPACE
               value: "bindy-system"
@@ -227,7 +227,7 @@ spec:
 
 | Flag | Description |
 |---|---|
-| `--bind9-cluster-name <NAME>` | **Required** (unless env var set). Logical name of this cluster stamped on all created ARecord labels. Used to distinguish records created by different clusters writing to the same bindy namespace. |
+| `--cluster-name <NAME>` | **Required** (unless env var set). Logical name of this cluster stamped on all created ARecord labels. Used to distinguish records created by different clusters writing to the same bindy namespace. |
 | `--namespace <NS>` | Namespace where ARecords are created. Defaults to `bindy-system`. |
 | `--default-zone <ZONE>` | Default DNS zone applied to all Ingresses when no `bindy.firestoned.io/zone` annotation is present (e.g. `example.com`). When combined with `--default-ips`, Ingresses only need `bindy.firestoned.io/scout-enabled: "true"`. |
 | `--default-ips <IP[,IP]>` | Comma-separated default IP address(es) used for all Ingresses when no per-Ingress `bindy.firestoned.io/ip` annotation or LoadBalancer status IP is available. Useful for shared-ingress topologies (e.g. Traefik). |
@@ -238,7 +238,7 @@ CLI flags take precedence over the corresponding environment variables.
 
 | Variable | Default | Description |
 |---|---|---|
-| `BINDY_SCOUT_CLUSTER_NAME` | — | **Required** when `--bind9-cluster-name` is not set. |
+| `BINDY_SCOUT_CLUSTER_NAME` | — | **Required** when `--cluster-name` is not set. |
 | `BINDY_SCOUT_NAMESPACE` | `bindy-system` | Namespace where ARecords are created. |
 | `POD_NAMESPACE` | `default` | Scout's own namespace. Always excluded from Ingress watching to prevent Scout from watching resources in its own namespace. Injected automatically by the Kubernetes downward API. |
 | `BINDY_SCOUT_EXCLUDE_NAMESPACES` | — | Comma-separated list of additional namespaces to skip. Useful to exclude system namespaces (`kube-system`, `kube-public`, etc.) that will never have Scout-annotated Ingresses. |
@@ -275,7 +275,7 @@ spec:
           image: ghcr.io/firestoned/bindy:latest
           args:
             - scout
-            # Alternatively: --bind9-cluster-name prod
+            # Alternatively: --cluster-name prod
           env:
             - name: BINDY_SCOUT_CLUSTER_NAME
               value: "prod"
@@ -560,7 +560,7 @@ spec:
       containers:
         - name: scout
           image: ghcr.io/firestoned/bindy:latest
-          args: ["scout", "--bind9-cluster-name", "cluster-a"]
+          args: ["scout", "--cluster-name", "cluster-a"]
           env:
             - name: BINDY_SCOUT_CLUSTER_NAME
               value: "cluster-a"
@@ -629,6 +629,39 @@ A separate `ServiceAccount`-type token Secret (`bindy-scout-remote-token`) is cr
 |---|---|---|
 | `BINDY_SCOUT_REMOTE_SECRET` | — | Name of a Secret in the **child cluster** containing a `kubeconfig` key. When set, Scout uses that kubeconfig to create `ARecord` CRs and validate `DNSZone` resources on the **Queen Bee cluster** instead of the local cluster. |
 | `BINDY_SCOUT_REMOTE_SECRET_NAMESPACE` | Scout's own namespace (`POD_NAMESPACE`) | Namespace where the remote kubeconfig Secret lives. Only set this if the Secret is in a different namespace than Scout itself. |
+
+---
+
+## Changing the Cluster Name
+
+If you restart Scout with a different `--cluster-name` (or `BINDY_SCOUT_CLUSTER_NAME`), Scout automatically cleans up any `ARecord` CRs that were created by the old cluster name.
+
+### How It Works
+
+`ARecord` CRs created by Scout carry a `bindy.firestoned.io/source-cluster` label with the cluster name that created them. The CR name also embeds the cluster name (e.g., `scout-<cluster>-<namespace>-<ingress>-<idx>`).
+
+When Scout reconciles an Ingress under a new cluster name:
+1. It creates new `ARecord` CRs under the new cluster name.
+2. It selects all `ARecord` CRs for the same Ingress whose `source-cluster` label does **not** match the current cluster name.
+3. It deletes those stale records automatically.
+
+This happens on every reconcile, so all stale records are cleaned up on the next controller loop after the restart — no manual intervention required.
+
+### Example
+
+```bash
+# Scout was previously running with --cluster-name prod-a
+# Rename the cluster:
+kubectl set env deployment/bindy-scout BINDY_SCOUT_CLUSTER_NAME=prod-b -n bindy-system
+
+# After the rollout, Scout logs will show:
+# Deleted stale ARecord after cluster-name change
+#   arecord=scout-prod-a-default-my-app-0
+#   old_cluster=prod-a  new_cluster=prod-b
+```
+
+!!! warning "One cluster name per scout instance"
+    All scouts writing to the same Queen Bee namespace must use **unique** cluster names. Duplicate cluster names cause one scout to overwrite the other's records.
 
 ---
 

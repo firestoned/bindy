@@ -23,6 +23,28 @@
 //! 6. Role (`bindy-scout-writer`) — namespaced ARecord write permissions
 //! 7. RoleBinding (`bindy-scout-writer`) — binds scout SA to writer Role
 //! 8. Deployment (`bindy-scout`) — the scout controller itself
+//!
+//! ## `bindy bootstrap mc`
+//! Sets up remote access so a scout running on a child (workload) cluster can write
+//! ARecords to the queen-ship (bindy) cluster.  Run this command **against the
+//! queen-ship cluster** (`KUBECONFIG` must point at it):
+//!
+//! 1. ServiceAccount (`bindy-scout-remote` by default, or `--service-account`)
+//!    — one SA per child cluster so access can be revoked independently
+//! 2. Role (`bindy-scout-remote`) — namespaced ARecord CRUD + DNSZone read permissions
+//!    on the queen-ship.  A namespaced Role is sufficient because the scout watches
+//!    DNSZones via `Api::namespaced` (not `Api::all`) in the same target namespace.
+//! 3. RoleBinding (`bindy-scout-remote`) — binds the SA to the namespaced Role
+//! 4. SA token Secret — a long-lived token for the SA
+//! 5. Kubeconfig Secret (`bindy-scout-remote-remote-kubeconfig`) — a ready-to-use
+//!    kubeconfig for the SA, printed to **stdout** as YAML
+//!
+//! The stdout output is applied to the **child cluster** where scout runs:
+//! ```text
+//! bindy bootstrap mc | kubectl --context=<child-cluster> apply -f -
+//! ```
+//! Then set `BINDY_SCOUT_REMOTE_SECRET=bindy-scout-remote-kubeconfig` on the
+//! scout Deployment so it picks up the remote kubeconfig at startup.
 
 use anyhow::{Context as _, Result};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -35,7 +57,7 @@ use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomRe
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use k8s_openapi::ByteString;
 use kube::{
-    api::{Patch, PatchParams},
+    api::{DeleteParams, Patch, PatchParams},
     config::Kubeconfig,
     Api, Client, CustomResourceExt,
 };
@@ -68,18 +90,11 @@ pub const OPERATOR_DEPLOYMENT_NAME: &str = "bindy";
 /// Container image registry and repository (without tag).
 pub const OPERATOR_IMAGE_BASE: &str = "ghcr.io/firestoned/bindy";
 
-/// Default image tag for the operator Deployment.
+/// Default image tag for operator and scout Deployments.
 ///
-/// In debug builds (`cargo build`) this is `"latest"` so local development always
-/// pulls the most recent image without needing a version bump.
-/// In release builds (`cargo build --release`) this is `"v{CARGO_PKG_VERSION}"`
-/// (e.g. `"v0.5.0"`) so `bindy bootstrap` installs exactly the same version
-/// that was released alongside the binary.
-pub const DEFAULT_IMAGE_TAG: &str = if cfg!(debug_assertions) {
-    "latest"
-} else {
-    concat!("v", env!("CARGO_PKG_VERSION"))
-};
+/// Always matches the binary's own version (e.g. `"v0.5.0"`) so that
+/// `bindy bootstrap` installs exactly the image that was shipped with this binary.
+pub const DEFAULT_IMAGE_TAG: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 
 /// Embedded RBAC YAML files — compiled into the binary so bootstrap is self-contained.
 pub const BINDY_ROLE_YAML: &str = include_str!("../deploy/operator/rbac/role.yaml");
@@ -107,6 +122,13 @@ pub const SCOUT_WRITER_ROLE_BINDING_NAME: &str = "bindy-scout-writer";
 /// Scout Deployment name.
 pub const SCOUT_DEPLOYMENT_NAME: &str = "bindy-scout";
 
+/// Default ServiceAccount name created by `bootstrap mc` on the queen-ship cluster.
+///
+/// Each child cluster gets its own SA so access can be revoked independently.
+/// The local in-cluster scout SA is named [`SCOUT_SERVICE_ACCOUNT_NAME`] (`bindy-scout`);
+/// the remote SA uses this distinct name to avoid confusion.
+pub const MC_DEFAULT_SERVICE_ACCOUNT_NAME: &str = "bindy-scout-remote";
+
 /// Default logical cluster name stamped on ARecord labels by the scout controller.
 pub const DEFAULT_SCOUT_CLUSTER_NAME: &str = "default";
 
@@ -126,13 +148,13 @@ pub struct ScoutDeploymentOptions<'a> {
     pub image_tag: &'a str,
     /// Optional registry override (e.g. `"my.registry.io/org"`).
     pub registry: Option<&'a str>,
-    /// Logical cluster name stamped on ARecord labels (`--bind9-cluster-name`).
-    pub bind9_cluster_name: &'a str,
+    /// Logical cluster name stamped on ARecord labels (`--cluster-name`).
+    pub cluster_name: &'a str,
     /// Default IP addresses for Ingresses with no per-Ingress annotation or LB status.
     pub default_ips: &'a [String],
     /// Default DNS zone for Ingresses with no zone annotation.
     pub default_zone: Option<&'a str>,
-    /// Name of the Secret containing the remote cluster kubeconfig (Phase 2).
+    /// Name of the Secret containing the remote cluster kubeconfig.
     /// When set, `BINDY_SCOUT_REMOTE_SECRET` is injected into the Deployment env.
     pub remote_secret: Option<&'a str>,
 }
@@ -162,6 +184,10 @@ pub const REMOTE_KUBECONFIG_SECRET_SUFFIX: &str = "-remote-kubeconfig";
 
 /// `app.kubernetes.io/component` label value for all resources created by `bootstrap mc`.
 const MC_COMPONENT_LABEL: &str = "scout-remote";
+
+/// HTTP 404 Not Found — used to detect missing resources during revoke so they can be
+/// skipped rather than treated as errors.
+const HTTP_NOT_FOUND: u16 = 404;
 
 /// Maximum polling attempts while waiting for the SA token Secret to be populated.
 const SA_TOKEN_WAIT_MAX_ATTEMPTS: usize = 20;
@@ -781,7 +807,7 @@ pub fn build_scout_cluster_role() -> ClusterRole {
                 verbs: vec!["get".to_string(), "list".to_string(), "watch".to_string()],
                 ..Default::default()
             },
-            // Read kubeconfig Secret for remote cluster connection (Phase 2)
+            // Read kubeconfig Secret for remote cluster connection
             PolicyRule {
                 api_groups: Some(vec![String::new()]),
                 resources: Some(vec!["secrets".to_string()]),
@@ -982,15 +1008,26 @@ struct BootstrapUser {
 /// # Arguments
 /// * `namespace` - Namespace on the queen-ship where the SA and Role are created
 /// * `service_account` - Name of the ServiceAccount to create
+/// * `server_override` - Optional API server URL to use in the kubeconfig instead of the
+///   address from KUBECONFIG. Required when the KUBECONFIG address is not reachable from
+///   inside the child cluster (e.g. `https://172.18.0.3:6443` for kind-to-kind).
 ///
 /// # Errors
 /// Returns error if KUBECONFIG is unreadable or if Kubernetes API calls fail.
-pub async fn run_bootstrap_multi_cluster(namespace: &str, service_account: &str) -> Result<()> {
+pub async fn run_bootstrap_multi_cluster(
+    namespace: &str,
+    service_account: &str,
+    server_override: Option<&str>,
+) -> Result<()> {
     let client = Client::try_default()
         .await
         .context("Failed to connect to Kubernetes cluster — is KUBECONFIG set?")?;
 
-    let (server, ca_data_b64, cluster_name) = read_cluster_info()?;
+    let (kubeconfig_server, ca_data_b64, cluster_name) = read_cluster_info()?;
+    let server = server_override.unwrap_or(&kubeconfig_server);
+    if server_override.is_some() {
+        eprintln!("ℹ Using server override: {server} (KUBECONFIG had: {kubeconfig_server})");
+    }
 
     apply_mc_service_account(&client, namespace, service_account).await?;
     apply_mc_writer_role(&client, namespace, service_account).await?;
@@ -1003,7 +1040,7 @@ pub async fn run_bootstrap_multi_cluster(namespace: &str, service_account: &str)
 
     let kubeconfig_yaml = build_kubeconfig_yaml(
         &cluster_name,
-        &server,
+        server,
         ca_data_b64.as_deref(),
         service_account,
         &token,
@@ -1102,6 +1139,11 @@ pub fn build_mc_service_account(namespace: &str, sa_name: &str) -> ServiceAccoun
 /// Grants:
 /// - Full CRUD on `arecords` — scout creates/deletes ARecords via the remote client
 /// - Read-only on `dnszones` — scout validates zones before creating ARecords
+///
+/// Both resources live in the same target namespace on the queen-ship cluster, so a
+/// namespaced `Role` is sufficient.  The scout watches DNSZones via
+/// `Api::namespaced(remote_client, target_namespace)` (not `Api::all`), which means no
+/// cluster-scoped `ClusterRole` is required.
 ///
 /// The Role name matches the service account name, mirroring the convention in
 /// `deploy/scout/remote-cluster-rbac.yaml`.
@@ -1412,7 +1454,7 @@ fn read_cluster_info() -> Result<(String, Option<String>, String)> {
 /// The container image defaults to `ghcr.io/firestoned/bindy:<image_tag>`.
 /// Pass `registry` to override the registry/org prefix for air-gapped environments.
 ///
-/// Scout CLI args (`--bind9-cluster-name`, `--default-ips`, `--default-zone`) are passed
+/// Scout CLI args (`--cluster-name`, `--default-ips`, `--default-zone`) are passed
 /// directly to the container command so the scout behaves consistently with `bindy scout`.
 pub fn build_scout_deployment(
     namespace: &str,
@@ -1422,8 +1464,8 @@ pub fn build_scout_deployment(
 
     let mut args: Vec<serde_json::Value> = vec![
         serde_json::json!("scout"),
-        serde_json::json!("--bind9-cluster-name"),
-        serde_json::json!(opts.bind9_cluster_name),
+        serde_json::json!("--cluster-name"),
+        serde_json::json!(opts.cluster_name),
     ];
     if !opts.default_ips.is_empty() {
         args.push(serde_json::json!("--default-ips"));
@@ -1500,4 +1542,104 @@ pub fn build_scout_deployment(
         }
     });
     serde_json::from_value(value).context("Failed to build scout Deployment")
+}
+
+// ---------------------------------------------------------------------------
+// Multi-cluster revoke
+// ---------------------------------------------------------------------------
+
+/// Revoke all resources that `bootstrap mc` created for a given service account.
+///
+/// Deletes in reverse creation order (bindings before roles, roles before SA) so
+/// that access is cut off at the earliest possible step. Missing resources are
+/// silently skipped — it is safe to call this function more than once.
+///
+/// Run this command **against the queen-ship cluster** (the same context used
+/// when the resources were originally created).
+///
+/// # Arguments
+/// * `namespace` - Namespace the resources were created in
+/// * `service_account` - Name of the ServiceAccount that was created by `bootstrap mc`
+///
+/// # Errors
+/// Returns an error if the Kubernetes API call fails for any reason other than 404.
+pub async fn run_revoke_multi_cluster(namespace: &str, service_account: &str) -> Result<()> {
+    let client = Client::try_default()
+        .await
+        .context("Failed to connect to Kubernetes cluster — is KUBECONFIG set?")?;
+
+    // Revoke in reverse creation order: bindings → roles → secrets → SA
+    delete_mc_role_binding(&client, namespace, service_account).await?;
+    delete_mc_role(&client, namespace, service_account).await?;
+
+    let kubeconfig_secret = format!("{service_account}{REMOTE_KUBECONFIG_SECRET_SUFFIX}");
+    delete_mc_secret(&client, namespace, &kubeconfig_secret).await?;
+
+    let token_secret = format!("{service_account}{SA_TOKEN_SECRET_SUFFIX}");
+    delete_mc_secret(&client, namespace, &token_secret).await?;
+
+    delete_mc_service_account(&client, namespace, service_account).await?;
+
+    eprintln!("\n✓ Revoked multi-cluster access for: {service_account} (namespace: {namespace})");
+    Ok(())
+}
+
+async fn delete_mc_role_binding(client: &Client, namespace: &str, sa_name: &str) -> Result<()> {
+    let api: Api<RoleBinding> = Api::namespaced(client.clone(), namespace);
+    match api.delete(sa_name, &DeleteParams::default()).await {
+        Ok(_) => eprintln!("✓ Deleted RoleBinding: {sa_name} (namespace: {namespace})"),
+        Err(kube::Error::Api(ref s)) if s.code == HTTP_NOT_FOUND => {
+            eprintln!("  RoleBinding/{sa_name} not found, skipping");
+        }
+        Err(e) => {
+            return Err(anyhow::Error::from(e))
+                .with_context(|| format!("Failed to delete RoleBinding/{sa_name}"));
+        }
+    }
+    Ok(())
+}
+
+async fn delete_mc_role(client: &Client, namespace: &str, sa_name: &str) -> Result<()> {
+    let api: Api<Role> = Api::namespaced(client.clone(), namespace);
+    match api.delete(sa_name, &DeleteParams::default()).await {
+        Ok(_) => eprintln!("✓ Deleted Role: {sa_name} (namespace: {namespace})"),
+        Err(kube::Error::Api(ref s)) if s.code == HTTP_NOT_FOUND => {
+            eprintln!("  Role/{sa_name} not found, skipping");
+        }
+        Err(e) => {
+            return Err(anyhow::Error::from(e))
+                .with_context(|| format!("Failed to delete Role/{sa_name}"));
+        }
+    }
+    Ok(())
+}
+
+async fn delete_mc_secret(client: &Client, namespace: &str, secret_name: &str) -> Result<()> {
+    let api: Api<Secret> = Api::namespaced(client.clone(), namespace);
+    match api.delete(secret_name, &DeleteParams::default()).await {
+        Ok(_) => eprintln!("✓ Deleted Secret: {secret_name} (namespace: {namespace})"),
+        Err(kube::Error::Api(ref s)) if s.code == HTTP_NOT_FOUND => {
+            eprintln!("  Secret/{secret_name} not found, skipping");
+        }
+        Err(e) => {
+            return Err(anyhow::Error::from(e))
+                .with_context(|| format!("Failed to delete Secret/{secret_name}"));
+        }
+    }
+    Ok(())
+}
+
+async fn delete_mc_service_account(client: &Client, namespace: &str, sa_name: &str) -> Result<()> {
+    let api: Api<ServiceAccount> = Api::namespaced(client.clone(), namespace);
+    match api.delete(sa_name, &DeleteParams::default()).await {
+        Ok(_) => eprintln!("✓ Deleted ServiceAccount: {sa_name} (namespace: {namespace})"),
+        Err(kube::Error::Api(ref s)) if s.code == HTTP_NOT_FOUND => {
+            eprintln!("  ServiceAccount/{sa_name} not found, skipping");
+        }
+        Err(e) => {
+            return Err(anyhow::Error::from(e))
+                .with_context(|| format!("Failed to delete ServiceAccount/{sa_name}"));
+        }
+    }
+    Ok(())
 }

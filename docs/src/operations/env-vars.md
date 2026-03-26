@@ -107,7 +107,7 @@ See [Bindy Scout](../guide/scout.md) for the full conceptual guide.
 
 | Variable | CLI flag | Default | Description |
 |---|---|---|---|
-| `BINDY_SCOUT_CLUSTER_NAME` | `--bind9-cluster-name` | — | **Required.** Logical cluster name stamped on all created `ARecord` labels. |
+| `BINDY_SCOUT_CLUSTER_NAME` | `--cluster-name` | — | **Required.** Logical cluster name stamped on all created `ARecord` labels. If changed and Scout is restarted, stale `ARecord` CRs from the old name are deleted automatically on the next reconcile. |
 | `BINDY_SCOUT_NAMESPACE` | `--namespace` | `bindy-system` | Namespace where `ARecord` CRs are created. |
 | `POD_NAMESPACE` | — | `default` | Scout's own namespace. Always excluded from Ingress watching. Inject via Kubernetes downward API. |
 | `BINDY_SCOUT_EXCLUDE_NAMESPACES` | — | — | Comma-separated list of additional namespaces to exclude from Ingress watching. |

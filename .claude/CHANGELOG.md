@@ -1,3 +1,44 @@
+## [2026-03-26 14:00] - Stale ARecord cleanup on cluster-name change
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/scout.rs`: Added `stale_arecord_label_selector` (public) — builds a label selector matching ARecords for an Ingress whose `source-cluster` label differs from the current cluster name
+- `src/scout.rs`: Added `delete_stale_cluster_arecords` — lists and deletes ARecords matching the stale selector, logging old/new cluster names
+- `src/scout.rs`: Called `delete_stale_cluster_arecords` in three reconcile paths: after SSA loop (opted-in Ingresses), Ingress deletion path, and opt-out annotation removal path
+- `src/scout_tests.rs`: Added four TDD tests for `stale_arecord_label_selector`
+
+### Why
+When scout is restarted with a different `--cluster-name`, the old ARecords are orphaned: they have the old cluster name in both their CR name and `source-cluster` label, so the new reconcile never touches them. This change detects and deletes them automatically on the next reconcile.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (deploy new scout image)
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-03-26 12:00] - Fix scout 403: scope DNSZone watch to target namespace
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/scout.rs`: Changed `Api::all(remote_client)` to `Api::namespaced(remote_client, &config.target_namespace)` for the DNSZone reflector — scout only needs DNSZones in the target namespace where ARecords live, not cluster-wide
+- `src/bootstrap.rs`: Restored `dnszones` read rule to `build_mc_writer_role`; updated doc comment to explain namespaced watch; updated module doc comment
+- `src/bootstrap_tests.rs`: Updated tests to verify DNSZone read is in the namespaced Role (not a separate ClusterRole)
+
+### Why
+The scout was using `Api::all` for DNSZones which required a ClusterRole. Since DNSZones and ARecords always live in the same target namespace on the queen-ship, a namespaced watch is sufficient and the existing namespaced Role covers the permission. No ClusterRole is needed.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (re-run `bindy bootstrap mc` to re-apply the Role with correct rules if previously bootstrapped with wrong version)
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-03-25 16:00] - Fix scout ClusterRole: add patch+update on ingresses
 
 **Author:** Erick Bourgeois
