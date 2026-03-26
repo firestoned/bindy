@@ -42,11 +42,26 @@ done
 
 # Default values
 STRATEGY="${STRATEGY:-local}"
-TAG="${TAG:-latest}"
+# Use a distinct tag for local dev builds so kind load never conflicts with a
+# registry-pulled image that shares the same tag.  Containerd keeps the existing
+# tag when an image with that name is already present from the registry, so
+# "latest" would silently leave the registry image in place.
+TAG="${TAG:-local-dev}"
 IMAGE_NAME=firestoned/bindy
 REGISTRY="${REGISTRY:-ghcr.io}"
 KIND_CLUSTER="${KIND_CLUSTER:-bindy-test}"
 FULL_IMAGE="${REGISTRY}/${IMAGE_NAME}:${TAG}"
+
+# Derive the Linux cross-compilation target from the host architecture.
+# The binary is built by `make build-linux-debug` and passed to Docker as a build arg
+# so Dockerfile.local picks up the right arch binary without hardcoding any path.
+HOST_ARCH="$(uname -m)"
+if [ "$HOST_ARCH" = "arm64" ]; then
+    LINUX_TARGET="aarch64-unknown-linux-gnu"
+else
+    LINUX_TARGET="x86_64-unknown-linux-gnu"
+fi
+BINARY_PATH="target/${LINUX_TARGET}/debug/bindy"
 
 print_usage() {
     echo "Usage: $0 [options] [strategy] [tag]"
@@ -85,29 +100,25 @@ echo ""
 
 case "$STRATEGY" in
     local)
-        echo -e "${YELLOW}Strategy: Local build (fastest)${NC}"
-        echo "Step 1/2: Building binary locally with cargo..."
-        make build-aarch64-linux-debug
+        echo -e "${YELLOW}Strategy: Local build (fastest) [arch: ${HOST_ARCH} → ${LINUX_TARGET}]${NC}"
+        echo "Step 1/2: Building Linux binary locally with cargo..."
+        make build-linux-debug
         echo ""
         echo "Step 2/2: Building Docker image..."
-        docker build --pull $NO_CACHE -f docker/Dockerfile.local -t "$FULL_IMAGE" .
+        # Use the binary's own directory as the build context — avoids walking the repo root
+        docker build --pull $NO_CACHE \
+            -f docker/Dockerfile.local -t "$FULL_IMAGE" "$(dirname "${BINARY_PATH}")"
         ;;
 
     kind)
-        echo -e "${YELLOW}Strategy: Local build for kind (fastest)${NC}"
-        echo "Step 1/3: Building binary locally with cargo..."
-        make build-aarch64-linux-debug
+        echo -e "${YELLOW}Strategy: Local build for kind (fastest) [arch: ${HOST_ARCH} → ${LINUX_TARGET}]${NC}"
+        echo "Step 1/3: Building Linux binary locally with cargo..."
+        make build-linux-debug
         echo ""
         echo "Step 2/3: Building Docker image..."
-        docker build --pull $NO_CACHE -f docker/Dockerfile.local -t "$FULL_IMAGE" .
-        echo ""
-        echo "Step 3/3: Loading image $FULL_IMAGE into kind cluster..."
-        kind load docker-image "$FULL_IMAGE" --name $KIND_CLUSTER
-        ;;
-
-    fast)
-        echo -e "${YELLOW}Strategy: Fast (optimized Dockerfile)${NC}"
-        docker build --pull $NO_CACHE -f docker/Dockerfile.fast -t "$FULL_IMAGE" .
+        # Use the binary's own directory as the build context — avoids walking the repo root
+        docker build --pull $NO_CACHE \
+            -f docker/Dockerfile.local -t "$FULL_IMAGE" "$(dirname "${BINARY_PATH}")"
         ;;
 
     ci)

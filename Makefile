@@ -3,10 +3,25 @@
 
 .PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks
 
+# Detect host architecture and derive the matching Linux cross-compilation target.
+# On Apple Silicon (arm64) → aarch64-unknown-linux-gnu
+# On Intel Mac / Linux x86_64 → x86_64-unknown-linux-gnu
+HOST_ARCH          := $(shell uname -m)
+ifeq ($(HOST_ARCH),arm64)
+  LINUX_TARGET     := aarch64-unknown-linux-gnu
+  LINUX_LINKER     := aarch64-unknown-linux-gnu-gcc
+else
+  LINUX_TARGET     := x86_64-unknown-linux-gnu
+  LINUX_LINKER     := x86_64-unknown-linux-gnu-gcc
+endif
+# Upper-cased, hyphen→underscore form used as the CARGO_TARGET_*_LINKER env var name
+LINUX_TARGET_ENV   := $(shell echo $(LINUX_TARGET) | tr 'a-z-' 'A-Z_')
+LINUX_BINARY       := target/$(LINUX_TARGET)/debug/bindy
+
 REGISTRY ?= ghcr.io
 IMAGE_NAME ?= firestoned/bindy
 IMAGE_REPOSITORY ?= firestoned/bindy
-IMAGE_TAG ?= latest-dev
+IMAGE_TAG ?= local-dev
 NAMESPACE ?= bindy-system
 KIND_CLUSTER ?= bindy
 KIND_CONTEXT ?= "kind-$(KIND_CLUSTER)"
@@ -579,13 +594,23 @@ format: ## Format code
 docker-build: ## Build Docker image
 	./scripts/build-docker-fast.sh local
 
-docker-build-kind:
-	KIND_CLUSTER=$(KIND_CLUSTER) ./scripts/build-docker-fast.sh kind
-	KIND_CLUSTER=$(KIND_SCOUT_CLUSTER) ./scripts/build-docker-fast.sh kind
+docker-build-kind: ## Build Docker image and load into both kind clusters, then restart deployments
+	TAG=$(IMAGE_TAG) KIND_CLUSTER=$(KIND_CLUSTER) ./scripts/build-docker-fast.sh kind
+	kind load docker-image "$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)" --name $(KIND_CLUSTER)
+	kind load docker-image "$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)" --name $(KIND_SCOUT_CLUSTER)
+	kubectl --context $(KIND_CONTEXT) rollout restart deployment -n $(NAMESPACE) 2>/dev/null || true
+	kubectl --context $(KIND_SCOUT_CONTEXT) rollout restart deployment -n $(NAMESPACE) 2>/dev/null || true
+	kubectl --context $(KIND_CONTEXT) rollout status deployment -n $(NAMESPACE) --timeout=60s 2>/dev/null || true
+	kubectl --context $(KIND_SCOUT_CONTEXT) rollout status deployment -n $(NAMESPACE) --timeout=60s 2>/dev/null || true
 
-docker-build-no-cache-kind:
-	KIND_CLUSTER=$(KIND_CLUSTER) ./scripts/build-docker-fast.sh --no-cache kind
-	KIND_CLUSTER=$(KIND_SCOUT_CLUSTER) ./scripts/build-docker-fast.sh --no-cache kind
+docker-build-no-cache-kind: ## Build Docker image (no cache) and load into both kind clusters
+	TAG=$(IMAGE_TAG) KIND_CLUSTER=$(KIND_CLUSTER) ./scripts/build-docker-fast.sh --no-cache kind
+	kind load docker-image "$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)" --name $(KIND_CLUSTER)
+	kind load docker-image "$(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)" --name $(KIND_SCOUT_CLUSTER)
+	kubectl --context $(KIND_CONTEXT) rollout restart deployment -n $(NAMESPACE) 2>/dev/null || true
+	kubectl --context $(KIND_SCOUT_CONTEXT) rollout restart deployment -n $(NAMESPACE) 2>/dev/null || true
+	kubectl --context $(KIND_CONTEXT) rollout status deployment -n $(NAMESPACE) --timeout=60s 2>/dev/null || true
+	kubectl --context $(KIND_SCOUT_CONTEXT) rollout status deployment -n $(NAMESPACE) --timeout=60s 2>/dev/null || true
 
 docker-push: ## Push Docker image
 	docker push $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
@@ -708,9 +733,9 @@ build: ## Build the Rust binary
 build-debug: ## Build the Rust binary in debug mode
 	cargo build
 
-build-aarch64-linux-debug: ## Build the Rust binary in debug mode
-	CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-unknown-linux-gnu-gcc \
-	cargo build --target aarch64-unknown-linux-gnu
+build-linux-debug: ## Build a Linux debug binary for the host architecture (arm64 → aarch64-unknown-linux-gnu, x86_64 → x86_64-unknown-linux-gnu)
+	CARGO_TARGET_$(LINUX_TARGET_ENV)_LINKER=$(LINUX_LINKER) \
+	cargo build --target $(LINUX_TARGET)
 
 # Documentation targets
 docs: export PATH := $(HOME)/.local/bin:$(HOME)/.cargo/bin:$(PATH)

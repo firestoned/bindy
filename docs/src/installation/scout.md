@@ -74,17 +74,17 @@ Scout requires one mandatory setting: the **logical cluster name** that is stamp
 === "CLI flag"
 
     ```yaml
-    args: ["scout", "--bind9-cluster-name", "prod"]
+    args: ["scout", "--cluster-name", "prod"]
     ```
 
 !!! note "CLI takes precedence"
-    When both `--bind9-cluster-name` and `BINDY_SCOUT_CLUSTER_NAME` are set, the CLI flag wins.
+    When both `--cluster-name` and `BINDY_SCOUT_CLUSTER_NAME` are set, the CLI flag wins.
 
 ### Full configuration reference
 
 | Variable | CLI flag | Default | Description |
 |---|---|---|---|
-| `BINDY_SCOUT_CLUSTER_NAME` | `--bind9-cluster-name` | — | **Required.** Logical cluster name stamped on all created `ARecord` labels. |
+| `BINDY_SCOUT_CLUSTER_NAME` | `--cluster-name` | — | **Required.** Logical cluster name stamped on all created `ARecord` labels. |
 | `BINDY_SCOUT_NAMESPACE` | `--namespace` | `bindy-system` | Namespace where `ARecord` CRs are created. |
 | `POD_NAMESPACE` | — | `default` | Scout's own namespace. Always excluded from Ingress watching. Inject via downward API. |
 | `BINDY_SCOUT_EXCLUDE_NAMESPACES` | — | — | Comma-separated list of additional namespaces to skip. |
@@ -99,12 +99,12 @@ Scout requires one mandatory setting: the **logical cluster name** that is stamp
 
 ## Multi-Cluster Setup
 
-In multi-cluster deployments, Scout runs on **workload clusters** and writes `ARecord` CRs to the dedicated **Queen Bee cluster** cluster (where the Bindy operator lives). Use `bindy bootstrap mc` to generate the credentials.
+In multi-cluster deployments, Scout runs on **workload clusters** and writes `ARecord` CRs to the dedicated **Queen Bee cluster** (where the Bindy operator lives). Use `bindy bootstrap mc` to generate the credentials.
 
 ### 1. Generate credentials on the Queen Bee cluster
 
 ```bash
-# Run this against the Queen Bee cluster cluster (with Queen Bee cluster KUBECONFIG active)
+# Run this against the Queen Bee cluster (with Queen Bee cluster KUBECONFIG active)
 bindy bootstrap mc \
   --service-account bindy-scout-remote \
   --namespace bindy-system \

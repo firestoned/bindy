@@ -118,10 +118,10 @@ enum BootstrapCommands {
         #[arg(long)]
         registry: Option<String>,
         /// Logical name of this cluster stamped on created ARecord labels.
-        /// Passed to the scout container as `--bind9-cluster-name`.
+        /// Passed to the scout container as `--cluster-name`.
         /// Overrides the BINDY_SCOUT_CLUSTER_NAME environment variable inside the pod.
         #[arg(long, default_value = bindy::bootstrap::DEFAULT_SCOUT_CLUSTER_NAME)]
-        bind9_cluster_name: String,
+        cluster_name: String,
         /// Default IP addresses for all Ingresses when no per-Ingress annotation override
         /// or LoadBalancer status IP is available. Accepts one or more comma-separated values.
         /// Passed to the scout container as `--default-ips`.
@@ -144,6 +144,8 @@ enum BootstrapCommands {
     ///
     /// Run this command against the queen-ship (bindy operator) cluster. Pipe the
     /// output to each child cluster so the scout can connect back to the queen-ship.
+    ///
+    /// To remove access later: `bindy bootstrap mc --revoke --service-account <name>`
     #[command(alias = "mc")]
     MultiCluster {
         /// Namespace on the queen-ship where the SA, Role, and token Secret are created.
@@ -152,8 +154,20 @@ enum BootstrapCommands {
         namespace: String,
         /// Name of the service account to create on the queen-ship cluster.
         /// Use one account per child cluster so access can be revoked independently.
-        #[arg(long, default_value = "bindy-scout")]
+        #[arg(long, default_value = bindy::bootstrap::MC_DEFAULT_SERVICE_ACCOUNT_NAME)]
         service_account: String,
+        /// Override the API server URL written into the generated kubeconfig Secret.
+        /// Required when the KUBECONFIG server address is not reachable from inside
+        /// the child cluster (e.g. kind-to-kind: use the queen-ship container's
+        /// Docker network address instead of 127.0.0.1).
+        /// Example: --server https://172.18.0.3:6443
+        #[arg(long)]
+        server: Option<String>,
+        /// Revoke (delete) all resources previously created for --service-account.
+        /// Safe to run multiple times — missing resources are silently skipped.
+        /// Alias: --delete
+        #[arg(long, alias = "delete", default_value_t = false)]
+        revoke: bool,
     },
 }
 
@@ -171,7 +185,7 @@ enum Commands {
         /// Logical name of this cluster stamped on created ARecord labels.
         /// Overrides the BINDY_SCOUT_CLUSTER_NAME environment variable.
         #[arg(long)]
-        bind9_cluster_name: Option<String>,
+        cluster_name: Option<String>,
         /// Namespace where ARecords are created.
         /// Overrides the BINDY_SCOUT_NAMESPACE environment variable.
         #[arg(long)]
@@ -254,7 +268,7 @@ fn main() -> Result<()> {
                     dry_run,
                     version,
                     registry,
-                    bind9_cluster_name,
+                    cluster_name,
                     default_ips,
                     default_zone,
                     remote_secret,
@@ -264,7 +278,7 @@ fn main() -> Result<()> {
             dry_run,
             version,
             registry,
-            bind9_cluster_name,
+            cluster_name,
             default_ips,
             default_zone,
             remote_secret,
@@ -274,16 +288,23 @@ fn main() -> Result<()> {
                 BootstrapCommands::MultiCluster {
                     namespace,
                     service_account,
+                    server,
+                    revoke,
                 },
-        } => runtime.block_on(bootstrap_multi_cluster_command(namespace, service_account)),
+        } => runtime.block_on(bootstrap_multi_cluster_command(
+            namespace,
+            service_account,
+            server,
+            revoke,
+        )),
         Commands::Run => runtime.block_on(run_command()),
         Commands::Scout {
-            bind9_cluster_name,
+            cluster_name,
             namespace,
             default_ips,
             default_zone,
         } => runtime.block_on(scout_command(
-            bind9_cluster_name,
+            cluster_name,
             namespace,
             default_ips,
             default_zone,
@@ -939,7 +960,7 @@ async fn bootstrap_scout_command(
     dry_run: bool,
     version: String,
     registry: Option<String>,
-    bind9_cluster_name: String,
+    cluster_name: String,
     default_ips: Vec<String>,
     default_zone: Option<String>,
     remote_secret: Option<String>,
@@ -948,7 +969,7 @@ async fn bootstrap_scout_command(
     let opts = bindy::bootstrap::ScoutDeploymentOptions {
         image_tag: &version,
         registry: registry.as_deref(),
-        bind9_cluster_name: &bind9_cluster_name,
+        cluster_name: &cluster_name,
         default_ips: &default_ips,
         default_zone: default_zone.as_deref(),
         remote_secret: remote_secret.as_deref(),
@@ -956,11 +977,26 @@ async fn bootstrap_scout_command(
     bindy::bootstrap::run_bootstrap_scout(&namespace, dry_run, &opts).await
 }
 
-/// Entry point for `bindy bootstrap multi-cluster` — creates SA + RBAC on the queen-ship and
-/// writes a `bindy.firestoned.io/remote-kubeconfig` Secret manifest to stdout.
-async fn bootstrap_multi_cluster_command(namespace: String, service_account: String) -> Result<()> {
+/// Entry point for `bindy bootstrap multi-cluster` — creates or revokes SA + RBAC on the
+/// queen-ship. Without `--revoke`, writes a `bindy.firestoned.io/remote-kubeconfig` Secret
+/// manifest to stdout. With `--revoke`, deletes all resources for the given service account.
+async fn bootstrap_multi_cluster_command(
+    namespace: String,
+    service_account: String,
+    server: Option<String>,
+    revoke: bool,
+) -> Result<()> {
     initialize_logging();
-    bindy::bootstrap::run_bootstrap_multi_cluster(&namespace, &service_account).await
+    if revoke {
+        bindy::bootstrap::run_revoke_multi_cluster(&namespace, &service_account).await
+    } else {
+        bindy::bootstrap::run_bootstrap_multi_cluster(
+            &namespace,
+            &service_account,
+            server.as_deref(),
+        )
+        .await
+    }
 }
 
 /// Entry point for `bindy scout` — watches Ingresses and creates ARecords on the bindy cluster.
@@ -968,14 +1004,14 @@ async fn bootstrap_multi_cluster_command(namespace: String, service_account: Str
 /// Phase 1 (same-cluster) and Phase 2 (remote cluster) are tracked in
 /// `docs/roadmaps/bindy-scout-ingress-controller.md`.
 async fn scout_command(
-    bind9_cluster_name: Option<String>,
+    cluster_name: Option<String>,
     namespace: Option<String>,
     default_ips: Vec<String>,
     default_zone: Option<String>,
 ) -> Result<()> {
     initialize_logging();
     info!("Starting Scout controller");
-    bindy::scout::run_scout(bind9_cluster_name, namespace, default_ips, default_zone).await
+    bindy::scout::run_scout(cluster_name, namespace, default_ips, default_zone).await
 }
 
 async fn run_command() -> Result<()> {

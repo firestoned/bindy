@@ -80,10 +80,13 @@ Applies the following resources in order:
 1. `Namespace` (`bindy-system` by default)
 2. All 12 CRDs — same set as the operator, so this is safe to run on a cluster that already has the operator installed
 3. `ServiceAccount/bindy-scout`
-4. `ClusterRole/bindy-scout` — cluster-wide Ingress watch, DNSZone read, and Secret read (for remote kubeconfig)
+4. `ClusterRole/bindy-scout` — cluster-wide Ingress watch and Secret read (for remote kubeconfig); DNSZone read is cluster-wide in same-cluster mode only
 5. `ClusterRoleBinding/bindy-scout`
 6. `Role/bindy-scout-writer` — `ARecord` write access in the target namespace
 7. `RoleBinding/bindy-scout-writer`
+
+!!! note "Multi-cluster mode"
+    In multi-cluster mode, Scout validates DNSZones via the remote kubeconfig using a **namespaced Role** on the Queen Bee cluster (created by `bindy bootstrap mc`). No cluster-wide DNSZone access is required on the Queen Bee cluster.
 8. `Deployment/bindy-scout` — the scout controller
 
 ```bash
@@ -231,7 +234,7 @@ bindy scout [OPTIONS]
 
 | Flag | Env var | Default | Description |
 |---|---|---|---|
-| `--bind9-cluster-name <NAME>` | `BINDY_SCOUT_CLUSTER_NAME` | — | **Required.** Logical name of this cluster, stamped on all created `ARecord` labels as `bindy.firestoned.io/source-cluster`. Used to distinguish records from multiple workload clusters writing to the same bindy namespace. |
+| `--cluster-name <NAME>` | `BINDY_SCOUT_CLUSTER_NAME` | — | **Required.** Logical name of this cluster, stamped on all created `ARecord` labels as `bindy.firestoned.io/source-cluster`. Used to distinguish records from multiple workload clusters writing to the same bindy namespace. |
 | `--namespace <NS>` | `BINDY_SCOUT_NAMESPACE` | `bindy-system` | Namespace where `ARecord` CRs are created. |
 
 !!! note "CLI takes precedence"
@@ -250,19 +253,19 @@ bindy scout [OPTIONS]
 
 ```bash
 # Minimal — cluster name required, everything else defaults
-bindy scout --bind9-cluster-name prod
+bindy scout --cluster-name prod
 
 # Explicit namespace
-bindy scout --bind9-cluster-name prod --namespace bindy-system
+bindy scout --cluster-name prod --namespace bindy-system
 
 # Using environment variables only (typical Kubernetes deployment)
 BINDY_SCOUT_CLUSTER_NAME=prod BINDY_SCOUT_NAMESPACE=bindy-system bindy scout
 
 # Mix: cluster name from CLI flag, namespace from environment
-BINDY_SCOUT_NAMESPACE=bindy-system bindy scout --bind9-cluster-name staging
+BINDY_SCOUT_NAMESPACE=bindy-system bindy scout --cluster-name staging
 
 # Debug logging
-RUST_LOG=bindy=debug bindy scout --bind9-cluster-name dev
+RUST_LOG=bindy=debug bindy scout --cluster-name dev
 ```
 
 ### Ingress annotations
