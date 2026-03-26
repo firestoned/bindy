@@ -6,12 +6,13 @@ kind: ClusterRole
 metadata:
   name: bindy-scout
 rules:
-  # Watch Ingresses across all namespaces
+  # Watch and mutate Ingresses across all namespaces.
+  # kube-rs finalizer::finalizer() patches the main resource metadata to add/remove
+  # finalizers, so patch+update on ingresses (not just the subresource) is required.
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
-    verbs: ["get", "list", "watch"]
-  # Write finalizers on Ingresses (Phase 1.5: cleanup on deletion)
-  # Required to add/remove bindy.firestoned.io/arecord-finalizer
+    verbs: ["get", "list", "watch", "patch", "update"]
+  # Also grant the finalizers subresource for forward-compatibility.
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses/finalizers"]
     verbs: ["update"]

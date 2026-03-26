@@ -86,13 +86,26 @@ chmod +x bindy && sudo mv bindy /usr/local/bin/
 
 ### 2. Bootstrap the cluster
 
-This creates the `bindy-system` namespace, installs CRDs, sets up RBAC, and deploys the operator — all in one command:
+Two subcommands handle everything declaratively — namespace, CRDs, RBAC, and the Deployment — all via server-side apply (safe to re-run):
 
 ```bash
-bindy bootstrap
+# Deploy the operator
+bindy bootstrap operator
+
+# Deploy Scout (optional ingress controller)
+bindy bootstrap scout
 ```
 
-The operator image tag matches the binary version (e.g. `ghcr.io/firestoned/bindy:v0.5.0`). Override with `--version` if needed.
+The image tag automatically matches the binary version (e.g. `ghcr.io/firestoned/bindy:v0.5.0`). Override with `--version` if needed.
+
+**Air-gapped environments:** use `--registry` to pull from a private mirror instead of `ghcr.io/firestoned`:
+
+```bash
+bindy bootstrap operator --registry harbor.corp.internal/bindy-mirror
+bindy bootstrap scout   --registry harbor.corp.internal/bindy-mirror
+```
+
+This produces `harbor.corp.internal/bindy-mirror/bindy:<version>` instead of `ghcr.io/firestoned/bindy:<version>`.
 
 ### 3. Create a BIND9 instance, zone, and record
 

@@ -1,7 +1,9 @@
 # Deploying Scout
 
-!!! info "Same-Cluster Mode is the Default"
-    Without additional configuration, Scout and the Bindy operator must run in the **same Kubernetes cluster**. For cross-cluster deployments, set `BINDY_SCOUT_REMOTE_SECRET` to a Secret containing a kubeconfig for the remote Bindy cluster. See the [Scout guide](../guide/scout.md) for details.
+!!! info "Two Deployment Modes"
+    **Same-cluster mode** (default): Scout and the Bindy operator run in the same cluster. No extra configuration needed.
+
+    **Multi-cluster mode**: Scout runs on workload clusters and writes to a dedicated **Queen Bee cluster** cluster running Bindy. Use `bindy bootstrap mc` to generate credentials, then set `BINDY_SCOUT_REMOTE_SECRET`. See [Multi-Cluster Setup](#multi-cluster-setup) below.
 
 **Bindy Scout** is an optional companion controller that watches `Ingress` resources across your cluster and automatically creates `ARecord` CRs on behalf of application teams — without requiring them to have write access to the bindy namespace.
 
@@ -19,24 +21,37 @@ See the [Bindy Scout guide](../guide/scout.md) for the full conceptual overview,
 
 ## Install
 
-Deploy Scout from the latest release:
+The recommended way to install Scout is with the `bindy` CLI. This applies all resources via server-side apply and is safe to re-run:
 
 ```bash
-kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/scout.yaml
+bindy bootstrap scout
 ```
-
-!!! tip "Specific version"
-    To pin to a specific release instead of `latest`:
-    ```bash
-    kubectl apply -f https://github.com/firestoned/bindy/releases/download/v0.3.0/scout.yaml
-    ```
 
 This creates:
 
+- A `Namespace` (`bindy-system` by default)
+- All 12 `CustomResourceDefinition` objects (same set as the operator — safe if already installed)
 - A `ServiceAccount` (`bindy-scout`) in `bindy-system`
 - A `ClusterRole` / `ClusterRoleBinding` for cluster-wide Ingress and DNSZone read access
 - A `Role` / `RoleBinding` for `ARecord` write access in `bindy-system`
 - A `Deployment` running the `bindy scout` controller
+
+!!! tip "Custom namespace or version"
+    ```bash
+    bindy bootstrap scout --namespace my-namespace --version v0.5.0
+    ```
+
+!!! tip "Air-gapped / private registry"
+    ```bash
+    bindy bootstrap scout --registry harbor.corp.internal/bindy-mirror
+    ```
+    This produces `harbor.corp.internal/bindy-mirror/bindy:<version>` instead of `ghcr.io/firestoned/bindy:<version>`. See the [CLI reference](../reference/cli.md#air-gapped-environments) for the full air-gapped workflow.
+
+!!! tip "Preview before applying"
+    ```bash
+    bindy bootstrap scout --dry-run
+    ```
+    Prints every resource as YAML without connecting to the cluster.
 
 ---
 
@@ -75,8 +90,52 @@ Scout requires one mandatory setting: the **logical cluster name** that is stamp
 | `BINDY_SCOUT_EXCLUDE_NAMESPACES` | — | — | Comma-separated list of additional namespaces to skip. |
 | `BINDY_SCOUT_DEFAULT_ZONE` | `--default-zone` | — | Default DNS zone when no `bindy.firestoned.io/zone` annotation is present. With `DEFAULT_IPS`, Ingresses only need `scout-enabled: "true"`. |
 | `BINDY_SCOUT_DEFAULT_IPS` | `--default-ips` | — | Comma-separated default IP(s) used when no per-Ingress annotation or LB status IP is available. For shared-ingress topologies (e.g. Traefik). |
+| `BINDY_SCOUT_REMOTE_SECRET` | — | — | **(Multi-cluster)** Name of a Secret in the local cluster containing a `kubeconfig` key for the Queen Bee cluster. When set, Scout writes `ARecord` CRs and validates zones on the remote Bindy cluster. See [Multi-Cluster Setup](#multi-cluster-setup) below. |
+| `BINDY_SCOUT_REMOTE_SECRET_NAMESPACE` | — | Scout's own namespace | **(Multi-cluster)** Namespace of the `BINDY_SCOUT_REMOTE_SECRET`. Defaults to Scout's own namespace. |
 | `RUST_LOG` | — | `info` | Log level: `trace`, `debug`, `info`, `warn`, `error`. |
 | `RUST_LOG_FORMAT` | — | `text` | Log format: `text` or `json`. |
+
+---
+
+## Multi-Cluster Setup
+
+In multi-cluster deployments, Scout runs on **workload clusters** and writes `ARecord` CRs to the dedicated **Queen Bee cluster** cluster (where the Bindy operator lives). Use `bindy bootstrap mc` to generate the credentials.
+
+### 1. Generate credentials on the Queen Bee cluster
+
+```bash
+# Run this against the Queen Bee cluster cluster (with Queen Bee cluster KUBECONFIG active)
+bindy bootstrap mc \
+  --service-account bindy-scout-remote \
+  --namespace bindy-system \
+  | kubectl --context=<child-cluster> apply -f -
+```
+
+This single pipeline:
+1. Creates a `ServiceAccount` + `Role` + `RoleBinding` on the **Queen Bee cluster** (minimal: ARecord CRUD + DNSZone read)
+2. Generates a kubeconfig for that service account
+3. Outputs a `bindy.firestoned.io/remote-kubeconfig` Secret and applies it to the **child cluster**
+
+!!! tip "One SA per child cluster"
+    Use a unique `--service-account` per child cluster for independent credential revocation:
+    ```bash
+    bindy bootstrap mc --service-account bindy-scout-remote-cluster-a \
+      | kubectl --context=cluster-a apply -f -
+    ```
+
+### 2. Enable remote mode on the Scout Deployment
+
+Add `BINDY_SCOUT_REMOTE_SECRET` to the Scout Deployment on the child cluster:
+
+```yaml
+env:
+  - name: BINDY_SCOUT_REMOTE_SECRET
+    value: "bindy-scout-remote-kubeconfig"
+```
+
+Scout will load the kubeconfig from that Secret and write all `ARecord` CRs to the Queen Bee cluster instead of the local cluster.
+
+See the [Scout guide — Multi-Cluster Mode](../guide/scout.md#multi-cluster-mode-phase-2) for the full architecture diagram, per-cluster SA strategy, and RBAC details.
 
 ---
 

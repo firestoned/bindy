@@ -1,3 +1,103 @@
+## [2026-03-25 16:00] - Fix scout ClusterRole: add patch+update on ingresses
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/bootstrap.rs`: Added `patch` and `update` verbs to the `ingresses` rule in `build_scout_cluster_role`; kept `ingresses/finalizers` rule for forward-compatibility
+- `src/bootstrap_tests.rs`: Added `test_build_scout_cluster_role_ingresses_allows_patch_and_update`
+- `deploy/scout/clusterrole.yaml`: Added `patch`, `update` to ingresses verbs; added `ingresses/finalizers` subresource rule
+- `deploy/scout.yaml`: Same fix as `clusterrole.yaml`
+- `docs/src/guide/scout.md`: Updated ClusterRole example YAML to match
+
+### Why
+kube-rs `finalizer::finalizer()` patches the main Ingress resource metadata directly — it does not use the `ingresses/finalizers` subresource. Scout was getting 403 Forbidden when trying to add/remove finalizers on Ingresses in other namespaces because `patch` and `update` were not granted on the main `ingresses` resource.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (re-run `bindy bootstrap scout` to update the ClusterRole)
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-03-25 15:30] - Bootstrap scout passes CLI args to container command
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/bootstrap.rs`: Added `DEFAULT_SCOUT_CLUSTER_NAME = "default"` constant; updated `build_scout_deployment`, `apply_scout_deployment`, `run_bootstrap_scout`, and `run_scout_dry_run` to accept `bind9_cluster_name`, `default_ips`, and `default_zone` and pass them as CLI args to the scout container
+- `src/main.rs`: Added `--bind9-cluster-name` (default "default"), `--default-ips`, and `--default-zone` args to `BootstrapCommands::Scout`; updated match arm and `bootstrap_scout_command` to forward them
+- `src/bootstrap_tests.rs`: Updated all `build_scout_deployment` call sites; replaced old `test_build_scout_deployment_args_are_scout` with targeted tests covering default cluster name, custom cluster name, default-ips, default-zone, all-options, and omission of flags when not set
+
+### Why
+The scout deployment was hardcoding `args: ["scout"]` with no way to configure the cluster name or default IPs/zone at bootstrap time. This meant `BINDY_SCOUT_CLUSTER_NAME` was never set, so the scout used no cluster name. Now all scout runtime flags can be specified at `bootstrap scout` time and are baked into the Deployment args.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (re-run `bindy bootstrap scout` to update existing Deployments)
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-03-25 14:00] - Scout multi-cluster architecture documentation
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/src/guide/scout.md`: Comprehensive "Multi-Cluster Mode (Phase 2)" section including:
+  - "Queen Bee and Her Scouts" architecture overview
+  - Mermaid architecture diagram showing multiple scout bees on child clusters connecting back to the Queen Bee (bindy operator on queen-ship)
+  - Mermaid sequence diagram showing the `bootstrap mc` setup flow
+  - Step-by-step setup guide (bootstrap mc → apply to child → configure Scout)
+  - Per-child-cluster SA recommendation for independent credential revocation
+  - RBAC table showing exactly what `bootstrap mc` creates on the queen-ship
+  - Multi-cluster configuration reference table (`BINDY_SCOUT_REMOTE_SECRET`, `BINDY_SCOUT_REMOTE_SECRET_NAMESPACE`)
+- `docs/src/installation/scout.md`: "Multi-Cluster Setup" section with `bootstrap mc` usage and link to full guide
+- `docs/src/installation/scout.md`: Updated info admonition to describe both deployment modes
+- `docs/src/installation/scout.md`: Added `BINDY_SCOUT_REMOTE_SECRET` and `BINDY_SCOUT_REMOTE_SECRET_NAMESPACE` to configuration table
+
+### Why
+Phase 2 (remote cluster mode) was implemented but not documented. Platform engineers deploying multi-cluster setups had no written guide.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Documentation only
+
+---
+
+## [2026-03-25 12:00] - bootstrap multi-cluster subcommand
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/bootstrap.rs`: `run_bootstrap_multi_cluster(namespace, service_account)` — creates SA + Role (ARecord CRUD + DNSZone read) + RoleBinding + SA token Secret on the queen-ship, then writes a `bindy.firestoned.io/remote-kubeconfig` Secret YAML to stdout
+- `src/bootstrap.rs`: `build_mc_service_account`, `build_mc_writer_role`, `build_mc_writer_role_binding`, `build_mc_sa_token_secret`, `build_mc_kubeconfig_secret`, `build_kubeconfig_yaml` — public builder functions (testable)
+- `src/bootstrap.rs`: constants `REMOTE_KUBECONFIG_SECRET_TYPE`, `SA_TOKEN_SECRET_SUFFIX`, `REMOTE_KUBECONFIG_SECRET_SUFFIX`, `MC_COMPONENT_LABEL`, `MC_FIELD_MANAGER`, `SA_TOKEN_WAIT_MAX_ATTEMPTS`, `SA_TOKEN_WAIT_INTERVAL_MS`
+- `src/bootstrap.rs`: private `read_cluster_info()` — reads server URL and CA from current KUBECONFIG context
+- `src/bootstrap.rs`: private `wait_for_sa_token()` — polls SA token Secret up to 10 s after creation
+- `src/main.rs`: `BootstrapCommands::MultiCluster` variant with `--namespace`, `--service-account` (default `bindy-scout-remote`); aliased as `mc`
+- `src/main.rs`: `bootstrap_multi_cluster_command` handler
+- `src/bootstrap_tests.rs`: 37 unit tests covering all MC builder functions including DNSZone read rule assertions and kubeconfig YAML structure
+
+### Architecture
+- **Scout runs on child clusters** and connects **back to the queen-ship** to create ARecords
+- Run `bindy bootstrap mc` on the queen-ship; pipe stdout to each child cluster:
+  `bindy bootstrap mc | kubectl --context=<child> apply -f -`
+- Role mirrors `deploy/scout/remote-cluster-rbac.yaml`: ARecord CRUD + DNSZone read, namespaced, Role/RoleBinding named same as SA
+- Progress output goes to stderr so stdout YAML can be piped directly
+
+### Why
+Automates the manual steps in `deploy/scout/remote-cluster-rbac.yaml` + kubeconfig generation in a single idempotent command.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] New CLI subcommand (additive)
+
+---
+
 ## [2026-03-20 13:00] - Scout: simplified opt-in + default zone
 
 **Author:** Erick Bourgeois

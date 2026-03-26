@@ -319,10 +319,14 @@ kind: ClusterRole
 metadata:
   name: bindy-scout
 rules:
-  # Watch Ingresses across all namespaces
+  # Watch and mutate Ingresses across all namespaces.
+  # patch+update required because kube-rs finalizer patches the main resource.
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses/finalizers"]
+    verbs: ["update"]
   # Read DNSZones for zone validation
   - apiGroups: ["bindy.firestoned.io"]
     resources: ["dnszones"]
@@ -386,13 +390,255 @@ env:
 
 ---
 
+## Multi-Cluster Mode (Phase 2)
+
+In many platform engineering setups, the DNS operator lives on a dedicated infrastructure cluster — isolated from workload traffic, hardened, and controlled by the platform team. Application workloads run on separate clusters that have no direct RBAC access to the DNS cluster. Scout bridges this gap without requiring network tunnels or federated identity.
+
+### The Queen Bee and Her Scouts
+
+Think of the architecture using the same honeybee metaphor:
+
+- The **Queen Bee** is the central Bindy operator running on the dedicated **Queen Bee cluster**. She manages all DNS infrastructure — `DNSZone` CRs, `ARecord` CRs, and the BIND9 instances that serve DNS.
+- **Scout Bees** run on each workload cluster. They watch local `Ingress` resources and fly their discoveries back to the Queen, depositing `ARecord` CRs directly into her hive.
+
+Application teams annotate their Ingresses as normal. They never need to know a separate DNS cluster exists.
+
+```mermaid
+graph LR
+    subgraph queen["🐝 Queen Bee — DNS Cluster"]
+        QB[Bindy Operator]
+        ARecord["ARecord CRs\n(bindy-system)"]
+        BIND9[BIND9 DNS Server]
+        QB -->|reconciles| ARecord
+        ARecord -->|programs via RNDC| BIND9
+    end
+
+    subgraph child1["🌸 Child Cluster A"]
+        Scout1["Scout Bee"]
+        Ingress1["Ingress resources"]
+        Secret1["remote-kubeconfig\nSecret"]
+        Ingress1 -->|watch event| Scout1
+        Scout1 --- Secret1
+    end
+
+    subgraph child2["🌸 Child Cluster B"]
+        Scout2["Scout Bee"]
+        Ingress2["Ingress resources"]
+        Secret2["remote-kubeconfig\nSecret"]
+        Ingress2 -->|watch event| Scout2
+        Scout2 --- Secret2
+    end
+
+    subgraph child3["🌸 Child Cluster C"]
+        Scout3["Scout Bee"]
+        Ingress3["Ingress resources"]
+        Secret3["remote-kubeconfig\nSecret"]
+        Ingress3 -->|watch event| Scout3
+        Scout3 --- Secret3
+    end
+
+    Scout1 -->|"server-side apply ARecord\n(via queen kubeconfig)"| ARecord
+    Scout2 -->|"server-side apply ARecord\n(via queen kubeconfig)"| ARecord
+    Scout3 -->|"server-side apply ARecord\n(via queen kubeconfig)"| ARecord
+```
+
+Each Scout authenticates to the Queen Bee cluster using a **dedicated service account kubeconfig** stored as a Secret in its own cluster. A Scout on Cluster A cannot impersonate or interfere with the Scout on Cluster B — each has its own independently revocable credentials.
+
+---
+
+### How the Multi-Cluster Connection Works
+
+```mermaid
+sequenceDiagram
+    participant Ops as Platform Engineer
+    participant Queen as Queen Bee Cluster
+    participant Child as Child Cluster
+
+    Ops->>Queen: bindy bootstrap mc --service-account bindy-scout-remote
+    Queen->>Queen: Create SA + Role (ARecord CRUD, DNSZone read)
+    Queen->>Queen: Create SA token Secret, wait for token
+    Queen->>Queen: Build kubeconfig for SA
+    Queen-->>Ops: Outputs remote-kubeconfig Secret YAML (stdout)
+    Ops->>Child: kubectl apply -f - (pipe or file)
+    Child->>Child: Store Secret as bindy.firestoned.io/remote-kubeconfig
+
+    Note over Child: Scout Deployment uses BINDY_SCOUT_REMOTE_SECRET
+
+    Child->>Child: Ingress annotated with scout-enabled: "true"
+    Child->>Child: Scout watches Ingress event
+    Child->>Queen: Scout applies ARecord via kubeconfig from Secret
+    Queen->>Queen: ARecord reconciler programs BIND9
+```
+
+---
+
+### Setup Guide
+
+#### 1. Bootstrap credentials on the Queen Bee cluster
+
+Run `bindy bootstrap mc` **against the Queen Bee cluster** (the cluster running the Bindy operator). It creates a dedicated service account, the minimal RBAC Role and RoleBinding, waits for the SA token, and outputs a `bindy.firestoned.io/remote-kubeconfig` Secret as YAML to **stdout**:
+
+```bash
+# Run against the Queen Bee cluster — outputs Secret YAML to stdout
+bindy bootstrap mc \
+  --service-account bindy-scout-remote \
+  --namespace bindy-system
+```
+
+Expected output (stderr — progress only):
+
+```
+✓ Applied ServiceAccount bindy-scout-remote
+✓ Applied Role bindy-scout-remote
+✓ Applied RoleBinding bindy-scout-remote
+✓ Applied SA token Secret bindy-scout-remote-token
+⏳ Waiting for SA token to be populated...
+✓ SA token ready
+
+✓ Apply the above Secret to each child cluster:
+    bindy bootstrap mc | kubectl --context=<child-cluster> apply -f -
+Then set BINDY_SCOUT_REMOTE_SECRET=bindy-scout-remote-kubeconfig on the scout Deployment.
+```
+
+The YAML written to **stdout** is a Secret of type `bindy.firestoned.io/remote-kubeconfig` containing a `kubeconfig` key with the Queen Bee cluster credentials.
+
+!!! tip "Use the default service account name"
+    The default `--service-account` is `bindy-scout-remote`, which matches the RBAC manifests in `deploy/scout/remote-cluster-rbac.yaml`. Use a unique SA name per child cluster if you want independent credential revocation.
+
+#### 2. Apply the kubeconfig Secret to each child cluster
+
+Pipe directly, or save to a file first:
+
+=== "Pipe directly"
+
+    ```bash
+    # Point KUBECONFIG at the Queen Bee cluster first
+    export KUBECONFIG=~/.kube/queen-bee.yaml
+
+    bindy bootstrap mc | kubectl --context=child-cluster-a apply -f -
+    ```
+
+=== "Save then apply"
+
+    ```bash
+    export KUBECONFIG=~/.kube/queen-bee.yaml
+    bindy bootstrap mc > /tmp/scout-kubeconfig.yaml
+
+    kubectl --context=child-cluster-a apply -f /tmp/scout-kubeconfig.yaml
+    kubectl --context=child-cluster-b apply -f /tmp/scout-kubeconfig.yaml
+    # Note: each cluster uses the same credentials (same SA on Queen Bee cluster)
+    # Use a unique --service-account per child cluster for independent revocation
+    ```
+
+=== "Per-child-cluster (recommended)"
+
+    ```bash
+    export KUBECONFIG=~/.kube/queen-bee.yaml
+
+    # Cluster A gets its own SA on the Queen Bee cluster
+    bindy bootstrap mc --service-account bindy-scout-remote-cluster-a \
+      | kubectl --context=child-cluster-a apply -f -
+
+    # Cluster B gets its own SA
+    bindy bootstrap mc --service-account bindy-scout-remote-cluster-b \
+      | kubectl --context=child-cluster-b apply -f -
+    ```
+
+#### 3. Configure Scout on the child cluster
+
+Set two environment variables on the Scout Deployment to activate remote mode:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bindy-scout
+  namespace: bindy-system
+spec:
+  template:
+    spec:
+      containers:
+        - name: scout
+          image: ghcr.io/firestoned/bindy:latest
+          args: ["scout", "--bind9-cluster-name", "cluster-a"]
+          env:
+            - name: BINDY_SCOUT_CLUSTER_NAME
+              value: "cluster-a"
+            - name: BINDY_SCOUT_NAMESPACE
+              value: "bindy-system"
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # --- Multi-cluster mode ---
+            - name: BINDY_SCOUT_REMOTE_SECRET
+              value: "bindy-scout-remote-kubeconfig"
+            # Optional: if the Secret is in a different namespace than Scout
+            # - name: BINDY_SCOUT_REMOTE_SECRET_NAMESPACE
+            #   value: "bindy-system"
+            - name: RUST_LOG
+              value: "info"
+```
+
+When `BINDY_SCOUT_REMOTE_SECRET` is set, Scout loads the kubeconfig from that Secret and uses it for all `ARecord` creation and `DNSZone` validation — the Queen Bee cluster, not the local cluster.
+
+#### 4. Verify the connection
+
+```bash
+# Check Scout is running on the child cluster
+kubectl --context=child-cluster-a get pods -n bindy-system -l app.kubernetes.io/component=scout
+
+# Watch Scout logs — should see "remote mode" startup message
+kubectl --context=child-cluster-a logs -n bindy-system -l app.kubernetes.io/component=scout -f
+
+# Annotate an Ingress on the child cluster
+kubectl --context=child-cluster-a annotate ingress my-app \
+  bindy.firestoned.io/scout-enabled=true \
+  bindy.firestoned.io/zone=example.com \
+  -n my-app-ns
+
+# Verify the ARecord was created on the Queen Bee cluster
+kubectl --context=queen-bee get arecords -n bindy-system -l bindy.firestoned.io/source-cluster=cluster-a
+```
+
+---
+
+### RBAC: What `bootstrap mc` Creates
+
+`bindy bootstrap mc` creates three resources on the Queen Bee cluster, all named after the service account:
+
+| Resource | Kind | Permissions |
+|---|---|---|
+| `bindy-scout-remote` | `ServiceAccount` | — |
+| `bindy-scout-remote` | `Role` | `arecords`: get, list, watch, create, update, patch, delete |
+| `bindy-scout-remote` | `Role` | `dnszones`: get, list, watch *(for zone validation)* |
+| `bindy-scout-remote` | `RoleBinding` | Binds the Role to the SA |
+
+The Role is **namespace-scoped** (defaults to `bindy-system`). Scout cannot read or modify any other namespace on the Queen Bee cluster. It cannot read Secrets, access Pods, or perform any cluster-wide operations.
+
+A separate `ServiceAccount`-type token Secret (`bindy-scout-remote-token`) is created with the `kubernetes.io/service-account.name` annotation so the Kubernetes token controller populates a long-lived token. The token is embedded in the output kubeconfig.
+
+!!! warning "One SA per child cluster (recommended)"
+    Using a unique service account per child cluster (`--service-account bindy-scout-remote-cluster-a`) allows you to revoke access for one cluster by simply deleting its SA on the Queen Bee cluster, without affecting other clusters.
+
+---
+
+### Multi-Cluster Configuration Reference
+
+| Variable | Default | Description |
+|---|---|---|
+| `BINDY_SCOUT_REMOTE_SECRET` | — | Name of a Secret in the **child cluster** containing a `kubeconfig` key. When set, Scout uses that kubeconfig to create `ARecord` CRs and validate `DNSZone` resources on the **Queen Bee cluster** instead of the local cluster. |
+| `BINDY_SCOUT_REMOTE_SECRET_NAMESPACE` | Scout's own namespace (`POD_NAMESPACE`) | Namespace where the remote kubeconfig Secret lives. Only set this if the Secret is in a different namespace than Scout itself. |
+
+---
+
 ## Roadmap
 
-Scout is currently in **Phase 1 — same-cluster mode**. All features are tracked in
+All features are tracked in
 [`docs/roadmaps/bindy-scout-ingress-controller.md`](../../roadmaps/bindy-scout-ingress-controller.md).
 
 | Phase | Status | Description |
 |---|---|---|
-| Phase 1 | ✅ Current | Same-cluster mode. Scout and bindy run in the same cluster. ARecords are created in the same cluster. |
+| Phase 1 | ✅ Complete | Same-cluster mode. Scout and bindy run in the same cluster. ARecords are created in the same cluster. |
 | Phase 1.5 | ✅ Complete | Finalizer on Ingress. When an annotated Ingress is deleted, Scout removes the corresponding ARecord. |
-| Phase 2 | ✅ Complete | Remote cluster mode. Set `BINDY_SCOUT_REMOTE_SECRET` to a Secret containing a kubeconfig for the Bindy cluster. Scout uses it to write ARecords and validate zones remotely. |
+| Phase 2 | ✅ Complete | Remote cluster mode. Set `BINDY_SCOUT_REMOTE_SECRET` to a Secret containing a kubeconfig for the Bindy cluster. Scout uses it to write ARecords and validate zones remotely. Use `bindy bootstrap mc` to generate the kubeconfig Secret. |

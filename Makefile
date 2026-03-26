@@ -1,15 +1,17 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 
-.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks
+.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks
 
 REGISTRY ?= ghcr.io
 IMAGE_NAME ?= firestoned/bindy
 IMAGE_REPOSITORY ?= firestoned/bindy
 IMAGE_TAG ?= latest-dev
 NAMESPACE ?= bindy-system
-KIND_CLUSTER ?= bindy-test
+KIND_CLUSTER ?= bindy
 KIND_CONTEXT ?= "kind-$(KIND_CLUSTER)"
+KIND_SCOUT_CLUSTER ?= scout
+KIND_SCOUT_CONTEXT ?= "kind-$(KIND_SCOUT_CLUSTER)"
 
 # Security tool versions
 GITLEAKS_VERSION ?= 8.21.2
@@ -579,9 +581,11 @@ docker-build: ## Build Docker image
 
 docker-build-kind:
 	KIND_CLUSTER=$(KIND_CLUSTER) ./scripts/build-docker-fast.sh kind
+	KIND_CLUSTER=$(KIND_SCOUT_CLUSTER) ./scripts/build-docker-fast.sh kind
 
 docker-build-no-cache-kind:
 	KIND_CLUSTER=$(KIND_CLUSTER) ./scripts/build-docker-fast.sh --no-cache kind
+	KIND_CLUSTER=$(KIND_SCOUT_CLUSTER) ./scripts/build-docker-fast.sh --no-cache kind
 
 docker-push: ## Push Docker image
 	docker push $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
@@ -662,6 +666,40 @@ kind-cleanup: ## Delete Kind cluster
 
 kind-logs: ## Show operator logs from Kind cluster
 	kubectl logs -n $(NAMESPACE) -l app=bindy -f --context kind-$(KIND_CLUSTER)
+
+kind-create-scout: ## Create a second Kind cluster and install Scout (child cluster for multi-cluster testing)
+	@echo "Creating Scout child cluster '$(KIND_SCOUT_CLUSTER)'..."
+	@kind delete cluster --name $(KIND_SCOUT_CLUSTER) 2>/dev/null || true
+	@kind create cluster --name $(KIND_SCOUT_CLUSTER) --config deploy/kind-scout-config.yaml
+	@kubectl cluster-info --context $(KIND_SCOUT_CONTEXT)
+	@echo "Loading image $(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG) into Scout cluster..."
+	@kind load docker-image $(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG) --name $(KIND_SCOUT_CLUSTER)
+	@echo "Creating namespace $(NAMESPACE)..."
+	@kubectl --context $(KIND_SCOUT_CONTEXT) create namespace $(NAMESPACE) || true
+	@echo "Installing CRDs..."
+	@kubectl --context $(KIND_SCOUT_CONTEXT) replace --force -f deploy/operator/crds/ 2>/dev/null || kubectl --context $(KIND_SCOUT_CONTEXT) create -f deploy/operator/crds/
+	@echo "Installing Scout RBAC..."
+	@kubectl --context $(KIND_SCOUT_CONTEXT) apply -f deploy/scout/serviceaccount.yaml
+	@kubectl --context $(KIND_SCOUT_CONTEXT) apply -f deploy/scout/clusterrole.yaml
+	@kubectl --context $(KIND_SCOUT_CONTEXT) apply -f deploy/scout/clusterrolebinding.yaml
+	@kubectl --context $(KIND_SCOUT_CONTEXT) apply -f deploy/scout/role.yaml
+	@kubectl --context $(KIND_SCOUT_CONTEXT) apply -f deploy/scout/rolebinding.yaml
+	@echo "Deploying Scout with image: $(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)..."
+	@sed "s|image: ghcr.io/firestoned/bindy:latest|image: $(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)|g" deploy/scout/deployment.yaml \
+		| kubectl --context $(KIND_SCOUT_CONTEXT) apply -f -
+	@kubectl --context $(KIND_SCOUT_CONTEXT) wait --for=condition=available --timeout=120s deployment/bindy-scout -n $(NAMESPACE)
+	@echo ""
+	@echo "✓ Scout cluster '$(KIND_SCOUT_CLUSTER)' is ready"
+	@echo "  kubectl --context $(KIND_SCOUT_CONTEXT) get pods -n $(NAMESPACE)"
+	@echo ""
+	@echo "  To connect Scout to the Queen Bee cluster (multi-cluster mode):"
+	@echo "    kubectl config use-context $(KIND_CONTEXT)"
+	@echo "    bindy bootstrap mc | kubectl --context $(KIND_SCOUT_CONTEXT) apply -f -"
+
+kind-scout-cleanup: ## Delete the Scout child Kind cluster
+	@echo "Deleting Scout cluster '$(KIND_SCOUT_CLUSTER)'..."
+	@kind delete cluster --name $(KIND_SCOUT_CLUSTER) || true
+	@echo "✓ Scout cluster deleted"
 
 # Build targets
 build: ## Build the Rust binary

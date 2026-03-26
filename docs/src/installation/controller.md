@@ -4,62 +4,48 @@ The Bindy operator watches for DNS resources and manages BIND9 configurations.
 
 ## Prerequisites
 
-Before deploying the operator:
-
-1. [CRDs must be installed](./crds.md)
-2. RBAC must be configured
-3. Namespace must exist (`bindy-system` recommended)
+- The `bindy` binary (same version as the image you want to deploy)
+- `kubectl` configured with cluster access
 
 ## Installation
 
-### Create Namespace
+The recommended way to deploy the operator is with the `bindy` CLI. A single command handles namespace creation, CRD installation, RBAC, and the Deployment — all via server-side apply (idempotent, safe to re-run):
 
 ```bash
-kubectl create namespace bindy-system
+bindy bootstrap operator
 ```
 
-### Install RBAC (Latest Release)
+This creates in order:
 
-Install from the latest stable release:
+1. `Namespace/bindy-system`
+2. All 12 CRDs (`bindy.firestoned.io/v1beta1`)
+3. `ServiceAccount/bindy`
+4. `ClusterRole/bindy-role` — operator permissions
+5. `ClusterRole/bindy-admin-role` — admin/destructive permissions
+6. `ClusterRoleBinding/bindy-rolebinding`
+7. `Deployment/bindy`
 
-```bash
-kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/serviceaccount.yaml
-kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/role.yaml
-kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/rolebinding.yaml
-```
+!!! tip "Custom namespace or version"
+    ```bash
+    bindy bootstrap operator --namespace my-namespace --version v0.5.0
+    ```
 
-Or install from a specific version:
+!!! tip "Air-gapped / private registry"
+    ```bash
+    bindy bootstrap operator --registry harbor.corp.internal/bindy-mirror
+    ```
+    This produces `harbor.corp.internal/bindy-mirror/bindy:<version>` instead of `ghcr.io/firestoned/bindy:<version>`. See the [CLI reference](../reference/cli.md#air-gapped-environments) for the full workflow.
 
-```bash
-kubectl apply -f https://github.com/firestoned/bindy/releases/download/v0.3.0/rbac/serviceaccount.yaml
-kubectl apply -f https://github.com/firestoned/bindy/releases/download/v0.3.0/rbac/role.yaml
-kubectl apply -f https://github.com/firestoned/bindy/releases/download/v0.3.0/rbac/rolebinding.yaml
-```
-
-This creates:
-- ServiceAccount for the operator
-- ClusterRole with required permissions
-- ClusterRoleBinding to bind them together
-
-### Deploy Operator (Latest Release)
-
-Install from the latest stable release:
-
-```bash
-kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/operator/deployment.yaml
-```
-
-Or install from a specific version:
-
-```bash
-kubectl apply -f https://github.com/firestoned/bindy/releases/download/v0.3.0/operator/deployment.yaml
-```
+!!! tip "Preview before applying"
+    ```bash
+    bindy bootstrap operator --dry-run
+    ```
 
 ### Wait for Readiness
 
 ```bash
 kubectl wait --for=condition=available --timeout=300s \
-  deployment/bind9-operator -n bindy-system
+  deployment/bindy -n bindy-system
 ```
 
 ## Verify Deployment

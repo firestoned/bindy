@@ -1,14 +1,32 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 
-# Build stage - optimized for faster local builds
+# This Dockerfile uses cargo-chef for optimal caching of Rust dependencies
+# First build: ~5 minutes, subsequent builds: ~30 seconds (if only src/ changes)
+#
+# To use this Dockerfile:
+#   docker build -f Dockerfile.chef -t bindy:latest .
+#
+# IMPORTANT: This requires cargo-chef to be installed in the base image.
+# The rust:1.91.0 image doesn't include it by default, so we install it in a separate stage.
+
+# Stage 1: Prepare cargo-chef
 # NOTE: This digest points to the multi-arch manifest list (supports AMD64, ARM64, etc.)
-FROM rust:1.94.0 as builder
-
-# Accept version as build argument (e.g., 1.0.0)
-ARG VERSION=0.1.0
-
+FROM rust:1.94.0 AS chef
+RUN cargo install cargo-chef
 WORKDIR /workspace
+
+# Stage 2: Generate recipe file (this layer is cached unless Cargo.toml/Cargo.lock change)
+FROM chef AS planner
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+RUN cargo chef prepare --recipe-path recipe.json
+
+# Stage 3: Build dependencies (this layer is cached unless recipe changes)
+FROM chef AS builder
+
+# Accept version as build argument
+ARG VERSION=0.1.0
 
 # Install musl target and cross-compilation tools for static linking
 RUN rustup target add aarch64-unknown-linux-musl x86_64-unknown-linux-musl && \
@@ -24,21 +42,13 @@ RUN ARCH=$(uname -m) && \
         echo "x86_64-unknown-linux-musl" > /tmp/target; \
     fi
 
-# Copy only dependency manifests first to leverage Docker layer caching
-COPY Cargo.toml ./
-COPY Cargo.lock* ./
+# Copy recipe and build dependencies
+COPY --from=planner /workspace/recipe.json recipe.json
+RUN TARGET=$(cat /tmp/target) && \
+    cargo chef cook --release --target $TARGET --recipe-path recipe.json
 
-# Create dummy source files to build dependencies
-# This layer will be cached as long as Cargo.toml/Cargo.lock don't change
-RUN mkdir -p src/bin && \
-    echo "fn main() {}" > src/main.rs && \
-    echo "fn main() {}" > src/bin/crdgen.rs && \
-    echo "fn main() {}" > src/bin/crddoc.rs && \
-    TARGET=$(cat /tmp/target) && \
-    cargo build --release --target $TARGET && \
-    rm -rf src
-
-# Now copy the actual source code
+# Copy source code and build the actual binary
+COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY templates ./templates
 
@@ -46,9 +56,7 @@ COPY templates ./templates
 RUN sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
 
 # Build the actual operator with musl for static linking
-# Touch main.rs to ensure it's rebuilt with the real code
-RUN touch src/main.rs && \
-    TARGET=$(cat /tmp/target) && \
+RUN TARGET=$(cat /tmp/target) && \
     cargo build --release --target $TARGET && \
     cp target/$TARGET/release/bindy target/release/bindy
 
@@ -89,6 +97,5 @@ USER bindy
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
-# Start the operator (default subcommand: run)
+# Start the operator
 ENTRYPOINT ["/usr/local/bin/bindy"]
-CMD ["run"]
