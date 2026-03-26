@@ -6,9 +6,148 @@
 bindy <SUBCOMMAND> [OPTIONS]
 
 Subcommands:
+  bootstrap   Bootstrap bindy components into the cluster
   run         Run the main BIND9 DNS operator (all controllers)
   scout       Run the Ingress-to-ARecord scout controller
   completion  Output shell completion code for the specified shell
+```
+
+---
+
+## `bindy bootstrap`
+
+Applies Kubernetes resources via server-side apply. Every operation is **idempotent** — safe to run multiple times and safe to use in automation pipelines.
+
+```text
+bindy bootstrap <SUBCOMMAND> [OPTIONS]
+
+Subcommands:
+  operator    Apply namespace, CRDs, RBAC, and the operator Deployment
+  scout       Apply namespace, CRDs, scout RBAC, and the scout Deployment
+```
+
+### `bindy bootstrap operator`
+
+Applies the following resources in order:
+
+1. `Namespace` (`bindy-system` by default)
+2. All 12 CRDs (`bindy.firestoned.io/v1beta1`)
+3. `ServiceAccount/bindy`
+4. `ClusterRole/bindy-role` — operator permissions
+5. `ClusterRole/bindy-admin-role` — admin/destructive permissions
+6. `ClusterRoleBinding/bindy-rolebinding`
+7. `Deployment/bindy` — the operator itself
+
+```bash
+bindy bootstrap operator [OPTIONS]
+```
+
+#### Options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--namespace <NS>` | `bindy-system` | Namespace to install the operator into. |
+| `--version <TAG>` | Binary version (e.g. `v0.5.0`) | Image tag for the operator Deployment. Use `latest` for debug builds. |
+| `--registry <REGISTRY>` | — | Override the container registry. See [Air-gapped environments](#air-gapped-environments). |
+| `--dry-run` | — | Print all resources as YAML without connecting to the cluster. |
+
+#### Examples
+
+```bash
+# Standard install — image tag matches the binary version automatically
+bindy bootstrap operator
+
+# Pin to a specific version
+bindy bootstrap operator --version v0.5.0
+
+# Custom namespace
+bindy bootstrap operator --namespace my-bindy
+
+# Preview what would be applied without touching the cluster
+bindy bootstrap operator --dry-run
+
+# Air-gapped: pull from a private registry mirror
+bindy bootstrap operator --registry harbor.corp.internal/bindy-mirror
+
+# Air-gapped with explicit version
+bindy bootstrap operator --registry harbor.corp.internal/bindy-mirror --version v0.5.0
+```
+
+### `bindy bootstrap scout`
+
+Applies the following resources in order:
+
+1. `Namespace` (`bindy-system` by default)
+2. All 12 CRDs — same set as the operator, so this is safe to run on a cluster that already has the operator installed
+3. `ServiceAccount/bindy-scout`
+4. `ClusterRole/bindy-scout` — cluster-wide Ingress watch, DNSZone read, and Secret read (for remote kubeconfig)
+5. `ClusterRoleBinding/bindy-scout`
+6. `Role/bindy-scout-writer` — `ARecord` write access in the target namespace
+7. `RoleBinding/bindy-scout-writer`
+8. `Deployment/bindy-scout` — the scout controller
+
+```bash
+bindy bootstrap scout [OPTIONS]
+```
+
+#### Options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--namespace <NS>` | `bindy-system` | Namespace to install Scout into. |
+| `--version <TAG>` | Binary version (e.g. `v0.5.0`) | Image tag for the Scout Deployment. |
+| `--registry <REGISTRY>` | — | Override the container registry. See [Air-gapped environments](#air-gapped-environments). |
+| `--dry-run` | — | Print all resources as YAML without connecting to the cluster. |
+
+#### Examples
+
+```bash
+# Standard install
+bindy bootstrap scout
+
+# Preview resources without applying
+bindy bootstrap scout --dry-run
+
+# Air-gapped: pull from a private registry mirror
+bindy bootstrap scout --registry harbor.corp.internal/bindy-mirror
+```
+
+!!! note "CRDs are always included"
+    Both `bootstrap operator` and `bootstrap scout` apply the full set of CRDs. Running both commands on the same cluster is safe — the CRDs are applied via server-side apply and remain unchanged on subsequent runs.
+
+### Air-gapped environments
+
+In environments without internet access, images must be mirrored to a private registry. Use `--registry` to point both subcommands at the mirror.
+
+The `--registry` value replaces the default `ghcr.io/firestoned` prefix. The image name (`bindy`) and tag (`--version`) are kept:
+
+| `--registry` | `--version` | Resulting image |
+|---|---|---|
+| _(not set)_ | `v0.5.0` | `ghcr.io/firestoned/bindy:v0.5.0` |
+| `harbor.corp.internal/bindy-mirror` | `v0.5.0` | `harbor.corp.internal/bindy-mirror/bindy:v0.5.0` |
+| `registry.example.com` | `latest` | `registry.example.com/bindy:latest` |
+
+**Typical air-gapped workflow:**
+
+```bash
+# 1. On an internet-connected machine, pull and re-tag the image
+docker pull ghcr.io/firestoned/bindy:v0.5.0
+docker tag  ghcr.io/firestoned/bindy:v0.5.0 harbor.corp.internal/bindy-mirror/bindy:v0.5.0
+docker push harbor.corp.internal/bindy-mirror/bindy:v0.5.0
+
+# 2. Copy the bindy binary to the air-gapped environment
+# (scp, USB, artifact repository, etc.)
+
+# 3. Bootstrap using the private registry
+bindy bootstrap operator --registry harbor.corp.internal/bindy-mirror --version v0.5.0
+bindy bootstrap scout    --registry harbor.corp.internal/bindy-mirror --version v0.5.0
+```
+
+Use `--dry-run` first to verify the image reference before applying:
+
+```bash
+bindy bootstrap operator --dry-run --registry harbor.corp.internal/bindy-mirror --version v0.5.0 \
+  | grep "image:"
 ```
 
 ---

@@ -214,13 +214,54 @@ make test-cov-view        # Generate and open coverage
 ### Kind Targets
 
 ```bash
-make kind-create          # Create Kind cluster
+make kind-create          # Create Kind cluster (Queen Bee / operator cluster)
 make kind-deploy          # Deploy operator
 make kind-test            # Basic functional tests
 make kind-integration-test # Full integration suite
 make kind-logs            # View operator logs
 make kind-cleanup         # Delete cluster
 ```
+
+#### Multi-Cluster Scout Testing
+
+A second Kind cluster (`bindy-scout`) can be created to test Scout in multi-cluster mode — Scout running on the child cluster, writing `ARecord` CRs back to the Queen Bee cluster.
+
+```bash
+# Create and install Scout on the child cluster
+make kind-create-scout IMAGE_TAG=latest-dev
+
+# Tear it down when done
+make kind-scout-cleanup
+```
+
+`kind-create-scout` performs all setup steps automatically:
+
+1. Creates a single-node Kind cluster named `bindy-scout`
+2. Loads the image into the cluster
+3. Creates the `bindy-system` namespace
+4. Installs all Bindy CRDs
+5. Applies Scout RBAC (ServiceAccount, ClusterRole, ClusterRoleBinding, Role, RoleBinding)
+6. Deploys the Scout controller
+7. Waits for the deployment to become available
+
+**Connecting Scout to the Queen Bee cluster (multi-cluster mode)**
+
+After both clusters are running, use `bindy bootstrap mc` to generate credentials on the Queen Bee cluster and apply them to the Scout cluster:
+
+```bash
+# Switch to the Queen Bee cluster
+kubectl config use-context kind-bindy-test
+
+# Generate credentials and pipe directly to the Scout cluster
+bindy bootstrap mc | kubectl --context kind-bindy-scout apply -f -
+
+# Then patch the Scout Deployment to enable remote mode
+kubectl --context kind-bindy-scout set env deployment/bindy-scout \
+  BINDY_SCOUT_REMOTE_SECRET=bindy-scout-remote-kubeconfig \
+  -n bindy-system
+```
+
+See the [Scout Multi-Cluster Guide](../guide/scout.md#multi-cluster-mode-phase-2) for the full architecture and configuration reference.
 
 ### Other Targets
 
