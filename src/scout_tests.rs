@@ -6,11 +6,17 @@
 #[cfg(test)]
 mod tests {
     use crate::scout::{
-        arecord_cr_name, arecord_label_selector, derive_record_name, get_zone_annotation,
-        has_finalizer, is_arecord_enabled, is_being_deleted, is_scout_opted_in,
-        resolve_ip_from_annotation, resolve_ips, resolve_zone, stale_arecord_label_selector,
+        arecord_cr_name, arecord_label_selector, build_service_arecord, derive_record_name,
+        get_zone_annotation, has_finalizer, is_arecord_enabled, is_being_deleted,
+        is_loadbalancer_service, is_scout_opted_in, resolve_ip_from_annotation,
+        resolve_ip_from_service_lb_status, resolve_ips, resolve_zone, service_arecord_cr_name,
+        service_arecord_label_selector, stale_arecord_label_selector, ServiceARecordParams,
         FINALIZER_SCOUT, LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER,
-        LABEL_SOURCE_INGRESS, LABEL_SOURCE_NAMESPACE,
+        LABEL_SOURCE_INGRESS, LABEL_SOURCE_NAMESPACE, LABEL_SOURCE_SERVICE, LABEL_ZONE,
+    };
+    use k8s_openapi::api::core::v1::{
+        LoadBalancerIngress as ServiceLoadBalancerIngress, LoadBalancerStatus, Service,
+        ServiceSpec, ServiceStatus,
     };
     use k8s_openapi::api::networking::v1::{
         Ingress, IngressLoadBalancerIngress, IngressLoadBalancerStatus, IngressStatus,
@@ -544,5 +550,258 @@ mod tests {
             resolve_zone(&annotations, Some("default.com")),
             Some("default.com".to_string())
         );
+    }
+
+    // =========================================================================
+    // is_loadbalancer_service
+    // =========================================================================
+
+    fn service_with_type(svc_type: &str) -> Service {
+        Service {
+            spec: Some(ServiceSpec {
+                type_: Some(svc_type.to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_is_loadbalancer_service_true() {
+        assert!(is_loadbalancer_service(&service_with_type("LoadBalancer")));
+    }
+
+    #[test]
+    fn test_is_loadbalancer_service_false_clusterip() {
+        assert!(!is_loadbalancer_service(&service_with_type("ClusterIP")));
+    }
+
+    #[test]
+    fn test_is_loadbalancer_service_false_nodeport() {
+        assert!(!is_loadbalancer_service(&service_with_type("NodePort")));
+    }
+
+    #[test]
+    fn test_is_loadbalancer_service_false_no_spec() {
+        let svc = Service::default();
+        assert!(!is_loadbalancer_service(&svc));
+    }
+
+    // =========================================================================
+    // resolve_ip_from_service_lb_status
+    // =========================================================================
+
+    fn service_with_lb_ip(ip: &str) -> Service {
+        Service {
+            status: Some(ServiceStatus {
+                load_balancer: Some(LoadBalancerStatus {
+                    ingress: Some(vec![ServiceLoadBalancerIngress {
+                        ip: Some(ip.to_string()),
+                        hostname: None,
+                        ..Default::default()
+                    }]),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_resolve_ip_from_service_lb_status_has_ip() {
+        let svc = service_with_lb_ip("1.2.3.4");
+        assert_eq!(
+            resolve_ip_from_service_lb_status(&svc),
+            Some("1.2.3.4".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_ip_from_service_lb_status_empty_list() {
+        let svc = Service {
+            status: Some(ServiceStatus {
+                load_balancer: Some(LoadBalancerStatus {
+                    ingress: Some(vec![]),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(resolve_ip_from_service_lb_status(&svc), None);
+    }
+
+    #[test]
+    fn test_resolve_ip_from_service_lb_status_no_status() {
+        let svc = Service::default();
+        assert_eq!(resolve_ip_from_service_lb_status(&svc), None);
+    }
+
+    #[test]
+    fn test_resolve_ip_from_service_lb_status_hostname_only() {
+        // hostname-only LB entries have no IP — should return None
+        let svc = Service {
+            status: Some(ServiceStatus {
+                load_balancer: Some(LoadBalancerStatus {
+                    ingress: Some(vec![ServiceLoadBalancerIngress {
+                        ip: None,
+                        hostname: Some("my-lb.example.com".to_string()),
+                        ..Default::default()
+                    }]),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(resolve_ip_from_service_lb_status(&svc), None);
+    }
+
+    // =========================================================================
+    // service_arecord_cr_name
+    // =========================================================================
+
+    #[test]
+    fn test_service_arecord_cr_name_format() {
+        // scout-{cluster}-{namespace}-{service} — no index suffix
+        let name = service_arecord_cr_name("prod", "default", "my-svc");
+        assert_eq!(name, "scout-prod-default-my-svc");
+    }
+
+    #[test]
+    fn test_service_arecord_cr_name_sanitizes_underscores() {
+        let name = service_arecord_cr_name("prod", "my_namespace", "my_service");
+        assert_eq!(name, "scout-prod-my-namespace-my-service");
+    }
+
+    #[test]
+    fn test_service_arecord_cr_name_lowercase() {
+        let name = service_arecord_cr_name("PROD", "Default", "My-Service");
+        assert_eq!(name, name.to_lowercase());
+    }
+
+    #[test]
+    fn test_service_arecord_cr_name_max_253_chars() {
+        let long_cluster = "a".repeat(100);
+        let long_ns = "b".repeat(100);
+        let long_svc = "c".repeat(100);
+        let name = service_arecord_cr_name(&long_cluster, &long_ns, &long_svc);
+        assert!(
+            name.len() <= 253,
+            "CR name exceeded 253 chars: {} chars",
+            name.len()
+        );
+    }
+
+    // =========================================================================
+    // service_arecord_label_selector
+    // =========================================================================
+
+    #[test]
+    fn test_service_arecord_label_selector_format() {
+        let selector = service_arecord_label_selector("prod", "my-ns", "my-svc");
+        assert_eq!(
+            selector,
+            format!(
+                "{}={},{}=prod,{}=my-ns,{}=my-svc",
+                LABEL_MANAGED_BY,
+                LABEL_MANAGED_BY_SCOUT,
+                LABEL_SOURCE_CLUSTER,
+                LABEL_SOURCE_NAMESPACE,
+                LABEL_SOURCE_SERVICE,
+            )
+        );
+    }
+
+    #[test]
+    fn test_service_arecord_label_selector_contains_all_keys() {
+        let selector = service_arecord_label_selector("prod", "ns", "svc");
+        assert!(selector.contains(LABEL_MANAGED_BY));
+        assert!(selector.contains(LABEL_SOURCE_CLUSTER));
+        assert!(selector.contains(LABEL_SOURCE_NAMESPACE));
+        assert!(selector.contains(LABEL_SOURCE_SERVICE));
+        // Must NOT use the Ingress label
+        assert!(!selector.contains(LABEL_SOURCE_INGRESS));
+    }
+
+    // =========================================================================
+    // build_service_arecord
+    // =========================================================================
+
+    #[test]
+    fn test_build_service_arecord_sets_source_service_label() {
+        let arecord = build_service_arecord(ServiceARecordParams {
+            name: "scout-prod-default-my-svc",
+            target_namespace: "bindy-system",
+            record_name: "my-svc",
+            ips: &["1.2.3.4".to_string()],
+            ttl: None,
+            cluster_name: "prod",
+            service_namespace: "default",
+            service_name: "my-svc",
+            zone: "example.com",
+        });
+
+        let labels = arecord.metadata.labels.as_ref().unwrap();
+        assert_eq!(
+            labels.get(LABEL_SOURCE_SERVICE).map(String::as_str),
+            Some("my-svc")
+        );
+        // Must NOT set the Ingress label
+        assert!(!labels.contains_key(LABEL_SOURCE_INGRESS));
+    }
+
+    #[test]
+    fn test_build_service_arecord_sets_all_expected_labels() {
+        let arecord = build_service_arecord(ServiceARecordParams {
+            name: "scout-prod-default-my-svc",
+            target_namespace: "bindy-system",
+            record_name: "my-svc",
+            ips: &["10.0.0.1".to_string()],
+            ttl: Some(300),
+            cluster_name: "prod",
+            service_namespace: "default",
+            service_name: "my-svc",
+            zone: "example.com",
+        });
+
+        let labels = arecord.metadata.labels.as_ref().unwrap();
+        assert_eq!(
+            labels.get(LABEL_MANAGED_BY).map(String::as_str),
+            Some(LABEL_MANAGED_BY_SCOUT)
+        );
+        assert_eq!(
+            labels.get(LABEL_SOURCE_CLUSTER).map(String::as_str),
+            Some("prod")
+        );
+        assert_eq!(
+            labels.get(LABEL_SOURCE_NAMESPACE).map(String::as_str),
+            Some("default")
+        );
+        assert_eq!(
+            labels.get(LABEL_SOURCE_SERVICE).map(String::as_str),
+            Some("my-svc")
+        );
+        assert_eq!(
+            labels.get(LABEL_ZONE).map(String::as_str),
+            Some("example.com")
+        );
+    }
+
+    #[test]
+    fn test_build_service_arecord_uses_record_name_in_spec() {
+        let arecord = build_service_arecord(ServiceARecordParams {
+            name: "scout-prod-default-my-svc",
+            target_namespace: "bindy-system",
+            record_name: "my-svc",
+            ips: &["1.2.3.4".to_string()],
+            ttl: None,
+            cluster_name: "prod",
+            service_namespace: "default",
+            service_name: "my-svc",
+            zone: "example.com",
+        });
+
+        assert_eq!(arecord.spec.name, "my-svc");
+        assert_eq!(arecord.spec.ipv4_addresses, vec!["1.2.3.4".to_string()]);
+        assert_eq!(arecord.spec.ttl, None);
     }
 }

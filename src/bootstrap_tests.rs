@@ -380,6 +380,46 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_build_scout_cluster_role_covers_services() {
+        let role = build_scout_cluster_role();
+        let rules = role.rules.unwrap();
+        let has_services_rule = rules.iter().any(|r| {
+            r.api_groups
+                .as_ref()
+                .is_some_and(|g| g.iter().any(|s| s.is_empty()))
+                && r.resources
+                    .as_ref()
+                    .is_some_and(|res| res.iter().any(|s| s == "services"))
+        });
+        assert!(
+            has_services_rule,
+            "ClusterRole must include a services rule"
+        );
+    }
+
+    #[test]
+    fn test_build_scout_cluster_role_services_allows_patch_and_update() {
+        let role = build_scout_cluster_role();
+        let rules = role.rules.unwrap();
+        let svc_rule = rules
+            .iter()
+            .find(|r| {
+                r.resources
+                    .as_ref()
+                    .is_some_and(|res| res.iter().any(|s| s == "services"))
+            })
+            .expect("services rule must exist");
+        assert!(
+            svc_rule.verbs.contains(&"patch".to_string()),
+            "services rule must include 'patch' (required for finalizer management)"
+        );
+        assert!(
+            svc_rule.verbs.contains(&"update".to_string()),
+            "services rule must include 'update'"
+        );
+    }
+
     // --- Scout ClusterRoleBinding ---
 
     #[test]
