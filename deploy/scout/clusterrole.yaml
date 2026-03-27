@@ -16,6 +16,15 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses/finalizers"]
     verbs: ["update"]
+  # Watch LoadBalancer Services for external IP → ARecord automation.
+  # patch+update required to add/remove the Scout finalizer on Service metadata.
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  # services/finalizers subresource for forward-compatibility.
+  - apiGroups: [""]
+    resources: ["services/finalizers"]
+    verbs: ["update"]
   # Read DNSZones for zone validation (same-cluster mode only; remote mode uses remote client)
   - apiGroups: ["bindy.firestoned.io"]
     resources: ["dnszones"]

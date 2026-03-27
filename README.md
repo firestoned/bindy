@@ -92,7 +92,7 @@ Two subcommands handle everything declaratively — namespace, CRDs, RBAC, and t
 # Deploy the operator
 bindy bootstrap operator
 
-# Deploy Scout (optional ingress controller)
+# Deploy Scout (optional Ingress + LoadBalancer Service → ARecord controller)
 bindy bootstrap scout
 ```
 

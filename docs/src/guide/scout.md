@@ -304,7 +304,7 @@ spec:
 
 ## RBAC Requirements
 
-Scout requires read access to `Ingress` and `DNSZone` resources cluster-wide, and write access to `ARecord` resources in the target namespace.
+Scout requires cluster-wide watch access to `Ingress` and `Service` resources, read access to `DNSZone` and `Secret` resources, and write access to `ARecord` resources in the target namespace.
 
 ```yaml
 ---
@@ -326,6 +326,14 @@ rules:
     verbs: ["get", "list", "watch", "patch", "update"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses/finalizers"]
+    verbs: ["update"]
+  # Watch LoadBalancer Services for external IP → ARecord automation.
+  # patch+update required to add/remove the Scout finalizer on Service metadata.
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["services/finalizers"]
     verbs: ["update"]
   # Read DNSZones for zone validation
   - apiGroups: ["bindy.firestoned.io"]
@@ -629,6 +637,78 @@ A separate `ServiceAccount`-type token Secret (`bindy-scout-remote-token`) is cr
 |---|---|---|
 | `BINDY_SCOUT_REMOTE_SECRET` | — | Name of a Secret in the **child cluster** containing a `kubeconfig` key. When set, Scout uses that kubeconfig to create `ARecord` CRs and validate `DNSZone` resources on the **Queen Bee cluster** instead of the local cluster. |
 | `BINDY_SCOUT_REMOTE_SECRET_NAMESPACE` | Scout's own namespace (`POD_NAMESPACE`) | Namespace where the remote kubeconfig Secret lives. Only set this if the Secret is in a different namespace than Scout itself. |
+
+---
+
+## Service Watching
+
+Scout also watches `LoadBalancer` Services and automatically creates `ARecord` CRs from them — no Ingress required. This covers gRPC, TCP, and other non-HTTP workloads that are exposed directly via a cloud load balancer.
+
+### Opt In
+
+Annotate the Service the same way as an Ingress:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-grpc-api
+  namespace: my-app
+  annotations:
+    bindy.firestoned.io/scout-enabled: "true"
+    bindy.firestoned.io/zone: "example.com"          # required if no --default-zone
+    # bindy.firestoned.io/ip: "1.2.3.4"              # optional IP override
+    # bindy.firestoned.io/ttl: "300"                  # optional TTL override
+spec:
+  type: LoadBalancer
+  selector:
+    app: my-grpc-api
+  ports:
+    - port: 443
+      targetPort: 8443
+```
+
+Scout creates an `ARecord` named `scout-{cluster}-{namespace}-{service}` in the target namespace with:
+- DNS record name: `{service-name}` (relative to the zone) → resolves to `my-grpc-api.example.com`
+- IP: from `bindy.firestoned.io/ip` annotation → `--default-ips` → `status.loadBalancer.ingress[].ip`
+
+### Differences from Ingress
+
+| | Ingress | Service |
+|---|---|---|
+| ARecord per rule | Yes (one per `rules[].host`) | No — exactly one record |
+| CR name suffix | `...-{idx}` (rule index) | No index |
+| IP source | LB status or annotation | LB status or annotation |
+| Label | `source-ingress` | `source-service` |
+
+### Non-LoadBalancer Services
+
+`ClusterIP` and `NodePort` services are silently skipped — they have no routable external IP and are not expected to need DNS records. No warning is emitted.
+
+### No External IP Yet
+
+If the cloud provider has not yet assigned an external IP to the Service, Scout logs a warning and re-queues after `30s`. No `ARecord` is created until an IP is available:
+
+```
+WARN scout: service my-app/my-grpc-api has no external IP yet; requeueing in 30s
+```
+
+### Labels on Created ARecords
+
+```yaml
+labels:
+  bindy.firestoned.io/managed-by: "scout"
+  bindy.firestoned.io/source-cluster: "prod"
+  bindy.firestoned.io/source-namespace: "my-app"
+  bindy.firestoned.io/source-service: "my-grpc-api"   # distinguishes from Ingress records
+  bindy.firestoned.io/zone: "example.com"
+```
+
+Query all Service-sourced ARecords:
+
+```bash
+kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-service
+```
 
 ---
 

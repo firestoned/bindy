@@ -1,7 +1,8 @@
 # Scout: Service Watching Support
 
-**Status:** Planned
+**Status:** Complete
 **Created:** 2026-03-25
+**Completed:** 2026-03-27
 **Author:** Erick Bourgeois
 
 ---

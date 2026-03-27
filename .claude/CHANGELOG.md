@@ -1,3 +1,48 @@
+## [2026-03-27] - Refactor CLAUDE.md: extract rules and remove sensitive references
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.claude/CLAUDE.md`: Reduced from ~1,600 lines to 264 lines by moving detailed content to rules files
+- `.claude/rules/github-workflows.md`: New file — GitHub Actions CI/CD standards (firestoned/github-actions, Makefile-driven, reusable workflows)
+- `.claude/rules/documentation.md`: New file — Documentation update workflow, changelog format, CRD example standards
+- `.claude/CLAUDE.md`: Removed "Capital Markets" and any client-specific environment references
+
+### Why
+CLAUDE.md was too large to load efficiently. Extracted reusable standards into rules/ files so they load on-demand. Removed client-identifying environment references for confidentiality.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
+## [2026-03-26 16:00] - Service watching: Scout creates ARecords from LoadBalancer Services
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/scout.rs`: Added `LABEL_SOURCE_SERVICE` constant; added `is_loadbalancer_service`, `resolve_ip_from_service_lb_status`, `service_arecord_cr_name`, `service_arecord_label_selector`, `build_service_arecord` (with `ServiceARecordParams`), `delete_arecords_for_service`, `add_finalizer_to_service`, `remove_finalizer_from_service`, `reconcile_service`, `service_error_policy`; wired `Service` controller concurrently alongside Ingress controller in `run_scout`
+- `src/scout_tests.rs`: 16 new TDD tests covering all new service helpers
+- `src/bootstrap.rs`: Added `services` and `services/finalizers` rules to `build_scout_cluster_role`
+- `src/bootstrap_tests.rs`: 2 new tests verifying services rules
+- `deploy/scout/clusterrole.yaml`: Added services + services/finalizers rules
+- `deploy/scout.yaml`: Added services + services/finalizers rules (inline)
+- `docs/src/guide/scout.md`: Added "Service Watching" section; updated ClusterRole YAML example
+
+### Why
+Extends Scout's zero-touch DNS automation to `LoadBalancer` Services. gRPC, TCP, and custom-protocol services exposed via LB no longer require manual ARecord creation.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (re-run `bindy bootstrap scout` to apply updated ClusterRole)
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-03-26 14:00] - Stale ARecord cleanup on cluster-name change
 
 **Author:** Erick Bourgeois

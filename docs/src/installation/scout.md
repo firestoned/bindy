@@ -5,7 +5,7 @@
 
     **Multi-cluster mode**: Scout runs on workload clusters and writes to a dedicated **Queen Bee cluster** cluster running Bindy. Use `bindy bootstrap mc` to generate credentials, then set `BINDY_SCOUT_REMOTE_SECRET`. See [Multi-Cluster Setup](#multi-cluster-setup) below.
 
-**Bindy Scout** is an optional companion controller that watches `Ingress` resources across your cluster and automatically creates `ARecord` CRs on behalf of application teams — without requiring them to have write access to the bindy namespace.
+**Bindy Scout** is an optional companion controller that watches `Ingress` resources and `LoadBalancer` Services across your cluster and automatically creates `ARecord` CRs on behalf of application teams — without requiring them to have write access to the bindy namespace.
 
 See the [Bindy Scout guide](../guide/scout.md) for the full conceptual overview, including the scout bee backstory, how record naming works, and the multi-cluster roadmap.
 
@@ -32,7 +32,7 @@ This creates:
 - A `Namespace` (`bindy-system` by default)
 - All 12 `CustomResourceDefinition` objects (same set as the operator — safe if already installed)
 - A `ServiceAccount` (`bindy-scout`) in `bindy-system`
-- A `ClusterRole` / `ClusterRoleBinding` for cluster-wide Ingress and DNSZone read access
+- A `ClusterRole` / `ClusterRoleBinding` for cluster-wide Ingress watch, LoadBalancer Service watch, DNSZone read, and Secret read
 - A `Role` / `RoleBinding` for `ARecord` write access in `bindy-system`
 - A `Deployment` running the `bindy scout` controller
 

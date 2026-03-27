@@ -23,7 +23,7 @@
 
 use crate::crd::{ARecord, ARecordSpec, DNSZone};
 use anyhow::{anyhow, Result};
-use k8s_openapi::api::core::v1::Secret;
+use k8s_openapi::api::core::v1::{Secret, Service};
 use kube::api::{DeleteParams, ListParams, Patch, PatchParams};
 use kube::config::{KubeConfigOptions, Kubeconfig};
 
@@ -87,6 +87,9 @@ pub const LABEL_SOURCE_NAMESPACE: &str = "bindy.firestoned.io/source-namespace";
 
 /// Label identifying the source Ingress name on created ARecords
 pub const LABEL_SOURCE_INGRESS: &str = "bindy.firestoned.io/source-ingress";
+
+/// Label identifying the source Service name on created ARecords
+pub const LABEL_SOURCE_SERVICE: &str = "bindy.firestoned.io/source-service";
 
 /// Label carrying the DNS zone name on created ARecords (for DNSZone selector matching)
 pub const LABEL_ZONE: &str = "bindy.firestoned.io/zone";
@@ -451,6 +454,128 @@ pub fn build_arecord(params: ARecordParams<'_>) -> ARecord {
 }
 
 // ============================================================================
+// Service helpers
+// ============================================================================
+
+/// Returns `true` if the Service is of type `LoadBalancer`.
+///
+/// `ClusterIP` and `NodePort` services have no routable external IP, so
+/// Scout silently skips them without warning.
+pub fn is_loadbalancer_service(svc: &Service) -> bool {
+    svc.spec
+        .as_ref()
+        .and_then(|s| s.type_.as_deref())
+        .map(|t| t == "LoadBalancer")
+        .unwrap_or(false)
+}
+
+/// Extracts the first non-empty IP from the Service's LoadBalancer status.
+///
+/// Returns `None` if the status has no entries, or the first entry has no IP
+/// (hostname-only entries are ignored). Scout re-queues and waits for the
+/// cloud provider to assign an external IP.
+pub fn resolve_ip_from_service_lb_status(svc: &Service) -> Option<String> {
+    svc.status
+        .as_ref()?
+        .load_balancer
+        .as_ref()?
+        .ingress
+        .as_ref()?
+        .iter()
+        .find_map(|entry| entry.ip.clone().filter(|ip| !ip.is_empty()))
+}
+
+/// Derives the ARecord CR name for a Service.
+///
+/// Format: `scout-{cluster}-{namespace}-{service_name}`
+///
+/// No index suffix — unlike Ingress, a Service produces exactly one ARecord.
+/// Applies the same sanitisation and 253-char truncation as Ingress CR names.
+pub fn service_arecord_cr_name(cluster: &str, namespace: &str, service_name: &str) -> String {
+    let raw = format!("{ARECORD_NAME_PREFIX}-{cluster}-{namespace}-{service_name}");
+    let sanitized = sanitize_k8s_name(&raw);
+    sanitized[..sanitized.len().min(MAX_K8S_NAME_LEN)].to_string()
+}
+
+/// Builds a Kubernetes label selector matching all ARecords created by Scout
+/// for a specific Service.
+pub fn service_arecord_label_selector(
+    cluster: &str,
+    namespace: &str,
+    service_name: &str,
+) -> String {
+    format!(
+        "{}={},{cluster_key}={cluster},{ns_key}={namespace},{svc_key}={service_name}",
+        LABEL_MANAGED_BY,
+        LABEL_MANAGED_BY_SCOUT,
+        cluster_key = LABEL_SOURCE_CLUSTER,
+        ns_key = LABEL_SOURCE_NAMESPACE,
+        svc_key = LABEL_SOURCE_SERVICE,
+    )
+}
+
+/// Parameters for building a Service-sourced ARecord CR.
+pub struct ServiceARecordParams<'a> {
+    /// Kubernetes resource name for the ARecord CR
+    pub name: &'a str,
+    /// Namespace where the ARecord CR will be created
+    pub target_namespace: &'a str,
+    /// DNS record name within the zone (e.g. `"my-svc"`)
+    pub record_name: &'a str,
+    /// IPv4 addresses for the record
+    pub ips: &'a [String],
+    /// Optional TTL override in seconds
+    pub ttl: Option<i32>,
+    /// Logical name of the source cluster (for labels)
+    pub cluster_name: &'a str,
+    /// Source Service namespace (for labels)
+    pub service_namespace: &'a str,
+    /// Source Service name (for labels)
+    pub service_name: &'a str,
+    /// DNS zone name (for labels)
+    pub zone: &'a str,
+}
+
+/// Builds the ARecord CR that Scout will create for a `LoadBalancer` Service.
+pub fn build_service_arecord(params: ServiceARecordParams<'_>) -> ARecord {
+    let mut labels = BTreeMap::new();
+    labels.insert(
+        LABEL_MANAGED_BY.to_string(),
+        LABEL_MANAGED_BY_SCOUT.to_string(),
+    );
+    labels.insert(
+        LABEL_SOURCE_CLUSTER.to_string(),
+        params.cluster_name.to_string(),
+    );
+    labels.insert(
+        LABEL_SOURCE_NAMESPACE.to_string(),
+        params.service_namespace.to_string(),
+    );
+    labels.insert(
+        LABEL_SOURCE_SERVICE.to_string(),
+        params.service_name.to_string(),
+    );
+    labels.insert(LABEL_ZONE.to_string(), params.zone.to_string());
+
+    let meta = kube::api::ObjectMeta {
+        name: Some(params.name.to_string()),
+        namespace: Some(params.target_namespace.to_string()),
+        labels: Some(labels),
+        ..Default::default()
+    };
+
+    ARecord {
+        metadata: meta,
+        spec: ARecordSpec {
+            name: params.record_name.to_string(),
+            ipv4_addresses: params.ips.to_vec(),
+            ttl: params.ttl,
+        },
+        status: None,
+    }
+}
+
+// ============================================================================
 // Finalizer helpers (async — require Kubernetes API access)
 // ============================================================================
 
@@ -483,6 +608,44 @@ async fn remove_finalizer(client: &Client, ingress: &Ingress) -> Result<()> {
     let api: Api<Ingress> = Api::namespaced(client.clone(), &namespace);
 
     let finalizers: Vec<String> = ingress
+        .metadata
+        .finalizers
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|f| f != FINALIZER_SCOUT)
+        .collect();
+
+    let patch = serde_json::json!({ "metadata": { "finalizers": finalizers } });
+    api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await?;
+    Ok(())
+}
+
+/// Adds the Scout finalizer to a Service.
+async fn add_finalizer_to_service(client: &Client, svc: &Service) -> Result<()> {
+    let namespace = svc.namespace().unwrap_or_default();
+    let name = svc.name_any();
+    let api: Api<Service> = Api::namespaced(client.clone(), &namespace);
+
+    let mut finalizers = svc.metadata.finalizers.clone().unwrap_or_default();
+    if !finalizers.contains(&FINALIZER_SCOUT.to_string()) {
+        finalizers.push(FINALIZER_SCOUT.to_string());
+    }
+
+    let patch = serde_json::json!({ "metadata": { "finalizers": finalizers } });
+    api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await?;
+    Ok(())
+}
+
+/// Removes the Scout finalizer from a Service.
+async fn remove_finalizer_from_service(client: &Client, svc: &Service) -> Result<()> {
+    let namespace = svc.namespace().unwrap_or_default();
+    let name = svc.name_any();
+    let api: Api<Service> = Api::namespaced(client.clone(), &namespace);
+
+    let finalizers: Vec<String> = svc
         .metadata
         .finalizers
         .clone()
@@ -563,6 +726,34 @@ async fn delete_stale_cluster_arecords(
             ingress = %ingress_name,
             ns = %ingress_namespace,
             "Deleted stale ARecord after cluster-name change"
+        );
+    }
+    Ok(())
+}
+
+/// Deletes all ARecords in `target_namespace` that Scout created for the given Service.
+///
+/// Called during Service deletion and opt-out annotation removal.
+async fn delete_arecords_for_service(
+    remote_client: &Client,
+    target_namespace: &str,
+    cluster: &str,
+    svc_namespace: &str,
+    svc_name: &str,
+) -> Result<()> {
+    let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
+    let selector = service_arecord_label_selector(cluster, svc_namespace, svc_name);
+    let lp = ListParams::default().labels(&selector);
+
+    let arecords = api.list(&lp).await?;
+    for ar in arecords.items {
+        let ar_name = ar.name_any();
+        api.delete(&ar_name, &DeleteParams::default()).await?;
+        info!(
+            arecord = %ar_name,
+            service = %svc_name,
+            ns = %svc_namespace,
+            "Deleted ARecord during Service cleanup"
         );
     }
     Ok(())
@@ -785,6 +976,214 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
     .map_err(ScoutError::from)?;
 
     Ok(Action::await_change())
+}
+
+///// Reconciles a single `LoadBalancer` Service, creating or updating an ARecord CR as needed.
+///
+/// Mirrors the Ingress reconciler lifecycle:
+/// - Opts in via `bindy.firestoned.io/scout-enabled: "true"`.
+/// - Silently skips non-`LoadBalancer` Services (no warning — ClusterIP/NodePort are intra-cluster).
+/// - Adds a finalizer; on deletion removes the ARecord and releases it.
+/// - If the opt-in annotation is removed, cleans up the ARecord and finalizer.
+/// - Re-queues if no external IP is available yet (cloud provider may not have assigned one).
+///
+/// # Errors
+///
+/// Returns an error that will be retried by the controller runtime.
+async fn reconcile_service(
+    svc: Arc<Service>,
+    ctx: Arc<ScoutContext>,
+) -> Result<Action, ScoutError> {
+    let name = svc.name_any();
+    let namespace = svc.namespace().unwrap_or_default();
+
+    if ctx.excluded_namespaces.contains(&namespace) {
+        debug!(service = %name, ns = %namespace, "Skipping excluded namespace");
+        return Ok(Action::await_change());
+    }
+
+    // Handle Service deletion — remove ARecord and release the finalizer
+    if svc.metadata.deletion_timestamp.is_some() {
+        if svc
+            .metadata
+            .finalizers
+            .as_ref()
+            .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
+            .unwrap_or(false)
+        {
+            info!(service = %name, ns = %namespace, "Service deleting — cleaning up ARecord");
+            delete_arecords_for_service(
+                &ctx.remote_client,
+                &ctx.target_namespace,
+                &ctx.cluster_name,
+                &namespace,
+                &name,
+            )
+            .await
+            .map_err(ScoutError::from)?;
+            remove_finalizer_from_service(&ctx.client, &svc)
+                .await
+                .map_err(ScoutError::from)?;
+            info!(service = %name, ns = %namespace, "Finalizer removed — Service deletion unblocked");
+        }
+        return Ok(Action::await_change());
+    }
+
+    let annotations = svc
+        .metadata
+        .annotations
+        .as_ref()
+        .cloned()
+        .unwrap_or_default();
+
+    // Guard: opt-in annotation required
+    if !is_scout_opted_in(&annotations) {
+        let has_fin = svc
+            .metadata
+            .finalizers
+            .as_ref()
+            .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
+            .unwrap_or(false);
+        if has_fin {
+            info!(service = %name, ns = %namespace, "Scout opt-in annotation removed — cleaning up ARecord and finalizer");
+            delete_arecords_for_service(
+                &ctx.remote_client,
+                &ctx.target_namespace,
+                &ctx.cluster_name,
+                &namespace,
+                &name,
+            )
+            .await
+            .map_err(ScoutError::from)?;
+            remove_finalizer_from_service(&ctx.client, &svc)
+                .await
+                .map_err(ScoutError::from)?;
+        }
+        debug!(service = %name, ns = %namespace, "No scout-enabled annotation — skipping");
+        return Ok(Action::await_change());
+    }
+
+    // Guard: only LoadBalancer services have routable external IPs
+    if !is_loadbalancer_service(&svc) {
+        debug!(service = %name, ns = %namespace, "Service is not LoadBalancer type — skipping");
+        return Ok(Action::await_change());
+    }
+
+    // Ensure finalizer before creating any ARecord
+    let has_fin = svc
+        .metadata
+        .finalizers
+        .as_ref()
+        .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
+        .unwrap_or(false);
+    if !has_fin {
+        add_finalizer_to_service(&ctx.client, &svc)
+            .await
+            .map_err(ScoutError::from)?;
+        debug!(service = %name, ns = %namespace, "Finalizer added — re-queuing for record creation");
+        return Ok(Action::await_change());
+    }
+
+    // Guard: zone required
+    let zone = match resolve_zone(&annotations, ctx.default_zone.as_deref()) {
+        Some(z) => z,
+        None => {
+            warn!(service = %name, ns = %namespace, "No DNS zone available — skipping");
+            return Ok(Action::requeue(Duration::from_secs(
+                SCOUT_ERROR_REQUEUE_SECS,
+            )));
+        }
+    };
+
+    // Guard: zone must exist in the DNSZone store
+    let zone_exists = ctx
+        .zone_store
+        .state()
+        .iter()
+        .any(|z| z.spec.zone_name == zone);
+    if !zone_exists {
+        warn!(service = %name, ns = %namespace, zone = %zone, "Zone not found in DNSZone store — requeuing");
+        return Ok(Action::requeue(Duration::from_secs(
+            SCOUT_ERROR_REQUEUE_SECS,
+        )));
+    }
+
+    // Resolve IP: annotation → default_ips → LB status
+    let ips = {
+        let from_annotation = annotations
+            .get(ANNOTATION_IP)
+            .filter(|v| !v.is_empty())
+            .map(|v| vec![v.clone()]);
+        let from_defaults = if ctx.default_ips.is_empty() {
+            None
+        } else {
+            Some(ctx.default_ips.clone())
+        };
+        let from_lb = resolve_ip_from_service_lb_status(&svc).map(|ip| vec![ip]);
+
+        match from_annotation.or(from_defaults).or(from_lb) {
+            Some(ips) => ips,
+            None => {
+                warn!(service = %name, ns = %namespace, "No external IP yet — requeuing in {}s", SCOUT_ERROR_REQUEUE_SECS);
+                return Ok(Action::requeue(Duration::from_secs(
+                    SCOUT_ERROR_REQUEUE_SECS,
+                )));
+            }
+        }
+    };
+
+    let ttl: Option<i32> = annotations.get(ANNOTATION_TTL).and_then(|v| v.parse().ok());
+
+    // Derive the DNS record name: "{service_name}.{zone}" → strip zone → service_name
+    let fqdn = format!("{name}.{zone}");
+    let record_name = match derive_record_name(&fqdn, &zone) {
+        Ok(n) => n,
+        Err(e) => {
+            warn!(service = %name, zone = %zone, error = %e, "Cannot derive record name — skipping");
+            return Ok(Action::requeue(Duration::from_secs(
+                SCOUT_ERROR_REQUEUE_SECS,
+            )));
+        }
+    };
+
+    let cr_name = service_arecord_cr_name(&ctx.cluster_name, &namespace, &name);
+    let arecord = build_service_arecord(ServiceARecordParams {
+        name: &cr_name,
+        target_namespace: &ctx.target_namespace,
+        record_name: &record_name,
+        ips: &ips,
+        ttl,
+        cluster_name: &ctx.cluster_name,
+        service_namespace: &namespace,
+        service_name: &name,
+        zone: &zone,
+    });
+
+    let arecord_api: Api<ARecord> =
+        Api::namespaced(ctx.remote_client.clone(), &ctx.target_namespace);
+    let ssapply = kube::api::PatchParams::apply("bindy-scout").force();
+    match arecord_api
+        .patch(&cr_name, &ssapply, &kube::api::Patch::Apply(&arecord))
+        .await
+    {
+        Ok(_) => {
+            info!(arecord = %cr_name, service = %name, ips = ?ips, "ARecord created/updated for Service");
+        }
+        Err(e) => {
+            error!(arecord = %cr_name, service = %name, error = %e, "Failed to apply ARecord for Service");
+            return Err(ScoutError::from(anyhow!(
+                "Failed to apply ARecord {cr_name}: {e}"
+            )));
+        }
+    }
+
+    Ok(Action::await_change())
+}
+
+/// Error policy for the Service controller: requeue with a fixed backoff.
+fn service_error_policy(_obj: Arc<Service>, error: &ScoutError, _ctx: Arc<ScoutContext>) -> Action {
+    error!(error = %error, "Scout service reconcile error — requeuing");
+    Action::requeue(Duration::from_secs(SCOUT_ERROR_REQUEUE_SECS))
 }
 
 /// Error policy: requeue with a fixed backoff on any reconcile error.
@@ -1077,18 +1476,30 @@ pub async fn run_scout(
 
     // Watch Ingresses across all namespaces using the LOCAL client
     let ingress_api: Api<Ingress> = Api::all(local_client.clone());
+    // Watch Services across all namespaces using the LOCAL client
+    let svc_api: Api<Service> = Api::all(local_client.clone());
 
-    info!("Scout controller running — watching Ingresses");
+    info!("Scout controller running — watching Ingresses and Services");
 
-    Controller::new(ingress_api, WatcherConfig::default())
-        .run(reconcile, error_policy, ctx)
+    let ingress_controller = Controller::new(ingress_api, WatcherConfig::default())
+        .run(reconcile, error_policy, ctx.clone())
         .for_each(|res| async move {
             match res {
-                Ok(obj) => debug!(obj = ?obj, "Reconciled"),
-                Err(e) => error!(error = %e, "Reconcile failed"),
+                Ok(obj) => debug!(obj = ?obj, "Reconciled Ingress"),
+                Err(e) => error!(error = %e, "Ingress reconcile failed"),
             }
-        })
-        .await;
+        });
+
+    let service_controller = Controller::new(svc_api, WatcherConfig::default())
+        .run(reconcile_service, service_error_policy, ctx)
+        .for_each(|res| async move {
+            match res {
+                Ok(obj) => debug!(obj = ?obj, "Reconciled Service"),
+                Err(e) => error!(error = %e, "Service reconcile failed"),
+            }
+        });
+
+    futures::future::join(ingress_controller, service_controller).await;
 
     Ok(())
 }
