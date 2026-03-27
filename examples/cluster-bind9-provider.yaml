@@ -50,7 +50,6 @@ spec:
       annotations:
         # Use different pool for secondaries
         metallb.universe.tf/address-pool: production-dns-pool
-        external-dns.alpha.kubernetes.io/hostname: ns2.production.example.com
       spec:
         type: LoadBalancer
         externalTrafficPolicy: Local
@@ -73,5 +72,21 @@ spec:
           - name: http
             port: 80
             targetPort: 8080
+    # DNSSEC configuration
     dnssec:
+      # Enable DNSSEC validation of upstream responses (currently implemented)
       validation: true
+
+      # Enable DNSSEC zone signing (Phases 1-4 implemented)
+      signing:
+        enabled: true
+        policy: "default"  # Built-in DNSSEC policy
+        algorithm: "ECDSAP256SHA256"  # ECDSA P-256 (recommended)
+        kskLifetime: "365d"  # Key Signing Key lifetime (1 year)
+        zskLifetime: "90d"   # Zone Signing Key lifetime (3 months)
+        nsec3: true          # Use NSEC3 for privacy
+        nsec3Iterations: 0   # Per RFC 9276 recommendation
+
+        # Key management: auto-generate with Secret backup (self-healing)
+        autoGenerate: true
+        exportToSecret: true

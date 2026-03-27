@@ -757,8 +757,9 @@ pub fn build_scout_service_account(namespace: &str) -> ServiceAccount {
 
 /// Build the scout ClusterRole with cluster-scoped permissions.
 ///
-/// Grants watch/patch/update on Ingresses (kube-rs finalizer patches the main resource),
-/// read on DNSZones, and read on Secrets (for remote kubeconfig).
+/// Grants watch/patch/update on Ingresses and Services (kube-rs finalizer patches the
+/// main resource metadata to add/remove finalizers), read on DNSZones, and read on
+/// Secrets (for remote kubeconfig).
 pub fn build_scout_cluster_role() -> ClusterRole {
     ClusterRole {
         metadata: ObjectMeta {
@@ -797,6 +798,27 @@ pub fn build_scout_cluster_role() -> ClusterRole {
             PolicyRule {
                 api_groups: Some(vec!["networking.k8s.io".to_string()]),
                 resources: Some(vec!["ingresses/finalizers".to_string()]),
+                verbs: vec!["update".to_string()],
+                ..Default::default()
+            },
+            // Watch LoadBalancer Services for external IP → ARecord automation.
+            // patch+update required to add/remove the Scout finalizer on the Service metadata.
+            PolicyRule {
+                api_groups: Some(vec![String::new()]),
+                resources: Some(vec!["services".to_string()]),
+                verbs: vec![
+                    "get".to_string(),
+                    "list".to_string(),
+                    "watch".to_string(),
+                    "patch".to_string(),
+                    "update".to_string(),
+                ],
+                ..Default::default()
+            },
+            // services/finalizers subresource for forward-compatibility.
+            PolicyRule {
+                api_groups: Some(vec![String::new()]),
+                resources: Some(vec!["services/finalizers".to_string()]),
                 verbs: vec!["update".to_string()],
                 ..Default::default()
             },
