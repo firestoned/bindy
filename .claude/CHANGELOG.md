@@ -1,3 +1,22 @@
+## [2026-03-28] - Update Scout docs to cover Service support alongside Ingress
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/guide/scout.md`: Updated intro, sequence diagram, How It Works steps, Quick Start, annotations table, labels table, and CLI/env var descriptions to cover both `Ingress` and `LoadBalancer Service` — removed all Ingress-only references where Service support equally applies
+- `docs/src/installation/scout.md`: Updated config table descriptions; expanded Test section with tabbed Ingress and Service examples and separate `kubectl` queries for each source type
+
+### Why
+Service watching support (LoadBalancer → ARecord) was implemented but documentation still described Scout as an "Ingress controller" throughout, leaving Service users without clear guidance.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
 ## [2026-03-27] - Refactor CLAUDE.md: extract rules and remove sensitive references
 
 **Author:** Erick Bourgeois

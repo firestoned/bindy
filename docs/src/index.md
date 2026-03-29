@@ -1,10 +1,11 @@
-# <img src="images/bindy-the-bee.png" alt="Bindy the Bee" width="60" style="vertical-align: middle; margin-right: 10px;"/> Introduction
+# <img src="images/bindy-the-bee.png" alt="Bindy the Bee" width="40" style="vertical-align: middle; margin-right: 2px;"/> Introduction
+
 ### *Pronounced: "bined-ee" (like BIND + ee)*
 
+[![Release](https://github.com/firestoned/bindy/actions/workflows/release.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/release.yaml)
 [![Main Branch CI/CD](https://github.com/firestoned/bindy/actions/workflows/main.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/main.yaml)
 [![PR CI](https://github.com/firestoned/bindy/actions/workflows/pr.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/pr.yaml)
 [![Integration Tests](https://github.com/firestoned/bindy/actions/workflows/integration.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/integration.yaml)
-[![codecov](https://codecov.io/gh/firestoned/bindy/branch/main/graph/badge.svg)](https://codecov.io/gh/firestoned/bindy)
 
 **Bindy** is a high-performance Kubernetes operator written in Rust that manages BIND9 DNS infrastructure through Custom Resource Definitions (CRDs). It enables you to manage DNS zones and records as native Kubernetes resources, bringing the declarative Kubernetes paradigm to DNS management.
 

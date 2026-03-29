@@ -37,7 +37,6 @@ jobs:
               - 'src/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
-              - '.github/workflows/pr.yaml'
 
   license-check:
     name: Verify SPDX License Headers
@@ -58,7 +57,6 @@ jobs:
     name: Verify Signed Commits
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -311,6 +309,7 @@ jobs:
   vex-validate:
     name: Validate VEX Documents
     runs-on: ubuntu-latest
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -327,6 +326,7 @@ jobs:
   security:
     name: Security Vulnerability Scan
     runs-on: ubuntu-latest
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout code
         uses: actions/checkout@v6

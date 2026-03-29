@@ -1,9 +1,9 @@
-# Bindy Scout
+# <img src="../../images/scouty.svg" alt="Scouty the Scout Bee" width="40" style="vertical-align: middle; margin-right: 2px;"/> Bindy Scout
 
-!!! info "Same-Cluster Mode is the Default (Phase 1)"
-    When `BINDY_SCOUT_REMOTE_SECRET` is **not set**, Scout and the Bindy operator must run in the **same Kubernetes cluster**. This is the default mode and requires no additional configuration.
+!!! info "Two Deployment Modes"
+    **[Same-cluster mode](#quick-start)** (default): Scout and the Bindy operator run in the same cluster. No extra configuration needed.
 
-    **Phase 2 (remote cluster mode)** is also available: set `BINDY_SCOUT_REMOTE_SECRET` to a Secret containing a kubeconfig for the dedicated Bindy cluster. Scout will use that kubeconfig to create ARecords and validate zones on the remote cluster while still watching local Ingresses.
+    **[Remote cluster mode](#multi-cluster-mode)**: Scout runs on a workload cluster and writes to a dedicated Bindy cluster elsewhere. Set `BINDY_SCOUT_REMOTE_SECRET` to a Secret containing a kubeconfig for the Bindy cluster. Scout will create ARecords and validate zones there while watching local Ingresses and Services.
 
 ## The Scout Bee
 
@@ -13,9 +13,9 @@ In a honeybee colony, **scout bees** are the advance team. While the main worker
 
 The main `bindy run` process is the hive — it manages BIND9 DNS infrastructure and reconciles DNS zones and records from their canonical CRD definitions. But it doesn't know about every application that flies around your cluster. That's where Scout comes in.
 
-Scout is a lightweight, event-driven controller that ventures into your workload namespaces, watches `Ingress` resources, and — when it finds one annotated with the right signal — carries that DNS information back to the bindy cluster and registers an `ARecord` on the application's behalf.
+Scout is a lightweight, event-driven controller that ventures into your workload namespaces, watches `Ingress` and `LoadBalancer Service` resources, and — when it finds one annotated with the right signal — carries that DNS information back to the bindy cluster and registers an `ARecord` on the application's behalf.
 
-The application team annotates their Ingress. Scout finds it, validates it, derives the correct record name from the DNS zone, and server-side applies the `ARecord` CR in the bindy namespace. From there, the normal `ARecord` reconciler picks it up and programs BIND9. The application never needs to know how DNS works — it just raises a flag and Scout handles the rest.
+The application team annotates their Ingress or Service. Scout finds it, validates it, derives the correct record name from the DNS zone, and server-side applies the `ARecord` CR in the bindy namespace. From there, the normal `ARecord` reconciler picks it up and programs BIND9. The application never needs to know how DNS works — it just raises a flag and Scout handles the rest.
 
 ---
 
@@ -40,31 +40,33 @@ Scout eliminates both compromises. Application teams annotate their own Ingresse
 ```mermaid
 sequenceDiagram
     participant App as Application Team
-    participant Ingress as Kubernetes Ingress
+    participant Source as Ingress or Service
     participant Scout as Bindy Scout
     participant ARecord as ARecord CR
     participant Bindy as Bindy Operator
     participant BIND9 as BIND9 DNS
 
-    App->>Ingress: Annotate with bindy.firestoned.io/recordKind: "ARecord"
-    Ingress->>Scout: Watch event (kube-rs Controller)
-    Scout->>Scout: Validate annotations + derive record name
+    App->>Source: Annotate with bindy.firestoned.io/scout-enabled: "true"
+    Source->>Scout: Watch event (kube-rs Controller)
+    Scout->>Scout: Validate annotations + derive record name + resolve IP
     Scout->>ARecord: Server-side apply (bindy-system namespace)
     ARecord->>Bindy: Watch event triggers ARecord reconciler
     Bindy->>BIND9: Program A record via RNDC
 ```
 
-1. Scout watches **all Ingress resources** cluster-wide (excluding its own namespace and any configured exclusions).
-2. When an Ingress event fires, Scout checks for the `bindy.firestoned.io/recordKind: "ARecord"` annotation.
-3. If enabled, Scout reads the zone annotation, derives the DNS record name (e.g. `app.example.com` → record name `app` in zone `example.com`), and resolves the IP from the LoadBalancer status or an explicit annotation override.
-4. Scout **server-side applies** an `ARecord` CR in the configured target namespace (default: `bindy-system`), stamped with labels identifying the source cluster, namespace, and Ingress.
+1. Scout watches **all `Ingress` and `LoadBalancer Service` resources** cluster-wide (excluding its own namespace and any configured exclusions).
+2. When a watch event fires, Scout checks for the `bindy.firestoned.io/scout-enabled: "true"` annotation.
+3. If enabled, Scout reads the zone annotation, derives the DNS record name, and resolves the IP — from the LoadBalancer status or an explicit annotation override.
+   - **Ingress**: record name derived by stripping the zone suffix from each rule host (e.g. `app.example.com` in zone `example.com` → `app`). One `ARecord` per rule host.
+   - **Service**: record name is the Service name. Exactly one `ARecord` per Service.
+4. Scout **server-side applies** an `ARecord` CR in the configured target namespace (default: `bindy-system`), stamped with labels identifying the source cluster, namespace, and resource.
 5. The main bindy operator's `ARecord` reconciler picks up the new CR and programs BIND9.
 
 ---
 
 ## Quick Start
 
-### 1. Annotate your Ingress
+### 1. Annotate your Ingress or Service
 
 **Minimal** — when Scout is configured with `--default-zone` and `--default-ips`:
 
@@ -118,6 +120,28 @@ Scout will create an `ARecord` named `scout-<cluster>-my-app-ns-my-app-0` in the
 - `spec.address`: IP from the Ingress LoadBalancer status
 - Labels: `bindy.firestoned.io/source-cluster`, `source-namespace`, `source-ingress`, `zone`
 
+**For a LoadBalancer Service:**
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-grpc-api
+  namespace: my-app-ns
+  annotations:
+    bindy.firestoned.io/scout-enabled: "true"
+    bindy.firestoned.io/zone: "example.com"
+spec:
+  type: LoadBalancer
+  selector:
+    app: my-grpc-api
+  ports:
+    - port: 9090
+      targetPort: 9090
+```
+
+Scout will create an `ARecord` named `scout-<cluster>-my-app-ns-my-grpc-api` in the `bindy-system` namespace, resolving to `my-grpc-api.example.com`.
+
 ### 2. Deploy Scout
 
 ```yaml
@@ -158,12 +182,14 @@ spec:
 
 ## Annotations Reference
 
+These annotations apply to both `Ingress` and `LoadBalancer Service` resources.
+
 | Annotation | Required | Description |
 |---|---|---|
-| `bindy.firestoned.io/scout-enabled` | **Yes** (preferred) | Set to `"true"` to opt this Ingress into Scout management. The record kind always defaults to `ARecord`. |
-| `bindy.firestoned.io/recordKind` | *(legacy)* | Accepted for backward compatibility. `"ARecord"` opts in. Prefer `scout-enabled: "true"` for new deployments. |
-| `bindy.firestoned.io/zone` | **Yes** (unless `--default-zone` is set) | The DNS zone that owns the Ingress hosts (e.g. `example.com`). Overrides the operator's `--default-zone`. Hosts outside the zone are skipped with a warning. |
-| `bindy.firestoned.io/ip` | No | Explicit IP address for the A record. When set, overrides both `--default-ips` and the Ingress LoadBalancer status. |
+| `bindy.firestoned.io/scout-enabled` | **Yes** (preferred) | Set to `"true"` to opt this Ingress or Service into Scout management. The record kind always defaults to `ARecord`. |
+| `bindy.firestoned.io/recordKind` | *(legacy, Ingress only)* | Accepted for backward compatibility. `"ARecord"` opts in. Prefer `scout-enabled: "true"` for new deployments. |
+| `bindy.firestoned.io/zone` | **Yes** (unless `--default-zone` is set) | The DNS zone for this resource (e.g. `example.com`). Overrides the operator's `--default-zone`. For Ingress: hosts outside the zone are skipped with a warning. |
+| `bindy.firestoned.io/ip` | No | Explicit IP address for the A record. When set, overrides both `--default-ips` and the LoadBalancer status IP. |
 | `bindy.firestoned.io/ttl` | No | TTL override in seconds. When absent, the created `ARecord` inherits the TTL from the `DNSZone` spec. |
 
 ---
@@ -195,13 +221,14 @@ The record name is derived by stripping the zone suffix from the host:
 
 Every `ARecord` created by Scout carries these labels:
 
-| Label | Value | Purpose |
+| Label | Value | Source |
 |---|---|---|
-| `bindy.firestoned.io/managed-by` | `scout` | Identifies Scout as the manager |
-| `bindy.firestoned.io/source-cluster` | `<BINDY_SCOUT_CLUSTER_NAME>` | Cluster where the Ingress lives |
-| `bindy.firestoned.io/source-namespace` | Ingress namespace | Source namespace for traceability |
-| `bindy.firestoned.io/source-ingress` | Ingress name | Source Ingress name |
-| `bindy.firestoned.io/zone` | Zone name | Allows `DNSZone.spec.recordsFrom` label selectors to discover the record |
+| `bindy.firestoned.io/managed-by` | `scout` | Both |
+| `bindy.firestoned.io/source-cluster` | `<BINDY_SCOUT_CLUSTER_NAME>` | Both |
+| `bindy.firestoned.io/source-namespace` | Resource namespace | Both |
+| `bindy.firestoned.io/source-ingress` | Ingress name | Ingress only |
+| `bindy.firestoned.io/source-service` | Service name | Service only |
+| `bindy.firestoned.io/zone` | Zone name | Both |
 
 The `zone` label is particularly important: it lets you configure a `DNSZone` to automatically pull in all ARecords created by Scout for that zone:
 
@@ -229,8 +256,8 @@ spec:
 |---|---|
 | `--cluster-name <NAME>` | **Required** (unless env var set). Logical name of this cluster stamped on all created ARecord labels. Used to distinguish records created by different clusters writing to the same bindy namespace. |
 | `--namespace <NS>` | Namespace where ARecords are created. Defaults to `bindy-system`. |
-| `--default-zone <ZONE>` | Default DNS zone applied to all Ingresses when no `bindy.firestoned.io/zone` annotation is present (e.g. `example.com`). When combined with `--default-ips`, Ingresses only need `bindy.firestoned.io/scout-enabled: "true"`. |
-| `--default-ips <IP[,IP]>` | Comma-separated default IP address(es) used for all Ingresses when no per-Ingress `bindy.firestoned.io/ip` annotation or LoadBalancer status IP is available. Useful for shared-ingress topologies (e.g. Traefik). |
+| `--default-zone <ZONE>` | Default DNS zone applied to all Ingresses and Services when no `bindy.firestoned.io/zone` annotation is present (e.g. `example.com`). When combined with `--default-ips`, resources only need `bindy.firestoned.io/scout-enabled: "true"`. |
+| `--default-ips <IP[,IP]>` | Comma-separated default IP address(es) used when no per-resource `bindy.firestoned.io/ip` annotation or LoadBalancer status IP is available. Useful for shared-ingress topologies (e.g. Traefik). |
 
 CLI flags take precedence over the corresponding environment variables.
 
@@ -242,8 +269,8 @@ CLI flags take precedence over the corresponding environment variables.
 | `BINDY_SCOUT_NAMESPACE` | `bindy-system` | Namespace where ARecords are created. |
 | `POD_NAMESPACE` | `default` | Scout's own namespace. Always excluded from Ingress watching to prevent Scout from watching resources in its own namespace. Injected automatically by the Kubernetes downward API. |
 | `BINDY_SCOUT_EXCLUDE_NAMESPACES` | — | Comma-separated list of additional namespaces to skip. Useful to exclude system namespaces (`kube-system`, `kube-public`, etc.) that will never have Scout-annotated Ingresses. |
-| `BINDY_SCOUT_DEFAULT_ZONE` | — | Default DNS zone for all Ingresses when no `bindy.firestoned.io/zone` annotation is present. Overridden by `--default-zone`. When set alongside `BINDY_SCOUT_DEFAULT_IPS`, Ingresses only need `bindy.firestoned.io/scout-enabled: "true"`. |
-| `BINDY_SCOUT_DEFAULT_IPS` | — | Comma-separated default IP address(es) used when no per-Ingress annotation override or LoadBalancer status IP is available. Useful for shared-ingress topologies (e.g. Traefik) where all Ingresses resolve to the same VIP(s). Overridden by `--default-ips`. |
+| `BINDY_SCOUT_DEFAULT_ZONE` | — | Default DNS zone for all Ingresses and Services when no `bindy.firestoned.io/zone` annotation is present. Overridden by `--default-zone`. When set alongside `BINDY_SCOUT_DEFAULT_IPS`, resources only need `bindy.firestoned.io/scout-enabled: "true"`. |
+| `BINDY_SCOUT_DEFAULT_IPS` | — | Comma-separated default IP address(es) used when no per-resource annotation override or LoadBalancer status IP is available. Useful for shared-ingress topologies (e.g. Traefik) where all resources resolve to the same VIP(s). Overridden by `--default-ips`. |
 | `BINDY_SCOUT_REMOTE_SECRET` | — | **(Phase 2)** Name of a Secret in the local cluster containing a `kubeconfig` key. When set, Scout targets the remote Bindy cluster for ARecord creation and zone validation. When unset, same-cluster mode is used. |
 | `BINDY_SCOUT_REMOTE_SECRET_NAMESPACE` | Scout's own namespace | **(Phase 2)** Namespace of the `BINDY_SCOUT_REMOTE_SECRET`. Defaults to Scout's own namespace (`POD_NAMESPACE`). |
 | `RUST_LOG` | `info` | Log level: `trace`, `debug`, `info`, `warn`, `error`. |
@@ -398,7 +425,7 @@ env:
 
 ---
 
-## Multi-Cluster Mode (Phase 2)
+## Multi-Cluster Mode
 
 In many platform engineering setups, the DNS operator lives on a dedicated infrastructure cluster — isolated from workload traffic, hardened, and controlled by the platform team. Application workloads run on separate clusters that have no direct RBAC access to the DNS cluster. Scout bridges this gap without requiring network tunnels or federated identity.
 
@@ -747,11 +774,11 @@ kubectl set env deployment/bindy-scout BINDY_SCOUT_CLUSTER_NAME=prod-b -n bindy-
 
 ## Roadmap
 
-All features are tracked in
-[`docs/roadmaps/bindy-scout-ingress-controller.md`](../../roadmaps/bindy-scout-ingress-controller.md).
-
-| Phase | Status | Description |
+| Feature | Status | Roadmap |
 |---|---|---|
-| Phase 1 | ✅ Complete | Same-cluster mode. Scout and bindy run in the same cluster. ARecords are created in the same cluster. |
-| Phase 1.5 | ✅ Complete | Finalizer on Ingress. When an annotated Ingress is deleted, Scout removes the corresponding ARecord. |
-| Phase 2 | ✅ Complete | Remote cluster mode. Set `BINDY_SCOUT_REMOTE_SECRET` to a Secret containing a kubeconfig for the Bindy cluster. Scout uses it to write ARecords and validate zones remotely. Use `bindy bootstrap mc` to generate the kubeconfig Secret. |
+| Same-cluster mode | ✅ Complete | [`bindy-scout-ingress-controller.md`](../../roadmaps/bindy-scout-ingress-controller.md) |
+| Finalizer on Ingress | ✅ Complete | [`bindy-scout-ingress-controller.md`](../../roadmaps/bindy-scout-ingress-controller.md) |
+| Remote cluster mode | ✅ Complete | [`bindy-scout-ingress-controller.md`](../../roadmaps/bindy-scout-ingress-controller.md) |
+| LoadBalancer Service → ARecord | ✅ Complete | [`scout-service-watching.md`](../../roadmaps/scout-service-watching.md) |
+| SRV records from Service ports and Ingress | 🔲 Planned | [`scout-srv-records.md`](../../roadmaps/scout-srv-records.md) |
+| Namespace inclusion/exclusion via label selectors | 🔲 Planned | [`scout-namespace-selectors.md`](../../roadmaps/scout-namespace-selectors.md) |

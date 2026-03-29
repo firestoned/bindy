@@ -1,0 +1,134 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 640" width="680" height="640">
+<defs>
+  <radialGradient id="bodyG" cx="38%" cy="30%" r="60%">
+    <stop offset="0%"   stop-color="#FFE27A"/>
+    <stop offset="35%"  stop-color="#F5A623"/>
+    <stop offset="72%"  stop-color="#D4820A"/>
+    <stop offset="100%" stop-color="#A85C00"/>
+  </radialGradient>
+  <radialGradient id="headG" cx="36%" cy="26%" r="62%">
+    <stop offset="0%"   stop-color="#FFEC90"/>
+    <stop offset="28%"  stop-color="#F5A623"/>
+    <stop offset="72%"  stop-color="#D4820A"/>
+    <stop offset="100%" stop-color="#A05400"/>
+  </radialGradient>
+  <linearGradient id="wG1" x1="10%" y1="0%" x2="90%" y2="100%">
+    <stop offset="0%"   stop-color="#FFFBE0" stop-opacity=".95"/>
+    <stop offset="100%" stop-color="#D4A020" stop-opacity=".38"/>
+  </linearGradient>
+  <linearGradient id="wG2" x1="10%" y1="0%" x2="90%" y2="100%">
+    <stop offset="0%"   stop-color="#FFE8A0" stop-opacity=".88"/>
+    <stop offset="100%" stop-color="#C08010" stop-opacity=".35"/>
+  </linearGradient>
+  <linearGradient id="clipG" x1="0%" y1="0%" x2="0%" y2="100%">
+    <stop offset="0%"   stop-color="#1a2030"/>
+    <stop offset="100%" stop-color="#090f18"/>
+  </linearGradient>
+  <radialGradient id="blush" cx="50%" cy="50%" r="50%">
+    <stop offset="0%"   stop-color="#FF8C50" stop-opacity=".54"/>
+    <stop offset="100%" stop-color="#FF8C50" stop-opacity="0"/>
+  </radialGradient>
+  <clipPath id="bc">
+    <ellipse cx="348" cy="415" rx="118" ry="130"/>
+  </clipPath>
+</defs>
+
+<!-- Upper wing -->
+<ellipse cx="185" cy="232" rx="113" ry="55" fill="url(#wG1)" stroke="#1a0800" stroke-width="3.5" transform="rotate(-28,185,232)"/>
+<path d="M232,208 Q206,224 190,252" stroke="#B08010" stroke-width="1.2" fill="none" opacity=".5"/>
+<path d="M220,202 Q198,218 182,244" stroke="#B08010" stroke-width=".9" fill="none" opacity=".38"/>
+<path d="M244,220 Q220,230 202,254" stroke="#B08010" stroke-width=".9" fill="none" opacity=".32"/>
+<!-- Lower wing -->
+<ellipse cx="194" cy="298" rx="75" ry="33" fill="url(#wG2)" stroke="#1a0800" stroke-width="3" transform="rotate(-13,194,298)"/>
+
+<!-- Body -->
+<ellipse cx="348" cy="415" rx="118" ry="130" fill="url(#bodyG)" stroke="#1a0800" stroke-width="5"/>
+<!-- Stripes -->
+<rect x="230" y="382" width="236" height="23" clip-path="url(#bc)" fill="#1a0800" opacity=".84"/>
+<rect x="230" y="421" width="236" height="23" clip-path="url(#bc)" fill="#1a0800" opacity=".84"/>
+<rect x="230" y="461" width="236" height="21" clip-path="url(#bc)" fill="#1a0800" opacity=".82"/>
+<!-- Body highlight -->
+<ellipse cx="304" cy="346" rx="44" ry="26" fill="white" opacity=".16" transform="rotate(-22,304,346)"/>
+
+<!-- Left arm holding clipboard -->
+<path d="M240,375 Q196,394 164,424" stroke="#1a0800" stroke-width="15" fill="none" stroke-linecap="round"/>
+<path d="M240,375 Q196,394 164,424" stroke="#D4820A" stroke-width="10" fill="none" stroke-linecap="round"/>
+<circle cx="157" cy="432" r="18" fill="#D4820A" stroke="#1a0800" stroke-width="4"/>
+<ellipse cx="151" cy="425" rx="9" ry="5" fill="#F5A623" opacity=".38"/>
+
+<!-- Clipboard -->
+<rect x="96" y="398" width="58" height="72" rx="4" fill="url(#clipG)" stroke="#1a0800" stroke-width="3.5"/>
+<rect x="113" y="388" width="22" height="14" rx="4" fill="#00CFCF" stroke="#1a0800" stroke-width="2.5"/>
+<line x1="108" y1="420" x2="146" y2="420" stroke="#00CFCF" stroke-width="2.2"/>
+<line x1="108" y1="431" x2="138" y2="431" stroke="#00CFCF" stroke-width="1.3" opacity=".5"/>
+<line x1="108" y1="442" x2="146" y2="442" stroke="#00CFCF" stroke-width="2.2"/>
+<line x1="108" y1="453" x2="134" y2="453" stroke="#00CFCF" stroke-width="1.3" opacity=".5"/>
+<rect x="108" y="461" width="36" height="12" rx="2" fill="#003838" stroke="#00CFCF" stroke-width="1.2"/>
+<text x="126" y="471" text-anchor="middle" font-family="'Courier New',Courier,monospace" font-size="8" fill="#00CFCF">dns</text>
+
+<!-- Right waving arm -->
+<path d="M454,368 Q488,330 490,285" stroke="#1a0800" stroke-width="15" fill="none" stroke-linecap="round"/>
+<path d="M454,368 Q488,330 490,285" stroke="#D4820A" stroke-width="10" fill="none" stroke-linecap="round"/>
+<circle cx="490" cy="275" r="19" fill="#D4820A" stroke="#1a0800" stroke-width="4"/>
+<ellipse cx="483" cy="267" rx="9" ry="5" fill="#F5A623" opacity=".38"/>
+
+<!-- Legs -->
+<path d="M312,536 Q304,552 300,566" stroke="#1a0800" stroke-width="12" fill="none" stroke-linecap="round"/>
+<path d="M312,536 Q304,552 300,566" stroke="#D4820A" stroke-width="8" fill="none" stroke-linecap="round"/>
+<path d="M348,540 Q347,556 346,570" stroke="#1a0800" stroke-width="12" fill="none" stroke-linecap="round"/>
+<path d="M348,540 Q347,556 346,570" stroke="#D4820A" stroke-width="8" fill="none" stroke-linecap="round"/>
+<path d="M384,535 Q392,551 396,565" stroke="#1a0800" stroke-width="12" fill="none" stroke-linecap="round"/>
+<path d="M384,535 Q392,551 396,565" stroke="#D4820A" stroke-width="8" fill="none" stroke-linecap="round"/>
+<!-- Stinger -->
+<path d="M348,534 Q342,548 344,564 Q346,574 348,580 Q350,574 352,564 Q354,548 348,534Z" fill="#1a0800"/>
+
+<!-- Head -->
+<circle cx="365" cy="192" r="108" fill="url(#headG)" stroke="#1a0800" stroke-width="5"/>
+<!-- Head highlight -->
+<ellipse cx="320" cy="148" rx="52" ry="30" fill="white" opacity=".21" transform="rotate(-22,320,148)"/>
+
+<!-- Cheek blushes -->
+<ellipse cx="318" cy="222" rx="27" ry="19" fill="url(#blush)"/>
+<ellipse cx="432" cy="214" rx="31" ry="21" fill="url(#blush)"/>
+
+<!-- Eyes -->
+<ellipse cx="347" cy="190" rx="28" ry="31" fill="#120606" stroke="#1a0800" stroke-width="3.5"/>
+<ellipse cx="414" cy="183" rx="30" ry="33" fill="#120606" stroke="#1a0800" stroke-width="3.5"/>
+<!-- Eye shines -->
+<ellipse cx="337" cy="176" rx="10" ry="8" fill="white" opacity=".76"/>
+<ellipse cx="404" cy="168" rx="11" ry="8" fill="white" opacity=".76"/>
+<circle cx="340" cy="178" r="4.5" fill="white" opacity=".92"/>
+<circle cx="407" cy="171" r="4.5" fill="white" opacity=".92"/>
+
+<!-- Glasses -->
+<rect x="317" y="162" width="62" height="58" rx="14" fill="none" stroke="#00CFCF" stroke-width="4.5"/>
+<rect x="383" y="155" width="66" height="60" rx="14" fill="none" stroke="#00CFCF" stroke-width="4.5"/>
+<rect x="319" y="164" width="58" height="54" rx="12" fill="#00CFCF" fill-opacity=".07"/>
+<rect x="385" y="157" width="62" height="56" rx="12" fill="#00CFCF" fill-opacity=".07"/>
+<!-- Bridge -->
+<line x1="379" y1="188" x2="383" y2="188" stroke="#00CFCF" stroke-width="4"/>
+<!-- Temple arms -->
+<path d="M317,186 Q298,188 278,196" stroke="#00CFCF" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+<path d="M449,180 Q468,178 486,185" stroke="#00CFCF" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+
+<!-- Eyebrows -->
+<path d="M320,160 Q348,146 377,158" stroke="#1a0800" stroke-width="5.5" fill="none" stroke-linecap="round"/>
+<path d="M392,153 Q418,140 447,155" stroke="#1a0800" stroke-width="5.5" fill="none" stroke-linecap="round"/>
+
+<!-- Nose -->
+<ellipse cx="402" cy="223" rx="9" ry="7" fill="#A05400" opacity=".65"/>
+
+<!-- Smile -->
+<path d="M338,246 Q383,284 424,249" stroke="#1a0800" stroke-width="5.5" fill="none" stroke-linecap="round"/>
+
+<!-- Antennae -->
+<path d="M347,86 Q322,56 295,39" stroke="#1a0800" stroke-width="5.5" fill="none" stroke-linecap="round"/>
+<circle cx="293" cy="36" r="11" fill="none" stroke="#00CFCF" stroke-width="3.5"/>
+<line x1="282" y1="36" x2="304" y2="36" stroke="#00CFCF" stroke-width="2.5"/>
+<line x1="293" y1="25" x2="293" y2="47" stroke="#00CFCF" stroke-width="2.5"/>
+
+<path d="M383,84 Q416,54 446,37" stroke="#1a0800" stroke-width="5.5" fill="none" stroke-linecap="round"/>
+<circle cx="448" cy="34" r="11" fill="none" stroke="#00CFCF" stroke-width="3.5"/>
+<line x1="437" y1="34" x2="459" y2="34" stroke="#00CFCF" stroke-width="2.5"/>
+<line x1="448" y1="23" x2="448" y2="45" stroke="#00CFCF" stroke-width="2.5"/>
+</svg>
