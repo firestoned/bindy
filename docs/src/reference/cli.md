@@ -8,7 +8,7 @@ bindy <SUBCOMMAND> [OPTIONS]
 Subcommands:
   bootstrap   Bootstrap bindy components into the cluster
   run         Run the main BIND9 DNS operator (all controllers)
-  scout       Run the Ingress-to-ARecord scout controller
+  scout       Run the Scout controller (Ingress and Service → ARecord)
   completion  Output shell completion code for the specified shell
 ```
 
@@ -224,7 +224,7 @@ bindy run
 
 ## `bindy scout`
 
-Starts the Scout controller. Watches `Ingress` resources cluster-wide and creates `ARecord` CRs for annotated hosts. See [Bindy Scout](../guide/scout.md) for the full conceptual guide.
+Starts the Scout controller. Watches `Ingress` and `LoadBalancer Service` resources cluster-wide and creates `ARecord` CRs for annotated resources. See [Bindy Scout](../guide/scout.md) for the full conceptual guide.
 
 ```bash
 bindy scout [OPTIONS]

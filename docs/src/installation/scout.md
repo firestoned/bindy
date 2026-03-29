@@ -1,4 +1,4 @@
-# Deploying Scout
+# <img src="../../images/scouty.svg" alt="Scouty the Scout Bee" width="40" style="vertical-align: middle; margin-right: 2px;"/> Deploying Scout
 
 !!! info "Two Deployment Modes"
     **Same-cluster mode** (default): Scout and the Bindy operator run in the same cluster. No extra configuration needed.
@@ -88,8 +88,8 @@ Scout requires one mandatory setting: the **logical cluster name** that is stamp
 | `BINDY_SCOUT_NAMESPACE` | `--namespace` | `bindy-system` | Namespace where `ARecord` CRs are created. |
 | `POD_NAMESPACE` | — | `default` | Scout's own namespace. Always excluded from Ingress watching. Inject via downward API. |
 | `BINDY_SCOUT_EXCLUDE_NAMESPACES` | — | — | Comma-separated list of additional namespaces to skip. |
-| `BINDY_SCOUT_DEFAULT_ZONE` | `--default-zone` | — | Default DNS zone when no `bindy.firestoned.io/zone` annotation is present. With `DEFAULT_IPS`, Ingresses only need `scout-enabled: "true"`. |
-| `BINDY_SCOUT_DEFAULT_IPS` | `--default-ips` | — | Comma-separated default IP(s) used when no per-Ingress annotation or LB status IP is available. For shared-ingress topologies (e.g. Traefik). |
+| `BINDY_SCOUT_DEFAULT_ZONE` | `--default-zone` | — | Default DNS zone when no `bindy.firestoned.io/zone` annotation is present. With `DEFAULT_IPS`, Ingresses and Services only need `scout-enabled: "true"`. |
+| `BINDY_SCOUT_DEFAULT_IPS` | `--default-ips` | — | Comma-separated default IP(s) used when no per-resource annotation or LB status IP is available. For shared-ingress topologies (e.g. Traefik). |
 | `BINDY_SCOUT_REMOTE_SECRET` | — | — | **(Multi-cluster)** Name of a Secret in the local cluster containing a `kubeconfig` key for the Queen Bee cluster. When set, Scout writes `ARecord` CRs and validates zones on the remote Bindy cluster. See [Multi-Cluster Setup](#multi-cluster-setup) below. |
 | `BINDY_SCOUT_REMOTE_SECRET_NAMESPACE` | — | Scout's own namespace | **(Multi-cluster)** Namespace of the `BINDY_SCOUT_REMOTE_SECRET`. Defaults to Scout's own namespace. |
 | `RUST_LOG` | — | `info` | Log level: `trace`, `debug`, `info`, `warn`, `error`. |
@@ -166,35 +166,66 @@ You should see Scout announce which namespaces it is watching and confirm it is 
 
 ## Test
 
-Annotate an Ingress in any non-excluded namespace:
+=== "Ingress"
 
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: my-app
-  namespace: my-app-ns
-  annotations:
-    bindy.firestoned.io/recordKind: "ARecord"
-    bindy.firestoned.io/zone: "example.com"
-spec:
-  rules:
-    - host: my-app.example.com
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: my-app
-                port:
-                  number: 80
-```
+    Annotate an Ingress in any non-excluded namespace:
+
+    ```yaml
+    apiVersion: networking.k8s.io/v1
+    kind: Ingress
+    metadata:
+      name: my-app
+      namespace: my-app-ns
+      annotations:
+        bindy.firestoned.io/scout-enabled: "true"
+        bindy.firestoned.io/zone: "example.com"
+    spec:
+      rules:
+        - host: my-app.example.com
+          http:
+            paths:
+              - path: /
+                pathType: Prefix
+                backend:
+                  service:
+                    name: my-app
+                    port:
+                      number: 80
+    ```
+
+=== "LoadBalancer Service"
+
+    Annotate a `LoadBalancer` Service in any non-excluded namespace:
+
+    ```yaml
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: my-grpc-api
+      namespace: my-app-ns
+      annotations:
+        bindy.firestoned.io/scout-enabled: "true"
+        bindy.firestoned.io/zone: "example.com"
+    spec:
+      type: LoadBalancer
+      selector:
+        app: my-grpc-api
+      ports:
+        - port: 9090
+          targetPort: 9090
+    ```
 
 Within seconds, Scout creates an `ARecord` in `bindy-system`:
 
 ```bash
+# All Scout-managed records
 kubectl get arecords -n bindy-system -l bindy.firestoned.io/managed-by=scout
+
+# Ingress-sourced only
+kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-ingress
+
+# Service-sourced only
+kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-service
 ```
 
 ---

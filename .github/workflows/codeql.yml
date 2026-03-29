@@ -53,10 +53,34 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  changes:
+    name: Detect Changed Files
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Check for changes
+        uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'src/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+
   analyze:
     name: Analyze Rust Code
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    needs: [changes]
+    if: |
+      always() &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.code == 'true')
     outputs:
       sarif-file: ${{ steps.upload.outputs.sarif-file }}
 
