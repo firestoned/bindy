@@ -165,6 +165,18 @@ pre.mermaid {
    Navigation Enhancements
    ============================================ */
 
+/* Increase header logo size by 10% over Material default (24px → ~26px) */
+.md-header__button.md-logo img {
+    width: 30px;
+    height: auto;
+}
+
+/* Reduce gap between logo and site name */
+.md-header__button.md-logo {
+    padding-right: 4px;
+    margin-right: 0;
+}
+
 /* Improve tab navigation visibility */
 .md-tabs {
     background-color: var(--md-primary-fg-color);

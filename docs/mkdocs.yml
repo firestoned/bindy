@@ -82,7 +82,7 @@ theme:
     - content.tooltips         # Improved tooltips
 
   # Logo and favicon
-  logo: images/favicons/favicon.png
+  logo: images/bindy-the-bee-nav.png
   favicon: images/favicons/favicon.png
   icon:
     repo: fontawesome/brands/github
