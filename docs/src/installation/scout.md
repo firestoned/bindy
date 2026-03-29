@@ -215,6 +215,68 @@ You should see Scout announce which namespaces it is watching and confirm it is 
           targetPort: 9090
     ```
 
+=== "HTTPRoute (Gateway API)"
+
+    Annotate an `HTTPRoute` attached to a `Gateway`:
+
+    !!! note "IP required"
+        HTTPRoute has no `LoadBalancer` status. Supply an IP via `bindy.firestoned.io/ip` or set `BINDY_SCOUT_DEFAULT_IPS`.
+
+    ```yaml
+    apiVersion: gateway.networking.k8s.io/v1
+    kind: HTTPRoute
+    metadata:
+      name: my-app
+      namespace: my-app-ns
+      annotations:
+        bindy.firestoned.io/scout-enabled: "true"
+        bindy.firestoned.io/zone: "example.com"
+        bindy.firestoned.io/ip: "203.0.113.10"
+    spec:
+      parentRefs:
+        - name: my-gateway
+          namespace: gateway-ns
+      hostnames:
+        - my-app.example.com
+      rules:
+        - matches:
+            - path:
+                type: PathPrefix
+                value: /
+          backendRefs:
+            - name: my-app
+              port: 80
+    ```
+
+=== "TLSRoute (Gateway API)"
+
+    Annotate a `TLSRoute` for TCP/TLS workloads:
+
+    !!! note "IP required"
+        TLSRoute has no `LoadBalancer` status. Supply an IP via `bindy.firestoned.io/ip` or set `BINDY_SCOUT_DEFAULT_IPS`.
+
+    ```yaml
+    apiVersion: gateway.networking.k8s.io/v1
+    kind: TLSRoute
+    metadata:
+      name: my-grpc-api
+      namespace: my-app-ns
+      annotations:
+        bindy.firestoned.io/scout-enabled: "true"
+        bindy.firestoned.io/zone: "example.com"
+        bindy.firestoned.io/ip: "203.0.113.11"
+    spec:
+      parentRefs:
+        - name: my-gateway
+          namespace: gateway-ns
+      hostnames:
+        - my-grpc-api.example.com
+      rules:
+        - backendRefs:
+            - name: my-grpc-api
+              port: 9090
+    ```
+
 Within seconds, Scout creates an `ARecord` in `bindy-system`:
 
 ```bash
@@ -226,6 +288,12 @@ kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-ingress
 
 # Service-sourced only
 kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-service
+
+# HTTPRoute-sourced only
+kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-httproute
+
+# TLSRoute-sourced only
+kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-tlsroute
 ```
 
 ---
