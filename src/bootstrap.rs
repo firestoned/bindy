@@ -822,6 +822,15 @@ pub fn build_scout_cluster_role() -> ClusterRole {
                 verbs: vec!["update".to_string()],
                 ..Default::default()
             },
+            // Watch HTTPRoutes and TLSRoutes from the Gateway API (gateway.networking.k8s.io)
+            // to automate A record creation for Gateway routes with opt-in annotations.
+            // No patch/update needed — Scout reads spec/metadata only, no mutation.
+            PolicyRule {
+                api_groups: Some(vec!["gateway.networking.k8s.io".to_string()]),
+                resources: Some(vec!["httproutes".to_string(), "tlsroutes".to_string()]),
+                verbs: vec!["get".to_string(), "list".to_string(), "watch".to_string()],
+                ..Default::default()
+            },
             // Read DNSZones for zone validation
             PolicyRule {
                 api_groups: Some(vec!["bindy.firestoned.io".to_string()]),

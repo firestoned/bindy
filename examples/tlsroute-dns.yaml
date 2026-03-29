@@ -1,0 +1,116 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# TLSRoute DNS Example — Scout watching Gateway API TLSRoute
+#
+# This example shows how Scout watches a TLSRoute resource (Gateway API v1)
+# and automatically creates ARecord CRs for each hostname in spec.hostnames[].
+# TLSRoute is used for TLS-only traffic (no HTTP), suitable for non-HTTP protocols
+# over TLS or strict TLS-only services.
+#
+# Prerequisites:
+#   1. Bindy operator running with a Bind9Cluster + Bind9Instance
+#   2. A DNSZone for "secure.example.com" applied (see examples/dns-zone.yaml)
+#   3. Bindy Scout deployed with Gateway API permissions (see deploy/scout/clusterrole.yaml)
+#   4. Gateway API CRDs installed on the cluster (if not available, install gateway-api chart)
+#
+# Apply:
+#   kubectl apply -f examples/tlsroute-dns.yaml
+#
+# Verify Scout created the ARecords:
+#   kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-tlsroute=secure-gateway
+#
+# Verify DNS resolution:
+#   kubectl run -it --rm drill --image=alpine/drill:latest -- drill @<dns-server> secure.example.com
+#   kubectl run -it --rm drill --image=alpine/drill:latest -- drill @<dns-server> grpc.example.com
+#
+# Clean up:
+#   kubectl delete -f examples/tlsroute-dns.yaml
+#
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: secure-apps
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grpc-server
+  namespace: secure-apps
+  labels:
+    app: grpc-server
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: grpc-server
+  template:
+    metadata:
+      labels:
+        app: grpc-server
+    spec:
+      containers:
+        - name: grpc
+          image: nginx:alpine
+          ports:
+            - containerPort: 5051
+              name: grpc
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grpc-server
+  namespace: secure-apps
+  labels:
+    app: grpc-server
+spec:
+  type: ClusterIP
+  selector:
+    app: grpc-server
+  ports:
+    - port: 5051
+      targetPort: 5051
+      name: grpc
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: TLSRoute
+metadata:
+  name: secure-gateway
+  namespace: secure-apps
+  annotations:
+    # Tell Scout to create ARecords for this TLSRoute
+    bindy.firestoned.io/scout-enabled: "true"
+    # DNS zone that owns these hostnames — a DNSZone CR for this zone must exist
+    bindy.firestoned.io/zone: "example.com"
+    # Explicit IP override for this route (e.g., LoadBalancer or API gateway IP)
+    # On cloud clusters with proper Gateway implementation, this is optional
+    # (Scout can read status.addresses if available)
+    bindy.firestoned.io/ip: "192.168.1.101"
+    # Optional: override the TTL on created ARecords (default is zone TTL)
+    bindy.firestoned.io/ttl: "300"
+spec:
+  # hostnames[] is the list of hostnames this route accepts for TLS connections.
+  # Scout creates one ARecord per hostname with an index suffix.
+  # Example: scout-{cluster}-secure-apps-secure-gateway-0 for secure.example.com
+  #          scout-{cluster}-secure-apps-secure-gateway-1 for grpc.example.com
+  hostnames:
+    - secure.example.com
+    - grpc.example.com
+  # parentRefs point to the Gateway this route belongs to
+  # Adjust based on your Gateway API implementation
+  parentRefs:
+    - name: external-gateway
+      namespace: secure-apps
+  # TLS routing rules
+  rules:
+    - backendRefs:
+        - name: grpc-server
+          port: 5051

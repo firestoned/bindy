@@ -1,0 +1,114 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# HTTPRoute DNS Example — Scout watching Gateway API HTTPRoute
+#
+# This example shows how Scout watches an HTTPRoute resource (Gateway API v1)
+# and automatically creates ARecord CRs for each hostname in spec.hostnames[].
+#
+# Prerequisites:
+#   1. Bindy operator running with a Bind9Cluster + Bind9Instance
+#   2. A DNSZone for "api.example.com" applied (see examples/dns-zone.yaml)
+#   3. Bindy Scout deployed with Gateway API permissions (see deploy/scout/clusterrole.yaml)
+#   4. Gateway API CRDs installed on the cluster (if not available, install gateway-api chart)
+#
+# Apply:
+#   kubectl apply -f examples/httproute-dns.yaml
+#
+# Verify Scout created the ARecords:
+#   kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-httproute=api-gateway
+#
+# Verify DNS resolution:
+#   kubectl run -it --rm drill --image=alpine/drill:latest -- drill @<dns-server> api.example.com
+#   kubectl run -it --rm drill --image=alpine/drill:latest -- drill @<dns-server> secure-api.example.com
+#
+# Clean up:
+#   kubectl delete -f examples/httproute-dns.yaml
+#
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gateway-apps
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-server
+  namespace: gateway-apps
+  labels:
+    app: api-server
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api-server
+  template:
+    metadata:
+      labels:
+        app: api-server
+    spec:
+      containers:
+        - name: api
+          image: nginx:alpine
+          ports:
+            - containerPort: 8080
+              name: http
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-server
+  namespace: gateway-apps
+  labels:
+    app: api-server
+spec:
+  type: ClusterIP
+  selector:
+    app: api-server
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: api-gateway
+  namespace: gateway-apps
+  annotations:
+    # Tell Scout to create ARecords for this HTTPRoute
+    bindy.firestoned.io/scout-enabled: "true"
+    # DNS zone that owns these hostnames — a DNSZone CR for this zone must exist
+    bindy.firestoned.io/zone: "example.com"
+    # Explicit IP override for this route (e.g., LoadBalancer or API gateway IP)
+    # On cloud clusters with proper Gateway implementation, this is optional
+    # (Scout can read status.addresses if available)
+    bindy.firestoned.io/ip: "192.168.1.100"
+    # Optional: override the TTL on created ARecords (default is zone TTL)
+    bindy.firestoned.io/ttl: "300"
+spec:
+  # hostnames[] is the list of hostnames this route accepts.
+  # Scout creates one ARecord per hostname with an index suffix.
+  # Example: scout-{cluster}-gateway-apps-api-gateway-0 for api.example.com
+  #          scout-{cluster}-gateway-apps-api-gateway-1 for secure-api.example.com
+  hostnames:
+    - api.example.com
+    - secure-api.example.com
+  # parentRefs point to the Gateway this route belongs to
+  # Adjust based on your Gateway API implementation
+  parentRefs:
+    - name: external-gateway
+      namespace: gateway-apps
+  # HTTP routing rules
+  rules:
+    - backendRefs:
+        - name: api-server
+          port: 8080

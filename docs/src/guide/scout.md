@@ -408,6 +408,155 @@ roleRef:
 
 ---
 
+## Gateway API Routes (HTTPRoute and TLSRoute)
+
+In addition to watching `Ingress` resources, Scout also supports **Gateway API** routes: `HTTPRoute` and `TLSRoute` from `gateway.networking.k8s.io/v1`. These resources provide a more modern, flexible alternative to Ingress with better separation of concerns.
+
+Scout treats HTTPRoute and TLSRoute identically to Ingress:
+
+- Watches all HTTPRoute/TLSRoute resources cluster-wide (excluding its own namespace)
+- Requires the same `bindy.firestoned.io/scout-enabled: "true"` opt-in annotation
+- Uses the same annotation scheme for zone, IP, and TTL configuration
+- Creates one `ARecord` per hostname in `spec.hostnames[]` with an index suffix
+
+### Why Use Gateway API Routes?
+
+- **HTTPRoute**: Provides advanced HTTP routing (path-based, method-based, header matching) without the Ingress resource limitations
+- **TLSRoute**: For TLS-only traffic (non-HTTP protocols over TLS, gRPC, custom protocols), Scout ensures DNS records are created for all declared hostnames
+
+### Quick Example: HTTPRoute
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: api-gateway
+  namespace: my-app
+  annotations:
+    bindy.firestoned.io/scout-enabled: "true"
+    bindy.firestoned.io/zone: "api.example.com"
+    bindy.firestoned.io/ip: "192.168.1.100"
+spec:
+  hostnames:
+    - api.example.com
+    - secure-api.example.com
+  parentRefs:
+    - name: my-gateway
+      namespace: my-app
+  rules:
+    - backendRefs:
+        - name: api-service
+          port: 8080
+```
+
+Scout will create two ARecords:
+- `scout-{cluster}-my-app-api-gateway-0` for `api.example.com`
+- `scout-{cluster}-my-app-api-gateway-1` for `secure-api.example.com`
+
+### Quick Example: TLSRoute
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: TLSRoute
+metadata:
+  name: grpc-gateway
+  namespace: my-app
+  annotations:
+    bindy.firestoned.io/scout-enabled: "true"
+    bindy.firestoned.io/zone: "secure.example.com"
+    bindy.firestoned.io/ip: "192.168.1.101"
+spec:
+  hostnames:
+    - secure.example.com
+    - grpc.example.com
+  parentRefs:
+    - name: my-gateway
+      namespace: my-app
+  rules:
+    - backendRefs:
+        - name: grpc-service
+          port: 5051
+```
+
+Scout will create two ARecords:
+- `scout-{cluster}-my-app-grpc-gateway-0` for `secure.example.com`
+- `scout-{cluster}-my-app-grpc-gateway-1` for `grpc.example.com`
+
+### Record Naming for Gateway Routes
+
+Gateway API routes use `spec.hostnames[]` instead of `spec.rules[].host`. Scout creates one ARecord per hostname with an **index suffix** (0, 1, 2, ...):
+
+| Hostname | Record CR Name |
+|---|---|
+| `api.example.com` (index 0) | `scout-prod-my-app-api-gateway-0` |
+| `secure-api.example.com` (index 1) | `scout-prod-my-app-api-gateway-1` |
+| `grpc.example.com` (index 0) | `scout-prod-my-app-grpc-gateway-0` |
+
+The record name within the zone is derived identically to Ingress rules:
+
+| Hostname | Zone | Derived record name |
+|---|---|---|
+| `api.example.com` | `api.example.com` | `@` (apex record) |
+| `secure-api.example.com` | `api.example.com` | `secure-api` |
+| `deep.api.example.com` | `api.example.com` | `deep.api` |
+
+### Labels on Gateway Route ARecords
+
+ARecords created from Gateway API routes carry similar labels to Ingress-derived records, with source-specific labels:
+
+| Label | Value | Purpose |
+|---|---|---|
+| `bindy.firestoned.io/managed-by` | `scout` | Identifies Scout as the manager |
+| `bindy.firestoned.io/source-cluster` | `<BINDY_SCOUT_CLUSTER_NAME>` | Cluster where the route lives |
+| `bindy.firestoned.io/source-namespace` | Route namespace | Source namespace for traceability |
+| `bindy.firestoned.io/source-httproute` | Route name | **(HTTPRoute only)** Source HTTPRoute name |
+| `bindy.firestoned.io/source-tlsroute` | Route name | **(TLSRoute only)** Source TLSRoute name |
+| `bindy.firestoned.io/zone` | Zone name | Allows `DNSZone.spec.recordsFrom` label selectors to discover the record |
+
+This allows you to configure a `DNSZone` to pull in all ARecords created by Scout from both Ingress and Gateway API routes:
+
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: api-example-com
+spec:
+  zoneName: api.example.com
+  recordsFrom:
+    - labelSelector:
+        matchLabels:
+          bindy.firestoned.io/managed-by: scout
+          bindy.firestoned.io/zone: api.example.com
+```
+
+### RBAC for Gateway API Routes
+
+Scout requires read access (`get`, `list`, `watch`) to `HTTPRoute` and `TLSRoute` resources. Add these rules to the Scout `ClusterRole`:
+
+```yaml
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: bindy-scout
+rules:
+  # ... existing Ingress and Service rules ...
+
+  # Watch HTTPRoute resources (Gateway API)
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["httproutes"]
+    verbs: ["get", "list", "watch"]
+
+  # Watch TLSRoute resources (Gateway API)
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["tlsroutes"]
+    verbs: ["get", "list", "watch"]
+```
+
+**Note:** Garden API routes are read-only for Scout. Scout does NOT add finalizers to routes or mutate them — it only reads hostnames and creates corresponding ARecords in the target namespace.
+
+---
+
 ## Namespace Exclusions
 
 Scout always excludes its own namespace (`POD_NAMESPACE`) from Ingress watching. This prevents:
