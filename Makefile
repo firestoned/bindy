@@ -18,6 +18,8 @@ endif
 LINUX_TARGET_ENV   := $(shell echo $(LINUX_TARGET) | tr 'a-z-' 'A-Z_')
 LINUX_BINARY       := target/$(LINUX_TARGET)/debug/bindy
 
+DOCS_PORT ?= 8000
+
 REGISTRY ?= ghcr.io
 IMAGE_NAME ?= firestoned/bindy
 IMAGE_REPOSITORY ?= firestoned/bindy
@@ -773,11 +775,15 @@ docs: ## Build all documentation (MkDocs + rustdoc + CRD API reference)
 docs-serve: export PATH := $(HOME)/.local/bin:$(PATH)
 docs-serve: ## Serve documentation locally with live reload (MkDocs)
 	@echo "Starting MkDocs development server with live reload..."
+	@if lsof -ti :$(DOCS_PORT) >/dev/null 2>&1; then \
+		echo "Killing existing process on port $(DOCS_PORT)..."; \
+		lsof -ti :$(DOCS_PORT) | xargs kill -9; \
+	fi
 	@command -v poetry >/dev/null 2>&1 || { echo "Error: Poetry not found. Run ./scripts/setup-docs-env.sh first."; exit 1; }
 	@echo "Ensuring documentation dependencies are installed..."
 	@cd docs && poetry install --no-interaction --quiet
 	@echo ""
-	@echo "Documentation server starting at http://127.0.0.1:8000"
+	@echo "Documentation server starting at http://127.0.0.1:$(DOCS_PORT)"
 	@echo "Live reload enabled - changes will auto-refresh your browser"
 	@echo ""
 	@echo "Watching:"
@@ -787,7 +793,7 @@ docs-serve: ## Serve documentation locally with live reload (MkDocs)
 	@echo ""
 	@echo "Press Ctrl+C to stop"
 	@echo ""
-	@cd docs && poetry run mkdocs serve --watch-theme --livereload
+	@cd docs && poetry run mkdocs serve --watch-theme --livereload --dev-addr 127.0.0.1:$(DOCS_PORT)
 
 docs-rustdoc: ## Build and open rustdoc API documentation only
 	@echo "Building rustdoc API documentation..."

@@ -1,3 +1,22 @@
+## [2026-03-29] - Document Gateway API support in Scout guides
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/guide/scout.md`: Replaced "Planned" stub in section 3 (Gateway API) with real content; added IP-required note; updated Labels table to include `source-httproute` and `source-tlsroute` rows; fixed typo "Garden API" → "Gateway API"
+- `docs/src/installation/scout.md`: Removed "Planned" admonitions from HTTPRoute and TLSRoute test tabs; fixed TLSRoute `apiVersion` from `v1alpha2` to `v1` (matches implementation); added IP-required notes; added `source-httproute`/`source-tlsroute` label selector examples
+
+### Why
+PR #227 merged Gateway API support. Docs still showed the feature as "Planned".
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
 ## [2026-03-28] - Scout watches Gateway API HTTPRoute and TLSRoute resources
 
 **Author:** Prabhjot Bawa
