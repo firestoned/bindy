@@ -804,4 +804,319 @@ mod tests {
         assert_eq!(arecord.spec.ipv4_addresses, vec!["1.2.3.4".to_string()]);
         assert_eq!(arecord.spec.ttl, None);
     }
+
+    // =========================================================================
+    // HTTPRoute & TLSRoute (Gateway API) — Phase 2 feature
+    // =========================================================================
+
+    #[test]
+    fn test_httproute_arecord_cr_name_single_hostname() {
+        // Arrange & Act
+        let name = crate::scout::httproute_arecord_cr_name("prod", "default", "api-route", 0);
+
+        // Assert
+        assert!(name.starts_with("scout-"));
+        assert!(name.contains("prod"));
+        assert!(name.contains("default"));
+        assert!(name.contains("api-route"));
+        assert!(name.contains("0")); // index suffix
+        assert!(!name.ends_with('-'));
+        assert!(name.len() <= 253); // K8s name length limit
+    }
+
+    #[test]
+    fn test_httproute_arecord_cr_name_multiple_indices() {
+        // Arrange & Act
+        let name0 = crate::scout::httproute_arecord_cr_name("prod", "default", "api-route", 0);
+        let name1 = crate::scout::httproute_arecord_cr_name("prod", "default", "api-route", 1);
+        let name2 = crate::scout::httproute_arecord_cr_name("prod", "default", "api-route", 2);
+
+        // Assert — each index produces a different CR name
+        assert_ne!(name0, name1);
+        assert_ne!(name1, name2);
+        // Verify indices are in the names
+        assert!(name0.contains("0"));
+        assert!(name1.contains("1"));
+        assert!(name2.contains("2"));
+    }
+
+    #[test]
+    fn test_httproute_arecord_cr_name_sanitization() {
+        // Arrange & Act
+        let name =
+            crate::scout::httproute_arecord_cr_name("prod_cluster", "kube-system", "My-Route", 5);
+
+        // Assert — underscores and uppercase should be sanitized
+        assert!(!name.contains("_"));
+        assert!(!name.contains('K'));
+        assert!(!name.contains('M'));
+        assert!(!name.ends_with('-'));
+    }
+
+    #[test]
+    fn test_tlsroute_arecord_cr_name_single_hostname() {
+        // Arrange & Act
+        let name = crate::scout::tlsroute_arecord_cr_name("prod", "default", "secure-route", 0);
+
+        // Assert
+        assert!(name.starts_with("scout-"));
+        assert!(name.contains("prod"));
+        assert!(name.contains("default"));
+        assert!(name.contains("secure-route"));
+        assert!(name.contains("0"));
+        assert!(!name.ends_with('-'));
+        assert!(name.len() <= 253);
+    }
+
+    #[test]
+    fn test_tlsroute_arecord_cr_name_multiple_indices() {
+        // Arrange & Act
+        let name0 = crate::scout::tlsroute_arecord_cr_name("prod", "default", "secure-route", 0);
+        let name1 = crate::scout::tlsroute_arecord_cr_name("prod", "default", "secure-route", 1);
+
+        // Assert
+        assert_ne!(name0, name1);
+        assert!(name0.contains("0"));
+        assert!(name1.contains("1"));
+    }
+
+    #[test]
+    fn test_httproute_arecord_label_selector() {
+        // Arrange & Act
+        let selector =
+            crate::scout::httproute_arecord_label_selector("prod", "default", "api-route");
+
+        // Assert
+        assert!(selector.contains(LABEL_MANAGED_BY));
+        assert!(selector.contains(LABEL_MANAGED_BY_SCOUT));
+        assert!(selector.contains("prod"));
+        assert!(selector.contains("default"));
+        assert!(selector.contains("api-route"));
+        // Verify it has the source-httproute label (different from source-ingress)
+        assert!(selector.contains("source-httproute"));
+    }
+
+    #[test]
+    fn test_tlsroute_arecord_label_selector() {
+        // Arrange & Act
+        let selector =
+            crate::scout::tlsroute_arecord_label_selector("prod", "default", "secure-route");
+
+        // Assert
+        assert!(selector.contains(LABEL_MANAGED_BY));
+        assert!(selector.contains(LABEL_MANAGED_BY_SCOUT));
+        assert!(selector.contains("prod"));
+        assert!(selector.contains("default"));
+        assert!(selector.contains("secure-route"));
+        // Verify it has the source-tlsroute label
+        assert!(selector.contains("source-tlsroute"));
+    }
+
+    #[test]
+    fn test_httproute_arecord_label_selector_distinct_from_tlsroute() {
+        // Arrange & Act
+        let http_selector =
+            crate::scout::httproute_arecord_label_selector("prod", "default", "route");
+        let tls_selector =
+            crate::scout::tlsroute_arecord_label_selector("prod", "default", "route");
+
+        // Assert — they must differ because they target different route types
+        assert_ne!(http_selector, tls_selector);
+    }
+
+    #[test]
+    fn test_stale_httproute_arecord_label_selector_uses_not_equal() {
+        // Arrange & Act
+        let selector = crate::scout::stale_httproute_arecord_label_selector(
+            "new-cluster",
+            "default",
+            "api-route",
+        );
+
+        // Assert
+        assert!(selector.contains(&format!("{}!=new-cluster", LABEL_SOURCE_CLUSTER)));
+        assert!(selector.contains("source-httproute"));
+        assert!(selector.contains("default"));
+        assert!(selector.contains("api-route"));
+    }
+
+    #[test]
+    fn test_stale_tlsroute_arecord_label_selector_uses_not_equal() {
+        // Arrange & Act
+        let selector = crate::scout::stale_tlsroute_arecord_label_selector(
+            "new-cluster",
+            "default",
+            "secure-route",
+        );
+
+        // Assert
+        assert!(selector.contains(&format!("{}!=new-cluster", LABEL_SOURCE_CLUSTER)));
+        assert!(selector.contains("source-tlsroute"));
+        assert!(selector.contains("default"));
+        assert!(selector.contains("secure-route"));
+    }
+
+    #[test]
+    fn test_build_httproute_arecord_sets_expected_labels() {
+        // Arrange
+        let params = crate::scout::HTTPRouteARecordParams {
+            name: "scout-prod-default-api-route-0",
+            target_namespace: "bindy-system",
+            record_name: "api",
+            ips: &["10.0.0.1".to_string()],
+            ttl: Some(300),
+            cluster_name: "prod",
+            route_namespace: "default",
+            route_name: "api-route",
+            zone: "example.com",
+        };
+
+        // Act
+        let arecord = crate::scout::build_httproute_arecord(params);
+
+        // Assert
+        let labels = arecord.metadata.labels.as_ref().unwrap();
+        assert_eq!(
+            labels.get(LABEL_MANAGED_BY).map(String::as_str),
+            Some(LABEL_MANAGED_BY_SCOUT)
+        );
+        assert_eq!(
+            labels.get(LABEL_SOURCE_CLUSTER).map(String::as_str),
+            Some("prod")
+        );
+        assert_eq!(
+            labels.get(LABEL_SOURCE_NAMESPACE).map(String::as_str),
+            Some("default")
+        );
+        // Must use "source-httproute" label, not "source-ingress"
+        assert_eq!(
+            labels
+                .get("bindy.firestoned.io/source-httproute")
+                .map(String::as_str),
+            Some("api-route")
+        );
+        assert_eq!(
+            labels.get(LABEL_ZONE).map(String::as_str),
+            Some("example.com")
+        );
+    }
+
+    #[test]
+    fn test_build_httproute_arecord_uses_record_name_in_spec() {
+        // Arrange
+        let params = crate::scout::HTTPRouteARecordParams {
+            name: "scout-prod-default-api-route-0",
+            target_namespace: "bindy-system",
+            record_name: "api",
+            ips: &["1.2.3.4".to_string()],
+            ttl: None,
+            cluster_name: "prod",
+            route_namespace: "default",
+            route_name: "api-route",
+            zone: "example.com",
+        };
+
+        // Act
+        let arecord = crate::scout::build_httproute_arecord(params);
+
+        // Assert
+        assert_eq!(arecord.spec.name, "api");
+        assert_eq!(arecord.spec.ipv4_addresses, vec!["1.2.3.4".to_string()]);
+        assert_eq!(arecord.spec.ttl, None);
+    }
+
+    #[test]
+    fn test_build_tlsroute_arecord_sets_expected_labels() {
+        // Arrange
+        let params = crate::scout::TLSRouteARecordParams {
+            name: "scout-prod-default-secure-route-0",
+            target_namespace: "bindy-system",
+            record_name: "secure",
+            ips: &["10.0.0.2".to_string()],
+            ttl: Some(600),
+            cluster_name: "prod",
+            route_namespace: "default",
+            route_name: "secure-route",
+            zone: "example.com",
+        };
+
+        // Act
+        let arecord = crate::scout::build_tlsroute_arecord(params);
+
+        // Assert
+        let labels = arecord.metadata.labels.as_ref().unwrap();
+        assert_eq!(
+            labels.get(LABEL_MANAGED_BY).map(String::as_str),
+            Some(LABEL_MANAGED_BY_SCOUT)
+        );
+        assert_eq!(
+            labels.get(LABEL_SOURCE_CLUSTER).map(String::as_str),
+            Some("prod")
+        );
+        // Must use "source-tlsroute" label
+        assert_eq!(
+            labels
+                .get("bindy.firestoned.io/source-tlsroute")
+                .map(String::as_str),
+            Some("secure-route")
+        );
+        assert_eq!(
+            labels.get(LABEL_ZONE).map(String::as_str),
+            Some("example.com")
+        );
+    }
+
+    #[test]
+    fn test_build_tlsroute_arecord_uses_record_name_in_spec() {
+        // Arrange
+        let params = crate::scout::TLSRouteARecordParams {
+            name: "scout-prod-default-secure-route-0",
+            target_namespace: "bindy-system",
+            record_name: "secure",
+            ips: &["5.6.7.8".to_string()],
+            ttl: Some(900),
+            cluster_name: "prod",
+            route_namespace: "default",
+            route_name: "secure-route",
+            zone: "example.com",
+        };
+
+        // Act
+        let arecord = crate::scout::build_tlsroute_arecord(params);
+
+        // Assert
+        assert_eq!(arecord.spec.name, "secure");
+        assert_eq!(arecord.spec.ipv4_addresses, vec!["5.6.7.8".to_string()]);
+        assert_eq!(arecord.spec.ttl, Some(900));
+    }
+
+    #[test]
+    fn test_httproute_arecord_cr_name_respects_length_limit() {
+        // Arrange — a very long HTTPRoute name
+        let long_route_name = "my-long-route-name-that-is-very-very-very-very-very-very-very-very-very-very-very-very-very-very-long";
+
+        // Act
+        let name = crate::scout::httproute_arecord_cr_name("prod", "default", long_route_name, 99);
+
+        // Assert
+        assert!(
+            name.len() <= 253,
+            "HTTPRoute CR name must not exceed 253 chars"
+        );
+    }
+
+    #[test]
+    fn test_tlsroute_arecord_cr_name_respects_length_limit() {
+        // Arrange — a very long TLSRoute name
+        let long_route_name = "my-long-route-name-that-is-very-very-very-very-very-very-very-very-very-very-very-very-very-very-long";
+
+        // Act
+        let name = crate::scout::tlsroute_arecord_cr_name("prod", "default", long_route_name, 99);
+
+        // Assert
+        assert!(
+            name.len() <= 253,
+            "TLSRoute CR name must not exceed 253 chars"
+        );
+    }
 }
