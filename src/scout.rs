@@ -44,6 +44,93 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tracing::{debug, error, info, warn};
 
 // ============================================================================
+// Gateway API Type Definitions
+//
+// HTTPRoute and TLSRoute are not in k8s_openapi yet, so we define minimal structs.
+// We only care about metadata and spec.hostnames[] for Scout's reconciliation.
+// ============================================================================
+
+/// Minimal HTTPRoute spec for Scout's use case.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HTTPRouteSpec {
+    /// Hostnames matching this HTTPRoute
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostnames: Option<Vec<String>>,
+}
+
+/// Minimal HTTPRoute definition for Scout's use case.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct HTTPRoute {
+    #[serde(rename = "apiVersion")]
+    pub api_version: String,
+    pub kind: String,
+    pub metadata: kube::api::ObjectMeta,
+    #[serde(default)]
+    pub spec: Option<HTTPRouteSpec>,
+}
+
+/// Minimal TLSRoute spec for Scout's use case.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TLSRouteSpec {
+    /// Hostnames matching this TLSRoute
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostnames: Option<Vec<String>>,
+}
+
+/// Minimal TLSRoute definition for Scout's use case.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TLSRoute {
+    #[serde(rename = "apiVersion")]
+    pub api_version: String,
+    pub kind: String,
+    pub metadata: kube::api::ObjectMeta,
+    #[serde(default)]
+    pub spec: Option<TLSRouteSpec>,
+}
+
+// Implement k8s_openapi::Metadata for HTTPRoute and TLSRoute
+impl k8s_openapi::Metadata for HTTPRoute {
+    type Ty = kube::api::ObjectMeta;
+    fn metadata(&self) -> &kube::api::ObjectMeta {
+        &self.metadata
+    }
+    fn metadata_mut(&mut self) -> &mut kube::api::ObjectMeta {
+        &mut self.metadata
+    }
+}
+
+impl k8s_openapi::Metadata for TLSRoute {
+    type Ty = kube::api::ObjectMeta;
+    fn metadata(&self) -> &kube::api::ObjectMeta {
+        &self.metadata
+    }
+    fn metadata_mut(&mut self) -> &mut kube::api::ObjectMeta {
+        &mut self.metadata
+    }
+}
+
+// Implement k8s_openapi::Resource for HTTPRoute and TLSRoute
+impl k8s_openapi::Resource for HTTPRoute {
+    const API_VERSION: &'static str = "gateway.networking.k8s.io/v1";
+    const GROUP: &'static str = "gateway.networking.k8s.io";
+    const KIND: &'static str = "HTTPRoute";
+    const VERSION: &'static str = "v1";
+    const URL_PATH_SEGMENT: &'static str = "httproutes";
+    type Scope = k8s_openapi::NamespaceResourceScope;
+}
+
+impl k8s_openapi::Resource for TLSRoute {
+    const API_VERSION: &'static str = "gateway.networking.k8s.io/v1";
+    const GROUP: &'static str = "gateway.networking.k8s.io";
+    const KIND: &'static str = "TLSRoute";
+    const VERSION: &'static str = "v1";
+    const URL_PATH_SEGMENT: &'static str = "tlsroutes";
+    type Scope = k8s_openapi::NamespaceResourceScope;
+}
+
+// ============================================================================
 // Constants
 // ============================================================================
 
@@ -90,6 +177,12 @@ pub const LABEL_SOURCE_INGRESS: &str = "bindy.firestoned.io/source-ingress";
 
 /// Label identifying the source Service name on created ARecords
 pub const LABEL_SOURCE_SERVICE: &str = "bindy.firestoned.io/source-service";
+
+/// Label identifying the source HTTPRoute name on created ARecords
+pub const LABEL_SOURCE_HTTPROUTE: &str = "bindy.firestoned.io/source-httproute";
+
+/// Label identifying the source TLSRoute name on created ARecords
+pub const LABEL_SOURCE_TLSROUTE: &str = "bindy.firestoned.io/source-tlsroute";
 
 /// Label carrying the DNS zone name on created ARecords (for DNSZone selector matching)
 pub const LABEL_ZONE: &str = "bindy.firestoned.io/zone";
@@ -576,6 +669,234 @@ pub fn build_service_arecord(params: ServiceARecordParams<'_>) -> ARecord {
 }
 
 // ============================================================================
+// Gateway API (HTTPRoute / TLSRoute) helpers
+// ============================================================================
+
+/// Derives the ARecord CR name for an HTTPRoute.
+///
+/// Format: `scout-{cluster}-{namespace}-{route_name}-{hostname_index}`
+///
+/// One ARecord per hostname in `spec.hostnames[]`. Index tracks which hostname
+/// this ARecord is for. Applies the same sanitisation and 253-char truncation
+/// as Ingress CR names.
+pub fn httproute_arecord_cr_name(
+    cluster: &str,
+    namespace: &str,
+    route_name: &str,
+    hostname_index: usize,
+) -> String {
+    let raw = format!("{ARECORD_NAME_PREFIX}-{cluster}-{namespace}-{route_name}-{hostname_index}");
+    let sanitized = sanitize_k8s_name(&raw);
+    sanitized[..sanitized.len().min(MAX_K8S_NAME_LEN)].to_string()
+}
+
+/// Derives the ARecord CR name for a TLSRoute.
+///
+/// Format: `scout-{cluster}-{namespace}-{route_name}-{hostname_index}`
+///
+/// One ARecord per hostname in `spec.hostnames[]`. Index tracks which hostname
+/// this ARecord is for. Applies the same sanitisation and 253-char truncation.
+pub fn tlsroute_arecord_cr_name(
+    cluster: &str,
+    namespace: &str,
+    route_name: &str,
+    hostname_index: usize,
+) -> String {
+    let raw = format!("{ARECORD_NAME_PREFIX}-{cluster}-{namespace}-{route_name}-{hostname_index}");
+    let sanitized = sanitize_k8s_name(&raw);
+    sanitized[..sanitized.len().min(MAX_K8S_NAME_LEN)].to_string()
+}
+
+/// Builds a Kubernetes label selector matching all ARecords created by Scout
+/// for a specific HTTPRoute.
+pub fn httproute_arecord_label_selector(
+    cluster: &str,
+    namespace: &str,
+    route_name: &str,
+) -> String {
+    format!(
+        "{}={},{cluster_key}={cluster},{ns_key}={namespace},{route_key}={route_name}",
+        LABEL_MANAGED_BY,
+        LABEL_MANAGED_BY_SCOUT,
+        cluster_key = LABEL_SOURCE_CLUSTER,
+        ns_key = LABEL_SOURCE_NAMESPACE,
+        route_key = LABEL_SOURCE_HTTPROUTE,
+    )
+}
+
+/// Builds a Kubernetes label selector matching all ARecords created by Scout
+/// for a specific TLSRoute.
+pub fn tlsroute_arecord_label_selector(cluster: &str, namespace: &str, route_name: &str) -> String {
+    format!(
+        "{}={},{cluster_key}={cluster},{ns_key}={namespace},{route_key}={route_name}",
+        LABEL_MANAGED_BY,
+        LABEL_MANAGED_BY_SCOUT,
+        cluster_key = LABEL_SOURCE_CLUSTER,
+        ns_key = LABEL_SOURCE_NAMESPACE,
+        route_key = LABEL_SOURCE_TLSROUTE,
+    )
+}
+
+/// Builds a label selector string matching ARecords for the given HTTPRoute that
+/// belong to **any cluster other than `current_cluster`**.
+///
+/// Used to detect and clean up stale ARecords left behind when scout is
+/// restarted with a different `--cluster-name`.
+pub fn stale_httproute_arecord_label_selector(
+    current_cluster: &str,
+    namespace: &str,
+    route_name: &str,
+) -> String {
+    format!(
+        "{}={},{cluster_key}!={current_cluster},{ns_key}={namespace},{route_key}={route_name}",
+        LABEL_MANAGED_BY,
+        LABEL_MANAGED_BY_SCOUT,
+        cluster_key = LABEL_SOURCE_CLUSTER,
+        ns_key = LABEL_SOURCE_NAMESPACE,
+        route_key = LABEL_SOURCE_HTTPROUTE,
+    )
+}
+
+/// Builds a label selector string matching ARecords for the given TLSRoute that
+/// belong to **any cluster other than `current_cluster`**.
+pub fn stale_tlsroute_arecord_label_selector(
+    current_cluster: &str,
+    namespace: &str,
+    route_name: &str,
+) -> String {
+    format!(
+        "{}={},{cluster_key}!={current_cluster},{ns_key}={namespace},{route_key}={route_name}",
+        LABEL_MANAGED_BY,
+        LABEL_MANAGED_BY_SCOUT,
+        cluster_key = LABEL_SOURCE_CLUSTER,
+        ns_key = LABEL_SOURCE_NAMESPACE,
+        route_key = LABEL_SOURCE_TLSROUTE,
+    )
+}
+
+/// Parameters for building an ARecord CR from an HTTPRoute.
+pub struct HTTPRouteARecordParams<'a> {
+    /// Kubernetes resource name for the ARecord CR
+    pub name: &'a str,
+    /// Namespace where the ARecord CR will be created
+    pub target_namespace: &'a str,
+    /// DNS record name within the zone (e.g. `"api"`)
+    pub record_name: &'a str,
+    /// IPv4 addresses for the record
+    pub ips: &'a [String],
+    /// Optional TTL override in seconds
+    pub ttl: Option<i32>,
+    /// Logical name of the source cluster (for labels)
+    pub cluster_name: &'a str,
+    /// Source HTTPRoute namespace (for labels)
+    pub route_namespace: &'a str,
+    /// Source HTTPRoute name (for labels)
+    pub route_name: &'a str,
+    /// DNS zone name (for labels)
+    pub zone: &'a str,
+}
+
+/// Builds the ARecord CR that Scout will create for an HTTPRoute.
+pub fn build_httproute_arecord(params: HTTPRouteARecordParams<'_>) -> ARecord {
+    let mut labels = BTreeMap::new();
+    labels.insert(
+        LABEL_MANAGED_BY.to_string(),
+        LABEL_MANAGED_BY_SCOUT.to_string(),
+    );
+    labels.insert(
+        LABEL_SOURCE_CLUSTER.to_string(),
+        params.cluster_name.to_string(),
+    );
+    labels.insert(
+        LABEL_SOURCE_NAMESPACE.to_string(),
+        params.route_namespace.to_string(),
+    );
+    labels.insert(
+        LABEL_SOURCE_HTTPROUTE.to_string(),
+        params.route_name.to_string(),
+    );
+    labels.insert(LABEL_ZONE.to_string(), params.zone.to_string());
+
+    let meta = kube::api::ObjectMeta {
+        name: Some(params.name.to_string()),
+        namespace: Some(params.target_namespace.to_string()),
+        labels: Some(labels),
+        ..Default::default()
+    };
+
+    ARecord {
+        metadata: meta,
+        spec: ARecordSpec {
+            name: params.record_name.to_string(),
+            ipv4_addresses: params.ips.to_vec(),
+            ttl: params.ttl,
+        },
+        status: None,
+    }
+}
+
+/// Parameters for building an ARecord CR from a TLSRoute.
+pub struct TLSRouteARecordParams<'a> {
+    /// Kubernetes resource name for the ARecord CR
+    pub name: &'a str,
+    /// Namespace where the ARecord CR will be created
+    pub target_namespace: &'a str,
+    /// DNS record name within the zone (e.g. `"secure"`)
+    pub record_name: &'a str,
+    /// IPv4 addresses for the record
+    pub ips: &'a [String],
+    /// Optional TTL override in seconds
+    pub ttl: Option<i32>,
+    /// Logical name of the source cluster (for labels)
+    pub cluster_name: &'a str,
+    /// Source TLSRoute namespace (for labels)
+    pub route_namespace: &'a str,
+    /// Source TLSRoute name (for labels)
+    pub route_name: &'a str,
+    /// DNS zone name (for labels)
+    pub zone: &'a str,
+}
+
+/// Builds the ARecord CR that Scout will create for a TLSRoute.
+pub fn build_tlsroute_arecord(params: TLSRouteARecordParams<'_>) -> ARecord {
+    let mut labels = BTreeMap::new();
+    labels.insert(
+        LABEL_MANAGED_BY.to_string(),
+        LABEL_MANAGED_BY_SCOUT.to_string(),
+    );
+    labels.insert(
+        LABEL_SOURCE_CLUSTER.to_string(),
+        params.cluster_name.to_string(),
+    );
+    labels.insert(
+        LABEL_SOURCE_NAMESPACE.to_string(),
+        params.route_namespace.to_string(),
+    );
+    labels.insert(
+        LABEL_SOURCE_TLSROUTE.to_string(),
+        params.route_name.to_string(),
+    );
+    labels.insert(LABEL_ZONE.to_string(), params.zone.to_string());
+
+    let meta = kube::api::ObjectMeta {
+        name: Some(params.name.to_string()),
+        namespace: Some(params.target_namespace.to_string()),
+        labels: Some(labels),
+        ..Default::default()
+    };
+
+    ARecord {
+        metadata: meta,
+        spec: ARecordSpec {
+            name: params.record_name.to_string(),
+            ipv4_addresses: params.ips.to_vec(),
+            ttl: params.ttl,
+        },
+        status: None,
+    }
+}
+
+// ============================================================================
 // Finalizer helpers (async — require Kubernetes API access)
 // ============================================================================
 
@@ -646,6 +967,82 @@ async fn remove_finalizer_from_service(client: &Client, svc: &Service) -> Result
     let api: Api<Service> = Api::namespaced(client.clone(), &namespace);
 
     let finalizers: Vec<String> = svc
+        .metadata
+        .finalizers
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|f| f != FINALIZER_SCOUT)
+        .collect();
+
+    let patch = serde_json::json!({ "metadata": { "finalizers": finalizers } });
+    api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await?;
+    Ok(())
+}
+
+/// Adds the Scout finalizer to an HTTPRoute.
+async fn add_finalizer_to_httproute(client: &Client, route: &HTTPRoute) -> Result<()> {
+    let namespace = route.namespace().unwrap_or_default();
+    let name = route.name_any();
+    let api: Api<HTTPRoute> = Api::namespaced(client.clone(), &namespace);
+
+    let mut finalizers = route.metadata.finalizers.clone().unwrap_or_default();
+    if !finalizers.contains(&FINALIZER_SCOUT.to_string()) {
+        finalizers.push(FINALIZER_SCOUT.to_string());
+    }
+
+    let patch = serde_json::json!({ "metadata": { "finalizers": finalizers } });
+    api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await?;
+    Ok(())
+}
+
+/// Removes the Scout finalizer from an HTTPRoute.
+async fn remove_finalizer_from_httproute(client: &Client, route: &HTTPRoute) -> Result<()> {
+    let namespace = route.namespace().unwrap_or_default();
+    let name = route.name_any();
+    let api: Api<HTTPRoute> = Api::namespaced(client.clone(), &namespace);
+
+    let finalizers: Vec<String> = route
+        .metadata
+        .finalizers
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|f| f != FINALIZER_SCOUT)
+        .collect();
+
+    let patch = serde_json::json!({ "metadata": { "finalizers": finalizers } });
+    api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await?;
+    Ok(())
+}
+
+/// Adds the Scout finalizer to a TLSRoute.
+async fn add_finalizer_to_tlsroute(client: &Client, route: &TLSRoute) -> Result<()> {
+    let namespace = route.namespace().unwrap_or_default();
+    let name = route.name_any();
+    let api: Api<TLSRoute> = Api::namespaced(client.clone(), &namespace);
+
+    let mut finalizers = route.metadata.finalizers.clone().unwrap_or_default();
+    if !finalizers.contains(&FINALIZER_SCOUT.to_string()) {
+        finalizers.push(FINALIZER_SCOUT.to_string());
+    }
+
+    let patch = serde_json::json!({ "metadata": { "finalizers": finalizers } });
+    api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await?;
+    Ok(())
+}
+
+/// Removes the Scout finalizer from a TLSRoute.
+async fn remove_finalizer_from_tlsroute(client: &Client, route: &TLSRoute) -> Result<()> {
+    let namespace = route.namespace().unwrap_or_default();
+    let name = route.name_any();
+    let api: Api<TLSRoute> = Api::namespaced(client.clone(), &namespace);
+
+    let finalizers: Vec<String> = route
         .metadata
         .finalizers
         .clone()
@@ -754,6 +1151,110 @@ async fn delete_arecords_for_service(
             service = %svc_name,
             ns = %svc_namespace,
             "Deleted ARecord during Service cleanup"
+        );
+    }
+    Ok(())
+}
+
+/// Deletes all ARecords created by Scout for a specific HTTPRoute.
+async fn delete_arecords_for_httproute(
+    remote_client: &Client,
+    target_namespace: &str,
+    cluster: &str,
+    route_namespace: &str,
+    route_name: &str,
+) -> Result<()> {
+    let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
+    let selector = httproute_arecord_label_selector(cluster, route_namespace, route_name);
+    let lp = ListParams::default().labels(&selector);
+
+    let arecords = api.list(&lp).await?;
+    for ar in arecords.items {
+        let ar_name = ar.name_any();
+        api.delete(&ar_name, &DeleteParams::default()).await?;
+        info!(
+            arecord = %ar_name,
+            httproute = %route_name,
+            ns = %route_namespace,
+            "Deleted ARecord during HTTPRoute cleanup"
+        );
+    }
+    Ok(())
+}
+
+/// Deletes all ARecords created by Scout for a specific TLSRoute.
+async fn delete_arecords_for_tlsroute(
+    remote_client: &Client,
+    target_namespace: &str,
+    cluster: &str,
+    route_namespace: &str,
+    route_name: &str,
+) -> Result<()> {
+    let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
+    let selector = tlsroute_arecord_label_selector(cluster, route_namespace, route_name);
+    let lp = ListParams::default().labels(&selector);
+
+    let arecords = api.list(&lp).await?;
+    for ar in arecords.items {
+        let ar_name = ar.name_any();
+        api.delete(&ar_name, &DeleteParams::default()).await?;
+        info!(
+            arecord = %ar_name,
+            tlsroute = %route_name,
+            ns = %route_namespace,
+            "Deleted ARecord during TLSRoute cleanup"
+        );
+    }
+    Ok(())
+}
+
+/// Deletes stale ARecords for an HTTPRoute from previous cluster names.
+async fn delete_stale_cluster_httproute_arecords(
+    remote_client: &Client,
+    target_namespace: &str,
+    current_cluster: &str,
+    route_namespace: &str,
+    route_name: &str,
+) -> Result<()> {
+    let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
+    let selector =
+        stale_httproute_arecord_label_selector(current_cluster, route_namespace, route_name);
+    let lp = ListParams::default().labels(&selector);
+
+    let arecords = api.list(&lp).await?;
+    for ar in arecords.items {
+        let ar_name = ar.name_any();
+        api.delete(&ar_name, &DeleteParams::default()).await?;
+        info!(
+            arecord = %ar_name,
+            httproute = %route_name,
+            "Deleted stale HTTPRoute ARecord from previous cluster name"
+        );
+    }
+    Ok(())
+}
+
+/// Deletes stale ARecords for a TLSRoute from previous cluster names.
+async fn delete_stale_cluster_tlsroute_arecords(
+    remote_client: &Client,
+    target_namespace: &str,
+    current_cluster: &str,
+    route_namespace: &str,
+    route_name: &str,
+) -> Result<()> {
+    let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
+    let selector =
+        stale_tlsroute_arecord_label_selector(current_cluster, route_namespace, route_name);
+    let lp = ListParams::default().labels(&selector);
+
+    let arecords = api.list(&lp).await?;
+    for ar in arecords.items {
+        let ar_name = ar.name_any();
+        api.delete(&ar_name, &DeleteParams::default()).await?;
+        info!(
+            arecord = %ar_name,
+            tlsroute = %route_name,
+            "Deleted stale TLSRoute ARecord from previous cluster name"
         );
     }
     Ok(())
@@ -1193,6 +1694,510 @@ fn error_policy(_obj: Arc<Ingress>, error: &ScoutError, _ctx: Arc<ScoutContext>)
 }
 
 // ============================================================================
+// Gateway API (HTTPRoute / TLSRoute) Reconciliation
+//
+// Note: HTTPRoute and TLSRoute reconciliation follows the same pattern as
+// Ingress reconciliation, with these differences:
+//
+// 1. HTTPRoute sources: `spec.hostnames[]` (array) instead of `spec.rules[].host`
+// 2. TLSRoute sources: `spec.hostnames[]` (array) instead of routes with hosts
+// 3. One ARecord per hostname with index suffix (like Ingress has one per rule)
+// 4. Zone and IP resolution use the same annotation scheme as Ingress/Service
+// ============================================================================
+
+/// Reconciles a single `HTTPRoute` resource, creating or updating ARecord CRs as needed.
+///
+/// Mirrors the Ingress reconciler lifecycle:
+/// - Opts in via `bindy.firestoned.io/scout-enabled: "true"`.
+/// - Adds a finalizer; on deletion removes ARecords and releases it.
+/// - If the opt-in annotation is removed, cleans up ARecords and finalizer.
+/// - One ARecord created per hostname in `spec.hostnames[]` with an index suffix.
+/// - Re-queues if zone is not found or no IP is available yet.
+///
+/// # Errors
+///
+/// Returns `ScoutError` if API calls fail (apply, delete, patch).
+async fn reconcile_httproute(
+    route: Arc<HTTPRoute>,
+    ctx: Arc<ScoutContext>,
+) -> Result<Action, ScoutError> {
+    let name = route.name_any();
+    let namespace = route.namespace().unwrap_or_default();
+
+    // Guard: Skip excluded namespaces
+    if ctx.excluded_namespaces.contains(&namespace) {
+        debug!(httproute = %name, ns = %namespace, "Skipping excluded namespace");
+        return Ok(Action::await_change());
+    }
+
+    // Handle HTTPRoute deletion — remove ARecords and release the finalizer
+    if route.metadata.deletion_timestamp.is_some() {
+        if route
+            .metadata
+            .finalizers
+            .as_ref()
+            .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
+            .unwrap_or(false)
+        {
+            info!(httproute = %name, ns = %namespace, "HTTPRoute deleting — cleaning up ARecords");
+            delete_arecords_for_httproute(
+                &ctx.remote_client,
+                &ctx.target_namespace,
+                &ctx.cluster_name,
+                &namespace,
+                &name,
+            )
+            .await
+            .map_err(ScoutError::from)?;
+            delete_stale_cluster_httproute_arecords(
+                &ctx.remote_client,
+                &ctx.target_namespace,
+                &ctx.cluster_name,
+                &namespace,
+                &name,
+            )
+            .await
+            .map_err(ScoutError::from)?;
+            remove_finalizer_from_httproute(&ctx.client, &route)
+                .await
+                .map_err(ScoutError::from)?;
+            info!(httproute = %name, ns = %namespace, "Finalizer removed — HTTPRoute deletion unblocked");
+        }
+        return Ok(Action::await_change());
+    }
+
+    let annotations = route
+        .metadata
+        .annotations
+        .as_ref()
+        .cloned()
+        .unwrap_or_default();
+
+    // Guard: opt-in annotation required
+    if !is_scout_opted_in(&annotations) {
+        let has_fin = route
+            .metadata
+            .finalizers
+            .as_ref()
+            .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
+            .unwrap_or(false);
+        if has_fin {
+            info!(httproute = %name, ns = %namespace, "Scout opt-in annotation removed — cleaning up ARecords and finalizer");
+            delete_arecords_for_httproute(
+                &ctx.remote_client,
+                &ctx.target_namespace,
+                &ctx.cluster_name,
+                &namespace,
+                &name,
+            )
+            .await
+            .map_err(ScoutError::from)?;
+            delete_stale_cluster_httproute_arecords(
+                &ctx.remote_client,
+                &ctx.target_namespace,
+                &ctx.cluster_name,
+                &namespace,
+                &name,
+            )
+            .await
+            .map_err(ScoutError::from)?;
+            remove_finalizer_from_httproute(&ctx.client, &route)
+                .await
+                .map_err(ScoutError::from)?;
+        }
+        debug!(httproute = %name, ns = %namespace, "No scout-enabled annotation — skipping");
+        return Ok(Action::await_change());
+    }
+
+    // Ensure finalizer before creating any ARecord
+    let has_fin = route
+        .metadata
+        .finalizers
+        .as_ref()
+        .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
+        .unwrap_or(false);
+    if !has_fin {
+        add_finalizer_to_httproute(&ctx.client, &route)
+            .await
+            .map_err(ScoutError::from)?;
+        debug!(httproute = %name, ns = %namespace, "Finalizer added — re-queuing for record creation");
+        return Ok(Action::await_change());
+    }
+
+    // Guard: zone required
+    let zone = match resolve_zone(&annotations, ctx.default_zone.as_deref()) {
+        Some(z) => z,
+        None => {
+            warn!(httproute = %name, ns = %namespace, "No DNS zone available — skipping");
+            return Ok(Action::requeue(Duration::from_secs(
+                SCOUT_ERROR_REQUEUE_SECS,
+            )));
+        }
+    };
+
+    // Guard: zone must exist in the DNSZone store
+    let zone_exists = ctx
+        .zone_store
+        .state()
+        .iter()
+        .any(|z| z.spec.zone_name == zone);
+    if !zone_exists {
+        warn!(httproute = %name, ns = %namespace, zone = %zone, "Zone not found in DNSZone store — requeuing");
+        return Ok(Action::requeue(Duration::from_secs(
+            SCOUT_ERROR_REQUEUE_SECS,
+        )));
+    }
+
+    // Resolve IPs: annotation → default_ips → no routable IP = requeue
+    let ips = {
+        let from_annotation = annotations
+            .get(ANNOTATION_IP)
+            .filter(|v| !v.is_empty())
+            .map(|v| vec![v.clone()]);
+        let from_defaults = if ctx.default_ips.is_empty() {
+            None
+        } else {
+            Some(ctx.default_ips.clone())
+        };
+
+        match from_annotation.or(from_defaults) {
+            Some(ips) => ips,
+            None => {
+                warn!(httproute = %name, ns = %namespace, "No IP available (no annotation override, no default IPs) — requeuing");
+                return Ok(Action::requeue(Duration::from_secs(
+                    SCOUT_ERROR_REQUEUE_SECS,
+                )));
+            }
+        }
+    };
+
+    let ttl: Option<i32> = annotations.get(ANNOTATION_TTL).and_then(|v| v.parse().ok());
+
+    // Extract hostnames from spec.hostnames[]
+    let hostnames = route
+        .spec
+        .as_ref()
+        .and_then(|s| s.hostnames.as_ref())
+        .cloned()
+        .unwrap_or_default();
+
+    let arecord_api: Api<ARecord> =
+        Api::namespaced(ctx.remote_client.clone(), &ctx.target_namespace);
+
+    for (idx, hostname) in hostnames.iter().enumerate() {
+        if hostname.is_empty() {
+            debug!(httproute = %name, hostname_index = idx, "HTTPRoute hostname is empty — skipping");
+            continue;
+        }
+
+        let record_name = match derive_record_name(hostname, &zone) {
+            Ok(n) => n,
+            Err(e) => {
+                warn!(httproute = %name, hostname = %hostname, zone = %zone, error = %e, "Hostname does not belong to zone — skipping");
+                continue;
+            }
+        };
+
+        let cr_name = httproute_arecord_cr_name(&ctx.cluster_name, &namespace, &name, idx);
+        let arecord = build_httproute_arecord(HTTPRouteARecordParams {
+            name: &cr_name,
+            target_namespace: &ctx.target_namespace,
+            record_name: &record_name,
+            ips: &ips,
+            ttl,
+            cluster_name: &ctx.cluster_name,
+            route_namespace: &namespace,
+            route_name: &name,
+            zone: &zone,
+        });
+
+        // Server-side apply
+        let ssapply = kube::api::PatchParams::apply("bindy-scout").force();
+        match arecord_api
+            .patch(&cr_name, &ssapply, &kube::api::Patch::Apply(&arecord))
+            .await
+        {
+            Ok(_) => {
+                info!(arecord = %cr_name, httproute = %name, hostname = %hostname, ips = ?ips, "ARecord created/updated for HTTPRoute");
+            }
+            Err(e) => {
+                error!(arecord = %cr_name, httproute = %name, error = %e, "Failed to apply ARecord for HTTPRoute");
+                return Err(ScoutError::from(anyhow!(
+                    "Failed to apply ARecord {cr_name}: {e}"
+                )));
+            }
+        }
+    }
+
+    // Clean up stale ARecords from old cluster names
+    delete_stale_cluster_httproute_arecords(
+        &ctx.remote_client,
+        &ctx.target_namespace,
+        &ctx.cluster_name,
+        &namespace,
+        &name,
+    )
+    .await
+    .map_err(ScoutError::from)?;
+
+    Ok(Action::await_change())
+}
+
+/// Reconciles a single `TLSRoute` resource, creating or updating ARecord CRs as needed.
+///
+/// Identical to HTTPRoute reconciliation: both resources have `spec.hostnames[]`
+/// and use the same annotation/IP resolution scheme.
+///
+/// # Errors
+///
+/// Returns `ScoutError` if API calls fail.
+async fn reconcile_tlsroute(
+    route: Arc<TLSRoute>,
+    ctx: Arc<ScoutContext>,
+) -> Result<Action, ScoutError> {
+    let name = route.name_any();
+    let namespace = route.namespace().unwrap_or_default();
+
+    // Guard: Skip excluded namespaces
+    if ctx.excluded_namespaces.contains(&namespace) {
+        debug!(tlsroute = %name, ns = %namespace, "Skipping excluded namespace");
+        return Ok(Action::await_change());
+    }
+
+    // Handle TLSRoute deletion — remove ARecords and release the finalizer
+    if route.metadata.deletion_timestamp.is_some() {
+        if route
+            .metadata
+            .finalizers
+            .as_ref()
+            .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
+            .unwrap_or(false)
+        {
+            info!(tlsroute = %name, ns = %namespace, "TLSRoute deleting — cleaning up ARecords");
+            delete_arecords_for_tlsroute(
+                &ctx.remote_client,
+                &ctx.target_namespace,
+                &ctx.cluster_name,
+                &namespace,
+                &name,
+            )
+            .await
+            .map_err(ScoutError::from)?;
+            delete_stale_cluster_tlsroute_arecords(
+                &ctx.remote_client,
+                &ctx.target_namespace,
+                &ctx.cluster_name,
+                &namespace,
+                &name,
+            )
+            .await
+            .map_err(ScoutError::from)?;
+            remove_finalizer_from_tlsroute(&ctx.client, &route)
+                .await
+                .map_err(ScoutError::from)?;
+            info!(tlsroute = %name, ns = %namespace, "Finalizer removed — TLSRoute deletion unblocked");
+        }
+        return Ok(Action::await_change());
+    }
+
+    let annotations = route
+        .metadata
+        .annotations
+        .as_ref()
+        .cloned()
+        .unwrap_or_default();
+
+    // Guard: opt-in annotation required
+    if !is_scout_opted_in(&annotations) {
+        let has_fin = route
+            .metadata
+            .finalizers
+            .as_ref()
+            .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
+            .unwrap_or(false);
+        if has_fin {
+            info!(tlsroute = %name, ns = %namespace, "Scout opt-in annotation removed — cleaning up ARecords and finalizer");
+            delete_arecords_for_tlsroute(
+                &ctx.remote_client,
+                &ctx.target_namespace,
+                &ctx.cluster_name,
+                &namespace,
+                &name,
+            )
+            .await
+            .map_err(ScoutError::from)?;
+            delete_stale_cluster_tlsroute_arecords(
+                &ctx.remote_client,
+                &ctx.target_namespace,
+                &ctx.cluster_name,
+                &namespace,
+                &name,
+            )
+            .await
+            .map_err(ScoutError::from)?;
+            remove_finalizer_from_tlsroute(&ctx.client, &route)
+                .await
+                .map_err(ScoutError::from)?;
+        }
+        debug!(tlsroute = %name, ns = %namespace, "No scout-enabled annotation — skipping");
+        return Ok(Action::await_change());
+    }
+
+    // Ensure finalizer before creating any ARecord
+    let has_fin = route
+        .metadata
+        .finalizers
+        .as_ref()
+        .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
+        .unwrap_or(false);
+    if !has_fin {
+        add_finalizer_to_tlsroute(&ctx.client, &route)
+            .await
+            .map_err(ScoutError::from)?;
+        debug!(tlsroute = %name, ns = %namespace, "Finalizer added — re-queuing for record creation");
+        return Ok(Action::await_change());
+    }
+
+    // Guard: zone required
+    let zone = match resolve_zone(&annotations, ctx.default_zone.as_deref()) {
+        Some(z) => z,
+        None => {
+            warn!(tlsroute = %name, ns = %namespace, "No DNS zone available — skipping");
+            return Ok(Action::requeue(Duration::from_secs(
+                SCOUT_ERROR_REQUEUE_SECS,
+            )));
+        }
+    };
+
+    // Guard: zone must exist in the DNSZone store
+    let zone_exists = ctx
+        .zone_store
+        .state()
+        .iter()
+        .any(|z| z.spec.zone_name == zone);
+    if !zone_exists {
+        warn!(tlsroute = %name, ns = %namespace, zone = %zone, "Zone not found in DNSZone store — requeuing");
+        return Ok(Action::requeue(Duration::from_secs(
+            SCOUT_ERROR_REQUEUE_SECS,
+        )));
+    }
+
+    // Resolve IPs: annotation → default_ips → no routable IP = requeue
+    let ips = {
+        let from_annotation = annotations
+            .get(ANNOTATION_IP)
+            .filter(|v| !v.is_empty())
+            .map(|v| vec![v.clone()]);
+        let from_defaults = if ctx.default_ips.is_empty() {
+            None
+        } else {
+            Some(ctx.default_ips.clone())
+        };
+
+        match from_annotation.or(from_defaults) {
+            Some(ips) => ips,
+            None => {
+                warn!(tlsroute = %name, ns = %namespace, "No IP available (no annotation override, no default IPs) — requeuing");
+                return Ok(Action::requeue(Duration::from_secs(
+                    SCOUT_ERROR_REQUEUE_SECS,
+                )));
+            }
+        }
+    };
+
+    let ttl: Option<i32> = annotations.get(ANNOTATION_TTL).and_then(|v| v.parse().ok());
+
+    // Extract hostnames from spec.hostnames[]
+    let hostnames = route
+        .spec
+        .as_ref()
+        .and_then(|s| s.hostnames.as_ref())
+        .cloned()
+        .unwrap_or_default();
+
+    let arecord_api: Api<ARecord> =
+        Api::namespaced(ctx.remote_client.clone(), &ctx.target_namespace);
+
+    for (idx, hostname) in hostnames.iter().enumerate() {
+        if hostname.is_empty() {
+            debug!(tlsroute = %name, hostname_index = idx, "TLSRoute hostname is empty — skipping");
+            continue;
+        }
+
+        let record_name = match derive_record_name(hostname, &zone) {
+            Ok(n) => n,
+            Err(e) => {
+                warn!(tlsroute = %name, hostname = %hostname, zone = %zone, error = %e, "Hostname does not belong to zone — skipping");
+                continue;
+            }
+        };
+
+        let cr_name = tlsroute_arecord_cr_name(&ctx.cluster_name, &namespace, &name, idx);
+        let arecord = build_tlsroute_arecord(TLSRouteARecordParams {
+            name: &cr_name,
+            target_namespace: &ctx.target_namespace,
+            record_name: &record_name,
+            ips: &ips,
+            ttl,
+            cluster_name: &ctx.cluster_name,
+            route_namespace: &namespace,
+            route_name: &name,
+            zone: &zone,
+        });
+
+        // Server-side apply
+        let ssapply = kube::api::PatchParams::apply("bindy-scout").force();
+        match arecord_api
+            .patch(&cr_name, &ssapply, &kube::api::Patch::Apply(&arecord))
+            .await
+        {
+            Ok(_) => {
+                info!(arecord = %cr_name, tlsroute = %name, hostname = %hostname, ips = ?ips, "ARecord created/updated for TLSRoute");
+            }
+            Err(e) => {
+                error!(arecord = %cr_name, tlsroute = %name, error = %e, "Failed to apply ARecord for TLSRoute");
+                return Err(ScoutError::from(anyhow!(
+                    "Failed to apply ARecord {cr_name}: {e}"
+                )));
+            }
+        }
+    }
+
+    // Clean up stale ARecords from old cluster names
+    delete_stale_cluster_tlsroute_arecords(
+        &ctx.remote_client,
+        &ctx.target_namespace,
+        &ctx.cluster_name,
+        &namespace,
+        &name,
+    )
+    .await
+    .map_err(ScoutError::from)?;
+
+    Ok(Action::await_change())
+}
+
+/// Error policy for Gateway API routes: requeue with a fixed backoff.
+fn gateway_route_error_policy(
+    _obj: Arc<HTTPRoute>,
+    error: &ScoutError,
+    _ctx: Arc<ScoutContext>,
+) -> Action {
+    error!(error = %error, "Scout HTTPRoute reconcile error — requeuing");
+    Action::requeue(Duration::from_secs(SCOUT_ERROR_REQUEUE_SECS))
+}
+
+/// Error policy for TLSRoute: requeue with a fixed backoff.
+fn tlsroute_error_policy(
+    _obj: Arc<TLSRoute>,
+    error: &ScoutError,
+    _ctx: Arc<ScoutContext>,
+) -> Action {
+    error!(error = %error, "Scout TLSRoute reconcile error — requeuing");
+    Action::requeue(Duration::from_secs(SCOUT_ERROR_REQUEUE_SECS))
+}
+
+// ============================================================================
 // Remote client builder (Phase 2)
 // ============================================================================
 
@@ -1478,8 +2483,12 @@ pub async fn run_scout(
     let ingress_api: Api<Ingress> = Api::all(local_client.clone());
     // Watch Services across all namespaces using the LOCAL client
     let svc_api: Api<Service> = Api::all(local_client.clone());
+    // Watch HTTPRoutes across all namespaces using the LOCAL client
+    let httproute_api: Api<HTTPRoute> = Api::all(local_client.clone());
+    // Watch TLSRoutes across all namespaces using the LOCAL client
+    let tlsroute_api: Api<TLSRoute> = Api::all(local_client.clone());
 
-    info!("Scout controller running — watching Ingresses and Services");
+    info!("Scout controller running — watching Ingresses, Services, HTTPRoutes, and TLSRoutes");
 
     let ingress_controller = Controller::new(ingress_api, WatcherConfig::default())
         .run(reconcile, error_policy, ctx.clone())
@@ -1491,7 +2500,7 @@ pub async fn run_scout(
         });
 
     let service_controller = Controller::new(svc_api, WatcherConfig::default())
-        .run(reconcile_service, service_error_policy, ctx)
+        .run(reconcile_service, service_error_policy, ctx.clone())
         .for_each(|res| async move {
             match res {
                 Ok(obj) => debug!(obj = ?obj, "Reconciled Service"),
@@ -1499,7 +2508,31 @@ pub async fn run_scout(
             }
         });
 
-    futures::future::join(ingress_controller, service_controller).await;
+    let httproute_controller = Controller::new(httproute_api, WatcherConfig::default())
+        .run(reconcile_httproute, gateway_route_error_policy, ctx.clone())
+        .for_each(|res| async move {
+            match res {
+                Ok(obj) => debug!(obj = ?obj, "Reconciled HTTPRoute"),
+                Err(e) => error!(error = %e, "HTTPRoute reconcile failed"),
+            }
+        });
+
+    let tlsroute_controller = Controller::new(tlsroute_api, WatcherConfig::default())
+        .run(reconcile_tlsroute, tlsroute_error_policy, ctx)
+        .for_each(|res| async move {
+            match res {
+                Ok(obj) => debug!(obj = ?obj, "Reconciled TLSRoute"),
+                Err(e) => error!(error = %e, "TLSRoute reconcile failed"),
+            }
+        });
+
+    futures::future::join4(
+        ingress_controller,
+        service_controller,
+        httproute_controller,
+        tlsroute_controller,
+    )
+    .await;
 
     Ok(())
 }

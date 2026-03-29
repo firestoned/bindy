@@ -25,6 +25,12 @@ rules:
   - apiGroups: [""]
     resources: ["services/finalizers"]
     verbs: ["update"]
+  # Watch HTTPRoutes and TLSRoutes from the Gateway API (gateway.networking.k8s.io)
+  # to automate A record creation for Gateway routes with opt-in annotations.
+  # No patch/update needed — Scout reads spec/metadata only, no mutation.
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["httproutes", "tlsroutes"]
+    verbs: ["get", "list", "watch"]
   # Read DNSZones for zone validation (same-cluster mode only; remote mode uses remote client)
   - apiGroups: ["bindy.firestoned.io"]
     resources: ["dnszones"]

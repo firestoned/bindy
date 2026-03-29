@@ -420,6 +420,77 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_build_scout_cluster_role_covers_gateway_api_routes() {
+        let role = build_scout_cluster_role();
+        let rules = role.rules.unwrap();
+
+        // Check that HTTPRoute rule exists
+        let http_route_rule = rules
+            .iter()
+            .find(|r| {
+                r.resources
+                    .as_ref()
+                    .is_some_and(|res| res.iter().any(|s| s == "httproutes"))
+            })
+            .expect("httproutes rule must exist for Gateway API");
+
+        // Check that TLSRoute rule exists (may be in same rule as HTTPRoute)
+        let has_tlsroutes = rules.iter().any(|r| {
+            r.resources
+                .as_ref()
+                .is_some_and(|res| res.iter().any(|s| s == "tlsroutes"))
+        });
+        assert!(has_tlsroutes, "tlsroutes rule must exist for Gateway API");
+
+        // Verify correct API group
+        assert_eq!(
+            http_route_rule.api_groups.as_ref().unwrap()[0],
+            "gateway.networking.k8s.io",
+            "HTTPRoute rule must use gateway.networking.k8s.io API group"
+        );
+    }
+
+    #[test]
+    fn test_build_scout_cluster_role_gateway_routes_readonly() {
+        let role = build_scout_cluster_role();
+        let rules = role.rules.unwrap();
+
+        // Find the gateway.networking.k8s.io rule
+        let gw_rule = rules
+            .iter()
+            .find(|r| {
+                r.api_groups
+                    .as_ref()
+                    .is_some_and(|ags| ags.iter().any(|ag| ag == "gateway.networking.k8s.io"))
+            })
+            .expect("gateway.networking.k8s.io rule must exist");
+
+        // Should have get, list, watch (read-only)
+        assert!(
+            gw_rule.verbs.contains(&"get".to_string()),
+            "gateway routes rule must include 'get'"
+        );
+        assert!(
+            gw_rule.verbs.contains(&"list".to_string()),
+            "gateway routes rule must include 'list'"
+        );
+        assert!(
+            gw_rule.verbs.contains(&"watch".to_string()),
+            "gateway routes rule must include 'watch'"
+        );
+
+        // Should NOT have patch/update (read-only access)
+        assert!(
+            !gw_rule.verbs.contains(&"patch".to_string()),
+            "gateway routes rule must NOT include 'patch' (read-only)"
+        );
+        assert!(
+            !gw_rule.verbs.contains(&"update".to_string()),
+            "gateway routes rule must NOT include 'update' (read-only)"
+        );
+    }
+
     // --- Scout ClusterRoleBinding ---
 
     #[test]

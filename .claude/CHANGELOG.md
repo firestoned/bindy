@@ -1,3 +1,30 @@
+## [2026-03-28] - Scout watches Gateway API HTTPRoute and TLSRoute resources
+
+**Author:** Prabhjot Bawa
+
+### Changed
+- `src/scout.rs`: Added HTTPRoute and TLSRoute type definitions with k8s_openapi trait implementations; added `LABEL_SOURCE_HTTPROUTE` and `LABEL_SOURCE_TLSROUTE` constants; implemented `reconcile_httproute()` and `reconcile_tlsroute()` async functions following Ingress pattern; added finalizer helpers for both route types; added ARecord deletion helpers for both route types; implemented `gateway_route_error_policy()` and `tlsroute_error_policy()` error handlers; updated `run_scout()` to spawn HTTPRoute and TLSRoute controllers concurrently alongside Ingress and Service controllers using `futures::future::join4()`
+- `src/scout_tests.rs`: 22 new unit tests covering all HTTPRoute/TLSRoute helpers (no new scaffold tests needed as reconciliation tested via integration tests)
+- `src/bootstrap.rs`: Added `httproutes` and `tlsroutes` rules to `build_scout_cluster_role()` with read-only verbs (get, list, watch)
+- `src/bootstrap_tests.rs`: 2 new tests verifying gateway.networking.k8s.io rules exist and are read-only
+- `deploy/scout/clusterrole.yaml`: Added httproutes and tlsroutes rules (read-only)
+- `examples/httproute-dns.yaml`: New example showing HTTPRoute with Scout annotations creating ARecords for multiple hostnames
+- `examples/tlsroute-dns.yaml`: New example showing TLSRoute with Scout annotations for TLS traffic
+- `docs/src/guide/scout.md`: Added "Gateway API Routes (HTTPRoute and TLSRoute)" section documenting hostname handling, record naming, labels, RBAC requirements, and examples
+
+### Why
+Scout now works with modern Gateway API resources (HTTPRoute and TLSRoute from gateway.networking.k8s.io/v1), complementing existing Ingress and Service watching. Gateway API provides better routing abstractions and allows Scout to support non-HTTP protocols (gRPC, custom TLS services) in addition to HTTP.
+
+Uses identical opt-in annotation scheme (`bindy.firestoned.io/scout-enabled`) and annotation configuration (zone, IP, TTL) as Ingress/Service. One ARecord created per hostname in `spec.hostnames[]` with index suffix for CR naming disambiguation.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (re-run `bindy bootstrap scout` to apply updated ClusterRole with gateway.networking.k8s.io rules)
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
 ## [2026-03-28] - Update Scout docs to cover Service support alongside Ingress
 
 **Author:** Erick Bourgeois
