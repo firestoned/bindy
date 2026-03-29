@@ -236,7 +236,7 @@ nav:
           - SRV Records: guide/srv-records.md
           - CAA Records: guide/caa-records.md
       - RNDC Key Rotation: guide/rndc-key-rotation.md
-      - Scout (Ingress → ARecord): guide/scout.md
+      - Scout: guide/scout.md
 
   - Operations:
       - Configuration:
