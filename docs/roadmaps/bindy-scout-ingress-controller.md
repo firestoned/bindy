@@ -167,7 +167,7 @@ labels:
   bindy.firestoned.io/managed-by: scout
   bindy.firestoned.io/source-cluster: "<BINDY_SCOUT_CLUSTER_NAME>"
   bindy.firestoned.io/source-namespace: "<ingress-namespace>"
-  bindy.firestoned.io/source-ingress: "<ingress-name>"
+  bindy.firestoned.io/source-name: "<ingress-name>"
   # zone label so bindy's DNSZone selector can pick it up:
   bindy.firestoned.io/zone: "example.com"
 ```

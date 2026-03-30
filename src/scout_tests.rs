@@ -12,7 +12,7 @@ mod tests {
         resolve_ip_from_service_lb_status, resolve_ips, resolve_zone, service_arecord_cr_name,
         service_arecord_label_selector, stale_arecord_label_selector, ServiceARecordParams,
         FINALIZER_SCOUT, LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER,
-        LABEL_SOURCE_INGRESS, LABEL_SOURCE_NAMESPACE, LABEL_SOURCE_SERVICE, LABEL_ZONE,
+        LABEL_SOURCE_NAME, LABEL_SOURCE_NAMESPACE, LABEL_ZONE,
     };
     use k8s_openapi::api::core::v1::{
         LoadBalancerIngress as ServiceLoadBalancerIngress, LoadBalancerStatus, Service,
@@ -388,7 +388,7 @@ mod tests {
                 LABEL_MANAGED_BY_SCOUT,
                 LABEL_SOURCE_CLUSTER,
                 LABEL_SOURCE_NAMESPACE,
-                LABEL_SOURCE_INGRESS,
+                LABEL_SOURCE_NAME,
             )
         );
     }
@@ -399,7 +399,7 @@ mod tests {
         assert!(selector.contains(LABEL_MANAGED_BY));
         assert!(selector.contains(LABEL_SOURCE_CLUSTER));
         assert!(selector.contains(LABEL_SOURCE_NAMESPACE));
-        assert!(selector.contains(LABEL_SOURCE_INGRESS));
+        assert!(selector.contains(LABEL_SOURCE_NAME));
     }
 
     // =========================================================================
@@ -430,7 +430,7 @@ mod tests {
     fn test_stale_arecord_label_selector_contains_namespace_and_ingress() {
         let selector = stale_arecord_label_selector("new-cluster", "my-ns", "my-ingress");
         assert!(selector.contains(&format!("{}=my-ns", LABEL_SOURCE_NAMESPACE)));
-        assert!(selector.contains(&format!("{}=my-ingress", LABEL_SOURCE_INGRESS)));
+        assert!(selector.contains(&format!("{}=my-ingress", LABEL_SOURCE_NAME)));
     }
 
     #[test]
@@ -706,7 +706,7 @@ mod tests {
                 LABEL_MANAGED_BY_SCOUT,
                 LABEL_SOURCE_CLUSTER,
                 LABEL_SOURCE_NAMESPACE,
-                LABEL_SOURCE_SERVICE,
+                LABEL_SOURCE_NAME,
             )
         );
     }
@@ -717,9 +717,7 @@ mod tests {
         assert!(selector.contains(LABEL_MANAGED_BY));
         assert!(selector.contains(LABEL_SOURCE_CLUSTER));
         assert!(selector.contains(LABEL_SOURCE_NAMESPACE));
-        assert!(selector.contains(LABEL_SOURCE_SERVICE));
-        // Must NOT use the Ingress label
-        assert!(!selector.contains(LABEL_SOURCE_INGRESS));
+        assert!(selector.contains(LABEL_SOURCE_NAME));
     }
 
     // =========================================================================
@@ -742,11 +740,9 @@ mod tests {
 
         let labels = arecord.metadata.labels.as_ref().unwrap();
         assert_eq!(
-            labels.get(LABEL_SOURCE_SERVICE).map(String::as_str),
+            labels.get(LABEL_SOURCE_NAME).map(String::as_str),
             Some("my-svc")
         );
-        // Must NOT set the Ingress label
-        assert!(!labels.contains_key(LABEL_SOURCE_INGRESS));
     }
 
     #[test]
@@ -777,7 +773,7 @@ mod tests {
             Some("default")
         );
         assert_eq!(
-            labels.get(LABEL_SOURCE_SERVICE).map(String::as_str),
+            labels.get(LABEL_SOURCE_NAME).map(String::as_str),
             Some("my-svc")
         );
         assert_eq!(
@@ -892,8 +888,7 @@ mod tests {
         assert!(selector.contains("prod"));
         assert!(selector.contains("default"));
         assert!(selector.contains("api-route"));
-        // Verify it has the source-httproute label (different from source-ingress)
-        assert!(selector.contains("source-httproute"));
+        assert!(selector.contains("source-name"));
     }
 
     #[test]
@@ -908,20 +903,20 @@ mod tests {
         assert!(selector.contains("prod"));
         assert!(selector.contains("default"));
         assert!(selector.contains("secure-route"));
-        // Verify it has the source-tlsroute label
-        assert!(selector.contains("source-tlsroute"));
+        assert!(selector.contains("source-name"));
     }
 
     #[test]
-    fn test_httproute_arecord_label_selector_distinct_from_tlsroute() {
+    fn test_httproute_and_tlsroute_selectors_share_source_name_label() {
         // Arrange & Act
         let http_selector =
             crate::scout::httproute_arecord_label_selector("prod", "default", "route");
         let tls_selector =
             crate::scout::tlsroute_arecord_label_selector("prod", "default", "route");
 
-        // Assert — they must differ because they target different route types
-        assert_ne!(http_selector, tls_selector);
+        // Both use the unified source-name label — selectors are structurally identical
+        assert_eq!(http_selector, tls_selector);
+        assert!(http_selector.contains("source-name=route"));
     }
 
     #[test]
@@ -935,9 +930,8 @@ mod tests {
 
         // Assert
         assert!(selector.contains(&format!("{}!=new-cluster", LABEL_SOURCE_CLUSTER)));
-        assert!(selector.contains("source-httproute"));
+        assert!(selector.contains("source-name=api-route"));
         assert!(selector.contains("default"));
-        assert!(selector.contains("api-route"));
     }
 
     #[test]
@@ -951,9 +945,8 @@ mod tests {
 
         // Assert
         assert!(selector.contains(&format!("{}!=new-cluster", LABEL_SOURCE_CLUSTER)));
-        assert!(selector.contains("source-tlsroute"));
+        assert!(selector.contains("source-name=secure-route"));
         assert!(selector.contains("default"));
-        assert!(selector.contains("secure-route"));
     }
 
     #[test]
@@ -988,11 +981,8 @@ mod tests {
             labels.get(LABEL_SOURCE_NAMESPACE).map(String::as_str),
             Some("default")
         );
-        // Must use "source-httproute" label, not "source-ingress"
         assert_eq!(
-            labels
-                .get("bindy.firestoned.io/source-httproute")
-                .map(String::as_str),
+            labels.get(LABEL_SOURCE_NAME).map(String::as_str),
             Some("api-route")
         );
         assert_eq!(
@@ -1053,11 +1043,8 @@ mod tests {
             labels.get(LABEL_SOURCE_CLUSTER).map(String::as_str),
             Some("prod")
         );
-        // Must use "source-tlsroute" label
         assert_eq!(
-            labels
-                .get("bindy.firestoned.io/source-tlsroute")
-                .map(String::as_str),
+            labels.get(LABEL_SOURCE_NAME).map(String::as_str),
             Some("secure-route")
         );
         assert_eq!(
