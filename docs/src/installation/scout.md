@@ -283,17 +283,8 @@ Within seconds, Scout creates an `ARecord` in `bindy-system`:
 # All Scout-managed records
 kubectl get arecords -n bindy-system -l bindy.firestoned.io/managed-by=scout
 
-# Ingress-sourced only
-kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-ingress
-
-# Service-sourced only
-kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-service
-
-# HTTPRoute-sourced only
-kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-httproute
-
-# TLSRoute-sourced only
-kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-tlsroute
+# Records from a specific source resource (works for any kind: Ingress, Service, HTTPRoute, TLSRoute)
+kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-name=<resource-name>
 ```
 
 ---

@@ -172,17 +172,9 @@ pub const LABEL_SOURCE_CLUSTER: &str = "bindy.firestoned.io/source-cluster";
 /// Label identifying the source namespace on created ARecords
 pub const LABEL_SOURCE_NAMESPACE: &str = "bindy.firestoned.io/source-namespace";
 
-/// Label identifying the source Ingress name on created ARecords
-pub const LABEL_SOURCE_INGRESS: &str = "bindy.firestoned.io/source-ingress";
-
-/// Label identifying the source Service name on created ARecords
-pub const LABEL_SOURCE_SERVICE: &str = "bindy.firestoned.io/source-service";
-
-/// Label identifying the source HTTPRoute name on created ARecords
-pub const LABEL_SOURCE_HTTPROUTE: &str = "bindy.firestoned.io/source-httproute";
-
-/// Label identifying the source TLSRoute name on created ARecords
-pub const LABEL_SOURCE_TLSROUTE: &str = "bindy.firestoned.io/source-tlsroute";
+/// Label identifying the source resource name on created ARecords.
+/// Used for all resource kinds (Ingress, Service, HTTPRoute, TLSRoute).
+pub const LABEL_SOURCE_NAME: &str = "bindy.firestoned.io/source-name";
 
 /// Label carrying the DNS zone name on created ARecords (for DNSZone selector matching)
 pub const LABEL_ZONE: &str = "bindy.firestoned.io/zone";
@@ -448,15 +440,15 @@ pub fn is_being_deleted(ingress: &Ingress) -> bool {
 /// by Scout for a specific Ingress.
 ///
 /// Selects on `managed-by=scout`, `source-cluster`, `source-namespace`, and
-/// `source-ingress` to precisely target only the records owned by this Ingress.
+/// `source-name` to precisely target only the records owned by this Ingress.
 pub fn arecord_label_selector(cluster: &str, namespace: &str, ingress_name: &str) -> String {
     format!(
-        "{}={},{cluster_key}={cluster},{ns_key}={namespace},{ingress_key}={ingress_name}",
+        "{}={},{cluster_key}={cluster},{ns_key}={namespace},{name_key}={ingress_name}",
         LABEL_MANAGED_BY,
         LABEL_MANAGED_BY_SCOUT,
         cluster_key = LABEL_SOURCE_CLUSTER,
         ns_key = LABEL_SOURCE_NAMESPACE,
-        ingress_key = LABEL_SOURCE_INGRESS,
+        name_key = LABEL_SOURCE_NAME,
     )
 }
 
@@ -472,12 +464,12 @@ pub fn stale_arecord_label_selector(
     ingress_name: &str,
 ) -> String {
     format!(
-        "{}={},{cluster_key}!={current_cluster},{ns_key}={namespace},{ingress_key}={ingress_name}",
+        "{}={},{cluster_key}!={current_cluster},{ns_key}={namespace},{name_key}={ingress_name}",
         LABEL_MANAGED_BY,
         LABEL_MANAGED_BY_SCOUT,
         cluster_key = LABEL_SOURCE_CLUSTER,
         ns_key = LABEL_SOURCE_NAMESPACE,
-        ingress_key = LABEL_SOURCE_INGRESS,
+        name_key = LABEL_SOURCE_NAME,
     )
 }
 
@@ -523,7 +515,7 @@ pub fn build_arecord(params: ARecordParams<'_>) -> ARecord {
         params.ingress_namespace.to_string(),
     );
     labels.insert(
-        LABEL_SOURCE_INGRESS.to_string(),
+        LABEL_SOURCE_NAME.to_string(),
         params.ingress_name.to_string(),
     );
     labels.insert(LABEL_ZONE.to_string(), params.zone.to_string());
@@ -598,12 +590,12 @@ pub fn service_arecord_label_selector(
     service_name: &str,
 ) -> String {
     format!(
-        "{}={},{cluster_key}={cluster},{ns_key}={namespace},{svc_key}={service_name}",
+        "{}={},{cluster_key}={cluster},{ns_key}={namespace},{name_key}={service_name}",
         LABEL_MANAGED_BY,
         LABEL_MANAGED_BY_SCOUT,
         cluster_key = LABEL_SOURCE_CLUSTER,
         ns_key = LABEL_SOURCE_NAMESPACE,
-        svc_key = LABEL_SOURCE_SERVICE,
+        name_key = LABEL_SOURCE_NAME,
     )
 }
 
@@ -645,7 +637,7 @@ pub fn build_service_arecord(params: ServiceARecordParams<'_>) -> ARecord {
         params.service_namespace.to_string(),
     );
     labels.insert(
-        LABEL_SOURCE_SERVICE.to_string(),
+        LABEL_SOURCE_NAME.to_string(),
         params.service_name.to_string(),
     );
     labels.insert(LABEL_ZONE.to_string(), params.zone.to_string());
@@ -715,12 +707,12 @@ pub fn httproute_arecord_label_selector(
     route_name: &str,
 ) -> String {
     format!(
-        "{}={},{cluster_key}={cluster},{ns_key}={namespace},{route_key}={route_name}",
+        "{}={},{cluster_key}={cluster},{ns_key}={namespace},{name_key}={route_name}",
         LABEL_MANAGED_BY,
         LABEL_MANAGED_BY_SCOUT,
         cluster_key = LABEL_SOURCE_CLUSTER,
         ns_key = LABEL_SOURCE_NAMESPACE,
-        route_key = LABEL_SOURCE_HTTPROUTE,
+        name_key = LABEL_SOURCE_NAME,
     )
 }
 
@@ -728,12 +720,12 @@ pub fn httproute_arecord_label_selector(
 /// for a specific TLSRoute.
 pub fn tlsroute_arecord_label_selector(cluster: &str, namespace: &str, route_name: &str) -> String {
     format!(
-        "{}={},{cluster_key}={cluster},{ns_key}={namespace},{route_key}={route_name}",
+        "{}={},{cluster_key}={cluster},{ns_key}={namespace},{name_key}={route_name}",
         LABEL_MANAGED_BY,
         LABEL_MANAGED_BY_SCOUT,
         cluster_key = LABEL_SOURCE_CLUSTER,
         ns_key = LABEL_SOURCE_NAMESPACE,
-        route_key = LABEL_SOURCE_TLSROUTE,
+        name_key = LABEL_SOURCE_NAME,
     )
 }
 
@@ -748,12 +740,12 @@ pub fn stale_httproute_arecord_label_selector(
     route_name: &str,
 ) -> String {
     format!(
-        "{}={},{cluster_key}!={current_cluster},{ns_key}={namespace},{route_key}={route_name}",
+        "{}={},{cluster_key}!={current_cluster},{ns_key}={namespace},{name_key}={route_name}",
         LABEL_MANAGED_BY,
         LABEL_MANAGED_BY_SCOUT,
         cluster_key = LABEL_SOURCE_CLUSTER,
         ns_key = LABEL_SOURCE_NAMESPACE,
-        route_key = LABEL_SOURCE_HTTPROUTE,
+        name_key = LABEL_SOURCE_NAME,
     )
 }
 
@@ -765,12 +757,12 @@ pub fn stale_tlsroute_arecord_label_selector(
     route_name: &str,
 ) -> String {
     format!(
-        "{}={},{cluster_key}!={current_cluster},{ns_key}={namespace},{route_key}={route_name}",
+        "{}={},{cluster_key}!={current_cluster},{ns_key}={namespace},{name_key}={route_name}",
         LABEL_MANAGED_BY,
         LABEL_MANAGED_BY_SCOUT,
         cluster_key = LABEL_SOURCE_CLUSTER,
         ns_key = LABEL_SOURCE_NAMESPACE,
-        route_key = LABEL_SOURCE_TLSROUTE,
+        name_key = LABEL_SOURCE_NAME,
     )
 }
 
@@ -811,10 +803,7 @@ pub fn build_httproute_arecord(params: HTTPRouteARecordParams<'_>) -> ARecord {
         LABEL_SOURCE_NAMESPACE.to_string(),
         params.route_namespace.to_string(),
     );
-    labels.insert(
-        LABEL_SOURCE_HTTPROUTE.to_string(),
-        params.route_name.to_string(),
-    );
+    labels.insert(LABEL_SOURCE_NAME.to_string(), params.route_name.to_string());
     labels.insert(LABEL_ZONE.to_string(), params.zone.to_string());
 
     let meta = kube::api::ObjectMeta {
@@ -872,10 +861,7 @@ pub fn build_tlsroute_arecord(params: TLSRouteARecordParams<'_>) -> ARecord {
         LABEL_SOURCE_NAMESPACE.to_string(),
         params.route_namespace.to_string(),
     );
-    labels.insert(
-        LABEL_SOURCE_TLSROUTE.to_string(),
-        params.route_name.to_string(),
-    );
+    labels.insert(LABEL_SOURCE_NAME.to_string(), params.route_name.to_string());
     labels.insert(LABEL_ZONE.to_string(), params.zone.to_string());
 
     let meta = kube::api::ObjectMeta {

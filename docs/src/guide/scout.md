@@ -118,7 +118,7 @@ Scout will create an `ARecord` named `scout-<cluster>-my-app-ns-my-app-0` in the
 
 - `spec.name`: `my-app` (derived by stripping the zone suffix from the host)
 - `spec.address`: IP from the Ingress LoadBalancer status
-- Labels: `bindy.firestoned.io/source-cluster`, `source-namespace`, `source-ingress`, `zone`
+- Labels: `bindy.firestoned.io/source-cluster`, `source-namespace`, `source-name`, `zone`
 
 **For a LoadBalancer Service:**
 
@@ -274,12 +274,12 @@ WARN scout: service my-app/my-grpc-api has no external IP yet; requeueing in 30s
 | ARecord per rule | Yes (one per `rules[].host`) | No — exactly one record |
 | CR name suffix | `...-{idx}` (rule index) | No index |
 | IP source | LB status or annotation | LB status or annotation |
-| Source label | `source-ingress` | `source-service` |
+| Source label | `source-name` | `source-name` |
 
 Query all Service-sourced ARecords:
 
 ```bash
-kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-service
+kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-name=<service-name>
 ```
 
 ---
@@ -304,10 +304,7 @@ Every `ARecord` created by Scout carries these labels:
 | `bindy.firestoned.io/managed-by` | `scout` | All |
 | `bindy.firestoned.io/source-cluster` | `<BINDY_SCOUT_CLUSTER_NAME>` | All |
 | `bindy.firestoned.io/source-namespace` | Resource namespace | All |
-| `bindy.firestoned.io/source-ingress` | Ingress name | Ingress only |
-| `bindy.firestoned.io/source-service` | Service name | Service only |
-| `bindy.firestoned.io/source-httproute` | HTTPRoute name | HTTPRoute only |
-| `bindy.firestoned.io/source-tlsroute` | TLSRoute name | TLSRoute only |
+| `bindy.firestoned.io/source-name` | Resource name | All |
 | `bindy.firestoned.io/zone` | Zone name | All |
 
 The `zone` label is particularly important: it lets you configure a `DNSZone` to automatically pull in all ARecords created by Scout for that zone:
@@ -589,8 +586,7 @@ ARecords created from Gateway API routes carry similar labels to Ingress-derived
 | `bindy.firestoned.io/managed-by` | `scout` | Identifies Scout as the manager |
 | `bindy.firestoned.io/source-cluster` | `<BINDY_SCOUT_CLUSTER_NAME>` | Cluster where the route lives |
 | `bindy.firestoned.io/source-namespace` | Route namespace | Source namespace for traceability |
-| `bindy.firestoned.io/source-httproute` | Route name | **(HTTPRoute only)** Source HTTPRoute name |
-| `bindy.firestoned.io/source-tlsroute` | Route name | **(TLSRoute only)** Source TLSRoute name |
+| `bindy.firestoned.io/source-name` | Route name | Source route name |
 | `bindy.firestoned.io/zone` | Zone name | Allows `DNSZone.spec.recordsFrom` label selectors to discover the record |
 
 This allows you to configure a `DNSZone` to pull in all ARecords created by Scout from both Ingress and Gateway API routes:

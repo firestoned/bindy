@@ -18,7 +18,7 @@
 #   kubectl apply -f examples/tlsroute-dns.yaml
 #
 # Verify Scout created the ARecords:
-#   kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-tlsroute=secure-gateway
+#   kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-name=secure-gateway
 #
 # Verify DNS resolution:
 #   kubectl run -it --rm drill --image=alpine/drill:latest -- drill @<dns-server> secure.example.com

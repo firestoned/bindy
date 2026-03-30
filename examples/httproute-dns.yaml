@@ -16,7 +16,7 @@
 #   kubectl apply -f examples/httproute-dns.yaml
 #
 # Verify Scout created the ARecords:
-#   kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-httproute=api-gateway
+#   kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-name=api-gateway
 #
 # Verify DNS resolution:
 #   kubectl run -it --rm drill --image=alpine/drill:latest -- drill @<dns-server> api.example.com

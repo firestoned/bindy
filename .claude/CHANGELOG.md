@@ -1,3 +1,22 @@
+## [2026-03-29] - Unify Scout source labels into bindy.firestoned.io/source-name
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/scout.rs`: Replaced four constants (`LABEL_SOURCE_INGRESS`, `LABEL_SOURCE_SERVICE`, `LABEL_SOURCE_HTTPROUTE`, `LABEL_SOURCE_TLSROUTE`) with a single `LABEL_SOURCE_NAME = "bindy.firestoned.io/source-name"`. All builder functions and label selector functions updated.
+- `src/scout_tests.rs`: Updated all test imports and assertions; removed now-invalid negative assertions; updated selector-equality test for HTTPRoute/TLSRoute.
+- `docs/src/guide/scout.md`, `docs/src/installation/scout.md`: Updated all labels tables and kubectl examples.
+- `examples/httproute-dns.yaml`, `examples/tlsroute-dns.yaml`: Updated comment kubectl examples.
+
+### Why
+The per-kind labels were redundant — the kind is already in the resource metadata. One `source-name` label is simpler to query.
+
+### Impact
+- [x] Breaking change — existing `DNSZone.spec.recordsFrom` label selectors or tooling using the old `source-ingress`/`source-service`/`source-httproute`/`source-tlsroute` labels must be updated to `source-name`
+- [x] Requires cluster rollout
+
+---
+
 ## [2026-03-29] - Document Gateway API support in Scout guides
 
 **Author:** Erick Bourgeois
