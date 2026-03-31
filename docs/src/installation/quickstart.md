@@ -49,7 +49,7 @@ Use `--dry-run` to preview every resource as YAML before applying:
 bindy bootstrap operator --dry-run
 ```
 
-### <img src="../../images/scouty.svg" alt="Scouty the Scout Bee" width="40" style="vertical-align: middle; margin-right: 2px;"/> Deploying Scout
+### <img src="../../images/scouty.png" alt="Scouty the Scout Bee" width="40" style="vertical-align: middle; margin-right: 2px;"/> Deploying Scout
 
 Scout is an optional, event-driven controller that watches `Ingress` resources and automatically creates `ARecord` CRs in the bindy namespace, no manual DNS management needed for application teams.
 

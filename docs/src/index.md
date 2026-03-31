@@ -119,7 +119,7 @@ Bindy automatically:
 
 Bindy is actively developed and used in production environments. The project follows semantic versioning and maintains backward compatibility within major versions.
 
-Current version: **v0.1.0**
+Current version: **v0.5.0**
 
 ## Support & Community
 

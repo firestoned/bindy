@@ -55,7 +55,7 @@ kubectl wait --for=condition=available --timeout=300s \
 !!! tip "Specific version"
     To pin to a specific release instead of `latest`:
     ```bash
-    kubectl apply -f https://github.com/firestoned/bindy/releases/download/v0.3.0/install.yaml
+    kubectl apply -f https://github.com/firestoned/bindy/releases/download/v0.5.0/install.yaml
     ```
 
 ## Step 3: Create a BIND9 Cluster

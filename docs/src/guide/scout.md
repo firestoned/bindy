@@ -1,4 +1,4 @@
-# <img src="../../images/scouty.svg" alt="Scouty the Scout Bee" width="40" style="vertical-align: middle; margin-right: 2px;"/> Bindy Scout
+# <img src="../../images/scouty.png" alt="Scouty the Scout Bee" width="40" style="vertical-align: middle; margin-right: 2px;"/> Bindy Scout
 
 !!! info "Two Deployment Modes"
     **[Same-cluster mode](#quick-start)** (default): Scout and the Bindy operator run in the same cluster. No extra configuration needed.
