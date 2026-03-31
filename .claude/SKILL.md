@@ -358,3 +358,51 @@ done
 - [ ] No `.unwrap()` in production code
 
 **Verification:** Every checked box above passes. A task is NOT complete until the full checklist is green.
+
+---
+
+## `upgrade-bindcar`
+
+**When to use:**
+- When the user asks to upgrade bindcar to a new version (e.g., "upgrade to bindcar v0.7.0")
+
+**Steps:**
+
+Given `NEW_VERSION` (e.g., `0.7.0`) and `NEW_TAG` (e.g., `v0.7.0`):
+
+```bash
+# 1. Update Cargo dependency
+# In Cargo.toml: bindcar = "<NEW_VERSION>"
+sed -i '' 's/^bindcar = ".*"/bindcar = "<NEW_VERSION>"/' Cargo.toml
+
+# 2. Resolve the new version in Cargo.lock
+cargo update bindcar
+```
+
+Then update ALL of the following files (use rg to verify nothing is missed):
+
+| File | What to change |
+|------|----------------|
+| `Cargo.toml` | `bindcar = "<NEW_VERSION>"` |
+| `src/constants.rs` | `DEFAULT_BINDCAR_IMAGE` → `ghcr.io/firestoned/bindcar:<NEW_TAG>` |
+| `src/crd.rs` | rustdoc example `/// Example: "ghcr.io/firestoned/bindcar:<NEW_TAG>"` |
+| `src/bootstrap.rs` | Any hardcoded image references (check with rg) |
+| `examples/*.yaml` | All `image: "ghcr.io/firestoned/bindcar:*"` lines |
+| `deploy/operator/crds/*.crd.yaml` | All `Example: "ghcr.io/firestoned/bindcar:*"` lines |
+| `tests/integration_test.sh` | All `image: "ghcr.io/firestoned/bindcar:*"` lines |
+| `docs/src/**/*.md` | Any `ghcr.io/firestoned/bindcar:v*` references (skip placeholder examples using other registries) |
+
+```bash
+# Verify no old version strings remain (replace OLD with the prior version tag)
+rg 'firestoned/bindcar:v' . --glob '!target/' --glob '!.claude/CHANGELOG.md'
+```
+
+3. Check for API breaking changes between old and new bindcar versions:
+   - Read `/Users/erick/dev/bindcar/src/lib.rs` and compare exported types against what bindy imports
+   - If types/fields were removed or renamed, update all usages in `src/`
+
+4. Run `cargo-quality` skill (compile + clippy + tests must all pass).
+
+5. Run `update-changelog` skill.
+
+**Verification:** `rg 'firestoned/bindcar:v' . --glob '!target/' --glob '!.claude/CHANGELOG.md'` shows only the new tag. `cargo test` passes.

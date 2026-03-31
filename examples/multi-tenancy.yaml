@@ -336,7 +336,7 @@ spec:
     allowQuery:
       - "any"  # Open for dev environment
     bindcarConfig:
-      image: "ghcr.io/firestoned/bindcar:latest"
+      image: "ghcr.io/firestoned/bindcar:v0.6.0"
       imagePullPolicy: Never
       logLevel: debug
     dnssec:

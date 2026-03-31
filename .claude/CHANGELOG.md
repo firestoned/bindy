@@ -1,3 +1,48 @@
+## [2026-03-30] - Roadmap: External Bind9 Gateway (bare-metal/VM support)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/roadmaps/external-bind9-gateway.md`: Full roadmap for tunnelling bindy communication to bind9+bindcar running on bare-metal or VMs via a reverse TLS 1.3 tunnel (rathole/Noise_KK), including proposed `Bind9Gateway` CRD, `Bind9Instance.gatewayRef` extension, `bind9gateway-agent` binary design, security model, and 6-phase implementation plan
+
+### Why
+bindcar can now run outside the cluster; this roadmap defines the architecture for extending bindy to manage fully external bind9 instances without requiring them to be Kubernetes nodes.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
+## [2026-03-30] - Upgrade bindcar to v0.6.0
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: bumped `bindcar` dependency from `0.5.4` to `0.6.0`
+- `src/constants.rs`: updated `DEFAULT_BINDCAR_IMAGE` from `v0.5.1` to `v0.6.0`
+- `src/crd.rs`: updated rustdoc example image tag to `v0.6.0`
+- `examples/complete-setup.yaml`: updated bindcar image to `v0.6.0`
+- `examples/cluster-bind9-provider.yaml`: updated bindcar image from `v0.5.6` to `v0.6.0`
+- `deploy/operator/crds/bind9instances.crd.yaml`: updated example image tags to `v0.6.0`
+- `deploy/operator/crds/bind9clusters.crd.yaml`: updated example image tag to `v0.6.0`
+- `deploy/operator/crds/clusterbind9providers.crd.yaml`: updated example image tag to `v0.6.0`
+- `tests/integration_test.sh`: updated both bindcar image references to `v0.6.0`
+- `.claude/SKILL.md`: added `upgrade-bindcar` skill
+
+### Why
+bindcar v0.6.0 adds DNSSEC support (`dnssec_policy`, `inline_signing` on `ZoneConfig`), `ModifyZoneRequest`, and full DNS record management API. All additions are backward compatible.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-03-29] - Unify Scout source labels into bindy.firestoned.io/source-name
 
 **Author:** Erick Bourgeois
