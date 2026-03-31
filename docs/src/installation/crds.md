@@ -24,7 +24,7 @@ kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/cr
 Or install a specific version:
 
 ```bash
-kubectl apply -f https://github.com/firestoned/bindy/releases/download/v0.3.0/crds.yaml
+kubectl apply -f https://github.com/firestoned/bindy/releases/download/v0.5.0/crds.yaml
 ```
 
 This is the **recommended method** as it:
