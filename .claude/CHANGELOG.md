@@ -1,3 +1,23 @@
+## [2026-04-03] - Fix Scout TLSRoute API version
+
+**Author:** Prabhjot Bawa
+
+### Changed
+- `src/scout.rs`: 
+  - Fixed TLSRoute API version from `v1` to `v1alpha2` (the stable Gateway API experimental version)
+  - Added required `rules` field to TLSRouteSpec structure (Gateway API v1alpha2 requirement)
+  - Updated k8s_openapi::Resource trait implementation for TLSRoute to use correct API version
+
+### Why
+1. API version was hardcoded to `v1`, but experimental TLSRoute uses `v1alpha2`
+2. TLSRouteSpec was missing the required `spec.rules` field
+3. Each rule requires at least one valid backendRef with name, kind, and port fields
+
+### Impact
+- [x] Bug fix: TLSRoute resources now create successfully with correct API version and valid structure
+
+---
+
 ## [2026-03-30] - Roadmap: External Bind9 Gateway (bare-metal/VM support)
 
 **Author:** Erick Bourgeois
