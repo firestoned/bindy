@@ -77,6 +77,9 @@ pub struct TLSRouteSpec {
     /// Hostnames matching this TLSRoute
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hostnames: Option<Vec<String>>,
+    /// Rules for this TLSRoute (required by API, but Scout only uses hostnames)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<Vec<serde_json::Value>>,
 }
 
 /// Minimal TLSRoute definition for Scout's use case.
@@ -122,10 +125,10 @@ impl k8s_openapi::Resource for HTTPRoute {
 }
 
 impl k8s_openapi::Resource for TLSRoute {
-    const API_VERSION: &'static str = "gateway.networking.k8s.io/v1";
+    const API_VERSION: &'static str = "gateway.networking.k8s.io/v1alpha2";
     const GROUP: &'static str = "gateway.networking.k8s.io";
     const KIND: &'static str = "TLSRoute";
-    const VERSION: &'static str = "v1";
+    const VERSION: &'static str = "v1alpha2";
     const URL_PATH_SEGMENT: &'static str = "tlsroutes";
     type Scope = k8s_openapi::NamespaceResourceScope;
 }
