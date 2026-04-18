@@ -1,3 +1,27 @@
+## [2026-04-17] - Update rustls-webpki to fix RUSTSEC-2026-0098 and RUSTSEC-2026-0099
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.lock`: Bumped `rustls-webpki` from 0.103.10 to 0.103.12
+
+### Why
+`cargo audit` reported two vulnerabilities in `rustls-webpki` 0.103.10:
+- **RUSTSEC-2026-0098**: Name constraints for URI names were incorrectly accepted
+- **RUSTSEC-2026-0099**: Name constraints were accepted for certificates asserting a wildcard name
+
+Both are fixed in 0.103.12. Pulled in transitively via `rustls`, `reqwest`, `kube-client`, and `hyper-rustls`.
+
+The remaining `rand` 0.8.5 / 0.9.2 advisories (RUSTSEC-2026-0097, unsoundness) are warnings only and come from transitive deps (`hickory-proto`, `quinn-proto`, `kube-lease-manager`, `governor`) that need upstream fixes — `cargo audit` exits 0.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-04-09 02:35] - Pin Dockerfile base image digests to fix OpenSSL CVEs
 
 **Author:** Erick Bourgeois
