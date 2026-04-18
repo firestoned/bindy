@@ -1,3 +1,27 @@
+## [2026-04-09 02:35] - Pin Dockerfile base image digests to fix OpenSSL CVEs
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docker/Dockerfile`: Pinned `debian:12-slim` builder stage and `gcr.io/distroless/cc-debian12:nonroot` runtime stage to latest multi-arch manifest list digests
+
+### Why
+Automated vulnerability scan detected CVEs in container image `ghcr.io/firestoned/bindy:main-distroless`:
+- **CVE-2025-15467** (CRITICAL): libssl3 — OpenSSL RCE via oversized IV in CMS parsing; fixed in 3.0.18-1~deb12u2
+- **CVE-2025-69419** (HIGH): libssl3 — arbitrary code execution via out-of-bounds write in PKCS#12 processing; fixed in 3.0.18-1~deb12u2
+- **CVE-2025-69421** (HIGH): libssl3 — DoS via malformed PKCS#12 file; fixed in 3.0.18-1~deb12u2
+- **CVE-2026-0861** (HIGH): libc6 — integer overflow in memalign leading to heap corruption; no upstream fix available yet
+
+Pinning to the latest distroless digest picks up the patched Debian 12 libssl3 packages. The libc6 CVE remains open until a patch is released.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-04-03] - Fix Scout TLSRoute API version
 
 **Author:** Prabhjot Bawa
