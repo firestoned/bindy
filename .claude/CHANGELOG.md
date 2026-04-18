@@ -1,3 +1,37 @@
+## [2026-04-17] - Upgrade base images to Debian 13 (trixie) and fix distroless builder stage
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docker/Dockerfile`:
+  - Builder stage: `debian:12-slim` → `debian:13-slim` and added missing `AS builder` alias
+  - Runtime stage: `gcr.io/distroless/cc-debian12:nonroot` → `gcr.io/distroless/cc-debian13:nonroot`
+- `docker/Dockerfile.local`: `debian:12-slim` → `debian:13-slim`
+- `scripts/pin-image-digests.sh`: Updated tracked image list to Debian 13 variants
+- `docker/README.md`: Base image description updated to `cc-debian13:nonroot`
+- `vex/bindy.openvex.json`: Impact statement references `distroless/cc-debian13`
+- `.claude/SKILL.md`: Digest examples updated to Debian 13
+
+### Why
+Distroless build in CI (run 24595052316) failed with:
+```
+failed to resolve source metadata for docker.io/library/builder:latest:
+pull access denied, repository does not exist or may require authorization
+```
+Root cause: `FROM debian:12-slim` lacked the `AS builder` alias, so `COPY --from=builder` tried to pull a non-existent image called `builder`. Added the alias.
+
+Also bumped Debian 12 (bookworm) → Debian 13 (trixie, current stable) to pick up the latest security patches. Multi-arch availability verified for both `debian:13-slim` and `gcr.io/distroless/cc-debian13:nonroot` (amd64 + arm64).
+
+Chainguard Dockerfile already tracks `:latest` on Wolfi-based images (no Debian version to bump) — no changes required there.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-04-17] - Update rustls-webpki to fix RUSTSEC-2026-0098 and RUSTSEC-2026-0099
 
 **Author:** Erick Bourgeois
