@@ -79,8 +79,8 @@ echo ""
 
 # Images to update: must match exactly what appears in FROM lines
 IMAGES=(
-  "debian:12-slim"
-  "gcr.io/distroless/cc-debian12:nonroot"
+  "debian:13-slim"
+  "gcr.io/distroless/cc-debian13:nonroot"
   "cgr.dev/chainguard/wolfi-base:latest"
   "cgr.dev/chainguard/glibc-dynamic:latest"
   "rust:1.94.0"

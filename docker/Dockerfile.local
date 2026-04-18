@@ -18,7 +18,7 @@
 
 # Local development: use platform-native image (auto-detects amd64 or arm64)
 # No digest pin - always pulls latest for your platform
-FROM debian:12-slim
+FROM debian:13-slim
 
 LABEL org.opencontainers.image.source="https://github.com/firestoned/bindy"
 LABEL org.opencontainers.image.description="BIND9 DNS Operator for Kubernetes (Local Dev Build)"

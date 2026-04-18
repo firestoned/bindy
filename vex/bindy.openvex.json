@@ -47,7 +47,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "bindy uses rustls (with the ring or aws-lc-rs backend) for all TLS operations and does not link against or call into OpenSSL or libssl. The container base images (distroless/cc-debian12, chainguard/glibc-dynamic) do not include libssl. This CVE is not applicable."
+      "impact_statement": "bindy uses rustls (with the ring or aws-lc-rs backend) for all TLS operations and does not link against or call into OpenSSL or libssl. The container base images (distroless/cc-debian13, chainguard/glibc-dynamic) do not include libssl. This CVE is not applicable."
     },
     {
       "vulnerability": {
