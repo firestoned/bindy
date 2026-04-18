@@ -235,15 +235,15 @@ What `make docs` does:
 docker buildx imagetools inspect <image>:<tag> --raw | sha256sum | awk '{print "sha256:"$1}'
 
 # Examples:
-docker buildx imagetools inspect debian:12-slim --raw | sha256sum | awk '{print "sha256:"$1}'
+docker buildx imagetools inspect debian:13-slim --raw | sha256sum | awk '{print "sha256:"$1}'
 docker buildx imagetools inspect rust:1.94.0 --raw | sha256sum | awk '{print "sha256:"$1}'
-docker buildx imagetools inspect gcr.io/distroless/cc-debian12:nonroot --raw | sha256sum | awk '{print "sha256:"$1}'
+docker buildx imagetools inspect gcr.io/distroless/cc-debian13:nonroot --raw | sha256sum | awk '{print "sha256:"$1}'
 ```
 
 Use the digest in Dockerfiles as:
 ```dockerfile
 # NOTE: This digest points to the multi-arch manifest list (supports both AMD64 and ARM64)
-FROM debian:12-slim@sha256:<digest> AS builder
+FROM debian:13-slim@sha256:<digest> AS builder
 ```
 
 Update ALL Dockerfiles that use the same base image:

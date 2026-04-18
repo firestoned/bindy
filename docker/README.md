@@ -38,7 +38,7 @@ docker pull ghcr.io/firestoned/bindy:latest-fips
 
 **Image Tag:** `ghcr.io/firestoned/bindy:latest-distroless`
 
-**Base Image:** Google Distroless (cc-debian12:nonroot)
+**Base Image:** Google Distroless (cc-debian13:nonroot)
 - **Size:** ~20MB
 - **CVEs:** Minimal (Google's security patches)
 - **FIPS:** Compatible (requires configuration)
