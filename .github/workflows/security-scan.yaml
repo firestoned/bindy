@@ -93,7 +93,7 @@ jobs:
 
       - name: Create GitHub issue for vulnerabilities
         if: steps.parse.outputs.has_vulnerabilities == 'true'
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
@@ -226,7 +226,7 @@ jobs:
 
       - name: Create GitHub issue for secrets
         if: steps.gitleaks.outputs.has_secrets == 'true'
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
@@ -372,7 +372,7 @@ jobs:
 
       - name: Create GitHub issue for container vulnerabilities
         if: steps.parse.outputs.has_vulnerabilities == 'true'
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
