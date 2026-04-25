@@ -44,7 +44,7 @@ url = "2.5.8"
 bindcar = "0.6.0"
 prometheus = "0.14"
 axum = "0.8"
-sha2 = "0.10"
+sha2 = "0.11"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 
