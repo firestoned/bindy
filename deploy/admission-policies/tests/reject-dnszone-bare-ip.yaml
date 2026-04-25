@@ -1,0 +1,17 @@
+# Should be REJECTED by bindy-zone-name-validation: zoneName must be a DNS
+# name, not a bare IPv4 address.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: vap-test-zone-reject-ip
+  namespace: bindy-system
+spec:
+  zoneName: 10.0.0.1
+  soaRecord:
+    primaryNs: ns1.example.com.
+    adminEmail: hostmaster@example.com
+    serial: 1
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTtl: 86400

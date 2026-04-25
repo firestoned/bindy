@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 
-.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks
+.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall
 
 # Detect host architecture and derive the matching Linux cross-compilation target.
 # On Apple Silicon (arm64) → aarch64-unknown-linux-gnu
@@ -154,6 +154,52 @@ test-integ-cluster-provider: ## Run cluster provider resilience tests (requires 
 	@echo "Running cluster provider resilience integration tests..."
 	@chmod +x tests/cluster_provider_resilience_test.sh
 	@./tests/cluster_provider_resilience_test.sh
+
+# -----------------------------------------------------------------------------
+# ValidatingAdmissionPolicy (CEL) — defense-in-depth at the kube API server
+# -----------------------------------------------------------------------------
+
+admission-policies-install: ## Install bindy ValidatingAdmissionPolicies (k8s 1.30+)
+	@echo "Installing bindy ValidatingAdmissionPolicies..."
+	@kubectl apply -f deploy/admission-policies/01-bindy-acl-policy.yaml
+	@kubectl apply -f deploy/admission-policies/02-bindy-acl-binding.yaml
+	@kubectl apply -f deploy/admission-policies/03-bindy-zone-name-policy.yaml
+	@kubectl apply -f deploy/admission-policies/04-bindy-zone-name-binding.yaml
+	@echo "✓ Core admission policies installed."
+	@echo "  Optional posture-strict RNDC policy (rejects hmac-sha1):"
+	@echo "    kubectl apply -f deploy/admission-policies/05-bindy-rndc-strict-policy.yaml"
+	@echo "    kubectl apply -f deploy/admission-policies/06-bindy-rndc-strict-binding.yaml"
+
+admission-policies-uninstall: ## Remove bindy ValidatingAdmissionPolicies
+	@kubectl delete --ignore-not-found -f deploy/admission-policies/
+
+# Exercises every fixture under deploy/admission-policies/tests/ via
+# kubectl --dry-run=server. Fixtures named accept-* must succeed; fixtures
+# named reject-* must fail. Requires the policies to be installed first.
+admission-policies-test: ## Validate VAPs against accept/reject fixtures
+	@echo "Testing ValidatingAdmissionPolicies against fixtures..."
+	@fail=0; \
+	for f in deploy/admission-policies/tests/accept-*.yaml; do \
+	  echo "  [ACCEPT] $$f"; \
+	  if ! kubectl apply --dry-run=server -f "$$f" >/dev/null 2>&1; then \
+	    echo "    ✗ FAIL: expected accept, got reject"; \
+	    kubectl apply --dry-run=server -f "$$f" 2>&1 | sed 's/^/      /'; \
+	    fail=1; \
+	  else \
+	    echo "    ✓ accepted"; \
+	  fi; \
+	done; \
+	for f in deploy/admission-policies/tests/reject-*.yaml; do \
+	  echo "  [REJECT] $$f"; \
+	  if kubectl apply --dry-run=server -f "$$f" >/dev/null 2>&1; then \
+	    echo "    ✗ FAIL: expected reject, got accept"; \
+	    fail=1; \
+	  else \
+	    echo "    ✓ rejected as expected"; \
+	  fi; \
+	done; \
+	if [ $$fail -ne 0 ]; then echo "✗ Admission policy tests FAILED."; exit 1; fi; \
+	echo "✓ All admission policy fixtures behaved as expected."
 
 test-all: test test-integration ## Run all tests (unit + integration)
 

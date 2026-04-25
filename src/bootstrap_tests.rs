@@ -1165,6 +1165,7 @@ mod tests {
             None,
             "scout",
             "my-token",
+            true,
         )
         .unwrap();
         let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
@@ -1179,6 +1180,7 @@ mod tests {
             None,
             "scout",
             "my-token",
+            true,
         )
         .unwrap();
         let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
@@ -1193,6 +1195,7 @@ mod tests {
             None,
             "scout",
             "my-token",
+            true,
         )
         .unwrap();
         let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
@@ -1210,6 +1213,7 @@ mod tests {
             None,
             "scout",
             "my-token",
+            true,
         )
         .unwrap();
         let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
@@ -1227,6 +1231,7 @@ mod tests {
             None,
             "scout",
             "my-token",
+            true,
         )
         .unwrap();
         let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
@@ -1241,6 +1246,7 @@ mod tests {
             None,
             "scout",
             "my-token",
+            true,
         )
         .unwrap();
         let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
@@ -1259,6 +1265,7 @@ mod tests {
             Some(ca),
             "scout",
             "my-token",
+            false,
         )
         .unwrap();
         let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
@@ -1277,6 +1284,7 @@ mod tests {
             Some(ca),
             "scout",
             "my-token",
+            false,
         )
         .unwrap();
         let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
@@ -1294,6 +1302,7 @@ mod tests {
             None,
             "scout",
             "my-token",
+            true,
         )
         .unwrap();
         let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
@@ -1308,6 +1317,7 @@ mod tests {
             None,
             "scout",
             "my-token",
+            true,
         )
         .unwrap();
         let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
@@ -1322,6 +1332,7 @@ mod tests {
             None,
             "scout",
             "my-token",
+            true,
         )
         .unwrap();
         let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
@@ -1332,6 +1343,50 @@ mod tests {
         assert_eq!(
             parsed["contexts"][0]["context"]["user"].as_str(),
             Some("scout")
+        );
+    }
+
+    #[test]
+    fn test_build_kubeconfig_yaml_refuses_no_ca_without_opt_in() {
+        // H2 regression: with no CA data and `allow_insecure = false` the builder
+        // must refuse rather than silently distribute a kubeconfig that disables
+        // TLS verification.
+        let result = build_kubeconfig_yaml(
+            "my-cluster",
+            "https://example.com:6443",
+            None,
+            "scout",
+            "my-token",
+            false,
+        );
+        assert!(
+            result.is_err(),
+            "expected refusal when CA missing and not opted in"
+        );
+        let msg = format!("{:#}", result.unwrap_err());
+        assert!(
+            msg.contains("insecure-skip-tls-verify"),
+            "error must reference the opt-out flag, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_build_kubeconfig_yaml_insecure_opt_in_sets_flag() {
+        // H2: explicit opt-in still produces insecure-skip-tls-verify=true so
+        // kind-to-kind local development flows keep working.
+        let yaml = build_kubeconfig_yaml(
+            "my-cluster",
+            "https://example.com:6443",
+            None,
+            "scout",
+            "my-token",
+            true,
+        )
+        .unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(
+            parsed["clusters"][0]["cluster"]["insecure-skip-tls-verify"].as_bool(),
+            Some(true)
         );
     }
 

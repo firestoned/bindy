@@ -1,0 +1,106 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# ValidatingAdmissionPolicy: defense-in-depth checks on `spec.zoneName` for
+# DNSZone and on the per-record `spec.zoneRef.zoneName` / `spec.zoneName`
+# fields used by ARecord, AAAARecord, CNAMERecord, MXRecord, NSRecord,
+# SRVRecord, CAARecord, TXTRecord.
+#
+# The CRD JSONSchema already enforces a regex pattern, but this policy adds:
+#   - explicit length cap (DNS names max 253 octets, RFC 1035)
+#   - rejection of bare-IP zone names (a common configuration mistake)
+#   - rejection of a leading '.' or consecutive dots
+#   - rejection of any character that could break out of a templated config
+#
+# Defense in depth is appropriate because the operator templates these names
+# into named.conf zone declarations and into RFC 2136 dynamic-update messages.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: bindy-zone-name-validation
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/part-of: bindy
+    app.kubernetes.io/component: admission-policy
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups:   ["bindy.firestoned.io"]
+        apiVersions: ["v1beta1"]
+        operations:  ["CREATE", "UPDATE"]
+        resources:
+          - dnszones
+          - arecords
+          - aaaarecords
+          - cnamerecords
+          - mxrecords
+          - nsrecords
+          - srvrecords
+          - caarecords
+          - txtrecords
+  variables:
+    # Collect every DNS-name-bearing field present in this resource. Records
+    # carry zoneName under spec.zoneRef; DNSZone carries it directly.
+    - name: dnsNames
+      expression: |
+        ([object.spec.?zoneName.orValue('')] +
+         [object.spec.?zoneRef.?zoneName.orValue('')] +
+         [object.spec.?recordName.orValue('')] +
+         [object.spec.?name.orValue('')]
+        ).filter(n, size(n) > 0)
+    # RFC 1035 max DNS name length, including the trailing dot.
+    - name: maxDnsNameLength
+      expression: '253'
+    # IPv4 dotted-quad — used to detect bare-IP zone names.
+    - name: ipv4Pattern
+      expression: |
+        '^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.?$'
+  validations:
+    # 1. Length cap.
+    - expression: |
+        variables.dnsNames.all(n, size(n) <= variables.maxDnsNameLength)
+      messageExpression: |
+        "DNS name exceeds RFC 1035 limit of " +
+        string(variables.maxDnsNameLength) + " octets. Offending names: " +
+        variables.dnsNames.filter(n, size(n) > variables.maxDnsNameLength)
+          .join(", ")
+
+    # 2. Reject characters that could break out of a templated zone block or
+    #    a quoted bindcar request body. These should already be excluded by
+    #    the CRD pattern, but we validate explicitly for clarity.
+    - expression: |
+        variables.dnsNames.all(n,
+          !n.contains(';') && !n.contains('{') && !n.contains('}') &&
+          !n.contains('"') && !n.contains('\\') && !n.contains(' ') &&
+          !n.contains('\n') && !n.contains('\r') && !n.contains('\t'))
+      messageExpression: |
+        "DNS names must not contain ';', '{', '}', '\"', '\\', whitespace, " +
+        "or control characters. Offending names: " +
+        variables.dnsNames.filter(n,
+          n.contains(';') || n.contains('{') || n.contains('}') ||
+          n.contains('"') || n.contains('\\') || n.contains(' ') ||
+          n.contains('\n') || n.contains('\r') || n.contains('\t')
+        ).join(", ")
+
+    # 3. No leading dot, no consecutive dots, no leading hyphen.
+    - expression: |
+        variables.dnsNames.all(n,
+          !n.startsWith('.') && !n.contains('..') && !n.startsWith('-'))
+      messageExpression: |
+        "DNS names must not start with '.', '-', or contain '..'. " +
+        "Offending names: " +
+        variables.dnsNames.filter(n,
+          n.startsWith('.') || n.contains('..') || n.startsWith('-')
+        ).join(", ")
+
+    # 4. Reject zone names that are bare IPv4 addresses — almost always a
+    #    misconfiguration (people meant to set a server, not a zone).
+    - expression: |
+        variables.dnsNames.all(n, !n.matches(variables.ipv4Pattern))
+      messageExpression: |
+        "Zone / record names must be DNS names, not IP addresses. " +
+        "Offending names: " +
+        variables.dnsNames.filter(n, n.matches(variables.ipv4Pattern))
+          .join(", ")

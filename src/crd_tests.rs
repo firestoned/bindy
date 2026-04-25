@@ -709,8 +709,8 @@ mod tests {
 
     #[test]
     fn test_rndc_algorithm_as_str_all_variants() {
-        // Test that as_str() returns the BIND9 format with "hmac-" prefix
-        assert_eq!(RndcAlgorithm::HmacMd5.as_str(), "hmac-md5");
+        // Test that as_str() returns the BIND9 format with "hmac-" prefix.
+        // HMAC-MD5 is intentionally absent — see H4 in the security audit.
         assert_eq!(RndcAlgorithm::HmacSha1.as_str(), "hmac-sha1");
         assert_eq!(RndcAlgorithm::HmacSha224.as_str(), "hmac-sha224");
         assert_eq!(RndcAlgorithm::HmacSha256.as_str(), "hmac-sha256");
@@ -721,7 +721,6 @@ mod tests {
     #[test]
     fn test_rndc_algorithm_as_rndc_str_all_variants() {
         // Test that as_rndc_str() returns the format expected by rndc crate (no "hmac-" prefix)
-        assert_eq!(RndcAlgorithm::HmacMd5.as_rndc_str(), "md5");
         assert_eq!(RndcAlgorithm::HmacSha1.as_rndc_str(), "sha1");
         assert_eq!(RndcAlgorithm::HmacSha224.as_rndc_str(), "sha224");
         assert_eq!(RndcAlgorithm::HmacSha256.as_rndc_str(), "sha256");
@@ -742,7 +741,6 @@ mod tests {
     fn test_rndc_algorithm_format_consistency() {
         // Verify that as_str() always has "hmac-" prefix and as_rndc_str() doesn't
         let algorithms = vec![
-            RndcAlgorithm::HmacMd5,
             RndcAlgorithm::HmacSha1,
             RndcAlgorithm::HmacSha224,
             RndcAlgorithm::HmacSha256,
@@ -802,10 +800,18 @@ mod tests {
         let algo = RndcAlgorithm::HmacSha256;
         let json = serde_json::to_string(&algo).unwrap();
         assert_eq!(json, "\"hmac-sha256\"");
+    }
 
-        let algo = RndcAlgorithm::HmacMd5;
-        let json = serde_json::to_string(&algo).unwrap();
-        assert_eq!(json, "\"hmac-md5\"");
+    #[test]
+    fn rndc_algorithm_rejects_hmac_md5_at_deserialization() {
+        // H4: `hmac-md5` must fail to deserialize so CRDs with the legacy
+        // algorithm are rejected at the API boundary rather than silently
+        // accepted by the operator.
+        let result: Result<RndcAlgorithm, _> = serde_json::from_str("\"hmac-md5\"");
+        assert!(
+            result.is_err(),
+            "hmac-md5 must be rejected at deserialization"
+        );
     }
 
     #[test]
@@ -820,10 +826,6 @@ mod tests {
         let json = "\"hmac-sha512\"";
         let algo: RndcAlgorithm = serde_json::from_str(json).unwrap();
         assert_eq!(algo, RndcAlgorithm::HmacSha512);
-
-        let json = "\"hmac-md5\"";
-        let algo: RndcAlgorithm = serde_json::from_str(json).unwrap();
-        assert_eq!(algo, RndcAlgorithm::HmacMd5);
     }
 
     #[test]
@@ -925,7 +927,6 @@ mod tests {
 
         // Test that serialization and deserialization roundtrip correctly
         let algorithms = vec![
-            RndcAlgorithm::HmacMd5,
             RndcAlgorithm::HmacSha1,
             RndcAlgorithm::HmacSha224,
             RndcAlgorithm::HmacSha256,
@@ -959,11 +960,11 @@ mod tests {
 
     #[test]
     fn test_tsig_key_with_different_algorithms() {
-        // Test TSIGKey with different algorithms
+        // Test TSIGKey with different algorithms (HMAC-MD5 removed per H4)
         let algorithms = vec![
             RndcAlgorithm::HmacSha256,
             RndcAlgorithm::HmacSha512,
-            RndcAlgorithm::HmacMd5,
+            RndcAlgorithm::HmacSha1,
         ];
 
         for algo in algorithms {
@@ -977,6 +978,42 @@ mod tests {
             assert_eq!(tsig.algorithm.as_str(), algo.as_str());
             assert_eq!(tsig.algorithm.as_rndc_str(), algo.as_rndc_str());
         }
+    }
+
+    // H3 regression tests: DNSRecordKind conversion is now fallible.
+    // Unknown input must return Err, not panic.
+
+    #[test]
+    fn dns_record_kind_try_from_str_accepts_all_known_kinds() {
+        for kind in DNSRecordKind::all() {
+            let parsed = DNSRecordKind::try_from(kind.as_str())
+                .expect("known kind should round-trip through try_from");
+            assert_eq!(parsed, *kind);
+        }
+    }
+
+    #[test]
+    fn dns_record_kind_try_from_returns_err_on_unknown() {
+        let result = DNSRecordKind::try_from("PTRRecord");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err, UnknownDNSRecordKind("PTRRecord".to_string()));
+    }
+
+    #[test]
+    fn dns_record_kind_try_from_does_not_panic_on_garbage() {
+        // Previously `DNSRecordKind::from("\0\0\0")` would crash the reconciler.
+        // The fallible variant must surface a structured error instead.
+        let result = DNSRecordKind::try_from("\0\0\0");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn dns_record_kind_from_str_trait_works() {
+        use std::str::FromStr;
+        let kind = DNSRecordKind::from_str("CNAMERecord").unwrap();
+        assert_eq!(kind, DNSRecordKind::CNAME);
+        assert!(DNSRecordKind::from_str("bogus").is_err());
     }
 }
 

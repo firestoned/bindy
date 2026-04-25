@@ -168,6 +168,13 @@ enum BootstrapCommands {
         /// Alias: --delete
         #[arg(long, alias = "delete", default_value_t = false)]
         revoke: bool,
+        /// Emit `insecure-skip-tls-verify: true` in the generated kubeconfig when the
+        /// source KUBECONFIG has no `certificate-authority-data`. Without this flag the
+        /// command refuses to proceed rather than silently distributing kubeconfigs that
+        /// disable TLS verification to every child cluster. Only use for local testing
+        /// (e.g. kind) where MITM is not a concern.
+        #[arg(long, default_value_t = false)]
+        insecure_skip_tls_verify: bool,
     },
 }
 
@@ -290,12 +297,14 @@ fn main() -> Result<()> {
                     service_account,
                     server,
                     revoke,
+                    insecure_skip_tls_verify,
                 },
         } => runtime.block_on(bootstrap_multi_cluster_command(
             namespace,
             service_account,
             server,
             revoke,
+            insecure_skip_tls_verify,
         )),
         Commands::Run => runtime.block_on(run_command()),
         Commands::Scout {
@@ -985,6 +994,7 @@ async fn bootstrap_multi_cluster_command(
     service_account: String,
     server: Option<String>,
     revoke: bool,
+    allow_insecure: bool,
 ) -> Result<()> {
     initialize_logging();
     if revoke {
@@ -994,6 +1004,7 @@ async fn bootstrap_multi_cluster_command(
             &namespace,
             &service_account,
             server.as_deref(),
+            allow_insecure,
         )
         .await
     }
