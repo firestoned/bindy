@@ -6,6 +6,7 @@
 //! This module provides functions to build Kubernetes resources (`Deployment`, `ConfigMap`, `Service`)
 //! for BIND9 instances. All functions are pure and easily testable.
 
+use crate::bind9_acl::build_acl_list;
 use crate::constants::{
     API_GROUP_VERSION, BIND9_MALLOC_CONF, BIND9_NONROOT_UID, BIND9_SERVICE_ACCOUNT,
     CONTAINER_NAME_BIND9, CONTAINER_NAME_BINDCAR, DEFAULT_BIND9_VERSION, DNS_CONTAINER_PORT,
@@ -19,6 +20,7 @@ use crate::labels::{
     K8S_MANAGED_BY, K8S_NAME, K8S_PART_OF, MANAGED_BY_BIND9_CLUSTER, MANAGED_BY_BIND9_INSTANCE,
     PART_OF_BINDY,
 };
+use anyhow::Context;
 use k8s_openapi::api::{
     apps::v1::{Deployment, DeploymentSpec},
     core::v1::{
@@ -476,14 +478,16 @@ pub fn build_owner_references(instance: &Bind9Instance) -> Vec<OwnerReference> {
 /// # Returns
 ///
 /// A Kubernetes `ConfigMap` resource ready for creation/update, or None if custom `ConfigMaps` are used
-#[must_use]
+/// # Errors
+/// Returns an error if any ACL entry in the instance or cluster spec fails
+/// validation — see [`crate::bind9_acl`] for the accepted syntax.
 pub fn build_configmap(
     name: &str,
     namespace: &str,
     instance: &Bind9Instance,
     cluster: Option<&Bind9Cluster>,
     role_allow_transfer: Option<&Vec<String>>,
-) -> Option<ConfigMap> {
+) -> anyhow::Result<Option<ConfigMap>> {
     debug!(
         name = %name,
         namespace = %namespace,
@@ -506,7 +510,7 @@ pub fn build_configmap(
                 "Custom ConfigMaps specified, skipping generation"
             );
             // User is providing custom ConfigMaps, so we don't create one
-            return None;
+            return Ok(None);
         }
     }
 
@@ -518,8 +522,8 @@ pub fn build_configmap(
     let named_conf = build_named_conf(instance, cluster);
     data.insert(NAMED_CONF_FILENAME.into(), named_conf);
 
-    // Build named.conf.options
-    let options_conf = build_options_conf(instance, cluster, role_allow_transfer);
+    // Build named.conf.options (validates ACL entries before templating)
+    let options_conf = build_options_conf(instance, cluster, role_allow_transfer)?;
     data.insert(NAMED_CONF_OPTIONS_FILENAME.into(), options_conf);
 
     // Build rndc.conf (references key file mounted from Secret)
@@ -530,7 +534,7 @@ pub fn build_configmap(
 
     let owner_refs = build_owner_references(instance);
 
-    Some(ConfigMap {
+    Ok(Some(ConfigMap {
         metadata: ObjectMeta {
             name: Some(format!("{name}-config")),
             namespace: Some(namespace.into()),
@@ -540,7 +544,7 @@ pub fn build_configmap(
         },
         data: Some(data),
         ..Default::default()
-    })
+    }))
 }
 
 /// Builds a cluster-level shared `ConfigMap` containing BIND9 configuration files.
@@ -582,7 +586,7 @@ pub fn build_cluster_configmap(
     data.insert(NAMED_CONF_FILENAME.into(), named_conf);
 
     // Build named.conf.options from cluster.spec.common.global
-    let options_conf = build_cluster_options_conf(cluster);
+    let options_conf = build_cluster_options_conf(cluster)?;
     data.insert(NAMED_CONF_OPTIONS_FILENAME.into(), options_conf);
 
     // Build rndc.conf (references key file mounted from Secret)
@@ -671,7 +675,7 @@ fn build_options_conf(
     instance: &Bind9Instance,
     cluster: Option<&Bind9Cluster>,
     role_allow_transfer: Option<&Vec<String>>,
-) -> String {
+) -> anyhow::Result<String> {
     let recursion;
     let mut allow_query = String::new();
     let allow_transfer;
@@ -702,13 +706,15 @@ fn build_options_conf(
         // Allow-query ACL - instance overrides global
         if let Some(acls) = &config.allow_query {
             if !acls.is_empty() {
-                let acl_list = acls.join("; ");
+                let acl_list = build_acl_list(acls)
+                    .context("invalid entry in instance spec.config.allow_query")?;
                 allow_query = format!("allow-query {{ {acl_list}; }};");
             }
         } else if let Some(global) = global_config {
             if let Some(global_acls) = &global.allow_query {
                 if !global_acls.is_empty() {
-                    let acl_list = global_acls.join("; ");
+                    let acl_list = build_acl_list(global_acls)
+                        .context("invalid entry in cluster spec.global.allow_query")?;
                     allow_query = format!("allow-query {{ {acl_list}; }};");
                 }
             }
@@ -720,7 +726,8 @@ fn build_options_conf(
             let acl_list = if acls.is_empty() {
                 "none".to_string()
             } else {
-                acls.join("; ")
+                build_acl_list(acls)
+                    .context("invalid entry in instance spec.config.allow_transfer")?
             };
             allow_transfer = format!("allow-transfer {{ {acl_list}; }};");
         } else if let Some(role_acls) = role_allow_transfer {
@@ -728,7 +735,8 @@ fn build_options_conf(
             let acl_list = if role_acls.is_empty() {
                 "none".to_string()
             } else {
-                role_acls.join("; ")
+                build_acl_list(role_acls)
+                    .context("invalid entry in cluster role-specific allow_transfer")?
             };
             allow_transfer = format!("allow-transfer {{ {acl_list}; }};");
         } else if let Some(global) = global_config {
@@ -737,7 +745,8 @@ fn build_options_conf(
                 let acl_list = if global_acls.is_empty() {
                     "none".to_string()
                 } else {
-                    global_acls.join("; ")
+                    build_acl_list(global_acls)
+                        .context("invalid entry in cluster spec.global.allow_transfer")?
                 };
                 allow_transfer = format!("allow-transfer {{ {acl_list}; }};");
             } else {
@@ -780,7 +789,8 @@ fn build_options_conf(
             // Allow-query from global
             if let Some(acls) = &global.allow_query {
                 if !acls.is_empty() {
-                    let acl_list = acls.join("; ");
+                    let acl_list = build_acl_list(acls)
+                        .context("invalid entry in cluster spec.global.allow_query")?;
                     allow_query = format!("allow-query {{ {acl_list}; }};");
                 }
             }
@@ -790,14 +800,16 @@ fn build_options_conf(
                 let acl_list = if role_acls.is_empty() {
                     "none".to_string()
                 } else {
-                    role_acls.join("; ")
+                    build_acl_list(role_acls)
+                        .context("invalid entry in cluster role-specific allow_transfer")?
                 };
                 allow_transfer = format!("allow-transfer {{ {acl_list}; }};");
             } else if let Some(global_acls) = &global.allow_transfer {
                 let acl_list = if global_acls.is_empty() {
                     "none".to_string()
                 } else {
-                    global_acls.join("; ")
+                    build_acl_list(global_acls)
+                        .context("invalid entry in cluster spec.global.allow_transfer")?
                 };
                 allow_transfer = format!("allow-transfer {{ {acl_list}; }};");
             } else {
@@ -822,12 +834,12 @@ fn build_options_conf(
     let dnssec_policies = generate_dnssec_policies(global_config, instance.spec.config.as_ref());
 
     // Perform template substitutions
-    NAMED_CONF_OPTIONS_TEMPLATE
+    Ok(NAMED_CONF_OPTIONS_TEMPLATE
         .replace("{{RECURSION}}", &recursion)
         .replace("{{ALLOW_QUERY}}", &allow_query)
         .replace("{{ALLOW_TRANSFER}}", &allow_transfer)
         .replace("{{DNSSEC_VALIDATE}}", &dnssec_validate)
-        .replace("{{DNSSEC_POLICIES}}", &dnssec_policies)
+        .replace("{{DNSSEC_POLICIES}}", &dnssec_policies))
 }
 
 /// Build the main named.conf configuration for a cluster from template
@@ -882,7 +894,7 @@ fn build_cluster_named_conf(cluster: &Bind9Cluster) -> String {
 ///
 /// A string containing the complete named.conf.options configuration
 #[allow(clippy::too_many_lines)]
-fn build_cluster_options_conf(cluster: &Bind9Cluster) -> String {
+fn build_cluster_options_conf(cluster: &Bind9Cluster) -> anyhow::Result<String> {
     let recursion;
     let mut allow_query = String::new();
     let mut allow_transfer = String::new();
@@ -901,20 +913,18 @@ fn build_cluster_options_conf(cluster: &Bind9Cluster) -> String {
         // allow-query ACL
         if let Some(aq) = &global.allow_query {
             if !aq.is_empty() {
-                allow_query = format!(
-                    "allow-query {{ {}; }};",
-                    aq.iter().map(String::as_str).collect::<Vec<_>>().join("; ")
-                );
+                let acl_list = build_acl_list(aq)
+                    .context("invalid entry in cluster spec.global.allow_query")?;
+                allow_query = format!("allow-query {{ {acl_list}; }};");
             }
         }
 
         // allow-transfer ACL
         if let Some(at) = &global.allow_transfer {
             if !at.is_empty() {
-                allow_transfer = format!(
-                    "allow-transfer {{ {}; }};",
-                    at.iter().map(String::as_str).collect::<Vec<_>>().join("; ")
-                );
+                let acl_list = build_acl_list(at)
+                    .context("invalid entry in cluster spec.global.allow_transfer")?;
+                allow_transfer = format!("allow-transfer {{ {acl_list}; }};");
             }
         }
 
@@ -934,12 +944,12 @@ fn build_cluster_options_conf(cluster: &Bind9Cluster) -> String {
     // Generate DNSSEC policies from global config
     let dnssec_policies = generate_dnssec_policies(cluster.spec.common.global.as_ref(), None);
 
-    NAMED_CONF_OPTIONS_TEMPLATE
+    Ok(NAMED_CONF_OPTIONS_TEMPLATE
         .replace("{{RECURSION}}", &recursion)
         .replace("{{ALLOW_QUERY}}", &allow_query)
         .replace("{{ALLOW_TRANSFER}}", &allow_transfer)
         .replace("{{DNSSEC_VALIDATE}}", &dnssec_validate)
-        .replace("{{DNSSEC_POLICIES}}", &dnssec_policies)
+        .replace("{{DNSSEC_POLICIES}}", &dnssec_policies))
 }
 
 /// Builds a Kubernetes Deployment for running BIND9 pods.

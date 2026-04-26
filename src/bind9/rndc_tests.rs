@@ -231,7 +231,6 @@ mod tests {
         use crate::crd::RndcAlgorithm;
 
         let algorithms = vec![
-            ("hmac-md5", RndcAlgorithm::HmacMd5),
             ("hmac-sha1", RndcAlgorithm::HmacSha1),
             ("hmac-sha224", RndcAlgorithm::HmacSha224),
             ("hmac-sha256", RndcAlgorithm::HmacSha256),
@@ -251,6 +250,25 @@ mod tests {
             assert_eq!(key.name, "test-key");
             assert_eq!(key.secret, "dGVzdHNlY3JldA==");
         }
+    }
+
+    #[test]
+    fn test_parse_rndc_secret_data_rejects_hmac_md5() {
+        // H4: hmac-md5 must be rejected with a clear error pointing at the
+        // RFC 8945 deprecation rather than silently allowed.
+        let mut data = BTreeMap::new();
+        data.insert("key-name".to_string(), b"legacy-key".to_vec());
+        data.insert("algorithm".to_string(), b"hmac-md5".to_vec());
+        data.insert("secret".to_string(), b"dGVzdHNlY3JldA==".to_vec());
+
+        let result = Bind9Manager::parse_rndc_secret_data(&data);
+
+        assert!(result.is_err(), "hmac-md5 must be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("hmac-md5") && err.contains("deprecated"),
+            "error should explain the deprecation, got: {err}"
+        );
     }
 
     #[test]
@@ -321,7 +339,6 @@ mod tests {
         use crate::crd::RndcAlgorithm;
 
         let algorithms = vec![
-            (RndcAlgorithm::HmacMd5, "hmac-md5"),
             (RndcAlgorithm::HmacSha1, "hmac-sha1"),
             (RndcAlgorithm::HmacSha224, "hmac-sha224"),
             (RndcAlgorithm::HmacSha256, "hmac-sha256"),
@@ -427,8 +444,8 @@ mod tests {
     fn test_round_trip_all_algorithms() {
         use crate::crd::RndcAlgorithm;
 
+        // HMAC-MD5 is intentionally omitted — rejected at parse time per H4.
         let algorithms = vec![
-            RndcAlgorithm::HmacMd5,
             RndcAlgorithm::HmacSha1,
             RndcAlgorithm::HmacSha224,
             RndcAlgorithm::HmacSha256,

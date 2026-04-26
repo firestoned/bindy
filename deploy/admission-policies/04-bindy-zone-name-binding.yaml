@@ -1,0 +1,15 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: bindy-zone-name-validation-binding
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/part-of: bindy
+    app.kubernetes.io/component: admission-policy
+spec:
+  policyName: bindy-zone-name-validation
+  validationActions:
+    - Deny

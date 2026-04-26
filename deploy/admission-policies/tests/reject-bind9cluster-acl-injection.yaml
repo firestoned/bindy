@@ -1,0 +1,17 @@
+# Should be REJECTED by bindy-acl-validation.
+# Reproduces the H1 named.conf injection payload exactly.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Cluster
+metadata:
+  name: vap-test-reject-injection
+  namespace: bindy-system
+spec:
+  version: "9.18"
+  primary:
+    replicas: 1
+  secondary:
+    replicas: 1
+  global:
+    recursion: false
+    allowQuery:
+      - 'any; }; zone "evil.example" { type master; file "/etc/passwd"; }; acl x { any'

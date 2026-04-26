@@ -91,8 +91,8 @@ use std::collections::{BTreeMap, HashMap};
 /// ```rust,ignore
 /// use bindy::crd::DNSRecordKind;
 ///
-/// // Parse from string
-/// let kind = DNSRecordKind::from("ARecord");
+/// // Parse from string (fallible — unknown kinds return Err instead of panicking)
+/// let kind = DNSRecordKind::try_from("ARecord").unwrap();
 /// assert_eq!(kind, DNSRecordKind::A);
 ///
 /// // Convert to string
@@ -201,25 +201,46 @@ impl DNSRecordKind {
     }
 }
 
-impl From<&str> for DNSRecordKind {
-    fn from(s: &str) -> Self {
+/// Error returned when a string does not match a known [`DNSRecordKind`].
+///
+/// Previously the `From<&str>` impl panicked on unknown input. Now the
+/// fallible `TryFrom` impls surface this error so the caller can return it
+/// through normal `Result` propagation rather than crashing the reconciler.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[error("unknown DNS record kind {0:?} (expected one of: ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord)")]
+pub struct UnknownDNSRecordKind(pub String);
+
+impl TryFrom<&str> for DNSRecordKind {
+    type Error = UnknownDNSRecordKind;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
         match s {
-            "ARecord" => Self::A,
-            "AAAARecord" => Self::AAAA,
-            "TXTRecord" => Self::TXT,
-            "CNAMERecord" => Self::CNAME,
-            "MXRecord" => Self::MX,
-            "NSRecord" => Self::NS,
-            "SRVRecord" => Self::SRV,
-            "CAARecord" => Self::CAA,
-            _ => panic!("Unknown DNS record kind: {s}"),
+            "ARecord" => Ok(Self::A),
+            "AAAARecord" => Ok(Self::AAAA),
+            "TXTRecord" => Ok(Self::TXT),
+            "CNAMERecord" => Ok(Self::CNAME),
+            "MXRecord" => Ok(Self::MX),
+            "NSRecord" => Ok(Self::NS),
+            "SRVRecord" => Ok(Self::SRV),
+            "CAARecord" => Ok(Self::CAA),
+            _ => Err(UnknownDNSRecordKind(s.to_string())),
         }
     }
 }
 
-impl From<String> for DNSRecordKind {
-    fn from(s: String) -> Self {
-        Self::from(s.as_str())
+impl TryFrom<String> for DNSRecordKind {
+    type Error = UnknownDNSRecordKind;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::try_from(s.as_str())
+    }
+}
+
+impl std::str::FromStr for DNSRecordKind {
+    type Err = UnknownDNSRecordKind;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::try_from(s)
     }
 }
 
@@ -1747,11 +1768,13 @@ pub struct RecordStatus {
 ///
 /// These HMAC algorithms are supported by BIND9 for securing RNDC communication
 /// and zone transfers (AXFR/IXFR).
+///
+/// HMAC-MD5 was intentionally removed: RFC 8945 §10 deprecates it and it is
+/// cryptographically broken. CRDs specifying `hmac-md5` now fail CRD
+/// validation rather than produce a weakly authenticated operator.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum RndcAlgorithm {
-    /// HMAC-MD5 (legacy, not recommended for new deployments)
-    HmacMd5,
     /// HMAC-SHA1
     HmacSha1,
     /// HMAC-SHA224
@@ -1770,7 +1793,6 @@ impl RndcAlgorithm {
     #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::HmacMd5 => "hmac-md5",
             Self::HmacSha1 => "hmac-sha1",
             Self::HmacSha224 => "hmac-sha224",
             Self::HmacSha256 => "hmac-sha256",
@@ -1786,7 +1808,6 @@ impl RndcAlgorithm {
     #[must_use]
     pub fn as_rndc_str(&self) -> &'static str {
         match self {
-            Self::HmacMd5 => "md5",
             Self::HmacSha1 => "sha1",
             Self::HmacSha224 => "sha224",
             Self::HmacSha256 => "sha256",

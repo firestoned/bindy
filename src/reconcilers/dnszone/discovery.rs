@@ -686,7 +686,7 @@ pub async fn check_all_records_ready(
     };
 
     for record_ref in record_refs {
-        let kind = DNSRecordKind::from(record_ref.kind.as_str());
+        let kind = DNSRecordKind::try_from(record_ref.kind.as_str())?;
         let is_ready = match kind {
             DNSRecordKind::A => {
                 let api: Api<ARecord> = Api::namespaced(client.clone(), namespace);

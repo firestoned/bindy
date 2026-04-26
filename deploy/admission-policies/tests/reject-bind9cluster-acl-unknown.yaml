@@ -1,0 +1,18 @@
+# Should be REJECTED by bindy-acl-validation: 'anyone' is not a valid token,
+# 'foo bar' has whitespace and matches no accepted form.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Cluster
+metadata:
+  name: vap-test-reject-unknown
+  namespace: bindy-system
+spec:
+  version: "9.18"
+  primary:
+    replicas: 1
+  secondary:
+    replicas: 1
+  global:
+    allowQuery:
+      - "anyone"
+    allowTransfer:
+      - "foo bar"

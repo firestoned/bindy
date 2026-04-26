@@ -1,0 +1,118 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# ValidatingAdmissionPolicy: enforce a strict whitelist on every entry of
+# `allowQuery` / `allowTransfer` ACL fields across all bindy CRDs that allow
+# them. Mirrors the in-process Rust validator in src/bind9_acl.rs so bad input
+# is rejected at the kube API server before it ever reaches the operator.
+#
+# Without this policy a malicious or compromised CRD author can break out of
+# the BIND9 ACL block by injecting `;` and `}` characters and append arbitrary
+# `named.conf` directives (zone definitions, includes, etc.). The Rust
+# reconciler now refuses to render such config — this policy rejects it at
+# admission so it never reaches etcd at all.
+#
+# Requires Kubernetes 1.30+ (admissionregistration.k8s.io/v1 GA).
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: bindy-acl-validation
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/part-of: bindy
+    app.kubernetes.io/component: admission-policy
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups:   ["bindy.firestoned.io"]
+        apiVersions: ["v1beta1"]
+        operations:  ["CREATE", "UPDATE"]
+        resources:
+          - bind9clusters
+          - bind9instances
+          - clusterbind9providers
+  variables:
+    # Union every ACL list anywhere in the spec. Different CRDs nest these
+    # under different parents (`global`, `primary`, `secondary`, `config`)
+    # so we collect them all defensively. `?` is optional-chain, `orValue`
+    # supplies an empty default when the field is absent.
+    - name: aclEntries
+      expression: |
+        object.spec.?global.?allowQuery.orValue([]) +
+        object.spec.?global.?allowTransfer.orValue([]) +
+        object.spec.?primary.?allowTransfer.orValue([]) +
+        object.spec.?secondary.?allowTransfer.orValue([]) +
+        object.spec.?config.?allowQuery.orValue([]) +
+        object.spec.?config.?allowTransfer.orValue([])
+    # The accepted address-match-list grammar, optionally `!`-negated:
+    #   - keywords: any | none | localhost | localnets
+    #   - IPv4 with optional CIDR /0..32
+    #   - IPv6 (permissive — the operator does strict parsing) with optional
+    #     CIDR /0..128
+    #   - `key <name>` where name is [A-Za-z0-9._-]+, optionally double-quoted
+    - name: aclTokenPattern
+      expression: |
+        '^!?\\s*((any|none|localhost|localnets)' +
+        '|((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(/(3[0-2]|[12]?[0-9]))?' +
+        '|[0-9a-fA-F:]+(/(12[0-8]|1[01][0-9]|[1-9]?[0-9]))?' +
+        '|key\\s+\"?[A-Za-z0-9._-]+\"?)$'
+    # Cap on entries per ACL list — a defensive ceiling against giant arrays.
+    - name: maxAclEntries
+      expression: '256'
+    # Per-entry length cap — matches MAX_ACL_ENTRY_LEN in src/bind9_acl.rs.
+    - name: maxAclEntryLength
+      expression: '256'
+  validations:
+    # 1. Bound the list size so a single CRD cannot trigger an enormous
+    #    template render or a giant named.conf options file.
+    - expression: 'size(variables.aclEntries) <= variables.maxAclEntries'
+      messageExpression: |
+        "BIND9 ACL list has " + string(size(variables.aclEntries)) +
+        " entries; the maximum accepted by this cluster is " +
+        string(variables.maxAclEntries) + "."
+
+    # 2. Each entry must be non-empty and within the per-entry length cap.
+    - expression: |
+        variables.aclEntries.all(e, size(e) > 0 && size(e) <= variables.maxAclEntryLength)
+      messageExpression: |
+        "Each allowQuery / allowTransfer entry must be 1.." +
+        string(variables.maxAclEntryLength) + " bytes. Offending entries: " +
+        variables.aclEntries.filter(e,
+          size(e) == 0 || size(e) > variables.maxAclEntryLength).join(", ")
+
+    # 3. Reject the H1 injection shape directly. This runs before the regex
+    #    so the message can point clearly at the structural attack.
+    - expression: |
+        variables.aclEntries.all(e,
+          !e.contains(';') && !e.contains('{') && !e.contains('}') &&
+          !e.contains('"') && !e.contains('\\') && !e.contains('\n') &&
+          !e.contains('\r'))
+      messageExpression: |
+        "BIND9 ACL entries must not contain ';', '{', '}', '\"', '\\', or " +
+        "newline / carriage return — these characters break out of the " +
+        "named.conf ACL block (named.conf injection). Offending entries: " +
+        variables.aclEntries.filter(e,
+          e.contains(';') || e.contains('{') || e.contains('}') ||
+          e.contains('"') || e.contains('\\') || e.contains('\n') ||
+          e.contains('\r')).join(", ")
+
+    # 4. Every entry must match the explicit accepted-token whitelist. This
+    #    mirrors src/bind9_acl.rs::validate_acl_entry so bad input is
+    #    rejected by the API server before it ever reaches the operator.
+    - expression: |
+        variables.aclEntries.all(e, e.matches(variables.aclTokenPattern))
+      messageExpression: |
+        "Each allowQuery / allowTransfer entry must be one of: 'any', " +
+        "'none', 'localhost', 'localnets', an IPv4 or IPv6 address " +
+        "(optionally with /prefix), or 'key <name>' — each optionally " +
+        "prefixed with '!'. Offending entries: " +
+        variables.aclEntries.filter(e, !e.matches(variables.aclTokenPattern))
+          .join(", ")
+  auditAnnotations:
+    - key: bindy-acl-rejected-entries
+      valueExpression: |
+        "Rejected ACL entries: " +
+        variables.aclEntries.filter(e, !e.matches(variables.aclTokenPattern))
+          .join(", ")

@@ -1,0 +1,20 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# Optional binding for the posture-strict RNDC policy. Apply only if your
+# environment must reject hmac-sha1 in addition to the already-rejected
+# hmac-md5. Switch `validationActions` to `[Audit]` first to see what would
+# be denied without breaking existing keys.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: bindy-rndc-algorithm-strict-binding
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/part-of: bindy
+    app.kubernetes.io/component: admission-policy
+spec:
+  policyName: bindy-rndc-algorithm-strict
+  validationActions:
+    - Deny

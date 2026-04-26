@@ -66,6 +66,7 @@
 //! For more information, see the [documentation](https://firestoned.github.io/bindy/).
 
 pub mod bind9;
+pub mod bind9_acl;
 pub mod bind9_resources;
 pub mod bootstrap;
 pub mod constants;
@@ -88,6 +89,8 @@ pub mod scout;
 pub mod selector;
 pub mod status_reasons;
 
+#[cfg(test)]
+mod bind9_acl_tests;
 #[cfg(test)]
 mod bind9_resources_tests;
 #[cfg(test)]

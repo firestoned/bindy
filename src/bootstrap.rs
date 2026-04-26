@@ -46,7 +46,7 @@
 //! Then set `BINDY_SCOUT_REMOTE_SECRET=bindy-scout-remote-kubeconfig` on the
 //! scout Deployment so it picks up the remote kubeconfig at startup.
 
-use anyhow::{Context as _, Result};
+use anyhow::{anyhow, Context as _, Result};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{Namespace, Secret, ServiceAccount};
@@ -1042,13 +1042,18 @@ struct BootstrapUser {
 /// * `server_override` - Optional API server URL to use in the kubeconfig instead of the
 ///   address from KUBECONFIG. Required when the KUBECONFIG address is not reachable from
 ///   inside the child cluster (e.g. `https://172.18.0.3:6443` for kind-to-kind).
+/// * `allow_insecure` - Opt in to emitting `insecure-skip-tls-verify: true` when the
+///   KUBECONFIG lacks `certificate-authority-data`. Defaults to `false`; the command
+///   refuses rather than silently distributing MITM-susceptible kubeconfigs.
 ///
 /// # Errors
-/// Returns error if KUBECONFIG is unreadable or if Kubernetes API calls fail.
+/// Returns error if KUBECONFIG is unreadable, the Kubernetes API calls fail, or a
+/// CA bundle is missing and `allow_insecure` is `false`.
 pub async fn run_bootstrap_multi_cluster(
     namespace: &str,
     service_account: &str,
     server_override: Option<&str>,
+    allow_insecure: bool,
 ) -> Result<()> {
     let client = Client::try_default()
         .await
@@ -1075,6 +1080,7 @@ pub async fn run_bootstrap_multi_cluster(
         ca_data_b64.as_deref(),
         service_account,
         &token,
+        allow_insecure,
     )?;
 
     let secret = build_mc_kubeconfig_secret(namespace, service_account, &kubeconfig_yaml);
@@ -1094,8 +1100,14 @@ pub async fn run_bootstrap_multi_cluster(
 
 /// Build a kubeconfig YAML string for the given service account token.
 ///
-/// When `ca_data_b64` is `None`, the generated kubeconfig sets
-/// `insecure-skip-tls-verify: true`. Otherwise it embeds the CA data.
+/// When `ca_data_b64` is `Some(...)` the CA data is embedded and TLS
+/// verification is enforced. When `ca_data_b64` is `None` the function
+/// refuses to produce output unless `allow_insecure` is `true`; in that case
+/// it sets `insecure-skip-tls-verify: true` on the cluster entry.
+///
+/// Refusing insecure output by default prevents a bootstrap run against a
+/// KUBECONFIG that lacks CA data from silently distributing kubeconfigs that
+/// skip TLS verification (MITM risk against the child-cluster scout).
 ///
 /// # Arguments
 /// * `cluster_name` - Name of the cluster entry in the kubeconfig
@@ -1103,16 +1115,29 @@ pub async fn run_bootstrap_multi_cluster(
 /// * `ca_data_b64` - Base64-encoded PEM CA certificate, or `None` to skip TLS verify
 /// * `sa_name` - Name of the service account / kubeconfig user entry
 /// * `token` - Bearer token for the service account
+/// * `allow_insecure` - Must be `true` to allow emitting `insecure-skip-tls-verify`
+///   when `ca_data_b64` is `None`. Intended to be wired to an explicit CLI
+///   opt-out flag (e.g. `--insecure-skip-tls-verify`).
 ///
 /// # Errors
-/// Returns error if YAML serialization fails.
+/// - Returns an error if `ca_data_b64` is `None` and `allow_insecure` is `false`.
+/// - Returns an error if YAML serialization fails.
 pub fn build_kubeconfig_yaml(
     cluster_name: &str,
     server: &str,
     ca_data_b64: Option<&str>,
     sa_name: &str,
     token: &str,
+    allow_insecure: bool,
 ) -> Result<String> {
+    if ca_data_b64.is_none() && !allow_insecure {
+        return Err(anyhow!(
+            "refusing to build kubeconfig for {server}: KUBECONFIG has no \
+             certificate-authority-data and --insecure-skip-tls-verify was not set. \
+             Provide a CA bundle or re-run with the explicit insecure opt-out."
+        ));
+    }
+
     let cfg = BootstrapKubeconfig {
         api_version: "v1".to_string(),
         kind: "Config".to_string(),

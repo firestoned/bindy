@@ -1,32 +1,124 @@
-## [2026-04-17] - Upgrade base images to Debian 13 (trixie) and fix distroless builder stage
+## [2026-04-25] - Bump base images from debian 12 to debian 13
 
 **Author:** Erick Bourgeois
 
 ### Changed
-- `docker/Dockerfile`:
-  - Builder stage: `debian:12-slim` → `debian:13-slim` and added missing `AS builder` alias
-  - Runtime stage: `gcr.io/distroless/cc-debian12:nonroot` → `gcr.io/distroless/cc-debian13:nonroot`
-- `docker/Dockerfile.local`: `debian:12-slim` → `debian:13-slim`
-- `scripts/pin-image-digests.sh`: Updated tracked image list to Debian 13 variants
-- `docker/README.md`: Base image description updated to `cc-debian13:nonroot`
-- `vex/bindy.openvex.json`: Impact statement references `distroless/cc-debian13`
-- `.claude/SKILL.md`: Digest examples updated to Debian 13
+- `docker/Dockerfile`: builder stage `debian:12-slim` → `debian:13-slim AS builder`;
+  runtime stage `gcr.io/distroless/cc-debian12:nonroot` → `gcr.io/distroless/cc-debian13:nonroot`.
+- `docker/Dockerfile.local`: `debian:12-slim` → `debian:13-slim`.
+- `scripts/pin-image-digests.sh`: target image list updated to track the
+  debian 13 tags.
+- `docker/README.md`: distroless variant description now references
+  `cc-debian13:nonroot`.
+- `vex/bindy.openvex.json`: impact statement for the OpenSSL CVE updated to
+  reference `distroless/cc-debian13` (still `not_affected` because the
+  distroless `cc` image carries no libssl).
 
 ### Why
-Distroless build in CI (run 24595052316) failed with:
-```
-failed to resolve source metadata for docker.io/library/builder:latest:
-pull access denied, repository does not exist or may require authorization
-```
-Root cause: `FROM debian:12-slim` lacked the `AS builder` alias, so `COPY --from=builder` tried to pull a non-existent image called `builder`. Added the alias.
+Trivy scan of `ghcr.io/firestoned/bindy:main-distroless` (run 2026-04-25)
+flagged 2 CRITICAL and 7 HIGH CVEs in the debian 12.12 base — `libssl3`
+(CVE-2025-15467, CVE-2025-69419, CVE-2025-69421, CVE-2026-31789,
+CVE-2026-28387, CVE-2026-28388) and `libc6` (CVE-2026-0861). Six of the
+seven OpenSSL CVEs require `deb12u2` packages that are not yet available;
+the practical remediation is moving the base image to debian 13 (Trixie),
+which ships a newer OpenSSL where these CVEs do not apply. The same change
+was previously prepared on the `fix-distroless` branch (commit ec655de) but
+never merged; this carries it onto `security-fixes` so it ships alongside
+the H1–H4 hardening.
 
-Also bumped Debian 12 (bookworm) → Debian 13 (trixie, current stable) to pick up the latest security patches. Multi-arch availability verified for both `debian:13-slim` and `gcr.io/distroless/cc-debian13:nonroot` (amd64 + arm64).
-
-Chainguard Dockerfile already tracks `:latest` on Wolfi-based images (no Debian version to bump) — no changes required there.
+CVE-2026-0861 (glibc `memalign` integer overflow) has no upstream fix in
+either debian release as of the scan date and remains tracked.
 
 ### Impact
 - [ ] Breaking change
-- [x] Requires cluster rollout
+- [x] Requires cluster rollout (operator image must be rebuilt and
+  republished with the new base, then pods rolled)
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-04-24] - Harden operator against four high-severity audit findings (H1–H4)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/bind9_acl.rs` (new) + `src/bind9_acl_tests.rs` (new): strict
+  `address_match_list` validator (`validate_acl_entry`, `build_acl_list`) that
+  accepts only the keywords `any`/`none`/`localhost`/`localnets`, IPv4 / IPv6
+  with optional CIDR prefix, and `key <name>` with a restrictive name charset,
+  each optionally prefixed with `!`. Rejects anything else (including the
+  semicolon/brace payloads used to break out of BIND9 ACL blocks).
+- `src/bind9_resources.rs`: `build_options_conf`, `build_cluster_options_conf`,
+  and `build_configmap` now return `Result<_>`. All CRD-supplied
+  `allow_query` / `allow_transfer` entries are validated through
+  `build_acl_list` before being interpolated into `named.conf`.
+- `src/reconcilers/bind9instance/resources.rs`: propagate the `Result` from
+  `build_configmap` so invalid ACLs fail reconciliation with a clear error.
+- `src/bind9_resources_tests.rs`: new regression
+  `build_configmap_rejects_acl_injection_payload` plus updates to existing
+  callers for the new `Result<Option<ConfigMap>>` signature.
+- `src/bootstrap.rs` / `src/main.rs`: `build_kubeconfig_yaml` and
+  `run_bootstrap_multi_cluster` now take an explicit `allow_insecure` flag
+  wired to a new `bindy bootstrap mc --insecure-skip-tls-verify` CLI flag.
+  When the source KUBECONFIG has no `certificate-authority-data`, the default
+  is to **refuse** rather than silently distribute kubeconfigs that skip TLS
+  verification to every child cluster.
+- `src/bootstrap_tests.rs`: new regressions
+  `test_build_kubeconfig_yaml_refuses_no_ca_without_opt_in` and
+  `test_build_kubeconfig_yaml_insecure_opt_in_sets_flag`; existing kubeconfig
+  tests updated for the new parameter.
+- `src/crd.rs`: `DNSRecordKind::From<&str>` / `From<String>` replaced with
+  fallible `TryFrom<&str>` / `TryFrom<String>` / `FromStr` returning a
+  structured `UnknownDNSRecordKind` error (no more `panic!` on unknown kinds).
+- `src/reconcilers/dnszone/{cleanup,discovery}.rs`: the three
+  `DNSRecordKind::from(...)` call sites now use `?` to propagate the error.
+- `src/crd_tests.rs`: new regressions
+  `dns_record_kind_try_from_*` plus `rndc_algorithm_rejects_hmac_md5_at_deserialization`.
+- `src/crd.rs`: removed `RndcAlgorithm::HmacMd5`. CRDs now fail deserialization
+  if `algorithm: hmac-md5` is specified. MD5 is deprecated by RFC 8945 §10.
+- `src/bind9/rndc.rs`: `parse_rndc_secret_data` and `parse_rndc_key_file`
+  reject `hmac-md5` with a clear error pointing at the RFC 8945 deprecation;
+  the `TSigner` mapping no longer has a `HmacMd5` arm.
+- `src/bind9/{rndc_tests,types_tests}.rs` and `src/crd_tests.rs`: tests that
+  previously asserted MD5 worked now assert it is rejected.
+- `deploy/operator/crds/*.crd.yaml` + `deploy/crds.yaml`: regenerated via
+  `make crds crds-combined` so the CRD schema enum drops `hmac-md5`.
+- `docs/src/reference/bind9cluster-spec.md`,
+  `docs/src/guide/rndc-key-rotation.md`: updated the list of supported RNDC
+  algorithms and added a callout that MD5 is rejected by the CRD schema.
+
+### Why
+Internal security audit surfaced four high-severity issues:
+
+- **H1 — ACL injection.** `allow_query` / `allow_transfer` CRD fields flowed
+  directly into the `named.conf` `{ ... }` block via `join("; ")`. A value
+  like `any; }; zone "evil" { type master; file "/etc/passwd"; }; acl x { any`
+  would close the block and inject arbitrary BIND9 directives — full read of
+  arbitrary files on the BIND9 pod, arbitrary zone definitions, disabling
+  DNSSEC, etc. Whitelisting tokens before substitution eliminates the
+  injection surface.
+- **H2 — MITM-susceptible kubeconfig distribution.** `build_kubeconfig_yaml`
+  silently set `insecure-skip-tls-verify: true` whenever the source
+  KUBECONFIG lacked CA data. A bootstrap run in that state would distribute
+  TLS-disabled kubeconfigs to every child cluster. Default behavior is now
+  to refuse; the legacy behavior is still available via an explicit
+  `--insecure-skip-tls-verify` opt-out for kind/local development.
+- **H3 — `panic!` in `From<&str>`.** `DNSRecordKind::from("...")` panicked on
+  any unrecognized kind, which could crash the reconciler if a future CRD
+  revision or annotation carried an unexpected value. `TryFrom` surfaces a
+  typed error instead.
+- **H4 — HMAC-MD5 in TSIG/RNDC.** RFC 8945 §10 deprecates MD5 and FFIEC /
+  SOC 2 audits flag MD5 authentication. Removing the enum variant makes
+  `algorithm: hmac-md5` fail at CRD admission.
+
+### Impact
+- [x] Breaking change (CRDs specifying `algorithm: hmac-md5` fail
+  deserialization — rotate to `hmac-sha256` or stronger before upgrading;
+  `bindy bootstrap mc` requires a CA bundle or the new
+  `--insecure-skip-tls-verify` flag)
+- [x] Requires cluster rollout (regenerated CRDs, operator binary, bootstrap
+  CLI flag)
 - [ ] Config change only
 - [ ] Documentation only
 
@@ -85,7 +177,7 @@ Pinning to the latest distroless digest picks up the patched Debian 12 libssl3 p
 **Author:** Prabhjot Bawa
 
 ### Changed
-- `src/scout.rs`: 
+- `src/scout.rs`:
   - Fixed TLSRoute API version from `v1` to `v1alpha2` (the stable Gateway API experimental version)
   - Added required `rules` field to TLSRouteSpec structure (Gateway API v1alpha2 requirement)
   - Updated k8s_openapi::Resource trait implementation for TLSRoute to use correct API version

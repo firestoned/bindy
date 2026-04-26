@@ -850,9 +850,10 @@ async fn create_or_update_configmap(
             .and_then(|s| s.allow_transfer.as_ref()),
     });
 
-    // build_configmap returns None if custom ConfigMaps are referenced
+    // build_configmap returns None if custom ConfigMaps are referenced;
+    // it returns Err if any ACL entry fails validation.
     if let Some(configmap) =
-        build_configmap(name, namespace, instance, cluster, role_allow_transfer)
+        build_configmap(name, namespace, instance, cluster, role_allow_transfer)?
     {
         let cm_api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
         let cm_name = format!("{name}-config");

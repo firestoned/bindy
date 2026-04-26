@@ -292,7 +292,8 @@ spec:
 **RndcSecretRef Fields**:
 - `name` (string, required) - Name of the Kubernetes Secret
 - `algorithm` (RndcAlgorithm, optional) - HMAC algorithm (defaults to hmac-sha256)
-  - Supported: `hmac-md5`, `hmac-sha1`, `hmac-sha224`, `hmac-sha256`, `hmac-sha384`, `hmac-sha512`
+  - Supported: `hmac-sha1`, `hmac-sha224`, `hmac-sha256`, `hmac-sha384`, `hmac-sha512`
+  - `hmac-md5` is rejected: RFC 8945 §10 deprecates it and the CRD schema no longer accepts it.
 - `keyNameKey` (string, optional) - Key in secret for key name (defaults to "key-name")
 - `secretKey` (string, optional) - Key in secret for secret value (defaults to "secret")
 

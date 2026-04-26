@@ -1,0 +1,25 @@
+# Should pass admission with bindy-acl-validation deployed.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Cluster
+metadata:
+  name: vap-test-accept
+  namespace: bindy-system
+spec:
+  version: "9.18"
+  primary:
+    replicas: 1
+    allowTransfer:
+      - "10.0.0.0/8"
+      - "192.168.0.0/16"
+      - "key bindy-operator"
+  secondary:
+    replicas: 1
+  global:
+    recursion: false
+    allowQuery:
+      - "any"
+      - "!10.0.0.0/8"
+      - "2001:db8::/32"
+    allowTransfer:
+      - "localhost"
+      - "localnets"

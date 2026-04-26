@@ -152,7 +152,7 @@ pub async fn cleanup_stale_records(
 
     // Check each record to see if it still exists
     for record_ref in current_records {
-        let kind = DNSRecordKind::from(record_ref.kind.as_str());
+        let kind = DNSRecordKind::try_from(record_ref.kind.as_str())?;
         let record_exists = match kind {
             DNSRecordKind::A => {
                 let api: Api<ARecord> = Api::namespaced(client.clone(), &record_ref.namespace);
@@ -205,7 +205,7 @@ pub async fn cleanup_stale_records(
 
             // Self-healing: Check if record still exists in BIND9 and delete if found
             // This catches cases where the finalizer failed to delete
-            let kind = DNSRecordKind::from(record_ref.kind.as_str());
+            let kind = DNSRecordKind::try_from(record_ref.kind.as_str())?;
             let record_type = kind.to_hickory_record_type();
 
             // Extract DNS record name and zone from RecordReference

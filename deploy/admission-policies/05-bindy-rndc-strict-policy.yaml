@@ -1,0 +1,62 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# OPTIONAL ValidatingAdmissionPolicy: posture-strict RNDC algorithm policy.
+#
+# The CRD JSONSchema enum already rejects `hmac-md5` (RFC 8945 §10
+# deprecated, see H4 in the security audit). This policy goes further and
+# also rejects `hmac-sha1` everywhere it appears in the bindy CRDs. SHA-1
+# is end-of-life for new HMAC use; SOC 2 / FFIEC / FIPS 140-3 audits flag
+# it. Skip this policy if you must interoperate with legacy BIND9
+# deployments that only speak HMAC-SHA1.
+#
+# This policy is purely defense-in-depth — even without it, `algorithm:
+# hmac-md5` is rejected by the API server via the CRD enum. Apply this
+# binding to also forbid `hmac-sha1`.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: bindy-rndc-algorithm-strict
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/part-of: bindy
+    app.kubernetes.io/component: admission-policy
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups:   ["bindy.firestoned.io"]
+        apiVersions: ["v1beta1"]
+        operations:  ["CREATE", "UPDATE"]
+        resources:
+          - bind9clusters
+          - bind9instances
+          - clusterbind9providers
+          - dnszones
+  variables:
+    - name: forbiddenAlgorithms
+      expression: "['hmac-md5', 'hmac-sha1']"
+    # Collect every `algorithm` field anywhere in the spec — different CRDs
+    # nest TSIG / RNDC keys under different parents, so we walk all of them
+    # defensively.
+    - name: algorithms
+      expression: |
+        ([object.spec.?rndcSecretRef.?algorithm.orValue('')] +
+         [object.spec.?primary.?rndcSecretRef.?algorithm.orValue('')] +
+         [object.spec.?secondary.?rndcSecretRef.?algorithm.orValue('')] +
+         [object.spec.?global.?rndcSecretRef.?algorithm.orValue('')] +
+         [object.spec.?config.?rndcSecretRef.?algorithm.orValue('')] +
+         [object.spec.?tsigKey.?algorithm.orValue('')] +
+         [object.spec.?rndcKey.?algorithm.orValue('')]
+        ).filter(a, size(a) > 0)
+  validations:
+    - expression: |
+        variables.algorithms.all(a, !(a in variables.forbiddenAlgorithms))
+      messageExpression: |
+        "RNDC/TSIG algorithm rejected by cluster posture policy. " +
+        "Forbidden: " + variables.forbiddenAlgorithms.join(", ") +
+        ". Offending values in this resource: " +
+        variables.algorithms.filter(a, a in variables.forbiddenAlgorithms)
+          .join(", ") +
+        ". Use hmac-sha256 or stronger (RFC 8945 §10)."

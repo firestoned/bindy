@@ -1,0 +1,16 @@
+# Should pass admission with bindy-zone-name-validation deployed.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: vap-test-zone-accept
+  namespace: bindy-system
+spec:
+  zoneName: example.com.
+  soaRecord:
+    primaryNs: ns1.example.com.
+    adminEmail: hostmaster@example.com
+    serial: 2026042501
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTtl: 86400

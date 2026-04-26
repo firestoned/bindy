@@ -1,0 +1,15 @@
+# Should be REJECTED: Bind9Instance.spec.config.allowQuery contains a
+# semicolon which would break out of the named.conf options block.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Instance
+metadata:
+  name: vap-test-instance-reject
+  namespace: bindy-system
+spec:
+  clusterRef: production-dns
+  role: primary
+  replicas: 1
+  version: "9.18"
+  config:
+    allowQuery:
+      - "10.0.0.0/8; allow-recursion { any; };"
