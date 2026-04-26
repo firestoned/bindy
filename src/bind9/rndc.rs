@@ -80,13 +80,16 @@ pub fn parse_rndc_secret_data(data: &BTreeMap<String, Vec<u8>>) -> Result<RndcKe
         let secret = std::str::from_utf8(secret_bytes)?.to_string();
 
         let algorithm = match algorithm_str {
-            "hmac-md5" => crate::crd::RndcAlgorithm::HmacMd5,
+            "hmac-md5" => anyhow::bail!(
+                "hmac-md5 is rejected: MD5 is deprecated by RFC 8945 and not \
+                 acceptable for new RNDC/TSIG keys. Rotate to hmac-sha256 or stronger."
+            ),
             "hmac-sha1" => crate::crd::RndcAlgorithm::HmacSha1,
             "hmac-sha224" => crate::crd::RndcAlgorithm::HmacSha224,
             "hmac-sha256" => crate::crd::RndcAlgorithm::HmacSha256,
             "hmac-sha384" => crate::crd::RndcAlgorithm::HmacSha384,
             "hmac-sha512" => crate::crd::RndcAlgorithm::HmacSha512,
-            _ => anyhow::bail!("Unsupported RNDC algorithm '{algorithm_str}'. Supported algorithms: hmac-md5, hmac-sha1, hmac-sha224, hmac-sha256, hmac-sha384, hmac-sha512"),
+            _ => anyhow::bail!("Unsupported RNDC algorithm '{algorithm_str}'. Supported algorithms: hmac-sha1, hmac-sha224, hmac-sha256, hmac-sha384, hmac-sha512"),
         };
 
         return Ok(RndcKeyData {
@@ -147,7 +150,10 @@ fn parse_rndc_key_file(content: &str) -> Result<RndcKeyData> {
         .context("Failed to parse algorithm from rndc.key file")?;
 
     let algorithm = match algorithm_str {
-        "hmac-md5" => crate::crd::RndcAlgorithm::HmacMd5,
+        "hmac-md5" => anyhow::bail!(
+            "hmac-md5 in rndc.key file is rejected: MD5 is deprecated by RFC 8945. \
+             Rotate to hmac-sha256 or stronger."
+        ),
         "hmac-sha1" => crate::crd::RndcAlgorithm::HmacSha1,
         "hmac-sha224" => crate::crd::RndcAlgorithm::HmacSha224,
         "hmac-sha256" => crate::crd::RndcAlgorithm::HmacSha256,
@@ -179,9 +185,10 @@ fn parse_rndc_key_file(content: &str) -> Result<RndcKeyData> {
 ///
 /// Returns an error if the algorithm is unsupported or key data is invalid.
 pub fn create_tsig_signer(key_data: &RndcKeyData) -> Result<TSigner> {
-    // Map RndcAlgorithm to hickory TsigAlgorithm
+    // Map RndcAlgorithm to hickory TsigAlgorithm. HMAC-MD5 is intentionally
+    // absent from the source enum (see crd::RndcAlgorithm) because RFC 8945
+    // deprecates it; nothing can reach this match with MD5.
     let algorithm = match key_data.algorithm {
-        crate::crd::RndcAlgorithm::HmacMd5 => TsigAlgorithm::HmacMd5,
         crate::crd::RndcAlgorithm::HmacSha1 => TsigAlgorithm::HmacSha1,
         crate::crd::RndcAlgorithm::HmacSha224 => TsigAlgorithm::HmacSha224,
         crate::crd::RndcAlgorithm::HmacSha256 => TsigAlgorithm::HmacSha256,

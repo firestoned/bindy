@@ -116,10 +116,11 @@ mod tests {
     #[test]
     fn test_rndc_key_data_with_different_algorithms() {
         use crate::crd::RndcAlgorithm;
+        // HMAC-MD5 removed per H4 (RFC 8945 deprecation).
         let algorithms = vec![
             RndcAlgorithm::HmacSha256,
             RndcAlgorithm::HmacSha512,
-            RndcAlgorithm::HmacMd5,
+            RndcAlgorithm::HmacSha1,
         ];
 
         for algorithm in algorithms {

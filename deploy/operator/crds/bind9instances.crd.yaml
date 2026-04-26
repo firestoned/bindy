@@ -3486,7 +3486,6 @@ spec:
                         default: hmac-sha256
                         description: HMAC algorithm for this key
                         enum:
-                        - hmac-md5
                         - hmac-sha1
                         - hmac-sha224
                         - hmac-sha256
@@ -3621,7 +3620,6 @@ spec:
 
                       Default: `hmac-sha256`
                     enum:
-                    - hmac-md5
                     - hmac-sha1
                     - hmac-sha224
                     - hmac-sha256
@@ -3775,7 +3773,6 @@ spec:
                         default: hmac-sha256
                         description: HMAC algorithm for this key
                         enum:
-                        - hmac-md5
                         - hmac-sha1
                         - hmac-sha224
                         - hmac-sha256
@@ -3812,7 +3809,6 @@ spec:
                     default: hmac-sha256
                     description: HMAC algorithm for this key
                     enum:
-                    - hmac-md5
                     - hmac-sha1
                     - hmac-sha224
                     - hmac-sha256

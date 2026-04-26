@@ -96,8 +96,12 @@ rndcKey:
   # algorithm: hmac-sha256  # Default
   # algorithm: hmac-sha224
   # algorithm: hmac-sha1    # Legacy (not recommended)
-  # algorithm: hmac-md5     # Legacy (not recommended)
 ```
+
+> **Note:** `hmac-md5` was removed. RFC 8945 §10 deprecates MD5 for TSIG and
+> CRDs that still specify it are rejected at the Kubernetes API server with a
+> schema validation error. Rotate any remaining MD5 keys to `hmac-sha256` or
+> stronger before upgrading.
 
 **Recommendation**: Use `hmac-sha512` for maximum security, `hmac-sha256` for broad compatibility.
 
@@ -479,7 +483,7 @@ See [RNDC Key Rotation Migration Guide](../operations/rndc-key-rotation-migratio
 - ✅ **DO** use `hmac-sha512` or `hmac-sha256` algorithms
 - ✅ **DO** monitor rotation logs for audit trails
 - ✅ **DO** test manual rotation triggers in non-production
-- ❌ **DON'T** use `hmac-md5` or `hmac-sha1` (legacy algorithms)
+- ❌ **DON'T** use `hmac-sha1` (legacy); `hmac-md5` is no longer accepted by the CRD schema
 - ❌ **DON'T** disable rotation in production environments
 - ❌ **DON'T** manually edit Secret data during rotation
 - ❌ **DON'T** set `rotateAfter` < 24 hours (unnecessary overhead)

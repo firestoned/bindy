@@ -1,0 +1,17 @@
+# Should be REJECTED by bindy-zone-name-validation: zoneName must not start
+# with '.' or contain '..'.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: vap-test-zone-reject-dot
+  namespace: bindy-system
+spec:
+  zoneName: .bad..example.com.
+  soaRecord:
+    primaryNs: ns1.example.com.
+    adminEmail: hostmaster@example.com
+    serial: 1
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTtl: 86400

@@ -231,7 +231,9 @@ mod tests {
     #[test]
     fn test_build_configmap() {
         let instance = create_test_instance("test");
-        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
+        let cm = build_configmap("test", "test-ns", &instance, None, None)
+            .unwrap()
+            .unwrap();
 
         assert_eq!(cm.metadata.name.as_deref(), Some("test-config"));
         assert_eq!(cm.metadata.namespace.as_deref(), Some("test-ns"));
@@ -398,7 +400,9 @@ mod tests {
     #[test]
     fn test_configmap_contains_all_files() {
         let instance = create_test_instance("test");
-        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
+        let cm = build_configmap("test", "test-ns", &instance, None, None)
+            .unwrap()
+            .unwrap();
 
         let data = cm.data.unwrap();
         assert!(data.contains_key("named.conf"));
@@ -424,7 +428,9 @@ mod tests {
     #[test]
     fn test_configmap_naming() {
         let instance = create_test_instance("test-instance");
-        let cm = build_configmap("test-instance", "test-ns", &instance, None, None).unwrap();
+        let cm = build_configmap("test-instance", "test-ns", &instance, None, None)
+            .unwrap()
+            .unwrap();
 
         assert_eq!(cm.metadata.name.as_deref(), Some("test-instance-config"));
         assert_eq!(cm.metadata.namespace.as_deref(), Some("test-ns"));
@@ -475,7 +481,7 @@ mod tests {
             named_conf_options: None,
         });
 
-        let cm = build_configmap("test", "test-ns", &instance, None, None);
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
 
         // Should return None when custom ConfigMaps are referenced
         assert!(cm.is_none());
@@ -492,7 +498,7 @@ mod tests {
             named_conf_options: Some("custom-options".to_string()),
         });
 
-        let cm = build_configmap("test", "test-ns", &instance, None, None);
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
 
         // Should return None when custom ConfigMaps are referenced
         assert!(cm.is_none());
@@ -509,7 +515,7 @@ mod tests {
             named_conf_options: Some("custom-options".to_string()),
         });
 
-        let cm = build_configmap("test", "test-ns", &instance, None, None);
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
 
         assert!(cm.is_none());
     }
@@ -525,10 +531,32 @@ mod tests {
             named_conf_options: None,
         });
 
-        let cm = build_configmap("test", "test-ns", &instance, None, None);
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
 
         // Should still generate ConfigMap if refs exist but are empty
         assert!(cm.is_some());
+    }
+
+    #[test]
+    fn build_configmap_rejects_acl_injection_payload() {
+        // H1 regression: a CRD that closes the ACL block and injects a new
+        // `zone` directive must cause reconciliation to fail rather than
+        // silently producing booby-trapped named.conf contents.
+        let mut instance = create_test_instance("injection-test");
+        let config = instance.spec.config.as_mut().unwrap();
+        config.allow_query = Some(vec![
+            "any; }; zone \"evil.example\" { type master; file \"/etc/passwd\"; }; acl x { any"
+                .to_string(),
+        ]);
+
+        let result = build_configmap("injection-test", "test-ns", &instance, None, None);
+
+        assert!(result.is_err(), "malicious ACL entry was not rejected");
+        let err = format!("{:#}", result.unwrap_err());
+        assert!(
+            err.contains("allow_query"),
+            "error message should point at allow_query: {err}"
+        );
     }
 
     #[test]
@@ -536,7 +564,9 @@ mod tests {
         let mut instance = create_test_instance("test");
         instance.spec.config.as_mut().unwrap().allow_query = Some(vec![]);
 
-        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
+        let cm = build_configmap("test", "test-ns", &instance, None, None)
+            .unwrap()
+            .unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
         // Empty allow_query list should result in no allow-query directive
@@ -548,7 +578,9 @@ mod tests {
         let mut instance = create_test_instance("test");
         instance.spec.config.as_mut().unwrap().allow_transfer = Some(vec![]);
 
-        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
+        let cm = build_configmap("test", "test-ns", &instance, None, None)
+            .unwrap()
+            .unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
         // Empty allow_transfer list should result in "none"
@@ -560,7 +592,9 @@ mod tests {
         let mut instance = create_test_instance("test");
         instance.spec.config = None;
 
-        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
+        let cm = build_configmap("test", "test-ns", &instance, None, None)
+            .unwrap()
+            .unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
         // Defaults should be applied - recursion no, but NO allow-transfer directive
@@ -577,7 +611,9 @@ mod tests {
             signing: None,
         });
 
-        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
+        let cm = build_configmap("test", "test-ns", &instance, None, None)
+            .unwrap()
+            .unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
         // Should contain dnssec-validation no when disabled
@@ -593,7 +629,9 @@ mod tests {
             signing: None,
         });
 
-        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
+        let cm = build_configmap("test", "test-ns", &instance, None, None)
+            .unwrap()
+            .unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
         // DNSSEC is always enabled in BIND 9.15+, only validation can be configured
@@ -605,7 +643,9 @@ mod tests {
         let mut instance = create_test_instance("test");
         instance.spec.config.as_mut().unwrap().dnssec = None;
 
-        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
+        let cm = build_configmap("test", "test-ns", &instance, None, None)
+            .unwrap()
+            .unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
         // Default behavior when no DNSSEC config is provided
@@ -846,7 +886,9 @@ mod tests {
             "172.16.0.0/12".to_string(),
         ]);
 
-        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
+        let cm = build_configmap("test", "test-ns", &instance, None, None)
+            .unwrap()
+            .unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
         assert!(options.contains("allow-query { 10.0.0.0/8; 192.168.0.0/16; 172.16.0.0/12; }"));
@@ -877,7 +919,9 @@ mod tests {
     #[test]
     fn test_configmap_with_custom_namespace() {
         let instance = create_test_instance("test");
-        let cm = build_configmap("test", "custom-namespace", &instance, None, None).unwrap();
+        let cm = build_configmap("test", "custom-namespace", &instance, None, None)
+            .unwrap()
+            .unwrap();
 
         assert_eq!(cm.metadata.namespace.as_deref(), Some("custom-namespace"));
     }
@@ -1102,7 +1146,7 @@ mod tests {
     #[test]
     fn test_configmap_contains_rndc_conf() {
         let instance = create_test_instance("rndc-test");
-        let configmap = build_configmap("rndc-test", "test-ns", &instance, None, None);
+        let configmap = build_configmap("rndc-test", "test-ns", &instance, None, None).unwrap();
 
         assert!(configmap.is_some());
         let cm = configmap.unwrap();
