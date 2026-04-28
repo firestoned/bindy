@@ -1,3 +1,187 @@
+## [2026-04-29] - Scout: per-resource ARecord `spec.name` override annotation
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/scout.rs`:
+  - Added `ANNOTATION_RECORD_NAME = "bindy.firestoned.io/record-name"` constant.
+  - Added `get_record_name_annotation()` helper (trims whitespace, treats empty/whitespace-only as absent).
+  - Added `resolve_record_name(annotations, host, zone)` helper: returns the annotation override when present, otherwise falls back to `derive_record_name(host, zone)`. Skips zone-membership validation when the override is set.
+  - All four reconcilers (`reconcile_ingress`, `reconcile_service`, `reconcile_httproute`, `reconcile_tlsroute`) now call `resolve_record_name` instead of `derive_record_name` directly so the override applies uniformly to Ingress, LoadBalancer Service, HTTPRoute, and TLSRoute sources.
+- `src/scout_tests.rs`: 12 new tests covering `get_record_name_annotation` (present / missing / empty / whitespace-only / trimmed) and `resolve_record_name` (override wins, fallback when absent or empty, apex `@` override, override skips zone validation, derive error propagated when no override).
+- `docs/src/guide/scout.md`: documented the new annotation in the Annotations Reference table.
+
+### Why
+Operators need to publish an `ARecord` whose name does not match the source resource's
+host suffix — for example, exposing an Ingress with host `web-prod-eu-1.example.com`
+under the friendlier DNS name `web` in the same zone, or pointing a `LoadBalancer`
+Service at the zone apex (`@`). Previously the record name was always derived by
+stripping the zone suffix from the host; there was no escape hatch.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (new optional annotation; absent ⇒ existing behavior)
+- [x] Documentation only (Scout user guide updated)
+
+---
+
+## [2026-04-26] - P0 audit fixes: F-001 volume allow-list + F-003 cross-namespace zone hijack
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/safe_volume.rs` (NEW) + `src/safe_volume_tests.rs` (NEW, 22 tests):
+  strict allow-list validators for user-supplied `Volume` / `VolumeMount`
+  on `Bind9Instance` / `Bind9Cluster` / `ClusterBind9Provider`. Permitted
+  sources: `emptyDir`, `configMap` / `secret` / `persistentVolumeClaim`
+  with the `bindy-` name prefix. Rejected: `hostPath`, `csi`,
+  `flexVolume`, `nfs`, `iscsi`, `rbd`, `cephfs`, `glusterfs`, `azureFile`,
+  `azureDisk`, `gcePersistentDisk`, `awsElasticBlockStore`, `cinder`,
+  `fc`, `flocker`, `photonPersistentDisk`, `portworxVolume`, `quobyte`,
+  `scaleIO`, `storageos`, `vsphereVolume`, `projected`, `ephemeral`,
+  `gitRepo`, `downwardAPI`, and any unknown variant. Mount paths must
+  start with `/data/` or `/var/log/bind/`; `subPath`/`subPathExpr` must
+  not contain `..`.
+- `src/constants.rs`: added `ALLOWED_USER_MOUNT_PREFIXES`,
+  `ALLOWED_USER_SECRET_PREFIX`, `ALLOWED_USER_PVC_PREFIX`,
+  `ALLOWED_USER_CONFIGMAP_PREFIX`.
+- `src/lib.rs`: registered `pub mod safe_volume`.
+- `src/reconcilers/bind9instance/resources.rs`: new
+  `validate_user_pod_shape` helper invoked from
+  `create_or_update_resources` before any Pod is built. Failure surfaces
+  through the existing reconcile error path with full context naming the
+  offending CR and field. New private `validate_user_pod_shape_for_test`
+  alias exposes the helper to the sibling test module.
+- `src/reconcilers/bind9instance/resources_tests.rs`: 4 new tests covering
+  default-instance happy path, hostPath rejection, mount-outside-allow-list
+  rejection, and inherited-cluster-volume rejection.
+- `src/crd.rs`:
+  - REMOVED `BindcarConfig.volumes` and `BindcarConfig.volume_mounts`.
+    These were declared but never plumbed into
+    `build_api_sidecar_container`; deleting them prevents a future
+    "wire these through" PR from re-introducing the unfiltered
+    Volume/VolumeMount priv-esc primitive.
+- `src/constants.rs`: added `ANNOTATION_ALLOW_ZONE_NAMESPACES =
+  "bindy.firestoned.io/allow-zone-namespaces"` and
+  `ALLOW_ZONE_NAMESPACES_WILDCARD = "*"`.
+- `src/reconcilers/dnszone/validation.rs`:
+  - `get_instances_from_zone` gates cross-namespace targeting on the
+    `bindy.firestoned.io/allow-zone-namespaces` **annotation on the
+    target `Bind9Instance`** (set by the platform admin). Same-namespace
+    matching is unaffected. Cross-namespace matches without the
+    annotation are rejected with a diagnostic explaining how to opt in.
+    Wildcard `*` re-enables the pre-F-003 cluster-wide behaviour as an
+    explicit escape hatch. The function signature is unchanged from
+    pre-fix (no second store argument).
+  - New helper `instance_allows_zone_namespace(instance, zone_ns)`
+    encapsulating the annotation parsing.
+  - `check_for_duplicate_zones` switched from a status-based gate
+    (which left every race window open) to a spec-based check using
+    `creationTimestamp` to break ties. Older CR wins.
+- `src/reconcilers/dnszone/validation_tests.rs`: 4 new F-003 tests
+  (cross-namespace denied by default; allowed by annotation; wildcard;
+  annotation that excludes the requesting namespace rejects). 2
+  existing tests updated to reflect the new spec-based duplicate check;
+  1 new test for "current is older → None".
+- `src/reconcilers/finalizers_tests.rs`,
+  `tests/multi_tenancy_integration.rs`,
+  `tests/simple_integration.rs`,
+  `src/bind9_resources_tests.rs`: literal `BindcarConfig {...}`
+  constructions updated for the field removal.
+- `deploy/operator/crds/*.crd.yaml`: regenerated via `make crds`.
+- `deploy/admission-policies/07-bindy-pod-shape-policy.yaml` (NEW) +
+  `08-bindy-pod-shape-binding.yaml` (NEW): CEL
+  `ValidatingAdmissionPolicy` rejecting forbidden Volume sources / mount
+  paths / subPath traversal at the API server.
+- `deploy/admission-policies/tests/`: 4 new fixtures —
+  `accept-bind9instance-emptydir-volume.yaml`,
+  `reject-bind9instance-hostpath.yaml`,
+  `reject-bind9instance-foreign-secret.yaml`,
+  `reject-bind9instance-mount-outside-data.yaml`. (No admission policy
+  for F-003 — the gate's input is metadata on the platform-owned
+  target instance, which isn't visible during `DNSZone` admission.
+  The operator-side check is sufficient.)
+- `deploy/admission-policies/README.md`: install steps + policy table
+  updated.
+
+### Why
+Audit findings F-001 (Critical) and F-003 (High) are the two P0 items
+from `~/dev/roadmaps/bindy-security-fixes.md`.
+
+- **F-001**: `Bind9Instance.spec.volumes` / `volumeMounts` (and the same
+  fields on `Bind9ClusterCommonSpec`, flattened into both
+  `Bind9Cluster.spec.common` and `ClusterBind9Provider.spec.common`)
+  were copied verbatim into the managed Pod spec. A namespace tenant
+  with `create` on `Bind9Instance` could mount the host filesystem via
+  `hostPath`, escape to the node, and read every other Pod's projected
+  SA token — including the operator's own SA token, whose
+  `ClusterRoleBinding` grants cluster-wide CRUD on Secrets.
+
+- **F-003**: `DNSZone.spec.bind9InstancesFrom` selectors were evaluated
+  against a cluster-wide `Bind9Instance` reflector store with no
+  namespace boundary. A tenant could match production BIND9 instances
+  by label and drive the operator to push attacker-controlled zones /
+  records onto them using the *victim's* RNDC key (the operator loaded
+  it). Combined with the racy status-based `check_for_duplicate_zones`,
+  the attacker could even claim production zoneNames during failed /
+  unconfigured windows.
+
+The F-001 fix follows the roadmap's Guiding Principle #1 (operator-side
+validator + CEL admission policy). The F-003 fix is operator-side only:
+the security gate must look at metadata on the platform-owned target
+`Bind9Instance` (an annotation the tenant cannot forge), and that
+metadata is not visible during `DNSZone` admission. **Important design
+choice:** the gate is an *annotation* on the target instance — not a
+new CRD field on `ClusterBind9Provider` and not a mandatory
+`spec.clusterRef` on the zone. This preserves the cluster-wide-operator
+contract: the platform admin keeps full control of who can claim their
+instances by annotating instance metadata they already manage; tenants
+do not need to add a `clusterRef` they had no reason to set previously.
+Labels alone are not a security boundary (they are discoverable and
+tenant-controlled on the *selector* side), but annotations on the
+platform-owned instance are.
+
+### Impact
+- [x] Breaking change (CRD shape change: removed `BindcarConfig.volumes`
+  / `volume_mounts`; runtime behaviour change: cross-namespace `DNSZone`
+  → `Bind9Instance` targeting now requires the platform admin to
+  annotate the target instance)
+- [x] Requires cluster rollout (new validators ship in the binary)
+- [x] Config change only (admission policies must be applied:
+  `kubectl apply -f deploy/admission-policies/07-bindy-pod-shape-policy.yaml
+  deploy/admission-policies/08-bindy-pod-shape-binding.yaml`; platform
+  admins must add the `bindy.firestoned.io/allow-zone-namespaces`
+  annotation to `Bind9Instance`s that are intended to be claimable
+  cross-namespace)
+- [x] Documentation only (README + CHANGELOG)
+
+Migration: any production `Bind9Instance` that is intended to be
+claimable from a `DNSZone` in a *different* namespace must be annotated
+by the platform admin:
+
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Instance
+metadata:
+  name: production-primary
+  namespace: bindy-system
+  annotations:
+    bindy.firestoned.io/allow-zone-namespaces: "tenant-a,tenant-b"
+    # or: "*"   to restore the pre-F-003 cluster-wide behaviour
+spec:
+  ...
+```
+
+Same-namespace `DNSZone` → `Bind9Instance` targeting is unchanged.
+Existing `Bind9Cluster` namespaced installs are unaffected (instances
+and zones live in the same namespace). Existing `ClusterBind9Provider`
+deployments where zones in other namespaces target shared instances
+must apply the annotation; the wildcard `*` is available as a one-line
+opt-out for platforms that want the previous behaviour.
+
+---
+
 ## [2026-04-25] - Bump base images from debian 12 to debian 13
 
 **Author:** Erick Bourgeois

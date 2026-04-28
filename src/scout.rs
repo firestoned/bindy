@@ -160,6 +160,16 @@ pub const ANNOTATION_IP: &str = "bindy.firestoned.io/ip";
 /// When absent, the ARecord inherits the TTL from the DNSZone spec.
 pub const ANNOTATION_TTL: &str = "bindy.firestoned.io/ttl";
 
+/// Annotation for overriding the DNS record name (`spec.name`) on the created ARecord.
+///
+/// When set, the value replaces the name normally derived from the source resource's
+/// host/hostname. Use `"@"` to target the zone apex. When absent or empty, Scout falls
+/// back to deriving the name from the host stripped of the zone suffix.
+///
+/// On multi-host resources (Ingress / HTTPRoute / TLSRoute) the override is applied to
+/// every ARecord produced from that resource, so it is intended for single-host use cases.
+pub const ANNOTATION_RECORD_NAME: &str = "bindy.firestoned.io/record-name";
+
 /// Finalizer added to Ingresses managed by Scout to ensure cleanup on deletion
 pub const FINALIZER_SCOUT: &str = "bindy.firestoned.io/arecord-finalizer";
 
@@ -314,6 +324,40 @@ pub fn derive_record_name(host: &str, zone: &str) -> Result<String> {
 
     let record_name = &host[..host.len() - zone_suffix.len()];
     Ok(record_name.to_string())
+}
+
+/// Returns the explicit DNS record name override from `bindy.firestoned.io/record-name`.
+///
+/// The annotation value is trimmed of surrounding whitespace. Returns `None` if the
+/// annotation is absent, empty, or whitespace-only.
+pub fn get_record_name_annotation(annotations: &BTreeMap<String, String>) -> Option<String> {
+    annotations
+        .get(ANNOTATION_RECORD_NAME)
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Resolves the DNS record name for an ARecord, in priority order:
+///
+/// 1. `bindy.firestoned.io/record-name` annotation — explicit override (e.g. `"myapp"`, `"@"`)
+/// 2. Derived from `host` by stripping the zone suffix (see [`derive_record_name`])
+///
+/// When the override annotation is present, the host is **not** validated against the zone:
+/// the operator has explicitly chosen the record name and is responsible for its correctness.
+///
+/// # Errors
+///
+/// Returns the error from [`derive_record_name`] only when no override is set and the host
+/// does not belong to the zone.
+pub fn resolve_record_name(
+    annotations: &BTreeMap<String, String>,
+    host: &str,
+    zone: &str,
+) -> Result<String> {
+    if let Some(override_name) = get_record_name_annotation(annotations) {
+        return Ok(override_name);
+    }
+    derive_record_name(host, zone)
 }
 
 /// Returns the explicit IP override from `bindy.firestoned.io/ip`, if present.
@@ -1414,7 +1458,7 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
             }
         };
 
-        let record_name = match derive_record_name(host, &zone) {
+        let record_name = match resolve_record_name(&annotations, host, &zone) {
             Ok(n) => n,
             Err(e) => {
                 warn!(ingress = %name, host = %host, zone = %zone, error = %e, "Host does not belong to zone — skipping rule");
@@ -1624,9 +1668,9 @@ async fn reconcile_service(
 
     let ttl: Option<i32> = annotations.get(ANNOTATION_TTL).and_then(|v| v.parse().ok());
 
-    // Derive the DNS record name: "{service_name}.{zone}" → strip zone → service_name
+    // Derive the DNS record name: annotation override → "{service_name}.{zone}" stripped of zone
     let fqdn = format!("{name}.{zone}");
-    let record_name = match derive_record_name(&fqdn, &zone) {
+    let record_name = match resolve_record_name(&annotations, &fqdn, &zone) {
         Ok(n) => n,
         Err(e) => {
             warn!(service = %name, zone = %zone, error = %e, "Cannot derive record name — skipping");
@@ -1879,7 +1923,7 @@ async fn reconcile_httproute(
             continue;
         }
 
-        let record_name = match derive_record_name(hostname, &zone) {
+        let record_name = match resolve_record_name(&annotations, hostname, &zone) {
             Ok(n) => n,
             Err(e) => {
                 warn!(httproute = %name, hostname = %hostname, zone = %zone, error = %e, "Hostname does not belong to zone — skipping");
@@ -2113,7 +2157,7 @@ async fn reconcile_tlsroute(
             continue;
         }
 
-        let record_name = match derive_record_name(hostname, &zone) {
+        let record_name = match resolve_record_name(&annotations, hostname, &zone) {
             Ok(n) => n,
             Err(e) => {
                 warn!(tlsroute = %name, hostname = %hostname, zone = %zone, error = %e, "Hostname does not belong to zone — skipping");

@@ -80,6 +80,7 @@ pub mod labels;
 pub mod metrics;
 pub mod record_impls;
 pub mod record_operator;
+pub mod safe_volume;
 
 #[macro_use]
 pub mod record_wrappers;
