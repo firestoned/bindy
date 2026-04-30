@@ -7,12 +7,12 @@
 mod tests {
     use crate::scout::{
         arecord_cr_name, arecord_label_selector, build_service_arecord, derive_record_name,
-        get_zone_annotation, has_finalizer, is_arecord_enabled, is_being_deleted,
-        is_loadbalancer_service, is_scout_opted_in, resolve_ip_from_annotation,
-        resolve_ip_from_service_lb_status, resolve_ips, resolve_zone, service_arecord_cr_name,
-        service_arecord_label_selector, stale_arecord_label_selector, ServiceARecordParams,
-        FINALIZER_SCOUT, LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER,
-        LABEL_SOURCE_NAME, LABEL_SOURCE_NAMESPACE, LABEL_ZONE,
+        get_record_name_annotation, get_zone_annotation, has_finalizer, is_arecord_enabled,
+        is_being_deleted, is_loadbalancer_service, is_scout_opted_in, resolve_ip_from_annotation,
+        resolve_ip_from_service_lb_status, resolve_ips, resolve_record_name, resolve_zone,
+        service_arecord_cr_name, service_arecord_label_selector, stale_arecord_label_selector,
+        ServiceARecordParams, FINALIZER_SCOUT, LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT,
+        LABEL_SOURCE_CLUSTER, LABEL_SOURCE_NAME, LABEL_SOURCE_NAMESPACE, LABEL_ZONE,
     };
     use k8s_openapi::api::core::v1::{
         LoadBalancerIngress as ServiceLoadBalancerIngress, LoadBalancerStatus, Service,
@@ -131,6 +131,128 @@ mod tests {
         // Ingress hosts may have trailing dots in edge cases
         let result = derive_record_name("app.example.com.", "example.com").unwrap();
         assert_eq!(result, "app");
+    }
+
+    // =========================================================================
+    // get_record_name_annotation
+    // =========================================================================
+
+    #[test]
+    fn test_get_record_name_annotation_present() {
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            "bindy.firestoned.io/record-name".to_string(),
+            "myapp".to_string(),
+        );
+        assert_eq!(
+            get_record_name_annotation(&annotations),
+            Some("myapp".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_record_name_annotation_missing() {
+        let annotations = BTreeMap::new();
+        assert_eq!(get_record_name_annotation(&annotations), None);
+    }
+
+    #[test]
+    fn test_get_record_name_annotation_empty_value() {
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            "bindy.firestoned.io/record-name".to_string(),
+            "".to_string(),
+        );
+        assert_eq!(get_record_name_annotation(&annotations), None);
+    }
+
+    #[test]
+    fn test_get_record_name_annotation_whitespace_only() {
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            "bindy.firestoned.io/record-name".to_string(),
+            "   ".to_string(),
+        );
+        assert_eq!(get_record_name_annotation(&annotations), None);
+    }
+
+    #[test]
+    fn test_get_record_name_annotation_trims_whitespace() {
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            "bindy.firestoned.io/record-name".to_string(),
+            "  custom  ".to_string(),
+        );
+        assert_eq!(
+            get_record_name_annotation(&annotations),
+            Some("custom".to_string())
+        );
+    }
+
+    // =========================================================================
+    // resolve_record_name (annotation override → derive_record_name fallback)
+    // =========================================================================
+
+    #[test]
+    fn test_resolve_record_name_override_wins() {
+        // When the annotation is set, it overrides the derived name
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            "bindy.firestoned.io/record-name".to_string(),
+            "myapp".to_string(),
+        );
+        let result = resolve_record_name(&annotations, "app.example.com", "example.com").unwrap();
+        assert_eq!(result, "myapp");
+    }
+
+    #[test]
+    fn test_resolve_record_name_falls_back_to_derived_when_absent() {
+        let annotations = BTreeMap::new();
+        let result = resolve_record_name(&annotations, "app.example.com", "example.com").unwrap();
+        assert_eq!(result, "app");
+    }
+
+    #[test]
+    fn test_resolve_record_name_falls_back_to_derived_when_empty() {
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            "bindy.firestoned.io/record-name".to_string(),
+            "".to_string(),
+        );
+        let result = resolve_record_name(&annotations, "app.example.com", "example.com").unwrap();
+        assert_eq!(result, "app");
+    }
+
+    #[test]
+    fn test_resolve_record_name_apex_override() {
+        // "@" is a valid override for the zone apex
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            "bindy.firestoned.io/record-name".to_string(),
+            "@".to_string(),
+        );
+        let result = resolve_record_name(&annotations, "app.example.com", "example.com").unwrap();
+        assert_eq!(result, "@");
+    }
+
+    #[test]
+    fn test_resolve_record_name_override_skips_zone_validation() {
+        // When the annotation is set, the host is no longer required to belong to the zone:
+        // the user is explicitly choosing the record name within the zone.
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            "bindy.firestoned.io/record-name".to_string(),
+            "myapp".to_string(),
+        );
+        let result = resolve_record_name(&annotations, "app.other.com", "example.com").unwrap();
+        assert_eq!(result, "myapp");
+    }
+
+    #[test]
+    fn test_resolve_record_name_propagates_derive_error_when_no_override() {
+        let annotations = BTreeMap::new();
+        let result = resolve_record_name(&annotations, "app.other.com", "example.com");
+        assert!(result.is_err());
     }
 
     // =========================================================================

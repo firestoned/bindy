@@ -274,11 +274,35 @@ mod tests {
         assert!(!names.contains(&"dns-dev".to_string()));
     }
 
+    /// Helper: like `create_test_instance_with_labels`, but also stamps the
+    /// platform-admin annotation that grants cross-namespace zone access.
+    fn create_test_instance_with_labels_and_annotation(
+        name: &str,
+        namespace: &str,
+        labels: &std::collections::BTreeMap<String, String>,
+        allow_zone_namespaces: &str,
+    ) -> Bind9Instance {
+        let mut inst = create_test_instance_with_labels(name, namespace, labels);
+        let mut annotations = std::collections::BTreeMap::new();
+        annotations.insert(
+            crate::constants::ANNOTATION_ALLOW_ZONE_NAMESPACES.to_string(),
+            allow_zone_namespaces.to_string(),
+        );
+        inst.metadata.annotations = Some(annotations);
+        inst
+    }
+
+    /// F-003: a `DNSZone` whose label selector matches a `Bind9Instance`
+    /// in *another namespace* is rejected by default. The platform admin
+    /// must opt that namespace in via the
+    /// `bindy.firestoned.io/allow-zone-namespaces` annotation on the
+    /// `Bind9Instance`.
     #[test]
-    fn test_get_instances_cross_namespace() {
+    fn test_get_instances_cross_namespace_denied_by_default() {
         let mut labels = std::collections::BTreeMap::new();
         labels.insert("app".to_string(), "bind9".to_string());
 
+        // No allow annotation on either instance.
         let instance_a = create_test_instance_with_labels("dns-1", "namespace-a", &labels);
         let instance_b = create_test_instance_with_labels("dns-2", "namespace-b", &labels);
 
@@ -296,16 +320,160 @@ mod tests {
             create_test_zone_with_selectors("test-zone", "default", Some(bind9_instances_from));
 
         let result = get_instances_from_zone(&zone, &store);
-        assert!(result.is_ok());
-        let found_instances = result.unwrap();
-        assert_eq!(found_instances.len(), 2);
+        assert!(
+            result.is_err(),
+            "F-003: cross-namespace match without instance annotation must be rejected"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("F-003 namespace gate"),
+            "rejection message must reference the namespace gate, got: {msg}"
+        );
+    }
 
-        let namespaces: Vec<String> = found_instances
-            .iter()
-            .map(|i| i.namespace.clone())
-            .collect();
-        assert!(namespaces.contains(&"namespace-a".to_string()));
-        assert!(namespaces.contains(&"namespace-b".to_string()));
+    /// F-003: cross-namespace targeting works when the platform admin
+    /// stamps the `bindy.firestoned.io/allow-zone-namespaces` annotation
+    /// on the target `Bind9Instance` and lists the zone's namespace.
+    #[test]
+    fn test_get_instances_cross_namespace_allowed_by_annotation() {
+        let mut labels = std::collections::BTreeMap::new();
+        labels.insert("app".to_string(), "bind9".to_string());
+        labels.insert("environment".to_string(), "production".to_string());
+
+        // Platform admin annotates two production instances to allow
+        // tenant-a.
+        let inst1 = create_test_instance_with_labels_and_annotation(
+            "primary-1",
+            "bindy-system",
+            &labels,
+            "tenant-a",
+        );
+        let inst2 = create_test_instance_with_labels_and_annotation(
+            "primary-2",
+            "bindy-system",
+            &labels,
+            "tenant-a,tenant-b",
+        );
+
+        let (store, mut writer) = kube::runtime::reflector::store::<Bind9Instance>();
+        writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(inst1));
+        writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(inst2));
+
+        let bind9_instances_from = vec![InstanceSource {
+            selector: crate::crd::LabelSelector {
+                match_labels: Some(labels),
+                match_expressions: None,
+            },
+        }];
+        let zone =
+            create_test_zone_with_selectors("tenant-zone", "tenant-a", Some(bind9_instances_from));
+
+        let result = get_instances_from_zone(&zone, &store);
+        assert!(result.is_ok(), "annotation opt-in must succeed: {result:?}");
+        let found = result.unwrap();
+        assert_eq!(found.len(), 2);
+        for inst in &found {
+            assert_eq!(inst.namespace, "bindy-system");
+        }
+    }
+
+    /// F-003: the wildcard value `*` re-enables cluster-wide cross-namespace
+    /// matching. This is the explicit-opt-in escape hatch for platform
+    /// admins who really want the pre-F-003 behaviour.
+    #[test]
+    fn test_get_instances_cross_namespace_wildcard_annotation() {
+        let mut labels = std::collections::BTreeMap::new();
+        labels.insert("app".to_string(), "bind9".to_string());
+
+        let inst = create_test_instance_with_labels_and_annotation(
+            "wide-open",
+            "bindy-system",
+            &labels,
+            "*",
+        );
+        let (store, mut writer) = kube::runtime::reflector::store::<Bind9Instance>();
+        writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(inst));
+
+        let bind9_instances_from = vec![InstanceSource {
+            selector: crate::crd::LabelSelector {
+                match_labels: Some(labels),
+                match_expressions: None,
+            },
+        }];
+        let zone = create_test_zone_with_selectors(
+            "any-tenant-zone",
+            "some-random-tenant",
+            Some(bind9_instances_from),
+        );
+
+        let result = get_instances_from_zone(&zone, &store);
+        assert!(result.is_ok(), "wildcard '*' must allow any namespace");
+        assert_eq!(result.unwrap().len(), 1);
+    }
+
+    /// F-003: an annotation that *omits* the requesting zone's namespace
+    /// still rejects that namespace, even if other namespaces are listed.
+    #[test]
+    fn test_get_instances_cross_namespace_annotation_excludes_other_namespaces() {
+        let mut labels = std::collections::BTreeMap::new();
+        labels.insert("app".to_string(), "bind9".to_string());
+
+        // Annotation lists tenant-a only.
+        let inst = create_test_instance_with_labels_and_annotation(
+            "primary-1",
+            "bindy-system",
+            &labels,
+            "tenant-a",
+        );
+        let (store, mut writer) = kube::runtime::reflector::store::<Bind9Instance>();
+        writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(inst));
+
+        let bind9_instances_from = vec![InstanceSource {
+            selector: crate::crd::LabelSelector {
+                match_labels: Some(labels),
+                match_expressions: None,
+            },
+        }];
+        // Zone in tenant-b — not in the allow-list.
+        let zone = create_test_zone_with_selectors(
+            "tenant-b-zone",
+            "tenant-b",
+            Some(bind9_instances_from),
+        );
+
+        let result = get_instances_from_zone(&zone, &store);
+        assert!(
+            result.is_err(),
+            "annotation that does not list the zone's namespace must reject"
+        );
+    }
+
+    /// F-003 happy path: same-namespace targeting always works without
+    /// any annotation on the target instance.
+    #[test]
+    fn test_get_instances_same_namespace_always_allowed() {
+        let mut labels = std::collections::BTreeMap::new();
+        labels.insert("app".to_string(), "bind9".to_string());
+        let inst = create_test_instance_with_labels("local-1", "tenant-a", &labels);
+
+        let (instance_store, mut iwriter) = kube::runtime::reflector::store::<Bind9Instance>();
+        iwriter.apply_watcher_event(&kube::runtime::watcher::Event::Apply(inst));
+
+        let bind9_instances_from = vec![InstanceSource {
+            selector: crate::crd::LabelSelector {
+                match_labels: Some(labels),
+                match_expressions: None,
+            },
+        }];
+        let zone =
+            create_test_zone_with_selectors("tenant-zone", "tenant-a", Some(bind9_instances_from));
+
+        let result = get_instances_from_zone(&zone, &instance_store);
+        assert!(
+            result.is_ok(),
+            "same-namespace match must always succeed: {result:?}"
+        );
+        assert_eq!(result.unwrap().len(), 1);
     }
 
     #[test]
@@ -542,13 +710,24 @@ mod tests {
         assert_eq!(duplicate_info.conflicting_zones[0].namespace, "team-a");
     }
 
+    /// F-003: a *new* zone with the same `zoneName` is now flagged as a
+    /// duplicate even if the existing zone has no instances configured yet.
+    /// The pre-F-003 behaviour gated on `status.bind9_instances` being
+    /// non-empty, leaving every race window open: a tenant could create a
+    /// malicious zone first and claim the zoneName uncontested before the
+    /// legitimate zone reached `Configured` state. The new check uses
+    /// `spec.zoneName` and creation timestamp; the older CR wins.
     #[test]
-    fn test_check_duplicate_zones_no_instances_no_conflict() {
+    fn test_check_duplicate_zones_unconfigured_existing_still_conflicts() {
         let (store, mut writer) = kube::runtime::reflector::store::<crate::crd::DNSZone>();
 
-        let unconfigured_zone =
+        // existing zone has no status.bind9_instances yet — but it's older.
+        let mut unconfigured_zone =
             create_zone_with_status("unconfigured-zone", "team-a", "example.com", &[]);
-
+        unconfigured_zone.metadata.creation_timestamp =
+            Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+                "2026-01-01T00:00:00Z".parse().unwrap(),
+            ));
         writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(unconfigured_zone));
 
         let new_zone_json = serde_json::json!({
@@ -557,6 +736,7 @@ mod tests {
             "metadata": {
                 "name": "new-zone",
                 "namespace": "team-b",
+                "creationTimestamp": "2026-04-01T00:00:00Z",
             },
             "spec": {
                 "zoneName": "example.com",
@@ -573,19 +753,30 @@ mod tests {
                 "nameServerIPs": ["192.168.1.1"]
             }
         });
-
         let new_zone: crate::crd::DNSZone =
             serde_json::from_value(new_zone_json).expect("Failed to create new zone");
 
         let result = check_for_duplicate_zones(&new_zone, &store);
-        assert!(result.is_none());
+        assert!(
+            result.is_some(),
+            "F-003: the newer zone must lose to the older zone with the same zoneName"
+        );
+        let info = result.unwrap();
+        assert_eq!(info.zone_name, "example.com");
+        assert_eq!(info.conflicting_zones[0].name, "unconfigured-zone");
     }
 
+    /// F-003: a *newer* zone whose existing same-zoneName neighbour is in
+    /// `Failed` state is still flagged as a duplicate. The pre-F-003
+    /// behaviour ignored failed zones, allowing a tenant to win the race
+    /// any time the legitimate zone happened to be transiently failed.
+    /// The new check is pure spec/creationTimestamp; the older CR wins
+    /// regardless of status.
     #[test]
-    fn test_check_duplicate_zones_ignores_failed() {
+    fn test_check_duplicate_zones_failed_existing_still_conflicts() {
         let (store, mut writer) = kube::runtime::reflector::store::<crate::crd::DNSZone>();
 
-        let failed_zone = create_zone_with_status(
+        let mut failed_zone = create_zone_with_status(
             "failed-zone",
             "team-a",
             "example.com",
@@ -599,7 +790,10 @@ mod tests {
                 message: None,
             }],
         );
-
+        failed_zone.metadata.creation_timestamp =
+            Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+                "2026-01-01T00:00:00Z".parse().unwrap(),
+            ));
         writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(failed_zone));
 
         let new_zone_json = serde_json::json!({
@@ -608,6 +802,7 @@ mod tests {
             "metadata": {
                 "name": "new-zone",
                 "namespace": "team-b",
+                "creationTimestamp": "2026-04-01T00:00:00Z",
             },
             "spec": {
                 "zoneName": "example.com",
@@ -624,12 +819,76 @@ mod tests {
                 "nameServerIPs": ["192.168.1.1"]
             }
         });
-
         let new_zone: crate::crd::DNSZone =
             serde_json::from_value(new_zone_json).expect("Failed to create new zone");
 
         let result = check_for_duplicate_zones(&new_zone, &store);
-        assert!(result.is_none());
+        assert!(
+            result.is_some(),
+            "F-003: failed-state of the older zone must not unblock the newer claimant"
+        );
+    }
+
+    /// F-003: when timestamps clearly favour the *current* zone (it is the
+    /// older claimant), `check_for_duplicate_zones` returns None. The
+    /// loser is the newer zone and its own reconciler will flag itself
+    /// when it runs.
+    #[test]
+    fn test_check_duplicate_zones_current_is_older_returns_none() {
+        let (store, mut writer) = kube::runtime::reflector::store::<crate::crd::DNSZone>();
+
+        // A *newer* same-zoneName zone exists in the store.
+        let newer_zone_json = serde_json::json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "DNSZone",
+            "metadata": {
+                "name": "newer-zone",
+                "namespace": "team-b",
+                "creationTimestamp": "2026-04-01T00:00:00Z",
+            },
+            "spec": {
+                "zoneName": "example.com",
+                "soaRecord": {
+                    "primaryNs": "ns1.example.com.",
+                    "adminEmail": "admin.example.com.",
+                    "serial": 1, "refresh": 3600, "retry": 1800,
+                    "expire": 604_800, "negativeTtl": 86400
+                },
+                "ttl": 3600,
+                "nameServerIPs": ["192.168.1.1"]
+            }
+        });
+        let newer: crate::crd::DNSZone = serde_json::from_value(newer_zone_json).unwrap();
+        writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(newer));
+
+        // The current zone is older.
+        let older_zone_json = serde_json::json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "DNSZone",
+            "metadata": {
+                "name": "older-zone",
+                "namespace": "team-a",
+                "creationTimestamp": "2026-01-01T00:00:00Z",
+            },
+            "spec": {
+                "zoneName": "example.com",
+                "soaRecord": {
+                    "primaryNs": "ns1.example.com.",
+                    "adminEmail": "admin.example.com.",
+                    "serial": 1, "refresh": 3600, "retry": 1800,
+                    "expire": 604_800, "negativeTtl": 86400
+                },
+                "ttl": 3600,
+                "nameServerIPs": ["192.168.1.1"]
+            }
+        });
+        let older: crate::crd::DNSZone = serde_json::from_value(older_zone_json).unwrap();
+
+        let result = check_for_duplicate_zones(&older, &store);
+        assert!(
+            result.is_none(),
+            "current zone is older → it wins; result must be None"
+        );
     }
 
     #[test]

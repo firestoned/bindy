@@ -3702,12 +3702,12 @@ pub struct BindcarConfig {
     /// Environment variables for the Bindcar container
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env_vars: Option<Vec<EnvVar>>,
-
-    /// Volumes that can be mounted by the Bindcar container
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub volumes: Option<Vec<Volume>>,
-
-    /// Volume mounts for the Bindcar container
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub volume_mounts: Option<Vec<VolumeMount>>,
+    // NOTE: `volumes` and `volume_mounts` were removed in v0.5.1 (audit
+    // finding F-001 mitigation). They were declared on `BindcarConfig` but
+    // never plumbed into `build_api_sidecar_container`, so removing them is
+    // a no-op for the runtime and prevents a future "wire these through"
+    // change from re-introducing the unfiltered Volume / VolumeMount
+    // priv-esc primitive. Use `Bind9Instance.spec.volumes` /
+    // `volumeMounts` (validated by `crate::safe_volume`) for any genuine
+    // need to mount additional storage into the BIND9 pod.
 }

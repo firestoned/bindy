@@ -239,6 +239,40 @@ pub const ANNOTATION_ZONE_OWNER: &str = "bindy.firestoned.io/zone";
 /// records and enables cleanup workflows.
 pub const ANNOTATION_ZONE_PREVIOUS_OWNER: &str = "bindy.firestoned.io/previous-zone";
 
+/// Annotation key on `Bind9Instance` that lists namespaces from which a
+/// `DNSZone` (in a *different* namespace) is permitted to target this
+/// instance via `spec.bind9InstancesFrom` selectors.
+///
+/// **F-003 mitigation.** A label-selector match alone is not enough to
+/// enrol a cross-namespace `Bind9Instance` in a zone — the platform admin
+/// who owns the instance must also annotate it with the zone's namespace.
+/// Same-namespace targeting (zone and instance in the same namespace) is
+/// always permitted and does not require this annotation.
+///
+/// Value format: comma-separated list of namespace names. The literal
+/// value `*` re-enables the pre-F-003 cluster-wide behaviour for
+/// platform admins who explicitly accept the risk.
+///
+/// Examples:
+/// - `"tenant-a,tenant-b"` — only zones in tenant-a or tenant-b may
+///   claim this instance.
+/// - `"*"` — any namespace may claim (back to pre-F-003 behaviour).
+/// - annotation absent — only same-namespace zones may claim.
+///
+/// Why an annotation rather than a CRD field on `ClusterBind9Provider`?
+/// The platform-admin contract for a cluster-wide operator is "platform
+/// admin labels their instances; tenants match those labels." The
+/// security gate must live on the side the tenant cannot forge — i.e.
+/// metadata on the platform-owned `Bind9Instance` — and an annotation
+/// keeps the admin's mental model intact without requiring tenants to
+/// add a `clusterRef` they had no reason to set previously.
+pub const ANNOTATION_ALLOW_ZONE_NAMESPACES: &str = "bindy.firestoned.io/allow-zone-namespaces";
+
+/// Wildcard value for [`ANNOTATION_ALLOW_ZONE_NAMESPACES`] meaning "any
+/// namespace may target this instance." Use with care — restores the
+/// pre-F-003 cluster-wide behaviour.
+pub const ALLOW_ZONE_NAMESPACES_WILDCARD: &str = "*";
+
 // ============================================================================
 // RNDC Key Rotation Constants
 // ============================================================================
@@ -335,3 +369,35 @@ pub const KUBE_CLIENT_BURST: u32 = 30;
 /// - Memory usage remains constant (O(1) relative to total count)
 /// - Reduces API server load per request
 pub const KUBE_LIST_PAGE_SIZE: u32 = 100;
+
+// ============================================================================
+// User-volume Allow-list (F-001 mitigation)
+// ============================================================================
+//
+// `Bind9Instance` and `Bind9Cluster` accept user-supplied `volumes` and
+// `volumeMounts` fields that flow into the managed Pod spec. To prevent a
+// namespace-tenant from mounting `hostPath`, `csi`, foreign Secrets, or any
+// volume into a container the operator stamps with cluster-wide RBAC, we
+// validate every user-supplied volume against the constants below before
+// constructing the Pod. See `src/safe_volume.rs`.
+
+/// Mount-path prefixes allowed for user-supplied `volumeMounts`.
+///
+/// Anything outside these prefixes is rejected at reconcile time. Operator-
+/// managed mounts (`/etc/bind/...`, `/var/cache/bind`) are added by the
+/// resource builder and bypass this check.
+pub const ALLOWED_USER_MOUNT_PREFIXES: &[&str] = &["/data/", "/var/log/bind/"];
+
+/// Required name prefix for any Secret that the user references via a
+/// `secret:` volume. Prevents the user from mounting an arbitrary Secret
+/// (including the operator's own credentials) into the BIND9/bindcar pod.
+pub const ALLOWED_USER_SECRET_PREFIX: &str = "bindy-";
+
+/// Required name prefix for any PVC that the user references via a
+/// `persistentVolumeClaim:` volume. Same rationale as
+/// [`ALLOWED_USER_SECRET_PREFIX`].
+pub const ALLOWED_USER_PVC_PREFIX: &str = "bindy-";
+
+/// Required name prefix for any ConfigMap that the user references via a
+/// `configMap:` volume. Same rationale as [`ALLOWED_USER_SECRET_PREFIX`].
+pub const ALLOWED_USER_CONFIGMAP_PREFIX: &str = "bindy-";

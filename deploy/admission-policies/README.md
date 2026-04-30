@@ -15,6 +15,15 @@ defense-in-depth on top of the in-process Rust validators in
 | `04-bindy-zone-name-binding.yaml` | binding | Binds the zone-name policy. |
 | `05-bindy-rndc-strict-policy.yaml` | `bindy-rndc-algorithm-strict` | **Optional, opt-in.** Rejects `hmac-sha1` in addition to the already-rejected `hmac-md5`. |
 | `06-bindy-rndc-strict-binding.yaml` | binding | Binds the strict RNDC policy. |
+| `07-bindy-pod-shape-policy.yaml` | `bindy-pod-shape-validation` | Strict allow-list for `spec.volumes` / `spec.volumeMounts` on `Bind9Instance` / `Bind9Cluster` / `ClusterBind9Provider`. Closes audit finding F-001 (host-fs / foreign-Secret injection via tenant CR). |
+| `08-bindy-pod-shape-binding.yaml` | binding | Binds the pod-shape policy with `validationActions: [Deny]`. |
+
+F-003 (cross-namespace zone hijack) is enforced operator-side via the
+`bindy.firestoned.io/allow-zone-namespaces` annotation on `Bind9Instance`
+(see `src/reconcilers/dnszone/validation.rs::get_instances_from_zone`).
+There is no admission policy for it because the gate's input — metadata
+on the platform-owned target instance — isn't visible during `DNSZone`
+admission.
 
 ## Requirements
 
@@ -33,6 +42,11 @@ kubectl apply -f deploy/admission-policies/01-bindy-acl-policy.yaml
 kubectl apply -f deploy/admission-policies/02-bindy-acl-binding.yaml
 kubectl apply -f deploy/admission-policies/03-bindy-zone-name-policy.yaml
 kubectl apply -f deploy/admission-policies/04-bindy-zone-name-binding.yaml
+
+# Pod-shape allow-list (closes F-001 — host-fs / foreign-Secret injection).
+# Strongly recommended on any multi-tenant cluster.
+kubectl apply -f deploy/admission-policies/07-bindy-pod-shape-policy.yaml
+kubectl apply -f deploy/admission-policies/08-bindy-pod-shape-binding.yaml
 
 # Optional: posture-strict RNDC (rejects hmac-sha1).
 # Verify nothing in your cluster is using hmac-sha1 first.

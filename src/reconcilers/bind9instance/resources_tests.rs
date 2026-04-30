@@ -285,4 +285,136 @@ mod tests {
         //       AND operator will retry on next reconciliation
         //       AND log error message with details
     }
+
+    // ----------------------------------------------------------------
+    // F-001: validate_user_pod_shape — pure-function tests
+    // ----------------------------------------------------------------
+
+    use crate::crd::{
+        Bind9Cluster, Bind9ClusterCommonSpec, Bind9ClusterSpec, Bind9Instance, Bind9InstanceSpec,
+        ServerRole,
+    };
+    use crate::reconcilers::bind9instance::resources::validate_user_pod_shape_for_test;
+    use k8s_openapi::api::core::v1::{HostPathVolumeSource, Volume, VolumeMount};
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+
+    fn instance_with_volumes(volumes: Vec<Volume>, mounts: Vec<VolumeMount>) -> Bind9Instance {
+        #[allow(deprecated)]
+        Bind9Instance {
+            metadata: ObjectMeta {
+                name: Some("test-instance".to_string()),
+                namespace: Some("tenant-a".to_string()),
+                ..Default::default()
+            },
+            spec: Bind9InstanceSpec {
+                cluster_ref: String::new(),
+                role: ServerRole::Primary,
+                replicas: Some(1),
+                version: None,
+                image: None,
+                config_map_refs: None,
+                config: None,
+                primary_servers: None,
+                volumes: if volumes.is_empty() {
+                    None
+                } else {
+                    Some(volumes)
+                },
+                volume_mounts: if mounts.is_empty() {
+                    None
+                } else {
+                    Some(mounts)
+                },
+                rndc_secret_ref: None,
+                rndc_key: None,
+                storage: None,
+                bindcar_config: None,
+            },
+            status: None,
+        }
+    }
+
+    #[test]
+    fn validate_pod_shape_accepts_default_instance() {
+        let inst = instance_with_volumes(vec![], vec![]);
+        validate_user_pod_shape_for_test(&inst, None, None).expect("default instance must pass");
+    }
+
+    #[test]
+    fn validate_pod_shape_rejects_hostpath_on_instance() {
+        let inst = instance_with_volumes(
+            vec![Volume {
+                name: "host-root".into(),
+                host_path: Some(HostPathVolumeSource {
+                    path: "/".into(),
+                    type_: Some("Directory".into()),
+                }),
+                ..Default::default()
+            }],
+            vec![],
+        );
+        let err = validate_user_pod_shape_for_test(&inst, None, None)
+            .expect_err("hostPath on instance must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Bind9Instance test-instance spec.volumes"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn validate_pod_shape_rejects_mount_outside_data() {
+        let inst = instance_with_volumes(
+            vec![],
+            vec![VolumeMount {
+                name: "evil".into(),
+                mount_path: "/etc/passwd".into(),
+                ..Default::default()
+            }],
+        );
+        let err = validate_user_pod_shape_for_test(&inst, None, None)
+            .expect_err("/etc/passwd mount must be rejected");
+        assert!(err.to_string().contains("spec.volumeMounts"));
+    }
+
+    #[test]
+    fn validate_pod_shape_rejects_hostpath_inherited_from_cluster() {
+        let inst = instance_with_volumes(vec![], vec![]);
+        let cluster = Bind9Cluster {
+            metadata: ObjectMeta {
+                name: Some("malicious-cluster".to_string()),
+                namespace: Some("tenant-a".to_string()),
+                ..Default::default()
+            },
+            spec: Bind9ClusterSpec {
+                common: Bind9ClusterCommonSpec {
+                    version: None,
+                    primary: None,
+                    secondary: None,
+                    image: None,
+                    config_map_refs: None,
+                    global: None,
+                    rndc_secret_refs: None,
+                    acls: None,
+                    volumes: Some(vec![Volume {
+                        name: "host".into(),
+                        host_path: Some(HostPathVolumeSource {
+                            path: "/var/lib/kubelet".into(),
+                            type_: None,
+                        }),
+                        ..Default::default()
+                    }]),
+                    volume_mounts: None,
+                },
+            },
+            status: None,
+        };
+        let err = validate_user_pod_shape_for_test(&inst, Some(&cluster), None)
+            .expect_err("inherited hostPath must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Bind9Cluster tenant-a/malicious-cluster spec.volumes"),
+            "{msg}"
+        );
+    }
 }

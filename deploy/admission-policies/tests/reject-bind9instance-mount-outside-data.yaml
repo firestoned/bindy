@@ -1,0 +1,18 @@
+# Should be REJECTED by bindy-pod-shape-validation.
+# Demonstrates F-001: shadowing an operator-managed mount (e.g. /etc/bind)
+# would let an attacker overlay the rndc.key Secret with chosen content.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Instance
+metadata:
+  name: vap-pod-shape-reject-mount-outside
+  namespace: bindy-system
+spec:
+  clusterRef: ""
+  role: primary
+  replicas: 1
+  volumes:
+    - name: shadow
+      emptyDir: {}
+  volumeMounts:
+    - name: shadow
+      mountPath: /etc/bind/keys

@@ -1,0 +1,107 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# ValidatingAdmissionPolicy: enforce a strict allow-list on every entry of
+# `spec.volumes` / `spec.volumeMounts` on Bind9Instance / Bind9Cluster /
+# ClusterBind9Provider. Closes audit finding F-001.
+#
+# Without this policy, a namespace-tenant who can create a Bind9Instance can
+# inject a `hostPath` volume (or any other Volume source) into a Pod the
+# operator stamps with cluster-wide RBAC, escaping the namespace boundary
+# and reading other tenants' Secrets / projected SA tokens via the kubelet
+# pods directory. The Rust reconciler refuses to build a Pod for any of
+# these inputs (src/safe_volume.rs); this policy rejects them at admission
+# so the bad CR never reaches etcd.
+#
+# Allow-list:
+#   - Volume sources: emptyDir, configMap (name prefix bindy-), secret
+#     (name prefix bindy-), persistentVolumeClaim (name prefix bindy-).
+#   - VolumeMount.mountPath: must start with /data/ or /var/log/bind/.
+#   - VolumeMount.subPath / subPathExpr: must not contain '..'.
+#
+# Requires Kubernetes 1.30+ (admissionregistration.k8s.io/v1 GA).
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: bindy-pod-shape-validation
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/part-of: bindy
+    app.kubernetes.io/component: admission-policy
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups:   ["bindy.firestoned.io"]
+        apiVersions: ["v1beta1"]
+        operations:  ["CREATE", "UPDATE"]
+        resources:
+          - bind9clusters
+          - bind9instances
+          - clusterbind9providers
+  variables:
+    # Union every volumes / volumeMounts list anywhere in the spec.
+    # Bind9ClusterCommonSpec is flattened into Bind9Cluster.spec.common and
+    # ClusterBind9Provider.spec.common; Bind9InstanceSpec carries the same
+    # fields directly under spec.
+    - name: vols
+      expression: |
+        object.spec.?volumes.orValue([]) +
+        object.spec.?common.?volumes.orValue([])
+    - name: mounts
+      expression: |
+        object.spec.?volumeMounts.orValue([]) +
+        object.spec.?common.?volumeMounts.orValue([])
+    - name: allowedSecretPrefix
+      expression: "'bindy-'"
+    - name: allowedConfigMapPrefix
+      expression: "'bindy-'"
+    - name: allowedPvcPrefix
+      expression: "'bindy-'"
+    - name: allowedMountPrefixes
+      expression: "['/data/', '/var/log/bind/']"
+  validations:
+    # 1. Reject every disallowed Volume source. Allow-list approach: only
+    #    the four named sources may be set; everything else fails.
+    - expression: |
+        variables.vols.all(v,
+          (has(v.emptyDir)) ||
+          (has(v.configMap)  && v.configMap.name.startsWith(variables.allowedConfigMapPrefix)) ||
+          (has(v.secret)     && has(v.secret.secretName) && v.secret.secretName.startsWith(variables.allowedSecretPrefix)) ||
+          (has(v.persistentVolumeClaim) && v.persistentVolumeClaim.claimName.startsWith(variables.allowedPvcPrefix)))
+      messageExpression: |
+        "User-supplied Bind9 volumes must be one of: emptyDir; configMap " +
+        "with name prefix '" + variables.allowedConfigMapPrefix + "'; secret " +
+        "with name prefix '" + variables.allowedSecretPrefix + "'; or " +
+        "persistentVolumeClaim with name prefix '" + variables.allowedPvcPrefix +
+        "'. Forbidden Volume sources include hostPath, csi, flexVolume, nfs, " +
+        "iscsi, rbd, projected, ephemeral, cephfs, glusterfs, azureFile, " +
+        "gcePersistentDisk, awsElasticBlockStore, gitRepo, downwardAPI, and any " +
+        "Volume that does not name an allowed source."
+
+    # 2. Reject mountPaths outside the allow-list.
+    - expression: |
+        variables.mounts.all(m,
+          variables.allowedMountPrefixes.exists(p, m.mountPath.startsWith(p)))
+      messageExpression: |
+        "Bind9 volumeMount.mountPath must start with one of " +
+        variables.allowedMountPrefixes.join(", ") +
+        " — these are the only paths the operator does not own. " +
+        "Offending mountPaths: " +
+        variables.mounts.filter(m,
+          !variables.allowedMountPrefixes.exists(p, m.mountPath.startsWith(p)))
+          .map(m, m.mountPath).join(", ")
+
+    # 3. Reject subPath / subPathExpr containing path traversal.
+    - expression: |
+        variables.mounts.all(m,
+          (!has(m.subPath)     || !m.subPath.contains('..')) &&
+          (!has(m.subPathExpr) || !m.subPathExpr.contains('..')))
+      messageExpression: |
+        "Bind9 volumeMount.subPath / subPathExpr must not contain '..' " +
+        "(path traversal)."
+  auditAnnotations:
+    - key: bindy-pod-shape-rejected
+      valueExpression: |
+        "Rejected user-supplied volume / volumeMount entries"
