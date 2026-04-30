@@ -153,6 +153,13 @@ pub(super) async fn create_or_update_resources(
         None
     };
 
+    // F-001 mitigation: validate every user-supplied volume / volumeMount that
+    // would flow into the managed Pod spec, refusing the reconcile if any
+    // entry violates the allow-list in `crate::safe_volume`. Validate the
+    // instance-level fields and any inherited cluster-level fields.
+    validate_user_pod_shape(instance, cluster.as_ref(), cluster_provider.as_ref())
+        .context("user-supplied Pod shape rejected")?;
+
     // Resolve RNDC configuration with proper precedence
     let rndc_config =
         resolve_full_rndc_config(instance, cluster.as_ref(), cluster_provider.as_ref());
@@ -1273,6 +1280,76 @@ pub(super) async fn delete_resources(client: &Client, namespace: &str, name: &st
         }
     }
 
+    Ok(())
+}
+
+/// Test-only re-export of the private `validate_user_pod_shape` helper.
+///
+/// Tests live in a sibling `_tests.rs` module (per project convention) and
+/// would otherwise need to access the private function. Exporting an alias
+/// keeps the production API surface unchanged.
+#[cfg(test)]
+pub(super) fn validate_user_pod_shape_for_test(
+    instance: &Bind9Instance,
+    cluster: Option<&Bind9Cluster>,
+    cluster_provider: Option<&crate::crd::ClusterBind9Provider>,
+) -> anyhow::Result<()> {
+    validate_user_pod_shape(instance, cluster, cluster_provider)
+}
+
+/// Validate every user-supplied volume / volumeMount that would be merged
+/// into the managed Pod spec.
+///
+/// Inspects `instance.spec.volumes` / `instance.spec.volume_mounts` plus the
+/// inherited cluster-level fields (from either `Bind9Cluster.common` or
+/// `ClusterBind9Provider.common`). Returns the first rejection encountered;
+/// the caller surfaces it as a `Ready=False, Reason=InvalidPodSpec`
+/// condition on the CR.
+///
+/// # Errors
+///
+/// Returns the underlying [`crate::safe_volume::VolumeRejection`] wrapped in
+/// `anyhow::Error` so it composes with the rest of the reconciler.
+fn validate_user_pod_shape(
+    instance: &Bind9Instance,
+    cluster: Option<&Bind9Cluster>,
+    cluster_provider: Option<&crate::crd::ClusterBind9Provider>,
+) -> anyhow::Result<()> {
+    use crate::safe_volume::{
+        validate_optional_user_volume_mounts, validate_optional_user_volumes,
+    };
+
+    // Instance-level fields.
+    validate_optional_user_volumes(instance.spec.volumes.as_ref())
+        .with_context(|| format!("Bind9Instance {} spec.volumes", instance.name_any()))?;
+    validate_optional_user_volume_mounts(instance.spec.volume_mounts.as_ref())
+        .with_context(|| format!("Bind9Instance {} spec.volumeMounts", instance.name_any()))?;
+
+    // Cluster-level fields (inherited when the instance does not override).
+    if let Some(c) = cluster {
+        validate_optional_user_volumes(c.spec.common.volumes.as_ref()).with_context(|| {
+            format!(
+                "Bind9Cluster {}/{} spec.volumes",
+                c.namespace().unwrap_or_default(),
+                c.name_any(),
+            )
+        })?;
+        validate_optional_user_volume_mounts(c.spec.common.volume_mounts.as_ref()).with_context(
+            || {
+                format!(
+                    "Bind9Cluster {}/{} spec.volumeMounts",
+                    c.namespace().unwrap_or_default(),
+                    c.name_any(),
+                )
+            },
+        )?;
+    }
+    if let Some(p) = cluster_provider {
+        validate_optional_user_volumes(p.spec.common.volumes.as_ref())
+            .with_context(|| format!("ClusterBind9Provider {} spec.volumes", p.name_any()))?;
+        validate_optional_user_volume_mounts(p.spec.common.volume_mounts.as_ref())
+            .with_context(|| format!("ClusterBind9Provider {} spec.volumeMounts", p.name_any()))?;
+    }
     Ok(())
 }
 

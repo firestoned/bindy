@@ -1,0 +1,113 @@
+{
+  "version": 1,
+  "created_at": "2026-04-28T01:06:07.659Z",
+  "lifetime": {
+    "total_tokens_estimated": 3472,
+    "total_reads": 4,
+    "total_writes": 10,
+    "total_sessions": 1,
+    "anatomy_hits": 0,
+    "anatomy_misses": 4,
+    "repeated_reads_blocked": 4,
+    "estimated_savings_vs_bare_cli": 0
+  },
+  "sessions": [
+    {
+      "id": "session-2026-04-28-1422",
+      "started": "2026-04-28T18:22:23.818Z",
+      "ended": "2026-04-30T01:34:00.669Z",
+      "reads": [
+        {
+          "file": "/Users/erick/dev/bindy/src/scout.rs",
+          "tokens_estimated": 0,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "/Users/erick/dev/bindy/src/scout_tests.rs",
+          "tokens_estimated": 0,
+          "was_repeated": true,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "/Users/erick/dev/bindy/docs/src/guide/scout.md",
+          "tokens_estimated": 0,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        },
+        {
+          "file": "/Users/erick/dev/bindy/.claude/CHANGELOG.md",
+          "tokens_estimated": 0,
+          "was_repeated": false,
+          "anatomy_had_description": false
+        }
+      ],
+      "writes": [
+        {
+          "file": "/Users/erick/dev/bindy/src/scout_tests.rs",
+          "tokens_estimated": 192,
+          "action": "edit"
+        },
+        {
+          "file": "/Users/erick/dev/bindy/src/scout_tests.rs",
+          "tokens_estimated": 1399,
+          "action": "edit"
+        },
+        {
+          "file": "/Users/erick/dev/bindy/src/scout.rs",
+          "tokens_estimated": 230,
+          "action": "edit"
+        },
+        {
+          "file": "/Users/erick/dev/bindy/src/scout.rs",
+          "tokens_estimated": 446,
+          "action": "edit"
+        },
+        {
+          "file": "/Users/erick/dev/bindy/src/scout.rs",
+          "tokens_estimated": 88,
+          "action": "edit"
+        },
+        {
+          "file": "/Users/erick/dev/bindy/src/scout.rs",
+          "tokens_estimated": 141,
+          "action": "edit"
+        },
+        {
+          "file": "/Users/erick/dev/bindy/src/scout.rs",
+          "tokens_estimated": 118,
+          "action": "edit"
+        },
+        {
+          "file": "/Users/erick/dev/bindy/src/scout.rs",
+          "tokens_estimated": 118,
+          "action": "edit"
+        },
+        {
+          "file": "/Users/erick/dev/bindy/docs/src/guide/scout.md",
+          "tokens_estimated": 185,
+          "action": "edit"
+        },
+        {
+          "file": "/Users/erick/dev/bindy/.claude/CHANGELOG.md",
+          "tokens_estimated": 555,
+          "action": "edit"
+        }
+      ],
+      "totals": {
+        "input_tokens_estimated": 0,
+        "output_tokens_estimated": 3472,
+        "reads_count": 4,
+        "writes_count": 10,
+        "repeated_reads_blocked": 4,
+        "anatomy_lookups": 0
+      }
+    }
+  ],
+  "daemon_usage": [],
+  "waste_flags": [],
+  "optimization_report": {
+    "last_generated": null,
+    "patterns": []
+  }
+}

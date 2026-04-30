@@ -19,19 +19,42 @@ use crate::crd::DNSZone;
 /// - Uses the reflector store for O(1) lookups without API calls
 /// - Single source of truth: `DNSZone` owns the zone-instance relationship
 ///
+/// # F-003 mitigation: cross-namespace targeting requires platform-admin opt-in
+///
+/// A label selector match is *not* sufficient to enrol a `Bind9Instance` in
+/// the zone. The instance is included only when **either**:
+///
+/// 1. The instance lives in the **same namespace** as the `DNSZone`, **or**
+/// 2. The instance carries the
+///    [`crate::constants::ANNOTATION_ALLOW_ZONE_NAMESPACES`] annotation
+///    whose value contains the zone's namespace (or the wildcard
+///    [`crate::constants::ALLOW_ZONE_NAMESPACES_WILDCARD`]).
+///
+/// The annotation is metadata on the `Bind9Instance`, which is owned by
+/// the platform admin (only they have RBAC on the namespace where the
+/// instance lives). This preserves the cluster-wide-operator contract:
+/// the platform admin keeps full control of who can claim their
+/// instances, expressed through a platform-admin-controlled annotation,
+/// while still preventing the F-003 hijack — labels on the instance side
+/// are not a security boundary (they are discoverable via list/watch and
+/// any tenant can write any matchLabels they want), but annotations on
+/// the platform-owned instance are.
+///
 /// # Arguments
 ///
 /// * `dnszone` - The `DNSZone` resource to get instances for
-/// * `bind9_instances_store` - The reflector store for querying `Bind9Instance` resources
+/// * `bind9_instances_store` - Reflector store of `Bind9Instance`
 ///
 /// # Returns
 ///
 /// * `Ok(Vec<InstanceReference>)` - List of instances serving this zone
-/// * `Err(_)` - If no instances match the `bind9_instances_from` selectors
+/// * `Err(_)` - If no instances pass both the selector match and the
+///   namespace gate
 ///
 /// # Errors
 ///
-/// Returns an error if no instances are found matching the label selectors.
+/// Returns an error if no instances pass the selector + namespace gate, or
+/// if `spec.bind9_instances_from` is missing or empty.
 pub fn get_instances_from_zone(
     dnszone: &DNSZone,
     bind9_instances_store: &kube::runtime::reflector::Store<crate::crd::Bind9Instance>,
@@ -50,7 +73,7 @@ pub fn get_instances_from_zone(
         }
     };
 
-    // Query all instances from the reflector store and filter by label selectors
+    let mut cross_ns_denied: Vec<(String, String)> = Vec::new();
     let instances_with_zone: Vec<crate::crd::InstanceReference> = bind9_instances_store
         .state()
         .iter()
@@ -59,24 +82,47 @@ pub fn get_instances_from_zone(
             let instance_namespace = instance.namespace()?;
             let instance_name = instance.name_any();
 
-            // Check if instance matches ANY of the bind9_instances_from selectors (OR logic)
+            // Selector match (label-based) — necessary but not sufficient.
             let matches = bind9_instances_from
                 .iter()
                 .any(|source| source.selector.matches(instance_labels));
-
-            if matches {
-                Some(crate::crd::InstanceReference {
-                    api_version: "bindy.firestoned.io/v1beta1".to_string(),
-                    kind: "Bind9Instance".to_string(),
-                    name: instance_name,
-                    namespace: instance_namespace,
-                    last_reconciled_at: None,
-                })
-            } else {
-                None
+            if !matches {
+                return None;
             }
+
+            // F-003 namespace gate. Same-namespace always allowed; cross-
+            // namespace requires the platform-admin annotation on the
+            // instance.
+            if instance_namespace != namespace
+                && !instance_allows_zone_namespace(instance, &namespace)
+            {
+                cross_ns_denied.push((instance_namespace.clone(), instance_name.clone()));
+                return None;
+            }
+
+            Some(crate::crd::InstanceReference {
+                api_version: "bindy.firestoned.io/v1beta1".to_string(),
+                kind: "Bind9Instance".to_string(),
+                name: instance_name,
+                namespace: instance_namespace,
+                last_reconciled_at: None,
+            })
         })
         .collect();
+
+    if !cross_ns_denied.is_empty() {
+        warn!(
+            "DNSZone {}/{} label selectors matched {} cross-namespace Bind9Instance(s) \
+             that were rejected by the F-003 namespace gate: {:?}. \
+             To allow cross-namespace targeting, the platform admin must annotate the \
+             target Bind9Instance with `{}: <comma-separated namespaces>` (or `*`).",
+            namespace,
+            name,
+            cross_ns_denied.len(),
+            cross_ns_denied,
+            crate::constants::ANNOTATION_ALLOW_ZONE_NAMESPACES,
+        );
+    }
 
     if !instances_with_zone.is_empty() {
         debug!(
@@ -88,11 +134,49 @@ pub fn get_instances_from_zone(
         return Ok(instances_with_zone);
     }
 
-    // No instances found
-    Err(anyhow!(
-        "DNSZone {namespace}/{name} has no instances matching spec.bind9_instances_from selectors. \
-        Verify that Bind9Instance resources exist with matching labels."
-    ))
+    // No instances found — message distinguishes "no labels matched" from
+    // "labels matched but cross-namespace gate denied them".
+    if cross_ns_denied.is_empty() {
+        Err(anyhow!(
+            "DNSZone {namespace}/{name} has no instances matching spec.bind9_instances_from selectors. \
+            Verify that Bind9Instance resources exist with matching labels."
+        ))
+    } else {
+        Err(anyhow!(
+            "DNSZone {namespace}/{name} matched only cross-namespace Bind9Instance(s) \
+             that the F-003 namespace gate denied. Ask the platform admin to annotate \
+             the target instance with `{annotation}: {namespace}` (or `{annotation}: *` \
+             to allow any namespace).",
+            annotation = crate::constants::ANNOTATION_ALLOW_ZONE_NAMESPACES,
+        ))
+    }
+}
+
+/// Check whether `instance` carries an annotation that grants the named
+/// `zone_namespace` permission to target it cross-namespace.
+///
+/// Returns `true` iff the instance's
+/// [`crate::constants::ANNOTATION_ALLOW_ZONE_NAMESPACES`] annotation is
+/// set and its value, when parsed as a comma-separated list, contains
+/// either `zone_namespace` or
+/// [`crate::constants::ALLOW_ZONE_NAMESPACES_WILDCARD`].
+///
+/// Same-namespace matching is handled by the caller and does *not*
+/// require this annotation.
+#[must_use]
+pub fn instance_allows_zone_namespace(
+    instance: &crate::crd::Bind9Instance,
+    zone_namespace: &str,
+) -> bool {
+    let Some(annotations) = instance.metadata.annotations.as_ref() else {
+        return false;
+    };
+    let Some(value) = annotations.get(crate::constants::ANNOTATION_ALLOW_ZONE_NAMESPACES) else {
+        return false;
+    };
+    value.split(',').map(str::trim).any(|entry| {
+        entry == crate::constants::ALLOW_ZONE_NAMESPACES_WILDCARD || entry == zone_namespace
+    })
 }
 
 /// Checks if another zone has already claimed the same zone name across any BIND9 instances.
@@ -139,41 +223,55 @@ pub fn check_for_duplicate_zones(
         current_namespace, current_name, zone_name
     );
 
+    // F-003 mitigation: switch the duplicate check from a status-based gate
+    // to a spec-based one. The previous implementation only flagged a
+    // conflict if the *other* zone had `status.bind9_instances` non-empty
+    // and at least one instance not in `Failed`/`Unclaimed`. That left
+    // every race window open: a tenant who created their malicious zone
+    // *first*, before the legitimate zone reached `Configured` state,
+    // would claim the zoneName uncontested, and the legitimate zone would
+    // never reconcile. We now compare on `spec.zoneName` directly and use
+    // creation timestamp to break ties: the *older* CR wins.
+    let current_creation = dnszone.metadata.creation_timestamp.as_ref();
+
     let mut conflicting_zones = Vec::new();
 
-    // Query all zones from the reflector store
     for other_zone in &zones_store.state() {
         let other_namespace = other_zone.namespace().unwrap_or_default();
         let other_name = other_zone.name_any();
 
-        // Skip if this is the same zone (updating itself)
+        // Skip if this is the same zone (updating itself).
         if other_namespace == current_namespace && other_name == current_name {
             continue;
         }
 
-        // Skip if zone name doesn't match
+        // Skip if zone name doesn't match.
         if other_zone.spec.zone_name != *zone_name {
             continue;
         }
 
-        // Check if other zone has instances configured
-        let has_configured_instances = other_zone.status.as_ref().is_some_and(|status| {
-            !status.bind9_instances.is_empty()
-                && status.bind9_instances.iter().any(|inst| {
-                    inst.status != crate::crd::InstanceStatus::Failed
-                        && inst.status != crate::crd::InstanceStatus::Unclaimed
-                })
-        });
-
-        if !has_configured_instances {
-            debug!(
-                "Zone {}/{} also uses {} but has no configured instances - not a conflict",
-                other_namespace, other_name, zone_name
-            );
+        // Tie-break by creation timestamp: the *older* CR keeps the
+        // zoneName; the newer one is the conflict. If timestamps are
+        // missing or equal, fall back to a stable lexicographic order on
+        // (namespace, name) so the result is deterministic.
+        let other_creation = other_zone.metadata.creation_timestamp.as_ref();
+        let other_is_older = match (other_creation, current_creation) {
+            (Some(o), Some(c)) if o.0 != c.0 => o.0 < c.0,
+            _ => {
+                (other_namespace.as_str(), other_name.as_str())
+                    < (current_namespace.as_str(), current_name.as_str())
+            }
+        };
+        if !other_is_older {
+            // The current zone is the older / lexicographically first
+            // claimant — keep it; the *other* zone is the loser. Don't
+            // record this as a conflict here; the other zone's own
+            // reconciler will report its loss when it runs.
             continue;
         }
 
-        // This is a conflict - collect instance names
+        // Collect any instance names from status for the operator's
+        // diagnostics, but do not gate the conflict on them.
         let instance_names = other_zone
             .status
             .as_ref()
@@ -191,8 +289,10 @@ pub fn check_for_duplicate_zones(
             .unwrap_or_default();
 
         warn!(
-            "Duplicate zone detected: {}/{} already claims {} on instances: {:?}",
-            other_namespace, other_name, zone_name, instance_names
+            "Duplicate zone detected: {}/{} already claims {} (older CR or lex-prior); \
+             current zone {}/{} will be marked Ready=False with DuplicateZone reason. \
+             Instances on the winning zone: {:?}",
+            other_namespace, other_name, zone_name, current_namespace, current_name, instance_names
         );
 
         conflicting_zones.push(ConflictingZone {

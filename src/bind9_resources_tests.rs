@@ -1246,8 +1246,6 @@ mod tests {
             port: Some(9090),
             service_spec: None,
             env_vars: None,
-            volumes: None,
-            volume_mounts: None,
             log_level: None,
         });
 
@@ -1296,8 +1294,6 @@ mod tests {
                 ..Default::default()
             }),
             env_vars: None,
-            volumes: None,
-            volume_mounts: None,
             log_level: None,
         });
 

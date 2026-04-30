@@ -1,0 +1,23 @@
+# Should pass admission with bindy-pod-shape-validation deployed.
+# emptyDir volumes are always permitted. /data/ is on the mount allow-list.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Instance
+metadata:
+  name: vap-pod-shape-accept
+  namespace: bindy-system
+spec:
+  clusterRef: ""
+  role: primary
+  replicas: 1
+  volumes:
+    - name: scratch
+      emptyDir: {}
+    - name: extra-keys
+      secret:
+        secretName: bindy-extra-tsig
+  volumeMounts:
+    - name: scratch
+      mountPath: /data/scratch
+    - name: extra-keys
+      mountPath: /data/extra-keys
+      readOnly: true

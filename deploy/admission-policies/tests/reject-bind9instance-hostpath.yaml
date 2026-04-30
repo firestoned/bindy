@@ -1,0 +1,20 @@
+# Should be REJECTED by bindy-pod-shape-validation.
+# Demonstrates F-001: hostPath injection from a tenant-owned CR.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Instance
+metadata:
+  name: vap-pod-shape-reject-hostpath
+  namespace: bindy-system
+spec:
+  clusterRef: ""
+  role: primary
+  replicas: 1
+  volumes:
+    - name: host-root
+      hostPath:
+        path: /
+        type: Directory
+  volumeMounts:
+    - name: host-root
+      mountPath: /data/host
+      readOnly: true
