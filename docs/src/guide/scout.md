@@ -189,7 +189,7 @@ These annotations apply to both `Ingress` and `LoadBalancer Service` resources.
 | `bindy.firestoned.io/scout-enabled` | **Yes** (preferred) | Set to `"true"` to opt this Ingress or Service into Scout management. The record kind always defaults to `ARecord`. |
 | `bindy.firestoned.io/recordKind` | *(legacy, Ingress only)* | Accepted for backward compatibility. `"ARecord"` opts in. Prefer `scout-enabled: "true"` for new deployments. |
 | `bindy.firestoned.io/zone` | **Yes** (unless `--default-zone` is set) | The DNS zone for this resource (e.g. `example.com`). Overrides the operator's `--default-zone`. For Ingress: hosts outside the zone are skipped with a warning. |
-| `bindy.firestoned.io/ip` | No | Explicit IP address for the A record. When set, overrides both `--default-ips` and the LoadBalancer status IP. |
+| `bindy.firestoned.io/ip` | No | Explicit IP address(es) for the A record. Accepts a single IP (`"10.0.0.1"`) or a comma-separated list (`"10.0.0.1,10.0.0.2,10.0.0.3"`) — every entry becomes one address on the resulting `ARecord`, in the order given. Whitespace around each entry is trimmed and empty entries are skipped. When set, overrides both `--default-ips` and the LoadBalancer status IP. |
 | `bindy.firestoned.io/ttl` | No | TTL override in seconds. When absent, the created `ARecord` inherits the TTL from the `DNSZone` spec. |
 | `bindy.firestoned.io/record-name` | No | Override the `spec.name` of the created `ARecord`. When set, replaces the name normally derived by stripping the zone suffix from the host. Use `"@"` for the zone apex. On multi-host resources (`Ingress`, `HTTPRoute`, `TLSRoute`) the override is applied to every record produced — intended for single-host use cases. |
 
