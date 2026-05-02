@@ -179,15 +179,15 @@ impl DNSRecordKind {
     ///
     /// ```rust,ignore
     /// use bindy::crd::DNSRecordKind;
-    /// use hickory_client::rr::RecordType;
+    /// use hickory_proto::rr::RecordType;
     ///
     /// let kind = DNSRecordKind::A;
     /// let record_type = kind.to_hickory_record_type();
     /// assert_eq!(record_type, RecordType::A);
     /// ```
     #[must_use]
-    pub const fn to_hickory_record_type(self) -> hickory_client::rr::RecordType {
-        use hickory_client::rr::RecordType;
+    pub const fn to_hickory_record_type(self) -> hickory_proto::rr::RecordType {
+        use hickory_proto::rr::RecordType;
         match self {
             Self::A => RecordType::A,
             Self::AAAA => RecordType::AAAA,

@@ -13,7 +13,7 @@ mod tests {
     };
     use crate::labels;
     use crate::record_operator::DnsRecordType;
-    use hickory_client::rr::RecordType;
+    use hickory_proto::rr::RecordType;
 
     // A Record Tests
     #[test]

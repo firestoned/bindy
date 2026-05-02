@@ -1,7 +1,7 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-05-01T01:16:17.013Z
-> Files: 531 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-05-02T15:47:04.861Z
+> Files: 542 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
 
@@ -11,7 +11,7 @@
 - `.gitleaks.toml` — SPDX-License-Identifier: MIT (~591 tok)
 - `.rustfmt.toml` — Rust formatting configuration for stable rustfmt (~377 tok)
 - `.trivyignore` — SPDX-License-Identifier: MIT (~1232 tok)
-- `Cargo.toml` — Rust package manifest (~738 tok)
+- `Cargo.toml` — Rust package manifest (~683 tok)
 - `CLAUDE.md` — OpenWolf (~57 tok)
 - `CONTRIBUTING.md` — Contributing to Bindy (~2950 tok)
 - `LICENSE` — Project license (~290 tok)
@@ -29,7 +29,7 @@
 
 ## .claude/
 
-- `CHANGELOG.md` — [2026-04-30] - Scout: comma-separated IP list in `bindy.firestoned.io/ip` annotation (~370000 tok)
+- `CHANGELOG.md` — [2026-05-02] - Migrate hickory-client → hickory-net 0.26.1 (RUSTSEC-2026-0119) (~371152 tok)
 - `CLAUDE.md` — Project Instructions for Claude Code (~2268 tok)
 - `optimization-recommendations.md` — CLAUDE.md Optimization Recommendations (~2543 tok)
 - `settings.json` (~462 tok)
@@ -77,7 +77,7 @@
 - `integration.yaml` — SPDX-License-Identifier: MIT (~579 tok)
 - `license-scan.yaml` — SPDX-License-Identifier: MIT (~1010 tok)
 - `main.yaml` — SPDX-License-Identifier: MIT (~2763 tok)
-- `pr.yaml` — SPDX-License-Identifier: MIT (~3419 tok)
+- `pr.yaml` — SPDX-License-Identifier: MIT (~3469 tok)
 - `release.yaml` — SPDX-License-Identifier: MIT (~5769 tok)
 - `sbom.yml` — SPDX-License-Identifier: MIT (~901 tok)
 - `scorecard.yml` — SPDX-License-Identifier: MIT (~510 tok)
@@ -609,11 +609,31 @@
 - `es_PY.dat` (~1171 tok)
 - `es_SV.dat` (~332 tok)
 
+## docs/roadmaps/
+
+- `hickory-client-stable-upgrade.md` — Hickory client: revisit migration target in Q3 2026 (~936 tok)
+
 ## docs/src/guide/
 
 - `scout.md` — <img src="../../images/scouty.png" alt="Scouty the Scout Bee" width="40" style="vertical-align: midd (~9457 tok)
 
 ## src/
 
+- `record_operator.rs` — Generic DNS record operator implementation. (~2346 tok)
 - `scout_tests.rs` — Unit tests for `scout.rs` — pure helper functions (no Kubernetes API calls) (~13952 tok)
 - `scout.rs` — Bindy Scout — Ingress-to-ARecord controller. (~25327 tok)
+
+## src/bind9/
+
+- `zone_ops.rs` — Zone HTTP API operations for BIND9 management. (~11460 tok)
+
+## src/bind9/records/
+
+- `a.rs` — A and AAAA record management. (~2406 tok)
+- `caa.rs` — CAA record management. (~1210 tok)
+- `cname.rs` — CNAME record management. (~670 tok)
+- `mod.rs` — DNS record management functions using dynamic DNS updates (RFC 2136). (~2141 tok)
+- `mx.rs` — MX record management. (~718 tok)
+- `ns.rs` — NS record management. (~662 tok)
+- `srv.rs` — SRV record management. (~1041 tok)
+- `txt.rs` — TXT record management. (~711 tok)

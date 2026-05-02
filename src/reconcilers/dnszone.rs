@@ -1776,7 +1776,7 @@ async fn auto_generate_ns_records(
                 zone_name,
                 &nameserver.hostname,
                 ipv4,
-                hickory_client::rr::RecordType::A,
+                hickory_proto::rr::RecordType::A,
                 ttl,
                 primary_instance_refs,
             )
@@ -1789,7 +1789,7 @@ async fn auto_generate_ns_records(
                 zone_name,
                 &nameserver.hostname,
                 ipv6,
-                hickory_client::rr::RecordType::AAAA,
+                hickory_proto::rr::RecordType::AAAA,
                 ttl,
                 primary_instance_refs,
             )
@@ -1830,7 +1830,7 @@ async fn add_glue_record(
     zone_name: &str,
     hostname: &str,
     ip_address: &str,
-    record_type: hickory_client::rr::RecordType,
+    record_type: hickory_proto::rr::RecordType,
     ttl: Option<i32>,
     primary_instance_refs: &[crate::crd::InstanceReference],
 ) -> Result<()> {
@@ -1854,13 +1854,13 @@ async fn add_glue_record(
 
     info!(
         "Adding {} glue record: {} IN {} {}",
-        if record_type == hickory_client::rr::RecordType::A {
+        if record_type == hickory_proto::rr::RecordType::A {
             "A"
         } else {
             "AAAA"
         },
         name,
-        if record_type == hickory_client::rr::RecordType::A {
+        if record_type == hickory_proto::rr::RecordType::A {
             "A"
         } else {
             "AAAA"
@@ -1914,7 +1914,7 @@ async fn add_glue_record(
             let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
 
             let result = match record_type {
-                hickory_client::rr::RecordType::A => {
+                hickory_proto::rr::RecordType::A => {
                     crate::bind9::records::a::add_a_record(
                         zone_name,
                         name,
@@ -1925,7 +1925,7 @@ async fn add_glue_record(
                     )
                     .await
                 }
-                hickory_client::rr::RecordType::AAAA => {
+                hickory_proto::rr::RecordType::AAAA => {
                     crate::bind9::records::a::add_aaaa_record(
                         zone_name,
                         name,

@@ -34,3 +34,29 @@
 | 21:16 | Edited src/scout_tests.rs | modified test_tlsroute_arecord_cr_name_respects_length_limit() | ~1840 |
 | 18:30 | Added 9 builder tests (build_arecord/_service/_httproute/_tlsroute) for record_name override and multi-IP | src/scout_tests.rs | 1014/1014 lib tests | ~700 |
 | 21:16 | Session end: 20 writes across 4 files (scout_tests.rs, scout.rs, scout.md, CHANGELOG.md) | 4 reads | ~46331 tok |
+| 07:20 | Edited .github/workflows/pr.yaml | 5→10 lines | ~99 |
+| 07:20 | Edited .claude/CHANGELOG.md | expanded (+18 lines) | ~242 |
+| 07:21 | Session end: 22 writes across 5 files (scout_tests.rs, scout.rs, scout.md, CHANGELOG.md, pr.yaml) | 5 reads | ~420158 tok |
+| 07:22 | Session end: 22 writes across 5 files (scout_tests.rs, scout.rs, scout.md, CHANGELOG.md, pr.yaml) | 5 reads | ~420158 tok |
+| 09:41 | Session end: 22 writes across 5 files (scout_tests.rs, scout.rs, scout.md, CHANGELOG.md, pr.yaml) | 5 reads | ~420158 tok |
+| 09:55 | Session end: 22 writes across 5 files (scout_tests.rs, scout.rs, scout.md, CHANGELOG.md, pr.yaml) | 12 reads | ~420896 tok |
+| 11:05 | Edited Cargo.toml | 2→2 lines | ~38 |
+| 11:08 | Edited Cargo.toml | 2→2 lines | ~40 |
+| 11:08 | Session end: 24 writes across 6 files (scout_tests.rs, scout.rs, scout.md, CHANGELOG.md, pr.yaml) | 12 reads | ~420980 tok |
+| 11:27 | Edited Cargo.toml | 2→2 lines | ~34 |
+| 11:32 | Edited src/record_operator.rs | "hickory_client" → "hickory_proto" | ~14 |
+| 11:36 | Created src/bind9/records/mod.rs | — | ~2141 |
+| 11:36 | Created src/bind9/records/cname.rs | — | ~670 |
+| 11:36 | Created src/bind9/records/txt.rs | — | ~712 |
+| 11:36 | Created src/bind9/records/ns.rs | — | ~662 |
+| 11:37 | Created src/bind9/records/mx.rs | — | ~718 |
+| 11:37 | Created src/bind9/records/srv.rs | — | ~1041 |
+| 11:38 | Created src/bind9/records/caa.rs | — | ~1234 |
+| 11:38 | Created src/bind9/records/a.rs | — | ~2406 |
+| 11:39 | Edited src/bind9/zone_ops.rs | added 1 import(s) | ~438 |
+| 11:39 | Edited src/bind9/records/txt.rs | 5→5 lines | ~67 |
+| 11:43 | Edited src/bind9/records/caa.rs | map_or() → is_some_and() | ~141 |
+| 11:46 | Edited .claude/CHANGELOG.md | expanded (+33 lines) | ~1026 |
+| 11:47 | Created docs/roadmaps/hickory-client-stable-upgrade.md | — | ~998 |
+| 11:48 | Session end: 39 writes across 17 files (scout_tests.rs, scout.rs, scout.md, CHANGELOG.md, pr.yaml) | 19 reads | ~434160 tok |
+| 11:54 | Session end: 39 writes across 17 files (scout_tests.rs, scout.rs, scout.md, CHANGELOG.md, pr.yaml) | 19 reads | ~434160 tok |

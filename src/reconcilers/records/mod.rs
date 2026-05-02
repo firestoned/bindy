@@ -1925,7 +1925,7 @@ pub async fn delete_record<T>(
     client: &Client,
     record: &T,
     record_type: &str,
-    record_type_hickory: hickory_client::rr::RecordType,
+    record_type_hickory: hickory_proto::rr::RecordType,
     stores: &crate::context::Stores,
 ) -> Result<()>
 where
