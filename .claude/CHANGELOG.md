@@ -1,3 +1,31 @@
+## [2026-04-30] - Scout: comma-separated IP list in `bindy.firestoned.io/ip` annotation
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/scout.rs`:
+  - Renamed `resolve_ip_from_annotation` → `resolve_ips_from_annotation`; return type changed from `Option<String>` to `Option<Vec<String>>`.
+  - The annotation value is now split on `,`, each entry trimmed of whitespace, empty entries dropped (preserving order and duplicates). Annotations containing only commas/whitespace return `None`.
+  - `resolve_ips()` (Ingress flow) consumes the new helper directly so the full list survives to the ARecord layer.
+  - Service / HTTPRoute / TLSRoute reconcilers swapped their inline `annotations.get(ANNOTATION_IP)` parsing for `resolve_ips_from_annotation`, so multi-IP overrides apply uniformly across all four source kinds.
+  - Updated `ANNOTATION_IP` doc comment to describe the new accepted forms.
+- `src/scout_tests.rs`: 8 new/updated tests covering single IP, comma-separated list, whitespace trimming, empty-entry skipping, separator-only input, order/duplicate preservation, and end-to-end multi-IP propagation through `resolve_ips`.
+- `docs/src/guide/scout.md`: Annotations Reference table now documents the comma-separated form and behavior.
+
+### Why
+Operators with multi-homed ingress fronts (e.g. paired Traefik nodes, dual-stack
+edge routers) need a single A record with multiple addresses for round-robin
+DNS. Previously the annotation accepted only one IP, forcing those operators to
+fall back to `--default-ips` (operator-wide) instead of per-resource overrides.
+
+### Impact
+- [ ] Breaking change *(public helper rename — `resolve_ip_from_annotation` → `resolve_ips_from_annotation`. Library consumers external to this crate must update; in-tree callers were all updated in this commit.)*
+- [ ] Requires cluster rollout
+- [x] Config change only *(annotation value format extended; existing single-IP values continue to work unchanged)*
+- [x] Documentation only *(Scout user guide updated)*
+
+---
+
 ## [2026-04-29] - Scout: per-resource ARecord `spec.name` override annotation
 
 **Author:** Erick Bourgeois

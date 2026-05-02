@@ -8,11 +8,12 @@ mod tests {
     use crate::scout::{
         arecord_cr_name, arecord_label_selector, build_service_arecord, derive_record_name,
         get_record_name_annotation, get_zone_annotation, has_finalizer, is_arecord_enabled,
-        is_being_deleted, is_loadbalancer_service, is_scout_opted_in, resolve_ip_from_annotation,
-        resolve_ip_from_service_lb_status, resolve_ips, resolve_record_name, resolve_zone,
-        service_arecord_cr_name, service_arecord_label_selector, stale_arecord_label_selector,
-        ServiceARecordParams, FINALIZER_SCOUT, LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT,
-        LABEL_SOURCE_CLUSTER, LABEL_SOURCE_NAME, LABEL_SOURCE_NAMESPACE, LABEL_ZONE,
+        is_being_deleted, is_loadbalancer_service, is_scout_opted_in,
+        resolve_ip_from_service_lb_status, resolve_ips, resolve_ips_from_annotation,
+        resolve_record_name, resolve_zone, service_arecord_cr_name, service_arecord_label_selector,
+        stale_arecord_label_selector, ServiceARecordParams, FINALIZER_SCOUT, LABEL_MANAGED_BY,
+        LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER, LABEL_SOURCE_NAME, LABEL_SOURCE_NAMESPACE,
+        LABEL_ZONE,
     };
     use k8s_openapi::api::core::v1::{
         LoadBalancerIngress as ServiceLoadBalancerIngress, LoadBalancerStatus, Service,
@@ -256,30 +257,120 @@ mod tests {
     }
 
     // =========================================================================
-    // resolve_ip_from_annotation
+    // resolve_ips_from_annotation
     // =========================================================================
 
     #[test]
-    fn test_resolve_ip_from_annotation_present() {
+    fn test_resolve_ips_from_annotation_single() {
         let mut annotations = BTreeMap::new();
         annotations.insert("bindy.firestoned.io/ip".to_string(), "10.0.0.1".to_string());
         assert_eq!(
-            resolve_ip_from_annotation(&annotations),
-            Some("10.0.0.1".to_string())
+            resolve_ips_from_annotation(&annotations),
+            Some(vec!["10.0.0.1".to_string()])
         );
     }
 
     #[test]
-    fn test_resolve_ip_from_annotation_missing() {
+    fn test_resolve_ips_from_annotation_missing() {
         let annotations = BTreeMap::new();
-        assert_eq!(resolve_ip_from_annotation(&annotations), None);
+        assert_eq!(resolve_ips_from_annotation(&annotations), None);
     }
 
     #[test]
-    fn test_resolve_ip_from_annotation_empty_value() {
+    fn test_resolve_ips_from_annotation_empty_value() {
         let mut annotations = BTreeMap::new();
         annotations.insert("bindy.firestoned.io/ip".to_string(), "".to_string());
-        assert_eq!(resolve_ip_from_annotation(&annotations), None);
+        assert_eq!(resolve_ips_from_annotation(&annotations), None);
+    }
+
+    #[test]
+    fn test_resolve_ips_from_annotation_comma_separated() {
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            "bindy.firestoned.io/ip".to_string(),
+            "10.0.0.1,10.0.0.2,10.0.0.3".to_string(),
+        );
+        assert_eq!(
+            resolve_ips_from_annotation(&annotations),
+            Some(vec![
+                "10.0.0.1".to_string(),
+                "10.0.0.2".to_string(),
+                "10.0.0.3".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_resolve_ips_from_annotation_trims_whitespace_around_entries() {
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            "bindy.firestoned.io/ip".to_string(),
+            "  10.0.0.1 ,  10.0.0.2  , 10.0.0.3 ".to_string(),
+        );
+        assert_eq!(
+            resolve_ips_from_annotation(&annotations),
+            Some(vec![
+                "10.0.0.1".to_string(),
+                "10.0.0.2".to_string(),
+                "10.0.0.3".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_resolve_ips_from_annotation_skips_empty_entries() {
+        // Trailing/leading commas and double commas produce no IPs for those slots
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            "bindy.firestoned.io/ip".to_string(),
+            ",10.0.0.1,,10.0.0.2,".to_string(),
+        );
+        assert_eq!(
+            resolve_ips_from_annotation(&annotations),
+            Some(vec!["10.0.0.1".to_string(), "10.0.0.2".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_resolve_ips_from_annotation_only_commas_returns_none() {
+        let mut annotations = BTreeMap::new();
+        annotations.insert("bindy.firestoned.io/ip".to_string(), ",,,".to_string());
+        assert_eq!(resolve_ips_from_annotation(&annotations), None);
+    }
+
+    #[test]
+    fn test_resolve_ips_from_annotation_preserves_order_and_duplicates() {
+        // Order is significant for round-robin DNS; duplicates are passed through verbatim
+        // (validation lives in the ARecord layer).
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            "bindy.firestoned.io/ip".to_string(),
+            "10.0.0.2,10.0.0.1,10.0.0.2".to_string(),
+        );
+        assert_eq!(
+            resolve_ips_from_annotation(&annotations),
+            Some(vec![
+                "10.0.0.2".to_string(),
+                "10.0.0.1".to_string(),
+                "10.0.0.2".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_resolve_ips_annotation_multiple_wins_over_defaults() {
+        // Multi-IP annotation flows through resolve_ips for the Ingress path
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            "bindy.firestoned.io/ip".to_string(),
+            "1.2.3.4,5.6.7.8".to_string(),
+        );
+        let defaults = vec!["9.9.9.9".to_string()];
+        let ingress = Ingress::default();
+        assert_eq!(
+            resolve_ips(&annotations, &defaults, &ingress),
+            Some(vec!["1.2.3.4".to_string(), "5.6.7.8".to_string()])
+        );
     }
 
     // =========================================================================
@@ -1227,5 +1318,181 @@ mod tests {
             name.len() <= 253,
             "TLSRoute CR name must not exceed 253 chars"
         );
+    }
+
+    // =========================================================================
+    // Builder ↔ override-annotation contract
+    //
+    // These tests pin down what the reconcilers actually produce when the
+    // `bindy.firestoned.io/record-name` and comma-separated `bindy.firestoned.io/ip`
+    // annotations are resolved upstream and threaded into the builders. They
+    // protect against regressions in `spec.name` and `spec.ipv4_addresses`
+    // for all four source kinds (Ingress, Service, HTTPRoute, TLSRoute).
+    // =========================================================================
+
+    #[test]
+    fn test_build_arecord_propagates_record_name_override() {
+        // Simulates resolve_record_name returning the annotation override "myapp"
+        let arecord = crate::scout::build_arecord(crate::scout::ARecordParams {
+            name: "scout-prod-default-my-ingress-0",
+            target_namespace: "bindy-system",
+            record_name: "myapp",
+            ips: &["10.0.0.1".to_string()],
+            ttl: None,
+            cluster_name: "prod",
+            ingress_namespace: "default",
+            ingress_name: "my-ingress",
+            zone: "example.com",
+        });
+
+        assert_eq!(arecord.spec.name, "myapp");
+        assert_eq!(arecord.spec.ipv4_addresses, vec!["10.0.0.1".to_string()]);
+    }
+
+    #[test]
+    fn test_build_arecord_accepts_apex_record_name() {
+        // record-name="@" must pass through to spec.name unchanged
+        let arecord = crate::scout::build_arecord(crate::scout::ARecordParams {
+            name: "scout-prod-default-apex-0",
+            target_namespace: "bindy-system",
+            record_name: "@",
+            ips: &["10.0.0.1".to_string()],
+            ttl: None,
+            cluster_name: "prod",
+            ingress_namespace: "default",
+            ingress_name: "apex",
+            zone: "example.com",
+        });
+
+        assert_eq!(arecord.spec.name, "@");
+    }
+
+    #[test]
+    fn test_build_arecord_propagates_multi_ip_in_order() {
+        // Simulates resolve_ips_from_annotation returning a 3-IP list — order preserved
+        let ips = vec![
+            "10.0.0.1".to_string(),
+            "10.0.0.2".to_string(),
+            "10.0.0.3".to_string(),
+        ];
+        let arecord = crate::scout::build_arecord(crate::scout::ARecordParams {
+            name: "scout-prod-default-multi-0",
+            target_namespace: "bindy-system",
+            record_name: "multi",
+            ips: &ips,
+            ttl: None,
+            cluster_name: "prod",
+            ingress_namespace: "default",
+            ingress_name: "multi",
+            zone: "example.com",
+        });
+
+        assert_eq!(arecord.spec.ipv4_addresses, ips);
+    }
+
+    #[test]
+    fn test_build_service_arecord_propagates_multi_ip_in_order() {
+        let ips = vec!["1.2.3.4".to_string(), "5.6.7.8".to_string()];
+        let arecord = build_service_arecord(ServiceARecordParams {
+            name: "scout-prod-default-my-svc",
+            target_namespace: "bindy-system",
+            record_name: "my-svc",
+            ips: &ips,
+            ttl: None,
+            cluster_name: "prod",
+            service_namespace: "default",
+            service_name: "my-svc",
+            zone: "example.com",
+        });
+
+        assert_eq!(arecord.spec.ipv4_addresses, ips);
+    }
+
+    #[test]
+    fn test_build_service_arecord_accepts_apex_record_name() {
+        let arecord = build_service_arecord(ServiceARecordParams {
+            name: "scout-prod-default-apex-svc",
+            target_namespace: "bindy-system",
+            record_name: "@",
+            ips: &["1.2.3.4".to_string()],
+            ttl: None,
+            cluster_name: "prod",
+            service_namespace: "default",
+            service_name: "apex-svc",
+            zone: "example.com",
+        });
+
+        assert_eq!(arecord.spec.name, "@");
+    }
+
+    #[test]
+    fn test_build_httproute_arecord_propagates_multi_ip_in_order() {
+        let ips = vec!["10.0.0.1".to_string(), "10.0.0.2".to_string()];
+        let arecord = crate::scout::build_httproute_arecord(crate::scout::HTTPRouteARecordParams {
+            name: "scout-prod-default-api-route-0",
+            target_namespace: "bindy-system",
+            record_name: "api",
+            ips: &ips,
+            ttl: None,
+            cluster_name: "prod",
+            route_namespace: "default",
+            route_name: "api-route",
+            zone: "example.com",
+        });
+
+        assert_eq!(arecord.spec.ipv4_addresses, ips);
+    }
+
+    #[test]
+    fn test_build_httproute_arecord_accepts_apex_record_name() {
+        let arecord = crate::scout::build_httproute_arecord(crate::scout::HTTPRouteARecordParams {
+            name: "scout-prod-default-apex-route-0",
+            target_namespace: "bindy-system",
+            record_name: "@",
+            ips: &["10.0.0.1".to_string()],
+            ttl: None,
+            cluster_name: "prod",
+            route_namespace: "default",
+            route_name: "apex-route",
+            zone: "example.com",
+        });
+
+        assert_eq!(arecord.spec.name, "@");
+    }
+
+    #[test]
+    fn test_build_tlsroute_arecord_propagates_multi_ip_in_order() {
+        let ips = vec!["5.6.7.8".to_string(), "9.10.11.12".to_string()];
+        let arecord = crate::scout::build_tlsroute_arecord(crate::scout::TLSRouteARecordParams {
+            name: "scout-prod-default-secure-route-0",
+            target_namespace: "bindy-system",
+            record_name: "secure",
+            ips: &ips,
+            ttl: Some(900),
+            cluster_name: "prod",
+            route_namespace: "default",
+            route_name: "secure-route",
+            zone: "example.com",
+        });
+
+        assert_eq!(arecord.spec.ipv4_addresses, ips);
+        assert_eq!(arecord.spec.ttl, Some(900));
+    }
+
+    #[test]
+    fn test_build_tlsroute_arecord_accepts_apex_record_name() {
+        let arecord = crate::scout::build_tlsroute_arecord(crate::scout::TLSRouteARecordParams {
+            name: "scout-prod-default-apex-tls-0",
+            target_namespace: "bindy-system",
+            record_name: "@",
+            ips: &["5.6.7.8".to_string()],
+            ttl: None,
+            cluster_name: "prod",
+            route_namespace: "default",
+            route_name: "apex-tls",
+            zone: "example.com",
+        });
+
+        assert_eq!(arecord.spec.name, "@");
     }
 }
