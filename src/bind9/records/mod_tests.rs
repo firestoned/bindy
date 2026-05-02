@@ -8,7 +8,7 @@
 
 #[cfg(test)]
 mod tests {
-    use hickory_client::rr::RecordType;
+    use hickory_proto::rr::RecordType;
 
     // ========== Tests for should_update_record() logic ==========
 

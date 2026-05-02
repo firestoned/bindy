@@ -6,7 +6,7 @@
 #[cfg(test)]
 mod tests {
     use crate::record_operator::ReconcileError;
-    use hickory_client::rr::RecordType;
+    use hickory_proto::rr::RecordType;
 
     #[test]
     fn test_reconcile_error_display() {

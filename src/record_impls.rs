@@ -18,7 +18,7 @@ use crate::reconcilers::{
 };
 use crate::record_operator::{DnsRecordType, ReconcileError};
 use anyhow::Result;
-use hickory_client::rr::RecordType;
+use hickory_proto::rr::RecordType;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use std::sync::Arc;
 

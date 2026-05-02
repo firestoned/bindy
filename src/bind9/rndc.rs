@@ -6,9 +6,9 @@
 use super::types::RndcKeyData;
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use hickory_client::rr::rdata::tsig::TsigAlgorithm;
-use hickory_client::rr::Name;
-use hickory_proto::rr::dnssec::tsig::TSigner;
+use hickory_proto::rr::rdata::tsig::TsigAlgorithm;
+use hickory_proto::rr::Name;
+use hickory_proto::rr::TSigner;
 use rand::Rng;
 use std::collections::BTreeMap;
 use std::str::FromStr;

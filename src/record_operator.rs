@@ -73,8 +73,8 @@ pub trait DnsRecordType:
     /// The DNS record type string (e.g., `A`, `TXT`)
     const RECORD_TYPE_STR: &'static str;
 
-    /// Get the `hickory_client` `RecordType` value
-    fn hickory_record_type() -> hickory_client::rr::RecordType;
+    /// Get the `hickory_proto` `RecordType` value
+    fn hickory_record_type() -> hickory_proto::rr::RecordType;
 
     /// Reconcile this record (create/update in BIND9)
     fn reconcile_record(

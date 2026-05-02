@@ -48,6 +48,86 @@
       "related_bugs": [],
       "occurrences": 1,
       "last_seen": "2026-05-01T01:00:15.543Z"
+    },
+    {
+      "id": "bug-004",
+      "timestamp": "2026-05-02T11:20:45.608Z",
+      "error_message": "Missing error handling in unknown",
+      "file": ".claude/CHANGELOG.md",
+      "root_cause": "Code path had no error handling — exceptions would propagate uncaught",
+      "fix": "Added try/catch block",
+      "tags": [
+        "auto-detected",
+        "error-handling",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-02T11:20:45.608Z"
+    },
+    {
+      "id": "bug-005",
+      "timestamp": "2026-05-02T15:05:55.161Z",
+      "error_message": "Incorrect value in code",
+      "file": "Cargo.toml",
+      "root_cause": "Had \"0.24\"",
+      "fix": "Changed to \"=0.26.0-alpha.1\"",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "toml"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-05-02T15:08:17.738Z"
+    },
+    {
+      "id": "bug-006",
+      "timestamp": "2026-05-02T15:27:19.868Z",
+      "error_message": "Incorrect value in code",
+      "file": "Cargo.toml",
+      "root_cause": "Had \"0.24\"",
+      "fix": "Changed to \"0.26\"",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "toml"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-02T15:27:19.868Z"
+    },
+    {
+      "id": "bug-007",
+      "timestamp": "2026-05-02T15:32:29.398Z",
+      "error_message": "Incorrect value in code",
+      "file": "src/record_operator.rs",
+      "root_cause": "Had `hickory_client`",
+      "fix": "Changed to `hickory_proto`",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-02T15:32:29.398Z"
+    },
+    {
+      "id": "bug-008",
+      "timestamp": "2026-05-02T15:46:35.631Z",
+      "error_message": "Function not marked async",
+      "file": ".claude/CHANGELOG.md",
+      "root_cause": "Function uses await but wasn't declared async",
+      "fix": "Added async modifier",
+      "tags": [
+        "auto-detected",
+        "async-fix",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-02T15:46:35.631Z"
     }
   ]
 }

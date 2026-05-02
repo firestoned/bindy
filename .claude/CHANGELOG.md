@@ -1,3 +1,54 @@
+## [2026-05-02] - Migrate hickory-client → hickory-net 0.26.1 (RUSTSEC-2026-0119)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: replaced `hickory-client = "0.24"` with `hickory-net = "0.26"` and bumped `hickory-proto` to `"0.26"`. Feature flag `dnssec` (now a meta-feature in 0.26) reduced to `dnssec-ring` only.
+- `src/bind9/records/mod.rs`: full async rewrite. Added `build_query_client()` and `build_authenticated_client()` helpers (TSIG-signed UDP). Introduced `build_record_fqdn()` as a shared utility. Removed `tokio::task::spawn_blocking` wrapping — `hickory-net 0.26` is async-only.
+- `src/bind9/records/{a,caa,cname,mx,ns,srv,txt}.rs`: rewritten to use the new helpers + async `Client::append`/`delete_rrset`. Switched from `record.set_dns_class(IN)` setters to direct `record.dns_class = IN` field assignment (Record struct now uses public fields). Replaced `Record::new()` (removed in 0.26) with `Record::from_rdata(name, 0, RData::Update0(record_type))` for delete-rrset placeholders.
+- `src/bind9/records/caa.rs`: rewrote CAA record comparison. The `rdata::CAA::value` field is now `Vec<u8>` instead of an enum; comparisons now go through `value_as_issue()`/`value_as_iodef()` accessors.
+- `src/bind9/records/mx.rs`, `src/bind9/records/srv.rs`: switched from method-call accessors (`.preference()`, `.exchange()`, `.priority()`, `.weight()`, `.port()`, `.target()`) to direct field access — these moved to public fields in 0.26.
+- `src/bind9/zone_ops.rs::verify_zone_signed`: rewritten to use `UdpClientStream::builder().build()` + `Client::<TokioRuntimeProvider>::from_sender()`. `AsyncClient::connect()` was removed in 0.26.
+- `src/bind9/rndc.rs`: import path updates — `hickory_proto::rr::dnssec::tsig::TSigner` → `hickory_proto::rr::TSigner` (re-exported); `hickory_client::rr::rdata::tsig::TsigAlgorithm` → `hickory_proto::rr::rdata::tsig::TsigAlgorithm`. No semantic changes.
+- `src/bind9/mod.rs`, `src/crd.rs`, `src/record_impls.rs`, `src/record_operator.rs`, `src/reconcilers/dnszone.rs`, `src/reconcilers/dnszone/cleanup.rs`, `src/reconcilers/records/mod.rs`: import-path swaps from `hickory_client::*` to `hickory_proto::*` / `hickory_net::*`. No behavior changes.
+- Response API: every callsite updated from `response.response_code()` / `response.answers()` to field access `response.metadata.response_code` / `response.answers`.
+
+### Why
+`hickory-client 0.24.4` is affected by **RUSTSEC-2026-0119** (CPU exhaustion via O(n²) name compression in `BinEncoder`). The fix is in `hickory-proto 0.26.1` (released 2026-05-01). The `hickory-client` crate was **removed from the hickory-dns workspace** between 0.25 and 0.26 — its functionality lives on as `hickory-net::client` in the same project, owned by the same maintainers (ISRG/Prossimo). This is a same-vendor migration, not a third-party swap. Rust DNS-client alternatives (`domain` from NLnetLabs) lack a high-level RFC 2136 UPDATE builder; hand-rolling that into a banking-compliance codebase carries worse audit risk than the in-place migration. See [docs/roadmaps/hickory-client-stable-upgrade.md](../docs/roadmaps/hickory-client-stable-upgrade.md) for the deeper rationale and the Q3 2026 follow-up.
+
+### Verification
+- `cargo build` clean, no warnings
+- `cargo clippy --all-targets --all-features -- -D warnings` clean
+- `cargo test --all` — 1014 lib tests + 11 integration + 47 doc tests, 0 failures
+- `cargo audit` — 0 vulnerabilities (was 1: RUSTSEC-2026-0119)
+- `cargo-deny check` — advisories/bans/licenses/sources all OK
+
+### Impact
+- [x] Breaking change *(internal API only — `hickory_client::*` paths replaced; no public bindy API affected; CRDs and YAML examples unchanged)*
+- [ ] Requires cluster rollout
+- [x] Config change only *(dependency manifest)*
+- [ ] Documentation only
+
+---
+
+## [2026-05-02] - PR CI: run cargo-audit on pull requests
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/pr.yaml`: Added a `cargo-audit` step to the existing `security` job using `firestoned/github-actions/rust/security-scan@v1.3.6` (cargo-audit 0.22.0), matching `main.yaml`. Step runs before `cargo-deny` and `gitleaks` so RustSec advisory failures surface first.
+
+### Why
+`cargo audit` was previously only invoked on push-to-main and the daily scheduled scan. PRs ran `cargo deny` (which covers RustSec advisories via its `[advisories]` section) but not `cargo audit` itself. Adding it explicitly to PRs catches advisory regressions at review time, before merge.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only *(CI workflow)*
+- [ ] Documentation only
+
+---
+
 ## [2026-04-30] - Scout: comma-separated IP list in `bindy.firestoned.io/ip` annotation
 
 **Author:** Erick Bourgeois
