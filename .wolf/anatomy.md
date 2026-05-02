@@ -1,7 +1,7 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-04-30T01:39:12.750Z
-> Files: 527 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-05-01T01:16:17.013Z
+> Files: 531 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ./
 
@@ -29,6 +29,7 @@
 
 ## .claude/
 
+- `CHANGELOG.md` — [2026-04-30] - Scout: comma-separated IP list in `bindy.firestoned.io/ip` annotation (~370000 tok)
 - `CLAUDE.md` — Project Instructions for Claude Code (~2268 tok)
 - `optimization-recommendations.md` — CLAUDE.md Optimization Recommendations (~2543 tok)
 - `settings.json` (~462 tok)
@@ -607,3 +608,12 @@
 - `es_PR.dat` (~854 tok)
 - `es_PY.dat` (~1171 tok)
 - `es_SV.dat` (~332 tok)
+
+## docs/src/guide/
+
+- `scout.md` — <img src="../../images/scouty.png" alt="Scouty the Scout Bee" width="40" style="vertical-align: midd (~9457 tok)
+
+## src/
+
+- `scout_tests.rs` — Unit tests for `scout.rs` — pure helper functions (no Kubernetes API calls) (~13952 tok)
+- `scout.rs` — Bindy Scout — Ingress-to-ARecord controller. (~25327 tok)

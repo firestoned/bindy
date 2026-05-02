@@ -1,4 +1,53 @@
 {
   "version": 1,
-  "bugs": []
+  "bugs": [
+    {
+      "id": "bug-001",
+      "timestamp": "2026-05-01T00:58:07.355Z",
+      "error_message": "Significant refactor of ",
+      "file": "src/scout_tests.rs",
+      "root_cause": "8 lines replaced/restructured",
+      "fix": "Rewrote 26→116 lines (8 removed)",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-01T00:58:07.355Z"
+    },
+    {
+      "id": "bug-002",
+      "timestamp": "2026-05-01T00:58:37.269Z",
+      "error_message": "Significant refactor of ",
+      "file": "src/scout.rs",
+      "root_cause": "2 lines replaced/restructured",
+      "fix": "Rewrote 3→8 lines (2 removed) | Also: /// Returns the explicit IP override from `bindy.f; /// Returns `None` if the annotation is absent or ",
+      "tags": [
+        "auto-detected",
+        "refactor",
+        "rs"
+      ],
+      "related_bugs": [],
+      "occurrences": 2,
+      "last_seen": "2026-05-01T00:58:49.349Z"
+    },
+    {
+      "id": "bug-003",
+      "timestamp": "2026-05-01T01:00:15.543Z",
+      "error_message": "Incorrect value in code",
+      "file": "docs/src/guide/scout.md",
+      "root_cause": "Had `--default-ips`",
+      "fix": "Changed to \"10.0.0.1\"",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "md"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-01T01:00:15.543Z"
+    }
+  ]
 }

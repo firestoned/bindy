@@ -152,8 +152,13 @@ pub const ANNOTATION_ZONE: &str = "bindy.firestoned.io/zone";
 /// Both annotations are accepted for backward compatibility.
 pub const ANNOTATION_SCOUT_ENABLED: &str = "bindy.firestoned.io/scout-enabled";
 
-/// Annotation for explicitly overriding the IP used in the ARecord.
-/// When set, takes precedence over the IP resolved from Ingress LoadBalancer status.
+/// Annotation for explicitly overriding the IP(s) used in the ARecord.
+///
+/// Accepts a single IP (`"10.0.0.1"`) or a comma-separated list of IPs
+/// (`"10.0.0.1,10.0.0.2"`) — every entry becomes an address on the resulting
+/// `ARecord`, in the order given. Whitespace around each entry is trimmed and
+/// empty entries are skipped. When set, takes precedence over `--default-ips`
+/// and any LoadBalancer status IP.
 pub const ANNOTATION_IP: &str = "bindy.firestoned.io/ip";
 
 /// Annotation for overriding the TTL (in seconds) on the created ARecord.
@@ -360,19 +365,32 @@ pub fn resolve_record_name(
     derive_record_name(host, zone)
 }
 
-/// Returns the explicit IP override from `bindy.firestoned.io/ip`, if present.
+/// Returns the explicit IP overrides from the `bindy.firestoned.io/ip` annotation.
 ///
-/// Returns `None` if the annotation is absent or empty.
-pub fn resolve_ip_from_annotation(annotations: &BTreeMap<String, String>) -> Option<String> {
-    annotations
-        .get(ANNOTATION_IP)
-        .filter(|v| !v.is_empty())
-        .cloned()
+/// The value may be a single IP (`"10.0.0.1"`) or a comma-separated list
+/// (`"10.0.0.1,10.0.0.2,10.0.0.3"`). Whitespace around each entry is trimmed
+/// and empty entries are skipped, preserving order and duplicates.
+///
+/// Returns `None` if the annotation is absent, empty, or contains only
+/// separators/whitespace.
+pub fn resolve_ips_from_annotation(annotations: &BTreeMap<String, String>) -> Option<Vec<String>> {
+    let raw = annotations.get(ANNOTATION_IP)?;
+    let ips: Vec<String> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+        .collect();
+    if ips.is_empty() {
+        None
+    } else {
+        Some(ips)
+    }
 }
 
 /// Resolves the IP address(es) to use for an ARecord, in priority order:
 ///
-/// 1. `bindy.firestoned.io/ip` annotation — explicit single-IP override
+/// 1. `bindy.firestoned.io/ip` annotation — explicit override (single IP or comma-separated list)
 /// 2. `default_ips` — operator-configured default IPs (e.g. shared Traefik ingress VIP)
 /// 3. Ingress LoadBalancer status — first non-empty IP
 ///
@@ -382,8 +400,8 @@ pub fn resolve_ips(
     default_ips: &[String],
     ingress: &Ingress,
 ) -> Option<Vec<String>> {
-    if let Some(ip) = resolve_ip_from_annotation(annotations) {
-        return Some(vec![ip]);
+    if let Some(ips) = resolve_ips_from_annotation(annotations) {
+        return Some(ips);
     }
     if !default_ips.is_empty() {
         return Some(default_ips.to_vec());
@@ -1642,12 +1660,9 @@ async fn reconcile_service(
         )));
     }
 
-    // Resolve IP: annotation → default_ips → LB status
+    // Resolve IPs: annotation (single or comma-separated) → default_ips → LB status
     let ips = {
-        let from_annotation = annotations
-            .get(ANNOTATION_IP)
-            .filter(|v| !v.is_empty())
-            .map(|v| vec![v.clone()]);
+        let from_annotation = resolve_ips_from_annotation(&annotations);
         let from_defaults = if ctx.default_ips.is_empty() {
             None
         } else {
@@ -1881,12 +1896,9 @@ async fn reconcile_httproute(
         )));
     }
 
-    // Resolve IPs: annotation → default_ips → no routable IP = requeue
+    // Resolve IPs: annotation (single or comma-separated) → default_ips → no routable IP = requeue
     let ips = {
-        let from_annotation = annotations
-            .get(ANNOTATION_IP)
-            .filter(|v| !v.is_empty())
-            .map(|v| vec![v.clone()]);
+        let from_annotation = resolve_ips_from_annotation(&annotations);
         let from_defaults = if ctx.default_ips.is_empty() {
             None
         } else {
@@ -2115,12 +2127,9 @@ async fn reconcile_tlsroute(
         )));
     }
 
-    // Resolve IPs: annotation → default_ips → no routable IP = requeue
+    // Resolve IPs: annotation (single or comma-separated) → default_ips → no routable IP = requeue
     let ips = {
-        let from_annotation = annotations
-            .get(ANNOTATION_IP)
-            .filter(|v| !v.is_empty())
-            .map(|v| vec![v.clone()]);
+        let from_annotation = resolve_ips_from_annotation(&annotations);
         let from_defaults = if ctx.default_ips.is_empty() {
             None
         } else {
