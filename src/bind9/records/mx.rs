@@ -4,16 +4,14 @@
 //! MX record management.
 
 use super::super::types::RndcKeyData;
-use super::should_update_record;
+use super::{build_authenticated_client, build_record_fqdn, should_update_record};
 use anyhow::Result;
-use hickory_client::client::{Client, SyncClient};
-use hickory_client::op::ResponseCode;
-use hickory_client::rr::{rdata, DNSClass, Name, RData, Record};
-use hickory_client::udp::UdpClientConnection;
+use hickory_net::client::ClientHandle;
+use hickory_proto::op::ResponseCode;
+use hickory_proto::rr::{rdata, DNSClass, Name, RData, Record, RecordType};
 use std::str::FromStr;
 use tracing::info;
 
-use crate::bind9::rndc::create_tsig_signer;
 use crate::constants::DEFAULT_DNS_RECORD_TTL_SECS;
 
 /// Add an MX record using dynamic DNS update (RFC 2136).
@@ -31,9 +29,6 @@ pub async fn add_mx_record(
     server: &str,
     key_data: &RndcKeyData,
 ) -> Result<()> {
-    use hickory_client::rr::RecordType;
-
-    // Check if update is needed using declarative reconciliation pattern
     let mail_server_for_comparison = mail_server.to_string();
     let priority_u16 = u16::try_from(priority).unwrap_or(10);
     let should_update = should_update_record(
@@ -43,11 +38,10 @@ pub async fn add_mx_record(
         "MX",
         server,
         |existing_records| {
-            // Compare: should return true if records match desired state
             if existing_records.len() == 1 {
-                if let Some(RData::MX(existing_mx)) = existing_records[0].data() {
-                    return existing_mx.preference() == priority_u16
-                        && existing_mx.exchange().to_string() == mail_server_for_comparison;
+                if let RData::MX(existing_mx) = &existing_records[0].data {
+                    return existing_mx.preference == priority_u16
+                        && existing_mx.exchange.to_string() == mail_server_for_comparison;
                 }
             }
             false
@@ -59,53 +53,37 @@ pub async fn add_mx_record(
         return Ok(());
     }
 
-    let zone_name_str = zone_name.to_string();
-    let name_str = name.to_string();
-    let mail_server_str = mail_server.to_string();
-    let server_str = server.to_string();
     let ttl_value = u32::try_from(ttl.unwrap_or(DEFAULT_DNS_RECORD_TTL_SECS))
         .unwrap_or(u32::try_from(DEFAULT_DNS_RECORD_TTL_SECS).unwrap_or(300));
-    let key_data = key_data.clone();
 
-    tokio::task::spawn_blocking(move || {
-        let server_addr = server_str.parse::<std::net::SocketAddr>()?;
-        let conn = UdpClientConnection::new(server_addr)?;
-        let signer = create_tsig_signer(&key_data)?;
-        let client = SyncClient::with_tsigner(conn, signer);
+    let zone = Name::from_str(zone_name)?;
+    let fqdn = build_record_fqdn(zone_name, name)?;
+    let mx_name = Name::from_str(mail_server)?;
 
-        let zone = Name::from_str(&zone_name_str)?;
-        let fqdn = if name_str == "@" || name_str.is_empty() {
-            zone.clone()
-        } else {
-            Name::from_str(&format!("{name_str}.{zone_name_str}"))?
-        };
+    let mut record = Record::from_rdata(
+        fqdn.clone(),
+        ttl_value,
+        RData::MX(rdata::MX::new(priority_u16, mx_name)),
+    );
+    record.dns_class = DNSClass::IN;
 
-        let mx_name = Name::from_str(&mail_server_str)?;
-        let mx_rdata = rdata::MX::new(priority_u16, mx_name);
-        let mut record = Record::from_rdata(fqdn.clone(), ttl_value, RData::MX(mx_rdata));
-        record.set_dns_class(DNSClass::IN);
+    info!(
+        "Adding MX record: {} -> {} (priority: {}, TTL: {})",
+        fqdn, mail_server, priority_u16, ttl_value
+    );
 
-        // Use append for idempotent operation (must_exist=false for no prerequisites)
-        info!(
-            "Adding MX record: {} -> {} (priority: {}, TTL: {})",
-            fqdn, mail_server_str, priority_u16, ttl_value
-        );
-        let response = client.append(record, zone, false)?;
+    let mut client = build_authenticated_client(server, key_data).await?;
+    let response = client.append(record, zone, false).await?;
 
-        match response.response_code() {
-            ResponseCode::NoError => {
-                info!(
-                    "Successfully added MX record: {} -> {}",
-                    name_str, mail_server_str
-                );
-                Ok(())
-            }
-            code => Err(anyhow::anyhow!(
-                "DNS update failed with response code: {code:?}"
-            )),
+    match response.metadata.response_code {
+        ResponseCode::NoError => {
+            info!("Successfully added MX record: {} -> {}", name, mail_server);
+            Ok(())
         }
-    })
-    .await?
+        code => Err(anyhow::anyhow!(
+            "DNS update failed with response code: {code:?}"
+        )),
+    }
 }
 
 #[cfg(test)]

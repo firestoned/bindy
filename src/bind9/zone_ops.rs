@@ -1181,9 +1181,10 @@ pub async fn notify_zone(
 /// # }
 /// ```
 pub async fn verify_zone_signed(zone_name: &str, server: &str) -> Result<bool> {
-    use hickory_client::client::{AsyncClient, ClientHandle};
-    use hickory_client::rr::{DNSClass, Name, RecordType};
-    use hickory_client::udp::UdpClientStream;
+    use hickory_net::client::{Client, ClientHandle};
+    use hickory_net::runtime::TokioRuntimeProvider;
+    use hickory_net::udp::UdpClientStream;
+    use hickory_proto::rr::{DNSClass, Name, RecordType};
     use std::net::SocketAddr;
     use std::str::FromStr;
 
@@ -1197,11 +1198,11 @@ pub async fn verify_zone_signed(zone_name: &str, server: &str) -> Result<bool> {
         zone_name, server_addr
     );
 
-    // Create UDP client connection
-    let stream = UdpClientStream::<tokio::net::UdpSocket>::new(server_addr);
-    let (mut client, bg) = AsyncClient::connect(stream).await?;
+    // Create UDP client connection (unauthenticated read-only query).
+    let stream = UdpClientStream::builder(server_addr, TokioRuntimeProvider::default()).build();
+    let (mut client, bg) = Client::<TokioRuntimeProvider>::from_sender(stream);
 
-    // Spawn the background task
+    // Spawn the background task that drives the connection.
     tokio::spawn(bg);
 
     // Parse zone name
@@ -1217,13 +1218,13 @@ pub async fn verify_zone_signed(zone_name: &str, server: &str) -> Result<bool> {
         })?;
 
     // If we got DNSKEY records, the zone is signed
-    let is_signed = !response.answers().is_empty();
+    let is_signed = !response.answers.is_empty();
 
     if is_signed {
         debug!(
             "Zone {} is signed with DNSSEC (found {} DNSKEY record(s))",
             zone_name,
-            response.answers().len()
+            response.answers.len()
         );
     } else {
         debug!(

@@ -777,7 +777,7 @@ impl Bind9Manager {
         &self,
         zone_name: &str,
         name: &str,
-        record_type: hickory_client::rr::RecordType,
+        record_type: hickory_proto::rr::RecordType,
         server: &str,
         key_data: &RndcKeyData,
     ) -> Result<()> {

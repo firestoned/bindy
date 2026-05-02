@@ -37,8 +37,8 @@ k8s-openapi = { version = "0.27", features = ["v1_31", "schemars"] }
 reqwest = { version = "0.13", features = ["json", "rustls"], default-features = false }
 base64 = "0.22"
 rand = "0.10"
-hickory-client = { version = "0.24", features = ["dnssec", "dnssec-ring"] }
-hickory-proto = { version = "0.24", features = ["dnssec", "dnssec-ring"] }
+hickory-net = { version = "0.26", features = ["dnssec-ring"] }
+hickory-proto = { version = "0.26", features = ["dnssec-ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 url = "2.5.8"
 bindcar = "0.6.0"

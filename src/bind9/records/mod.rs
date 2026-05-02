@@ -15,12 +15,57 @@ pub mod srv;
 pub mod txt;
 
 use anyhow::{Context, Result};
-use hickory_client::client::{Client, SyncClient};
-use hickory_client::rr::Name;
-use hickory_client::rr::{DNSClass, Record};
-use hickory_client::udp::UdpClientConnection;
+use hickory_net::client::{Client, ClientHandle};
+use hickory_net::runtime::TokioRuntimeProvider;
+use hickory_net::udp::UdpClientStream;
+use hickory_proto::op::ResponseCode;
+use hickory_proto::rr::{DNSClass, Name, RData, Record, RecordType};
+use std::net::SocketAddr;
 use std::str::FromStr;
 use tracing::{info, warn};
+
+use crate::bind9::rndc::create_tsig_signer;
+use crate::bind9::types::RndcKeyData;
+
+/// Build an unauthenticated UDP DNS client for read-only queries.
+async fn build_query_client(server_str: &str) -> Result<Client<TokioRuntimeProvider>> {
+    let server_addr: SocketAddr = server_str
+        .parse()
+        .with_context(|| format!("Invalid server address: {server_str}"))?;
+    let stream = UdpClientStream::builder(server_addr, TokioRuntimeProvider::default()).build();
+    let (client, bg) = Client::<TokioRuntimeProvider>::from_sender(stream);
+    tokio::spawn(bg);
+    Ok(client)
+}
+
+/// Build a TSIG-authenticated UDP DNS client for RFC 2136 dynamic updates.
+pub(crate) async fn build_authenticated_client(
+    server_str: &str,
+    key_data: &RndcKeyData,
+) -> Result<Client<TokioRuntimeProvider>> {
+    let server_addr: SocketAddr = server_str
+        .parse()
+        .with_context(|| format!("Invalid server address: {server_str}"))?;
+    let signer = create_tsig_signer(key_data)?;
+    let stream = UdpClientStream::builder(server_addr, TokioRuntimeProvider::default())
+        .with_signer(Some(signer))
+        .build();
+    let (client, bg) = Client::<TokioRuntimeProvider>::from_sender(stream);
+    tokio::spawn(bg);
+    Ok(client)
+}
+
+/// Build the fully-qualified record name for a given (zone, name).
+///
+/// `@` or empty `name` produces the zone apex; otherwise the name is concatenated with the zone.
+pub(crate) fn build_record_fqdn(zone_name: &str, name: &str) -> Result<Name> {
+    if name == "@" || name.is_empty() {
+        Name::from_str(zone_name).with_context(|| format!("Invalid zone name: {zone_name}"))
+    } else {
+        Name::from_str(&format!("{name}.{zone_name}"))
+            .with_context(|| format!("Invalid record name: {name}.{zone_name}"))
+    }
+}
 
 /// Generic DNS record query function.
 ///
@@ -44,50 +89,25 @@ use tracing::{info, warn};
 pub async fn query_dns_record(
     zone_name: &str,
     name: &str,
-    record_type: hickory_client::rr::RecordType,
+    record_type: RecordType,
     server: &str,
 ) -> Result<Vec<Record>> {
-    let zone_name_str = zone_name.to_string();
-    let name_str = name.to_string();
-    let server_str = server.to_string();
+    let mut client = build_query_client(server).await?;
+    let fqdn = build_record_fqdn(zone_name, name)?;
 
-    tokio::task::spawn_blocking(move || {
-        // Parse server address
-        let server_addr = server_str
-            .parse::<std::net::SocketAddr>()
-            .with_context(|| format!("Invalid server address: {server_str}"))?;
+    let response = client
+        .query(fqdn.clone(), DNSClass::IN, record_type)
+        .await
+        .with_context(|| format!("Failed to query {record_type:?} record for {fqdn}"))?;
 
-        // Create UDP connection for query
-        let conn = UdpClientConnection::new(server_addr)
-            .context("Failed to create UDP connection for query")?;
-        let client = SyncClient::new(conn);
+    let records: Vec<Record> = response
+        .answers
+        .iter()
+        .filter(|r| r.record_type() == record_type)
+        .cloned()
+        .collect();
 
-        // Build full record name
-        let fqdn = if name_str == "@" || name_str.is_empty() {
-            Name::from_str(&zone_name_str)
-                .with_context(|| format!("Invalid zone name: {zone_name_str}"))?
-        } else {
-            Name::from_str(&format!("{name_str}.{zone_name_str}"))
-                .with_context(|| format!("Invalid record name: {name_str}.{zone_name_str}"))?
-        };
-
-        // Query for records
-        let response = client
-            .query(&fqdn, DNSClass::IN, record_type)
-            .with_context(|| format!("Failed to query {record_type:?} record for {fqdn}"))?;
-
-        // Extract matching records from response
-        let records: Vec<Record> = response
-            .answers()
-            .iter()
-            .filter(|r| r.record_type() == record_type)
-            .cloned()
-            .collect();
-
-        Ok(records)
-    })
-    .await
-    .context("DNS query task failed")?
+    Ok(records)
 }
 
 /// Helper for declarative record reconciliation.
@@ -116,7 +136,7 @@ pub async fn query_dns_record(
 pub async fn should_update_record<F>(
     zone_name: &str,
     name: &str,
-    record_type: hickory_client::rr::RecordType,
+    record_type: RecordType,
     record_type_name: &str,
     server: &str,
     compare_fn: F,
@@ -126,36 +146,33 @@ where
 {
     match query_dns_record(zone_name, name, record_type, server).await {
         Ok(existing_records) if !existing_records.is_empty() => {
-            // Records exist - use callback to compare
             if compare_fn(&existing_records) {
                 info!(
                     "{} record {} already exists with correct value - no changes needed",
                     record_type_name, name
                 );
-                Ok(false) // Skip update
+                Ok(false)
             } else {
                 info!(
                     "{} record {} exists with different value(s), updating",
                     record_type_name, name
                 );
-                Ok(true) // Need update
+                Ok(true)
             }
         }
         Ok(_) => {
-            // No records exist
             info!(
                 "{} record {} does not exist, creating",
                 record_type_name, name
             );
-            Ok(true) // Need creation
+            Ok(true)
         }
         Err(e) => {
-            // Query failed - log warning but allow update attempt
             warn!(
                 "Failed to query existing {} record {} (will attempt update anyway): {}",
                 record_type_name, name, e
             );
-            Ok(true) // Proceed with update
+            Ok(true)
         }
     }
 }
@@ -183,88 +200,47 @@ where
 pub async fn delete_dns_record(
     zone_name: &str,
     name: &str,
-    record_type: hickory_client::rr::RecordType,
+    record_type: RecordType,
     server: &str,
-    key_data: &crate::bind9::types::RndcKeyData,
+    key_data: &RndcKeyData,
 ) -> Result<()> {
-    use crate::bind9::rndc::create_tsig_signer;
-    use hickory_client::op::ResponseCode;
-    use hickory_client::rr::DNSClass;
+    let mut client = build_authenticated_client(server, key_data).await?;
+    let zone =
+        Name::from_str(zone_name).with_context(|| format!("Invalid zone name: {zone_name}"))?;
+    let fqdn = build_record_fqdn(zone_name, name)?;
 
-    let zone_name_str = zone_name.to_string();
-    let name_str = name.to_string();
-    let server_str = server.to_string();
-    let key_data = key_data.clone();
+    info!(
+        "Deleting {:?} record: {} from zone {}",
+        record_type, fqdn, zone_name
+    );
 
-    tokio::task::spawn_blocking(move || {
-        // Parse server address
-        let server_addr = server_str
-            .parse::<std::net::SocketAddr>()
-            .with_context(|| format!("Invalid server address: {server_str}"))?;
+    // Build a placeholder record. delete_rrset() overwrites class/ttl/data based on record_type.
+    let dummy_record = Record::from_rdata(fqdn.clone(), 0, RData::Update0(record_type));
 
-        // Create UDP connection
-        let conn =
-            UdpClientConnection::new(server_addr).context("Failed to create UDP connection")?;
+    let response = client
+        .delete_rrset(dummy_record, zone)
+        .await
+        .with_context(|| {
+            format!("Failed to send DNS UPDATE to delete {record_type:?} record {fqdn}")
+        })?;
 
-        // Create TSIG signer
-        let signer = create_tsig_signer(&key_data)?;
-
-        // Create client with TSIG
-        let client = SyncClient::with_tsigner(conn, signer);
-
-        // Parse zone name
-        let zone = Name::from_str(&zone_name_str)
-            .with_context(|| format!("Invalid zone name: {zone_name_str}"))?;
-
-        // Build full record name
-        let fqdn = if name_str == "@" || name_str.is_empty() {
-            zone.clone()
-        } else {
-            Name::from_str(&format!("{name_str}.{zone_name_str}"))
-                .with_context(|| format!("Invalid record name: {name_str}.{zone_name_str}"))?
-        };
-
-        info!(
-            "Deleting {:?} record: {} from zone {}",
-            record_type, fqdn, zone_name_str
-        );
-
-        // Create a dummy record with TTL=0 for deletion (hickory-client delete_rrset API)
-        let mut dummy_record = Record::new();
-        dummy_record.set_name(fqdn.clone());
-        dummy_record.set_record_type(record_type);
-        dummy_record.set_dns_class(DNSClass::IN);
-
-        // Send delete operation - deletes ALL records of this type for this name
-        let response = client
-            .delete_rrset(dummy_record, zone.clone())
-            .with_context(|| {
-                format!("Failed to send DNS UPDATE to delete {record_type:?} record {fqdn}")
-            })?;
-
-        // Check response code
-        match response.response_code() {
-            ResponseCode::NoError => {
-                info!(
-                    "Successfully deleted {:?} record: {} from zone {}",
-                    record_type, name_str, zone_name_str
-                );
-                Ok(())
-            }
-            code => {
-                warn!(
-                    "DNS DELETE for {:?} record {fqdn} returned code: {:?} (may not have existed)",
-                    record_type, code
-                );
-                // Don't treat "not found" as error - record deletion is idempotent
-                Ok(())
-            }
+    match response.metadata.response_code {
+        ResponseCode::NoError => {
+            info!(
+                "Successfully deleted {:?} record: {} from zone {}",
+                record_type, name, zone_name
+            );
+            Ok(())
         }
-    })
-    .await
-    .with_context(|| {
-        format!("DNS delete task panicked or failed for {record_type:?} record {name}")
-    })?
+        code => {
+            warn!(
+                "DNS DELETE for {:?} record {fqdn} returned code: {:?} (may not have existed)",
+                record_type, code
+            );
+            // Deletion is idempotent: don't treat "not found" as error.
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]

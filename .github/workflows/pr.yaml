@@ -341,6 +341,11 @@ jobs:
           key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-registry-
 
+      - name: Run cargo-audit (RustSec advisory scan)
+        uses: firestoned/github-actions/rust/security-scan@v1.3.6
+        with:
+          cargo-audit-version: "0.22.0"
+
       - name: Run cargo-deny (dependencies, licenses, supply chain)
         run: make cargo-deny
 
