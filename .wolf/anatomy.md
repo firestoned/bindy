@@ -1,7 +1,11 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-05-02T15:47:04.861Z
-> Files: 542 tracked | Anatomy hits: 0 | Misses: 0
+> Auto-maintained by OpenWolf. Last scanned: 2026-05-02T19:42:24.697Z
+> Files: 544 tracked | Anatomy hits: 0 | Misses: 0
+
+## ../bindcar/docs/roadmaps/
+
+- `feature-gate-http-server.md` — Feature-gate the HTTP server (so type-only consumers can opt out) (~3663 tok)
 
 ## ./
 
@@ -619,6 +623,7 @@
 
 ## src/
 
+- `ddns.rs` — Dynamic DNS update utilities for BIND9 via RFC 2136. (~1020 tok)
 - `record_operator.rs` — Generic DNS record operator implementation. (~2346 tok)
 - `scout_tests.rs` — Unit tests for `scout.rs` — pure helper functions (no Kubernetes API calls) (~13952 tok)
 - `scout.rs` — Bindy Scout — Ingress-to-ARecord controller. (~25327 tok)

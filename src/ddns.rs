@@ -85,7 +85,13 @@ pub fn calculate_record_hash<T: Serialize>(data: &T) -> String {
     let json = serde_json::to_string(data).unwrap_or_default();
     let mut hasher = Sha256::new();
     hasher.update(json.as_bytes());
-    format!("{:x}", hasher.finalize())
+    // sha2 0.11 returns `Array<u8, _>` from hybrid-array, which does not
+    // implement `LowerHex` like the old `GenericArray<u8, U32>` did.
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
 }
 
 /// Generate nsupdate commands for an A record.
