@@ -128,6 +128,22 @@
       "related_bugs": [],
       "occurrences": 1,
       "last_seen": "2026-05-02T15:46:35.631Z"
+    },
+    {
+      "id": "bug-009",
+      "timestamp": "2026-05-02T16:02:22.143Z",
+      "error_message": "Incorrect value in code",
+      "file": "Cargo.toml",
+      "root_cause": "Had \"0.10\"",
+      "fix": "Changed to \"0.11\"",
+      "tags": [
+        "auto-detected",
+        "wrong-value",
+        "toml"
+      ],
+      "related_bugs": [],
+      "occurrences": 1,
+      "last_seen": "2026-05-02T16:02:22.143Z"
     }
   ]
 }
