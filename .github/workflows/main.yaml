@@ -217,6 +217,10 @@ jobs:
           file: ${{ matrix.variant.dockerfile }}
           platforms: linux/amd64,linux/arm64
           push: true
+          # Force buildx to re-resolve FROM tags against the registry on every build.
+          # Without this, GHA cache reuses cached base-image layers and stale base
+          # CVEs persist across rebuilds (the whole point of floating tags is defeated).
+          pull: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: |
             ${{ steps.meta.outputs.labels }}
