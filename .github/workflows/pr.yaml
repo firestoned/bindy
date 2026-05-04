@@ -297,6 +297,9 @@ jobs:
           file: ${{ matrix.variant.dockerfile }}
           platforms: linux/amd64,linux/arm64
           push: true
+          # Force buildx to re-resolve FROM tags so PR builds reflect the same
+          # fresh-base policy as main/release.
+          pull: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: |
             ${{ steps.meta.outputs.labels }}

@@ -1,6 +1,6 @@
 # anatomy.md
 
-> Auto-maintained by OpenWolf. Last scanned: 2026-05-02T19:42:24.697Z
+> Auto-maintained by OpenWolf. Last scanned: 2026-05-04T15:21:47.061Z
 > Files: 544 tracked | Anatomy hits: 0 | Misses: 0
 
 ## ../bindcar/docs/roadmaps/
@@ -80,9 +80,9 @@
 - `docs.yaml` — SPDX-License-Identifier: MIT (~816 tok)
 - `integration.yaml` — SPDX-License-Identifier: MIT (~579 tok)
 - `license-scan.yaml` — SPDX-License-Identifier: MIT (~1010 tok)
-- `main.yaml` — SPDX-License-Identifier: MIT (~2763 tok)
-- `pr.yaml` — SPDX-License-Identifier: MIT (~3469 tok)
-- `release.yaml` — SPDX-License-Identifier: MIT (~5769 tok)
+- `main.yaml` — SPDX-License-Identifier: MIT (~2843 tok)
+- `pr.yaml` — SPDX-License-Identifier: MIT (~3511 tok)
+- `release.yaml` — SPDX-License-Identifier: MIT (~5840 tok)
 - `sbom.yml` — SPDX-License-Identifier: MIT (~901 tok)
 - `scorecard.yml` — SPDX-License-Identifier: MIT (~510 tok)
 - `security-scan.yaml` — SPDX-License-Identifier: MIT (~8855 tok)

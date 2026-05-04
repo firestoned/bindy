@@ -255,6 +255,10 @@ jobs:
           context: .
           file: ${{ matrix.variant.dockerfile }}
           push: true
+          # Force buildx to re-resolve FROM tags against the registry on every
+          # build so we always pick up the latest patched base image. Without
+          # this the GHA cache happily reuses stale base-image layers.
+          pull: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: |
             ${{ steps.meta.outputs.labels }}

@@ -23,7 +23,7 @@
       "first_read": "2026-04-29T23:51:43.276Z"
     },
     "/Users/erick/dev/bindy/.github/workflows/pr.yaml": {
-      "count": 1,
+      "count": 2,
       "tokens": 3469,
       "first_read": "2026-05-02T11:20:27.143Z"
     },
@@ -116,6 +116,16 @@
       "count": 1,
       "tokens": 0,
       "first_read": "2026-05-02T19:40:33.931Z"
+    },
+    "/Users/erick/dev/bindy/.github/workflows/main.yaml": {
+      "count": 3,
+      "tokens": 2763,
+      "first_read": "2026-05-04T15:19:04.814Z"
+    },
+    "/Users/erick/dev/bindy/.github/workflows/release.yaml": {
+      "count": 1,
+      "tokens": 5769,
+      "first_read": "2026-05-04T15:21:30.151Z"
     }
   },
   "files_written": [
@@ -370,6 +380,24 @@
       "action": "create",
       "tokens": 4186,
       "at": "2026-05-02T19:42:24.726Z"
+    },
+    {
+      "file": "/Users/erick/dev/bindy/.github/workflows/main.yaml",
+      "action": "edit",
+      "tokens": 270,
+      "at": "2026-05-04T15:21:22.898Z"
+    },
+    {
+      "file": "/Users/erick/dev/bindy/.github/workflows/release.yaml",
+      "action": "edit",
+      "tokens": 287,
+      "at": "2026-05-04T15:21:37.633Z"
+    },
+    {
+      "file": "/Users/erick/dev/bindy/.github/workflows/pr.yaml",
+      "action": "edit",
+      "tokens": 225,
+      "at": "2026-05-04T15:21:47.077Z"
     }
   ],
   "edit_counts": {
@@ -377,7 +405,7 @@
     "src/scout.rs": 11,
     "docs/src/guide/scout.md": 2,
     ".claude/CHANGELOG.md": 4,
-    ".github/workflows/pr.yaml": 1,
+    ".github/workflows/pr.yaml": 2,
     "Cargo.toml": 4,
     "src/record_operator.rs": 1,
     "src/bind9/records/mod.rs": 1,
@@ -391,11 +419,13 @@
     "src/bind9/zone_ops.rs": 1,
     "docs/roadmaps/hickory-client-stable-upgrade.md": 1,
     "src/ddns.rs": 1,
-    "../bindcar/docs/roadmaps/feature-gate-http-server.md": 1
+    "../bindcar/docs/roadmaps/feature-gate-http-server.md": 1,
+    ".github/workflows/main.yaml": 1,
+    ".github/workflows/release.yaml": 1
   },
-  "anatomy_hits": 3,
+  "anatomy_hits": 5,
   "anatomy_misses": 20,
-  "repeated_reads_warned": 29,
+  "repeated_reads_warned": 32,
   "cerebrum_warnings": 0,
-  "stop_count": 16
+  "stop_count": 20
 }
