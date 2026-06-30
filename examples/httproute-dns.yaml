@@ -48,12 +48,30 @@ spec:
       labels:
         app: api-server
     spec:
+      # Pod-level hardening (satisfies Trivy KSV-0118 "default security context")
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: api
-          image: nginx:alpine
+          # Unprivileged nginx variant: runs as uid 101 and listens on 8080,
+          # so it works under runAsNonRoot + readOnlyRootFilesystem.
+          image: nginxinc/nginx-unprivileged:alpine
           ports:
             - containerPort: 8080
               name: http
+          # Container-level hardening (Trivy KSV-0014 read-only root FS, KSV-0118,
+          # Semgrep writable-filesystem-container)
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
           resources:
             requests:
               cpu: 10m
@@ -61,6 +79,21 @@ spec:
             limits:
               cpu: 100m
               memory: 64Mi
+          # Writable scratch dirs nginx needs once the root FS is read-only
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
