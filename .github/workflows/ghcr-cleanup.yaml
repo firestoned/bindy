@@ -1,0 +1,68 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+
+name: GHCR Image Cleanup
+
+# Prunes stale container image versions from GHCR so the package does not
+# accumulate thousands of untagged orphan layers and old dev snapshots (the
+# nightly Trivy scan keeps re-flagging aged main/dev images). This does NOT
+# touch released images — semver tags and the floating release/main tags are
+# always preserved (see `exclude-tags` below).
+on:
+  # Daily at 02:00 UTC (after the 00:00 security scan, before the working day).
+  schedule:
+    - cron: '0 2 * * *'
+
+  # Manual run — use dry_run=true first to preview what WOULD be deleted.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preview only — do not delete anything'
+        required: false
+        type: boolean
+        default: true
+
+  # Reusable by other workflows.
+  workflow_call:
+    inputs:
+      dry_run:
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  # Required to delete container package versions.
+  packages: write
+
+jobs:
+  cleanup:
+    name: Prune stale GHCR image versions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete stale image versions
+        # Manifest-aware cleanup: understands multi-arch manifest lists, so the
+        # per-platform child digests of a preserved tag are NOT orphaned.
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          owner: firestoned
+          package: bindy
+          # Never delete released images or the floating release/main tags.
+          # Anchored regex (use-regex) so semver matching does NOT also catch dotted
+          # dated snapshots like `main-2026.01.15` (a plain `*.*` wildcard would).
+          #   ^v?[0-9]+(\.[0-9]+){0,2}$  ->  0, 0.5, 0.5.2, v0.5.2
+          use-regex: true
+          exclude-tags: '^latest$,^latest-distroless$,^main$,^main-distroless$,^v?[0-9]+(\.[0-9]+){0,2}$'
+          # Keep the 20 most recent tagged snapshots (main-YYYY-MM-DD, sha-*,
+          # pr-*); older ones beyond that window are pruned.
+          keep-n-tagged: 20
+          # Remove untagged orphan layers/attestations left by every build.
+          delete-untagged: true
+          # Safety window: never touch anything created in the last 14 days.
+          older-than: 14 days
+          # Verify multi-arch manifest integrity in the registry after cleanup.
+          validate: true
+          # schedule/workflow_call => real run; manual dispatch defaults to preview.
+          dry-run: ${{ inputs.dry_run || false }}
+          log-level: info

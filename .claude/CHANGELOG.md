@@ -1,3 +1,50 @@
+## [2026-06-30] - Stop nightly [SECURITY] issue spam + add GHCR cleanup
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/security-scan.yaml`: fixed the container-vulnerability issue
+  creator. Root cause of the nightly email storm: the dedup matched an existing issue
+  only when its title contained **today's date**, so a brand-new issue (and email) was
+  filed every night per variant (74 had accumulated).
+  - `*-main` dev variants (`chainguard-main`, `distroless-main`) no longer open issues —
+    they are rebuilt on every push and tracked via code-scanning SARIF (new
+    `create_issue` matrix flag, gated step).
+  - Released variants now update a single **rolling** tracking issue per variant
+    (match on title prefix, not date) instead of filing a new one daily.
+- `.github/workflows/ghcr-cleanup.yaml` (new): scheduled daily (02:00 UTC) +
+  `workflow_dispatch` (dry-run default) + `workflow_call`. Uses the manifest-aware
+  `dataaxiom/ghcr-cleanup-action` (SHA-pinned) to prune untagged orphan layers and old
+  `main-YYYY-MM-DD` / `sha-*` / `pr-*` snapshots, while **preserving** all semver tags
+  and the floating `latest` / `latest-distroless` / `main` / `main-distroless` tags
+  (`keep-n-tagged: 20`, `older-than: 14 days`, `validate: true`). Exclusions use an
+  **anchored regex** (`use-regex: true`, `^v?[0-9]+(\.[0-9]+){0,2}$`) so semver
+  protection does not also catch dotted dated snapshots like `main-2026.01.15` — a
+  plain `*.*` wildcard did, which a local dry-run simulation caught before first run.
+- `Makefile`: added read-only `ghcr-report` target (inventories GHCR versions by
+  category via `gh api`; no deletion) for local previews before trusting the schedule.
+
+### Why
+Daily `[SECURITY]` emails were noise from aging *dev* images, not actionable release
+regressions. The GHCR package had grown to ~2,525 versions (~2,037 untagged orphans)
+dating back to 2025-11-27. Closed the 74 stale snapshot issues (GitHub, "not planned")
+since the rolling-issue model supersedes them.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] CI / supply-chain hygiene (no runtime/image behavior change)
+- [ ] Documentation only
+
+### Verification
+All workflow YAML parses + `actionlint` clean; `make ghcr-report` runs; 0 open
+`container-vulnerability` issues remain (74 closed). New third-party action (cleanup)
+SHA-pinned per the supply-chain policy. **Recommend running the cleanup once via manual
+`workflow_dispatch` with `dry_run=true` to review the deletion set before the first
+scheduled run.**
+
+---
+
 ## [2026-06-30] - Remediate code-scanning findings (Scorecard / Trivy / Semgrep)
 
 **Author:** Erick Bourgeois
