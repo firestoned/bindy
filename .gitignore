@@ -82,3 +82,6 @@ coverage/
 # bind9-rndc-api
 bind9-rndc-api/target/
 docs/.venv/
+
+# Wolf agent working dir (kept locally, never committed)
+.wolf/

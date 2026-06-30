@@ -27,8 +27,16 @@ Bindy implements **least privilege** RBAC to comply with PCI-DSS 7.1.2, SOX 404,
 **Permissions:**
 - ✅ **Read/Write** on all Bindy CRDs (Bind9Instance, DNSZone, Records)
 - ✅ **Read/Write** on Kubernetes resources (Deployments, Services, ConfigMaps, ServiceAccounts)
-- ✅ **Read-only** on Secrets (PCI-DSS 7.1.2 compliance)
+- ✅ **Read-only** on Secrets cluster-wide (`get`/`list`/`watch` only — B-5 hardening)
+- ❌ **NO cluster-wide Secret write** — `create`/`update`/`patch`/`delete` on Secrets is granted
+  separately by the namespaced `bindy-secrets-writer` Role (see below)
 - ❌ **NO delete** on any resources (least privilege)
+
+> **B-5 (2026-06-09):** Cluster-wide Secret access is now read-only. The controller's
+> `Bind9Instance` reconciler uses `.owns(Api::<Secret>::all)`, which Kubernetes RBAC cannot
+> filter by name/label, so cluster-wide Secret *read* is required and retained. Cluster-wide
+> Secret *write* is not, and was moved to a namespaced Role so a compromised operator cannot
+> create/modify/delete Secrets in other namespaces (e.g. `kube-system`).
 
 **Why No Delete?**
 - **Security:** Controller compromise cannot delete infrastructure
@@ -40,6 +48,35 @@ Bindy implements **least privilege** RBAC to comply with PCI-DSS 7.1.2, SOX 404,
 ```bash
 kubectl apply -f deploy/rbac/role.yaml
 kubectl apply -f deploy/rbac/rolebinding.yaml
+```
+
+---
+
+### 1a. `bindy-secrets-writer` (Namespaced Secret Writer)
+
+**Files:** [`secrets-role.yaml`](secrets-role.yaml), [`secrets-rolebinding.yaml`](secrets-rolebinding.yaml)
+**Type:** Role (namespaced) + RoleBinding
+**Bound To:** ServiceAccount `bindy` in `bindy-system` namespace
+
+**Purpose:** Grants the operator the mutating verbs on Secrets (`create`/`update`/`patch`/`delete`),
+confined to the operator namespace. This is the half of the former cluster-wide Secret grant that
+does **not** need cluster scope (B-5 hardening).
+
+**Multi-namespace note:** If Bind9Instances live outside `bindy-system`, replicate this
+Role + RoleBinding into each target namespace (the operator creates RNDC key Secrets in the
+instance's own namespace).
+
+**Verify:**
+```bash
+# Operator can write secrets ONLY in its own namespace
+kubectl auth can-i create secrets -n bindy-system \
+  --as=system:serviceaccount:bindy-system:bindy
+# Expected: yes
+
+# Operator CANNOT write secrets in other namespaces
+kubectl auth can-i create secrets -n kube-system \
+  --as=system:serviceaccount:bindy-system:bindy
+# Expected: no
 ```
 
 ---

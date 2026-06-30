@@ -480,7 +480,12 @@ spec:
                               ECDSA algorithms are recommended for performance and smaller key sizes.
 
                               Default: `"ECDSAP256SHA256"`
+
+                              Restricted to an alphanumeric token because it is interpolated unquoted
+                              into the BIND9 `dnssec-policy { ... }` block — `;`, `{`, `}`, `"`, or
+                              whitespace would allow config injection (B-6b).
                             nullable: true
+                            pattern: ^[A-Za-z0-9]{1,32}$
                             type: string
                           autoGenerate:
                             description: |-
@@ -674,7 +679,13 @@ spec:
                               Longer lifetimes reduce `DS` update frequency but increase impact of key compromise.
 
                               Default: `"365d"` (1 year)
+
+                              Restricted to an alphanumeric token (e.g. `365d`, `8760h`, `P1Y`,
+                              `unlimited`) because it is interpolated unquoted into the BIND9
+                              `dnssec-policy { ... }` block — metacharacters would allow config
+                              injection (B-6b).
                             nullable: true
+                            pattern: ^[A-Za-z0-9]{1,32}$
                             type: string
                           nsec3:
                             description: |-
@@ -719,7 +730,12 @@ spec:
                               Custom policies can be defined in future enhancements.
 
                               Default: `"default"`
+
+                              The name is restricted to a safe identifier set (`[A-Za-z0-9_-]`, starting
+                              alphanumeric, max 63 chars) because it is interpolated into a quoted BIND9
+                              configuration literal — `"`, `;`, `{`, `}` would allow config injection (B-6).
                             nullable: true
+                            pattern: ^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$
                             type: string
                           zskLifetime:
                             description: |-
@@ -731,7 +747,12 @@ spec:
                               but increase signing overhead.
 
                               Default: `"90d"` (3 months)
+
+                              Restricted to an alphanumeric token (e.g. `90d`, `2160h`, `P3M`) because
+                              it is interpolated unquoted into the BIND9 `dnssec-policy { ... }` block —
+                              metacharacters would allow config injection (B-6b).
                             nullable: true
+                            pattern: ^[A-Za-z0-9]{1,32}$
                             type: string
                         type: object
                       validation:

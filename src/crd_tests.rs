@@ -1058,3 +1058,174 @@ fn test_zones_count_serialization() {
     let empty_json = serde_json::to_value(&empty_status).unwrap();
     assert!(empty_json.get("zonesCount").is_none());
 }
+
+/// B-6: `dnssecPolicy` flows into BIND9 configuration (via bindcar's
+/// `rndc addzone ... dnssec-policy "<name>"` quoted literal), so the CRD schema
+/// must constrain it to a safe identifier set at the source. These tests pin the
+/// generated OpenAPI schema pattern — the Kubernetes API server enforces it on
+/// admission.
+#[cfg(test)]
+mod dnssec_policy_schema_tests {
+    use crate::crd::{Bind9Cluster, DNSZone};
+    use kube::CustomResourceExt;
+
+    /// The exact pattern required for DNSSEC policy names: a safe identifier with
+    /// no `"`, `;`, `{`, `}`, whitespace, or control characters that could break
+    /// out of the quoted BIND config literal.
+    const DNSSEC_POLICY_PATTERN: &str = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$";
+
+    fn schema_json<T: CustomResourceExt>() -> serde_json::Value {
+        serde_json::to_value(T::crd()).expect("CRD serializes to JSON")
+    }
+
+    #[test]
+    fn test_dnszone_dnssec_policy_has_safe_pattern() {
+        let crd = schema_json::<DNSZone>();
+        let pattern = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]
+            ["spec"]["properties"]["dnssecPolicy"]["pattern"];
+        assert_eq!(
+            pattern.as_str(),
+            Some(DNSSEC_POLICY_PATTERN),
+            "DNSZone spec.dnssecPolicy must carry the safe-identifier pattern"
+        );
+    }
+
+    #[test]
+    fn test_bind9cluster_global_dnssec_signing_policy_has_safe_pattern() {
+        let crd = schema_json::<Bind9Cluster>();
+        let pattern = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]
+            ["spec"]["properties"]["global"]["properties"]["dnssec"]["properties"]["signing"]
+            ["properties"]["policy"]["pattern"];
+        assert_eq!(
+            pattern.as_str(),
+            Some(DNSSEC_POLICY_PATTERN),
+            "Bind9Cluster global.dnssec.signing.policy must carry the safe-identifier pattern"
+        );
+    }
+
+    /// Sanity-check the pattern itself: legitimate policy names match, injection
+    /// payloads do not. Implemented as a literal character walk to avoid adding a
+    /// regex dev-dependency — the pattern is simple enough to verify directly.
+    #[test]
+    fn test_pattern_semantics_reject_injection_payloads() {
+        fn matches(s: &str) -> bool {
+            let mut chars = s.chars();
+            let Some(first) = chars.next() else {
+                return false;
+            };
+            if !first.is_ascii_alphanumeric() {
+                return false;
+            }
+            let rest: Vec<char> = chars.collect();
+            if rest.len() > 62 {
+                return false;
+            }
+            rest.iter()
+                .all(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        }
+
+        for good in ["default", "none", "high-security", "policy_1"] {
+            assert!(matches(good), "expected {good:?} to be accepted");
+        }
+        for bad in [
+            "\"; }; allow-update { any; };",
+            "evil\"",
+            "a;b",
+            "a{b}",
+            "with space",
+            "",
+            "-leading-dash",
+        ] {
+            assert!(!matches(bad), "expected {bad:?} to be rejected");
+        }
+    }
+}
+
+/// B-6b: the sibling DNSSEC signing parameters `algorithm`, `kskLifetime`, and
+/// `zskLifetime` are interpolated into the same `dnssec-policy { ... }` BIND9
+/// config block (alongside the policy name fixed in B-6) via plain string
+/// substitution. Without validation, a value such as
+/// `365d; }; zone "evil" { type master; file "/etc/passwd"; };` would break out
+/// of the block and inject arbitrary BIND directives. These tests pin the
+/// generated OpenAPI schema pattern that the API server enforces on admission.
+#[cfg(test)]
+mod dnssec_param_schema_tests {
+    use crate::crd::Bind9Cluster;
+    use kube::CustomResourceExt;
+
+    /// Safe token: alphanumeric only, 1-32 chars. Accepts every legitimate value
+    /// (`ECDSAP256SHA256`, `365d`, `90d`, `unlimited`, ISO-8601 durations like
+    /// `P1Y`) while rejecting `"`, `;`, `{`, `}`, whitespace, and control chars.
+    const DNSSEC_PARAM_PATTERN: &str = r"^[A-Za-z0-9]{1,32}$";
+
+    fn signing_param_pattern(field: &str) -> Option<String> {
+        let crd = serde_json::to_value(Bind9Cluster::crd()).expect("CRD serializes to JSON");
+        crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"]
+            ["global"]["properties"]["dnssec"]["properties"]["signing"]["properties"][field]
+            ["pattern"]
+            .as_str()
+            .map(str::to_string)
+    }
+
+    #[test]
+    fn test_signing_algorithm_has_safe_pattern() {
+        assert_eq!(
+            signing_param_pattern("algorithm").as_deref(),
+            Some(DNSSEC_PARAM_PATTERN),
+            "global.dnssec.signing.algorithm must carry the safe-token pattern"
+        );
+    }
+
+    #[test]
+    fn test_signing_ksk_lifetime_has_safe_pattern() {
+        assert_eq!(
+            signing_param_pattern("kskLifetime").as_deref(),
+            Some(DNSSEC_PARAM_PATTERN),
+            "global.dnssec.signing.kskLifetime must carry the safe-token pattern"
+        );
+    }
+
+    #[test]
+    fn test_signing_zsk_lifetime_has_safe_pattern() {
+        assert_eq!(
+            signing_param_pattern("zskLifetime").as_deref(),
+            Some(DNSSEC_PARAM_PATTERN),
+            "global.dnssec.signing.zskLifetime must carry the safe-token pattern"
+        );
+    }
+
+    /// Sanity-check the pattern semantics: legitimate algorithm/duration values
+    /// match, injection payloads do not. Literal character walk to avoid a regex
+    /// dev-dependency.
+    #[test]
+    fn test_param_pattern_semantics_reject_injection_payloads() {
+        fn matches(s: &str) -> bool {
+            !s.is_empty() && s.len() <= 32 && s.chars().all(|c| c.is_ascii_alphanumeric())
+        }
+
+        for good in [
+            "ECDSAP256SHA256",
+            "ECDSAP384SHA384",
+            "RSASHA256",
+            "ED25519",
+            "365d",
+            "90d",
+            "8760h",
+            "unlimited",
+            "P1Y",
+        ] {
+            assert!(matches(good), "expected {good:?} to be accepted");
+        }
+        for bad in [
+            "365d; }; zone \"evil\" { type master; file \"/etc/passwd\"; };",
+            "ECDSAP256SHA256\"",
+            "365d;",
+            "a{b}",
+            "1y 2d",
+            "",
+            "with-dash",
+        ] {
+            assert!(!matches(bad), "expected {bad:?} to be rejected");
+        }
+    }
+}

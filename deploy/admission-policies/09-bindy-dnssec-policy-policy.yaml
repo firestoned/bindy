@@ -1,0 +1,90 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# ValidatingAdmissionPolicy: defense-in-depth checks on DNSSEC policy names
+# (B-6). Covers:
+#   - DNSZone               spec.dnssecPolicy
+#   - Bind9Cluster          spec.global.dnssec.signing.policy
+#   - ClusterBind9Provider  spec.global.dnssec.signing.policy
+#   - Bind9Instance         spec.config.dnssec.signing.policy
+#
+# It also validates the sibling signing parameters interpolated into the same
+# block (B-6b): algorithm + KSK/ZSK lifetimes under spec.global.dnssec.signing
+# and spec.config.dnssec.signing.
+#
+# The CRD JSONSchema already enforces the same patterns, but this policy adds an
+# explicit runtime layer: the policy name is interpolated into a quoted BIND9
+# configuration literal (`dnssec-policy "<name>"`) and the algorithm/lifetimes
+# unquoted into the `dnssec-policy { ... }` block, so `"`, `;`, `{`, `}`,
+# whitespace, or control characters would allow arbitrary BIND configuration
+# injection if any layer were bypassed.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: bindy-dnssec-policy-validation
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/part-of: bindy
+    app.kubernetes.io/component: admission-policy
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups:   ["bindy.firestoned.io"]
+        apiVersions: ["v1beta1"]
+        operations:  ["CREATE", "UPDATE"]
+        resources:
+          - dnszones
+          - bind9clusters
+          - clusterbind9providers
+          - bind9instances
+  variables:
+    # Collect every DNSSEC-policy-bearing field present in this resource.
+    - name: policyNames
+      expression: |
+        ([object.spec.?dnssecPolicy.orValue('')] +
+         [object.spec.?global.?dnssec.?signing.?policy.orValue('')] +
+         [object.spec.?config.?dnssec.?signing.?policy.orValue('')]
+        ).filter(p, size(p) > 0)
+    # Safe identifier: starts alphanumeric, then [A-Za-z0-9_-], max 63 chars.
+    - name: safeIdentifierPattern
+      expression: |
+        '^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$'
+    # Collect the sibling DNSSEC signing params interpolated *unquoted* into the
+    # same `dnssec-policy { ... }` block: algorithm + KSK/ZSK lifetimes (B-6b).
+    - name: signingParams
+      expression: |
+        ([object.spec.?global.?dnssec.?signing.?algorithm.orValue('')] +
+         [object.spec.?global.?dnssec.?signing.?kskLifetime.orValue('')] +
+         [object.spec.?global.?dnssec.?signing.?zskLifetime.orValue('')] +
+         [object.spec.?config.?dnssec.?signing.?algorithm.orValue('')] +
+         [object.spec.?config.?dnssec.?signing.?kskLifetime.orValue('')] +
+         [object.spec.?config.?dnssec.?signing.?zskLifetime.orValue('')]
+        ).filter(p, size(p) > 0)
+    # Safe token: alphanumeric only, 1-32 chars (algorithm names, durations).
+    - name: safeTokenPattern
+      expression: |
+        '^[A-Za-z0-9]{1,32}$'
+  validations:
+    # 1. Must match the safe-identifier grammar (rejects '"', ';', '{', '}',
+    #    whitespace, control characters, leading '-', overlength).
+    - expression: |
+        variables.policyNames.all(p, p.matches(variables.safeIdentifierPattern))
+      messageExpression: |
+        "DNSSEC policy names must match " + variables.safeIdentifierPattern +
+        " (alphanumeric start, then letters/digits/_/-, max 63 chars). " +
+        "Offending names: " +
+        variables.policyNames.filter(p,
+          !p.matches(variables.safeIdentifierPattern)).join(", ")
+    # 2. Sibling signing params (algorithm, KSK/ZSK lifetimes) must be safe
+    #    alphanumeric tokens — they are interpolated unquoted into the BIND9
+    #    `dnssec-policy { ... }` block (B-6b).
+    - expression: |
+        variables.signingParams.all(p, p.matches(variables.safeTokenPattern))
+      messageExpression: |
+        "DNSSEC signing algorithm/lifetime values must match " +
+        variables.safeTokenPattern + " (alphanumeric, max 32 chars). " +
+        "Offending values: " +
+        variables.signingParams.filter(p,
+          !p.matches(variables.safeTokenPattern)).join(", ")

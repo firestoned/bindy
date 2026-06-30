@@ -1193,7 +1193,12 @@ pub struct DNSZoneSpec {
     ///
     /// **Note**: Custom policies require BIND9 `dnssec-policy` configuration.
     /// Built-in policies: `"default"`, `"none"`
+    ///
+    /// The name is restricted to a safe identifier set (`[A-Za-z0-9_-]`, starting
+    /// alphanumeric, max 63 chars) because it is interpolated into a quoted BIND9
+    /// configuration literal — `"`, `;`, `{`, `}` would allow config injection (B-6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(regex(pattern = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$"))]
     pub dnssec_policy: Option<String>,
 }
 
@@ -2363,7 +2368,12 @@ pub struct DNSSECSigningConfig {
     /// Custom policies can be defined in future enhancements.
     ///
     /// Default: `"default"`
+    ///
+    /// The name is restricted to a safe identifier set (`[A-Za-z0-9_-]`, starting
+    /// alphanumeric, max 63 chars) because it is interpolated into a quoted BIND9
+    /// configuration literal — `"`, `;`, `{`, `}` would allow config injection (B-6).
     #[serde(default)]
+    #[schemars(regex(pattern = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$"))]
     pub policy: Option<String>,
 
     /// DNSSEC algorithm
@@ -2376,7 +2386,12 @@ pub struct DNSSECSigningConfig {
     /// ECDSA algorithms are recommended for performance and smaller key sizes.
     ///
     /// Default: `"ECDSAP256SHA256"`
+    ///
+    /// Restricted to an alphanumeric token because it is interpolated unquoted
+    /// into the BIND9 `dnssec-policy { ... }` block — `;`, `{`, `}`, `"`, or
+    /// whitespace would allow config injection (B-6b).
     #[serde(default)]
+    #[schemars(regex(pattern = r"^[A-Za-z0-9]{1,32}$"))]
     pub algorithm: Option<String>,
 
     /// Key Signing Key (KSK) lifetime
@@ -2387,7 +2402,13 @@ pub struct DNSSECSigningConfig {
     /// Longer lifetimes reduce `DS` update frequency but increase impact of key compromise.
     ///
     /// Default: `"365d"` (1 year)
+    ///
+    /// Restricted to an alphanumeric token (e.g. `365d`, `8760h`, `P1Y`,
+    /// `unlimited`) because it is interpolated unquoted into the BIND9
+    /// `dnssec-policy { ... }` block — metacharacters would allow config
+    /// injection (B-6b).
     #[serde(default)]
+    #[schemars(regex(pattern = r"^[A-Za-z0-9]{1,32}$"))]
     pub ksk_lifetime: Option<String>,
 
     /// Zone Signing Key (ZSK) lifetime
@@ -2398,7 +2419,12 @@ pub struct DNSSECSigningConfig {
     /// but increase signing overhead.
     ///
     /// Default: `"90d"` (3 months)
+    ///
+    /// Restricted to an alphanumeric token (e.g. `90d`, `2160h`, `P3M`) because
+    /// it is interpolated unquoted into the BIND9 `dnssec-policy { ... }` block —
+    /// metacharacters would allow config injection (B-6b).
     #[serde(default)]
+    #[schemars(regex(pattern = r"^[A-Za-z0-9]{1,32}$"))]
     pub zsk_lifetime: Option<String>,
 
     /// Use NSEC3 instead of NSEC for authenticated denial of existence
