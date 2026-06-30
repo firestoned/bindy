@@ -26,10 +26,10 @@ jobs:
       code: ${{ steps.filter.outputs.code }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Check for changes
-        uses: dorny/paths-filter@v4
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
         id: filter
         with:
           filters: |
@@ -45,10 +45,10 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Check license headers
-        uses: firestoned/github-actions/security/license-check@v1.3.6
+        uses: firestoned/github-actions/security/license-check@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           copyright-holder: "Erick Bourgeois, firestoned"
           license-id: "MIT"
@@ -59,12 +59,12 @@ jobs:
     needs: changes
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0  # Fetch all history for verification
 
       - name: Verify all commits are signed
-        uses: firestoned/github-actions/security/verify-signed-commits@v1.3.6
+        uses: firestoned/github-actions/security/verify-signed-commits@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           base-ref: origin/${{ github.base_ref }}
@@ -76,10 +76,10 @@ jobs:
     needs: [license-check, verify-commits]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           components: rustfmt
 
@@ -92,15 +92,15 @@ jobs:
     needs: format
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           components: clippy
 
       - name: Cache cargo dependencies
-        uses: firestoned/github-actions/rust/cache-cargo@v1.3.6
+        uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
 
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
@@ -140,19 +140,19 @@ jobs:
             binary_name: bindy.exe
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       # Linux: custom action handles cross-compilation setup for ARM64
       - name: Setup Rust build environment (Linux)
         if: runner.os == 'Linux'
-        uses: firestoned/github-actions/rust/setup-rust-build@v1.3.6
+        uses: firestoned/github-actions/rust/setup-rust-build@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           target: ${{ matrix.platform.target }}
 
       # macOS/Windows: native build; macOS x86_64 is cross-compiled on ARM64 macos-latest runner
       - name: Setup Rust toolchain (macOS/Windows)
         if: runner.os != 'Linux'
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           targets: ${{ matrix.platform.target }}
 
@@ -163,11 +163,11 @@ jobs:
 
       - name: Cache cargo dependencies (macOS/Windows)
         if: runner.os != 'Linux'
-        uses: firestoned/github-actions/rust/cache-cargo@v1.3.6
+        uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
 
       - name: Build binary (Linux)
         if: runner.os == 'Linux'
-        uses: firestoned/github-actions/rust/build-binary@v1.3.6
+        uses: firestoned/github-actions/rust/build-binary@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           target: ${{ matrix.platform.target }}
 
@@ -178,12 +178,12 @@ jobs:
 
       - name: Generate SBOM (Linux only)
         if: runner.os == 'Linux'
-        uses: firestoned/github-actions/rust/generate-sbom@v1.3.6
+        uses: firestoned/github-actions/rust/generate-sbom@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           target: ${{ matrix.platform.target }}
 
       - name: Upload binary and SBOM artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.platform.artifact_name }}
           path: |
@@ -197,19 +197,19 @@ jobs:
     needs: build
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Download x86_64 build artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: bindy-linux-amd64
           path: target/x86_64-unknown-linux-gnu/release/
 
       - name: Cache cargo dependencies
-        uses: firestoned/github-actions/rust/cache-cargo@v1.3.6
+        uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
 
       - name: Run tests
         run: cargo test --all --verbose
@@ -226,11 +226,11 @@ jobs:
       short-sha: ${{ steps.version-chainguard.outputs.short-sha }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Extract version for Chainguard
         id: version-chainguard
-        uses: firestoned/github-actions/versioning/extract-version@v1.3.6
+        uses: firestoned/github-actions/versioning/extract-version@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           repository: firestoned/bindy
           workflow-type: pr
@@ -239,7 +239,7 @@ jobs:
 
       - name: Extract version for Distroless
         id: version-distroless
-        uses: firestoned/github-actions/versioning/extract-version@v1.3.6
+        uses: firestoned/github-actions/versioning/extract-version@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           repository: firestoned/bindy
           workflow-type: pr
@@ -269,19 +269,19 @@ jobs:
             image-repository: ${{ needs.extract-version.outputs.image-repository-distroless }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Prepare Docker binaries
         uses: ./.github/actions/prepare-docker-binaries
 
       - name: Setup Docker environment
-        uses: firestoned/github-actions/docker/setup-docker@v1.3.6
+        uses: firestoned/github-actions/docker/setup-docker@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6
         with:
           images: ghcr.io/${{ matrix.variant.image-repository }}
           tags: |
@@ -291,7 +291,7 @@ jobs:
             latest=false
 
       - name: Build and push Docker image (${{ matrix.variant.name }})
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
         with:
           context: .
           file: ${{ matrix.variant.dockerfile }}
@@ -315,10 +315,10 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: stable
           cache: false
@@ -332,20 +332,20 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Cache cargo registry
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.cargo/registry
           key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-registry-
 
       - name: Run cargo-audit (RustSec advisory scan)
-        uses: firestoned/github-actions/rust/security-scan@v1.3.6
+        uses: firestoned/github-actions/rust/security-scan@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           cargo-audit-version: "0.22.0"
 
@@ -371,10 +371,10 @@ jobs:
             image-repository: ${{ needs.extract-version.outputs.image-repository-distroless }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Run Trivy scan on ${{ matrix.variant.name }} image
-        uses: firestoned/github-actions/security/trivy-scan@v1.3.6
+        uses: firestoned/github-actions/security/trivy-scan@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           image-ref: ghcr.io/${{ matrix.variant.image-repository }}:${{ matrix.variant.image-tag }}
           sarif-category: trivy-pr-${{ matrix.variant.name }}

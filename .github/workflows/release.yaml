@@ -24,10 +24,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Check license headers
-        uses: firestoned/github-actions/security/license-check@v1.3.6
+        uses: firestoned/github-actions/security/license-check@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           copyright-holder: "Erick Bourgeois, firestoned"
           license-id: "MIT"
@@ -37,12 +37,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0  # Fetch all history for verification
 
       - name: Verify release tag commit is signed
-        uses: firestoned/github-actions/security/verify-signed-commits@v1.3.6
+        uses: firestoned/github-actions/security/verify-signed-commits@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           verify-mode: release
@@ -61,11 +61,11 @@ jobs:
       short-sha: ${{ steps.version-chainguard.outputs.short-sha }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Extract version for Chainguard
         id: version-chainguard
-        uses: firestoned/github-actions/versioning/extract-version@v1.3.6
+        uses: firestoned/github-actions/versioning/extract-version@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           repository: firestoned/bindy
           workflow-type: release
@@ -74,7 +74,7 @@ jobs:
 
       - name: Extract version for Distroless
         id: version-distroless
-        uses: firestoned/github-actions/versioning/extract-version@v1.3.6
+        uses: firestoned/github-actions/versioning/extract-version@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           repository: firestoned/bindy
           workflow-type: release
@@ -87,10 +87,10 @@ jobs:
     needs: extract-version
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: stable
           cache: false
@@ -99,7 +99,7 @@ jobs:
         run: make vex-validate
 
       - name: Upload VEX documents as artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: vex-documents
           path: vex/*.openvex.json
@@ -139,7 +139,7 @@ jobs:
             binary_name: bindy.exe
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Update Cargo.toml version
         shell: bash
@@ -151,7 +151,7 @@ jobs:
       # Linux: custom action handles cross-compilation setup for ARM64
       - name: Setup Rust build environment (Linux)
         if: runner.os == 'Linux'
-        uses: firestoned/github-actions/rust/setup-rust-build@v1.3.6
+        uses: firestoned/github-actions/rust/setup-rust-build@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           target: ${{ matrix.platform.target }}
           cache-key: release-${{ needs.extract-version.outputs.version }}
@@ -159,7 +159,7 @@ jobs:
       # macOS/Windows: native build; macOS x86_64 is cross-compiled on ARM64 macos-latest runner
       - name: Setup Rust toolchain (macOS/Windows)
         if: runner.os != 'Linux'
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           targets: ${{ matrix.platform.target }}
 
@@ -170,11 +170,11 @@ jobs:
 
       - name: Cache cargo dependencies (macOS/Windows)
         if: runner.os != 'Linux'
-        uses: firestoned/github-actions/rust/cache-cargo@v1.3.6
+        uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
 
       - name: Build binary (Linux)
         if: runner.os == 'Linux'
-        uses: firestoned/github-actions/rust/build-binary@v1.3.6
+        uses: firestoned/github-actions/rust/build-binary@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           target: ${{ matrix.platform.target }}
 
@@ -185,12 +185,12 @@ jobs:
 
       - name: Generate SBOM (Linux only)
         if: runner.os == 'Linux'
-        uses: firestoned/github-actions/rust/generate-sbom@v1.3.6
+        uses: firestoned/github-actions/rust/generate-sbom@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           target: ${{ matrix.platform.target }}
 
       - name: Upload binary and SBOM artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.platform.artifact_name }}
           path: |
@@ -223,19 +223,19 @@ jobs:
             image-repository: ${{ needs.extract-version.outputs.image-repository-distroless }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Prepare Docker binaries
         uses: ./.github/actions/prepare-docker-binaries
 
       - name: Setup Docker environment
-        uses: firestoned/github-actions/docker/setup-docker@v1.3.6
+        uses: firestoned/github-actions/docker/setup-docker@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6
         with:
           images: ghcr.io/${{ matrix.variant.image-repository }}
           tags: |
@@ -250,7 +250,7 @@ jobs:
 
       - name: Build and push Docker image (${{ matrix.variant.name }})
         id: docker_build
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
         with:
           context: .
           file: ${{ matrix.variant.dockerfile }}
@@ -272,7 +272,7 @@ jobs:
           provenance: true
 
       - name: Sign container image with Cosign
-        uses: firestoned/github-actions/security/cosign-sign@v1.3.6
+        uses: firestoned/github-actions/security/cosign-sign@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           image-digest: ${{ steps.docker_build.outputs.digest }}
           image-tags: ${{ matrix.variant.image-tag }}
@@ -280,14 +280,14 @@ jobs:
           repository: ${{ matrix.variant.image-repository }}
 
       - name: Generate Docker SBOM for ${{ matrix.variant.name }}
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           image: ghcr.io/${{ matrix.variant.image-repository }}:${{ matrix.variant.image-tag }}
           format: cyclonedx-json
           output-file: docker-sbom-${{ matrix.variant.name }}.json
 
       - name: Upload Docker SBOM as artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: docker-sbom-${{ matrix.variant.name }}
           path: docker-sbom-${{ matrix.variant.name }}.json
@@ -319,10 +319,10 @@ jobs:
             binary_name: bindy.exe
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Download binary artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: ${{ matrix.platform.artifact_name }}
           path: ./artifacts/${{ matrix.platform.artifact_name }}
@@ -335,12 +335,12 @@ jobs:
           ls -lh ${{ matrix.platform.artifact_name }}.tar.gz
 
       - name: Sign binary tarball with Cosign
-        uses: firestoned/github-actions/security/cosign-sign@v1.3.6
+        uses: firestoned/github-actions/security/cosign-sign@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           artifact-path: artifacts/${{ matrix.platform.artifact_name }}/${{ matrix.platform.artifact_name }}.tar.gz
 
       - name: Upload signed artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.platform.artifact_name }}-signed
           path: |
@@ -355,7 +355,7 @@ jobs:
       hashes: ${{ steps.hash.outputs.hashes }}
     steps:
       - name: Download signed artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: bindy-*-signed
           path: ./artifacts
@@ -389,10 +389,10 @@ jobs:
     needs: extract-version
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Setup Rust build environment
-        uses: firestoned/github-actions/rust/setup-rust-build@v1.3.6
+        uses: firestoned/github-actions/rust/setup-rust-build@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           target: x86_64-unknown-linux-gnu
           cache-key: release-${{ needs.extract-version.outputs.version }}
@@ -401,7 +401,7 @@ jobs:
         run: make release-manifests VERSION=${{ github.event.release.tag_name }}
 
       - name: Upload deploy manifests
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: deploy-manifests
           path: |
@@ -416,7 +416,7 @@ jobs:
       contents: write
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: ./artifacts
 
@@ -514,7 +514,7 @@ jobs:
           ls -lh ../vex/ || echo "No VEX documents found"
 
       - name: Upload release assets
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
         with:
           files: |
             artifacts/release/*.tar.gz
@@ -532,10 +532,10 @@ jobs:
     needs: extract-version
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Run security scan
-        uses: firestoned/github-actions/rust/security-scan@v1.3.6
+        uses: firestoned/github-actions/rust/security-scan@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           cargo-audit-version: "0.22.0"
           upload-artifact-name: cargo-audit-report-release
@@ -556,10 +556,10 @@ jobs:
             image-repository: ${{ needs.extract-version.outputs.image-repository-distroless }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Run Trivy scan on ${{ matrix.variant.name }} image
-        uses: firestoned/github-actions/security/trivy-scan@v1.3.6
+        uses: firestoned/github-actions/security/trivy-scan@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           image-ref: ghcr.io/${{ matrix.variant.image-repository }}:${{ matrix.variant.image-tag }}
           sarif-category: trivy-release-${{ matrix.variant.name }}

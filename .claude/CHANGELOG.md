@@ -1,3 +1,57 @@
+## [2026-06-30] - Remediate code-scanning findings (Scorecard / Trivy / Semgrep)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **Example hardening** (Trivy KSV-0014/KSV-0118, Semgrep writable-filesystem-container):
+  - `examples/httproute-dns.yaml`, `examples/tlsroute-dns.yaml`: added pod + container
+    `securityContext` (`runAsNonRoot`, `runAsUser/Group: 101`, `fsGroup`, seccomp
+    `RuntimeDefault`, `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`,
+    `capabilities.drop: [ALL]`). Switched the placeholder backend from `nginx:alpine` to
+    `nginxinc/nginx-unprivileged:alpine` and added `emptyDir` mounts (`/tmp`,
+    `/var/cache/nginx`, `/var/run`) so the read-only root FS still runs.
+- **Pinned dependencies** (Scorecard PinnedDependenciesID, 71 alerts):
+  - All `.github/workflows/*` third-party Actions pinned to a commit SHA with a
+    `# <tag>` comment (Dependabot-trackable) via a resolved tag→SHA map. Includes the
+    `firestoned/github-actions/*` composite actions (pinned, **not** replaced — per the
+    repo rule) and `ossf/scorecard-action` (added `# v2.4.3` comment).
+  - `docker/Dockerfile`: `debian:13-slim` and `gcr.io/distroless/cc-debian13:nonroot`
+    pinned to their multi-arch manifest-list digests (`sha256:28de0877…`, `sha256:d3cda6e9…`).
+- **Workflow token permissions** (Scorecard TokenPermissionsID):
+  - `.github/workflows/codeql.yml`: top-level `permissions` reduced to `contents: read`;
+    `security-events: write` moved to the `analyze` job that actually publishes results.
+
+### Exceptions (deliberate, not fixed)
+- `slsa-framework/slsa-github-generator` left on its `@v2.1.0` tag — the reusable workflow
+  refuses to run when referenced by SHA.
+- `docker/Dockerfile.local` left unpinned — the file and `.claude/CLAUDE.md` both document
+  ".local has no digest" (fast local iteration; never shipped, no supply-chain exposure).
+
+### Not code-fixable here (require your image rebuild)
+- ~25 Trivy CVEs in the `firestoned/bindy` image (openssl / glibc / zlib) live in the
+  distroless/debian base layers. Both bases are now pinned to the **latest** patched
+  digests; the alerts clear on the next image build+push (your step — operator does not
+  build images).
+- Scorecard "Vulnerabilities" (alert 459) aggregates OSV findings (cargo + container);
+  auto-clears as the underlying CVEs resolve (cargo side handled by the quinn-proto /
+  anyhow bumps; container side by the rebuild above).
+- 5 Trivy alerts on `docs/poetry.lock` (GitPython, urllib3) are **stale** — already
+  remediated (gitpython 3.1.50 ≥ fix 3.1.49, urllib3 2.7.0 = fix); clear on next scan
+  once the lockfile bump lands on the default branch.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] CI / supply-chain hardening (workflows, Dockerfile, examples)
+- [ ] Documentation only
+
+### Verification
+All 10 workflow files + 2 example YAMLs parse; `actionlint` reports no new errors (only
+pre-existing shellcheck style hints); every third-party Action is SHA-pinned except the
+documented SLSA exception.
+
+---
+
 ## [2026-06-29] - Fix duplicate definitions in scout (CI build break)
 
 **Author:** Erick Bourgeois

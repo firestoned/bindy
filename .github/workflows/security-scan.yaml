@@ -48,10 +48,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Run cargo-deny checks (JSON output for automated issue creation)
         id: deny
@@ -66,7 +66,7 @@ jobs:
 
       - name: Upload cargo-deny report
         if: steps.deny.outputs.report_exists == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: scheduled-cargo-deny-${{ github.run_number }}
           path: cargo-deny-report.json
@@ -93,7 +93,7 @@ jobs:
 
       - name: Create GitHub issue for vulnerabilities
         if: steps.parse.outputs.has_vulnerabilities == 'true'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const fs = require('fs');
@@ -191,7 +191,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0  # Full history for comprehensive scanning
 
@@ -218,7 +218,7 @@ jobs:
 
       - name: Upload gitleaks report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: scheduled-gitleaks-${{ github.run_number }}
           path: gitleaks-report.json
@@ -226,7 +226,7 @@ jobs:
 
       - name: Create GitHub issue for secrets
         if: steps.gitleaks.outputs.has_secrets == 'true'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const fs = require('fs');
@@ -321,26 +321,34 @@ jobs:
     strategy:
       matrix:
         variant:
+          # Released images: file/maintain a rolling tracking issue when vulnerable.
           - name: chainguard
             tag: latest
             description: "Chainguard Zero-CVE"
+            create_issue: true
           - name: distroless
             tag: latest-distroless
             description: "Google Distroless"
+            create_issue: true
+          # Main-branch dev images: still scanned (SARIF -> code scanning), but they
+          # are rebuilt on every push and their base layers age daily, so we do NOT
+          # open a GitHub issue for them (that produced a nightly email storm).
           - name: chainguard-main
             tag: main
             description: "Chainguard Main Branch"
+            create_issue: false
           - name: distroless-main
             tag: main-distroless
             description: "Distroless Main Branch"
+            create_issue: false
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Run Trivy scan on ${{ matrix.variant.description }}
         continue-on-error: true
         id: trivy
-        uses: firestoned/github-actions/security/trivy-scan@v1.3.6
+        uses: firestoned/github-actions/security/trivy-scan@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           image-ref: ghcr.io/${{ github.repository }}:${{ matrix.variant.tag }}
           sarif-category: trivy-scheduled-${{ matrix.variant.name }}
@@ -371,8 +379,8 @@ jobs:
           fi
 
       - name: Create GitHub issue for container vulnerabilities
-        if: steps.parse.outputs.has_vulnerabilities == 'true'
-        uses: actions/github-script@v9
+        if: steps.parse.outputs.has_vulnerabilities == 'true' && matrix.variant.create_issue
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const fs = require('fs');
@@ -443,7 +451,12 @@ jobs:
             **Note**: If this is the Distroless variant, consider switching to the Chainguard variant which has daily security updates and zero known CVEs.
             `;
 
-            // Check for existing issue
+            // Reuse a single ROLLING tracking issue per variant. Matching on the
+            // variant only (not the date) means a vulnerable image updates the same
+            // open issue every day instead of filing a brand-new one (and emailing)
+            // each night.
+            const titlePrefix = `[SECURITY] Container vulnerabilities in ${variantName}`;
+            const todayStr = new Date().toISOString().split('T')[0];
             const existingIssues = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -451,11 +464,8 @@ jobs:
               state: 'open'
             });
 
-            const todayStr = new Date().toISOString().split('T')[0];
             const existingIssue = existingIssues.data.find(i =>
-              i.title.includes('Container vulnerabilities') &&
-              i.title.includes(variantName) &&
-              i.title.includes(todayStr)
+              i.title.startsWith(titlePrefix)
             );
 
             if (existingIssue) {
@@ -463,18 +473,18 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: existingIssue.number,
-                body: `## Updated Scan Results\n\n${body}`
+                body: `## Updated Scan Results (${todayStr})\n\n${body}`
               });
-              console.log(`Updated existing issue #${existingIssue.number}`);
+              console.log(`Updated existing rolling issue #${existingIssue.number}`);
             } else {
               const issue = await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                title: `[SECURITY] Container vulnerabilities in ${variantName} (${todayStr})`,
+                title: `${titlePrefix} (since ${todayStr})`,
                 body: body,
                 labels: ['security', 'container-vulnerability', 'automated']
               });
-              console.log(`Created new issue #${issue.data.number}`);
+              console.log(`Created new rolling issue #${issue.data.number}`);
             }
 
   trivy-fs:
@@ -482,7 +492,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Install Trivy
         run: make trivy-install
@@ -500,14 +510,14 @@ jobs:
 
       - name: Upload Trivy filesystem results to GitHub Security
         if: steps.trivy-fs.outputs.sarif_exists == 'true'
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
         with:
           sarif_file: trivy-fs-results.sarif
           category: trivy-fs
 
       - name: Upload Trivy filesystem results as artifact
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: trivy-fs-results-${{ github.run_number }}
           path: trivy-fs-results.sarif
@@ -545,7 +555,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Install Trivy
         run: make trivy-install
@@ -563,14 +573,14 @@ jobs:
 
       - name: Upload Trivy Kubernetes results to GitHub Security
         if: steps.trivy-k8s.outputs.sarif_exists == 'true'
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
         with:
           sarif_file: trivy-k8s-results.sarif
           category: trivy-k8s
 
       - name: Upload Trivy Kubernetes results as artifact
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: trivy-k8s-results-${{ github.run_number }}
           path: trivy-k8s-results.sarif
@@ -608,10 +618,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
 
@@ -637,14 +647,14 @@ jobs:
 
       - name: Upload Semgrep results to GitHub Security
         if: steps.semgrep.outputs.sarif_exists == 'true'
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
         with:
           sarif_file: semgrep-results.sarif
           category: semgrep
 
       - name: Upload Semgrep results as artifact
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: semgrep-results-${{ github.run_number }}
           path: semgrep-results.sarif
@@ -706,7 +716,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Install Kubesec
         run: make kubesec-install
@@ -742,7 +752,7 @@ jobs:
 
       - name: Upload Kubesec output as artifact
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: kubesec-results-${{ github.run_number }}
           path: kubesec-output.txt

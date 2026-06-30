@@ -43,10 +43,10 @@ on:
         type: string
         default: 'rust'
 
+# Minimal top-level token: read-only by default. Write scopes are granted
+# per-job only where needed (Scorecard TokenPermissions best practice).
 permissions:
   contents: read
-  security-events: write
-  actions: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -61,10 +61,10 @@ jobs:
       code: ${{ steps.filter.outputs.code }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Check for changes
-        uses: dorny/paths-filter@v4
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
         id: filter
         with:
           filters: |
@@ -78,6 +78,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [changes]
+    # Only this job needs to publish CodeQL results.
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
     if: |
       always() &&
       (github.event_name != 'pull_request' || needs.changes.outputs.code == 'true')
@@ -91,17 +96,17 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0  # Full history for better analysis
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: stable
 
       - name: Cache cargo registry
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.cargo/registry
           key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
@@ -109,7 +114,7 @@ jobs:
             ${{ runner.os }}-cargo-registry-
 
       - name: Cache cargo index
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.cargo/git
           key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
@@ -117,7 +122,7 @@ jobs:
             ${{ runner.os }}-cargo-index-
 
       - name: Cache cargo build
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: target
           key: ${{ runner.os }}-cargo-build-codeql-${{ hashFiles('**/Cargo.lock') }}
@@ -127,7 +132,7 @@ jobs:
 
       # Initialize CodeQL for Rust analysis
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
+        uses: github/codeql-action/init@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
         with:
           languages: ${{ matrix.language }}
           config-file: ${{ inputs.config-file || '.github/codeql/codeql-config.yml' }}
@@ -143,7 +148,7 @@ jobs:
       # Perform CodeQL analysis
       - name: Perform CodeQL Analysis
         id: analyze
-        uses: github/codeql-action/analyze@v4
+        uses: github/codeql-action/analyze@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
         with:
           category: "/language:${{ matrix.language }}"
           upload: true
@@ -152,7 +157,7 @@ jobs:
       - name: Upload SARIF as artifact
         id: upload
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: codeql-sarif-${{ matrix.language }}-${{ github.run_number }}
           path: ${{ steps.analyze.outputs.sarif-output }}/${{ matrix.language }}.sarif
