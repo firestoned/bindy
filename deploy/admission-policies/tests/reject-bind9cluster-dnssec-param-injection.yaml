@@ -1,0 +1,19 @@
+# Should be REJECTED by bindy-dnssec-policy-validation (and by the CRD schema
+# pattern): global.dnssec.signing.kskLifetime contains ';', '{', '}', '"' — a
+# BIND config injection payload that would break out of the unquoted
+# `dnssec-policy { ... }` block where the lifetime is interpolated (B-6b).
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Cluster
+metadata:
+  name: vap-test-cluster-reject-dnssec-param
+  namespace: bindy-system
+spec:
+  version: "9.18"
+  global:
+    dnssec:
+      signing:
+        enabled: true
+        policy: high-security
+        algorithm: ECDSAP256SHA256
+        kskLifetime: '365d; }; zone "evil" { type master; file "/etc/passwd"; };'
+        zskLifetime: 90d

@@ -144,29 +144,32 @@ rules:
   # Kubernetes Secrets - RNDC key management (CRITICAL: least privilege for sensitive data)
   # trivy:ignore:KSV-0041
   # Suppression Justification (KSV-0041 - Secrets Access):
-  #   REQUIRED FOR CORE FUNCTIONALITY - DNS operator MUST manage RNDC secrets for BIND9 authentication.
+  #   REQUIRED FOR CORE FUNCTIONALITY - DNS operator MUST read RNDC secrets across the
+  #   namespaces it watches for BIND9 authentication.
+  #   B-5 hardening (2026-06-09): cluster-wide access is now READ-ONLY. The mutating verbs
+  #   (create/update/patch/delete) have been moved out of this ClusterRole into the
+  #   namespaced Role `bindy-secrets-writer` (see secrets-role.yaml), bound only in the
+  #   operator namespace. This removes cluster-wide Secret WRITE — a compromised operator
+  #   can no longer create, modify, or delete Secrets in other namespaces (e.g. kube-system).
+  #   For multi-namespace deployments, replicate the `bindy-secrets-writer` Role/RoleBinding
+  #   into each target namespace.
   #   Mitigation Strategy:
-  #     1. Namespace-scoped via RoleBinding (not ClusterRoleBinding) - limits blast radius
-  #     2. Minimal verbs - no "update" permission, only "patch" for metadata-only changes
-  #     3. Purpose-specific secrets - only creates/reads secrets with "bindy-rndc-" prefix
-  #     4. Audit logging enabled - all secret operations logged for compliance (PCI-DSS 10.2)
-  #     5. RBAC separation - admin role required for cluster-wide secret access
-  #   Risk Acceptance: Secrets access is unavoidable for DNS operator authentication requirements.
+  #     1. Read-only cluster-wide; write verbs namespaced to the operator namespace only
+  #     2. Purpose-specific secrets - only manages secrets with the "-rndc-key" suffix
+  #     3. Audit logging enabled - all secret operations logged for compliance (PCI-DSS 10.2)
+  #     4. RBAC separation - admin role required for cluster-wide destructive secret access
+  #   Risk Acceptance: Cluster-wide Secret READ is required by the controller's owned-Secret
+  #     watch (`.owns(Api::<Secret>::all)`), which RBAC cannot filter by name/label.
   #   Compliance: PCI-DSS 7.1.2 (minimal permissions), NIST SP 800-190 (container secrets management)
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-    # Permissions needed:
+    verbs: ["get", "list", "watch"]
+    # Cluster-wide, READ-ONLY:
     # - "get": Load RNDC keys for zone updates (DNSZone reconciler)
     # - "list": Check if RNDC secrets exist (Bind9Cluster reconciler)
-    # - "watch": Monitor RNDC secret changes
-    # - "create": Generate RNDC keys for new Bind9Instance resources
-    # - "update": RNDC key rotation — kube::Api::replace() (HTTP PUT) replaces the entire
-    #             Secret with new key material + updated rotation count + annotations.
-    #             patch is insufficient here because key data itself changes during rotation.
-    # - "patch": Metadata-only changes (e.g. adding annotations without touching key data)
-    # - "delete": Clean up RNDC keys when Bind9Instance is deleted (finalizer)
-    # PCI-DSS 7.1.2: Minimal permissions for RNDC secret lifecycle management
+    # - "watch": Monitor RNDC secret changes (Bind9Instance .owns(Secret) watch)
+    # Mutating verbs (create/update/patch/delete) live in the namespaced
+    # bindy-secrets-writer Role (secrets-role.yaml) — operator namespace only.
 
   # Kubernetes ServiceAccounts
   - apiGroups: [""]

@@ -17,6 +17,8 @@ defense-in-depth on top of the in-process Rust validators in
 | `06-bindy-rndc-strict-binding.yaml` | binding | Binds the strict RNDC policy. |
 | `07-bindy-pod-shape-policy.yaml` | `bindy-pod-shape-validation` | Strict allow-list for `spec.volumes` / `spec.volumeMounts` on `Bind9Instance` / `Bind9Cluster` / `ClusterBind9Provider`. Closes audit finding F-001 (host-fs / foreign-Secret injection via tenant CR). |
 | `08-bindy-pod-shape-binding.yaml` | binding | Binds the pod-shape policy with `validationActions: [Deny]`. |
+| `09-bindy-dnssec-policy-policy.yaml` | `bindy-dnssec-policy-validation` | Safe-identifier check on DNSSEC policy names (`DNSZone spec.dnssecPolicy`, `Bind9Cluster`/`ClusterBind9Provider` `spec.global.dnssec.signing.policy`, `Bind9Instance spec.config.dnssec.signing.policy`) **and** safe-token check on the sibling signing params `algorithm`/`kskLifetime`/`zskLifetime` under `*.dnssec.signing`. Closes audit findings B-6 (injection via the quoted `dnssec-policy "<name>"` literal) and B-6b (injection via the unquoted lifetime/algorithm values in the `dnssec-policy { ... }` block). |
+| `10-bindy-dnssec-policy-binding.yaml` | binding | Binds the DNSSEC-policy-name policy with `validationActions: [Deny]`. |
 
 F-003 (cross-namespace zone hijack) is enforced operator-side via the
 `bindy.firestoned.io/allow-zone-namespaces` annotation on `Bind9Instance`
@@ -42,6 +44,8 @@ kubectl apply -f deploy/admission-policies/01-bindy-acl-policy.yaml
 kubectl apply -f deploy/admission-policies/02-bindy-acl-binding.yaml
 kubectl apply -f deploy/admission-policies/03-bindy-zone-name-policy.yaml
 kubectl apply -f deploy/admission-policies/04-bindy-zone-name-binding.yaml
+kubectl apply -f deploy/admission-policies/09-bindy-dnssec-policy-policy.yaml
+kubectl apply -f deploy/admission-policies/10-bindy-dnssec-policy-binding.yaml
 
 # Pod-shape allow-list (closes F-001 — host-fs / foreign-Secret injection).
 # Strongly recommended on any multi-tenant cluster.

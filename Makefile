@@ -97,6 +97,8 @@ install-yaml: crds-combined ## Generate single-file install.yaml (CRDs + RBAC + 
 		cat deploy/operator/rbac/serviceaccount.yaml; \
 		cat deploy/operator/rbac/role.yaml; \
 		cat deploy/operator/rbac/rolebinding.yaml; \
+		cat deploy/operator/rbac/secrets-role.yaml; \
+		cat deploy/operator/rbac/secrets-rolebinding.yaml; \
 		echo ""; \
 		echo "# ============================================================"; \
 		echo "# Deployment"; \
@@ -165,6 +167,8 @@ admission-policies-install: ## Install bindy ValidatingAdmissionPolicies (k8s 1.
 	@kubectl apply -f deploy/admission-policies/02-bindy-acl-binding.yaml
 	@kubectl apply -f deploy/admission-policies/03-bindy-zone-name-policy.yaml
 	@kubectl apply -f deploy/admission-policies/04-bindy-zone-name-binding.yaml
+	@kubectl apply -f deploy/admission-policies/09-bindy-dnssec-policy-policy.yaml
+	@kubectl apply -f deploy/admission-policies/10-bindy-dnssec-policy-binding.yaml
 	@echo "✓ Core admission policies installed."
 	@echo "  Optional posture-strict RNDC policy (rejects hmac-sha1):"
 	@echo "    kubectl apply -f deploy/admission-policies/05-bindy-rndc-strict-policy.yaml"

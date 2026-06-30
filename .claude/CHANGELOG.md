@@ -1,3 +1,238 @@
+## [2026-06-29] - Fix duplicate definitions in scout (CI build break)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/scout.rs`: removed a duplicated block (a second copy of `get_record_name_annotation`
+  and `resolve_record_name`, fronted by a mis-pasted `bindy.firestoned.io/ip` doc comment)
+  that caused `E0428` "defined multiple times".
+- `src/scout_tests.rs`: removed the duplicated test block (a second copy of the
+  `get_record_name_annotation` + `resolve_record_name` tests, under a mislabeled
+  `resolve_ips_from_annotation` section header) that caused the same `E0428` on the test
+  functions.
+
+### Why
+`cargo clippy --all-targets --all-features -- -D warnings` failed in CI with `E0428` — the
+functions and their tests were each defined twice (a copy/paste or merge artifact). The
+first copy (with correct doc comments / section headers) was retained verbatim.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Build fix only (no behavior change; identical surviving definitions)
+
+### Verification
+`cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and
+`cargo test --lib` (1026 passed, 0 failed) all green.
+
+---
+
+## [2026-06-29] - Validate DNSSEC signing algorithm + lifetimes (B-6b)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/crd.rs`: added `#[schemars(regex(pattern = r"^[A-Za-z0-9]{1,32}$"))]` to
+  `DNSSECSigningConfig.algorithm`, `.ksk_lifetime`, and `.zsk_lifetime` (shared by
+  `Bind9Cluster`/`ClusterBind9Provider` `global.dnssec.signing.*` and `Bind9Instance`
+  `config.dnssec.signing.*`).
+- `deploy/operator/crds/{bind9clusters,bind9instances,clusterbind9providers}.crd.yaml`:
+  regenerated via `make crds` — the safe-token pattern now appears on the three signing
+  params in each (DNSZone is unaffected; it has no signing params).
+- `deploy/admission-policies/09-bindy-dnssec-policy-policy.yaml`: extended the CEL
+  ValidatingAdmissionPolicy with a `signingParams` variable + a second validation that
+  rejects `algorithm`/`kskLifetime`/`zskLifetime` containing `"`, `;`, `{`, `}`,
+  whitespace, or control characters under `spec.global.dnssec.signing` and
+  `spec.config.dnssec.signing`. Added `tests/reject-bind9cluster-dnssec-param-injection.yaml`
+  and documented in the admission-policies README.
+- `src/crd_tests.rs`: new `dnssec_param_schema_tests` module (4 tests) pinning the
+  generated schema pattern for the three fields and verifying its semantics against
+  injection payloads.
+
+### Why
+B-6b — discovered by a fresh security review of the `security-fixes` branch. B-6 closed
+injection via the **quoted** `dnssec-policy "<name>"` literal, but the same template
+(`DNSSEC_POLICY_TEMPLATE`, `src/bind9_resources.rs:46`) interpolates `algorithm`,
+`ksk_lifetime`, and `zsk_lifetime` **unquoted** into the `dnssec-policy { ... }` block
+via plain `.replace()` (lines 169-171) with no validation. A value such as
+`kskLifetime: '365d; }; zone "evil" { type master; file "/etc/passwd"; };'` would close
+the block and inject arbitrary BIND9 directives — the same impact class as B-3/B-6
+(arbitrary file read, rogue zones, disabling DNSSEC). Anyone able to create/update a
+`Bind9Cluster`/`Bind9Instance`/`ClusterBind9Provider` could exploit it. All legitimate
+values (`ECDSAP256SHA256`, `365d`, `90d`) are alphanumeric and unaffected.
+
+### Verification
+- `cargo fmt` / `cargo clippy --all-targets` clean
+- `cargo test --lib` — 1026 passed, 0 failed (4 new schema tests, RED→GREEN)
+- Pattern verified present on all three signing params in the 3 regenerated CRDs;
+  admission policy + new fixture parse cleanly.
+
+### Impact
+- [x] Breaking change *(CRs with non-conforming signing algorithm/lifetime values are now
+      rejected on admission; legitimate alphanumeric values are unaffected)*
+- [x] Requires cluster rollout *(re-apply CRDs + admission policies)*
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-06-29] - Patch Dependabot + cargo-audit security advisories
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.lock`: `quinn-proto` 0.11.14 → 0.11.15 (RUSTSEC-2026-0185, remote memory
+  exhaustion, CVSS 7.5 — the failing CI `cargo audit`), `anyhow` 1.0.102 → 1.0.103
+  (RUSTSEC-2026-0190, `Error::downcast_mut()` unsoundness).
+- `docs/poetry.lock`: resolved all 8 open Dependabot alerts (in-range bumps, no
+  `pyproject.toml` constraint changes):
+  - `gitpython` 3.1.46 → 3.1.50 (GHSA-7545-fcxq-7j24, GHSA-v87r-6q3f-2j67, GHSA-mv93-w799-cj2w)
+  - `urllib3` 2.6.3 → 2.7.0 (GHSA-qccp-gfcp-xxvc, GHSA-mf9v-mfxr-j63j)
+  - `pymdown-extensions` 10.21 → 10.21.3 (GHSA-62q4-447f-wv8h)
+  - `idna` 3.11 → 3.18 (GHSA-65pc-fj4g-8rjx)
+  - `pygments` 2.19.2 → 2.20.0 (GHSA-5239-wwwm-4pmq)
+
+### Why
+CI `cargo audit` failed on RUSTSEC-2026-0185, and the GitHub Dependabot tab listed 8 open
+advisories across the docs Python toolchain. All fixes are lockfile-only transitive/in-range
+bumps — no source, API, or manifest changes.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (`Cargo.lock` / `docs/poetry.lock` dependency bumps)
+- [ ] Documentation only
+
+### Verification
+- `cargo audit` exits 0 — no vulnerabilities or warnings; `cargo build` succeeds.
+- `poetry check --lock` consistent; all 5 docs packages at or above patched versions.
+
+---
+
+## [2026-06-29] - Refresh dependency lockfile (in-range)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.lock`: ran `cargo update` to pull the newest patch/minor versions permitted
+  by the existing `Cargo.toml` constraints. No `Cargo.toml` requirement changes — no
+  breaking-version (major) bumps. Notable security-relevant moves: `rustls`
+  0.23.40 → 0.23.41, `tokio` 1.52.2 → 1.52.3, `reqwest` 0.13.3 → 0.13.4,
+  `quinn` 0.11.9 → 0.11.11, `zeroize` 1.8.2 → 1.9.0, plus many transitive bumps.
+  The resolver also dropped a stale `wit-bindgen`/`wasm-encoder` transitive subtree
+  (net −129 lines in `Cargo.lock`).
+- The coupled major bumps (`kube` 3.1 → 4.0, `k8s-openapi` 0.27 → 0.28,
+  `kube-lease-manager` 0.11 → 0.12) were intentionally **deferred** — they require
+  source changes and were kept out of the security-fixes branch.
+
+### Why
+Routine maintenance / supply-chain hygiene alongside the B-5/B-6 security work: stay
+current on patch releases (including security-relevant crates like `rustls`) without
+taking on breaking-change risk.
+
+### Verification
+- `cargo clippy --all-targets` clean
+- `cargo test --lib` — 1022 passed, 0 failed, 53 ignored (unchanged from pre-update)
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only *(`Cargo.lock` only; no API, behavior, or manifest changes)*
+- [ ] Documentation only
+
+## [2026-06-09] - Validate DNSSEC policy names at the source (B-6)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/crd.rs`: added `#[schemars(regex(pattern = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$"))]`
+  to `DNSZoneSpec.dnssec_policy` **and** `DNSSECSigningConfig.policy` (the latter is
+  shared by `Bind9Cluster`/`ClusterBind9Provider` `global.dnssec.signing.policy` and
+  `Bind9Instance` `config.dnssec.signing.policy`).
+- `deploy/operator/crds/*.crd.yaml`: regenerated via `crdgen` — the pattern now appears
+  in all 4 affected CRDs.
+- `deploy/admission-policies/09-bindy-dnssec-policy-policy.yaml` +
+  `10-bindy-dnssec-policy-binding.yaml` (new): CEL ValidatingAdmissionPolicy rejecting
+  DNSSEC policy names containing `"`, `;`, `{`, `}`, whitespace, or control characters,
+  mirroring the zone-name policy. Added accept/reject test fixtures and wired into
+  `make admission-policies-install`; documented in the admission-policies README.
+- `src/crd_tests.rs`: new `dnssec_policy_schema_tests` module (3 tests) pinning the
+  generated schema pattern and verifying its semantics against injection payloads.
+- `deploy/install.yaml` / `deploy/crds.yaml`: regenerated via
+  `make install-yaml VERSION=v0.4.0` (also makes the B-5 RBAC bundle canonical).
+- `docs/src/reference/api.md`: regenerated via `crddoc` (LAST).
+
+### Why
+B-6 from the 2026-06-09 security audit: `dnssecPolicy` flows from the CRD through bindy
+to bindcar, which interpolates it into the quoted `dnssec-policy "<name>"` RNDC config
+literal. P0.1 fixed the bindcar **sink**; this fixes the bindy **source** — defense in
+depth, since bindcar is reachable independently of bindy. Existing examples
+(`default`, `none`, `high-security`) all conform.
+
+### Verification
+- `cargo fmt` / `cargo clippy --all-targets` clean
+- `cargo test --lib` — 1022 passed, 0 failed (3 new schema tests, RED→GREEN)
+- Pattern verified present in all 4 regenerated CRDs; install.yaml re-validated
+  (19 documents parse, RBAC intact)
+
+### Impact
+- [x] Breaking change *(CRs with non-conforming DNSSEC policy names are now rejected
+      on admission; legitimate names are unaffected)*
+- [x] Requires cluster rollout *(re-apply CRDs + admission policies)*
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-06-09] - Remove cluster-wide Secret WRITE from operator RBAC (B-5)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `deploy/operator/rbac/role.yaml`: the operator ClusterRole `bindy-role` now grants
+  only **read-only** (`get`/`list`/`watch`) on Secrets cluster-wide. The mutating verbs
+  (`create`/`update`/`patch`/`delete`) were removed.
+- `deploy/operator/rbac/secrets-role.yaml` (new): namespaced Role `bindy-secrets-writer`
+  with the Secret mutating verbs, scoped to `bindy-system`.
+- `deploy/operator/rbac/secrets-rolebinding.yaml` (new): RoleBinding binding the operator
+  ServiceAccount to `bindy-secrets-writer` in `bindy-system`.
+- `src/bootstrap.rs`: added `SECRETS_WRITER_ROLE_NAME` / `SECRETS_WRITER_ROLE_BINDING_NAME`
+  constants, `build_secrets_writer_role` / `build_secrets_writer_role_binding` builders,
+  `apply_secrets_writer_role` / `apply_secrets_writer_role_binding`, wired into
+  `run_bootstrap_operator` and the operator dry-run output. The embedded `BINDY_ROLE_YAML`
+  now carries the read-only Secrets rule automatically.
+- `src/bootstrap_tests.rs`: added 5 tests — operator ClusterRole Secrets is read-only, and
+  the namespaced secrets-writer Role/RoleBinding shape (verbs, namespace, roleRef, subject).
+- `Makefile` (`install-yaml`): bundle the new `secrets-role.yaml` / `secrets-rolebinding.yaml`.
+- `deploy/install.yaml`: synced the RBAC block — Secrets read-only on the ClusterRole and the
+  namespaced `bindy-secrets-writer` Role + RoleBinding appended. (Regenerate at next release
+  via `make install-yaml VERSION=...`.)
+
+### Why
+B-5 from the 2026-06-09 security audit: the operator ServiceAccount had cluster-wide
+read/write/delete on **all** Secrets via a `ClusterRoleBinding`, so a compromised operator
+could read or tamper with Secrets in any namespace (e.g. `kube-system`) — turning any
+operator bug into cluster-wide compromise. The operator's `Bind9Instance` controller uses
+`.owns(Api::<Secret>::all)`, which Kubernetes RBAC cannot filter by name/label, so
+cluster-wide Secret **read** is structurally required and is retained; cluster-wide Secret
+**write** is not, and has been confined to the operator namespace. (Fully removing
+cluster-wide Secret read would require making the operator namespace-scoped — tracked as a
+follow-up; see the security roadmap.)
+
+### Verification
+- `cargo fmt` / `cargo clippy --all-targets` clean
+- `cargo test --lib` — 1019 passed, 0 failed (incl. 5 new B-5 tests)
+- `bindy bootstrap operator --dry-run` emits the read-only ClusterRole + namespaced
+  `bindy-secrets-writer` Role/RoleBinding; all RBAC manifests parse cleanly.
+- After apply: `kubectl auth can-i create secrets -n kube-system --as=system:serviceaccount:bindy-system:bindy` → **no** (was yes).
+
+### Impact
+- [x] Breaking change *(operator can no longer create/update/delete Secrets outside its own
+      namespace; multi-namespace deployments must replicate the `bindy-secrets-writer`
+      Role/RoleBinding into each target namespace)*
+- [x] Requires cluster rollout *(re-apply RBAC)*
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-05-02] - Migrate hickory-client → hickory-net 0.26.1 (RUSTSEC-2026-0119)
 
 **Author:** Erick Bourgeois

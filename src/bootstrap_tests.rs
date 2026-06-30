@@ -9,14 +9,15 @@ mod tests {
         build_mc_writer_role, build_mc_writer_role_binding, build_namespace,
         build_scout_cluster_role, build_scout_cluster_role_binding, build_scout_deployment,
         build_scout_service_account, build_scout_writer_role, build_scout_writer_role_binding,
-        build_service_account, parse_cluster_role, resolve_image, ScoutDeploymentOptions,
-        BINDY_ADMIN_ROLE_YAML, BINDY_ROLE_YAML, CLUSTER_ROLE_BINDING_NAME, DEFAULT_IMAGE_TAG,
-        DEFAULT_NAMESPACE, DEFAULT_SCOUT_CLUSTER_NAME, MC_DEFAULT_SERVICE_ACCOUNT_NAME,
-        OPERATOR_DEPLOYMENT_NAME, OPERATOR_IMAGE_BASE, OPERATOR_ROLE_NAME,
-        REMOTE_KUBECONFIG_SECRET_SUFFIX, REMOTE_KUBECONFIG_SECRET_TYPE, SA_TOKEN_SECRET_SUFFIX,
-        SCOUT_CLUSTER_ROLE_BINDING_NAME, SCOUT_CLUSTER_ROLE_NAME, SCOUT_DEPLOYMENT_NAME,
-        SCOUT_SERVICE_ACCOUNT_NAME, SCOUT_WRITER_ROLE_BINDING_NAME, SCOUT_WRITER_ROLE_NAME,
-        SERVICE_ACCOUNT_NAME,
+        build_secrets_writer_role, build_secrets_writer_role_binding, build_service_account,
+        parse_cluster_role, resolve_image, ScoutDeploymentOptions, BINDY_ADMIN_ROLE_YAML,
+        BINDY_ROLE_YAML, CLUSTER_ROLE_BINDING_NAME, DEFAULT_IMAGE_TAG, DEFAULT_NAMESPACE,
+        DEFAULT_SCOUT_CLUSTER_NAME, MC_DEFAULT_SERVICE_ACCOUNT_NAME, OPERATOR_DEPLOYMENT_NAME,
+        OPERATOR_IMAGE_BASE, OPERATOR_ROLE_NAME, REMOTE_KUBECONFIG_SECRET_SUFFIX,
+        REMOTE_KUBECONFIG_SECRET_TYPE, SA_TOKEN_SECRET_SUFFIX, SCOUT_CLUSTER_ROLE_BINDING_NAME,
+        SCOUT_CLUSTER_ROLE_NAME, SCOUT_DEPLOYMENT_NAME, SCOUT_SERVICE_ACCOUNT_NAME,
+        SCOUT_WRITER_ROLE_BINDING_NAME, SCOUT_WRITER_ROLE_NAME, SECRETS_WRITER_ROLE_BINDING_NAME,
+        SECRETS_WRITER_ROLE_NAME, SERVICE_ACCOUNT_NAME,
     };
 
     /// Convenience helper: build a minimal `ScoutDeploymentOptions` for tests.
@@ -158,6 +159,88 @@ mod tests {
     fn test_parse_invalid_yaml_returns_error() {
         let result = parse_cluster_role("this is: not: valid: yaml: !!!");
         assert!(result.is_err());
+    }
+
+    // --- B-5: Secrets RBAC hardening ---
+
+    /// The operator ClusterRole must only grant READ-ONLY access to Secrets
+    /// cluster-wide. The mutating verbs live in the namespaced secrets-writer Role.
+    #[test]
+    fn test_operator_cluster_role_secrets_is_read_only() {
+        let role = parse_cluster_role(BINDY_ROLE_YAML).unwrap();
+        let rules = role.rules.unwrap();
+        let secrets_rule = rules
+            .iter()
+            .find(|r| {
+                r.resources
+                    .as_ref()
+                    .is_some_and(|res| res.iter().any(|x| x == "secrets"))
+            })
+            .expect("operator ClusterRole must have a secrets rule");
+
+        for verb in &secrets_rule.verbs {
+            assert!(
+                matches!(verb.as_str(), "get" | "list" | "watch"),
+                "operator ClusterRole secrets rule must be read-only, found verb: {verb}"
+            );
+        }
+        for forbidden in ["create", "update", "patch", "delete"] {
+            assert!(
+                !secrets_rule.verbs.iter().any(|v| v == forbidden),
+                "operator ClusterRole must NOT grant cluster-wide secrets '{forbidden}'"
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_secrets_writer_role_name_and_namespace() {
+        let role = build_secrets_writer_role("bindy-system");
+        assert_eq!(
+            role.metadata.name.as_deref(),
+            Some(SECRETS_WRITER_ROLE_NAME)
+        );
+        assert_eq!(role.metadata.namespace.as_deref(), Some("bindy-system"));
+    }
+
+    #[test]
+    fn test_build_secrets_writer_role_has_only_mutating_verbs() {
+        let role = build_secrets_writer_role("bindy-system");
+        let rules = role.rules.unwrap();
+        let rule = rules.first().unwrap();
+        assert!(rule
+            .resources
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|r| r == "secrets"));
+        let mut verbs = rule.verbs.clone();
+        verbs.sort();
+        assert_eq!(verbs, vec!["create", "delete", "patch", "update"]);
+        // Read verbs stay on the cluster-wide ClusterRole, not here.
+        for read in ["get", "list", "watch"] {
+            assert!(!rule.verbs.iter().any(|v| v == read));
+        }
+    }
+
+    #[test]
+    fn test_build_secrets_writer_role_binding_references_role() {
+        let rb = build_secrets_writer_role_binding("bindy-system");
+        assert_eq!(
+            rb.metadata.name.as_deref(),
+            Some(SECRETS_WRITER_ROLE_BINDING_NAME)
+        );
+        assert_eq!(rb.metadata.namespace.as_deref(), Some("bindy-system"));
+        assert_eq!(rb.role_ref.kind, "Role");
+        assert_eq!(rb.role_ref.name, SECRETS_WRITER_ROLE_NAME);
+    }
+
+    #[test]
+    fn test_build_secrets_writer_role_binding_subject() {
+        let rb = build_secrets_writer_role_binding("custom-ns");
+        let subject = rb.subjects.unwrap().into_iter().next().unwrap();
+        assert_eq!(subject.kind, "ServiceAccount");
+        assert_eq!(subject.name, SERVICE_ACCOUNT_NAME);
+        assert_eq!(subject.namespace.as_deref(), Some("custom-ns"));
     }
 
     // --- Deployment ---

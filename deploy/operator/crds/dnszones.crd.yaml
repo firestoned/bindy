@@ -320,7 +320,12 @@ spec:
 
                   **Note**: Custom policies require BIND9 `dnssec-policy` configuration.
                   Built-in policies: `"default"`, `"none"`
+
+                  The name is restricted to a safe identifier set (`[A-Za-z0-9_-]`, starting
+                  alphanumeric, max 63 chars) because it is interpolated into a quoted BIND9
+                  configuration literal — `"`, `;`, `{`, `}` would allow config injection (B-6).
                 nullable: true
+                pattern: ^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$
                 type: string
               nameServerIps:
                 additionalProperties:

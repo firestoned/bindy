@@ -84,6 +84,16 @@ pub const CLUSTER_ROLE_BINDING_NAME: &str = "bindy-rolebinding";
 /// Operator ClusterRole name.
 pub const OPERATOR_ROLE_NAME: &str = "bindy-role";
 
+/// Namespaced Role granting the operator the mutating verbs on Secrets (B-5 hardening).
+///
+/// The operator ClusterRole grants only read-only (get/list/watch) on Secrets
+/// cluster-wide; create/update/patch/delete are confined to this namespaced Role,
+/// bound only in the operator namespace.
+pub const SECRETS_WRITER_ROLE_NAME: &str = "bindy-secrets-writer";
+
+/// Namespaced RoleBinding name for the secrets-writer Role.
+pub const SECRETS_WRITER_ROLE_BINDING_NAME: &str = "bindy-secrets-writer";
+
 /// Operator Deployment name.
 pub const OPERATOR_DEPLOYMENT_NAME: &str = "bindy";
 
@@ -250,6 +260,8 @@ pub async fn run_bootstrap_operator(
     apply_cluster_role(&client, BINDY_ROLE_YAML).await?;
     apply_cluster_role(&client, BINDY_ADMIN_ROLE_YAML).await?;
     apply_cluster_role_binding(&client, namespace).await?;
+    apply_secrets_writer_role(&client, namespace).await?;
+    apply_secrets_writer_role_binding(&client, namespace).await?;
     apply_deployment(&client, namespace, image_tag, registry).await?;
 
     println!("\nBootstrap complete! The operator is running in namespace {namespace}.");
@@ -324,6 +336,14 @@ fn run_operator_dry_run(namespace: &str, image_tag: &str, registry: Option<&str>
         &parse_cluster_role(BINDY_ADMIN_ROLE_YAML)?,
     )?;
     print_resource("ClusterRoleBinding", &build_cluster_role_binding(namespace))?;
+    print_resource(
+        "Role (secrets-writer)",
+        &build_secrets_writer_role(namespace),
+    )?;
+    print_resource(
+        "RoleBinding (secrets-writer)",
+        &build_secrets_writer_role_binding(namespace),
+    )?;
     print_resource(
         "Deployment",
         &build_deployment(namespace, image_tag, registry)?,
@@ -448,6 +468,34 @@ async fn apply_cluster_role_binding(client: &Client, namespace: &str) -> Result<
     .await
     .context("Failed to apply ClusterRoleBinding/bindy-rolebinding")?;
     println!("✓ ClusterRoleBinding: {CLUSTER_ROLE_BINDING_NAME}");
+    Ok(())
+}
+
+async fn apply_secrets_writer_role(client: &Client, namespace: &str) -> Result<()> {
+    let api: Api<Role> = Api::namespaced(client.clone(), namespace);
+    let role = build_secrets_writer_role(namespace);
+    api.patch(
+        SECRETS_WRITER_ROLE_NAME,
+        &PatchParams::apply(FIELD_MANAGER).force(),
+        &Patch::Apply(&role),
+    )
+    .await
+    .with_context(|| format!("Failed to apply Role/{SECRETS_WRITER_ROLE_NAME}"))?;
+    println!("✓ Role: {SECRETS_WRITER_ROLE_NAME} (namespace: {namespace})");
+    Ok(())
+}
+
+async fn apply_secrets_writer_role_binding(client: &Client, namespace: &str) -> Result<()> {
+    let api: Api<RoleBinding> = Api::namespaced(client.clone(), namespace);
+    let rb = build_secrets_writer_role_binding(namespace);
+    api.patch(
+        SECRETS_WRITER_ROLE_BINDING_NAME,
+        &PatchParams::apply(FIELD_MANAGER).force(),
+        &Patch::Apply(&rb),
+    )
+    .await
+    .with_context(|| format!("Failed to apply RoleBinding/{SECRETS_WRITER_ROLE_BINDING_NAME}"))?;
+    println!("✓ RoleBinding: {SECRETS_WRITER_ROLE_BINDING_NAME} (namespace: {namespace})");
     Ok(())
 }
 
@@ -620,6 +668,78 @@ pub fn build_cluster_role_binding(namespace: &str) -> ClusterRoleBinding {
             api_group: "rbac.authorization.k8s.io".to_string(),
             kind: "ClusterRole".to_string(),
             name: OPERATOR_ROLE_NAME.to_string(),
+        },
+        subjects: Some(vec![Subject {
+            kind: "ServiceAccount".to_string(),
+            name: SERVICE_ACCOUNT_NAME.to_string(),
+            namespace: Some(namespace.to_string()),
+            api_group: Some(String::new()),
+        }]),
+    }
+}
+
+/// Build the namespaced Role granting the operator the mutating verbs on Secrets.
+///
+/// B-5 hardening: cluster-wide Secret access in the operator ClusterRole is
+/// read-only; `create`/`update`/`patch`/`delete` are confined to this namespaced
+/// Role, bound only in the operator namespace. This prevents a compromised
+/// operator from creating, modifying, or deleting Secrets in other namespaces.
+pub fn build_secrets_writer_role(namespace: &str) -> Role {
+    Role {
+        metadata: ObjectMeta {
+            name: Some(SECRETS_WRITER_ROLE_NAME.to_string()),
+            namespace: Some(namespace.to_string()),
+            labels: Some(
+                [
+                    ("app.kubernetes.io/name".to_string(), "bindy".to_string()),
+                    (
+                        "app.kubernetes.io/component".to_string(),
+                        "rbac".to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            ..Default::default()
+        },
+        rules: Some(vec![PolicyRule {
+            api_groups: Some(vec![String::new()]),
+            resources: Some(vec!["secrets".to_string()]),
+            verbs: vec![
+                "create".to_string(),
+                "update".to_string(),
+                "patch".to_string(),
+                "delete".to_string(),
+            ],
+            ..Default::default()
+        }]),
+    }
+}
+
+/// Build the RoleBinding that binds the operator ServiceAccount to the namespaced
+/// `bindy-secrets-writer` Role.
+pub fn build_secrets_writer_role_binding(namespace: &str) -> RoleBinding {
+    RoleBinding {
+        metadata: ObjectMeta {
+            name: Some(SECRETS_WRITER_ROLE_BINDING_NAME.to_string()),
+            namespace: Some(namespace.to_string()),
+            labels: Some(
+                [
+                    ("app.kubernetes.io/name".to_string(), "bindy".to_string()),
+                    (
+                        "app.kubernetes.io/component".to_string(),
+                        "rbac".to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            ..Default::default()
+        },
+        role_ref: RoleRef {
+            api_group: "rbac.authorization.k8s.io".to_string(),
+            kind: "Role".to_string(),
+            name: SECRETS_WRITER_ROLE_NAME.to_string(),
         },
         subjects: Some(vec![Subject {
             kind: "ServiceAccount".to_string(),

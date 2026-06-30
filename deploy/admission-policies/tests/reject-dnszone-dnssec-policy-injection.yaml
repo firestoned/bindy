@@ -1,0 +1,19 @@
+# Should be REJECTED by bindy-dnssec-policy-validation (and by the CRD schema
+# pattern): dnssecPolicy contains '"', ';', '{', '}' — a BIND config injection
+# payload that would break out of the quoted `dnssec-policy "<name>"` literal.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: vap-test-zone-reject-dnssec-policy
+  namespace: bindy-system
+spec:
+  zoneName: dnssec-reject.example.com.
+  dnssecPolicy: 'evil"; }; allow-update { any; };'
+  soaRecord:
+    primaryNs: ns1.example.com.
+    adminEmail: hostmaster@example.com
+    serial: 2026060901
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTtl: 86400

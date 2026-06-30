@@ -119,16 +119,22 @@ echo "4. Testing Secrets Permissions (CRITICAL)"
 echo "========================================"
 echo ""
 
-# Operator SHOULD be able to READ secrets (for RNDC keys)
+# Operator SHOULD be able to READ secrets cluster-wide (RNDC key watch across namespaces)
 test_allowed "get" "secrets" "--namespace=${NAMESPACE}"
 test_allowed "list" "secrets" "--namespace=${NAMESPACE}"
 test_allowed "watch" "secrets" "--namespace=${NAMESPACE}"
 
-# Operator MUST NOT be able to modify/delete secrets (PCI-DSS 7.1.2)
-test_denied "create" "secrets" "--namespace=${NAMESPACE}"
-test_denied "update" "secrets" "--namespace=${NAMESPACE}"
-test_denied "patch" "secrets" "--namespace=${NAMESPACE}"
-test_denied "delete" "secrets" "--namespace=${NAMESPACE}"
+# B-5: Operator MAY write secrets ONLY in its own namespace (namespaced bindy-secrets-writer Role)
+test_allowed "create" "secrets" "--namespace=${NAMESPACE}"
+test_allowed "update" "secrets" "--namespace=${NAMESPACE}"
+test_allowed "patch" "secrets" "--namespace=${NAMESPACE}"
+test_allowed "delete" "secrets" "--namespace=${NAMESPACE}"
+
+# B-5: Operator MUST NOT write/delete secrets in OTHER namespaces (no cluster-wide Secret write)
+test_denied "create" "secrets" "--namespace=kube-system"
+test_denied "update" "secrets" "--namespace=kube-system"
+test_denied "patch" "secrets" "--namespace=kube-system"
+test_denied "delete" "secrets" "--namespace=kube-system"
 
 echo ""
 echo "========================================"
@@ -226,8 +232,8 @@ if [ ${FAILED} -eq 0 ]; then
     echo -e "${GREEN}✓ ALL TESTS PASSED${NC}"
     echo ""
     echo "RBAC configuration follows least privilege principle:"
-    echo "  - Operator has NO delete permissions on any resources"
-    echo "  - Secrets are READ-ONLY (PCI-DSS 7.1.2 compliant)"
+    echo "  - Operator has NO delete permissions on most resources"
+    echo "  - Secrets: READ-ONLY cluster-wide; write confined to the operator namespace (B-5)"
     echo "  - Destructive operations require bindy-admin-role"
     echo ""
     exit 0
@@ -236,8 +242,8 @@ else
     echo ""
     echo "RBAC configuration does NOT meet least privilege requirements."
     echo "Review deploy/rbac/role.yaml and ensure:"
-    echo "  - NO 'delete' verbs on any resources"
-    echo "  - Secrets have ONLY: get, list, watch"
+    echo "  - NO 'delete' verbs on most resources"
+    echo "  - ClusterRole Secrets have ONLY: get, list, watch (writes in bindy-secrets-writer Role)"
     echo "  - Admin operations use bindy-admin-role (NOT operator role)"
     echo ""
     exit 1
