@@ -33,6 +33,7 @@ htmlcov/
 /deploy/crds.yaml
 /deploy/install.yaml
 /deploy/scout.yaml
+/deploy/admission-policies.yaml
 
 # OS
 .DS_Store

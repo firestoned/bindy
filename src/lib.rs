@@ -85,6 +85,7 @@ pub mod safe_volume;
 #[macro_use]
 pub mod record_wrappers;
 
+pub mod namespace_scope;
 pub mod reconcilers;
 pub mod scout;
 pub mod selector;

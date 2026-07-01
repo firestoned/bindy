@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 
-.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall
+.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall
 
 # Detect host architecture and derive the matching Linux cross-compilation target.
 # On Apple Silicon (arm64) → aarch64-unknown-linux-gnu
@@ -139,7 +139,31 @@ scout-yaml: ## Generate single-file scout.yaml (RBAC + Deployment) for a given V
 	} > deploy/scout.yaml
 	@echo "✓ scout.yaml generated: deploy/scout.yaml"
 
-release-manifests: install-yaml scout-yaml ## Generate all release manifests (install.yaml + scout.yaml) for a given VERSION
+admission-policies-yaml: ## Generate combined admission-policies.yaml (all ValidatingAdmissionPolicies + bindings) for releases
+	@echo "Creating combined admission-policies.yaml file..."
+	@{ \
+		echo "# Copyright (c) 2025 Erick Bourgeois, firestoned"; \
+		echo "# SPDX-License-Identifier: MIT"; \
+		echo "#"; \
+		echo "# Combined ValidatingAdmissionPolicies for Bindy (defense-in-depth at the kube API server)"; \
+		echo "# Install with: kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/admission-policies.yaml"; \
+		echo "#"; \
+		echo "# Requires Kubernetes 1.30+ (ValidatingAdmissionPolicy GA)."; \
+		echo "#"; \
+		echo "# NOTE: This bundle INCLUDES the opt-in RNDC-strict policy (05/06), which"; \
+		echo "# rejects hmac-sha1 RNDC keys. Applying this file enforces that rejection and"; \
+		echo "# may deny existing Bind9 instances that still use hmac-sha1."; \
+		echo "#"; \
+		echo "# DO NOT EDIT MANUALLY - Generated from individual files in deploy/admission-policies/"; \
+		echo ""; \
+		for file in deploy/admission-policies/[0-9][0-9]-*.yaml; do \
+			echo "---"; \
+			tail -n +3 "$$file"; \
+		done; \
+	} > deploy/admission-policies.yaml
+	@echo "✓ Combined admission policies file generated: deploy/admission-policies.yaml"
+
+release-manifests: install-yaml scout-yaml admission-policies-yaml ## Generate all release manifests (install.yaml + scout.yaml + admission-policies.yaml) for a given VERSION
 	@echo "✓ All release manifests generated for version $(VERSION)"
 
 test: ## Run unit tests

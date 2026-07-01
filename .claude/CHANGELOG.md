@@ -1,3 +1,98 @@
+## [2026-07-01] - RED-team remediation: C1/H1/H2 fixes + C2 compensating policy
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/safe_volume.rs`: reject `..` in `volumeMount.mountPath` (new
+  `VolumeRejection::MountPathTraversal`), checked before the prefix allow-list.
+  A path like `/data/../etc/bind/named.conf` previously satisfied
+  `starts_with("/data/")` and resolved onto the operator-owned `named.conf`.
+  Added `validate_dnssec_key_secret_name` enforcing the `bindy-` prefix on
+  DNSSEC `keysFrom.secretRef` names. **Closes C1 and H2.**
+- `deploy/admission-policies/07-bindy-pod-shape-policy.yaml`: mirror the two
+  Rust checks at admission — reject `..` in `mountPath`, and require
+  `spec.dnssec.signing.keysFrom.secretRef.name` (instance/cluster/provider
+  paths) to start with `bindy-`.
+- `src/reconcilers/bind9instance/resources.rs`: `validate_user_pod_shape` now
+  also validates the resolved DNSSEC `keysFrom` secret name (H2).
+- `src/scout.rs`: added `zone_allows_source_namespace` / `check_zone_authorization`
+  and gated all four Scout reconcilers (Ingress, Service, HTTPRoute, TLSRoute)
+  so a source object may only publish into a zone whose DNSZone lives in the
+  source namespace or opts it in via `bindy.firestoned.io/allow-zone-namespaces`
+  (`*` wildcard supported). **Closes H1** (cross-tenant DNS-hijack confused deputy).
+- `deploy/admission-policies/11-bindy-operator-workload-sa-policy.yaml` (+ `12`
+  binding, new): compensating control for **C2** — constrains workloads created
+  by the operator SA (`system:serviceaccount:bindy-system:bindy`) to run only as
+  `bind9`, blocking privilege escalation via a compromised operator token.
+- `src/namespace_scope.rs` (new): `NamespaceScope` + `BINDY_WATCH_NAMESPACES`
+  parsing — foundation for the namespace-scoped operator that will durably fix
+  C2 and H3 (see `docs/roadmaps/namespace-scoped-operator.md`). Default is
+  cluster-wide (backward compatible).
+- Admission test manifests: `reject-bind9instance-mount-traversal.yaml`,
+  `reject-bind9instance-dnssec-foreign-secret.yaml`,
+  `reject-operator-workload-foreign-sa.yaml`,
+  `accept-operator-workload-bind9-sa.yaml`.
+- `docs/src/operations/migration-guide.md`, `docs/src/guide/scout.md`: user-facing
+  migration notes for the two breaking changes (Scout default-deny + DNSSEC
+  keysFrom `bindy-` prefix) and the `mountPath` `..` rejection.
+- `.claude/SKILL.md`: new `docs-sync-check` skill (detects doc drift for new
+  features / breaking changes); registered in `.claude/CLAUDE.md` and the
+  `.claude/rules/documentation.md` validation checklist. Run against this change
+  — it surfaced the missing migration notes, now added.
+
+### Why
+Follow-up RED-team sweep found a CRITICAL defense-in-depth bypass (C1: `..` in
+`mountPath` defeated *both* the pod-shape admission policy and `safe_volume.rs`)
+plus HIGH cross-tenant paths (H1 Scout confused deputy, H2 DNSSEC keysFrom
+foreign-Secret mount) and cluster-wide operator RBAC (C2/H3).
+
+### Impact
+- [x] Breaking change — Scout now default-denies cross-namespace zone
+  publishing; DNSZones must set `bindy.firestoned.io/allow-zone-namespaces`
+  (or `*`) to authorize other namespaces. DNSSEC `keysFrom` secrets must be
+  named `bindy-*`.
+- [x] Requires cluster rollout (operator image) + `kubectl apply` of policies 07
+  (updated), 11, 12.
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+`cargo fmt`/`clippy`/`test` all clean (1046 lib tests pass); new YAML parses.
+TDD: failing tests written first for C1, H1, H2, and namespace parsing.
+C2/H3 durable fix tracked in `docs/roadmaps/namespace-scoped-operator.md`.
+
+---
+
+## [2026-07-01] - Distribute admission policies as a single release file
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Makefile`: added `admission-policies-yaml` target that concatenates the ten
+  individual `deploy/admission-policies/NN-*.yaml` documents (all 5 policies + 5
+  bindings, including the opt-in RNDC-strict policy) into a single
+  `deploy/admission-policies.yaml`, mirroring the existing `crds-combined`
+  pattern. Wired it into `release-manifests` and added it to `.PHONY`.
+- `.github/workflows/release.yaml`: `package-deploy-manifests` now uploads
+  `admission-policies.yaml`; `upload-release-assets` copies it into the release
+  set, adds it to `checksums.sha256`, and publishes it as a release asset via
+  `softprops/action-gh-release`.
+- `.gitignore`: ignore the generated `/deploy/admission-policies.yaml`.
+- `deploy/admission-policies/README.md`: documented the single-file release
+  install (`kubectl apply -f .../releases/latest/download/admission-policies.yaml`)
+  with the hmac-sha1 caveat.
+
+### Why
+Operators can now install the full ValidatingAdmissionPolicy defense-in-depth
+set with one `kubectl apply` against a release URL, matching how `install.yaml`
+and `scout.yaml` are already distributed.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (plus release tooling; no operator behavior change)
+
 ## [2026-06-30] - Stop nightly [SECURITY] issue spam + add GHCR cleanup
 
 **Author:** Erick Bourgeois

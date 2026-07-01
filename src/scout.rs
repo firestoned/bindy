@@ -21,6 +21,7 @@
 //! The local client still handles Ingress watching and finalizer management.
 //! The remote client handles ARecord creation/deletion and DNSZone validation.
 
+use crate::constants::{ALLOW_ZONE_NAMESPACES_WILDCARD, ANNOTATION_ALLOW_ZONE_NAMESPACES};
 use crate::crd::{ARecord, ARecordSpec, DNSZone};
 use anyhow::{anyhow, Result};
 use k8s_openapi::api::core::v1::{Secret, Service};
@@ -385,6 +386,75 @@ pub fn resolve_ips_from_annotation(annotations: &BTreeMap<String, String>) -> Op
         None
     } else {
         Some(ips)
+    }
+}
+
+/// Whether a `DNSZone` authorizes DNS records sourced from `source_namespace`.
+///
+/// A DNSZone in the *same* namespace as the source object (Ingress / Service /
+/// Route) is always authorized. A DNSZone in a different namespace must opt in
+/// via the [`ANNOTATION_ALLOW_ZONE_NAMESPACES`] annotation — a comma-separated
+/// namespace list, or the [`ALLOW_ZONE_NAMESPACES_WILDCARD`] `*`.
+///
+/// This mirrors the cross-namespace gate the DNSZone reconciler already
+/// enforces for instance targeting, and closes audit finding H1: without it,
+/// any tenant's opted-in Ingress could publish records into *any* zone Scout
+/// served (a confused-deputy cross-tenant DNS hijack), because Scout writes
+/// with a cluster-privileged remote client.
+#[must_use]
+pub fn zone_allows_source_namespace(zone: &DNSZone, source_namespace: &str) -> bool {
+    if zone.namespace().as_deref() == Some(source_namespace) {
+        return true;
+    }
+    let Some(annotations) = zone.metadata.annotations.as_ref() else {
+        return false;
+    };
+    let Some(value) = annotations.get(ANNOTATION_ALLOW_ZONE_NAMESPACES) else {
+        return false;
+    };
+    value
+        .split(',')
+        .map(str::trim)
+        .any(|entry| entry == ALLOW_ZONE_NAMESPACES_WILDCARD || entry == source_namespace)
+}
+
+/// Outcome of resolving a zone name against the DNSZone store for a given
+/// source namespace.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ZoneAuthz {
+    /// A matching DNSZone exists and authorizes the source namespace.
+    Authorized,
+    /// A matching DNSZone exists but does not authorize the source namespace.
+    Forbidden,
+    /// No DNSZone with the requested name is present in the store yet.
+    NotFound,
+}
+
+/// Resolve `zone_name` against the DNSZone `zones` for `source_namespace`.
+///
+/// Returns [`ZoneAuthz::Authorized`] if any matching DNSZone authorizes the
+/// namespace (see [`zone_allows_source_namespace`]), [`ZoneAuthz::Forbidden`]
+/// if the zone exists but no matching DNSZone authorizes it, or
+/// [`ZoneAuthz::NotFound`] if no DNSZone with that name is in the store.
+pub(crate) fn check_zone_authorization(
+    zones: &[Arc<DNSZone>],
+    zone_name: &str,
+    source_namespace: &str,
+) -> ZoneAuthz {
+    let mut found = false;
+    for zone in zones {
+        if zone.spec.zone_name != zone_name {
+            continue;
+        }
+        found = true;
+        if zone_allows_source_namespace(zone, source_namespace) {
+            return ZoneAuthz::Authorized;
+        }
+    }
+    if found {
+        ZoneAuthz::Forbidden
+    } else {
+        ZoneAuthz::NotFound
     }
 }
 
@@ -1425,22 +1495,31 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
         }
     };
 
-    // Guard: zone must exist in the local DNSZone store
-    let zone_exists = ctx
-        .zone_store
-        .state()
-        .iter()
-        .any(|z| z.spec.zone_name == zone);
-    if !zone_exists {
-        warn!(
-            ingress = %name,
-            ns = %namespace,
-            zone = %zone,
-            "Zone not found in DNSZone store — skipping until zone appears"
-        );
-        return Ok(Action::requeue(Duration::from_secs(
-            SCOUT_ERROR_REQUEUE_SECS,
-        )));
+    // Guard: a matching DNSZone must exist AND authorize this Ingress's
+    // namespace (finding H1 — otherwise any tenant's Ingress could publish
+    // into any zone Scout serves).
+    match check_zone_authorization(&ctx.zone_store.state(), &zone, &namespace) {
+        ZoneAuthz::Authorized => {}
+        ZoneAuthz::Forbidden => {
+            warn!(
+                ingress = %name, ns = %namespace, zone = %zone,
+                "Ingress namespace not authorized for zone — the DNSZone must live in this \
+                 namespace or set annotation {ANNOTATION_ALLOW_ZONE_NAMESPACES} to include it \
+                 (or '*') — skipping"
+            );
+            return Ok(Action::requeue(Duration::from_secs(
+                SCOUT_ERROR_REQUEUE_SECS,
+            )));
+        }
+        ZoneAuthz::NotFound => {
+            warn!(
+                ingress = %name, ns = %namespace, zone = %zone,
+                "Zone not found in DNSZone store — skipping until zone appears"
+            );
+            return Ok(Action::requeue(Duration::from_secs(
+                SCOUT_ERROR_REQUEUE_SECS,
+            )));
+        }
     }
 
     // Resolve IPs: annotation override → default_ips → LB status
@@ -1647,17 +1726,22 @@ async fn reconcile_service(
         }
     };
 
-    // Guard: zone must exist in the DNSZone store
-    let zone_exists = ctx
-        .zone_store
-        .state()
-        .iter()
-        .any(|z| z.spec.zone_name == zone);
-    if !zone_exists {
-        warn!(service = %name, ns = %namespace, zone = %zone, "Zone not found in DNSZone store — requeuing");
-        return Ok(Action::requeue(Duration::from_secs(
-            SCOUT_ERROR_REQUEUE_SECS,
-        )));
+    // Guard: a matching DNSZone must exist AND authorize this Service's
+    // namespace (finding H1).
+    match check_zone_authorization(&ctx.zone_store.state(), &zone, &namespace) {
+        ZoneAuthz::Authorized => {}
+        ZoneAuthz::Forbidden => {
+            warn!(service = %name, ns = %namespace, zone = %zone, "Service namespace not authorized for zone — the DNSZone must live in this namespace or set annotation {ANNOTATION_ALLOW_ZONE_NAMESPACES} to include it (or '*') — skipping");
+            return Ok(Action::requeue(Duration::from_secs(
+                SCOUT_ERROR_REQUEUE_SECS,
+            )));
+        }
+        ZoneAuthz::NotFound => {
+            warn!(service = %name, ns = %namespace, zone = %zone, "Zone not found in DNSZone store — requeuing");
+            return Ok(Action::requeue(Duration::from_secs(
+                SCOUT_ERROR_REQUEUE_SECS,
+            )));
+        }
     }
 
     // Resolve IPs: annotation (single or comma-separated) → default_ips → LB status
@@ -1883,17 +1967,22 @@ async fn reconcile_httproute(
         }
     };
 
-    // Guard: zone must exist in the DNSZone store
-    let zone_exists = ctx
-        .zone_store
-        .state()
-        .iter()
-        .any(|z| z.spec.zone_name == zone);
-    if !zone_exists {
-        warn!(httproute = %name, ns = %namespace, zone = %zone, "Zone not found in DNSZone store — requeuing");
-        return Ok(Action::requeue(Duration::from_secs(
-            SCOUT_ERROR_REQUEUE_SECS,
-        )));
+    // Guard: a matching DNSZone must exist AND authorize this HTTPRoute's
+    // namespace (finding H1).
+    match check_zone_authorization(&ctx.zone_store.state(), &zone, &namespace) {
+        ZoneAuthz::Authorized => {}
+        ZoneAuthz::Forbidden => {
+            warn!(httproute = %name, ns = %namespace, zone = %zone, "HTTPRoute namespace not authorized for zone — the DNSZone must live in this namespace or set annotation {ANNOTATION_ALLOW_ZONE_NAMESPACES} to include it (or '*') — skipping");
+            return Ok(Action::requeue(Duration::from_secs(
+                SCOUT_ERROR_REQUEUE_SECS,
+            )));
+        }
+        ZoneAuthz::NotFound => {
+            warn!(httproute = %name, ns = %namespace, zone = %zone, "Zone not found in DNSZone store — requeuing");
+            return Ok(Action::requeue(Duration::from_secs(
+                SCOUT_ERROR_REQUEUE_SECS,
+            )));
+        }
     }
 
     // Resolve IPs: annotation (single or comma-separated) → default_ips → no routable IP = requeue
@@ -2114,17 +2203,22 @@ async fn reconcile_tlsroute(
         }
     };
 
-    // Guard: zone must exist in the DNSZone store
-    let zone_exists = ctx
-        .zone_store
-        .state()
-        .iter()
-        .any(|z| z.spec.zone_name == zone);
-    if !zone_exists {
-        warn!(tlsroute = %name, ns = %namespace, zone = %zone, "Zone not found in DNSZone store — requeuing");
-        return Ok(Action::requeue(Duration::from_secs(
-            SCOUT_ERROR_REQUEUE_SECS,
-        )));
+    // Guard: a matching DNSZone must exist AND authorize this TLSRoute's
+    // namespace (finding H1).
+    match check_zone_authorization(&ctx.zone_store.state(), &zone, &namespace) {
+        ZoneAuthz::Authorized => {}
+        ZoneAuthz::Forbidden => {
+            warn!(tlsroute = %name, ns = %namespace, zone = %zone, "TLSRoute namespace not authorized for zone — the DNSZone must live in this namespace or set annotation {ANNOTATION_ALLOW_ZONE_NAMESPACES} to include it (or '*') — skipping");
+            return Ok(Action::requeue(Duration::from_secs(
+                SCOUT_ERROR_REQUEUE_SECS,
+            )));
+        }
+        ZoneAuthz::NotFound => {
+            warn!(tlsroute = %name, ns = %namespace, zone = %zone, "Zone not found in DNSZone store — requeuing");
+            return Ok(Action::requeue(Duration::from_secs(
+                SCOUT_ERROR_REQUEUE_SECS,
+            )));
+        }
     }
 
     // Resolve IPs: annotation (single or comma-separated) → default_ips → no routable IP = requeue

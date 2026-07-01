@@ -600,6 +600,75 @@ nameServers:
     ipv6Address: "2001:db8::2"  # Add this
 ```
 
+## Security hardening (RED-team remediation)
+
+This release tightens multi-tenant isolation. Three changes reject inputs that
+were previously accepted. Review each before upgrading.
+
+### 1. Scout no longer publishes cross-namespace by default (Breaking)
+
+**What changed:** Scout (the Ingress/Service/Route watcher) previously created
+DNS records in **any** existing zone. It now requires the target `DNSZone` to
+authorize the source object's namespace — otherwise the record is skipped and
+Scout logs `... namespace not authorized for zone ...`.
+
+**Who is affected:** anyone running Scout where the Ingress/Service/Route lives
+in a *different* namespace than the `DNSZone` (the common case — DNSZones
+usually live in `bindy-system`).
+
+**How to migrate:** annotate each `DNSZone` with the namespaces allowed to
+publish into it (comma-separated), or `*` to restore the previous
+publish-from-anywhere behavior:
+
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: example-com
+  namespace: bindy-system
+  annotations:
+    # allow these namespaces' Ingresses/Services/Routes to publish into this zone
+    bindy.firestoned.io/allow-zone-namespaces: "tenant-a,tenant-b"
+    # ...or "*" for the old behavior (NOT recommended on multi-tenant clusters)
+spec:
+  zoneName: example.com
+```
+
+A `DNSZone` in the *same* namespace as the source object is always authorized
+and needs no annotation.
+
+### 2. DNSSEC `keysFrom.secretRef` must be a `bindy-` Secret (Breaking)
+
+**What changed:** `spec.dnssec.signing.keysFrom.secretRef.name` must now start
+with `bindy-`, matching the prefix already required for user `secret:` volumes.
+This stops a tenant from mounting another tenant's Secret (e.g. an RNDC/TSIG
+key) into their BIND pod.
+
+**How to migrate:** rename the DNSSEC key Secret to a `bindy-` prefix and update
+the reference:
+
+```yaml
+spec:
+  dnssec:
+    signing:
+      enabled: true
+      keysFrom:
+        secretRef:
+          name: bindy-example-dnssec-keys   # was: example-dnssec-keys
+```
+
+### 3. `volumeMount.mountPath` may not contain `..`
+
+**What changed:** user `volumeMounts` on `Bind9Instance`/`Bind9Cluster` are
+rejected if `mountPath` contains a `..` segment (e.g.
+`/data/../etc/bind/named.conf`), which previously slipped past the prefix
+allow-list. Legitimate mounts under `/data/` or `/var/log/bind/` are unaffected;
+only paths using `..` need to be rewritten to their intended absolute location.
+
+All three are enforced both in the operator and — if installed — by the
+`bindy-pod-shape-validation` / Scout admission policies (see
+`deploy/admission-policies/`).
+
 ## See Also
 
 - [DNSZone Concepts](../concepts/dnszone.md) - Detailed explanation of label selectors

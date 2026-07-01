@@ -5,16 +5,116 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::crd::DNSZone;
     use crate::scout::{
-        arecord_cr_name, arecord_label_selector, build_service_arecord, derive_record_name,
-        get_record_name_annotation, get_zone_annotation, has_finalizer, is_arecord_enabled,
-        is_being_deleted, is_loadbalancer_service, is_scout_opted_in,
+        arecord_cr_name, arecord_label_selector, build_service_arecord, check_zone_authorization,
+        derive_record_name, get_record_name_annotation, get_zone_annotation, has_finalizer,
+        is_arecord_enabled, is_being_deleted, is_loadbalancer_service, is_scout_opted_in,
         resolve_ip_from_service_lb_status, resolve_ips, resolve_ips_from_annotation,
         resolve_record_name, resolve_zone, service_arecord_cr_name, service_arecord_label_selector,
-        stale_arecord_label_selector, ServiceARecordParams, FINALIZER_SCOUT, LABEL_MANAGED_BY,
-        LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER, LABEL_SOURCE_NAME, LABEL_SOURCE_NAMESPACE,
-        LABEL_ZONE,
+        stale_arecord_label_selector, zone_allows_source_namespace, ServiceARecordParams,
+        ZoneAuthz, FINALIZER_SCOUT, LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER,
+        LABEL_SOURCE_NAME, LABEL_SOURCE_NAMESPACE, LABEL_ZONE,
     };
+    use std::sync::Arc;
+
+    /// Build a minimal valid `DNSZone` fixture in `namespace` with the given
+    /// annotations JSON object (`serde_json::Value::Null` for none).
+    fn zone_fixture(namespace: &str, annotations: serde_json::Value) -> DNSZone {
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "DNSZone",
+            "metadata": { "name": "z", "namespace": namespace, "annotations": annotations },
+            "spec": {
+                "zoneName": "example.com",
+                "soaRecord": {
+                    "primaryNs": "ns1.example.com.",
+                    "adminEmail": "admin.example.com.",
+                    "serial": 2_024_010_101_u32,
+                    "refresh": 3600,
+                    "retry": 600,
+                    "expire": 604_800,
+                    "negativeTtl": 86_400
+                }
+            }
+        }))
+        .expect("valid DNSZone json")
+    }
+
+    // =========================================================================
+    // H1: Scout zone-ownership gate — zone_allows_source_namespace
+    // =========================================================================
+
+    #[test]
+    fn zone_in_same_namespace_is_authorized() {
+        let zone = zone_fixture("tenant-a", serde_json::Value::Null);
+        assert!(zone_allows_source_namespace(&zone, "tenant-a"));
+    }
+
+    #[test]
+    fn zone_in_other_namespace_without_annotation_is_denied() {
+        let zone = zone_fixture("bindy-system", serde_json::Value::Null);
+        assert!(!zone_allows_source_namespace(&zone, "tenant-a"));
+    }
+
+    #[test]
+    fn zone_annotation_listing_namespace_authorizes() {
+        let zone = zone_fixture(
+            "bindy-system",
+            serde_json::json!({ "bindy.firestoned.io/allow-zone-namespaces": "tenant-x,tenant-a" }),
+        );
+        assert!(zone_allows_source_namespace(&zone, "tenant-a"));
+        assert!(!zone_allows_source_namespace(&zone, "tenant-b"));
+    }
+
+    #[test]
+    fn zone_annotation_wildcard_authorizes_any_namespace() {
+        let zone = zone_fixture(
+            "bindy-system",
+            serde_json::json!({ "bindy.firestoned.io/allow-zone-namespaces": "*" }),
+        );
+        assert!(zone_allows_source_namespace(&zone, "any-tenant"));
+    }
+
+    // =========================================================================
+    // H1: check_zone_authorization
+    // =========================================================================
+
+    #[test]
+    fn check_zone_authorization_authorized_when_annotation_allows() {
+        let zones = vec![Arc::new(zone_fixture(
+            "bindy-system",
+            serde_json::json!({ "bindy.firestoned.io/allow-zone-namespaces": "tenant-a" }),
+        ))];
+        assert_eq!(
+            check_zone_authorization(&zones, "example.com", "tenant-a"),
+            ZoneAuthz::Authorized
+        );
+    }
+
+    #[test]
+    fn check_zone_authorization_forbidden_when_zone_exists_but_not_allowed() {
+        let zones = vec![Arc::new(zone_fixture(
+            "bindy-system",
+            serde_json::Value::Null,
+        ))];
+        assert_eq!(
+            check_zone_authorization(&zones, "example.com", "tenant-a"),
+            ZoneAuthz::Forbidden
+        );
+    }
+
+    #[test]
+    fn check_zone_authorization_not_found_when_no_matching_zone() {
+        let zones = vec![Arc::new(zone_fixture(
+            "bindy-system",
+            serde_json::json!({ "bindy.firestoned.io/allow-zone-namespaces": "*" }),
+        ))];
+        assert_eq!(
+            check_zone_authorization(&zones, "other.com", "tenant-a"),
+            ZoneAuthz::NotFound
+        );
+    }
     use k8s_openapi::api::core::v1::{
         LoadBalancerIngress as ServiceLoadBalancerIngress, LoadBalancerStatus, Service,
         ServiceSpec, ServiceStatus,

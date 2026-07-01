@@ -1,0 +1,25 @@
+# Should PASS bindy-operator-workload-sa-validation.
+# The operand ServiceAccount 'bind9' is the only value the operator uses, so a
+# workload it creates naming 'bind9' is accepted. Apply while impersonating the
+# operator SA (the policy does not match any other principal):
+#
+#   kubectl apply --as=system:serviceaccount:bindy-system:bindy \
+#     -f accept-operator-workload-bind9-sa.yaml
+#
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vap-operator-workload-accept-bind9-sa
+  namespace: bindy-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: bind9 }
+  template:
+    metadata:
+      labels: { app: bind9 }
+    spec:
+      serviceAccountName: bind9
+      containers:
+        - name: bind9
+          image: bind9

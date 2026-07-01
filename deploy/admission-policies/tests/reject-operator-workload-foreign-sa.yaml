@@ -1,0 +1,26 @@
+# Should be REJECTED by bindy-operator-workload-sa-validation.
+# Demonstrates audit finding C2: a workload created with the operator token
+# that runs as a ServiceAccount other than 'bind9' is a privilege-escalation
+# vector. The policy only matches the operator SA, so this must be applied
+# while impersonating it:
+#
+#   kubectl apply --as=system:serviceaccount:bindy-system:bindy \
+#     -f reject-operator-workload-foreign-sa.yaml
+#
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vap-operator-workload-reject-foreign-sa
+  namespace: kube-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: pwn }
+  template:
+    metadata:
+      labels: { app: pwn }
+    spec:
+      serviceAccountName: clusterrole-aggregation-controller   # a privileged SA
+      containers:
+        - name: c
+          image: busybox

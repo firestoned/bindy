@@ -1,0 +1,72 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# ValidatingAdmissionPolicy: constrain the workloads the bindy OPERATOR itself
+# creates. Closes audit finding C2 (compensating control).
+#
+# The operator ServiceAccount (system:serviceaccount:bindy-system:bindy) holds
+# create/update/patch on Deployments cluster-wide. A Deployment's pod template
+# can name ANY serviceAccountName, so a compromised operator token could stamp
+# a Pod that runs as a privileged ServiceAccount (e.g. one bound to
+# cluster-admin) and exfiltrate its token — a full cluster takeover. RBAC
+# cannot restrict a field VALUE, but admission can: this policy only fires for
+# requests made *by the operator SA* (matchConditions) and requires every
+# workload it creates/updates to run as the fixed operand ServiceAccount
+# `bind9` — the only SA the operator legitimately uses (constants.rs
+# BIND9_SERVICE_ACCOUNT). An unset/empty serviceAccountName is also rejected,
+# since that would silently fall back to the target namespace's `default` SA.
+#
+# Requests from any other principal (humans, other controllers) are NOT matched
+# and are unaffected, so the blast radius is limited to the operator identity.
+#
+# NOTE: this is a stop-gap. The durable fix is to run the operator
+# namespace-scoped (WATCH_NAMESPACES) so its RBAC is not cluster-wide at all.
+#
+# Requires Kubernetes 1.30+ (admissionregistration.k8s.io/v1 GA).
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: bindy-operator-workload-sa-validation
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/part-of: bindy
+    app.kubernetes.io/component: admission-policy
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups:   ["apps"]
+        apiVersions: ["v1"]
+        operations:  ["CREATE", "UPDATE"]
+        resources:
+          - deployments
+          - statefulsets
+          - daemonsets
+          - replicasets
+  matchConditions:
+    # Only constrain requests made by the operator ServiceAccount. Everything
+    # else (platform admins, the built-in controllers) is out of scope.
+    - name: is-bindy-operator
+      expression: |
+        request.userInfo.username == 'system:serviceaccount:bindy-system:bindy'
+  variables:
+    - name: operandServiceAccount
+      expression: "'bind9'"
+    - name: podServiceAccount
+      # '' when unset — which we reject, because an empty serviceAccountName
+      # resolves to the target namespace's `default` SA at runtime.
+      expression: |
+        object.spec.?template.?spec.?serviceAccountName.orValue('')
+  validations:
+    - expression: |
+        variables.podServiceAccount == variables.operandServiceAccount
+      messageExpression: |
+        "Workloads created by the bindy operator must run as ServiceAccount '" +
+        variables.operandServiceAccount + "' (got '" + variables.podServiceAccount +
+        "'). A compromised operator token could otherwise run Pods as another " +
+        "ServiceAccount and escalate privileges (audit finding C2)."
+  auditAnnotations:
+    - key: bindy-operator-workload-sa-rejected
+      valueExpression: |
+        "Operator workload named a serviceAccountName other than 'bind9'"

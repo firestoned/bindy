@@ -16,8 +16,11 @@
 # Allow-list:
 #   - Volume sources: emptyDir, configMap (name prefix bindy-), secret
 #     (name prefix bindy-), persistentVolumeClaim (name prefix bindy-).
-#   - VolumeMount.mountPath: must start with /data/ or /var/log/bind/.
+#   - VolumeMount.mountPath: must start with /data/ or /var/log/bind/ and must
+#     not contain '..' (a '..' segment can escape the prefix — finding C1).
 #   - VolumeMount.subPath / subPathExpr: must not contain '..'.
+#   - DNSSEC spec.dnssec.signing.keysFrom.secretRef.name: must start with
+#     bindy- (mounted outside spec.volumes — finding H2).
 #
 # Requires Kubernetes 1.30+ (admissionregistration.k8s.io/v1 GA).
 ---
@@ -61,6 +64,18 @@ spec:
       expression: "'bindy-'"
     - name: allowedMountPrefixes
       expression: "['/data/', '/var/log/bind/']"
+    # Collect every DNSSEC keysFrom.secretRef.name across the instance
+    # (spec.config), the flattened cluster common (spec.global), and the
+    # non-flattened form (spec.common.global). These Secrets are mounted into
+    # the operand Pod outside spec.volumes, so they must obey the same
+    # name-prefix allow-list (audit finding H2).
+    - name: dnssecKeySecrets
+      expression: |
+        [
+          object.spec.?config.?dnssec.?signing.?keysFrom.?secretRef.?name,
+          object.spec.?global.?dnssec.?signing.?keysFrom.?secretRef.?name,
+          object.spec.?common.?global.?dnssec.?signing.?keysFrom.?secretRef.?name
+        ].filter(o, o.hasValue()).map(o, o.value())
   validations:
     # 1. Reject every disallowed Volume source. Allow-list approach: only
     #    the four named sources may be set; everything else fails.
@@ -80,16 +95,21 @@ spec:
         "gcePersistentDisk, awsElasticBlockStore, gitRepo, downwardAPI, and any " +
         "Volume that does not name an allowed source."
 
-    # 2. Reject mountPaths outside the allow-list.
+    # 2. Reject mountPaths outside the allow-list. A mountPath must both start
+    #    with an allowed prefix AND contain no '..' segment — otherwise a value
+    #    like '/data/../etc/bind/named.conf' satisfies startsWith('/data/') yet
+    #    the kubelet resolves it onto an operator-owned path (audit finding C1).
     - expression: |
         variables.mounts.all(m,
+          !m.mountPath.contains('..') &&
           variables.allowedMountPrefixes.exists(p, m.mountPath.startsWith(p)))
       messageExpression: |
         "Bind9 volumeMount.mountPath must start with one of " +
         variables.allowedMountPrefixes.join(", ") +
-        " — these are the only paths the operator does not own. " +
-        "Offending mountPaths: " +
+        " and must not contain '..' (path traversal) — these are the only " +
+        "paths the operator does not own. Offending mountPaths: " +
         variables.mounts.filter(m,
+          m.mountPath.contains('..') ||
           !variables.allowedMountPrefixes.exists(p, m.mountPath.startsWith(p)))
           .map(m, m.mountPath).join(", ")
 
@@ -101,6 +121,17 @@ spec:
       messageExpression: |
         "Bind9 volumeMount.subPath / subPathExpr must not contain '..' " +
         "(path traversal)."
+
+    # 4. Reject DNSSEC keysFrom secrets outside the user-secret allow-list.
+    - expression: |
+        variables.dnssecKeySecrets.all(n, n.startsWith(variables.allowedSecretPrefix))
+      messageExpression: |
+        "Bind9 spec.dnssec.signing.keysFrom.secretRef.name must start with '" +
+        variables.allowedSecretPrefix + "' — otherwise a foreign Secret (e.g. " +
+        "another tenant's RNDC/TSIG key) can be mounted into the operand Pod, " +
+        "bypassing the volume allow-list. Offending secret names: " +
+        variables.dnssecKeySecrets.filter(n,
+          !n.startsWith(variables.allowedSecretPrefix)).join(", ")
   auditAnnotations:
     - key: bindy-pod-shape-rejected
       valueExpression: |

@@ -193,6 +193,38 @@ These annotations apply to both `Ingress` and `LoadBalancer Service` resources.
 | `bindy.firestoned.io/ttl` | No | TTL override in seconds. When absent, the created `ARecord` inherits the TTL from the `DNSZone` spec. |
 | `bindy.firestoned.io/record-name` | No | Override the `spec.name` of the created `ARecord`. When set, replaces the name normally derived by stripping the zone suffix from the host. Use `"@"` for the zone apex. On multi-host resources (`Ingress`, `HTTPRoute`, `TLSRoute`) the override is applied to every record produced — intended for single-host use cases. |
 
+### Zone authorization (cross-namespace)
+
+Scout only publishes into a zone that authorizes the source object's namespace.
+This prevents a tenant in one namespace from creating records in another
+tenant's zone (a cross-tenant DNS-hijack / confused-deputy risk, since Scout
+writes with a cluster-privileged client).
+
+A source object (`Ingress`/`Service`/`HTTPRoute`/`TLSRoute`) may publish into a
+zone when **either**:
+
+- the matching `DNSZone` lives in the **same namespace** as the source object, **or**
+- the `DNSZone` carries `bindy.firestoned.io/allow-zone-namespaces` listing the
+  source namespace (comma-separated), or the `*` wildcard.
+
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: example-com
+  namespace: bindy-system
+  annotations:
+    bindy.firestoned.io/allow-zone-namespaces: "tenant-a,tenant-b"   # or "*"
+spec:
+  zoneName: example.com
+```
+
+If a source object names a zone that does not authorize its namespace, Scout
+skips it and logs `... namespace not authorized for zone ...`. This mirrors the
+same annotation gate the `DNSZone` reconciler enforces for cross-namespace
+instance targeting. See the [Migration Guide](../operations/migration-guide.md)
+for upgrade steps.
+
 ---
 
 ## Watched Resources
