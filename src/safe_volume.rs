@@ -26,7 +26,8 @@
 //!   `persistentVolumeClaim` (name must start with
 //!   [`crate::constants::ALLOWED_USER_PVC_PREFIX`]).
 //! - **VolumeMount.mountPath:** must begin with one of
-//!   [`crate::constants::ALLOWED_USER_MOUNT_PREFIXES`].
+//!   [`crate::constants::ALLOWED_USER_MOUNT_PREFIXES`] and must not contain
+//!   `..` (a `..` segment can escape the prefix onto an operator-owned path).
 //! - **VolumeMount.subPath / subPathExpr:** must not contain `..`.
 //!
 //! Everything else is rejected. This is an allow-list, not a block-list, so
@@ -77,8 +78,39 @@ pub enum VolumeRejection {
     )]
     MountPathOutsideAllowList { path: String },
 
+    #[error("volumeMount mountPath {path:?} contains '..' (path traversal not permitted)")]
+    MountPathTraversal { path: String },
+
     #[error("volumeMount {field} {value:?} contains '..' (path traversal not permitted)")]
     SubPathTraversal { field: &'static str, value: String },
+
+    #[error(
+        "DNSSEC keysFrom secret reference {secret:?} does not start with the required prefix \
+         {ALLOWED_USER_SECRET_PREFIX:?}"
+    )]
+    DnssecKeySecretPrefix { secret: String },
+}
+
+/// Validate that a user-supplied DNSSEC key Secret name obeys the same
+/// name-prefix allow-list as user `secret:` volumes.
+///
+/// `spec.dnssec.signing.keysFrom.secretRef` is mounted into the operand Pod
+/// outside the normal `spec.volumes` path, so without this check a tenant can
+/// mount an arbitrary Secret in the namespace (e.g. another tenant's RNDC/TSIG
+/// key), bypassing both [`validate_user_volumes`] and the pod-shape admission
+/// policy. Closes audit finding H2.
+///
+/// # Errors
+///
+/// Returns [`VolumeRejection::DnssecKeySecretPrefix`] if `name` does not start
+/// with [`crate::constants::ALLOWED_USER_SECRET_PREFIX`].
+pub fn validate_dnssec_key_secret_name(name: &str) -> Result<(), VolumeRejection> {
+    if name.starts_with(ALLOWED_USER_SECRET_PREFIX) {
+        return Ok(());
+    }
+    Err(VolumeRejection::DnssecKeySecretPrefix {
+        secret: name.to_string(),
+    })
 }
 
 /// Validate a slice of user-supplied [`Volume`] entries against the
@@ -260,6 +292,17 @@ fn forbid(name: String, kind: &'static str) -> Result<(), VolumeRejection> {
 }
 
 fn validate_one_volume_mount(m: &VolumeMount) -> Result<(), VolumeRejection> {
+    // Reject path traversal FIRST: a `..` segment lets an attacker satisfy the
+    // prefix allow-list (e.g. `/data/../etc/bind/named.conf` starts with
+    // `/data/`) while the kubelet resolves the mount onto an operator-owned
+    // path. This guard must run before the prefix check, which would otherwise
+    // accept the escaping path. Closes audit finding C1.
+    if m.mount_path.contains("..") {
+        return Err(VolumeRejection::MountPathTraversal {
+            path: m.mount_path.clone(),
+        });
+    }
+
     if !ALLOWED_USER_MOUNT_PREFIXES
         .iter()
         .any(|p| m.mount_path.starts_with(p))

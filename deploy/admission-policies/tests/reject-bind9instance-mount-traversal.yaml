@@ -1,0 +1,23 @@
+# Should be REJECTED by bindy-pod-shape-validation.
+# Demonstrates audit finding C1: a mountPath that starts with an allowed
+# prefix but contains '..' (e.g. /data/../etc/bind/named.conf) satisfies the
+# startsWith() allow-list yet the kubelet resolves it onto the operator-owned
+# /etc/bind/named.conf, letting an attacker overlay it with a bindy- prefixed
+# ConfigMap. The mountPath '..' check rejects this at admission.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Instance
+metadata:
+  name: vap-pod-shape-reject-mount-traversal
+  namespace: bindy-system
+spec:
+  clusterRef: ""
+  role: primary
+  replicas: 1
+  volumes:
+    - name: pwn
+      configMap:
+        name: bindy-pwn
+  volumeMounts:
+    - name: pwn
+      mountPath: /data/../etc/bind/named.conf
+      subPath: named.conf

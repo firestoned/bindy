@@ -129,3 +129,4 @@ pub async fn reconcile(zone: Arc<BindZone>, ctx: Arc<Context>) -> Result<Action,
 - [ ] API docs regenerated if CRDs changed
 - [ ] Architecture diagrams updated if structure changed
 - [ ] `make docs` succeeds
+- [ ] `docs-sync-check` skill run — no undocumented new features; every breaking change has a `migration-guide.md` entry + CHANGELOG breaking flag

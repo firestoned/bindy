@@ -378,6 +378,52 @@ mod tests {
     }
 
     #[test]
+    fn validate_pod_shape_rejects_foreign_dnssec_keys_secret() {
+        // H2: spec.dnssec.signing.keysFrom.secretRef mounts an arbitrary
+        // in-namespace Secret, bypassing the volume allow-list and the
+        // pod-shape admission policy. A secret name without the required
+        // `bindy-` prefix (e.g. another tenant's RNDC key) must be rejected.
+        let mut inst = instance_with_volumes(vec![], vec![]);
+        inst.spec.config = Some(
+            serde_json::from_value(serde_json::json!({
+                "dnssec": {
+                    "signing": {
+                        "enabled": true,
+                        "keysFrom": { "secretRef": { "name": "production-primary-rndc-key" } }
+                    }
+                }
+            }))
+            .expect("valid Bind9Config json"),
+        );
+        let err = validate_user_pod_shape_for_test(&inst, None, None)
+            .expect_err("foreign DNSSEC keys secret must be rejected");
+        // `{:#}` renders the full anyhow context chain (outer context + source).
+        let msg = format!("{err:#}");
+        assert!(msg.contains("keysFrom"), "{msg}");
+        assert!(msg.contains("production-primary-rndc-key"), "{msg}");
+    }
+
+    #[test]
+    fn validate_pod_shape_accepts_bindy_prefixed_dnssec_keys_secret() {
+        // A tenant's own DNSSEC key Secret named with the `bindy-` prefix is
+        // permitted, matching the user-secret volume allow-list.
+        let mut inst = instance_with_volumes(vec![], vec![]);
+        inst.spec.config = Some(
+            serde_json::from_value(serde_json::json!({
+                "dnssec": {
+                    "signing": {
+                        "enabled": true,
+                        "keysFrom": { "secretRef": { "name": "bindy-my-dnssec-keys" } }
+                    }
+                }
+            }))
+            .expect("valid Bind9Config json"),
+        );
+        validate_user_pod_shape_for_test(&inst, None, None)
+            .expect("bindy- prefixed DNSSEC keys secret must be accepted");
+    }
+
+    #[test]
     fn validate_pod_shape_rejects_hostpath_inherited_from_cluster() {
         let inst = instance_with_volumes(vec![], vec![]);
         let cluster = Bind9Cluster {

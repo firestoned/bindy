@@ -1319,6 +1319,36 @@ fn validate_user_pod_shape(
         validate_optional_user_volume_mounts, validate_optional_user_volumes,
     };
 
+    // H2: DNSSEC keys mounted via `spec.dnssec.signing.keysFrom.secretRef`
+    // are merged into the Pod outside the `spec.volumes` allow-list, so a
+    // tenant could otherwise mount any Secret in the namespace (e.g. another
+    // tenant's RNDC key). Validate the resolved signing config — the same one
+    // `build_dnssec_key_volumes` mounts — against the user-secret prefix.
+    let instance_config = instance.spec.config.as_ref();
+    let cluster_global = cluster.and_then(|c| c.spec.common.global.as_ref());
+    let provider_global = cluster_provider.and_then(|p| p.spec.common.global.as_ref());
+    for global in [cluster_global, provider_global] {
+        let Some(signing) =
+            crate::bind9_resources::get_dnssec_signing_config(global, instance_config)
+        else {
+            continue;
+        };
+        if let Some(secret) = signing
+            .keys_from
+            .as_ref()
+            .and_then(|k| k.secret_ref.as_ref())
+        {
+            crate::safe_volume::validate_dnssec_key_secret_name(&secret.name).with_context(
+                || {
+                    format!(
+                        "Bind9Instance {} spec.dnssec.signing.keysFrom.secretRef",
+                        instance.name_any()
+                    )
+                },
+            )?;
+        }
+    }
+
     // Instance-level fields.
     validate_optional_user_volumes(instance.spec.volumes.as_ref())
         .with_context(|| format!("Bind9Instance {} spec.volumes", instance.name_any()))?;

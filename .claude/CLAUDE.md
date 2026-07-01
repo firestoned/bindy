@@ -244,7 +244,7 @@ RUST_LOG=debug cargo run                       # Run locally
 kubectl apply --dry-run=server -f deploy/      # Validate manifests
 ```
 
-Skills: `regen-crds`, `regen-api-docs`, `validate-examples`, `cargo-quality`, `build-docs`, `get-multiarch-digest`, `verify-crd-sync`, `tdd-workflow`, `pre-commit-checklist`, `update-changelog`, `update-docs`, `add-new-crd`.
+Skills: `regen-crds`, `regen-api-docs`, `validate-examples`, `cargo-quality`, `build-docs`, `docs-sync-check`, `get-multiarch-digest`, `verify-crd-sync`, `tdd-workflow`, `pre-commit-checklist`, `update-changelog`, `update-docs`, `add-new-crd`.
 
 ---
 

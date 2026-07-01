@@ -407,6 +407,7 @@ jobs:
           path: |
             deploy/install.yaml
             deploy/scout.yaml
+            deploy/admission-policies.yaml
 
   upload-release-assets:
     name: Upload Release Assets
@@ -433,6 +434,9 @@ jobs:
             fi
             if [ -f "deploy-manifests/scout.yaml" ]; then
               cp deploy-manifests/scout.yaml release/
+            fi
+            if [ -f "deploy-manifests/admission-policies.yaml" ]; then
+              cp deploy-manifests/admission-policies.yaml release/
             fi
           fi
 
@@ -493,6 +497,9 @@ jobs:
           if [ -f "scout.yaml" ]; then
             sha256sum scout.yaml >> checksums.sha256
           fi
+          if [ -f "admission-policies.yaml" ]; then
+            sha256sum admission-policies.yaml >> checksums.sha256
+          fi
           cd ../sboms
           sha256sum *.json >> ../release/checksums.sha256
           cd ../signatures
@@ -520,6 +527,7 @@ jobs:
             artifacts/release/*.tar.gz
             artifacts/release/install.yaml
             artifacts/release/scout.yaml
+            artifacts/release/admission-policies.yaml
             artifacts/sboms/*.json
             artifacts/vex/*.openvex.json
             artifacts/signatures/*.bundle

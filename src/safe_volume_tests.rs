@@ -225,6 +225,35 @@ mod tests {
     }
 
     #[test]
+    fn mount_path_with_traversal_escaping_allowed_prefix_is_rejected() {
+        // C1: `/data/../etc/bind/named.conf` starts with the allowed `/data/`
+        // prefix but resolves to the operator-owned named.conf. A bare
+        // starts_with() check accepts it; we must reject any `..` in mountPath.
+        let m = VolumeMount {
+            name: "pwn".into(),
+            mount_path: "/data/../etc/bind/named.conf".into(),
+            sub_path: Some("named.conf".to_string()),
+            ..Default::default()
+        };
+        let err = validate_user_volume_mounts(&[m])
+            .expect_err("mountPath containing '..' must be rejected");
+        assert!(matches!(err, VolumeRejection::MountPathTraversal { .. }));
+    }
+
+    #[test]
+    fn mount_path_with_traversal_before_prefix_is_rejected() {
+        // Defense in depth: reject `..` even when it appears deeper in the path.
+        let m = VolumeMount {
+            name: "pwn2".into(),
+            mount_path: "/var/log/bind/../../etc/bind/keys".into(),
+            ..Default::default()
+        };
+        let err = validate_user_volume_mounts(&[m])
+            .expect_err("mountPath containing '..' must be rejected");
+        assert!(matches!(err, VolumeRejection::MountPathTraversal { .. }));
+    }
+
+    #[test]
     fn subpath_with_traversal_is_rejected() {
         let m = VolumeMount {
             name: "tricky".into(),
@@ -248,6 +277,19 @@ mod tests {
         let err =
             validate_user_volume_mounts(&[m]).expect_err("subPathExpr traversal must be rejected");
         assert!(matches!(err, VolumeRejection::SubPathTraversal { .. }));
+    }
+
+    #[test]
+    fn dnssec_key_secret_with_bindy_prefix_is_accepted() {
+        validate_dnssec_key_secret_name("bindy-my-keys")
+            .expect("bindy- prefixed DNSSEC key secret must be accepted");
+    }
+
+    #[test]
+    fn dnssec_key_secret_without_prefix_is_rejected() {
+        let err = validate_dnssec_key_secret_name("production-primary-rndc-key")
+            .expect_err("foreign DNSSEC key secret must be rejected");
+        assert!(matches!(err, VolumeRejection::DnssecKeySecretPrefix { .. }));
     }
 
     #[test]

@@ -19,6 +19,8 @@ defense-in-depth on top of the in-process Rust validators in
 | `08-bindy-pod-shape-binding.yaml` | binding | Binds the pod-shape policy with `validationActions: [Deny]`. |
 | `09-bindy-dnssec-policy-policy.yaml` | `bindy-dnssec-policy-validation` | Safe-identifier check on DNSSEC policy names (`DNSZone spec.dnssecPolicy`, `Bind9Cluster`/`ClusterBind9Provider` `spec.global.dnssec.signing.policy`, `Bind9Instance spec.config.dnssec.signing.policy`) **and** safe-token check on the sibling signing params `algorithm`/`kskLifetime`/`zskLifetime` under `*.dnssec.signing`. Closes audit findings B-6 (injection via the quoted `dnssec-policy "<name>"` literal) and B-6b (injection via the unquoted lifetime/algorithm values in the `dnssec-policy { ... }` block). |
 | `10-bindy-dnssec-policy-binding.yaml` | binding | Binds the DNSSEC-policy-name policy with `validationActions: [Deny]`. |
+| `11-bindy-operator-workload-sa-policy.yaml` | `bindy-operator-workload-sa-validation` | Constrains workloads created **by the operator SA** (`system:serviceaccount:bindy-system:bindy`): the pod template `serviceAccountName` must be `bind9`. Compensating control for audit finding C2 (a compromised operator token could otherwise run Pods as any SA and escalate). Stop-gap until the operator runs namespace-scoped. |
+| `12-bindy-operator-workload-sa-binding.yaml` | binding | Binds the operator-workload-SA policy with `validationActions: [Deny]`. |
 
 F-003 (cross-namespace zone hijack) is enforced operator-side via the
 `bindy.firestoned.io/allow-zone-namespaces` annotation on `Bind9Instance`
@@ -47,10 +49,17 @@ kubectl apply -f deploy/admission-policies/04-bindy-zone-name-binding.yaml
 kubectl apply -f deploy/admission-policies/09-bindy-dnssec-policy-policy.yaml
 kubectl apply -f deploy/admission-policies/10-bindy-dnssec-policy-binding.yaml
 
-# Pod-shape allow-list (closes F-001 — host-fs / foreign-Secret injection).
+# Pod-shape allow-list (closes F-001 — host-fs / foreign-Secret injection;
+# also closes C1 mountPath traversal and H2 DNSSEC keysFrom foreign-Secret).
 # Strongly recommended on any multi-tenant cluster.
 kubectl apply -f deploy/admission-policies/07-bindy-pod-shape-policy.yaml
 kubectl apply -f deploy/admission-policies/08-bindy-pod-shape-binding.yaml
+
+# Operator-workload SA guard (compensating control for C2 — blocks the
+# operator token from running Pods as any SA other than 'bind9').
+# Recommended wherever the operator runs cluster-wide RBAC.
+kubectl apply -f deploy/admission-policies/11-bindy-operator-workload-sa-policy.yaml
+kubectl apply -f deploy/admission-policies/12-bindy-operator-workload-sa-binding.yaml
 
 # Optional: posture-strict RNDC (rejects hmac-sha1).
 # Verify nothing in your cluster is using hmac-sha1 first.
@@ -60,6 +69,23 @@ kubectl apply -f deploy/admission-policies/06-bindy-rndc-strict-binding.yaml
 # Or apply the whole directory at once:
 kubectl apply -f deploy/admission-policies/
 ```
+
+### Single-file install (releases)
+
+Each release publishes a combined `admission-policies.yaml` that bundles **all
+ten** documents (every policy + binding, including the opt-in RNDC-strict
+policy). Apply it in one shot:
+
+```bash
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/admission-policies.yaml
+```
+
+> ⚠️ The bundle includes the RNDC-strict policy (`05`/`06`), which rejects
+> `hmac-sha1` RNDC keys. Verify nothing in your cluster still uses `hmac-sha1`
+> before applying, or install the individual files above instead.
+
+Regenerate the bundle locally with `make admission-policies-yaml` (also run as
+part of `make release-manifests`).
 
 ## Roll-out tip: `Audit` before `Deny`
 
