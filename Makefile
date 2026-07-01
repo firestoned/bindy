@@ -623,6 +623,20 @@ security-scan-quick: cargo-deny gitleaks license-check ## Run quick security sca
 security-scan-full: cargo-deny gitleaks vex-validate trivy-all semgrep kubesec license-check ## Run all security scans (Phase 1-5 complete)
 	@echo "✓ All security scans completed"
 
+GHCR_OWNER ?= firestoned
+GHCR_PACKAGE ?= bindy
+ghcr-report: ## Read-only inventory of GHCR image versions (no deletion). Requires gh auth.
+	@echo "GHCR package: $(GHCR_OWNER)/$(GHCR_PACKAGE) — read-only inventory"
+	@gh api "users/$(GHCR_OWNER)/packages/container/$(GHCR_PACKAGE)/versions" --paginate \
+		| jq -rs 'add | { \
+			total: length, \
+			untagged: ([.[] | select((.metadata.container.tags // []) | length == 0)] | length), \
+			pr: ([.[].metadata.container.tags[]? | select(startswith("pr-"))] | length), \
+			sha: ([.[].metadata.container.tags[]? | select(startswith("sha-"))] | length), \
+			dated_main: ([.[].metadata.container.tags[]? | select(test("^main-[0-9]"))] | length) \
+		}'
+	@echo "Nightly cleanup runs via .github/workflows/ghcr-cleanup.yaml (manifest-aware)."
+
 install-git-hooks: ## Install git pre-commit hooks (gitleaks secret scanning)
 	@echo "Installing git pre-commit hooks..."
 	@if [ ! -d .git ]; then \
