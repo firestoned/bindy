@@ -41,7 +41,7 @@ hickory-net = { version = "0.26", features = ["dnssec-ring"] }
 hickory-proto = { version = "0.26", features = ["dnssec-ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 url = "2.5.8"
-bindcar = "0.6.0"
+bindcar = "0.7.2"
 prometheus = "0.14"
 axum = "0.8"
 sha2 = "0.11"
