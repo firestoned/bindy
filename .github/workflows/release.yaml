@@ -272,7 +272,7 @@ jobs:
           provenance: true
 
       - name: Sign container image with Cosign
-        uses: firestoned/github-actions/security/cosign-sign@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        uses: firestoned/github-actions/security/cosign-sign@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
         with:
           image-digest: ${{ steps.docker_build.outputs.digest }}
           image-tags: ${{ matrix.variant.image-tag }}
@@ -335,7 +335,7 @@ jobs:
           ls -lh ${{ matrix.platform.artifact_name }}.tar.gz
 
       - name: Sign binary tarball with Cosign
-        uses: firestoned/github-actions/security/cosign-sign@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        uses: firestoned/github-actions/security/cosign-sign@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
         with:
           artifact-path: artifacts/${{ matrix.platform.artifact_name }}/${{ matrix.platform.artifact_name }}.tar.gz
 
