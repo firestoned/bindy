@@ -1,0 +1,13 @@
+# Should PASS bindy-record-value-validation: target is an absolute FQDN
+# ending with a trailing dot.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: CNAMERecord
+metadata:
+  name: vap-test-cname-accept
+  namespace: bindy-system
+  labels:
+    zone: example.com
+spec:
+  name: blog
+  target: example.github.io.
+  ttl: 3600

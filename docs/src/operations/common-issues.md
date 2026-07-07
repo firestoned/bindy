@@ -551,6 +551,43 @@ kubectl get clusterrolebinding bindy-rolebinding -o yaml
 kubectl rollout restart deployment/bindy -n bindy-system
 ```
 
+## bindcar Sidecar Authentication (Mode B / TokenReview)
+
+### Sidecar crashloops: "refusing to start ... without real authentication"
+
+**Symptom:** the operand pod's `api` container crashloops; its logs show:
+`refusing to start: the API is bound to a non-loopback interface (0.0.0.0) without real authentication`.
+
+**Cause:** the bindcar image lacks the TokenReview auth path. bindy runs "Mode B"
+(no `BIND_API_TOKEN`), so the image **must** be built with `--features
+k8s-token-review`. Published images `>= v0.7.2` include it; `v0.7.0`/`v0.7.1` do not.
+
+**Solution:** use `ghcr.io/firestoned/bindcar:v0.7.2` or newer (the default). If
+you pin `bindcarConfig.image`, bump it to `v0.7.2+`.
+
+### Operator gets HTTP 401 from the bindcar API
+
+**Symptom:** operator logs show persistent `401 Unauthorized` from bindcar zone
+operations (a 401 is **not retried**), and zones never become Ready.
+
+**Diagnosis:**
+```bash
+# Is the operand SA allowed to create tokenreviews?
+kubectl auth can-i create tokenreviews.authentication.k8s.io \
+  --as=system:serviceaccount:bindy-system:bind9
+
+# Does the operator carry the bindcar-audience projected token?
+kubectl get deploy/bindy -n bindy-system -o jsonpath='{.spec.template.spec.volumes[?(@.name=="bindcar-token")].projected.sources[0].serviceAccountToken.audience}'
+# expect: bindcar
+```
+
+**Common causes & fixes:**
+- **Missing tokenreview RBAC** → `kubectl apply -f deploy/operator/rbac/tokenreview-clusterrole.yaml -f deploy/operator/rbac/tokenreview-clusterrolebinding.yaml` (add a subject per operand namespace).
+- **Audience mismatch** → the operator's projected token audience must equal the sidecar's `BIND_TOKEN_AUDIENCES` (`bindcar`).
+- **Wrong allow-list** → `BIND_ALLOWED_SERVICE_ACCOUNTS` must name the **operator** SA (`system:serviceaccount:<ns>:bindy`), not the operand `bind9` SA.
+
+See the [bindcar 0.7.x migration guide](./migration-guide.md) and [RBAC](./rbac.md).
+
 ## Next Steps
 
 - [Debugging Guide](./debugging.md) - Detailed debugging procedures

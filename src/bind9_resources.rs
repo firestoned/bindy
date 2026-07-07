@@ -24,9 +24,10 @@ use anyhow::Context;
 use k8s_openapi::api::{
     apps::v1::{Deployment, DeploymentSpec},
     core::v1::{
-        Capabilities, ConfigMap, Container, ContainerPort, EnvVar, EnvVarSource,
-        PodSecurityContext, PodSpec, PodTemplateSpec, Probe, SecretKeySelector, SecurityContext,
-        Service, ServiceAccount, ServicePort, ServiceSpec, TCPSocketAction, Volume, VolumeMount,
+        Capabilities, ConfigMap, Container, ContainerPort, EmptyDirVolumeSource, EnvVar,
+        EnvVarSource, PodSecurityContext, PodSpec, PodTemplateSpec, Probe, SeccompProfile,
+        SecretKeySelector, SecurityContext, Service, ServiceAccount, ServicePort, ServiceSpec,
+        TCPSocketAction, Volume, VolumeMount,
     },
 };
 use k8s_openapi::apimachinery::pkg::{
@@ -95,6 +96,11 @@ const VOLUME_NAMED_CONF: &str = "named-conf";
 const VOLUME_NAMED_CONF_OPTIONS: &str = "named-conf-options";
 const VOLUME_NAMED_CONF_ZONES: &str = "named-conf-zones";
 const VOLUME_DNSSEC_KEYS: &str = "dnssec-keys";
+/// Memory-backed writable scratch volume for the bindcar sidecar (`TMPDIR`).
+/// Required because the sidecar runs with `readOnlyRootFilesystem: true` under
+/// Pod Security Admission `restricted` yet must write a `0600` TSIG key file
+/// for `nsupdate -k`.
+const VOLUME_TMP: &str = "tmp";
 
 // Default DNSSEC signing parameters
 const DEFAULT_DNSSEC_POLICY_NAME: &str = "default";
@@ -1155,7 +1161,6 @@ pub fn build_deployment(
                     ..Default::default()
                 }),
                 spec: Some(build_pod_spec(
-                    namespace,
                     &config.configmap_name,
                     &config.rndc_secret_name,
                     config.version,
@@ -1175,7 +1180,6 @@ pub fn build_deployment(
 /// Builds pod specification with BIND9 container and API sidecar
 ///
 /// # Arguments
-/// * `namespace` - Namespace where the pod will be deployed
 /// * `configmap_name` - Name of the `ConfigMap` with BIND9 configuration
 /// * `rndc_secret_name` - Name of the Secret with RNDC keys
 /// * `version` - BIND9 version tag
@@ -1187,7 +1191,6 @@ pub fn build_deployment(
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_lines)]
 fn build_pod_spec(
-    namespace: &str,
     configmap_name: &str,
     rndc_secret_name: &str,
     version: &str,
@@ -1284,7 +1287,18 @@ fn build_pod_spec(
             run_as_group: Some(BIND9_NONROOT_UID),
             allow_privilege_escalation: Some(false),
             capabilities: Some(Capabilities {
+                // Drop everything, then add back only NET_BIND_SERVICE so a
+                // non-root `named` can bind the privileged DNS port 53
+                // (DNS_CONTAINER_PORT). NET_BIND_SERVICE is the single
+                // capability permitted under Pod Security Admission `restricted`.
                 drop: Some(vec!["ALL".to_string()]),
+                add: Some(vec!["NET_BIND_SERVICE".to_string()]),
+            }),
+            // PSA `restricted` requires a RuntimeDefault (or Localhost) seccomp
+            // profile on every container. Set it explicitly at the container
+            // level in addition to the pod-level default.
+            seccomp_profile: Some(SeccompProfile {
+                type_: "RuntimeDefault".to_string(),
                 ..Default::default()
             }),
             ..Default::default()
@@ -1306,7 +1320,6 @@ fn build_pod_spec(
         containers: {
             let mut containers = vec![bind9_container];
             containers.push(build_api_sidecar_container(
-                namespace,
                 bindcar_config,
                 rndc_secret_name,
             ));
@@ -1325,6 +1338,13 @@ fn build_pod_spec(
             run_as_group: Some(BIND9_NONROOT_UID),
             fs_group: Some(BIND9_NONROOT_UID),
             run_as_non_root: Some(true),
+            // Pod-level RuntimeDefault seccomp profile so the pod satisfies Pod
+            // Security Admission `restricted` (inherited by any container that
+            // does not set its own).
+            seccomp_profile: Some(SeccompProfile {
+                type_: "RuntimeDefault".to_string(),
+                ..Default::default()
+            }),
             ..Default::default()
         }),
         ..Default::default()
@@ -1335,7 +1355,6 @@ fn build_pod_spec(
 ///
 /// # Arguments
 ///
-/// * `namespace` - Namespace where the container will be deployed
 /// * `bindcar_config` - Optional Bindcar container configuration from the instance spec
 /// * `rndc_secret_name` - Name of the Secret containing the RNDC key
 ///
@@ -1344,7 +1363,6 @@ fn build_pod_spec(
 /// A `Container` configured to run the Bindcar RNDC API sidecar
 #[allow(clippy::too_many_lines)]
 fn build_api_sidecar_container(
-    namespace: &str,
     bindcar_config: Option<&crate::crd::BindcarConfig>,
     rndc_secret_name: &str,
 ) -> Container {
@@ -1367,6 +1385,18 @@ fn build_api_sidecar_container(
 
     let resources = bindcar_config.and_then(|c| c.resources.clone());
 
+    // bindcar 0.7.0 (Mode B / TokenReview) validates the *caller's* SA token
+    // against BIND_ALLOWED_SERVICE_ACCOUNTS. The caller is the bindy operator,
+    // so the allow-list must name the operator SA in the operator's own
+    // namespace — NOT the operand `bind9` SA. The operator namespace is taken
+    // from POD_NAMESPACE (set on the operator Deployment) with a sane fallback.
+    let operator_namespace = std::env::var("POD_NAMESPACE")
+        .unwrap_or_else(|_| crate::constants::DEFAULT_OPERATOR_NAMESPACE.to_string());
+    let allowed_service_account = format!(
+        "system:serviceaccount:{operator_namespace}:{}",
+        crate::constants::OPERATOR_SERVICE_ACCOUNT
+    );
+
     // Build required environment variables
     let mut env_vars = vec![
         EnvVar {
@@ -1386,9 +1416,22 @@ fn build_api_sidecar_container(
         },
         EnvVar {
             name: "BIND_ALLOWED_SERVICE_ACCOUNTS".into(),
-            value: Some(format!(
-                "system:serviceaccount:{namespace}:{BIND9_SERVICE_ACCOUNT}"
-            )),
+            value: Some(allowed_service_account),
+            ..Default::default()
+        },
+        // bindcar 0.7.0 enforces the token audience from the TokenReview
+        // response. The operator projects a token with the `bindcar` audience
+        // (deploy/operator/deployment.yaml); this must match here.
+        EnvVar {
+            name: "BIND_TOKEN_AUDIENCES".into(),
+            value: Some(crate::constants::BINDCAR_TOKEN_AUDIENCE.into()),
+            ..Default::default()
+        },
+        // Writable scratch dir for bindcar's 0600 TSIG key file (nsupdate -k),
+        // required because the sidecar runs with a read-only root filesystem.
+        EnvVar {
+            name: "TMPDIR".into(),
+            value: Some(crate::constants::BINDCAR_TMP_PATH.into()),
             ..Default::default()
         },
         EnvVar {
@@ -1437,12 +1480,12 @@ fn build_api_sidecar_container(
         env: Some(env_vars),
         volume_mounts: Some(vec![
             VolumeMount {
-                name: "cache".into(),
+                name: VOLUME_CACHE.into(),
                 mount_path: BIND_CACHE_PATH.into(),
                 ..Default::default()
             },
             VolumeMount {
-                name: "rndc-key".into(),
+                name: VOLUME_RNDC_KEY.into(),
                 mount_path: BIND_KEYS_PATH.into(),
                 read_only: Some(true),
                 ..Default::default()
@@ -1453,6 +1496,13 @@ fn build_api_sidecar_container(
                 sub_path: Some(RNDC_CONF_FILENAME.into()),
                 ..Default::default()
             },
+            // Writable /tmp (TMPDIR) for the bindcar TSIG key file, required
+            // because readOnlyRootFilesystem is enabled below.
+            VolumeMount {
+                name: VOLUME_TMP.into(),
+                mount_path: crate::constants::BINDCAR_TMP_PATH.into(),
+                ..Default::default()
+            },
         ]),
         resources,
         security_context: Some(SecurityContext {
@@ -1460,8 +1510,16 @@ fn build_api_sidecar_container(
             run_as_user: Some(BIND9_NONROOT_UID),
             run_as_group: Some(BIND9_NONROOT_UID),
             allow_privilege_escalation: Some(false),
+            // The sidecar never binds a privileged port, so it keeps ALL
+            // capabilities dropped and a read-only root filesystem — the
+            // strictest posture under Pod Security Admission `restricted`.
+            read_only_root_filesystem: Some(true),
             capabilities: Some(Capabilities {
                 drop: Some(vec!["ALL".to_string()]),
+                ..Default::default()
+            }),
+            seccomp_profile: Some(SeccompProfile {
+                type_: "RuntimeDefault".to_string(),
                 ..Default::default()
             }),
             ..Default::default()
@@ -1630,6 +1688,17 @@ fn build_volumes(
             name: VOLUME_RNDC_KEY.into(),
             secret: Some(k8s_openapi::api::core::v1::SecretVolumeSource {
                 secret_name: Some(rndc_secret_name.to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        // Memory-backed writable scratch dir mounted at /tmp in the bindcar
+        // sidecar (TMPDIR). Needed because the sidecar runs with a read-only
+        // root filesystem under Pod Security Admission `restricted`.
+        Volume {
+            name: VOLUME_TMP.into(),
+            empty_dir: Some(EmptyDirVolumeSource {
+                medium: Some("Memory".to_string()),
                 ..Default::default()
             }),
             ..Default::default()

@@ -34,14 +34,23 @@ thiserror = "2"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 k8s-openapi = { version = "0.27", features = ["v1_31", "schemars"] }
-reqwest = { version = "0.13", features = ["json", "rustls"], default-features = false }
+# ring-only: use "rustls-no-provider", NOT reqwest's "rustls" feature. The
+# latter is an alias for "__rustls-aws-lc-rs", which force-enables the aws-lc-rs
+# crypto backend across the whole dependency graph and pulls in aws-lc-sys
+# (C/assembly). "rustls-no-provider" leaves the crypto backend unset so reqwest
+# uses the process-default provider, which we install as ring in main.rs.
+reqwest = { version = "0.13", features = ["json", "rustls-no-provider"], default-features = false }
 base64 = "0.22"
 rand = "0.10"
 hickory-net = { version = "0.26", features = ["dnssec-ring"] }
 hickory-proto = { version = "0.26", features = ["dnssec-ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 url = "2.5.8"
-bindcar = "0.6.0"
+# Types-only dependency (CreateZoneRequest / ZoneConfig / SoaRecord / ZONE_TYPE_*).
+# bindcar 0.7.0 gates its kube 4.0 / k8s-openapi 0.28 deps behind the optional
+# `k8s-token-review` feature (default = []), so this does not conflict with the
+# operator's own kube 3.1 / k8s-openapi 0.27 stack.
+bindcar = "0.7"
 prometheus = "0.14"
 axum = "0.8"
 sha2 = "0.11"

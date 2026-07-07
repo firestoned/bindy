@@ -7,6 +7,14 @@ The Bindy operator watches for DNS resources and manages BIND9 configurations.
 - The `bindy` binary (same version as the image you want to deploy)
 - `kubectl` configured with cluster access
 
+> **bindcar Mode B auth (0.7.x):** operand BIND9 pods run an **authenticated**
+> bindcar sidecar (Kubernetes TokenReview). The operator Deployment must carry a
+> projected `audience: bindcar` token, and the operand `bind9` ServiceAccount
+> needs the `bindcar-tokenreview` ClusterRole. The `bindy` CLI bootstrap and the
+> release `install.yaml` include these; if you assemble RBAC manually, apply
+> `deploy/operator/rbac/tokenreview-clusterrole.yaml` + `-clusterrolebinding.yaml`.
+> See the [bindcar 0.7.x migration guide](../operations/migration-guide.md).
+
 ## Installation
 
 The recommended way to deploy the operator is with the `bindy` CLI. A single command handles namespace creation, CRD installation, RBAC, and the Deployment — all via server-side apply (idempotent, safe to re-run):

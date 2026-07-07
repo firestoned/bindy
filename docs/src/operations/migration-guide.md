@@ -1,3 +1,110 @@
+# Migration Guide
+
+This document collects the breaking-change migrations for Bindy, newest first.
+
+## Migrating to bindcar 0.7.0 (Mode B / TokenReview)
+
+Bindy now provisions and consumes **bindcar 0.7.2**
+(`ghcr.io/firestoned/bindcar:v0.7.2`), which enforces real authentication at
+startup, validates request payloads strictly, and requires a Pod Security
+Admission `restricted`-compliant pod. Bindy uses **Mode B (TokenReview)**: the
+operator authenticates to the bindcar API with an audience-scoped
+ServiceAccount token, which bindcar validates via a Kubernetes TokenReview.
+
+> ⚠️ **This upgrade is rollout-blocking.** A v0.6.0-shaped deployment will not
+> come up under bindcar 0.7.0 — follow every step below before rolling out.
+
+### What changed in Bindy
+
+| Area | v0.6.0 behavior | 0.7.0 behavior |
+|---|---|---|
+| **Auth** | Presence-only Bearer token | TokenReview with enforced `bindcar` audience; allow-list names the **operator** SA (`system:serviceaccount:<operator-ns>:bindy`) |
+| **DNS port** | `named` listened on 5353 (non-privileged) | `named` listens on **53** with `NET_BIND_SERVICE` (the one capability PSA `restricted` allows); Service `targetPort` follows |
+| **Secondary zones** | `primaries` sent as `"<ip> port 5353"` | Plain IPs only — bindcar rejects non-IP entries with HTTP 400 |
+| **RNDC keys** | `hmac-sha1` accepted | **SHA-2 only** — `hmac-md5`/`hmac-sha1` rejected by both Bindy's parsers and bindcar |
+| **Sidecar pod shape** | Writable rootfs, no seccomp | `readOnlyRootFilesystem: true`, `RuntimeDefault` seccomp, memory-backed `emptyDir` at `/tmp` + `TMPDIR` |
+| **Swagger/OpenAPI** | Served by default | Off unless `BIND_ENABLE_DOCS=true` (set it via `bindcarConfig.envVars` for dev only; `/api/v1/health`, `/api/v1/ready`, `/metrics` unchanged) |
+
+### Pre-upgrade checklist
+
+1. **Apply the TokenReview RBAC** (the bindcar sidecar runs as the operand
+   `bind9` SA and must be able to create TokenReviews):
+
+   ```bash
+   kubectl apply -f deploy/operator/rbac/tokenreview-clusterrole.yaml
+   kubectl apply -f deploy/operator/rbac/tokenreview-clusterrolebinding.yaml
+   ```
+
+   If you run Bind9Instances outside `bindy-system`, add one binding subject
+   per operand namespace's `bind9` ServiceAccount.
+
+2. **Redeploy the operator** with the updated
+   `deploy/operator/deployment.yaml`, which projects a `bindcar`-audience token
+   at `/var/run/secrets/bindcar/token`. Without it the operator falls back to
+   its default SA token, which bindcar 0.7.0 **rejects** (wrong audience).
+
+3. **Rotate any `hmac-sha1` RNDC keys to `hmac-sha256`.** Operator-generated
+   keys are already SHA-256; only external/user-managed Secrets are affected.
+   Bindy fails closed at parse time on `hmac-md5` and `hmac-sha1`.
+
+4. **NetworkPolicy** (recommended): apply `deploy/pod-hardening.yaml` and
+   **replace the fail-closed `10.0.0.1/32` placeholder** with your real
+   kube-apiserver endpoint/CIDR — TokenReview (and therefore every
+   authenticated bindcar request) is denied without it.
+
+5. **PSA `restricted`** (recommended): label the operand namespace(s):
+
+   ```bash
+   kubectl label ns bindy-system \
+     pod-security.kubernetes.io/enforce=restricted --overwrite
+   ```
+
+   The operator-built pods comply (non-root, drop-ALL + `NET_BIND_SERVICE` on
+   `named` only, seccomp `RuntimeDefault`, read-only sidecar rootfs).
+
+6. **Admission policies**: apply the new record-value policy (and the
+   now-recommended RNDC-strict policy):
+
+   ```bash
+   make admission-policies-install
+   kubectl apply -f deploy/admission-policies/05-bindy-rndc-strict-policy.yaml
+   kubectl apply -f deploy/admission-policies/06-bindy-rndc-strict-binding.yaml
+   ```
+
+7. **DNS port change**: anything that reached the operand pods on 5353
+   directly (custom NetworkPolicies, external monitors, firewall rules) must
+   move to **53**. The Service-facing port was already 53 and is unchanged.
+
+8. **Record hygiene**: `CNAMERecord.spec.target`, `MXRecord.spec.mailServer`,
+   `NSRecord.spec.nameserver`, and `SRVRecord.spec.target` must be absolute
+   FQDNs ending with a trailing dot (e.g. `mail.example.com.`). The new
+   `bindy-record-value-validation` admission policy rejects violations at the
+   API server.
+
+### Rollout order
+
+1. RBAC + admission policies (steps 1, 6) — safe to apply ahead of time.
+2. Operator Deployment (step 2).
+3. Operand rollout: the operator recreates Bind9Instance pods with the 0.7.0
+   sidecar, port 53, and the hardened pod shape on its next reconcile.
+4. NetworkPolicy + PSA labels (steps 4, 5) after confirming the operand pods
+   are healthy.
+
+### Verification
+
+```bash
+# bindcar started and passed its auth startup guard
+kubectl logs -n bindy-system deploy/<instance> -c api | head
+
+# named is serving on 53
+kubectl get svc -n bindy-system <instance> -o jsonpath='{.spec.ports}'
+
+# zone ops authenticate (no 401/403 in operator logs)
+kubectl logs -n bindy-system deploy/bindy | grep -iE 'unauthorized|forbidden' || echo OK
+```
+
+---
+
 # Migration Guide: v0.2.x → v0.3.x
 
 This document explains how to migrate from Bindy v0.2.x to v0.3.x, which introduces breaking changes to how DNS records are associated with zones.

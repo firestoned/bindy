@@ -1,0 +1,99 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# ValidatingAdmissionPolicy: defense-in-depth checks on DNS record *target*
+# values that name another host — CNAMERecord.spec.target, MXRecord.spec.mailServer,
+# NSRecord.spec.nameserver, and SRVRecord.spec.target.
+#
+# bindcar 0.7.0 tightened record-value validation (migration §3): CNAME / NS /
+# PTR / MX values must be fully-qualified and end with a trailing dot, and no
+# value may contain control characters. bindy sends most records over the
+# RFC 2136 dynamic-update path (not the bindcar HTTP API), so bindcar's own
+# validation does not always bite these fields — this policy enforces the same
+# contract at the Kubernetes API server, before a malformed value can produce a
+# broken zone (a target without a trailing dot is silently treated as relative
+# to the zone origin, e.g. `example.com` becomes `example.com.<zone>`).
+#
+# Rules (mirroring bindcar 0.7.0):
+#   - must end with '.' (absolute FQDN)
+#   - character set restricted to [A-Za-z0-9._-] (rejects whitespace, control
+#     chars, and named.conf/zone-file metacharacters ; { } " \ $)
+#   - RFC 1035 length cap (253 octets)
+#   - no leading '.' and no consecutive dots '..'
+#
+# Requires Kubernetes 1.30+ (admissionregistration.k8s.io/v1 GA).
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: bindy-record-value-validation
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/part-of: bindy
+    app.kubernetes.io/component: admission-policy
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups:   ["bindy.firestoned.io"]
+        apiVersions: ["v1beta1"]
+        operations:  ["CREATE", "UPDATE"]
+        resources:
+          - cnamerecords
+          - mxrecords
+          - nsrecords
+          - srvrecords
+  variables:
+    # Collect every host-target field present on this record. Each record kind
+    # carries exactly one of these, so the union yields a single value.
+    - name: targets
+      expression: |
+        ([object.spec.?target.orValue('')] +
+         [object.spec.?mailServer.orValue('')] +
+         [object.spec.?nameserver.orValue('')]
+        ).filter(v, size(v) > 0)
+    # RFC 1035 max DNS name length, including the trailing dot.
+    - name: maxDnsNameLength
+      expression: '253'
+  validations:
+    # 1. Must be an absolute FQDN (trailing dot). This is the most common bindy
+    #    bite under bindcar 0.7.0.
+    - expression: |
+        variables.targets.all(v, v.endsWith('.'))
+      messageExpression: |
+        "CNAME/MX/NS/SRV target values must be fully-qualified and end with a " +
+        "trailing dot (e.g. 'example.com.'). Offending values: " +
+        variables.targets.filter(v, !v.endsWith('.')).join(", ")
+
+    # 2. Restrict to the DNS name character set; rejects whitespace, control
+    #    characters, and zone-file / named.conf metacharacters.
+    - expression: |
+        variables.targets.all(v, v.matches('^[A-Za-z0-9._-]+$'))
+      messageExpression: |
+        "CNAME/MX/NS/SRV target values may contain only [A-Za-z0-9._-] " +
+        "(no whitespace, control characters, or ';', '{', '}', '\"', '\\', '$'). " +
+        "Offending values: " +
+        variables.targets.filter(v, !v.matches('^[A-Za-z0-9._-]+$')).join(", ")
+
+    # 3. RFC 1035 length cap.
+    - expression: |
+        variables.targets.all(v, size(v) <= variables.maxDnsNameLength)
+      messageExpression: |
+        "CNAME/MX/NS/SRV target values exceed the RFC 1035 limit of " +
+        string(variables.maxDnsNameLength) + " octets. Offending values: " +
+        variables.targets.filter(v, size(v) > variables.maxDnsNameLength).join(", ")
+
+    # 4. No leading dot, no consecutive dots.
+    - expression: |
+        variables.targets.all(v, !v.startsWith('.') && !v.contains('..'))
+      messageExpression: |
+        "CNAME/MX/NS/SRV target values must not start with '.' or contain '..'. " +
+        "Offending values: " +
+        variables.targets.filter(v, v.startsWith('.') || v.contains('..')).join(", ")
+  auditAnnotations:
+    - key: bindy-record-value-rejected
+      valueExpression: |
+        "Rejected record target values: " +
+        variables.targets.filter(v,
+          !v.endsWith('.') || !v.matches('^[A-Za-z0-9._-]+$') ||
+          v.startsWith('.') || v.contains('..')).join(", ")

@@ -230,8 +230,9 @@ mod tests {
     fn test_parse_rndc_secret_data_all_algorithms() {
         use crate::crd::RndcAlgorithm;
 
+        // hmac-sha1 is intentionally omitted — rejected at parse time to match
+        // bindcar 0.7.0 (see test_parse_rndc_secret_data_rejects_hmac_sha1).
         let algorithms = vec![
-            ("hmac-sha1", RndcAlgorithm::HmacSha1),
             ("hmac-sha224", RndcAlgorithm::HmacSha224),
             ("hmac-sha256", RndcAlgorithm::HmacSha256),
             ("hmac-sha384", RndcAlgorithm::HmacSha384),
@@ -269,6 +270,43 @@ mod tests {
             err.contains("hmac-md5") && err.contains("deprecated"),
             "error should explain the deprecation, got: {err}"
         );
+    }
+
+    #[test]
+    fn test_parse_rndc_secret_data_rejects_hmac_sha1() {
+        // bindcar 0.7.0 rejects SHA-1 HMAC keys in addition to MD5. bindy must
+        // fail-closed at parse time so a legacy hmac-sha1 Secret never reaches
+        // bindcar (where it would be refused) or the TSIG signer.
+        let mut data = BTreeMap::new();
+        data.insert("key-name".to_string(), b"legacy-key".to_vec());
+        data.insert("algorithm".to_string(), b"hmac-sha1".to_vec());
+        data.insert("secret".to_string(), b"dGVzdHNlY3JldA==".to_vec());
+
+        let result = Bind9Manager::parse_rndc_secret_data(&data);
+
+        assert!(result.is_err(), "hmac-sha1 must be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("hmac-sha1") && err.contains("SHA-1"),
+            "error should name the rejected SHA-1 algorithm, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_parse_rndc_key_file_rejects_hmac_sha1() {
+        // The external rndc.key file path must also reject SHA-1.
+        let rndc_key_content = r#"key "legacy" {
+    algorithm hmac-sha1;
+    secret "dGVzdHNlY3JldA==";
+};
+"#;
+        let mut data = BTreeMap::new();
+        data.insert("rndc.key".to_string(), rndc_key_content.as_bytes().to_vec());
+
+        let result = Bind9Manager::parse_rndc_secret_data(&data);
+
+        assert!(result.is_err(), "hmac-sha1 in rndc.key must be rejected");
+        assert!(result.unwrap_err().to_string().contains("SHA-1"));
     }
 
     #[test]
@@ -338,8 +376,10 @@ mod tests {
     fn test_create_rndc_secret_data_all_algorithms() {
         use crate::crd::RndcAlgorithm;
 
+        // hmac-sha1 omitted: create still serializes the enum, but the value is
+        // rejected on parse (bindcar 0.7.0), so it is not a supported end-to-end
+        // algorithm. Its `as_str()` mapping is covered by crd_tests.
         let algorithms = vec![
-            (RndcAlgorithm::HmacSha1, "hmac-sha1"),
             (RndcAlgorithm::HmacSha224, "hmac-sha224"),
             (RndcAlgorithm::HmacSha256, "hmac-sha256"),
             (RndcAlgorithm::HmacSha384, "hmac-sha384"),
@@ -444,9 +484,9 @@ mod tests {
     fn test_round_trip_all_algorithms() {
         use crate::crd::RndcAlgorithm;
 
-        // HMAC-MD5 is intentionally omitted — rejected at parse time per H4.
+        // HMAC-MD5 and HMAC-SHA1 are intentionally omitted — both are rejected
+        // at parse time (RFC 8945 §10 / bindcar 0.7.0), so they cannot round-trip.
         let algorithms = vec![
-            RndcAlgorithm::HmacSha1,
             RndcAlgorithm::HmacSha224,
             RndcAlgorithm::HmacSha256,
             RndcAlgorithm::HmacSha384,

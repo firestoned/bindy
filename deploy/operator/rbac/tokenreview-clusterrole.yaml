@@ -1,0 +1,24 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# bindcar 0.7.0 Mode B (TokenReview): the bindcar sidecar (which runs in the
+# operand BIND9 pod as the `bind9` ServiceAccount) validates the operator's
+# bearer token by creating a TokenReview against the API server. This
+# purpose-built, least-privilege ClusterRole grants ONLY `create tokenreviews`
+# — it deliberately does not grant `subjectaccessreviews` or any other verb.
+#
+# Not required for shared-secret (Mode A) deployments. Safe to apply alongside
+# the operator RBAC.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: bindcar-tokenreview
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/part-of: bindy
+    app.kubernetes.io/component: rbac
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]

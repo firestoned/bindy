@@ -1,0 +1,15 @@
+# Should be REJECTED by bindy-record-value-validation: mailServer contains a
+# space (a stand-in for any whitespace/control/metacharacter), violating the
+# [A-Za-z0-9._-] character set.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: MXRecord
+metadata:
+  name: vap-test-mx-reject
+  namespace: bindy-system
+  labels:
+    zone: example.com
+spec:
+  name: "@"
+  priority: 10
+  mailServer: "mail example.com."
+  ttl: 3600

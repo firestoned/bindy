@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 
-.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall
+.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh
 
 # Detect host architecture and derive the matching Linux cross-compilation target.
 # On Apple Silicon (arm64) → aarch64-unknown-linux-gnu
@@ -193,8 +193,10 @@ admission-policies-install: ## Install bindy ValidatingAdmissionPolicies (k8s 1.
 	@kubectl apply -f deploy/admission-policies/04-bindy-zone-name-binding.yaml
 	@kubectl apply -f deploy/admission-policies/09-bindy-dnssec-policy-policy.yaml
 	@kubectl apply -f deploy/admission-policies/10-bindy-dnssec-policy-binding.yaml
+	@kubectl apply -f deploy/admission-policies/13-bindy-record-value-policy.yaml
+	@kubectl apply -f deploy/admission-policies/14-bindy-record-value-binding.yaml
 	@echo "✓ Core admission policies installed."
-	@echo "  Optional posture-strict RNDC policy (rejects hmac-sha1):"
+	@echo "  Recommended (default since bindcar 0.7.0) posture-strict RNDC policy (rejects hmac-sha1):"
 	@echo "    kubectl apply -f deploy/admission-policies/05-bindy-rndc-strict-policy.yaml"
 	@echo "    kubectl apply -f deploy/admission-policies/06-bindy-rndc-strict-binding.yaml"
 
@@ -208,18 +210,20 @@ admission-policies-test: ## Validate VAPs against accept/reject fixtures
 	@echo "Testing ValidatingAdmissionPolicies against fixtures..."
 	@fail=0; \
 	for f in deploy/admission-policies/tests/accept-*.yaml; do \
-	  echo "  [ACCEPT] $$f"; \
-	  if ! kubectl apply --dry-run=server -f "$$f" >/dev/null 2>&1; then \
+	  as_flag=$$(grep -oE -- '--as=[^ ]+' "$$f" 2>/dev/null | head -1); \
+	  echo "  [ACCEPT] $$f $$as_flag"; \
+	  if ! kubectl apply --dry-run=server $$as_flag -f "$$f" >/dev/null 2>&1; then \
 	    echo "    ✗ FAIL: expected accept, got reject"; \
-	    kubectl apply --dry-run=server -f "$$f" 2>&1 | sed 's/^/      /'; \
+	    kubectl apply --dry-run=server $$as_flag -f "$$f" 2>&1 | sed 's/^/      /'; \
 	    fail=1; \
 	  else \
 	    echo "    ✓ accepted"; \
 	  fi; \
 	done; \
 	for f in deploy/admission-policies/tests/reject-*.yaml; do \
-	  echo "  [REJECT] $$f"; \
-	  if kubectl apply --dry-run=server -f "$$f" >/dev/null 2>&1; then \
+	  as_flag=$$(grep -oE -- '--as=[^ ]+' "$$f" 2>/dev/null | head -1); \
+	  echo "  [REJECT] $$f $$as_flag"; \
+	  if kubectl apply --dry-run=server $$as_flag -f "$$f" >/dev/null 2>&1; then \
 	    echo "    ✗ FAIL: expected reject, got accept"; \
 	    fail=1; \
 	  else \
@@ -741,6 +745,16 @@ kind-test: ## Run tests on Kind cluster
 
 kind-integration-test: ## Run full integration test suite (local build)
 	./tests/integration_test.sh
+
+REGRESSION_CLUSTER ?= bindy-regression
+
+regression-test: ## Run kind-based regression suite (Phase A: admission policies; set REGRESSION_IMAGE=<ref> to add operator pod-shape + liveness phases)
+	@chmod +x tests/regression_test.sh
+	@CLUSTER_NAME=$(REGRESSION_CLUSTER) tests/regression_test.sh $(if $(REGRESSION_IMAGE),--image "$(REGRESSION_IMAGE)")
+
+regression-test-fresh: ## Run the regression suite on a freshly recreated kind cluster
+	@chmod +x tests/regression_test.sh
+	@CLUSTER_NAME=$(REGRESSION_CLUSTER) tests/regression_test.sh --fresh $(if $(REGRESSION_IMAGE),--image "$(REGRESSION_IMAGE)")
 
 kind-integration-test-ci: ## Run integration tests in CI mode (requires IMAGE_TAG env var)
 	@echo "Running integration tests in CI mode..."
