@@ -158,6 +158,36 @@ spec:
 
 ---
 
+## bindcar Sidecar (operand pods)
+
+These variables configure the **bindcar** HTTP API sidecar (`api` container) that
+the operator injects into every BIND9 operand pod. The operator sets them
+automatically from the `Bind9Instance` / `Bind9Cluster` spec — you normally do
+**not** set them yourself. They are documented here because they define the
+sidecar's authentication contract (bindcar 0.7.x "Mode B" / Kubernetes
+TokenReview).
+
+| Variable | Set by operator to | Purpose |
+|----------|--------------------|---------|
+| `BIND_TOKEN_AUDIENCES` | `bindcar` | Audience that the caller's ServiceAccount token must carry. bindcar validates the token's `status.audiences` (from the TokenReview response) against this. The operator presents a token minted with `audience: bindcar` (projected at `/var/run/secrets/bindcar/token`). |
+| `BIND_ALLOWED_SERVICE_ACCOUNTS` | `system:serviceaccount:<operator-ns>:bindy` | Allow-list of ServiceAccounts permitted to call the API. This names the **operator** SA (the caller), not the operand `bind9` SA. The operator namespace comes from `POD_NAMESPACE` (fallback `bindy-system`). |
+| `RNDC_SECRET` / `RNDC_ALGORITHM` | from the RNDC key Secret | RNDC credential the sidecar uses to talk to `named`. `RNDC_ALGORITHM` is SHA-2 only (`hmac-md5`/`hmac-sha1` are rejected). |
+| `BIND_ZONE_DIR` | `/var/cache/bind` | Zone file directory. |
+| `TMPDIR` | `/tmp` | Writable scratch dir (memory-backed `emptyDir`) for bindcar's `0600` TSIG key file — required because the sidecar runs with `readOnlyRootFilesystem: true` under Pod Security Admission `restricted`. |
+| `API_PORT` | `8080` (or `bindcarConfig.port`) | HTTP API listen port. |
+
+> ⚠️ **Reserved — do not override via `bindcarConfig.envVars`.** The variables
+> above (plus `BIND_API_TOKEN`, `DISABLE_AUTH`, `BIND_ALLOW_ANY_SERVICEACCOUNT`,
+> `BIND_ALLOWED_NAMESPACES`, and any `KUBE_*`) are security-critical. As of
+> bindcar 0.7.2, setting `BIND_API_TOKEN` *disables* TokenReview, so injecting
+> these through user `envVars` can weaken or bypass authentication. See the
+> [migration guide](migration-guide.md).
+
+For the full Mode B setup (projected token, `bindcar-tokenreview` RBAC, PSA), see
+the [bindcar 0.7.x migration guide](migration-guide.md) and [RBAC](rbac.md).
+
+---
+
 ## Best Practices
 
 1. **Use `info` in production** — balances visibility and noise. Raise to `debug` temporarily for troubleshooting.

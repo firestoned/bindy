@@ -1,0 +1,97 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# Pod hardening for the bindcar 0.7.0 migration (Mode B / TokenReview).
+#
+# 1. Pod Security Admission `restricted`
+#    -------------------------------------
+#    The operator-built BIND9 + bindcar pods are PSA-`restricted` compliant:
+#      - runAsNonRoot: true, non-root UID
+#      - allowPrivilegeEscalation: false
+#      - capabilities.drop: ["ALL"] (the `named` container adds back only
+#        NET_BIND_SERVICE, which `restricted` permits, to bind DNS port 53)
+#      - seccompProfile.type: RuntimeDefault (pod + container level)
+#      - the bindcar sidecar runs readOnlyRootFilesystem: true with a
+#        memory-backed emptyDir at /tmp (TMPDIR) for its 0600 TSIG key file
+#    Enforce the profile by labelling the namespace that runs the operand pods.
+#    Prefer patching the existing namespace over shipping a competing Namespace
+#    object:
+#
+#      kubectl label ns bindy-system \
+#        pod-security.kubernetes.io/enforce=restricted \
+#        pod-security.kubernetes.io/enforce-version=latest --overwrite
+#
+#    (Repeat for every namespace that hosts a Bind9Instance.)
+#
+# 2. NetworkPolicy (least-privilege, fail-closed)
+#    --------------------------------------------
+#    bindcar 0.7.0 performs a TokenReview against the Kubernetes API server, so
+#    the operand pods need egress to the API server. The API-server address is
+#    cluster-specific and ships as a FAIL-CLOSED placeholder — REPLACE
+#    10.0.0.1/32 with your real kube-apiserver endpoint/CIDR or TokenReview
+#    (and therefore every authenticated bindcar request) will be denied.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bindy-operand
+  namespace: bindy-system
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/part-of: bindy
+    app.kubernetes.io/component: network-policy
+spec:
+  # Selects the operator-built BIND9 pods (which host the bindcar sidecar).
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: bindy
+      app.kubernetes.io/component: dns-server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # DNS service (queries, zone transfers) on port 53.
+    - ports:
+        - port: 53
+          protocol: TCP
+        - port: 53
+          protocol: UDP
+    # bindcar HTTP API: container port 8080 and Service port 80.
+    - ports:
+        - port: 8080
+          protocol: TCP
+        - port: 80
+          protocol: TCP
+  egress:
+    # Kubernetes API server (TokenReview). FAIL-CLOSED placeholder — replace
+    # 10.0.0.1/32 with your kube-apiserver endpoint/CIDR.
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.1/32
+      ports:
+        - port: 443
+          protocol: TCP
+        - port: 6443
+          protocol: TCP
+    # Cluster DNS resolution (kube-system CoreDNS).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Zone transfers / NOTIFY between bindy-managed peers (primary <-> secondary)
+    # on DNS port 53. Add external secondary/forwarder CIDRs here if `named`
+    # peers outside the cluster.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: bindy
+      ports:
+        - port: 53
+          protocol: TCP
+        - port: 53
+          protocol: UDP

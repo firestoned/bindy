@@ -62,8 +62,17 @@ pub const KIND_BIND9_INSTANCE: &str = "Bind9Instance";
 /// Standard DNS service port exposed externally
 pub const DNS_PORT: u16 = 53;
 
-/// DNS container port (non-privileged port for non-root execution)
-pub const DNS_CONTAINER_PORT: u16 = 5353;
+/// DNS container port.
+///
+/// This is the port `named` binds inside the operand pod and the `targetPort`
+/// of the DNS Service. As of the bindcar `0.7.0` migration this is the standard
+/// DNS port `53`: bindcar `0.7.0` validates secondary-zone `primaries` as plain
+/// IP addresses (no `IP port N` form) and defaults zone transfers to port `53`,
+/// so cross-pod transfers require `named` to listen on `53`. Running on a
+/// privileged port as a non-root user requires the `NET_BIND_SERVICE`
+/// capability, which is granted **only** to the `named` container (allowed under
+/// Pod Security Admission `restricted`). See `build_pod_spec`.
+pub const DNS_CONTAINER_PORT: u16 = 53;
 
 /// Standard RNDC control port (non-privileged)
 pub const RNDC_PORT: u16 = 9530;
@@ -179,7 +188,42 @@ pub const BIND9_NONROOT_UID: i64 = 101;
 /// This is the default image used for the bindcar HTTP API sidecar container
 /// when no image is specified in the `BindcarConfig` of a `Bind9Instance`,
 /// `Bind9Cluster`, or `ClusterBind9Provider`.
-pub const DEFAULT_BINDCAR_IMAGE: &str = "ghcr.io/firestoned/bindcar:v0.6.0";
+pub const DEFAULT_BINDCAR_IMAGE: &str = "ghcr.io/firestoned/bindcar:v0.7.2";
+
+// ============================================================================
+// Bindcar Authentication Constants (Mode B — TokenReview)
+// ============================================================================
+
+/// `ServiceAccount` name the bindy operator runs as.
+///
+/// Under bindcar `0.7.0` Mode B (TokenReview), the operator presents its own SA
+/// token to the bindcar HTTP API, and bindcar validates the token's subject
+/// against its `BIND_ALLOWED_SERVICE_ACCOUNTS` allow-list. That allow-list must
+/// therefore name **this** (the caller's) SA, not the operand `bind9` SA.
+pub const OPERATOR_SERVICE_ACCOUNT: &str = "bindy";
+
+/// Default namespace the bindy operator runs in.
+///
+/// Used as a fallback when the `POD_NAMESPACE` environment variable is not set
+/// while composing the `BIND_ALLOWED_SERVICE_ACCOUNTS` value for the bindcar
+/// sidecar.
+pub const DEFAULT_OPERATOR_NAMESPACE: &str = "bindy-system";
+
+/// Audience that operator tokens must carry for bindcar `0.7.0` TokenReview.
+///
+/// bindcar verifies `status.audiences` against `BIND_TOKEN_AUDIENCES`
+/// (default `bindcar`). The operator projects a token with this audience (see
+/// `deploy/operator/deployment.yaml`) and the sidecar is configured with the
+/// matching `BIND_TOKEN_AUDIENCES`.
+pub const BINDCAR_TOKEN_AUDIENCE: &str = "bindcar";
+
+/// Writable temporary directory mounted into the bindcar sidecar.
+///
+/// Under Pod Security Admission `restricted` the sidecar runs with
+/// `readOnlyRootFilesystem: true`, but bindcar writes a `0600` TSIG key file for
+/// `nsupdate -k`. A memory-backed `emptyDir` is mounted here and `TMPDIR` points
+/// at it.
+pub const BINDCAR_TMP_PATH: &str = "/tmp";
 
 // ============================================================================
 // Container Name Constants

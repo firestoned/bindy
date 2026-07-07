@@ -46,7 +46,9 @@ pub mod zone_ops;
 pub use rndc::{
     create_rndc_secret_data, create_tsig_signer, generate_rndc_key, parse_rndc_secret_data,
 };
-pub use types::{RndcError, RndcKeyData, SRVRecordData, SERVICE_ACCOUNT_TOKEN_PATH};
+pub use types::{
+    RndcError, RndcKeyData, SRVRecordData, BINDCAR_TOKEN_PATH, SERVICE_ACCOUNT_TOKEN_PATH,
+};
 
 use anyhow::{Context, Result};
 use bindcar::ZoneConfig;
@@ -61,7 +63,11 @@ use tracing::{debug, warn};
 const BINDCAR_AUTH_ENV_VAR: &str = "BIND_ALLOWED_SERVICE_ACCOUNTS";
 
 /// Name of the bindcar sidecar container in `Bind9Instance` deployments.
-const BINDCAR_CONTAINER_NAME: &str = "bindcar";
+///
+/// Must match [`crate::constants::CONTAINER_NAME_BINDCAR`] — the operator names
+/// the sidecar `api` (not `bindcar`), so this is what `is_auth_enabled` looks
+/// for when inspecting the operand Deployment.
+const BINDCAR_CONTAINER_NAME: &str = crate::constants::CONTAINER_NAME_BINDCAR;
 
 /// Manager for BIND9 servers via HTTP API sidecar.
 ///
@@ -154,10 +160,28 @@ impl Bind9Manager {
         }
     }
 
-    /// Read the `ServiceAccount` token from the mounted secret
+    /// Read the operator's `ServiceAccount` token for bindcar authentication.
+    ///
+    /// bindcar `0.7.0` enforces the token audience (`status.audiences`) from the
+    /// TokenReview response, so the operator must present a token minted with the
+    /// `bindcar` audience. The projected audience-scoped token
+    /// ([`BINDCAR_TOKEN_PATH`]) is read in preference to the default
+    /// API-server-audience token ([`SERVICE_ACCOUNT_TOKEN_PATH`]), which is kept
+    /// only as a backward-compatible fallback for clusters that have not yet
+    /// projected the audience-scoped token.
     fn read_service_account_token() -> Result<String> {
-        std::fs::read_to_string(SERVICE_ACCOUNT_TOKEN_PATH)
-            .context("Failed to read ServiceAccount token file")
+        match std::fs::read_to_string(BINDCAR_TOKEN_PATH) {
+            Ok(token) => Ok(token),
+            Err(bindcar_err) => {
+                debug!(
+                    path = BINDCAR_TOKEN_PATH,
+                    error = %bindcar_err,
+                    "bindcar-audience token not found; falling back to default ServiceAccount token"
+                );
+                std::fs::read_to_string(SERVICE_ACCOUNT_TOKEN_PATH)
+                    .context("Failed to read ServiceAccount token file")
+            }
+        }
     }
 
     /// Check if authentication is enabled for the associated `Bind9Instance`.

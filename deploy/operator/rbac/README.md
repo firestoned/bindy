@@ -81,6 +81,39 @@ kubectl auth can-i create secrets -n kube-system \
 
 ---
 
+### 1b. `bindcar-tokenreview` (bindcar 0.7.0 Mode B)
+
+**Files:** [`tokenreview-clusterrole.yaml`](tokenreview-clusterrole.yaml), [`tokenreview-clusterrolebinding.yaml`](tokenreview-clusterrolebinding.yaml)
+**Type:** ClusterRole + ClusterRoleBinding
+**Bound To:** ServiceAccount `bind9` in `bindy-system` (the operand identity the bindcar sidecar runs as)
+
+**Purpose:** bindcar 0.7.0 validates the operator's bearer token by creating a
+`TokenReview` against the API server. This purpose-built role grants **only**
+`create tokenreviews` — no `subjectaccessreviews`, no other verbs — replacing
+any broader `system:auth-delegator` binding you may have templated previously.
+
+**When needed:** Only for TokenReview (Mode B) deployments, i.e. bindcar built
+with `--features k8s-token-review` — Bindy's default configuration since the
+bindcar 0.7.0 migration. Not needed for shared-secret (`BIND_API_TOKEN`) setups.
+
+**Multi-namespace note:** Add one binding subject per operand namespace's
+`bind9` ServiceAccount if Bind9Instances live outside `bindy-system`.
+
+**Apply:**
+```bash
+kubectl apply -f deploy/operator/rbac/tokenreview-clusterrole.yaml
+kubectl apply -f deploy/operator/rbac/tokenreview-clusterrolebinding.yaml
+```
+
+**Verify:**
+```bash
+kubectl auth can-i create tokenreviews.authentication.k8s.io \
+  --as=system:serviceaccount:bindy-system:bind9
+# Expected: yes
+```
+
+---
+
 ### 2. `bindy-admin-role` (Admin Role)
 
 **File:** [`role-admin.yaml`](role-admin.yaml)

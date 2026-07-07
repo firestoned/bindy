@@ -123,6 +123,46 @@ subjects:
   namespace: bindy-system
 ```
 
+## bindcar TokenReview RBAC (Mode B)
+
+Since the bindcar 0.7.x migration, the operator authenticates to the bindcar
+sidecar HTTP API with a `bindcar`-audience ServiceAccount token, which the
+sidecar validates by creating a Kubernetes **TokenReview**. The sidecar runs as
+the operand `bind9` ServiceAccount, so that SA needs permission to create
+tokenreviews. This is a purpose-built, least-privilege ClusterRole — it grants
+**only** `create tokenreviews` (no `subjectaccessreviews`, no other verbs).
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: bindcar-tokenreview
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: bindcar-tokenreview
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: bindcar-tokenreview
+subjects:
+  - kind: ServiceAccount
+    name: bind9
+    namespace: bindy-system   # one subject per operand namespace
+```
+
+Ships as `deploy/operator/rbac/tokenreview-clusterrole.yaml` and
+`tokenreview-clusterrolebinding.yaml` (applied by `make regression-test` and the
+release manifests). For operand pods in namespaces other than `bindy-system`,
+add one binding subject per namespace's `bind9` SA. See the
+[bindcar 0.7.x migration guide](migration-guide.md) for the full Mode B setup
+(projected `audience: bindcar` token + `BIND_ALLOWED_SERVICE_ACCOUNTS`).
+
 ## Applying RBAC
 
 ### Install from Latest Release (Recommended)

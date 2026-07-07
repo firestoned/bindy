@@ -274,8 +274,8 @@ mod tests {
         let ports = container.ports.as_ref().unwrap();
         // Should have 3 ports: DNS TCP, DNS UDP, and RNDC
         assert_eq!(ports.len(), 3);
-        assert_eq!(ports[0].container_port, 5353); // DNS TCP (non-privileged port)
-        assert_eq!(ports[1].container_port, 5353); // DNS UDP (non-privileged port)
+        assert_eq!(ports[0].container_port, 53); // DNS TCP (via NET_BIND_SERVICE)
+        assert_eq!(ports[1].container_port, 53); // DNS UDP (via NET_BIND_SERVICE)
         assert_eq!(ports[2].container_port, 9530); // RNDC (non-privileged)
     }
 
@@ -305,12 +305,21 @@ mod tests {
 
         // Verify volumes
         let volumes = pod_spec.volumes.unwrap();
-        assert_eq!(volumes.len(), 4);
-        // Order: zones, cache, rndc-key, config (from build_volumes function)
+        assert_eq!(volumes.len(), 5);
+        // Order: zones, cache, rndc-key, tmp, config (from build_volumes function).
+        // `tmp` is the memory-backed writable scratch dir for the bindcar
+        // sidecar (TMPDIR), required under PSA `restricted`.
         assert_eq!(volumes[0].name, "zones");
         assert_eq!(volumes[1].name, "cache");
         assert_eq!(volumes[2].name, "rndc-key");
-        assert_eq!(volumes[3].name, "config");
+        assert_eq!(volumes[3].name, "tmp");
+        assert_eq!(volumes[4].name, "config");
+        // The tmp volume must be a memory-backed emptyDir.
+        let tmp_vol = &volumes[3];
+        assert_eq!(
+            tmp_vol.empty_dir.as_ref().unwrap().medium.as_deref(),
+            Some("Memory")
+        );
 
         // Verify container configuration
         let container = &pod_spec.containers[0];
@@ -845,7 +854,7 @@ mod tests {
             let expected_port = if port.name.as_deref() == Some("http") {
                 8080
             } else {
-                5353 // DNS container port (non-privileged)
+                53 // DNS container port (named binds :53 with NET_BIND_SERVICE)
             };
             assert_eq!(
                 port.target_port,
@@ -1394,6 +1403,124 @@ mod tests {
             Some(true),
             "RNDC key volume should be read-only for API"
         );
+
+        // bindcar 0.7.0 runs with a read-only root filesystem and writes its
+        // TSIG key file to TMPDIR, so /tmp must be a writable mount.
+        let tmp_mount = volume_mounts.iter().find(|m| m.name == "tmp");
+        assert!(
+            tmp_mount.is_some(),
+            "API should mount a writable tmp volume"
+        );
+        assert_eq!(tmp_mount.unwrap().mount_path, "/tmp");
+    }
+
+    // ============================================================
+    // bindcar 0.7.0 migration: auth (Mode B) + PSA `restricted`
+    // ============================================================
+
+    #[test]
+    fn test_named_container_has_net_bind_service_and_seccomp() {
+        // named now binds the privileged DNS port 53, so it must add back the
+        // single capability PSA `restricted` allows — NET_BIND_SERVICE — while
+        // still dropping ALL others and running with a RuntimeDefault seccomp
+        // profile and a non-root UID.
+        let instance = create_test_instance("test");
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
+        let named = pod_spec
+            .containers
+            .iter()
+            .find(|c| c.name == "bind9")
+            .unwrap();
+
+        // Container binds DNS on 53.
+        let ports = named.ports.as_ref().unwrap();
+        assert!(
+            ports
+                .iter()
+                .any(|p| p.name.as_deref() == Some("dns-tcp") && p.container_port == 53),
+            "named should bind dns-tcp on 53"
+        );
+
+        let sc = named.security_context.as_ref().unwrap();
+        let caps = sc.capabilities.as_ref().unwrap();
+        assert_eq!(caps.drop.as_ref().unwrap(), &vec!["ALL".to_string()]);
+        assert_eq!(
+            caps.add.as_ref().unwrap(),
+            &vec!["NET_BIND_SERVICE".to_string()],
+            "named must add back only NET_BIND_SERVICE for port 53"
+        );
+        assert_eq!(sc.allow_privilege_escalation, Some(false));
+        assert_eq!(sc.run_as_non_root, Some(true));
+        assert_eq!(sc.seccomp_profile.as_ref().unwrap().type_, "RuntimeDefault");
+    }
+
+    #[test]
+    fn test_bindcar_sidecar_is_psa_restricted() {
+        // The sidecar binds no privileged port, so it keeps the strictest
+        // posture: drop ALL (no add), read-only root filesystem, RuntimeDefault
+        // seccomp, non-root.
+        let instance = create_test_instance("test");
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
+        let api = pod_spec
+            .containers
+            .iter()
+            .find(|c| c.name == "api")
+            .unwrap();
+
+        let sc = api.security_context.as_ref().unwrap();
+        assert_eq!(sc.read_only_root_filesystem, Some(true));
+        assert_eq!(sc.allow_privilege_escalation, Some(false));
+        assert_eq!(sc.run_as_non_root, Some(true));
+        let caps = sc.capabilities.as_ref().unwrap();
+        assert_eq!(caps.drop.as_ref().unwrap(), &vec!["ALL".to_string()]);
+        assert!(
+            caps.add.is_none(),
+            "sidecar must not add any capability (no privileged port)"
+        );
+        assert_eq!(sc.seccomp_profile.as_ref().unwrap().type_, "RuntimeDefault");
+    }
+
+    #[test]
+    fn test_pod_security_context_has_seccomp() {
+        let instance = create_test_instance("test");
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
+        let sc = pod_spec.security_context.as_ref().unwrap();
+        assert_eq!(sc.run_as_non_root, Some(true));
+        assert_eq!(sc.seccomp_profile.as_ref().unwrap().type_, "RuntimeDefault");
+    }
+
+    #[test]
+    fn test_bindcar_env_targets_operator_sa_and_audience() {
+        // Under bindcar 0.7.0 Mode B, the allow-list must name the *caller*
+        // (the operator SA), and the operator presents a `bindcar`-audience
+        // token, so BIND_TOKEN_AUDIENCES must match. TMPDIR must point at the
+        // writable /tmp mount.
+        let instance = create_test_instance("test");
+        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
+        let api = pod_spec
+            .containers
+            .iter()
+            .find(|c| c.name == "api")
+            .unwrap();
+        let env = api.env.as_ref().unwrap();
+
+        let get = |name: &str| {
+            env.iter()
+                .find(|e| e.name == name)
+                .and_then(|e| e.value.clone())
+        };
+
+        let allowed = get("BIND_ALLOWED_SERVICE_ACCOUNTS").unwrap();
+        assert!(
+            allowed.starts_with("system:serviceaccount:") && allowed.ends_with(":bindy"),
+            "allow-list must name the operator SA (…:bindy), got {allowed}"
+        );
+        assert_eq!(get("BIND_TOKEN_AUDIENCES").as_deref(), Some("bindcar"));
+        assert_eq!(get("TMPDIR").as_deref(), Some("/tmp"));
     }
 
     // DNSSEC Policy Generation Tests

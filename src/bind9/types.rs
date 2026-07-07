@@ -85,8 +85,24 @@ impl RndcError {
     }
 }
 
-/// Path to the `ServiceAccount` token file in Kubernetes pods
+/// Path to the default `ServiceAccount` token file in Kubernetes pods.
+///
+/// This token carries the API server's default audience. bindcar `0.7.0`
+/// enforces `status.audiences` on the TokenReview response, so this default
+/// token is **rejected** by bindcar unless it also carries the `bindcar`
+/// audience. Prefer [`BINDCAR_TOKEN_PATH`] (an explicitly-projected token with
+/// `audience: bindcar`); this path is kept only as a backward-compatible
+/// fallback for clusters that have not yet projected the audience-scoped token.
 pub const SERVICE_ACCOUNT_TOKEN_PATH: &str = "/var/run/secrets/kubernetes.io/serviceaccount/token";
+
+/// Path to the projected `ServiceAccount` token minted with the `bindcar`
+/// audience (see `deploy/operator/deployment.yaml`).
+///
+/// bindcar `0.7.0` verifies the token's `status.audiences` against
+/// `BIND_TOKEN_AUDIENCES` (default `bindcar`), so the operator must present a
+/// token whose audience is `bindcar` rather than the default API-server
+/// audience. This path is read in preference to [`SERVICE_ACCOUNT_TOKEN_PATH`].
+pub const BINDCAR_TOKEN_PATH: &str = "/var/run/secrets/bindcar/token";
 
 /// Parameters for creating SRV records.
 ///

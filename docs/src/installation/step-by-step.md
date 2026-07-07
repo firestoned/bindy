@@ -44,13 +44,23 @@ kubectl get storageclass
 # Create namespace
 kubectl create namespace bindy-system
 
-# Install everything from the latest release (CRDs, RBAC, and operator)
+# Install everything from the latest release (CRDs, RBAC, and operator).
+# This bundle includes the bindcar Mode B auth pieces: the projected
+# `audience: bindcar` token on the operator Deployment and the
+# `bindcar-tokenreview` ClusterRole/Binding for the operand `bind9` SA.
 kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/install.yaml
 
 # Wait for operator to be ready
 kubectl wait --for=condition=available --timeout=300s \
   deployment/bind9-operator -n bindy-system
 ```
+
+!!! note "Authenticated bindcar sidecar (0.7.x)"
+    Operand pods run an authenticated bindcar sidecar (TokenReview). Using the
+    release `install.yaml` above wires this up automatically. If you build RBAC
+    by hand, also apply `deploy/operator/rbac/tokenreview-clusterrole.yaml` and
+    `-clusterrolebinding.yaml`. See the
+    [bindcar 0.7.x migration guide](../operations/migration-guide.md).
 
 !!! tip "Specific version"
     To pin to a specific release instead of `latest`:

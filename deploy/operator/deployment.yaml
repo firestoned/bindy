@@ -32,6 +32,10 @@ spec:
       securityContext:
         fsGroup: 65534
         runAsNonRoot: true
+        # Required for Pod Security Admission `restricted` (recommended on
+        # bindy-system since the bindcar 0.7.0 migration — see deploy/pod-hardening.yaml).
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: bindy
           image: ghcr.io/firestoned/bindy:latest
@@ -83,9 +87,25 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            # bindcar 0.7.0 (Mode B / TokenReview) enforces the token audience.
+            # The operator presents this projected token (audience: bindcar) as
+            # the Bearer credential to the bindcar HTTP API; bindy reads it from
+            # /var/run/secrets/bindcar/token (BINDCAR_TOKEN_PATH).
+            - name: bindcar-token
+              mountPath: /var/run/secrets/bindcar
+              readOnly: true
       volumes:
         - name: tmp
           emptyDir: {}
+        # Short-lived ServiceAccount token minted with the `bindcar` audience so
+        # bindcar 0.7.0 accepts it (its default BIND_TOKEN_AUDIENCES is `bindcar`).
+        - name: bindcar-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: bindcar
+                  expirationSeconds: 3600
+                  path: token
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:

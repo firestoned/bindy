@@ -5,10 +5,13 @@ metadata:
   name: vap-test-zone-accept
   namespace: bindy-system
 spec:
-  zoneName: example.com.
+  # zoneName must NOT carry a trailing dot and adminEmail must be the SOA
+  # dotted form (CRD schema patterns) — otherwise this fixture is rejected by
+  # the schema before any VAP runs.
+  zoneName: example.com
   soaRecord:
     primaryNs: ns1.example.com.
-    adminEmail: hostmaster@example.com
+    adminEmail: hostmaster.example.com.
     serial: 2026042501
     refresh: 3600
     retry: 600

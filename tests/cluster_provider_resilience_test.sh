@@ -536,14 +536,14 @@ validate_zone_on_instance() {
     if [ -z "$POD_NAME" ]; then
         echo -e "${RED}  ✗ No running pod found for instance '${instance}'${NC}"
         echo -e "${YELLOW}  Manual verification command:${NC}"
-        echo "    kubectl exec -it \$(kubectl get po -n ${NAMESPACE} -l app.kubernetes.io/instance=${instance} --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -- dig @127.0.0.1 -p 5353 SOA ${ZONE_NAME}"
+        echo "    kubectl exec -it \$(kubectl get po -n ${NAMESPACE} -l app.kubernetes.io/instance=${instance} --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}') -n ${NAMESPACE} -- dig @127.0.0.1 -p 53 SOA ${ZONE_NAME}"
         return 1
     fi
 
     echo -e "${YELLOW}  Pod: ${POD_NAME}${NC}"
 
     # Execute dig command to check if zone exists (non-empty output expected)
-    SOA_RECORD=$(${KUBECTL} exec -n "${NAMESPACE}" "${POD_NAME}" -- dig @127.0.0.1 -p 5353 SOA ${ZONE_NAME} +short 2>/dev/null || echo "")
+    SOA_RECORD=$(${KUBECTL} exec -n "${NAMESPACE}" "${POD_NAME}" -- dig @127.0.0.1 -p 53 SOA ${ZONE_NAME} +short 2>/dev/null || echo "")
 
     if [ -n "$SOA_RECORD" ]; then
         # Zone exists (non-empty output) - this is expected
@@ -554,7 +554,7 @@ validate_zone_on_instance() {
         # Zone does not exist (empty output) - this is a failure
         echo -e "${RED}  ✗ DNS query failed - zone may not be loaded${NC}"
         echo -e "${YELLOW}  Manual verification command:${NC}"
-        echo "    kubectl exec -it ${POD_NAME} -n ${NAMESPACE} -- dig @127.0.0.1 -p 5353 SOA ${ZONE_NAME}"
+        echo "    kubectl exec -it ${POD_NAME} -n ${NAMESPACE} -- dig @127.0.0.1 -p 53 SOA ${ZONE_NAME}"
         return 1
     fi
 }
@@ -733,7 +733,7 @@ validate_zone_removed_from_instance() {
     echo -e "${YELLOW}  Pod: ${POD_NAME}${NC}"
 
     # Execute dig command - zone should NOT exist (empty output expected)
-    SOA_RECORD=$(${KUBECTL} exec -n "${NAMESPACE}" "${POD_NAME}" -- dig @127.0.0.1 -p 5353 SOA ${ZONE_NAME} +short 2>/dev/null || echo "")
+    SOA_RECORD=$(${KUBECTL} exec -n "${NAMESPACE}" "${POD_NAME}" -- dig @127.0.0.1 -p 53 SOA ${ZONE_NAME} +short 2>/dev/null || echo "")
 
     if [ -n "$SOA_RECORD" ]; then
         # Zone still exists (non-empty output) - this is a failure

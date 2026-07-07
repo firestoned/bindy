@@ -660,13 +660,24 @@ mod tests {
             records: vec![],
             also_notify: None,
             allow_transfer: None,
-            primaries: Some(vec!["10.0.0.1 port 5353".to_string()]),
+            // bindcar 0.7.0 requires every `primaries` entry to be a plain IP
+            // (no "IP port N" form); named binds :53 so the default port is used.
+            primaries: Some(vec!["10.0.0.1".to_string()]),
             dnssec_policy: None, // Secondary zones should not have DNSSEC policy
             inline_signing: None,
         };
 
         // Verify secondary zone has primaries but no DNSSEC
         assert!(zone_config.primaries.is_some());
+        assert!(
+            zone_config
+                .primaries
+                .as_ref()
+                .unwrap()
+                .iter()
+                .all(|p| p.parse::<std::net::IpAddr>().is_ok()),
+            "every primaries entry must be a bare IP for bindcar 0.7.0"
+        );
         assert_eq!(zone_config.dnssec_policy, None);
         assert_eq!(zone_config.inline_signing, None);
     }

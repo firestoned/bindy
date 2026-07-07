@@ -1,3 +1,305 @@
+## [2026-07-07] - Docs & examples: bindcar Mode B audience details
+
+**Author:** Erick Bourgeois
+
+Audited all ~130 doc pages: the bindcar 0.7.x Mode B auth model (audience
+`bindcar`, TokenReview, projected token, tokenreview RBAC) was documented **only**
+in the migration guide. Propagated it to the canonical homes and fixed stale
+image tags.
+
+### Changed
+- `examples/{complete-setup,cluster-bind9-provider,multi-tenancy}.yaml`: bindcar
+  image `v0.6.0` → `v0.7.2` (validated via server dry-run).
+- `tests/integration_test.sh`, `docs/roadmaps/external-bind9-gateway.md`: same
+  `v0.6.0` → `v0.7.2` tag bump.
+- `docs/src/operations/env-vars.md`: new "bindcar Sidecar" section documenting
+  `BIND_TOKEN_AUDIENCES`, `BIND_ALLOWED_SERVICE_ACCOUNTS`, `RNDC_*`, `TMPDIR`,
+  `API_PORT` + a reserved-env warning (envVars override risk).
+- `docs/src/operations/rbac.md`: new "bindcar TokenReview RBAC (Mode B)" section
+  with the `bindcar-tokenreview` ClusterRole/Binding.
+- `docs/src/reference/api.md`: `bindcarConfig` now described as authenticated
+  (audience/TokenReview) with the reserved-`envVars` warning + default v0.7.2.
+- `docs/src/operations/common-issues.md`: new "bindcar Sidecar Authentication"
+  troubleshooting — sidecar auth-guard crashloop (pre-v0.7.2 image) and
+  operator-side 401 (audience mismatch / missing tokenreview RBAC / wrong
+  allow-list).
+- `docs/src/installation/controller.md` + `step-by-step.md`: Mode B prereq
+  callouts (projected token + tokenreview RBAC).
+- `README.md`: "How It Works" notes the authenticated bindcar sidecar (v0.7.2).
+
+### Why
+A reader following the install/RBAC/env docs would otherwise have no signal that
+the sidecar is authenticated, and a manual RBAC assembly would omit the
+tokenreview grant → operator 401s. All new cross-links verified to resolve.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+> **Remaining (offered, not yet done):** narrative/accuracy passes on
+> `concepts/architecture-protocols.md` (operator→bindcar hop shown unauth'd;
+> "mTLS planned" now understated), `security/threat-model.md` +
+> `security/architecture.md` (add the bindcar:8080 authenticated trust
+> boundary). Non-breaking — the pages are silent, not wrong.
+
+---
+
+## [2026-07-06] - bindcar v0.7.2 bump + drop aws-lc-sys (ring-only TLS)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: `reqwest` feature `"rustls"` → `"rustls-no-provider"`. reqwest's
+  `"rustls"` is an alias for `__rustls-aws-lc-rs`, which force-enabled the
+  `aws-lc-rs` crypto backend graph-wide (pulling in `aws-lc-sys`, a C/assembly
+  build) and silently overrode the `ring` backend selected on the `rustls` line.
+  `rustls-no-provider` leaves the backend unset so reqwest uses the
+  process-default `CryptoProvider` — already installed as **ring** in
+  `main.rs`. Verified: `aws-lc-sys` and `aws-lc-rs` are gone from `Cargo.lock`;
+  `ring 0.17` remains the sole provider.
+- `src/bind9/mod_tests.rs`: added an idempotent `ensure_crypto_provider()`
+  helper to the two tests that build a `reqwest` client (`main.rs`'s startup
+  provider install does not run under `cargo test`). All other client-building
+  tests are `#[ignore]`d.
+- `src/constants.rs`, `src/crd.rs`, `docs/src/operations/migration-guide.md`,
+  `tests/regression_test.sh`: bindcar image `v0.7.1` → **`v0.7.2`**; regenerated
+  the 3 CRDs embedding `BindcarConfig` (doc-example diff only). The regression
+  Phase C skip message no longer claims the image lacks TokenReview — v0.7.2
+  ships it.
+- Crate dep: `bindcar = "0.7"` now resolves to `0.7.2` in `Cargo.lock`.
+
+### Why
+- **aws-lc-sys** was unwanted transitive weight — bindy already selects and
+  installs ring everywhere. Removing it simplifies builds and shrinks the
+  C-toolchain / FIPS-adjacent audit surface (banking-compliance context).
+- **v0.7.2** (bindcar PR #71) is the first published image built with
+  `--features k8s-token-review`, so `ghcr.io/firestoned/bindcar:v0.7.2` is the
+  first stock image deployable under bindy's Mode B config — no custom build
+  needed, and regression Phase B/C can run against it.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (operand pods pick up the v0.7.2 sidecar on next
+      reconcile)
+- [ ] Config change only
+- [ ] Documentation only
+
+> ⚠️ **Security follow-up (tracked, not yet done):** v0.7.2 made shared-secret
+> and TokenReview auth mutually exclusive with `BIND_API_TOKEN` winning, so a
+> tenant-supplied `bindcarConfig.envVars` entry (appended after the operator's
+> env; kubelet last-wins) can now inject `BIND_API_TOKEN`/`DISABLE_AUTH`/
+> `KUBE_API_SERVER`/allowlist vars to disable or subvert TokenReview. Needs a
+> reserved-env guard in `build_api_sidecar_container` + a new VAP (15/16). See
+> `~/dev/roadmaps/bindcar-v0.6.0-to-v0.7.2-bindy-migration.md` §14.
+
+---
+
+## [2026-07-05] - bindcar v0.7.1 bump
+
+**Author:** Erick Bourgeois
+
+Comprehensive v0.6.0→v0.7.1 analysis:
+`~/dev/roadmaps/bindcar-v0.6.0-to-v0.7.1-bindy-migration.md`. Verified from the
+bindcar repo: `src/` is **byte-identical** between the v0.7.0 and v0.7.1 tags —
+the patch release is packaging/CI only. The shipped fix is that the container
+images now bundle the `nsupdate` binary (+ shared libs), which the published
+v0.7.0 images lacked (bindcar's own `/records` endpoints were silently broken
+there; bindy was unaffected — it does RFC 2136 directly). Also: `DISABLE_AUTH`
+no longer baked as an image ENV (binary still defaults `false`), CI consolidated
+into `build.yaml`, bindcar gained its own regression targets.
+
+### Changed
+- `src/constants.rs`: `DEFAULT_BINDCAR_IMAGE` → `ghcr.io/firestoned/bindcar:v0.7.1`.
+- `src/crd.rs`: `BindcarConfig.image` rustdoc example `v0.6.0` → `v0.7.1`;
+  regenerated `deploy/operator/crds/` (description-only diff in 3 CRDs).
+- `docs/src/operations/migration-guide.md`, `tests/regression_test.sh`: v0.7.1
+  references; regression Phase C skip message clarified (published v0.7.1 still
+  lacks `k8s-token-review`).
+- Crate dep: no change — `bindcar = "0.7"` already resolves to `0.7.1`
+  (Cargo.lock; API identical).
+
+### Why
+v0.7.1 is the first published image where the nsupdate path works; v0.7.0
+images should not be referenced.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (operand pods pick up the new sidecar image on
+      next reconcile)
+- [ ] Config change only
+- [ ] Documentation only
+
+**Residual blocker (bindcar repo, unchanged):** `build.yaml` still builds
+without `--features k8s-token-review`, so the published v0.7.1 image cannot do
+Mode B TokenReview — bindy-managed pods need a feature-enabled build. Fix is a
+one-line `extra-args` addition to the Build binary step.
+
+---
+
+## [2026-07-02] - kind-based regression suite (`make regression-test`)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `tests/regression_test.sh`: idempotent kind + kubectl regression harness in
+  three phases — **A**: all admission-policy fixtures via server-side dry-run
+  (no images needed); **B**: deploys the operator under PSA `restricted` and
+  asserts the operand pod shape against the bindcar 0.7.0 contract (port 53,
+  `NET_BIND_SERVICE`, RO rootfs, seccomp, `TMPDIR`, operator-SA allowlist,
+  audience, `hmac-sha256`); **C**: best-effort operand liveness (Ready proves
+  `named` binds :53). Re-runnable against the same dedicated `bindy-regression`
+  cluster: prior-run test CRs are cleaned (finalizer-strip fallback) before the
+  CRD `replace --force`, and Phase B never asserts against a stale operand.
+- `Makefile`: `regression-test` / `regression-test-fresh` targets
+  (`REGRESSION_IMAGE=<ref>` enables Phases B/C; `REGRESSION_CLUSTER` overrides
+  the cluster name).
+
+### Fixed
+- `deploy/operator/deployment.yaml`: added the missing pod-level
+  `seccompProfile: RuntimeDefault` — without it the operator itself is rejected
+  in a PSA-`restricted` namespace, which `deploy/pod-hardening.yaml` recommends.
+- Stale admission-policy fixtures (caught by the new suite on first run):
+  - `accept-dnszone.yaml`, `accept-dnszone-dnssec-policy.yaml`: were rejected by
+    the **CRD schema** (trailing-dot `zoneName`, `@`-form `adminEmail`), never
+    reaching the VAPs they claim to test. Now schema-valid.
+  - `reject-dnszone-*.yaml`: same invalid `adminEmail` meant the rejection came
+    from the schema, not the VAP under test. Only the intentionally-bad field
+    remains invalid in each fixture.
+  - `reject-operator-workload-foreign-sa.yaml` / `accept-operator-workload-bind9-sa.yaml`:
+    VAP 11 only matches requests **by the operator SA**, so plain dry-run apply
+    never exercised it (the reject fixture was silently admitted). Both the new
+    harness and `make admission-policies-test` now honor the `--as=<principal>`
+    impersonation hint in fixture headers, and the harness installs the operator
+    RBAC up front so impersonated requests pass authorization.
+
+### Why
+The bindcar 0.7.0 migration changed the operand pod contract in ways unit tests
+can't fully cover (admission, PSA, rendered pod shape on a live API server); the
+suite pins that contract. Verified: two consecutive `make regression-test` runs
+on the same cluster — 22/22 fixtures pass both times, zero failures.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Tests + fixture fixes + one deploy-manifest hardening fix
+
+---
+
+## [2026-07-02] - Fix ReDoS-rejected exclude-tags regex in GHCR cleanup
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/ghcr-cleanup.yaml`: the semver exclude pattern
+  `^v?[0-9]+(\.[0-9]+){0,2}$` was rejected at runtime by
+  `dataaxiom/ghcr-cleanup-action`'s ReDoS guard (a `+`-quantified group nested
+  inside `{0,2}` counts as nested quantifiers, even though the literal `\.`
+  separator makes it non-exploitable). Unrolled it into three flat patterns
+  with the identical match set: `^v?[0-9]+$`, `^v?[0-9]+\.[0-9]+$`,
+  `^v?[0-9]+\.[0-9]+\.[0-9]+$`.
+
+### Why
+The GHCR cleanup job failed on every run with
+`exclude-tags: regex pattern rejected as ReDoS-prone`, so no stale image
+versions were being pruned. Released semver tags (`0`, `0.5`, `0.5.2`,
+`v0.5.2`) remain excluded from deletion exactly as before.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-07-01] - bindcar 0.7.0 migration (Mode B / TokenReview)
+
+**Author:** Erick Bourgeois
+
+Consumes bindcar `0.7.0`, whose startup guard, TokenReview enforcement,
+stricter request validation, and PSA-`restricted` requirements are all
+rollout-blocking against a v0.6.0-shaped deployment. See
+`docs/src/operations/migration-guide.md` for the operator-facing runbook.
+Auth model chosen: **Mode B (TokenReview / ServiceAccount tokens)**.
+
+### Changed
+- `src/constants.rs`:
+  - `DNS_CONTAINER_PORT` `5353` → **`53`**. bindcar 0.7.0 validates secondary
+    `primaries` as plain IPs (no `IP port N`) and defaults transfers to port 53,
+    so `named` must listen on 53. A non-root `named` binds 53 via the
+    `NET_BIND_SERVICE` capability (the only cap PSA `restricted` allows).
+  - `DEFAULT_BINDCAR_IMAGE` → `ghcr.io/firestoned/bindcar:v0.7.0`.
+  - New: `OPERATOR_SERVICE_ACCOUNT`, `DEFAULT_OPERATOR_NAMESPACE`,
+    `BINDCAR_TOKEN_AUDIENCE`, `BINDCAR_TMP_PATH`.
+- `src/bind9_resources.rs`:
+  - `named` container adds back only `NET_BIND_SERVICE` (drops ALL others),
+    gains a `RuntimeDefault` seccomp profile; container/probe/Service ports
+    follow `DNS_CONTAINER_PORT` (now 53).
+  - bindcar `api` sidecar: `readOnlyRootFilesystem: true` + `RuntimeDefault`
+    seccomp; new memory-backed `emptyDir` mounted at `/tmp` with `TMPDIR=/tmp`
+    (bindcar writes a 0600 TSIG key file for `nsupdate -k`).
+  - `BIND_ALLOWED_SERVICE_ACCOUNTS` now names the **operator** SA
+    (`system:serviceaccount:$POD_NAMESPACE:bindy`, fallback `bindy-system`) —
+    the actual caller — not the operand `bind9` SA. Added `BIND_TOKEN_AUDIENCES=bindcar`.
+    Pod-level `seccompProfile: RuntimeDefault`.
+  - `build_api_sidecar_container` no longer takes `namespace` (operator identity
+    comes from `POD_NAMESPACE`); `build_pod_spec` drops the unused `namespace` arg.
+- `src/bind9/zone_ops.rs`: secondary-zone `primaries` are now plain pod IPs
+  (dropped the `" port 5353"` suffix) — bindcar 0.7.0 rejects non-IP entries
+  with HTTP 400.
+- `src/bind9/rndc.rs`: both RNDC secret parsers now reject `hmac-sha1` in
+  addition to `hmac-md5` (RFC 8945 §10 / bindcar 0.7.0). SHA-2 only.
+- `src/bind9/mod.rs`: fixed a latent bug where `is_auth_enabled` looked for a
+  container named `bindcar` (the operator names it `api`); now references
+  `CONTAINER_NAME_BINDCAR`. `read_service_account_token` prefers the projected
+  `bindcar`-audience token at `/var/run/secrets/bindcar/token`
+  (`BINDCAR_TOKEN_PATH`), falling back to the default SA token.
+- `src/bind9/types.rs`: added `BINDCAR_TOKEN_PATH`.
+- `Cargo.toml`: `bindcar` `0.6.0` → `0.7` (types-only; its kube 4.0 / k8s-openapi
+  0.28 deps are gated behind the optional `k8s-token-review` feature, so no
+  conflict with the operator's kube 3.1 stack).
+- `deploy/operator/deployment.yaml`: projected `bindcar`-audience SA token
+  volume mounted read-only at `/var/run/secrets/bindcar`.
+- `deploy/admission-policies/`: RNDC-strict (`05`/`06`) reclassified from opt-in
+  to **recommended/default**; `admission-policies-install` and its README now
+  install the record-value policy by default.
+
+### Added
+- `deploy/operator/rbac/tokenreview-clusterrole.yaml` +
+  `tokenreview-clusterrolebinding.yaml`: least-privilege `bindcar-tokenreview`
+  ClusterRole (`create tokenreviews` only) bound to the operand `bind9` SA, which
+  bindcar uses to validate the operator's bearer token (Mode B).
+- `deploy/pod-hardening.yaml`: PSA-`restricted` guidance + a fail-closed
+  `NetworkPolicy` for operand pods (API-server egress placeholder `10.0.0.1/32`
+  for TokenReview; scoped DNS/peer egress; DNS + API ingress).
+- `deploy/admission-policies/13-bindy-record-value-policy.yaml` (+ `14` binding):
+  `bindy-record-value-validation` — enforces trailing-dot FQDN + `[A-Za-z0-9._-]`
+  + length on `CNAMERecord.spec.target`, `MXRecord.spec.mailServer`,
+  `NSRecord.spec.nameserver`, `SRVRecord.spec.target` (bindcar 0.7.0 §3
+  defense-in-depth). Fixtures under `tests/`.
+- Tests: RNDC parsers reject `hmac-sha1` (secret + `rndc.key` forms); operand
+  pod is PSA-`restricted` (named `NET_BIND_SERVICE`, sidecar RO-rootfs/seccomp,
+  pod seccomp); sidecar env targets the operator SA + `bindcar` audience + `/tmp`;
+  DNS ports are 53; secondary `primaries` are bare IPs.
+
+### Why
+bindcar 0.7.0 refuses to start / rejects requests against the old deployment
+shape (auth startup guard, audience-enforced TokenReview, fail-closed allowlists,
+plain-IP `primaries`, SHA-2 RNDC keys, PSA `restricted`).
+
+### Impact
+- [x] Breaking change (requires the projected `bindcar`-audience token, the
+      `bindcar-tokenreview` RBAC, a real API-server CIDR in the NetworkPolicy,
+      and DNS on port 53)
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
 ## [2026-07-01] - RED-team remediation: C1/H1/H2 fixes + C2 compensating policy
 
 **Author:** Erick Bourgeois

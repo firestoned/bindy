@@ -6,10 +6,12 @@ metadata:
   name: vap-test-zone-reject-ip
   namespace: bindy-system
 spec:
+  # Only zoneName is intentionally invalid; every other field is CRD-valid so
+  # the rejection provably comes from bindy-zone-name-validation.
   zoneName: 10.0.0.1
   soaRecord:
     primaryNs: ns1.example.com.
-    adminEmail: hostmaster@example.com
+    adminEmail: hostmaster.example.com.
     serial: 1
     refresh: 3600
     retry: 600

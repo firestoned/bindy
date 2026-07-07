@@ -212,6 +212,7 @@ Bindy provides 4 types of resources:
 - **Bind9Instance** generates Kubernetes Deployments, Services, ConfigMaps, and Secrets
 - **DNSZone** creates the zone on target BIND9 instances
 - **Record resources** add DNS records dynamically (no zone file edits!)
+- Each BIND9 pod runs an **authenticated bindcar sidecar** (`ghcr.io/firestoned/bindcar:v0.7.2`). The operator calls its HTTP API with a `bindcar`-audience ServiceAccount token validated by Kubernetes TokenReview (Mode B). See the [bindcar 0.7.x migration guide](docs/src/operations/migration-guide.md).
 
 ### Cluster-Scoped DNS with ClusterBind9Provider
 

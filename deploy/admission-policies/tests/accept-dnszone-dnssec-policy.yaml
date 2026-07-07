@@ -6,11 +6,13 @@ metadata:
   name: vap-test-zone-accept-dnssec-policy
   namespace: bindy-system
 spec:
-  zoneName: dnssec-accept.example.com.
+  # CRD-schema-valid values (no trailing dot on zoneName, SOA dotted-form
+  # email) so the fixture exercises the VAP, not the schema.
+  zoneName: dnssec-accept.example.com
   dnssecPolicy: high-security
   soaRecord:
     primaryNs: ns1.example.com.
-    adminEmail: hostmaster@example.com
+    adminEmail: hostmaster.example.com.
     serial: 2026060901
     refresh: 3600
     retry: 600

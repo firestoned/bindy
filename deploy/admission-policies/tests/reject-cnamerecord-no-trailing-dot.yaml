@@ -1,0 +1,14 @@
+# Should be REJECTED by bindy-record-value-validation: CNAME target is not an
+# absolute FQDN (no trailing dot), which bindcar 0.7.0 rejects and which BIND9
+# would otherwise treat as relative to the zone origin.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: CNAMERecord
+metadata:
+  name: vap-test-cname-reject
+  namespace: bindy-system
+  labels:
+    zone: example.com
+spec:
+  name: blog
+  target: example.github.io
+  ttl: 3600

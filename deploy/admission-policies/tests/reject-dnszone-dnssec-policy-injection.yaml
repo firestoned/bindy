@@ -7,11 +7,13 @@ metadata:
   name: vap-test-zone-reject-dnssec-policy
   namespace: bindy-system
 spec:
-  zoneName: dnssec-reject.example.com.
+  # Only dnssecPolicy is intentionally invalid; every other field is CRD-valid
+  # so the rejection provably comes from the DNSSEC-policy VAP / schema pattern.
+  zoneName: dnssec-reject.example.com
   dnssecPolicy: 'evil"; }; allow-update { any; };'
   soaRecord:
     primaryNs: ns1.example.com.
-    adminEmail: hostmaster@example.com
+    adminEmail: hostmaster.example.com.
     serial: 2026060901
     refresh: 3600
     retry: 600

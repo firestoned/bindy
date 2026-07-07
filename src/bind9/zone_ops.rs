@@ -750,15 +750,14 @@ pub async fn add_secondary_zone(
     let base_url = build_api_url(server);
     let url = format!("{base_url}/api/v1/zones");
 
-    // Create zone configuration for secondary zone with primaries
-    // Secondary zones don't need SOA/NS records as they are transferred from primary
-    // CRITICAL: Append port number to primary IPs for BIND9 zone transfers
-    // BIND9 defaults to port 53, but we use DNS_CONTAINER_PORT (5353)
-    // Format: "IP port PORT" (e.g., "10.244.1.82 port 5353")
-    let primaries_with_port: Vec<String> = primary_ips
-        .iter()
-        .map(|ip| format!("{} port {}", ip, crate::constants::DNS_CONTAINER_PORT))
-        .collect();
+    // Create zone configuration for secondary zone with primaries.
+    // Secondary zones don't need SOA/NS records as they are transferred from
+    // the primary. bindcar 0.7.0 strictly validates every `primaries` entry as
+    // a plain IP address (`IpAddr::parse`), rejecting the older
+    // "IP port <port>" form with HTTP 400. Zone transfers therefore use the
+    // default DNS port; the operand `named` now listens on DNS_CONTAINER_PORT
+    // (53), so plain pod IPs resolve to the correct transfer endpoint.
+    let primaries: Vec<String> = primary_ips.to_vec();
 
     let zone_config = ZoneConfig {
         ttl: DEFAULT_DNS_RECORD_TTL_SECS as u32,
@@ -776,7 +775,7 @@ pub async fn add_secondary_zone(
         records: vec![],
         also_notify: None,
         allow_transfer: None,
-        primaries: Some(primaries_with_port),
+        primaries: Some(primaries),
         // Secondary zones don't need DNSSEC policy (they receive signed zones via transfer)
         dnssec_policy: None,
         inline_signing: None,
@@ -1146,7 +1145,7 @@ pub async fn notify_zone(
 /// # Arguments
 ///
 /// * `zone_name` - The DNS zone name to verify (e.g., "example.com")
-/// * `server` - The DNS server address (e.g., "bind9-primary.bindy-system.svc.cluster.local:5353")
+/// * `server` - The DNS server address (e.g., "bind9-primary.bindy-system.svc.cluster.local:53")
 ///
 /// # Returns
 ///
@@ -1169,7 +1168,7 @@ pub async fn notify_zone(
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let signed = verify_zone_signed(
 ///     "example.com",
-///     "10.0.0.1:5353"
+///     "10.0.0.1:53"
 /// ).await?;
 ///
 /// if signed {

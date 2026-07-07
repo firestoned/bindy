@@ -173,7 +173,7 @@ spec:
     service: bindcar-api
   # bindcarConfig.image is still used — it's what runs on the remote host
   bindcarConfig:
-    image: "ghcr.io/firestoned/bindcar:v0.6.0"
+    image: "ghcr.io/firestoned/bindcar:v0.7.2"
 ```
 
 When `gatewayRef` is present:
