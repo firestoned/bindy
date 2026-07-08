@@ -111,7 +111,44 @@ pub fn parse_rndc_secret_data(data: &BTreeMap<String, Vec<u8>>) -> Result<RndcKe
     )
 }
 
+/// Start delimiter of a C-style block comment in BIND9 configuration files.
+const BLOCK_COMMENT_START: &str = "/*";
+
+/// End delimiter of a C-style block comment in BIND9 configuration files.
+const BLOCK_COMMENT_END: &str = "*/";
+
+/// Remove C-style `/* ... */` block comments from BIND9 configuration content.
+///
+/// An unterminated block comment swallows the rest of the content, matching
+/// how `named` itself treats an unterminated comment.
+fn strip_block_comments(content: &str) -> String {
+    let mut stripped = String::with_capacity(content.len());
+    let mut rest = content;
+
+    while let Some(start) = rest.find(BLOCK_COMMENT_START) {
+        stripped.push_str(&rest[..start]);
+        let after_start = &rest[start + BLOCK_COMMENT_START.len()..];
+        let Some(end) = after_start.find(BLOCK_COMMENT_END) else {
+            // Unterminated block comment: discard the remainder
+            return stripped;
+        };
+        rest = &after_start[end + BLOCK_COMMENT_END.len()..];
+    }
+
+    stripped.push_str(rest);
+    stripped
+}
+
+/// Returns `true` if a trimmed line is a `#` or `//` line comment.
+fn is_line_comment(line: &str) -> bool {
+    line.starts_with('#') || line.starts_with("//")
+}
+
 /// Parse a BIND9 key file (rndc.key format) to extract key metadata.
+///
+/// Comment lines (`#`, `//`) and `/* ... */` block comments are ignored, so a
+/// leading comment such as `# rndc key "docs-example"` cannot poison the
+/// parsed key name (which would cause TSIG NOTAUTH on every update).
 ///
 /// Expected format:
 /// ```text
@@ -125,23 +162,29 @@ pub fn parse_rndc_secret_data(data: &BTreeMap<String, Vec<u8>>) -> Result<RndcKe
 ///
 /// Returns an error if the file format is invalid or required fields are missing.
 fn parse_rndc_key_file(content: &str) -> Result<RndcKeyData> {
-    // Simple regex-based parser for BIND9 key file format
+    // Simple line-based parser for BIND9 key file format
     // Format: key "name" { algorithm algo; secret "secret"; };
-
-    // Extract key name
-    let name = content
+    let content = strip_block_comments(content);
+    let statement_lines: Vec<&str> = content
         .lines()
-        .find(|line| line.contains("key"))
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !is_line_comment(line))
+        .collect();
+
+    // Extract key name from the `key "name" {` statement
+    let name = statement_lines
+        .iter()
+        .find(|line| line.starts_with("key ") || line.starts_with("key\""))
         .and_then(|line| {
             line.split('"').nth(1) // Get the text between first pair of quotes
         })
         .context("Failed to parse key name from rndc.key file")?
         .to_string();
 
-    // Extract algorithm
-    let algorithm_str = content
-        .lines()
-        .find(|line| line.contains("algorithm"))
+    // Extract algorithm from the `algorithm <algo>;` statement
+    let algorithm_str = statement_lines
+        .iter()
+        .find(|line| line.starts_with("algorithm"))
         .and_then(|line| {
             line.split_whitespace()
                 .nth(1) // After "algorithm"
@@ -162,10 +205,10 @@ fn parse_rndc_key_file(content: &str) -> Result<RndcKeyData> {
         _ => anyhow::bail!("Unsupported algorithm '{algorithm_str}' in rndc.key file"),
     };
 
-    // Extract secret
-    let secret = content
-        .lines()
-        .find(|line| line.contains("secret"))
+    // Extract secret from the `secret "...";` statement
+    let secret = statement_lines
+        .iter()
+        .find(|line| line.starts_with("secret"))
         .and_then(|line| {
             line.split('"').nth(1) // Get the text between first pair of quotes
         })

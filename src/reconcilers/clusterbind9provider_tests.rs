@@ -116,6 +116,7 @@ mod tests {
                     last_transition_time: None,
                 }],
                 observed_generation: Some(1),
+                observed_parent_generation: None,
                 service_address: Some("127.0.0.1".to_string()),
                 cluster_ref: None,
                 zones: Vec::new(),
@@ -132,6 +133,7 @@ mod tests {
                     last_transition_time: None,
                 }],
                 observed_generation: Some(1),
+                observed_parent_generation: None,
                 service_address: None,
                 cluster_ref: None,
                 zones: Vec::new(),
@@ -165,5 +167,97 @@ mod tests {
             },
             status,
         }
+    }
+
+    // ========================================================================
+    // Status patch decision (cluster_status_needs_update)
+    // ========================================================================
+
+    use super::super::clusterbind9provider::{
+        cluster_status_needs_update, expected_cluster_namespaces,
+    };
+
+    #[test]
+    fn test_cluster_status_needs_update_no_current_status() {
+        let instances = vec![create_test_instance("primary-0", "test-ns", true)];
+        let new_status = calculate_cluster_status(&instances, Some(1));
+
+        assert!(cluster_status_needs_update(None, &new_status));
+    }
+
+    #[test]
+    fn test_cluster_status_needs_update_generation_only_change_triggers_patch() {
+        // THE BUG: a spec edit that does not change counts or conditions bumps
+        // metadata.generation only. The patch must still be applied so
+        // observedGeneration advances - otherwise should_reconcile() returns
+        // true on every requeue forever.
+        let instances = vec![create_test_instance("primary-0", "test-ns", true)];
+        let current = calculate_cluster_status(&instances, Some(1));
+        let new_status = calculate_cluster_status(&instances, Some(2));
+
+        assert!(
+            cluster_status_needs_update(Some(&current), &new_status),
+            "generation-only change must trigger a status patch"
+        );
+    }
+
+    #[test]
+    fn test_cluster_status_needs_update_unchanged_skips_patch() {
+        let instances = vec![create_test_instance("primary-0", "test-ns", true)];
+        let current = calculate_cluster_status(&instances, Some(2));
+        let new_status = calculate_cluster_status(&instances, Some(2));
+
+        assert!(!cluster_status_needs_update(Some(&current), &new_status));
+    }
+
+    #[test]
+    fn test_cluster_status_needs_update_count_change_triggers_patch() {
+        let one = vec![create_test_instance("primary-0", "test-ns", true)];
+        let two = vec![
+            create_test_instance("primary-0", "test-ns", true),
+            create_test_instance("primary-1", "test-ns", true),
+        ];
+        let current = calculate_cluster_status(&one, Some(2));
+        let new_status = calculate_cluster_status(&two, Some(2));
+
+        assert!(cluster_status_needs_update(Some(&current), &new_status));
+    }
+
+    // ========================================================================
+    // Expected namespace set shared by reconcile + drift detection
+    // ========================================================================
+
+    #[test]
+    fn test_expected_cluster_namespaces_falls_back_to_target_namespace() {
+        // No instance references the provider: the managed cluster is expected
+        // in the target namespace only
+        let instances = vec![];
+        let namespaces = expected_cluster_namespaces(&instances, "my-provider", "bindy-system");
+
+        assert_eq!(namespaces.len(), 1);
+        assert!(namespaces.contains("bindy-system"));
+    }
+
+    #[test]
+    fn test_expected_cluster_namespaces_uses_instance_namespaces() {
+        // THE BUG: drift detection previously only inspected the target
+        // namespace. Instances in ns1/ns2 mean managed clusters are created in
+        // ns1/ns2 - the expected set must be exactly those namespaces.
+        let mut inst_a = create_test_instance("primary-0", "ns1", true);
+        inst_a.spec.cluster_ref = "my-provider".to_string();
+        let mut inst_b = create_test_instance("secondary-0", "ns2", true);
+        inst_b.spec.cluster_ref = "my-provider".to_string();
+        // An instance referencing a DIFFERENT provider must not contribute
+        let mut other = create_test_instance("other-0", "ns3", true);
+        other.spec.cluster_ref = "other-provider".to_string();
+
+        let instances = vec![inst_a, inst_b, other];
+        let namespaces = expected_cluster_namespaces(&instances, "my-provider", "bindy-system");
+
+        assert_eq!(namespaces.len(), 2);
+        assert!(namespaces.contains("ns1"));
+        assert!(namespaces.contains("ns2"));
+        assert!(!namespaces.contains("ns3"));
+        assert!(!namespaces.contains("bindy-system"));
     }
 }

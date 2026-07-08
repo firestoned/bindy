@@ -26,6 +26,56 @@ use tracing::{info, warn};
 
 use crate::bind9::rndc::create_tsig_signer;
 use crate::bind9::types::RndcKeyData;
+use crate::constants::DEFAULT_DNS_RECORD_TTL_SECS;
+
+/// Fallback TTL (seconds) used only if [`DEFAULT_DNS_RECORD_TTL_SECS`] cannot be
+/// converted to `u32`.
+const FALLBACK_DNS_RECORD_TTL_SECS: u32 = 300;
+
+/// Resolve the effective TTL for a DNS record from an optional spec value.
+///
+/// Returns the spec TTL when present and representable as `u32`; otherwise falls
+/// back to [`DEFAULT_DNS_RECORD_TTL_SECS`].
+///
+/// This is the single source of truth for the TTL written to DNS, and is also
+/// used when diffing desired state against existing records so that TTL-only
+/// spec changes trigger an update.
+pub(crate) fn effective_record_ttl(ttl: Option<i32>) -> u32 {
+    u32::try_from(ttl.unwrap_or(DEFAULT_DNS_RECORD_TTL_SECS)).unwrap_or_else(|_| {
+        u32::try_from(DEFAULT_DNS_RECORD_TTL_SECS).unwrap_or(FALLBACK_DNS_RECORD_TTL_SECS)
+    })
+}
+
+/// Check whether every record in an existing `RRset` carries the desired TTL.
+///
+/// Used by the per-record-type compare functions so that a TTL-only spec change
+/// is detected as a mismatch and triggers the update path.
+pub(crate) fn rrset_ttl_matches(existing_records: &[Record], desired_ttl: u32) -> bool {
+    existing_records
+        .iter()
+        .all(|record| record.ttl == desired_ttl)
+}
+
+/// Build the placeholder record used by RFC 2136 "delete `RRset`" operations.
+///
+/// `delete_rrset()` overwrites class/TTL/data based on `record_type`, so the
+/// returned record only needs to carry the FQDN and the record type.
+pub(crate) fn build_delete_rrset_record(fqdn: &Name, record_type: RecordType) -> Record {
+    Record::from_rdata(fqdn.clone(), 0, RData::Update0(record_type))
+}
+
+/// Response codes that indicate an RFC 2136 delete succeeded (`NoError`) or the
+/// target records already did not exist (`NXDomain`, `NXRRSet`) — idempotent
+/// success.
+///
+/// Every other code (e.g. `Refused`, `NotAuth`, `NotZone`, `ServFail`) is a real
+/// failure and must be surfaced to the caller.
+pub(crate) fn is_idempotent_delete_response_code(code: ResponseCode) -> bool {
+    matches!(
+        code,
+        ResponseCode::NoError | ResponseCode::NXDomain | ResponseCode::NXRRSet
+    )
+}
 
 /// Build an unauthenticated UDP DNS client for read-only queries.
 async fn build_query_client(server_str: &str) -> Result<Client<TokioRuntimeProvider>> {
@@ -192,11 +242,14 @@ where
 ///
 /// # Returns
 ///
-/// Returns `Ok(())` if deletion succeeded (or if record didn't exist).
+/// Returns `Ok(())` if deletion succeeded (`NoError`) or the record already did
+/// not exist (`NXDomain`/`NXRRSet` — idempotent success).
 ///
 /// # Errors
 ///
-/// Returns an error if the DNS server rejects the update or connection fails.
+/// Returns an error if the connection fails or the DNS server rejects the
+/// update with any other response code (e.g. `Refused`, `NotAuth`, `NotZone`,
+/// `ServFail`), so TSIG/ACL failures are never silently swallowed.
 pub async fn delete_dns_record(
     zone_name: &str,
     name: &str,
@@ -215,7 +268,7 @@ pub async fn delete_dns_record(
     );
 
     // Build a placeholder record. delete_rrset() overwrites class/ttl/data based on record_type.
-    let dummy_record = Record::from_rdata(fqdn.clone(), 0, RData::Update0(record_type));
+    let dummy_record = build_delete_rrset_record(&fqdn, record_type);
 
     let response = client
         .delete_rrset(dummy_record, zone)
@@ -224,23 +277,28 @@ pub async fn delete_dns_record(
             format!("Failed to send DNS UPDATE to delete {record_type:?} record {fqdn}")
         })?;
 
-    match response.metadata.response_code {
-        ResponseCode::NoError => {
-            info!(
-                "Successfully deleted {:?} record: {} from zone {}",
-                record_type, name, zone_name
-            );
-            Ok(())
-        }
-        code => {
-            warn!(
-                "DNS DELETE for {:?} record {fqdn} returned code: {:?} (may not have existed)",
-                record_type, code
-            );
-            // Deletion is idempotent: don't treat "not found" as error.
-            Ok(())
-        }
+    let code = response.metadata.response_code;
+    if !is_idempotent_delete_response_code(code) {
+        return Err(anyhow::anyhow!(
+            "DNS DELETE for {record_type:?} record {fqdn} in zone {zone_name} \
+             rejected with response code: {code:?}"
+        ));
     }
+
+    if code == ResponseCode::NoError {
+        info!(
+            "Successfully deleted {:?} record: {} from zone {}",
+            record_type, name, zone_name
+        );
+        return Ok(());
+    }
+
+    // NXDomain/NXRRSet: the record did not exist — deletion is idempotent.
+    warn!(
+        "DNS DELETE for {:?} record {fqdn} returned code: {:?} (record did not exist)",
+        record_type, code
+    );
+    Ok(())
 }
 
 #[cfg(test)]

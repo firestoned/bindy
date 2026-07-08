@@ -126,7 +126,14 @@ mod tests {
         );
         instance.metadata.labels = Some(instance_labels);
 
-        let deployment = build_deployment("test-instance", "test-ns", &instance, None, None);
+        let deployment = build_deployment(
+            "test-instance",
+            "test-ns",
+            &instance,
+            None,
+            None,
+            "test-instance-rndc-key",
+        );
 
         let labels = deployment.metadata.labels.as_ref().unwrap();
         assert_eq!(
@@ -146,7 +153,14 @@ mod tests {
         instance_labels.insert(BINDY_ROLE_LABEL.to_string(), ROLE_PRIMARY.to_string());
         instance.metadata.labels = Some(instance_labels);
 
-        let deployment = build_deployment("test-primary", "test-ns", &instance, None, None);
+        let deployment = build_deployment(
+            "test-primary",
+            "test-ns",
+            &instance,
+            None,
+            None,
+            "test-primary-rndc-key",
+        );
 
         // Check deployment metadata labels
         let deployment_labels = deployment.metadata.labels.as_ref().unwrap();
@@ -198,7 +212,14 @@ mod tests {
         let instance = create_test_instance("test-instance");
         // Don't add role label
 
-        let deployment = build_deployment("test-instance", "test-ns", &instance, None, None);
+        let deployment = build_deployment(
+            "test-instance",
+            "test-ns",
+            &instance,
+            None,
+            None,
+            "test-instance-rndc-key",
+        );
 
         let labels = deployment.metadata.labels.as_ref().unwrap();
         assert!(
@@ -231,9 +252,7 @@ mod tests {
     #[test]
     fn test_build_configmap() {
         let instance = create_test_instance("test");
-        let cm = build_configmap("test", "test-ns", &instance, None, None)
-            .unwrap()
-            .unwrap();
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
 
         assert_eq!(cm.metadata.name.as_deref(), Some("test-config"));
         assert_eq!(cm.metadata.namespace.as_deref(), Some("test-ns"));
@@ -252,7 +271,8 @@ mod tests {
     #[test]
     fn test_build_deployment() {
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
 
         assert_eq!(deployment.metadata.name.as_deref(), Some("test"));
         assert_eq!(deployment.metadata.namespace.as_deref(), Some("test-ns"));
@@ -300,7 +320,8 @@ mod tests {
     #[test]
     fn test_build_pod_spec() {
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
 
         // Verify volumes
@@ -343,7 +364,8 @@ mod tests {
         let mut instance = create_test_instance("test");
         instance.spec.replicas = Some(5);
 
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
         let spec = deployment.spec.unwrap();
 
         assert_eq!(spec.replicas, Some(5));
@@ -354,7 +376,8 @@ mod tests {
         let mut instance = create_test_instance("test");
         instance.spec.version = Some("9.20".into());
 
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let container = &pod_spec.containers[0];
 
@@ -409,9 +432,7 @@ mod tests {
     #[test]
     fn test_configmap_contains_all_files() {
         let instance = create_test_instance("test");
-        let cm = build_configmap("test", "test-ns", &instance, None, None)
-            .unwrap()
-            .unwrap();
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
 
         let data = cm.data.unwrap();
         assert!(data.contains_key("named.conf"));
@@ -437,9 +458,7 @@ mod tests {
     #[test]
     fn test_configmap_naming() {
         let instance = create_test_instance("test-instance");
-        let cm = build_configmap("test-instance", "test-ns", &instance, None, None)
-            .unwrap()
-            .unwrap();
+        let cm = build_configmap("test-instance", "test-ns", &instance, None, None).unwrap();
 
         assert_eq!(cm.metadata.name.as_deref(), Some("test-instance-config"));
         assert_eq!(cm.metadata.namespace.as_deref(), Some("test-ns"));
@@ -448,7 +467,8 @@ mod tests {
     #[test]
     fn test_deployment_selector_matches_labels() {
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
 
         let spec = deployment.spec.unwrap();
         let selector_labels = spec.selector.match_labels.unwrap();
@@ -479,54 +499,130 @@ mod tests {
     // Comprehensive Edge-Case Tests for Missing Coverage
     // =====================================================
 
-    #[test]
-    fn test_configmap_with_custom_refs_returns_none() {
+    // =====================================================
+    // bug-044: custom configMapRefs must never break the
+    // generated ConfigMap / `config` volume / mounts triad
+    // =====================================================
+
+    /// Build a standalone instance (no clusterRef) with the given
+    /// `configMapRefs`, so the generated `ConfigMap` name (`{name}-config`)
+    /// matches what the `config` volume must reference.
+    fn standalone_instance_with_refs(
+        name: &str,
+        named_conf: Option<&str>,
+        named_conf_options: Option<&str>,
+    ) -> Bind9Instance {
         use crate::crd::ConfigMapRefs;
 
-        let mut instance = create_test_instance("test");
+        let mut instance = create_test_instance(name);
+        instance.spec.cluster_ref = String::new();
         instance.spec.config_map_refs = Some(ConfigMapRefs {
             named_conf_zones: None,
-            named_conf: Some("custom-named-conf".to_string()),
-            named_conf_options: None,
+            named_conf: named_conf.map(ToString::to_string),
+            named_conf_options: named_conf_options.map(ToString::to_string),
         });
+        instance
+    }
 
-        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
+    /// Assert the ConfigMap / volume / mount contract for an instance:
+    /// - the generated `ConfigMap` always exists and always carries
+    ///   `rndc.conf`, plus exactly the files NOT overridden by refs
+    /// - the `config` volume always exists and points at the generated
+    ///   `ConfigMap`
+    /// - every volumeMount in every container has a matching volume
+    fn assert_configmap_volume_mount_consistency(
+        instance: &Bind9Instance,
+        name: &str,
+        expect_named_conf_generated: bool,
+        expect_options_generated: bool,
+    ) {
+        // Generated ConfigMap must always exist with the expected files.
+        let cm = build_configmap(name, "test-ns", instance, None, None)
+            .expect("build_configmap must succeed");
+        let data = cm.data.expect("generated ConfigMap must have data");
+        assert!(
+            data.contains_key("rndc.conf"),
+            "generated ConfigMap must always contain rndc.conf"
+        );
+        assert_eq!(
+            data.contains_key("named.conf"),
+            expect_named_conf_generated,
+            "named.conf presence mismatch in generated ConfigMap"
+        );
+        assert_eq!(
+            data.contains_key("named.conf.options"),
+            expect_options_generated,
+            "named.conf.options presence mismatch in generated ConfigMap"
+        );
 
-        // Should return None when custom ConfigMaps are referenced
-        assert!(cm.is_none());
+        let deployment = build_deployment(
+            name,
+            "test-ns",
+            instance,
+            None,
+            None,
+            &format!("{name}-rndc-key"),
+        );
+        let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
+        let volumes = pod_spec.volumes.as_ref().expect("pod must have volumes");
+
+        // The `config` volume must always exist and reference the generated
+        // ConfigMap (it always carries at least rndc.conf).
+        let config_volume = volumes
+            .iter()
+            .find(|v| v.name == "config")
+            .expect("`config` volume must always be present");
+        assert_eq!(
+            config_volume
+                .config_map
+                .as_ref()
+                .expect("`config` volume must be ConfigMap-backed")
+                .name,
+            format!("{name}-config"),
+            "`config` volume must reference the generated ConfigMap"
+        );
+
+        // Every mount in every container must reference an existing volume,
+        // otherwise the API server rejects the Deployment (422).
+        for container in &pod_spec.containers {
+            for mount in container.volume_mounts.as_ref().unwrap() {
+                assert!(
+                    volumes.iter().any(|v| v.name == mount.name),
+                    "container {} mounts volume {:?} which does not exist in pod volumes",
+                    container.name,
+                    mount.name
+                );
+            }
+        }
     }
 
     #[test]
-    fn test_configmap_with_custom_options_ref_returns_none() {
-        use crate::crd::ConfigMapRefs;
-
+    fn test_configmap_volume_consistency_no_refs() {
         let mut instance = create_test_instance("test");
-        instance.spec.config_map_refs = Some(ConfigMapRefs {
-            named_conf_zones: None,
-            named_conf: None,
-            named_conf_options: Some("custom-options".to_string()),
-        });
-
-        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
-
-        // Should return None when custom ConfigMaps are referenced
-        assert!(cm.is_none());
+        instance.spec.cluster_ref = String::new();
+        assert_configmap_volume_mount_consistency(&instance, "test", true, true);
     }
 
     #[test]
-    fn test_configmap_with_both_custom_refs_returns_none() {
-        use crate::crd::ConfigMapRefs;
+    fn test_configmap_volume_consistency_only_named_conf_ref() {
+        let instance = standalone_instance_with_refs("test", Some("custom-named-conf"), None);
+        assert_configmap_volume_mount_consistency(&instance, "test", false, true);
+    }
 
-        let mut instance = create_test_instance("test");
-        instance.spec.config_map_refs = Some(ConfigMapRefs {
-            named_conf_zones: None,
-            named_conf: Some("custom-named-conf".to_string()),
-            named_conf_options: Some("custom-options".to_string()),
-        });
+    #[test]
+    fn test_configmap_volume_consistency_only_options_ref() {
+        let instance = standalone_instance_with_refs("test", None, Some("custom-options"));
+        assert_configmap_volume_mount_consistency(&instance, "test", true, false);
+    }
 
-        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
-
-        assert!(cm.is_none());
+    #[test]
+    fn test_configmap_volume_consistency_both_refs() {
+        let instance = standalone_instance_with_refs(
+            "test",
+            Some("custom-named-conf"),
+            Some("custom-options"),
+        );
+        assert_configmap_volume_mount_consistency(&instance, "test", false, false);
     }
 
     #[test]
@@ -542,8 +638,11 @@ mod tests {
 
         let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
 
-        // Should still generate ConfigMap if refs exist but are empty
-        assert!(cm.is_some());
+        // Should still generate a full ConfigMap if refs exist but are empty
+        let data = cm.data.unwrap();
+        assert!(data.contains_key("named.conf"));
+        assert!(data.contains_key("named.conf.options"));
+        assert!(data.contains_key("rndc.conf"));
     }
 
     #[test]
@@ -573,9 +672,7 @@ mod tests {
         let mut instance = create_test_instance("test");
         instance.spec.config.as_mut().unwrap().allow_query = Some(vec![]);
 
-        let cm = build_configmap("test", "test-ns", &instance, None, None)
-            .unwrap()
-            .unwrap();
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
         // Empty allow_query list should result in no allow-query directive
@@ -587,9 +684,7 @@ mod tests {
         let mut instance = create_test_instance("test");
         instance.spec.config.as_mut().unwrap().allow_transfer = Some(vec![]);
 
-        let cm = build_configmap("test", "test-ns", &instance, None, None)
-            .unwrap()
-            .unwrap();
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
         // Empty allow_transfer list should result in "none"
@@ -601,9 +696,7 @@ mod tests {
         let mut instance = create_test_instance("test");
         instance.spec.config = None;
 
-        let cm = build_configmap("test", "test-ns", &instance, None, None)
-            .unwrap()
-            .unwrap();
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
         // Defaults should be applied - recursion no, but NO allow-transfer directive
@@ -620,9 +713,7 @@ mod tests {
             signing: None,
         });
 
-        let cm = build_configmap("test", "test-ns", &instance, None, None)
-            .unwrap()
-            .unwrap();
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
         // Should contain dnssec-validation no when disabled
@@ -638,9 +729,7 @@ mod tests {
             signing: None,
         });
 
-        let cm = build_configmap("test", "test-ns", &instance, None, None)
-            .unwrap()
-            .unwrap();
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
         // DNSSEC is always enabled in BIND 9.15+, only validation can be configured
@@ -652,9 +741,7 @@ mod tests {
         let mut instance = create_test_instance("test");
         instance.spec.config.as_mut().unwrap().dnssec = None;
 
-        let cm = build_configmap("test", "test-ns", &instance, None, None)
-            .unwrap()
-            .unwrap();
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
         // Default behavior when no DNSSEC config is provided
@@ -672,7 +759,8 @@ mod tests {
             image_pull_secrets: None,
         });
 
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         assert_eq!(
@@ -693,7 +781,8 @@ mod tests {
             image_pull_secrets: Some(vec!["secret1".to_string(), "secret2".to_string()]),
         });
 
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
 
         let secrets = pod_spec.image_pull_secrets.unwrap();
@@ -707,7 +796,8 @@ mod tests {
         let mut instance = create_test_instance("test");
         instance.spec.replicas = None;
 
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
 
         // Should default to 1 replica
         assert_eq!(deployment.spec.unwrap().replicas, Some(1));
@@ -718,7 +808,8 @@ mod tests {
         let mut instance = create_test_instance("test");
         instance.spec.replicas = Some(0);
 
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
 
         assert_eq!(deployment.spec.unwrap().replicas, Some(0));
     }
@@ -737,7 +828,8 @@ mod tests {
             ..Default::default()
         }]);
 
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
         let volumes = deployment
             .spec
             .unwrap()
@@ -766,7 +858,8 @@ mod tests {
             ..Default::default()
         }]);
 
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let mounts = pod_spec.containers[0].volume_mounts.as_ref().unwrap();
 
@@ -778,7 +871,8 @@ mod tests {
     #[test]
     fn test_deployment_container_has_correct_command() {
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         // Verify named command with correct flags
@@ -792,7 +886,8 @@ mod tests {
     #[test]
     fn test_deployment_has_tz_environment_variable() {
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         let env = container.env.as_ref().unwrap();
@@ -805,7 +900,8 @@ mod tests {
         use crate::constants::BIND9_MALLOC_CONF;
 
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         let env = container.env.as_ref().unwrap();
@@ -816,7 +912,8 @@ mod tests {
     #[test]
     fn test_deployment_probe_configuration() {
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         // Liveness probe
@@ -895,9 +992,7 @@ mod tests {
             "172.16.0.0/12".to_string(),
         ]);
 
-        let cm = build_configmap("test", "test-ns", &instance, None, None)
-            .unwrap()
-            .unwrap();
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
         assert!(options.contains("allow-query { 10.0.0.0/8; 192.168.0.0/16; 172.16.0.0/12; }"));
@@ -906,7 +1001,14 @@ mod tests {
     #[test]
     fn test_deployment_with_custom_namespace() {
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "custom-namespace", &instance, None, None);
+        let deployment = build_deployment(
+            "test",
+            "custom-namespace",
+            &instance,
+            None,
+            None,
+            "test-rndc-key",
+        );
 
         assert_eq!(
             deployment.metadata.namespace.as_deref(),
@@ -928,9 +1030,7 @@ mod tests {
     #[test]
     fn test_configmap_with_custom_namespace() {
         let instance = create_test_instance("test");
-        let cm = build_configmap("test", "custom-namespace", &instance, None, None)
-            .unwrap()
-            .unwrap();
+        let cm = build_configmap("test", "custom-namespace", &instance, None, None).unwrap();
 
         assert_eq!(cm.metadata.namespace.as_deref(), Some("custom-namespace"));
     }
@@ -940,7 +1040,8 @@ mod tests {
         let mut instance = create_test_instance("test");
         instance.spec.version = None;
 
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         // Should default to 9.18
@@ -962,7 +1063,8 @@ mod tests {
             image_pull_secrets: None,
         });
 
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         // Custom image should override version
@@ -981,7 +1083,8 @@ mod tests {
             image_pull_secrets: None,
         });
 
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         // Should use version from spec
@@ -995,7 +1098,8 @@ mod tests {
     #[test]
     fn test_deployment_default_image_pull_policy() {
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         assert_eq!(container.image_pull_policy.as_deref(), Some("IfNotPresent"));
@@ -1134,7 +1238,14 @@ mod tests {
     #[test]
     fn test_deployment_rndc_conf_volume_mount() {
         let instance = create_test_instance("rndc-test");
-        let deployment = build_deployment("rndc-test", "test-ns", &instance, None, None);
+        let deployment = build_deployment(
+            "rndc-test",
+            "test-ns",
+            &instance,
+            None,
+            None,
+            "rndc-test-rndc-key",
+        );
 
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let container = &pod_spec.containers[0];
@@ -1155,10 +1266,7 @@ mod tests {
     #[test]
     fn test_configmap_contains_rndc_conf() {
         let instance = create_test_instance("rndc-test");
-        let configmap = build_configmap("rndc-test", "test-ns", &instance, None, None).unwrap();
-
-        assert!(configmap.is_some());
-        let cm = configmap.unwrap();
+        let cm = build_configmap("rndc-test", "test-ns", &instance, None, None).unwrap();
         let data = cm.data.unwrap();
 
         // Verify rndc.conf is present in ConfigMap
@@ -1178,7 +1286,14 @@ mod tests {
     #[test]
     fn test_rndc_key_volume_mount() {
         let instance = create_test_instance("rndc-test");
-        let deployment = build_deployment("rndc-test", "test-ns", &instance, None, None);
+        let deployment = build_deployment(
+            "rndc-test",
+            "test-ns",
+            &instance,
+            None,
+            None,
+            "rndc-test-rndc-key",
+        );
 
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let container = &pod_spec.containers[0];
@@ -1197,7 +1312,14 @@ mod tests {
     #[test]
     fn test_rndc_key_volume_source() {
         let instance = create_test_instance("rndc-test");
-        let deployment = build_deployment("rndc-test", "test-ns", &instance, None, None);
+        let deployment = build_deployment(
+            "rndc-test",
+            "test-ns",
+            &instance,
+            None,
+            None,
+            "rndc-test-rndc-key",
+        );
 
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let volumes = pod_spec.volumes.unwrap();
@@ -1216,6 +1338,265 @@ mod tests {
         assert_eq!(
             secret_source.secret_name.as_deref(),
             Some("rndc-test-rndc-key")
+        );
+    }
+
+    #[test]
+    fn test_build_deployment_uses_resolved_rndc_secret_name() {
+        // When the reconciler resolves an rndcKey.secretRef (or inline secret
+        // name), that resolved name must flow into BOTH the rndc-key volume
+        // and the bindcar env secretKeyRefs — not the auto-generated
+        // `{name}-rndc-key` default.
+        let instance = create_test_instance("rndc-test");
+        let deployment = build_deployment(
+            "rndc-test",
+            "test-ns",
+            &instance,
+            None,
+            None,
+            "user-managed-rndc-secret",
+        );
+
+        let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
+
+        // Volume must reference the resolved Secret name.
+        let rndc_volume = pod_spec
+            .volumes
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|v| v.name == "rndc-key")
+            .expect("rndc-key volume must exist");
+        assert_eq!(
+            rndc_volume.secret.as_ref().unwrap().secret_name.as_deref(),
+            Some("user-managed-rndc-secret"),
+            "rndc-key volume must use the resolved Secret name"
+        );
+
+        // bindcar env secretKeyRefs must reference the resolved Secret name.
+        let api = pod_spec
+            .containers
+            .iter()
+            .find(|c| c.name == "api")
+            .expect("api sidecar must exist");
+        for env_name in ["RNDC_SECRET", "RNDC_ALGORITHM"] {
+            let env = api
+                .env
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|e| e.name == env_name)
+                .unwrap_or_else(|| panic!("{env_name} env var must exist"));
+            let secret_ref = env
+                .value_from
+                .as_ref()
+                .and_then(|v| v.secret_key_ref.as_ref())
+                .unwrap_or_else(|| panic!("{env_name} must use a secretKeyRef"));
+            assert_eq!(
+                secret_ref.name, "user-managed-rndc-secret",
+                "{env_name} secretKeyRef must use the resolved Secret name"
+            );
+        }
+    }
+
+    // =====================================================
+    // forwarders / listenOn / listenOnV6 rendering
+    // =====================================================
+
+    #[test]
+    fn test_options_conf_default_listen_on_any_and_no_forwarders() {
+        let instance = create_test_instance("test");
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
+        let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
+
+        assert!(
+            options.contains("listen-on port 53 { any; };"),
+            "default listen-on must be `any` on port 53, got: {options}"
+        );
+        assert!(
+            options.contains("listen-on-v6 port 53 { any; };"),
+            "default listen-on-v6 must be `any` on port 53, got: {options}"
+        );
+        assert!(
+            !options.contains("forwarders"),
+            "no forwarders block must be rendered when unset, got: {options}"
+        );
+    }
+
+    #[test]
+    fn test_options_conf_renders_forwarders() {
+        let mut instance = create_test_instance("test");
+        instance.spec.config.as_mut().unwrap().forwarders =
+            Some(vec!["8.8.8.8".to_string(), "8.8.4.4".to_string()]);
+
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
+        let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
+
+        assert!(
+            options.contains("forwarders { 8.8.8.8; 8.8.4.4; };"),
+            "forwarders block must be rendered from spec.config.forwarders, got: {options}"
+        );
+    }
+
+    #[test]
+    fn test_options_conf_empty_forwarders_renders_nothing() {
+        let mut instance = create_test_instance("test");
+        instance.spec.config.as_mut().unwrap().forwarders = Some(vec![]);
+
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
+        let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
+
+        assert!(
+            !options.contains("forwarders"),
+            "empty forwarders list must render nothing, got: {options}"
+        );
+    }
+
+    #[test]
+    fn test_options_conf_rejects_invalid_forwarder() {
+        // A forwarder that is not a plain IP address (e.g. a config-injection
+        // payload) must be rejected, not rendered into named.conf.options.
+        let mut instance = create_test_instance("test");
+        instance.spec.config.as_mut().unwrap().forwarders =
+            Some(vec!["8.8.8.8; }; zone \"evil\" {".to_string()]);
+
+        let result = build_configmap("test", "test-ns", &instance, None, None);
+        assert!(result.is_err(), "invalid forwarder must be rejected");
+    }
+
+    #[test]
+    fn test_options_conf_renders_custom_listen_on() {
+        let mut instance = create_test_instance("test");
+        {
+            let config = instance.spec.config.as_mut().unwrap();
+            config.listen_on = Some(vec!["10.0.0.1".to_string(), "127.0.0.1".to_string()]);
+            config.listen_on_v6 = Some(vec!["::1".to_string()]);
+        }
+
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
+        let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
+
+        assert!(
+            options.contains("listen-on port 53 { 10.0.0.1; 127.0.0.1; };"),
+            "listen-on must render spec.config.listenOn, got: {options}"
+        );
+        assert!(
+            options.contains("listen-on-v6 port 53 { ::1; };"),
+            "listen-on-v6 must render spec.config.listenOnV6, got: {options}"
+        );
+        assert!(
+            !options.contains("listen-on port 53 { any; };"),
+            "default listen-on must be replaced when listenOn is set, got: {options}"
+        );
+    }
+
+    #[test]
+    fn test_options_conf_rejects_invalid_listen_on_entry() {
+        let mut instance = create_test_instance("test");
+        instance.spec.config.as_mut().unwrap().listen_on =
+            Some(vec!["any; }; zone \"evil\" {".to_string()]);
+
+        let result = build_configmap("test", "test-ns", &instance, None, None);
+        assert!(result.is_err(), "invalid listen-on entry must be rejected");
+    }
+
+    #[test]
+    fn test_cluster_options_conf_renders_forwarders_and_listen_on() {
+        use crate::bind9_resources::build_cluster_configmap;
+        use crate::crd::{Bind9Cluster, Bind9ClusterCommonSpec, Bind9ClusterSpec};
+
+        let cluster = Bind9Cluster {
+            metadata: ObjectMeta {
+                name: Some("test-cluster".to_string()),
+                namespace: Some("test-ns".to_string()),
+                ..Default::default()
+            },
+            spec: Bind9ClusterSpec {
+                common: Bind9ClusterCommonSpec {
+                    version: None,
+                    primary: None,
+                    secondary: None,
+                    image: None,
+                    config_map_refs: None,
+                    global: Some(Bind9Config {
+                        recursion: Some(true),
+                        allow_query: None,
+                        allow_transfer: None,
+                        dnssec: None,
+                        forwarders: Some(vec!["1.1.1.1".to_string()]),
+                        listen_on: Some(vec!["10.1.2.3".to_string()]),
+                        listen_on_v6: Some(vec!["none".to_string()]),
+                        rndc_secret_ref: None,
+                        bindcar_config: None,
+                    }),
+                    rndc_secret_refs: None,
+                    acls: None,
+                    volumes: None,
+                    volume_mounts: None,
+                },
+            },
+            status: None,
+        };
+
+        let cm = build_cluster_configmap("test-cluster", "test-ns", &cluster).unwrap();
+        let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
+
+        assert!(
+            options.contains("forwarders { 1.1.1.1; };"),
+            "cluster-level forwarders must be rendered, got: {options}"
+        );
+        assert!(
+            options.contains("listen-on port 53 { 10.1.2.3; };"),
+            "cluster-level listen-on must be rendered, got: {options}"
+        );
+        assert!(
+            options.contains("listen-on-v6 port 53 { none; };"),
+            "cluster-level listen-on-v6 must be rendered, got: {options}"
+        );
+    }
+
+    #[test]
+    fn test_cluster_options_conf_default_listen_on_any() {
+        use crate::bind9_resources::build_cluster_configmap;
+        use crate::crd::{Bind9Cluster, Bind9ClusterCommonSpec, Bind9ClusterSpec};
+
+        let cluster = Bind9Cluster {
+            metadata: ObjectMeta {
+                name: Some("test-cluster".to_string()),
+                namespace: Some("test-ns".to_string()),
+                ..Default::default()
+            },
+            spec: Bind9ClusterSpec {
+                common: Bind9ClusterCommonSpec {
+                    version: None,
+                    primary: None,
+                    secondary: None,
+                    image: None,
+                    config_map_refs: None,
+                    global: None,
+                    rndc_secret_refs: None,
+                    acls: None,
+                    volumes: None,
+                    volume_mounts: None,
+                },
+            },
+            status: None,
+        };
+
+        let cm = build_cluster_configmap("test-cluster", "test-ns", &cluster).unwrap();
+        let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
+
+        assert!(
+            options.contains("listen-on port 53 { any; };"),
+            "cluster default listen-on must be `any`, got: {options}"
+        );
+        assert!(
+            options.contains("listen-on-v6 port 53 { any; };"),
+            "cluster default listen-on-v6 must be `any`, got: {options}"
+        );
+        assert!(
+            !options.contains("forwarders"),
+            "no forwarders block by default, got: {options}"
         );
     }
 
@@ -1332,7 +1713,8 @@ mod tests {
         // Test that deployment includes the API sidecar container
         let instance = create_test_instance("test");
 
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let containers = pod_spec.containers;
 
@@ -1374,7 +1756,8 @@ mod tests {
         // Test that API sidecar mounts the same volumes as BIND9
         let instance = create_test_instance("test");
 
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let containers = pod_spec.containers;
 
@@ -1425,7 +1808,8 @@ mod tests {
         // still dropping ALL others and running with a RuntimeDefault seccomp
         // profile and a non-root UID.
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let named = pod_spec
             .containers
@@ -1461,7 +1845,8 @@ mod tests {
         // posture: drop ALL (no add), read-only root filesystem, RuntimeDefault
         // seccomp, non-root.
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let api = pod_spec
             .containers
@@ -1485,7 +1870,8 @@ mod tests {
     #[test]
     fn test_pod_security_context_has_seccomp() {
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let sc = pod_spec.security_context.as_ref().unwrap();
         assert_eq!(sc.run_as_non_root, Some(true));
@@ -1499,7 +1885,8 @@ mod tests {
         // token, so BIND_TOKEN_AUDIENCES must match. TMPDIR must point at the
         // writable /tmp mount.
         let instance = create_test_instance("test");
-        let deployment = build_deployment("test", "test-ns", &instance, None, None);
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let api = pod_spec
             .containers
@@ -1637,7 +2024,12 @@ mod tests {
             result.contains("lifetime unlimited"),
             "Should use unlimited lifetime by default"
         );
-        assert!(result.contains("nsec;"), "Should use NSEC by default");
+        // BIND 9.18 has no `nsec` statement in dnssec-policy: NSEC is selected
+        // by omitting `nsec3param` entirely.
+        assert!(
+            !result.contains("nsec"),
+            "NSEC default must be expressed by omitting nsec3param, got: {result}"
+        );
     }
 
     #[test]
@@ -1690,9 +2082,65 @@ mod tests {
             result.contains("zsk lifetime 90d"),
             "Should use custom ZSK lifetime"
         );
+        // NSEC (nsec3: false) must render no `nsec`/`nsec3param` statement at
+        // all — `nsec;` is not valid BIND 9.18 dnssec-policy grammar.
         assert!(
-            result.contains("nsec;"),
-            "Should use NSEC when nsec3 is false"
+            !result.contains("nsec"),
+            "NSEC must be expressed by omitting nsec3param, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_dnssec_policies_falls_back_to_global_when_instance_has_no_dnssec() {
+        use crate::bind9_resources::generate_dnssec_policies;
+
+        // Global config enables signing.
+        let global_config = Bind9Config {
+            recursion: Some(false),
+            allow_query: None,
+            allow_transfer: None,
+            dnssec: Some(DNSSECConfig {
+                validation: Some(true),
+                signing: Some(crate::crd::DNSSECSigningConfig {
+                    enabled: true,
+                    policy: Some("global-policy".to_string()),
+                    algorithm: None,
+                    ksk_lifetime: None,
+                    zsk_lifetime: None,
+                    nsec3: None,
+                    nsec3_salt: None,
+                    nsec3_iterations: None,
+                    keys_from: None,
+                    auto_generate: None,
+                    export_to_secret: None,
+                }),
+            }),
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        };
+
+        // Instance config exists but carries no dnssec block at all.
+        let instance_config = Bind9Config {
+            recursion: Some(true),
+            allow_query: None,
+            allow_transfer: None,
+            dnssec: None,
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        };
+
+        let result = generate_dnssec_policies(Some(&global_config), Some(&instance_config));
+
+        // Must fall back to global config, matching get_dnssec_signing_config.
+        assert!(
+            result.contains("dnssec-policy \"global-policy\""),
+            "should fall back to global DNSSEC config when instance config has no dnssec block, got: {result}"
         );
     }
 

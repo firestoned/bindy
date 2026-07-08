@@ -69,6 +69,9 @@ where
 /// * `observed_generation` - Optional generation to set in status (defaults to record's current generation)
 /// * `record_hash` - Optional hash of the record spec for change detection
 /// * `last_updated` - Optional timestamp of last update
+/// * `addresses` - Optional display addresses; `None` preserves any existing value
+/// * `published_name` - DNS name just published to BIND9 (used for rename
+///   detection); `None` preserves any existing value
 ///
 /// # Errors
 ///
@@ -85,6 +88,7 @@ pub(super) async fn update_record_status<T>(
     record_hash: Option<String>,
     last_updated: Option<String>,
     addresses: Option<String>,
+    published_name: Option<String>,
 ) -> Result<()>
 where
     T: Resource<DynamicType = (), Scope = k8s_openapi::NamespaceResourceScope>
@@ -210,6 +214,15 @@ where
             .map(ToString::to_string)
     });
 
+    // Use provided published name if available, otherwise preserve existing
+    let status_published_name = published_name.or_else(|| {
+        current_json
+            .get("status")
+            .and_then(|s| s.get("publishedName"))
+            .and_then(|p| p.as_str())
+            .map(ToString::to_string)
+    });
+
     #[allow(deprecated)] // Maintain backward compatibility with deprecated zone field
     let record_status = RecordStatus {
         conditions: vec![condition],
@@ -219,6 +232,7 @@ where
         record_hash,
         last_updated,
         addresses: status_addresses, // Set by A/AAAA record reconcilers or preserved from existing
+        published_name: status_published_name, // Set on success by reconcile_record or preserved
     };
 
     let status_patch = json!({

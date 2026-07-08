@@ -8,13 +8,52 @@
 
 use crate::crd::{DNSZone, InstanceReference};
 use anyhow::{anyhow, Context as AnyhowContext, Result};
-use k8s_openapi::api::core::v1::{Endpoints, Secret};
+use k8s_openapi::api::core::v1::{Endpoints, Pod, Secret};
 use kube::{Api, Client};
 use std::collections::{HashMap, HashSet};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use super::types::{DuplicateZoneInfo, EndpointAddress};
 use crate::bind9::RndcKeyData;
+
+/// HTTP status code for "Not Found" responses from the Kubernetes API.
+pub(crate) const HTTP_STATUS_NOT_FOUND: u16 = 404;
+
+/// How [`for_each_instance_endpoint_with_policy`] treats per-instance
+/// RNDC-key and endpoint lookup failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndpointFailurePolicy {
+    /// Propagate RNDC-key and endpoint lookup failures immediately.
+    /// This is the correct behavior for normal reconciliation, where the
+    /// operation must be retried until the instance becomes reachable.
+    Strict,
+    /// Deletion-cleanup mode: an instance whose RNDC key Secret is gone or
+    /// that has no ready endpoints is skipped with a loud warning (the DNS
+    /// data on it is unreachable or already gone), while real API errors
+    /// (timeouts, 429, 5xx, ...) still fail the call so the next reconcile
+    /// retries. This prevents resources from being stuck Terminating behind
+    /// an instance that can never be cleaned up.
+    SkipUnavailable,
+}
+
+/// Classifies an error from `load_rndc_key`/`get_endpoint` during DELETION cleanup.
+///
+/// Returns `true` when the failure means the lookup target is gone or there is
+/// nothing to operate on (safe to skip during deletion):
+/// - a Kubernetes 404 (Secret or Endpoints object missing), or
+/// - a non-Kubernetes error (e.g. "no ready endpoints found", malformed
+///   Secret data) - conditions that will not be fixed by retrying the delete.
+///
+/// Returns `false` for any other Kubernetes API error (timeout, 429, 5xx, ...)
+/// which is potentially transient and must be retried instead of skipped.
+#[must_use]
+pub(crate) fn is_unavailable_for_deletion(err: &anyhow::Error) -> bool {
+    match err.downcast_ref::<kube::Error>() {
+        Some(kube::Error::Api(ae)) => ae.code == HTTP_STATUS_NOT_FOUND,
+        Some(_) => false,
+        None => true,
+    }
+}
 
 /// Re-fetch a DNSZone to get the latest status.
 ///
@@ -217,6 +256,55 @@ where
     F: Fn(String, String, Option<RndcKeyData>) -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
+    for_each_instance_endpoint_with_policy(
+        client,
+        instance_refs,
+        with_rndc_key,
+        port_name,
+        EndpointFailurePolicy::Strict,
+        operation,
+    )
+    .await
+}
+
+/// Execute an operation on all endpoints for a list of instance references,
+/// with an explicit failure policy for per-instance lookups.
+///
+/// Same as [`for_each_instance_endpoint`], but the caller chooses how to treat
+/// RNDC-key and endpoint lookup failures (see [`EndpointFailurePolicy`]).
+/// Deletion cleanup paths should use [`EndpointFailurePolicy::SkipUnavailable`]
+/// so that a missing RNDC Secret or an instance with zero ready endpoints does
+/// not block finalizer removal forever.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `instance_refs` - List of instance references to process
+/// * `with_rndc_key` - Whether to load and pass RNDC keys for each instance
+/// * `port_name` - Port name to use for endpoints (e.g., "rndc-api", "dns-tcp")
+/// * `policy` - How to treat per-instance RNDC-key/endpoint lookup failures
+/// * `operation` - Async closure to execute for each endpoint
+///
+/// # Returns
+///
+/// * `Ok((first_endpoint, total_endpoints))` - First endpoint found and total count
+///
+/// # Errors
+///
+/// Returns an error if all operations fail, or if RNDC-key/endpoint lookups
+/// fail and the policy does not allow skipping them.
+pub async fn for_each_instance_endpoint_with_policy<F, Fut>(
+    client: &Client,
+    instance_refs: &[crate::crd::InstanceReference],
+    with_rndc_key: bool,
+    port_name: &str,
+    policy: EndpointFailurePolicy,
+    operation: F,
+) -> Result<(Option<String>, usize)>
+where
+    F: Fn(String, String, Option<RndcKeyData>) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
     let mut first_endpoint: Option<String> = None;
     let mut total_endpoints = 0;
     let mut errors: Vec<String> = Vec::new();
@@ -229,19 +317,48 @@ where
 
         // Load RNDC key for this specific instance if requested
         let key_data = if with_rndc_key {
-            Some(load_rndc_key(client, &instance_ref.namespace, &instance_ref.name).await?)
+            match load_rndc_key(client, &instance_ref.namespace, &instance_ref.name).await {
+                Ok(key) => Some(key),
+                Err(e)
+                    if policy == EndpointFailurePolicy::SkipUnavailable
+                        && is_unavailable_for_deletion(&e) =>
+                {
+                    warn!(
+                        "SKIPPING instance {}/{} during deletion cleanup: RNDC key unavailable ({e:#}). \
+                         DNS data on this instance cannot be cleaned up and may be orphaned.",
+                        instance_ref.namespace, instance_ref.name
+                    );
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
         } else {
             None
         };
 
         // Get all endpoints for this instance's service
-        let endpoints = get_endpoint(
+        let endpoints = match get_endpoint(
             client,
             &instance_ref.namespace,
             &instance_ref.name,
             port_name,
         )
-        .await?;
+        .await
+        {
+            Ok(eps) => eps,
+            Err(e)
+                if policy == EndpointFailurePolicy::SkipUnavailable
+                    && is_unavailable_for_deletion(&e) =>
+            {
+                warn!(
+                    "SKIPPING instance {}/{} during deletion cleanup: no reachable endpoints ({e:#}). \
+                     DNS data on this instance cannot be cleaned up and may be orphaned.",
+                    instance_ref.namespace, instance_ref.name
+                );
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
 
         info!(
             "Found {} endpoint(s) for instance {}/{}",
@@ -289,6 +406,45 @@ where
     }
 
     Ok((first_endpoint, total_endpoints))
+}
+
+/// Extract the name and IP of a pod that is Running and has an IP assigned.
+///
+/// Used when listing BIND9 pods for zone operations: pods that are not yet
+/// Running, or that are so freshly scheduled they have no IP, must be SKIPPED
+/// rather than failing the entire pod listing - a single Pending pod must not
+/// abort operations against the healthy pods.
+///
+/// # Arguments
+///
+/// * `pod` - The pod to inspect
+///
+/// # Returns
+///
+/// `Some((name, ip))` if the pod is Running with an IP, `None` otherwise.
+#[must_use]
+pub fn running_pod_name_and_ip(pod: &Pod) -> Option<(String, String)> {
+    let pod_name = pod.metadata.name.as_deref().unwrap_or("unknown");
+
+    let phase = pod
+        .status
+        .as_ref()
+        .and_then(|s| s.phase.as_deref())
+        .unwrap_or("Unknown");
+    if phase != "Running" {
+        tracing::debug!("Skipping pod {} (phase: {}, not running)", pod_name, phase);
+        return None;
+    }
+
+    let Some(pod_ip) = pod.status.as_ref().and_then(|s| s.pod_ip.as_ref()) else {
+        tracing::debug!(
+            "Skipping pod {} without an IP address (likely just scheduled)",
+            pod_name
+        );
+        return None;
+    };
+
+    Some((pod_name.to_string(), pod_ip.clone()))
 }
 
 /// Load RNDC key from the instance's secret.

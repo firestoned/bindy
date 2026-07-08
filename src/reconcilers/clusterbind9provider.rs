@@ -227,6 +227,75 @@ pub async fn reconcile_clusterbind9provider(
     Ok(())
 }
 
+/// Returns the target namespace for a `ClusterBind9Provider`.
+///
+/// Uses `spec.namespace` if set, otherwise falls back to the operator's own
+/// namespace (`POD_NAMESPACE` env var), defaulting to `bindy-system`.
+fn provider_target_namespace(cluster_provider: &ClusterBind9Provider) -> String {
+    cluster_provider.spec.namespace.as_ref().map_or_else(
+        || std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "bindy-system".to_string()),
+        std::clone::Clone::clone,
+    )
+}
+
+/// Computes the namespaces where a managed `Bind9Cluster` is expected to exist.
+///
+/// This is the single source of truth shared by `reconcile_namespace_clusters`
+/// (which creates the managed clusters) and `detect_cluster_drift` (which
+/// verifies them), so the two can never diverge.
+///
+/// The expected set is every namespace containing a `Bind9Instance` that
+/// references the provider; when no instance references it, the provider's
+/// target namespace is used as a fallback.
+///
+/// # Arguments
+///
+/// * `instances` - All `Bind9Instance` resources in the cluster
+/// * `provider_name` - Name of the `ClusterBind9Provider`
+/// * `target_namespace` - Fallback namespace when no instances reference the provider
+#[must_use]
+pub fn expected_cluster_namespaces(
+    instances: &[Bind9Instance],
+    provider_name: &str,
+    target_namespace: &str,
+) -> std::collections::HashSet<String> {
+    let namespaces: std::collections::HashSet<String> = instances
+        .iter()
+        .filter(|inst| inst.spec.cluster_ref == provider_name)
+        .filter_map(kube::ResourceExt::namespace)
+        .collect();
+
+    if namespaces.is_empty() {
+        return std::iter::once(target_namespace.to_string()).collect();
+    }
+
+    namespaces
+}
+
+/// Lists instances across all namespaces and computes the expected namespace set.
+///
+/// See [`expected_cluster_namespaces`] for the semantics.
+///
+/// # Errors
+///
+/// Returns an error if listing `Bind9Instance` resources fails.
+async fn compute_expected_cluster_namespaces(
+    client: &Client,
+    cluster_provider: &ClusterBind9Provider,
+) -> Result<std::collections::HashSet<String>> {
+    let cluster_provider_name = cluster_provider.name_any();
+    let target_namespace = provider_target_namespace(cluster_provider);
+
+    let instances_api: Api<Bind9Instance> = Api::all(client.clone());
+    let all_instances = instances_api.list(&ListParams::default()).await?;
+
+    Ok(expected_cluster_namespaces(
+        &all_instances.items,
+        &cluster_provider_name,
+        &target_namespace,
+    ))
+}
+
 /// Reconciles namespace-scoped `Bind9Cluster` resources for this global cluster.
 ///
 /// This function creates or updates a namespace-scoped `Bind9Cluster` resource in each
@@ -250,42 +319,20 @@ async fn reconcile_namespace_clusters(
     use crate::labels::{
         BINDY_CLUSTER_LABEL, BINDY_MANAGED_BY_LABEL, MANAGED_BY_CLUSTER_BIND9_PROVIDER,
     };
-    use kube::api::{ListParams, PostParams};
-    use std::collections::{BTreeMap, HashSet};
+    use kube::api::PostParams;
+    use std::collections::BTreeMap;
 
     let cluster_provider_name = cluster_provider.name_any();
 
-    // Get target namespace from spec or default to operator's namespace
-    let target_namespace = cluster_provider.spec.namespace.as_ref().map_or_else(
-        || std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "bindy-system".to_string()),
-        std::clone::Clone::clone,
-    );
-
     debug!(
-        "Reconciling namespace-scoped Bind9Cluster for global cluster {} in namespace {}",
-        cluster_provider_name, target_namespace
+        "Reconciling namespace-scoped Bind9Cluster resources for global cluster {}",
+        cluster_provider_name
     );
 
-    // List all instances across all namespaces that reference this global cluster
-    let instances_api: Api<Bind9Instance> = Api::all(client.clone());
-    let all_instances = instances_api.list(&ListParams::default()).await?;
-
-    // Find unique namespaces that have instances referencing this global cluster
-    let namespaces: HashSet<String> = all_instances
-        .items
-        .iter()
-        .filter(|inst| inst.spec.cluster_ref == cluster_provider_name)
-        .filter_map(kube::ResourceExt::namespace)
-        .collect();
-
-    // If no instances reference this global cluster, still create cluster in target namespace
-    let namespaces_to_reconcile: HashSet<String> = if namespaces.is_empty() {
-        let mut set = HashSet::new();
-        set.insert(target_namespace);
-        set
-    } else {
-        namespaces
-    };
+    // Compute the namespaces needing a managed Bind9Cluster using the shared
+    // helper (also used by detect_cluster_drift so the two cannot diverge)
+    let namespaces_to_reconcile =
+        compute_expected_cluster_namespaces(client, cluster_provider).await?;
 
     debug!(
         "Found {} namespace(s) needing Bind9Cluster for global cluster {}",
@@ -438,31 +485,7 @@ async fn update_cluster_status(client: &Client, cluster: &ClusterBind9Provider) 
     let new_status = calculate_cluster_status(&instances, cluster.metadata.generation);
 
     // Check if status has actually changed before patching
-    let status_changed = if let Some(current_status) = &cluster.status {
-        // Check if instance count or ready count changed
-        if current_status.instance_count != new_status.instance_count
-            || current_status.ready_instances != new_status.ready_instances
-        {
-            true
-        } else if let Some(current_condition) = current_status.conditions.first() {
-            // Check if condition changed
-            let new_condition = new_status.conditions.first();
-            match new_condition {
-                Some(new_cond) => {
-                    current_condition.r#type != new_cond.r#type
-                        || current_condition.status != new_cond.status
-                        || current_condition.message != new_cond.message
-                }
-                None => true, // New status has no condition, definitely changed
-            }
-        } else {
-            // Current status has no condition but new status might
-            !new_status.conditions.is_empty()
-        }
-    } else {
-        // No current status, definitely need to update
-        true
-    };
+    let status_changed = cluster_status_needs_update(cluster.status.as_ref(), &new_status);
 
     // Only update if status has changed
     if !status_changed {
@@ -484,6 +507,64 @@ async fn update_cluster_status(client: &Client, cluster: &ClusterBind9Provider) 
 
     debug!("Updated status for ClusterBind9Provider: {}", name);
     Ok(())
+}
+
+/// Determines whether the `ClusterBind9Provider` status patch is needed.
+///
+/// Compares the current status against the newly calculated status. The patch
+/// is needed if any of the following changed:
+/// - `instance_count` or `ready_instances`
+/// - `observed_generation` (so spec edits that don't change counts/conditions
+///   still advance `observedGeneration` and stop perpetual re-reconciliation)
+/// - The first (encompassing) condition's type, status, or message
+///
+/// # Arguments
+///
+/// * `current_status` - The status currently stored on the resource (if any)
+/// * `new_status` - The freshly calculated status about to be written
+///
+/// # Returns
+///
+/// `true` if the status patch should be applied, `false` if it can be skipped.
+#[must_use]
+pub fn cluster_status_needs_update(
+    current_status: Option<&Bind9ClusterStatus>,
+    new_status: &Bind9ClusterStatus,
+) -> bool {
+    let Some(current_status) = current_status else {
+        // No current status, definitely need to update
+        return true;
+    };
+
+    // Check if instance count or ready count changed
+    if current_status.instance_count != new_status.instance_count
+        || current_status.ready_instances != new_status.ready_instances
+    {
+        return true;
+    }
+
+    // Check if the observed generation is behind the generation about to be
+    // written. Without this, a spec edit that does not change counts or
+    // conditions never advances observedGeneration, causing should_reconcile()
+    // to return true on every requeue forever.
+    if current_status.observed_generation != new_status.observed_generation {
+        return true;
+    }
+
+    // Check if the encompassing condition changed
+    let Some(current_condition) = current_status.conditions.first() else {
+        // Current status has no condition but new status might
+        return !new_status.conditions.is_empty();
+    };
+
+    match new_status.conditions.first() {
+        Some(new_cond) => {
+            current_condition.r#type != new_cond.r#type
+                || current_condition.status != new_cond.status
+                || current_condition.message != new_cond.message
+        }
+        None => true, // New status has no condition, definitely changed
+    }
 }
 
 /// Calculates the cluster status based on instance states.
@@ -572,8 +653,10 @@ pub fn calculate_cluster_status(
 
 /// Detects drift in managed `Bind9Cluster` resources.
 ///
-/// Compares the expected number of namespace-scoped `Bind9Cluster` resources
-/// (should be 1 per target namespace) with the actual count of managed clusters.
+/// Checks every namespace where `reconcile_namespace_clusters` is expected to
+/// have created a managed `Bind9Cluster` (computed via the shared
+/// [`expected_cluster_namespaces`] helper) and verifies that exactly one
+/// managed cluster exists there with a spec matching the provider's spec.
 ///
 /// # Arguments
 ///
@@ -582,13 +665,14 @@ pub fn calculate_cluster_status(
 ///
 /// # Returns
 ///
-/// * `Ok(true)` - If drift is detected (clusters missing or extra clusters exist)
+/// * `Ok(true)` - If drift is detected (a managed cluster is missing in an
+///   expected namespace, extra managed clusters exist there, or a spec differs)
 /// * `Ok(false)` - If no drift detected
 /// * `Err(_)` - If API calls fail
 ///
 /// # Errors
 ///
-/// Returns an error if listing `Bind9Cluster` resources fails.
+/// Returns an error if listing `Bind9Instance` or `Bind9Cluster` resources fails.
 async fn detect_cluster_drift(
     client: &Client,
     cluster_provider: &ClusterBind9Provider,
@@ -601,56 +685,54 @@ async fn detect_cluster_drift(
 
     let cluster_provider_name = cluster_provider.name_any();
 
-    // Get target namespace from spec or default
-    let target_namespace = cluster_provider.spec.namespace.as_ref().map_or_else(
-        || std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "bindy-system".to_string()),
-        std::clone::Clone::clone,
-    );
+    // Use the SAME namespace set that reconcile_namespace_clusters creates
+    // managed clusters in. Checking only the target namespace would report
+    // perpetual false drift when instances live in other namespaces, and would
+    // never detect a deleted managed cluster outside the target namespace.
+    let expected_namespaces = compute_expected_cluster_namespaces(client, cluster_provider).await?;
 
-    // List all Bind9Cluster resources in the target namespace
-    let clusters_api: Api<Bind9Cluster> = Api::namespaced(client.clone(), &target_namespace);
-    let clusters = clusters_api.list(&ListParams::default()).await?;
+    // We expect exactly 1 managed cluster in each expected namespace
+    let expected_count_per_namespace = 1;
 
-    // Filter for managed clusters
-    let managed_clusters: Vec<_> = clusters
-        .items
-        .into_iter()
-        .filter(|cluster| {
-            cluster.metadata.labels.as_ref().is_some_and(|labels| {
-                labels.get(BINDY_MANAGED_BY_LABEL)
-                    == Some(&MANAGED_BY_CLUSTER_BIND9_PROVIDER.to_string())
-                    && labels.get(BINDY_CLUSTER_LABEL) == Some(&cluster_provider_name.clone())
+    for namespace in &expected_namespaces {
+        // List all Bind9Cluster resources in this namespace
+        let clusters_api: Api<Bind9Cluster> = Api::namespaced(client.clone(), namespace);
+        let clusters = clusters_api.list(&ListParams::default()).await?;
+
+        // Filter for managed clusters
+        let managed_clusters: Vec<_> = clusters
+            .items
+            .into_iter()
+            .filter(|cluster| {
+                cluster.metadata.labels.as_ref().is_some_and(|labels| {
+                    labels.get(BINDY_MANAGED_BY_LABEL)
+                        == Some(&MANAGED_BY_CLUSTER_BIND9_PROVIDER.to_string())
+                        && labels.get(BINDY_CLUSTER_LABEL) == Some(&cluster_provider_name.clone())
+                })
             })
-        })
-        .collect();
+            .collect();
 
-    // We expect exactly 1 managed cluster in the target namespace
-    let expected_count = 1;
-    let actual_count = managed_clusters.len();
-
-    // Check count drift
-    if actual_count != expected_count {
-        info!(
-            "Cluster count drift detected for ClusterBind9Provider {}: expected {} Bind9Cluster in namespace {}, found {}",
-            cluster_provider_name, expected_count, target_namespace, actual_count
-        );
-        return Ok(true);
-    }
-
-    // Check spec drift - compare managed cluster's spec with desired spec
-    if let Some(managed_cluster) = managed_clusters.first() {
-        // The desired spec is just the common spec from the cluster provider
-        let desired_common_spec = &cluster_provider.spec.common;
-        let actual_common_spec = &managed_cluster.spec.common;
-
-        // Compare specs - if they differ, drift is detected
-        if desired_common_spec != actual_common_spec {
+        // Check count drift in this namespace
+        let actual_count = managed_clusters.len();
+        if actual_count != expected_count_per_namespace {
             info!(
-                "Cluster spec drift detected for ClusterBind9Provider {} in namespace {}: \
-                 managed Bind9Cluster spec differs from desired spec",
-                cluster_provider_name, target_namespace
+                "Cluster count drift detected for ClusterBind9Provider {}: expected {} Bind9Cluster in namespace {}, found {}",
+                cluster_provider_name, expected_count_per_namespace, namespace, actual_count
             );
             return Ok(true);
+        }
+
+        // Check spec drift - compare managed cluster's spec with desired spec
+        if let Some(managed_cluster) = managed_clusters.first() {
+            // The desired spec is just the common spec from the cluster provider
+            if cluster_provider.spec.common != managed_cluster.spec.common {
+                info!(
+                    "Cluster spec drift detected for ClusterBind9Provider {} in namespace {}: \
+                     managed Bind9Cluster spec differs from desired spec",
+                    cluster_provider_name, namespace
+                );
+                return Ok(true);
+            }
         }
     }
 

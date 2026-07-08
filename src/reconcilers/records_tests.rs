@@ -527,6 +527,7 @@ mod tests {
             record_hash: None,
             last_updated: None,
             addresses: None,
+            published_name: None,
         };
 
         assert_eq!(status.conditions.len(), 1);
@@ -562,6 +563,7 @@ mod tests {
             record_hash: None,
             last_updated: None,
             addresses: None,
+            published_name: None,
         };
 
         assert_eq!(status.conditions.len(), 2);
@@ -588,6 +590,7 @@ mod tests {
             record_hash: None,
             last_updated: None,
             addresses: None,
+            published_name: None,
         };
 
         assert_eq!(status.conditions[0].status, "False");
@@ -1368,6 +1371,137 @@ mod tests {
             };
 
             assert!(new_status.records.is_empty());
+        }
+    }
+
+    // ========================================================================
+    // Timestamp Patch Tests (DNSZone.status.records[] key correctness)
+    // ========================================================================
+
+    mod timestamp_patch_tests {
+        use crate::constants::API_GROUP_VERSION;
+        use crate::crd::{DNSZoneStatus, RecordReferenceWithTimestamp};
+        use crate::reconcilers::records::build_records_timestamp_patch;
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
+
+        fn sample_record_ref(name: &str) -> RecordReferenceWithTimestamp {
+            RecordReferenceWithTimestamp {
+                api_version: API_GROUP_VERSION.to_string(),
+                kind: "ARecord".to_string(),
+                name: name.to_string(),
+                namespace: "bindy-system".to_string(),
+                record_name: Some("www".to_string()),
+                last_reconciled_at: "2026-01-01T00:00:00Z"
+                    .parse::<k8s_openapi::jiff::Timestamp>()
+                    .ok()
+                    .map(Time),
+            }
+        }
+
+        #[test]
+        fn test_build_records_timestamp_patch_uses_records_key() {
+            let records = vec![sample_record_ref("web-a-record")];
+
+            let patch = build_records_timestamp_patch(&records);
+
+            // The DNSZoneStatus field serializes as `records` - patching any other
+            // key (e.g. `selectedRecords`) is silently pruned by the structural schema.
+            let status = patch
+                .get("status")
+                .expect("patch must have a status object");
+            assert!(
+                status.get("records").is_some(),
+                "patch must use the `records` key: {patch}"
+            );
+            assert!(
+                status.get("selectedRecords").is_none(),
+                "patch must NOT use the pruned `selectedRecords` key: {patch}"
+            );
+        }
+
+        #[test]
+        fn test_build_records_timestamp_patch_roundtrips_into_dnszone_status() {
+            let records = vec![sample_record_ref("web-a-record"), {
+                let mut second = sample_record_ref("api-a-record");
+                second.last_reconciled_at = None;
+                second
+            }];
+
+            let patch = build_records_timestamp_patch(&records);
+
+            // The patch body must deserialize back into DNSZoneStatus without
+            // losing any record entries (i.e. no unknown fields to prune).
+            let status: DNSZoneStatus =
+                serde_json::from_value(patch.get("status").expect("status present").clone())
+                    .expect("patch status must deserialize into DNSZoneStatus");
+            assert_eq!(status.records.len(), 2);
+            assert!(status.records[0].last_reconciled_at.is_some());
+            assert!(status.records[1].last_reconciled_at.is_none());
+        }
+    }
+
+    // ========================================================================
+    // Rename Detection Tests (status.publishedName tracking)
+    // ========================================================================
+
+    mod rename_detection_tests {
+        use crate::crd::RecordStatus;
+        use crate::reconcilers::records::detect_renamed_record;
+
+        fn status_with_published_name(published_name: Option<&str>) -> RecordStatus {
+            RecordStatus {
+                published_name: published_name.map(ToString::to_string),
+                ..RecordStatus::default()
+            }
+        }
+
+        #[test]
+        fn test_detect_renamed_record_no_status() {
+            // A record with no status was never published - nothing to clean up
+            assert_eq!(detect_renamed_record(None, "www"), None);
+        }
+
+        #[test]
+        fn test_detect_renamed_record_no_published_name() {
+            // A record without publishedName was never published under another name
+            let status = status_with_published_name(None);
+            assert_eq!(detect_renamed_record(Some(&status), "www"), None);
+        }
+
+        #[test]
+        fn test_detect_renamed_record_same_name() {
+            // spec.name matches the published name - no rename occurred
+            let status = status_with_published_name(Some("www"));
+            assert_eq!(detect_renamed_record(Some(&status), "www"), None);
+        }
+
+        #[test]
+        fn test_detect_renamed_record_changed_name() {
+            // spec.name changed - the old published name must be deleted from DNS
+            let status = status_with_published_name(Some("www"));
+            assert_eq!(
+                detect_renamed_record(Some(&status), "web"),
+                Some("www".to_string())
+            );
+        }
+
+        #[test]
+        fn test_record_status_published_name_serialized_when_set() {
+            let status = status_with_published_name(Some("www"));
+            let json = serde_json::to_value(&status).expect("status must serialize");
+            assert_eq!(
+                json.get("publishedName").and_then(|v| v.as_str()),
+                Some("www")
+            );
+        }
+
+        #[test]
+        fn test_record_status_published_name_omitted_when_none() {
+            // publishedName must be omitted (not null) when unset so that
+            // merge patches preserve any existing value.
+            let status = status_with_published_name(None);
+            let json = serde_json::to_value(&status).expect("status must serialize");
+            assert!(json.get("publishedName").is_none());
         }
     }
 }

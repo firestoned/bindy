@@ -32,10 +32,16 @@ use crate::reconcilers::pagination::list_all_paginated;
 /// When `status.zoneRef` is set, the record is reconciled to BIND9.
 /// When `status.zoneRef` is cleared, the record reconciler marks it as `"NotSelected"`.
 ///
+/// Before a record is untagged, its data is deleted from the zone's primary
+/// BIND9 instances. If that DNS deletion fails, the record is kept selected
+/// (and in `status.records`) so the cleanup is retried on the next
+/// reconciliation instead of orphaning the data in BIND9.
+///
 /// # Arguments
 ///
 /// * `client` - Kubernetes API client for querying DNS records
 /// * `dnszone` - The `DNSZone` resource with label selectors
+/// * `stores` - Context stores for resolving instances and creating `Bind9Manager`s
 ///
 /// # Returns
 ///
@@ -49,6 +55,7 @@ use crate::reconcilers::pagination::list_all_paginated;
 pub async fn reconcile_zone_records(
     client: Client,
     dnszone: DNSZone,
+    stores: &crate::context::Stores,
 ) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
     let namespace = dnszone.namespace().unwrap_or_default();
     let spec = &dnszone.spec;
@@ -150,39 +157,70 @@ pub async fn reconcile_zone_records(
     }
 
     // Untag previously matched records that no longer match or were deleted
-    // (in previous but not in current)
-    for prev_record_key in &previous_records {
-        if !current_records.contains(prev_record_key.as_str()) {
-            // Parse kind and name from "Kind/name" format
-            if let Some((kind, name)) = prev_record_key.split_once('/') {
-                warn!(
-                    "Record no longer matches zone {} (unmatched or deleted): {} {}/{}",
-                    zone_name, kind, namespace, name
-                );
+    // (in previous but not in current). Before untagging, delete the record's
+    // data from this zone's primary BIND9 instances - otherwise the data
+    // would stay live in BIND9 forever (the record reconciler only marks
+    // unselected records as NotSelected, it does not delete them).
+    let previous_refs: Vec<crate::crd::RecordReferenceWithTimestamp> = dnszone
+        .status
+        .as_ref()
+        .map(|s| s.records.clone())
+        .unwrap_or_default();
 
-                // Try to untag the record, but don't fail if it was deleted
-                // If the record was deleted, the API will return NotFound, which is fine
-                if let Err(e) =
-                    untag_record_from_zone(&client, &namespace, kind, name, zone_name).await
-                {
-                    // Check if error is because record was deleted (NotFound)
-                    if e.to_string().contains("NotFound") || e.to_string().contains("not found") {
-                        info!(
-                            "Record {} {}/{} was deleted, removing from zone {} status",
-                            kind, namespace, name, zone_name
-                        );
-                    } else {
-                        // Other errors should be logged but not fail the reconciliation
-                        warn!(
-                            "Failed to untag record {} {}/{} from zone {}: {}",
-                            kind, namespace, name, zone_name, e
-                        );
-                    }
-                }
-                // Continue regardless - the record will be removed from status.records
-                // when we return all_record_refs (which doesn't include this record)
+    // Lazily resolved (and cached) primary instances for this zone
+    let mut primary_refs_cache: Option<Vec<crate::crd::InstanceReference>> = None;
+
+    for record_ref in unselected_previous_records(&previous_refs, &current_records) {
+        let kind = record_ref.kind.as_str();
+        let name = record_ref.name.as_str();
+
+        warn!(
+            "Record no longer matches zone {} (unmatched or deleted): {} {}/{}",
+            zone_name, kind, namespace, name
+        );
+
+        // Delete the record data from BIND9 before untagging
+        if let Err(e) = cleanup_unselected_record_dns(
+            &client,
+            stores,
+            &dnszone,
+            &namespace,
+            &record_ref,
+            &mut primary_refs_cache,
+        )
+        .await
+        {
+            // Do NOT untag: keep the record selected (zoneRef intact and
+            // present in status.records) so the DNS deletion is retried on
+            // the next reconciliation instead of orphaning data in BIND9.
+            warn!(
+                "Failed to delete DNS data for unselected record {} {}/{} from zone {}: {}. \
+                 Keeping record selected for retry.",
+                kind, namespace, name, zone_name, e
+            );
+            all_record_refs.push(record_ref.clone());
+            continue;
+        }
+
+        // Try to untag the record, but don't fail if it was deleted
+        // If the record was deleted, the API will return NotFound, which is fine
+        if let Err(e) = untag_record_from_zone(&client, &namespace, kind, name, zone_name).await {
+            // Check if error is because record was deleted (NotFound)
+            if e.to_string().contains("NotFound") || e.to_string().contains("not found") {
+                info!(
+                    "Record {} {}/{} was deleted, removing from zone {} status",
+                    kind, namespace, name, zone_name
+                );
+            } else {
+                // Other errors should be logged but not fail the reconciliation
+                warn!(
+                    "Failed to untag record {} {}/{} from zone {}: {}",
+                    kind, namespace, name, zone_name, e
+                );
             }
         }
+        // Continue regardless - the record will be removed from status.records
+        // when we return all_record_refs (which doesn't include this record)
     }
 
     // CRITICAL: Preserve existing timestamps for records that haven't changed
@@ -208,6 +246,220 @@ pub async fn reconcile_zone_records(
     }
 
     Ok(all_record_refs)
+}
+
+/// HTTP status code returned by the Kubernetes API when a resource does not exist.
+const HTTP_STATUS_NOT_FOUND: u16 = 404;
+
+/// Returns the previously matched record references that are no longer selected.
+///
+/// # Arguments
+///
+/// * `previous` - Record references from the zone's current `status.records[]`
+/// * `current_keys` - Set of `"Kind/name"` keys for currently matched records
+fn unselected_previous_records(
+    previous: &[crate::crd::RecordReferenceWithTimestamp],
+    current_keys: &HashSet<String>,
+) -> Vec<crate::crd::RecordReferenceWithTimestamp> {
+    previous
+        .iter()
+        .filter(|r| !current_keys.contains(&format!("{}/{}", r.kind, r.name)))
+        .cloned()
+        .collect()
+}
+
+/// Maps a Kubernetes record kind (e.g., `"ARecord"`) to its hickory `RecordType`.
+///
+/// # Errors
+///
+/// Returns an error if the kind is not a known DNS record kind.
+fn hickory_record_type_for_kind(kind: &str) -> Result<hickory_proto::rr::RecordType> {
+    use crate::crd::DNSRecordKind;
+    use hickory_proto::rr::RecordType;
+
+    let record_kind = DNSRecordKind::try_from(kind)
+        .map_err(|e| anyhow::anyhow!("Unknown DNS record kind '{kind}': {e}"))?;
+
+    Ok(match record_kind {
+        DNSRecordKind::A => RecordType::A,
+        DNSRecordKind::AAAA => RecordType::AAAA,
+        DNSRecordKind::TXT => RecordType::TXT,
+        DNSRecordKind::CNAME => RecordType::CNAME,
+        DNSRecordKind::MX => RecordType::MX,
+        DNSRecordKind::NS => RecordType::NS,
+        DNSRecordKind::SRV => RecordType::SRV,
+        DNSRecordKind::CAA => RecordType::CAA,
+    })
+}
+
+/// Builds a dynamic API client for a DNS record kind in the given namespace.
+fn dynamic_record_api(
+    client: &Client,
+    namespace: &str,
+    kind: &str,
+) -> kube::api::Api<kube::api::DynamicObject> {
+    // Convert kind to plural resource name (e.g., "ARecord" -> "arecords")
+    let plural = format!("{}s", kind.to_lowercase());
+
+    let gvk = kube::core::GroupVersionKind {
+        group: "bindy.firestoned.io".to_string(),
+        version: "v1beta1".to_string(),
+        kind: kind.to_string(),
+    };
+
+    let api_resource = kube::api::ApiResource::from_gvk_with_plural(&gvk, &plural);
+
+    kube::api::Api::<kube::api::DynamicObject>::namespaced_with(
+        client.clone(),
+        namespace,
+        &api_resource,
+    )
+}
+
+/// Deletes the DNS data of a record that is no longer selected by a zone.
+///
+/// Called by `reconcile_zone_records()` before untagging a record. Without this,
+/// unselecting a record (label/selector change) would leave its data live in
+/// BIND9 forever, since the record reconciler only marks unselected records
+/// as `NotSelected`.
+///
+/// The deletion is skipped (returns `Ok`) when:
+/// - The record resource no longer exists (its finalizer handles DNS cleanup)
+/// - The record has no `status.zoneRef` (it was never published to DNS)
+/// - The record's `status.zoneRef` points at a different zone (not ours to delete)
+/// - The zone has no instances or no primary instances (nowhere to delete from)
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `stores` - Context stores for resolving instances and creating `Bind9Manager`s
+/// * `dnszone` - The zone that previously selected this record
+/// * `namespace` - Namespace of the record
+/// * `record_ref` - Reference to the unselected record
+/// * `primary_refs_cache` - Cache of the zone's primary instances (resolved once)
+///
+/// # Errors
+///
+/// Returns an error if the record cannot be fetched (other than `NotFound`),
+/// primary instances cannot be resolved, or the DNS deletion fails. Callers
+/// must NOT untag the record in that case, so the cleanup is retried.
+async fn cleanup_unselected_record_dns(
+    client: &Client,
+    stores: &crate::context::Stores,
+    dnszone: &DNSZone,
+    namespace: &str,
+    record_ref: &crate::crd::RecordReferenceWithTimestamp,
+    primary_refs_cache: &mut Option<Vec<crate::crd::InstanceReference>>,
+) -> Result<()> {
+    let kind = record_ref.kind.as_str();
+    let name = record_ref.name.as_str();
+
+    // Fetch the record to read its published DNS name and zone ownership
+    let api = dynamic_record_api(client, namespace, kind);
+    let record = match api.get(name).await {
+        Ok(record) => record,
+        Err(kube::Error::Api(ae)) if ae.code == HTTP_STATUS_NOT_FOUND => {
+            // Record resource was deleted - its finalizer handles DNS cleanup
+            debug!(
+                "Record {} {}/{} no longer exists, skipping DNS cleanup",
+                kind, namespace, name
+            );
+            return Ok(());
+        }
+        Err(e) => {
+            return Err(anyhow::Error::from(e)
+                .context(format!("Failed to fetch {kind} {namespace}/{name}")));
+        }
+    };
+
+    let record_json = serde_json::to_value(&record)?;
+    let status = record_json.get("status");
+
+    // No zoneRef means the record was never published to DNS
+    let Some(zone_ref) = status
+        .and_then(|s| s.get("zoneRef"))
+        .filter(|z| !z.is_null())
+    else {
+        debug!(
+            "Record {} {}/{} has no status.zoneRef, skipping DNS cleanup",
+            kind, namespace, name
+        );
+        return Ok(());
+    };
+
+    // Only delete data for records this zone actually owns
+    let owned_by_this_zone = zone_ref.get("name").and_then(|v| v.as_str())
+        == Some(dnszone.name_any().as_str())
+        && zone_ref.get("namespace").and_then(|v| v.as_str())
+            == Some(dnszone.namespace().unwrap_or_default().as_str());
+    if !owned_by_this_zone {
+        debug!(
+            "Record {} {}/{} is owned by a different zone, skipping DNS cleanup",
+            kind, namespace, name
+        );
+        return Ok(());
+    }
+
+    // Resolve this zone's primary instances once and cache across records
+    if primary_refs_cache.is_none() {
+        let Ok(instance_refs) = crate::reconcilers::dnszone::validation::get_instances_from_zone(
+            dnszone,
+            &stores.bind9_instances,
+        ) else {
+            // Zone has no instances - there is nowhere the data could live
+            debug!(
+                "Zone {} has no instances, skipping DNS cleanup for {} {}/{}",
+                dnszone.spec.zone_name, kind, namespace, name
+            );
+            return Ok(());
+        };
+
+        let primaries =
+            crate::reconcilers::dnszone::primary::filter_primary_instances(client, &instance_refs)
+                .await?;
+        *primary_refs_cache = Some(primaries);
+    }
+
+    let primary_refs = primary_refs_cache.as_deref().unwrap_or_default();
+    if primary_refs.is_empty() {
+        debug!(
+            "Zone {} has no primary instances, skipping DNS cleanup for {} {}/{}",
+            dnszone.spec.zone_name, kind, namespace, name
+        );
+        return Ok(());
+    }
+
+    // The DNS name actually published (handles renames), falling back to spec.name
+    let record_name = status
+        .and_then(|s| s.get("publishedName"))
+        .and_then(|p| p.as_str())
+        .or_else(|| {
+            record_json
+                .get("spec")
+                .and_then(|s| s.get("name"))
+                .and_then(|n| n.as_str())
+        })
+        .unwrap_or(name);
+
+    let record_type_hickory = hickory_record_type_for_kind(kind)?;
+
+    crate::reconcilers::records::delete_record_from_primaries(
+        client,
+        stores,
+        primary_refs,
+        &dnszone.spec.zone_name,
+        record_name,
+        record_type_hickory,
+        true, // fail_on_error: do not untag until the data is really gone
+    )
+    .await?;
+
+    info!(
+        "Deleted DNS data for unselected record {} {}/{} ('{}') from zone {}",
+        kind, namespace, name, record_name, dnszone.spec.zone_name
+    );
+
+    Ok(())
 }
 
 /// Tags a DNS record with zone ownership by setting `status.zoneRef`.
@@ -241,25 +493,8 @@ async fn tag_record_with_zone(
         kind, namespace, name, zone_fqdn
     );
 
-    // Convert kind to plural resource name (e.g., "ARecord" -> "arecords")
-    let plural = format!("{}s", kind.to_lowercase());
-
-    // Create GroupVersionKind for the resource
-    let gvk = kube::core::GroupVersionKind {
-        group: "bindy.firestoned.io".to_string(),
-        version: "v1beta1".to_string(),
-        kind: kind.to_string(),
-    };
-
-    // Use kube's Discovery API to create ApiResource
-    let api_resource = kube::api::ApiResource::from_gvk_with_plural(&gvk, &plural);
-
     // Create a dynamic API client
-    let api = kube::api::Api::<kube::api::DynamicObject>::namespaced_with(
-        client.clone(),
-        namespace,
-        &api_resource,
-    );
+    let api = dynamic_record_api(client, namespace, kind);
 
     // Create ZoneReference for status.zoneRef (event-driven architecture)
     let zone_ref = crate::crd::ZoneReference {
@@ -326,25 +561,8 @@ async fn untag_record_from_zone(
         kind, namespace, name, previous_zone_fqdn
     );
 
-    // Convert kind to plural resource name
-    let plural = format!("{}s", kind.to_lowercase());
-
-    // Create GroupVersionKind for the resource
-    let gvk = kube::core::GroupVersionKind {
-        group: "bindy.firestoned.io".to_string(),
-        version: "v1beta1".to_string(),
-        kind: kind.to_string(),
-    };
-
-    // Use kube's Discovery API to create ApiResource
-    let api_resource = kube::api::ApiResource::from_gvk_with_plural(&gvk, &plural);
-
     // Create a dynamic API client
-    let api = kube::api::Api::<kube::api::DynamicObject>::namespaced_with(
-        client.clone(),
-        namespace,
-        &api_resource,
-    );
+    let api = dynamic_record_api(client, namespace, kind);
 
     // Patch status to remove zoneRef (event-driven architecture uses status.zoneRef, not annotations)
     let status_patch = json!({
@@ -920,14 +1138,14 @@ pub async fn trigger_record_reconciliation(
 /// This wrapper function orchestrates record discovery and status updates:
 /// 1. Sets "Progressing" status condition
 /// 2. Calls `reconcile_zone_records()` to discover records
-/// 3. Handles errors gracefully (non-fatal)
-/// 4. Updates DNSZone status with discovered records
+/// 3. Updates DNSZone status with discovered records
 ///
 /// # Arguments
 ///
 /// * `client` - Kubernetes API client
 /// * `dnszone` - The DNSZone resource being reconciled
 /// * `status_updater` - Status updater for setting conditions and records
+/// * `stores` - Context stores for resolving instances and creating `Bind9Manager`s
 ///
 /// # Returns
 ///
@@ -935,11 +1153,15 @@ pub async fn trigger_record_reconciliation(
 ///
 /// # Errors
 ///
-/// Returns an error if critical failures occur (does not fail for record discovery errors)
+/// Returns an error if record discovery fails (e.g., a transient record list
+/// failure). The existing `status.records` list is left untouched in that case
+/// so the watch mapper keeps working until discovery succeeds again; wiping it
+/// on a transient error would orphan the zone's records.
 pub async fn discover_and_update_records(
     client: &kube::Client,
     dnszone: &crate::crd::DNSZone,
     status_updater: &mut crate::reconcilers::status::DNSZoneStatusUpdater,
+    stores: &crate::context::Stores,
 ) -> Result<(Vec<crate::crd::RecordReferenceWithTimestamp>, usize)> {
     let spec = &dnszone.spec;
 
@@ -951,31 +1173,28 @@ pub async fn discover_and_update_records(
         "Discovering DNS records via label selectors",
     );
 
-    // Discover records
-    let record_refs = match reconcile_zone_records(client.clone(), dnszone.clone()).await {
-        Ok(refs) => {
-            info!(
-                "Discovered {} DNS record(s) for zone {} via label selectors",
-                refs.len(),
-                spec.zone_name
-            );
-            refs
-        }
-        Err(e) => {
-            // Record discovery failure is non-fatal - the zone itself is still configured
+    // Discover records. On failure, propagate the error WITHOUT touching
+    // status.records: overwriting it with an empty list on a transient list
+    // failure would break the record watch mapper until the next successful
+    // discovery.
+    let record_refs = reconcile_zone_records(client.clone(), dnszone.clone(), stores)
+        .await
+        .map_err(|e| {
             warn!(
-                "Failed to discover DNS records for zone {}: {}. Zone is configured but record discovery failed.",
+                "Failed to discover DNS records for zone {}: {}. Keeping existing status.records for retry.",
                 spec.zone_name, e
             );
-            status_updater.set_condition(
-                "Degraded",
-                "True",
-                "RecordDiscoveryFailed",
-                &format!("Zone configured but record discovery failed: {e}"),
-            );
-            vec![]
-        }
-    };
+            e.context(format!(
+                "Failed to discover DNS records for zone {}",
+                spec.zone_name
+            ))
+        })?;
+
+    info!(
+        "Discovered {} DNS record(s) for zone {} via label selectors",
+        record_refs.len(),
+        spec.zone_name
+    );
 
     let records_count = record_refs.len();
 

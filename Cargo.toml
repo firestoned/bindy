@@ -18,8 +18,11 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-kube = { version = "3.1", features = ["runtime", "derive", "client"] }
+kube = { version = "3.1", features = ["runtime", "derive", "client", "jsonpatch"] }
 kube-lease-manager = "0.11.1"
+# JSON Patch construction for atomic finalizer add/remove with `test` guards
+# (mirrors kube-runtime's own finalizer helper; same version kube-core uses)
+json-patch = "4.2"
 # Only include needed tokio features for faster compilation
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "signal"] }
 serde = { version = "1", features = ["derive"] }

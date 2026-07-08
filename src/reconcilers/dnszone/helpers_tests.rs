@@ -282,4 +282,125 @@ mod tests {
     //
     // These would require kube::Client mocking infrastructure, which is typically
     // done in integration tests with test fixtures or mock servers.
+
+    // ========================================================================
+    // Deletion-cleanup failure classification (is_unavailable_for_deletion)
+    // ========================================================================
+
+    fn kube_api_error(code: u16) -> anyhow::Error {
+        anyhow::Error::from(kube::Error::Api(
+            kube::core::Status::failure("test error", "TestReason")
+                .with_code(code)
+                .boxed(),
+        ))
+    }
+
+    #[test]
+    fn test_is_unavailable_for_deletion_kube_404_is_unavailable() {
+        // A missing Secret/Endpoints object (404) means the target is gone:
+        // safe to skip during deletion cleanup
+        let err = kube_api_error(HTTP_STATUS_NOT_FOUND);
+        assert!(is_unavailable_for_deletion(&err));
+    }
+
+    #[test]
+    fn test_is_unavailable_for_deletion_kube_transient_errors_are_not() {
+        // Timeouts / rate limits / server errors are potentially transient and
+        // must be retried, never skipped
+        const HTTP_TOO_MANY_REQUESTS: u16 = 429;
+        const HTTP_INTERNAL_SERVER_ERROR: u16 = 500;
+        const HTTP_SERVICE_UNAVAILABLE: u16 = 503;
+        for code in [
+            HTTP_TOO_MANY_REQUESTS,
+            HTTP_INTERNAL_SERVER_ERROR,
+            HTTP_SERVICE_UNAVAILABLE,
+        ] {
+            let err = kube_api_error(code);
+            assert!(
+                !is_unavailable_for_deletion(&err),
+                "HTTP {code} must be treated as transient"
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_unavailable_for_deletion_context_wrapped_kube_404() {
+        // load_rndc_key/get_endpoint wrap kube errors with .context(); the
+        // classification must see through the anyhow context chain
+        use anyhow::Context;
+        let err: anyhow::Error = Err::<(), _>(kube::Error::Api(
+            kube::core::Status::failure("secret not found", "NotFound")
+                .with_code(HTTP_STATUS_NOT_FOUND)
+                .boxed(),
+        ))
+        .context("Failed to get RNDC secret")
+        .unwrap_err();
+        assert!(is_unavailable_for_deletion(&err));
+    }
+
+    #[test]
+    fn test_is_unavailable_for_deletion_non_kube_error_is_unavailable() {
+        // "No ready endpoints found" style errors are not fixed by retrying a
+        // deletion: skip with a warning
+        let err = anyhow::anyhow!("No ready endpoints found for service foo with port 'http'");
+        assert!(is_unavailable_for_deletion(&err));
+    }
+
+    // ========================================================================
+    // Pod listing helpers (running_pod_name_and_ip)
+    // ========================================================================
+
+    fn make_pod(
+        name: &str,
+        phase: Option<&str>,
+        ip: Option<&str>,
+    ) -> k8s_openapi::api::core::v1::Pod {
+        k8s_openapi::api::core::v1::Pod {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                ..Default::default()
+            },
+            status: Some(k8s_openapi::api::core::v1::PodStatus {
+                phase: phase.map(ToString::to_string),
+                pod_ip: ip.map(ToString::to_string),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_running_pod_name_and_ip_running_with_ip() {
+        let pod = make_pod("pod-1", Some("Running"), Some("10.0.0.1"));
+        assert_eq!(
+            running_pod_name_and_ip(&pod),
+            Some(("pod-1".to_string(), "10.0.0.1".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_running_pod_name_and_ip_pending_pod_is_skipped() {
+        let pod = make_pod("pod-pending", Some("Pending"), None);
+        assert_eq!(running_pod_name_and_ip(&pod), None);
+    }
+
+    #[test]
+    fn test_running_pod_name_and_ip_running_without_ip_is_skipped() {
+        // A pod can briefly report Running before its IP is populated in the
+        // cache; it must be skipped, not fail the whole pod listing
+        let pod = make_pod("pod-no-ip", Some("Running"), None);
+        assert_eq!(running_pod_name_and_ip(&pod), None);
+    }
+
+    #[test]
+    fn test_running_pod_name_and_ip_no_status() {
+        let pod = k8s_openapi::api::core::v1::Pod {
+            metadata: ObjectMeta {
+                name: Some("pod-nostatus".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(running_pod_name_and_ip(&pod), None);
+    }
 }

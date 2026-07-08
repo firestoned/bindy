@@ -8,6 +8,16 @@ mod tests {
     use crate::bind9::{Bind9Manager, RndcKeyData};
     use bindcar::ZONE_TYPE_PRIMARY;
 
+    /// Install the ring TLS crypto provider for this test process.
+    ///
+    /// reqwest is compiled with `rustls-no-provider` and relies on the
+    /// process-default `CryptoProvider`, which `main.rs` installs at startup
+    /// but unit tests do not. `install_default` returns `Err` once a provider
+    /// is already set, so calling it from every test is safe and idempotent.
+    fn ensure_crypto_provider() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+
     // =====================================================
     // HTTP API URL Building Tests
     // =====================================================
@@ -218,19 +228,6 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires mock HTTP server"]
-    async fn test_zone_exists_false() {
-        let manager = Bind9Manager::new();
-
-        let result = manager
-            .zone_exists("definitely-does-not-exist-12345.com", "localhost:8080")
-            .await;
-
-        // Should return Ok(false) for 404 not found
-        assert!(matches!(result, Ok(false)));
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires mock HTTP server"]
     async fn test_zone_exists_connection_error() {
         let manager = Bind9Manager::new();
 
@@ -240,6 +237,237 @@ mod tests {
             .await;
 
         assert!(result.is_err());
+    }
+
+    // =====================================================
+    // HTTP error inspection helpers (zone_exists 404 fix)
+    // =====================================================
+
+    use super::super::{is_http_conflict, is_http_not_found, HttpError};
+    use reqwest::StatusCode;
+
+    fn http_error(status: StatusCode, message: &str) -> anyhow::Error {
+        anyhow::Error::from(HttpError {
+            status,
+            message: message.to_string(),
+        })
+    }
+
+    #[test]
+    fn test_is_http_not_found_on_bare_error() {
+        let err = http_error(StatusCode::NOT_FOUND, "zone not found");
+        assert!(is_http_not_found(&err));
+    }
+
+    #[test]
+    fn test_is_http_not_found_through_context_layers() {
+        // zone_status() wraps the HttpError with anyhow context; the helper
+        // must see through the context layers (string-matching on
+        // e.to_string() only prints the outermost context and made the 404
+        // branch unreachable).
+        let err = http_error(StatusCode::NOT_FOUND, "zone not found")
+            .context("Failed to get zone status")
+            .context("outer context");
+        assert!(is_http_not_found(&err));
+    }
+
+    #[test]
+    fn test_is_http_not_found_rejects_other_statuses() {
+        let err = http_error(StatusCode::INTERNAL_SERVER_ERROR, "boom")
+            .context("Failed to get zone status");
+        assert!(!is_http_not_found(&err));
+    }
+
+    #[test]
+    fn test_is_http_not_found_rejects_non_http_errors() {
+        let err = anyhow::anyhow!("connection reset by peer");
+        assert!(!is_http_not_found(&err));
+    }
+
+    #[test]
+    fn test_is_http_conflict_on_bare_error() {
+        let err = http_error(StatusCode::CONFLICT, "zone already exists");
+        assert!(is_http_conflict(&err));
+    }
+
+    #[test]
+    fn test_is_http_conflict_through_context_layers() {
+        let err =
+            http_error(StatusCode::CONFLICT, "zone already exists").context("Failed to add zone");
+        assert!(is_http_conflict(&err));
+    }
+
+    #[test]
+    fn test_is_http_conflict_rejects_not_found() {
+        let err = http_error(StatusCode::NOT_FOUND, "zone not found");
+        assert!(!is_http_conflict(&err));
+    }
+
+    // =====================================================
+    // zone_exists against a mock bindcar server
+    // =====================================================
+
+    use std::sync::Arc;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn test_zone_exists_returns_false_on_404() {
+        ensure_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/zones/missing.example.com/status"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("zone not found"))
+            .mount(&server)
+            .await;
+
+        let client = Arc::new(reqwest::Client::new());
+        let result = super::super::zone_exists(&client, None, "missing.example.com", &server.uri())
+            .await
+            .expect("404 must map to Ok(false), not Err");
+
+        assert!(!result, "a 404 from bindcar means the zone does not exist");
+    }
+
+    #[tokio::test]
+    async fn test_zone_exists_returns_true_on_200() {
+        ensure_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/zones/present.example.com/status"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("zone is loaded"))
+            .mount(&server)
+            .await;
+
+        let client = Arc::new(reqwest::Client::new());
+        let result = super::super::zone_exists(&client, None, "present.example.com", &server.uri())
+            .await
+            .expect("200 must map to Ok(true)");
+
+        assert!(result);
+    }
+
+    // =====================================================
+    // create_zone_http via the shared retry path
+    // =====================================================
+
+    fn test_key_data() -> RndcKeyData {
+        RndcKeyData {
+            name: "test-key".to_string(),
+            algorithm: crate::crd::RndcAlgorithm::HmacSha256,
+            secret: "dGVzdHNlY3JldA==".to_string(),
+        }
+    }
+
+    fn test_zone_config() -> bindcar::ZoneConfig {
+        use bindcar::{SoaRecord, ZoneConfig};
+        use std::collections::HashMap;
+
+        ZoneConfig {
+            ttl: 3600,
+            soa: SoaRecord {
+                primary_ns: "ns1.example.com.".to_string(),
+                admin_email: "admin.example.com.".to_string(),
+                serial: 1,
+                refresh: 3600,
+                retry: 600,
+                expire: 604_800,
+                negative_ttl: 86400,
+            },
+            name_servers: vec!["ns1.example.com.".to_string()],
+            name_server_ips: HashMap::new(),
+            records: vec![],
+            also_notify: None,
+            allow_transfer: None,
+            primaries: None,
+            dnssec_policy: None,
+            inline_signing: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_zone_http_success() {
+        ensure_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/zones"))
+            .respond_with(
+                ResponseTemplate::new(201).set_body_string(
+                    r#"{"success": true, "message": "Zone created successfully"}"#,
+                ),
+            )
+            .mount(&server)
+            .await;
+
+        let client = Arc::new(reqwest::Client::new());
+        let result = super::super::create_zone_http(
+            &client,
+            None,
+            "new.example.com",
+            ZONE_TYPE_PRIMARY,
+            test_zone_config(),
+            &server.uri(),
+            &test_key_data(),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "successful creation must return Ok: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_zone_http_treats_409_as_success() {
+        ensure_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/zones"))
+            .respond_with(ResponseTemplate::new(409).set_body_string("zone already exists"))
+            .mount(&server)
+            .await;
+
+        let client = Arc::new(reqwest::Client::new());
+        let result = super::super::create_zone_http(
+            &client,
+            None,
+            "dup.example.com",
+            ZONE_TYPE_PRIMARY,
+            test_zone_config(),
+            &server.uri(),
+            &test_key_data(),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "409 Conflict means the zone already exists and must be idempotent: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_zone_http_fails_on_bad_request() {
+        ensure_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/zones"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("invalid zone name"))
+            .mount(&server)
+            .await;
+
+        let client = Arc::new(reqwest::Client::new());
+        let result = super::super::create_zone_http(
+            &client,
+            None,
+            "bad zone",
+            ZONE_TYPE_PRIMARY,
+            test_zone_config(),
+            &server.uri(),
+            &test_key_data(),
+        )
+        .await;
+
+        assert!(result.is_err(), "a 400 must not be swallowed");
     }
 
     // =====================================================

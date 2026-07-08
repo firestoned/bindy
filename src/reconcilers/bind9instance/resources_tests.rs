@@ -287,6 +287,141 @@ mod tests {
     }
 
     // ----------------------------------------------------------------
+    // evaluate_existing_rndc_secret — pure decision-logic tests
+    //
+    // Regression coverage for the malformed-Secret bug: after deleting a
+    // malformed Secret, control previously continued into the rotation /
+    // algorithm checks on the stale in-memory copy and could early-return
+    // WITHOUT recreating the Secret, leaving the Deployment mounting a
+    // Secret that no longer exists.
+    // ----------------------------------------------------------------
+
+    use crate::crd::{RndcAlgorithm, RndcKeyConfig};
+    use crate::reconcilers::bind9instance::resources::{
+        evaluate_existing_rndc_secret, RndcSecretAction,
+    };
+    use k8s_openapi::api::core::v1::Secret;
+    use k8s_openapi::ByteString;
+    use std::collections::BTreeMap;
+
+    fn rndc_config(auto_rotate: bool) -> RndcKeyConfig {
+        RndcKeyConfig {
+            auto_rotate,
+            rotate_after: "720h".to_string(),
+            secret_ref: None,
+            secret: None,
+            algorithm: RndcAlgorithm::HmacSha256,
+        }
+    }
+
+    fn valid_secret_data() -> BTreeMap<String, ByteString> {
+        let mut data = BTreeMap::new();
+        data.insert(
+            "key-name".to_string(),
+            ByteString(b"bindy-operator".to_vec()),
+        );
+        data.insert("algorithm".to_string(), ByteString(b"hmac-sha256".to_vec()));
+        data.insert("secret".to_string(), ByteString(b"c2VjcmV0".to_vec()));
+        data
+    }
+
+    fn secret_with_data(data: Option<BTreeMap<String, ByteString>>) -> Secret {
+        Secret {
+            metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+                name: Some("test-rndc-key".to_string()),
+                ..Default::default()
+            },
+            data,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn evaluate_rndc_secret_recreates_when_data_missing() {
+        let secret = secret_with_data(None);
+        let action = evaluate_existing_rndc_secret(&secret, &rndc_config(false)).unwrap();
+        assert!(
+            matches!(action, RndcSecretAction::Recreate(_)),
+            "Secret without data must be recreated, got {action:?}"
+        );
+    }
+
+    #[test]
+    fn evaluate_rndc_secret_recreates_when_required_keys_missing() {
+        let mut data = valid_secret_data();
+        data.remove("secret");
+        let secret = secret_with_data(Some(data));
+        let action = evaluate_existing_rndc_secret(&secret, &rndc_config(false)).unwrap();
+        assert!(
+            matches!(action, RndcSecretAction::Recreate(_)),
+            "Secret missing required keys must be recreated, got {action:?}"
+        );
+    }
+
+    #[test]
+    fn evaluate_rndc_secret_recreates_malformed_even_with_auto_rotate() {
+        // The original bug: a malformed Secret with auto_rotate enabled fell
+        // into the rotation-annotation branch after deletion and returned
+        // early without recreating. Malformedness must win over rotation.
+        let secret = secret_with_data(None);
+        let action = evaluate_existing_rndc_secret(&secret, &rndc_config(true)).unwrap();
+        assert!(
+            matches!(action, RndcSecretAction::Recreate(_)),
+            "malformed Secret must be recreated regardless of rotation config, got {action:?}"
+        );
+    }
+
+    #[test]
+    fn evaluate_rndc_secret_keeps_valid_secret() {
+        let secret = secret_with_data(Some(valid_secret_data()));
+        let action = evaluate_existing_rndc_secret(&secret, &rndc_config(false)).unwrap();
+        assert_eq!(action, RndcSecretAction::Keep);
+    }
+
+    #[test]
+    fn evaluate_rndc_secret_recreates_on_algorithm_mismatch() {
+        let secret = secret_with_data(Some(valid_secret_data()));
+        let mut config = rndc_config(false);
+        config.algorithm = RndcAlgorithm::HmacSha512;
+        let action = evaluate_existing_rndc_secret(&secret, &config).unwrap();
+        assert!(
+            matches!(action, RndcSecretAction::Recreate(_)),
+            "algorithm drift must recreate the Secret, got {action:?}"
+        );
+    }
+
+    #[test]
+    fn evaluate_rndc_secret_adds_annotations_when_rotation_enabled() {
+        let secret = secret_with_data(Some(valid_secret_data()));
+        let action = evaluate_existing_rndc_secret(&secret, &rndc_config(true)).unwrap();
+        assert_eq!(action, RndcSecretAction::AddRotationAnnotations);
+    }
+
+    #[test]
+    fn evaluate_rndc_secret_rotates_when_due() {
+        use chrono::{Duration, Utc};
+
+        let mut secret = secret_with_data(Some(valid_secret_data()));
+        let mut annotations = std::collections::BTreeMap::new();
+        annotations.insert(
+            crate::constants::ANNOTATION_RNDC_CREATED_AT.to_string(),
+            (Utc::now() - Duration::hours(2)).to_rfc3339(),
+        );
+        annotations.insert(
+            crate::constants::ANNOTATION_RNDC_ROTATE_AT.to_string(),
+            (Utc::now() - Duration::minutes(5)).to_rfc3339(),
+        );
+        annotations.insert(
+            crate::constants::ANNOTATION_RNDC_ROTATION_COUNT.to_string(),
+            "0".to_string(),
+        );
+        secret.metadata.annotations = Some(annotations);
+
+        let action = evaluate_existing_rndc_secret(&secret, &rndc_config(true)).unwrap();
+        assert_eq!(action, RndcSecretAction::Rotate);
+    }
+
+    // ----------------------------------------------------------------
     // F-001: validate_user_pod_shape — pure-function tests
     // ----------------------------------------------------------------
 

@@ -55,7 +55,8 @@ use bindcar::ZoneConfig;
 use k8s_openapi::api::apps::v1::Deployment;
 use reqwest::Client as HttpClient;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
 /// Environment variable name that indicates bindcar authentication is enabled.
@@ -68,6 +69,93 @@ const BINDCAR_AUTH_ENV_VAR: &str = "BIND_ALLOWED_SERVICE_ACCOUNTS";
 /// the sidecar `api` (not `bindcar`), so this is what `is_auth_enabled` looks
 /// for when inspecting the operand Deployment.
 const BINDCAR_CONTAINER_NAME: &str = crate::constants::CONTAINER_NAME_BINDCAR;
+
+/// How long a `ServiceAccount` token read from disk may be served from the
+/// in-memory cache before it is re-read (seconds).
+///
+/// The operator's bindcar-audience token is projected with
+/// `expirationSeconds: 3600` (see `deploy/operator/deployment.yaml`) and the
+/// kubelet rewrites the token file at roughly 80% of that lifetime. Caching
+/// the token for the process lifetime therefore presents an **expired** token
+/// after ~1h, which bindcar's TokenReview rejects with a non-retryable 401.
+/// Re-reading every 5 minutes keeps the presented token far fresher than the
+/// rotation window; the file lives on a tmpfs projected volume, so the re-read
+/// is cheap.
+const TOKEN_CACHE_TTL_SECS: u64 = 300;
+
+/// Connect timeout for bindcar HTTP API requests.
+///
+/// Without a connect timeout, a blackholed pod IP (e.g. a stale Endpoints
+/// entry) hangs a reconcile task indefinitely — the retry/backoff in
+/// `zone_ops::bindcar_request` never fires because attempt #1 never returns.
+const BINDCAR_HTTP_CONNECT_TIMEOUT_SECS: u64 = 5;
+
+/// Total request timeout (connect + transfer) for bindcar HTTP API requests.
+///
+/// Bounded well below `zone_ops::bindcar_request`'s 120s max retry window so
+/// a slow attempt still leaves room for retries.
+const BINDCAR_HTTP_REQUEST_TIMEOUT_SECS: u64 = 30;
+
+/// A `ServiceAccount` token (or the absence of one) read from disk, together
+/// with the time it was read.
+///
+/// `token: None` means the token file could not be read (e.g. auth-disabled
+/// or out-of-cluster deployments); the negative result is cached too, so a
+/// missing file is not re-read on every request within the TTL.
+struct CachedToken {
+    /// The token contents, or `None` if no token file was readable.
+    token: Option<String>,
+    /// When the token file was last read.
+    read_at: Instant,
+}
+
+// Custom Debug implementation to prevent logging the token in cleartext
+impl std::fmt::Debug for CachedToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CachedToken")
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field("read_at", &self.read_at)
+            .finish()
+    }
+}
+
+/// Returns `true` while a token read at `read_at` may still be served from
+/// cache at `now` (i.e. it is younger than [`TOKEN_CACHE_TTL_SECS`]).
+fn is_token_cache_fresh(read_at: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(read_at) < Duration::from_secs(TOKEN_CACHE_TTL_SECS)
+}
+
+/// Build the shared bindcar HTTP client with connect and request timeouts.
+fn build_http_client() -> HttpClient {
+    build_http_client_with_timeouts(
+        Duration::from_secs(BINDCAR_HTTP_CONNECT_TIMEOUT_SECS),
+        Duration::from_secs(BINDCAR_HTTP_REQUEST_TIMEOUT_SECS),
+    )
+}
+
+/// Build an HTTP client with the given connect and total-request timeouts.
+///
+/// Falls back to the default client (no timeouts) if the builder fails, so
+/// manager construction never panics; the failure is logged.
+fn build_http_client_with_timeouts(
+    connect_timeout: Duration,
+    request_timeout: Duration,
+) -> HttpClient {
+    match HttpClient::builder()
+        .connect_timeout(connect_timeout)
+        .timeout(request_timeout)
+        .build()
+    {
+        Ok(client) => client,
+        Err(e) => {
+            warn!(
+                error = %e,
+                "Failed to build HTTP client with timeouts; falling back to default client without timeouts"
+            );
+            HttpClient::new()
+        }
+    }
+}
 
 /// Manager for BIND9 servers via HTTP API sidecar.
 ///
@@ -86,8 +174,11 @@ const BINDCAR_CONTAINER_NAME: &str = crate::constants::CONTAINER_NAME_BINDCAR;
 pub struct Bind9Manager {
     /// HTTP client for API requests
     client: Arc<HttpClient>,
-    /// `ServiceAccount` token for authentication (optional - only used if auth is enabled)
-    token: Arc<Option<String>>,
+    /// Cached `ServiceAccount` token for authentication (only used if auth is
+    /// enabled). Re-read from disk when older than [`TOKEN_CACHE_TTL_SECS`]
+    /// because the kubelet rotates the projected token file; caching it for
+    /// the process lifetime would present an expired token after ~1h.
+    token_cache: Arc<RwLock<Option<CachedToken>>>,
     /// Deployment for the `Bind9Instance` (used to check auth status)
     deployment: Option<Arc<Deployment>>,
     /// Instance name (for auth checking)
@@ -99,18 +190,18 @@ pub struct Bind9Manager {
 impl Bind9Manager {
     /// Create a new `Bind9Manager` without deployment information.
     ///
-    /// Reads the `ServiceAccount` token from the default location and creates
-    /// an HTTP client for API requests. Without deployment information, auth is
-    /// always assumed to be enabled (backward compatible behavior).
+    /// Creates an HTTP client (with connect/request timeouts) for API
+    /// requests. The `ServiceAccount` token is read lazily at request time and
+    /// cached for [`TOKEN_CACHE_TTL_SECS`] so kubelet token rotation is picked
+    /// up. Without deployment information, auth is always assumed to be
+    /// enabled (backward compatible behavior).
     ///
     /// For proper auth status detection, use `new_with_deployment()` instead.
     #[must_use]
     pub fn new() -> Self {
-        let token = Self::read_service_account_token().ok();
-
         Self {
-            client: Arc::new(HttpClient::new()),
-            token: Arc::new(token),
+            client: Arc::new(build_http_client()),
+            token_cache: Arc::new(RwLock::new(None)),
             deployment: None,
             instance_name: None,
             instance_namespace: None,
@@ -119,10 +210,12 @@ impl Bind9Manager {
 
     /// Create a new `Bind9Manager` with deployment information for auth checking.
     ///
-    /// Reads the `ServiceAccount` token from the default location and creates
-    /// an HTTP client for API requests. The deployment is used to determine if
-    /// authentication is enabled or disabled by checking for the presence of
-    /// the `BIND_ALLOWED_SERVICE_ACCOUNTS` environment variable in the bindcar container.
+    /// Creates an HTTP client (with connect/request timeouts) for API
+    /// requests. The `ServiceAccount` token is read lazily at request time and
+    /// cached for [`TOKEN_CACHE_TTL_SECS`] so kubelet token rotation is picked
+    /// up. The deployment is used to determine if authentication is enabled or
+    /// disabled by checking for the presence of the
+    /// `BIND_ALLOWED_SERVICE_ACCOUNTS` environment variable in the bindcar container.
     ///
     /// # Arguments
     /// * `deployment` - The Deployment for the `Bind9Instance`
@@ -149,11 +242,9 @@ impl Bind9Manager {
         instance_name: String,
         instance_namespace: String,
     ) -> Self {
-        let token = Self::read_service_account_token().ok();
-
         Self {
-            client: Arc::new(HttpClient::new()),
-            token: Arc::new(token),
+            client: Arc::new(build_http_client()),
+            token_cache: Arc::new(RwLock::new(None)),
             deployment: Some(deployment),
             instance_name: Some(instance_name),
             instance_namespace: Some(instance_namespace),
@@ -169,6 +260,9 @@ impl Bind9Manager {
     /// API-server-audience token ([`SERVICE_ACCOUNT_TOKEN_PATH`]), which is kept
     /// only as a backward-compatible fallback for clusters that have not yet
     /// projected the audience-scoped token.
+    ///
+    /// Called at request time (via [`Self::get_token`]) rather than once at
+    /// construction, because the kubelet rotates the projected token file.
     fn read_service_account_token() -> Result<String> {
         match std::fs::read_to_string(BINDCAR_TOKEN_PATH) {
             Ok(token) => Ok(token),
@@ -249,10 +343,13 @@ impl Bind9Manager {
 
     /// Get the authentication token if available and auth is enabled.
     ///
+    /// The token is read from disk at request time and cached for
+    /// [`TOKEN_CACHE_TTL_SECS`]; a stale cache entry triggers a re-read so
+    /// kubelet rotation of the projected token file is always picked up.
+    ///
     /// Returns `None` if:
     /// - Auth is disabled for this instance
     /// - Token file couldn't be read
-    /// - No token was loaded
     ///
     /// This is a public method to allow external code to check auth status and get the token.
     #[must_use]
@@ -261,7 +358,36 @@ impl Bind9Manager {
             return None;
         }
 
-        self.token.as_ref().clone()
+        self.cached_or_fresh_token()
+    }
+
+    /// Return the cached token if still fresh, otherwise re-read it from disk.
+    ///
+    /// The negative result (no readable token file) is cached too, so an
+    /// auth-disabled or out-of-cluster environment does not re-read the file
+    /// on every request within the TTL. A poisoned lock is treated as a cache
+    /// miss: the token is re-read from disk and returned even if the cache
+    /// cannot be updated.
+    fn cached_or_fresh_token(&self) -> Option<String> {
+        // Fast path: serve a fresh cached token under the read lock.
+        if let Ok(guard) = self.token_cache.read() {
+            if let Some(cached) = guard.as_ref() {
+                if is_token_cache_fresh(cached.read_at, Instant::now()) {
+                    return cached.token.clone();
+                }
+            }
+        }
+
+        // Slow path: (re-)read the token file and refresh the cache.
+        let token = Self::read_service_account_token().ok();
+        if let Ok(mut guard) = self.token_cache.write() {
+            *guard = Some(CachedToken {
+                token: token.clone(),
+                read_at: Instant::now(),
+            });
+        }
+
+        token
     }
 
     /// Get a reference to the HTTP client for making API requests.

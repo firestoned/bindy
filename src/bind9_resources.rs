@@ -51,10 +51,7 @@ dnssec-policy "{{POLICY_NAME}}" {
         ksk lifetime {{KSK_LIFETIME}} algorithm {{ALGORITHM}};
         zsk lifetime {{ZSK_LIFETIME}} algorithm {{ALGORITHM}};
     };
-
-    // Authenticated denial of existence
-    {{NSEC_CONFIG}};
-
+{{NSEC_CONFIG}}
     // Signature validity periods
     signatures-refresh 5d;
     signatures-validity 30d;
@@ -102,6 +99,12 @@ const VOLUME_DNSSEC_KEYS: &str = "dnssec-keys";
 /// for `nsupdate -k`.
 const VOLUME_TMP: &str = "tmp";
 
+// named.conf.options directive names for listen addresses
+const LISTEN_ON_DIRECTIVE: &str = "listen-on";
+const LISTEN_ON_V6_DIRECTIVE: &str = "listen-on-v6";
+/// Default listen address match list when `listenOn` / `listenOnV6` are unset.
+const LISTEN_ON_DEFAULT: &str = "any";
+
 // Default DNSSEC signing parameters
 const DEFAULT_DNSSEC_POLICY_NAME: &str = "default";
 const DEFAULT_DNSSEC_ALGORITHM: &str = "ECDSAP256SHA256";
@@ -126,21 +129,13 @@ pub(crate) fn generate_dnssec_policies(
     global_config: Option<&crate::crd::Bind9Config>,
     instance_config: Option<&crate::crd::Bind9Config>,
 ) -> String {
-    // Check instance config first, then fall back to global config
-    let dnssec_config = if let Some(instance) = instance_config {
-        instance.dnssec.as_ref().and_then(|d| d.signing.as_ref())
-    } else {
-        global_config.and_then(|g| g.dnssec.as_ref().and_then(|d| d.signing.as_ref()))
-    };
-
-    // If no DNSSEC signing config or not enabled, return empty string
-    let Some(signing) = dnssec_config else {
+    // Resolve the signing config with the same precedence/fallback semantics
+    // as get_dnssec_signing_config: instance config wins when it enables
+    // signing, otherwise fall back to the global config. Returns None when
+    // signing is not enabled anywhere.
+    let Some(signing) = get_dnssec_signing_config(global_config, instance_config) else {
         return String::new();
     };
-
-    if !signing.enabled {
-        return String::new();
-    }
 
     // Extract policy parameters with defaults
     let policy_name = signing
@@ -160,13 +155,17 @@ pub(crate) fn generate_dnssec_policies(
         .as_deref()
         .unwrap_or(DEFAULT_ZSK_LIFETIME);
 
-    // Configure NSEC/NSEC3
+    // Configure NSEC/NSEC3. BIND 9.18 dnssec-policy grammar has an
+    // `nsec3param` statement but NO `nsec` keyword: NSEC is selected by
+    // omitting `nsec3param`, so the NSEC case renders nothing at all.
     let nsec_config = if signing.nsec3.unwrap_or(false) {
         let iterations = signing.nsec3_iterations.unwrap_or(0);
         let salt_length = DEFAULT_NSEC3_SALT_LENGTH;
-        format!("nsec3param iterations {iterations} optout no salt-length {salt_length}")
+        format!(
+            "\n    // Authenticated denial of existence (NSEC3)\n    nsec3param iterations {iterations} optout no salt-length {salt_length};\n"
+        )
     } else {
-        "nsec".to_string()
+        String::new()
     };
 
     // Substitute template variables
@@ -467,12 +466,16 @@ pub fn build_owner_references(instance: &Bind9Instance) -> Vec<OwnerReference> {
 
 /// Builds a Kubernetes `ConfigMap` containing BIND9 configuration files.
 ///
-/// Creates a `ConfigMap` with:
-/// - `named.conf` - Main BIND9 configuration
-/// - `named.conf.options` - BIND9 options (recursion, ACLs, DNSSEC, etc.)
+/// Creates a `ConfigMap` with the files NOT overridden by custom
+/// `configMapRefs` (instance overrides cluster):
+/// - `named.conf` - Main BIND9 configuration (omitted when `namedConf` ref is set)
+/// - `named.conf.options` - BIND9 options (omitted when `namedConfOptions` ref is set)
+/// - `rndc.conf` - RNDC client configuration (ALWAYS generated; it is not
+///   overridable and is mounted from this `ConfigMap` unconditionally)
 ///
-/// If custom `ConfigMaps` are referenced in the cluster or instance spec, this function
-/// will not generate configuration files, as they should be provided by the user.
+/// Because `rndc.conf` is always present, this `ConfigMap` must always be
+/// created — even when both `namedConf` and `namedConfOptions` refs are set —
+/// so the pod's `config` volume always has a backing `ConfigMap`.
 ///
 /// # Arguments
 ///
@@ -480,20 +483,23 @@ pub fn build_owner_references(instance: &Bind9Instance) -> Vec<OwnerReference> {
 /// * `namespace` - Kubernetes namespace
 /// * `instance` - `Bind9Instance` spec containing configuration options
 /// * `cluster` - Optional `Bind9Cluster` containing shared configuration
+/// * `role_allow_transfer` - Role-specific allow-transfer override from cluster spec
 ///
 /// # Returns
 ///
-/// A Kubernetes `ConfigMap` resource ready for creation/update, or None if custom `ConfigMaps` are used
+/// A Kubernetes `ConfigMap` resource ready for creation/update
+///
 /// # Errors
-/// Returns an error if any ACL entry in the instance or cluster spec fails
-/// validation — see [`crate::bind9_acl`] for the accepted syntax.
+/// Returns an error if any ACL, forwarder, or listen-address entry in the
+/// instance or cluster spec fails validation — see [`crate::bind9_acl`] for
+/// the accepted ACL syntax.
 pub fn build_configmap(
     name: &str,
     namespace: &str,
     instance: &Bind9Instance,
     cluster: Option<&Bind9Cluster>,
     role_allow_transfer: Option<&Vec<String>>,
-) -> anyhow::Result<Option<ConfigMap>> {
+) -> anyhow::Result<ConfigMap> {
     debug!(
         name = %name,
         namespace = %namespace,
@@ -507,32 +513,28 @@ pub fn build_configmap(
         .as_ref()
         .or_else(|| cluster.and_then(|c| c.spec.common.config_map_refs.as_ref()));
 
-    // If custom ConfigMaps are specified, don't generate a ConfigMap
-    if let Some(refs) = config_map_refs {
-        if refs.named_conf.is_some() || refs.named_conf_options.is_some() {
-            debug!(
-                named_conf_ref = ?refs.named_conf,
-                named_conf_options_ref = ?refs.named_conf_options,
-                "Custom ConfigMaps specified, skipping generation"
-            );
-            // User is providing custom ConfigMaps, so we don't create one
-            return Ok(None);
-        }
-    }
+    let named_conf_overridden = config_map_refs.is_some_and(|refs| refs.named_conf.is_some());
+    let options_overridden = config_map_refs.is_some_and(|refs| refs.named_conf_options.is_some());
 
-    // Generate default configuration
+    // Generate configuration files not overridden by custom ConfigMap refs
     let mut data = BTreeMap::new();
     let labels = build_labels_from_instance(name, instance);
 
-    // Build named.conf
-    let named_conf = build_named_conf(instance, cluster);
-    data.insert(NAMED_CONF_FILENAME.into(), named_conf);
+    // Build named.conf (unless the user supplies it via namedConf ref)
+    if !named_conf_overridden {
+        let named_conf = build_named_conf(instance, cluster);
+        data.insert(NAMED_CONF_FILENAME.into(), named_conf);
+    }
 
-    // Build named.conf.options (validates ACL entries before templating)
-    let options_conf = build_options_conf(instance, cluster, role_allow_transfer)?;
-    data.insert(NAMED_CONF_OPTIONS_FILENAME.into(), options_conf);
+    // Build named.conf.options (unless the user supplies it via namedConfOptions ref);
+    // validates ACL entries before templating
+    if !options_overridden {
+        let options_conf = build_options_conf(instance, cluster, role_allow_transfer)?;
+        data.insert(NAMED_CONF_OPTIONS_FILENAME.into(), options_conf);
+    }
 
-    // Build rndc.conf (references key file mounted from Secret)
+    // Build rndc.conf (references key file mounted from Secret). This file is
+    // never overridable, so the generated ConfigMap always exists.
     data.insert(RNDC_CONF_FILENAME.into(), RNDC_CONF_TEMPLATE.to_string());
 
     // Note: We do NOT auto-generate named.conf.zones anymore.
@@ -540,7 +542,7 @@ pub fn build_configmap(
 
     let owner_refs = build_owner_references(instance);
 
-    Ok(Some(ConfigMap {
+    Ok(ConfigMap {
         metadata: ObjectMeta {
             name: Some(format!("{name}-config")),
             namespace: Some(namespace.into()),
@@ -550,7 +552,7 @@ pub fn build_configmap(
         },
         data: Some(data),
         ..Default::default()
-    }))
+    })
 }
 
 /// Builds a cluster-level shared `ConfigMap` containing BIND9 configuration files.
@@ -659,7 +661,8 @@ fn build_named_conf(instance: &Bind9Instance, cluster: Option<&Bind9Cluster>) ->
 /// Build the named.conf.options configuration from template
 ///
 /// Generates the BIND9 options configuration file from the instance's config spec.
-/// Includes settings for recursion, ACLs (allow-query, allow-transfer), and DNSSEC.
+/// Includes settings for recursion, ACLs (allow-query, allow-transfer), DNSSEC,
+/// forwarders, and listen addresses (listen-on / listen-on-v6).
 ///
 /// Priority for configuration values (highest to lowest):
 /// 1. Instance-level settings (`instance.spec.config`)
@@ -839,13 +842,97 @@ fn build_options_conf(
     // Generate DNSSEC policies (instance config overrides global)
     let dnssec_policies = generate_dnssec_policies(global_config, instance.spec.config.as_ref());
 
+    // Forwarders and listen addresses - instance overrides global, per field
+    let instance_cfg = instance.spec.config.as_ref();
+    let forwarders = render_forwarders(
+        instance_cfg
+            .and_then(|c| c.forwarders.as_ref())
+            .or_else(|| global_config.and_then(|g| g.forwarders.as_ref())),
+    )?;
+    let listen_on = render_listen_on(
+        LISTEN_ON_DIRECTIVE,
+        instance_cfg
+            .and_then(|c| c.listen_on.as_ref())
+            .or_else(|| global_config.and_then(|g| g.listen_on.as_ref())),
+    )?;
+    let listen_on_v6 = render_listen_on(
+        LISTEN_ON_V6_DIRECTIVE,
+        instance_cfg
+            .and_then(|c| c.listen_on_v6.as_ref())
+            .or_else(|| global_config.and_then(|g| g.listen_on_v6.as_ref())),
+    )?;
+
     // Perform template substitutions
     Ok(NAMED_CONF_OPTIONS_TEMPLATE
+        .replace("{{LISTEN_ON}}", &listen_on)
+        .replace("{{LISTEN_ON_V6}}", &listen_on_v6)
         .replace("{{RECURSION}}", &recursion)
+        .replace("{{FORWARDERS}}", &forwarders)
         .replace("{{ALLOW_QUERY}}", &allow_query)
         .replace("{{ALLOW_TRANSFER}}", &allow_transfer)
         .replace("{{DNSSEC_VALIDATE}}", &dnssec_validate)
         .replace("{{DNSSEC_POLICIES}}", &dnssec_policies))
+}
+
+/// Render the `forwarders { …; };` block for named.conf.options.
+///
+/// Emits only the `forwarders` block (no `forward` mode statement), matching
+/// BIND defaults. Returns an empty string when `forwarders` is `None` or
+/// empty so no directive is rendered.
+///
+/// # Arguments
+///
+/// * `forwarders` - Optional list of upstream DNS server IP addresses
+///
+/// # Errors
+///
+/// Returns an error if any entry is not a plain IPv4 or IPv6 address —
+/// CRD-supplied values flow directly into named.conf, so anything else is
+/// rejected to prevent configuration injection.
+fn render_forwarders(forwarders: Option<&Vec<String>>) -> anyhow::Result<String> {
+    let Some(list) = forwarders else {
+        return Ok(String::new());
+    };
+    if list.is_empty() {
+        return Ok(String::new());
+    }
+
+    for entry in list {
+        let trimmed = entry.trim();
+        if trimmed.parse::<std::net::IpAddr>().is_err() {
+            anyhow::bail!("invalid forwarder {trimmed:?}: must be a plain IPv4 or IPv6 address");
+        }
+    }
+
+    let joined = list
+        .iter()
+        .map(|entry| entry.trim().to_string())
+        .collect::<Vec<_>>()
+        .join("; ");
+    Ok(format!("forwarders {{ {joined}; }};"))
+}
+
+/// Render a `listen-on` / `listen-on-v6` directive for named.conf.options.
+///
+/// Defaults to `{directive} port 53 {{ any; }};` when `addresses` is `None`
+/// or empty, preserving the previous hardcoded behavior.
+///
+/// # Arguments
+///
+/// * `directive` - Either [`LISTEN_ON_DIRECTIVE`] or [`LISTEN_ON_V6_DIRECTIVE`]
+/// * `addresses` - Optional address match list from the CRD
+///
+/// # Errors
+///
+/// Returns an error if any entry fails address-match-list validation — see
+/// [`crate::bind9_acl`] for the accepted syntax.
+fn render_listen_on(directive: &str, addresses: Option<&Vec<String>>) -> anyhow::Result<String> {
+    let list = match addresses {
+        Some(addrs) if !addrs.is_empty() => build_acl_list(addrs)
+            .with_context(|| format!("invalid entry in {directive} address list"))?,
+        _ => LISTEN_ON_DEFAULT.to_string(),
+    };
+    Ok(format!("{directive} port {DNS_PORT} {{ {list}; }};"))
 }
 
 /// Build the main named.conf configuration for a cluster from template
@@ -890,7 +977,8 @@ fn build_cluster_named_conf(cluster: &Bind9Cluster) -> String {
 /// Build the named.conf.options configuration for a cluster from template
 ///
 /// Generates the BIND9 options configuration file from the cluster's `spec.global` config.
-/// Includes settings for recursion, ACLs (allow-query, allow-transfer), and DNSSEC.
+/// Includes settings for recursion, ACLs (allow-query, allow-transfer), DNSSEC,
+/// forwarders, and listen addresses (listen-on / listen-on-v6).
 ///
 /// # Arguments
 ///
@@ -950,8 +1038,23 @@ fn build_cluster_options_conf(cluster: &Bind9Cluster) -> anyhow::Result<String> 
     // Generate DNSSEC policies from global config
     let dnssec_policies = generate_dnssec_policies(cluster.spec.common.global.as_ref(), None);
 
+    // Forwarders and listen addresses from global config
+    let global = cluster.spec.common.global.as_ref();
+    let forwarders = render_forwarders(global.and_then(|g| g.forwarders.as_ref()))?;
+    let listen_on = render_listen_on(
+        LISTEN_ON_DIRECTIVE,
+        global.and_then(|g| g.listen_on.as_ref()),
+    )?;
+    let listen_on_v6 = render_listen_on(
+        LISTEN_ON_V6_DIRECTIVE,
+        global.and_then(|g| g.listen_on_v6.as_ref()),
+    )?;
+
     Ok(NAMED_CONF_OPTIONS_TEMPLATE
+        .replace("{{LISTEN_ON}}", &listen_on)
+        .replace("{{LISTEN_ON_V6}}", &listen_on_v6)
         .replace("{{RECURSION}}", &recursion)
+        .replace("{{FORWARDERS}}", &forwarders)
         .replace("{{ALLOW_QUERY}}", &allow_query)
         .replace("{{ALLOW_TRANSFER}}", &allow_transfer)
         .replace("{{DNSSEC_VALIDATE}}", &dnssec_validate)
@@ -973,6 +1076,9 @@ fn build_cluster_options_conf(cluster: &Bind9Cluster) -> anyhow::Result<String> 
 /// * `namespace` - Kubernetes namespace
 /// * `instance` - `Bind9Instance` spec containing replicas, version, etc.
 /// * `cluster` - Optional `Bind9Cluster` containing shared configuration
+/// * `cluster_provider` - Optional `ClusterBind9Provider` containing shared configuration
+/// * `rndc_secret_name` - Resolved RNDC `Secret` name (from `rndcKey.secretRef`,
+///   an inline secret spec, or the auto-generated `{name}-rndc-key` default)
 ///
 /// # Returns
 ///
@@ -987,7 +1093,6 @@ struct DeploymentConfig<'a> {
     volume_mounts: Option<&'a Vec<VolumeMount>>,
     bindcar_config: Option<&'a crate::crd::BindcarConfig>,
     configmap_name: String,
-    rndc_secret_name: String,
 }
 
 /// Extract and resolve deployment configuration from instance and cluster
@@ -1071,10 +1176,6 @@ fn resolve_deployment_config<'a>(
         format!("{}-config", instance.spec.cluster_ref)
     };
 
-    // Determine RNDC secret name
-    // TODO: Use actual RNDC config precedence resolution when implemented
-    let rndc_secret_name = format!("{name}-rndc-key");
-
     DeploymentConfig {
         image_config,
         config_map_refs,
@@ -1083,7 +1184,6 @@ fn resolve_deployment_config<'a>(
         volume_mounts,
         bindcar_config,
         configmap_name,
-        rndc_secret_name,
     }
 }
 
@@ -1093,6 +1193,7 @@ pub fn build_deployment(
     instance: &Bind9Instance,
     cluster: Option<&Bind9Cluster>,
     cluster_provider: Option<&crate::crd::ClusterBind9Provider>,
+    rndc_secret_name: &str,
 ) -> Deployment {
     debug!(
         name = %name,
@@ -1162,7 +1263,7 @@ pub fn build_deployment(
                 }),
                 spec: Some(build_pod_spec(
                     &config.configmap_name,
-                    &config.rndc_secret_name,
+                    rndc_secret_name,
                     config.version,
                     config.image_config,
                     config.config_map_refs,
@@ -1658,6 +1759,10 @@ fn build_volume_mounts(
 /// for each custom `ConfigMap`. If `namedConfZones` is not specified, no zones `ConfigMap` volume
 /// is created.
 ///
+/// The generated `config` volume is ALWAYS present regardless of custom refs:
+/// it backs the unconditional `rndc.conf` mounts in both containers and the
+/// generated `ConfigMap` always exists (it always contains at least `rndc.conf`).
+///
 /// # Arguments
 ///
 /// * `configmap_name` - Name of the `ConfigMap` to mount (instance or cluster `ConfigMap`)
@@ -1739,30 +1844,21 @@ fn build_volumes(
                 ..Default::default()
             });
         }
-
-        // If any of the named.conf or named.conf.options use defaults, add the config volume
-        // This ensures volume mounts have a corresponding volume
-        if refs.named_conf.is_none() || refs.named_conf_options.is_none() {
-            volumes.push(Volume {
-                name: VOLUME_CONFIG.into(),
-                config_map: Some(k8s_openapi::api::core::v1::ConfigMapVolumeSource {
-                    name: configmap_name.to_string(),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            });
-        }
-    } else {
-        // No custom ConfigMaps, use default generated one (cluster or instance ConfigMap)
-        volumes.push(Volume {
-            name: VOLUME_CONFIG.into(),
-            config_map: Some(k8s_openapi::api::core::v1::ConfigMapVolumeSource {
-                name: configmap_name.to_string(),
-                ..Default::default()
-            }),
-            ..Default::default()
-        });
     }
+
+    // ALWAYS add the generated config volume. The generated ConfigMap always
+    // exists (it always carries at least rndc.conf, which is not overridable),
+    // and rndc.conf is mounted from this volume unconditionally in both the
+    // bind9 and bindcar containers. Omitting it when custom refs are set would
+    // leave those mounts dangling and make the API server reject the Deployment.
+    volumes.push(Volume {
+        name: VOLUME_CONFIG.into(),
+        config_map: Some(k8s_openapi::api::core::v1::ConfigMapVolumeSource {
+            name: configmap_name.to_string(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
 
     // Append custom volumes from cluster/instance
     if let Some(custom_vols) = custom_volumes {

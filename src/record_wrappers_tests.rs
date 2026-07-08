@@ -30,6 +30,7 @@ mod tests {
             zone_ref: None,
             record_hash: Some("hash123".to_string()),
             addresses: None,
+            published_name: None,
         }
     }
 

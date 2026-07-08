@@ -10,14 +10,17 @@ mod tests {
         build_scout_cluster_role, build_scout_cluster_role_binding, build_scout_deployment,
         build_scout_service_account, build_scout_writer_role, build_scout_writer_role_binding,
         build_secrets_writer_role, build_secrets_writer_role_binding, build_service_account,
-        parse_cluster_role, resolve_image, ScoutDeploymentOptions, BINDY_ADMIN_ROLE_YAML,
-        BINDY_ROLE_YAML, CLUSTER_ROLE_BINDING_NAME, DEFAULT_IMAGE_TAG, DEFAULT_NAMESPACE,
-        DEFAULT_SCOUT_CLUSTER_NAME, MC_DEFAULT_SERVICE_ACCOUNT_NAME, OPERATOR_DEPLOYMENT_NAME,
-        OPERATOR_IMAGE_BASE, OPERATOR_ROLE_NAME, REMOTE_KUBECONFIG_SECRET_SUFFIX,
-        REMOTE_KUBECONFIG_SECRET_TYPE, SA_TOKEN_SECRET_SUFFIX, SCOUT_CLUSTER_ROLE_BINDING_NAME,
-        SCOUT_CLUSTER_ROLE_NAME, SCOUT_DEPLOYMENT_NAME, SCOUT_SERVICE_ACCOUNT_NAME,
-        SCOUT_WRITER_ROLE_BINDING_NAME, SCOUT_WRITER_ROLE_NAME, SECRETS_WRITER_ROLE_BINDING_NAME,
-        SECRETS_WRITER_ROLE_NAME, SERVICE_ACCOUNT_NAME,
+        build_tokenreview_cluster_role_binding, parse_cluster_role, resolve_image,
+        ScoutDeploymentOptions, BINDCAR_TOKENREVIEW_CLUSTER_ROLE_YAML, BINDCAR_TOKENREVIEW_NAME,
+        BINDCAR_TOKEN_EXPIRATION_SECONDS, BINDCAR_TOKEN_FILENAME, BINDCAR_TOKEN_MOUNT_PATH,
+        BINDCAR_TOKEN_VOLUME_NAME, BINDY_ADMIN_ROLE_YAML, BINDY_ROLE_YAML,
+        CLUSTER_ROLE_BINDING_NAME, DEFAULT_IMAGE_TAG, DEFAULT_NAMESPACE,
+        DEFAULT_SCOUT_CLUSTER_NAME, MC_DEFAULT_SERVICE_ACCOUNT_NAME, OPERATOR_CLUSTER_ROLE_YAMLS,
+        OPERATOR_DEPLOYMENT_NAME, OPERATOR_IMAGE_BASE, OPERATOR_ROLE_NAME, POD_NAMESPACE_ENV,
+        REMOTE_KUBECONFIG_SECRET_SUFFIX, REMOTE_KUBECONFIG_SECRET_TYPE, SA_TOKEN_SECRET_SUFFIX,
+        SCOUT_CLUSTER_ROLE_BINDING_NAME, SCOUT_CLUSTER_ROLE_NAME, SCOUT_DEPLOYMENT_NAME,
+        SCOUT_SERVICE_ACCOUNT_NAME, SCOUT_WRITER_ROLE_BINDING_NAME, SCOUT_WRITER_ROLE_NAME,
+        SECRETS_WRITER_ROLE_BINDING_NAME, SECRETS_WRITER_ROLE_NAME, SERVICE_ACCOUNT_NAME,
     };
 
     /// Convenience helper: build a minimal `ScoutDeploymentOptions` for tests.
@@ -296,6 +299,170 @@ mod tests {
     #[test]
     fn test_default_image_tag_is_nonempty() {
         assert!(!DEFAULT_IMAGE_TAG.is_empty());
+    }
+
+    // --- bindcar 0.7.0 TokenReview (Mode B) support in the bootstrap path ---
+
+    /// Convenience helper: extract the operator PodSpec from a built Deployment.
+    fn operator_pod_spec(namespace: &str) -> k8s_openapi::api::core::v1::PodSpec {
+        build_deployment(namespace, "latest", None)
+            .unwrap()
+            .spec
+            .unwrap()
+            .template
+            .spec
+            .unwrap()
+    }
+
+    #[test]
+    fn test_build_deployment_has_bindcar_token_projected_volume() {
+        let pod_spec = operator_pod_spec("foo");
+        let volumes = pod_spec.volumes.expect("pod must have volumes");
+        let volume = volumes
+            .iter()
+            .find(|v| v.name == BINDCAR_TOKEN_VOLUME_NAME)
+            .expect("bindcar-token projected volume must exist");
+        let sources = volume
+            .projected
+            .as_ref()
+            .expect("bindcar-token volume must be projected")
+            .sources
+            .as_ref()
+            .expect("projected volume must have sources");
+        let sa_token = sources
+            .iter()
+            .find_map(|s| s.service_account_token.as_ref())
+            .expect("projected volume must have a serviceAccountToken source");
+        assert_eq!(
+            sa_token.audience.as_deref(),
+            Some(crate::constants::BINDCAR_TOKEN_AUDIENCE),
+            "token audience must be `bindcar` so bindcar 0.7.0 accepts it"
+        );
+        assert_eq!(
+            sa_token.expiration_seconds,
+            Some(BINDCAR_TOKEN_EXPIRATION_SECONDS),
+            "token expiration must use the named constant"
+        );
+        assert_eq!(sa_token.path, BINDCAR_TOKEN_FILENAME);
+    }
+
+    #[test]
+    fn test_build_deployment_mounts_bindcar_token_read_only() {
+        let pod_spec = operator_pod_spec("foo");
+        let container = pod_spec.containers.into_iter().next().unwrap();
+        let mounts = container.volume_mounts.expect("container must have mounts");
+        let mount = mounts
+            .iter()
+            .find(|m| m.name == BINDCAR_TOKEN_VOLUME_NAME)
+            .expect("bindcar-token volumeMount must exist");
+        assert_eq!(mount.mount_path, BINDCAR_TOKEN_MOUNT_PATH);
+        assert_eq!(
+            mount.read_only,
+            Some(true),
+            "bindcar token mount must be read-only"
+        );
+    }
+
+    /// The mount path plus token file name must compose to the exact path the
+    /// operator reads the bearer token from (`BINDCAR_TOKEN_PATH`).
+    #[test]
+    fn test_bindcar_token_mount_path_matches_operator_token_path() {
+        assert_eq!(
+            format!("{BINDCAR_TOKEN_MOUNT_PATH}/{BINDCAR_TOKEN_FILENAME}"),
+            crate::bind9::BINDCAR_TOKEN_PATH
+        );
+    }
+
+    /// POD_NAMESPACE must come from the downward API so the operator stamps the
+    /// correct `system:serviceaccount:<ns>:bindy` into operand pods'
+    /// BIND_ALLOWED_SERVICE_ACCOUNTS regardless of the `--namespace` argument.
+    #[test]
+    fn test_build_deployment_has_pod_namespace_downward_api_env() {
+        let pod_spec = operator_pod_spec("custom-ns");
+        let container = pod_spec.containers.into_iter().next().unwrap();
+        let env = container.env.expect("container must have env vars");
+        let pod_namespace = env
+            .iter()
+            .find(|e| e.name == POD_NAMESPACE_ENV)
+            .expect("POD_NAMESPACE env var must exist");
+        let field_path = pod_namespace
+            .value_from
+            .as_ref()
+            .and_then(|v| v.field_ref.as_ref())
+            .map(|f| f.field_path.as_str());
+        assert_eq!(
+            field_path,
+            Some("metadata.namespace"),
+            "POD_NAMESPACE must use the downward API (fieldRef metadata.namespace)"
+        );
+    }
+
+    #[test]
+    fn test_tokenreview_cluster_role_is_applied_by_operator_bootstrap() {
+        let names: Vec<String> = OPERATOR_CLUSTER_ROLE_YAMLS
+            .iter()
+            .map(|yaml| {
+                parse_cluster_role(yaml)
+                    .unwrap()
+                    .metadata
+                    .name
+                    .expect("embedded ClusterRole must have a name")
+            })
+            .collect();
+        assert!(
+            names.iter().any(|n| n == BINDCAR_TOKENREVIEW_NAME),
+            "operator bootstrap must apply the TokenReview ClusterRole, got: {names:?}"
+        );
+    }
+
+    #[test]
+    fn test_tokenreview_cluster_role_grants_only_create_tokenreviews() {
+        let role = parse_cluster_role(BINDCAR_TOKENREVIEW_CLUSTER_ROLE_YAML).unwrap();
+        assert_eq!(
+            role.metadata.name.as_deref(),
+            Some(BINDCAR_TOKENREVIEW_NAME)
+        );
+        let rules = role.rules.expect("TokenReview ClusterRole must have rules");
+        assert_eq!(rules.len(), 1, "least-privilege: exactly one rule");
+        let rule = &rules[0];
+        assert_eq!(
+            rule.api_groups.as_deref(),
+            Some(&["authentication.k8s.io".to_string()][..])
+        );
+        assert_eq!(
+            rule.resources.as_deref(),
+            Some(&["tokenreviews".to_string()][..])
+        );
+        assert_eq!(rule.verbs, vec!["create".to_string()]);
+    }
+
+    #[test]
+    fn test_build_tokenreview_cluster_role_binding_role_ref() {
+        let crb = build_tokenreview_cluster_role_binding(DEFAULT_NAMESPACE).unwrap();
+        assert_eq!(crb.metadata.name.as_deref(), Some(BINDCAR_TOKENREVIEW_NAME));
+        assert_eq!(crb.role_ref.kind, "ClusterRole");
+        assert_eq!(crb.role_ref.name, BINDCAR_TOKENREVIEW_NAME);
+    }
+
+    #[test]
+    fn test_build_tokenreview_cluster_role_binding_subject_is_operand_bind9_sa() {
+        let crb = build_tokenreview_cluster_role_binding(DEFAULT_NAMESPACE).unwrap();
+        let subject = crb.subjects.unwrap().into_iter().next().unwrap();
+        assert_eq!(subject.kind, "ServiceAccount");
+        assert_eq!(subject.name, crate::constants::BIND9_SERVICE_ACCOUNT);
+        assert_eq!(subject.namespace.as_deref(), Some(DEFAULT_NAMESPACE));
+    }
+
+    /// The binding subject namespace must follow the requested `--namespace`
+    /// argument, not the hardcoded `bindy-system` from the embedded manifest.
+    #[test]
+    fn test_build_tokenreview_cluster_role_binding_follows_requested_namespace() {
+        let crb = build_tokenreview_cluster_role_binding("custom-ns").unwrap();
+        let subjects = crb.subjects.unwrap();
+        assert!(!subjects.is_empty());
+        for subject in subjects {
+            assert_eq!(subject.namespace.as_deref(), Some("custom-ns"));
+        }
     }
 
     #[test]
