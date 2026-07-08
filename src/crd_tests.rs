@@ -386,6 +386,7 @@ mod tests {
         let status = Bind9InstanceStatus {
             conditions: vec![condition],
             observed_generation: Some(1),
+            observed_parent_generation: None,
             service_address: Some("my-instance.bindy-system.svc.cluster.local".into()),
             cluster_ref: None,
             zones: Vec::new(),
@@ -406,6 +407,7 @@ mod tests {
         let status_empty = Bind9InstanceStatus {
             conditions: vec![],
             observed_generation: Some(1),
+            observed_parent_generation: None,
             service_address: None,
             cluster_ref: None,
             zones: Vec::new(),
@@ -506,6 +508,7 @@ mod tests {
         let status = Bind9InstanceStatus {
             conditions: conditions.clone(),
             observed_generation: Some(1),
+            observed_parent_generation: None,
             service_address: None,
             cluster_ref: None,
             zones: Vec::new(),
@@ -561,6 +564,7 @@ mod tests {
             record_hash: None,
             last_updated: None,
             addresses: None,
+            published_name: None,
         };
 
         assert_eq!(status.conditions.len(), 1);
@@ -581,6 +585,7 @@ mod tests {
         let status = Bind9InstanceStatus {
             conditions: vec![condition],
             observed_generation: Some(1),
+            observed_parent_generation: None,
             service_address: None,
             cluster_ref: None,
             zones: Vec::new(),
@@ -605,6 +610,7 @@ mod tests {
         let status = Bind9InstanceStatus {
             conditions: vec![condition],
             observed_generation: Some(1),
+            observed_parent_generation: None,
             service_address: None,
             cluster_ref: None,
             zones: Vec::new(),
@@ -676,6 +682,7 @@ mod tests {
         let status = Bind9InstanceStatus {
             conditions: vec![],
             observed_generation: Some(1),
+            observed_parent_generation: None,
             service_address: None,
             cluster_ref: None,
             zones: Vec::new(),
@@ -692,6 +699,7 @@ mod tests {
         let status = Bind9InstanceStatus {
             conditions: vec![],
             observed_generation: Some(5),
+            observed_parent_generation: None,
             service_address: None,
             cluster_ref: None,
             zones: Vec::new(),

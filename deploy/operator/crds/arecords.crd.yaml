@@ -162,6 +162,17 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              publishedName:
+                description: |-
+                  DNS record name (from `spec.name`) most recently published to BIND9.
+
+                  Set by the record reconciler after a successful dynamic DNS update.
+                  When `spec.name` changes (a rename), the reconciler compares it against
+                  this field, deletes the old FQDN from the zone, publishes the new name,
+                  and then updates this field. Without it, renamed records would leave
+                  their old FQDN orphaned in BIND9.
+                nullable: true
+                type: string
               recordHash:
                 description: |-
                   SHA-256 hash of the record's spec data.

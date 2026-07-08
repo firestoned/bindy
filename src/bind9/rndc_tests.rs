@@ -803,4 +803,107 @@ mod tests {
         // Rotation at exactly current time should be considered due
         assert!(crate::bind9::rndc::is_rotation_due(Some(now), now));
     }
+
+    // =====================================================
+    // rndc.key file comment handling
+    // =====================================================
+
+    #[test]
+    fn test_parse_rndc_key_file_ignores_hash_comment_lines() {
+        // A leading `#` comment that mentions `key "..."` must not poison the
+        // parsed key name (a poisoned name causes TSIG NOTAUTH on every update).
+        let rndc_key_content = r#"# rndc key "docs-example"
+# secret "ZmFrZXNlY3JldA==" is only documented here
+key "real-key" {
+    algorithm hmac-sha256;
+    secret "dGVzdHNlY3JldA==";
+};
+"#;
+        let mut data = BTreeMap::new();
+        data.insert("rndc.key".to_string(), rndc_key_content.as_bytes().to_vec());
+
+        let key = Bind9Manager::parse_rndc_secret_data(&data).unwrap();
+
+        assert_eq!(key.name, "real-key");
+        assert_eq!(key.algorithm, crate::crd::RndcAlgorithm::HmacSha256);
+        assert_eq!(key.secret, "dGVzdHNlY3JldA==");
+    }
+
+    #[test]
+    fn test_parse_rndc_key_file_ignores_slash_comment_lines() {
+        let rndc_key_content = r#"// key "commented-out" {
+//     algorithm hmac-sha512;
+//     secret "ZmFrZXNlY3JldA==";
+// };
+key "slash-key" {
+    algorithm hmac-sha256;
+    secret "dGVzdHNlY3JldA==";
+};
+"#;
+        let mut data = BTreeMap::new();
+        data.insert("rndc.key".to_string(), rndc_key_content.as_bytes().to_vec());
+
+        let key = Bind9Manager::parse_rndc_secret_data(&data).unwrap();
+
+        assert_eq!(key.name, "slash-key");
+        assert_eq!(key.algorithm, crate::crd::RndcAlgorithm::HmacSha256);
+        assert_eq!(key.secret, "dGVzdHNlY3JldA==");
+    }
+
+    #[test]
+    fn test_parse_rndc_key_file_ignores_block_comments() {
+        let rndc_key_content = r#"/*
+ * key "block-commented" {
+ *     algorithm hmac-sha384;
+ *     secret "ZmFrZXNlY3JldA==";
+ * };
+ */
+key "block-key" {
+    algorithm hmac-sha256;
+    secret "dGVzdHNlY3JldA==";
+};
+"#;
+        let mut data = BTreeMap::new();
+        data.insert("rndc.key".to_string(), rndc_key_content.as_bytes().to_vec());
+
+        let key = Bind9Manager::parse_rndc_secret_data(&data).unwrap();
+
+        assert_eq!(key.name, "block-key");
+        assert_eq!(key.algorithm, crate::crd::RndcAlgorithm::HmacSha256);
+        assert_eq!(key.secret, "dGVzdHNlY3JldA==");
+    }
+
+    #[test]
+    fn test_parse_rndc_key_file_ignores_single_line_block_comment() {
+        let rndc_key_content = r#"/* key "inline-commented" */
+key "inline-key" {
+    algorithm hmac-sha256;
+    secret "dGVzdHNlY3JldA==";
+};
+"#;
+        let mut data = BTreeMap::new();
+        data.insert("rndc.key".to_string(), rndc_key_content.as_bytes().to_vec());
+
+        let key = Bind9Manager::parse_rndc_secret_data(&data).unwrap();
+
+        assert_eq!(key.name, "inline-key");
+        assert_eq!(key.secret, "dGVzdHNlY3JldA==");
+    }
+
+    #[test]
+    fn test_parse_rndc_key_file_only_comments_is_error() {
+        // A file with nothing but comments must fail to parse, not silently
+        // produce a key from comment text.
+        let rndc_key_content = r#"# key "ghost" {
+#     algorithm hmac-sha256;
+#     secret "ZmFrZXNlY3JldA==";
+# };
+"#;
+        let mut data = BTreeMap::new();
+        data.insert("rndc.key".to_string(), rndc_key_content.as_bytes().to_vec());
+
+        let result = Bind9Manager::parse_rndc_secret_data(&data);
+
+        assert!(result.is_err(), "comment-only rndc.key must not parse");
+    }
 }

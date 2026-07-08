@@ -761,15 +761,19 @@ fn default_watcher_config() -> Config {
     Config::default()
 }
 
-/// Create a semantic watcher configuration.
+/// Create a watcher configuration with relaxed list semantics.
 ///
-/// Returns a watcher configuration that only triggers on semantic changes
-/// (spec modifications), ignoring status-only updates. This prevents
-/// reconciliation loops when controllers update status fields.
+/// `any_semantic()` sets `ListSemantic::Any`, which lets the initial LIST be
+/// served from any resource version (cheaper on the API server). It does NOT
+/// filter watch events: status-only updates still trigger reconciliation.
+/// Event-level filtering would require `predicates::generation` on the
+/// controller stream, which is deliberately not used here — several
+/// controllers depend on observing status updates (e.g. zone record
+/// discovery reacts to record status changes).
 ///
 /// # Returns
 ///
-/// A `Config` instance configured with semantic filtering.
+/// A `Config` instance with `ListSemantic::Any`.
 #[inline]
 fn semantic_watcher_config() -> Config {
     Config::default().any_semantic()
