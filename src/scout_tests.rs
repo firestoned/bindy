@@ -8,13 +8,16 @@ mod tests {
     use crate::crd::DNSZone;
     use crate::scout::{
         arecord_cr_name, arecord_label_selector, build_service_arecord, check_zone_authorization,
-        derive_record_name, get_record_name_annotation, get_zone_annotation, has_finalizer,
-        is_arecord_enabled, is_being_deleted, is_loadbalancer_service, is_scout_opted_in,
-        resolve_ip_from_service_lb_status, resolve_ips, resolve_ips_from_annotation,
-        resolve_record_name, resolve_zone, service_arecord_cr_name, service_arecord_label_selector,
-        stale_arecord_label_selector, zone_allows_source_namespace, ServiceARecordParams,
-        ZoneAuthz, FINALIZER_SCOUT, LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER,
-        LABEL_SOURCE_NAME, LABEL_SOURCE_NAMESPACE, LABEL_ZONE,
+        derive_record_name, gateway_addresses_as_ips, gateway_parent_refs,
+        get_record_name_annotation, get_zone_annotation, has_finalizer, is_arecord_enabled,
+        is_being_deleted, is_loadbalancer_service, is_scout_opted_in, parse_gateway_service_entry,
+        parse_gateway_services, resolve_ip_from_service_lb_status, resolve_ips,
+        resolve_ips_from_annotation, resolve_record_name, resolve_zone, service_arecord_cr_name,
+        service_arecord_label_selector, service_ref_from_str, stale_arecord_label_selector,
+        zone_allows_source_namespace, Gateway, GatewayServiceTarget, NamespacedName,
+        ParentReference, ServiceARecordParams, ZoneAuthz, FINALIZER_SCOUT, LABEL_MANAGED_BY,
+        LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER, LABEL_SOURCE_NAME, LABEL_SOURCE_NAMESPACE,
+        LABEL_ZONE,
     };
     use std::sync::Arc;
 
@@ -1594,5 +1597,206 @@ mod tests {
         });
 
         assert_eq!(arecord.spec.name, "@");
+    }
+
+    // ========================================================================
+    // Gateway-chain IP resolution — pure helpers
+    // ========================================================================
+
+    fn gateway_fixture(class: &str, addresses: serde_json::Value) -> Gateway {
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "gateway.networking.k8s.io/v1",
+            "kind": "Gateway",
+            "metadata": { "name": "gw", "namespace": "traefik" },
+            "spec": { "gatewayClassName": class },
+            "status": { "addresses": addresses },
+        }))
+        .expect("valid Gateway fixture")
+    }
+
+    #[test]
+    fn test_service_ref_from_str_valid() {
+        let r = service_ref_from_str("traefik/traefik").expect("parses");
+        assert_eq!(r.namespace, "traefik");
+        assert_eq!(r.name, "traefik");
+    }
+
+    #[test]
+    fn test_service_ref_from_str_trims_whitespace() {
+        let r = service_ref_from_str("  traefik / traefik  ").expect("parses");
+        assert_eq!(r.namespace, "traefik");
+        assert_eq!(r.name, "traefik");
+    }
+
+    #[test]
+    fn test_service_ref_from_str_rejects_malformed() {
+        assert!(service_ref_from_str("traefik").is_none()); // no slash
+        assert!(service_ref_from_str("a/b/c").is_none()); // too many segments
+        assert!(service_ref_from_str("/traefik").is_none()); // empty namespace
+        assert!(service_ref_from_str("traefik/").is_none()); // empty name
+        assert!(service_ref_from_str("").is_none());
+    }
+
+    #[test]
+    fn test_parse_gateway_services_valid_map_by_name() {
+        let m = parse_gateway_services("traefik=traefik/traefik,cilium=kube-system/cilium-gw");
+        assert_eq!(m.len(), 2);
+        assert_eq!(
+            m.get("traefik"),
+            Some(&GatewayServiceTarget::Name(NamespacedName {
+                namespace: "traefik".to_string(),
+                name: "traefik".to_string()
+            }))
+        );
+        assert_eq!(
+            m.get("cilium"),
+            Some(&GatewayServiceTarget::Name(NamespacedName {
+                namespace: "kube-system".to_string(),
+                name: "cilium-gw".to_string()
+            }))
+        );
+    }
+
+    #[test]
+    fn test_parse_gateway_services_by_label_selector() {
+        // A target whose Service part contains `=` is a label selector, scoped to
+        // the namespace before the first `/`. The selector's own `/` is preserved.
+        let m = parse_gateway_services("traefik=traefik/app.kubernetes.io/name=traefik");
+        assert_eq!(
+            m.get("traefik"),
+            Some(&GatewayServiceTarget::Labeled {
+                namespace: "traefik".to_string(),
+                selector: "app.kubernetes.io/name=traefik".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_gateway_service_entry_multi_label_selector() {
+        // Multi-label selectors contain commas — parsed per-entry (the CLI path)
+        // so the commas stay inside the selector.
+        let (class, target) =
+            parse_gateway_service_entry("traefik=traefik/app=traefik,tier=edge").expect("parses");
+        assert_eq!(class, "traefik");
+        assert_eq!(
+            target,
+            GatewayServiceTarget::Labeled {
+                namespace: "traefik".to_string(),
+                selector: "app=traefik,tier=edge".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_gateway_services_skips_malformed_entries() {
+        // "bad" has no target; "=x/y" has empty class; "dup=onlyname" has no ns/name
+        // slash and no `=` selector; only the good entry survives.
+        let m = parse_gateway_services("traefik=traefik/traefik,bad,=x/y,dup=onlyname");
+        assert_eq!(m.len(), 1);
+        assert!(matches!(
+            m.get("traefik"),
+            Some(GatewayServiceTarget::Name(_))
+        ));
+    }
+
+    #[test]
+    fn test_parse_gateway_services_empty() {
+        assert!(parse_gateway_services("").is_empty());
+        assert!(parse_gateway_services("   ").is_empty());
+    }
+
+    #[test]
+    fn test_gateway_addresses_as_ips_typed_ipaddress() {
+        let gw = gateway_fixture(
+            "traefik",
+            serde_json::json!([{ "type": "IPAddress", "value": "203.0.113.5" }]),
+        );
+        assert_eq!(
+            gateway_addresses_as_ips(&gw),
+            vec!["203.0.113.5".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_gateway_addresses_as_ips_untyped_but_parses_as_ip() {
+        // type omitted; value is a valid IP → accepted.
+        let gw = gateway_fixture("traefik", serde_json::json!([{ "value": "198.51.100.7" }]));
+        assert_eq!(
+            gateway_addresses_as_ips(&gw),
+            vec!["198.51.100.7".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_gateway_addresses_as_ips_skips_hostname() {
+        let gw = gateway_fixture(
+            "traefik",
+            serde_json::json!([
+                { "type": "Hostname", "value": "lb.example.com" },
+                { "type": "IPAddress", "value": "203.0.113.9" }
+            ]),
+        );
+        // Hostname entry ignored; only the IP is returned.
+        assert_eq!(
+            gateway_addresses_as_ips(&gw),
+            vec!["203.0.113.9".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_gateway_addresses_as_ips_empty_when_no_status() {
+        let gw = gateway_fixture("traefik", serde_json::json!([]));
+        assert!(gateway_addresses_as_ips(&gw).is_empty());
+    }
+
+    #[test]
+    fn test_gateway_parent_refs_defaults_namespace_to_route() {
+        let refs = vec![ParentReference {
+            group: Some("gateway.networking.k8s.io".to_string()),
+            kind: Some("Gateway".to_string()),
+            namespace: None,
+            name: "gw".to_string(),
+        }];
+        let out = gateway_parent_refs(&refs, "app-ns");
+        assert_eq!(
+            out,
+            vec![NamespacedName {
+                namespace: "app-ns".to_string(),
+                name: "gw".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn test_gateway_parent_refs_honors_explicit_namespace() {
+        let refs = vec![ParentReference {
+            group: None,
+            kind: None, // kind defaults to Gateway
+            namespace: Some("traefik".to_string()),
+            name: "gw".to_string(),
+        }];
+        let out = gateway_parent_refs(&refs, "app-ns");
+        assert_eq!(out[0].namespace, "traefik");
+        assert_eq!(out[0].name, "gw");
+    }
+
+    #[test]
+    fn test_gateway_parent_refs_skips_non_gateway_kinds() {
+        let refs = vec![
+            ParentReference {
+                group: Some("gateway.networking.k8s.io".to_string()),
+                kind: Some("Mesh".to_string()),
+                namespace: None,
+                name: "mesh".to_string(),
+            },
+            ParentReference {
+                group: Some("example.com".to_string()),
+                kind: Some("Gateway".to_string()),
+                namespace: None,
+                name: "other".to_string(),
+            },
+        ];
+        // Non-Gateway kind and non-Gateway-API group are both excluded.
+        assert!(gateway_parent_refs(&refs, "app-ns").is_empty());
     }
 }

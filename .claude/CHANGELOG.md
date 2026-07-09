@@ -1,3 +1,54 @@
+## [2026-07-08] - Scout: gateway-chain IP resolution for HTTPRoute/TLSRoute
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/scout.rs`: Scout now auto-discovers the IP for a Gateway API route
+  instead of requiring customers to hardcode it. When an HTTPRoute/TLSRoute has
+  no `bindy.firestoned.io/ip` annotation, Scout follows the route's `parentRefs`
+  to the serving `Gateway`, and — for a Gateway whose `gatewayClassName` is in the
+  operator-configured map — resolves the external IP from the Gateway's
+  `status.addresses`, falling back to the mapped LoadBalancer `Service` when the
+  Gateway advertises no address (the common case, e.g. Traefik's shared proxy
+  Service). New types: `ParentReference` (+ `parentRefs` on the route specs),
+  `Gateway`/`GatewaySpec`/`GatewayStatus`, `NamespacedName`, `GatewayServiceTarget`.
+  New helpers: `parse_gateway_services`, `parse_gateway_service_entry`,
+  `gateway_service_target_from_str`, `service_ref_from_str`,
+  `gateway_addresses_as_ips`, `gateway_parent_refs`, `resolve_ips_from_gateways`.
+- Config: `--gateway-service <class=target>` (repeatable) and
+  `BINDY_SCOUT_GATEWAY_SERVICES`. `target` is `namespace/name` or
+  `namespace/<label-selector>` (e.g. `traefik=traefik/traefik` or
+  `traefik=traefik/app.kubernetes.io/name=traefik`). The configured classes
+  double as the allow-list of gateways Scout will follow. Multi-label selectors
+  (comma-bearing) must use the repeatable CLI flag.
+- IP precedence for routes is now: annotation → discovered gateway IP →
+  `--default-ips` → requeue.
+
+### Changed
+- Scout RBAC: added `gateways` to the `gateway.networking.k8s.io` read rule in
+  `src/bootstrap.rs` (`build_scout_cluster_role`), `deploy/scout/clusterrole.yaml`,
+  and `deploy/scout.yaml`. Also mirrored the HTTPRoute/TLSRoute rule into
+  `deploy/scout.yaml`, which was previously missing it. Docs updated in
+  `docs/src/guide/scout.md` (IP-resolution note, CLI/env tables, both RBAC blocks).
+
+### Why
+Customers running Gateway API routes had to repeat an IP that is already
+discoverable from the gateway their route attaches to. Following the parentRef
+chain removes that duplication; supporting a label-selector target handles
+controllers (e.g. Traefik) that publish the external IP on a shared proxy
+Service with a generated name.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (scout image + ClusterRole update adds `gateways`)
+- [ ] Config change only
+- [ ] Documentation only
+
+Additive and opt-in: with no `--gateway-service`/`BINDY_SCOUT_GATEWAY_SERVICES`
+configured, route IP resolution is unchanged (annotation → default_ips → requeue).
+
+---
+
 ## [2026-07-08] - Regression run + verify-crd-sync skill
 
 **Author:** Erick Bourgeois

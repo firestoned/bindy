@@ -27,9 +27,11 @@ rules:
     verbs: ["update"]
   # Watch HTTPRoutes and TLSRoutes from the Gateway API (gateway.networking.k8s.io)
   # to automate A record creation for Gateway routes with opt-in annotations.
-  # No patch/update needed — Scout reads spec/metadata only, no mutation.
+  # Gateways are read to follow a route's parentRefs back to the serving gateway
+  # and discover its external IP. No patch/update needed — Scout reads
+  # spec/metadata/status only, no mutation.
   - apiGroups: ["gateway.networking.k8s.io"]
-    resources: ["httproutes", "tlsroutes"]
+    resources: ["httproutes", "tlsroutes", "gateways"]
     verbs: ["get", "list", "watch"]
   # Read DNSZones for zone validation (same-cluster mode only; remote mode uses remote client)
   - apiGroups: ["bindy.firestoned.io"]
