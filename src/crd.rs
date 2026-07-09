@@ -1767,6 +1767,15 @@ pub struct RecordStatus {
     /// For other record types, this field is not used.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub addresses: Option<String>,
+    /// DNS record name (from `spec.name`) most recently published to BIND9.
+    ///
+    /// Set by the record reconciler after a successful dynamic DNS update.
+    /// When `spec.name` changes (a rename), the reconciler compares it against
+    /// this field, deletes the old FQDN from the zone, publishes the new name,
+    /// and then updates this field. Without it, renamed records would leave
+    /// their old FQDN orphaned in BIND9.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub published_name: Option<String>,
 }
 
 /// RNDC/TSIG algorithm for authenticated communication and zone transfers.
@@ -3359,6 +3368,19 @@ pub struct Bind9InstanceStatus {
     pub conditions: Vec<Condition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub observed_generation: Option<i64>,
+    /// Generation of the referenced parent cluster that was last reconciled.
+    ///
+    /// Records the `metadata.generation` of the parent `Bind9Cluster` or
+    /// `ClusterBind9Provider` (whichever this instance references) as observed
+    /// during the last successful reconciliation. The instance reconciler
+    /// compares the parent's current generation against this value to detect
+    /// parent configuration changes (e.g., RNDC config added at the cluster
+    /// level) that must be propagated to the instance.
+    ///
+    /// This is intentionally separate from `observed_generation`, which tracks
+    /// the instance's OWN spec generation - the two counters are unrelated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_parent_generation: Option<i64>,
     /// IP or hostname of this instance's service
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_address: Option<String>,

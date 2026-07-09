@@ -4,7 +4,10 @@
 //! A and AAAA record management.
 
 use super::super::types::RndcKeyData;
-use super::{build_authenticated_client, build_record_fqdn, should_update_record};
+use super::{
+    build_authenticated_client, build_delete_rrset_record, build_record_fqdn, effective_record_ttl,
+    rrset_ttl_matches, should_update_record,
+};
 use anyhow::{Context, Result};
 use hickory_net::client::ClientHandle;
 use hickory_proto::op::ResponseCode;
@@ -12,11 +15,9 @@ use hickory_proto::rr::{DNSClass, Name, RData, Record, RecordType};
 use std::collections::HashSet;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
-use crate::constants::DEFAULT_DNS_RECORD_TTL_SECS;
-
-/// Compare existing DNS `RRset` with desired IPv4 addresses.
+/// Compare existing DNS `RRset` with desired IPv4 addresses and TTL.
 ///
 /// This function implements declarative reconciliation for A records by comparing
 /// the current state (existing DNS records) with desired state (spec).
@@ -25,12 +26,17 @@ use crate::constants::DEFAULT_DNS_RECORD_TTL_SECS;
 ///
 /// * `existing_records` - Records currently in DNS (from query)
 /// * `desired_ips` - IP addresses from `ARecordSpec`
+/// * `desired_ttl` - Effective TTL from the spec
 ///
 /// # Returns
 ///
 /// `true` if existing `RRset` matches desired state exactly (no changes needed),
-/// `false` if update required (add/remove IPs needed).
-fn compare_ip_rrset(existing_records: &[Record], desired_ips: &[String]) -> bool {
+/// `false` if update required (add/remove IPs or TTL change needed).
+fn compare_ip_rrset(existing_records: &[Record], desired_ips: &[String], desired_ttl: u32) -> bool {
+    if !rrset_ttl_matches(existing_records, desired_ttl) {
+        return false;
+    }
+
     let existing_ips: HashSet<String> = existing_records
         .iter()
         .filter_map(|record| {
@@ -46,33 +52,63 @@ fn compare_ip_rrset(existing_records: &[Record], desired_ips: &[String]) -> bool
     existing_ips == desired_set
 }
 
-/// Compare existing DNS `RRset` with desired IPv6 addresses.
+/// Compare existing DNS `RRset` with desired IPv6 addresses and TTL.
 ///
 /// This function implements declarative reconciliation for AAAA records by comparing
 /// the current state (existing DNS records) with desired state (spec).
+///
+/// Both sides are parsed to [`Ipv6Addr`] before comparison so that equivalent
+/// textual forms (e.g. `2001:DB8::1`, uncompressed notation) do not cause
+/// endless delete/recreate churn.
 ///
 /// # Arguments
 ///
 /// * `existing_records` - Records currently in DNS (from query)
 /// * `desired_ips` - IP addresses from `AAAARecordSpec`
+/// * `desired_ttl` - Effective TTL from the spec
 ///
 /// # Returns
 ///
 /// `true` if existing `RRset` matches desired state exactly (no changes needed),
-/// `false` if update required (add/remove IPs needed).
-fn compare_ipv6_rrset(existing_records: &[Record], desired_ips: &[String]) -> bool {
-    let existing_ips: HashSet<String> = existing_records
+/// `false` if update required (add/remove IPs or TTL change needed). A desired
+/// IP that cannot be parsed is treated as a mismatch (with a warning), never a
+/// panic.
+fn compare_ipv6_rrset(
+    existing_records: &[Record],
+    desired_ips: &[String],
+    desired_ttl: u32,
+) -> bool {
+    if !rrset_ttl_matches(existing_records, desired_ttl) {
+        return false;
+    }
+
+    let existing_ips: HashSet<Ipv6Addr> = existing_records
         .iter()
         .filter_map(|record| {
             if let RData::AAAA(ipv6) = &record.data {
-                Some(ipv6.to_string())
+                Some(ipv6.0)
             } else {
                 None
             }
         })
         .collect();
 
-    let desired_set: HashSet<String> = desired_ips.iter().cloned().collect();
+    let mut desired_set: HashSet<Ipv6Addr> = HashSet::with_capacity(desired_ips.len());
+    for ip_str in desired_ips {
+        match Ipv6Addr::from_str(ip_str) {
+            Ok(addr) => {
+                desired_set.insert(addr);
+            }
+            Err(e) => {
+                warn!(
+                    "Invalid IPv6 address '{}' in desired spec (treating as mismatch): {}",
+                    ip_str, e
+                );
+                return false;
+            }
+        }
+    }
+
     existing_ips == desired_set
 }
 
@@ -103,22 +139,20 @@ pub async fn add_a_record(
     server: &str,
     key_data: &RndcKeyData,
 ) -> Result<()> {
+    let ttl_value = effective_record_ttl(ttl);
     let should_update = should_update_record(
         zone_name,
         name,
         RecordType::A,
         "A",
         server,
-        |existing_records| compare_ip_rrset(existing_records, ipv4_addresses),
+        |existing_records| compare_ip_rrset(existing_records, ipv4_addresses, ttl_value),
     )
     .await?;
 
     if !should_update {
         return Ok(());
     }
-
-    let ttl_value = u32::try_from(ttl.unwrap_or(DEFAULT_DNS_RECORD_TTL_SECS))
-        .unwrap_or(u32::try_from(DEFAULT_DNS_RECORD_TTL_SECS).unwrap_or(300));
 
     let zone =
         Name::from_str(zone_name).with_context(|| format!("Invalid zone name: {zone_name}"))?;
@@ -127,7 +161,7 @@ pub async fn add_a_record(
     let mut client = build_authenticated_client(server, key_data).await?;
 
     // Step 1: delete existing RRset (ignore errors — may not exist).
-    let delete_record = Record::from_rdata(fqdn.clone(), 0, RData::Update0(RecordType::A));
+    let delete_record = build_delete_rrset_record(&fqdn, RecordType::A);
     let _ = client.delete_rrset(delete_record, zone.clone()).await;
 
     info!(
@@ -197,13 +231,14 @@ pub async fn add_aaaa_record(
     server: &str,
     key_data: &RndcKeyData,
 ) -> Result<()> {
+    let ttl_value = effective_record_ttl(ttl);
     let should_update = should_update_record(
         zone_name,
         name,
         RecordType::AAAA,
         "AAAA",
         server,
-        |existing_records| compare_ipv6_rrset(existing_records, ipv6_addresses),
+        |existing_records| compare_ipv6_rrset(existing_records, ipv6_addresses, ttl_value),
     )
     .await?;
 
@@ -211,16 +246,13 @@ pub async fn add_aaaa_record(
         return Ok(());
     }
 
-    let ttl_value = u32::try_from(ttl.unwrap_or(DEFAULT_DNS_RECORD_TTL_SECS))
-        .unwrap_or(u32::try_from(DEFAULT_DNS_RECORD_TTL_SECS).unwrap_or(300));
-
     let zone =
         Name::from_str(zone_name).with_context(|| format!("Invalid zone name: {zone_name}"))?;
     let fqdn = build_record_fqdn(zone_name, name)?;
 
     let mut client = build_authenticated_client(server, key_data).await?;
 
-    let delete_record = Record::from_rdata(fqdn.clone(), 0, RData::Update0(RecordType::AAAA));
+    let delete_record = build_delete_rrset_record(&fqdn, RecordType::AAAA);
     let _ = client.delete_rrset(delete_record, zone.clone()).await;
 
     info!(

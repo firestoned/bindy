@@ -6,10 +6,55 @@
 //! This module handles cleanup of deleted instances and stale records from zone status.
 
 use anyhow::Result;
-use kube::Client;
+use kube::{Api, Client};
 use tracing::{debug, info, warn};
 
+use super::helpers::HTTP_STATUS_NOT_FOUND;
 use crate::crd::DNSZone;
+
+/// Converts a Kubernetes `get` result into an existence check.
+///
+/// CRITICAL: Only a 404 (`NotFound`) response means the resource is deleted.
+/// Any other error (timeout, 429, 5xx, auth failure, ...) is potentially
+/// transient and MUST be propagated - treating it as "deleted" would trigger
+/// the self-healing cleanup path and delete live DNS data for a resource that
+/// still exists.
+///
+/// # Arguments
+///
+/// * `result` - The result of an `Api::get` call
+///
+/// # Returns
+///
+/// * `Ok(true)` - The resource exists
+/// * `Ok(false)` - The API returned 404: the resource is deleted
+///
+/// # Errors
+///
+/// Returns the original error for any non-404 failure so the caller aborts
+/// this cleanup pass and retries on the next reconciliation.
+pub(super) fn existence_from_get_result<K>(
+    result: std::result::Result<K, kube::Error>,
+) -> Result<bool> {
+    match result {
+        Ok(_) => Ok(true),
+        Err(kube::Error::Api(ae)) if ae.code == HTTP_STATUS_NOT_FOUND => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Checks whether a namespaced resource exists, distinguishing 404 from
+/// transient API errors (see [`existence_from_get_result`]).
+///
+/// # Errors
+///
+/// Returns an error for any non-404 API failure.
+async fn resource_exists<K>(api: &Api<K>, name: &str) -> Result<bool>
+where
+    K: kube::Resource + Clone + std::fmt::Debug + serde::de::DeserializeOwned,
+{
+    existence_from_get_result(api.get(name).await)
+}
 
 /// Clean up deleted instances from zone status.
 ///
@@ -64,12 +109,14 @@ pub async fn cleanup_deleted_instances(
 
     let mut deleted_count = 0;
 
-    // Check each instance to see if it still exists
+    // Check each instance to see if it still exists.
+    // Only a 404 means "deleted": transient API errors abort this cleanup
+    // pass (via `?`) so a live instance is never removed from status by mistake.
     for instance_ref in current_instances {
         let instance_api: Api<Bind9Instance> =
             Api::namespaced(client.clone(), &instance_ref.namespace);
 
-        let instance_exists = instance_api.get(&instance_ref.name).await.is_ok();
+        let instance_exists = resource_exists(&instance_api, &instance_ref.name).await?;
 
         if !instance_exists {
             info!(
@@ -150,41 +197,45 @@ pub async fn cleanup_stale_records(
     let mut records_to_keep: Vec<RecordReferenceWithTimestamp> = Vec::new();
     let mut stale_count = 0;
 
-    // Check each record to see if it still exists
+    // Check each record to see if it still exists.
+    // Only a 404 means "deleted": transient API errors abort this cleanup pass
+    // (via `?`). Treating a transient error on a live record as "deleted"
+    // would trigger the SELF-HEALING path below and delete live DNS data from
+    // all primaries while the record CR still exists.
     for record_ref in current_records {
         let kind = DNSRecordKind::try_from(record_ref.kind.as_str())?;
         let record_exists = match kind {
             DNSRecordKind::A => {
                 let api: Api<ARecord> = Api::namespaced(client.clone(), &record_ref.namespace);
-                api.get(&record_ref.name).await.is_ok()
+                resource_exists(&api, &record_ref.name).await?
             }
             DNSRecordKind::AAAA => {
                 let api: Api<AAAARecord> = Api::namespaced(client.clone(), &record_ref.namespace);
-                api.get(&record_ref.name).await.is_ok()
+                resource_exists(&api, &record_ref.name).await?
             }
             DNSRecordKind::TXT => {
                 let api: Api<TXTRecord> = Api::namespaced(client.clone(), &record_ref.namespace);
-                api.get(&record_ref.name).await.is_ok()
+                resource_exists(&api, &record_ref.name).await?
             }
             DNSRecordKind::CNAME => {
                 let api: Api<CNAMERecord> = Api::namespaced(client.clone(), &record_ref.namespace);
-                api.get(&record_ref.name).await.is_ok()
+                resource_exists(&api, &record_ref.name).await?
             }
             DNSRecordKind::MX => {
                 let api: Api<MXRecord> = Api::namespaced(client.clone(), &record_ref.namespace);
-                api.get(&record_ref.name).await.is_ok()
+                resource_exists(&api, &record_ref.name).await?
             }
             DNSRecordKind::NS => {
                 let api: Api<NSRecord> = Api::namespaced(client.clone(), &record_ref.namespace);
-                api.get(&record_ref.name).await.is_ok()
+                resource_exists(&api, &record_ref.name).await?
             }
             DNSRecordKind::SRV => {
                 let api: Api<SRVRecord> = Api::namespaced(client.clone(), &record_ref.namespace);
-                api.get(&record_ref.name).await.is_ok()
+                resource_exists(&api, &record_ref.name).await?
             }
             DNSRecordKind::CAA => {
                 let api: Api<CAARecord> = Api::namespaced(client.clone(), &record_ref.namespace);
-                api.get(&record_ref.name).await.is_ok()
+                resource_exists(&api, &record_ref.name).await?
             }
         };
 

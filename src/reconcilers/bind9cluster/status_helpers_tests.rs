@@ -199,4 +199,90 @@ mod tests {
         // Then: Should patch the status with new values
         //       AND log "Updating Bind9Cluster status: 3 instances, 3 ready"
     }
+
+    // ========================================================================
+    // Status patch decision (cluster_status_changed)
+    // ========================================================================
+
+    use crate::crd::Bind9ClusterStatus;
+    use crate::reconcilers::bind9cluster::status_helpers::cluster_status_changed;
+
+    fn build_current_status(generation: Option<i64>) -> Bind9ClusterStatus {
+        let instances = vec![create_test_instance("instance-0", "default", true)];
+        let (instance_count, ready_instances, instance_names, conditions) =
+            calculate_cluster_status(&instances, "default", "test-cluster");
+        Bind9ClusterStatus {
+            conditions,
+            observed_generation: generation,
+            instance_count: Some(instance_count),
+            ready_instances: Some(ready_instances),
+            instances: instance_names,
+        }
+    }
+
+    #[test]
+    fn test_cluster_status_changed_no_current_status() {
+        let instances = vec![create_test_instance("instance-0", "default", true)];
+        let (count, ready, names, conditions) =
+            calculate_cluster_status(&instances, "default", "test-cluster");
+
+        assert!(cluster_status_changed(
+            None,
+            &conditions,
+            count,
+            ready,
+            &names,
+            Some(1)
+        ));
+    }
+
+    #[test]
+    fn test_cluster_status_changed_generation_only_change_triggers_patch() {
+        // THE BUG: a spec edit that does not change counts or conditions must
+        // still trigger the patch so observedGeneration advances - otherwise
+        // should_reconcile() returns true on every requeue forever.
+        let current = build_current_status(Some(1));
+        let instances = vec![create_test_instance("instance-0", "default", true)];
+        let (count, ready, names, conditions) =
+            calculate_cluster_status(&instances, "default", "test-cluster");
+
+        assert!(
+            cluster_status_changed(Some(&current), &conditions, count, ready, &names, Some(2)),
+            "generation-only change must trigger a status patch"
+        );
+    }
+
+    #[test]
+    fn test_cluster_status_changed_unchanged_skips_patch() {
+        let current = build_current_status(Some(2));
+        let instances = vec![create_test_instance("instance-0", "default", true)];
+        let (count, ready, names, conditions) =
+            calculate_cluster_status(&instances, "default", "test-cluster");
+
+        assert!(!cluster_status_changed(
+            Some(&current),
+            &conditions,
+            count,
+            ready,
+            &names,
+            Some(2)
+        ));
+    }
+
+    #[test]
+    fn test_cluster_status_changed_condition_change_triggers_patch() {
+        let current = build_current_status(Some(2));
+        let instances = vec![create_test_instance("instance-0", "default", false)];
+        let (count, ready, names, conditions) =
+            calculate_cluster_status(&instances, "default", "test-cluster");
+
+        assert!(cluster_status_changed(
+            Some(&current),
+            &conditions,
+            count,
+            ready,
+            &names,
+            Some(2)
+        ));
+    }
 }

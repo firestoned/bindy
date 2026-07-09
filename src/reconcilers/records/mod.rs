@@ -152,6 +152,7 @@ where
             None, // record_hash
             None, // last_updated
             None, // addresses
+            None, // published_name
         )
         .await?;
         return Ok(None);
@@ -182,6 +183,7 @@ where
                 None, // record_hash
                 None, // last_updated
                 None, // addresses
+                None, // published_name
             )
             .await?;
             return Ok(None);
@@ -210,6 +212,7 @@ where
                 None, // record_hash
                 None, // last_updated
                 None, // addresses
+                None, // published_name
             )
             .await?;
             return Ok(None);
@@ -240,6 +243,7 @@ where
                 None, // record_hash
                 None, // last_updated
                 None, // addresses
+                None, // published_name
             )
             .await?;
             return Ok(None);
@@ -262,6 +266,7 @@ where
             None, // record_hash
             None, // last_updated
             None, // addresses
+            None, // published_name
         )
         .await?;
         return Ok(None);
@@ -389,8 +394,14 @@ trait ReconcilableRecord:
     /// Get the record's spec
     fn get_spec(&self) -> &Self::Spec;
 
+    /// Get the record's status, if any
+    fn get_status(&self) -> Option<&crate::crd::RecordStatus>;
+
     /// Get the record type name (e.g., "A", "TXT", "AAAA") for logging
     fn record_type_name() -> &'static str;
+
+    /// Get the `hickory_proto` record type used for DNS deletion operations
+    fn record_type_hickory() -> hickory_proto::rr::RecordType;
 
     /// Create the BIND9 operation from the spec
     fn create_operation(spec: &Self::Spec) -> Self::Operation;
@@ -400,6 +411,13 @@ trait ReconcilableRecord:
 
     /// Get the TTL from the spec
     fn get_ttl(spec: &Self::Spec) -> Option<i32>;
+
+    /// Comma-separated display addresses for `status.addresses` (A/AAAA only).
+    ///
+    /// Returns `None` for record types that do not publish addresses.
+    fn get_display_addresses(_spec: &Self::Spec) -> Option<String> {
+        None
+    }
 }
 
 /// Generic helper to add a record to all primary instances.
@@ -531,8 +549,16 @@ impl ReconcilableRecord for ARecord {
         &self.spec
     }
 
+    fn get_status(&self) -> Option<&crate::crd::RecordStatus> {
+        self.status.as_ref()
+    }
+
     fn record_type_name() -> &'static str {
         "A"
+    }
+
+    fn record_type_hickory() -> hickory_proto::rr::RecordType {
+        hickory_proto::rr::RecordType::A
     }
 
     fn create_operation(spec: &Self::Spec) -> Self::Operation {
@@ -547,6 +573,10 @@ impl ReconcilableRecord for ARecord {
 
     fn get_ttl(spec: &Self::Spec) -> Option<i32> {
         spec.ttl
+    }
+
+    fn get_display_addresses(spec: &Self::Spec) -> Option<String> {
+        Some(spec.ipv4_addresses.join(","))
     }
 }
 
@@ -592,8 +622,16 @@ impl ReconcilableRecord for AAAARecord {
         &self.spec
     }
 
+    fn get_status(&self) -> Option<&crate::crd::RecordStatus> {
+        self.status.as_ref()
+    }
+
     fn record_type_name() -> &'static str {
         "AAAA"
+    }
+
+    fn record_type_hickory() -> hickory_proto::rr::RecordType {
+        hickory_proto::rr::RecordType::AAAA
     }
 
     fn create_operation(spec: &Self::Spec) -> Self::Operation {
@@ -608,6 +646,10 @@ impl ReconcilableRecord for AAAARecord {
 
     fn get_ttl(spec: &Self::Spec) -> Option<i32> {
         spec.ttl
+    }
+
+    fn get_display_addresses(spec: &Self::Spec) -> Option<String> {
+        Some(spec.ipv6_addresses.join(","))
     }
 }
 
@@ -646,8 +688,16 @@ impl ReconcilableRecord for CNAMERecord {
         &self.spec
     }
 
+    fn get_status(&self) -> Option<&crate::crd::RecordStatus> {
+        self.status.as_ref()
+    }
+
     fn record_type_name() -> &'static str {
         "CNAME"
+    }
+
+    fn record_type_hickory() -> hickory_proto::rr::RecordType {
+        hickory_proto::rr::RecordType::CNAME
     }
 
     fn create_operation(spec: &Self::Spec) -> Self::Operation {
@@ -700,8 +750,16 @@ impl ReconcilableRecord for TXTRecord {
         &self.spec
     }
 
+    fn get_status(&self) -> Option<&crate::crd::RecordStatus> {
+        self.status.as_ref()
+    }
+
     fn record_type_name() -> &'static str {
         "TXT"
+    }
+
+    fn record_type_hickory() -> hickory_proto::rr::RecordType {
+        hickory_proto::rr::RecordType::TXT
     }
 
     fn create_operation(spec: &Self::Spec) -> Self::Operation {
@@ -763,8 +821,16 @@ impl ReconcilableRecord for MXRecord {
         &self.spec
     }
 
+    fn get_status(&self) -> Option<&crate::crd::RecordStatus> {
+        self.status.as_ref()
+    }
+
     fn record_type_name() -> &'static str {
         "MX"
+    }
+
+    fn record_type_hickory() -> hickory_proto::rr::RecordType {
+        hickory_proto::rr::RecordType::MX
     }
 
     fn create_operation(spec: &Self::Spec) -> Self::Operation {
@@ -825,8 +891,16 @@ impl ReconcilableRecord for NSRecord {
         &self.spec
     }
 
+    fn get_status(&self) -> Option<&crate::crd::RecordStatus> {
+        self.status.as_ref()
+    }
+
     fn record_type_name() -> &'static str {
         "NS"
+    }
+
+    fn record_type_hickory() -> hickory_proto::rr::RecordType {
+        hickory_proto::rr::RecordType::NS
     }
 
     fn create_operation(spec: &Self::Spec) -> Self::Operation {
@@ -889,8 +963,16 @@ impl ReconcilableRecord for SRVRecord {
         &self.spec
     }
 
+    fn get_status(&self) -> Option<&crate::crd::RecordStatus> {
+        self.status.as_ref()
+    }
+
     fn record_type_name() -> &'static str {
         "SRV"
+    }
+
+    fn record_type_hickory() -> hickory_proto::rr::RecordType {
+        hickory_proto::rr::RecordType::SRV
     }
 
     fn create_operation(spec: &Self::Spec) -> Self::Operation {
@@ -957,8 +1039,16 @@ impl ReconcilableRecord for CAARecord {
         &self.spec
     }
 
+    fn get_status(&self) -> Option<&crate::crd::RecordStatus> {
+        self.status.as_ref()
+    }
+
     fn record_type_name() -> &'static str {
         "CAA"
+    }
+
+    fn record_type_hickory() -> hickory_proto::rr::RecordType {
+        hickory_proto::rr::RecordType::CAA
     }
 
     fn create_operation(spec: &Self::Spec) -> Self::Operation {
@@ -978,10 +1068,6 @@ impl ReconcilableRecord for CAARecord {
     }
 }
 
-///
-/// # Errors
-///
-/// Returns an error if Kubernetes API operations fail or BIND9 record creation fails.
 /// Generic record reconciliation function.
 ///
 /// This function handles reconciliation for all DNS record types that implement
@@ -991,8 +1077,11 @@ impl ReconcilableRecord for CAARecord {
 /// The function:
 /// 1. Checks if the record is selected by a `DNSZone` (via status.zoneRef)
 /// 2. Looks up the `DNSZone` and gets primary instances
-/// 3. Adds the record to BIND9 primaries using dynamic DNS updates
-/// 4. Updates the record status based on success/failure
+/// 3. Deletes the previously published name from BIND9 if `spec.name` changed
+///    (rename detection via `status.publishedName`)
+/// 4. Adds the record to BIND9 primaries using dynamic DNS updates
+/// 5. Updates the record status based on success/failure; `status.addresses`
+///    and `status.publishedName` are only set after a successful reconcile
 ///
 /// # Type Parameters
 ///
@@ -1043,6 +1132,56 @@ where
         return Ok(()); // Record not selected or status already updated
     };
 
+    // Handle renames: if the record was previously published under a different
+    // DNS name (status.publishedName), delete the old FQDN from the zone first.
+    // Otherwise the old name would remain orphaned in BIND9 forever.
+    if let Some(old_name) = detect_renamed_record(record.get_status(), T::get_record_name(spec)) {
+        info!(
+            "{} record {}/{} renamed from '{}' to '{}' - deleting old name from zone {}",
+            T::record_type_name(),
+            namespace,
+            name,
+            old_name,
+            T::get_record_name(spec),
+            rec_ctx.zone_ref.zone_name
+        );
+
+        if let Err(e) = delete_record_from_primaries(
+            &client,
+            &ctx.stores,
+            &rec_ctx.primary_refs,
+            &rec_ctx.zone_ref.zone_name,
+            &old_name,
+            T::record_type_hickory(),
+            true, // fail_on_error: do not publish the new name until the old one is gone
+        )
+        .await
+        {
+            warn!(
+                "Failed to delete renamed {} record '{}' from zone {}: {}",
+                T::record_type_name(),
+                old_name,
+                rec_ctx.zone_ref.zone_name,
+                e
+            );
+            update_record_status(
+                &client,
+                &record,
+                "Ready",
+                "False",
+                "ReconcileFailed",
+                &format!("Failed to delete renamed record '{old_name}' from zone: {e}"),
+                current_generation,
+                None, // record_hash
+                None, // last_updated
+                None, // addresses
+                None, // published_name (preserve old name so deletion is retried)
+            )
+            .await?;
+            return Ok(());
+        }
+    }
+
     // Create type-specific operation from spec
     let record_op = T::create_operation(spec);
 
@@ -1067,7 +1206,7 @@ where
                 rec_ctx.primary_refs.len()
             );
 
-            // Update lastReconciledAt timestamp in DNSZone.status.selectedRecords[]
+            // Update lastReconciledAt timestamp in DNSZone.status.records[]
             update_record_reconciled_timestamp(
                 &client,
                 &rec_ctx.zone_ref.namespace,
@@ -1078,7 +1217,8 @@ where
             )
             .await?;
 
-            // Update record status to Ready
+            // Update record status to Ready. Addresses (A/AAAA display field) and
+            // publishedName are only set after a successful, selected reconcile.
             update_record_status(
                 &client,
                 &record,
@@ -1093,7 +1233,8 @@ where
                 current_generation,
                 Some(rec_ctx.current_hash),
                 Some(chrono::Utc::now().to_rfc3339()),
-                None, // addresses
+                T::get_display_addresses(spec),
+                Some(T::get_record_name(spec).to_string()),
             )
             .await?;
         }
@@ -1116,6 +1257,7 @@ where
                 None, // record_hash
                 None, // last_updated
                 None, // addresses
+                None, // published_name
             )
             .await?;
         }
@@ -1124,11 +1266,39 @@ where
     Ok(())
 }
 
+/// Detects whether a record was renamed since it was last published to BIND9.
+///
+/// Compares the record's `status.publishedName` (the DNS name most recently
+/// written to BIND9) against the current `spec.name`.
+///
+/// # Arguments
+///
+/// * `status` - The record's current status, if any
+/// * `current_name` - The record name from the current spec
+///
+/// # Returns
+///
+/// * `Some(old_name)` - The record was renamed; `old_name` must be deleted from DNS
+/// * `None` - No rename occurred (never published, or name unchanged)
+pub(crate) fn detect_renamed_record(
+    status: Option<&crate::crd::RecordStatus>,
+    current_name: &str,
+) -> Option<String> {
+    let published = status?.published_name.as_deref()?;
+    if published == current_name {
+        return None;
+    }
+    Some(published.to_string())
+}
+
 /// Reconciles an `ARecord` (IPv4 address) resource.
 ///
 /// This is a thin wrapper around the generic `reconcile_record<T>()` function.
 /// It finds `DNSZones` that have selected this record via label selectors and
 /// creates/updates the record in BIND9 primaries for those zones using dynamic DNS updates.
+///
+/// `status.addresses` (comma-separated IPv4 addresses for kubectl output) is only
+/// published after a successful, selected reconcile.
 ///
 /// # Errors
 ///
@@ -1137,30 +1307,7 @@ pub async fn reconcile_a_record(
     ctx: std::sync::Arc<crate::context::Context>,
     record: ARecord,
 ) -> Result<()> {
-    // Reconcile the record
-    reconcile_record(ctx.clone(), record.clone()).await?;
-
-    // Update status with comma-separated addresses for kubectl output
-    let client = ctx.client.clone();
-    let namespace = record.namespace().unwrap_or_default();
-    let name = record.name_any();
-    let api: Api<ARecord> = Api::namespaced(client.clone(), &namespace);
-
-    // Format addresses as comma-separated list
-    let addresses = record.spec.ipv4_addresses.join(",");
-
-    // Patch just the addresses field in status
-    let status_patch = serde_json::json!({
-        "status": {
-            "addresses": addresses
-        }
-    });
-
-    api.patch_status(&name, &PatchParams::default(), &Patch::Merge(&status_patch))
-        .await
-        .context("Failed to update addresses in status")?;
-
-    Ok(())
+    reconcile_record(ctx, record).await
 }
 
 /// Reconciles a `TXTRecord` (text) resource.
@@ -1176,93 +1323,7 @@ pub async fn reconcile_txt_record(
     ctx: std::sync::Arc<crate::context::Context>,
     record: TXTRecord,
 ) -> Result<()> {
-    let client = ctx.client.clone();
-    let bind9_instances_store = &ctx.stores.bind9_instances;
-    let namespace = record.namespace().unwrap_or_default();
-    let name = record.name_any();
-
-    info!("Reconciling TXTRecord: {}/{}", namespace, name);
-
-    let spec = &record.spec;
-    let current_generation = record.metadata.generation;
-
-    // Use generic helper to get zone and instances
-    let Some(rec_ctx) =
-        prepare_record_reconciliation(&client, &record, "TXT", spec, bind9_instances_store).await?
-    else {
-        return Ok(()); // Record not selected or status already updated
-    };
-
-    // Add record to BIND9 primaries using generic helper
-    let record_op = TXTRecordOp {
-        texts: spec.text.clone(),
-    };
-    match add_record_to_instances_generic(
-        &client,
-        &ctx.stores,
-        &rec_ctx.primary_refs,
-        &rec_ctx.zone_ref.zone_name,
-        &spec.name,
-        spec.ttl,
-        record_op,
-    )
-    .await
-    {
-        Ok(()) => {
-            info!(
-                "Successfully added TXT record {}.{} via {} primary instance(s)",
-                spec.name,
-                rec_ctx.zone_ref.zone_name,
-                rec_ctx.primary_refs.len()
-            );
-
-            // Update lastReconciledAt timestamp in DNSZone.status.selectedRecords[]
-            update_record_reconciled_timestamp(
-                &client,
-                &rec_ctx.zone_ref.namespace,
-                &rec_ctx.zone_ref.name,
-                "TXTRecord",
-                &name,
-                &namespace,
-            )
-            .await?;
-
-            update_record_status(
-                &client,
-                &record,
-                "Ready",
-                "True",
-                "ReconcileSucceeded",
-                &format!("TXT record added to zone {}", rec_ctx.zone_ref.zone_name),
-                current_generation,
-                Some(rec_ctx.current_hash),
-                Some(chrono::Utc::now().to_rfc3339()),
-                None, // addresses
-            )
-            .await?;
-        }
-        Err(e) => {
-            warn!(
-                "Failed to add TXT record {}.{}: {}",
-                spec.name, rec_ctx.zone_ref.zone_name, e
-            );
-            update_record_status(
-                &client,
-                &record,
-                "Ready",
-                "False",
-                "ReconcileFailed",
-                &format!("Failed to add record to zone: {e}"),
-                current_generation,
-                None, // record_hash
-                None, // last_updated
-                None, // addresses
-            )
-            .await?;
-        }
-    }
-
-    Ok(())
+    reconcile_record(ctx, record).await
 }
 
 /// Reconciles an `AAAARecord` (IPv6 address) resource.
@@ -1277,97 +1338,7 @@ pub async fn reconcile_aaaa_record(
     ctx: std::sync::Arc<crate::context::Context>,
     record: AAAARecord,
 ) -> Result<()> {
-    let client = ctx.client.clone();
-    let bind9_instances_store = &ctx.stores.bind9_instances;
-    let namespace = record.namespace().unwrap_or_default();
-    let name = record.name_any();
-
-    info!("Reconciling AAAARecord: {}/{}", namespace, name);
-
-    let spec = &record.spec;
-    let current_generation = record.metadata.generation;
-
-    // Use generic helper to get zone and instances
-    let Some(rec_ctx) =
-        prepare_record_reconciliation(&client, &record, "AAAA", spec, bind9_instances_store)
-            .await?
-    else {
-        return Ok(()); // Record not selected or status already updated
-    };
-
-    // Add record to BIND9 primaries using generic helper
-    let record_op = AAAARecordOp {
-        ipv6_addresses: spec.ipv6_addresses.clone(),
-    };
-    match add_record_to_instances_generic(
-        &client,
-        &ctx.stores,
-        &rec_ctx.primary_refs,
-        &rec_ctx.zone_ref.zone_name,
-        &spec.name,
-        spec.ttl,
-        record_op,
-    )
-    .await
-    {
-        Ok(()) => {
-            info!(
-                "Successfully added AAAA record {}.{} via {} primary instance(s)",
-                spec.name,
-                rec_ctx.zone_ref.zone_name,
-                rec_ctx.primary_refs.len()
-            );
-
-            // Update lastReconciledAt timestamp in DNSZone.status.selectedRecords[]
-            update_record_reconciled_timestamp(
-                &client,
-                &rec_ctx.zone_ref.namespace,
-                &rec_ctx.zone_ref.name,
-                "AAAARecord",
-                &name,
-                &namespace,
-            )
-            .await?;
-
-            // Format addresses as comma-separated list for kubectl output
-            let addresses = record.spec.ipv6_addresses.join(",");
-
-            update_record_status(
-                &client,
-                &record,
-                "Ready",
-                "True",
-                "ReconcileSucceeded",
-                &format!("AAAA record added to zone {}", rec_ctx.zone_ref.zone_name),
-                current_generation,
-                Some(rec_ctx.current_hash),
-                Some(chrono::Utc::now().to_rfc3339()),
-                Some(addresses),
-            )
-            .await?;
-        }
-        Err(e) => {
-            warn!(
-                "Failed to add AAAA record {}.{}: {}",
-                spec.name, rec_ctx.zone_ref.zone_name, e
-            );
-            update_record_status(
-                &client,
-                &record,
-                "Ready",
-                "False",
-                "ReconcileFailed",
-                &format!("Failed to add record to zone: {e}"),
-                current_generation,
-                None, // record_hash
-                None, // last_updated
-                None, // addresses
-            )
-            .await?;
-        }
-    }
-
-    Ok(())
+    reconcile_record(ctx, record).await
 }
 
 /// Reconciles a `CNAMERecord` \(canonical name alias\) resource.
@@ -1379,99 +1350,11 @@ pub async fn reconcile_aaaa_record(
 /// # Errors
 ///
 /// Returns an error if Kubernetes API operations fail or BIND9 record creation fails.
-#[allow(clippy::too_many_lines)]
 pub async fn reconcile_cname_record(
     ctx: std::sync::Arc<crate::context::Context>,
     record: CNAMERecord,
 ) -> Result<()> {
-    let client = ctx.client.clone();
-    let bind9_instances_store = &ctx.stores.bind9_instances;
-    let namespace = record.namespace().unwrap_or_default();
-    let name = record.name_any();
-
-    info!("Reconciling CNAMERecord: {}/{}", namespace, name);
-
-    let spec = &record.spec;
-    let current_generation = record.metadata.generation;
-
-    // Use generic helper to get zone and instances
-    let Some(rec_ctx) =
-        prepare_record_reconciliation(&client, &record, "CNAME", spec, bind9_instances_store)
-            .await?
-    else {
-        return Ok(()); // Record not selected or status already updated
-    };
-
-    // Add record to BIND9 primaries using instances
-    let record_op = CNAMERecordOp {
-        target: spec.target.clone(),
-    };
-    match add_record_to_instances_generic(
-        &client,
-        &ctx.stores,
-        &rec_ctx.primary_refs,
-        &rec_ctx.zone_ref.zone_name,
-        &spec.name,
-        spec.ttl,
-        record_op,
-    )
-    .await
-    {
-        Ok(()) => {
-            info!(
-                "Successfully added CNAME record {}.{} via {} primary instance(s)",
-                spec.name,
-                rec_ctx.zone_ref.zone_name,
-                rec_ctx.primary_refs.len()
-            );
-
-            // Update lastReconciledAt timestamp in DNSZone.status.selectedRecords[]
-            update_record_reconciled_timestamp(
-                &client,
-                &rec_ctx.zone_ref.namespace,
-                &rec_ctx.zone_ref.name,
-                "CNAMERecord",
-                &name,
-                &namespace,
-            )
-            .await?;
-
-            update_record_status(
-                &client,
-                &record,
-                "Ready",
-                "True",
-                "ReconcileSucceeded",
-                &format!("CNAME record added to zone {}", rec_ctx.zone_ref.zone_name),
-                current_generation,
-                Some(rec_ctx.current_hash),
-                Some(chrono::Utc::now().to_rfc3339()),
-                None, // addresses
-            )
-            .await?;
-        }
-        Err(e) => {
-            warn!(
-                "Failed to add CNAME record {}.{}: {}",
-                spec.name, rec_ctx.zone_ref.zone_name, e
-            );
-            update_record_status(
-                &client,
-                &record,
-                "Ready",
-                "False",
-                "ReconcileFailed",
-                &format!("Failed to add record to zone: {e}"),
-                current_generation,
-                None, // record_hash
-                None, // last_updated
-                None, // addresses
-            )
-            .await?;
-        }
-    }
-
-    Ok(())
+    reconcile_record(ctx, record).await
 }
 
 /// Reconciles an `MXRecord` (mail exchange) resource.
@@ -1483,99 +1366,11 @@ pub async fn reconcile_cname_record(
 /// # Errors
 ///
 /// Returns an error if Kubernetes API operations fail or BIND9 record creation fails.
-#[allow(clippy::too_many_lines)]
 pub async fn reconcile_mx_record(
     ctx: std::sync::Arc<crate::context::Context>,
     record: MXRecord,
 ) -> Result<()> {
-    let client = ctx.client.clone();
-    let bind9_instances_store = &ctx.stores.bind9_instances;
-    let namespace = record.namespace().unwrap_or_default();
-    let name = record.name_any();
-
-    info!("Reconciling MXRecord: {}/{}", namespace, name);
-
-    let spec = &record.spec;
-    let current_generation = record.metadata.generation;
-
-    // Use generic helper to get zone and instances
-    let Some(rec_ctx) =
-        prepare_record_reconciliation(&client, &record, "MX", spec, bind9_instances_store).await?
-    else {
-        return Ok(()); // Record not selected or status already updated
-    };
-
-    // Add record to BIND9 primaries using instances
-    let record_op = MXRecordOp {
-        priority: spec.priority,
-        mail_server: spec.mail_server.clone(),
-    };
-    match add_record_to_instances_generic(
-        &client,
-        &ctx.stores,
-        &rec_ctx.primary_refs,
-        &rec_ctx.zone_ref.zone_name,
-        &spec.name,
-        spec.ttl,
-        record_op,
-    )
-    .await
-    {
-        Ok(()) => {
-            info!(
-                "Successfully added MX record {}.{} via {} primary instance(s)",
-                spec.name,
-                rec_ctx.zone_ref.zone_name,
-                rec_ctx.primary_refs.len()
-            );
-
-            // Update lastReconciledAt timestamp in DNSZone.status.selectedRecords[]
-            update_record_reconciled_timestamp(
-                &client,
-                &rec_ctx.zone_ref.namespace,
-                &rec_ctx.zone_ref.name,
-                "MXRecord",
-                &name,
-                &namespace,
-            )
-            .await?;
-
-            update_record_status(
-                &client,
-                &record,
-                "Ready",
-                "True",
-                "ReconcileSucceeded",
-                &format!("MX record added to zone {}", rec_ctx.zone_ref.zone_name),
-                current_generation,
-                Some(rec_ctx.current_hash),
-                Some(chrono::Utc::now().to_rfc3339()),
-                None, // addresses
-            )
-            .await?;
-        }
-        Err(e) => {
-            warn!(
-                "Failed to add MX record {}.{}: {}",
-                spec.name, rec_ctx.zone_ref.zone_name, e
-            );
-            update_record_status(
-                &client,
-                &record,
-                "Ready",
-                "False",
-                "ReconcileFailed",
-                &format!("Failed to add record to zone: {e}"),
-                current_generation,
-                None, // record_hash
-                None, // last_updated
-                None, // addresses
-            )
-            .await?;
-        }
-    }
-
-    Ok(())
+    reconcile_record(ctx, record).await
 }
 
 /// Reconciles an `NSRecord` (nameserver delegation) resource.
@@ -1587,98 +1382,11 @@ pub async fn reconcile_mx_record(
 /// # Errors
 ///
 /// Returns an error if Kubernetes API operations fail or BIND9 record creation fails.
-#[allow(clippy::too_many_lines)]
 pub async fn reconcile_ns_record(
     ctx: std::sync::Arc<crate::context::Context>,
     record: NSRecord,
 ) -> Result<()> {
-    let client = ctx.client.clone();
-    let bind9_instances_store = &ctx.stores.bind9_instances;
-    let namespace = record.namespace().unwrap_or_default();
-    let name = record.name_any();
-
-    info!("Reconciling NSRecord: {}/{}", namespace, name);
-
-    let spec = &record.spec;
-    let current_generation = record.metadata.generation;
-
-    // Use generic helper to get zone and instances
-    let Some(rec_ctx) =
-        prepare_record_reconciliation(&client, &record, "NS", spec, bind9_instances_store).await?
-    else {
-        return Ok(()); // Record not selected or status already updated
-    };
-
-    // Add record to BIND9 primaries using instances
-    let record_op = NSRecordOp {
-        nameserver: spec.nameserver.clone(),
-    };
-    match add_record_to_instances_generic(
-        &client,
-        &ctx.stores,
-        &rec_ctx.primary_refs,
-        &rec_ctx.zone_ref.zone_name,
-        &spec.name,
-        spec.ttl,
-        record_op,
-    )
-    .await
-    {
-        Ok(()) => {
-            info!(
-                "Successfully added NS record {}.{} via {} primary instance(s)",
-                spec.name,
-                rec_ctx.zone_ref.zone_name,
-                rec_ctx.primary_refs.len()
-            );
-
-            // Update lastReconciledAt timestamp in DNSZone.status.selectedRecords[]
-            update_record_reconciled_timestamp(
-                &client,
-                &rec_ctx.zone_ref.namespace,
-                &rec_ctx.zone_ref.name,
-                "NSRecord",
-                &name,
-                &namespace,
-            )
-            .await?;
-
-            update_record_status(
-                &client,
-                &record,
-                "Ready",
-                "True",
-                "ReconcileSucceeded",
-                &format!("NS record added to zone {}", rec_ctx.zone_ref.zone_name),
-                current_generation,
-                Some(rec_ctx.current_hash),
-                Some(chrono::Utc::now().to_rfc3339()),
-                None, // addresses
-            )
-            .await?;
-        }
-        Err(e) => {
-            warn!(
-                "Failed to add NS record {}.{}: {}",
-                spec.name, rec_ctx.zone_ref.zone_name, e
-            );
-            update_record_status(
-                &client,
-                &record,
-                "Ready",
-                "False",
-                "ReconcileFailed",
-                &format!("Failed to add record to zone: {e}"),
-                current_generation,
-                None, // record_hash
-                None, // last_updated
-                None, // addresses
-            )
-            .await?;
-        }
-    }
-
-    Ok(())
+    reconcile_record(ctx, record).await
 }
 
 /// Reconciles an `SRVRecord` (service location) resource.
@@ -1690,101 +1398,11 @@ pub async fn reconcile_ns_record(
 /// # Errors
 ///
 /// Returns an error if Kubernetes API operations fail or BIND9 record creation fails.
-#[allow(clippy::too_many_lines)]
 pub async fn reconcile_srv_record(
     ctx: std::sync::Arc<crate::context::Context>,
     record: SRVRecord,
 ) -> Result<()> {
-    let client = ctx.client.clone();
-    let bind9_instances_store = &ctx.stores.bind9_instances;
-    let namespace = record.namespace().unwrap_or_default();
-    let name = record.name_any();
-
-    info!("Reconciling SRVRecord: {}/{}", namespace, name);
-
-    let spec = &record.spec;
-    let current_generation = record.metadata.generation;
-
-    // Use generic helper to get zone and instances
-    let Some(rec_ctx) =
-        prepare_record_reconciliation(&client, &record, "SRV", spec, bind9_instances_store).await?
-    else {
-        return Ok(()); // Record not selected or status already updated
-    };
-
-    // Add record to BIND9 primaries using instances
-    let record_op = SRVRecordOp {
-        priority: spec.priority,
-        weight: spec.weight,
-        port: spec.port,
-        target: spec.target.clone(),
-    };
-    match add_record_to_instances_generic(
-        &client,
-        &ctx.stores,
-        &rec_ctx.primary_refs,
-        &rec_ctx.zone_ref.zone_name,
-        &spec.name,
-        spec.ttl,
-        record_op,
-    )
-    .await
-    {
-        Ok(()) => {
-            info!(
-                "Successfully added SRV record {}.{} via {} primary instance(s)",
-                spec.name,
-                rec_ctx.zone_ref.zone_name,
-                rec_ctx.primary_refs.len()
-            );
-
-            // Update lastReconciledAt timestamp in DNSZone.status.selectedRecords[]
-            update_record_reconciled_timestamp(
-                &client,
-                &rec_ctx.zone_ref.namespace,
-                &rec_ctx.zone_ref.name,
-                "SRVRecord",
-                &name,
-                &namespace,
-            )
-            .await?;
-
-            update_record_status(
-                &client,
-                &record,
-                "Ready",
-                "True",
-                "ReconcileSucceeded",
-                &format!("SRV record added to zone {}", rec_ctx.zone_ref.zone_name),
-                current_generation,
-                Some(rec_ctx.current_hash),
-                Some(chrono::Utc::now().to_rfc3339()),
-                None, // addresses
-            )
-            .await?;
-        }
-        Err(e) => {
-            warn!(
-                "Failed to add SRV record {}.{}: {}",
-                spec.name, rec_ctx.zone_ref.zone_name, e
-            );
-            update_record_status(
-                &client,
-                &record,
-                "Ready",
-                "False",
-                "ReconcileFailed",
-                &format!("Failed to add record to zone: {e}"),
-                current_generation,
-                None, // record_hash
-                None, // last_updated
-                None, // addresses
-            )
-            .await?;
-        }
-    }
-
-    Ok(())
+    reconcile_record(ctx, record).await
 }
 
 /// Reconciles a `CAARecord` \(certificate authority authorization\) resource.
@@ -1797,100 +1415,11 @@ pub async fn reconcile_srv_record(
 /// # Errors
 ///
 /// Returns an error if Kubernetes API operations fail or BIND9 record creation fails.
-#[allow(clippy::too_many_lines)]
 pub async fn reconcile_caa_record(
     ctx: std::sync::Arc<crate::context::Context>,
     record: CAARecord,
 ) -> Result<()> {
-    let client = ctx.client.clone();
-    let bind9_instances_store = &ctx.stores.bind9_instances;
-    let namespace = record.namespace().unwrap_or_default();
-    let name = record.name_any();
-
-    info!("Reconciling CAARecord: {}/{}", namespace, name);
-
-    let spec = &record.spec;
-    let current_generation = record.metadata.generation;
-
-    // Use generic helper to get zone and instances
-    let Some(rec_ctx) =
-        prepare_record_reconciliation(&client, &record, "CAA", spec, bind9_instances_store).await?
-    else {
-        return Ok(()); // Record not selected or status already updated
-    };
-
-    // Add record to BIND9 primaries using instances
-    let record_op = CAARecordOp {
-        flags: spec.flags,
-        tag: spec.tag.clone(),
-        value: spec.value.clone(),
-    };
-    match add_record_to_instances_generic(
-        &client,
-        &ctx.stores,
-        &rec_ctx.primary_refs,
-        &rec_ctx.zone_ref.zone_name,
-        &spec.name,
-        spec.ttl,
-        record_op,
-    )
-    .await
-    {
-        Ok(()) => {
-            info!(
-                "Successfully added CAA record {}.{} via {} primary instance(s)",
-                spec.name,
-                rec_ctx.zone_ref.zone_name,
-                rec_ctx.primary_refs.len()
-            );
-
-            // Update lastReconciledAt timestamp in DNSZone.status.selectedRecords[]
-            update_record_reconciled_timestamp(
-                &client,
-                &rec_ctx.zone_ref.namespace,
-                &rec_ctx.zone_ref.name,
-                "CAARecord",
-                &name,
-                &namespace,
-            )
-            .await?;
-
-            update_record_status(
-                &client,
-                &record,
-                "Ready",
-                "True",
-                "ReconcileSucceeded",
-                &format!("CAA record added to zone {}", rec_ctx.zone_ref.zone_name),
-                current_generation,
-                Some(rec_ctx.current_hash),
-                Some(chrono::Utc::now().to_rfc3339()),
-                None, // addresses
-            )
-            .await?;
-        }
-        Err(e) => {
-            warn!(
-                "Failed to add CAA record {}.{}: {}",
-                spec.name, rec_ctx.zone_ref.zone_name, e
-            );
-            update_record_status(
-                &client,
-                &record,
-                "Ready",
-                "False",
-                "ReconcileFailed",
-                &format!("Failed to add record to zone: {e}"),
-                current_generation,
-                None, // record_hash
-                None, // last_updated
-                None, // addresses
-            )
-            .await?;
-        }
-    }
-
-    Ok(())
+    reconcile_record(ctx, record).await
 }
 
 /// Generic function to delete a DNS record from BIND9 primaries.
@@ -1899,7 +1428,9 @@ pub async fn reconcile_caa_record(
 /// 1. Gets the zone reference from the record's status
 /// 2. Looks up the `DNSZone` to get instances
 /// 3. Filters to primary instances
-/// 4. Deletes the record from all primaries
+/// 4. Deletes the record from all primaries (best-effort), using
+///    `status.publishedName` when present so renamed records delete the
+///    name actually published to DNS, falling back to `spec.name`
 ///
 /// # Arguments
 ///
@@ -1942,9 +1473,8 @@ where
     info!("Deleting {} record: {}/{}", record_type, namespace, name);
 
     // Extract status fields generically
-    let status = serde_json::to_value(record)
-        .ok()
-        .and_then(|v| v.get("status").cloned());
+    let record_json = serde_json::to_value(record).ok();
+    let status = record_json.as_ref().and_then(|v| v.get("status").cloned());
 
     let zone_ref = status
         .as_ref()
@@ -2013,46 +1543,126 @@ where
         return Ok(());
     }
 
-    // Delete record from all primaries
+    // Determine the DNS name actually published to BIND9. Prefer
+    // status.publishedName (handles renames), then spec.name, then the
+    // resource name as a last resort.
+    let record_name_str = status
+        .as_ref()
+        .and_then(|s| s.get("publishedName"))
+        .and_then(|p| p.as_str())
+        .map(ToString::to_string)
+        .or_else(|| {
+            record_json
+                .as_ref()
+                .and_then(|v| v.get("spec"))
+                .and_then(|s| s.get("name"))
+                .and_then(|n| n.as_str())
+                .map(ToString::to_string)
+        })
+        .unwrap_or_else(|| name.clone());
+
+    // Delete record from all primaries (best-effort: finalizer removal must
+    // not be blocked by unreachable endpoints)
+    delete_record_from_primaries(
+        client,
+        stores,
+        &primary_refs,
+        &zone_ref.zone_name,
+        &record_name_str,
+        record_type_hickory,
+        false, // fail_on_error: allow Kubernetes deletion to proceed
+    )
+    .await?;
+
+    info!(
+        "Successfully deleted {} record {}/{} from {} primary instance(s)",
+        record_type,
+        namespace,
+        name,
+        primary_refs.len()
+    );
+
+    Ok(())
+}
+
+/// Deletes a DNS record (by name and type) from all given primary instances.
+///
+/// Shared by the record finalizer (`delete_record`), the rename cleanup in
+/// `reconcile_record`, and the `DNSZone` controller when a record is no longer
+/// selected by the zone's `recordsFrom` selectors.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `stores` - Context stores for creating `Bind9Manager` instances
+/// * `primary_refs` - Primary instance references to delete the record from
+/// * `zone_name` - DNS zone name (e.g., "example.com")
+/// * `record_name` - Record name within the zone (e.g., "www")
+/// * `record_type_hickory` - hickory-proto `RecordType` of the record
+/// * `fail_on_error` - When `true`, a failed DNS deletion on any endpoint fails
+///   the call (used when the record data must be gone before proceeding).
+///   When `false`, failures are logged and skipped (best-effort finalizer cleanup).
+///
+/// # Errors
+///
+/// Returns an error if endpoint resolution fails, or if a DNS deletion fails
+/// and `fail_on_error` is `true`.
+pub(crate) async fn delete_record_from_primaries(
+    client: &Client,
+    stores: &crate::context::Stores,
+    primary_refs: &[crate::crd::InstanceReference],
+    zone_name: &str,
+    record_name: &str,
+    record_type_hickory: hickory_proto::rr::RecordType,
+    fail_on_error: bool,
+) -> Result<()> {
     // Create a map of instance name -> namespace for quick lookup
     let instance_map: std::collections::HashMap<String, String> = primary_refs
         .iter()
         .map(|inst| (inst.name.clone(), inst.namespace.clone()))
         .collect();
 
-    let (_first_endpoint, total_endpoints) =
-        crate::reconcilers::dnszone::helpers::for_each_instance_endpoint(
+    // Collect per-endpoint failures ourselves: for_each_instance_endpoint only
+    // fails when ALL endpoints fail, but with fail_on_error we must also fail
+    // on PARTIAL failures (a record left on any endpoint is still an orphan).
+    // The closure always returns Ok so every endpoint is attempted.
+    let failures: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    // Best-effort finalizer cleanup (fail_on_error=false) must not be blocked
+    // forever by an instance whose RNDC Secret is gone or that has zero ready
+    // endpoints - the DNS data there is unreachable anyway. Strict callers
+    // (fail_on_error=true) keep propagating those lookup failures.
+    let failure_policy = if fail_on_error {
+        crate::reconcilers::dnszone::helpers::EndpointFailurePolicy::Strict
+    } else {
+        crate::reconcilers::dnszone::helpers::EndpointFailurePolicy::SkipUnavailable
+    };
+
+    let (_first_endpoint, _total_endpoints) =
+        crate::reconcilers::dnszone::helpers::for_each_instance_endpoint_with_policy(
             client,
-            &primary_refs,
+            primary_refs,
             true,      // with_rndc_key
             "dns-tcp", // Use DNS TCP port for dynamic updates
+            failure_policy,
             |pod_endpoint, instance_name, rndc_key| {
-                let zone_name = zone_ref.zone_name.clone();
-                let record_name_str = if let Some(record_spec) = serde_json::to_value(record)
-                    .ok()
-                    .and_then(|v| v.get("spec").cloned())
-                {
-                    record_spec
-                        .get("name")
-                        .and_then(|n| n.as_str())
-                        .unwrap_or(&name)
-                        .to_string()
-                } else {
-                    name.clone()
-                };
+                let zone_name = zone_name.to_string();
+                let record_name_str = record_name.to_string();
                 let instance_namespace = instance_map
                     .get(&instance_name)
                     .expect("Instance should be in map")
                     .clone();
+                let failures = std::sync::Arc::clone(&failures);
 
                 // Create Bind9Manager for this specific instance with deployment-aware auth
-                let zone_manager = stores.create_bind9_manager_for_instance(&instance_name, &instance_namespace);
+                let zone_manager =
+                    stores.create_bind9_manager_for_instance(&instance_name, &instance_namespace);
 
                 async move {
                     let key_data = rndc_key.expect("RNDC key should be loaded");
 
-                    // Attempt to delete - if it fails, log warning but don't fail the deletion
-                    if let Err(e) = zone_manager
+                    let delete_result = zone_manager
                         .delete_record(
                             &zone_name,
                             &record_name_str,
@@ -2060,17 +1670,27 @@ where
                             &pod_endpoint,
                             &key_data,
                         )
-                        .await
-                    {
-                        warn!(
-                            "Failed to delete {} record {}.{} from endpoint {} (instance: {}): {}. Continuing with deletion anyway.",
-                            record_type, record_name_str, zone_name, pod_endpoint, instance_name, e
-                        );
-                    } else {
-                        info!(
-                            "Successfully deleted {} record {}.{} from endpoint {} (instance: {})",
-                            record_type, record_name_str, zone_name, pod_endpoint, instance_name
-                        );
+                        .await;
+
+                    match delete_result {
+                        Ok(()) => {
+                            info!(
+                                "Successfully deleted {} record {}.{} from endpoint {} (instance: {})",
+                                record_type_hickory, record_name_str, zone_name, pod_endpoint, instance_name
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to delete {} record {}.{} from endpoint {} (instance: {}): {}",
+                                record_type_hickory, record_name_str, zone_name, pod_endpoint, instance_name, e
+                            );
+                            failures
+                                .lock()
+                                .expect("delete failures mutex should not be poisoned")
+                                .push(format!(
+                                    "endpoint {pod_endpoint} (instance: {instance_name}): {e}"
+                                ));
+                        }
                     }
 
                     Ok(())
@@ -2079,15 +1699,51 @@ where
         )
         .await?;
 
-    info!(
-        "Successfully deleted {} record {}/{} from {} primary endpoint(s)",
-        record_type, namespace, name, total_endpoints
-    );
+    let failures = failures
+        .lock()
+        .expect("delete failures mutex should not be poisoned");
+
+    if fail_on_error && !failures.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Failed to delete {} record {}.{} from {} endpoint(s): {}",
+            record_type_hickory,
+            record_name,
+            zone_name,
+            failures.len(),
+            failures.join("; ")
+        ));
+    }
+
+    if !failures.is_empty() {
+        warn!(
+            "Failed to delete {} record {}.{} from {} endpoint(s); continuing anyway (best-effort)",
+            record_type_hickory,
+            record_name,
+            zone_name,
+            failures.len()
+        );
+    }
 
     Ok(())
 }
 
-/// Update lastReconciledAt timestamp for a record in DNSZone.status.selectedRecords[].
+/// Builds the merge patch that updates `DNSZone.status.records[]`.
+///
+/// The `DNSZoneStatus` field is named `records` on the wire (camelCase of
+/// `pub records`). Using any other key (e.g., the old `selectedRecords`) is
+/// silently pruned by the CRD structural schema, so timestamps never persist.
+#[must_use]
+pub(crate) fn build_records_timestamp_patch(
+    records: &[crate::crd::RecordReferenceWithTimestamp],
+) -> serde_json::Value {
+    json!({
+        "status": {
+            "records": records
+        }
+    })
+}
+
+/// Update lastReconciledAt timestamp for a record in `DNSZone.status.records[]`.
 ///
 /// This signals that the record has been successfully configured in BIND9.
 /// Future reconciliations will skip this record until the timestamp is reset.
@@ -2105,7 +1761,6 @@ where
 ///
 /// Returns an error if:
 /// - `DNSZone` cannot be fetched from Kubernetes API
-/// - Record is not found in zone's `selectedRecords[]` array
 /// - Status patch operation fails
 pub async fn update_record_reconciled_timestamp(
     client: &Client,
@@ -2137,18 +1792,19 @@ pub async fn update_record_reconciled_timestamp(
 
     if !found {
         warn!(
-            "Record {} {}/{} not found in DNSZone {}/{} selectedRecords[] - cannot update timestamp",
+            "Record {} {}/{} not found in DNSZone {}/{} status.records[] - cannot update timestamp",
             record_kind, record_namespace, record_name, zone_namespace, zone_name
         );
         return Ok(());
     }
 
-    // Patch the status with updated timestamp
-    let status_patch = json!({
-        "status": {
-            "selectedRecords": zone.status.as_ref().map(|s| &s.records)
-        }
-    });
+    // Patch the status with updated timestamp (key MUST be `records` - see
+    // build_records_timestamp_patch)
+    let status_patch = zone
+        .status
+        .as_ref()
+        .map(|s| build_records_timestamp_patch(&s.records))
+        .unwrap_or_else(|| build_records_timestamp_patch(&[]));
 
     api.patch_status(
         zone_name,

@@ -1,3 +1,241 @@
+## [2026-07-08] - Scout: gateway-chain IP resolution for HTTPRoute/TLSRoute
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/scout.rs`: Scout now auto-discovers the IP for a Gateway API route
+  instead of requiring customers to hardcode it. When an HTTPRoute/TLSRoute has
+  no `bindy.firestoned.io/ip` annotation, Scout follows the route's `parentRefs`
+  to the serving `Gateway`, and — for a Gateway whose `gatewayClassName` is in the
+  operator-configured map — resolves the external IP from the Gateway's
+  `status.addresses`, falling back to the mapped LoadBalancer `Service` when the
+  Gateway advertises no address (the common case, e.g. Traefik's shared proxy
+  Service). New types: `ParentReference` (+ `parentRefs` on the route specs),
+  `Gateway`/`GatewaySpec`/`GatewayStatus`, `NamespacedName`, `GatewayServiceTarget`.
+  New helpers: `parse_gateway_services`, `parse_gateway_service_entry`,
+  `gateway_service_target_from_str`, `service_ref_from_str`,
+  `gateway_addresses_as_ips`, `gateway_parent_refs`, `resolve_ips_from_gateways`.
+- Config: `--gateway-service <class=target>` (repeatable) and
+  `BINDY_SCOUT_GATEWAY_SERVICES`. `target` is `namespace/name` or
+  `namespace/<label-selector>` (e.g. `traefik=traefik/traefik` or
+  `traefik=traefik/app.kubernetes.io/name=traefik`). The configured classes
+  double as the allow-list of gateways Scout will follow. Multi-label selectors
+  (comma-bearing) must use the repeatable CLI flag.
+- IP precedence for routes is now: annotation → discovered gateway IP →
+  `--default-ips` → requeue.
+
+### Changed
+- Scout RBAC: added `gateways` to the `gateway.networking.k8s.io` read rule in
+  `src/bootstrap.rs` (`build_scout_cluster_role`), `deploy/scout/clusterrole.yaml`,
+  and `deploy/scout.yaml`. Also mirrored the HTTPRoute/TLSRoute rule into
+  `deploy/scout.yaml`, which was previously missing it. Docs updated in
+  `docs/src/guide/scout.md` (IP-resolution note, CLI/env tables, both RBAC blocks).
+
+### Why
+Customers running Gateway API routes had to repeat an IP that is already
+discoverable from the gateway their route attaches to. Following the parentRef
+chain removes that duplication; supporting a label-selector target handles
+controllers (e.g. Traefik) that publish the external IP on a shared proxy
+Service with a generated name.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (scout image + ClusterRole update adds `gateways`)
+- [ ] Config change only
+- [ ] Documentation only
+
+Additive and opt-in: with no `--gateway-service`/`BINDY_SCOUT_GATEWAY_SERVICES`
+configured, route IP resolution is unchanged (annotation → default_ips → requeue).
+- `.github/workflows/e2e.yaml`: reusable (`workflow_call` + `workflow_dispatch`)
+  full e2e gate — builds the operator image locally and runs integration +
+  regression (admission policies + operand pod-shape + liveness) in kind. Kind
+  v0.24.0 (k8s 1.31) so ValidatingAdmissionPolicy (GA 1.30+) is exercised. All
+  logic in the new `make ci-e2e` target.
+- `.github/workflows/dependabot-auto-merge.yaml`: on every Dependabot PR, runs
+  the e2e gate; on green, enables `--auto --squash` merge for **patch/minor**
+  updates and holds **major** updates open with a review comment. Any
+  failure leaves the PR open and comments (fail-safe: only ever enables a merge
+  on an explicit green run). `--auto` means GitHub still waits for all other
+  required checks (PR CI, security) before merging.
+- `Makefile`: `ci-e2e` target (build local image → integration + regression
+  against it → cleanup); `CI_E2E_IMAGE` / `CI_E2E_INTEGRATION_CLUSTER` knobs.
+
+---
+
+## [2026-07-08] - Dependabot auto-merge on green e2e
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `tests/integration_test.sh`: the `--image` branch now `kind load`s a
+  locally-present image (mirrors `regression_test.sh`) so a CI-built,
+  never-pushed image runs without a registry. (The prior no-image local build
+  was already broken — `docker build` with no `-f` and no root Dockerfile.)
+
+### Why
+Automate the safe path for dependency bumps: full e2e + integration on every
+Dependabot PR, auto-merge the low-risk (patch/minor) ones on green, and surface
+majors/failures for human review — reducing dependency-update toil without
+auto-landing a green-but-breaking major.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Requires one-time repo settings (see below)
+- [ ] Documentation only
+
+> **Repo-settings prerequisites (one-time, not code):** ① Settings > General >
+> "Allow auto-merge" = ON; ② branch protection on `main` with required status
+> checks; ③ Settings > Actions > General > "Allow GitHub Actions to create and
+> approve pull requests" = ON. Documented in the workflow header.
+
+---
+
+## [2026-07-08] - Regression run + verify-crd-sync skill
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `deploy/operator/crds/bind9instances.crd.yaml`: regenerated — the merge of the
+  bug-fix batches left this CRD stale (missing `status.observedParentGeneration`);
+  a fresh `cargo run --bin crdgen` corrected it. All other CRDs were in sync.
+- `.claude/skills/verify-crd-sync/SKILL.md`: new invocable skill (the reference in
+  `.claude/SKILL.md` was prose-only, so the Skill tool could not run it). Folds in
+  the offline drift check (`crdgen` + `git diff`) that caught the stale CRD above,
+  and corrects the CRD path (`deploy/operator/crds/`, not `deploy/crds/`).
+
+### Regression results (compiled suite, `cargo test --all`)
+- 1253 passed, 0 failed, 89 ignored (the 89 are cluster-required integration tests).
+- `cargo fmt` clean, `cargo clippy --all-targets -D warnings` clean.
+- CRD sync verified (see above). All 19 `examples/*.yaml` are well-formed.
+- NOT run (require a rebuilt operator image + deploy, which is the user's step):
+  `make test-integration`, `test-integ-multi-tenancy`, `test-integ-cluster-provider`,
+  and the kind admission-policy phases.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Tooling / CRD regeneration only
+
+---
+
+## [2026-07-07] - Bug-fix sweep: 24 bugs from codebase-wide audit (branch major-bug-fixes)
+
+**Author:** Erick Bourgeois
+
+Codebase-wide correctness audit (4 parallel reviewers + hand verification)
+followed by six fix batches. All fixes TDD-first with ~130 new unit tests;
+`cargo fmt`/`clippy -D warnings`/`cargo test` green throughout.
+
+### Changed — DNS record operations (`src/bind9/records/`)
+- TXT/MX/NS/SRV/CAA add paths now **replace** the RRset (delete-then-append via
+  shared `build_delete_rrset_record`), matching A/AAAA. Previously they only
+  appended, so spec changes served old + new rdata forever (broken SPF, stale MX).
+- `delete_dns_record` now fails on REFUSED/NOTAUTH/NOTZONE/SERVFAIL; only
+  NoError/NXDomain/NXRRSet are idempotent success (`is_idempotent_delete_response_code`).
+  Previously TSIG/ACL failures returned Ok and orphaned records past finalizers.
+- TTL-only spec changes now trigger updates (all 8 types compare TTL via
+  `effective_record_ttl`/`rrset_ttl_matches`).
+- IPv6 RRset comparison parses both sides to `Ipv6Addr` (non-canonical spellings
+  like `2001:DB8::1` no longer cause endless delete/recreate churn).
+
+### Changed — records reconciler (`src/reconcilers/records/`, `dnszone/discovery.rs`)
+- `update_record_reconciled_timestamp` patched nonexistent `status.selectedRecords`
+  (schema-pruned no-op); now patches `records`. `lastReconciledAt` persists for
+  the first time.
+- Records unselected from a zone are now deleted from BIND9 before untagging
+  (`cleanup_unselected_record_dns`; untag deferred on DNS failure for retry).
+- **New CRD status field `publishedName`** on all 8 record types: tracks the
+  published FQDN so renames delete the old name; finalizer prefers it over spec.name.
+- 7 duplicated per-type reconcilers collapsed into generic `reconcile_record`
+  (net −970 lines).
+- `status.addresses` only published on successful, selected reconciles.
+- Transient record-list failures no longer wipe `DNSZone.status.records`.
+
+### Changed — bindcar HTTP/auth layer (`src/bind9/`)
+- SA token no longer cached for process lifetime: `RwLock`-guarded cache with
+  freshness TTL re-reads the kubelet-rotated projected token (was: permanent 401s
+  ~1h after operator start under bindcar 0.7 TokenReview).
+- HTTP client now has connect (5s) / request (30s) timeouts; retry/backoff can
+  actually engage on hung connections. `create_zone_http` routed through the
+  shared retry path.
+- `zone_exists` 404 detection fixed via `is_http_not_found()` downcast through
+  the anyhow context chain (`Ok(false)` was unreachable).
+- `parse_rndc_key_file` skips comment lines (`#`, `//`, `/* */`).
+
+### Changed — resource builders (`src/bind9_resources.rs`, `bind9instance/resources.rs`, `templates/`)
+- Custom `configMapRefs` no longer produce broken Deployments: generated
+  ConfigMap always created with non-overridden files (rndc.conf always), `config`
+  volume always present, custom refs override per-file via subPath. Previously:
+  both refs → 422; one ref → FailedMount forever.
+- `rndcKey.secretRef`/inline secret names now threaded into the Deployment
+  (env secretKeyRefs + volume). Previously hardcoded `{name}-rndc-key` (TODO).
+- DNSSEC policy no longer emits invalid `nsec;` (NSEC = omitted `nsec3param` in
+  BIND 9.18 grammar; was CrashLoopBackOff on signing without nsec3).
+  `generate_dnssec_policies` fallback now matches `get_dnssec_signing_config`.
+- Malformed RNDC Secrets are genuinely recreated after deletion
+  (`evaluate_existing_rndc_secret` pure decision fn; also removed a production unwrap).
+- `Bind9Config.forwarders`/`listenOn`/`listenOnV6` are now rendered into
+  named.conf.options (instance + cluster paths; entries validated as IPs).
+  Previously silently ignored — forwarder-only setups did full recursion.
+
+### Changed — reconcilers (`src/reconcilers/`)
+- `observedGeneration` included in status-change checks at all 3 affected sites
+  (ClusterBind9Provider, Bind9Cluster, Bind9Instance) — statuses no longer lag
+  metadata.generation, ending permanent re-reconcile loops (bug-039 family).
+- **New CRD status field `Bind9InstanceStatus.observedParentGeneration`**:
+  parent-config change detection no longer compares the parent's generation to
+  the instance's own observedGeneration (unrelated counters).
+- ClusterBind9Provider drift detection now checks the same namespace set that
+  reconciliation creates (shared `expected_cluster_namespaces()`), fixing both
+  perpetual false drift and never-detected real drift.
+- DNSZone Ready now compares instances-configured vs instances-expected
+  (`ZoneConfigOutcome`); an instance counts only if ALL its ready endpoints
+  accepted the zone. Partial pod failures no longer masked by endpoint counts.
+- Zone conditions converge on every path (`set_final_zone_conditions`):
+  failure sets Ready=False (was: stale Ready=True during outages);
+  success resolves Progressing=False.
+- DNSZone cleanup only treats kube 404 as "resource deleted"; transient API
+  errors propagate instead of triggering the self-healing path that deleted
+  live DNS records.
+- Deletion cleanup skips (with loud warning) instances with no ready endpoints
+  and missing RNDC Secrets instead of blocking finalizers forever
+  (`EndpointFailurePolicy::SkipUnavailable`, deletion paths only).
+- Finalizer add/remove uses guarded JSON Patches (test + add/remove, mirroring
+  kube-runtime) instead of whole-array merge patches that clobbered concurrent
+  writers. New dependency: `json-patch` 4.2 (already in tree via kube-core;
+  no new compiled crates).
+- Pending pods without IPs are skipped during pod discovery instead of aborting
+  the listing.
+
+### Changed — bootstrap (`src/bootstrap.rs`)
+- `bindy bootstrap operator` can now authenticate to bindcar 0.7: projected
+  `audience: bindcar` token volume (3600s), `POD_NAMESPACE` downward-API env,
+  and TokenReview ClusterRole/Binding applied with the binding subject namespace
+  following `--namespace` (was hardcoded-implicitly to bindy-system).
+
+### Why
+See `.wolf/buglog.json` bug-039..044 and the 2026-07-07 audit. Highest-impact:
+records serving stale rdata indefinitely, live DNS data deleted on transient
+control-plane errors, operator auth expiring after 1h, and Ready=True masking
+outages.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (operator image + CRD update)
+- [ ] Config change only
+- [ ] Documentation only
+
+CRD changes are additive only (`publishedName`, `observedParentGeneration`);
+apply CRDs with `kubectl replace --force` per the standard procedure. Behavior
+changes operators should know: record deletion failures now surface as errors
+(previously silent), zone Ready is stricter (partial failures now show
+Ready=False), and `forwarders`/`listenOn` fields now take effect — clusters
+relying on them being ignored will see config changes on next reconcile.
+
+---
+
 ## [2026-07-07] - Docs & examples: bindcar Mode B audience details
 
 **Author:** Erick Bourgeois

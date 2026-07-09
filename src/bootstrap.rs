@@ -10,8 +10,14 @@
 //! 3. ServiceAccount (`bindy`)
 //! 4. ClusterRole (`bindy-role`) — operator permissions
 //! 5. ClusterRole (`bindy-admin-role`) — admin/destructive permissions
-//! 6. ClusterRoleBinding (`bindy-rolebinding`) — binds SA to operator role
-//! 7. Deployment (`bindy`) — the operator itself
+//! 6. ClusterRole (`bindcar-tokenreview`) — `create tokenreviews` for the bindcar sidecar
+//! 7. ClusterRoleBinding (`bindy-rolebinding`) — binds SA to operator role
+//! 8. ClusterRoleBinding (`bindcar-tokenreview`) — binds the operand `bind9` SA
+//!    (in the requested `--namespace`) to the TokenReview ClusterRole
+//! 9. Role + RoleBinding (`bindy-secrets-writer`) — namespaced Secret write access
+//! 10. Deployment (`bindy`) — the operator itself, with a projected SA token
+//!     (`audience: bindcar`) and `POD_NAMESPACE` from the downward API so it can
+//!     authenticate to bindcar 0.7.0 sidecars
 //!
 //! ## `bindy bootstrap scout`
 //! Applies all scout prerequisites to a Kubernetes cluster in order:
@@ -109,6 +115,61 @@ pub const DEFAULT_IMAGE_TAG: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 /// Embedded RBAC YAML files — compiled into the binary so bootstrap is self-contained.
 pub const BINDY_ROLE_YAML: &str = include_str!("../deploy/operator/rbac/role.yaml");
 pub const BINDY_ADMIN_ROLE_YAML: &str = include_str!("../deploy/operator/rbac/role-admin.yaml");
+
+/// Embedded TokenReview ClusterRole (bindcar `0.7.0` Mode B).
+///
+/// Grants `create tokenreviews` so the bindcar sidecar (running as the operand
+/// `bind9` ServiceAccount) can validate the operator's bearer token against the
+/// API server. Mirrors `deploy/operator/rbac/tokenreview-clusterrole.yaml`.
+pub const BINDCAR_TOKENREVIEW_CLUSTER_ROLE_YAML: &str =
+    include_str!("../deploy/operator/rbac/tokenreview-clusterrole.yaml");
+
+/// Embedded TokenReview ClusterRoleBinding (bindcar `0.7.0` Mode B).
+///
+/// The static manifest binds the operand `bind9` ServiceAccount in
+/// `bindy-system`; the bootstrap path rewrites the subject namespace to the
+/// requested `--namespace` via [`build_tokenreview_cluster_role_binding`].
+pub const BINDCAR_TOKENREVIEW_CLUSTER_ROLE_BINDING_YAML: &str =
+    include_str!("../deploy/operator/rbac/tokenreview-clusterrolebinding.yaml");
+
+/// Name shared by the TokenReview ClusterRole and ClusterRoleBinding.
+pub const BINDCAR_TOKENREVIEW_NAME: &str = "bindcar-tokenreview";
+
+/// Embedded ClusterRole manifests applied by `bindy bootstrap operator`, in apply order.
+pub const OPERATOR_CLUSTER_ROLE_YAMLS: &[&str] = &[
+    BINDY_ROLE_YAML,
+    BINDY_ADMIN_ROLE_YAML,
+    BINDCAR_TOKENREVIEW_CLUSTER_ROLE_YAML,
+];
+
+/// Volume name for the projected ServiceAccount token carrying the `bindcar` audience.
+///
+/// Mirrors the `bindcar-token` volume in `deploy/operator/deployment.yaml`.
+pub const BINDCAR_TOKEN_VOLUME_NAME: &str = "bindcar-token";
+
+/// Mount path of the projected bindcar token volume inside the operator container.
+///
+/// Together with [`BINDCAR_TOKEN_FILENAME`] this composes
+/// [`crate::bind9::BINDCAR_TOKEN_PATH`] (`/var/run/secrets/bindcar/token`),
+/// the path the operator reads the bearer token from.
+pub const BINDCAR_TOKEN_MOUNT_PATH: &str = "/var/run/secrets/bindcar";
+
+/// File name of the projected token inside [`BINDCAR_TOKEN_MOUNT_PATH`].
+pub const BINDCAR_TOKEN_FILENAME: &str = "token";
+
+/// Expiration (seconds) for the projected bindcar token.
+///
+/// The kubelet automatically rotates the token before expiry; mirrors
+/// `expirationSeconds: 3600` in `deploy/operator/deployment.yaml`.
+pub const BINDCAR_TOKEN_EXPIRATION_SECONDS: i64 = 3600;
+
+/// Downward-API environment variable carrying the operator pod's namespace.
+///
+/// `src/bind9_resources.rs` reads this to compose the
+/// `BIND_ALLOWED_SERVICE_ACCOUNTS` value for operand bindcar sidecars; without
+/// it the operator falls back to `bindy-system` and bindcar rejects tokens
+/// from operators installed in any other namespace.
+pub const POD_NAMESPACE_ENV: &str = "POD_NAMESPACE";
 
 // ---------------------------------------------------------------------------
 // Scout constants
@@ -257,9 +318,11 @@ pub async fn run_bootstrap_operator(
     apply_namespace(&client, namespace).await?;
     apply_crds(&client).await?;
     apply_service_account(&client, namespace).await?;
-    apply_cluster_role(&client, BINDY_ROLE_YAML).await?;
-    apply_cluster_role(&client, BINDY_ADMIN_ROLE_YAML).await?;
+    for yaml in OPERATOR_CLUSTER_ROLE_YAMLS {
+        apply_cluster_role(&client, yaml).await?;
+    }
     apply_cluster_role_binding(&client, namespace).await?;
+    apply_tokenreview_cluster_role_binding(&client, namespace).await?;
     apply_secrets_writer_role(&client, namespace).await?;
     apply_secrets_writer_role_binding(&client, namespace).await?;
     apply_deployment(&client, namespace, image_tag, registry).await?;
@@ -327,15 +390,16 @@ fn run_operator_dry_run(namespace: &str, image_tag: &str, registry: Option<&str>
     }
 
     print_resource("ServiceAccount", &build_service_account(namespace))?;
-    print_resource(
-        "ClusterRole (operator)",
-        &parse_cluster_role(BINDY_ROLE_YAML)?,
-    )?;
-    print_resource(
-        "ClusterRole (admin)",
-        &parse_cluster_role(BINDY_ADMIN_ROLE_YAML)?,
-    )?;
+    for yaml in OPERATOR_CLUSTER_ROLE_YAMLS {
+        let role = parse_cluster_role(yaml)?;
+        let name = role.metadata.name.clone().unwrap_or_default();
+        print_resource(&format!("ClusterRole ({name})"), &role)?;
+    }
     print_resource("ClusterRoleBinding", &build_cluster_role_binding(namespace))?;
+    print_resource(
+        "ClusterRoleBinding (bindcar-tokenreview)",
+        &build_tokenreview_cluster_role_binding(namespace)?,
+    )?;
     print_resource(
         "Role (secrets-writer)",
         &build_secrets_writer_role(namespace),
@@ -468,6 +532,22 @@ async fn apply_cluster_role_binding(client: &Client, namespace: &str) -> Result<
     .await
     .context("Failed to apply ClusterRoleBinding/bindy-rolebinding")?;
     println!("✓ ClusterRoleBinding: {CLUSTER_ROLE_BINDING_NAME}");
+    Ok(())
+}
+
+/// Apply the TokenReview ClusterRoleBinding, re-homing the subject namespace
+/// to the requested install namespace (see [`build_tokenreview_cluster_role_binding`]).
+async fn apply_tokenreview_cluster_role_binding(client: &Client, namespace: &str) -> Result<()> {
+    let api: Api<ClusterRoleBinding> = Api::all(client.clone());
+    let crb = build_tokenreview_cluster_role_binding(namespace)?;
+    api.patch(
+        BINDCAR_TOKENREVIEW_NAME,
+        &PatchParams::apply(FIELD_MANAGER).force(),
+        &Patch::Apply(&crb),
+    )
+    .await
+    .with_context(|| format!("Failed to apply ClusterRoleBinding/{BINDCAR_TOKENREVIEW_NAME}"))?;
+    println!("✓ ClusterRoleBinding: {BINDCAR_TOKENREVIEW_NAME} (subject namespace: {namespace})");
     Ok(())
 }
 
@@ -784,6 +864,9 @@ pub fn build_deployment(
                         "env": [
                             {"name": "RUST_LOG", "value": "info"},
                             {"name": "RUST_LOG_FORMAT", "value": "text"},
+                            // Downward API: the operator derives BIND_ALLOWED_SERVICE_ACCOUNTS
+                            // for operand bindcar sidecars from its own namespace.
+                            {"name": POD_NAMESPACE_ENV, "valueFrom": {"fieldRef": {"fieldPath": "metadata.namespace"}}},
                             {"name": "BINDY_ENABLE_LEADER_ELECTION", "value": "true"},
                             {"name": "BINDY_LEASE_NAME", "value": "bindy-leader"}
                         ],
@@ -798,9 +881,34 @@ pub fn build_deployment(
                             "limits": {"cpu": "500m", "memory": "512Mi"},
                             "requests": {"cpu": "100m", "memory": "128Mi"}
                         },
-                        "volumeMounts": [{"name": "tmp", "mountPath": "/tmp"}]
+                        "volumeMounts": [
+                            {"name": "tmp", "mountPath": "/tmp"},
+                            // bindcar 0.7.0 (Mode B / TokenReview) bearer token,
+                            // read from /var/run/secrets/bindcar/token.
+                            {
+                                "name": BINDCAR_TOKEN_VOLUME_NAME,
+                                "mountPath": BINDCAR_TOKEN_MOUNT_PATH,
+                                "readOnly": true
+                            }
+                        ]
                     }],
-                    "volumes": [{"name": "tmp", "emptyDir": {}}]
+                    "volumes": [
+                        {"name": "tmp", "emptyDir": {}},
+                        // Short-lived SA token minted with the `bindcar` audience so
+                        // bindcar 0.7.0 accepts it (default BIND_TOKEN_AUDIENCES is `bindcar`).
+                        {
+                            "name": BINDCAR_TOKEN_VOLUME_NAME,
+                            "projected": {
+                                "sources": [{
+                                    "serviceAccountToken": {
+                                        "audience": crate::constants::BINDCAR_TOKEN_AUDIENCE,
+                                        "expirationSeconds": BINDCAR_TOKEN_EXPIRATION_SECONDS,
+                                        "path": BINDCAR_TOKEN_FILENAME
+                                    }
+                                }]
+                            }
+                        }
+                    ]
                 }
             }
         }
@@ -811,6 +919,40 @@ pub fn build_deployment(
 /// Parse a ClusterRole from embedded YAML.
 pub fn parse_cluster_role(yaml: &str) -> Result<ClusterRole> {
     serde_yaml::from_str(yaml).context("Failed to parse ClusterRole YAML")
+}
+
+/// Parse a ClusterRoleBinding from embedded YAML.
+pub fn parse_cluster_role_binding(yaml: &str) -> Result<ClusterRoleBinding> {
+    serde_yaml::from_str(yaml).context("Failed to parse ClusterRoleBinding YAML")
+}
+
+/// Build the TokenReview ClusterRoleBinding for the requested install namespace.
+///
+/// Parses the embedded manifest ([`BINDCAR_TOKENREVIEW_CLUSTER_ROLE_BINDING_YAML`])
+/// and rewrites every subject's namespace to `namespace`. The static manifest
+/// hardcodes `bindy-system`, but `bindy bootstrap operator --namespace foo`
+/// creates the operand `bind9` ServiceAccount in `foo`, so the binding must
+/// follow the requested namespace or bindcar's TokenReview calls are denied.
+///
+/// # Arguments
+/// * `namespace` - Namespace the operator (and operand `bind9` SA) is installed into
+///
+/// # Errors
+/// Returns an error if the embedded YAML fails to parse or has no subjects.
+pub fn build_tokenreview_cluster_role_binding(namespace: &str) -> Result<ClusterRoleBinding> {
+    let mut crb = parse_cluster_role_binding(BINDCAR_TOKENREVIEW_CLUSTER_ROLE_BINDING_YAML)?;
+
+    let Some(subjects) = crb.subjects.as_mut() else {
+        return Err(anyhow!(
+            "Embedded TokenReview ClusterRoleBinding has no subjects"
+        ));
+    };
+
+    for subject in subjects {
+        subject.namespace = Some(namespace.to_string());
+    }
+
+    Ok(crb)
 }
 
 /// Build a single CRD from a Rust type, ensuring `storage: true` and `served: true`.
@@ -944,10 +1086,16 @@ pub fn build_scout_cluster_role() -> ClusterRole {
             },
             // Watch HTTPRoutes and TLSRoutes from the Gateway API (gateway.networking.k8s.io)
             // to automate A record creation for Gateway routes with opt-in annotations.
-            // No patch/update needed — Scout reads spec/metadata only, no mutation.
+            // Gateways are read to follow a route's parentRefs back to the serving gateway
+            // and discover its external IP. No patch/update needed — Scout reads
+            // spec/metadata/status only, no mutation.
             PolicyRule {
                 api_groups: Some(vec!["gateway.networking.k8s.io".to_string()]),
-                resources: Some(vec!["httproutes".to_string(), "tlsroutes".to_string()]),
+                resources: Some(vec![
+                    "httproutes".to_string(),
+                    "tlsroutes".to_string(),
+                    "gateways".to_string(),
+                ]),
                 verbs: vec!["get".to_string(), "list".to_string(), "watch".to_string()],
                 ..Default::default()
             },

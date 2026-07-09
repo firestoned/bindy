@@ -8,10 +8,12 @@ options {
     // bindcar 0.7.0 migration: named listens on the standard DNS port 53
     // (bound as non-root via the NET_BIND_SERVICE capability). Secondary-zone
     // `primaries` entries are plain IPs, so zone transfers use this port.
-    listen-on port 53 { any; };
-    listen-on-v6 port 53 { any; };
+    // Defaults to `any` unless listenOn / listenOnV6 are set in the CRD.
+    {{LISTEN_ON}}
+    {{LISTEN_ON_V6}}
     allow-new-zones yes;
     {{RECURSION}}
+    {{FORWARDERS}}
     {{ALLOW_QUERY}}
     {{ALLOW_TRANSFER}}
     {{DNSSEC_VALIDATE}}

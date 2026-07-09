@@ -2805,6 +2805,22 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              observedParentGeneration:
+                description: |-
+                  Generation of the referenced parent cluster that was last reconciled.
+
+                  Records the `metadata.generation` of the parent `Bind9Cluster` or
+                  `ClusterBind9Provider` (whichever this instance references) as observed
+                  during the last successful reconciliation. The instance reconciler
+                  compares the parent's current generation against this value to detect
+                  parent configuration changes (e.g., RNDC config added at the cluster
+                  level) that must be propagated to the instance.
+
+                  This is intentionally separate from `observed_generation`, which tracks
+                  the instance's OWN spec generation - the two counters are unrelated.
+                format: int64
+                nullable: true
+                type: integer
               rndcKeyRotation:
                 description: |-
                   RNDC key rotation status and tracking information.

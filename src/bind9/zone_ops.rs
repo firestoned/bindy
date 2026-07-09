@@ -36,6 +36,47 @@ impl std::fmt::Display for HttpError {
 
 impl std::error::Error for HttpError {}
 
+/// Extract the HTTP status code from an error, if it originated from a
+/// bindcar [`HttpError`].
+///
+/// Works even when the error has been wrapped in additional `anyhow` context
+/// (e.g. by `zone_status`), because `anyhow::Error::downcast_ref` sees
+/// through context layers. Never string-match on `e.to_string()` for status
+/// codes: it only prints the outermost context.
+fn bindcar_http_status(err: &anyhow::Error) -> Option<StatusCode> {
+    err.downcast_ref::<HttpError>()
+        .map(|http_err| http_err.status)
+}
+
+/// Returns `true` if the error is a bindcar HTTP 404 Not Found response.
+pub(crate) fn is_http_not_found(err: &anyhow::Error) -> bool {
+    bindcar_http_status(err) == Some(StatusCode::NOT_FOUND)
+}
+
+/// Returns `true` if the error is a bindcar HTTP 409 Conflict response.
+pub(crate) fn is_http_conflict(err: &anyhow::Error) -> bool {
+    bindcar_http_status(err) == Some(StatusCode::CONFLICT)
+}
+
+/// Returns `true` if a bindcar/BIND9 message indicates the zone already exists.
+///
+/// BIND9 can return various messages for duplicate zones:
+/// - "already exists" (including the BIND9 `zone X/IN: already exists` form)
+/// - "already serves the given zone"
+/// - "duplicate zone"
+fn is_zone_already_exists_message(message: &str) -> bool {
+    let msg = message.to_lowercase();
+    msg.contains("already exists")
+        || msg.contains("already serves")
+        || msg.contains("duplicate zone")
+}
+
+/// Returns `true` if the error indicates the zone already exists — either an
+/// HTTP 409 Conflict or a BIND9 "already exists"-style message.
+fn is_zone_already_exists_error(err: &anyhow::Error) -> bool {
+    is_http_conflict(err) || is_zone_already_exists_message(&err.to_string())
+}
+
 /// Build the API base URL from a server address
 ///
 /// Converts "service-name.namespace.svc.cluster.local:8080" or "service-name:8080"
@@ -437,22 +478,20 @@ pub async fn zone_exists(
             debug!("Zone {zone_name} exists on {server}");
             Ok(true)
         }
+        // 404 Not Found - zone definitely doesn't exist. Inspect the typed
+        // error in the chain: zone_status wraps the HttpError with anyhow
+        // context, so string-matching on e.to_string() would never see "404".
+        Err(e) if is_http_not_found(&e) => {
+            debug!("Zone {zone_name} does not exist on {server}");
+            Ok(false)
+        }
+        // Rate limiting - should retry
+        Err(e) if bindcar_http_status(&e) == Some(StatusCode::TOO_MANY_REQUESTS) => {
+            error!("Rate limited while checking if zone {zone_name} exists on {server}: {e}");
+            Err(e).context("Rate limited while checking zone existence")
+        }
+        // Any other error is a transient failure that should be retried
         Err(e) => {
-            let err_msg = e.to_string();
-
-            // 404 Not Found - zone definitely doesn't exist
-            if err_msg.contains("404") || err_msg.contains("not found") {
-                debug!("Zone {zone_name} does not exist on {server}");
-                return Ok(false);
-            }
-
-            // Rate limiting - should retry
-            if err_msg.contains("429") || err_msg.contains("Too Many Requests") {
-                error!("Rate limited while checking if zone {zone_name} exists on {server}: {e}");
-                return Err(e).context("Rate limited while checking zone existence");
-            }
-
-            // Any other error is a transient failure that should be retried
             error!("Error checking if zone {zone_name} exists on {server}: {e}");
             Err(e).context("Failed to check zone existence")
         }
@@ -596,24 +635,9 @@ pub async fn add_primary_zone(
             Ok(true)
         }
         Err(e) => {
-            // Handle "zone already exists" errors as success (idempotent)
-            // Check if this is an HttpError with 409 Conflict status code
-            let is_conflict = e
-                .downcast_ref::<HttpError>()
-                .is_some_and(|http_err| http_err.status == StatusCode::CONFLICT);
-
-            let err_msg = e.to_string().to_lowercase();
-            // BIND9 can return various messages for duplicate zones:
-            // - "already exists"
-            // - "already serves the given zone"
-            // - "duplicate zone"
-            // - "zone X/IN: already exists" (BIND9 format)
-            // HTTP 409 Conflict means the zone already exists
-            if is_conflict
-                || err_msg.contains("already exists")
-                || err_msg.contains("already serves")
-                || err_msg.contains("duplicate zone")
-            {
+            // Handle "zone already exists" errors (HTTP 409 Conflict or a
+            // BIND9 duplicate-zone message) as success (idempotent)
+            if is_zone_already_exists_error(&e) {
                 info!("Zone {zone_name} already exists on {server} (HTTP 409 Conflict), treating as success");
 
                 // Zone exists - check if we need to update its configuration with secondary IPs
@@ -702,16 +726,12 @@ pub async fn update_primary_zone(
             );
             Ok(true)
         }
-        Err(e) => {
-            let error_msg = e.to_string();
-            // If the zone doesn't exist, we can't update it
-            if error_msg.contains("not found") || error_msg.contains("404") {
-                debug!("Zone {zone_name} not found on {server}, cannot update");
-                Ok(false)
-            } else {
-                Err(e).context("Failed to update zone configuration")
-            }
+        // If the zone doesn't exist, we can't update it
+        Err(e) if is_http_not_found(&e) => {
+            debug!("Zone {zone_name} not found on {server}, cannot update");
+            Ok(false)
         }
+        Err(e) => Err(e).context("Failed to update zone configuration"),
     }
 }
 
@@ -796,31 +816,13 @@ pub async fn add_secondary_zone(
             );
             Ok(true)
         }
-        Err(e) => {
-            // Handle "zone already exists" errors as success (idempotent)
-            // Check if this is an HttpError with 409 Conflict status code
-            let is_conflict = e
-                .downcast_ref::<HttpError>()
-                .is_some_and(|http_err| http_err.status == StatusCode::CONFLICT);
-
-            let err_msg = e.to_string().to_lowercase();
-            // BIND9 can return various messages for duplicate zones:
-            // - "already exists"
-            // - "already serves the given zone"
-            // - "duplicate zone"
-            // - "zone X/IN: already exists" (BIND9 format)
-            // HTTP 409 Conflict means the zone already exists
-            if is_conflict
-                || err_msg.contains("already exists")
-                || err_msg.contains("already serves")
-                || err_msg.contains("duplicate zone")
-            {
-                info!("Zone {zone_name} already exists on {server} (HTTP 409 Conflict), treating as success");
-                Ok(false)
-            } else {
-                Err(e).context("Failed to add secondary zone")
-            }
+        // Handle "zone already exists" errors (HTTP 409 Conflict or a BIND9
+        // duplicate-zone message) as success (idempotent)
+        Err(e) if is_zone_already_exists_error(&e) => {
+            info!("Zone {zone_name} already exists on {server} (HTTP 409 Conflict), treating as success");
+            Ok(false)
         }
+        Err(e) => Err(e).context("Failed to add secondary zone"),
     }
 }
 
@@ -909,8 +911,13 @@ pub async fn add_zones(
 
 /// Create a zone via HTTP API with structured configuration.
 ///
-/// This method sends a POST request to the API sidecar to create a zone using
+/// This method sends a POST request to the API sidecar (via the shared
+/// [`bindcar_request`] retry path, so it gets the same retry/backoff and
+/// timeout behavior as all other zone operations) to create a zone using
 /// structured zone configuration from the bindcar library.
+///
+/// This operation is idempotent: an HTTP 409 Conflict (or a BIND9
+/// "already exists"-style message) is treated as success.
 ///
 /// # Arguments
 /// * `client` - HTTP client
@@ -925,7 +932,6 @@ pub async fn add_zones(
 ///
 /// Returns an error if the HTTP request fails or the zone cannot be created.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_lines)]
 pub async fn create_zone_http(
     client: &Arc<HttpClient>,
     token: Option<&str>,
@@ -935,22 +941,6 @@ pub async fn create_zone_http(
     server: &str,
     key_data: &RndcKeyData,
 ) -> Result<()> {
-    // Check if zone already exists (idempotent)
-    match zone_exists(client, token, zone_name, server).await {
-        Ok(true) => {
-            info!("Zone {zone_name} already exists on {server}, skipping creation");
-            return Ok(());
-        }
-        Ok(false) => {
-            // Zone doesn't exist, proceed with creation
-        }
-        Err(e) => {
-            // Can't check zone existence (rate limiting, network error, etc.)
-            // Propagate the error rather than blindly attempting creation
-            return Err(e).context("Failed to check if zone exists before creation");
-        }
-    }
-
     let base_url = build_api_url(server);
     let url = format!("{base_url}/api/v1/zones");
 
@@ -968,79 +958,34 @@ pub async fn create_zone_http(
         "Creating zone via HTTP API"
     );
 
-    let mut post_request = client
-        .post(&url)
-        .header("Content-Type", "application/json")
-        .json(&request);
-
-    // Add Authorization header only if token is provided
-    if let Some(token_value) = token {
-        post_request = post_request.header("Authorization", format!("Bearer {token_value}"));
-    }
-
-    let response = post_request
-        .send()
-        .await
-        .context(format!("Failed to send HTTP request to {url}"))?;
-
-    let status = response.status();
-
-    if !status.is_success() {
-        let error_text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unknown error".to_string());
-
-        // Check if it's a "zone already exists" error (idempotent)
-        let error_lower = error_text.to_lowercase();
-        let zone_check_result = zone_exists(client, token, zone_name, server).await;
-        if error_lower.contains("already exists")
-            || error_lower.contains("already serves")
-            || error_lower.contains("duplicate zone")
-            || status.as_u16() == 409
-            || matches!(zone_check_result, Ok(true))
-        {
-            info!("Zone {zone_name} already exists on {server} (detected via API error or existence check), treating as success");
+    let body = match bindcar_request(client, token, "POST", &url, Some(&request)).await {
+        Ok(body) => body,
+        // HTTP 409 Conflict (or an "already exists" message) means the zone
+        // is already present - treat as success (idempotent)
+        Err(e) if is_zone_already_exists_error(&e) => {
+            info!("Zone {zone_name} already exists on {server}, treating as success");
             return Ok(());
         }
-
-        // If we can't check zone existence due to rate limiting or other errors, propagate that
-        if let Err(zone_err) = zone_check_result {
-            return Err(zone_err).context("Failed to verify zone existence after creation error");
+        Err(e) => {
+            error!(
+                zone_name = %zone_name,
+                server = %server,
+                error = %e,
+                "Failed to create zone via HTTP API"
+            );
+            return Err(e)
+                .with_context(|| format!("Failed to create zone '{zone_name}' via HTTP API"));
         }
+    };
 
-        error!(
-            zone_name = %zone_name,
-            server = %server,
-            status = %status,
-            error = %error_text,
-            "Failed to create zone via HTTP API"
-        );
-        anyhow::bail!("Failed to create zone '{zone_name}' via HTTP API: {status} - {error_text}");
-    }
-
-    let result: ZoneResponse = response
-        .json()
-        .await
-        .context("Failed to parse API response")?;
+    let result: ZoneResponse =
+        serde_json::from_str(&body).context("Failed to parse API response")?;
 
     if !result.success {
         // Check if the error message indicates zone already exists (idempotent)
-        let msg_lower = result.message.to_lowercase();
-        let zone_check_result = zone_exists(client, token, zone_name, server).await;
-        if msg_lower.contains("already exists")
-            || msg_lower.contains("already serves")
-            || msg_lower.contains("duplicate zone")
-            || matches!(zone_check_result, Ok(true))
-        {
+        if is_zone_already_exists_message(&result.message) {
             info!("Zone {zone_name} already exists on {server} (detected via API response), treating as success");
             return Ok(());
-        }
-
-        // If we can't check zone existence due to rate limiting or other errors, propagate that
-        if let Err(zone_err) = zone_check_result {
-            return Err(zone_err)
-                .context("Failed to verify zone existence after API returned error");
         }
 
         error!(
@@ -1102,16 +1047,12 @@ pub async fn delete_zone(
             info!("Deleted zone {zone_name} from {server}");
             Ok(())
         }
-        Err(e) => {
-            let error_msg = e.to_string();
-            // If the zone doesn't exist, consider it already deleted (idempotent)
-            if error_msg.contains("not found") || error_msg.contains("404") {
-                debug!("Zone {zone_name} already deleted from {server}");
-                Ok(())
-            } else {
-                Err(e).context("Failed to delete zone")
-            }
+        // If the zone doesn't exist, consider it already deleted (idempotent)
+        Err(e) if is_http_not_found(&e) => {
+            debug!("Zone {zone_name} already deleted from {server}");
+            Ok(())
         }
+        Err(e) => Err(e).context("Failed to delete zone"),
     }
 }
 

@@ -33,7 +33,9 @@ use crate::crd::{DNSZone, InstanceReference};
 ///
 /// # Returns
 ///
-/// Tuple of `(primary_count, secondary_count)` - number of successfully configured instances
+/// Tuple of `(primary_outcome, secondary_outcome)` - per-instance and per-endpoint
+/// configuration counts for primary and secondary instances (see
+/// [`super::types::ZoneConfigOutcome`])
 ///
 /// # Errors
 ///
@@ -42,7 +44,9 @@ use crate::crd::{DNSZone, InstanceReference};
 /// - Primary configuration fails completely
 /// - Kubernetes API operations fail
 ///
-/// Note: Secondary configuration failure is non-fatal and logged as a warning
+/// Note: Secondary configuration failure is non-fatal and logged as a warning.
+/// On every fatal error path the Ready condition is set to False and the
+/// Progressing condition is resolved before the error is returned.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_lines)]
 pub async fn configure_zone_on_instances(
@@ -52,7 +56,10 @@ pub async fn configure_zone_on_instances(
     status_updater: &mut crate::reconcilers::status::DNSZoneStatusUpdater,
     instance_refs: &[InstanceReference],
     _unreconciled_instances: &[InstanceReference],
-) -> Result<(usize, usize)> {
+) -> Result<(
+    super::types::ZoneConfigOutcome,
+    super::types::ZoneConfigOutcome,
+)> {
     let client = ctx.client.clone();
     let namespace = dnszone.namespace().unwrap_or_default();
     let spec = &dnszone.spec;
@@ -82,12 +89,8 @@ pub async fn configure_zone_on_instances(
                 ips
             }
             Ok(_) => {
-                status_updater.set_condition(
-                    "Degraded",
-                    "True",
-                    "PrimaryFailed",
-                    "No primary servers found - cannot configure secondary zones",
-                );
+                let message = "No primary servers found - cannot configure secondary zones";
+                set_failure_conditions(status_updater, "PrimaryFailed", message);
                 // Apply status before returning error
                 status_updater.apply(&client).await?;
                 return Err(anyhow!(
@@ -97,9 +100,8 @@ pub async fn configure_zone_on_instances(
                 ));
             }
             Err(e) => {
-                status_updater.set_condition(
-                    "Degraded",
-                    "True",
+                set_failure_conditions(
+                    status_updater,
                     "PrimaryFailed",
                     &format!("Failed to find primary servers: {e}"),
                 );
@@ -113,7 +115,7 @@ pub async fn configure_zone_on_instances(
     // Primary instances are marked as reconciled inside add_dnszone() immediately after success
     // CRITICAL: We pass ALL instances (not just unreconciled ones) to ensure zones are recreated
     // after pod restarts. The add_zones() function is idempotent (checks zone_exists first).
-    let primary_count = match super::add_dnszone(
+    let primary_outcome = match super::add_dnszone(
         ctx.clone(),
         dnszone.clone(),
         zone_manager,
@@ -122,23 +124,22 @@ pub async fn configure_zone_on_instances(
     )
     .await
     {
-        Ok(count) => {
+        Ok(outcome) => {
             // Update status after successful primary reconciliation (in-memory)
             status_updater.set_condition(
                 "Progressing",
                 "True",
                 "PrimaryReconciled",
                 &format!(
-                    "Zone {} configured on {} primary server(s)",
-                    spec.zone_name, count
+                    "Zone {} configured on {} primary instance(s) ({} endpoint(s))",
+                    spec.zone_name, outcome.instances_configured, outcome.endpoints_configured
                 ),
             );
-            count
+            outcome
         }
         Err(e) => {
-            status_updater.set_condition(
-                "Degraded",
-                "True",
+            set_failure_conditions(
+                status_updater,
                 "PrimaryFailed",
                 &format!("Failed to configure zone on primary servers: {e}"),
             );
@@ -160,7 +161,7 @@ pub async fn configure_zone_on_instances(
     // Secondary instances are marked as reconciled inside add_dnszone_to_secondaries() immediately after success
     // CRITICAL: We pass ALL instances (not just unreconciled ones) to ensure zones are recreated
     // after pod restarts. The add_zones() function is idempotent (checks zone_exists first).
-    let secondary_count = match super::add_dnszone_to_secondaries(
+    let secondary_outcome = match super::add_dnszone_to_secondaries(
         ctx.clone(),
         dnszone.clone(),
         zone_manager,
@@ -170,20 +171,20 @@ pub async fn configure_zone_on_instances(
     )
     .await
     {
-        Ok(count) => {
+        Ok(outcome) => {
             // Update status after successful secondary reconciliation (in-memory)
-            if count > 0 {
+            if outcome.endpoints_configured > 0 {
                 status_updater.set_condition(
                     "Progressing",
                     "True",
                     "SecondaryReconciled",
                     &format!(
-                        "Zone {} configured on {} secondary server(s)",
-                        spec.zone_name, count
+                        "Zone {} configured on {} secondary instance(s) ({} endpoint(s))",
+                        spec.zone_name, outcome.instances_configured, outcome.endpoints_configured
                     ),
                 );
             }
-            count
+            outcome
         }
         Err(e) => {
             // Secondary failure is non-fatal - primaries still work
@@ -196,14 +197,43 @@ pub async fn configure_zone_on_instances(
                 "True",
                 "SecondaryFailed",
                 &format!(
-                    "Zone configured on {primary_count} primary server(s) but secondary configuration failed: {e}"
+                    "Zone configured on {} primary instance(s) but secondary configuration failed: {e}",
+                    primary_outcome.instances_configured
                 ),
             );
-            0
+            super::types::ZoneConfigOutcome::default()
         }
     };
 
-    Ok((primary_count, secondary_count))
+    Ok((primary_outcome, secondary_outcome))
+}
+
+/// Sets the condition triple for a fatal zone configuration failure (in-memory).
+///
+/// Ensures the conditions converge to a consistent failed state:
+/// - `Degraded=True` with the failure reason and message
+/// - `Ready=False` with the same reason and message (a previously set
+///   `Ready=True` must never survive a failed reconciliation)
+/// - `Progressing=False` (the reconciliation attempt has finished)
+///
+/// # Arguments
+///
+/// * `status_updater` - Status updater collecting in-memory condition changes
+/// * `reason` - Programmatic failure reason in `CamelCase` (e.g. `PrimaryFailed`)
+/// * `message` - Human-readable failure explanation
+pub fn set_failure_conditions(
+    status_updater: &mut crate::reconcilers::status::DNSZoneStatusUpdater,
+    reason: &str,
+    message: &str,
+) {
+    status_updater.set_condition("Degraded", "True", reason, message);
+    status_updater.set_condition("Ready", "False", reason, message);
+    status_updater.set_condition(
+        "Progressing",
+        "False",
+        reason,
+        "Reconciliation attempt finished with errors",
+    );
 }
 
 #[cfg(test)]

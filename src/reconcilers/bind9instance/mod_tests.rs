@@ -297,4 +297,46 @@ mod tests {
             ..Default::default()
         }
     }
+
+    // ========================================================================
+    // Parent generation tracking (parent_generation_changed)
+    // ========================================================================
+
+    use crate::reconcilers::bind9instance::parent_generation_changed;
+
+    #[test]
+    fn test_parent_generation_changed_detects_newer_parent() {
+        // Parent generation moved from 3 to 5 since last observed
+        assert!(parent_generation_changed(Some(5), Some(3)));
+    }
+
+    #[test]
+    fn test_parent_generation_changed_unchanged_parent() {
+        assert!(!parent_generation_changed(Some(3), Some(3)));
+    }
+
+    #[test]
+    fn test_parent_generation_changed_never_observed() {
+        // Parent exists but its generation was never recorded: must reconcile
+        assert!(parent_generation_changed(Some(1), None));
+    }
+
+    #[test]
+    fn test_parent_generation_changed_no_parent() {
+        assert!(!parent_generation_changed(None, None));
+        assert!(!parent_generation_changed(None, Some(4)));
+    }
+
+    #[test]
+    fn test_parent_generation_changed_independent_of_instance_generation() {
+        // THE BUG (regression guard): the old code compared the PARENT's
+        // generation against the INSTANCE's own observedGeneration - two
+        // unrelated counters. A parent at generation 2 whose changes were
+        // already applied (observed parent generation 2) must NOT re-trigger,
+        // regardless of what the instance's own generation is; and a parent
+        // that moved to 7 MUST trigger even if the instance's own observed
+        // generation is far higher (e.g. 100).
+        assert!(!parent_generation_changed(Some(2), Some(2)));
+        assert!(parent_generation_changed(Some(7), Some(2)));
+    }
 }

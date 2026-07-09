@@ -145,6 +145,74 @@ pub fn calculate_cluster_status(
     )
 }
 
+/// Determines whether the `Bind9Cluster` status patch is needed.
+///
+/// Compares the current status against the values about to be written. The
+/// patch is needed if any of the following changed:
+/// - `instance_count`, `ready_instances`, or the instance name list
+/// - `observed_generation` (so spec edits that don't change counts/conditions
+///   still advance `observedGeneration` and stop perpetual re-reconciliation)
+/// - Any condition's type, status, reason, or message
+///
+/// # Arguments
+///
+/// * `current` - The status currently stored on the resource (if any)
+/// * `conditions` - New conditions about to be written
+/// * `instance_count` - New total instance count
+/// * `ready_instances` - New ready instance count
+/// * `instances` - New instance name list
+/// * `generation` - The `metadata.generation` about to be written as `observed_generation`
+///
+/// # Returns
+///
+/// `true` if the status patch should be applied, `false` if it can be skipped.
+#[must_use]
+pub fn cluster_status_changed(
+    current: Option<&Bind9ClusterStatus>,
+    conditions: &[Condition],
+    instance_count: i32,
+    ready_instances: i32,
+    instances: &[String],
+    generation: Option<i64>,
+) -> bool {
+    let Some(current) = current else {
+        // No status exists, need to update
+        return true;
+    };
+
+    // Check if counts changed
+    if current.instance_count != Some(instance_count)
+        || current.ready_instances != Some(ready_instances)
+        || current.instances != instances
+    {
+        return true;
+    }
+
+    // Check if the observed generation is behind the generation about to be
+    // written. Without this, a spec edit that does not change counts or
+    // conditions never advances observedGeneration, causing should_reconcile()
+    // to return true on every requeue forever.
+    if current.observed_generation != generation {
+        return true;
+    }
+
+    // Check if any condition changed
+    if current.conditions.len() != conditions.len() {
+        return true;
+    }
+
+    current
+        .conditions
+        .iter()
+        .zip(conditions.iter())
+        .any(|(current_cond, new_cond)| {
+            current_cond.r#type != new_cond.r#type
+                || current_cond.status != new_cond.status
+                || current_cond.message != new_cond.message
+                || current_cond.reason != new_cond.reason
+        })
+}
+
 /// Update the status of a `Bind9Cluster` with multiple conditions.
 ///
 /// Patches the cluster status in Kubernetes if it has changed.
@@ -173,36 +241,15 @@ pub(super) async fn update_status(
     let api: Api<Bind9Cluster> =
         Api::namespaced(client.clone(), &cluster.namespace().unwrap_or_default());
 
-    // Check if status has actually changed
-    let current_status = &cluster.status;
-    let status_changed =
-        if let Some(current) = current_status {
-            // Check if counts changed
-            if current.instance_count != Some(instance_count)
-                || current.ready_instances != Some(ready_instances)
-                || current.instances != instances
-            {
-                true
-            } else {
-                // Check if any condition changed
-                if current.conditions.len() == conditions.len() {
-                    // Compare each condition
-                    current.conditions.iter().zip(conditions.iter()).any(
-                        |(current_cond, new_cond)| {
-                            current_cond.r#type != new_cond.r#type
-                                || current_cond.status != new_cond.status
-                                || current_cond.message != new_cond.message
-                                || current_cond.reason != new_cond.reason
-                        },
-                    )
-                } else {
-                    true
-                }
-            }
-        } else {
-            // No status exists, need to update
-            true
-        };
+    // Check if status has actually changed (including observed_generation)
+    let status_changed = cluster_status_changed(
+        cluster.status.as_ref(),
+        &conditions,
+        instance_count,
+        ready_instances,
+        &instances,
+        cluster.metadata.generation,
+    );
 
     // Only update if status has changed
     if !status_changed {

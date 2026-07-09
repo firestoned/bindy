@@ -4,7 +4,10 @@
 //! SRV record management.
 
 use super::super::types::{RndcKeyData, SRVRecordData};
-use super::{build_authenticated_client, build_record_fqdn, should_update_record};
+use super::{
+    build_authenticated_client, build_delete_rrset_record, build_record_fqdn, effective_record_ttl,
+    rrset_ttl_matches, should_update_record,
+};
 use anyhow::{Context, Result};
 use hickory_net::client::ClientHandle;
 use hickory_proto::op::ResponseCode;
@@ -12,9 +15,48 @@ use hickory_proto::rr::{rdata, DNSClass, Name, RData, Record, RecordType};
 use std::str::FromStr;
 use tracing::info;
 
-use crate::constants::DEFAULT_DNS_RECORD_TTL_SECS;
+/// Compare existing DNS `RRset` with the desired SRV fields and TTL.
+///
+/// # Arguments
+///
+/// * `existing_records` - Records currently in DNS (from query)
+/// * `priority` - Desired SRV priority from the spec
+/// * `weight` - Desired SRV weight from the spec
+/// * `port` - Desired SRV port from the spec
+/// * `target` - Desired SRV target host from the spec
+/// * `desired_ttl` - Effective TTL from the spec
+///
+/// # Returns
+///
+/// `true` if the existing `RRset` matches the desired state exactly (no changes
+/// needed), `false` if an update is required (rdata or TTL differ).
+fn compare_srv_rrset(
+    existing_records: &[Record],
+    priority: u16,
+    weight: u16,
+    port: u16,
+    target: &str,
+    desired_ttl: u32,
+) -> bool {
+    if existing_records.len() != 1 {
+        return false;
+    }
+    if !rrset_ttl_matches(existing_records, desired_ttl) {
+        return false;
+    }
+    let RData::SRV(existing_srv) = &existing_records[0].data else {
+        return false;
+    };
+    existing_srv.priority == priority
+        && existing_srv.weight == weight
+        && existing_srv.port == port
+        && existing_srv.target.to_string() == target
+}
 
-/// Add an SRV record using dynamic DNS update (RFC 2136).
+/// Add an SRV record using dynamic DNS update (RFC 2136) with `RRset` synchronization.
+///
+/// If the existing `RRset` differs from the desired state, the entire SRV
+/// `RRset` for the name is deleted and recreated so stale rdata never lingers.
 ///
 /// # Errors
 ///
@@ -31,13 +73,13 @@ pub async fn add_srv_record(
     server: &str,
     key_data: &RndcKeyData,
 ) -> Result<()> {
-    let srv_data_for_comparison = srv_data.clone();
     let priority_u16 = u16::try_from(srv_data.priority)
         .context(format!("Invalid SRV priority: {}", srv_data.priority))?;
     let weight_u16 = u16::try_from(srv_data.weight)
         .context(format!("Invalid SRV weight: {}", srv_data.weight))?;
     let port_u16 =
         u16::try_from(srv_data.port).context(format!("Invalid SRV port: {}", srv_data.port))?;
+    let ttl_value = effective_record_ttl(srv_data.ttl);
 
     let should_update = should_update_record(
         zone_name,
@@ -46,20 +88,14 @@ pub async fn add_srv_record(
         "SRV",
         server,
         |existing_records| {
-            if existing_records.len() == 1 {
-                if let RData::SRV(existing_srv) = &existing_records[0].data {
-                    let priority_match = existing_srv.priority
-                        == u16::try_from(srv_data_for_comparison.priority).unwrap_or(0);
-                    let weight_match = existing_srv.weight
-                        == u16::try_from(srv_data_for_comparison.weight).unwrap_or(0);
-                    let port_match = existing_srv.port
-                        == u16::try_from(srv_data_for_comparison.port).unwrap_or(0);
-                    let target_match =
-                        existing_srv.target.to_string() == srv_data_for_comparison.target;
-                    return priority_match && weight_match && port_match && target_match;
-                }
-            }
-            false
+            compare_srv_rrset(
+                existing_records,
+                priority_u16,
+                weight_u16,
+                port_u16,
+                &srv_data.target,
+                ttl_value,
+            )
         },
     )
     .await?;
@@ -67,9 +103,6 @@ pub async fn add_srv_record(
     if !should_update {
         return Ok(());
     }
-
-    let ttl_value = u32::try_from(srv_data.ttl.unwrap_or(DEFAULT_DNS_RECORD_TTL_SECS))
-        .unwrap_or(u32::try_from(DEFAULT_DNS_RECORD_TTL_SECS).unwrap_or(300));
 
     let zone =
         Name::from_str(zone_name).context(format!("Invalid zone name for SRV: {zone_name}"))?;
@@ -84,6 +117,12 @@ pub async fn add_srv_record(
     record.dns_class = DNSClass::IN;
 
     let mut client = build_authenticated_client(server, key_data).await?;
+
+    // Step 1: delete existing RRset (ignore errors — may not exist).
+    let delete_record = build_delete_rrset_record(&fqdn, RecordType::SRV);
+    let _ = client.delete_rrset(delete_record, zone.clone()).await;
+
+    // Step 2: append the desired record to create the new RRset.
     let response = client
         .append(record, zone, false)
         .await
