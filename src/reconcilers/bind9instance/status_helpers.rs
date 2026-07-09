@@ -22,6 +22,8 @@ use crate::reconcilers::pagination::list_all_paginated;
 /// * `name` - Instance name
 /// * `instance` - The `Bind9Instance` resource
 /// * `cluster_ref` - Optional cluster reference to include in status
+/// * `observed_parent_generation` - Generation of the referenced parent cluster
+///   (`Bind9Cluster`/`ClusterBind9Provider`) observed during this reconciliation
 ///
 /// # Errors
 ///
@@ -33,6 +35,7 @@ pub(super) async fn update_status_from_deployment(
     name: &str,
     instance: &Bind9Instance,
     cluster_ref: Option<ClusterReference>,
+    observed_parent_generation: Option<i64>,
 ) -> Result<()> {
     let deploy_api: Api<Deployment> = Api::namespaced(client.clone(), namespace);
     let pod_api: Api<Pod> = Api::namespaced(client.clone(), namespace);
@@ -136,7 +139,14 @@ pub(super) async fn update_status_from_deployment(
             all_conditions.extend(pod_conditions);
 
             // Update status with all conditions
-            update_status(client, instance, all_conditions, cluster_ref).await?;
+            update_status(
+                client,
+                instance,
+                all_conditions,
+                cluster_ref,
+                observed_parent_generation,
+            )
+            .await?;
         }
         Err(e) => {
             warn!(
@@ -151,11 +161,87 @@ pub(super) async fn update_status_from_deployment(
                 message: Some("Unable to determine deployment status".to_string()),
                 last_transition_time: Some(Utc::now().to_rfc3339()),
             };
-            update_status(client, instance, vec![unknown_condition], cluster_ref).await?;
+            update_status(
+                client,
+                instance,
+                vec![unknown_condition],
+                cluster_ref,
+                observed_parent_generation,
+            )
+            .await?;
         }
     }
 
     Ok(())
+}
+
+/// Determines whether the `Bind9Instance` status patch is needed.
+///
+/// Compares the current status against the values about to be written. The
+/// patch is needed if any of the following changed:
+/// - `cluster_ref` or the zones list
+/// - `observed_generation` (so spec edits that don't change conditions still
+///   advance `observedGeneration` and stop perpetual re-reconciliation)
+/// - `observed_parent_generation` (so parent cluster config changes are
+///   recorded once applied)
+/// - Any condition's type, status, reason, or message
+///
+/// # Arguments
+///
+/// * `current` - The status currently stored on the resource (if any)
+/// * `conditions` - New conditions about to be written
+/// * `cluster_ref` - New cluster reference about to be written
+/// * `zones` - Zones list about to be written (preserved from current status)
+/// * `generation` - The `metadata.generation` about to be written as `observed_generation`
+/// * `observed_parent_generation` - The parent cluster generation about to be written
+///
+/// # Returns
+///
+/// `true` if the status patch should be applied, `false` if it can be skipped.
+#[must_use]
+pub fn instance_status_changed(
+    current: Option<&Bind9InstanceStatus>,
+    conditions: &[Condition],
+    cluster_ref: Option<&ClusterReference>,
+    zones: &[crate::crd::ZoneReference],
+    generation: Option<i64>,
+    observed_parent_generation: Option<i64>,
+) -> bool {
+    let Some(current) = current else {
+        // No status exists, need to update
+        return true;
+    };
+
+    // Check if cluster_ref or zones changed
+    if current.cluster_ref.as_ref() != cluster_ref || current.zones != zones {
+        return true;
+    }
+
+    // Check if the observed generations are behind the values about to be
+    // written. Without this, a spec (or parent spec) edit that does not change
+    // conditions never advances the observed generations, causing perpetual
+    // re-reconciliation on every requeue.
+    if current.observed_generation != generation
+        || current.observed_parent_generation != observed_parent_generation
+    {
+        return true;
+    }
+
+    // Check if any condition changed
+    if current.conditions.len() != conditions.len() {
+        return true;
+    }
+
+    current
+        .conditions
+        .iter()
+        .zip(conditions.iter())
+        .any(|(current_cond, new_cond)| {
+            current_cond.r#type != new_cond.r#type
+                || current_cond.status != new_cond.status
+                || current_cond.message != new_cond.message
+                || current_cond.reason != new_cond.reason
+        })
 }
 
 /// Update the status of a `Bind9Instance` with multiple conditions.
@@ -171,6 +257,8 @@ pub(super) async fn update_status_from_deployment(
 /// * `instance` - The instance to update
 /// * `conditions` - Vector of status conditions to set
 /// * `cluster_ref` - Optional cluster reference
+/// * `observed_parent_generation` - Generation of the referenced parent cluster
+///   (`Bind9Cluster`/`ClusterBind9Provider`) observed during this reconciliation
 ///
 /// # Errors
 ///
@@ -180,6 +268,7 @@ pub(super) async fn update_status(
     instance: &Bind9Instance,
     conditions: Vec<Condition>,
     cluster_ref: Option<ClusterReference>,
+    observed_parent_generation: Option<i64>,
 ) -> Result<()> {
     let api: Api<Bind9Instance> =
         Api::namespaced(client.clone(), &instance.namespace().unwrap_or_default());
@@ -194,33 +283,15 @@ pub(super) async fn update_status(
     // Compute zones_count from zones length
     let zones_count = i32::try_from(zones.len()).ok();
 
-    // Check if status has actually changed (now including zones)
-    let current_status = &instance.status;
-    let status_changed =
-        if let Some(current) = current_status {
-            // Check if cluster_ref or zones changed
-            if current.cluster_ref != cluster_ref || current.zones != zones {
-                true
-            } else {
-                // Check if any condition changed
-                if current.conditions.len() == conditions.len() {
-                    // Compare each condition
-                    current.conditions.iter().zip(conditions.iter()).any(
-                        |(current_cond, new_cond)| {
-                            current_cond.r#type != new_cond.r#type
-                                || current_cond.status != new_cond.status
-                                || current_cond.message != new_cond.message
-                                || current_cond.reason != new_cond.reason
-                        },
-                    )
-                } else {
-                    true
-                }
-            }
-        } else {
-            // No status exists, need to update
-            true
-        };
+    // Check if status has actually changed (including generation tracking)
+    let status_changed = instance_status_changed(
+        instance.status.as_ref(),
+        &conditions,
+        cluster_ref.as_ref(),
+        &zones,
+        instance.metadata.generation,
+        observed_parent_generation,
+    );
 
     // Only update if status has changed
     if !status_changed {
@@ -235,6 +306,7 @@ pub(super) async fn update_status(
     let new_status = Bind9InstanceStatus {
         conditions,
         observed_generation: instance.metadata.generation,
+        observed_parent_generation,
         service_address: None, // Will be populated when service is ready
         cluster_ref,
         zones,

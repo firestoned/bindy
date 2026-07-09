@@ -730,4 +730,87 @@ mod tests {
             .as_ref()
             .is_some_and(|f| f.contains(&TEST_FINALIZER.to_string())));
     }
+
+    // ========================================================================
+    // Guarded JSON Patch builders (concurrency-safe finalizer add/remove)
+    // ========================================================================
+
+    use crate::reconcilers::finalizers::{build_add_finalizer_patch, build_remove_finalizer_patch};
+
+    #[test]
+    fn test_build_add_finalizer_patch_empty_finalizers_tests_for_absence() {
+        // With no existing finalizers the patch must test that the array is
+        // absent before creating it, so a racing writer's fresh finalizer is
+        // never clobbered
+        let patch = build_add_finalizer_patch(&[], Some("42"), TEST_FINALIZER).unwrap();
+        let value = serde_json::to_value(&patch).unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!([
+                {"op": "test", "path": "/metadata/finalizers", "value": null},
+                {"op": "add", "path": "/metadata/finalizers", "value": [TEST_FINALIZER]},
+            ])
+        );
+    }
+
+    #[test]
+    fn test_build_add_finalizer_patch_existing_finalizers_appends_with_rv_guard() {
+        // With existing finalizers the patch must guard on resourceVersion and
+        // APPEND (path "-") rather than rewriting the whole array
+        let existing = vec!["other.io/finalizer".to_string()];
+        let patch = build_add_finalizer_patch(&existing, Some("42"), TEST_FINALIZER).unwrap();
+        let value = serde_json::to_value(&patch).unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!([
+                {"op": "test", "path": "/metadata/resourceVersion", "value": "42"},
+                {"op": "add", "path": "/metadata/finalizers/-", "value": TEST_FINALIZER},
+            ])
+        );
+    }
+
+    #[test]
+    fn test_build_add_finalizer_patch_existing_finalizers_requires_resource_version() {
+        let existing = vec!["other.io/finalizer".to_string()];
+        assert!(build_add_finalizer_patch(&existing, None, TEST_FINALIZER).is_err());
+    }
+
+    #[test]
+    fn test_build_remove_finalizer_patch_tests_exact_index_content() {
+        // The patch must test the exact index content before removing it, so a
+        // concurrent add/remove (shifting indices) fails the test server-side
+        // instead of removing a FOREIGN finalizer
+        let existing = vec![
+            "other.io/finalizer".to_string(),
+            TEST_FINALIZER.to_string(),
+            "third.io/finalizer".to_string(),
+        ];
+        let patch = build_remove_finalizer_patch(&existing, TEST_FINALIZER)
+            .unwrap()
+            .expect("finalizer is present, patch expected");
+        let value = serde_json::to_value(&patch).unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!([
+                {"op": "test", "path": "/metadata/finalizers/1", "value": TEST_FINALIZER},
+                {"op": "remove", "path": "/metadata/finalizers/1"},
+            ])
+        );
+    }
+
+    #[test]
+    fn test_build_remove_finalizer_patch_absent_finalizer_returns_none() {
+        let existing = vec!["other.io/finalizer".to_string()];
+        let patch = build_remove_finalizer_patch(&existing, TEST_FINALIZER).unwrap();
+        assert!(patch.is_none());
+    }
+
+    #[test]
+    fn test_build_remove_finalizer_patch_empty_list_returns_none() {
+        let patch = build_remove_finalizer_patch(&[], TEST_FINALIZER).unwrap();
+        assert!(patch.is_none());
+    }
 }

@@ -4,7 +4,10 @@
 //! CNAME record management.
 
 use super::super::types::RndcKeyData;
-use super::{build_authenticated_client, build_record_fqdn, should_update_record};
+use super::{
+    build_authenticated_client, build_record_fqdn, effective_record_ttl, rrset_ttl_matches,
+    should_update_record,
+};
 use anyhow::Result;
 use hickory_net::client::ClientHandle;
 use hickory_proto::op::ResponseCode;
@@ -12,7 +15,30 @@ use hickory_proto::rr::{rdata, DNSClass, Name, RData, Record, RecordType};
 use std::str::FromStr;
 use tracing::info;
 
-use crate::constants::DEFAULT_DNS_RECORD_TTL_SECS;
+/// Compare existing DNS `RRset` with the desired CNAME target and TTL.
+///
+/// # Arguments
+///
+/// * `existing_records` - Records currently in DNS (from query)
+/// * `target` - Desired CNAME target from the spec
+/// * `desired_ttl` - Effective TTL from the spec
+///
+/// # Returns
+///
+/// `true` if the existing `RRset` matches the desired state exactly (no changes
+/// needed), `false` if an update is required (rdata or TTL differ).
+fn compare_cname_rrset(existing_records: &[Record], target: &str, desired_ttl: u32) -> bool {
+    if existing_records.len() != 1 {
+        return false;
+    }
+    if !rrset_ttl_matches(existing_records, desired_ttl) {
+        return false;
+    }
+    let RData::CNAME(existing_cname) = &existing_records[0].data else {
+        return false;
+    };
+    existing_cname.0.to_string() == target
+}
 
 /// Add a CNAME record using dynamic DNS update (RFC 2136).
 ///
@@ -28,30 +54,20 @@ pub async fn add_cname_record(
     server: &str,
     key_data: &RndcKeyData,
 ) -> Result<()> {
-    let target_for_comparison = target.to_string();
+    let ttl_value = effective_record_ttl(ttl);
     let should_update = should_update_record(
         zone_name,
         name,
         RecordType::CNAME,
         "CNAME",
         server,
-        |existing_records| {
-            if existing_records.len() == 1 {
-                if let RData::CNAME(existing_cname) = &existing_records[0].data {
-                    return existing_cname.0.to_string() == target_for_comparison;
-                }
-            }
-            false
-        },
+        |existing_records| compare_cname_rrset(existing_records, target, ttl_value),
     )
     .await?;
 
     if !should_update {
         return Ok(());
     }
-
-    let ttl_value = u32::try_from(ttl.unwrap_or(DEFAULT_DNS_RECORD_TTL_SECS))
-        .unwrap_or(u32::try_from(DEFAULT_DNS_RECORD_TTL_SECS).unwrap_or(300));
 
     let zone = Name::from_str(zone_name)?;
     let fqdn = build_record_fqdn(zone_name, name)?;

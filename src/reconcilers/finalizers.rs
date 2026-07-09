@@ -39,12 +39,99 @@
 //! }
 //! ```
 
-use anyhow::Result;
+use anyhow::{anyhow, Context as AnyhowContext, Result};
 use kube::api::{Patch, PatchParams};
 use kube::core::{ClusterResourceScope, NamespaceResourceScope};
 use kube::{Api, Client, Resource, ResourceExt};
 use serde_json::json;
 use tracing::info;
+
+/// Builds the JSON Patch that atomically adds `finalizer` to a resource.
+///
+/// Mirrors the pattern used by kube-runtime's own finalizer helper:
+/// - When the resource has no finalizers, the patch `test`s that
+///   `/metadata/finalizers` is absent (null) before creating the array. This
+///   guarantees a racing writer that added a finalizer first is not clobbered.
+/// - When finalizers exist, JSON Patch has no test-for-absence, so the patch
+///   `test`s `/metadata/resourceVersion` instead and appends with the `-`
+///   (end-of-array) pointer, never rewriting existing entries.
+///
+/// If either `test` fails on the server (concurrent modification), the API
+/// call fails and the caller must requeue; the next reconciliation retries
+/// with fresh state.
+///
+/// # Arguments
+///
+/// * `existing_finalizers` - Finalizers currently on the (possibly stale) object
+/// * `resource_version` - The object's `metadata.resourceVersion`
+/// * `finalizer` - The finalizer string to add
+///
+/// # Errors
+///
+/// Returns an error if the resource has existing finalizers but no
+/// `resourceVersion` (cannot build a safe guarded patch), or if patch
+/// serialization fails.
+pub(crate) fn build_add_finalizer_patch(
+    existing_finalizers: &[String],
+    resource_version: Option<&str>,
+    finalizer: &str,
+) -> Result<json_patch::Patch> {
+    let operations = if existing_finalizers.is_empty() {
+        json!([
+            {"op": "test", "path": "/metadata/finalizers", "value": null},
+            {"op": "add", "path": "/metadata/finalizers", "value": [finalizer]},
+        ])
+    } else {
+        let resource_version = resource_version.ok_or_else(|| {
+            anyhow!("resource has no resourceVersion; cannot safely add finalizer {finalizer}")
+        })?;
+        json!([
+            {"op": "test", "path": "/metadata/resourceVersion", "value": resource_version},
+            {"op": "add", "path": "/metadata/finalizers/-", "value": finalizer},
+        ])
+    };
+
+    serde_json::from_value(operations).context("failed to build add-finalizer JSON Patch")
+}
+
+/// Builds the JSON Patch that atomically removes `finalizer` from a resource.
+///
+/// Mirrors the pattern used by kube-runtime's own finalizer helper: the patch
+/// `test`s that the exact array index still contains our finalizer before
+/// removing that index. If a racing writer added or removed a finalizer in the
+/// meantime (shifting indices), the `test` fails server-side and nothing is
+/// removed - so a foreign finalizer can never be dropped by accident.
+///
+/// # Arguments
+///
+/// * `existing_finalizers` - Finalizers currently on the (possibly stale) object
+/// * `finalizer` - The finalizer string to remove
+///
+/// # Returns
+///
+/// `Ok(None)` when the finalizer is not present (nothing to do).
+///
+/// # Errors
+///
+/// Returns an error if patch serialization fails.
+pub(crate) fn build_remove_finalizer_patch(
+    existing_finalizers: &[String],
+    finalizer: &str,
+) -> Result<Option<json_patch::Patch>> {
+    let Some(index) = existing_finalizers.iter().position(|f| f == finalizer) else {
+        return Ok(None);
+    };
+
+    let finalizer_path = format!("/metadata/finalizers/{index}");
+    let operations = json!([
+        {"op": "test", "path": finalizer_path, "value": finalizer},
+        {"op": "remove", "path": finalizer_path},
+    ]);
+
+    serde_json::from_value(operations)
+        .map(Some)
+        .context("failed to build remove-finalizer JSON Patch")
+}
 
 /// Trait for resources that require cleanup operations when being deleted.
 ///
@@ -93,11 +180,19 @@ pub trait FinalizerCleanup: Resource + ResourceExt + Clone {
 ///
 /// Returns `Ok(())` if the finalizer was added or already present.
 ///
+/// # Concurrency
+///
+/// The patch is a JSON Patch guarded by a `test` operation (mirroring
+/// kube-runtime's finalizer helper), so a racing writer's finalizer edits are
+/// never clobbered. On a conflict the API call fails and the returned error
+/// triggers a requeue; the next reconciliation retries with fresh state.
+///
 /// # Errors
 ///
 /// Returns an error if:
 /// - The resource has no namespace (for namespaced resources)
-/// - The API patch operation fails
+/// - The API patch operation fails, including when a concurrent writer
+///   modified `metadata.finalizers` and the guarded patch was rejected
 ///
 /// # Example
 ///
@@ -122,37 +217,44 @@ where
     let namespace = resource.namespace().unwrap_or_default();
     let name = resource.name_any();
 
-    // Check if finalizer is already present
-    if resource
-        .meta()
-        .finalizers
-        .as_ref()
-        .is_none_or(|f| !f.contains(&finalizer.to_string()))
-    {
-        info!(
-            "Adding finalizer {} to {}/{} {}",
-            finalizer,
-            namespace,
-            name,
-            T::kind(&())
-        );
+    let finalizers = resource.meta().finalizers.clone().unwrap_or_default();
 
-        let mut finalizers = resource.meta().finalizers.clone().unwrap_or_default();
-        finalizers.push(finalizer.to_string());
-
-        let api: Api<T> = Api::namespaced(client.clone(), &namespace);
-        let patch = json!({ "metadata": { "finalizers": finalizers } });
-        api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
-            .await?;
-
-        info!(
-            "Successfully added finalizer {} to {}/{} {}",
-            finalizer,
-            namespace,
-            name,
-            T::kind(&())
-        );
+    // Early return: finalizer already present
+    if finalizers.iter().any(|f| f == finalizer) {
+        return Ok(());
     }
+
+    info!(
+        "Adding finalizer {} to {}/{} {}",
+        finalizer,
+        namespace,
+        name,
+        T::kind(&())
+    );
+
+    let patch = build_add_finalizer_patch(
+        &finalizers,
+        resource.meta().resource_version.as_deref(),
+        finalizer,
+    )?;
+
+    let api: Api<T> = Api::namespaced(client.clone(), &namespace);
+    api.patch(&name, &PatchParams::default(), &Patch::Json::<()>(patch))
+        .await
+        .with_context(|| {
+            format!(
+                "failed to add finalizer {finalizer} to {namespace}/{name} \
+                 (possibly a concurrent finalizer edit; will retry on next reconciliation)"
+            )
+        })?;
+
+    info!(
+        "Successfully added finalizer {} to {}/{} {}",
+        finalizer,
+        namespace,
+        name,
+        T::kind(&())
+    );
 
     Ok(())
 }
@@ -176,11 +278,20 @@ where
 ///
 /// Returns `Ok(())` if the finalizer was removed or already absent.
 ///
+/// # Concurrency
+///
+/// The patch is a JSON Patch that `test`s the exact array index before
+/// removing it (mirroring kube-runtime's finalizer helper), so a racing
+/// writer's finalizer edits are never clobbered. On a conflict the API call
+/// fails and the returned error triggers a requeue; the next reconciliation
+/// retries with fresh state.
+///
 /// # Errors
 ///
 /// Returns an error if:
 /// - The resource has no namespace (for namespaced resources)
-/// - The API patch operation fails
+/// - The API patch operation fails, including when a concurrent writer
+///   modified `metadata.finalizers` and the guarded patch was rejected
 pub async fn remove_finalizer<T>(client: &Client, resource: &T, finalizer: &str) -> Result<()>
 where
     T: Resource<DynamicType = (), Scope = NamespaceResourceScope>
@@ -193,37 +304,38 @@ where
     let namespace = resource.namespace().unwrap_or_default();
     let name = resource.name_any();
 
-    // Check if finalizer is present
-    if resource
-        .meta()
-        .finalizers
-        .as_ref()
-        .is_some_and(|f| f.contains(&finalizer.to_string()))
-    {
-        info!(
-            "Removing finalizer {} from {}/{} {}",
-            finalizer,
-            namespace,
-            name,
-            T::kind(&())
-        );
+    let finalizers = resource.meta().finalizers.clone().unwrap_or_default();
 
-        let mut finalizers = resource.meta().finalizers.clone().unwrap_or_default();
-        finalizers.retain(|f| f != finalizer);
+    // Early return: finalizer already absent
+    let Some(patch) = build_remove_finalizer_patch(&finalizers, finalizer)? else {
+        return Ok(());
+    };
 
-        let api: Api<T> = Api::namespaced(client.clone(), &namespace);
-        let patch = json!({ "metadata": { "finalizers": finalizers } });
-        api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
-            .await?;
+    info!(
+        "Removing finalizer {} from {}/{} {}",
+        finalizer,
+        namespace,
+        name,
+        T::kind(&())
+    );
 
-        info!(
-            "Successfully removed finalizer {} from {}/{} {}",
-            finalizer,
-            namespace,
-            name,
-            T::kind(&())
-        );
-    }
+    let api: Api<T> = Api::namespaced(client.clone(), &namespace);
+    api.patch(&name, &PatchParams::default(), &Patch::Json::<()>(patch))
+        .await
+        .with_context(|| {
+            format!(
+                "failed to remove finalizer {finalizer} from {namespace}/{name} \
+                 (possibly a concurrent finalizer edit; will retry on next reconciliation)"
+            )
+        })?;
+
+    info!(
+        "Successfully removed finalizer {} from {}/{} {}",
+        finalizer,
+        namespace,
+        name,
+        T::kind(&())
+    );
 
     Ok(())
 }
@@ -330,9 +442,18 @@ where
 ///
 /// Returns `Ok(())` if the finalizer was added or already present.
 ///
+/// # Concurrency
+///
+/// The patch is a JSON Patch guarded by a `test` operation (mirroring
+/// kube-runtime's finalizer helper), so a racing writer's finalizer edits are
+/// never clobbered. On a conflict the API call fails and the returned error
+/// triggers a requeue; the next reconciliation retries with fresh state.
+///
 /// # Errors
 ///
-/// Returns an error if the API patch operation fails.
+/// Returns an error if the API patch operation fails, including when a
+/// concurrent writer modified `metadata.finalizers` and the guarded patch
+/// was rejected.
 ///
 /// # Example
 ///
@@ -360,35 +481,42 @@ where
 {
     let name = resource.name_any();
 
-    // Check if finalizer is already present
-    if resource
-        .meta()
-        .finalizers
-        .as_ref()
-        .is_none_or(|f| !f.contains(&finalizer.to_string()))
-    {
-        info!(
-            "Adding finalizer {} to {} {}",
-            finalizer,
-            T::kind(&()),
-            name
-        );
+    let finalizers = resource.meta().finalizers.clone().unwrap_or_default();
 
-        let mut finalizers = resource.meta().finalizers.clone().unwrap_or_default();
-        finalizers.push(finalizer.to_string());
-
-        let api: Api<T> = Api::all(client.clone());
-        let patch = json!({ "metadata": { "finalizers": finalizers } });
-        api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
-            .await?;
-
-        info!(
-            "Successfully added finalizer {} to {} {}",
-            finalizer,
-            T::kind(&()),
-            name
-        );
+    // Early return: finalizer already present
+    if finalizers.iter().any(|f| f == finalizer) {
+        return Ok(());
     }
+
+    info!(
+        "Adding finalizer {} to {} {}",
+        finalizer,
+        T::kind(&()),
+        name
+    );
+
+    let patch = build_add_finalizer_patch(
+        &finalizers,
+        resource.meta().resource_version.as_deref(),
+        finalizer,
+    )?;
+
+    let api: Api<T> = Api::all(client.clone());
+    api.patch(&name, &PatchParams::default(), &Patch::Json::<()>(patch))
+        .await
+        .with_context(|| {
+            format!(
+                "failed to add finalizer {finalizer} to {name} \
+                 (possibly a concurrent finalizer edit; will retry on next reconciliation)"
+            )
+        })?;
+
+    info!(
+        "Successfully added finalizer {} to {} {}",
+        finalizer,
+        T::kind(&()),
+        name
+    );
 
     Ok(())
 }
@@ -412,9 +540,19 @@ where
 ///
 /// Returns `Ok(())` if the finalizer was removed or already absent.
 ///
+/// # Concurrency
+///
+/// The patch is a JSON Patch that `test`s the exact array index before
+/// removing it (mirroring kube-runtime's finalizer helper), so a racing
+/// writer's finalizer edits are never clobbered. On a conflict the API call
+/// fails and the returned error triggers a requeue; the next reconciliation
+/// retries with fresh state.
+///
 /// # Errors
 ///
-/// Returns an error if the API patch operation fails.
+/// Returns an error if the API patch operation fails, including when a
+/// concurrent writer modified `metadata.finalizers` and the guarded patch
+/// was rejected.
 pub async fn remove_cluster_finalizer<T>(
     client: &Client,
     resource: &T,
@@ -430,35 +568,36 @@ where
 {
     let name = resource.name_any();
 
-    // Check if finalizer is present
-    if resource
-        .meta()
-        .finalizers
-        .as_ref()
-        .is_some_and(|f| f.contains(&finalizer.to_string()))
-    {
-        info!(
-            "Removing finalizer {} from {} {}",
-            finalizer,
-            T::kind(&()),
-            name
-        );
+    let finalizers = resource.meta().finalizers.clone().unwrap_or_default();
 
-        let mut finalizers = resource.meta().finalizers.clone().unwrap_or_default();
-        finalizers.retain(|f| f != finalizer);
+    // Early return: finalizer already absent
+    let Some(patch) = build_remove_finalizer_patch(&finalizers, finalizer)? else {
+        return Ok(());
+    };
 
-        let api: Api<T> = Api::all(client.clone());
-        let patch = json!({ "metadata": { "finalizers": finalizers } });
-        api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
-            .await?;
+    info!(
+        "Removing finalizer {} from {} {}",
+        finalizer,
+        T::kind(&()),
+        name
+    );
 
-        info!(
-            "Successfully removed finalizer {} from {} {}",
-            finalizer,
-            T::kind(&()),
-            name
-        );
-    }
+    let api: Api<T> = Api::all(client.clone());
+    api.patch(&name, &PatchParams::default(), &Patch::Json::<()>(patch))
+        .await
+        .with_context(|| {
+            format!(
+                "failed to remove finalizer {finalizer} from {name} \
+                 (possibly a concurrent finalizer edit; will retry on next reconciliation)"
+            )
+        })?;
+
+    info!(
+        "Successfully removed finalizer {} from {} {}",
+        finalizer,
+        T::kind(&()),
+        name
+    );
 
     Ok(())
 }

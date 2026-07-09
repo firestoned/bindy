@@ -204,6 +204,13 @@ enum Commands {
         /// to the same IP(s).
         #[arg(long, value_delimiter = ',')]
         default_ips: Vec<String>,
+        /// Map a gatewayClass to the LoadBalancer Service whose external IP backs it,
+        /// as `class=namespace/name` (repeatable). When an HTTPRoute/TLSRoute has no IP
+        /// annotation, scout follows its parentRefs to a Gateway of a configured class
+        /// and uses the mapped Service's external IP. Overrides BINDY_SCOUT_GATEWAY_SERVICES.
+        /// Example: --gateway-service traefik=traefik/traefik
+        #[arg(long = "gateway-service")]
+        gateway_service: Vec<String>,
         /// Default DNS zone applied to all Ingresses when no bindy.firestoned.io/zone annotation
         /// is present. Overrides the BINDY_SCOUT_DEFAULT_ZONE environment variable.
         /// When combined with --default-ips, Ingresses only need: bindy.firestoned.io/scout-enabled: "true"
@@ -311,11 +318,13 @@ fn main() -> Result<()> {
             cluster_name,
             namespace,
             default_ips,
+            gateway_service,
             default_zone,
         } => runtime.block_on(scout_command(
             cluster_name,
             namespace,
             default_ips,
+            gateway_service,
             default_zone,
         )),
         Commands::Completion { .. } => unreachable!("handled above"),
@@ -761,15 +770,19 @@ fn default_watcher_config() -> Config {
     Config::default()
 }
 
-/// Create a semantic watcher configuration.
+/// Create a watcher configuration with relaxed list semantics.
 ///
-/// Returns a watcher configuration that only triggers on semantic changes
-/// (spec modifications), ignoring status-only updates. This prevents
-/// reconciliation loops when controllers update status fields.
+/// `any_semantic()` sets `ListSemantic::Any`, which lets the initial LIST be
+/// served from any resource version (cheaper on the API server). It does NOT
+/// filter watch events: status-only updates still trigger reconciliation.
+/// Event-level filtering would require `predicates::generation` on the
+/// controller stream, which is deliberately not used here — several
+/// controllers depend on observing status updates (e.g. zone record
+/// discovery reacts to record status changes).
 ///
 /// # Returns
 ///
-/// A `Config` instance configured with semantic filtering.
+/// A `Config` instance with `ListSemantic::Any`.
 #[inline]
 fn semantic_watcher_config() -> Config {
     Config::default().any_semantic()
@@ -1018,11 +1031,19 @@ async fn scout_command(
     cluster_name: Option<String>,
     namespace: Option<String>,
     default_ips: Vec<String>,
+    gateway_service: Vec<String>,
     default_zone: Option<String>,
 ) -> Result<()> {
     initialize_logging();
     info!("Starting Scout controller");
-    bindy::scout::run_scout(cluster_name, namespace, default_ips, default_zone).await
+    bindy::scout::run_scout(
+        cluster_name,
+        namespace,
+        default_ips,
+        gateway_service,
+        default_zone,
+    )
+    .await
 }
 
 async fn run_command() -> Result<()> {

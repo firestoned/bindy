@@ -10,7 +10,7 @@
 //! - Collecting secondary pod IPs
 //! - Executing operations on all secondary endpoints
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use k8s_openapi::api::core::v1::Pod;
 use kube::{api::ListParams, Api, Client};
 use tracing::{debug, error, info, warn};
@@ -213,45 +213,23 @@ async fn find_all_secondary_pods(
         );
 
         for pod in &pods.items {
-            let pod_name = pod
-                .metadata
-                .name
-                .as_ref()
-                .ok_or_else(|| anyhow!("Pod has no name"))?
-                .clone();
+            // Skip pods that are not Running or have no IP yet (e.g. Pending
+            // pods that were just scheduled) instead of failing the whole
+            // listing - one new pod must not abort operations on healthy pods.
+            let Some((pod_name, pod_ip)) = super::helpers::running_pod_name_and_ip(pod) else {
+                continue;
+            };
 
-            // Get pod IP
-            let pod_ip = pod
-                .status
-                .as_ref()
-                .and_then(|s| s.pod_ip.as_ref())
-                .ok_or_else(|| anyhow!("Pod {pod_name} has no IP address"))?
-                .clone();
-
-            // Check if pod is running
-            let phase = pod
-                .status
-                .as_ref()
-                .and_then(|s| s.phase.as_ref())
-                .map(String::as_str);
-
-            if phase == Some("Running") {
-                all_pod_infos.push(PodInfo {
-                    name: pod_name.clone(),
-                    ip: pod_ip.clone(),
-                    instance_name: instance_name.clone(),
-                    namespace: instance_namespace.clone(),
-                });
-                debug!(
-                    "Found running secondary pod {} with IP {} in namespace {}",
-                    pod_name, pod_ip, instance_namespace
-                );
-            } else {
-                debug!(
-                    "Skipping secondary pod {} (phase: {:?}, not running)",
-                    pod_name, phase
-                );
-            }
+            all_pod_infos.push(PodInfo {
+                name: pod_name.clone(),
+                ip: pod_ip.clone(),
+                instance_name: instance_name.clone(),
+                namespace: instance_namespace.clone(),
+            });
+            debug!(
+                "Found running secondary pod {} with IP {} in namespace {}",
+                pod_name, pod_ip, instance_namespace
+            );
         }
     }
 

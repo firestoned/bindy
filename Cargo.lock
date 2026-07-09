@@ -291,6 +291,7 @@ dependencies = [
  "futures",
  "hickory-net",
  "hickory-proto",
+ "json-patch",
  "k8s-openapi",
  "kube",
  "kube-lease-manager",

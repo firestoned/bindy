@@ -4,7 +4,10 @@
 //! NS record management.
 
 use super::super::types::RndcKeyData;
-use super::{build_authenticated_client, build_record_fqdn, should_update_record};
+use super::{
+    build_authenticated_client, build_delete_rrset_record, build_record_fqdn, effective_record_ttl,
+    rrset_ttl_matches, should_update_record,
+};
 use anyhow::Result;
 use hickory_net::client::ClientHandle;
 use hickory_proto::op::ResponseCode;
@@ -12,9 +15,36 @@ use hickory_proto::rr::{rdata, DNSClass, Name, RData, Record, RecordType};
 use std::str::FromStr;
 use tracing::info;
 
-use crate::constants::DEFAULT_DNS_RECORD_TTL_SECS;
+/// Compare existing DNS `RRset` with the desired nameserver and TTL.
+///
+/// # Arguments
+///
+/// * `existing_records` - Records currently in DNS (from query)
+/// * `nameserver` - Desired nameserver host from the spec
+/// * `desired_ttl` - Effective TTL from the spec
+///
+/// # Returns
+///
+/// `true` if the existing `RRset` matches the desired state exactly (no changes
+/// needed), `false` if an update is required (rdata or TTL differ).
+fn compare_ns_rrset(existing_records: &[Record], nameserver: &str, desired_ttl: u32) -> bool {
+    if existing_records.len() != 1 {
+        return false;
+    }
+    if !rrset_ttl_matches(existing_records, desired_ttl) {
+        return false;
+    }
+    let RData::NS(existing_ns) = &existing_records[0].data else {
+        return false;
+    };
+    existing_ns.0.to_string() == nameserver
+}
 
-/// Add an NS record using dynamic DNS update (RFC 2136).
+/// Add an NS record using dynamic DNS update (RFC 2136) with `RRset` synchronization.
+///
+/// NS records managed here are used for delegations. If the existing `RRset`
+/// differs from the desired state, the entire NS `RRset` for the name is
+/// deleted and recreated so stale delegation rdata never lingers.
 ///
 /// # Errors
 ///
@@ -28,30 +58,20 @@ pub async fn add_ns_record(
     server: &str,
     key_data: &RndcKeyData,
 ) -> Result<()> {
-    let nameserver_for_comparison = nameserver.to_string();
+    let ttl_value = effective_record_ttl(ttl);
     let should_update = should_update_record(
         zone_name,
         name,
         RecordType::NS,
         "NS",
         server,
-        |existing_records| {
-            if existing_records.len() == 1 {
-                if let RData::NS(existing_ns) = &existing_records[0].data {
-                    return existing_ns.0.to_string() == nameserver_for_comparison;
-                }
-            }
-            false
-        },
+        |existing_records| compare_ns_rrset(existing_records, nameserver, ttl_value),
     )
     .await?;
 
     if !should_update {
         return Ok(());
     }
-
-    let ttl_value = u32::try_from(ttl.unwrap_or(DEFAULT_DNS_RECORD_TTL_SECS))
-        .unwrap_or(u32::try_from(DEFAULT_DNS_RECORD_TTL_SECS).unwrap_or(300));
 
     let zone = Name::from_str(zone_name)?;
     let fqdn = build_record_fqdn(zone_name, name)?;
@@ -66,6 +86,12 @@ pub async fn add_ns_record(
     );
 
     let mut client = build_authenticated_client(server, key_data).await?;
+
+    // Step 1: delete existing RRset (ignore errors — may not exist).
+    let delete_record = build_delete_rrset_record(&fqdn, RecordType::NS);
+    let _ = client.delete_rrset(delete_record, zone.clone()).await;
+
+    // Step 2: append the desired record to create the new RRset.
     let response = client.append(record, zone, false).await?;
 
     match response.metadata.response_code {

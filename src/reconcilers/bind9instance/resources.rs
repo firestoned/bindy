@@ -198,7 +198,7 @@ pub(super) async fn create_or_update_resources(
     )
     .await?;
 
-    // 4. Create/update Deployment
+    // 4. Create/update Deployment (mounts the resolved RNDC Secret)
     debug!("Step 4: Creating/updating Deployment");
     create_or_update_deployment(
         client,
@@ -207,6 +207,7 @@ pub(super) async fn create_or_update_resources(
         instance,
         cluster.as_ref(),
         cluster_provider.as_ref(),
+        &secret_name,
     )
     .await?;
 
@@ -234,6 +235,93 @@ async fn create_or_update_service_account(
 ) -> Result<()> {
     let service_account = build_service_account(namespace, instance);
     create_or_apply(client, namespace, &service_account, "bindy-controller").await
+}
+
+/// Data keys every operator-managed RNDC `Secret` must contain.
+const RNDC_SECRET_REQUIRED_KEYS: [&str; 3] = ["key-name", "algorithm", "secret"];
+
+/// Action to take for an existing RNDC `Secret`, decided by
+/// [`evaluate_existing_rndc_secret`].
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum RndcSecretAction {
+    /// Secret is valid and up to date — keep it as-is.
+    Keep,
+    /// Secret is valid but rotation is enabled and rotation annotations are
+    /// missing — patch them onto the Secret without regenerating the key.
+    AddRotationAnnotations,
+    /// Rotation is due — rotate the key in place.
+    Rotate,
+    /// Secret is malformed or has drifted from the desired configuration —
+    /// delete it and recreate it (the reason explains why).
+    Recreate(String),
+}
+
+/// Decide what to do with an existing RNDC `Secret`.
+///
+/// Pure decision logic extracted from `create_or_update_rndc_secret_with_config`
+/// so the ordering is unit-testable. Malformedness is checked FIRST: a Secret
+/// with missing data or missing required keys must be recreated, and none of
+/// the rotation / drift checks may run against it (running them on a stale
+/// in-memory copy after deletion previously caused an early return that left
+/// the Secret deleted but never recreated).
+///
+/// # Arguments
+///
+/// * `secret` - The existing RNDC `Secret` fetched from the API server
+/// * `config` - Desired RNDC configuration (resolved via precedence)
+///
+/// # Returns
+///
+/// The [`RndcSecretAction`] to perform for this Secret.
+///
+/// # Errors
+///
+/// Returns an error if rotation annotations exist but cannot be parsed.
+pub(super) fn evaluate_existing_rndc_secret(
+    secret: &Secret,
+    config: &crate::crd::RndcKeyConfig,
+) -> Result<RndcSecretAction> {
+    // Malformed Secrets must be recreated before any other check.
+    let Some(data) = secret.data.as_ref() else {
+        return Ok(RndcSecretAction::Recreate("Secret has no data".to_string()));
+    };
+    if RNDC_SECRET_REQUIRED_KEYS
+        .iter()
+        .any(|key| !data.contains_key(*key))
+    {
+        return Ok(RndcSecretAction::Recreate(
+            "Secret is missing required keys".to_string(),
+        ));
+    }
+
+    // Rotation annotations need to be added before rotation can be evaluated.
+    let has_annotations = secret
+        .metadata
+        .annotations
+        .as_ref()
+        .and_then(|a| a.get(crate::constants::ANNOTATION_RNDC_CREATED_AT))
+        .is_some();
+    if config.auto_rotate && !has_annotations {
+        return Ok(RndcSecretAction::AddRotationAnnotations);
+    }
+
+    if config.auto_rotate && should_rotate_secret(secret, config)? {
+        return Ok(RndcSecretAction::Rotate);
+    }
+
+    // Configuration drift: the key algorithm changed in the spec.
+    let current_algorithm = data.get("algorithm").map_or_else(
+        || "unknown".to_string(),
+        |v| String::from_utf8_lossy(&v.0).into_owned(),
+    );
+    let desired_algorithm = config.algorithm.as_str();
+    if current_algorithm != desired_algorithm {
+        return Ok(RndcSecretAction::Recreate(format!(
+            "algorithm mismatch (current: {current_algorithm}, desired: {desired_algorithm})"
+        )));
+    }
+
+    Ok(RndcSecretAction::Keep)
 }
 
 /// Create or update the RNDC Secret for BIND9 remote control
@@ -290,44 +378,20 @@ async fn create_or_update_rndc_secret_with_config(
 
     let secret_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
 
-    // Check if Secret exists and if rotation is due
+    // Check the existing Secret (if any) and decide what to do with it. The
+    // decision logic is a pure function so that the malformed/rotation/drift
+    // ordering is unit-testable; only `Recreate` falls through to the
+    // creation path below — every other action returns early.
     match secret_api.get(&secret_name).await {
-        Ok(existing_secret) => {
-            // Verify Secret has required keys first
-            if let Some(ref data) = existing_secret.data {
-                if !data.contains_key("key-name")
-                    || !data.contains_key("algorithm")
-                    || !data.contains_key("secret")
-                {
-                    warn!(
-                        "RNDC Secret {}/{} is missing required keys, will recreate",
-                        namespace, secret_name
-                    );
-                    secret_api
-                        .delete(&secret_name, &kube::api::DeleteParams::default())
-                        .await?;
-                    // Fall through to create new Secret
-                }
-            } else {
-                warn!(
-                    "RNDC Secret {}/{} has no data, will recreate",
+        Ok(existing_secret) => match evaluate_existing_rndc_secret(&existing_secret, config)? {
+            RndcSecretAction::Keep => {
+                info!(
+                    "RNDC Secret {}/{} exists and is valid, skipping creation",
                     namespace, secret_name
                 );
-                secret_api
-                    .delete(&secret_name, &kube::api::DeleteParams::default())
-                    .await?;
-                // Fall through to create new Secret
+                return Ok(secret_name);
             }
-
-            // Check if rotation annotations need to be added or updated
-            let has_annotations = existing_secret
-                .metadata
-                .annotations
-                .as_ref()
-                .and_then(|a| a.get(crate::constants::ANNOTATION_RNDC_CREATED_AT))
-                .is_some();
-
-            if config.auto_rotate && !has_annotations {
+            RndcSecretAction::AddRotationAnnotations => {
                 info!(
                     "RNDC Secret {}/{} missing rotation annotations, adding them",
                     namespace, secret_name
@@ -335,9 +399,7 @@ async fn create_or_update_rndc_secret_with_config(
                 add_rotation_annotations_to_secret(&secret_api, &secret_name, config).await?;
                 return Ok(secret_name);
             }
-
-            // Check if rotation is needed
-            if config.auto_rotate && should_rotate_secret(&existing_secret, config)? {
+            RndcSecretAction::Rotate => {
                 info!(
                     "RNDC Secret {}/{} rotation is due, rotating",
                     namespace, secret_name
@@ -353,32 +415,17 @@ async fn create_or_update_rndc_secret_with_config(
                 .await?;
                 return Ok(secret_name);
             }
-
-            // Check for configuration drift (algorithm changed)
-            if let Some(ref data) = existing_secret.data {
-                if data.contains_key("algorithm") {
-                    let current_algorithm =
-                        std::str::from_utf8(&data.get("algorithm").unwrap().0).unwrap_or("unknown");
-                    let desired_algorithm = config.algorithm.as_str();
-
-                    if current_algorithm == desired_algorithm {
-                        info!(
-                            "RNDC Secret {}/{} exists and is valid, skipping creation",
-                            namespace, secret_name
-                        );
-                        return Ok(secret_name);
-                    }
-                    warn!(
-                        "RNDC Secret {}/{} algorithm mismatch (current: {}, desired: {}), will recreate",
-                        namespace, secret_name, current_algorithm, desired_algorithm
-                    );
-                    secret_api
-                        .delete(&secret_name, &kube::api::DeleteParams::default())
-                        .await?;
-                    // Fall through to create new Secret
-                }
+            RndcSecretAction::Recreate(reason) => {
+                warn!(
+                    "RNDC Secret {}/{} will be recreated: {}",
+                    namespace, secret_name, reason
+                );
+                secret_api
+                    .delete(&secret_name, &kube::api::DeleteParams::default())
+                    .await?;
+                // Fall through to create a new Secret below
             }
-        }
+        },
         Err(_) => {
             info!(
                 "RNDC Secret {}/{} does not exist, creating",
@@ -857,31 +904,27 @@ async fn create_or_update_configmap(
             .and_then(|s| s.allow_transfer.as_ref()),
     });
 
-    // build_configmap returns None if custom ConfigMaps are referenced;
-    // it returns Err if any ACL entry fails validation.
-    if let Some(configmap) =
-        build_configmap(name, namespace, instance, cluster, role_allow_transfer)?
-    {
-        let cm_api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
-        let cm_name = format!("{name}-config");
+    // build_configmap always returns a ConfigMap (it always carries at least
+    // rndc.conf, plus any file not overridden by custom configMapRefs); it
+    // returns Err if any ACL/forwarder/listen entry fails validation. The
+    // generated ConfigMap must always be created because the Deployment's
+    // `config` volume references it unconditionally.
+    let configmap = build_configmap(name, namespace, instance, cluster, role_allow_transfer)?;
+    let cm_api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+    let cm_name = format!("{name}-config");
 
-        if (cm_api.get(&cm_name).await).is_ok() {
-            // ConfigMap exists, update it
-            info!("Updating ConfigMap {}/{}", namespace, cm_name);
-            cm_api
-                .replace(&cm_name, &PostParams::default(), &configmap)
-                .await?;
-        } else {
-            // ConfigMap doesn't exist, create it
-            info!("Creating ConfigMap {}/{}", namespace, cm_name);
-            cm_api.create(&PostParams::default(), &configmap).await?;
-        }
-    } else {
-        info!(
-            "Using custom ConfigMaps for {}/{}, skipping ConfigMap creation",
-            namespace, name
-        );
+    if (cm_api.get(&cm_name).await).is_ok() {
+        // ConfigMap exists, update it
+        info!("Updating ConfigMap {}/{}", namespace, cm_name);
+        cm_api
+            .replace(&cm_name, &PostParams::default(), &configmap)
+            .await?;
+        return Ok(());
     }
+
+    // ConfigMap doesn't exist, create it
+    info!("Creating ConfigMap {}/{}", namespace, cm_name);
+    cm_api.create(&PostParams::default(), &configmap).await?;
 
     Ok(())
 }
@@ -972,6 +1015,12 @@ fn deployment_needs_update(current: &Deployment, desired: &Deployment) -> bool {
 }
 
 /// Create or update the Deployment for BIND9
+///
+/// `rndc_secret_name` is the resolved RNDC `Secret` name returned by
+/// `create_or_update_rndc_secret_with_config` (a `secretRef` / inline secret
+/// name, or the auto-generated `{name}-rndc-key` default) and is threaded
+/// into the Deployment's rndc-key volume and bindcar env secretKeyRefs.
+#[allow(clippy::too_many_arguments)]
 async fn create_or_update_deployment(
     client: &Client,
     namespace: &str,
@@ -979,8 +1028,16 @@ async fn create_or_update_deployment(
     instance: &Bind9Instance,
     cluster: Option<&Bind9Cluster>,
     cluster_provider: Option<&crate::crd::ClusterBind9Provider>,
+    rndc_secret_name: &str,
 ) -> Result<()> {
-    let deployment = build_deployment(name, namespace, instance, cluster, cluster_provider);
+    let deployment = build_deployment(
+        name,
+        namespace,
+        instance,
+        cluster,
+        cluster_provider,
+        rndc_secret_name,
+    );
     let api: Api<Deployment> = Api::namespaced(client.clone(), namespace);
 
     // Check if deployment exists - if not, create it and return early

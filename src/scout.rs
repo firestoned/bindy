@@ -51,6 +51,28 @@ use tracing::{debug, error, info, warn};
 // We only care about metadata and spec.hostnames[] for Scout's reconciliation.
 // ============================================================================
 
+/// A minimal Gateway API `parentRef` — the reference from a route back to the
+/// Gateway (or other parent) that serves it.
+///
+/// Only the fields Scout needs to walk route → Gateway are modelled. Per the
+/// Gateway API defaults, an omitted `group` means `gateway.networking.k8s.io`
+/// and an omitted `kind` means `Gateway`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParentReference {
+    /// API group of the parent. Defaults to `gateway.networking.k8s.io` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// Kind of the parent. Defaults to `Gateway` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Namespace of the parent. Defaults to the route's own namespace when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    /// Name of the parent Gateway.
+    pub name: String,
+}
+
 /// Minimal HTTPRoute spec for Scout's use case.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,6 +80,10 @@ pub struct HTTPRouteSpec {
     /// Hostnames matching this HTTPRoute
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hostnames: Option<Vec<String>>,
+    /// Gateways this route attaches to. Scout follows these to discover the
+    /// serving Gateway's external IP when no explicit IP annotation is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_refs: Option<Vec<ParentReference>>,
 }
 
 /// Minimal HTTPRoute definition for Scout's use case.
@@ -81,6 +107,10 @@ pub struct TLSRouteSpec {
     /// Rules for this TLSRoute (required by API, but Scout only uses hostnames)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rules: Option<Vec<serde_json::Value>>,
+    /// Gateways this route attaches to. Scout follows these to discover the
+    /// serving Gateway's external IP when no explicit IP annotation is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_refs: Option<Vec<ParentReference>>,
 }
 
 /// Minimal TLSRoute definition for Scout's use case.
@@ -131,6 +161,115 @@ impl k8s_openapi::Resource for TLSRoute {
     const KIND: &'static str = "TLSRoute";
     const VERSION: &'static str = "v1alpha2";
     const URL_PATH_SEGMENT: &'static str = "tlsroutes";
+    type Scope = k8s_openapi::NamespaceResourceScope;
+}
+
+/// Gateway API group used for `parentRefs` and Gateway lookups.
+pub const GATEWAY_API_GROUP: &str = "gateway.networking.k8s.io";
+
+/// Gateway API `kind` for a Gateway parent reference.
+pub const GATEWAY_KIND: &str = "Gateway";
+
+/// A namespaced object reference (`namespace` + `name`).
+///
+/// Used both for the operator-configured `gatewayClass → LoadBalancer Service`
+/// map and for the Gateways a route's `parentRefs` point at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamespacedName {
+    /// Object namespace.
+    pub namespace: String,
+    /// Object name.
+    pub name: String,
+}
+
+/// How Scout locates the LoadBalancer Service backing a gateway class.
+///
+/// Configured per `gatewayClass` so operators can pin the exact Service — either
+/// by an explicit `namespace/name`, or by a label selector scoped to a namespace
+/// (useful when the Service name is generated but carries stable labels).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GatewayServiceTarget {
+    /// A specific LoadBalancer Service, addressed by namespace and name.
+    Name(NamespacedName),
+    /// A LoadBalancer Service found by label selector within a namespace.
+    /// `selector` is a standard Kubernetes label-selector string, e.g.
+    /// `app.kubernetes.io/name=traefik`.
+    Labeled {
+        /// Namespace to search for the Service.
+        namespace: String,
+        /// Kubernetes label selector identifying the Service.
+        selector: String,
+    },
+}
+
+impl GatewayServiceTarget {
+    /// Namespace the target Service lives in.
+    #[must_use]
+    pub fn namespace(&self) -> &str {
+        match self {
+            Self::Name(nn) => &nn.namespace,
+            Self::Labeled { namespace, .. } => namespace,
+        }
+    }
+}
+
+/// Minimal Gateway spec — only `gatewayClassName`, used to match the running class.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewaySpec {
+    /// Name of the GatewayClass implementing this Gateway.
+    pub gateway_class_name: String,
+}
+
+/// A single entry in `Gateway.status.addresses`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayStatusAddress {
+    /// Address type, e.g. `IPAddress` or `Hostname`. Absent is treated as unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<String>,
+    /// The address value (an IP for `IPAddress`, a DNS name for `Hostname`).
+    pub value: String,
+}
+
+/// Minimal Gateway status — only the assigned addresses.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayStatus {
+    /// Addresses the controller has assigned to this Gateway (often empty when
+    /// the controller publishes the external IP only on its LoadBalancer Service).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub addresses: Option<Vec<GatewayStatusAddress>>,
+}
+
+/// Minimal Gateway definition for Scout's chain-following.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Gateway {
+    #[serde(rename = "apiVersion")]
+    pub api_version: String,
+    pub kind: String,
+    pub metadata: kube::api::ObjectMeta,
+    pub spec: GatewaySpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<GatewayStatus>,
+}
+
+impl k8s_openapi::Metadata for Gateway {
+    type Ty = kube::api::ObjectMeta;
+    fn metadata(&self) -> &kube::api::ObjectMeta {
+        &self.metadata
+    }
+    fn metadata_mut(&mut self) -> &mut kube::api::ObjectMeta {
+        &mut self.metadata
+    }
+}
+
+impl k8s_openapi::Resource for Gateway {
+    const API_VERSION: &'static str = "gateway.networking.k8s.io/v1";
+    const GROUP: &'static str = "gateway.networking.k8s.io";
+    const KIND: &'static str = "Gateway";
+    const VERSION: &'static str = "v1";
+    const URL_PATH_SEGMENT: &'static str = "gateways";
     type Scope = k8s_openapi::NamespaceResourceScope;
 }
 
@@ -238,6 +377,11 @@ pub struct ScoutContext {
     /// Intended for shared-ingress topologies (e.g. Traefik) where all Ingresses resolve
     /// to the same IP(s). Set via `BINDY_SCOUT_DEFAULT_IPS` or `--default-ips`.
     pub default_ips: Vec<String>,
+    /// Operator-configured `gatewayClass → LoadBalancer Service` map. When an HTTPRoute
+    /// or TLSRoute has no explicit IP annotation, Scout follows its `parentRefs` to a
+    /// Gateway of one of these classes and reads the mapped Service's external IP.
+    /// Set via `BINDY_SCOUT_GATEWAY_SERVICES` or `--gateway-service`.
+    pub gateway_services: BTreeMap<String, GatewayServiceTarget>,
     /// Default DNS zone applied to all Ingresses when no `bindy.firestoned.io/zone` annotation
     /// is present. Set via `BINDY_SCOUT_DEFAULT_ZONE` or `--default-zone`.
     pub default_zone: Option<String>,
@@ -703,6 +847,264 @@ pub fn resolve_ip_from_service_lb_status(svc: &Service) -> Option<String> {
         .as_ref()?
         .iter()
         .find_map(|entry| entry.ip.clone().filter(|ip| !ip.is_empty()))
+}
+
+/// Parses a `namespace/name` string into a [`NamespacedName`].
+///
+/// Whitespace around each segment is trimmed. Returns `None` unless the input
+/// has exactly two non-empty segments separated by a single `/`.
+#[must_use]
+pub fn service_ref_from_str(s: &str) -> Option<NamespacedName> {
+    let mut parts = s.split('/');
+    let namespace = parts.next()?.trim();
+    let name = parts.next()?.trim();
+    if namespace.is_empty() || name.is_empty() || parts.next().is_some() {
+        return None;
+    }
+    Some(NamespacedName {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+    })
+}
+
+/// Parses a single `gatewayClass` target: either `namespace/name` (explicit
+/// Service) or `namespace/<label-selector>` (any entry whose Service part
+/// contains `=`, since Service names never do).
+///
+/// The namespace is the segment before the first `/`; namespaces cannot contain
+/// `/`, so a label selector's own `/` (e.g. `app.kubernetes.io/name=x`) is
+/// preserved. Returns `None` for empty namespace or empty target.
+#[must_use]
+pub fn gateway_service_target_from_str(s: &str) -> Option<GatewayServiceTarget> {
+    let (namespace, rest) = s.split_once('/')?;
+    let namespace = namespace.trim();
+    let rest = rest.trim();
+    if namespace.is_empty() || rest.is_empty() {
+        return None;
+    }
+    if rest.contains('=') {
+        return Some(GatewayServiceTarget::Labeled {
+            namespace: namespace.to_string(),
+            selector: rest.to_string(),
+        });
+    }
+    // No `=` → an explicit Service name. Reuse the strict `ns/name` parser,
+    // which rejects extra slashes.
+    service_ref_from_str(s).map(GatewayServiceTarget::Name)
+}
+
+/// Parses a single `class=<target>` mapping entry.
+///
+/// Splits on the first `=` (so a label selector's own `=` stays in the target).
+/// Returns `None` for an empty class or an unparseable target. Used per-entry so
+/// the repeatable `--gateway-service` CLI flag can carry multi-label selectors
+/// (which contain commas) without them being mistaken for entry separators.
+#[must_use]
+pub fn parse_gateway_service_entry(entry: &str) -> Option<(String, GatewayServiceTarget)> {
+    let (class, target) = entry.trim().split_once('=')?;
+    let class = class.trim();
+    if class.is_empty() {
+        return None;
+    }
+    let target = gateway_service_target_from_str(target)?;
+    Some((class.to_string(), target))
+}
+
+/// Parses the operator's `gatewayClass → LoadBalancer Service` map from a single
+/// comma-separated string (the `BINDY_SCOUT_GATEWAY_SERVICES` env form).
+///
+/// Each entry is `class=<target>`, where `<target>` is either `namespace/name`
+/// or `namespace/<label-selector>`, e.g.
+/// `traefik=traefik/traefik,cilium=kube-system/app.kubernetes.io/name=cilium`.
+/// Malformed entries are skipped. Because commas separate entries here,
+/// multi-label selectors (which use commas) must be supplied via the repeatable
+/// `--gateway-service` CLI flag instead. The map's keys double as the allow-list
+/// of gateway classes Scout will follow.
+#[must_use]
+pub fn parse_gateway_services(raw: &str) -> BTreeMap<String, GatewayServiceTarget> {
+    raw.split(',')
+        .filter(|e| !e.trim().is_empty())
+        .filter_map(parse_gateway_service_entry)
+        .collect()
+}
+
+/// Extracts the IP-typed addresses from a Gateway's `status.addresses`.
+///
+/// An entry is treated as an IP when its `type` is `IPAddress`, or when the
+/// `type` is absent but the `value` parses as an [`IpAddr`](std::net::IpAddr).
+/// `Hostname`-typed entries are ignored. Returns an empty vec when the Gateway
+/// has no addresses (the common case that forces the LoadBalancer-Service hop).
+#[must_use]
+pub fn gateway_addresses_as_ips(gw: &Gateway) -> Vec<String> {
+    let Some(addresses) = gw.status.as_ref().and_then(|s| s.addresses.as_ref()) else {
+        return Vec::new();
+    };
+    addresses
+        .iter()
+        .filter(|addr| match addr.r#type.as_deref() {
+            Some("IPAddress") => true,
+            Some("Hostname") => false,
+            _ => addr.value.parse::<std::net::IpAddr>().is_ok(),
+        })
+        .map(|addr| addr.value.clone())
+        .filter(|v| !v.is_empty())
+        .collect()
+}
+
+/// Resolves a route's `parentRefs` to the Gateways they point at.
+///
+/// Only references to Gateway API Gateways are returned — an entry is kept when
+/// its `group` is absent or `gateway.networking.k8s.io` AND its `kind` is absent
+/// or `Gateway`. Each ref's namespace defaults to `route_namespace` when omitted.
+#[must_use]
+pub fn gateway_parent_refs(
+    parent_refs: &[ParentReference],
+    route_namespace: &str,
+) -> Vec<NamespacedName> {
+    parent_refs
+        .iter()
+        .filter(|r| {
+            let group_ok = r
+                .group
+                .as_deref()
+                .is_none_or(|g| g.is_empty() || g == GATEWAY_API_GROUP);
+            let kind_ok = r.kind.as_deref().is_none_or(|k| k == GATEWAY_KIND);
+            group_ok && kind_ok
+        })
+        .map(|r| NamespacedName {
+            namespace: r
+                .namespace
+                .clone()
+                .filter(|ns| !ns.is_empty())
+                .unwrap_or_else(|| route_namespace.to_string()),
+            name: r.name.clone(),
+        })
+        .collect()
+}
+
+/// Resolves the external IP of the LoadBalancer Service a gateway class maps to.
+///
+/// For a [`GatewayServiceTarget::Name`] the Service is fetched directly; for a
+/// [`GatewayServiceTarget::Labeled`] target the namespace is listed by label
+/// selector and the first LoadBalancer Service with an external IP is used.
+/// Returns `None` (with a debug log) when the Service is unreachable, absent, or
+/// has no external IP assigned yet.
+async fn resolve_ip_from_gateway_service(
+    client: &Client,
+    target: &GatewayServiceTarget,
+) -> Option<String> {
+    match target {
+        GatewayServiceTarget::Name(svc_ref) => {
+            let svc_api: Api<Service> = Api::namespaced(client.clone(), &svc_ref.namespace);
+            match svc_api.get(&svc_ref.name).await {
+                Ok(svc) => resolve_ip_from_service_lb_status(&svc).or_else(|| {
+                    debug!(service = %svc_ref.name, ns = %svc_ref.namespace,
+                        "Gateway LoadBalancer Service has no external IP yet");
+                    None
+                }),
+                Err(e) => {
+                    debug!(service = %svc_ref.name, ns = %svc_ref.namespace, error = %e,
+                        "Could not fetch Gateway's LoadBalancer Service");
+                    None
+                }
+            }
+        }
+        GatewayServiceTarget::Labeled {
+            namespace,
+            selector,
+        } => {
+            let svc_api: Api<Service> = Api::namespaced(client.clone(), namespace);
+            let lp = kube::api::ListParams::default().labels(selector);
+            match svc_api.list(&lp).await {
+                Ok(list) => list
+                    .items
+                    .iter()
+                    .filter(|svc| is_loadbalancer_service(svc))
+                    .find_map(resolve_ip_from_service_lb_status)
+                    .or_else(|| {
+                        debug!(ns = %namespace, selector = %selector,
+                            "No LoadBalancer Service with an external IP matched the selector");
+                        None
+                    }),
+                Err(e) => {
+                    debug!(ns = %namespace, selector = %selector, error = %e,
+                        "Could not list Gateway LoadBalancer Services by selector");
+                    None
+                }
+            }
+        }
+    }
+}
+
+/// Follows a route's `parentRefs` back to the serving Gateway(s) and resolves
+/// their external IP(s).
+///
+/// For each `parentRef` that points at a Gateway whose `gatewayClassName` is in
+/// the operator-configured `gateway_services` map (the "running gateway
+/// class"), Scout resolves the IP by:
+///   1. reading the Gateway's `status.addresses` (IP-typed) when present, else
+///   2. reading the mapped LoadBalancer Service's external IP.
+///
+/// Returns the de-duplicated IPs in discovery order, or `None` when nothing is
+/// configured or nothing resolves. Individual lookup failures are logged and
+/// skipped so one unreachable Gateway does not blank out the others.
+///
+/// # Arguments
+/// * `client` - Local cluster client (Gateways and Services live on the workload cluster)
+/// * `route_namespace` - Namespace of the route, used as the default parentRef namespace
+/// * `parent_refs` - The route's `spec.parentRefs`
+/// * `gateway_services` - Operator-configured `gatewayClass → Service` map / allow-list
+pub async fn resolve_ips_from_gateways(
+    client: &Client,
+    route_namespace: &str,
+    parent_refs: &[ParentReference],
+    gateway_services: &BTreeMap<String, GatewayServiceTarget>,
+) -> Option<Vec<String>> {
+    if gateway_services.is_empty() || parent_refs.is_empty() {
+        return None;
+    }
+
+    let mut ips: Vec<String> = Vec::new();
+    for gw_ref in gateway_parent_refs(parent_refs, route_namespace) {
+        let gw_api: Api<Gateway> = Api::namespaced(client.clone(), &gw_ref.namespace);
+        let gateway = match gw_api.get(&gw_ref.name).await {
+            Ok(gw) => gw,
+            Err(e) => {
+                debug!(gateway = %gw_ref.name, ns = %gw_ref.namespace, error = %e,
+                    "Skipping parentRef Gateway that could not be fetched");
+                continue;
+            }
+        };
+
+        let class = &gateway.spec.gateway_class_name;
+        let Some(target) = gateway_services.get(class) else {
+            debug!(gateway = %gw_ref.name, class = %class,
+                "Gateway class not in configured gateway-services — skipping");
+            continue;
+        };
+
+        // Prefer the Gateway's own advertised addresses when present.
+        let gw_ips = gateway_addresses_as_ips(&gateway);
+        if !gw_ips.is_empty() {
+            ips.extend(gw_ips);
+            continue;
+        }
+
+        // Otherwise hop to the mapped LoadBalancer Service for its external IP.
+        if let Some(ip) = resolve_ip_from_gateway_service(client, target).await {
+            ips.push(ip);
+        }
+    }
+
+    // De-duplicate preserving discovery order.
+    let mut seen = std::collections::HashSet::new();
+    ips.retain(|ip| seen.insert(ip.clone()));
+
+    if ips.is_empty() {
+        None
+    } else {
+        Some(ips)
+    }
 }
 
 /// Derives the ARecord CR name for a Service.
@@ -1985,19 +2387,32 @@ async fn reconcile_httproute(
         }
     }
 
-    // Resolve IPs: annotation (single or comma-separated) → default_ips → no routable IP = requeue
+    // Resolve IPs: annotation → gateway chain (parentRefs → Gateway → LB Service)
+    // → default_ips → no routable IP = requeue
     let ips = {
         let from_annotation = resolve_ips_from_annotation(&annotations);
+        let from_gateway = if from_annotation.is_some() {
+            None
+        } else {
+            let parent_refs = route
+                .spec
+                .as_ref()
+                .and_then(|s| s.parent_refs.as_ref())
+                .cloned()
+                .unwrap_or_default();
+            resolve_ips_from_gateways(&ctx.client, &namespace, &parent_refs, &ctx.gateway_services)
+                .await
+        };
         let from_defaults = if ctx.default_ips.is_empty() {
             None
         } else {
             Some(ctx.default_ips.clone())
         };
 
-        match from_annotation.or(from_defaults) {
+        match from_annotation.or(from_gateway).or(from_defaults) {
             Some(ips) => ips,
             None => {
-                warn!(httproute = %name, ns = %namespace, "No IP available (no annotation override, no default IPs) — requeuing");
+                warn!(httproute = %name, ns = %namespace, "No IP available (no annotation override, no gateway IP, no default IPs) — requeuing");
                 return Ok(Action::requeue(Duration::from_secs(
                     SCOUT_ERROR_REQUEUE_SECS,
                 )));
@@ -2221,19 +2636,32 @@ async fn reconcile_tlsroute(
         }
     }
 
-    // Resolve IPs: annotation (single or comma-separated) → default_ips → no routable IP = requeue
+    // Resolve IPs: annotation → gateway chain (parentRefs → Gateway → LB Service)
+    // → default_ips → no routable IP = requeue
     let ips = {
         let from_annotation = resolve_ips_from_annotation(&annotations);
+        let from_gateway = if from_annotation.is_some() {
+            None
+        } else {
+            let parent_refs = route
+                .spec
+                .as_ref()
+                .and_then(|s| s.parent_refs.as_ref())
+                .cloned()
+                .unwrap_or_default();
+            resolve_ips_from_gateways(&ctx.client, &namespace, &parent_refs, &ctx.gateway_services)
+                .await
+        };
         let from_defaults = if ctx.default_ips.is_empty() {
             None
         } else {
             Some(ctx.default_ips.clone())
         };
 
-        match from_annotation.or(from_defaults) {
+        match from_annotation.or(from_gateway).or(from_defaults) {
             Some(ips) => ips,
             None => {
-                warn!(tlsroute = %name, ns = %namespace, "No IP available (no annotation override, no default IPs) — requeuing");
+                warn!(tlsroute = %name, ns = %namespace, "No IP available (no annotation override, no gateway IP, no default IPs) — requeuing");
                 return Ok(Action::requeue(Duration::from_secs(
                     SCOUT_ERROR_REQUEUE_SECS,
                 )));
@@ -2390,6 +2818,9 @@ struct ScoutConfig {
     /// Default IPs used when no per-Ingress annotation override or LB status IP is available.
     /// Set via `BINDY_SCOUT_DEFAULT_IPS` (comma-separated) or `--default-ips` CLI flag.
     default_ips: Vec<String>,
+    /// `gatewayClass → LoadBalancer Service` map for gateway-chain IP resolution.
+    /// Set via `BINDY_SCOUT_GATEWAY_SERVICES` (`class=ns/name,...`) or `--gateway-service`.
+    gateway_services: BTreeMap<String, GatewayServiceTarget>,
     /// Default DNS zone applied to all Ingresses when no `bindy.firestoned.io/zone` annotation
     /// is present. Set via `BINDY_SCOUT_DEFAULT_ZONE` or `--default-zone` CLI flag.
     default_zone: Option<String>,
@@ -2408,6 +2839,7 @@ impl ScoutConfig {
         cli_cluster_name: Option<String>,
         cli_namespace: Option<String>,
         cli_default_ips: Vec<String>,
+        cli_gateway_services: Vec<String>,
         cli_default_zone: Option<String>,
     ) -> Result<Self> {
         let target_namespace = cli_namespace
@@ -2451,6 +2883,21 @@ impl ScoutConfig {
                 .collect()
         };
 
+        // CLI --gateway-service takes precedence over BINDY_SCOUT_GATEWAY_SERVICES env var.
+        // CLI entries are parsed one-by-one (each flag is a single `class=target`) so a
+        // multi-label selector's commas are not mistaken for entry separators; the env
+        // form is a single comma-separated string.
+        let gateway_services = if cli_gateway_services.is_empty() {
+            parse_gateway_services(
+                &std::env::var("BINDY_SCOUT_GATEWAY_SERVICES").unwrap_or_default(),
+            )
+        } else {
+            cli_gateway_services
+                .iter()
+                .filter_map(|e| parse_gateway_service_entry(e))
+                .collect()
+        };
+
         // CLI --default-zone takes precedence over BINDY_SCOUT_DEFAULT_ZONE env var
         let default_zone = cli_default_zone.filter(|s| !s.is_empty()).or_else(|| {
             std::env::var("BINDY_SCOUT_DEFAULT_ZONE")
@@ -2470,6 +2917,7 @@ impl ScoutConfig {
             cluster_name,
             excluded_namespaces,
             default_ips,
+            gateway_services,
             default_zone,
             remote_secret_name,
             remote_secret_namespace,
@@ -2535,12 +2983,14 @@ pub async fn run_scout(
     cli_cluster_name: Option<String>,
     cli_namespace: Option<String>,
     cli_default_ips: Vec<String>,
+    cli_gateway_services: Vec<String>,
     cli_default_zone: Option<String>,
 ) -> Result<()> {
     let config = ScoutConfig::from_env(
         cli_cluster_name,
         cli_namespace,
         cli_default_ips,
+        cli_gateway_services,
         cli_default_zone,
     )?;
 
@@ -2611,6 +3061,7 @@ pub async fn run_scout(
         cluster_name: config.cluster_name,
         excluded_namespaces: config.excluded_namespaces,
         default_ips: config.default_ips,
+        gateway_services: config.gateway_services,
         default_zone: config.default_zone,
         zone_store: dnszone_reader,
     });

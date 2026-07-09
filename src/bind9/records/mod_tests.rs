@@ -8,7 +8,102 @@
 
 #[cfg(test)]
 mod tests {
+    use super::super::*;
     use hickory_proto::rr::RecordType;
+    use std::net::Ipv4Addr;
+
+    const TEST_TTL: u32 = 300;
+    const OTHER_TTL: u32 = 600;
+
+    fn make_a_record(ttl: u32) -> Record {
+        let name = Name::from_str("www.example.com.").expect("valid test name");
+        Record::from_rdata(name, ttl, RData::A(Ipv4Addr::new(192, 0, 2, 1).into()))
+    }
+
+    // ========== Tests for is_idempotent_delete_response_code() ==========
+
+    #[test]
+    fn test_is_idempotent_delete_response_code_no_error() {
+        assert!(is_idempotent_delete_response_code(ResponseCode::NoError));
+    }
+
+    #[test]
+    fn test_is_idempotent_delete_response_code_nxdomain() {
+        assert!(is_idempotent_delete_response_code(ResponseCode::NXDomain));
+    }
+
+    #[test]
+    fn test_is_idempotent_delete_response_code_nxrrset() {
+        assert!(is_idempotent_delete_response_code(ResponseCode::NXRRSet));
+    }
+
+    #[test]
+    fn test_is_idempotent_delete_response_code_rejects_failures() {
+        let failure_codes = [
+            ResponseCode::Refused,
+            ResponseCode::NotAuth,
+            ResponseCode::NotZone,
+            ResponseCode::ServFail,
+            ResponseCode::FormErr,
+            ResponseCode::NotImp,
+            ResponseCode::YXRRSet,
+        ];
+        for code in failure_codes {
+            assert!(
+                !is_idempotent_delete_response_code(code),
+                "{code:?} must NOT be treated as idempotent delete success"
+            );
+        }
+    }
+
+    // ========== Tests for effective_record_ttl() ==========
+
+    #[test]
+    fn test_effective_record_ttl_uses_default_when_none() {
+        assert_eq!(effective_record_ttl(None), TEST_TTL);
+    }
+
+    #[test]
+    fn test_effective_record_ttl_uses_spec_value() {
+        assert_eq!(effective_record_ttl(Some(3600)), 3600);
+    }
+
+    #[test]
+    fn test_effective_record_ttl_falls_back_on_negative_value() {
+        assert_eq!(effective_record_ttl(Some(-5)), TEST_TTL);
+    }
+
+    // ========== Tests for rrset_ttl_matches() ==========
+
+    #[test]
+    fn test_rrset_ttl_matches_when_all_equal() {
+        let records = vec![make_a_record(TEST_TTL), make_a_record(TEST_TTL)];
+        assert!(rrset_ttl_matches(&records, TEST_TTL));
+    }
+
+    #[test]
+    fn test_rrset_ttl_matches_detects_mismatch() {
+        let records = vec![make_a_record(TEST_TTL), make_a_record(OTHER_TTL)];
+        assert!(!rrset_ttl_matches(&records, TEST_TTL));
+    }
+
+    #[test]
+    fn test_rrset_ttl_matches_ttl_only_change() {
+        // Simulates a user changing spec.ttl with unchanged rdata: must report mismatch.
+        let records = vec![make_a_record(TEST_TTL)];
+        assert!(!rrset_ttl_matches(&records, OTHER_TTL));
+    }
+
+    // ========== Tests for build_delete_rrset_record() ==========
+
+    #[test]
+    fn test_build_delete_rrset_record_shape() {
+        let fqdn = Name::from_str("mail.example.com.").expect("valid test name");
+        let record = build_delete_rrset_record(&fqdn, RecordType::MX);
+        assert_eq!(record.name, fqdn);
+        assert_eq!(record.ttl, 0);
+        assert_eq!(record.data, RData::Update0(RecordType::MX));
+    }
 
     // ========== Tests for should_update_record() logic ==========
 

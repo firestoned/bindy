@@ -93,4 +93,98 @@ mod tests {
         // Then: Should set status.observedGeneration = 5
         //       AND include in the status patch
     }
+
+    // ========================================================================
+    // Status patch decision (instance_status_changed)
+    // ========================================================================
+
+    use crate::crd::{Bind9InstanceStatus, Condition};
+    use crate::reconcilers::bind9instance::status_helpers::instance_status_changed;
+
+    fn ready_condition() -> Condition {
+        Condition {
+            r#type: "Ready".to_string(),
+            status: "True".to_string(),
+            reason: Some("AllReady".to_string()),
+            message: Some("All 1 pods are ready".to_string()),
+            last_transition_time: Some("2025-01-01T00:00:00Z".to_string()),
+        }
+    }
+
+    fn build_current_status(
+        generation: Option<i64>,
+        parent_generation: Option<i64>,
+    ) -> Bind9InstanceStatus {
+        Bind9InstanceStatus {
+            conditions: vec![ready_condition()],
+            observed_generation: generation,
+            observed_parent_generation: parent_generation,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_instance_status_changed_no_current_status() {
+        assert!(instance_status_changed(
+            None,
+            &[ready_condition()],
+            None,
+            &[],
+            Some(1),
+            None
+        ));
+    }
+
+    #[test]
+    fn test_instance_status_changed_generation_only_change_triggers_patch() {
+        // THE BUG: a spec edit that does not change conditions must still
+        // trigger the patch so observedGeneration advances - otherwise
+        // should_reconcile() returns true on every requeue forever.
+        let current = build_current_status(Some(1), None);
+
+        assert!(
+            instance_status_changed(
+                Some(&current),
+                &[ready_condition()],
+                None,
+                &[],
+                Some(2),
+                None
+            ),
+            "generation-only change must trigger a status patch"
+        );
+    }
+
+    #[test]
+    fn test_instance_status_changed_parent_generation_only_change_triggers_patch() {
+        // A parent cluster config change must be recorded even when the
+        // instance's own conditions and generation are unchanged
+        let current = build_current_status(Some(2), Some(5));
+
+        assert!(
+            instance_status_changed(
+                Some(&current),
+                &[ready_condition()],
+                None,
+                &[],
+                Some(2),
+                Some(6)
+            ),
+            "parent-generation-only change must trigger a status patch"
+        );
+    }
+
+    #[test]
+    fn test_instance_status_changed_unchanged_skips_patch() {
+        let current = build_current_status(Some(2), Some(5));
+
+        assert!(!instance_status_changed(
+            Some(&current),
+            &[ready_condition()],
+            None,
+            &[],
+            Some(2),
+            Some(5)
+        ));
+    }
 }

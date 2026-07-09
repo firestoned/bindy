@@ -118,6 +118,36 @@ fn calculate_requeue_duration(
     Some(std::time::Duration::from_secs(requeue_secs as u64))
 }
 
+/// Detects whether the parent cluster's configuration changed since it was last observed.
+///
+/// Compares the parent's current `metadata.generation` against the parent
+/// generation recorded in the instance's `status.observedParentGeneration`.
+/// These are the ONLY two values that may be compared: the instance's own
+/// `observed_generation` tracks a different, unrelated counter.
+///
+/// # Arguments
+///
+/// * `parent_generation` - Current `metadata.generation` of the referenced
+///   `Bind9Cluster`/`ClusterBind9Provider` (`None` if no parent exists)
+/// * `observed_parent_generation` - Parent generation recorded during the last
+///   successful reconciliation (`None` if never recorded)
+///
+/// # Returns
+///
+/// `true` if the parent exists and its generation differs from the recorded
+/// value (or was never recorded), `false` otherwise.
+#[must_use]
+pub fn parent_generation_changed(
+    parent_generation: Option<i64>,
+    observed_parent_generation: Option<i64>,
+) -> bool {
+    match (parent_generation, observed_parent_generation) {
+        (Some(parent), Some(observed)) => parent != observed,
+        (Some(_), None) => true, // Parent exists but was never observed
+        (None, _) => false,      // No parent - nothing to track
+    }
+}
+
 /// Update the `Bind9Instance` status with RNDC key rotation information.
 ///
 /// Reads rotation metadata from the RNDC Secret annotations and updates the instance
@@ -325,50 +355,33 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
     let (cluster, cluster_provider) = fetch_cluster_info(&client, &namespace, &instance).await;
 
     // Check if parent cluster configuration has changed since last reconciliation
-    // This is critical for detecting when RNDC config is added/changed at the cluster level
-    let parent_config_changed = {
-        // Check Bind9Cluster generation
-        let cluster_changed = if let Some(ref c) = cluster {
-            let cluster_generation = c.metadata.generation.unwrap_or(0);
-            let instance_observed_gen = observed_generation.unwrap_or(0);
+    // This is critical for detecting when RNDC config is added/changed at the cluster level.
+    //
+    // The parent's generation is tracked SEPARATELY from the instance's own
+    // observed_generation via status.observedParentGeneration - the two counters
+    // are unrelated and must never be compared against each other.
+    let parent_generation = cluster
+        .as_ref()
+        .and_then(|c| c.metadata.generation)
+        .or_else(|| {
+            cluster_provider
+                .as_ref()
+                .and_then(|cp| cp.metadata.generation)
+        });
+    let observed_parent_generation = instance
+        .status
+        .as_ref()
+        .and_then(|s| s.observed_parent_generation);
 
-            // If cluster generation is newer than when we last reconciled, parent config may have changed
-            // Note: This is a heuristic since we don't track parent's observed generation separately
-            // We compare against instance's observed_generation as a proxy for "last reconciliation time"
-            if cluster_generation > instance_observed_gen {
-                debug!(
-                    "Parent Bind9Cluster generation ({}) is newer than instance observed generation ({}), checking for config changes",
-                    cluster_generation, instance_observed_gen
-                );
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        };
+    let parent_config_changed =
+        parent_generation_changed(parent_generation, observed_parent_generation);
 
-        // Check ClusterBind9Provider generation
-        let provider_changed = if let Some(ref cp) = cluster_provider {
-            let provider_generation = cp.metadata.generation.unwrap_or(0);
-            let instance_observed_gen = observed_generation.unwrap_or(0);
-
-            // Same heuristic: if provider generation is newer, config may have changed
-            if provider_generation > instance_observed_gen {
-                debug!(
-                    "Parent ClusterBind9Provider generation ({}) is newer than instance observed generation ({}), checking for config changes",
-                    provider_generation, instance_observed_gen
-                );
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
-        cluster_changed || provider_changed
-    };
+    if parent_config_changed {
+        debug!(
+            "Parent cluster generation ({:?}) differs from last observed parent generation ({:?})",
+            parent_generation, observed_parent_generation
+        );
+    }
 
     if parent_config_changed {
         info!(
@@ -487,7 +500,15 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
         // Update status from current deployment state (only patches if status changed)
         // Preserve existing cluster_ref from instance status if available
         let cluster_ref = instance.status.as_ref().and_then(|s| s.cluster_ref.clone());
-        update_status_from_deployment(&client, &namespace, &name, &instance, cluster_ref).await?;
+        update_status_from_deployment(
+            &client,
+            &namespace,
+            &name,
+            &instance,
+            cluster_ref,
+            parent_generation,
+        )
+        .await?;
 
         // Reconcile zones after status update
         reconcile_zones_internal(&client, &ctx.stores, &instance).await?;
@@ -545,9 +566,28 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
             // Build cluster reference for status
             let cluster_ref = build_cluster_reference(cluster.as_ref(), cluster_provider.as_ref());
 
+            // Record the parent generation observed during this successful
+            // reconciliation. Use the freshly fetched parent (it may have been
+            // re-fetched by create_or_update_resources).
+            let observed_parent_generation = cluster
+                .as_ref()
+                .and_then(|c| c.metadata.generation)
+                .or_else(|| {
+                    cluster_provider
+                        .as_ref()
+                        .and_then(|cp| cp.metadata.generation)
+                });
+
             // Update status based on actual deployment state
-            update_status_from_deployment(&client, &namespace, &name, &instance, cluster_ref)
-                .await?;
+            update_status_from_deployment(
+                &client,
+                &namespace,
+                &name,
+                &instance,
+                cluster_ref,
+                observed_parent_generation,
+            )
+            .await?;
 
             // Update rotation status if Secret is available
             if let Some(ref secret) = secret {
@@ -586,8 +626,17 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
                 message: Some(format!("Failed to create resources: {e}")),
                 last_transition_time: Some(Utc::now().to_rfc3339()),
             };
-            // No cluster info available on error, pass None
-            update_status(&client, &instance, vec![error_condition], None).await?;
+            // No cluster info available on error, pass None for cluster_ref.
+            // Preserve the previously observed parent generation: the new parent
+            // config was NOT applied, so it must not be recorded as observed.
+            update_status(
+                &client,
+                &instance,
+                vec![error_condition],
+                None,
+                observed_parent_generation,
+            )
+            .await?;
 
             return Err(e);
         }

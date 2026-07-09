@@ -44,3 +44,18 @@ pub struct EndpointAddress {
     /// Container port number
     pub port: i32,
 }
+
+/// Outcome of configuring a zone across a set of BIND9 instances.
+///
+/// Tracks success in two different units so readiness can be computed in
+/// INSTANCE units (comparable with the expected instance counts) while still
+/// reporting per-endpoint detail for observability. An instance counts as
+/// configured only if ALL of its ready endpoints accepted the zone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ZoneConfigOutcome {
+    /// Number of instances where EVERY ready endpoint accepted the zone.
+    pub instances_configured: usize,
+    /// Total number of endpoints that accepted the zone (including
+    /// endpoints where the zone already existed).
+    pub endpoints_configured: usize,
+}
