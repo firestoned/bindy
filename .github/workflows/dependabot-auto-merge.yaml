@@ -1,0 +1,110 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# Dependabot auto-merge.
+#
+# On every Dependabot pull request, run the full e2e gate (integration +
+# regression, via the reusable e2e.yaml). If it passes:
+#   - patch / minor updates  -> enable auto-merge (squash). GitHub then merges
+#                               once ALL required status checks (PR CI, security,
+#                               this e2e) are green.
+#   - major updates          -> leave the PR OPEN and comment, for manual review.
+# If the e2e gate fails (or anything errors), nothing is merged — the PR is left
+# open with a comment, which is the desired "leave open for me to investigate"
+# fallback. This workflow is fail-safe: it can only ever ENABLE a merge on an
+# explicit green run; every other path leaves the PR untouched.
+#
+# ── Prerequisites (repo settings — one-time, not code) ───────────────────────
+#   1. Settings > General > "Allow auto-merge"  ......................  ENABLED
+#   2. Branch protection on `main` with required status checks (so `gh pr merge
+#      --auto` has gates to wait on before merging).
+#   3. Settings > Actions > General > Workflow permissions:
+#      "Allow GitHub Actions to create and approve pull requests"  ....  ENABLED
+#      (needed for the GITHUB_TOKEN to enable auto-merge on Dependabot PRs).
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Dependabot Auto-merge
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# Elevated so the auto-injected GITHUB_TOKEN can enable auto-merge / comment on
+# the Dependabot PR. (Custom repo/org secrets are still unavailable to
+# Dependabot-triggered runs — that is fine, this workflow needs none.)
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: dependabot-automerge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  metadata:
+    name: Fetch Dependabot metadata
+    # Only Dependabot PRs. For any other author this (and every downstream job)
+    # is skipped, so the workflow no-ops on human PRs.
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    outputs:
+      update-type: ${{ steps.meta.outputs.update-type }}
+      dependency-names: ${{ steps.meta.outputs.dependency-names }}
+    steps:
+      - name: Fetch metadata
+        id: meta
+        # SHA-pinned to match repo policy; Dependabot's github-actions updater
+        # will keep this current.
+        uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2.5.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  e2e:
+    name: E2E gate
+    needs: metadata
+    # Skipped automatically when `metadata` is skipped (non-Dependabot PR).
+    uses: ./.github/workflows/e2e.yaml
+
+  auto-merge:
+    name: Enable auto-merge (patch/minor)
+    needs: [metadata, e2e]
+    # success() ensures BOTH metadata and the e2e gate passed before we ever
+    # enable a merge. Major bumps are excluded — held for manual review.
+    if: ${{ success() && needs.metadata.outputs.update-type != 'version-update:semver-major' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge (squash)
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge --auto --squash "$PR_URL"
+
+  hold-major:
+    name: Hold major update for review
+    needs: [metadata, e2e]
+    # e2e passed but it is a major bump — leave open, tell the reviewer.
+    if: ${{ success() && needs.metadata.outputs.update-type == 'version-update:semver-major' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment (major held)
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment "$PR_URL" --body \
+            "✅ e2e (integration + regression) passed, but this is a **major** version update — left open for manual review before merge."
+
+  report-failure:
+    name: Report e2e failure
+    needs: [metadata, e2e]
+    # Any failure in metadata or the e2e gate. Leaves the PR open and flags it.
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment (e2e failed)
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment "$PR_URL" --body \
+            "❌ e2e (integration + regression) failed — auto-merge withheld. Left open for investigation. See the **E2E gate** job for logs."

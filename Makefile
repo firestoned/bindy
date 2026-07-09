@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 
-.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh
+.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh ci-e2e
 
 # Detect host architecture and derive the matching Linux cross-compilation target.
 # On Apple Silicon (arm64) → aarch64-unknown-linux-gnu
@@ -755,6 +755,21 @@ regression-test: ## Run kind-based regression suite (Phase A: admission policies
 regression-test-fresh: ## Run the regression suite on a freshly recreated kind cluster
 	@chmod +x tests/regression_test.sh
 	@CLUSTER_NAME=$(REGRESSION_CLUSTER) tests/regression_test.sh --fresh $(if $(REGRESSION_IMAGE),--image "$(REGRESSION_IMAGE)")
+
+CI_E2E_IMAGE ?= ghcr.io/firestoned/bindy:ci-e2e
+CI_E2E_INTEGRATION_CLUSTER ?= bindy-e2e
+
+ci-e2e: ## Self-contained full e2e: build local image, run integration + regression against it (no registry). Used by the e2e.yaml workflow.
+	@echo "==> Building operator image locally ($(CI_E2E_IMAGE))"
+	@TAG=ci-e2e KIND_CLUSTER=$(CI_E2E_INTEGRATION_CLUSTER) ./scripts/build-docker-fast.sh local ci-e2e
+	@echo "==> Integration suite (simple zone/record lifecycle) against $(CI_E2E_IMAGE)"
+	@chmod +x tests/integration_test.sh
+	@CLUSTER_NAME=$(CI_E2E_INTEGRATION_CLUSTER) tests/integration_test.sh --image "$(CI_E2E_IMAGE)"
+	@echo "==> Regression suite (admission policies + operand pod-shape + liveness) against $(CI_E2E_IMAGE)"
+	@$(MAKE) regression-test-fresh REGRESSION_IMAGE=$(CI_E2E_IMAGE)
+	@echo "==> Cleaning up e2e kind clusters"
+	@kind delete cluster --name $(CI_E2E_INTEGRATION_CLUSTER) 2>/dev/null || true
+	@kind delete cluster --name $(REGRESSION_CLUSTER) 2>/dev/null || true
 
 kind-integration-test-ci: ## Run integration tests in CI mode (requires IMAGE_TAG env var)
 	@echo "Running integration tests in CI mode..."

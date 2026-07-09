@@ -81,7 +81,17 @@ if [ "$SKIP_DEPLOY" = false ]; then
             echo -e "${GREEN}🚀 Deploying operator...${NC}"
             ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/operator/deployment.yaml"
         else
-            # Image reference specified, pull from registry
+            # Image reference specified. If it is present in the local Docker
+            # daemon (e.g. a CI-built `make docker-build` image that was never
+            # pushed), load it into the kind node so the pod does not try to
+            # pull it from a registry. Otherwise assume the kind node can pull
+            # it. Mirrors tests/regression_test.sh.
+            if docker image inspect "${IMAGE_REF}" >/dev/null 2>&1; then
+                echo -e "${GREEN}📤 Loading local image ${IMAGE_REF} into Kind...${NC}"
+                kind load docker-image "${IMAGE_REF}" --name "${CLUSTER_NAME}"
+            else
+                echo -e "${YELLOW}⚠️  ${IMAGE_REF} not in local Docker; assuming the kind node can pull it${NC}"
+            fi
             echo -e "${YELLOW}📦 Deploying operator with image: ${IMAGE_REF}${NC}"
             sed "s|ghcr.io/firestoned/bindy:latest|${IMAGE_REF}|g" \
                 "${PROJECT_ROOT}/deploy/operator/deployment.yaml" | ${KUBECTL} apply -f -
