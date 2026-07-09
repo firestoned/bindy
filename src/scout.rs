@@ -1324,6 +1324,29 @@ pub fn tcproute_arecord_cr_name(
     sanitized[..sanitized.len().min(MAX_K8S_NAME_LEN)].to_string()
 }
 
+/// Returns the effective hostnames for a TCPRoute.
+///
+/// When `spec.hostnames[]` is present, those values are used directly. When it is
+/// absent but a record-name override is configured, Scout falls back to a single
+/// placeholder hostname so the override can still be applied without requiring a
+/// hostname to be present.
+pub fn effective_tcproute_hostnames(
+    annotations: &BTreeMap<String, String>,
+    declared_hostnames: Option<&Vec<String>>,
+) -> Vec<String> {
+    if let Some(hostnames) = declared_hostnames {
+        if !hostnames.is_empty() {
+            return hostnames.clone();
+        }
+    }
+
+    if get_record_name_annotation(annotations).is_some() {
+        vec![String::new()]
+    } else {
+        Vec::new()
+    }
+}
+
 /// Builds a Kubernetes label selector matching all ARecords created by Scout
 /// for a specific TCPRoute.
 pub fn tcproute_arecord_label_selector(cluster: &str, namespace: &str, route_name: &str) -> String {
@@ -3140,27 +3163,27 @@ async fn reconcile_tcproute(
 
     let ttl: Option<i32> = annotations.get(ANNOTATION_TTL).and_then(|v| v.parse().ok());
 
-    let hostnames = route
-        .spec
-        .as_ref()
-        .and_then(|s| s.hostnames.as_ref())
-        .cloned()
-        .unwrap_or_default();
+    let hostnames = effective_tcproute_hostnames(
+        &annotations,
+        route.spec.as_ref().and_then(|s| s.hostnames.as_ref()),
+    );
 
     let arecord_api: Api<ARecord> =
         Api::namespaced(ctx.remote_client.clone(), &ctx.target_namespace);
 
     for (idx, hostname) in hostnames.iter().enumerate() {
-        if hostname.is_empty() {
-            debug!(tcproute = %name, hostname_index = idx, "TCPRoute hostname is empty — skipping");
+        let record_name = if let Some(override_name) = get_record_name_annotation(&annotations) {
+            override_name
+        } else if hostname.is_empty() {
+            debug!(tcproute = %name, hostname_index = idx, "TCPRoute has no hostname and no record-name override — skipping");
             continue;
-        }
-
-        let record_name = match resolve_record_name(&annotations, hostname, &zone) {
-            Ok(n) => n,
-            Err(e) => {
-                warn!(tcproute = %name, hostname = %hostname, zone = %zone, error = %e, "Hostname does not belong to zone — skipping");
-                continue;
+        } else {
+            match resolve_record_name(&annotations, hostname, &zone) {
+                Ok(name) => name,
+                Err(e) => {
+                    debug!(tcproute = %name, hostname = %hostname, zone = %zone, error = %e, "TCPRoute hostname did not resolve to a record name — using the hostname as-is");
+                    hostname.to_string()
+                }
             }
         };
 

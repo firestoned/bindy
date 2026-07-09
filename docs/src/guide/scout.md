@@ -610,11 +610,10 @@ metadata:
   namespace: my-app
   annotations:
     bindy.firestoned.io/scout-enabled: "true"
-    bindy.firestoned.io/zone: "db.example.com"
+    bindy.firestoned.io/zone: "example.com"
     bindy.firestoned.io/ip: "192.168.1.102"
+    bindy.firestoned.io/record-name: "db"
 spec:
-  hostnames:
-    - db.example.com
   parentRefs:
     - name: my-gateway
       namespace: my-app

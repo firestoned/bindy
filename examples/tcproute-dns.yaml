@@ -1,0 +1,63 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# TCPRoute DNS Example — Scout watching Gateway API TCPRoute
+#
+# This example shows how Scout watches a TCPRoute resource (Gateway API v1alpha2)
+# and automatically creates ARecord CRs for each hostname in spec.hostnames[].
+# TCPRoute is used for TCP-based services such as databases and L4 proxies.
+#
+# Prerequisites:
+#   1. Bindy operator running with a Bind9Cluster + Bind9Instance
+#   2. A DNSZone for "db.example.com" applied (see examples/dns-zone.yaml)
+#   3. Bindy Scout deployed with Gateway API permissions (see deploy/scout/clusterrole.yaml)
+#   4. Gateway API CRDs installed on the cluster
+#
+# Apply:
+#   kubectl apply -f examples/tcproute-dns.yaml
+#
+# Verify Scout created the ARecord:
+#   kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-name=db-gateway
+#
+# Clean up:
+#   kubectl delete -f examples/tcproute-dns.yaml
+#
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tcp-apps
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: tcp-apps
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+      name: postgres
+---
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TCPRoute
+metadata:
+  name: db-gateway
+  namespace: tcp-apps
+  annotations:
+    bindy.firestoned.io/scout-enabled: "true"
+    bindy.firestoned.io/zone: "example.com"
+    bindy.firestoned.io/ip: "192.168.1.102"
+    bindy.firestoned.io/record-name: "db"
+    bindy.firestoned.io/ttl: "300"
+spec:
+  parentRefs:
+    - name: external-gateway
+      namespace: tcp-apps
+  rules:
+    - backendRefs:
+        - name: postgres
+          port: 5432
