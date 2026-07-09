@@ -702,6 +702,27 @@ mod tests {
     }
 
     #[test]
+    fn test_build_scout_cluster_role_covers_gateways() {
+        let role = build_scout_cluster_role();
+        let rules = role.rules.unwrap();
+
+        // Gateways must be readable so Scout can follow a route's parentRefs back
+        // to the serving gateway and discover its external IP.
+        let has_gateways = rules.iter().any(|r| {
+            r.api_groups
+                .as_ref()
+                .is_some_and(|ags| ags.iter().any(|ag| ag == "gateway.networking.k8s.io"))
+                && r.resources
+                    .as_ref()
+                    .is_some_and(|res| res.iter().any(|s| s == "gateways"))
+        });
+        assert!(
+            has_gateways,
+            "ClusterRole must grant read access to gateways for parentRef chain-following"
+        );
+    }
+
+    #[test]
     fn test_build_scout_cluster_role_gateway_routes_readonly() {
         let role = build_scout_cluster_role();
         let rules = role.rules.unwrap();
