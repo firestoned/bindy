@@ -46,6 +46,48 @@ Service with a generated name.
 
 Additive and opt-in: with no `--gateway-service`/`BINDY_SCOUT_GATEWAY_SERVICES`
 configured, route IP resolution is unchanged (annotation → default_ips → requeue).
+- `.github/workflows/e2e.yaml`: reusable (`workflow_call` + `workflow_dispatch`)
+  full e2e gate — builds the operator image locally and runs integration +
+  regression (admission policies + operand pod-shape + liveness) in kind. Kind
+  v0.24.0 (k8s 1.31) so ValidatingAdmissionPolicy (GA 1.30+) is exercised. All
+  logic in the new `make ci-e2e` target.
+- `.github/workflows/dependabot-auto-merge.yaml`: on every Dependabot PR, runs
+  the e2e gate; on green, enables `--auto --squash` merge for **patch/minor**
+  updates and holds **major** updates open with a review comment. Any
+  failure leaves the PR open and comments (fail-safe: only ever enables a merge
+  on an explicit green run). `--auto` means GitHub still waits for all other
+  required checks (PR CI, security) before merging.
+- `Makefile`: `ci-e2e` target (build local image → integration + regression
+  against it → cleanup); `CI_E2E_IMAGE` / `CI_E2E_INTEGRATION_CLUSTER` knobs.
+
+---
+
+## [2026-07-08] - Dependabot auto-merge on green e2e
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `tests/integration_test.sh`: the `--image` branch now `kind load`s a
+  locally-present image (mirrors `regression_test.sh`) so a CI-built,
+  never-pushed image runs without a registry. (The prior no-image local build
+  was already broken — `docker build` with no `-f` and no root Dockerfile.)
+
+### Why
+Automate the safe path for dependency bumps: full e2e + integration on every
+Dependabot PR, auto-merge the low-risk (patch/minor) ones on green, and surface
+majors/failures for human review — reducing dependency-update toil without
+auto-landing a green-but-breaking major.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Requires one-time repo settings (see below)
+- [ ] Documentation only
+
+> **Repo-settings prerequisites (one-time, not code):** ① Settings > General >
+> "Allow auto-merge" = ON; ② branch protection on `main` with required status
+> checks; ③ Settings > Actions > General > "Allow GitHub Actions to create and
+> approve pull requests" = ON. Documented in the workflow header.
 
 ---
 

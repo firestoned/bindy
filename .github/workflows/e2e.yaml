@@ -1,0 +1,70 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# Reusable end-to-end test workflow.
+#
+# Builds the operator image locally (no registry) and runs the full e2e gate
+# against it in kind:
+#   1. Integration suite   — simple zone/record lifecycle (tests/integration_test.sh)
+#   2. Regression suite     — admission policies + operand pod-shape + liveness
+#                             (tests/regression_test.sh: bindcar 0.7.x Mode B contract)
+#
+# All logic lives in the `ci-e2e` Makefile target (workflows delegate to the
+# Makefile per repo convention). Self-contained: no pushed image, no
+# cross-workflow timing, no registry credentials.
+#
+# Callable via `workflow_call` (e.g. from dependabot-auto-merge.yaml) or run
+# manually via `workflow_dispatch`.
+
+name: E2E Tests
+
+on:
+  workflow_call: {}
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  e2e:
+    name: Integration + Regression (kind)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Setup Rust build environment
+        uses: firestoned/github-actions/rust/setup-rust-build@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - name: Install Kind
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
+        with:
+          # kind v0.24.0 provisions Kubernetes v1.31 by default. ValidatingAdmissionPolicy
+          # (exercised by the regression suite) is GA only on 1.30+, so this must
+          # stay >= v0.23.0.
+          install_only: true
+          version: v0.24.0
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5
+        with:
+          version: 'v1.31.0'
+
+      - name: Run full e2e (integration + regression)
+        run: make ci-e2e
+
+      - name: Dump operator logs on failure
+        if: failure()
+        run: |
+          for ctx in kind-bindy-e2e kind-bindy-regression; do
+            echo "::group::operator logs ($ctx)"
+            kubectl --context "$ctx" -n bindy-system logs -l app=bindy --tail=200 2>/dev/null || true
+            kubectl --context "$ctx" -n bindy-system get pods -o wide 2>/dev/null || true
+            echo "::endgroup::"
+          done
