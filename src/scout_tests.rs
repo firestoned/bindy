@@ -14,10 +14,11 @@ mod tests {
         parse_gateway_services, resolve_ip_from_service_lb_status, resolve_ips,
         resolve_ips_from_annotation, resolve_record_name, resolve_zone, service_arecord_cr_name,
         service_arecord_label_selector, service_ref_from_str, stale_arecord_label_selector,
-        zone_allows_source_namespace, Gateway, GatewayServiceTarget, NamespacedName,
-        ParentReference, ServiceARecordParams, ZoneAuthz, FINALIZER_SCOUT, LABEL_MANAGED_BY,
-        LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER, LABEL_SOURCE_NAME, LABEL_SOURCE_NAMESPACE,
-        LABEL_ZONE,
+        stale_tcproute_arecord_label_selector, tcproute_arecord_cr_name,
+        tcproute_arecord_label_selector, zone_allows_source_namespace, Gateway,
+        GatewayServiceTarget, NamespacedName, ParentReference, ServiceARecordParams, ZoneAuthz,
+        FINALIZER_SCOUT, LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER,
+        LABEL_SOURCE_NAME, LABEL_SOURCE_NAMESPACE, LABEL_ZONE,
     };
     use std::sync::Arc;
 
@@ -1391,6 +1392,80 @@ mod tests {
         assert_eq!(arecord.spec.name, "secure");
         assert_eq!(arecord.spec.ipv4_addresses, vec!["5.6.7.8".to_string()]);
         assert_eq!(arecord.spec.ttl, Some(900));
+    }
+
+    #[test]
+    fn test_tcproute_arecord_cr_name_single_hostname() {
+        let name = tcproute_arecord_cr_name("prod", "default", "database-route", 0);
+
+        assert!(name.starts_with("scout-"));
+        assert!(name.contains("prod"));
+        assert!(name.contains("default"));
+        assert!(name.contains("database-route"));
+        assert!(name.contains("0"));
+        assert!(!name.ends_with('-'));
+        assert!(name.len() <= 253);
+    }
+
+    #[test]
+    fn test_tcproute_arecord_label_selector_uses_source_labels() {
+        let selector = tcproute_arecord_label_selector("prod", "default", "database-route");
+
+        assert!(selector.contains(LABEL_MANAGED_BY));
+        assert!(selector.contains(LABEL_MANAGED_BY_SCOUT));
+        assert!(selector.contains("prod"));
+        assert!(selector.contains("default"));
+        assert!(selector.contains("database-route"));
+        assert!(selector.contains("source-name"));
+    }
+
+    #[test]
+    fn test_stale_tcproute_arecord_label_selector_uses_not_equal() {
+        let selector =
+            stale_tcproute_arecord_label_selector("new-cluster", "default", "database-route");
+
+        assert!(selector.contains(&format!("{}!=new-cluster", LABEL_SOURCE_CLUSTER)));
+        assert!(selector.contains("source-name=database-route"));
+        assert!(selector.contains("default"));
+    }
+
+    #[test]
+    fn test_build_tcproute_arecord_sets_expected_labels() {
+        let params = crate::scout::TCPRouteARecordParams {
+            name: "scout-prod-default-database-route-0",
+            target_namespace: "bindy-system",
+            record_name: "db",
+            ips: &["10.0.0.99".to_string()],
+            ttl: Some(120),
+            cluster_name: "prod",
+            route_namespace: "default",
+            route_name: "database-route",
+            zone: "example.com",
+        };
+
+        let arecord = crate::scout::build_tcproute_arecord(params);
+
+        let labels = arecord.metadata.labels.as_ref().unwrap();
+        assert_eq!(
+            labels.get(LABEL_MANAGED_BY).map(String::as_str),
+            Some(LABEL_MANAGED_BY_SCOUT)
+        );
+        assert_eq!(
+            labels.get(LABEL_SOURCE_CLUSTER).map(String::as_str),
+            Some("prod")
+        );
+        assert_eq!(
+            labels.get(LABEL_SOURCE_NAMESPACE).map(String::as_str),
+            Some("default")
+        );
+        assert_eq!(
+            labels.get(LABEL_SOURCE_NAME).map(String::as_str),
+            Some("database-route")
+        );
+        assert_eq!(
+            labels.get(LABEL_ZONE).map(String::as_str),
+            Some("example.com")
+        );
     }
 
     #[test]
