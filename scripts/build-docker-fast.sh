@@ -55,8 +55,10 @@ FULL_IMAGE="${REGISTRY}/${IMAGE_NAME}:${TAG}"
 # Derive the Linux cross-compilation target from the host architecture.
 # The binary is built by `make build-linux-debug` and passed to Docker as a build arg
 # so Dockerfile.local picks up the right arch binary without hardcoding any path.
+# `uname -m` reports arm64 on Apple Silicon macOS but aarch64 on Linux ARM;
+# both must map to the aarch64 target. Keep in sync with the Makefile.
 HOST_ARCH="$(uname -m)"
-if [ "$HOST_ARCH" = "arm64" ]; then
+if [ "$HOST_ARCH" = "arm64" ] || [ "$HOST_ARCH" = "aarch64" ]; then
     LINUX_TARGET="aarch64-unknown-linux-gnu"
 else
     LINUX_TARGET="x86_64-unknown-linux-gnu"
