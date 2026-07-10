@@ -405,3 +405,23 @@ jobs:
           sarif-category: trivy-pr-${{ matrix.variant.name }}
           upload-artifact-name: trivy-pr-${{ matrix.variant.name }}-${{ github.run_number }}
           output-filename: trivy-pr-${{ matrix.variant.name }}.json
+
+  # Single aggregating gate for branch protection. The Rust quality jobs above are
+  # path-filtered (they only run when src/**, Cargo.*, or calm/** change), so on a
+  # PR that touches none of those (e.g. a Dependabot github-actions bump, or a
+  # docs-only change) they report "skipped". A *required* status check that is
+  # skipped counts as unsatisfied and blocks the merge forever. Requiring THIS job
+  # instead — rather than the individual jobs — sidesteps that: it always runs and
+  # passes when every dependency either succeeded or was skipped (not applicable),
+  # and fails only when one genuinely failed or was cancelled.
+  ci-gate:
+    name: PR Checks Passed
+    runs-on: ubuntu-latest
+    needs: [changes, calm-validate, license-check, verify-commits, format, clippy, build, test]
+    if: always()
+    steps:
+      - name: Fail if any required PR check failed or was cancelled
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: |
+          echo "One or more required PR checks did not pass: ${{ join(needs.*.result, ', ') }}"
+          exit 1

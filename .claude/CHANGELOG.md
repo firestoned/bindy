@@ -1,3 +1,44 @@
+## [2026-07-10] - Fix: Dependabot PRs stuck / E2E "waiting"; add PR Checks Passed gate
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `.github/workflows/pr.yaml`: added a single aggregating **`PR Checks Passed`**
+  (`ci-gate`) job. The Rust quality jobs (license-check → format → clippy →
+  build → test) are path-filtered to `src/**` / `Cargo.*` (and calm-validate to
+  `calm/**`), so on a PR that touches none of those (e.g. a Dependabot
+  github-actions bump, or docs-only) they report `skipped`. A *required* status
+  check that is skipped counts as unsatisfied and blocks the merge forever. The
+  new job runs `if: always()`, needs all those jobs, and passes when each
+  dependency succeeded or was skipped — failing only on a genuine failure /
+  cancellation. Branch protection should require **this** job instead of the
+  individual path-filtered ones.
+
+### Repo-settings changes (rulesets — not code, recorded for audit)
+- `main` ruleset: removed the required status check `E2E gate`. It never
+  matched — the reusable E2E workflow reports its check as
+  `E2E gate / Integration + Regression (kind)`, so PRs sat "Expected — waiting"
+  forever even when E2E passed. E2E still gates Dependabot auto-merge inside
+  `dependabot-auto-merge.yaml` (`auto-merge` needs `[metadata, e2e]` + `success()`).
+- **Pending (after this workflow change lands on `main` + open Dependabot PRs are
+  rebased):** change the `Signed Commits` ruleset required checks from
+  `[Clippy, Check Formatting, Test, Verify Signed Commits]` to
+  `[PR Checks Passed, Verify Signed Commits]`.
+
+### Why
+Dependabot github-actions PRs (#399/#398/#397) passed E2E but stayed BLOCKED: the
+`E2E gate` name mismatch, plus required Rust checks reporting `skipped` on
+non-code PRs. The aggregating gate is the standard fix for "required checks +
+path filters" and unblocks any non-code PR without weakening the gate for code PRs.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] CI + branch-protection change (requires merge to main + Dependabot rebase, then a ruleset update)
+- [ ] Documentation only
+
+---
+
 ## [2026-07-10] - Architecture as Code: FINOS CALM models + generated Mermaid + PR validation
 
 **Author:** Erick Bourgeois
