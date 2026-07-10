@@ -1338,31 +1338,6 @@ pub fn effective_tcproute_hostnames(annotations: &BTreeMap<String, String>) -> V
     }
 }
 
-/// Given a TCPRoute's annotations, derive the record name(s) Scout would create.
-///
-/// This mirrors the naming path used in `reconcile_tcproute`:
-/// - If a `bindy.firestoned.io/record-name` annotation is present, a single
-///   record name (the annotation value) is returned.
-/// - Otherwise, when hostnames are present (not applicable to TCPRoute in
-///   Gateway API), the derived record names from those hostnames would be
-///   returned. For TCPRoute (pure L4) this returns an empty vec unless the
-///   annotation is set.
-pub fn tcproute_effective_record_names(
-    annotations: &BTreeMap<String, String>,
-    zone: &str,
-) -> Result<Vec<String>> {
-    let hostnames = effective_tcproute_hostnames(annotations);
-    let mut names = Vec::new();
-    for host in hostnames.iter() {
-        // resolve_record_name prefers the annotation override when present.
-        match resolve_record_name(annotations, host, zone) {
-            Ok(n) => names.push(n),
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(names)
-}
-
 /// Builds a Kubernetes label selector matching all ARecords created by Scout
 /// for a specific TCPRoute.
 pub fn tcproute_arecord_label_selector(cluster: &str, namespace: &str, route_name: &str) -> String {

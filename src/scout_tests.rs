@@ -384,30 +384,6 @@ mod tests {
         assert!(hostnames.is_empty());
     }
 
-    #[test]
-    fn test_tcproute_effective_record_names_uses_annotation() {
-        let mut annotations = BTreeMap::new();
-        annotations.insert(
-            "bindy.firestoned.io/record-name".to_string(),
-            "db".to_string(),
-        );
-
-        let names = crate::scout::tcproute_effective_record_names(&annotations, "example.com")
-            .expect("should derive names");
-
-        assert_eq!(names, vec!["db".to_string()]);
-    }
-
-    #[test]
-    fn test_tcproute_effective_record_names_empty_without_annotation() {
-        let annotations = BTreeMap::new();
-
-        let names = crate::scout::tcproute_effective_record_names(&annotations, "example.com")
-            .expect("should succeed");
-
-        assert!(names.is_empty());
-    }
-
     // =========================================================================
     // resolve_ips_from_annotation
     // =========================================================================
