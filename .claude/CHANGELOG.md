@@ -11,6 +11,11 @@
   the first crate with ``error: linker `x86_64-unknown-linux-gnu-gcc` not found``.
   Now sets `HOST_OS := $(shell uname -s)` and only applies the
   `CARGO_TARGET_*_LINKER` override on `Darwin`; Linux uses cargo's default `cc`.
+- `Makefile` + `scripts/build-docker-fast.sh`: harden host-arch detection so
+  Linux ARM (`uname -m` = `aarch64`) maps to the aarch64 target like macOS
+  (`arm64`) does — previously only `arm64` matched, so a Linux ARM runner would
+  have wrongly picked the x86_64 target. Verified target/linker selection across
+  all four {Darwin,Linux}×{x86_64,arm64/aarch64} combos via `make -n`.
 
 ### Why
 The new `E2E Tests` workflow (Dependabot auto-merge gate) runs `make ci-e2e` on

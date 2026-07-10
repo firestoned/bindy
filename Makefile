@@ -4,11 +4,13 @@
 .PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh ci-e2e
 
 # Detect host architecture and derive the matching Linux cross-compilation target.
-# On Apple Silicon (arm64) → aarch64-unknown-linux-gnu
+# `uname -m` reports arm64 on Apple Silicon macOS but aarch64 on Linux ARM, so
+# both spellings must map to the aarch64 target.
+# On Apple Silicon (arm64) / Linux ARM (aarch64) → aarch64-unknown-linux-gnu
 # On Intel Mac / Linux x86_64 → x86_64-unknown-linux-gnu
 HOST_ARCH          := $(shell uname -m)
 HOST_OS            := $(shell uname -s)
-ifeq ($(HOST_ARCH),arm64)
+ifneq (,$(filter arm64 aarch64,$(HOST_ARCH)))
   LINUX_TARGET     := aarch64-unknown-linux-gnu
   LINUX_LINKER     := aarch64-unknown-linux-gnu-gcc
 else
