@@ -7,6 +7,7 @@
 # On Apple Silicon (arm64) → aarch64-unknown-linux-gnu
 # On Intel Mac / Linux x86_64 → x86_64-unknown-linux-gnu
 HOST_ARCH          := $(shell uname -m)
+HOST_OS            := $(shell uname -s)
 ifeq ($(HOST_ARCH),arm64)
   LINUX_TARGET     := aarch64-unknown-linux-gnu
   LINUX_LINKER     := aarch64-unknown-linux-gnu-gcc
@@ -16,6 +17,16 @@ else
 endif
 # Upper-cased, hyphen→underscore form used as the CARGO_TARGET_*_LINKER env var name
 LINUX_TARGET_ENV   := $(shell echo $(LINUX_TARGET) | tr 'a-z-' 'A-Z_')
+# The prefixed cross-linker (e.g. x86_64-unknown-linux-gnu-gcc) only exists when
+# cross-compiling from macOS — it is installed via the homebrew
+# macos-cross-toolchains. On a native Linux host, building for the matching
+# *-unknown-linux-gnu target is NOT a cross build (cargo's default `cc` links it)
+# and that prefixed linker is absent, so forcing it fails with "linker not found".
+# Therefore only set the CARGO_TARGET_*_LINKER override on Darwin; leave cargo's
+# default linker in place on Linux (e.g. the x86_64 CI runner).
+ifeq ($(HOST_OS),Darwin)
+  LINUX_LINKER_ENV := CARGO_TARGET_$(LINUX_TARGET_ENV)_LINKER=$(LINUX_LINKER)
+endif
 LINUX_BINARY       := target/$(LINUX_TARGET)/debug/bindy
 
 DOCS_PORT ?= 8000
@@ -853,8 +864,7 @@ build-debug: ## Build the Rust binary in debug mode
 	cargo build
 
 build-linux-debug: ## Build a Linux debug binary for the host architecture (arm64 → aarch64-unknown-linux-gnu, x86_64 → x86_64-unknown-linux-gnu)
-	CARGO_TARGET_$(LINUX_TARGET_ENV)_LINKER=$(LINUX_LINKER) \
-	cargo build --target $(LINUX_TARGET)
+	$(LINUX_LINKER_ENV) cargo build --target $(LINUX_TARGET)
 
 # Documentation targets
 docs: export PATH := $(HOME)/.local/bin:$(HOME)/.cargo/bin:$(PATH)
