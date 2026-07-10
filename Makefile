@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 
-.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh ci-e2e
+.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh ci-e2e calm-validate calm-docs calm-docs-check
 
 # Detect host architecture and derive the matching Linux cross-compilation target.
 # `uname -m` reports arm64 on Apple Silicon macOS but aarch64 on Linux ARM, so
@@ -783,6 +783,31 @@ ci-e2e: ## Self-contained full e2e: build local image, run integration + regress
 	@echo "==> Cleaning up e2e kind clusters"
 	@kind delete cluster --name $(CI_E2E_INTEGRATION_CLUSTER) 2>/dev/null || true
 	@kind delete cluster --name $(REGRESSION_CLUSTER) 2>/dev/null || true
+
+# ── CALM (Architecture as Code) ──────────────────────────────────────────────
+# FINOS CALM models live in ./calm; the Mermaid diagrams under
+# docs/src/architecture/calm-*.md are GENERATED from them. Node.js (>=20) is
+# required; the CLI is fetched on demand via npx, pinned for reproducibility.
+CALM_CLI_VERSION ?= 1.47.1
+CALM ?= npx --yes @finos/calm-cli@$(CALM_CLI_VERSION)
+
+calm-validate: ## Schema-validate every calm/*.architecture.json against CALM 1.2
+	@command -v npx >/dev/null 2>&1 || { echo "Error: npx (Node.js >=20) not found."; exit 1; }
+	@for f in calm/*.architecture.json; do \
+		echo "==> validating $$f"; \
+		$(CALM) validate -a "$$f" -f pretty || exit 1; \
+	done
+	@echo "✓ All CALM models valid."
+
+calm-docs: ## Regenerate the Mermaid architecture pages from the CALM models
+	@command -v npx >/dev/null 2>&1 || { echo "Error: npx (Node.js >=20) not found."; exit 1; }
+	@CALM_CLI_VERSION=$(CALM_CLI_VERSION) ./scripts/calm-docs.sh
+
+calm-docs-check: ## Verify the committed CALM Mermaid pages match the models (CI drift gate)
+	@$(MAKE) calm-docs
+	@git diff --exit-code -- docs/src/architecture/calm-*.md \
+		|| { echo "ERROR: CALM docs are stale. Run 'make calm-docs' and commit the result."; exit 1; }
+	@echo "✓ CALM docs are up to date."
 
 kind-integration-test-ci: ## Run integration tests in CI mode (requires IMAGE_TAG env var)
 	@echo "Running integration tests in CI mode..."

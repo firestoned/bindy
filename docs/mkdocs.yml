@@ -297,6 +297,10 @@ nav:
           - Reconciler Hierarchy: architecture/reconciler-hierarchy.md
           - Label Selector: architecture/label-selector-reconciliation.md
           - BIND9 Integration: development/bind9-integration.md
+          - Architecture as Code (CALM):
+              - Overview: architecture/calm.md
+              - Control Plane: architecture/calm-control-plane.md
+              - Multi-Cluster: architecture/calm-multi-cluster.md
       - Technical Deep Dive:
           - Architecture Overview: concepts/architecture.md
           - Architecture Diagrams: concepts/architecture-diagrams.md

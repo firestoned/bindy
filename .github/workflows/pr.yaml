@@ -24,6 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      calm: ${{ steps.filter.outputs.calm }}
     steps:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -37,6 +38,30 @@ jobs:
               - 'src/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+            calm:
+              - 'calm/**'
+              - 'docs/src/architecture/calm-*.md'
+              - 'scripts/calm-docs.sh'
+
+  calm-validate:
+    name: Validate CALM Architecture
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.calm == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+
+      - name: Validate CALM models against the schema
+        run: make calm-validate
+
+      - name: Verify generated diagrams are up to date
+        run: make calm-docs-check
 
   license-check:
     name: Verify SPDX License Headers
