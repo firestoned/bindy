@@ -1,3 +1,29 @@
+## [2026-07-09] - Fix: e2e build fails on native Linux runner (cross-linker not found)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `Makefile`: `build-linux-debug` no longer unconditionally forces
+  `CARGO_TARGET_<TARGET>_LINKER=<triple>-gcc`. That prefixed cross-linker only
+  exists on macOS (installed via the homebrew macos-cross-toolchains). On the
+  native x86_64 GitHub Linux runner, building for `x86_64-unknown-linux-gnu` is
+  not a cross build, so the prefixed linker is absent and `make ci-e2e` died at
+  the first crate with ``error: linker `x86_64-unknown-linux-gnu-gcc` not found``.
+  Now sets `HOST_OS := $(shell uname -s)` and only applies the
+  `CARGO_TARGET_*_LINKER` override on `Darwin`; Linux uses cargo's default `cc`.
+
+### Why
+The new `E2E Tests` workflow (Dependabot auto-merge gate) runs `make ci-e2e` on
+`ubuntu-latest`, which hit the macOS-only linker assumption on its first run.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] CI-only fix (no runtime/behavior change; macOS dev build path unchanged)
+- [ ] Documentation only
+
+---
+
 ## [2026-07-08] - Scout: gateway-chain IP resolution for HTTPRoute/TLSRoute
 
 **Author:** Erick Bourgeois
