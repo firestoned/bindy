@@ -1,0 +1,181 @@
+{
+  "$schema": "https://calm.finos.org/release/1.2/meta/calm.json",
+  "nodes": [
+    {
+      "unique-id": "queen-cluster",
+      "node-type": "system",
+      "name": "Queen Bee Cluster",
+      "description": "Management / DNS cluster (the k0rdent management context). Runs the Bindy operator, the BIND9 operands, and the canonical DNSZone and ARecord resources."
+    },
+    {
+      "unique-id": "queen-api",
+      "node-type": "system",
+      "name": "Queen Kubernetes API",
+      "description": "API server of the Queen Bee cluster. Holds the canonical bindy-system namespace that every Scout fans records into."
+    },
+    {
+      "unique-id": "queen-operator",
+      "node-type": "service",
+      "name": "Bindy Operator",
+      "description": "The operator running on the Queen Bee cluster; reconciles ARecord CRs into BIND9 and manages zones.",
+      "development-language": "Rust"
+    },
+    {
+      "unique-id": "queen-bind9",
+      "node-type": "service",
+      "name": "BIND9 Operands",
+      "description": "BIND9 named + bindcar operand pods on the Queen Bee cluster that actually serve DNS."
+    },
+    {
+      "unique-id": "arecords",
+      "node-type": "data-asset",
+      "name": "ARecord CRs (bindy-system)",
+      "description": "Canonical ARecord resources in the Queen Bee bindy-system namespace, fanned in from every child cluster and stamped with a source-cluster label."
+    },
+    {
+      "unique-id": "child-cluster-a",
+      "node-type": "system",
+      "name": "Child Cluster A",
+      "description": "A workload cluster in the k0rdent fleet. Runs a Scout instance with its own independently revocable ServiceAccount credentials."
+    },
+    {
+      "unique-id": "scout-a",
+      "node-type": "service",
+      "name": "Bindy Scout A",
+      "description": "Scout Deployment (image bindy, args=[scout]) on Child Cluster A. Watches local Ingress / LoadBalancer Service / HTTPRoute / TLSRoute and derives DNS names.",
+      "development-language": "Rust"
+    },
+    {
+      "unique-id": "ingress-a",
+      "node-type": "network",
+      "name": "Ingress / Gateway (A)",
+      "description": "Ingress objects, LoadBalancer Services, HTTPRoutes and TLSRoutes on Child Cluster A that expose workloads and carry the hostnames Scout resolves."
+    },
+    {
+      "unique-id": "child-cluster-b",
+      "node-type": "system",
+      "name": "Child Cluster B",
+      "description": "A second workload cluster, demonstrating record fan-in from many child clusters into one Queen Bee namespace."
+    },
+    {
+      "unique-id": "scout-b",
+      "node-type": "service",
+      "name": "Bindy Scout B",
+      "description": "Scout Deployment on Child Cluster B with its own ServiceAccount, --cluster-name and remote kubeconfig.",
+      "development-language": "Rust"
+    },
+    {
+      "unique-id": "ingress-b",
+      "node-type": "network",
+      "name": "Ingress / Gateway (B)",
+      "description": "Ingress / Gateway API objects on Child Cluster B that Scout B observes."
+    }
+  ],
+  "relationships": [
+    {
+      "unique-id": "compose-queen",
+      "description": "the Queen Bee cluster hosts the operator, operands and canonical records",
+      "relationship-type": {
+        "composed-of": {
+          "container": "queen-cluster",
+          "nodes": ["queen-api", "queen-operator", "queen-bind9", "arecords"]
+        }
+      }
+    },
+    {
+      "unique-id": "compose-child-a",
+      "description": "Child Cluster A hosts Scout A and its watched ingress objects",
+      "relationship-type": {
+        "composed-of": {
+          "container": "child-cluster-a",
+          "nodes": ["scout-a", "ingress-a"]
+        }
+      }
+    },
+    {
+      "unique-id": "compose-child-b",
+      "description": "Child Cluster B hosts Scout B and its watched ingress objects",
+      "relationship-type": {
+        "composed-of": {
+          "container": "child-cluster-b",
+          "nodes": ["scout-b", "ingress-b"]
+        }
+      }
+    },
+    {
+      "unique-id": "scout-a-watches",
+      "description": "watches Ingress / Service / HTTPRoute / TLSRoute",
+      "protocol": "HTTPS",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "scout-a" },
+          "destination": { "node": "ingress-a" }
+        }
+      }
+    },
+    {
+      "unique-id": "scout-b-watches",
+      "description": "watches Ingress / Service / HTTPRoute / TLSRoute",
+      "protocol": "HTTPS",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "scout-b" },
+          "destination": { "node": "ingress-b" }
+        }
+      }
+    },
+    {
+      "unique-id": "scout-a-applies",
+      "description": "server-side-applies ARecord CRs via remote kubeconfig (per-cluster SA)",
+      "protocol": "HTTPS",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "scout-a" },
+          "destination": { "node": "queen-api" }
+        }
+      }
+    },
+    {
+      "unique-id": "scout-b-applies",
+      "description": "server-side-applies ARecord CRs via remote kubeconfig (per-cluster SA)",
+      "protocol": "HTTPS",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "scout-b" },
+          "destination": { "node": "queen-api" }
+        }
+      }
+    },
+    {
+      "unique-id": "api-stores-arecords",
+      "description": "persists fanned-in ARecords",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "queen-api" },
+          "destination": { "node": "arecords" }
+        }
+      }
+    },
+    {
+      "unique-id": "operator-reconciles-arecords",
+      "description": "reconciles ARecords",
+      "protocol": "HTTPS",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "queen-operator" },
+          "destination": { "node": "arecords" }
+        }
+      }
+    },
+    {
+      "unique-id": "operator-programs-bind9",
+      "description": "programs zones and records",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "queen-operator" },
+          "destination": { "node": "queen-bind9" }
+        }
+      }
+    }
+  ]
+}

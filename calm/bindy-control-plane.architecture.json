@@ -1,0 +1,256 @@
+{
+  "$schema": "https://calm.finos.org/release/1.2/meta/calm.json",
+  "nodes": [
+    {
+      "unique-id": "bindy-system",
+      "node-type": "system",
+      "name": "bindy-system Namespace",
+      "description": "Kubernetes namespace hosting the Bindy operator and the BIND9 operand workloads it manages."
+    },
+    {
+      "unique-id": "bindy-operator",
+      "node-type": "service",
+      "name": "Bindy Operator",
+      "description": "Rust controller-manager (ghcr.io/firestoned/bindy, args=[run]). Leader-elected Deployment that hosts every reconciler (ClusterBind9Provider, Bind9Cluster, Bind9Instance, DNSZone, and the 8 record reconcilers) and exposes Prometheus metrics on :8080.",
+      "development-language": "Rust"
+    },
+    {
+      "unique-id": "k8s-api",
+      "node-type": "system",
+      "name": "Kubernetes API Server",
+      "description": "Cluster control plane and reconcile source of truth. All controllers watch and patch resources here; bindcar validates operator tokens via TokenReview."
+    },
+    {
+      "unique-id": "admission-policies",
+      "node-type": "policy",
+      "name": "ValidatingAdmissionPolicies",
+      "description": "Seven CEL-based ValidatingAdmissionPolicies (acl, zone-name, rndc-strict, pod-shape, dnssec-policy, operator-workload-sa, record-value) enforced by the API server on CR and pod admission."
+    },
+    {
+      "unique-id": "crd-provider",
+      "node-type": "data-asset",
+      "name": "ClusterBind9Provider (CRD)",
+      "description": "Cluster-scoped CRD declaring platform DNS infrastructure that spans namespaces."
+    },
+    {
+      "unique-id": "crd-cluster",
+      "node-type": "data-asset",
+      "name": "Bind9Cluster (CRD)",
+      "description": "Namespaced CRD describing a logical DNS cluster with primary/secondary replica counts."
+    },
+    {
+      "unique-id": "crd-instance",
+      "node-type": "data-asset",
+      "name": "Bind9Instance (CRD)",
+      "description": "Namespaced CRD describing a single BIND9 server (role Primary or Secondary)."
+    },
+    {
+      "unique-id": "crd-dnszone",
+      "node-type": "data-asset",
+      "name": "DNSZone (CRD)",
+      "description": "Namespaced CRD describing an authoritative zone; selects target instances (clusterRef / clusterProviderRef / bind9InstancesFrom) and member records (recordsFrom)."
+    },
+    {
+      "unique-id": "crd-records",
+      "node-type": "data-asset",
+      "name": "DNS Record CRDs",
+      "description": "Eight namespaced record CRDs (ARecord, AAAARecord, CNAMERecord, MXRecord, TXTRecord, NSRecord, SRVRecord, CAARecord) associated to a zone by label selector."
+    },
+    {
+      "unique-id": "bind9-pod",
+      "node-type": "system",
+      "name": "BIND9 Operand Pod",
+      "description": "Deployment created per Bind9Instance. A two-container pod running the DNS server plus the bindcar management sidecar."
+    },
+    {
+      "unique-id": "named",
+      "node-type": "service",
+      "name": "BIND9 named",
+      "description": "Container 'bind9'. Authoritative DNS server serving UDP/TCP :53 as non-root UID 101 with the NET_BIND_SERVICE capability."
+    },
+    {
+      "unique-id": "bindcar",
+      "node-type": "service",
+      "name": "bindcar API Sidecar",
+      "description": "Container 'api' (ghcr.io/firestoned/bindcar). HTTP API on :8080 for zone add/del/notify/status; runs rndc / nsupdate against the local named.",
+      "development-language": "Rust"
+    },
+    {
+      "unique-id": "bind9-svc",
+      "node-type": "service",
+      "name": "BIND9 Service",
+      "description": "Kubernetes Service exposing DNS (:53 UDP/TCP) and the bindcar API (port 80 -> 8080)."
+    },
+    {
+      "unique-id": "dns-client",
+      "node-type": "actor",
+      "name": "DNS Client",
+      "description": "Any resolver or workload issuing DNS queries against the served zones."
+    }
+  ],
+  "relationships": [
+    {
+      "unique-id": "compose-namespace",
+      "description": "bindy-system contains the operator and the BIND9 operands",
+      "relationship-type": {
+        "composed-of": {
+          "container": "bindy-system",
+          "nodes": ["bindy-operator", "bind9-pod", "bind9-svc"]
+        }
+      }
+    },
+    {
+      "unique-id": "compose-pod",
+      "description": "The operand pod runs named plus the bindcar sidecar",
+      "relationship-type": {
+        "composed-of": {
+          "container": "bind9-pod",
+          "nodes": ["named", "bindcar"]
+        }
+      }
+    },
+    {
+      "unique-id": "operator-watches-api",
+      "description": "watches and patches custom resources",
+      "protocol": "HTTPS",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "bindy-operator" },
+          "destination": { "node": "k8s-api" }
+        }
+      }
+    },
+    {
+      "unique-id": "api-enforces-policies",
+      "description": "enforces CEL policies on CR and pod admission",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "k8s-api" },
+          "destination": { "node": "admission-policies" }
+        }
+      }
+    },
+    {
+      "unique-id": "operator-reconciles-cluster",
+      "description": "reconciles",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "bindy-operator" },
+          "destination": { "node": "crd-cluster" }
+        }
+      }
+    },
+    {
+      "unique-id": "operator-reconciles-dnszone",
+      "description": "reconciles",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "bindy-operator" },
+          "destination": { "node": "crd-dnszone" }
+        }
+      }
+    },
+    {
+      "unique-id": "operator-reconciles-records",
+      "description": "reconciles (8 record kinds)",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "bindy-operator" },
+          "destination": { "node": "crd-records" }
+        }
+      }
+    },
+    {
+      "unique-id": "provider-owns-cluster",
+      "description": "creates / owns",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "crd-provider" },
+          "destination": { "node": "crd-cluster" }
+        }
+      }
+    },
+    {
+      "unique-id": "cluster-owns-instance",
+      "description": "creates / owns",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "crd-cluster" },
+          "destination": { "node": "crd-instance" }
+        }
+      }
+    },
+    {
+      "unique-id": "instance-owns-pod",
+      "description": "creates / owns Deployment",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "crd-instance" },
+          "destination": { "node": "bind9-pod" }
+        }
+      }
+    },
+    {
+      "unique-id": "dnszone-selects-records",
+      "description": "selects member records via label selector",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "crd-dnszone" },
+          "destination": { "node": "crd-records" }
+        }
+      }
+    },
+    {
+      "unique-id": "operator-manages-zones",
+      "description": "add / delete / notify zones (SA token, TokenReview)",
+      "protocol": "HTTPS",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "bindy-operator" },
+          "destination": { "node": "bindcar" }
+        }
+      }
+    },
+    {
+      "unique-id": "operator-updates-records",
+      "description": "DNS UPDATE (RFC 2136, TSIG)",
+      "protocol": "TCP",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "bindy-operator" },
+          "destination": { "node": "named" }
+        }
+      }
+    },
+    {
+      "unique-id": "bindcar-controls-named",
+      "description": "rndc / nsupdate (local)",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "bindcar" },
+          "destination": { "node": "named" }
+        }
+      }
+    },
+    {
+      "unique-id": "client-queries-svc",
+      "description": "DNS query",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "dns-client" },
+          "destination": { "node": "bind9-svc" }
+        }
+      }
+    },
+    {
+      "unique-id": "svc-routes-named",
+      "description": "routes :53 to named",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "bind9-svc" },
+          "destination": { "node": "named" }
+        }
+      }
+    }
+  ]
+}

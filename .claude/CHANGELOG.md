@@ -1,3 +1,46 @@
+## [2026-07-10] - Architecture as Code: FINOS CALM models + generated Mermaid + PR validation
+
+**Author:** Erick Bourgeois
+
+### Added
+- `calm/bindy-control-plane.architecture.json`, `calm/bindy-multi-cluster.architecture.json`:
+  FINOS CALM (schema 1.2) architecture models — the source of truth for the
+  architecture diagrams. Control-plane model covers the operator, reconcilers,
+  CRD ownership hierarchy, the `named`+`bindcar` operand pod, the K8s API and the
+  ValidatingAdmissionPolicies; multi-cluster model covers the Queen Bee vs
+  child/Scout (k0rdent) topology and ARecord fan-in. Both pass `calm validate`.
+- `calm/README.md`: what the models are and the edit → validate → regenerate flow.
+- `scripts/calm-docs.sh`: generates Mermaid pages from the models via
+  `calm docify`, extracts the diagram, and normalizes the `elk` layout directive
+  to the built-in `dagre` (elk isn't bundled with the MkDocs mermaid.min.js).
+  Output is deterministic (no timestamps) so the CI drift-check is stable.
+- `docs/src/architecture/calm.md` (authored overview) +
+  `docs/src/architecture/calm-control-plane.md`,
+  `docs/src/architecture/calm-multi-cluster.md` (GENERATED — do not edit).
+  Added to the MkDocs nav under Development → Architecture → "Architecture as Code (CALM)".
+- `Makefile`: `calm-validate` (schema-validate every model; CI gate),
+  `calm-docs` (regenerate the Mermaid pages), `calm-docs-check` (regenerate +
+  `git diff --exit-code` drift gate). CLI pinned via `CALM_CLI_VERSION` (1.47.1),
+  fetched on demand with `npx` (Node.js >= 20).
+- `.github/workflows/pr.yaml`: a `calm` paths-filter (`calm/**`,
+  `docs/src/architecture/calm-*.md`, `scripts/calm-docs.sh`) and a
+  `calm-validate` job (setup-node, then `make calm-validate` + `make calm-docs-check`).
+  Delegates all logic to the Makefile per repo convention; actions SHA-pinned.
+
+### Why
+Keep the architecture description versioned, reviewable and machine-validated
+alongside the code — diagrams are regenerated deterministically from CALM rather
+than hand-drawn, and PR CI fails on an invalid model or a stale diagram. Matches
+the compliance requirement that architecture be auditable and traceable.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] New CI job (runs only when `calm/**` or the generated pages change; needs Node.js in CI)
+- [ ] Documentation only
+
+---
+
 ## [2026-07-09] - Fix: e2e build fails on native Linux runner (cross-linker not found)
 
 **Author:** Erick Bourgeois
