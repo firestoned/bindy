@@ -477,7 +477,7 @@ rules:
   # Watch HTTPRoutes/TLSRoutes/TCPRoutes and read Gateways (Gateway API) to follow a route's
   # parentRefs back to the serving gateway and discover its external IP.
   - apiGroups: ["gateway.networking.k8s.io"]
-    resources: ["httproutes", "tlsroutes", "gateways"]
+    resources: ["httproutes", "tlsroutes", "tcproutes", "gateways"]
     verbs: ["get", "list", "watch"]
   # Read DNSZones for zone validation
   - apiGroups: ["bindy.firestoned.io"]

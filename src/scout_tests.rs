@@ -7,18 +7,20 @@
 mod tests {
     use crate::crd::DNSZone;
     use crate::scout::{
-        arecord_cr_name, arecord_label_selector, build_service_arecord, check_zone_authorization,
-        derive_record_name, effective_tcproute_hostnames, gateway_addresses_as_ips,
-        gateway_parent_refs, get_record_name_annotation, get_zone_annotation, has_finalizer,
-        is_arecord_enabled, is_being_deleted, is_loadbalancer_service, is_scout_opted_in,
-        parse_gateway_service_entry, parse_gateway_services, resolve_ip_from_service_lb_status,
-        resolve_ips, resolve_ips_from_annotation, resolve_record_name, resolve_zone,
-        service_arecord_cr_name, service_arecord_label_selector, service_ref_from_str,
-        stale_arecord_label_selector, stale_tcproute_arecord_label_selector,
-        tcproute_arecord_cr_name, tcproute_arecord_label_selector, zone_allows_source_namespace,
-        Gateway, GatewayServiceTarget, NamespacedName, ParentReference, ServiceARecordParams,
-        ZoneAuthz, FINALIZER_SCOUT, LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER,
-        LABEL_SOURCE_NAME, LABEL_SOURCE_NAMESPACE, LABEL_ZONE,
+        arecord_cr_name, arecord_label_selector, build_service_arecord, build_tcproute_arecord,
+        check_zone_authorization, derive_record_name, effective_tcproute_hostnames,
+        gateway_addresses_as_ips, gateway_parent_refs, get_record_name_annotation,
+        get_zone_annotation, has_finalizer, is_arecord_enabled, is_being_deleted,
+        is_loadbalancer_service, is_scout_opted_in, parse_gateway_service_entry,
+        parse_gateway_services, resolve_ip_from_service_lb_status, resolve_ips,
+        resolve_ips_from_annotation, resolve_record_name, resolve_zone, service_arecord_cr_name,
+        service_arecord_label_selector, service_ref_from_str, stale_arecord_label_selector,
+        stale_tcproute_arecord_label_selector, tcproute_arecord_cr_name,
+        tcproute_arecord_label_selector, zone_allows_source_namespace, Gateway,
+        GatewayServiceTarget, NamespacedName, ParentReference, ServiceARecordParams,
+        TCPRouteARecordParams, ZoneAuthz, FINALIZER_SCOUT, LABEL_MANAGED_BY,
+        LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER, LABEL_SOURCE_NAME, LABEL_SOURCE_NAMESPACE,
+        LABEL_ZONE,
     };
     use std::sync::Arc;
 
@@ -361,30 +363,49 @@ mod tests {
     }
 
     #[test]
-    fn test_effective_tcproute_hostnames_uses_annotation_override_when_no_hostnames_present() {
+    fn test_effective_tcproute_hostnames_uses_annotation_override() {
         let mut annotations = BTreeMap::new();
         annotations.insert(
             "bindy.firestoned.io/record-name".to_string(),
             "db".to_string(),
         );
 
-        let hostnames = effective_tcproute_hostnames(&annotations, None);
+        let hostnames = effective_tcproute_hostnames(&annotations);
 
         assert_eq!(hostnames, vec![String::new()]);
     }
 
     #[test]
-    fn test_effective_tcproute_hostnames_prefers_declared_hostnames_when_present() {
+    fn test_effective_tcproute_hostnames_empty_when_no_annotation() {
+        let annotations = BTreeMap::new();
+
+        let hostnames = effective_tcproute_hostnames(&annotations);
+
+        assert!(hostnames.is_empty());
+    }
+
+    #[test]
+    fn test_tcproute_effective_record_names_uses_annotation() {
         let mut annotations = BTreeMap::new();
         annotations.insert(
             "bindy.firestoned.io/record-name".to_string(),
             "db".to_string(),
         );
 
-        let hostnames =
-            effective_tcproute_hostnames(&annotations, Some(&vec!["db.example.com".to_string()]));
+        let names = crate::scout::tcproute_effective_record_names(&annotations, "example.com")
+            .expect("should derive names");
 
-        assert_eq!(hostnames, vec!["db.example.com".to_string()]);
+        assert_eq!(names, vec!["db".to_string()]);
+    }
+
+    #[test]
+    fn test_tcproute_effective_record_names_empty_without_annotation() {
+        let annotations = BTreeMap::new();
+
+        let names = crate::scout::tcproute_effective_record_names(&annotations, "example.com")
+            .expect("should succeed");
+
+        assert!(names.is_empty());
     }
 
     // =========================================================================
@@ -1900,5 +1921,37 @@ mod tests {
         ];
         // Non-Gateway kind and non-Gateway-API group are both excluded.
         assert!(gateway_parent_refs(&refs, "app-ns").is_empty());
+    }
+    #[test]
+    fn test_reconcile_tcproute_smoke_builds_arecord_from_annotation() {
+        // Smoke test: simulate the annotation-driven naming path used by reconcile_tcproute
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            "bindy.firestoned.io/record-name".to_string(),
+            "db".to_string(),
+        );
+
+        let zone = "example.com";
+        // resolve_record_name should return the annotation value regardless of host
+        let record_name = resolve_record_name(&annotations, "", zone).expect("annotation present");
+
+        let ips = vec!["10.0.0.5".to_string()];
+        let cr_name = tcproute_arecord_cr_name("test-cluster", "default", "my-tcproute", 0);
+
+        let arecord = build_tcproute_arecord(TCPRouteARecordParams {
+            name: &cr_name,
+            target_namespace: "bindy-system",
+            record_name: &record_name,
+            ips: &ips,
+            ttl: Some(300),
+            cluster_name: "test-cluster",
+            route_namespace: "default",
+            route_name: "my-tcproute",
+            zone,
+        });
+
+        assert_eq!(arecord.spec.name, record_name);
+        assert_eq!(arecord.spec.ipv4_addresses, ips);
+        assert_eq!(arecord.spec.ttl, Some(300));
     }
 }

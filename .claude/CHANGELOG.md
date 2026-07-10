@@ -106,7 +106,7 @@ least-privilege posture.
 **Author:** Prabhjot Bawa
 
 ### Added
-- `src/scout.rs`: Scout now reconciles Gateway API `TCPRoute` resources alongside `HTTPRoute` and `TLSRoute`, including ARecord creation, finalizer handling, stale-record cleanup, and the existing gateway-chain IP resolution flow.
+- `src/scout.rs`: Scout now reconciles Gateway API `TCPRoute` resources alongside `HTTPRoute` and `TLSRoute`. For L4 TCPRoute sources Scout creates ARecords when a `bindy.firestoned.io/record-name` annotation is present (TCPRoute has no `spec.hostnames[]`), and otherwise follows the existing gateway-chain IP resolution, finalizer handling, and stale-record cleanup flow.
 - `src/bootstrap.rs` and `deploy/scout/clusterrole.yaml`: Scout RBAC now includes `tcproutes` read access for Gateway API route watching.
 - `docs/src/guide/scout.md` and `examples/README.md`: documented TCPRoute support and the RBAC requirements for Gateway API route watching.
 

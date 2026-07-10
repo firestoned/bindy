@@ -128,10 +128,10 @@ pub struct TLSRoute {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TCPRouteSpec {
-    /// Hostnames matching this TCPRoute when present.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hostnames: Option<Vec<String>>,
-    /// Rules for this TCPRoute (required by API, but Scout only uses hostnames).
+    /// Rules for this TCPRoute (kept for schema compatibility with the
+    /// Gateway API). Scout does not currently parse individual rule contents
+    /// for TCPRoute (L4), but keeping the field avoids schema drift when the
+    /// CR is round-tripped by the controller.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rules: Option<Vec<serde_json::Value>>,
     /// Gateways this route attaches to. Scout follows these to discover the
@@ -1330,21 +1330,37 @@ pub fn tcproute_arecord_cr_name(
 /// absent but a record-name override is configured, Scout falls back to a single
 /// placeholder hostname so the override can still be applied without requiring a
 /// hostname to be present.
-pub fn effective_tcproute_hostnames(
-    annotations: &BTreeMap<String, String>,
-    declared_hostnames: Option<&Vec<String>>,
-) -> Vec<String> {
-    if let Some(hostnames) = declared_hostnames {
-        if !hostnames.is_empty() {
-            return hostnames.clone();
-        }
-    }
-
+pub fn effective_tcproute_hostnames(annotations: &BTreeMap<String, String>) -> Vec<String> {
     if get_record_name_annotation(annotations).is_some() {
         vec![String::new()]
     } else {
         Vec::new()
     }
+}
+
+/// Given a TCPRoute's annotations, derive the record name(s) Scout would create.
+///
+/// This mirrors the naming path used in `reconcile_tcproute`:
+/// - If a `bindy.firestoned.io/record-name` annotation is present, a single
+///   record name (the annotation value) is returned.
+/// - Otherwise, when hostnames are present (not applicable to TCPRoute in
+///   Gateway API), the derived record names from those hostnames would be
+///   returned. For TCPRoute (pure L4) this returns an empty vec unless the
+///   annotation is set.
+pub fn tcproute_effective_record_names(
+    annotations: &BTreeMap<String, String>,
+    zone: &str,
+) -> Result<Vec<String>> {
+    let hostnames = effective_tcproute_hostnames(annotations);
+    let mut names = Vec::new();
+    for host in hostnames.iter() {
+        // resolve_record_name prefers the annotation override when present.
+        match resolve_record_name(annotations, host, zone) {
+            Ok(n) => names.push(n),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(names)
 }
 
 /// Builds a Kubernetes label selector matching all ARecords created by Scout
@@ -3163,10 +3179,7 @@ async fn reconcile_tcproute(
 
     let ttl: Option<i32> = annotations.get(ANNOTATION_TTL).and_then(|v| v.parse().ok());
 
-    let hostnames = effective_tcproute_hostnames(
-        &annotations,
-        route.spec.as_ref().and_then(|s| s.hostnames.as_ref()),
-    );
+    let hostnames = effective_tcproute_hostnames(&annotations);
 
     let arecord_api: Api<ARecord> =
         Api::namespaced(ctx.remote_client.clone(), &ctx.target_namespace);
