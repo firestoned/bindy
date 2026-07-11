@@ -20,12 +20,40 @@
 Closes #44 (create Grafana dashboards for bindy and bindcar). The operator
 dashboard already existed but was undocumented; the sidecar had metrics but no
 dashboard. This adds the missing sidecar dashboard and wires both into the docs.
+## [2026-07-10] - Fix: integration test silently passed when operator pods never started
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `tests/simple_integration.rs`: `test_instance_pod_label_selector_finds_pods`
+  waited up to 2 minutes for the instance's pods, printed
+  `✗ Pods never became ready`, then **still reported success** — every assertion
+  path (pod readiness, label verification) was skipped or looped over an empty
+  pod list, so the suite exited 0. A real pod-creation/reconciliation regression
+  would pass unnoticed. Two changes:
+  1. The test creates its Bind9Instance in `bindy-label-selector-test`, outside
+     the operator namespace, where the operator's cluster-wide (read-only) Secret
+     ClusterRole can't create the RNDC key — a 403 that left the instance stuck at
+     `Ready=False/NotReady` with no pods (B-5 hardening, PR #391). Added a
+     `grant_secrets_writer_role` helper that replicates the namespaced
+     `bindy-secrets-writer` Role + RoleBinding into the test namespace (the
+     documented multi-namespace remedy), so the instance can actually reconcile.
+  2. Added a hard `assert!(pod_ready, …)` after cleanup so the test now fails
+     loudly if pods never become Ready.
+
+### Why
+Surfaced while validating the kube 4.0 upgrade: the e2e reported success despite a
+visible 403 in the logs. Root cause was pre-existing test masking (unrelated to the
+dependency upgrade), not an operator or migration defect — the 403 is the intended
+least-privilege posture.
 
 ### Impact
 - [ ] Breaking change
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation / observability only
+- [x] Test-only fix (no runtime/behavior change)
+- [ ] Documentation only
 
 ---
 
@@ -51,10 +79,12 @@ dashboard. This adds the missing sidecar dashboard and wires both into the docs.
   `E2E gate / Integration + Regression (kind)`, so PRs sat "Expected — waiting"
   forever even when E2E passed. E2E still gates Dependabot auto-merge inside
   `dependabot-auto-merge.yaml` (`auto-merge` needs `[metadata, e2e]` + `success()`).
-- **Pending (after this workflow change lands on `main` + open Dependabot PRs are
-  rebased):** change the `Signed Commits` ruleset required checks from
+- `Signed Commits` ruleset: changed required checks from
   `[Clippy, Check Formatting, Test, Verify Signed Commits]` to
-  `[PR Checks Passed, Verify Signed Commits]`.
+  `[PR Checks Passed, Verify Signed Commits]` (done after the gate landed on
+  `main` and the open Dependabot PRs were rebased). The individual Rust checks
+  are still enforced — via the `PR Checks Passed` aggregate — but no longer block
+  non-code PRs when they legitimately skip.
 
 ### Why
 Dependabot github-actions PRs (#399/#398/#397) passed E2E but stayed BLOCKED: the

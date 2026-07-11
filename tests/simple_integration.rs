@@ -97,6 +97,77 @@ async fn delete_test_namespace(client: &Client, name: &str) {
     }
 }
 
+/// Replicate the namespaced `bindy-secrets-writer` Role + RoleBinding into `namespace`.
+///
+/// The operator's cluster-wide ClusterRole is READ-ONLY on Secrets (B-5 hardening,
+/// PR #391); the mutating verbs live in the namespaced `bindy-secrets-writer` Role,
+/// shipped only in the operator's own namespace (`deploy/operator/rbac/secrets-role.yaml`).
+/// A Bind9Instance created in any other namespace therefore hits a 403 when the operator
+/// tries to create its RNDC key Secret, so no pods are ever created. The documented
+/// remedy for multi-namespace deployments is to replicate this Role + RoleBinding into
+/// each target namespace — which this helper does so the instance can actually reconcile.
+async fn grant_secrets_writer_role(client: &Client, namespace: &str) {
+    use k8s_openapi::api::rbac::v1::{PolicyRule, Role, RoleBinding, RoleRef, Subject};
+
+    const ROLE_NAME: &str = "bindy-secrets-writer";
+    const OPERATOR_SA_NAME: &str = "bindy";
+    const OPERATOR_SA_NAMESPACE: &str = "bindy-system";
+
+    let roles: Api<Role> = Api::namespaced(client.clone(), namespace);
+    let role = Role {
+        metadata: ObjectMeta {
+            name: Some(ROLE_NAME.to_string()),
+            namespace: Some(namespace.to_string()),
+            ..Default::default()
+        },
+        rules: Some(vec![PolicyRule {
+            api_groups: Some(vec![String::new()]),
+            resources: Some(vec!["secrets".to_string()]),
+            verbs: vec![
+                "create".to_string(),
+                "update".to_string(),
+                "patch".to_string(),
+                "delete".to_string(),
+            ],
+            ..Default::default()
+        }]),
+    };
+    match roles.create(&PostParams::default(), &role).await {
+        Ok(_) => println!("✓ Created {ROLE_NAME} Role in {namespace}"),
+        Err(kube::Error::Api(ae)) if ae.code == 409 => {
+            println!("  {ROLE_NAME} Role already exists in {namespace}");
+        }
+        Err(e) => eprintln!("⚠ Failed to create {ROLE_NAME} Role in {namespace}: {e}"),
+    }
+
+    let bindings: Api<RoleBinding> = Api::namespaced(client.clone(), namespace);
+    let binding = RoleBinding {
+        metadata: ObjectMeta {
+            name: Some(ROLE_NAME.to_string()),
+            namespace: Some(namespace.to_string()),
+            ..Default::default()
+        },
+        role_ref: RoleRef {
+            api_group: "rbac.authorization.k8s.io".to_string(),
+            kind: "Role".to_string(),
+            name: ROLE_NAME.to_string(),
+        },
+        subjects: Some(vec![Subject {
+            kind: "ServiceAccount".to_string(),
+            name: OPERATOR_SA_NAME.to_string(),
+            namespace: Some(OPERATOR_SA_NAMESPACE.to_string()),
+            ..Default::default()
+        }]),
+    };
+    match bindings.create(&PostParams::default(), &binding).await {
+        Ok(_) => println!("✓ Created {ROLE_NAME} RoleBinding in {namespace}"),
+        Err(kube::Error::Api(ae)) if ae.code == 409 => {
+            println!("  {ROLE_NAME} RoleBinding already exists in {namespace}");
+        }
+        Err(e) => eprintln!("⚠ Failed to create {ROLE_NAME} RoleBinding in {namespace}: {e}"),
+    }
+}
+
 // ============================================================================
 // Basic Connectivity Tests
 // ============================================================================
@@ -901,6 +972,11 @@ async fn test_instance_pod_label_selector_finds_pods() {
         return;
     }
 
+    // The instance lives outside the operator namespace, so replicate the namespaced
+    // secrets-writer Role here — otherwise the operator gets a 403 creating the RNDC
+    // Secret and no pods are ever scheduled (B-5 hardening, see helper docs).
+    grant_secrets_writer_role(&client, namespace).await;
+
     // Create Bind9Cluster first (required for instance to reconcile)
     let cluster_name = "test-cluster";
     let clusters: Api<Bind9Cluster> = Api::namespaced(client.clone(), namespace);
@@ -1187,6 +1263,17 @@ async fn test_instance_pod_label_selector_finds_pods() {
     }
 
     delete_test_namespace(&client, namespace).await;
+
+    // Enforce the behaviour this test is named for: if the operator never brought
+    // pods up (e.g. a reconciliation/label-selector or RNDC-secret regression), fail
+    // loudly instead of silently passing on an empty pod list. Cleanup above has
+    // already run, so this leaks nothing.
+    assert!(
+        pod_ready,
+        "Bind9Instance '{instance_name}' pods never became Ready within 2 minutes — \
+         pod creation/reconciliation regression (operator could not schedule pods; \
+         see Bind9Instance status logged above)"
+    );
 
     println!("\n✓ Test passed\n");
 }
