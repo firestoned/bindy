@@ -1,3 +1,34 @@
+## [2026-07-11] - Add Grafana dashboard for the bindcar sidecar
+
+**Author:** William Rizzo
+
+### Added
+- `docs/grafana-dashboard-bindcar.json`: new Grafana dashboard (schemaVersion 38,
+  `${DS_PROMETHEUS}` datasource variable) for the bindcar BIND9 sidecar. 14 panels
+  covering all 8 `bindcar_*` Prometheus metric families: HTTP request rate/latency/
+  status/path/method, zone & record operations, `rndc`/nsupdate command rate &
+  latency, zones managed, rate-limit decisions, and build version. Mirrors the
+  conventions of the existing `docs/grafana-dashboard.json` (operator dashboard).
+
+### Changed
+- `docs/src/operations/metrics.md`: replaced the "coming soon" dashboard note with
+  import instructions for the shipped operator dashboard, and added a new
+  "Sidecar (bindcar) Metrics" section documenting the eight `bindcar_*` metrics,
+  example PromQL, and the bindcar dashboard import.
+
+### Why
+Closes #44 (create Grafana dashboards for bindy and bindcar). The operator
+dashboard already existed but was undocumented; the sidecar had metrics but no
+dashboard. This adds the missing sidecar dashboard and wires both into the docs.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation / observability only
+
+---
+
 ## [2026-07-10] - Fix: Dependabot PRs stuck / E2E "waiting"; add PR Checks Passed gate
 
 **Author:** Erick Bourgeois
