@@ -196,15 +196,58 @@ sum(rate(bindy_firestoned_io_requeues_total[5m])) by (resource_type, reason)
 
 ### Grafana Dashboard
 
-Import the Bindy operator dashboard (coming soon) or create custom panels using the queries above.
+A ready-to-import dashboard for the operator ships in the repository at
+[`docs/grafana-dashboard.json`](https://github.com/firestoned/bindy/blob/main/docs/grafana-dashboard.json).
 
-Recommended panels:
+Import it from **Grafana → Dashboards → New → Import**, upload the JSON, and select
+your Prometheus datasource for the `DS_PROMETHEUS` variable.
+
+It includes panels for:
+
 1. **Reconciliation Rate** - Total reconciliations/sec by resource type
 2. **Reconciliation Latency** - P50, P95, P99 latencies
 3. **Error Rate** - Errors/sec by resource type and error category
 4. **Active Resources** - Gauge showing current active resources
 5. **Leader Status** - Current leader pod and election events
 6. **Resource Lifecycle** - Created/Updated/Deleted rates
+
+A companion dashboard for the [bindcar sidecar](#sidecar-bindcar-metrics) ships at
+[`docs/grafana-dashboard-bindcar.json`](https://github.com/firestoned/bindy/blob/main/docs/grafana-dashboard-bindcar.json).
+
+## Sidecar (bindcar) Metrics
+
+The [bindcar](https://github.com/firestoned/bindcar) sidecar that runs alongside `named`
+exposes its own Prometheus metrics on `/metrics` (default port `8080`, unauthenticated),
+using the `bindcar_` prefix. Scrape it with the same
+`prometheus.io/scrape` annotations as the operator.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `bindcar_http_requests_total` | Counter | `method`, `path`, `status` | HTTP requests processed by the REST API |
+| `bindcar_http_request_duration_seconds` | Histogram | `method`, `path` | HTTP request latency |
+| `bindcar_zone_operations_total` | Counter | `operation`, `result` | Zone and record operations (record ops use the `record_*` operation prefix) |
+| `bindcar_rndc_commands_total` | Counter | `command`, `result` | `rndc` commands executed (nsupdate uses the `nsupdate_*` command prefix) |
+| `bindcar_rndc_command_duration_seconds` | Histogram | `command` | `rndc`/nsupdate command latency |
+| `bindcar_zones_managed_total` | Gauge | — | Zones currently managed by this instance |
+| `bindcar_rate_limit_requests_total` | Counter | `result` (`allowed`, `rejected`) | Rate-limit decisions |
+| `bindcar_app_info` | Counter | `version` | Build/version info |
+
+```promql
+# Request rate by HTTP status
+sum(rate(bindcar_http_requests_total[5m])) by (status)
+
+# API p95 latency
+histogram_quantile(0.95, sum(rate(bindcar_http_request_duration_seconds_bucket[5m])) by (le))
+
+# Failed rndc commands
+sum(rate(bindcar_rndc_commands_total{result="error"}[5m])) by (command)
+
+# Rate-limit rejections
+sum(rate(bindcar_rate_limit_requests_total{result="rejected"}[5m]))
+```
+
+Import the sidecar dashboard from
+[`docs/grafana-dashboard-bindcar.json`](https://github.com/firestoned/bindy/blob/main/docs/grafana-dashboard-bindcar.json).
 
 ## Resource Metrics
 
