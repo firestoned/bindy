@@ -18,8 +18,8 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-kube = { version = "3.1", features = ["runtime", "derive", "client", "jsonpatch"] }
-kube-lease-manager = "0.11.1"
+kube = { version = "4.0", features = ["runtime", "derive", "client", "jsonpatch"] }
+kube-lease-manager = "0.12"
 # JSON Patch construction for atomic finalizer add/remove with `test` guards
 # (mirrors kube-runtime's own finalizer helper; same version kube-core uses)
 json-patch = "4.2"
@@ -36,7 +36,7 @@ anyhow = "1"
 thiserror = "2"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
-k8s-openapi = { version = "0.27", features = ["v1_31", "schemars"] }
+k8s-openapi = { version = "0.28", features = ["v1_32", "schemars"] }
 # ring-only: use "rustls-no-provider", NOT reqwest's "rustls" feature. The
 # latter is an alias for "__rustls-aws-lc-rs", which force-enables the aws-lc-rs
 # crypto backend across the whole dependency graph and pulls in aws-lc-sys
@@ -50,9 +50,8 @@ hickory-proto = { version = "0.26", features = ["dnssec-ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 url = "2.5.8"
 # Types-only dependency (CreateZoneRequest / ZoneConfig / SoaRecord / ZONE_TYPE_*).
-# bindcar 0.7.0 gates its kube 4.0 / k8s-openapi 0.28 deps behind the optional
-# `k8s-token-review` feature (default = []), so this does not conflict with the
-# operator's own kube 3.1 / k8s-openapi 0.27 stack.
+# bindcar 0.7.0's optional `k8s-token-review` feature (default = []) pulls kube 4.0 /
+# k8s-openapi 0.28, which now matches the operator's own kube 4.0 / k8s-openapi 0.28 stack.
 bindcar = "0.7"
 prometheus = "0.14"
 axum = "0.8"

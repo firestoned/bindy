@@ -20,6 +20,9 @@
 Closes #44 (create Grafana dashboards for bindy and bindcar). The operator
 dashboard already existed but was undocumented; the sidecar had metrics but no
 dashboard. This adds the missing sidecar dashboard and wires both into the docs.
+
+---
+
 ## [2026-07-10] - Fix: integration test silently passed when operator pods never started
 
 **Author:** Erick Bourgeois
@@ -47,9 +50,51 @@ visible 403 in the logs. Root cause was pre-existing test masking (unrelated to 
 dependency upgrade), not an operator or migration defect — the 403 is the intended
 least-privilege posture.
 
-### Impact
-- [ ] Breaking change
-- [ ] Requires cluster rollout
+    ## [2026-07-10] - Upgrade to kube 4.0 / k8s-openapi 0.28 (Kubernetes v1_32)
+
+    **Author:** Erick Bourgeois
+
+    ### Changed
+    - `Cargo.toml`: `kube` 3.1 → 4.0, `kube-lease-manager` 0.11 → 0.12, and
+      `k8s-openapi` 0.27 → 0.28. k8s-openapi 0.28 removed the `v1_31` feature, so the
+      enabled version moves to `v1_32` (minimum supported Kubernetes API is now 1.32).
+    - `Cargo.lock`: regenerated; the graph now resolves a single `k8s-openapi 0.28.0`
+      and single `kube 4.0.0` (previously the half-applied Dependabot bumps left two
+      incompatible k8s-openapi copies, one with no `v1_*` feature — a build failure).
+    - `deploy/operator/crds/{bind9clusters,bind9instances,clusterbind9providers}.crd.yaml`:
+      regenerated from `src/crd.rs`. Changes are **description-only**, inherited from
+      the embedded k8s core types (PodSpec/ServiceSpec) as they moved from Kubernetes
+      1.31 to 1.32 (e.g. `trafficDistribution` "alpha field" → "beta field"; new
+      `Deprecated:` notes on in-tree volume types). No structural/schema changes to
+      bindy's own fields; no re-apply required for existing CRs.
+    - `.github/dependabot.yml`: added a `kube-ecosystem` group (`kube`, `kube-*`,
+      `k8s-openapi`, all update-types incl. major) so the version-coupled kube stack
+      always bumps together in one coherent PR instead of separate breaking PRs.
+
+    ### Why
+    Dependabot PRs #403 (kube 4.0) and #404 (kube-lease-manager 0.12) each pulled kube
+    4.0 — which requires k8s-openapi 0.28 — while bindy's direct `k8s-openapi` stayed
+    pinned at 0.27. That left two semver-incompatible k8s-openapi copies in the graph;
+    the new 0.28 copy had no `v1_*` feature enabled, so its build script panicked and
+    every build/clippy/test job failed. The fix is a coordinated upgrade of the whole
+    kube stack, plus a Dependabot group so the split can't recur. kube 3→4 required no
+    source changes — the API surface bindy uses is source-compatible.
+
+    ### Verification
+    - `cargo clippy --all-targets --all-features -- -D warnings` — clean
+    - `cargo test --all-features` — 1210 passed, 0 failed
+    - `cargo fmt --check` — clean
+    - CRD regen diff confirmed description-only (no property/type/required changes)
+    - `make ci-e2e` against a kind cluster (kindest/node v1.36) — integration 12/0,
+      regression + PSA/security suite 48/0, all record types reconciled, and the
+      operand BIND9 pod served DNS (in-pod `dig` on :53 answered). Confirms the
+      kube 4.0 / k8s-openapi 0.28 stack (with bindcar v0.7) works at runtime, not
+      just at compile time.
+
+    ### Impact
+    - [ ] Breaking change
+    - [ ] Requires cluster rollout
+
 - [ ] Config change only
 - [x] Documentation / observability only
 - [x] Test-only fix (no runtime/behavior change)
@@ -139,6 +184,7 @@ the compliance requirement that architecture be auditable and traceable.
 - [ ] Breaking change
 - [ ] Requires cluster rollout
 - [x] New CI job (runs only when `calm/**` or the generated pages change; needs Node.js in CI)
+- [x] Dependency upgrade (raises minimum supported Kubernetes API to 1.32)
 - [ ] Documentation only
 
 ---

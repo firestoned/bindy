@@ -25,6 +25,21 @@ updates:
       include: "scope"
     # Group minor and patch updates together
     groups:
+      # The kube ecosystem is tightly version-coupled: kube 4.x requires
+      # k8s-openapi 0.28, and kube-lease-manager pins a specific kube minor.
+      # Bumping any one of them alone produces two incompatible k8s-openapi
+      # copies (the new one has no v1_* feature enabled), which breaks the
+      # build. Group them — including majors — so they always move together
+      # in a single, coherent PR. Must precede the catch-all group below.
+      kube-ecosystem:
+        patterns:
+          - "kube"
+          - "kube-*"
+          - "k8s-openapi"
+        update-types:
+          - "major"
+          - "minor"
+          - "patch"
       rust-dependencies:
         patterns:
           - "*"
