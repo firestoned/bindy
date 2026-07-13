@@ -513,7 +513,7 @@ spec:
           app: bind9-secondary
     ports:
     - protocol: TCP
-      port: 53    # Zone transfer
+      port: 5353    # Zone transfer (named binds the unprivileged 5353)
 ```
 
 **3. Limit Secret Access**

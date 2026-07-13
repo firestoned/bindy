@@ -2,6 +2,34 @@
 
 This document collects the breaking-change migrations for Bindy, newest first.
 
+## `named` moves to the unprivileged port 5353
+
+`named` now binds the **unprivileged container port 5353** instead of 53, so the
+operand container drops the `NET_BIND_SERVICE` capability entirely (it now adds
+**no** capabilities — the strictest posture under PSA `restricted`). The DNS
+Service is unchanged from a client's view: it still exposes **53** and forwards
+to `targetPort: 5353`, so `dig @<service>` on port 53 keeps working.
+
+This reverses the port decision from the bindcar 0.7.0 migration below. It is
+now possible because **bindcar 0.7.2** accepts port-qualified transfer endpoints
+(`<ip>:<port>`): the operator publishes secondary `primaries` and primary
+`also-notify` as `<ip>:5353`, and sets `NSUPDATE_PORT=5353` on the bindcar
+sidecar so dynamic updates reach `named`. `allow-transfer` remains a bare-IP ACL.
+
+| Area | Before | After |
+|---|---|---|
+| **Operand DNS port** | `named` on 53 with `NET_BIND_SERVICE` | `named` on **5353**, no added capabilities |
+| **DNS Service** | port 53 → targetPort 53 | port 53 → **targetPort 5353** (clients unchanged) |
+| **Secondary `primaries`** | plain `<ip>` (port 53) | port-qualified `<ip>:5353` |
+| **Primary `also-notify`** | plain `<ip>` (port 53) | port-qualified `<ip>:5353` |
+| **bindcar DDNS** | nsupdate to 53 | `NSUPDATE_PORT=5353` |
+
+> ⚠️ **Rollout-blocking for multi-instance clusters.** Primary and secondary
+> operands must both run this version, since transfers now target 5353. A mixed
+> fleet (some pods on 53, some on 5353) will fail zone transfers until fully
+> rolled out. Requires **bindcar 0.7.2+**. `NetworkPolicy` ingress and peer
+> egress must allow 5353 (see `deploy/pod-hardening.yaml`).
+
 ## Migrating to bindcar 0.7.0 (Mode B / TokenReview)
 
 Bindy now provisions and consumes **bindcar 0.7.2**

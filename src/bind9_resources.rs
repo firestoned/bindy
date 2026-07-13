@@ -914,8 +914,9 @@ fn render_forwarders(forwarders: Option<&Vec<String>>) -> anyhow::Result<String>
 
 /// Render a `listen-on` / `listen-on-v6` directive for named.conf.options.
 ///
-/// Defaults to `{directive} port 53 {{ any; }};` when `addresses` is `None`
-/// or empty, preserving the previous hardcoded behavior.
+/// Defaults to `{directive} port 5353 {{ any; }};` when `addresses` is `None`
+/// or empty. The port is [`DNS_CONTAINER_PORT`] — the port `named` actually binds
+/// inside the pod — not the client-facing service port [`DNS_PORT`].
 ///
 /// # Arguments
 ///
@@ -932,7 +933,9 @@ fn render_listen_on(directive: &str, addresses: Option<&Vec<String>>) -> anyhow:
             .with_context(|| format!("invalid entry in {directive} address list"))?,
         _ => LISTEN_ON_DEFAULT.to_string(),
     };
-    Ok(format!("{directive} port {DNS_PORT} {{ {list}; }};"))
+    Ok(format!(
+        "{directive} port {DNS_CONTAINER_PORT} {{ {list}; }};"
+    ))
 }
 
 /// Build the main named.conf configuration for a cluster from template
@@ -1388,12 +1391,12 @@ fn build_pod_spec(
             run_as_group: Some(BIND9_NONROOT_UID),
             allow_privilege_escalation: Some(false),
             capabilities: Some(Capabilities {
-                // Drop everything, then add back only NET_BIND_SERVICE so a
-                // non-root `named` can bind the privileged DNS port 53
-                // (DNS_CONTAINER_PORT). NET_BIND_SERVICE is the single
-                // capability permitted under Pod Security Admission `restricted`.
+                // Drop ALL capabilities and add none back. `named` binds the
+                // unprivileged DNS port 5353 (DNS_CONTAINER_PORT), so it no
+                // longer needs NET_BIND_SERVICE. This is the strictest posture
+                // under Pod Security Admission `restricted`.
                 drop: Some(vec!["ALL".to_string()]),
-                add: Some(vec!["NET_BIND_SERVICE".to_string()]),
+                add: None,
             }),
             // PSA `restricted` requires a RuntimeDefault (or Localhost) seccomp
             // profile on every container. Set it explicitly at the container
@@ -1557,6 +1560,15 @@ fn build_api_sidecar_container(
                 }),
                 ..Default::default()
             }),
+            ..Default::default()
+        },
+        // The co-located `named` listens on the unprivileged DNS_CONTAINER_PORT
+        // (5353), not 53. Point bindcar's dynamic-update (nsupdate) traffic at
+        // that port; without this it would default to 53 and every update would
+        // fail with connection refused.
+        EnvVar {
+            name: "NSUPDATE_PORT".into(),
+            value: Some(DNS_CONTAINER_PORT.to_string()),
             ..Default::default()
         },
     ];

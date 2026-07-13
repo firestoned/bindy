@@ -254,7 +254,7 @@ kubectl get deployment -n bindy-system bindy-operator -o jsonpath='{.spec.templa
 
 1. **Verify correct image version**:
    ```bash
-   kubectl set image deployment/bindy-operator -n bindy-system bindy-operator=ghcr.io/firestoned/bindy:v0.X.Y
+   kubectl set image deployment/bindy -n bindy-system bindy=ghcr.io/firestoned/bindy:v0.X.Y
    ```
 
 2. **Force rollout**:
@@ -274,7 +274,7 @@ If migration fails and you need to rollback:
 
 1. **Restore previous operator version**:
    ```bash
-   kubectl set image deployment/bindy-operator -n bindy-system bindy-operator=ghcr.io/firestoned/bindy:v0.PREVIOUS.VERSION
+   kubectl set image deployment/bindy -n bindy-system bindy=ghcr.io/firestoned/bindy:v0.PREVIOUS.VERSION
    kubectl rollout status deployment/bindy-operator -n bindy-system
    ```
 
