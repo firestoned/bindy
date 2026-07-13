@@ -4,7 +4,8 @@
 # TCPRoute DNS Example — Scout watching Gateway API TCPRoute
 #
 # This example shows how Scout watches a TCPRoute resource (Gateway API v1alpha2)
-# and automatically creates ARecord CRs for each hostname in spec.hostnames[].
+# and automatically creates an ARecord CR. TCPRoute has no spec.hostnames[] field,
+# so the record name must be supplied via bindy.firestoned.io/record-name.
 # TCPRoute is used for TCP-based services such as databases and L4 proxies.
 #
 # Prerequisites:

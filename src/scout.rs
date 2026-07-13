@@ -1324,20 +1324,6 @@ pub fn tcproute_arecord_cr_name(
     sanitized[..sanitized.len().min(MAX_K8S_NAME_LEN)].to_string()
 }
 
-/// Returns the effective hostnames for a TCPRoute.
-///
-/// When `spec.hostnames[]` is present, those values are used directly. When it is
-/// absent but a record-name override is configured, Scout falls back to a single
-/// placeholder hostname so the override can still be applied without requiring a
-/// hostname to be present.
-pub fn effective_tcproute_hostnames(annotations: &BTreeMap<String, String>) -> Vec<String> {
-    if get_record_name_annotation(annotations).is_some() {
-        vec![String::new()]
-    } else {
-        Vec::new()
-    }
-}
-
 /// Builds a Kubernetes label selector matching all ARecords created by Scout
 /// for a specific TCPRoute.
 pub fn tcproute_arecord_label_selector(cluster: &str, namespace: &str, route_name: &str) -> String {
@@ -3154,54 +3140,40 @@ async fn reconcile_tcproute(
 
     let ttl: Option<i32> = annotations.get(ANNOTATION_TTL).and_then(|v| v.parse().ok());
 
-    let hostnames = effective_tcproute_hostnames(&annotations);
+    let Some(record_name) = get_record_name_annotation(&annotations) else {
+        warn!(tcproute = %name, ns = %namespace, "TCPRoute has no record-name override — skipping (add bindy.firestoned.io/record-name annotation)");
+        return Ok(Action::requeue(Duration::from_secs(SCOUT_ERROR_REQUEUE_SECS)));
+    };
 
     let arecord_api: Api<ARecord> =
         Api::namespaced(ctx.remote_client.clone(), &ctx.target_namespace);
 
-    for (idx, hostname) in hostnames.iter().enumerate() {
-        let record_name = if let Some(override_name) = get_record_name_annotation(&annotations) {
-            override_name
-        } else if hostname.is_empty() {
-            debug!(tcproute = %name, hostname_index = idx, "TCPRoute has no hostname and no record-name override — skipping");
-            continue;
-        } else {
-            match resolve_record_name(&annotations, hostname, &zone) {
-                Ok(name) => name,
-                Err(e) => {
-                    debug!(tcproute = %name, hostname = %hostname, zone = %zone, error = %e, "TCPRoute hostname did not resolve to a record name — using the hostname as-is");
-                    hostname.to_string()
-                }
-            }
-        };
+    let cr_name = tcproute_arecord_cr_name(&ctx.cluster_name, &namespace, &name, 0);
+    let arecord = build_tcproute_arecord(TCPRouteARecordParams {
+        name: &cr_name,
+        target_namespace: &ctx.target_namespace,
+        record_name: &record_name,
+        ips: &ips,
+        ttl,
+        cluster_name: &ctx.cluster_name,
+        route_namespace: &namespace,
+        route_name: &name,
+        zone: &zone,
+    });
 
-        let cr_name = tcproute_arecord_cr_name(&ctx.cluster_name, &namespace, &name, idx);
-        let arecord = build_tcproute_arecord(TCPRouteARecordParams {
-            name: &cr_name,
-            target_namespace: &ctx.target_namespace,
-            record_name: &record_name,
-            ips: &ips,
-            ttl,
-            cluster_name: &ctx.cluster_name,
-            route_namespace: &namespace,
-            route_name: &name,
-            zone: &zone,
-        });
-
-        let ssapply = kube::api::PatchParams::apply("bindy-scout").force();
-        match arecord_api
-            .patch(&cr_name, &ssapply, &kube::api::Patch::Apply(&arecord))
-            .await
-        {
-            Ok(_) => {
-                info!(arecord = %cr_name, tcproute = %name, hostname = %hostname, ips = ?ips, "ARecord created/updated for TCPRoute");
-            }
-            Err(e) => {
-                error!(arecord = %cr_name, tcproute = %name, error = %e, "Failed to apply ARecord for TCPRoute");
-                return Err(ScoutError::from(anyhow!(
-                    "Failed to apply ARecord {cr_name}: {e}"
-                )));
-            }
+    let ssapply = kube::api::PatchParams::apply("bindy-scout").force();
+    match arecord_api
+        .patch(&cr_name, &ssapply, &kube::api::Patch::Apply(&arecord))
+        .await
+    {
+        Ok(_) => {
+            info!(arecord = %cr_name, tcproute = %name, record_name = %record_name, ips = ?ips, "ARecord created/updated for TCPRoute");
+        }
+        Err(e) => {
+            error!(arecord = %cr_name, tcproute = %name, error = %e, "Failed to apply ARecord for TCPRoute");
+            return Err(ScoutError::from(anyhow!(
+                "Failed to apply ARecord {cr_name}: {e}"
+            )));
         }
     }
 
