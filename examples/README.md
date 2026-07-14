@@ -110,6 +110,8 @@ metadata:
 ### Basic Setup
 
 1. **[bind9-cluster.yaml](bind9-cluster.yaml)** - Basic Bind9Cluster configuration
+
+1.1. **[tcproute-dns.yaml](tcproute-dns.yaml)** - Scout example for Gateway API TCPRoute sources
    - Defines shared settings for BIND9 instances
    - Configures DNSSEC, query permissions, and zone transfers
 

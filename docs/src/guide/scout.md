@@ -200,7 +200,7 @@ This prevents a tenant in one namespace from creating records in another
 tenant's zone (a cross-tenant DNS-hijack / confused-deputy risk, since Scout
 writes with a cluster-privileged client).
 
-A source object (`Ingress`/`Service`/`HTTPRoute`/`TLSRoute`) may publish into a
+A source object (`Ingress`/`Service`/`HTTPRoute`/`TLSRoute`/`TCPRoute`) may publish into a
 zone when **either**:
 
 - the matching `DNSZone` lives in the **same namespace** as the source object, **or**
@@ -236,7 +236,7 @@ Scout supports three categories of Kubernetes resources as DNS record sources.
 ### 1. Ingresses (Legacy)
 
 !!! note "Kubernetes Ingress is deprecated"
-    The `networking.k8s.io/v1` Ingress API is considered legacy in modern Kubernetes clusters. New deployments should prefer [Gateway API](#3-gateway-api-httproute-and-tlsroute) (HTTPRoute / TLSRoute) where available. Scout continues to support Ingress for backward compatibility.
+    The `networking.k8s.io/v1` Ingress API is considered legacy in modern Kubernetes clusters. New deployments should prefer [Gateway API](#3-gateway-api-httproute-tlsroute-and-tcproute) (HTTPRoute / TLSRoute / TCPRoute) where available. Scout continues to support Ingress for backward compatibility.
 
 Scout processes **each rule in the Ingress spec independently**. For a multi-host Ingress:
 
@@ -317,14 +317,14 @@ kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-name=<service
 
 ---
 
-### 3. Gateway API (HTTPRoute and TLSRoute)
+### 3. Gateway API (HTTPRoute, TLSRoute, and TCPRoute)
 
-Scout watches `HTTPRoute` and `TLSRoute` resources from `gateway.networking.k8s.io/v1` and creates one `ARecord` per hostname in `spec.hostnames[]`. The same opt-in annotation (`bindy.firestoned.io/scout-enabled: "true"`) and zone/IP/TTL annotations apply.
+Scout watches `HTTPRoute`, `TLSRoute`, and `TCPRoute` resources from the Gateway API. The same opt-in annotation (`bindy.firestoned.io/scout-enabled: "true"`) and zone/IP/TTL annotations apply. For `HTTPRoute` and `TLSRoute`, Scout creates one `ARecord` per hostname in `spec.hostnames[]`. `TCPRoute` has no `spec.hostnames[]` field — Scout creates a single `ARecord` using the name supplied by the `bindy.firestoned.io/record-name` annotation.
 
 !!! note "IP resolution follows the gateway chain"
     Gateway API routes have no `LoadBalancer` status of their own. When no `bindy.firestoned.io/ip` annotation is set, Scout follows the route's `parentRefs` to the serving `Gateway`, and — for a Gateway whose `gatewayClassName` is in the operator-configured `--gateway-service` map — reads the external IP from the Gateway's `status.addresses`, or, when those are empty, from the mapped LoadBalancer `Service`. This lets operators avoid making every route repeat an IP that is already discoverable from the gateway (e.g. Traefik's proxy Service). The full precedence is: `bindy.firestoned.io/ip` annotation → discovered gateway IP → `--default-ips` → requeue.
 
-See [Gateway API Routes](#gateway-api-routes-httproute-and-tlsroute) for the full reference, examples, record naming, labels, and RBAC requirements.
+See [Gateway API Routes](#gateway-api-routes-httproute-tlsroute-and-tcproute) for the full reference, examples, record naming, labels, and RBAC requirements.
 
 ---
 
@@ -368,7 +368,7 @@ spec:
 | `--namespace <NS>` | Namespace where ARecords are created. Defaults to `bindy-system`. |
 | `--default-zone <ZONE>` | Default DNS zone applied to all Ingresses and Services when no `bindy.firestoned.io/zone` annotation is present (e.g. `example.com`). When combined with `--default-ips`, resources only need `bindy.firestoned.io/scout-enabled: "true"`. |
 | `--default-ips <IP[,IP]>` | Comma-separated default IP address(es) used when no per-resource `bindy.firestoned.io/ip` annotation or LoadBalancer status IP is available. Useful for shared-ingress topologies (e.g. Traefik). |
-| `--gateway-service <class=target>` | Repeatable. Maps a `gatewayClass` to the LoadBalancer Service whose external IP backs it, used to resolve an IP for HTTPRoute/TLSRoute via their `parentRefs`. `target` is either `namespace/name` (e.g. `traefik=traefik/traefik`) or `namespace/<label-selector>` (e.g. `traefik=traefik/app.kubernetes.io/name=traefik`). Multi-label selectors (with commas) must use this flag rather than the env var. The configured classes double as the allow-list of gateways Scout will follow. |
+| `--gateway-service <class=target>` | Repeatable. Maps a `gatewayClass` to the LoadBalancer Service whose external IP backs it, used to resolve an IP for HTTPRoute/TLSRoute/TCPRoute via their `parentRefs`. `target` is either `namespace/name` (e.g. `traefik=traefik/traefik`) or `namespace/<label-selector>` (e.g. `traefik=traefik/app.kubernetes.io/name=traefik`). Multi-label selectors (with commas) must use this flag rather than the env var. The configured classes double as the allow-list of gateways Scout will follow. |
 
 CLI flags take precedence over the corresponding environment variables.
 
@@ -382,7 +382,7 @@ CLI flags take precedence over the corresponding environment variables.
 | `BINDY_SCOUT_EXCLUDE_NAMESPACES` | — | Comma-separated list of additional namespaces to skip. Useful to exclude system namespaces (`kube-system`, `kube-public`, etc.) that will never have Scout-annotated Ingresses. |
 | `BINDY_SCOUT_DEFAULT_ZONE` | — | Default DNS zone for all Ingresses and Services when no `bindy.firestoned.io/zone` annotation is present. Overridden by `--default-zone`. When set alongside `BINDY_SCOUT_DEFAULT_IPS`, resources only need `bindy.firestoned.io/scout-enabled: "true"`. |
 | `BINDY_SCOUT_DEFAULT_IPS` | — | Comma-separated default IP address(es) used when no per-resource annotation override or LoadBalancer status IP is available. Useful for shared-ingress topologies (e.g. Traefik) where all resources resolve to the same VIP(s). Overridden by `--default-ips`. |
-| `BINDY_SCOUT_GATEWAY_SERVICES` | — | Comma-separated `gatewayClass=target` map for gateway-chain IP resolution on HTTPRoute/TLSRoute, e.g. `traefik=traefik/traefik`. `target` is `namespace/name` or `namespace/<label-selector>`. Because commas separate entries here, multi-label selectors must use the repeatable `--gateway-service` flag. Overridden by `--gateway-service`. |
+| `BINDY_SCOUT_GATEWAY_SERVICES` | — | Comma-separated `gatewayClass=target` map for gateway-chain IP resolution on HTTPRoute/TLSRoute/TCPRoute, e.g. `traefik=traefik/traefik`. `target` is `namespace/name` or `namespace/<label-selector>`. Because commas separate entries here, multi-label selectors must use the repeatable `--gateway-service` flag. Overridden by `--gateway-service`. |
 | `BINDY_SCOUT_REMOTE_SECRET` | — | **(Phase 2)** Name of a Secret in the local cluster containing a `kubeconfig` key. When set, Scout targets the remote Bindy cluster for ARecord creation and zone validation. When unset, same-cluster mode is used. |
 | `BINDY_SCOUT_REMOTE_SECRET_NAMESPACE` | Scout's own namespace | **(Phase 2)** Namespace of the `BINDY_SCOUT_REMOTE_SECRET`. Defaults to Scout's own namespace (`POD_NAMESPACE`). |
 | `RUST_LOG` | `info` | Log level: `trace`, `debug`, `info`, `warn`, `error`. |
@@ -474,10 +474,10 @@ rules:
   - apiGroups: [""]
     resources: ["services/finalizers"]
     verbs: ["update"]
-  # Watch HTTPRoutes/TLSRoutes and read Gateways (Gateway API) to follow a route's
+  # Watch HTTPRoutes/TLSRoutes/TCPRoutes and read Gateways (Gateway API) to follow a route's
   # parentRefs back to the serving gateway and discover its external IP.
   - apiGroups: ["gateway.networking.k8s.io"]
-    resources: ["httproutes", "tlsroutes", "gateways"]
+    resources: ["httproutes", "tlsroutes", "tcproutes", "gateways"]
     verbs: ["get", "list", "watch"]
   # Read DNSZones for zone validation
   - apiGroups: ["bindy.firestoned.io"]
@@ -525,21 +525,23 @@ roleRef:
 
 ---
 
-## Gateway API Routes (HTTPRoute and TLSRoute)
+## Gateway API Routes (HTTPRoute, TLSRoute, and TCPRoute)
 
-In addition to watching `Ingress` resources, Scout also supports **Gateway API** routes: `HTTPRoute` and `TLSRoute` from `gateway.networking.k8s.io/v1`. These resources provide a more modern, flexible alternative to Ingress with better separation of concerns.
+In addition to watching `Ingress` resources, Scout also supports **Gateway API** routes: `HTTPRoute`, `TLSRoute`, and `TCPRoute` from the Gateway API. These resources provide a more modern, flexible alternative to Ingress with better separation of concerns.
 
-Scout treats HTTPRoute and TLSRoute identically to Ingress:
+Scout treats HTTPRoute, TLSRoute, and TCPRoute similarly to Ingress:
 
-- Watches all HTTPRoute/TLSRoute resources cluster-wide (excluding its own namespace)
+- Watches all HTTPRoute/TLSRoute/TCPRoute resources cluster-wide (excluding its own namespace)
 - Requires the same `bindy.firestoned.io/scout-enabled: "true"` opt-in annotation
 - Uses the same annotation scheme for zone, IP, and TTL configuration
-- Creates one `ARecord` per hostname in `spec.hostnames[]` with an index suffix
+- `HTTPRoute` / `TLSRoute`: creates one `ARecord` per hostname in `spec.hostnames[]` with an index suffix
+- `TCPRoute`: has no `spec.hostnames[]` field — creates one `ARecord` using the `bindy.firestoned.io/record-name` annotation (required)
 
 ### Why Use Gateway API Routes?
 
 - **HTTPRoute**: Provides advanced HTTP routing (path-based, method-based, header matching) without the Ingress resource limitations
 - **TLSRoute**: For TLS-only traffic (non-HTTP protocols over TLS, gRPC, custom protocols), Scout ensures DNS records are created for all declared hostnames
+- **TCPRoute**: For TCP-based services such as databases, proxies, or other L4 traffic. TCPRoute has no `spec.hostnames[]` field, so the record name must be supplied via `bindy.firestoned.io/record-name`. Scout creates exactly one `ARecord`.
 
 ### Quick Example: HTTPRoute
 
@@ -599,6 +601,31 @@ Scout will create two ARecords:
 - `scout-{cluster}-my-app-grpc-gateway-0` for `secure.example.com`
 - `scout-{cluster}-my-app-grpc-gateway-1` for `grpc.example.com`
 
+### Quick Example: TCPRoute
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TCPRoute
+metadata:
+  name: db-gateway
+  namespace: my-app
+  annotations:
+    bindy.firestoned.io/scout-enabled: "true"
+    bindy.firestoned.io/zone: "example.com"
+    bindy.firestoned.io/ip: "192.168.1.102"
+    bindy.firestoned.io/record-name: "db"
+spec:
+  parentRefs:
+    - name: my-gateway
+      namespace: my-app
+  rules:
+    - backendRefs:
+        - name: postgres
+          port: 5432
+```
+
+Scout will create one ARecord for `db.example.com`.
+
 ### Record Naming for Gateway Routes
 
 Gateway API routes use `spec.hostnames[]` instead of `spec.rules[].host`. Scout creates one ARecord per hostname with an **index suffix** (0, 1, 2, ...):
@@ -647,7 +674,7 @@ spec:
 
 ### RBAC for Gateway API Routes
 
-Scout requires read access (`get`, `list`, `watch`) to `HTTPRoute`, `TLSRoute`, and `Gateway` resources. `Gateway` read access lets Scout follow a route's `parentRefs` to the serving gateway and discover its external IP. Add this rule to the Scout `ClusterRole`:
+Scout requires read access (`get`, `list`, `watch`) to `HTTPRoute`, `TLSRoute`, `TCPRoute`, and `Gateway` resources. `Gateway` read access lets Scout follow a route's `parentRefs` to the serving gateway and discover its external IP. Add this rule to the Scout `ClusterRole`:
 
 ```yaml
 ---
@@ -658,9 +685,9 @@ metadata:
 rules:
   # ... existing Ingress and Service rules ...
 
-  # Watch HTTPRoutes/TLSRoutes and read Gateways (Gateway API)
+  # Watch HTTPRoutes/TLSRoutes/TCPRoutes and read Gateways (Gateway API)
   - apiGroups: ["gateway.networking.k8s.io"]
-    resources: ["httproutes", "tlsroutes", "gateways"]
+    resources: ["httproutes", "tlsroutes", "tcproutes", "gateways"]
     verbs: ["get", "list", "watch"]
 ```
 

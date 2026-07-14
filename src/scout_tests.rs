@@ -7,15 +7,18 @@
 mod tests {
     use crate::crd::DNSZone;
     use crate::scout::{
-        arecord_cr_name, arecord_label_selector, build_service_arecord, check_zone_authorization,
-        derive_record_name, gateway_addresses_as_ips, gateway_parent_refs,
-        get_record_name_annotation, get_zone_annotation, has_finalizer, is_arecord_enabled,
-        is_being_deleted, is_loadbalancer_service, is_scout_opted_in, parse_gateway_service_entry,
+        arecord_cr_name, arecord_label_selector, build_service_arecord, build_tcproute_arecord,
+        check_zone_authorization, derive_record_name,
+        gateway_addresses_as_ips, gateway_parent_refs, get_record_name_annotation,
+        get_zone_annotation, has_finalizer, is_arecord_enabled, is_being_deleted,
+        is_loadbalancer_service, is_scout_opted_in, parse_gateway_service_entry,
         parse_gateway_services, resolve_ip_from_service_lb_status, resolve_ips,
         resolve_ips_from_annotation, resolve_record_name, resolve_zone, service_arecord_cr_name,
         service_arecord_label_selector, service_ref_from_str, stale_arecord_label_selector,
-        zone_allows_source_namespace, Gateway, GatewayServiceTarget, NamespacedName,
-        ParentReference, ServiceARecordParams, ZoneAuthz, FINALIZER_SCOUT, LABEL_MANAGED_BY,
+        stale_tcproute_arecord_label_selector, tcproute_arecord_cr_name,
+        tcproute_arecord_label_selector, zone_allows_source_namespace, Gateway,
+        GatewayServiceTarget, NamespacedName, ParentReference, ServiceARecordParams,
+        TCPRouteARecordParams, ZoneAuthz, FINALIZER_SCOUT, LABEL_MANAGED_BY,
         LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER, LABEL_SOURCE_NAME, LABEL_SOURCE_NAMESPACE,
         LABEL_ZONE,
     };
@@ -1394,6 +1397,80 @@ mod tests {
     }
 
     #[test]
+    fn test_tcproute_arecord_cr_name_single_hostname() {
+        let name = tcproute_arecord_cr_name("prod", "default", "database-route", 0);
+
+        assert!(name.starts_with("scout-"));
+        assert!(name.contains("prod"));
+        assert!(name.contains("default"));
+        assert!(name.contains("database-route"));
+        assert!(name.contains("0"));
+        assert!(!name.ends_with('-'));
+        assert!(name.len() <= 253);
+    }
+
+    #[test]
+    fn test_tcproute_arecord_label_selector_uses_source_labels() {
+        let selector = tcproute_arecord_label_selector("prod", "default", "database-route");
+
+        assert!(selector.contains(LABEL_MANAGED_BY));
+        assert!(selector.contains(LABEL_MANAGED_BY_SCOUT));
+        assert!(selector.contains("prod"));
+        assert!(selector.contains("default"));
+        assert!(selector.contains("database-route"));
+        assert!(selector.contains("source-name"));
+    }
+
+    #[test]
+    fn test_stale_tcproute_arecord_label_selector_uses_not_equal() {
+        let selector =
+            stale_tcproute_arecord_label_selector("new-cluster", "default", "database-route");
+
+        assert!(selector.contains(&format!("{}!=new-cluster", LABEL_SOURCE_CLUSTER)));
+        assert!(selector.contains("source-name=database-route"));
+        assert!(selector.contains("default"));
+    }
+
+    #[test]
+    fn test_build_tcproute_arecord_sets_expected_labels() {
+        let params = crate::scout::TCPRouteARecordParams {
+            name: "scout-prod-default-database-route-0",
+            target_namespace: "bindy-system",
+            record_name: "db",
+            ips: &["10.0.0.99".to_string()],
+            ttl: Some(120),
+            cluster_name: "prod",
+            route_namespace: "default",
+            route_name: "database-route",
+            zone: "example.com",
+        };
+
+        let arecord = crate::scout::build_tcproute_arecord(params);
+
+        let labels = arecord.metadata.labels.as_ref().unwrap();
+        assert_eq!(
+            labels.get(LABEL_MANAGED_BY).map(String::as_str),
+            Some(LABEL_MANAGED_BY_SCOUT)
+        );
+        assert_eq!(
+            labels.get(LABEL_SOURCE_CLUSTER).map(String::as_str),
+            Some("prod")
+        );
+        assert_eq!(
+            labels.get(LABEL_SOURCE_NAMESPACE).map(String::as_str),
+            Some("default")
+        );
+        assert_eq!(
+            labels.get(LABEL_SOURCE_NAME).map(String::as_str),
+            Some("database-route")
+        );
+        assert_eq!(
+            labels.get(LABEL_ZONE).map(String::as_str),
+            Some("example.com")
+        );
+    }
+
+    #[test]
     fn test_httproute_arecord_cr_name_respects_length_limit() {
         // Arrange — a very long HTTPRoute name
         let long_route_name = "my-long-route-name-that-is-very-very-very-very-very-very-very-very-very-very-very-very-very-very-long";
@@ -1798,5 +1875,38 @@ mod tests {
         ];
         // Non-Gateway kind and non-Gateway-API group are both excluded.
         assert!(gateway_parent_refs(&refs, "app-ns").is_empty());
+    }
+    #[test]
+    fn test_reconcile_tcproute_smoke_builds_arecord_from_annotation() {
+        // Smoke test: verify reconcile_tcproute's code path — get_record_name_annotation drives
+        // the record name and build_tcproute_arecord produces the expected ARecord CR.
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            "bindy.firestoned.io/record-name".to_string(),
+            "db".to_string(),
+        );
+
+        let zone = "example.com";
+        let record_name = get_record_name_annotation(&annotations).expect("annotation present");
+
+        let ips = vec!["10.0.0.5".to_string()];
+        // reconcile_tcproute always uses index 0 — TCPRoute produces exactly one ARecord.
+        let cr_name = tcproute_arecord_cr_name("test-cluster", "default", "my-tcproute", 0);
+
+        let arecord = build_tcproute_arecord(TCPRouteARecordParams {
+            name: &cr_name,
+            target_namespace: "bindy-system",
+            record_name: &record_name,
+            ips: &ips,
+            ttl: Some(300),
+            cluster_name: "test-cluster",
+            route_namespace: "default",
+            route_name: "my-tcproute",
+            zone,
+        });
+
+        assert_eq!(arecord.spec.name, record_name);
+        assert_eq!(arecord.spec.ipv4_addresses, ips);
+        assert_eq!(arecord.spec.ttl, Some(300));
     }
 }

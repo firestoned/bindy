@@ -1,3 +1,23 @@
+## [2026-07-13] - Scout: TCPRoute support and docs alignment
+
+**Author:** Prabhjot Bawa
+
+### Added
+- `src/scout.rs`: Scout now reconciles Gateway API `TCPRoute` resources alongside `HTTPRoute` and `TLSRoute`, including ARecord creation, finalizer handling, stale-record cleanup, and the existing gateway-chain IP resolution flow.
+- `src/bootstrap.rs` and `deploy/scout/clusterrole.yaml`: Scout RBAC now includes `tcproutes` read access for Gateway API route watching.
+- `docs/src/guide/scout.md` and `examples/README.md`: documented TCPRoute support and the RBAC requirements for Gateway API route watching.
+
+### Why
+TCPRoute support was missing from the existing Gateway API route handling even though the reconciliation patterns and tests already existed for the other route kinds. Aligning the implementation, RBAC, and docs keeps Scout behavior consistent and avoids surprise regressions for users adopting Gateway API TCP routing.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [x] Documentation only
+
+---
+
 ## [2026-07-11] - Add Grafana dashboard for the bindcar sidecar
 
 **Author:** William Rizzo

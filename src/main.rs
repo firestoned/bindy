@@ -205,7 +205,7 @@ enum Commands {
         #[arg(long, value_delimiter = ',')]
         default_ips: Vec<String>,
         /// Map a gatewayClass to the LoadBalancer Service whose external IP backs it,
-        /// as `class=namespace/name` (repeatable). When an HTTPRoute/TLSRoute has no IP
+        /// as `class=namespace/name` (repeatable). When an HTTPRoute/TLSRoute/TCPRoute has no IP
         /// annotation, scout follows its parentRefs to a Gateway of a configured class
         /// and uses the mapped Service's external IP. Overrides BINDY_SCOUT_GATEWAY_SERVICES.
         /// Example: --gateway-service traefik=traefik/traefik
