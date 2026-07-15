@@ -23,7 +23,7 @@ use bindy::crd::{
     ClusterBind9ProviderSpec, DNSZone, DNSZoneSpec, MXRecord, MXRecordSpec, SOARecord, ServerRole,
     TXTRecord, TXTRecordSpec,
 };
-use k8s_openapi::api::core::v1::Namespace;
+use k8s_openapi::api::core::v1::{Event, Namespace, Pod};
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{Api, DeleteParams, ListParams, PostParams};
@@ -165,6 +165,98 @@ async fn grant_secrets_writer_role(client: &Client, namespace: &str) {
             println!("  {ROLE_NAME} RoleBinding already exists in {namespace}");
         }
         Err(e) => eprintln!("⚠ Failed to create {ROLE_NAME} RoleBinding in {namespace}: {e}"),
+    }
+}
+
+async fn dump_pod_readiness_diagnostics(client: &Client, namespace: &str, instance_name: &str) {
+    println!("\nPod readiness diagnostics for {namespace}/{instance_name}:");
+
+    let pod_api: Api<Pod> = Api::namespaced(client.clone(), namespace);
+    let label_selector = format!("app.kubernetes.io/instance={instance_name}");
+    let list_params = ListParams::default().labels(&label_selector);
+
+    let pods = match pod_api.list(&list_params).await {
+        Ok(pods) => pods,
+        Err(e) => {
+            eprintln!("  Failed to list diagnostic pods: {e}");
+            return;
+        }
+    };
+
+    if pods.items.is_empty() {
+        println!("  No pods found with selector '{label_selector}'");
+        return;
+    }
+
+    for pod in &pods.items {
+        let pod_name = pod.metadata.name.as_deref().unwrap_or("unknown");
+        println!("\n  Pod: {pod_name}");
+
+        if let Some(status) = &pod.status {
+            println!("    Phase: {:?}", status.phase);
+            println!("    Pod IP: {:?}", status.pod_ip);
+            println!("    Host IP: {:?}", status.host_ip);
+            println!(
+                "    Node: {:?}",
+                pod.spec.as_ref().and_then(|s| s.node_name.as_ref())
+            );
+
+            if let Some(conditions) = &status.conditions {
+                println!("    Conditions:");
+                for condition in conditions {
+                    println!(
+                        "      {}={} reason={:?} message={:?}",
+                        condition.type_, condition.status, condition.reason, condition.message
+                    );
+                }
+            }
+
+            if let Some(container_statuses) = &status.container_statuses {
+                println!("    Containers:");
+                for container in container_statuses {
+                    println!(
+                        "      {} ready={} restarts={} image={}",
+                        container.name, container.ready, container.restart_count, container.image
+                    );
+
+                    if let Some(state) = &container.state {
+                        if let Some(waiting) = &state.waiting {
+                            println!(
+                                "        waiting reason={:?} message={:?}",
+                                waiting.reason, waiting.message
+                            );
+                        }
+                        if let Some(running) = &state.running {
+                            println!("        running started_at={:?}", running.started_at);
+                        }
+                        if let Some(terminated) = &state.terminated {
+                            println!(
+                                "        terminated exit_code={} reason={:?} message={:?}",
+                                terminated.exit_code, terminated.reason, terminated.message
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        let event_api: Api<Event> = Api::namespaced(client.clone(), namespace);
+        match event_api.list(&ListParams::default()).await {
+            Ok(events) => {
+                println!("    Events:");
+                for event in events
+                    .items
+                    .iter()
+                    .filter(|event| event.involved_object.name.as_deref() == Some(pod_name))
+                {
+                    println!(
+                        "      type={:?} reason={:?} count={:?} message={:?}",
+                        event.type_, event.reason, event.count, event.message
+                    );
+                }
+            }
+            Err(e) => eprintln!("    Failed to list pod events: {e}"),
+        }
     }
 }
 
@@ -1081,11 +1173,19 @@ async fn test_instance_pod_label_selector_finds_pods() {
     use k8s_openapi::api::core::v1::Pod;
     let pod_api: Api<Pod> = Api::namespaced(client.clone(), namespace);
 
-    println!("Waiting for pods to be created and become ready (up to 2 minutes)...");
+    // Budget generously: on the hosted GitHub CI runners the bind9 operand image
+    // is built via apt at image-build time and the kind node is resource-constrained,
+    // so pod scheduling + image pull alone can consume ~80s before named even starts.
+    // 4 minutes leaves ample headroom once the pod appears.
+    const POD_READY_POLL_INTERVAL_SECS: u64 = 5;
+    const POD_READY_MAX_ATTEMPTS: usize = 48; // 48 * 5s = 4 minutes
+    println!("Waiting for pods to be created and become ready (up to 4 minutes)...");
     let mut pod_ready = false;
-    for attempt in 1..=24 {
-        // 24 attempts * 5 seconds = 2 minutes
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+    for attempt in 1..=POD_READY_MAX_ATTEMPTS {
+        tokio::time::sleep(tokio::time::Duration::from_secs(
+            POD_READY_POLL_INTERVAL_SECS,
+        ))
+        .await;
 
         // Use the CORRECT label selector (the one the controller uses)
         let label_selector = format!("app.kubernetes.io/instance={}", instance_name);
@@ -1094,7 +1194,7 @@ async fn test_instance_pod_label_selector_finds_pods() {
         match pod_api.list(&list_params).await {
             Ok(pods) => {
                 if pods.items.is_empty() {
-                    println!("  Attempt {attempt}/24: No pods found yet with selector '{label_selector}'");
+                    println!("  Attempt {attempt}/{POD_READY_MAX_ATTEMPTS}: No pods found yet with selector '{label_selector}'");
                     continue;
                 }
 
@@ -1117,7 +1217,7 @@ async fn test_instance_pod_label_selector_finds_pods() {
                                 pod_ready = true;
                                 break;
                             }
-                            println!("  Pod {pod_name} not ready yet (attempt {attempt}/24)");
+                            println!("  Pod {pod_name} not ready yet (attempt {attempt}/{POD_READY_MAX_ATTEMPTS})");
                         }
                     }
                 }
@@ -1133,8 +1233,9 @@ async fn test_instance_pod_label_selector_finds_pods() {
     }
 
     if !pod_ready {
-        eprintln!("✗ Pods never became ready after 2 minutes");
+        eprintln!("✗ Pods never became ready after 4 minutes");
         eprintln!("  This might indicate a cluster issue or slow image pull");
+        dump_pod_readiness_diagnostics(&client, namespace, instance_name).await;
     }
 
     // Now check the Bind9Instance status
@@ -1270,7 +1371,7 @@ async fn test_instance_pod_label_selector_finds_pods() {
     // already run, so this leaks nothing.
     assert!(
         pod_ready,
-        "Bind9Instance '{instance_name}' pods never became Ready within 2 minutes — \
+        "Bind9Instance '{instance_name}' pods never became Ready within 4 minutes — \
          pod creation/reconciliation regression (operator could not schedule pods; \
          see Bind9Instance status logged above)"
     );

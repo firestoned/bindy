@@ -294,8 +294,8 @@ mod tests {
         let ports = container.ports.as_ref().unwrap();
         // Should have 3 ports: DNS TCP, DNS UDP, and RNDC
         assert_eq!(ports.len(), 3);
-        assert_eq!(ports[0].container_port, 53); // DNS TCP (via NET_BIND_SERVICE)
-        assert_eq!(ports[1].container_port, 53); // DNS UDP (via NET_BIND_SERVICE)
+        assert_eq!(ports[0].container_port, 5353); // DNS TCP (unprivileged)
+        assert_eq!(ports[1].container_port, 5353); // DNS UDP (unprivileged)
         assert_eq!(ports[2].container_port, 9530); // RNDC (non-privileged)
     }
 
@@ -951,7 +951,7 @@ mod tests {
             let expected_port = if port.name.as_deref() == Some("http") {
                 8080
             } else {
-                53 // DNS container port (named binds :53 with NET_BIND_SERVICE)
+                5353 // DNS container port (named binds the unprivileged :5353)
             };
             assert_eq!(
                 port.target_port,
@@ -1410,11 +1410,11 @@ mod tests {
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
         assert!(
-            options.contains("listen-on port 53 { any; };"),
+            options.contains("listen-on port 5353 { any; };"),
             "default listen-on must be `any` on port 53, got: {options}"
         );
         assert!(
-            options.contains("listen-on-v6 port 53 { any; };"),
+            options.contains("listen-on-v6 port 5353 { any; };"),
             "default listen-on-v6 must be `any` on port 53, got: {options}"
         );
         assert!(
@@ -1477,15 +1477,15 @@ mod tests {
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
         assert!(
-            options.contains("listen-on port 53 { 10.0.0.1; 127.0.0.1; };"),
+            options.contains("listen-on port 5353 { 10.0.0.1; 127.0.0.1; };"),
             "listen-on must render spec.config.listenOn, got: {options}"
         );
         assert!(
-            options.contains("listen-on-v6 port 53 { ::1; };"),
+            options.contains("listen-on-v6 port 5353 { ::1; };"),
             "listen-on-v6 must render spec.config.listenOnV6, got: {options}"
         );
         assert!(
-            !options.contains("listen-on port 53 { any; };"),
+            !options.contains("listen-on port 5353 { any; };"),
             "default listen-on must be replaced when listenOn is set, got: {options}"
         );
     }
@@ -1546,11 +1546,11 @@ mod tests {
             "cluster-level forwarders must be rendered, got: {options}"
         );
         assert!(
-            options.contains("listen-on port 53 { 10.1.2.3; };"),
+            options.contains("listen-on port 5353 { 10.1.2.3; };"),
             "cluster-level listen-on must be rendered, got: {options}"
         );
         assert!(
-            options.contains("listen-on-v6 port 53 { none; };"),
+            options.contains("listen-on-v6 port 5353 { none; };"),
             "cluster-level listen-on-v6 must be rendered, got: {options}"
         );
     }
@@ -1587,11 +1587,11 @@ mod tests {
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
         assert!(
-            options.contains("listen-on port 53 { any; };"),
+            options.contains("listen-on port 5353 { any; };"),
             "cluster default listen-on must be `any`, got: {options}"
         );
         assert!(
-            options.contains("listen-on-v6 port 53 { any; };"),
+            options.contains("listen-on-v6 port 5353 { any; };"),
             "cluster default listen-on-v6 must be `any`, got: {options}"
         );
         assert!(
@@ -1802,11 +1802,11 @@ mod tests {
     // ============================================================
 
     #[test]
-    fn test_named_container_has_net_bind_service_and_seccomp() {
-        // named now binds the privileged DNS port 53, so it must add back the
-        // single capability PSA `restricted` allows — NET_BIND_SERVICE — while
-        // still dropping ALL others and running with a RuntimeDefault seccomp
-        // profile and a non-root UID.
+    fn test_named_container_drops_all_caps_and_seccomp() {
+        // named binds the unprivileged DNS port 5353, so it needs NO added
+        // capabilities — it drops ALL and adds none back, running with a
+        // RuntimeDefault seccomp profile and a non-root UID (strictest posture
+        // under PSA `restricted`).
         let instance = create_test_instance("test");
         let deployment =
             build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
@@ -1817,22 +1817,21 @@ mod tests {
             .find(|c| c.name == "bind9")
             .unwrap();
 
-        // Container binds DNS on 53.
+        // Container binds DNS on the unprivileged 5353.
         let ports = named.ports.as_ref().unwrap();
         assert!(
             ports
                 .iter()
-                .any(|p| p.name.as_deref() == Some("dns-tcp") && p.container_port == 53),
-            "named should bind dns-tcp on 53"
+                .any(|p| p.name.as_deref() == Some("dns-tcp") && p.container_port == 5353),
+            "named should bind dns-tcp on 5353"
         );
 
         let sc = named.security_context.as_ref().unwrap();
         let caps = sc.capabilities.as_ref().unwrap();
         assert_eq!(caps.drop.as_ref().unwrap(), &vec!["ALL".to_string()]);
-        assert_eq!(
-            caps.add.as_ref().unwrap(),
-            &vec!["NET_BIND_SERVICE".to_string()],
-            "named must add back only NET_BIND_SERVICE for port 53"
+        assert!(
+            caps.add.is_none(),
+            "named must not add back any capability on the unprivileged 5353"
         );
         assert_eq!(sc.allow_privilege_escalation, Some(false));
         assert_eq!(sc.run_as_non_root, Some(true));

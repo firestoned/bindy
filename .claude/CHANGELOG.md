@@ -1,3 +1,115 @@
+## [2026-07-15] - Operand `named` moves to unprivileged port 5353
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/constants.rs`: `DNS_CONTAINER_PORT` 53 → **5353** (`DNS_PORT` stays 53 as
+  the client-facing Service port). Rewrote the doc comment.
+- `src/bind9_resources.rs`:
+  - `render_listen_on` now renders the listen port from `DNS_CONTAINER_PORT`
+    (was `DNS_PORT`) — so `named` binds the port the probes and Service target,
+    not the client-facing service port.
+  - Removed `NET_BIND_SERVICE` from the bind9 container — 5353 is unprivileged,
+    so it drops ALL capabilities and adds none back.
+  - Set `NSUPDATE_PORT=5353` on the bindcar sidecar so dynamic updates reach
+    `named` on the new port.
+- `src/bind9/zone_ops.rs`: secondary `primaries` and primary `also-notify`
+  endpoints are now port-qualified (`<ip>:5353`, IPv6 bracketed) via the new
+  `with_transfer_port` helper, so cross-pod AXFR/NOTIFY reach `named:5353`.
+  `allow-transfer` stays bare IPs (port-agnostic ACL). Requires **bindcar 0.7.2**,
+  which parses the `<ip>:<port>` form.
+- `deploy/pod-hardening.yaml`: NetworkPolicy ingress (DNS to `named`) and peer
+  egress (zone transfer/NOTIFY) move to 5353; egress to kube-system CoreDNS stays
+  53. Updated the capability comment.
+- `templates/named.conf.options.tmpl`, `tests/regression_test.sh`,
+  `docs/src/operations/{monitoring,migration-guide}.md`,
+  `docs/src/concepts/architecture-protocols.md`,
+  `calm/bindy-control-plane.architecture.json`: updated port/capability references.
+
+### Why
+Runs `named` as a fully unprivileged process (no `NET_BIND_SERVICE`), the
+strictest posture under PSA `restricted`. Previously blocked because bindcar
+0.7.0 rejected port-qualified `primaries`; **bindcar 0.7.2** accepts the compact
+`<ip>:<port>` form, so cross-pod zone transfers stay coherent on 5353.
+
+### Impact
+- [x] Breaking change (multi-instance: primary+secondary operands must both run
+      this version; transfers now target 5353). Requires bindcar 0.7.2+.
+- [x] Requires cluster rollout (operand pod template + NetworkPolicy change)
+- [ ] Config change only
+- [ ] Documentation only
+
+See `docs/src/operations/migration-guide.md` for the full migration.
+
+---
+
+## [2026-07-13] - Scout: TCPRoute support and docs alignment
+
+**Author:** Prabhjot Bawa
+
+### Added
+- `src/scout.rs`: Scout now reconciles Gateway API `TCPRoute` resources alongside `HTTPRoute` and `TLSRoute`, including ARecord creation, finalizer handling, stale-record cleanup, and the existing gateway-chain IP resolution flow.
+- `src/bootstrap.rs` and `deploy/scout/clusterrole.yaml`: Scout RBAC now includes `tcproutes` read access for Gateway API route watching.
+- `docs/src/guide/scout.md` and `examples/README.md`: documented TCPRoute support and the RBAC requirements for Gateway API route watching.
+
+### Why
+TCPRoute support was missing from the existing Gateway API route handling even though the reconciliation patterns and tests already existed for the other route kinds. Aligning the implementation, RBAC, and docs keeps Scout behavior consistent and avoids surprise regressions for users adopting Gateway API TCP routing.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [x] Documentation only
+
+---
+
+## [2026-07-13] - Fix cargo-deny scan for latest CLI
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `Makefile`: updated `cargo-deny` and `cargo-deny-json` targets to support both
+  cargo-deny 0.19.x and 0.20.x CLI argument ordering. GitHub PR CI installed
+  cargo-deny 0.20.2, where `--config` must be passed before `check`; local
+  environments may still have 0.19.x, where `--config` belongs after `check`.
+
+### Why
+PR #428's Security Vulnerability Scan failed in `make cargo-deny` with
+`unexpected argument '--config'` after CI installed cargo-deny 0.20.2. The scan
+itself was clean; only the CLI invocation was stale.
+
+---
+
+## [2026-07-12] - Improve e2e pod-readiness diagnostics
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/e2e.yaml`: added a `pull_request` trigger for e2e-relevant
+  files, including `.github/workflows/e2e.yaml` itself, so edits to the e2e gate
+  run the e2e gate instead of relying only on reusable-workflow callers.
+- `.github/workflows/e2e.yaml`: expanded failure diagnostics from operator logs
+  only to cluster summary, events, operator pod describe/logs, the
+  `bindy-label-selector-test` namespace resources, operand pod describe/logs,
+  and RBAC checks for Secret writes and bindcar TokenReview.
+- `.github/workflows/pr.yaml`: treats e2e workflow/script/manifest/test changes
+  as code changes for PR CI path filtering, and fixes two jobs that referenced
+  `needs.changes` without declaring `needs: changes`.
+- `tests/simple_integration.rs`: when `test_instance_pod_label_selector_finds_pods`
+  times out waiting for pod readiness, it now dumps pod phase, conditions,
+  container states, images, restart counts, and related events before deleting the
+  namespace.
+
+### Why
+GitHub e2e run #29212377168 showed reconciliation succeeded (ServiceAccount,
+RNDC Secret, Deployment, and Service were created) but the operand pod stayed
+NotReady for two minutes. The workflow only dumped operator logs after the test
+had already deleted the namespace, hiding the actual pod/event cause. These
+changes make the next GitHub failure actionable while keeping the e2e gate active
+for workflow edits.
+
+---
+
 ## [2026-07-11] - Add Grafana dashboard for the bindcar sidecar
 
 **Author:** William Rizzo

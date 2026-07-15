@@ -140,7 +140,7 @@ kubectl delete arecords,aaaarecords,cnamerecords,mxrecords,txtrecords \
 ### How do I upgrade Bindy?
 
 1. Update CRDs: `kubectl apply -k deploy/crds/`
-2. Update operator: `kubectl set image deployment/bindy operator=new-image`
+2. Update operator: `kubectl set image deployment/bindy bindy=new-image`
 3. Monitor rollout: `kubectl rollout status deployment/bindy -n bindy-system`
 
 ### How do I backup DNS configuration?

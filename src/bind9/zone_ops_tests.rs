@@ -888,25 +888,40 @@ mod tests {
             records: vec![],
             also_notify: None,
             allow_transfer: None,
-            // bindcar 0.7.0 requires every `primaries` entry to be a plain IP
-            // (no "IP port N" form); named binds :53 so the default port is used.
-            primaries: Some(vec!["10.0.0.1".to_string()]),
+            // named binds the unprivileged 5353, so primaries are port-qualified
+            // (`<ip>:5353`); bindcar (0.7.2+) parses this compact form.
+            primaries: Some(super::super::with_transfer_port(&["10.0.0.1".to_string()])),
             dnssec_policy: None, // Secondary zones should not have DNSSEC policy
             inline_signing: None,
         };
 
         // Verify secondary zone has primaries but no DNSSEC
         assert!(zone_config.primaries.is_some());
-        assert!(
-            zone_config
-                .primaries
-                .as_ref()
-                .unwrap()
-                .iter()
-                .all(|p| p.parse::<std::net::IpAddr>().is_ok()),
-            "every primaries entry must be a bare IP for bindcar 0.7.0"
+        assert_eq!(
+            zone_config.primaries.as_ref().unwrap(),
+            &vec!["10.0.0.1:5353".to_string()],
+            "primaries must carry the operand's unprivileged transfer port"
         );
         assert_eq!(zone_config.dnssec_policy, None);
         assert_eq!(zone_config.inline_signing, None);
+    }
+
+    #[test]
+    fn test_with_transfer_port_ipv4_and_ipv6() {
+        let out =
+            super::super::with_transfer_port(&["10.0.0.1".to_string(), "2001:db8::1".to_string()]);
+        assert_eq!(
+            out,
+            vec![
+                "10.0.0.1:5353".to_string(),
+                "[2001:db8::1]:5353".to_string()
+            ],
+            "IPv4 uses ip:port; IPv6 is bracketed [ip]:port"
+        );
+    }
+
+    #[test]
+    fn test_with_transfer_port_empty() {
+        assert!(super::super::with_transfer_port(&[]).is_empty());
     }
 }

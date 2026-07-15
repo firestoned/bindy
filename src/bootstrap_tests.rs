@@ -693,6 +693,14 @@ mod tests {
         });
         assert!(has_tlsroutes, "tlsroutes rule must exist for Gateway API");
 
+        // Check that TCPRoute rule exists (may be in same rule as HTTPRoute/TLSRoute)
+        let has_tcproutes = rules.iter().any(|r| {
+            r.resources
+                .as_ref()
+                .is_some_and(|res| res.iter().any(|s| s == "tcproutes"))
+        });
+        assert!(has_tcproutes, "tcproutes rule must exist for Gateway API");
+
         // Verify correct API group
         assert_eq!(
             http_route_rule.api_groups.as_ref().unwrap()[0],
