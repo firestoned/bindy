@@ -124,6 +124,33 @@ pub struct TLSRoute {
     pub spec: Option<TLSRouteSpec>,
 }
 
+/// Minimal TCPRoute spec for Scout's use case.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TCPRouteSpec {
+    /// Rules for this TCPRoute (kept for schema compatibility with the
+    /// Gateway API). Scout does not currently parse individual rule contents
+    /// for TCPRoute (L4), but keeping the field avoids schema drift when the
+    /// CR is round-tripped by the controller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<Vec<serde_json::Value>>,
+    /// Gateways this route attaches to. Scout follows these to discover the
+    /// serving Gateway's external IP when no explicit IP annotation is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_refs: Option<Vec<ParentReference>>,
+}
+
+/// Minimal TCPRoute definition for Scout's use case.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TCPRoute {
+    #[serde(rename = "apiVersion")]
+    pub api_version: String,
+    pub kind: String,
+    pub metadata: kube::api::ObjectMeta,
+    #[serde(default)]
+    pub spec: Option<TCPRouteSpec>,
+}
+
 // Implement k8s_openapi::Metadata for HTTPRoute and TLSRoute
 impl k8s_openapi::Metadata for HTTPRoute {
     type Ty = kube::api::ObjectMeta;
@@ -161,6 +188,25 @@ impl k8s_openapi::Resource for TLSRoute {
     const KIND: &'static str = "TLSRoute";
     const VERSION: &'static str = "v1alpha2";
     const URL_PATH_SEGMENT: &'static str = "tlsroutes";
+    type Scope = k8s_openapi::NamespaceResourceScope;
+}
+
+impl k8s_openapi::Metadata for TCPRoute {
+    type Ty = kube::api::ObjectMeta;
+    fn metadata(&self) -> &kube::api::ObjectMeta {
+        &self.metadata
+    }
+    fn metadata_mut(&mut self) -> &mut kube::api::ObjectMeta {
+        &mut self.metadata
+    }
+}
+
+impl k8s_openapi::Resource for TCPRoute {
+    const API_VERSION: &'static str = "gateway.networking.k8s.io/v1alpha2";
+    const GROUP: &'static str = "gateway.networking.k8s.io";
+    const KIND: &'static str = "TCPRoute";
+    const VERSION: &'static str = "v1alpha2";
+    const URL_PATH_SEGMENT: &'static str = "tcproutes";
     type Scope = k8s_openapi::NamespaceResourceScope;
 }
 
@@ -1266,6 +1312,31 @@ pub fn tlsroute_arecord_label_selector(cluster: &str, namespace: &str, route_nam
     )
 }
 
+/// Derives the ARecord CR name for a TCPRoute.
+pub fn tcproute_arecord_cr_name(
+    cluster: &str,
+    namespace: &str,
+    route_name: &str,
+    hostname_index: usize,
+) -> String {
+    let raw = format!("{ARECORD_NAME_PREFIX}-{cluster}-{namespace}-{route_name}-{hostname_index}");
+    let sanitized = sanitize_k8s_name(&raw);
+    sanitized[..sanitized.len().min(MAX_K8S_NAME_LEN)].to_string()
+}
+
+/// Builds a Kubernetes label selector matching all ARecords created by Scout
+/// for a specific TCPRoute.
+pub fn tcproute_arecord_label_selector(cluster: &str, namespace: &str, route_name: &str) -> String {
+    format!(
+        "{}={},{cluster_key}={cluster},{ns_key}={namespace},{name_key}={route_name}",
+        LABEL_MANAGED_BY,
+        LABEL_MANAGED_BY_SCOUT,
+        cluster_key = LABEL_SOURCE_CLUSTER,
+        ns_key = LABEL_SOURCE_NAMESPACE,
+        name_key = LABEL_SOURCE_NAME,
+    )
+}
+
 /// Builds a label selector string matching ARecords for the given HTTPRoute that
 /// belong to **any cluster other than `current_cluster`**.
 ///
@@ -1289,6 +1360,23 @@ pub fn stale_httproute_arecord_label_selector(
 /// Builds a label selector string matching ARecords for the given TLSRoute that
 /// belong to **any cluster other than `current_cluster`**.
 pub fn stale_tlsroute_arecord_label_selector(
+    current_cluster: &str,
+    namespace: &str,
+    route_name: &str,
+) -> String {
+    format!(
+        "{}={},{cluster_key}!={current_cluster},{ns_key}={namespace},{name_key}={route_name}",
+        LABEL_MANAGED_BY,
+        LABEL_MANAGED_BY_SCOUT,
+        cluster_key = LABEL_SOURCE_CLUSTER,
+        ns_key = LABEL_SOURCE_NAMESPACE,
+        name_key = LABEL_SOURCE_NAME,
+    )
+}
+
+/// Builds a label selector string matching ARecords for the given TCPRoute that
+/// belong to **any cluster other than `current_cluster`**.
+pub fn stale_tcproute_arecord_label_selector(
     current_cluster: &str,
     namespace: &str,
     route_name: &str,
@@ -1385,6 +1473,64 @@ pub struct TLSRouteARecordParams<'a> {
 
 /// Builds the ARecord CR that Scout will create for a TLSRoute.
 pub fn build_tlsroute_arecord(params: TLSRouteARecordParams<'_>) -> ARecord {
+    let mut labels = BTreeMap::new();
+    labels.insert(
+        LABEL_MANAGED_BY.to_string(),
+        LABEL_MANAGED_BY_SCOUT.to_string(),
+    );
+    labels.insert(
+        LABEL_SOURCE_CLUSTER.to_string(),
+        params.cluster_name.to_string(),
+    );
+    labels.insert(
+        LABEL_SOURCE_NAMESPACE.to_string(),
+        params.route_namespace.to_string(),
+    );
+    labels.insert(LABEL_SOURCE_NAME.to_string(), params.route_name.to_string());
+    labels.insert(LABEL_ZONE.to_string(), params.zone.to_string());
+
+    let meta = kube::api::ObjectMeta {
+        name: Some(params.name.to_string()),
+        namespace: Some(params.target_namespace.to_string()),
+        labels: Some(labels),
+        ..Default::default()
+    };
+
+    ARecord {
+        metadata: meta,
+        spec: ARecordSpec {
+            name: params.record_name.to_string(),
+            ipv4_addresses: params.ips.to_vec(),
+            ttl: params.ttl,
+        },
+        status: None,
+    }
+}
+
+/// Parameters for building an ARecord CR from a TCPRoute.
+pub struct TCPRouteARecordParams<'a> {
+    /// Kubernetes resource name for the ARecord CR
+    pub name: &'a str,
+    /// Namespace where the ARecord CR will be created
+    pub target_namespace: &'a str,
+    /// DNS record name within the zone (e.g. `"db"`)
+    pub record_name: &'a str,
+    /// IPv4 addresses for the record
+    pub ips: &'a [String],
+    /// Optional TTL override in seconds
+    pub ttl: Option<i32>,
+    /// Logical name of the source cluster (for labels)
+    pub cluster_name: &'a str,
+    /// Source TCPRoute namespace (for labels)
+    pub route_namespace: &'a str,
+    /// Source TCPRoute name (for labels)
+    pub route_name: &'a str,
+    /// DNS zone name (for labels)
+    pub zone: &'a str,
+}
+
+/// Builds the ARecord CR that Scout will create for a TCPRoute.
+pub fn build_tcproute_arecord(params: TCPRouteARecordParams<'_>) -> ARecord {
     let mut labels = BTreeMap::new();
     labels.insert(
         LABEL_MANAGED_BY.to_string(),
@@ -1564,6 +1710,44 @@ async fn remove_finalizer_from_tlsroute(client: &Client, route: &TLSRoute) -> Re
     let namespace = route.namespace().unwrap_or_default();
     let name = route.name_any();
     let api: Api<TLSRoute> = Api::namespaced(client.clone(), &namespace);
+
+    let finalizers: Vec<String> = route
+        .metadata
+        .finalizers
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|f| f != FINALIZER_SCOUT)
+        .collect();
+
+    let patch = serde_json::json!({ "metadata": { "finalizers": finalizers } });
+    api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await?;
+    Ok(())
+}
+
+/// Adds the Scout finalizer to a TCPRoute.
+async fn add_finalizer_to_tcproute(client: &Client, route: &TCPRoute) -> Result<()> {
+    let namespace = route.namespace().unwrap_or_default();
+    let name = route.name_any();
+    let api: Api<TCPRoute> = Api::namespaced(client.clone(), &namespace);
+
+    let mut finalizers = route.metadata.finalizers.clone().unwrap_or_default();
+    if !finalizers.contains(&FINALIZER_SCOUT.to_string()) {
+        finalizers.push(FINALIZER_SCOUT.to_string());
+    }
+
+    let patch = serde_json::json!({ "metadata": { "finalizers": finalizers } });
+    api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await?;
+    Ok(())
+}
+
+/// Removes the Scout finalizer from a TCPRoute.
+async fn remove_finalizer_from_tcproute(client: &Client, route: &TCPRoute) -> Result<()> {
+    let namespace = route.namespace().unwrap_or_default();
+    let name = route.name_any();
+    let api: Api<TCPRoute> = Api::namespaced(client.clone(), &namespace);
 
     let finalizers: Vec<String> = route
         .metadata
@@ -1778,6 +1962,58 @@ async fn delete_stale_cluster_tlsroute_arecords(
             arecord = %ar_name,
             tlsroute = %route_name,
             "Deleted stale TLSRoute ARecord from previous cluster name"
+        );
+    }
+    Ok(())
+}
+
+/// Deletes all ARecords created by Scout for a specific TCPRoute.
+async fn delete_arecords_for_tcproute(
+    remote_client: &Client,
+    target_namespace: &str,
+    cluster: &str,
+    route_namespace: &str,
+    route_name: &str,
+) -> Result<()> {
+    let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
+    let selector = tcproute_arecord_label_selector(cluster, route_namespace, route_name);
+    let lp = ListParams::default().labels(&selector);
+
+    let arecords = api.list(&lp).await?;
+    for ar in arecords.items {
+        let ar_name = ar.name_any();
+        api.delete(&ar_name, &DeleteParams::default()).await?;
+        info!(
+            arecord = %ar_name,
+            tcproute = %route_name,
+            ns = %route_namespace,
+            "Deleted ARecord during TCPRoute cleanup"
+        );
+    }
+    Ok(())
+}
+
+/// Deletes stale ARecords for a TCPRoute from previous cluster names.
+async fn delete_stale_cluster_tcproute_arecords(
+    remote_client: &Client,
+    target_namespace: &str,
+    current_cluster: &str,
+    route_namespace: &str,
+    route_name: &str,
+) -> Result<()> {
+    let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
+    let selector =
+        stale_tcproute_arecord_label_selector(current_cluster, route_namespace, route_name);
+    let lp = ListParams::default().labels(&selector);
+
+    let arecords = api.list(&lp).await?;
+    for ar in arecords.items {
+        let ar_name = ar.name_any();
+        api.delete(&ar_name, &DeleteParams::default()).await?;
+        info!(
+            arecord = %ar_name,
+            tcproute = %route_name,
+            "Deleted stale TCPRoute ARecord from previous cluster name"
         );
     }
     Ok(())
@@ -2741,6 +2977,221 @@ async fn reconcile_tlsroute(
     Ok(Action::await_change())
 }
 
+/// Reconciles a single `TCPRoute` resource, creating or updating ARecord CRs as needed.
+async fn reconcile_tcproute(
+    route: Arc<TCPRoute>,
+    ctx: Arc<ScoutContext>,
+) -> Result<Action, ScoutError> {
+    let name = route.name_any();
+    let namespace = route.namespace().unwrap_or_default();
+
+    if ctx.excluded_namespaces.contains(&namespace) {
+        debug!(tcproute = %name, ns = %namespace, "Skipping excluded namespace");
+        return Ok(Action::await_change());
+    }
+
+    if route.metadata.deletion_timestamp.is_some() {
+        if route
+            .metadata
+            .finalizers
+            .as_ref()
+            .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
+            .unwrap_or(false)
+        {
+            info!(tcproute = %name, ns = %namespace, "TCPRoute deleting — cleaning up ARecords");
+            delete_arecords_for_tcproute(
+                &ctx.remote_client,
+                &ctx.target_namespace,
+                &ctx.cluster_name,
+                &namespace,
+                &name,
+            )
+            .await
+            .map_err(ScoutError::from)?;
+            delete_stale_cluster_tcproute_arecords(
+                &ctx.remote_client,
+                &ctx.target_namespace,
+                &ctx.cluster_name,
+                &namespace,
+                &name,
+            )
+            .await
+            .map_err(ScoutError::from)?;
+            remove_finalizer_from_tcproute(&ctx.client, &route)
+                .await
+                .map_err(ScoutError::from)?;
+            info!(tcproute = %name, ns = %namespace, "Finalizer removed — TCPRoute deletion unblocked");
+        }
+        return Ok(Action::await_change());
+    }
+
+    let annotations = route
+        .metadata
+        .annotations
+        .as_ref()
+        .cloned()
+        .unwrap_or_default();
+
+    if !is_scout_opted_in(&annotations) {
+        let has_fin = route
+            .metadata
+            .finalizers
+            .as_ref()
+            .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
+            .unwrap_or(false);
+        if has_fin {
+            info!(tcproute = %name, ns = %namespace, "Scout opt-in annotation removed — cleaning up ARecords and finalizer");
+            delete_arecords_for_tcproute(
+                &ctx.remote_client,
+                &ctx.target_namespace,
+                &ctx.cluster_name,
+                &namespace,
+                &name,
+            )
+            .await
+            .map_err(ScoutError::from)?;
+            delete_stale_cluster_tcproute_arecords(
+                &ctx.remote_client,
+                &ctx.target_namespace,
+                &ctx.cluster_name,
+                &namespace,
+                &name,
+            )
+            .await
+            .map_err(ScoutError::from)?;
+            remove_finalizer_from_tcproute(&ctx.client, &route)
+                .await
+                .map_err(ScoutError::from)?;
+        }
+        debug!(tcproute = %name, ns = %namespace, "No scout-enabled annotation — skipping");
+        return Ok(Action::await_change());
+    }
+
+    let has_fin = route
+        .metadata
+        .finalizers
+        .as_ref()
+        .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
+        .unwrap_or(false);
+    if !has_fin {
+        add_finalizer_to_tcproute(&ctx.client, &route)
+            .await
+            .map_err(ScoutError::from)?;
+        debug!(tcproute = %name, ns = %namespace, "Finalizer added — re-queuing for record creation");
+        return Ok(Action::await_change());
+    }
+
+    let zone = match resolve_zone(&annotations, ctx.default_zone.as_deref()) {
+        Some(z) => z,
+        None => {
+            warn!(tcproute = %name, ns = %namespace, "No DNS zone available — skipping");
+            return Ok(Action::requeue(Duration::from_secs(
+                SCOUT_ERROR_REQUEUE_SECS,
+            )));
+        }
+    };
+
+    match check_zone_authorization(&ctx.zone_store.state(), &zone, &namespace) {
+        ZoneAuthz::Authorized => {}
+        ZoneAuthz::Forbidden => {
+            warn!(tcproute = %name, ns = %namespace, zone = %zone, "TCPRoute namespace not authorized for zone — the DNSZone must live in this namespace or set annotation {ANNOTATION_ALLOW_ZONE_NAMESPACES} to include it (or '*') — skipping");
+            return Ok(Action::requeue(Duration::from_secs(
+                SCOUT_ERROR_REQUEUE_SECS,
+            )));
+        }
+        ZoneAuthz::NotFound => {
+            warn!(tcproute = %name, ns = %namespace, zone = %zone, "Zone not found in DNSZone store — requeuing");
+            return Ok(Action::requeue(Duration::from_secs(
+                SCOUT_ERROR_REQUEUE_SECS,
+            )));
+        }
+    }
+
+    let ips = {
+        let from_annotation = resolve_ips_from_annotation(&annotations);
+        let from_gateway = if from_annotation.is_some() {
+            None
+        } else {
+            let parent_refs = route
+                .spec
+                .as_ref()
+                .and_then(|s| s.parent_refs.as_ref())
+                .cloned()
+                .unwrap_or_default();
+            resolve_ips_from_gateways(&ctx.client, &namespace, &parent_refs, &ctx.gateway_services)
+                .await
+        };
+        let from_defaults = if ctx.default_ips.is_empty() {
+            None
+        } else {
+            Some(ctx.default_ips.clone())
+        };
+
+        match from_annotation.or(from_gateway).or(from_defaults) {
+            Some(ips) => ips,
+            None => {
+                warn!(tcproute = %name, ns = %namespace, "No IP available (no annotation override, no gateway IP, no default IPs) — requeuing");
+                return Ok(Action::requeue(Duration::from_secs(
+                    SCOUT_ERROR_REQUEUE_SECS,
+                )));
+            }
+        }
+    };
+
+    let ttl: Option<i32> = annotations.get(ANNOTATION_TTL).and_then(|v| v.parse().ok());
+
+    let Some(record_name) = get_record_name_annotation(&annotations) else {
+        warn!(tcproute = %name, ns = %namespace, "TCPRoute has no record-name override — skipping (add bindy.firestoned.io/record-name annotation)");
+        return Ok(Action::requeue(Duration::from_secs(
+            SCOUT_ERROR_REQUEUE_SECS,
+        )));
+    };
+
+    let arecord_api: Api<ARecord> =
+        Api::namespaced(ctx.remote_client.clone(), &ctx.target_namespace);
+
+    let cr_name = tcproute_arecord_cr_name(&ctx.cluster_name, &namespace, &name, 0);
+    let arecord = build_tcproute_arecord(TCPRouteARecordParams {
+        name: &cr_name,
+        target_namespace: &ctx.target_namespace,
+        record_name: &record_name,
+        ips: &ips,
+        ttl,
+        cluster_name: &ctx.cluster_name,
+        route_namespace: &namespace,
+        route_name: &name,
+        zone: &zone,
+    });
+
+    let ssapply = kube::api::PatchParams::apply("bindy-scout").force();
+    match arecord_api
+        .patch(&cr_name, &ssapply, &kube::api::Patch::Apply(&arecord))
+        .await
+    {
+        Ok(_) => {
+            info!(arecord = %cr_name, tcproute = %name, record_name = %record_name, ips = ?ips, "ARecord created/updated for TCPRoute");
+        }
+        Err(e) => {
+            error!(arecord = %cr_name, tcproute = %name, error = %e, "Failed to apply ARecord for TCPRoute");
+            return Err(ScoutError::from(anyhow!(
+                "Failed to apply ARecord {cr_name}: {e}"
+            )));
+        }
+    }
+
+    delete_stale_cluster_tcproute_arecords(
+        &ctx.remote_client,
+        &ctx.target_namespace,
+        &ctx.cluster_name,
+        &namespace,
+        &name,
+    )
+    .await
+    .map_err(ScoutError::from)?;
+
+    Ok(Action::await_change())
+}
+
 /// Error policy for Gateway API routes: requeue with a fixed backoff.
 fn gateway_route_error_policy(
     _obj: Arc<HTTPRoute>,
@@ -2758,6 +3209,16 @@ fn tlsroute_error_policy(
     _ctx: Arc<ScoutContext>,
 ) -> Action {
     error!(error = %error, "Scout TLSRoute reconcile error — requeuing");
+    Action::requeue(Duration::from_secs(SCOUT_ERROR_REQUEUE_SECS))
+}
+
+/// Error policy for TCPRoute: requeue with a fixed backoff.
+fn tcproute_error_policy(
+    _obj: Arc<TCPRoute>,
+    error: &ScoutError,
+    _ctx: Arc<ScoutContext>,
+) -> Action {
+    error!(error = %error, "Scout TCPRoute reconcile error — requeuing");
     Action::requeue(Duration::from_secs(SCOUT_ERROR_REQUEUE_SECS))
 }
 
@@ -3074,8 +3535,10 @@ pub async fn run_scout(
     let httproute_api: Api<HTTPRoute> = Api::all(local_client.clone());
     // Watch TLSRoutes across all namespaces using the LOCAL client
     let tlsroute_api: Api<TLSRoute> = Api::all(local_client.clone());
+    // Watch TCPRoutes across all namespaces using the LOCAL client
+    let tcproute_api: Api<TCPRoute> = Api::all(local_client.clone());
 
-    info!("Scout controller running — watching Ingresses, Services, HTTPRoutes, and TLSRoutes");
+    info!("Scout controller running — watching Ingresses, Services, HTTPRoutes, TLSRoutes, and TCPRoutes");
 
     let ingress_controller = Controller::new(ingress_api, WatcherConfig::default())
         .run(reconcile, error_policy, ctx.clone())
@@ -3105,7 +3568,7 @@ pub async fn run_scout(
         });
 
     let tlsroute_controller = Controller::new(tlsroute_api, WatcherConfig::default())
-        .run(reconcile_tlsroute, tlsroute_error_policy, ctx)
+        .run(reconcile_tlsroute, tlsroute_error_policy, ctx.clone())
         .for_each(|res| async move {
             match res {
                 Ok(obj) => debug!(obj = ?obj, "Reconciled TLSRoute"),
@@ -3113,11 +3576,21 @@ pub async fn run_scout(
             }
         });
 
-    futures::future::join4(
+    let tcproute_controller = Controller::new(tcproute_api, WatcherConfig::default())
+        .run(reconcile_tcproute, tcproute_error_policy, ctx)
+        .for_each(|res| async move {
+            match res {
+                Ok(obj) => debug!(obj = ?obj, "Reconciled TCPRoute"),
+                Err(e) => error!(error = %e, "TCPRoute reconcile failed"),
+            }
+        });
+
+    futures::future::join5(
         ingress_controller,
         service_controller,
         httproute_controller,
         tlsroute_controller,
+        tcproute_controller,
     )
     .await;
 

@@ -65,14 +65,17 @@ pub const DNS_PORT: u16 = 53;
 /// DNS container port.
 ///
 /// This is the port `named` binds inside the operand pod and the `targetPort`
-/// of the DNS Service. As of the bindcar `0.7.0` migration this is the standard
-/// DNS port `53`: bindcar `0.7.0` validates secondary-zone `primaries` as plain
-/// IP addresses (no `IP port N` form) and defaults zone transfers to port `53`,
-/// so cross-pod transfers require `named` to listen on `53`. Running on a
-/// privileged port as a non-root user requires the `NET_BIND_SERVICE`
-/// capability, which is granted **only** to the `named` container (allowed under
-/// Pod Security Admission `restricted`). See `build_pod_spec`.
-pub const DNS_CONTAINER_PORT: u16 = 53;
+/// of the DNS Service (which still exposes the standard [`DNS_PORT`] `53` to
+/// clients). It is the **unprivileged** port `5353`, so non-root `named` binds
+/// it without the `NET_BIND_SERVICE` capability.
+///
+/// Cross-pod zone transfers stay coherent because bindcar (`0.7.2`+) accepts
+/// port-qualified endpoints (`<ip>:<port>`): the operator publishes secondary
+/// `primaries` and primary `also-notify` entries as `<ip>:5353`, and sets
+/// `NSUPDATE_PORT` on the bindcar sidecar so dynamic updates target this port.
+/// `allow-transfer` remains a bare-IP ACL (port-agnostic). See `build_pod_spec`,
+/// `render_listen_on`, and `crate::bind9::zone_ops`.
+pub const DNS_CONTAINER_PORT: u16 = 5353;
 
 /// Standard RNDC control port (non-privileged)
 pub const RNDC_PORT: u16 = 9530;

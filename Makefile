@@ -267,12 +267,20 @@ test-cov-ci: ## Run coverage for CI (text output)
 cargo-deny: ## Check dependencies for security, licenses, and supply chain issues
 	@command -v cargo-deny >/dev/null 2>&1 || { echo "Installing cargo-deny..."; cargo install cargo-deny; }
 	@echo "Running cargo-deny checks..."
-	@cargo deny check --config .cargo/deny.toml
+	@version=$$(cargo deny --version); \
+	case "$$version" in \
+		*" 0.19."*) cargo deny check --config .cargo/deny.toml ;; \
+		*) cargo deny --config .cargo/deny.toml check ;; \
+	esac
 
 cargo-deny-json: ## Run cargo-deny with JSON output (for CI automation)
 	@command -v cargo-deny >/dev/null 2>&1 || { echo "Installing cargo-deny..."; cargo install cargo-deny; }
 	@echo "Running cargo-deny checks (JSON output)..."
-	@cargo deny --format json check --config .cargo/deny.toml
+	@version=$$(cargo deny --version); \
+	case "$$version" in \
+		*" 0.19."*) cargo deny --format json check --config .cargo/deny.toml ;; \
+		*) cargo deny --format json --config .cargo/deny.toml check ;; \
+	esac
 
 gitleaks-install: ## Install gitleaks from GitHub with checksum verification
 	@if ! command -v gitleaks >/dev/null 2>&1; then \

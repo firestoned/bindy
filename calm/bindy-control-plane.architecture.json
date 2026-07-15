@@ -66,7 +66,7 @@
       "unique-id": "named",
       "node-type": "service",
       "name": "BIND9 named",
-      "description": "Container 'bind9'. Authoritative DNS server serving UDP/TCP :53 as non-root UID 101 with the NET_BIND_SERVICE capability."
+      "description": "Container 'bind9'. Authoritative DNS server serving UDP/TCP :5353 as non-root UID 101 with no added capabilities (unprivileged port)."
     },
     {
       "unique-id": "bindcar",
@@ -79,7 +79,7 @@
       "unique-id": "bind9-svc",
       "node-type": "service",
       "name": "BIND9 Service",
-      "description": "Kubernetes Service exposing DNS (:53 UDP/TCP) and the bindcar API (port 80 -> 8080)."
+      "description": "Kubernetes Service exposing DNS (:53 UDP/TCP -> container :5353) and the bindcar API (port 80 -> 8080)."
     },
     {
       "unique-id": "dns-client",
@@ -244,7 +244,7 @@
     },
     {
       "unique-id": "svc-routes-named",
-      "description": "routes :53 to named",
+      "description": "routes :53 to named :5353",
       "relationship-type": {
         "connects": {
           "source": { "node": "bind9-svc" },

@@ -49,20 +49,26 @@ See [Metrics](./metrics.md) for detailed metrics.
 
 ## Health Checks
 
-BIND9 pods include liveness and readiness probes:
+BIND9 pods include liveness and readiness probes, both TCP socket checks against the
+container's DNS port `5353` (`named` binds the unprivileged `5353`; the Service still
+exposes `53` to clients and forwards to `5353`):
 
 ```yaml
 livenessProbe:
-  exec:
-    command: ["dig", "@localhost", "version.bind", "txt", "chaos"]
+  tcpSocket:
+    port: 5353
   initialDelaySeconds: 30
   periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
 
 readinessProbe:
-  exec:
-    command: ["dig", "@localhost", "version.bind", "txt", "chaos"]
-  initialDelaySeconds: 5
+  tcpSocket:
+    port: 5353
+  initialDelaySeconds: 10
   periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
 ```
 
 Check probe status:
