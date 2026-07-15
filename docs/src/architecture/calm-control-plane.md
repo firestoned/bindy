@@ -62,7 +62,7 @@ classDef highlight fill:#fdf7ec,stroke:#f0c060,stroke-width:1px,color:#000000;
     bindy-operator -->|DNS UPDATE #40;RFC 2136, TSIG#41;| named
     bindcar -->|rndc / nsupdate #40;local#41;| named
     dns-client -->|DNS query| bind9-svc
-    bind9-svc -->|routes :53 to named| named
+    bind9-svc -->|routes :53 to named :5353| named
 
 
 

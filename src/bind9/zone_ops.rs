@@ -15,8 +15,29 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, error, info, warn};
 
-use crate::constants::DEFAULT_DNS_RECORD_TTL_SECS;
+use crate::constants::{DEFAULT_DNS_RECORD_TTL_SECS, DNS_CONTAINER_PORT};
 use crate::reconcilers::retry::{http_backoff, is_retryable_http_status};
+
+/// Append the operand's DNS container port to each transfer endpoint, in the
+/// compact `<ip>:<port>` form bindcar accepts (IPv6 addresses are bracketed:
+/// `[2001:db8::1]:5353`).
+///
+/// `named` binds the unprivileged [`DNS_CONTAINER_PORT`] (5353), not 53, so a
+/// secondary's `primaries` and a primary's `also-notify` endpoints must target
+/// that port. bindcar (`0.7.2`+) parses this form and renders BIND's
+/// `<ip> port <n>` syntax. `allow-transfer` is a port-agnostic ACL and must stay
+/// bare IPs, so it deliberately does **not** use this helper.
+fn with_transfer_port(ips: &[String]) -> Vec<String> {
+    ips.iter()
+        .map(|ip| {
+            if ip.parse::<std::net::Ipv6Addr>().is_ok() {
+                format!("[{ip}]:{DNS_CONTAINER_PORT}")
+            } else {
+                format!("{ip}:{DNS_CONTAINER_PORT}")
+            }
+        })
+        .collect()
+}
 
 /// HTTP error with status code for retry logic.
 ///
@@ -602,8 +623,9 @@ pub async fn add_primary_zone(
         name_servers: all_name_servers,
         name_server_ips: name_server_ips.cloned().unwrap_or_default(),
         records: vec![],
-        // Configure zone transfers to secondary servers
-        also_notify: secondary_ips.map(<[String]>::to_vec),
+        // Configure zone transfers to secondary servers. NOTIFY targets the
+        // secondaries' operand port (5353); allow-transfer is a bare-IP ACL.
+        also_notify: secondary_ips.map(with_transfer_port),
         allow_transfer: secondary_ips.map(<[String]>::to_vec),
         // Primary zones don't have primaries field (only secondary zones do)
         primaries: None,
@@ -707,7 +729,9 @@ pub async fn update_primary_zone(
     let url = format!("{base_url}/api/v1/zones/{zone_name}");
 
     let update_request = ZoneUpdateRequest {
-        also_notify: Some(secondary_ips.to_vec()),
+        // NOTIFY targets the secondaries' operand port (5353); allow-transfer is
+        // a bare-IP ACL.
+        also_notify: Some(with_transfer_port(secondary_ips)),
         allow_transfer: Some(secondary_ips.to_vec()),
     };
 
@@ -772,12 +796,11 @@ pub async fn add_secondary_zone(
 
     // Create zone configuration for secondary zone with primaries.
     // Secondary zones don't need SOA/NS records as they are transferred from
-    // the primary. bindcar 0.7.0 strictly validates every `primaries` entry as
-    // a plain IP address (`IpAddr::parse`), rejecting the older
-    // "IP port <port>" form with HTTP 400. Zone transfers therefore use the
-    // default DNS port; the operand `named` now listens on DNS_CONTAINER_PORT
-    // (53), so plain pod IPs resolve to the correct transfer endpoint.
-    let primaries: Vec<String> = primary_ips.to_vec();
+    // the primary. The operand `named` listens on the unprivileged
+    // DNS_CONTAINER_PORT (5353), so each primary endpoint is port-qualified
+    // (`<ip>:5353`); bindcar (0.7.2+) parses this and renders BIND's
+    // `<ip> port 5353` primaries syntax.
+    let primaries: Vec<String> = with_transfer_port(primary_ips);
 
     let zone_config = ZoneConfig {
         ttl: DEFAULT_DNS_RECORD_TTL_SECS as u32,

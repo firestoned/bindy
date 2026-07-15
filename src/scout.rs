@@ -3142,7 +3142,9 @@ async fn reconcile_tcproute(
 
     let Some(record_name) = get_record_name_annotation(&annotations) else {
         warn!(tcproute = %name, ns = %namespace, "TCPRoute has no record-name override — skipping (add bindy.firestoned.io/record-name annotation)");
-        return Ok(Action::requeue(Duration::from_secs(SCOUT_ERROR_REQUEUE_SECS)));
+        return Ok(Action::requeue(Duration::from_secs(
+            SCOUT_ERROR_REQUEUE_SECS,
+        )));
     };
 
     let arecord_api: Api<ARecord> =

@@ -17,7 +17,7 @@
 #   B. Operator pod-shape regression — requires --image <bindy operator ref>.
 #      Deploys the operator under PSA `restricted`, creates a Bind9Instance,
 #      and asserts the operand Deployment/Service/Secret match the bindcar
-#      0.7.0 contract (port 53, NET_BIND_SERVICE, RO rootfs, seccomp, TMPDIR,
+#      0.7.2 contract (unprivileged port 5353, no added caps, RO rootfs, seccomp, TMPDIR,
 #      operator-SA allowlist, audience, hmac-sha256).
 #   C. Operand liveness smoke — best-effort. Waits for the operand pod to be
 #      Ready (probe = TCP 53, so Ready proves named binds 53). Skipped with a
@@ -48,7 +48,7 @@ KUBECTL="kubectl --context kind-${CLUSTER_NAME}"
 
 # Test instance / expectations (bindcar 0.7.0 contract)
 INSTANCE_NAME="regression-primary"
-EXPECTED_DNS_PORT="53"
+EXPECTED_DNS_PORT="5353"
 EXPECTED_AUDIENCE="bindcar"
 EXPECTED_TMPDIR="/tmp"
 EXPECTED_ALLOWED_SA="system:serviceaccount:${NAMESPACE}:bindy"
@@ -70,6 +70,8 @@ PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
 FAILED_TESTS=()
+# Markdown rows accumulated for the GitHub Actions step summary (run page).
+SUMMARY_ROWS=()
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -86,9 +88,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-pass() { PASS_COUNT=$((PASS_COUNT + 1)); echo -e "  ${GREEN}✅ PASS${NC} $1"; }
-fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); FAILED_TESTS+=("$1"); echo -e "  ${RED}❌ FAIL${NC} $1${2:+ — $2}"; }
-skip() { SKIP_COUNT=$((SKIP_COUNT + 1)); echo -e "  ${YELLOW}⏭  SKIP${NC} $1${2:+ — $2}"; }
+pass() { PASS_COUNT=$((PASS_COUNT + 1)); SUMMARY_ROWS+=("| ✅ | ${1//|/\\|} |"); echo -e "  ${GREEN}✅ PASS${NC} $1"; }
+fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); FAILED_TESTS+=("$1"); SUMMARY_ROWS+=("| ❌ | ${1//|/\\|}${2:+ — ${2//|/\\|}} |"); echo -e "  ${RED}❌ FAIL${NC} $1${2:+ — $2}"; }
+skip() { SKIP_COUNT=$((SKIP_COUNT + 1)); SUMMARY_ROWS+=("| ⏭ | ${1//|/\\|} |"); echo -e "  ${YELLOW}⏭  SKIP${NC} $1${2:+ — $2}"; }
 
 # assert_eq <test-name> <actual> <expected>
 assert_eq() {
@@ -340,13 +342,13 @@ EOF
     local bind9='{.spec.template.spec.containers[?(@.name=="bind9")]'
     local api='{.spec.template.spec.containers[?(@.name=="api")]'
 
-    # named: port 53 + NET_BIND_SERVICE + seccomp
+    # named: unprivileged port 5353 (no NET_BIND_SERVICE) + seccomp
     assert_eq "operand: named dns-tcp containerPort" \
         "$(jp "$dep" "${bind9}.ports[?(@.name==\"dns-tcp\")].containerPort}")" "$EXPECTED_DNS_PORT"
     assert_eq "operand: named dns-udp containerPort" \
         "$(jp "$dep" "${bind9}.ports[?(@.name==\"dns-udp\")].containerPort}")" "$EXPECTED_DNS_PORT"
-    assert_eq "operand: named capability add NET_BIND_SERVICE" \
-        "$(jp "$dep" "${bind9}.securityContext.capabilities.add[0]}")" "NET_BIND_SERVICE"
+    assert_eq "operand: named adds no capabilities (unprivileged 5353)" \
+        "$(jp "$dep" "${bind9}.securityContext.capabilities.add[0]}")" ""
     assert_eq "operand: named capabilities drop ALL" \
         "$(jp "$dep" "${bind9}.securityContext.capabilities.drop[0]}")" "ALL"
     assert_eq "operand: named seccomp RuntimeDefault" \
@@ -418,8 +420,8 @@ phase_c() {
         return 0
     fi
 
-    # Readiness probe is TCP :53, so a Ready pod proves the named.conf
-    # template change (listen-on port 53) landed.
+    # Readiness probe is TCP :5353, so a Ready pod proves the named.conf
+    # template change (listen-on port 5353) landed.
     echo -e "${GREEN}⏳ Waiting up to ${OPERAND_READY_TIMEOUT}s for operand pod Ready...${NC}"
     if ${KUBECTL} wait --for=condition=ready "--timeout=${OPERAND_READY_TIMEOUT}s" \
             pod -l "instance=${INSTANCE_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1; then
@@ -484,6 +486,24 @@ echo -e "  ${YELLOW}skipped: ${SKIP_COUNT}${NC}"
 if [ "$FAIL_COUNT" -gt 0 ]; then
     echo -e "${RED}Failed tests:${NC}"
     printf '  - %s\n' "${FAILED_TESTS[@]}"
+fi
+
+# Render a summary on the GitHub Actions run page (when running in CI).
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    {
+        echo "## Regression suite — operand contract, admission policies, liveness"
+        echo ""
+        echo "**✅ passed: ${PASS_COUNT} · ❌ failed: ${FAIL_COUNT} · ⏭ skipped: ${SKIP_COUNT}**"
+        echo ""
+        echo "<details><summary>All ${#SUMMARY_ROWS[@]} checks</summary>"
+        echo ""
+        echo "| | Check |"
+        echo "|---|---|"
+        [ "${#SUMMARY_ROWS[@]}" -gt 0 ] && printf '%s\n' "${SUMMARY_ROWS[@]}"
+        echo ""
+        echo "</details>"
+        echo ""
+    } >> "$GITHUB_STEP_SUMMARY"
 fi
 
 if [ "$DELETE_CLUSTER" = true ] && [ "$FAIL_COUNT" -eq 0 ]; then

@@ -5,9 +5,10 @@ options {
     dump-file "/var/cache/bind/cache_dump.db";
     statistics-file "/var/cache/bind/named_stats.txt";
     memstatistics-file "/var/cache/bind/named_mem_stats.txt";
-    // bindcar 0.7.0 migration: named listens on the standard DNS port 53
-    // (bound as non-root via the NET_BIND_SERVICE capability). Secondary-zone
-    // `primaries` entries are plain IPs, so zone transfers use this port.
+    // named listens on the unprivileged DNS port 5353 (no NET_BIND_SERVICE
+    // capability needed). The DNS Service exposes 53 to clients and forwards to
+    // 5353; secondary-zone `primaries` and `also-notify` are port-qualified
+    // (`<ip>:5353`) so cross-pod transfers reach this port (bindcar 0.7.2+).
     // Defaults to `any` unless listenOn / listenOnV6 are set in the CRD.
     {{LISTEN_ON}}
     {{LISTEN_ON_V6}}

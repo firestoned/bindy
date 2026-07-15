@@ -111,9 +111,9 @@ if [ "$SKIP_DEPLOY" = false ]; then
         if [ -n "$IMAGE_REF" ]; then
             echo -e "${YELLOW}📦 Updating operator with image: ${IMAGE_REF}${NC}"
 
-            # Update deployment with specific image
+            # Update deployment with specific image (container is named "bindy")
             ${KUBECTL} set image deployment/bindy \
-                operator="${IMAGE_REF}" \
+                bindy="${IMAGE_REF}" \
                 -n "${NAMESPACE}"
 
             # Wait for rollout
@@ -436,6 +436,24 @@ ${KUBECTL} delete bind9instance integration-test-primary -n "${NAMESPACE}" --ign
 ${KUBECTL} delete bind9cluster integration-test-cluster -n "${NAMESPACE}" --ignore-not-found=true
 
 echo ""
+
+# Render a summary on the GitHub Actions run page (when running in CI).
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    rust_status=$([ $TEST_EXIT -eq 0 ] && echo '✅ passed' || echo '❌ failed')
+    func_status=$([ $ERRORS -eq 0 ] && echo '✅ passed' || echo "❌ failed (${ERRORS} error(s))")
+    records_status=$([ $ERRORS -eq 0 ] && echo '✅ all 8 created & verified' || echo '⚠️ see errors')
+    {
+        echo "## Integration suite — zone/record lifecycle"
+        echo ""
+        echo "| Check | Result |"
+        echo "|---|---|"
+        echo "| Rust integration tests (\`cargo test --test simple_integration\`) | ${rust_status} |"
+        echo "| Functional tests (kubectl create/verify) | ${func_status} |"
+        echo "| DNS record types (A, AAAA, CNAME, MX, TXT, NS, SRV, CAA) | ${records_status} |"
+        echo ""
+    } >> "$GITHUB_STEP_SUMMARY"
+fi
+
 if [ $ERRORS -eq 0 ] && [ $TEST_EXIT -eq 0 ]; then
     echo -e "${GREEN}✅ All integration tests passed!${NC}"
     echo ""

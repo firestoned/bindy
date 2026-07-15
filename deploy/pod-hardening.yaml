@@ -8,8 +8,8 @@
 #    The operator-built BIND9 + bindcar pods are PSA-`restricted` compliant:
 #      - runAsNonRoot: true, non-root UID
 #      - allowPrivilegeEscalation: false
-#      - capabilities.drop: ["ALL"] (the `named` container adds back only
-#        NET_BIND_SERVICE, which `restricted` permits, to bind DNS port 53)
+#      - capabilities.drop: ["ALL"] and adds none back (the `named` container
+#        binds the unprivileged DNS port 5353, so NET_BIND_SERVICE isn't needed)
 #      - seccompProfile.type: RuntimeDefault (pod + container level)
 #      - the bindcar sidecar runs readOnlyRootFilesystem: true with a
 #        memory-backed emptyDir at /tmp (TMPDIR) for its 0600 TSIG key file
@@ -50,11 +50,12 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # DNS service (queries, zone transfers) on port 53.
+    # DNS queries and zone transfers reach named on the unprivileged container
+    # port 5353 (the DNS Service exposes 53 to clients and forwards to 5353).
     - ports:
-        - port: 53
+        - port: 5353
           protocol: TCP
-        - port: 53
+        - port: 5353
           protocol: UDP
     # bindcar HTTP API: container port 8080 and Service port 80.
     - ports:
@@ -84,14 +85,14 @@ spec:
         - port: 53
           protocol: TCP
     # Zone transfers / NOTIFY between bindy-managed peers (primary <-> secondary)
-    # on DNS port 53. Add external secondary/forwarder CIDRs here if `named`
-    # peers outside the cluster.
+    # reach the peer's named on container port 5353. Add external
+    # secondary/forwarder CIDRs here if `named` peers outside the cluster.
     - to:
         - podSelector:
             matchLabels:
               app.kubernetes.io/part-of: bindy
       ports:
-        - port: 53
+        - port: 5353
           protocol: TCP
-        - port: 53
+        - port: 5353
           protocol: UDP
