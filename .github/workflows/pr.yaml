@@ -95,7 +95,7 @@ jobs:
           fetch-depth: 0  # Fetch all history for verification
 
       - name: Verify all commits are signed
-        uses: firestoned/github-actions/security/verify-signed-commits@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        uses: firestoned/github-actions/security/verify-signed-commits@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           base-ref: origin/${{ github.base_ref }}
