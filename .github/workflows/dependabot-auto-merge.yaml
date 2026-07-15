@@ -6,7 +6,7 @@
 # On every Dependabot pull request, run the full e2e gate (integration +
 # regression, via the reusable e2e.yaml). If it passes:
 #   - patch / minor updates  -> enable auto-merge (squash). GitHub then merges
-#                               once ALL required status checks (PR CI, security,
+#                               once ALL required status checks (Build, security,
 #                               this e2e) are green.
 #   - major updates          -> leave the PR OPEN and comment, for manual review.
 # If the e2e gate fails (or anything errors), nothing is merged — the PR is left

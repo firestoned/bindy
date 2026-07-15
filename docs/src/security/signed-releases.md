@@ -97,7 +97,7 @@ When verification succeeds, Cosign returns JSON output with signature details:
         }
       },
       "Issuer": "https://token.actions.githubusercontent.com",
-      "Subject": "https://github.com/firestoned/bindy/.github/workflows/release.yaml@refs/tags/v0.1.0"
+      "Subject": "https://github.com/firestoned/bindy/.github/workflows/build.yaml@refs/tags/v0.1.0"
     }
   }
 ]
@@ -240,9 +240,101 @@ cosign verify-attestation \
 
 ## Kubernetes Deployment Verification
 
-When deploying to Kubernetes, use [policy-operator](https://docs.sigstore.dev/policy-operator/overview) or [Kyverno](https://kyverno.io/) to enforce signature verification:
+Three complementary layers, in the order most deployments adopt them:
+
+1. **FluxCD (GitOps)** — verify the *deployment source* (signed OCI artifact)
+   before anything is applied.
+2. **ValidatingAdmissionPolicy** — enforce image *provenance* (trusted
+   registries, immutable references) with zero extra controllers. Ships with
+   bindy.
+3. **Kyverno / sigstore policy-controller** — cryptographic *signature*
+   verification at pod admission (CEL cannot verify signatures, so this layer
+   needs a verifying controller).
+
+### FluxCD (GitOps) Verification
+
+Flux verifies **Cosign signatures on the OCI sources it pulls**
+(`OCIRepository` / `HelmChart`) — tampered or unsigned artifacts are never
+applied. Note Flux does *not* verify container-image signatures at pod
+admission; combine it with the layers below.
+
+Wrap bindy's released manifests in an OCI artifact you sign, and let Flux
+refuse anything unsigned:
+
+```bash
+# One-time (or per bindy upgrade): package + sign the manifests you deploy
+VERSION=v0.6.0
+curl -sSLO https://github.com/firestoned/bindy/releases/download/${VERSION}/install.yaml
+flux push artifact oci://ghcr.io/<your-org>/bindy-manifests:${VERSION} \
+  --path=. --source="github.com/firestoned/bindy" --revision="${VERSION}"
+cosign sign ghcr.io/<your-org>/bindy-manifests:${VERSION}
+```
+
+```yaml
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: bindy-manifests
+  namespace: flux-system
+spec:
+  interval: 10m
+  url: oci://ghcr.io/<your-org>/bindy-manifests
+  ref:
+    tag: v0.6.0
+  verify:
+    provider: cosign
+    # Keyless: pin the signing identity. For artifacts signed in YOUR CI,
+    # match your workflow; for interactive `cosign sign`, match your OIDC
+    # identity via a secretRef / matchOIDCIdentity as appropriate.
+    matchOIDCIdentity:
+      - issuer: "https://token.actions.githubusercontent.com"
+        subject: "https://github.com/<your-org>/<your-repo>/.github/workflows/.*"
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: bindy
+  namespace: flux-system
+spec:
+  interval: 10m
+  sourceRef:
+    kind: OCIRepository
+    name: bindy-manifests
+  path: ./
+  prune: true
+```
+
+With `spec.verify` set, Flux marks the source `SourceVerifiedFailed` and
+refuses to reconcile if the signature is missing or does not match the pinned
+identity.
+
+### ValidatingAdmissionPolicy (no extra controller)
+
+Bindy ships an image-provenance policy —
+[`deploy/admission-policies/15-bindy-image-provenance-policy.yaml`](https://github.com/firestoned/bindy/blob/main/deploy/admission-policies/15-bindy-image-provenance-policy.yaml)
+— enforced by the API server itself (Kubernetes 1.30+, CEL; no webhook or
+controller to operate):
+
+- bindcar sidecar overrides must come from `ghcr.io/firestoned/`
+- BIND9 operand overrides must be `internetsystemsconsortium/bind9` or a
+  `ghcr.io/firestoned/` mirror
+- every override must be immutable: digest-pinned (`@sha256:`) or a named
+  non-`:latest` tag
+
+```bash
+kubectl apply -f deploy/admission-policies/
+# or the combined release artifact:
+kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/admission-policies.yaml
+```
+
+> **Scope**: CEL cannot perform cryptographic verification — this policy pins
+> *where images come from and that references are immutable*, not *who signed
+> them*. For signature verification at admission, add Kyverno or the sigstore
+> policy-controller below.
 
 ### Kyverno Policy Example
+
+When deploying to Kubernetes, use [policy-controller](https://docs.sigstore.dev/policy-controller/overview) or [Kyverno](https://kyverno.io/) to enforce signature verification:
 
 ```yaml
 apiVersion: kyverno.io/v1
@@ -265,7 +357,10 @@ spec:
           attestors:
             - entries:
                 - keyless:
-                    subject: "https://github.com/firestoned/bindy/.github/workflows/release.yaml@*"
+                    # Releases are signed by the consolidated build.yaml
+                    # workflow. Releases published before the consolidation
+                    # were signed by the former release.yaml identity.
+                    subject: "https://github.com/firestoned/bindy/.github/workflows/build.yaml@*"
                     issuer: "https://token.actions.githubusercontent.com"
                     rekor:
                       url: https://rekor.sigstore.dev

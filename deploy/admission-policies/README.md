@@ -23,6 +23,8 @@ defense-in-depth on top of the in-process Rust validators in
 | `12-bindy-operator-workload-sa-binding.yaml` | binding | Binds the operator-workload-SA policy with `validationActions: [Deny]`. |
 | `13-bindy-record-value-policy.yaml` | `bindy-record-value-validation` | Defense-in-depth on DNS record target values (`CNAMERecord.spec.target`, `MXRecord.spec.mailServer`, `NSRecord.spec.nameserver`, `SRVRecord.spec.target`): must be an absolute FQDN (trailing dot), match `[A-Za-z0-9._-]`, ≤253 octets, no leading/consecutive dots. Mirrors bindcar 0.7.0's stricter record-value validation (migration §3) at the API server, since bindy sends most records over the RFC 2136 path rather than the bindcar HTTP API. |
 | `14-bindy-record-value-binding.yaml` | binding | Binds the record-value policy with `validationActions: [Deny]`. |
+| `15-bindy-image-provenance-policy.yaml` | `bindy-image-provenance-validation` | Registry/immutability allow-list on the image overrides tenants can set via CRs (`spec[.common].image.image`, `spec[.common].bindcarConfig.image`): bindcar from `ghcr.io/firestoned/`, BIND9 from ISC or a firestoned mirror, and every reference digest-pinned or a named non-`:latest` tag. CEL cannot verify Cosign signatures — pair with Kyverno / policy-controller for cryptographic admission (see `docs/src/security/signed-releases.md`). |
+| `16-bindy-image-provenance-binding.yaml` | binding | Binds the image-provenance policy with `validationActions: [Deny]`. |
 
 F-003 (cross-namespace zone hijack) is enforced operator-side via the
 `bindy.firestoned.io/allow-zone-namespaces` annotation on `Bind9Instance`

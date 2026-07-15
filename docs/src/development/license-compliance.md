@@ -67,7 +67,7 @@ make license-report
 ## CI Integration
 
 License compliance is checked on every pull request in the `security` job of
-[`.github/workflows/pr.yaml`](../../../.github/workflows/pr.yaml):
+[`.github/workflows/build.yaml`](../../../.github/workflows/build.yaml):
 
 1. **`make cargo-deny`** — Blocks the build on prohibited licenses (strict enforcement)
 2. **`make license-check`** — Reports any violations not caught by cargo-deny

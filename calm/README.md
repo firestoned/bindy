@@ -34,12 +34,12 @@ make calm-docs-check   # fail if the committed Mermaid pages are stale
 ### Editing workflow
 
 1. Edit or add a `*.architecture.json` model here.
-2. Run `make calm-validate` — it must pass (Pull Request CI enforces this).
+2. Run `make calm-validate` — it must pass (the Build workflow enforces this on PRs).
 3. Run `make calm-docs` to regenerate the diagram pages, and commit both the
    model **and** the regenerated `docs/src/architecture/calm-*.md`.
 
 > The generated pages carry a `DO NOT EDIT` banner. Change the model, not the page.
-> Pull Request CI runs `make calm-docs-check` and fails if they drift.
+> The Build workflow runs `make calm-docs-check` on PRs and fails if they drift.
 
 ## Why CALM
 

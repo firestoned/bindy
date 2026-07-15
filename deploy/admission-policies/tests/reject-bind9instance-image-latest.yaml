@@ -1,0 +1,13 @@
+# Should be REJECTED by bindy-image-provenance-validation: the BIND9 operand
+# image override uses the mutable :latest tag.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Instance
+metadata:
+  name: vap-image-provenance-reject-latest
+  namespace: bindy-system
+spec:
+  clusterRef: ""
+  role: primary
+  replicas: 1
+  image:
+    image: internetsystemsconsortium/bind9:latest

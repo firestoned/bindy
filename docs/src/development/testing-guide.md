@@ -345,7 +345,7 @@ cargo clean
 
 ### GitHub Actions
 
-Current PR workflow (`.github/workflows/pr.yaml`):
+Current PR flow (`.github/workflows/build.yaml`, `pull_request` jobs):
 - Lint (formatting, clippy)
 - Test (unit tests)
 - Build (stable, beta)

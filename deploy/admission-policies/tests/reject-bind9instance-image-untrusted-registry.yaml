@@ -1,0 +1,13 @@
+# Should be REJECTED by bindy-image-provenance-validation: the bindcar
+# sidecar image override points at a registry outside ghcr.io/firestoned/.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Instance
+metadata:
+  name: vap-image-provenance-reject-registry
+  namespace: bindy-system
+spec:
+  clusterRef: ""
+  role: primary
+  replicas: 1
+  bindcarConfig:
+    image: registry.example.com/bindcar:v0.7.3
