@@ -43,9 +43,14 @@ concurrency:
 jobs:
   metadata:
     name: Fetch Dependabot metadata
-    # Only Dependabot PRs. For any other author this (and every downstream job)
-    # is skipped, so the workflow no-ops on human PRs.
-    if: github.actor == 'dependabot[bot]'
+    # Gate on the PR *author* (who opened it), not github.actor (who triggered
+    # the run). github.actor flips to a human the moment anyone merges/rebases/
+    # pushes to a Dependabot branch, which would skip this and every downstream
+    # job. pull_request.user.login stays 'dependabot[bot]' for the PR's life, so
+    # auto-merge keeps working after a maintainer merges main in. For any other
+    # author this (and every downstream job) is skipped, so the workflow no-ops
+    # on human PRs.
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
     outputs:
       update-type: ${{ steps.meta.outputs.update-type }}
