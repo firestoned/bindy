@@ -1,3 +1,23 @@
+## [2026-07-16] - Fix rustdoc private_intra_doc_links warnings
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/bind9/zone_ops.rs`, `src/bind9/mod.rs`: public rustdoc comments
+  intra-doc-linked private items (`bindcar_request`, `TOKEN_CACHE_TTL_SECS`),
+  triggering 4 `rustdoc::private_intra_doc_links` warnings. Links replaced
+  with plain code formatting (backticks, no brackets) — the items are
+  intentionally private, so there is nothing to link to in public docs.
+
+### Impact
+- [ ] Breaking change
+- [x] Documentation only (doc comments; `cargo doc` now emits 0 warnings)
+
+### Verification
+- `cargo doc --no-deps --all-features`: 0 warnings; fmt/clippy/test green (1217 passed).
+
+---
+
 ## [2026-07-15] - Build job: thin LTO for PR/main CI (fat LTO kept for releases)
 
 **Author:** Erick Bourgeois

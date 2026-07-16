@@ -120,7 +120,7 @@ impl std::fmt::Debug for CachedToken {
 }
 
 /// Returns `true` while a token read at `read_at` may still be served from
-/// cache at `now` (i.e. it is younger than [`TOKEN_CACHE_TTL_SECS`]).
+/// cache at `now` (i.e. it is younger than `TOKEN_CACHE_TTL_SECS`).
 fn is_token_cache_fresh(read_at: Instant, now: Instant) -> bool {
     now.saturating_duration_since(read_at) < Duration::from_secs(TOKEN_CACHE_TTL_SECS)
 }
@@ -175,7 +175,7 @@ pub struct Bind9Manager {
     /// HTTP client for API requests
     client: Arc<HttpClient>,
     /// Cached `ServiceAccount` token for authentication (only used if auth is
-    /// enabled). Re-read from disk when older than [`TOKEN_CACHE_TTL_SECS`]
+    /// enabled). Re-read from disk when older than `TOKEN_CACHE_TTL_SECS`
     /// because the kubelet rotates the projected token file; caching it for
     /// the process lifetime would present an expired token after ~1h.
     token_cache: Arc<RwLock<Option<CachedToken>>>,
@@ -192,7 +192,7 @@ impl Bind9Manager {
     ///
     /// Creates an HTTP client (with connect/request timeouts) for API
     /// requests. The `ServiceAccount` token is read lazily at request time and
-    /// cached for [`TOKEN_CACHE_TTL_SECS`] so kubelet token rotation is picked
+    /// cached for `TOKEN_CACHE_TTL_SECS` so kubelet token rotation is picked
     /// up. Without deployment information, auth is always assumed to be
     /// enabled (backward compatible behavior).
     ///
@@ -212,7 +212,7 @@ impl Bind9Manager {
     ///
     /// Creates an HTTP client (with connect/request timeouts) for API
     /// requests. The `ServiceAccount` token is read lazily at request time and
-    /// cached for [`TOKEN_CACHE_TTL_SECS`] so kubelet token rotation is picked
+    /// cached for `TOKEN_CACHE_TTL_SECS` so kubelet token rotation is picked
     /// up. The deployment is used to determine if authentication is enabled or
     /// disabled by checking for the presence of the
     /// `BIND_ALLOWED_SERVICE_ACCOUNTS` environment variable in the bindcar container.
@@ -344,7 +344,7 @@ impl Bind9Manager {
     /// Get the authentication token if available and auth is enabled.
     ///
     /// The token is read from disk at request time and cached for
-    /// [`TOKEN_CACHE_TTL_SECS`]; a stale cache entry triggers a re-read so
+    /// `TOKEN_CACHE_TTL_SECS`; a stale cache entry triggers a re-read so
     /// kubelet rotation of the projected token file is always picked up.
     ///
     /// Returns `None` if:
