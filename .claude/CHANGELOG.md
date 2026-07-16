@@ -1,3 +1,177 @@
+## [2026-07-15] - Build job: thin LTO for PR/main CI (fat LTO kept for releases)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/build.yaml` (`build` job): job-level env overrides
+  `CARGO_PROFILE_RELEASE_LTO=thin` / `CODEGEN_UNITS=16` on PR/main events;
+  `release` events keep Cargo.toml's fat LTO + codegen-units=1 for shipped
+  binaries. Job-level so build + test steps share one profile fingerprint
+  (dependency rlibs stay reusable between them).
+
+### Why
+Run-log analysis (job 87459077001) showed artifact reuse working — the test
+step recompiled only 20 feature-unified crates — but fat-LTO/single-CGU
+linking dominated: ~6 of the build step's 7m29s (3 binaries) and the test
+step's 8m53s (6 test binaries + 47 doctests); test execution itself was <1s.
+Thin LTO removes that tax from CI while release artifacts are unchanged.
+
+### Note
+PR/main container images (pr-N / main-* tags) now carry thin-LTO binaries;
+release images/binaries keep the existing fat-LTO policy. Kind e2e on main
+therefore exercises a thin-LTO build — revert by deleting the two env lines
+if bit-for-bit parity with releases matters more than CI time.
+
+### Impact
+- [ ] Breaking change
+- [x] CI-only change (release artifacts unchanged)
+- [ ] Requires cluster rollout
+- [ ] Documentation only
+
+---
+
+## [2026-07-15] - Build workflow: fold tests into the build job (true build-once)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/build.yaml`: removed the standalone `Test` job (which
+  recompiled the whole dependency graph in dev profile, verbosely). Tests now
+  run as a **step inside the x86_64 `build` leg** immediately after the release
+  build: `cargo test --release --target x86_64-unknown-linux-gnu` — same
+  workspace, profile, and target as the binary build, so every dependency rlib
+  is reused and only the test harnesses compile on top.
+- The step is gated `if: matrix.platform.target == x86_64 && event != push &&
+  event != release`: tests run on pull requests (and manual dispatch) only —
+  main merges and releases ship code already tested on the PR.
+- `docker` now needs `[build, extract-version]`; `ci-gate` drops `test`.
+  One fewer runner per PR; dropped `--verbose`.
+
+### Why
+The old Test job could never reuse the release build by construction
+(dev profile + host target vs release profile + explicit target). Aligning
+profile/target and sharing the workspace makes the dependency graph compile
+exactly once per PR.
+
+### Note
+- Tests now run in the **release profile** (no `debug_assertions`) — you test
+  the optimization level you ship. Verified locally with
+  `cargo test --release`.
+
+### Impact
+- [ ] Breaking change
+- [x] CI-only change
+- [ ] Requires cluster rollout
+- [ ] Documentation only
+
+---
+
+## [2026-07-15] - Image validation layers: FluxCD docs + image-provenance VAP; fix single-wf branch leftovers
+
+**Author:** Erick Bourgeois
+
+### Added
+- `deploy/admission-policies/15-bindy-image-provenance-policy.yaml` + `16-…-binding.yaml`:
+  new `bindy-image-provenance-validation` ValidatingAdmissionPolicy on
+  Bind9Instance / Bind9Cluster / ClusterBind9Provider image overrides
+  (`spec[.common].image.image`, `spec[.common].bindcarConfig.image`):
+  bindcar must come from `ghcr.io/firestoned/`; BIND9 operand from
+  `internetsystemsconsortium/bind9` (bare or docker.io) or a
+  `ghcr.io/firestoned/` mirror; every reference digest-pinned or a named
+  non-`:latest` tag. CEL cannot verify signatures — this is the
+  zero-controller provenance layer that composes with Kyverno/policy-controller.
+- Fixtures: `accept-bind9instance-image-provenance.yaml`,
+  `reject-bind9instance-image-untrusted-registry.yaml`,
+  `reject-bind9instance-image-latest.yaml` (regression Phase A picks them up
+  automatically; combined admission-policies.yaml globs the new files).
+- `docs/src/security/signed-releases.md`: "Kubernetes Deployment Verification"
+  restructured into three layers — **FluxCD (GitOps) verification first**
+  (OCIRepository `spec.verify` + Cosign-signed manifest artifact flow, with the
+  honest scope note that Flux verifies sources, not pod admission), then the
+  shipped **ValidatingAdmissionPolicy**, then **Kyverno / policy-controller**
+  for cryptographic admission.
+- `deploy/admission-policies/README.md`: table rows for 15/16.
+
+### Fixed
+- Branch `single-wf` (PR #430): the old `pr.yaml` and `main.yaml` survived the
+  consolidation commit, so the legacy "Pull Request CI" still triggered next to
+  the new Build workflow (its path-filtered jobs skipping on a workflow-only PR
+  looked like a broken build — the Build run itself was green). Both files
+  deleted; Build is now the only PR workflow.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] New admission policy (apply deploy/admission-policies/); CI fix on PR #430
+- [ ] Documentation only
+
+### Verification
+- All new YAML parses; fixtures follow the dry-run accept/reject contract.
+- CEL exercised by the regression suite (kind, Phase A) in CI — not runnable
+  without a cluster locally.
+
+---
+
+## [2026-07-15] - Consolidate CI: single build.yaml (pr + main + release + integration), build-once artifacts
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **New `.github/workflows/build.yaml`** consolidates `pr.yaml`, `main.yaml`,
+  `release.yaml`, and `integration.yaml` into one event-gated workflow
+  (`pull_request` / `push` to main / `release` / `workflow_dispatch`) — the same
+  pattern as firestoned/bindcar. All four old workflows deleted.
+- **Build-once**: Linux binaries are compiled exactly once in `build` and flow
+  as artifacts to every consumer — Docker images assemble from them via
+  `prepare-docker-binaries` (no compile in Docker); the kind integration test
+  runs against the pushed image. `test` no longer downloads the (unusable)
+  release artifact — unit tests compile their own dev-profile harnesses and
+  lean on the shared cargo cache.
+- **PR/push build Linux only** (amd64 + arm64 — all Docker/e2e consumers);
+  macOS ×2 + Windows (`build-extras`) build on release only, for release assets.
+- **Kind integration test** folded in as a push-to-main job (was a
+  `workflow_run` chain via integration.yaml); kind v0.20 → v0.24, kubectl
+  1.28 → 1.31 to match e2e.yaml. Dependabot PRs keep their full e2e gate
+  (e2e.yaml — untouched).
+- Merged the 3 `trivy` / `security` / `vex-validate` / `extract-version` /
+  `docker` job variants into single event-aware jobs (conditional tags,
+  sarif categories, release artifact names preserved).
+- Least-privilege permissions: workflow-level `contents: read`; jobs escalate
+  individually (SARIF upload moved to the trivy job, Cosign id-token to
+  release jobs) — replaces the old broad workflow-level grants.
+- README + docs badges collapsed to one Build badge; doc references updated
+  (`license-compliance.md`, `testing-guide.md`, `vulnerability-management.md`,
+  `calm/README.md`).
+
+### ⚠️ Behavioral notes
+- **Ruleset contexts unchanged**: the required checks `PR Checks Passed` and
+  `Verify Signed Commits` keep their exact job names in build.yaml — the
+  `main` ruleset keeps working without edits. The gate now also aggregates
+  docker/security/vex/trivy (stronger than before, matching bindcar).
+- **Cosign identity changes for NEW releases**: images/binaries are now signed
+  by `.github/workflows/build.yaml@…` (was `release.yaml@…`). The Makefile's
+  `verify-image`/`verify-binary` use a repo-wide identity regexp and are
+  unaffected; the Kyverno example in `signed-releases.md` was updated. Any
+  external verifier pinning the old `release.yaml` subject must update.
+- macOS/Windows build breakage now surfaces at release time, not on PRs
+  (deliberate trade-off to cut 3 runners per PR/push).
+- `format`/`clippy`/`license-check` now run on all PRs (previously
+  path-gated to code changes) — matches bindcar; the aggregate gate treats
+  skips correctly either way.
+
+### Why
+The `test` job (and every workflow) was recompiling bindy independently —
+three workflows each built the same 5-platform matrix. One workflow, one
+build, artifacts everywhere: less CI time, one badge, one place to maintain.
+
+### Impact
+- [ ] Breaking change (repo code)
+- [x] CI-only change; external Cosign verifiers pinning `release.yaml` must update
+- [ ] Requires cluster rollout
+- [ ] Documentation only
+
+---
+
 ## [2026-07-15] - Operand `named` moves to unprivileged port 5353
 
 **Author:** Erick Bourgeois

@@ -1,0 +1,961 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# Single "Build" workflow for pull requests, pushes to main, and releases —
+# consolidating the former pr.yaml, main.yaml, release.yaml and
+# integration.yaml (same pattern as firestoned/bindcar). Jobs are gated by
+# `github.event_name`:
+#
+#   - pull_request : changes filter + CALM validate + lint (format/clippy) +
+#                    build (Linux, tests run in the x86_64 leg) + docker
+#                    (build/push PR tags) + trivy + security + "PR Checks
+#                    Passed" aggregate gate
+#   - push (main)  : build (Linux, no tests — already tested on the PR) +
+#                    docker (+main-date/latest tags) + kind integration test
+#                    against the pushed image + trivy + security
+#   - release      : build (all 5 platforms, versioned, no tests) +
+#                    docker-release (semver + Cosign) + sign binaries +
+#                    SLSA provenance + deploy manifests + release assets +
+#                    trivy + security
+#
+# Build-once principle: the Linux binaries are compiled exactly once in the
+# `build` job and flow to every consumer as artifacts — Docker images are
+# assembled from them via .github/actions/prepare-docker-binaries (no compile
+# inside Docker), and the kind integration test runs against the pushed image.
+# Tests run as a step inside the x86_64 build leg (same profile + target as
+# the release build, so the dependency graph compiles exactly once) and only
+# on pull requests — main merges and releases ship code already tested there.
+#
+# Documentation builds live in docs.yaml; the Dependabot e2e gate lives in
+# e2e.yaml + dependabot-auto-merge.yaml.
+
+name: Build
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  release:
+    types:
+      - published
+  workflow_dispatch:
+
+# Least-privilege by default; jobs that push images, upload SARIF, sign, or
+# upload assets escalate at the job level.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+
+  # ── PR-only: paths filter + CALM ──────────────────────────────────────────
+  changes:
+    name: Detect Changed Files
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      calm: ${{ steps.filter.outputs.calm }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Check for changes
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'src/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+            calm:
+              - 'calm/**'
+              - 'docs/src/architecture/calm-*.md'
+              - 'scripts/calm-docs.sh'
+
+  calm-validate:
+    name: Validate CALM Architecture
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.calm == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+
+      - name: Validate CALM models against the schema
+        run: make calm-validate
+
+      - name: Verify generated diagrams are up to date
+        run: make calm-docs-check
+
+  # ── Always ────────────────────────────────────────────────────────────────
+  license-check:
+    name: Verify SPDX License Headers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Check license headers
+        uses: firestoned/github-actions/security/license-check@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        with:
+          copyright-holder: "Erick Bourgeois, firestoned"
+          license-id: "MIT"
+
+  verify-commits:
+    name: Verify Signed Commits
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0  # Fetch all history for verification
+
+      - name: Verify release tag commit is signed
+        uses: firestoned/github-actions/security/verify-signed-commits@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # pr on pull_request, release on a published release, push otherwise.
+          verify-mode: ${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'release' && 'release' || 'push' }}
+          base-ref: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
+
+  # ── PR-only lint ──────────────────────────────────────────────────────────
+  format:
+    name: Check Formatting
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    needs: [license-check, verify-commits]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    needs: format
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: clippy
+
+      - name: Cache cargo dependencies
+        uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # ── Version metadata (always) ─────────────────────────────────────────────
+  extract-version:
+    name: Extract Version Information
+    runs-on: ubuntu-latest
+    needs: [license-check, verify-commits]
+    outputs:
+      image-tag-chainguard: ${{ steps.version-chainguard.outputs.image-tag || steps.version-chainguard-release.outputs.image-tag }}
+      image-tag-distroless: ${{ steps.version-distroless.outputs.image-tag || steps.version-distroless-release.outputs.image-tag }}
+      image-repository-chainguard: ${{ steps.version-chainguard.outputs.image-repository || steps.version-chainguard-release.outputs.image-repository }}
+      image-repository-distroless: ${{ steps.version-distroless.outputs.image-repository || steps.version-distroless-release.outputs.image-repository }}
+      short-sha: ${{ steps.version-chainguard.outputs.short-sha || steps.version-chainguard-release.outputs.short-sha }}
+      # release-only outputs
+      version: ${{ steps.version-chainguard-release.outputs.version }}
+      tag_name: ${{ steps.version-chainguard-release.outputs.tag-name }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Extract version for Chainguard (pr/main)
+        id: version-chainguard
+        if: github.event_name != 'release'
+        uses: firestoned/github-actions/versioning/extract-version@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        with:
+          repository: firestoned/bindy
+          workflow-type: ${{ github.event_name == 'pull_request' && 'pr' || 'main' }}
+          pr-number: ${{ github.event.pull_request.number }}
+          image-tag-suffix: ""
+
+      - name: Extract version for Distroless (pr/main)
+        id: version-distroless
+        if: github.event_name != 'release'
+        uses: firestoned/github-actions/versioning/extract-version@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        with:
+          repository: firestoned/bindy
+          workflow-type: ${{ github.event_name == 'pull_request' && 'pr' || 'main' }}
+          pr-number: ${{ github.event.pull_request.number }}
+          image-tag-suffix: "-distroless"
+
+      - name: Extract version for Chainguard (release)
+        id: version-chainguard-release
+        if: github.event_name == 'release'
+        uses: firestoned/github-actions/versioning/extract-version@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        with:
+          repository: firestoned/bindy
+          workflow-type: release
+          release-tag: ${{ github.event.release.tag_name }}
+          image-tag-suffix: ""
+
+      - name: Extract version for Distroless (release)
+        id: version-distroless-release
+        if: github.event_name == 'release'
+        uses: firestoned/github-actions/versioning/extract-version@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        with:
+          repository: firestoned/bindy
+          workflow-type: release
+          release-tag: ${{ github.event.release.tag_name }}
+          image-tag-suffix: "-distroless"
+
+  # ── Build binaries ONCE (always; Linux — what docker/e2e consume) ─────────
+  build:
+    name: Build - ${{ matrix.platform.name }}
+    runs-on: ${{ matrix.platform.os }}
+    needs: [extract-version]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Linux x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: bindy-linux-amd64
+            binary_name: bindy
+          - name: Linux ARM64
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact_name: bindy-linux-arm64
+            binary_name: bindy
+    env:
+      # Cargo.toml pins the RELEASE binary policy (fat LTO, codegen-units=1);
+      # keep that for `release` events, but override to thin LTO for PR/main
+      # builds: fat-LTO links dominated CI time (~6 of 7.5 min in the build
+      # step, and every test binary paid it again in the test step) while
+      # buying nothing measurable for an I/O-bound controller's throwaway CI
+      # images. Job-level env so the build and test steps share one profile
+      # fingerprint — the dependency rlibs stay reusable between them.
+      CARGO_PROFILE_RELEASE_LTO: ${{ github.event_name == 'release' && 'fat' || 'thin' }}
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.event_name == 'release' && '1' || '16' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Update Cargo.toml version (release)
+        if: github.event_name == 'release'
+        shell: bash
+        run: |
+          perl -i -pe 's/^version = ".*"/version = "${{ needs.extract-version.outputs.version }}"/' Cargo.toml
+          echo "Updated Cargo.toml to version ${{ needs.extract-version.outputs.version }}"
+          grep '^version = ' Cargo.toml
+
+      - name: Setup Rust build environment
+        uses: firestoned/github-actions/rust/setup-rust-build@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        with:
+          target: ${{ matrix.platform.target }}
+
+      - name: Build binary
+        uses: firestoned/github-actions/rust/build-binary@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        with:
+          target: ${{ matrix.platform.target }}
+
+      # Run tests in the SAME workspace, profile, and target as the release
+      # build above — every dependency rlib is reused, so only the test
+      # harnesses compile on top (no second dependency-graph compile like the
+      # old standalone Test job). x86_64 leg only: aarch64 test binaries are
+      # cross-compiled and cannot execute on the x86_64 runner. Skipped on
+      # main merges and releases — the code was already tested on the PR.
+      - name: Run tests (release profile, PR only)
+        if: >-
+          matrix.platform.target == 'x86_64-unknown-linux-gnu' &&
+          github.event_name != 'push' &&
+          github.event_name != 'release'
+        run: cargo test --release --target ${{ matrix.platform.target }}
+
+      - name: Generate SBOM
+        uses: firestoned/github-actions/rust/generate-sbom@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        with:
+          target: ${{ matrix.platform.target }}
+
+      - name: Upload binary and SBOM artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ matrix.platform.artifact_name }}
+          path: |
+            target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}
+            target/${{ matrix.platform.target }}/release/*.cdx.json
+          retention-days: ${{ github.event_name == 'release' && 90 || 1 }}
+          if-no-files-found: error
+
+  # ── Release-only extra platforms (release binaries/assets) ────────────────
+  build-extras:
+    name: Build - ${{ matrix.platform.name }}
+    runs-on: ${{ matrix.platform.os }}
+    if: github.event_name == 'release'
+    needs: [extract-version]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: macOS x86_64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: bindy-macos-amd64
+            binary_name: bindy
+          - name: macOS ARM64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: bindy-macos-arm64
+            binary_name: bindy
+          - name: Windows x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: bindy-windows-amd64
+            binary_name: bindy.exe
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Update Cargo.toml version
+        shell: bash
+        run: |
+          perl -i -pe 's/^version = ".*"/version = "${{ needs.extract-version.outputs.version }}"/' Cargo.toml
+          echo "Updated Cargo.toml to version ${{ needs.extract-version.outputs.version }}"
+          grep '^version = ' Cargo.toml
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: ${{ matrix.platform.target }}
+
+      # macos-latest is ARM64; x86_64-apple-darwin requires explicit target addition
+      - name: Add x86_64 target for cross-compilation (macOS)
+        if: matrix.platform.target == 'x86_64-apple-darwin'
+        run: rustup target add x86_64-apple-darwin
+
+      - name: Cache cargo dependencies
+        uses: firestoned/github-actions/rust/cache-cargo@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+
+      - name: Build binary
+        shell: bash
+        run: cargo build --release --target ${{ matrix.platform.target }}
+
+      - name: Upload binary artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ matrix.platform.artifact_name }}
+          path: target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}
+          if-no-files-found: error
+
+  # (No standalone Test job: tests run inside the x86_64 `build` leg — same
+  # workspace/profile/target as the release build, so dependencies compile
+  # exactly once. See the "Run tests" step in `build`.)
+
+  # ── Docker build + push, PR/push (not release) ────────────────────────────
+  docker:
+    name: Build and Push Docker Image - ${{ matrix.variant.name }}
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    needs: [build, extract-version]
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - name: Chainguard
+            dockerfile: docker/Dockerfile.chainguard
+            description: "Chainguard Zero-CVE (glibc, ~15MB, FIPS-ready)"
+            image-tag: ${{ needs.extract-version.outputs.image-tag-chainguard }}
+            image-repository: ${{ needs.extract-version.outputs.image-repository-chainguard }}
+          - name: Distroless
+            dockerfile: docker/Dockerfile
+            description: "Google Distroless (glibc, ~20MB)"
+            image-tag: ${{ needs.extract-version.outputs.image-tag-distroless }}
+            image-repository: ${{ needs.extract-version.outputs.image-repository-distroless }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      # Reuse the binaries compiled once in `build` — no compile inside Docker.
+      - name: Prepare Docker binaries
+        uses: ./.github/actions/prepare-docker-binaries
+
+      - name: Setup Docker environment
+        uses: firestoned/github-actions/docker/setup-docker@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6
+        with:
+          images: ghcr.io/${{ matrix.variant.image-repository }}
+          # `main-<date>` and `latest` only on pushes to main.
+          tags: |
+            type=raw,value=${{ matrix.variant.image-tag }}
+            type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}
+            type=raw,value=main-{{date 'YYYY-MM-DD'}},enable=${{ github.event_name == 'push' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
+          flavor: |
+            latest=false
+
+      - name: Build and push Docker image (${{ matrix.variant.name }})
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
+        with:
+          context: .
+          file: ${{ matrix.variant.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          # Force buildx to re-resolve FROM tags against the registry on every
+          # build so we always pick up the latest patched base image. Without
+          # this the GHA cache happily reuses stale base-image layers.
+          pull: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.description=${{ matrix.variant.description }}
+          cache-from: type=gha,scope=${{ matrix.variant.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant.name }}
+          sbom: true
+          provenance: true
+
+  # ── Kind integration test against the pushed image, push-to-main only ─────
+  # (Replaces the old integration.yaml workflow_run chain. Dependabot PRs get
+  # full e2e separately via e2e.yaml + dependabot-auto-merge.yaml.)
+  kind-integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    needs: [docker, extract-version]
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Install Kind
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
+        with:
+          install_only: true
+          version: v0.24.0
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5
+        with:
+          version: 'v1.31.0'
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run integration tests
+        env:
+          IMAGE_TAG: ${{ needs.extract-version.outputs.image-tag-chainguard }}
+          IMAGE_REPOSITORY: ${{ needs.extract-version.outputs.image-repository-chainguard }}
+          REGISTRY: ghcr.io
+        run: make kind-integration-test-ci
+
+      - name: Check operator logs on failure
+        if: failure()
+        run: |
+          echo "Operator logs:"
+          kubectl logs -n bindy-system -l app=bindy --tail=100 || true
+
+  # ── VEX documents (always; uploaded as artifact on release) ───────────────
+  vex-validate:
+    name: Validate VEX Documents
+    runs-on: ubuntu-latest
+    needs: [license-check, verify-commits]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Validate VEX documents
+        run: make vex-validate
+
+      - name: Upload VEX documents as artifact (release)
+        if: github.event_name == 'release'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: vex-documents
+          path: vex/*.openvex.json
+
+  # ── Security scan (always; deep checks on PR) ─────────────────────────────
+  security:
+    name: Security Vulnerability Scan
+    runs-on: ubuntu-latest
+    needs: [license-check, verify-commits]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Install Rust toolchain
+        if: github.event_name == 'pull_request'
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache cargo registry
+        if: github.event_name == 'pull_request'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-registry-
+
+      - name: Run cargo-audit (RustSec advisory scan)
+        if: github.event_name != 'release'
+        uses: firestoned/github-actions/rust/security-scan@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        with:
+          cargo-audit-version: "0.22.0"
+
+      - name: Run cargo-audit (RustSec advisory scan, release)
+        if: github.event_name == 'release'
+        uses: firestoned/github-actions/rust/security-scan@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        with:
+          cargo-audit-version: "0.22.0"
+          upload-artifact-name: cargo-audit-report-release
+
+      - name: Run cargo-deny (dependencies, licenses, supply chain)
+        if: github.event_name == 'pull_request'
+        run: make cargo-deny
+
+      - name: Run gitleaks (secret scanning)
+        if: github.event_name == 'pull_request'
+        run: make gitleaks
+
+  # ── Trivy container scan (all events, against whichever docker job ran) ───
+  trivy:
+    name: Container Security Scan - ${{ matrix.variant.name }}
+    runs-on: ubuntu-latest
+    needs: [docker, docker-release, extract-version]
+    # One of the two docker jobs is always skipped; run when the applicable
+    # one succeeded.
+    if: ${{ !cancelled() && (needs.docker.result == 'success' || needs.docker-release.result == 'success') }}
+    permissions:
+      contents: read
+      security-events: write  # SARIF upload
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - name: Chainguard
+            image-tag: ${{ needs.extract-version.outputs.image-tag-chainguard }}
+            image-repository: ${{ needs.extract-version.outputs.image-repository-chainguard }}
+          - name: Distroless
+            image-tag: ${{ needs.extract-version.outputs.image-tag-distroless }}
+            image-repository: ${{ needs.extract-version.outputs.image-repository-distroless }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Run Trivy scan on ${{ matrix.variant.name }} image
+        uses: firestoned/github-actions/security/trivy-scan@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        with:
+          image-ref: ghcr.io/${{ matrix.variant.image-repository }}:${{ matrix.variant.image-tag }}
+          sarif-category: trivy-${{ github.event_name == 'release' && 'release' || github.event_name == 'push' && 'main' || 'pr' }}-${{ matrix.variant.name }}
+          upload-artifact-name: trivy-${{ github.event_name == 'release' && 'release' || github.event_name == 'push' && 'main' || 'pr' }}-${{ matrix.variant.name }}-${{ github.run_number }}
+          output-filename: trivy-${{ github.event_name == 'release' && 'release' || github.event_name == 'push' && 'main' || 'pr' }}-${{ matrix.variant.name }}.json
+
+  # ── Aggregate PR gate ─────────────────────────────────────────────────────
+  # Single stable status-check context ("PR Checks Passed") required by the
+  # branch ruleset, so required checks don't track individual (matrix) job
+  # names. `always()` makes it run even when an upstream job is skipped — a
+  # merely-skipped required check would never turn red. It passes when every
+  # dependency either succeeded or was skipped (not applicable), and fails
+  # only when one genuinely failed or was cancelled.
+  # DO NOT rename this job: the "main" ruleset requires the exact context
+  # "PR Checks Passed" (and "Verify Signed Commits").
+  ci-gate:
+    name: PR Checks Passed
+    runs-on: ubuntu-latest
+    needs: [changes, calm-validate, license-check, verify-commits, format, clippy, build, docker, security, vex-validate, trivy]
+    if: always()
+    steps:
+      - name: Fail if any required PR check failed or was cancelled
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: |
+          echo "One or more required PR checks did not pass: ${{ join(needs.*.result, ', ') }}"
+          exit 1
+
+  # ══ Release-only jobs ═════════════════════════════════════════════════════
+
+  # Docker build + push with semver tags and Cosign signing.
+  docker-release:
+    name: Release Docker Image - ${{ matrix.variant.name }}
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    needs: [extract-version, build]
+    permissions:
+      contents: write
+      packages: write
+      id-token: write  # For keyless signing with Cosign
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - name: Chainguard
+            dockerfile: docker/Dockerfile.chainguard
+            suffix: ""
+            description: "Firestoned bindy Chainguard Zero-CVE"
+            image-tag: ${{ needs.extract-version.outputs.image-tag-chainguard }}
+            image-repository: ${{ needs.extract-version.outputs.image-repository-chainguard }}
+          - name: Distroless
+            dockerfile: docker/Dockerfile
+            suffix: "-distroless"
+            description: "Firestoned bindy Distroless"
+            image-tag: ${{ needs.extract-version.outputs.image-tag-distroless }}
+            image-repository: ${{ needs.extract-version.outputs.image-repository-distroless }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Prepare Docker binaries
+        uses: ./.github/actions/prepare-docker-binaries
+
+      - name: Setup Docker environment
+        uses: firestoned/github-actions/docker/setup-docker@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ghcr.io/${{ matrix.variant.image-repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}${{ matrix.variant.suffix }}
+          flavor: |
+            latest=false
+            prefix=v
+            suffix=${{ matrix.variant.suffix }}
+
+      - name: Build and push Docker image (${{ matrix.variant.name }})
+        id: docker_build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: ${{ matrix.variant.dockerfile }}
+          push: true
+          # Force buildx to re-resolve FROM tags against the registry on every
+          # build so we always pick up the latest patched base image. Without
+          # this the GHA cache happily reuses stale base-image layers.
+          pull: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.description=${{ matrix.variant.description }}
+          build-args: |
+            VERSION=${{ needs.extract-version.outputs.version }}
+          cache-from: type=gha,scope=${{ matrix.variant.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant.name }}
+          platforms: linux/amd64,linux/arm64
+          sbom: true
+          provenance: true
+
+      - name: Sign container image with Cosign
+        uses: firestoned/github-actions/security/cosign-sign@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        with:
+          image-digest: ${{ steps.docker_build.outputs.digest }}
+          image-tags: ${{ matrix.variant.image-tag }}
+          registry: ghcr.io
+          repository: ${{ matrix.variant.image-repository }}
+
+      - name: Generate Docker SBOM for ${{ matrix.variant.name }}
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ghcr.io/${{ matrix.variant.image-repository }}:${{ matrix.variant.image-tag }}
+          format: cyclonedx-json
+          output-file: docker-sbom-${{ matrix.variant.name }}.json
+
+      - name: Upload Docker SBOM as artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: docker-sbom-${{ matrix.variant.name }}
+          path: docker-sbom-${{ matrix.variant.name }}.json
+
+  sign-artifacts:
+    name: Sign Binary Artifacts
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    needs: [build, build-extras, extract-version]
+    permissions:
+      id-token: write  # For keyless signing with Cosign
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Linux x86_64
+            artifact_name: bindy-linux-amd64
+            binary_name: bindy
+          - name: Linux ARM64
+            artifact_name: bindy-linux-arm64
+            binary_name: bindy
+          - name: macOS x86_64
+            artifact_name: bindy-macos-amd64
+            binary_name: bindy
+          - name: macOS ARM64
+            artifact_name: bindy-macos-arm64
+            binary_name: bindy
+          - name: Windows x86_64
+            artifact_name: bindy-windows-amd64
+            binary_name: bindy.exe
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Download binary artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ matrix.platform.artifact_name }}
+          path: ./artifacts/${{ matrix.platform.artifact_name }}
+
+      - name: Create tarball for signing
+        run: |
+          cd artifacts/${{ matrix.platform.artifact_name }}
+          BINARY=$(find . -type f -name "${{ matrix.platform.binary_name }}" | head -1)
+          if [ -z "$BINARY" ]; then
+            echo "ERROR: ${{ matrix.platform.binary_name }} not found in artifacts/${{ matrix.platform.artifact_name }}"
+            find . -ls
+            exit 1
+          fi
+          echo "Found binary at: $BINARY"
+          chmod +x "$BINARY" 2>/dev/null || true
+          tar czf ${{ matrix.platform.artifact_name }}.tar.gz -C "$(dirname "$BINARY")" "$(basename "$BINARY")"
+          ls -lh ${{ matrix.platform.artifact_name }}.tar.gz
+
+      - name: Sign binary tarball with Cosign
+        uses: firestoned/github-actions/security/cosign-sign@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        with:
+          artifact-path: artifacts/${{ matrix.platform.artifact_name }}/${{ matrix.platform.artifact_name }}.tar.gz
+
+      - name: Upload signed artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ matrix.platform.artifact_name }}-signed
+          path: |
+            artifacts/${{ matrix.platform.artifact_name }}/${{ matrix.platform.artifact_name }}.tar.gz
+            artifacts/${{ matrix.platform.artifact_name }}/${{ matrix.platform.artifact_name }}.tar.gz.bundle
+
+  generate-provenance-subjects:
+    name: Generate SLSA Provenance Subjects
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    needs: [sign-artifacts, extract-version]
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
+    steps:
+      - name: Download signed artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: bindy-*-signed
+          path: ./artifacts
+          merge-multiple: true
+
+      - name: Generate hashes for SLSA provenance
+        id: hash
+        run: |
+          cd artifacts
+          # Generate SHA256 hashes for all signed tarballs
+          sha256sum *.tar.gz > checksums.txt
+          cat checksums.txt
+          echo "hashes=$(cat checksums.txt | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+  slsa-provenance:
+    name: Generate SLSA Provenance
+    if: github.event_name == 'release'
+    needs: [generate-provenance-subjects, extract-version]
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: "${{ needs.generate-provenance-subjects.outputs.hashes }}"
+      upload-assets: true
+      provenance-name: "${{ needs.extract-version.outputs.version }}.intoto.jsonl"
+
+  package-deploy-manifests:
+    name: Package Deployment Manifests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    needs: extract-version
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Setup Rust build environment
+        uses: firestoned/github-actions/rust/setup-rust-build@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        with:
+          target: x86_64-unknown-linux-gnu
+          cache-key: release-${{ needs.extract-version.outputs.version }}
+
+      - name: Generate release manifests
+        run: make release-manifests VERSION=${{ github.event.release.tag_name }}
+
+      - name: Upload deploy manifests
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: deploy-manifests
+          path: |
+            deploy/install.yaml
+            deploy/scout.yaml
+            deploy/admission-policies.yaml
+
+  upload-release-assets:
+    name: Upload Release Assets
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    needs: [build, build-extras, docker-release, sign-artifacts, slsa-provenance, package-deploy-manifests, vex-validate]
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: ./artifacts
+
+      - name: Organize release artifacts
+        run: |
+          cd artifacts
+          mkdir -p release sboms signatures provenance vex
+
+          # Copy deployment manifests
+          if [ -d "deploy-manifests" ]; then
+            echo "Copying deployment manifests..."
+            if [ -f "deploy-manifests/install.yaml" ]; then
+              cp deploy-manifests/install.yaml release/
+            fi
+            if [ -f "deploy-manifests/scout.yaml" ]; then
+              cp deploy-manifests/scout.yaml release/
+            fi
+            if [ -f "deploy-manifests/admission-policies.yaml" ]; then
+              cp deploy-manifests/admission-policies.yaml release/
+            fi
+          fi
+
+          # Copy signed tarballs and signature bundles
+          for dir in bindy-*-signed; do
+            if [ -d "$dir" ]; then
+              platform="${dir%-signed}"
+              echo "Processing signed artifacts for $platform..."
+
+              # Copy tarball
+              if compgen -G "$dir/*.tar.gz" > /dev/null; then
+                cp "$dir"/*.tar.gz release/
+              fi
+
+              # Copy signature bundle
+              if compgen -G "$dir/*.tar.gz.bundle" > /dev/null; then
+                cp "$dir"/*.tar.gz.bundle signatures/
+              fi
+            fi
+          done
+
+          # Collect all SBOM files (using default cargo-cyclonedx naming, Linux builds only)
+          for dir in bindy-linux-amd64 bindy-linux-arm64 bindy-macos-amd64 bindy-macos-arm64 bindy-windows-amd64; do
+            if [ -d "$dir" ]; then
+              # Find any .cdx.json files (cargo-cyclonedx default naming)
+              if compgen -G "$dir/*.cdx.json" > /dev/null; then
+                cp "$dir"/*.cdx.json "sboms/${dir}-sbom.json"
+              fi
+            fi
+          done
+
+          # Copy Docker SBOMs for both variants
+          for variant in Chainguard Distroless; do
+            if [ -d "docker-sbom-${variant}" ] && [ -f "docker-sbom-${variant}/docker-sbom-${variant}.json" ]; then
+              cp "docker-sbom-${variant}/docker-sbom-${variant}.json" "sboms/docker-sbom-${variant}.json"
+            fi
+          done
+
+          # Copy SLSA provenance (generated by slsa-github-generator)
+          # The SLSA generator creates a directory named after the provenance file
+          if compgen -G "*.intoto.jsonl" > /dev/null; then
+            # Find and copy the actual .intoto.jsonl file from within the directory
+            find . -name "*.intoto.jsonl" -type f -exec cp {} provenance/ \;
+          fi
+
+          # Copy VEX documents
+          if [ -d "vex-documents" ]; then
+            echo "Copying VEX documents..."
+            cp vex-documents/*.openvex.json vex/
+          fi
+
+          # Generate SHA256 checksums for all release artifacts
+          cd release
+          sha256sum *.tar.gz > checksums.sha256
+          if [ -f "install.yaml" ]; then
+            sha256sum install.yaml >> checksums.sha256
+          fi
+          if [ -f "scout.yaml" ]; then
+            sha256sum scout.yaml >> checksums.sha256
+          fi
+          if [ -f "admission-policies.yaml" ]; then
+            sha256sum admission-policies.yaml >> checksums.sha256
+          fi
+          cd ../sboms
+          sha256sum *.json >> ../release/checksums.sha256
+          cd ../signatures
+          sha256sum *.bundle >> ../release/checksums.sha256
+          cd ../provenance
+          if compgen -G "*.intoto.jsonl" > /dev/null; then
+            sha256sum *.intoto.jsonl >> ../release/checksums.sha256
+          fi
+          cd ../vex
+          if compgen -G "*.openvex.json" > /dev/null; then
+            sha256sum *.openvex.json >> ../release/checksums.sha256
+          fi
+
+          echo "Release artifacts prepared:"
+          ls -lh ../release/
+          echo "Provenance files:"
+          ls -lh ../provenance/ || echo "No provenance files found"
+          echo "VEX documents:"
+          ls -lh ../vex/ || echo "No VEX documents found"
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
+        with:
+          files: |
+            artifacts/release/*.tar.gz
+            artifacts/release/install.yaml
+            artifacts/release/scout.yaml
+            artifacts/release/admission-policies.yaml
+            artifacts/sboms/*.json
+            artifacts/vex/*.openvex.json
+            artifacts/signatures/*.bundle
+            artifacts/provenance/*.intoto.jsonl
+            artifacts/release/checksums.sha256

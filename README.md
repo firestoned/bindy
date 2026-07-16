@@ -10,10 +10,7 @@
 
 ## CI/CD Status
 
-[![Main Branch CI/CD](https://github.com/firestoned/bindy/actions/workflows/main.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/main.yaml)
-[![Pull Request Checks](https://github.com/firestoned/bindy/actions/workflows/pr.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/pr.yaml)
-[![Release Workflow](https://github.com/firestoned/bindy/actions/workflows/release.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/release.yaml)
-[![Integration Tests](https://github.com/firestoned/bindy/actions/workflows/integration.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/integration.yaml)
+[![Build](https://github.com/firestoned/bindy/actions/workflows/build.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/build.yaml)
 [![Documentation](https://github.com/firestoned/bindy/actions/workflows/docs.yaml/badge.svg)](https://github.com/firestoned/bindy/actions/workflows/docs.yaml)
 
 ## Code Quality

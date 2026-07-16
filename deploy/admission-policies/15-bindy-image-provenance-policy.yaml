@@ -1,0 +1,95 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# ValidatingAdmissionPolicy: enforce container-image PROVENANCE on the image
+# references a tenant can set through bindy CRDs (`spec.image.image` /
+# `spec.common.image.image` for the BIND9 operand, `spec.bindcarConfig.image` /
+# `spec.common.bindcarConfig.image` for the bindcar sidecar).
+#
+# Why: a namespace-tenant who can create a Bind9Instance chooses the images the
+# operator stamps into an operand Deployment. Without this policy they can pull
+# an arbitrary image from an arbitrary registry into a pod carrying bindy's
+# operand ServiceAccount. This policy pins every override to the registries we
+# publish to (or the upstream ISC BIND9 repository) and refuses mutable
+# references (`:latest` or tag-less), so what runs is what was reviewed.
+#
+# NOTE — scope: CEL cannot verify Cosign signatures; cryptographic
+# signature verification at admission requires a verifying controller
+# (Kyverno verifyImages or sigstore policy-controller). This policy is the
+# zero-extra-controller provenance layer that composes with either — see
+# docs/src/security/signed-releases.md.
+#
+# Allow-list:
+#   - bindcar sidecar image: must come from ghcr.io/firestoned/
+#   - BIND9 operand image:   internetsystemsconsortium/bind9 (bare or
+#     docker.io-qualified) or a ghcr.io/firestoned/ mirror
+#   - every override must be immutable-ish: digest-pinned (@sha256:) or a
+#     named tag that is not :latest
+#
+# Requires Kubernetes 1.30+ (admissionregistration.k8s.io/v1 GA).
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: bindy-image-provenance-validation
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/part-of: bindy
+    app.kubernetes.io/component: admission-policy
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups:   ["bindy.firestoned.io"]
+        apiVersions: ["v1beta1"]
+        operations:  ["CREATE", "UPDATE"]
+        resources:
+          - bind9clusters
+          - bind9instances
+          - clusterbind9providers
+  variables:
+    # Image overrides may appear directly under spec (Bind9Instance) or under
+    # the flattened spec.common (Bind9Cluster / ClusterBind9Provider) — same
+    # shape as the pod-shape policy's volume handling.
+    - name: bind9Images
+      expression: |
+        [object.spec.?image.?image.orValue(''),
+         object.spec.?common.?image.?image.orValue('')].filter(i, i != '')
+    - name: bindcarImages
+      expression: |
+        [object.spec.?bindcarConfig.?image.orValue(''),
+         object.spec.?common.?bindcarConfig.?image.orValue('')].filter(i, i != '')
+    - name: allImages
+      expression: "variables.bind9Images + variables.bindcarImages"
+  validations:
+    # 1. bindcar sidecar must come from the firestoned GHCR namespace.
+    - expression: >-
+        variables.bindcarImages.all(i, i.startsWith('ghcr.io/firestoned/'))
+      message: >-
+        bindcarConfig.image must come from ghcr.io/firestoned/ (e.g.
+        ghcr.io/firestoned/bindcar:v0.7.3); other registries are not a trusted
+        provenance for the bindcar sidecar.
+      reason: Forbidden
+    # 2. BIND9 operand image must be upstream ISC BIND9 or a firestoned mirror.
+    - expression: >-
+        variables.bind9Images.all(i,
+          i.startsWith('internetsystemsconsortium/bind9') ||
+          i.startsWith('docker.io/internetsystemsconsortium/bind9') ||
+          i.startsWith('ghcr.io/firestoned/'))
+      message: >-
+        image.image must be internetsystemsconsortium/bind9 (Docker Hub) or a
+        ghcr.io/firestoned/ mirror; other registries are not a trusted
+        provenance for the BIND9 operand.
+      reason: Forbidden
+    # 3. No mutable references: require a digest or a non-latest named tag.
+    #    (i.substring(i.lastIndexOf('/')+1) is the final path segment, so a
+    #    ':' there is a tag, not a registry port.)
+    - expression: >-
+        variables.allImages.all(i,
+          i.contains('@sha256:') ||
+          (i.substring(i.lastIndexOf('/') + 1).contains(':') &&
+           !i.endsWith(':latest')))
+      message: >-
+        image references must be immutable: pin a digest (@sha256:...) or a
+        named tag; tag-less references and :latest are refused.
+      reason: Forbidden
