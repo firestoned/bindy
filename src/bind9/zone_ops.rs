@@ -935,7 +935,7 @@ pub async fn add_zones(
 /// Create a zone via HTTP API with structured configuration.
 ///
 /// This method sends a POST request to the API sidecar (via the shared
-/// [`bindcar_request`] retry path, so it gets the same retry/backoff and
+/// `bindcar_request` retry path, so it gets the same retry/backoff and
 /// timeout behavior as all other zone operations) to create a zone using
 /// structured zone configuration from the bindcar library.
 ///
