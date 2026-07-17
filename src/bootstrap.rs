@@ -1088,15 +1088,38 @@ pub fn build_scout_cluster_role() -> ClusterRole {
             // (gateway.networking.k8s.io) to automate A record creation for Gateway
             // routes with opt-in annotations. Gateways are read to follow a route's
             // parentRefs back to the serving gateway and discover its external IP.
-            // No patch/update needed — Scout reads spec/metadata/status only, no mutation.
+            // patch+update required to add/remove the Scout finalizer on route metadata.
             PolicyRule {
                 api_groups: Some(vec!["gateway.networking.k8s.io".to_string()]),
                 resources: Some(vec![
                     "httproutes".to_string(),
                     "tlsroutes".to_string(),
                     "tcproutes".to_string(),
-                    "gateways".to_string(),
                 ]),
+                verbs: vec![
+                    "get".to_string(),
+                    "list".to_string(),
+                    "watch".to_string(),
+                    "patch".to_string(),
+                    "update".to_string(),
+                ],
+                ..Default::default()
+            },
+            // route/finalizers subresource for forward-compatibility.
+            PolicyRule {
+                api_groups: Some(vec!["gateway.networking.k8s.io".to_string()]),
+                resources: Some(vec![
+                    "httproutes/finalizers".to_string(),
+                    "tlsroutes/finalizers".to_string(),
+                    "tcproutes/finalizers".to_string(),
+                ]),
+                verbs: vec!["update".to_string()],
+                ..Default::default()
+            },
+            // Gateways are read-only — Scout reads status.addresses to discover external IPs.
+            PolicyRule {
+                api_groups: Some(vec!["gateway.networking.k8s.io".to_string()]),
+                resources: Some(vec!["gateways".to_string()]),
                 verbs: vec!["get".to_string(), "list".to_string(), "watch".to_string()],
                 ..Default::default()
             },

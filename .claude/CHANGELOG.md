@@ -1,3 +1,30 @@
+## [2026-07-18] - Fix Gateway API ClusterRole: add patch/update and finalizers subresource rules
+
+**Author:** Prabhjot Singh Bawa
+
+### Fixed
+- `deploy/scout/clusterrole.yaml`: split the single `gateway.networking.k8s.io` rule into three:
+  1. `httproutes`, `tlsroutes`, `tcproutes` — added `patch` + `update` verbs (Scout manages finalizers on all three route types)
+  2. `httproutes/finalizers`, `tlsroutes/finalizers`, `tcproutes/finalizers` — new rule with `update` (forward-compat `/finalizers` subresource, matching the existing pattern for Ingress and Service)
+  3. `gateways` — remains read-only (`get`, `list`, `watch` only — Scout reads `status.addresses` for external IP discovery, no mutation)
+- `src/bootstrap.rs` (`build_scout_cluster_role`): same three-rule split; comment updated to remove incorrect "No patch/update needed" claim
+- `src/bootstrap_tests.rs`: replaced `test_build_scout_cluster_role_gateway_routes_readonly` (which incorrectly asserted patch/update must be absent) with `test_build_scout_cluster_role_gateway_routes_allow_finalizer_mutation` and new `test_build_scout_cluster_role_gateway_route_finalizers_subresource`
+- `docs/src/guide/scout.md`: ClusterRole YAML example updated to match
+
+### Why
+Scout calls `add_finalizer_to_httproute`, `add_finalizer_to_tlsroute`, `add_finalizer_to_tcproute` (and their `remove_finalizer_*` counterparts) which issue `PATCH` requests against the route resources. Without `patch` + `update` the operator would fail with 403 Forbidden when trying to set its cleanup finalizer on any Gateway API route.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (ClusterRole must be re-applied: `kubectl apply -f deploy/scout/clusterrole.yaml`)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- `cargo test --lib`: 1218 passed, 0 failed
+
+---
+
 ## [2026-07-18] - Add `version` subcommand and `--version`/`-V` flag to the bindy CLI
 
 **Author:** Daniel Guns

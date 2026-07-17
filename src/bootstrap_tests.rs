@@ -731,43 +731,75 @@ mod tests {
     }
 
     #[test]
-    fn test_build_scout_cluster_role_gateway_routes_readonly() {
+    fn test_build_scout_cluster_role_gateway_routes_allow_finalizer_mutation() {
         let role = build_scout_cluster_role();
         let rules = role.rules.unwrap();
 
-        // Find the gateway.networking.k8s.io rule
+        // Find the route rule (httproutes/tlsroutes/tcproutes — Scout adds/removes finalizers).
+        let route_rule = rules
+            .iter()
+            .find(|r| {
+                r.api_groups
+                    .as_ref()
+                    .is_some_and(|ags| ags.iter().any(|ag| ag == "gateway.networking.k8s.io"))
+                    && r.resources
+                        .as_ref()
+                        .is_some_and(|res| res.iter().any(|s| s == "httproutes"))
+            })
+            .expect("httproutes rule must exist in gateway.networking.k8s.io");
+
+        // Routes need full read + mutation verbs for finalizer management.
+        for verb in ["get", "list", "watch", "patch", "update"] {
+            assert!(
+                route_rule.verbs.contains(&verb.to_string()),
+                "gateway routes rule must include '{verb}' (required for finalizer management)"
+            );
+        }
+
+        // Gateways are read-only — Scout only reads status.addresses.
         let gw_rule = rules
             .iter()
             .find(|r| {
                 r.api_groups
                     .as_ref()
                     .is_some_and(|ags| ags.iter().any(|ag| ag == "gateway.networking.k8s.io"))
+                    && r.resources
+                        .as_ref()
+                        .is_some_and(|res| res.iter().any(|s| s == "gateways"))
             })
-            .expect("gateway.networking.k8s.io rule must exist");
+            .expect("gateways rule must exist");
 
-        // Should have get, list, watch (read-only)
-        assert!(
-            gw_rule.verbs.contains(&"get".to_string()),
-            "gateway routes rule must include 'get'"
-        );
-        assert!(
-            gw_rule.verbs.contains(&"list".to_string()),
-            "gateway routes rule must include 'list'"
-        );
-        assert!(
-            gw_rule.verbs.contains(&"watch".to_string()),
-            "gateway routes rule must include 'watch'"
-        );
-
-        // Should NOT have patch/update (read-only access)
         assert!(
             !gw_rule.verbs.contains(&"patch".to_string()),
-            "gateway routes rule must NOT include 'patch' (read-only)"
+            "gateways rule must NOT include 'patch' (read-only)"
         );
         assert!(
             !gw_rule.verbs.contains(&"update".to_string()),
-            "gateway routes rule must NOT include 'update' (read-only)"
+            "gateways rule must NOT include 'update' (read-only)"
         );
+    }
+
+    #[test]
+    fn test_build_scout_cluster_role_gateway_route_finalizers_subresource() {
+        let role = build_scout_cluster_role();
+        let rules = role.rules.unwrap();
+
+        // The /finalizers subresource rules must exist for each route type.
+        for subresource in ["httproutes/finalizers", "tlsroutes/finalizers", "tcproutes/finalizers"] {
+            let has_rule = rules.iter().any(|r| {
+                r.api_groups
+                    .as_ref()
+                    .is_some_and(|ags| ags.iter().any(|ag| ag == "gateway.networking.k8s.io"))
+                    && r.resources
+                        .as_ref()
+                        .is_some_and(|res| res.iter().any(|s| s == subresource))
+                    && r.verbs.contains(&"update".to_string())
+            });
+            assert!(
+                has_rule,
+                "ClusterRole must have an 'update' rule for {subresource}"
+            );
+        }
     }
 
     // --- Scout ClusterRoleBinding ---
