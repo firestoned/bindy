@@ -69,6 +69,7 @@ const BANNER: &str = "
 #[command(
     name = "bindy",
     about = "Bindy - BIND9 DNS Operator for Kubernetes",
+    version,
     before_help = BANNER,
 )]
 struct Cli {
@@ -223,6 +224,8 @@ enum Commands {
         #[arg(value_enum)]
         shell: Shell,
     },
+    /// Print the binary version (same output as --version)
+    Version,
 }
 
 fn main() -> Result<()> {
@@ -241,6 +244,13 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Version output is synchronous — no Tokio runtime needed.
+    // render_version() derives from CARGO_PKG_VERSION, matching --version exactly.
+    if let Commands::Version = cli.command {
+        print!("{}", Cli::command().render_version());
+        return Ok(());
+    }
+
     let thread_name = match &cli.command {
         Commands::Bootstrap {
             subcommand: BootstrapCommands::Operator { .. },
@@ -253,7 +263,7 @@ fn main() -> Result<()> {
         } => "bindy-bootstrap-mc",
         Commands::Run => "bindy-run",
         Commands::Scout { .. } => "bindy-scout",
-        Commands::Completion { .. } => unreachable!("handled above"),
+        Commands::Completion { .. } | Commands::Version => unreachable!("handled above"),
     };
 
     // Build Tokio runtime with custom thread names
@@ -327,7 +337,7 @@ fn main() -> Result<()> {
             gateway_service,
             default_zone,
         )),
-        Commands::Completion { .. } => unreachable!("handled above"),
+        Commands::Completion { .. } | Commands::Version => unreachable!("handled above"),
     }
 }
 
