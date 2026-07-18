@@ -29,9 +29,17 @@ rules:
   # (gateway.networking.k8s.io) to automate A record creation for Gateway
   # routes with opt-in annotations. Gateways are read to follow a route's
   # parentRefs back to the serving gateway and discover its external IP.
-  # No patch/update needed — Scout reads spec/metadata/status only, no mutation.
+  # patch+update required to add/remove the Scout finalizer on route metadata.
   - apiGroups: ["gateway.networking.k8s.io"]
-    resources: ["httproutes", "tlsroutes", "tcproutes", "gateways"]
+    resources: ["httproutes", "tlsroutes", "tcproutes"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  # route/finalizers subresource for forward-compatibility.
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["httproutes/finalizers", "tlsroutes/finalizers", "tcproutes/finalizers"]
+    verbs: ["update"]
+  # Gateways are read-only — Scout reads status.addresses to discover external IPs.
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["gateways"]
     verbs: ["get", "list", "watch"]
   # Read DNSZones for zone validation (same-cluster mode only; remote mode uses remote client)
   - apiGroups: ["bindy.firestoned.io"]
