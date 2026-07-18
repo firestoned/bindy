@@ -785,7 +785,11 @@ mod tests {
         let rules = role.rules.unwrap();
 
         // The /finalizers subresource rules must exist for each route type.
-        for subresource in ["httproutes/finalizers", "tlsroutes/finalizers", "tcproutes/finalizers"] {
+        for subresource in [
+            "httproutes/finalizers",
+            "tlsroutes/finalizers",
+            "tcproutes/finalizers",
+        ] {
             let has_rule = rules.iter().any(|r| {
                 r.api_groups
                     .as_ref()
