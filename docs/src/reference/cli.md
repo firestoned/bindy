@@ -10,6 +10,10 @@ Subcommands:
   run         Run the main BIND9 DNS operator (all controllers)
   scout       Run the Scout controller (Ingress and Service → ARecord)
   completion  Output shell completion code for the specified shell
+  version     Print the binary version (same output as --version)
+
+Options:
+  -V, --version  Print the binary version (matches the crate version, e.g. `bindy 0.6.0`)
 ```
 
 ---

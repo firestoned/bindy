@@ -1,3 +1,41 @@
+## [2026-07-18] - Add `version` subcommand and `--version`/`-V` flag to the bindy CLI
+
+**Author:** Daniel Guns
+
+### Added
+- `src/main.rs`: `version` attribute on the clap `Cli` struct — `bindy --version`
+  and `bindy -V` now print the binary version, sourced automatically from
+  `Cargo.toml`'s `version` via `CARGO_PKG_VERSION` at compile time (same source
+  `bootstrap::DEFAULT_IMAGE_TAG` already uses), so it can never drift from the
+  crate version.
+- `src/main.rs`: `Commands::Version` subcommand — `bindy version` prints the
+  identical output (via `Cli::command().render_version()`), handled synchronously
+  before the Tokio runtime is built, same pattern as `completion`.
+- `src/main_tests.rs`: TDD tests asserting the CLI version matches
+  `CARGO_PKG_VERSION`, that `--version`/`-V` short-circuit with
+  `ErrorKind::DisplayVersion`, that `bindy version` parses to
+  `Commands::Version`, and that the rendered output is exactly
+  `bindy <CARGO_PKG_VERSION>`.
+- `docs/src/reference/cli.md`: documented the new subcommand and flag.
+
+### Why
+`./bindy --version` and `./bindy version` both errored — the binary had no way
+to report its own version, which is the first step when troubleshooting which
+CLI version is deployed. The clap built-in flag plus a thin subcommand wrapper
+is the idiomatic, zero-maintenance fix; shell completions pick both up
+automatically since they are generated from the same `Cli` definition.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (CLI surface addition; no runtime behavior change)
+
+### Verification
+- `cargo fmt` / `cargo clippy --all-targets -- -D warnings` / `cargo test` all green (1217 lib + 16 bin + 47 doc tests).
+- End-to-end: `./target/debug/bindy version`, `--version`, and `-V` all print `bindy 0.6.0`.
+
+---
+
 ## [2026-07-16] - Fix rustdoc private_intra_doc_links warnings
 
 **Author:** Erick Bourgeois

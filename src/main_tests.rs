@@ -295,6 +295,79 @@ mod tests {
             "Burst should be >= QPS for proper throttling"
         );
     }
+
+    /// Test that the CLI advertises a version derived from Cargo.toml
+    #[test]
+    fn test_cli_version_matches_cargo_pkg_version() {
+        use clap::CommandFactory;
+
+        let command = super::super::Cli::command();
+        assert_eq!(
+            command.get_version(),
+            Some(env!("CARGO_PKG_VERSION")),
+            "CLI version must be sourced from CARGO_PKG_VERSION"
+        );
+    }
+
+    /// Test that `bindy --version` is accepted and triggers version display
+    #[test]
+    fn test_version_long_flag_displays_version() {
+        use clap::error::ErrorKind;
+        use clap::Parser;
+
+        let result = super::super::Cli::try_parse_from(["bindy", "--version"]);
+        let Err(error) = result else {
+            panic!("--version should short-circuit parsing");
+        };
+        assert_eq!(
+            error.kind(),
+            ErrorKind::DisplayVersion,
+            "--version must display the version"
+        );
+    }
+
+    /// Test that `bindy version` parses as the Version subcommand
+    #[test]
+    fn test_version_subcommand_parses() {
+        use clap::Parser;
+
+        let cli = super::super::Cli::try_parse_from(["bindy", "version"])
+            .unwrap_or_else(|error| panic!("version subcommand should parse: {error}"));
+        assert!(
+            matches!(cli.command, super::super::Commands::Version),
+            "expected Commands::Version"
+        );
+    }
+
+    /// Test that the rendered version output matches the crate version exactly
+    #[test]
+    fn test_rendered_version_matches_cargo_pkg_version() {
+        use clap::CommandFactory;
+
+        let rendered = super::super::Cli::command().render_version();
+        assert_eq!(
+            rendered.trim(),
+            concat!("bindy ", env!("CARGO_PKG_VERSION")),
+            "rendered version must be 'bindy <CARGO_PKG_VERSION>'"
+        );
+    }
+
+    /// Test that the short `-V` version flag is accepted
+    #[test]
+    fn test_version_short_flag_displays_version() {
+        use clap::error::ErrorKind;
+        use clap::Parser;
+
+        let result = super::super::Cli::try_parse_from(["bindy", "-V"]);
+        let Err(error) = result else {
+            panic!("-V should short-circuit parsing");
+        };
+        assert_eq!(
+            error.kind(),
+            ErrorKind::DisplayVersion,
+            "-V must display the version"
+        );
+    }
 }
 
 // Integration test documentation
