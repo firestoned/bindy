@@ -31,7 +31,7 @@ on:
         description: 'Space-separated release tags to rebuild'
         required: true
         type: string
-        default: 'v0.3.0 v0.3.1 v0.3.2 v0.3.3 v0.4.0 v0.5.0 v0.5.1 v0.5.2'
+        default: 'v0.3.3 v0.4.0 v0.5.1 v0.5.2'
       aliases:
         description: 'JSON map of tag -> minor alias to also push (newest patch per minor only)'
         required: false
@@ -92,31 +92,44 @@ jobs:
         with:
           ref: ${{ matrix.tag }}
 
+      # Each tag gets its own rust-cache key: legs share a runner cache scope,
+      # and every tag has a distinct Cargo.lock, so a shared key produces stale
+      # partial (restore-key) hits from sibling tags. Each binary is also staged
+      # into binaries/ immediately after its build — the aarch64 setup step
+      # restores a cache over target/ and a stale restore clobbers the freshly
+      # built x86_64 binary (root cause of the v0.3.3/v0.4.0 leg failures).
       - name: Setup Rust build environment (x86_64)
         uses: firestoned/github-actions/rust/setup-rust-build@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           target: x86_64-unknown-linux-gnu
+          cache-key: ${{ matrix.tag }}
 
       - name: Build binary (x86_64)
         uses: firestoned/github-actions/rust/build-binary@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           target: x86_64-unknown-linux-gnu
 
+      - name: Stage amd64 binary
+        run: |
+          set -euo pipefail
+          mkdir -p binaries/amd64
+          cp target/x86_64-unknown-linux-gnu/release/bindy binaries/amd64/bindy
+
       - name: Setup Rust build environment (aarch64)
         uses: firestoned/github-actions/rust/setup-rust-build@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           target: aarch64-unknown-linux-gnu
+          cache-key: ${{ matrix.tag }}
 
       - name: Build binary (aarch64)
         uses: firestoned/github-actions/rust/build-binary@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
         with:
           target: aarch64-unknown-linux-gnu
 
-      - name: Stage binaries for Docker build
+      - name: Stage arm64 binary and verify both
         run: |
           set -euo pipefail
-          mkdir -p binaries/amd64 binaries/arm64
-          cp target/x86_64-unknown-linux-gnu/release/bindy binaries/amd64/bindy
+          mkdir -p binaries/arm64
           cp target/aarch64-unknown-linux-gnu/release/bindy binaries/arm64/bindy
           chmod +x binaries/amd64/bindy binaries/arm64/bindy
           file binaries/amd64/bindy binaries/arm64/bindy
