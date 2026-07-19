@@ -549,6 +549,10 @@ jobs:
         if: github.event_name == 'pull_request'
         run: make cargo-deny
 
+      - name: Run cargo-machete (unused dependencies)
+        if: github.event_name == 'pull_request'
+        run: make cargo-machete
+
       - name: Run gitleaks (secret scanning)
         if: github.event_name == 'pull_request'
         run: make gitleaks

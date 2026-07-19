@@ -217,6 +217,15 @@ enum Commands {
         /// When combined with --default-ips, Ingresses only need: bindy.firestoned.io/scout-enabled: "true"
         #[arg(long)]
         default_zone: Option<String>,
+        /// Kubernetes label selector (e.g. "bindy.firestoned.io/scout-enabled=true") restricting
+        /// which namespaces scout will act in. A source object's per-resource opt-in annotation
+        /// is still required in addition to this — the namespace must match the selector AND the
+        /// object must carry the annotation. When unset, every namespace is eligible (unchanged
+        /// default, for backward compatibility) — production deployments are strongly encouraged
+        /// to set this rather than run with cluster-wide scope. Overrides the
+        /// BINDY_SCOUT_NAMESPACE_SELECTOR environment variable.
+        #[arg(long = "namespace-selector")]
+        namespace_selector: Option<String>,
     },
     /// Output shell completion code for the specified shell
     Completion {
@@ -330,12 +339,14 @@ fn main() -> Result<()> {
             default_ips,
             gateway_service,
             default_zone,
+            namespace_selector,
         } => runtime.block_on(scout_command(
             cluster_name,
             namespace,
             default_ips,
             gateway_service,
             default_zone,
+            namespace_selector,
         )),
         Commands::Completion { .. } | Commands::Version => unreachable!("handled above"),
     }
@@ -1043,6 +1054,7 @@ async fn scout_command(
     default_ips: Vec<String>,
     gateway_service: Vec<String>,
     default_zone: Option<String>,
+    namespace_selector: Option<String>,
 ) -> Result<()> {
     initialize_logging();
     info!("Starting Scout controller");
@@ -1052,6 +1064,7 @@ async fn scout_command(
         default_ips,
         gateway_service,
         default_zone,
+        namespace_selector,
     )
     .await
 }

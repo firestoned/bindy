@@ -25,7 +25,7 @@ rg -A 10 "pub struct <StructName>" src/crd.rs
 cargo run --bin crdgen
 
 # 4. Apply updated CRDs (use replace --force to avoid annotation size limits)
-kubectl replace --force -f deploy/crds/<crd-name>.crd.yaml
+kubectl replace --force -f deploy/operator/crds/<crd-name>.crd.yaml
 ```
 
 **Verification:** Field appears in `kubectl get` output after patch; no infinite reconciliation loop.
@@ -44,7 +44,7 @@ kubectl replace --force -f deploy/crds/<crd-name>.crd.yaml
 cargo run --bin crdgen
 
 # 2. Verify generated YAMLs
-for file in deploy/crds/*.crd.yaml; do
+for file in deploy/operator/crds/*.crd.yaml; do
   echo "Checking $file"
   kubectl apply --dry-run=client -f "$file"
 done
@@ -52,12 +52,12 @@ done
 # 3. Update examples to match new schema (see validate-examples skill)
 
 # 4. Deploy
-kubectl replace --force -f deploy/crds/
+kubectl replace --force -f deploy/operator/crds/
 # Or for first install:
-kubectl create -f deploy/crds/
+kubectl create -f deploy/operator/crds/
 ```
 
-**Verification:** `kubectl apply --dry-run=client -f deploy/crds/` succeeds for all files.
+**Verification:** `kubectl apply --dry-run=client -f deploy/operator/crds/` succeeds for all files.
 
 ---
 
@@ -214,12 +214,13 @@ make docs
 ```
 
 What `make docs` does:
-1. Generates CRD API reference: `cargo run --bin crddoc > docs/src/reference/api.md`
-2. Builds rustdoc: `cargo doc --no-deps --all-features`
-3. Installs mermaid assets and builds mdBook: `cd docs && mdbook-mermaid install && mdbook build`
-4. Copies rustdoc into output and creates index redirects
+1. Installs docs dependencies via Poetry: `cd docs && poetry install`
+2. Generates CRD API reference: `cargo run --bin crddoc > docs/src/reference/api.md`
+3. Builds rustdoc: `cargo doc --no-deps --all-features`
+4. Builds the MkDocs site: `cd docs && poetry run mkdocs build`
+5. Copies rustdoc into `docs/site/rustdoc/` and creates an index redirect
 
-**Verification:** `make docs` exits 0 with no errors. Output site is viewable at `docs/book/`.
+**Verification:** `make docs` exits 0 with no errors. Output site is viewable at `docs/site/index.html`.
 
 ---
 
@@ -408,7 +409,7 @@ done
 8. Run `cargo-quality` skill.
 9. Run `update-changelog` skill.
 
-**Verification:** `kubectl apply --dry-run=client -f deploy/crds/mynewresources.crd.yaml` succeeds; API docs include the new resource.
+**Verification:** `kubectl apply --dry-run=client -f deploy/operator/crds/mynewresources.crd.yaml` succeeds; API docs include the new resource.
 
 ---
 
@@ -445,7 +446,7 @@ done
 - [ ] `.claude/CHANGELOG.md` updated with **Author:** line (MANDATORY)
 - [ ] `make docs` succeeds
 - [ ] All YAML examples validate: `kubectl apply --dry-run=client -f examples/`
-- [ ] `kubectl apply --dry-run=client -f deploy/crds/` succeeds
+- [ ] `kubectl apply --dry-run=client -f deploy/operator/crds/` succeeds
 - [ ] No secrets, tokens, credentials, internal hostnames, or IP addresses committed
 - [ ] No `.unwrap()` in production code
 

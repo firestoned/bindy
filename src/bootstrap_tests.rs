@@ -8,6 +8,7 @@ mod tests {
         build_mc_kubeconfig_secret, build_mc_sa_token_secret, build_mc_service_account,
         build_mc_writer_role, build_mc_writer_role_binding, build_namespace,
         build_scout_cluster_role, build_scout_cluster_role_binding, build_scout_deployment,
+        build_scout_secrets_reader_role, build_scout_secrets_reader_role_binding,
         build_scout_service_account, build_scout_writer_role, build_scout_writer_role_binding,
         build_secrets_writer_role, build_secrets_writer_role_binding, build_service_account,
         build_tokenreview_cluster_role_binding, parse_cluster_role, resolve_image,
@@ -19,6 +20,7 @@ mod tests {
         OPERATOR_DEPLOYMENT_NAME, OPERATOR_IMAGE_BASE, OPERATOR_ROLE_NAME, POD_NAMESPACE_ENV,
         REMOTE_KUBECONFIG_SECRET_SUFFIX, REMOTE_KUBECONFIG_SECRET_TYPE, SA_TOKEN_SECRET_SUFFIX,
         SCOUT_CLUSTER_ROLE_BINDING_NAME, SCOUT_CLUSTER_ROLE_NAME, SCOUT_DEPLOYMENT_NAME,
+        SCOUT_SECRETS_READER_ROLE_BINDING_NAME, SCOUT_SECRETS_READER_ROLE_NAME,
         SCOUT_SERVICE_ACCOUNT_NAME, SCOUT_WRITER_ROLE_BINDING_NAME, SCOUT_WRITER_ROLE_NAME,
         SECRETS_WRITER_ROLE_BINDING_NAME, SECRETS_WRITER_ROLE_NAME, SERVICE_ACCOUNT_NAME,
     };
@@ -806,6 +808,42 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_build_scout_cluster_role_covers_namespaces_read_only() {
+        let role = build_scout_cluster_role();
+        let rules = role.rules.unwrap();
+
+        // Namespace get/list is required for --namespace-selector /
+        // BINDY_SCOUT_NAMESPACE_SELECTOR — scout checks a source object's namespace
+        // labels against the configured selector before acting.
+        let ns_rule = rules
+            .iter()
+            .find(|r| {
+                r.api_groups
+                    .as_ref()
+                    .is_some_and(|ags| ags.iter().any(|ag| ag.is_empty()))
+                    && r.resources
+                        .as_ref()
+                        .is_some_and(|res| res.iter().any(|s| s == "namespaces"))
+            })
+            .expect("namespaces rule must exist for --namespace-selector support");
+
+        for verb in ["get", "list"] {
+            assert!(
+                ns_rule.verbs.contains(&verb.to_string()),
+                "namespaces rule must include '{verb}'"
+            );
+        }
+        assert!(
+            !ns_rule.verbs.contains(&"watch".to_string())
+                && !ns_rule.verbs.contains(&"patch".to_string())
+                && !ns_rule.verbs.contains(&"update".to_string())
+                && !ns_rule.verbs.contains(&"delete".to_string())
+                && !ns_rule.verbs.contains(&"create".to_string()),
+            "namespaces rule must be strictly read-only (get/list only) — Scout never mutates Namespaces"
+        );
+    }
+
     // --- Scout ClusterRoleBinding ---
 
     #[test]
@@ -890,6 +928,104 @@ mod tests {
     #[test]
     fn test_build_scout_writer_role_binding_subject_is_scout_sa() {
         let rb = build_scout_writer_role_binding("baz");
+        let subjects = rb.subjects.unwrap();
+        let subject = subjects.first().unwrap();
+        assert_eq!(subject.name, SCOUT_SERVICE_ACCOUNT_NAME);
+        assert_eq!(subject.namespace.as_deref(), Some("baz"));
+    }
+
+    // --- M-25: Scout cluster-wide Secret read closed ---
+
+    /// The Scout ClusterRole must NOT grant any cluster-wide access to Secrets.
+    /// Reading the remote-cluster kubeconfig Secret (Phase 2 only) is granted by a
+    /// separate namespaced, resourceNames-restricted Role instead (see the
+    /// `test_build_scout_secrets_reader_role_*` tests below).
+    #[test]
+    fn test_build_scout_cluster_role_has_no_secrets_rule() {
+        let role = build_scout_cluster_role();
+        let rules = role.rules.unwrap();
+        let has_secrets_rule = rules.iter().any(|r| {
+            r.resources
+                .as_ref()
+                .is_some_and(|res| res.iter().any(|s| s == "secrets"))
+        });
+        assert!(
+            !has_secrets_rule,
+            "Scout ClusterRole must NOT grant cluster-wide Secret access — \
+             see build_scout_secrets_reader_role for the namespaced replacement"
+        );
+    }
+
+    // --- Scout secrets-reader Role (namespaced, resourceNames-restricted) ---
+
+    #[test]
+    fn test_build_scout_secrets_reader_role_name() {
+        let role = build_scout_secrets_reader_role("foo", "my-kubeconfig");
+        assert_eq!(
+            role.metadata.name.as_deref(),
+            Some(SCOUT_SECRETS_READER_ROLE_NAME)
+        );
+    }
+
+    #[test]
+    fn test_build_scout_secrets_reader_role_namespace() {
+        let role = build_scout_secrets_reader_role("bar", "my-kubeconfig");
+        assert_eq!(role.metadata.namespace.as_deref(), Some("bar"));
+    }
+
+    #[test]
+    fn test_build_scout_secrets_reader_role_grants_get_on_secrets_only() {
+        let role = build_scout_secrets_reader_role("foo", "my-kubeconfig");
+        let rules = role.rules.unwrap();
+        assert_eq!(rules.len(), 1, "must grant exactly one rule");
+        let rule = &rules[0];
+        assert_eq!(
+            rule.resources.as_ref().unwrap(),
+            &vec!["secrets".to_string()]
+        );
+        assert_eq!(rule.verbs, vec!["get".to_string()], "must be get-only");
+    }
+
+    #[test]
+    fn test_build_scout_secrets_reader_role_restricts_resource_names() {
+        let role = build_scout_secrets_reader_role("foo", "my-remote-kubeconfig");
+        let rules = role.rules.unwrap();
+        let resource_names = rules[0]
+            .resource_names
+            .as_ref()
+            .expect("rule must set resourceNames to scope to the single Secret");
+        assert_eq!(
+            resource_names,
+            &vec!["my-remote-kubeconfig".to_string()],
+            "resourceNames must restrict the rule to exactly the configured Secret name"
+        );
+    }
+
+    #[test]
+    fn test_build_scout_secrets_reader_role_binding_name() {
+        let rb = build_scout_secrets_reader_role_binding("foo");
+        assert_eq!(
+            rb.metadata.name.as_deref(),
+            Some(SCOUT_SECRETS_READER_ROLE_BINDING_NAME)
+        );
+    }
+
+    #[test]
+    fn test_build_scout_secrets_reader_role_binding_namespace() {
+        let rb = build_scout_secrets_reader_role_binding("bar");
+        assert_eq!(rb.metadata.namespace.as_deref(), Some("bar"));
+    }
+
+    #[test]
+    fn test_build_scout_secrets_reader_role_binding_references_role() {
+        let rb = build_scout_secrets_reader_role_binding("foo");
+        assert_eq!(rb.role_ref.name, SCOUT_SECRETS_READER_ROLE_NAME);
+        assert_eq!(rb.role_ref.kind, "Role");
+    }
+
+    #[test]
+    fn test_build_scout_secrets_reader_role_binding_subject_is_scout_sa() {
+        let rb = build_scout_secrets_reader_role_binding("baz");
         let subjects = rb.subjects.unwrap();
         let subject = subjects.first().unwrap();
         assert_eq!(subject.name, SCOUT_SERVICE_ACCOUNT_NAME);

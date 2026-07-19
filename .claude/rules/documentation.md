@@ -49,7 +49,7 @@ Applies to: code changes, CRD changes, API changes, configuration changes, archi
 
 ## Documentation Examples Must Reference CRDs
 
-ALWAYS verify field names against `deploy/crds/*.crd.yaml` or `src/crd.rs` before writing examples. NEVER guess field names.
+ALWAYS verify field names against `deploy/operator/crds/*.crd.yaml` or `src/crd.rs` before writing examples. NEVER guess field names.
 
 ```yaml
 # ❌ WRONG - guessed field name
@@ -72,7 +72,7 @@ grep -r "kind: <CRDName>" docs/src/
 
 ## Building Documentation
 
-**ALWAYS use `make docs`, never `mdbook build` directly.**
+**ALWAYS use `make docs`, never `mkdocs build` directly.**
 
 > Run the `build-docs` skill.
 

@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 
-.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh ci-e2e calm-validate calm-docs calm-docs-check
+.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny cargo-machete gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh ci-e2e calm-validate calm-docs calm-docs-check
 
 # Detect host architecture and derive the matching Linux cross-compilation target.
 # `uname -m` reports arm64 on Apple Silicon macOS but aarch64 on Linux ARM, so
@@ -272,6 +272,11 @@ cargo-deny: ## Check dependencies for security, licenses, and supply chain issue
 		*" 0.19."*) cargo deny check --config .cargo/deny.toml ;; \
 		*) cargo deny --config .cargo/deny.toml check ;; \
 	esac
+
+cargo-machete: ## Check for unused dependencies
+	@command -v cargo-machete >/dev/null 2>&1 || { echo "Installing cargo-machete..."; cargo install cargo-machete; }
+	@echo "Running cargo-machete..."
+	@cargo machete
 
 cargo-deny-json: ## Run cargo-deny with JSON output (for CI automation)
 	@command -v cargo-deny >/dev/null 2>&1 || { echo "Installing cargo-deny..."; cargo install cargo-deny; }

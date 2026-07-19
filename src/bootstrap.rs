@@ -190,6 +190,17 @@ pub const SCOUT_WRITER_ROLE_NAME: &str = "bindy-scout-writer";
 /// Scout namespaced RoleBinding name.
 pub const SCOUT_WRITER_ROLE_BINDING_NAME: &str = "bindy-scout-writer";
 
+/// Scout namespaced Role name (remote-cluster kubeconfig Secret read, Phase 2 only).
+///
+/// Namespaced and `resourceNames`-restricted to the single configured Secret —
+/// deliberately NOT part of the cluster-wide `bindy-scout` ClusterRole, which
+/// previously granted unscoped `secrets: get` across every namespace in the
+/// cluster (closed 2026-07-19).
+pub const SCOUT_SECRETS_READER_ROLE_NAME: &str = "bindy-scout-secrets-reader";
+
+/// Scout namespaced RoleBinding name for [`SCOUT_SECRETS_READER_ROLE_NAME`].
+pub const SCOUT_SECRETS_READER_ROLE_BINDING_NAME: &str = "bindy-scout-secrets-reader";
+
 /// Scout Deployment name.
 pub const SCOUT_DEPLOYMENT_NAME: &str = "bindy-scout";
 
@@ -368,6 +379,10 @@ pub async fn run_bootstrap_scout(
     apply_scout_cluster_role_binding(&client, namespace).await?;
     apply_scout_writer_role(&client, namespace).await?;
     apply_scout_writer_role_binding(&client, namespace).await?;
+    if let Some(secret_name) = opts.remote_secret {
+        apply_scout_secrets_reader_role(&client, namespace, secret_name).await?;
+        apply_scout_secrets_reader_role_binding(&client, namespace).await?;
+    }
     apply_scout_deployment(&client, namespace, opts).await?;
 
     println!("\nBootstrap complete! Scout is running in namespace {namespace}.");
@@ -441,6 +456,16 @@ fn run_scout_dry_run(namespace: &str, opts: &ScoutDeploymentOptions<'_>) -> Resu
         "RoleBinding (scout-writer)",
         &build_scout_writer_role_binding(namespace),
     )?;
+    if let Some(secret_name) = opts.remote_secret {
+        print_resource(
+            "Role (scout-secrets-reader)",
+            &build_scout_secrets_reader_role(namespace, secret_name),
+        )?;
+        print_resource(
+            "RoleBinding (scout-secrets-reader)",
+            &build_scout_secrets_reader_role_binding(namespace),
+        )?;
+    }
     print_resource(
         "Deployment (scout)",
         &build_scout_deployment(namespace, opts)?,
@@ -670,6 +695,47 @@ async fn apply_scout_writer_role_binding(client: &Client, namespace: &str) -> Re
     .await
     .with_context(|| format!("Failed to apply RoleBinding/{SCOUT_WRITER_ROLE_BINDING_NAME}"))?;
     println!("✓ RoleBinding: {SCOUT_WRITER_ROLE_BINDING_NAME} (namespace: {namespace})");
+    Ok(())
+}
+
+/// Applies the namespaced, `resourceNames`-restricted Role granting read access to the
+/// single remote-cluster kubeconfig Secret. Only called when `--remote-secret` (Phase 2
+/// mode) is configured — same-cluster-only deployments get no Secret access at all.
+async fn apply_scout_secrets_reader_role(
+    client: &Client,
+    namespace: &str,
+    secret_name: &str,
+) -> Result<()> {
+    let api: Api<Role> = Api::namespaced(client.clone(), namespace);
+    let role = build_scout_secrets_reader_role(namespace, secret_name);
+    api.patch(
+        SCOUT_SECRETS_READER_ROLE_NAME,
+        &PatchParams::apply(SCOUT_FIELD_MANAGER).force(),
+        &Patch::Apply(&role),
+    )
+    .await
+    .with_context(|| format!("Failed to apply Role/{SCOUT_SECRETS_READER_ROLE_NAME}"))?;
+    println!(
+        "✓ Role: {SCOUT_SECRETS_READER_ROLE_NAME} (namespace: {namespace}, secret: {secret_name})"
+    );
+    Ok(())
+}
+
+/// Applies the RoleBinding pairing [`apply_scout_secrets_reader_role`]'s Role with the
+/// Scout ServiceAccount. Only called when `--remote-secret` (Phase 2 mode) is configured.
+async fn apply_scout_secrets_reader_role_binding(client: &Client, namespace: &str) -> Result<()> {
+    let api: Api<RoleBinding> = Api::namespaced(client.clone(), namespace);
+    let rb = build_scout_secrets_reader_role_binding(namespace);
+    api.patch(
+        SCOUT_SECRETS_READER_ROLE_BINDING_NAME,
+        &PatchParams::apply(SCOUT_FIELD_MANAGER).force(),
+        &Patch::Apply(&rb),
+    )
+    .await
+    .with_context(|| {
+        format!("Failed to apply RoleBinding/{SCOUT_SECRETS_READER_ROLE_BINDING_NAME}")
+    })?;
+    println!("✓ RoleBinding: {SCOUT_SECRETS_READER_ROLE_BINDING_NAME} (namespace: {namespace})");
     Ok(())
 }
 
@@ -1130,11 +1196,21 @@ pub fn build_scout_cluster_role() -> ClusterRole {
                 verbs: vec!["get".to_string(), "list".to_string(), "watch".to_string()],
                 ..Default::default()
             },
-            // Read kubeconfig Secret for remote cluster connection
+            // NOTE: there is deliberately no cluster-wide Secret rule here. Reading the
+            // remote-cluster kubeconfig Secret (Phase 2 only) is granted by a namespaced,
+            // resourceNames-restricted Role/RoleBinding instead — see
+            // `build_scout_secrets_reader_role` and `apply_scout_secrets_reader_role`,
+            // applied only when `--remote-secret` is configured. This closes the previously
+            // unscoped `secrets: get` grant that applied to every Secret in every namespace.
+            // Read Namespace labels for --namespace-selector / BINDY_SCOUT_NAMESPACE_SELECTOR:
+            // scout checks each source object's namespace against the configured selector
+            // before acting, via a List scoped to that single namespace by name. Namespace
+            // metadata (name/labels) is low-sensitivity, unlike the cluster-wide secrets
+            // read above.
             PolicyRule {
                 api_groups: Some(vec![String::new()]),
-                resources: Some(vec!["secrets".to_string()]),
-                verbs: vec!["get".to_string()],
+                resources: Some(vec!["namespaces".to_string()]),
+                verbs: vec!["get".to_string(), "list".to_string()],
                 ..Default::default()
             },
         ]),
@@ -1235,6 +1311,75 @@ pub fn build_scout_writer_role_binding(namespace: &str) -> RoleBinding {
             api_group: "rbac.authorization.k8s.io".to_string(),
             kind: "Role".to_string(),
             name: SCOUT_WRITER_ROLE_NAME.to_string(),
+        },
+        subjects: Some(vec![Subject {
+            kind: "ServiceAccount".to_string(),
+            name: SCOUT_SERVICE_ACCOUNT_NAME.to_string(),
+            namespace: Some(namespace.to_string()),
+            api_group: Some(String::new()),
+        }]),
+    }
+}
+
+/// Build the namespaced Role granting Scout read access to the single remote-cluster
+/// kubeconfig Secret (Phase 2 / multi-cluster mode only).
+///
+/// Scoped two ways: namespaced (not a ClusterRole) and `resourceNames`-restricted to
+/// `secret_name`, so this grants `get` on exactly one Secret object, not "every Secret
+/// in this namespace" and certainly not "every Secret in the cluster" (the previous,
+/// now-removed cluster-wide `bindy-scout` ClusterRole behavior).
+pub fn build_scout_secrets_reader_role(namespace: &str, secret_name: &str) -> Role {
+    Role {
+        metadata: ObjectMeta {
+            name: Some(SCOUT_SECRETS_READER_ROLE_NAME.to_string()),
+            namespace: Some(namespace.to_string()),
+            labels: Some(
+                [
+                    ("app.kubernetes.io/name".to_string(), "bindy".to_string()),
+                    (
+                        "app.kubernetes.io/component".to_string(),
+                        "scout".to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            ..Default::default()
+        },
+        rules: Some(vec![PolicyRule {
+            api_groups: Some(vec![String::new()]),
+            resources: Some(vec!["secrets".to_string()]),
+            resource_names: Some(vec![secret_name.to_string()]),
+            verbs: vec!["get".to_string()],
+            ..Default::default()
+        }]),
+    }
+}
+
+/// Build the RoleBinding pairing [`build_scout_secrets_reader_role`] with the Scout
+/// ServiceAccount.
+pub fn build_scout_secrets_reader_role_binding(namespace: &str) -> RoleBinding {
+    RoleBinding {
+        metadata: ObjectMeta {
+            name: Some(SCOUT_SECRETS_READER_ROLE_BINDING_NAME.to_string()),
+            namespace: Some(namespace.to_string()),
+            labels: Some(
+                [
+                    ("app.kubernetes.io/name".to_string(), "bindy".to_string()),
+                    (
+                        "app.kubernetes.io/component".to_string(),
+                        "scout".to_string(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            ..Default::default()
+        },
+        role_ref: RoleRef {
+            api_group: "rbac.authorization.k8s.io".to_string(),
+            kind: "Role".to_string(),
+            name: SCOUT_SECRETS_READER_ROLE_NAME.to_string(),
         },
         subjects: Some(vec![Subject {
             kind: "ServiceAccount".to_string(),

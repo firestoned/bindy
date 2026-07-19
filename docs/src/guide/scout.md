@@ -369,6 +369,7 @@ spec:
 | `--default-zone <ZONE>` | Default DNS zone applied to all Ingresses and Services when no `bindy.firestoned.io/zone` annotation is present (e.g. `example.com`). When combined with `--default-ips`, resources only need `bindy.firestoned.io/scout-enabled: "true"`. |
 | `--default-ips <IP[,IP]>` | Comma-separated default IP address(es) used when no per-resource `bindy.firestoned.io/ip` annotation or LoadBalancer status IP is available. Useful for shared-ingress topologies (e.g. Traefik). |
 | `--gateway-service <class=target>` | Repeatable. Maps a `gatewayClass` to the LoadBalancer Service whose external IP backs it, used to resolve an IP for HTTPRoute/TLSRoute/TCPRoute via their `parentRefs`. `target` is either `namespace/name` (e.g. `traefik=traefik/traefik`) or `namespace/<label-selector>` (e.g. `traefik=traefik/app.kubernetes.io/name=traefik`). Multi-label selectors (with commas) must use this flag rather than the env var. The configured classes double as the allow-list of gateways Scout will follow. |
+| `--namespace-selector <SELECTOR>` | A Kubernetes label selector (e.g. `bindy.firestoned.io/scout-enabled=true`) restricting which namespaces Scout will act in — same syntax as `kubectl get ns -l <selector>`. A namespace must match this selector **and** the individual Ingress/Service/route object must still carry its own opt-in annotation; both gates apply. **Strongly recommended for every production deployment** — see [Namespace Whitelisting](#namespace-whitelisting-namespace-selector) below. |
 
 CLI flags take precedence over the corresponding environment variables.
 
@@ -383,6 +384,7 @@ CLI flags take precedence over the corresponding environment variables.
 | `BINDY_SCOUT_DEFAULT_ZONE` | — | Default DNS zone for all Ingresses and Services when no `bindy.firestoned.io/zone` annotation is present. Overridden by `--default-zone`. When set alongside `BINDY_SCOUT_DEFAULT_IPS`, resources only need `bindy.firestoned.io/scout-enabled: "true"`. |
 | `BINDY_SCOUT_DEFAULT_IPS` | — | Comma-separated default IP address(es) used when no per-resource annotation override or LoadBalancer status IP is available. Useful for shared-ingress topologies (e.g. Traefik) where all resources resolve to the same VIP(s). Overridden by `--default-ips`. |
 | `BINDY_SCOUT_GATEWAY_SERVICES` | — | Comma-separated `gatewayClass=target` map for gateway-chain IP resolution on HTTPRoute/TLSRoute/TCPRoute, e.g. `traefik=traefik/traefik`. `target` is `namespace/name` or `namespace/<label-selector>`. Because commas separate entries here, multi-label selectors must use the repeatable `--gateway-service` flag. Overridden by `--gateway-service`. |
+| `BINDY_SCOUT_NAMESPACE_SELECTOR` | — (every namespace eligible) | Label selector restricting which namespaces Scout will act in. Overridden by `--namespace-selector`. **Unset means every namespace in the cluster is eligible — running without this set is not recommended for production.** See [Namespace Whitelisting](#namespace-whitelisting-namespace-selector). |
 | `BINDY_SCOUT_REMOTE_SECRET` | — | **(Phase 2)** Name of a Secret in the local cluster containing a `kubeconfig` key. When set, Scout targets the remote Bindy cluster for ARecord creation and zone validation. When unset, same-cluster mode is used. |
 | `BINDY_SCOUT_REMOTE_SECRET_NAMESPACE` | Scout's own namespace | **(Phase 2)** Namespace of the `BINDY_SCOUT_REMOTE_SECRET`. Defaults to Scout's own namespace (`POD_NAMESPACE`). |
 | `RUST_LOG` | `info` | Log level: `trace`, `debug`, `info`, `warn`, `error`. |
@@ -443,7 +445,12 @@ spec:
 
 ## RBAC Requirements
 
-Scout requires cluster-wide watch access to `Ingress` and `Service` resources, read access to `DNSZone` and `Secret` resources, and write access to `ARecord` resources in the target namespace.
+Scout requires cluster-wide watch access to `Ingress` and `Service` resources, read access to `DNSZone` and `Namespace` resources, and write access to `ARecord` resources in the target namespace. It requires **no Secret access at all** unless you use Phase 2 (multi-cluster) mode — see below.
+
+!!! note "Namespace access is low-sensitivity"
+    The `namespaces: get, list` rule is namespace *metadata* only (names and labels, no
+    Secret data) and is required for
+    [namespace whitelisting](#namespace-whitelisting-namespace-selector).
 
 ```yaml
 ---
@@ -491,6 +498,13 @@ rules:
   - apiGroups: ["bindy.firestoned.io"]
     resources: ["dnszones"]
     verbs: ["get", "list", "watch"]
+  # Read Namespace labels for --namespace-selector / BINDY_SCOUT_NAMESPACE_SELECTOR.
+  # Low-sensitivity (name/labels only, no Secret data).
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list"]
+  # NOTE: deliberately no Secret rule here. See "RBAC for Phase 2 (Multi-Cluster) Mode"
+  # below for the namespaced, resourceNames-restricted Role used instead.
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -530,6 +544,48 @@ roleRef:
   name: bindy-scout-writer
   apiGroup: rbac.authorization.k8s.io
 ```
+
+### RBAC for Phase 2 (Multi-Cluster) Mode
+
+If — and only if — you run Scout with `BINDY_SCOUT_REMOTE_SECRET` set, Scout additionally
+needs to read that one kubeconfig Secret. This is granted by a **separate, namespaced,
+`resourceNames`-restricted** Role/RoleBinding — **not** a cluster-wide grant on the main
+`bindy-scout` ClusterRole. Apply this only if you use Phase 2 mode
+(`deploy/scout/secrets-reader-rbac.yaml`, or automatically via `bindy bootstrap scout
+--remote-secret <name>`):
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: bindy-scout-secrets-reader
+  namespace: bindy-system
+rules:
+  # resourceNames restricts this to exactly the one kubeconfig Secret — not every
+  # Secret in this namespace, and not any Secret in any other namespace.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["bindy-scout-remote-kubeconfig"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bindy-scout-secrets-reader
+  namespace: bindy-system
+subjects:
+  - kind: ServiceAccount
+    name: bindy-scout
+    namespace: bindy-system
+roleRef:
+  kind: Role
+  name: bindy-scout-secrets-reader
+  apiGroup: rbac.authorization.k8s.io
+```
+
+`bindy bootstrap scout --remote-secret <name>` provisions this automatically, with
+`resourceNames` set to the exact Secret name you passed. Same-cluster-only deployments
+(the default — no `--remote-secret`) get no Secret access whatsoever.
 
 ---
 
@@ -719,6 +775,65 @@ env:
   - name: BINDY_SCOUT_EXCLUDE_NAMESPACES
     value: "kube-system,kube-public,kube-node-lease,monitoring"
 ```
+
+---
+
+## Namespace Whitelisting (`--namespace-selector`)
+
+By default — with no `--namespace-selector` / `BINDY_SCOUT_NAMESPACE_SELECTOR` set — Scout
+is eligible to act in **every namespace in the cluster**, gated only by each source
+object's own opt-in annotation (`bindy.firestoned.io/scout-enabled: "true"`, etc.) and
+the [namespace exclusion list](#namespace-exclusions) above. In other words: any tenant
+in any namespace can cause Scout to create an `ARecord`, simply by annotating their own
+`Ingress`/`Service`/route object.
+
+**Running with no namespace selector configured is not recommended.** Set one:
+
+```yaml
+env:
+  - name: BINDY_SCOUT_NAMESPACE_SELECTOR
+    value: "bindy.firestoned.io/scout-enabled=true"
+```
+
+or via the CLI flag: `--namespace-selector "bindy.firestoned.io/scout-enabled=true"`.
+
+Once set, Scout checks this selector against **the namespace's own labels** (not the
+resource's annotations) before acting on anything inside it — a genuine two-factor
+opt-in: the namespace must carry the label **and** the individual resource must carry
+its annotation. Label the namespaces you want Scout active in:
+
+```bash
+kubectl label namespace team-web bindy.firestoned.io/scout-enabled=true
+```
+
+Any selector expression accepted by `kubectl get ns -l <selector>` works — this is not
+limited to the single-label example above (e.g. `environment in (staging,prod)` is
+equally valid).
+
+### What changes when a namespace is unlabeled
+
+If a namespace stops matching the selector (label removed, or the selector is newly
+introduced on an existing deployment), Scout treats every source object in that
+namespace exactly as if its opt-in annotation had been removed: any `ARecord`s it
+created are deleted and its finalizer is released, unblocking normal object deletion.
+**This means introducing `--namespace-selector` on an existing Scout deployment is a
+behavior change** — any namespace not labeled at the time will have its Scout-managed
+`ARecord`s cleaned up. Label every namespace that should keep working *before* rolling
+out the selector, not after.
+
+### What this does and does not reduce
+
+Setting a namespace selector meaningfully shrinks Scout's day-to-day operating
+footprint and requires a platform-level action (labeling a namespace) before any
+tenant's opt-in annotation takes effect — a real, valuable second gate. It does **not**
+by itself shrink the `ClusterRole`'s RBAC ceiling: `bindy-scout` still holds cluster-wide
+`patch`/`update` on Ingress/Service/route types, so a directly compromised ServiceAccount
+token could still, in principle, act outside the labeled namespaces for those types. (As
+of 2026-07-19, Scout's Secret access is no longer part of this ceiling at all — the
+former cluster-wide `secrets: get` grant was replaced with a namespaced,
+`resourceNames`-restricted Role scoped to the single Phase 2 kubeconfig Secret; see
+[RBAC for Phase 2 Mode](#rbac-for-phase-2-multi-cluster-mode) above.) See
+`docs/src/security/threat-model.md` for the full analysis.
 
 ---
 
@@ -913,6 +1028,18 @@ spec:
 ```
 
 When `BINDY_SCOUT_REMOTE_SECRET` is set, Scout loads the kubeconfig from that Secret and uses it for all `ARecord` creation and `DNSZone` validation — the Queen Bee cluster, not the local cluster.
+
+!!! warning "Also grant RBAC to read this Secret"
+    Setting the env var alone is not enough — Scout's `ClusterRole` grants no Secret
+    access at all (see [RBAC for Phase 2 Mode](#rbac-for-phase-2-multi-cluster-mode)).
+    Apply the namespaced secrets-reader Role too, with `resourceNames` matching the
+    Secret name above:
+    ```bash
+    kubectl --context=child-cluster-a apply -f deploy/scout/secrets-reader-rbac.yaml
+    ```
+    or, if you manage Scout via `bindy bootstrap scout`, re-run it with
+    `--remote-secret bindy-scout-remote-kubeconfig` to provision this automatically.
+    Without it, Scout will fail to read the Secret with an RBAC-forbidden error.
 
 #### 4. Verify the connection
 

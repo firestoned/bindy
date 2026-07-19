@@ -261,7 +261,7 @@ kubectl --context kind-bindy-scout set env deployment/bindy-scout \
   -n bindy-system
 ```
 
-See the [Scout Multi-Cluster Guide](../guide/scout.md#multi-cluster-mode-phase-2) for the full architecture and configuration reference.
+See the [Scout Multi-Cluster Guide](../guide/scout.md#multi-cluster-mode) for the full architecture and configuration reference.
 
 ### Other Targets
 
