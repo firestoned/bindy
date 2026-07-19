@@ -1,3 +1,36 @@
+## [2026-07-19] - Rebuild workflow for GHCR-deleted release images
+
+**Author:** Erick Bourgeois
+
+### Added
+- `.github/workflows/rebuild-release-images.yaml`: disaster-recovery
+  `workflow_dispatch` (+`workflow_call`) that rebuilds historical release
+  images and pushes them back to GHCR. A GHCR cleanup removed every
+  version-tagged image older than v0.6.0, and GitHub's ~30-day re-run limit
+  rules out re-running the original release runs. Per tag (matrix,
+  fail-fast off, max-parallel 2): checkout at the TAG (its own Cargo.lock +
+  Dockerfiles) → build Linux amd64+arm64 binaries → stage
+  `binaries/{amd64,arm64}` (the uniform contract since v0.3.0) → buildx
+  push Chainguard + Distroless with the version tag (+ optional minor alias
+  from the `aliases` input) → Cosign-sign both digests.
+- Defaults restore the 8 stable tags v0.3.0–v0.5.2 with aliases
+  v0.3→v0.3.3, v0.4→v0.4.0, v0.5→v0.5.2. `v0`, `v0.6*`, `latest` are never
+  touched; RCs and the pre-v0.3 Dockerfile era are out of scope.
+
+### Notes
+- Rebuilt images have **new digests** and are signed under this workflow's
+  identity; `make verify-image` (repo-wide identity regexp) still verifies.
+  Old digest-pinned deployments were unrecoverable once the packages were
+  deleted — tag-based consumers recover.
+
+### Impact
+- [ ] Breaking change
+- [x] CI-only addition; pushes images to GHCR when dispatched
+- [ ] Requires cluster rollout
+- [ ] Documentation only
+
+---
+
 ## [2026-07-18] - Fix Gateway API ClusterRole: add patch/update and finalizers subresource rules
 
 **Author:** Prabhjot Singh Bawa

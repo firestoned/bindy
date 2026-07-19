@@ -1,0 +1,207 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# Rebuild historical release images and push them back to GHCR.
+#
+# Disaster-recovery utility: a GHCR cleanup removed the version-tagged images
+# for releases older than v0.6.0, and GitHub's ~30-day workflow re-run limit
+# rules out re-running the original release runs. This workflow checks out
+# each requested release TAG (its own Cargo.lock + Dockerfiles), rebuilds the
+# Linux binaries, assembles both image variants from them (the same
+# binaries/{amd64,arm64} contract every tag since v0.3.0 uses), pushes the
+# version tags, and Cosign-signs the results.
+#
+# Notes:
+#   - Rebuilt images have NEW digests and are signed under THIS workflow's
+#     identity (rebuild-release-images.yaml). `make verify-image` uses a
+#     repo-wide identity regexp and still verifies. Deployments pinning the
+#     old digests were unrecoverable the moment the packages were deleted.
+#   - Alias tags (vX.Y) are re-pointed only per the `aliases` input mapping
+#     (newest patch of each minor). `v0`, `v0.6*`, and `latest` are never
+#     touched — they belong to the current release line.
+#   - Applies to tags >= v0.3.0 (uniform Dockerfile contract). v0.1/v0.2 use
+#     an older layout and are intentionally out of scope.
+
+name: Rebuild Release Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: 'Space-separated release tags to rebuild'
+        required: true
+        type: string
+        default: 'v0.3.0 v0.3.1 v0.3.2 v0.3.3 v0.4.0 v0.5.0 v0.5.1 v0.5.2'
+      aliases:
+        description: 'JSON map of tag -> minor alias to also push (newest patch per minor only)'
+        required: false
+        type: string
+        default: '{"v0.3.3":"v0.3","v0.4.0":"v0.4","v0.5.2":"v0.5"}'
+  workflow_call:
+    inputs:
+      tags:
+        required: true
+        type: string
+      aliases:
+        required: false
+        type: string
+        default: '{}'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  plan:
+    name: Plan Rebuild Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      tags: ${{ steps.parse.outputs.tags }}
+    steps:
+      - name: Parse tag list into a matrix
+        id: parse
+        env:
+          TAGS: ${{ inputs.tags }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086  # $TAGS is intentionally word-split (one tag per word)
+          json=$(printf '%s\n' $TAGS | jq -R . | jq -cs .)
+          echo "tags=${json}" >> "$GITHUB_OUTPUT"
+          echo "Rebuilding: ${json}"
+
+  rebuild:
+    name: Rebuild ${{ matrix.tag }}
+    runs-on: ubuntu-latest
+    needs: plan
+    permissions:
+      contents: read
+      packages: write
+      id-token: write  # keyless Cosign signing
+    strategy:
+      fail-fast: false
+      # Be gentle on runner quota and GHCR; each leg builds two targets.
+      max-parallel: 2
+      matrix:
+        tag: ${{ fromJSON(needs.plan.outputs.tags) }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ matrix.tag }}
+
+      - name: Setup Rust build environment (x86_64)
+        uses: firestoned/github-actions/rust/setup-rust-build@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - name: Build binary (x86_64)
+        uses: firestoned/github-actions/rust/build-binary@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - name: Setup Rust build environment (aarch64)
+        uses: firestoned/github-actions/rust/setup-rust-build@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        with:
+          target: aarch64-unknown-linux-gnu
+
+      - name: Build binary (aarch64)
+        uses: firestoned/github-actions/rust/build-binary@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        with:
+          target: aarch64-unknown-linux-gnu
+
+      - name: Stage binaries for Docker build
+        run: |
+          set -euo pipefail
+          mkdir -p binaries/amd64 binaries/arm64
+          cp target/x86_64-unknown-linux-gnu/release/bindy binaries/amd64/bindy
+          cp target/aarch64-unknown-linux-gnu/release/bindy binaries/arm64/bindy
+          chmod +x binaries/amd64/bindy binaries/arm64/bindy
+          file binaries/amd64/bindy binaries/arm64/bindy
+
+      - name: Compute version and tag set
+        id: tagset
+        env:
+          TAG: ${{ matrix.tag }}
+          ALIASES: ${{ inputs.aliases }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          ALIAS=$(printf '%s' "$ALIASES" | jq -r --arg t "$TAG" '.[$t] // empty')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "alias=${ALIAS}" >> "$GITHUB_OUTPUT"
+          echo "Version ${VERSION}; alias '${ALIAS:-<none>}'"
+
+      - name: Setup Docker environment
+        uses: firestoned/github-actions/docker/setup-docker@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Chainguard image
+        id: docker_chainguard
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
+        with:
+          context: .
+          file: docker/Dockerfile.chainguard
+          platforms: linux/amd64,linux/arm64
+          push: true
+          pull: true
+          tags: |
+            ghcr.io/firestoned/bindy:${{ matrix.tag }}
+            ${{ steps.tagset.outputs.alias && format('ghcr.io/firestoned/bindy:{0}', steps.tagset.outputs.alias) || '' }}
+          build-args: |
+            VERSION=${{ steps.tagset.outputs.version }}
+          sbom: true
+          provenance: true
+
+      - name: Sign Chainguard image with Cosign
+        uses: firestoned/github-actions/security/cosign-sign@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        with:
+          image-digest: ${{ steps.docker_chainguard.outputs.digest }}
+          image-tags: ${{ matrix.tag }}
+          registry: ghcr.io
+          repository: firestoned/bindy
+
+      - name: Build and push Distroless image
+        id: docker_distroless
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          pull: true
+          tags: |
+            ghcr.io/firestoned/bindy:${{ matrix.tag }}-distroless
+            ${{ steps.tagset.outputs.alias && format('ghcr.io/firestoned/bindy:{0}-distroless', steps.tagset.outputs.alias) || '' }}
+          build-args: |
+            VERSION=${{ steps.tagset.outputs.version }}
+          sbom: true
+          provenance: true
+
+      - name: Sign Distroless image with Cosign
+        uses: firestoned/github-actions/security/cosign-sign@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        with:
+          image-digest: ${{ steps.docker_distroless.outputs.digest }}
+          image-tags: ${{ matrix.tag }}-distroless
+          registry: ghcr.io
+          repository: firestoned/bindy
+
+  summary:
+    name: Rebuild Summary
+    runs-on: ubuntu-latest
+    needs: [plan, rebuild]
+    if: always()
+    steps:
+      - name: Report
+        env:
+          RESULT: ${{ needs.rebuild.result }}
+          TAGS: ${{ needs.plan.outputs.tags }}
+        run: |
+          echo "Rebuild result: ${RESULT} for ${TAGS}"
+          if [ "${RESULT}" != "success" ]; then
+            echo "One or more tags failed — check the matrix legs; each tag is independent (fail-fast off)."
+            exit 1
+          fi
