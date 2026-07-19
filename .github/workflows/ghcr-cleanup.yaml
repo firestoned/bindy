@@ -48,20 +48,28 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           owner: firestoned
           package: bindy
-          # Never delete released images or the floating release/main tags.
-          # Anchored regex (use-regex) so semver matching does NOT also catch dotted
-          # dated snapshots like `main-2026.01.15` (a plain `*.*` wildcard would).
-          # The semver match is unrolled into three patterns (0 / 0.5 / 0.5.2, with
-          # optional v prefix) because the action's ReDoS guard rejects a quantified
-          # group like (\.[0-9]+){0,2} as nested quantifiers.
           use-regex: true
-          exclude-tags: '^latest$,^latest-distroless$,^main$,^main-distroless$,^v?[0-9]+$,^v?[0-9]+\.[0-9]+$,^v?[0-9]+\.[0-9]+\.[0-9]+$'
-          # Keep the 20 most recent tagged snapshots (main-YYYY-MM-DD, sha-*,
-          # pr-*); older ones beyond that window are pruned.
-          keep-n-tagged: 20
-          # Remove untagged orphan layers/attestations left by every build.
+          # DELETE ONLY dated `main-<date>` snapshots — dash or dot date form,
+          # with an optional `-distroless` variant (e.g. `main-2026-07-18`,
+          # `main-2026.07.18`, `main-2026.07.18-distroless`). Nothing else is ever
+          # a deletion candidate: semver releases (incl. `-distroless` variants),
+          # `latest`/`main`, `sha-*`, and `pr-*` do NOT match this pattern and are
+          # left untouched. This replaces the old `keep-n-tagged: 20` model, which
+          # pruned any non-excluded tag beyond the 20 newest — including semver
+          # `-distroless` variants that the exclude list didn't cover.
+          delete-tags: '^main-20[0-9]{2}[-.][0-9]{2}[-.][0-9]{2}(-distroless)?$'
+          # Defense-in-depth: even if delete-tags is ever loosened, never delete a
+          # released image or floating tag. Semver is unrolled into three patterns
+          # (0 / 0.5 / 0.5.2, optional `v` prefix, optional `-distroless`) because
+          # the action's ReDoS guard rejects a quantified group like
+          # (\.[0-9]+){0,2} as nested quantifiers.
+          exclude-tags: '^latest$,^latest-distroless$,^main$,^main-distroless$,^v?[0-9]+(-distroless)?$,^v?[0-9]+\.[0-9]+(-distroless)?$,^v?[0-9]+\.[0-9]+\.[0-9]+(-distroless)?$'
+          # Reap untagged orphan layers/attestations left by every build
+          # (manifest-aware, so child digests of preserved multi-arch tags are
+          # kept). This removes no named version — only unreferenced orphans.
           delete-untagged: true
-          # Safety window: never touch anything created in the last 14 days.
+          # Safety window: never touch anything created in the last 14 days, so
+          # recent daily `main-<date>` snapshots are retained.
           older-than: 14 days
           # Verify multi-arch manifest integrity in the registry after cleanup.
           validate: true
