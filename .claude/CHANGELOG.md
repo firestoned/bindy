@@ -1,3 +1,35 @@
+## [2026-07-19 21:05] - Fix rebuild workflow: stale rust-cache restore clobbered x86_64 binary
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/rebuild-release-images.yaml`: run 29701432357 legs
+  v0.3.3 and v0.4.0 failed at binary staging with `cp: cannot stat
+  'target/x86_64-.../release/bindy'`. Root cause: all matrix legs shared one
+  Swatinem/rust-cache key (hashed from Cargo.lock); tags whose lockfile
+  differs from the cached one get a stale partial (restore-key) hit, and the
+  aarch64 `setup-rust-build` step — which runs AFTER the x86_64 build —
+  restores that stale cache over `target/`, wiping the fresh x86_64 binary.
+  Exact hits (v0.3.0–v0.3.2) and clean misses (v0.5.0) succeeded. Fix:
+  (1) stage each binary into `binaries/` immediately after its own build
+  step, leaving no window between build and copy; (2) pass
+  `cache-key: ${{ matrix.tag }}` to both `setup-rust-build` calls so legs
+  never share caches across tags. Default `tags`/`aliases` inputs narrowed
+  to the legs that failed (v0.3.3 v0.4.0 v0.5.1 v0.5.2) — v0.3.0–v0.3.2 and
+  v0.5.0 were restored by run 29701432357 and must not be rebuilt again.
+
+### Why
+Recover the remaining deleted release images (v0.3.3, v0.4.0, and any
+v0.5.x legs that fail the same way) by re-dispatching the fixed workflow.
+
+### Impact
+- [ ] Breaking change
+- [x] CI-only fix
+- [ ] Requires cluster rollout
+- [ ] Documentation only
+
+---
+
 ## [2026-07-19] - Rebuild workflow for GHCR-deleted release images
 
 **Author:** Erick Bourgeois
