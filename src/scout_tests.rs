@@ -8,20 +8,69 @@ mod tests {
     use crate::crd::DNSZone;
     use crate::scout::{
         arecord_cr_name, arecord_label_selector, build_service_arecord, build_tcproute_arecord,
-        check_zone_authorization, derive_record_name, gateway_addresses_as_ips,
-        gateway_parent_refs, get_record_name_annotation, get_zone_annotation, has_finalizer,
-        is_arecord_enabled, is_being_deleted, is_loadbalancer_service, is_scout_opted_in,
-        parse_gateway_service_entry, parse_gateway_services, resolve_ip_from_service_lb_status,
-        resolve_ips, resolve_ips_from_annotation, resolve_record_name, resolve_zone,
-        service_arecord_cr_name, service_arecord_label_selector, service_ref_from_str,
-        stale_arecord_label_selector, stale_tcproute_arecord_label_selector,
-        tcproute_arecord_cr_name, tcproute_arecord_label_selector, zone_allows_source_namespace,
-        Gateway, GatewayServiceTarget, NamespacedName, ParentReference, ServiceARecordParams,
+        check_zone_authorization, cleanup_grace_expired, derive_record_name,
+        gateway_addresses_as_ips, gateway_parent_refs, get_record_name_annotation,
+        get_zone_annotation, has_finalizer, is_arecord_enabled, is_being_deleted,
+        is_loadbalancer_service, is_scout_opted_in, parse_gateway_service_entry,
+        parse_gateway_services, resolve_ip_from_service_lb_status, resolve_ips,
+        resolve_ips_from_annotation, resolve_record_name, resolve_zone, service_arecord_cr_name,
+        service_arecord_label_selector, service_ref_from_str, stale_arecord_label_selector,
+        stale_tcproute_arecord_label_selector, tcproute_arecord_cr_name,
+        tcproute_arecord_label_selector, zone_allows_source_namespace, Gateway,
+        GatewayServiceTarget, NamespacedName, ParentReference, ServiceARecordParams,
         TCPRouteARecordParams, ZoneAuthz, FINALIZER_SCOUT, LABEL_MANAGED_BY,
         LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER, LABEL_SOURCE_NAME, LABEL_SOURCE_NAMESPACE,
-        LABEL_ZONE,
+        LABEL_ZONE, REMOTE_CLEANUP_GRACE_SECS,
     };
+    use k8s_openapi::jiff::{SignedDuration, Timestamp};
     use std::sync::Arc;
+
+    /// Fixed reference instant (2026-07-19T12:00:00Z) for deterministic
+    /// grace-period tests.
+    fn fixed_now() -> Timestamp {
+        "2026-07-19T12:00:00Z".parse().unwrap()
+    }
+
+    /// `now` shifted by `secs` seconds (negative = into the past).
+    fn shifted(now: Timestamp, secs: i64) -> Timestamp {
+        now + SignedDuration::from_secs(secs)
+    }
+
+    #[test]
+    fn test_cleanup_grace_not_expired_when_not_being_deleted() {
+        // No deletion timestamp → nothing is terminating, so never "expired".
+        assert!(!cleanup_grace_expired(None, fixed_now()));
+    }
+
+    #[test]
+    fn test_cleanup_grace_not_expired_within_window() {
+        let now = fixed_now();
+        let started = shifted(now, -(REMOTE_CLEANUP_GRACE_SECS - 1));
+        assert!(!cleanup_grace_expired(Some(&Time(started)), now));
+    }
+
+    #[test]
+    fn test_cleanup_grace_expired_at_boundary() {
+        // Exactly at the grace boundary counts as expired (>=).
+        let now = fixed_now();
+        let started = shifted(now, -REMOTE_CLEANUP_GRACE_SECS);
+        assert!(cleanup_grace_expired(Some(&Time(started)), now));
+    }
+
+    #[test]
+    fn test_cleanup_grace_expired_past_window() {
+        let now = fixed_now();
+        let started = shifted(now, -(REMOTE_CLEANUP_GRACE_SECS + 60));
+        assert!(cleanup_grace_expired(Some(&Time(started)), now));
+    }
+
+    #[test]
+    fn test_cleanup_grace_not_expired_for_future_timestamp() {
+        // Clock skew: a deletion timestamp in the future must not read as expired.
+        let now = fixed_now();
+        let started = shifted(now, 10);
+        assert!(!cleanup_grace_expired(Some(&Time(started)), now));
+    }
 
     /// Build a minimal valid `DNSZone` fixture in `namespace` with the given
     /// annotations JSON object (`serde_json::Value::Null` for none).

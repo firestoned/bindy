@@ -821,6 +821,18 @@ behavior change** — any namespace not labeled at the time will have its Scout-
 `ARecord`s cleaned up. Label every namespace that should keep working *before* rolling
 out the selector, not after.
 
+### Deletion and remote-cluster failures
+
+When an opted-in Ingress/Service/route is deleted, Scout first deletes the `ARecord`s it
+created (on the remote Bindy cluster in Phase 2 mode) and then releases its finalizer.
+If that remote cleanup fails — a broken or expired Phase 2 kubeconfig, or a remote-cluster
+outage — Scout retries for a grace period (5 minutes) and, past it, **releases the
+finalizer anyway** rather than hold the source object in `Terminating`. This prevents a
+single unreachable remote from blocking deletion of tenant objects cluster-wide. When the
+grace period is exceeded, Scout logs an error noting that the remote `ARecord`s may be
+orphaned and must be reconciled separately (they are otherwise reaped by Scout's
+label-based stale-record cleanup once the remote is reachable again).
+
 ### What this does and does not reduce
 
 Setting a namespace selector meaningfully shrinks Scout's day-to-day operating

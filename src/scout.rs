@@ -25,6 +25,8 @@ use crate::constants::{ALLOW_ZONE_NAMESPACES_WILDCARD, ANNOTATION_ALLOW_ZONE_NAM
 use crate::crd::{ARecord, ARecordSpec, DNSZone};
 use anyhow::{anyhow, Context, Result};
 use k8s_openapi::api::core::v1::{Namespace, Secret, Service};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
+use k8s_openapi::jiff::Timestamp;
 use kube::api::{DeleteParams, ListParams, Patch, PatchParams};
 use kube::config::{KubeConfigOptions, Kubeconfig};
 
@@ -395,6 +397,22 @@ const ARECORD_NAME_PREFIX: &str = "scout";
 /// Requeue delay for non-fatal errors (seconds)
 const SCOUT_ERROR_REQUEUE_SECS: u64 = 30;
 
+/// Grace period, in seconds, that Scout keeps retrying remote ARecord cleanup
+/// for an object that is being deleted before it releases its finalizer anyway.
+///
+/// The finalizer exists so Scout gets a chance to delete the ARecords it created
+/// on the (possibly remote, Phase 2) Bindy cluster before the source object
+/// disappears. But if that remote cluster is unreachable — a broken/expired
+/// kubeconfig, a network partition — blocking finalizer removal on the remote
+/// call would strand the tenant's Ingress/Service/route in `Terminating`
+/// indefinitely, and because Scout adds this finalizer cluster-wide a single
+/// broken remote connection could block deletions across every namespace.
+///
+/// Within the grace period Scout requeues and retries (so transient failures
+/// still get cleaned up); past it, Scout releases the finalizer and logs that
+/// the remote ARecords may be orphaned and must be reconciled separately.
+pub(crate) const REMOTE_CLEANUP_GRACE_SECS: i64 = 300;
+
 /// Backoff delay before re-polling the DNSZone reflector after a connection error (seconds).
 /// The kube-runtime watcher has no built-in backoff — consumers must apply their own by
 /// delaying the next poll. Without this, a failed LIST/WATCH causes a tight retry loop.
@@ -510,6 +528,24 @@ async fn source_namespace_eligible(
 // ============================================================================
 // Pure helper functions (tested in scout_tests.rs)
 // ============================================================================
+
+/// Returns `true` when an object that entered `Terminating` at
+/// `deletion_timestamp` has been terminating for at least
+/// [`REMOTE_CLEANUP_GRACE_SECS`] as of `now`.
+///
+/// Used during finalizer handling: when remote ARecord cleanup keeps failing,
+/// this decides whether Scout should give up and release its finalizer (grace
+/// expired) rather than strand the source object in `Terminating` forever.
+///
+/// Returns `false` when `deletion_timestamp` is `None` (the object is not being
+/// deleted, so there is nothing to time out), when the grace period has not yet
+/// elapsed (keep retrying), or when the timestamp is in the future (clock skew).
+pub(crate) fn cleanup_grace_expired(deletion_timestamp: Option<&Time>, now: Timestamp) -> bool {
+    match deletion_timestamp {
+        Some(Time(started)) => now.duration_since(*started).as_secs() >= REMOTE_CLEANUP_GRACE_SECS,
+        None => false,
+    }
+}
 
 /// Returns `true` if the Ingress is annotated for ARecord creation.
 ///
@@ -2118,24 +2154,37 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
     if is_being_deleted(&ingress) {
         if has_finalizer(&ingress) {
             info!(ingress = %name, ns = %namespace, "Ingress deleting — cleaning up ARecords");
-            delete_arecords_for_ingress(
-                &ctx.remote_client,
-                &ctx.target_namespace,
-                &ctx.cluster_name,
-                &namespace,
-                &name,
-            )
-            .await
-            .map_err(ScoutError::from)?;
-            delete_stale_cluster_arecords(
-                &ctx.remote_client,
-                &ctx.target_namespace,
-                &ctx.cluster_name,
-                &namespace,
-                &name,
-            )
-            .await
-            .map_err(ScoutError::from)?;
+            let cleanup: Result<()> = async {
+                delete_arecords_for_ingress(
+                    &ctx.remote_client,
+                    &ctx.target_namespace,
+                    &ctx.cluster_name,
+                    &namespace,
+                    &name,
+                )
+                .await?;
+                delete_stale_cluster_arecords(
+                    &ctx.remote_client,
+                    &ctx.target_namespace,
+                    &ctx.cluster_name,
+                    &namespace,
+                    &name,
+                )
+                .await
+            }
+            .await;
+            if let Err(e) = cleanup {
+                if !cleanup_grace_expired(
+                    ingress.metadata.deletion_timestamp.as_ref(),
+                    Timestamp::now(),
+                ) {
+                    warn!(ingress = %name, ns = %namespace, error = %e, "Remote ARecord cleanup failed during Ingress deletion — retrying within grace period");
+                    return Ok(Action::requeue(Duration::from_secs(
+                        SCOUT_ERROR_REQUEUE_SECS,
+                    )));
+                }
+                error!(ingress = %name, ns = %namespace, error = %e, grace_secs = REMOTE_CLEANUP_GRACE_SECS, "Remote ARecord cleanup still failing after grace period — releasing finalizer to unblock Ingress deletion; remote ARecords may be orphaned and must be reconciled separately");
+            }
             remove_finalizer(&ctx.client, &ingress)
                 .await
                 .map_err(ScoutError::from)?;
@@ -2357,7 +2406,7 @@ async fn reconcile_service(
             .unwrap_or(false)
         {
             info!(service = %name, ns = %namespace, "Service deleting — cleaning up ARecord");
-            delete_arecords_for_service(
+            if let Err(e) = delete_arecords_for_service(
                 &ctx.remote_client,
                 &ctx.target_namespace,
                 &ctx.cluster_name,
@@ -2365,7 +2414,18 @@ async fn reconcile_service(
                 &name,
             )
             .await
-            .map_err(ScoutError::from)?;
+            {
+                if !cleanup_grace_expired(
+                    svc.metadata.deletion_timestamp.as_ref(),
+                    Timestamp::now(),
+                ) {
+                    warn!(service = %name, ns = %namespace, error = %e, "Remote ARecord cleanup failed during Service deletion — retrying within grace period");
+                    return Ok(Action::requeue(Duration::from_secs(
+                        SCOUT_ERROR_REQUEUE_SECS,
+                    )));
+                }
+                error!(service = %name, ns = %namespace, error = %e, grace_secs = REMOTE_CLEANUP_GRACE_SECS, "Remote ARecord cleanup still failing after grace period — releasing finalizer to unblock Service deletion; remote ARecords may be orphaned and must be reconciled separately");
+            }
             remove_finalizer_from_service(&ctx.client, &svc)
                 .await
                 .map_err(ScoutError::from)?;
@@ -2591,24 +2651,37 @@ async fn reconcile_httproute(
             .unwrap_or(false)
         {
             info!(httproute = %name, ns = %namespace, "HTTPRoute deleting — cleaning up ARecords");
-            delete_arecords_for_httproute(
-                &ctx.remote_client,
-                &ctx.target_namespace,
-                &ctx.cluster_name,
-                &namespace,
-                &name,
-            )
-            .await
-            .map_err(ScoutError::from)?;
-            delete_stale_cluster_httproute_arecords(
-                &ctx.remote_client,
-                &ctx.target_namespace,
-                &ctx.cluster_name,
-                &namespace,
-                &name,
-            )
-            .await
-            .map_err(ScoutError::from)?;
+            let cleanup: Result<()> = async {
+                delete_arecords_for_httproute(
+                    &ctx.remote_client,
+                    &ctx.target_namespace,
+                    &ctx.cluster_name,
+                    &namespace,
+                    &name,
+                )
+                .await?;
+                delete_stale_cluster_httproute_arecords(
+                    &ctx.remote_client,
+                    &ctx.target_namespace,
+                    &ctx.cluster_name,
+                    &namespace,
+                    &name,
+                )
+                .await
+            }
+            .await;
+            if let Err(e) = cleanup {
+                if !cleanup_grace_expired(
+                    route.metadata.deletion_timestamp.as_ref(),
+                    Timestamp::now(),
+                ) {
+                    warn!(httproute = %name, ns = %namespace, error = %e, "Remote ARecord cleanup failed during HTTPRoute deletion — retrying within grace period");
+                    return Ok(Action::requeue(Duration::from_secs(
+                        SCOUT_ERROR_REQUEUE_SECS,
+                    )));
+                }
+                error!(httproute = %name, ns = %namespace, error = %e, grace_secs = REMOTE_CLEANUP_GRACE_SECS, "Remote ARecord cleanup still failing after grace period — releasing finalizer to unblock HTTPRoute deletion; remote ARecords may be orphaned and must be reconciled separately");
+            }
             remove_finalizer_from_httproute(&ctx.client, &route)
                 .await
                 .map_err(ScoutError::from)?;
@@ -2845,24 +2918,37 @@ async fn reconcile_tlsroute(
             .unwrap_or(false)
         {
             info!(tlsroute = %name, ns = %namespace, "TLSRoute deleting — cleaning up ARecords");
-            delete_arecords_for_tlsroute(
-                &ctx.remote_client,
-                &ctx.target_namespace,
-                &ctx.cluster_name,
-                &namespace,
-                &name,
-            )
-            .await
-            .map_err(ScoutError::from)?;
-            delete_stale_cluster_tlsroute_arecords(
-                &ctx.remote_client,
-                &ctx.target_namespace,
-                &ctx.cluster_name,
-                &namespace,
-                &name,
-            )
-            .await
-            .map_err(ScoutError::from)?;
+            let cleanup: Result<()> = async {
+                delete_arecords_for_tlsroute(
+                    &ctx.remote_client,
+                    &ctx.target_namespace,
+                    &ctx.cluster_name,
+                    &namespace,
+                    &name,
+                )
+                .await?;
+                delete_stale_cluster_tlsroute_arecords(
+                    &ctx.remote_client,
+                    &ctx.target_namespace,
+                    &ctx.cluster_name,
+                    &namespace,
+                    &name,
+                )
+                .await
+            }
+            .await;
+            if let Err(e) = cleanup {
+                if !cleanup_grace_expired(
+                    route.metadata.deletion_timestamp.as_ref(),
+                    Timestamp::now(),
+                ) {
+                    warn!(tlsroute = %name, ns = %namespace, error = %e, "Remote ARecord cleanup failed during TLSRoute deletion — retrying within grace period");
+                    return Ok(Action::requeue(Duration::from_secs(
+                        SCOUT_ERROR_REQUEUE_SECS,
+                    )));
+                }
+                error!(tlsroute = %name, ns = %namespace, error = %e, grace_secs = REMOTE_CLEANUP_GRACE_SECS, "Remote ARecord cleanup still failing after grace period — releasing finalizer to unblock TLSRoute deletion; remote ARecords may be orphaned and must be reconciled separately");
+            }
             remove_finalizer_from_tlsroute(&ctx.client, &route)
                 .await
                 .map_err(ScoutError::from)?;
@@ -3090,24 +3176,37 @@ async fn reconcile_tcproute(
             .unwrap_or(false)
         {
             info!(tcproute = %name, ns = %namespace, "TCPRoute deleting — cleaning up ARecords");
-            delete_arecords_for_tcproute(
-                &ctx.remote_client,
-                &ctx.target_namespace,
-                &ctx.cluster_name,
-                &namespace,
-                &name,
-            )
-            .await
-            .map_err(ScoutError::from)?;
-            delete_stale_cluster_tcproute_arecords(
-                &ctx.remote_client,
-                &ctx.target_namespace,
-                &ctx.cluster_name,
-                &namespace,
-                &name,
-            )
-            .await
-            .map_err(ScoutError::from)?;
+            let cleanup: Result<()> = async {
+                delete_arecords_for_tcproute(
+                    &ctx.remote_client,
+                    &ctx.target_namespace,
+                    &ctx.cluster_name,
+                    &namespace,
+                    &name,
+                )
+                .await?;
+                delete_stale_cluster_tcproute_arecords(
+                    &ctx.remote_client,
+                    &ctx.target_namespace,
+                    &ctx.cluster_name,
+                    &namespace,
+                    &name,
+                )
+                .await
+            }
+            .await;
+            if let Err(e) = cleanup {
+                if !cleanup_grace_expired(
+                    route.metadata.deletion_timestamp.as_ref(),
+                    Timestamp::now(),
+                ) {
+                    warn!(tcproute = %name, ns = %namespace, error = %e, "Remote ARecord cleanup failed during TCPRoute deletion — retrying within grace period");
+                    return Ok(Action::requeue(Duration::from_secs(
+                        SCOUT_ERROR_REQUEUE_SECS,
+                    )));
+                }
+                error!(tcproute = %name, ns = %namespace, error = %e, grace_secs = REMOTE_CLEANUP_GRACE_SECS, "Remote ARecord cleanup still failing after grace period — releasing finalizer to unblock TCPRoute deletion; remote ARecords may be orphaned and must be reconciled separately");
+            }
             remove_finalizer_from_tcproute(&ctx.client, &route)
                 .await
                 .map_err(ScoutError::from)?;
