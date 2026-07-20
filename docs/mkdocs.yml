@@ -237,6 +237,7 @@ nav:
           - CAA Records: guide/caa-records.md
       - RNDC Key Rotation: guide/rndc-key-rotation.md
       - Scout: guide/scout.md
+      - Scout Topology (CAPI/k0rdent): guide/scout-topology.md
 
   - Operations:
       - Configuration:

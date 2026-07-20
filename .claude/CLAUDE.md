@@ -40,7 +40,7 @@ Before investigating any Kubernetes issue, verify CRDs match Rust code definitio
 
 > **How:** Run the `verify-crd-sync` skill.
 
-CRD YAMLs in `deploy/crds/` are AUTO-GENERATED from `src/crd.rs`. Schema mismatches cause silent failures — patches succeed (HTTP 200) but fields don't persist.
+CRD YAMLs in `deploy/operator/crds/` are AUTO-GENERATED from `src/crd.rs`. Schema mismatches cause silent failures — patches succeed (HTTP 200) but fields don't persist.
 
 **When to check:** reconciliation loops, "field not appearing in kubectl output", after `src/crd.rs` edits, when status patches don't persist.
 
@@ -117,7 +117,7 @@ See `rules/documentation.md` for full workflow.
 
 - Ask "Does documentation need to be updated?" before marking ANY task complete
 - Update `.claude/CHANGELOG.md` with `**Author:**` on EVERY code change (MANDATORY — no exceptions)
-- Build docs with `make docs` — use `build-docs` skill (never `mdbook build` directly)
+- Build docs with `make docs` — use `build-docs` skill (never `mkdocs build` directly)
 - For ADRs: create `/docs/adr/NNNN-title.md` with Status / Context / Decision / Consequences
 
 ---
@@ -144,7 +144,7 @@ Before adding deps: verify actively maintained (commits in last 6 months), prefe
 
 ### CRD Development — Rust as Source of Truth
 
-`src/crd.rs` is the source of truth. YAML files in `deploy/crds/` are auto-generated — never edit them directly.
+`src/crd.rs` is the source of truth. YAML files in `deploy/operator/crds/` are auto-generated — never edit them directly.
 
 > CRD changes: `regen-crds` skill → update `examples/` → `regen-api-docs` skill (LAST).
 
@@ -154,7 +154,7 @@ Adding a new CRD: follow `add-new-crd` skill.
 
 ### CRD Documentation Examples
 
-ALWAYS read `deploy/crds/*.crd.yaml` or `src/crd.rs` before writing any YAML examples. Never guess field names.
+ALWAYS read `deploy/operator/crds/*.crd.yaml` or `src/crd.rs` before writing any YAML examples. Never guess field names.
 
 ### Controllers: Event-Driven (Watch, Not Poll)
 
@@ -209,20 +209,21 @@ See `rules/testing.md` for full standards.
 ```
 src/
 ├── main.rs / main_tests.rs
-├── bind9.rs / bind9_tests.rs
-├── bind9_resources.rs / bind9_resources_tests.rs
 ├── crd.rs / crd_tests.rs
+├── bind9/                  ← BIND9 module (mod.rs, rndc.rs, duration.rs, records/) + *_tests.rs siblings
+├── bind9_resources.rs / bind9_resources_tests.rs
 ├── reconcilers/
-│   ├── bind9cluster.rs / bind9cluster_tests.rs
-│   ├── bind9instance.rs / bind9instance_tests.rs
+│   ├── bind9cluster/       ← modular (mod.rs, config.rs, drift.rs, instances.rs, status_helpers.rs, types.rs)
+│   ├── bind9instance/      ← modular (mod.rs, config.rs, resources.rs, zones.rs, cluster_helpers.rs, ...)
 │   ├── dnszone.rs / dnszone_tests.rs
-│   └── records.rs / records_tests.rs
+│   └── records/            ← modular (mod.rs, status_helpers.rs, types.rs)
 └── bin/ (crdgen.rs, crddoc.rs)
 
 docs/
 ├── roadmaps/   ← ALL planning docs here (lowercase-hyphen filenames)
 ├── adr/        ← Architecture Decision Records
-└── src/        ← mdBook source
+├── mkdocs.yml  ← MkDocs config (Poetry-managed; build via `make docs`)
+└── src/        ← MkDocs source (docs_dir)
 ```
 
 ---

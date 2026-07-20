@@ -135,7 +135,7 @@ env:
 
 Scout will load the kubeconfig from that Secret and write all `ARecord` CRs to the Queen Bee cluster instead of the local cluster.
 
-See the [Scout guide — Multi-Cluster Mode](../guide/scout.md#multi-cluster-mode-phase-2) for the full architecture diagram, per-cluster SA strategy, and RBAC details.
+See the [Scout guide — Multi-Cluster Mode](../guide/scout.md#multi-cluster-mode) for the full architecture diagram, per-cluster SA strategy, and RBAC details.
 
 ---
 

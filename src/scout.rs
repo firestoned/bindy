@@ -23,8 +23,8 @@
 
 use crate::constants::{ALLOW_ZONE_NAMESPACES_WILDCARD, ANNOTATION_ALLOW_ZONE_NAMESPACES};
 use crate::crd::{ARecord, ARecordSpec, DNSZone};
-use anyhow::{anyhow, Result};
-use k8s_openapi::api::core::v1::{Secret, Service};
+use anyhow::{anyhow, Context, Result};
+use k8s_openapi::api::core::v1::{Namespace, Secret, Service};
 use kube::api::{DeleteParams, ListParams, Patch, PatchParams};
 use kube::config::{KubeConfigOptions, Kubeconfig};
 
@@ -431,9 +431,80 @@ pub struct ScoutContext {
     /// Default DNS zone applied to all Ingresses when no `bindy.firestoned.io/zone` annotation
     /// is present. Set via `BINDY_SCOUT_DEFAULT_ZONE` or `--default-zone`.
     pub default_zone: Option<String>,
+    /// Kubernetes label selector restricting which namespaces Scout will act in (e.g.
+    /// `"bindy.firestoned.io/scout-enabled=true"`). A source object's own per-resource opt-in
+    /// annotation is still required in addition — the namespace must match this selector AND
+    /// the object must carry the annotation. `None` means every namespace is eligible, matching
+    /// pre-selector behavior; this is the default for backward compatibility, but production
+    /// deployments are strongly encouraged to set it rather than run with cluster-wide scope
+    /// (see `namespace_matches_selector` and the Scout guide). Set via
+    /// `BINDY_SCOUT_NAMESPACE_SELECTOR` or `--namespace-selector`.
+    pub namespace_selector: Option<String>,
     /// Read-only store of DNSZone resources for zone validation.
     /// Populated from the remote client so zones are validated against the bindy cluster.
     pub zone_store: reflector::Store<DNSZone>,
+}
+
+// ============================================================================
+// Namespace-selector helpers (async — require Kubernetes API access)
+// ============================================================================
+
+/// Returns `true` if `namespace` currently carries labels matching `selector`.
+///
+/// `selector` is a standard Kubernetes label selector expression (e.g.
+/// `"bindy.firestoned.io/scout-enabled=true"`, or any expression accepted by
+/// `kubectl -l`). Rather than re-implement label-selector parsing/matching
+/// client-side, this delegates to the API server: it issues a `List` on
+/// `Namespace` scoped to the single namespace by name (`fieldSelector:
+/// metadata.name=<namespace>`) combined with the caller's label selector, and
+/// checks whether the (0-or-1-item) result is non-empty. This guarantees
+/// exactly the same selector semantics as `kubectl get ns -l <selector>`.
+///
+/// # Errors
+///
+/// Returns an error if the `List` call fails (e.g. RBAC-forbidden, transport
+/// error, or a malformed selector rejected by the API server) — callers should
+/// propagate this as a reconcile error (triggering a requeue with backoff)
+/// rather than treat a failed check as "not matched", to avoid spuriously
+/// cleaning up ARecords/finalizers on a transient API hiccup.
+async fn namespace_matches_selector(
+    client: &Client,
+    namespace: &str,
+    selector: &str,
+) -> Result<bool> {
+    let ns_api: Api<Namespace> = Api::all(client.clone());
+    let lp = ListParams::default()
+        .labels(selector)
+        .fields(&format!("metadata.name={namespace}"));
+    let list = ns_api.list(&lp).await.with_context(|| {
+        format!("failed to check namespace '{namespace}' against selector '{selector}'")
+    })?;
+    Ok(!list.items.is_empty())
+}
+
+/// Returns whether `namespace` is eligible for Scout to act in.
+///
+/// When `selector` is `None` (the default), every namespace is eligible —
+/// preserving pre-selector behavior for backward compatibility. When `selector`
+/// is `Some`, this delegates to [`namespace_matches_selector`], so only
+/// namespaces whose labels match the configured selector are eligible.
+///
+/// This is combined (AND) with the existing per-resource opt-in annotation
+/// check (`is_scout_opted_in`) in each reconciler: both the namespace and the
+/// individual Ingress/Service/route object must opt in.
+///
+/// # Errors
+///
+/// Propagates any error from [`namespace_matches_selector`].
+async fn source_namespace_eligible(
+    client: &Client,
+    namespace: &str,
+    selector: Option<&str>,
+) -> Result<bool> {
+    match selector {
+        None => Ok(true),
+        Some(sel) => namespace_matches_selector(client, namespace, sel).await,
+    }
 }
 
 // ============================================================================
@@ -2081,7 +2152,12 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
         .unwrap_or_default();
 
     // Guard: opt-in annotation required (scout-enabled: "true" or recordKind: "ARecord")
-    if !is_scout_opted_in(&annotations) {
+    let namespace_eligible =
+        source_namespace_eligible(&ctx.client, &namespace, ctx.namespace_selector.as_deref())
+            .await
+            .map_err(ScoutError::from)?;
+
+    if !is_scout_opted_in(&annotations) || !namespace_eligible {
         // Annotation may have been removed after a finalizer was added — clean up
         if has_finalizer(&ingress) {
             info!(ingress = %name, ns = %namespace, "Scout opt-in annotation removed — cleaning up ARecords and finalizer");
@@ -2306,7 +2382,12 @@ async fn reconcile_service(
         .unwrap_or_default();
 
     // Guard: opt-in annotation required
-    if !is_scout_opted_in(&annotations) {
+    let namespace_eligible =
+        source_namespace_eligible(&ctx.client, &namespace, ctx.namespace_selector.as_deref())
+            .await
+            .map_err(ScoutError::from)?;
+
+    if !is_scout_opted_in(&annotations) || !namespace_eligible {
         let has_fin = svc
             .metadata
             .finalizers
@@ -2544,7 +2625,12 @@ async fn reconcile_httproute(
         .unwrap_or_default();
 
     // Guard: opt-in annotation required
-    if !is_scout_opted_in(&annotations) {
+    let namespace_eligible =
+        source_namespace_eligible(&ctx.client, &namespace, ctx.namespace_selector.as_deref())
+            .await
+            .map_err(ScoutError::from)?;
+
+    if !is_scout_opted_in(&annotations) || !namespace_eligible {
         let has_fin = route
             .metadata
             .finalizers
@@ -2793,7 +2879,12 @@ async fn reconcile_tlsroute(
         .unwrap_or_default();
 
     // Guard: opt-in annotation required
-    if !is_scout_opted_in(&annotations) {
+    let namespace_eligible =
+        source_namespace_eligible(&ctx.client, &namespace, ctx.namespace_selector.as_deref())
+            .await
+            .map_err(ScoutError::from)?;
+
+    if !is_scout_opted_in(&annotations) || !namespace_eligible {
         let has_fin = route
             .metadata
             .finalizers
@@ -3032,7 +3123,12 @@ async fn reconcile_tcproute(
         .cloned()
         .unwrap_or_default();
 
-    if !is_scout_opted_in(&annotations) {
+    let namespace_eligible =
+        source_namespace_eligible(&ctx.client, &namespace, ctx.namespace_selector.as_deref())
+            .await
+            .map_err(ScoutError::from)?;
+
+    if !is_scout_opted_in(&annotations) || !namespace_eligible {
         let has_fin = route
             .metadata
             .finalizers
@@ -3285,6 +3381,10 @@ struct ScoutConfig {
     /// Default DNS zone applied to all Ingresses when no `bindy.firestoned.io/zone` annotation
     /// is present. Set via `BINDY_SCOUT_DEFAULT_ZONE` or `--default-zone` CLI flag.
     default_zone: Option<String>,
+    /// Kubernetes label selector restricting which namespaces Scout will act in. `None` means
+    /// every namespace is eligible (backward-compatible default). Set via
+    /// `BINDY_SCOUT_NAMESPACE_SELECTOR` or `--namespace-selector` CLI flag.
+    namespace_selector: Option<String>,
     /// Name of the Secret containing the remote cluster kubeconfig (Phase 2).
     /// When `None`, Scout operates in same-cluster mode.
     remote_secret_name: Option<String>,
@@ -3302,6 +3402,7 @@ impl ScoutConfig {
         cli_default_ips: Vec<String>,
         cli_gateway_services: Vec<String>,
         cli_default_zone: Option<String>,
+        cli_namespace_selector: Option<String>,
     ) -> Result<Self> {
         let target_namespace = cli_namespace
             .filter(|s| !s.is_empty())
@@ -3366,6 +3467,16 @@ impl ScoutConfig {
                 .filter(|s| !s.is_empty())
         });
 
+        // CLI --namespace-selector takes precedence over BINDY_SCOUT_NAMESPACE_SELECTOR env var.
+        // Unset (None) means every namespace is eligible — the backward-compatible default.
+        let namespace_selector = cli_namespace_selector
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                std::env::var("BINDY_SCOUT_NAMESPACE_SELECTOR")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+            });
+
         let remote_secret_name = std::env::var("BINDY_SCOUT_REMOTE_SECRET")
             .ok()
             .filter(|s| !s.is_empty());
@@ -3380,6 +3491,7 @@ impl ScoutConfig {
             default_ips,
             gateway_services,
             default_zone,
+            namespace_selector,
             remote_secret_name,
             remote_secret_namespace,
         })
@@ -3446,6 +3558,7 @@ pub async fn run_scout(
     cli_default_ips: Vec<String>,
     cli_gateway_services: Vec<String>,
     cli_default_zone: Option<String>,
+    cli_namespace_selector: Option<String>,
 ) -> Result<()> {
     let config = ScoutConfig::from_env(
         cli_cluster_name,
@@ -3453,6 +3566,7 @@ pub async fn run_scout(
         cli_default_ips,
         cli_gateway_services,
         cli_default_zone,
+        cli_namespace_selector,
     )?;
 
     let local_client = Client::try_default().await?;
@@ -3466,6 +3580,7 @@ pub async fn run_scout(
             excluded = ?config.excluded_namespaces,
             default_ips = ?config.default_ips,
             default_zone = ?config.default_zone,
+            namespace_selector = ?config.namespace_selector,
             "Starting bindy scout in remote cluster mode"
         );
         build_remote_client(&local_client, secret_name, &config.remote_secret_namespace).await?
@@ -3476,10 +3591,21 @@ pub async fn run_scout(
             excluded = ?config.excluded_namespaces,
             default_ips = ?config.default_ips,
             default_zone = ?config.default_zone,
+            namespace_selector = ?config.namespace_selector,
             "Starting bindy scout in same-cluster mode"
         );
         local_client.clone()
     };
+
+    if config.namespace_selector.is_none() {
+        warn!(
+            "No --namespace-selector / BINDY_SCOUT_NAMESPACE_SELECTOR configured — scout will \
+             act in EVERY namespace in the cluster (subject only to each source object's own \
+             opt-in annotation and --exclude-namespaces). Setting a namespace-selector so scout \
+             only considers explicitly-whitelisted namespaces is strongly recommended for \
+             production deployments; running without one is not recommended."
+        );
+    }
 
     // Build a reflector store for DNSZone resources using the REMOTE client.
     // In same-cluster mode this is the local cluster; in Phase 2 this is the bindy cluster.
@@ -3524,6 +3650,7 @@ pub async fn run_scout(
         default_ips: config.default_ips,
         gateway_services: config.gateway_services,
         default_zone: config.default_zone,
+        namespace_selector: config.namespace_selector,
         zone_store: dnszone_reader,
     });
 

@@ -17,6 +17,10 @@ categories = ["network-programming", "web-programming"]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[lints.rust]
+# The operator has no first-party unsafe code; enforce that at compile time.
+unsafe_code = "forbid"
+
 [dependencies]
 kube = { version = "4.0", features = ["runtime", "derive", "client", "jsonpatch"] }
 kube-lease-manager = "0.12"

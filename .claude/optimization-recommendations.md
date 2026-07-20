@@ -150,14 +150,14 @@ CRD guidance appears in **3 separate sections:**
 > **How:** Run the `regen-crds` skill, then `regen-api-docs` skill (LAST).
 
 **After CRD changes, MUST update:**
-- `/deploy/crds/*.crd.yaml` (auto-generated via `cargo run --bin crdgen`)
+- `/deploy/operator/crds/*.crd.yaml` (auto-generated via `cargo run --bin crdgen`)
 - `/examples/*.yaml` (validate with `kubectl apply --dry-run=client`)
 - `/docs/src/` (any documentation referencing CRD fields)
 - API docs (via `cargo run --bin crddoc > docs/src/reference/api.md`)
 
 **REMEMBER:**
 - ALWAYS read CRD schema BEFORE writing documentation examples
-- NEVER guess field names - verify against `/deploy/crds/*.crd.yaml` or `src/crd.rs`
+- NEVER guess field names - verify against `/deploy/operator/crds/*.crd.yaml` or `src/crd.rs`
 - Use `kubectl replace --force` not `kubectl apply` (Bind9Instance CRD exceeds 256KB)
 
 **See:** `add-new-crd` skill for adding new CRDs

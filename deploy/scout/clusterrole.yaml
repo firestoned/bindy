@@ -45,8 +45,14 @@ rules:
   - apiGroups: ["bindy.firestoned.io"]
     resources: ["dnszones"]
     verbs: ["get", "list", "watch"]
-  # Read kubeconfig Secret for remote cluster connection (Phase 2 only)
-  # Scope this to a Role in the specific Secret's namespace for production deployments
+  # NOTE: there is deliberately no cluster-wide Secret rule here. Reading the
+  # remote-cluster kubeconfig Secret (Phase 2 only) is granted by a namespaced,
+  # resourceNames-restricted Role/RoleBinding instead — see secrets-reader-rbac.yaml,
+  # applied only if you use Phase 2 (multi-cluster) mode.
+  # Read Namespace labels for --namespace-selector / BINDY_SCOUT_NAMESPACE_SELECTOR: scout
+  # checks each source object's namespace against the configured selector before acting, via
+  # a List scoped to that single namespace by name. Namespace metadata (name/labels) is
+  # low-sensitivity, unlike the cluster-wide secrets read above.
   - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get"]
+    resources: ["namespaces"]
+    verbs: ["get", "list"]

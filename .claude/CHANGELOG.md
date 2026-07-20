@@ -1,3 +1,211 @@
+## [2026-07-19] - Fix M-25: Scout's cluster-wide Secret read scoped to a single namespaced Secret
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/bootstrap.rs`: removed the cluster-wide `secrets: get` `PolicyRule` from
+  `build_scout_cluster_role()`. The `bindy-scout` `ClusterRole` previously
+  granted `get` on **every Secret in every namespace in the cluster** — with
+  no `resourceNames` or namespace scoping — for what should only ever need
+  read access to the one Phase 2 (multi-cluster) kubeconfig Secret. This was
+  the top open finding (I4/E4/Scenario 6, CRITICAL impact) from the 2026-07-19
+  threat model revision.
+- Added `build_scout_secrets_reader_role` / `build_scout_secrets_reader_role_binding`:
+  a namespaced Role, **`resourceNames`-restricted** to the single configured
+  Secret name, bound to the Scout ServiceAccount. New constants
+  `SCOUT_SECRETS_READER_ROLE_NAME` / `_ROLE_BINDING_NAME`.
+- `run_bootstrap_scout` / `run_scout_dry_run` apply this Role/RoleBinding
+  **only when `--remote-secret` is configured** — same-cluster-only Scout
+  deployments (the default) now get zero Secret access, matching deny-by-default.
+- `deploy/scout/clusterrole.yaml`: removed the cluster-wide secrets rule.
+- `deploy/scout/secrets-reader-rbac.yaml` (new): opt-in static manifest for
+  the namespaced Role/RoleBinding, mirroring the existing
+  `remote-cluster-rbac.yaml` pattern — **not** included in the default
+  `make scout-yaml` combined bundle, so a fresh install grants no Secret
+  access unless this file is explicitly applied.
+- `src/bootstrap_tests.rs`: asserts the ClusterRole has no `secrets` rule at
+  all, and that the new Role grants exactly `get` on `secrets`, restricted by
+  `resourceNames` to the configured Secret name.
+- `docs/src/guide/scout.md`: rewrote the RBAC Requirements section (no more
+  cluster-wide Secret grant to document/warn about); added "RBAC for Phase 2
+  (Multi-Cluster) Mode" documenting the namespaced replacement; added the
+  missing "also apply this RBAC" step to the multi-cluster Setup Guide
+  (previously undocumented — the guide patched `BINDY_SCOUT_REMOTE_SECRET`
+  onto the Deployment without ever mentioning the RBAC needed to read it).
+- `docs/src/security/threat-model.md`: M-25 moved from Planned to Existing
+  Mitigations; I4/E4/T4/Scenario 6/Attack Surface #7/Trust Boundary 6 updated
+  to reflect this is now fixed; Residual Risks and Security Controls Summary
+  re-leveled (Scout's Access Control residual risk was HIGH, now LOW/MEDIUM
+  — see that document for the full before/after).
+
+### Why
+Requested as a direct, immediate fix for the highest-priority finding
+identified in the 2026-07-19 threat model revision, ahead of publishing that
+revision (see prior conversation: don't publish a live unpatched CRITICAL
+finding with exploit detail — fix first, then disclose).
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout **only for existing Phase 2 (multi-cluster)
+      deployments** — they must additionally apply
+      `deploy/scout/secrets-reader-rbac.yaml` (or re-run
+      `bindy bootstrap scout --remote-secret <name>`) or Scout will start
+      failing to read its remote kubeconfig Secret with an RBAC-forbidden
+      error once this ships. Same-cluster-only deployments are unaffected.
+- [ ] Config change only
+- [ ] Documentation only
+
+---
+
+## [2026-07-19] - Security remediation roadmap from threat-model audit
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/roadmaps/security-remediation-roadmap.md`: prioritized fix roadmap
+  derived from a code-vs-threat-model audit of RBAC, secret handling, config
+  injection, pod hardening, admission policies, CI/CD supply chain, and the
+  Scout controller. Captures P0–P3 code/RBAC fixes plus a threat-model
+  reconciliation table for the documentation drift found in both directions
+  (controls claimed-but-absent and implemented-but-marked-missing).
+
+### Why
+`docs/src/security/threat-model.md` (v1.1) had drifted from the shipped code.
+The roadmap records the actionable gaps and the doc corrections needed for
+SOX/PCI/Basel auditability.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
+## [2026-07-19] - Scout: namespace whitelisting via `--namespace-selector`
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/scout.rs`: new `--namespace-selector <SELECTOR>` CLI flag /
+  `BINDY_SCOUT_NAMESPACE_SELECTOR` env var (CLI takes precedence). When set, a
+  source object's namespace must match this Kubernetes label selector **in
+  addition to** the object's own opt-in annotation before Scout will act on it
+  — a genuine two-factor opt-in (platform-level namespace label + tenant-level
+  resource annotation). Implemented via `namespace_matches_selector` /
+  `source_namespace_eligible`, which delegate label-selector matching to the
+  API server (a `List` scoped to the single namespace by name via a field
+  selector combined with the caller's label selector) rather than
+  reimplementing selector-matching logic client-side.
+  - **Default unchanged when unset**: every namespace remains eligible,
+    exactly as before — no breaking change for existing deployments that don't
+    opt in. Scout logs a `warn!` on startup when no selector is configured,
+    since running without one is not recommended for production.
+  - Wired into all 5 reconcilers (Ingress, Service, HTTPRoute, TLSRoute,
+    TCPRoute): combined (AND) with the existing `is_scout_opted_in` check, so
+    a namespace losing the label is treated exactly like the annotation being
+    removed — existing ARecords are cleaned up and the finalizer released.
+- `src/bootstrap.rs` + `deploy/scout/clusterrole.yaml`: new `namespaces: get,
+  list` RBAC rule (read-only; Scout never mutates Namespaces).
+- `src/bootstrap_tests.rs`: assert the namespaces rule exists and is strictly
+  read-only.
+- `docs/src/guide/scout.md`: new "Namespace Whitelisting" section — documents
+  the flag/env var, the "label before you flip it on" migration note (this is
+  a behavior change if introduced onto an existing deployment with unlabeled
+  namespaces), and an explicit statement of what this does and does not
+  reduce (operating footprint yes, RBAC ceiling no — the `ClusterRole`'s
+  cluster-wide `secrets:get` and Ingress/Service/route `patch`/`update` are
+  unchanged). Also backfilled the missing `secrets` RBAC rule in the first
+  "RBAC Requirements" YAML block, which had drifted from the real manifest.
+- `docs/src/security/threat-model.md`: updated to reflect this as a new,
+  partial mitigation for the Scout threats (T4/I4/E4/Scenario 6) — see the
+  next entry below for the full threat-model revision.
+
+### Why
+Requested to reduce Scout's default operating scope: today any tenant in any
+namespace can cause Scout to create DNS records simply by annotating their own
+Ingress/Service/route. A namespace-level label whitelist adds a platform-level
+gate before that tenant-level opt-in takes effect, without breaking existing
+deployments that haven't adopted it. This does not close the larger, separately
+tracked gap (Scout's `ClusterRole` still holds an unscoped cluster-wide
+`secrets:get` — see the threat model's M-25).
+
+### Impact
+- [ ] Breaking change (only if `--namespace-selector` is *newly enabled* on an
+      already-running deployment with unlabeled namespaces — see the doc's
+      migration note)
+- [ ] Requires cluster rollout
+- [x] Config change only (new opt-in flag; default behavior unchanged)
+- [ ] Documentation only
+
+---
+
+## [2026-07-19 23:15] - ADR-0002 + docs: Scout deployment topology for CAPI/k0rdent fleets
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0002-scout-deployment-topology.md`: ADR (Accepted) — in a
+  queenship/drone (CAPI management/child) fleet, Scout runs inside every
+  drone cluster plus one on the queenship (Option A), never centralized on
+  the queenship with mounted CAPI kubeconfigs (Option B). Rationale: a
+  queenship-resident Scout must hold drone cluster-admin kubeconfigs, and
+  combined with cluster-wide `secrets: get` (threat model I4) one pod
+  compromise exposes every drone of every tenant; Option A bounds compromise
+  to one tenant's DNS-record surface.
+- `docs/src/guide/scout-topology.md`: user guide for the queenship/drone
+  model — topology comparison table, mermaid diagram, hardening checklist
+  (I4 scoped RBAC, per-drone Bindy-side identities, zone admission policy,
+  egress), and k0rdent ServiceTemplate/MultiClusterService rollout guidance.
+- `docs/mkdocs.yml`: nav entry "Scout Topology (CAPI/k0rdent)" under User
+  Guide, after Scout.
+
+### Why
+Decision from the deployment-topology discussion: distributing Scout to
+drones keeps credential direction low-privilege (pointing *at* the Bindy
+cluster) instead of concentrating drone cluster-admin credentials on the
+queenship.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
+## [2026-07-19 21:40] - Fix stale contributor tooling references in .claude/ docs (#420)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.claude/CLAUDE.md`: `deploy/crds/` → `deploy/operator/crds/` (3 places);
+  `mdbook build` → `mkdocs build`; File Organization tree updated to the
+  modular layout (`src/bind9/`, `src/reconcilers/{bind9cluster,bind9instance,records}/`)
+  and docs tree now shows `mkdocs.yml` + MkDocs source instead of mdBook.
+- `.claude/SKILL.md`: `deploy/crds/` → `deploy/operator/crds/` in
+  `verify-crd-sync`, `regen-crds`, `add-new-crd`, and `pre-commit-checklist`;
+  `build-docs` steps rewritten to match the actual `make docs` recipe
+  (Poetry install → crddoc → rustdoc → `poetry run mkdocs build` → rustdoc
+  copy into `docs/site/rustdoc/`); output path corrected `docs/book/` →
+  `docs/site/index.html`.
+- `.claude/rules/documentation.md`: same two corrections (CRD path, mkdocs).
+- `.claude/optimization-recommendations.md`: CRD path corrected (2 places).
+
+### Why
+Fixes firestoned/bindy#420 — contributor docs had drifted from the code:
+the repo builds docs with MkDocs/Poetry (`docs/mkdocs.yml`), CRDs are
+generated into `deploy/operator/crds/`, and `src/bind9` plus most
+reconcilers are module directories, not flat files.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+---
+
 ## [2026-07-19 21:05] - Fix rebuild workflow: stale rust-cache restore clobbered x86_64 binary
 
 **Author:** Erick Bourgeois
