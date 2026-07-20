@@ -57,28 +57,38 @@ finding with exploit detail — fix first, then disclose).
 
 ---
 
-## [2026-07-19] - Security remediation roadmap from threat-model audit
+## [2026-07-19] - Scout: don't strand tenant objects when remote cleanup fails (P1-1)
 
 **Author:** Erick Bourgeois
 
-### Added
-- `docs/roadmaps/security-remediation-roadmap.md`: prioritized fix roadmap
-  derived from a code-vs-threat-model audit of RBAC, secret handling, config
-  injection, pod hardening, admission policies, CI/CD supply chain, and the
-  Scout controller. Captures P0–P3 code/RBAC fixes plus a threat-model
-  reconciliation table for the documentation drift found in both directions
-  (controls claimed-but-absent and implemented-but-marked-missing).
+### Changed
+- `src/scout.rs`: on deletion of an opted-in Ingress/Service/HTTPRoute/TLSRoute/
+  TCPRoute, remote ARecord cleanup is now **best-effort with a grace period**
+  instead of a hard precondition for finalizer removal. Previously the deletion
+  path propagated any remote-client error with `?` **before** removing the Scout
+  finalizer, so a broken/expired Phase-2 kubeconfig (or any remote-cluster
+  outage) left the finalizer in place and stranded the tenant object in
+  `Terminating` — cluster-wide, since Scout adds the finalizer in every
+  namespace. Cleanup failures now requeue and retry for
+  `REMOTE_CLEANUP_GRACE_SECS` (300s); past the grace window Scout releases the
+  finalizer anyway (logging that remote ARecords may be orphaned and must be
+  reconciled separately), so an unreachable remote can no longer block deletions.
+- New pure helper `cleanup_grace_expired(deletion_timestamp, now)` (jiff
+  `Timestamp`-based, handles clock skew) drives the decision; applied uniformly
+  across all five reconcilers.
+- `src/scout_tests.rs`: 5 new unit tests covering the not-deleting, within-grace,
+  boundary, past-grace, and future-timestamp (clock-skew) cases.
 
 ### Why
-`docs/src/security/threat-model.md` (v1.1) had drifted from the shipped code.
-The roadmap records the actionable gaps and the doc corrections needed for
-SOX/PCI/Basel auditability.
+Closes finding P1-1 from the security-remediation roadmap: an availability gap
+(STRIDE Denial-of-Service) where a single broken remote-cluster connection could
+block deletion of tenant Ingress/Service/route objects across the whole cluster.
 
 ### Impact
 - [ ] Breaking change
 - [ ] Requires cluster rollout
 - [ ] Config change only
-- [x] Documentation only
+- [x] Behavior change (deletion no longer blocks indefinitely on remote failure)
 
 ---
 

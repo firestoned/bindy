@@ -279,7 +279,7 @@ make docs && kubectl apply --dry-run=client -f examples/
 - `src/bin/` - Binary utilities (crdgen, crddoc)
 
 **Documentation:**
-- `docs/roadmaps/` - ALL roadmaps and planning docs (MANDATORY location)
+- Roadmaps and planning docs are stored EXTERNAL to this repo (never committed here)
 - `docs/adr/` - Architecture Decision Records
 - `docs/src/` - User-facing documentation
 
