@@ -1,3 +1,30 @@
+## [2026-07-21] - Fix CI: cargo fmt and clippy failures in PR #445's new gateway-resolution tests
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/scout_tests.rs`: reformatted the `assert!` in
+  `test_gateway_status_addresses_resolved_without_gateway_services` to satisfy
+  `cargo fmt --check` (line exceeded the wrap width as a single statement).
+- `src/scout_tests.rs`: replaced
+  `empty_services.get(&gw.spec.gateway_class_name).is_none()` with
+  `!empty_services.contains_key(&gw.spec.gateway_class_name)` in
+  `test_gateway_status_addresses_resolved_without_gateway_services` to satisfy
+  `clippy::unnecessary_get_then_check` (`-D warnings`).
+
+### Why
+PR #445's `Check Formatting` job failed, which meant `Clippy` never ran
+(skipped downstream of the fmt failure) and would have failed too. Both are
+pre-existing style/lint issues in the PR's new test code, unrelated to the
+`resolve_ips_from_gateways` logic fix itself.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Test-code-only fix (fmt/clippy compliance, no behavior change)
+
+---
+
 ## [2026-07-19] - Fix M-25: Scout's cluster-wide Secret read scoped to a single namespaced Secret
 
 **Author:** Erick Bourgeois
