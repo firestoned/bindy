@@ -99,7 +99,7 @@ jobs:
       # restores a cache over target/ and a stale restore clobbers the freshly
       # built x86_64 binary (root cause of the v0.3.3/v0.4.0 leg failures).
       - name: Setup Rust build environment (x86_64)
-        uses: firestoned/github-actions/rust/setup-rust-build@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        uses: firestoned/github-actions/rust/setup-rust-build@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
         with:
           target: x86_64-unknown-linux-gnu
           cache-key: ${{ matrix.tag }}
@@ -116,7 +116,7 @@ jobs:
           cp target/x86_64-unknown-linux-gnu/release/bindy binaries/amd64/bindy
 
       - name: Setup Rust build environment (aarch64)
-        uses: firestoned/github-actions/rust/setup-rust-build@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        uses: firestoned/github-actions/rust/setup-rust-build@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
         with:
           target: aarch64-unknown-linux-gnu
           cache-key: ${{ matrix.tag }}
