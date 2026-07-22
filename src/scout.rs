@@ -1192,28 +1192,31 @@ async fn resolve_ip_from_gateway_service(
 /// Follows a route's `parentRefs` back to the serving Gateway(s) and resolves
 /// their external IP(s).
 ///
-/// For each `parentRef` that points at a Gateway whose `gatewayClassName` is in
-/// the operator-configured `gateway_services` map (the "running gateway
-/// class"), Scout resolves the IP by:
-///   1. reading the Gateway's `status.addresses` (IP-typed) when present, else
-///   2. reading the mapped LoadBalancer Service's external IP.
+/// For each `parentRef` that resolves to a Gateway, Scout resolves the IP by:
+///   1. reading the Gateway's `status.addresses` (IP-typed) — no extra
+///      configuration required; works as long as the gateway controller
+///      populates its own status.
+///   2. if `status.addresses` is empty, looking up the gateway class in the
+///      operator-configured `gateway_services` map and reading the external IP
+///      of the mapped LoadBalancer Service.
 ///
-/// Returns the de-duplicated IPs in discovery order, or `None` when nothing is
-/// configured or nothing resolves. Individual lookup failures are logged and
-/// skipped so one unreachable Gateway does not blank out the others.
+/// Returns the de-duplicated IPs in discovery order, or `None` when nothing
+/// resolves. Individual lookup failures are logged and skipped so one
+/// unreachable Gateway does not blank out the others.
 ///
 /// # Arguments
 /// * `client` - Local cluster client (Gateways and Services live on the workload cluster)
 /// * `route_namespace` - Namespace of the route, used as the default parentRef namespace
 /// * `parent_refs` - The route's `spec.parentRefs`
-/// * `gateway_services` - Operator-configured `gatewayClass → Service` map / allow-list
+/// * `gateway_services` - Optional fallback map: `gatewayClass → Service` used only when
+///   `status.addresses` is absent
 pub async fn resolve_ips_from_gateways(
     client: &Client,
     route_namespace: &str,
     parent_refs: &[ParentReference],
     gateway_services: &BTreeMap<String, GatewayServiceTarget>,
 ) -> Option<Vec<String>> {
-    if gateway_services.is_empty() || parent_refs.is_empty() {
+    if parent_refs.is_empty() {
         return None;
     }
 
@@ -1229,21 +1232,22 @@ pub async fn resolve_ips_from_gateways(
             }
         };
 
-        let class = &gateway.spec.gateway_class_name;
-        let Some(target) = gateway_services.get(class) else {
-            debug!(gateway = %gw_ref.name, class = %class,
-                "Gateway class not in configured gateway-services — skipping");
-            continue;
-        };
-
-        // Prefer the Gateway's own advertised addresses when present.
+        // Prefer the Gateway's own advertised addresses when present — no
+        // gateway-services configuration needed for this path.
         let gw_ips = gateway_addresses_as_ips(&gateway);
         if !gw_ips.is_empty() {
             ips.extend(gw_ips);
             continue;
         }
 
-        // Otherwise hop to the mapped LoadBalancer Service for its external IP.
+        // status.addresses is empty — fall back to the mapped LoadBalancer
+        // Service if the gateway class is in the operator-configured map.
+        let class = &gateway.spec.gateway_class_name;
+        let Some(target) = gateway_services.get(class) else {
+            debug!(gateway = %gw_ref.name, class = %class,
+                "Gateway has no status.addresses and class not in configured gateway-services — skipping");
+            continue;
+        };
         if let Some(ip) = resolve_ip_from_gateway_service(client, target).await {
             ips.push(ip);
         }

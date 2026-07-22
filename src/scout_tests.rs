@@ -1924,6 +1924,74 @@ mod tests {
         // Non-Gateway kind and non-Gateway-API group are both excluded.
         assert!(gateway_parent_refs(&refs, "app-ns").is_empty());
     }
+
+    // -------------------------------------------------------------------------
+    // resolve_ips_from_gateways — pure sub-logic tests
+    //
+    // The full async function requires a kube::Client and is not unit-tested
+    // here. These tests verify the two decision paths it now takes:
+    //
+    //   Path 1 — Gateway has status.addresses → use them directly.
+    //             No gateway_services configuration required.
+    //   Path 2 — status.addresses is empty → consult gateway_services map.
+    //             The class must be present in the map for fallback to work.
+    //
+    // Previously the function returned None immediately when gateway_services
+    // was empty, blocking Path 1 entirely.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_gateway_status_addresses_resolved_without_gateway_services() {
+        // Path 1: gateway has IPs in status.addresses — gateway_addresses_as_ips
+        // must return them regardless of whether gateway_services is configured.
+        let gw = gateway_fixture(
+            "traefik",
+            serde_json::json!([{"type": "IPAddress", "value": "10.186.195.24"}]),
+        );
+        let empty_services: std::collections::BTreeMap<String, GatewayServiceTarget> =
+            std::collections::BTreeMap::new();
+
+        let ips = gateway_addresses_as_ips(&gw);
+
+        assert!(
+            !ips.is_empty(),
+            "status.addresses should be read even when gateway_services is empty"
+        );
+        assert_eq!(ips, vec!["10.186.195.24".to_string()]);
+        // Empty map provides no fallback — but the status.addresses path doesn't need it.
+        assert!(!empty_services.contains_key(&gw.spec.gateway_class_name));
+    }
+
+    #[test]
+    fn test_gateway_fallback_to_services_when_no_status_addresses() {
+        // Path 2: status.addresses is empty — the class must be in gateway_services
+        // for the fallback LB-service lookup to proceed.
+        let gw = gateway_fixture("traefik", serde_json::json!([]));
+
+        assert!(
+            gateway_addresses_as_ips(&gw).is_empty(),
+            "fixture has no status.addresses"
+        );
+        let services = parse_gateway_services("traefik=traefik/traefik-ssc-01");
+        assert!(
+            services.contains_key(&gw.spec.gateway_class_name),
+            "class must be in gateway_services for LB-service fallback"
+        );
+    }
+
+    #[test]
+    fn test_gateway_fallback_skipped_when_class_not_in_services() {
+        // Path 2 miss: status.addresses empty AND class absent from map → no IP.
+        let gw = gateway_fixture("traefik", serde_json::json!([]));
+
+        assert!(gateway_addresses_as_ips(&gw).is_empty());
+        let services = parse_gateway_services("cilium=kube-system/cilium-gw");
+        assert!(
+            !services.contains_key(&gw.spec.gateway_class_name),
+            "traefik class absent from services map — no fallback"
+        );
+    }
+
     #[test]
     fn test_reconcile_tcproute_smoke_builds_arecord_from_annotation() {
         // Smoke test: verify reconcile_tcproute's code path — get_record_name_annotation drives
