@@ -47,7 +47,7 @@ k8s-openapi = { version = "0.28", features = ["v1_32", "schemars"] }
 # (C/assembly). "rustls-no-provider" leaves the crypto backend unset so reqwest
 # uses the process-default provider, which we install as ring in main.rs.
 reqwest = { version = "0.13", features = ["json", "rustls-no-provider"], default-features = false }
-base64 = "0.22"
+base64 = "0.23"
 rand = "0.10"
 hickory-net = { version = "0.26", features = ["dnssec-ring"] }
 hickory-proto = { version = "0.26", features = ["dnssec-ring"] }
