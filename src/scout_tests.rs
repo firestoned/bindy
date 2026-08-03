@@ -8,20 +8,69 @@ mod tests {
     use crate::crd::DNSZone;
     use crate::scout::{
         arecord_cr_name, arecord_label_selector, build_service_arecord, build_tcproute_arecord,
-        check_zone_authorization, derive_record_name, gateway_addresses_as_ips,
-        gateway_parent_refs, get_record_name_annotation, get_zone_annotation, has_finalizer,
-        is_arecord_enabled, is_being_deleted, is_loadbalancer_service, is_scout_opted_in,
-        parse_gateway_service_entry, parse_gateway_services, resolve_ip_from_service_lb_status,
-        resolve_ips, resolve_ips_from_annotation, resolve_record_name, resolve_zone,
-        service_arecord_cr_name, service_arecord_label_selector, service_ref_from_str,
-        stale_arecord_label_selector, stale_tcproute_arecord_label_selector,
-        tcproute_arecord_cr_name, tcproute_arecord_label_selector, zone_allows_source_namespace,
-        Gateway, GatewayServiceTarget, NamespacedName, ParentReference, ServiceARecordParams,
+        check_zone_authorization, cleanup_grace_expired, derive_record_name,
+        gateway_addresses_as_ips, gateway_parent_refs, get_record_name_annotation,
+        get_zone_annotation, has_finalizer, is_arecord_enabled, is_being_deleted,
+        is_loadbalancer_service, is_scout_opted_in, parse_gateway_service_entry,
+        parse_gateway_services, resolve_ip_from_service_lb_status, resolve_ips,
+        resolve_ips_from_annotation, resolve_record_name, resolve_zone, service_arecord_cr_name,
+        service_arecord_label_selector, service_ref_from_str, stale_arecord_label_selector,
+        stale_tcproute_arecord_label_selector, tcproute_arecord_cr_name,
+        tcproute_arecord_label_selector, zone_allows_source_namespace, Gateway,
+        GatewayServiceTarget, NamespacedName, ParentReference, ServiceARecordParams,
         TCPRouteARecordParams, ZoneAuthz, FINALIZER_SCOUT, LABEL_MANAGED_BY,
         LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER, LABEL_SOURCE_NAME, LABEL_SOURCE_NAMESPACE,
-        LABEL_ZONE,
+        LABEL_ZONE, REMOTE_CLEANUP_GRACE_SECS,
     };
+    use k8s_openapi::jiff::{SignedDuration, Timestamp};
     use std::sync::Arc;
+
+    /// Fixed reference instant (2026-07-19T12:00:00Z) for deterministic
+    /// grace-period tests.
+    fn fixed_now() -> Timestamp {
+        "2026-07-19T12:00:00Z".parse().unwrap()
+    }
+
+    /// `now` shifted by `secs` seconds (negative = into the past).
+    fn shifted(now: Timestamp, secs: i64) -> Timestamp {
+        now + SignedDuration::from_secs(secs)
+    }
+
+    #[test]
+    fn test_cleanup_grace_not_expired_when_not_being_deleted() {
+        // No deletion timestamp → nothing is terminating, so never "expired".
+        assert!(!cleanup_grace_expired(None, fixed_now()));
+    }
+
+    #[test]
+    fn test_cleanup_grace_not_expired_within_window() {
+        let now = fixed_now();
+        let started = shifted(now, -(REMOTE_CLEANUP_GRACE_SECS - 1));
+        assert!(!cleanup_grace_expired(Some(&Time(started)), now));
+    }
+
+    #[test]
+    fn test_cleanup_grace_expired_at_boundary() {
+        // Exactly at the grace boundary counts as expired (>=).
+        let now = fixed_now();
+        let started = shifted(now, -REMOTE_CLEANUP_GRACE_SECS);
+        assert!(cleanup_grace_expired(Some(&Time(started)), now));
+    }
+
+    #[test]
+    fn test_cleanup_grace_expired_past_window() {
+        let now = fixed_now();
+        let started = shifted(now, -(REMOTE_CLEANUP_GRACE_SECS + 60));
+        assert!(cleanup_grace_expired(Some(&Time(started)), now));
+    }
+
+    #[test]
+    fn test_cleanup_grace_not_expired_for_future_timestamp() {
+        // Clock skew: a deletion timestamp in the future must not read as expired.
+        let now = fixed_now();
+        let started = shifted(now, 10);
+        assert!(!cleanup_grace_expired(Some(&Time(started)), now));
+    }
 
     /// Build a minimal valid `DNSZone` fixture in `namespace` with the given
     /// annotations JSON object (`serde_json::Value::Null` for none).
@@ -1875,6 +1924,74 @@ mod tests {
         // Non-Gateway kind and non-Gateway-API group are both excluded.
         assert!(gateway_parent_refs(&refs, "app-ns").is_empty());
     }
+
+    // -------------------------------------------------------------------------
+    // resolve_ips_from_gateways — pure sub-logic tests
+    //
+    // The full async function requires a kube::Client and is not unit-tested
+    // here. These tests verify the two decision paths it now takes:
+    //
+    //   Path 1 — Gateway has status.addresses → use them directly.
+    //             No gateway_services configuration required.
+    //   Path 2 — status.addresses is empty → consult gateway_services map.
+    //             The class must be present in the map for fallback to work.
+    //
+    // Previously the function returned None immediately when gateway_services
+    // was empty, blocking Path 1 entirely.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_gateway_status_addresses_resolved_without_gateway_services() {
+        // Path 1: gateway has IPs in status.addresses — gateway_addresses_as_ips
+        // must return them regardless of whether gateway_services is configured.
+        let gw = gateway_fixture(
+            "traefik",
+            serde_json::json!([{"type": "IPAddress", "value": "10.186.195.24"}]),
+        );
+        let empty_services: std::collections::BTreeMap<String, GatewayServiceTarget> =
+            std::collections::BTreeMap::new();
+
+        let ips = gateway_addresses_as_ips(&gw);
+
+        assert!(
+            !ips.is_empty(),
+            "status.addresses should be read even when gateway_services is empty"
+        );
+        assert_eq!(ips, vec!["10.186.195.24".to_string()]);
+        // Empty map provides no fallback — but the status.addresses path doesn't need it.
+        assert!(!empty_services.contains_key(&gw.spec.gateway_class_name));
+    }
+
+    #[test]
+    fn test_gateway_fallback_to_services_when_no_status_addresses() {
+        // Path 2: status.addresses is empty — the class must be in gateway_services
+        // for the fallback LB-service lookup to proceed.
+        let gw = gateway_fixture("traefik", serde_json::json!([]));
+
+        assert!(
+            gateway_addresses_as_ips(&gw).is_empty(),
+            "fixture has no status.addresses"
+        );
+        let services = parse_gateway_services("traefik=traefik/traefik-ssc-01");
+        assert!(
+            services.contains_key(&gw.spec.gateway_class_name),
+            "class must be in gateway_services for LB-service fallback"
+        );
+    }
+
+    #[test]
+    fn test_gateway_fallback_skipped_when_class_not_in_services() {
+        // Path 2 miss: status.addresses empty AND class absent from map → no IP.
+        let gw = gateway_fixture("traefik", serde_json::json!([]));
+
+        assert!(gateway_addresses_as_ips(&gw).is_empty());
+        let services = parse_gateway_services("cilium=kube-system/cilium-gw");
+        assert!(
+            !services.contains_key(&gw.spec.gateway_class_name),
+            "traefik class absent from services map — no fallback"
+        );
+    }
+
     #[test]
     fn test_reconcile_tcproute_smoke_builds_arecord_from_annotation() {
         // Smoke test: verify reconcile_tcproute's code path — get_record_name_annotation drives

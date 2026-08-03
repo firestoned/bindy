@@ -82,14 +82,18 @@ After code changes: run `cargo fmt`, `cargo clippy`, `cargo test`, then inform t
 
 ---
 
-## 🚨 Plans and Roadmaps → `docs/roadmaps/`
+## 🚨 NO Roadmaps or Planning Docs in This Repo
 
-ALL planning documents MUST go in `docs/roadmaps/`. Filenames: **lowercase**, **hyphens only** (no underscores, no uppercase).
+Do **NOT** create or commit roadmap / planning / analysis / design documents
+anywhere in this repository — not in `docs/roadmaps/`, not anywhere else. These
+must remain **external** to the repo.
 
 ```
-✅ docs/roadmaps/integration-test-plan.md
-❌ ROADMAP.md  ❌ docs/roadmaps/ZONES_FROM_LABEL_SELECTOR.md  ❌ docs/roadmaps/Phase_3.md
+❌ docs/roadmaps/anything.md   ❌ ROADMAP.md   ❌ docs/plans/*.md
 ```
+
+The external storage location is a personal preference kept in global settings,
+not in this repo.
 
 ---
 
@@ -220,7 +224,7 @@ src/
 └── bin/ (crdgen.rs, crddoc.rs)
 
 docs/
-├── roadmaps/   ← ALL planning docs here (lowercase-hyphen filenames)
+├── (NO roadmaps/ — planning docs are stored external to this repo)
 ├── adr/        ← Architecture Decision Records
 ├── mkdocs.yml  ← MkDocs config (Poetry-managed; build via `make docs`)
 └── src/        ← MkDocs source (docs_dir)
