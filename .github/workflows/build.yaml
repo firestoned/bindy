@@ -109,7 +109,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Check license headers
-        uses: firestoned/github-actions/security/license-check@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        uses: firestoned/github-actions/security/license-check@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
         with:
           copyright-holder: "Erick Bourgeois, firestoned"
           license-id: "MIT"
