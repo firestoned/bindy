@@ -97,3 +97,36 @@ AVD-KSV-0056
 #   Inspect examples/bind9-cluster-with-rotation.yaml lines 183-241 to verify no secret data is stored.
 #
 AVD-KSV-0109
+
+# ============================================================
+# Container Image - OpenSSL QUIC Server DoS (HIGH)
+# ============================================================
+# CVE: CVE-2026-14456 - OpenSSL: Denial of Service via unbounded memory growth
+#   in QUIC server
+# Affected Image: ghcr.io/firestoned/bindy:latest-distroless
+#   (libssl3t64@3.5.6-1~deb13u2, copied from the debian:13-slim builder)
+# Tracking: https://github.com/firestoned/bindy/issues/459
+#
+# JUSTIFICATION:
+#   1. NO FIX AVAILABLE - Debian security team marked this CVE "<postponed>"
+#      for trixie ("Minor issue, fix along with future update"). No patched
+#      libssl3t64 exists in Debian 13, so a rebuild cannot remediate it.
+#      See: https://security-tracker.debian.org/tracker/CVE-2026-14456
+#   2. UNREACHABLE CODE PATH - The flaw only affects an OpenSSL QUIC *server*
+#      (Listener SSL object). Neither the bindy operator (Rust, no QUIC) nor
+#      BIND9 named as packaged here acts as a QUIC server listener, so the
+#      vulnerable allocation path is never exercised.
+#   3. The Chainguard variant (ghcr.io/firestoned/bindy:latest) is the
+#      recommended production image and is rebuilt daily with patches.
+#
+# MITIGATIONS:
+#   1. Distroless runtime has no shell/package manager - minimal attack surface
+#   2. Operator and BIND9 do not listen on QUIC (UDP/443) server sockets
+#   3. Daily scheduled Trivy scans re-check for a fixed Debian package; this
+#      suppression MUST be removed once trixie ships a patched libssl3t64
+#
+# RISK ACCEPTANCE:
+#   Accepted until Debian publishes a fixed openssl for trixie, matching the
+#   Debian security team's own "minor issue" assessment.
+#
+CVE-2026-14456

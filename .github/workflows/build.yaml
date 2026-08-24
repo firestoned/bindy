@@ -385,11 +385,13 @@ jobs:
         variant:
           - name: Chainguard
             dockerfile: docker/Dockerfile.chainguard
+            suffix: ""
             description: "Chainguard Zero-CVE (glibc, ~15MB, FIPS-ready)"
             image-tag: ${{ needs.extract-version.outputs.image-tag-chainguard }}
             image-repository: ${{ needs.extract-version.outputs.image-repository-chainguard }}
           - name: Distroless
             dockerfile: docker/Dockerfile
+            suffix: "-distroless"
             description: "Google Distroless (glibc, ~20MB)"
             image-tag: ${{ needs.extract-version.outputs.image-tag-distroless }}
             image-repository: ${{ needs.extract-version.outputs.image-repository-distroless }}
@@ -411,12 +413,16 @@ jobs:
         uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6
         with:
           images: ghcr.io/${{ matrix.variant.image-repository }}
-          # `main-<date>` and `latest` only on pushes to main.
+          # `main`, `main-<date>` and `latest` only on pushes to main. Every
+          # floating tag carries the variant suffix so the two matrix legs never
+          # overwrite each other (`latest` used to race between Chainguard and
+          # Distroless, and `latest-distroless`/`main[-distroless]` never existed).
           tags: |
             type=raw,value=${{ matrix.variant.image-tag }}
-            type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}
-            type=raw,value=main-{{date 'YYYY-MM-DD'}},enable=${{ github.event_name == 'push' }}
-            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
+            type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}${{ matrix.variant.suffix }}
+            type=raw,value=main-{{date 'YYYY-MM-DD'}}${{ matrix.variant.suffix }},enable=${{ github.event_name == 'push' }}
+            type=raw,value=main${{ matrix.variant.suffix }},enable=${{ github.event_name == 'push' }}
+            type=raw,value=latest${{ matrix.variant.suffix }},enable=${{ github.event_name == 'push' }}
           flavor: |
             latest=false
 
