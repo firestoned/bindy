@@ -190,7 +190,7 @@ jobs:
       - name: Extract version for Chainguard (pr/main)
         id: version-chainguard
         if: github.event_name != 'release'
-        uses: firestoned/github-actions/versioning/extract-version@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        uses: firestoned/github-actions/versioning/extract-version@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
         with:
           repository: firestoned/bindy
           workflow-type: ${{ github.event_name == 'pull_request' && 'pr' || 'main' }}
@@ -200,7 +200,7 @@ jobs:
       - name: Extract version for Distroless (pr/main)
         id: version-distroless
         if: github.event_name != 'release'
-        uses: firestoned/github-actions/versioning/extract-version@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        uses: firestoned/github-actions/versioning/extract-version@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
         with:
           repository: firestoned/bindy
           workflow-type: ${{ github.event_name == 'pull_request' && 'pr' || 'main' }}
@@ -210,7 +210,7 @@ jobs:
       - name: Extract version for Chainguard (release)
         id: version-chainguard-release
         if: github.event_name == 'release'
-        uses: firestoned/github-actions/versioning/extract-version@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        uses: firestoned/github-actions/versioning/extract-version@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
         with:
           repository: firestoned/bindy
           workflow-type: release
@@ -220,7 +220,7 @@ jobs:
       - name: Extract version for Distroless (release)
         id: version-distroless-release
         if: github.event_name == 'release'
-        uses: firestoned/github-actions/versioning/extract-version@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        uses: firestoned/github-actions/versioning/extract-version@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
         with:
           repository: firestoned/bindy
           workflow-type: release
