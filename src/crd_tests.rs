@@ -155,6 +155,7 @@ mod tests {
                 image: None,
                 config_map_refs: None,
                 global: Some(Bind9Config {
+                    rate_limit: None,
                     recursion: Some(false),
                     allow_query: None,
                     allow_transfer: None,
@@ -299,6 +300,7 @@ mod tests {
     #[test]
     fn test_bind9_config() {
         let config = Bind9Config {
+            rate_limit: None,
             recursion: Some(false),
             allow_query: Some(vec!["0.0.0.0/0".into()]),
             allow_transfer: Some(vec!["10.0.0.0/8".into()]),
@@ -339,6 +341,7 @@ mod tests {
             image: None,
             config_map_refs: None,
             config: Some(Bind9Config {
+                rate_limit: None,
                 recursion: Some(false),
                 allow_query: None,
                 allow_transfer: None,
