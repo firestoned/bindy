@@ -34,6 +34,8 @@ spec:
     forwarders: [string]
     listenOn: [string]
     listenOnV6: [string]
+    rateLimit:                # Optional, Response Rate Limiting (on by default)
+      responsesPerSecond: integer
   primaryServers: [string]    # Required for secondary role
 ```
 
@@ -414,6 +416,36 @@ spec:
     listenOnV6:
       - "any"              # All IPv6 interfaces
       - "2001:db8::1"      # Specific IPv6
+```
+
+#### global.rateLimit
+**Type**: object
+**Required**: No
+**Default**: `responsesPerSecond: 15` (Response Rate Limiting is **on by default**)
+
+Configures BIND9 Response Rate Limiting (RRL), which throttles identical
+authoritative responses per client source prefix (an IPv4 /24 by default) to
+mitigate DNS amplification and reflection attacks. Because it applies only to
+authoritative answers and is scoped per source prefix, the conservative default
+rarely affects legitimate clients.
+
+Rendered into `named.conf.options` as `rate-limit { responses-per-second N; }`.
+Set `responsesPerSecond: 0` to disable RRL entirely (no `rate-limit` block is
+emitted). Instance-level `spec.config.rateLimit` overrides the cluster
+`global.rateLimit` value.
+
+```yaml
+spec:
+  global:
+    rateLimit:
+      responsesPerSecond: 20   # Tune the cap; omit the block to use the default (15)
+```
+
+```yaml
+spec:
+  config:
+    rateLimit:
+      responsesPerSecond: 0    # Disable RRL for this instance
 ```
 
 ## Status Fields

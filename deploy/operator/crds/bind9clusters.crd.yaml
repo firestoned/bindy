@@ -816,6 +816,29 @@ spec:
                       type: string
                     nullable: true
                     type: array
+                  rateLimit:
+                    description: |-
+                      Response Rate Limiting (RRL) to mitigate DNS amplification/reflection.
+
+                      When unset, a conservative default is applied
+                      (`responses-per-second 15`). Set `responsesPerSecond: 0` to disable RRL
+                      entirely. Instance-level config overrides the cluster `global` value.
+
+                      See `RateLimitConfig`.
+                    nullable: true
+                    properties:
+                      responsesPerSecond:
+                        description: |-
+                          Maximum identical responses per second, per client source prefix.
+
+                          Rendered as BIND9's `rate-limit { responses-per-second N; }`. When unset,
+                          a conservative default of `15` is applied (RRL is on by default). Set to
+                          `0` to disable RRL entirely — no `rate-limit` block is emitted.
+                        format: uint32
+                        minimum: 0.0
+                        nullable: true
+                        type: integer
+                    type: object
                   recursion:
                     description: |-
                       Enable or disable recursive DNS queries

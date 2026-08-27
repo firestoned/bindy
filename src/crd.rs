@@ -2288,6 +2288,42 @@ pub struct Bind9Config {
     /// This configuration is inherited by all instances unless overridden.
     #[serde(default)]
     pub bindcar_config: Option<BindcarConfig>,
+
+    /// Response Rate Limiting (RRL) to mitigate DNS amplification/reflection.
+    ///
+    /// When unset, a conservative default is applied
+    /// (`responses-per-second 15`). Set `responsesPerSecond: 0` to disable RRL
+    /// entirely. Instance-level config overrides the cluster `global` value.
+    ///
+    /// See `RateLimitConfig`.
+    #[serde(default)]
+    pub rate_limit: Option<RateLimitConfig>,
+}
+
+/// Response Rate Limiting (RRL) configuration.
+///
+/// BIND9 RRL throttles identical authoritative responses per client source
+/// prefix (an IPv4 /24 by default) to blunt DNS amplification and reflection
+/// attacks (threat model D1/D3). Because it applies only to authoritative
+/// answers and is scoped per source prefix, a modest per-second cap rarely
+/// affects legitimate clients.
+///
+/// # Example
+///
+/// ```yaml
+/// rateLimit:
+///   responsesPerSecond: 20
+/// ```
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RateLimitConfig {
+    /// Maximum identical responses per second, per client source prefix.
+    ///
+    /// Rendered as BIND9's `rate-limit { responses-per-second N; }`. When unset,
+    /// a conservative default of `15` is applied (RRL is on by default). Set to
+    /// `0` to disable RRL entirely — no `rate-limit` block is emitted.
+    #[serde(default)]
+    pub responses_per_second: Option<u32>,
 }
 
 /// DNSSEC (DNS Security Extensions) configuration
