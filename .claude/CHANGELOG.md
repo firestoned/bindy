@@ -25,6 +25,72 @@ pre-existing style/lint issues in the PR's new test code, unrelated to the
 
 ---
 
+## [2026-07-20] - BIND9 Response Rate Limiting, configurable, on by default (P1-3)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/crd.rs`: new `RateLimitConfig` struct with `responsesPerSecond: Option<u32>`,
+  exposed as `Bind9Config.rate_limit` (`spec.config.rateLimit` /
+  cluster `spec.global.rateLimit`).
+- `src/bind9_resources.rs`: `build_options_conf` now renders a
+  `rate-limit { responses-per-second N; }` block via `render_rate_limit`.
+  Response Rate Limiting is **on by default** — when `rateLimit` is unset the
+  conservative default `DEFAULT_RATE_LIMIT_RESPONSES_PER_SECOND = 15` is applied
+  (ISC's recommended starting point, per source /24). `responsesPerSecond: 0`
+  disables it (no block emitted). Instance overrides cluster `global`.
+- `templates/named.conf.options.tmpl`: new `{{RATE_LIMIT}}` placeholder.
+- `src/bind9_resources_tests.rs`: 4 tests (default-on, custom value, disabled-with-0,
+  default-when-no-config).
+- Regenerated CRDs (`deploy/operator/crds/*.crd.yaml`) and API docs; documented
+  in `docs/src/reference/bind9instance-spec.md`.
+
+### Why
+Closes finding P1-3 from the security-remediation roadmap. The threat model
+(M-08) claimed BIND9 rate limiting was implemented, but no `rate-limit` directive
+was ever generated — a false assurance against DNS amplification/DDoS (D1/D3).
+This makes M-08 true.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (CRD update + new option in generated config)
+- [ ] Config change only
+- [x] Behavior change (RRL now enforced by default; set `responsesPerSecond: 0` to opt out)
+
+---
+
+## [2026-07-20] - Deny AXFR by default at the options level (P1-4)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/bind9_resources.rs`: `build_options_conf` now emits an explicit
+  `allow-transfer { none; };` (new const `DEFAULT_ALLOW_TRANSFER_NONE`) whenever
+  no transfer ACL is configured at the instance, role, or global level, instead
+  of omitting the directive. An omitted `allow-transfer` inherits BIND9's
+  built-in default of `allow-transfer { any; }`, so a standalone primary zone
+  with no secondaries and no explicit ACL was **open to AXFR from anyone**
+  (bulk zone enumeration — threat model I2; amplification — D3). Zones that need
+  transfers still get a zone-level ACL scoped to their secondary IPs
+  (`bind9::zone_ops`), which overrides this options-level default — replication
+  is unaffected.
+- `src/bind9_resources_tests.rs`: corrected `test_configmap_with_no_config_section`
+  (previously asserted the directive was absent) and added
+  `test_configmap_with_config_but_no_transfer_acl_denies_by_default`.
+
+### Why
+Closes finding P1-4 from the security-remediation roadmap: standalone primaries
+defaulted to AXFR-open, contradicting the model's "AXFR restricted to
+secondaries" posture (M-07).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Behavior change (zones without an explicit transfer ACL now deny AXFR by default)
+
+---
+
 ## [2026-07-19] - Fix M-25: Scout's cluster-wide Secret read scoped to a single namespaced Secret
 
 **Author:** Erick Bourgeois

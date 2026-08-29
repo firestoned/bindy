@@ -9,7 +9,9 @@ mod tests {
         build_configmap, build_deployment, build_labels_from_instance, build_service,
     };
     use crate::constants::KIND_BIND9_CLUSTER;
-    use crate::crd::{Bind9Config, Bind9Instance, Bind9InstanceSpec, DNSSECConfig};
+    use crate::crd::{
+        Bind9Config, Bind9Instance, Bind9InstanceSpec, DNSSECConfig, RateLimitConfig,
+    };
     use crate::labels::BINDY_MANAGED_BY_LABEL;
     use k8s_openapi::api::core::v1::ServiceSpec;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
@@ -31,6 +33,7 @@ mod tests {
                 image: None,
                 config_map_refs: None,
                 config: Some(Bind9Config {
+                    rate_limit: None,
                     recursion: Some(false),
                     allow_query: Some(vec!["0.0.0.0/0".into()]),
                     allow_transfer: Some(vec!["10.0.0.0/8".into()]),
@@ -699,10 +702,77 @@ mod tests {
         let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
-        // Defaults should be applied - recursion no, but NO allow-transfer directive
+        // Defaults should be applied - recursion no.
         assert!(options.contains("recursion no"));
-        // With no config, no allow-transfer directive should be present (BIND9's default: none)
-        assert!(!options.contains("allow-transfer"));
+        // With no config, allow-transfer must be explicitly denied rather than
+        // omitted: an omitted directive falls back to BIND9's default of
+        // `allow-transfer { any; }`, which would expose the zone to AXFR from
+        // anyone. Deny by default instead.
+        assert!(options.contains("allow-transfer { none; }"));
+    }
+
+    #[test]
+    fn test_configmap_with_config_but_no_transfer_acl_denies_by_default() {
+        // A config section exists (recursion/dnssec set) but no allow_transfer
+        // ACL and no cluster — the options-level default must still be `none`,
+        // not an omitted directive (which would inherit BIND9's `any` default).
+        let mut instance = create_test_instance("test");
+        instance.spec.config.as_mut().unwrap().allow_transfer = None;
+
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
+        let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
+
+        assert!(options.contains("allow-transfer { none; }"));
+    }
+
+    #[test]
+    fn test_configmap_rate_limit_on_by_default() {
+        // RRL is on by default: no rateLimit configured → conservative default.
+        let instance = create_test_instance("test");
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
+        let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
+
+        assert!(options.contains("rate-limit { responses-per-second 15; }"));
+    }
+
+    #[test]
+    fn test_configmap_rate_limit_custom_value() {
+        let mut instance = create_test_instance("test");
+        instance.spec.config.as_mut().unwrap().rate_limit = Some(RateLimitConfig {
+            responses_per_second: Some(50),
+        });
+
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
+        let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
+
+        assert!(options.contains("rate-limit { responses-per-second 50; }"));
+        assert!(!options.contains("responses-per-second 15"));
+    }
+
+    #[test]
+    fn test_configmap_rate_limit_disabled_with_zero() {
+        // responsesPerSecond: 0 disables RRL — no directive emitted.
+        let mut instance = create_test_instance("test");
+        instance.spec.config.as_mut().unwrap().rate_limit = Some(RateLimitConfig {
+            responses_per_second: Some(0),
+        });
+
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
+        let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
+
+        assert!(!options.contains("rate-limit"));
+    }
+
+    #[test]
+    fn test_configmap_rate_limit_default_when_no_config_section() {
+        // Even a config-less instance gets the default RRL (on by default).
+        let mut instance = create_test_instance("test");
+        instance.spec.config = None;
+
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
+        let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
+
+        assert!(options.contains("rate-limit { responses-per-second 15; }"));
     }
 
     #[test]
@@ -1519,6 +1589,7 @@ mod tests {
                     image: None,
                     config_map_refs: None,
                     global: Some(Bind9Config {
+                        rate_limit: None,
                         recursion: Some(true),
                         allow_query: None,
                         allow_transfer: None,
@@ -1924,6 +1995,7 @@ mod tests {
 
         // DNSSEC config exists but signing is not enabled
         let config = Bind9Config {
+            rate_limit: None,
             recursion: Some(false),
             allow_query: None,
             allow_transfer: None,
@@ -1945,6 +2017,7 @@ mod tests {
 
         // DNSSEC signing explicitly disabled
         let config = Bind9Config {
+            rate_limit: None,
             recursion: Some(false),
             allow_query: None,
             allow_transfer: None,
@@ -1983,6 +2056,7 @@ mod tests {
 
         // DNSSEC signing enabled with minimal config (all defaults)
         let config = Bind9Config {
+            rate_limit: None,
             recursion: Some(false),
             allow_query: None,
             allow_transfer: None,
@@ -2037,6 +2111,7 @@ mod tests {
 
         // DNSSEC signing enabled with custom values
         let config = Bind9Config {
+            rate_limit: None,
             recursion: Some(false),
             allow_query: None,
             allow_transfer: None,
@@ -2095,6 +2170,7 @@ mod tests {
 
         // Global config enables signing.
         let global_config = Bind9Config {
+            rate_limit: None,
             recursion: Some(false),
             allow_query: None,
             allow_transfer: None,
@@ -2123,6 +2199,7 @@ mod tests {
 
         // Instance config exists but carries no dnssec block at all.
         let instance_config = Bind9Config {
+            rate_limit: None,
             recursion: Some(true),
             allow_query: None,
             allow_transfer: None,
@@ -2149,6 +2226,7 @@ mod tests {
 
         // DNSSEC signing enabled with NSEC3
         let config = Bind9Config {
+            rate_limit: None,
             recursion: Some(false),
             allow_query: None,
             allow_transfer: None,
@@ -2198,6 +2276,7 @@ mod tests {
 
         // Global config with DNSSEC signing
         let global_config = Bind9Config {
+            rate_limit: None,
             recursion: Some(false),
             allow_query: None,
             allow_transfer: None,
@@ -2226,6 +2305,7 @@ mod tests {
 
         // Instance config overrides with different policy
         let instance_config = Bind9Config {
+            rate_limit: None,
             recursion: Some(false),
             allow_query: None,
             allow_transfer: None,
@@ -2292,6 +2372,7 @@ mod tests {
 
         // DNSSEC signing explicitly disabled
         let config = Bind9Config {
+            rate_limit: None,
             recursion: Some(false),
             allow_query: None,
             allow_transfer: None,
@@ -2335,6 +2416,7 @@ mod tests {
 
         // DNSSEC signing with user-supplied Secret
         let config = Bind9Config {
+            rate_limit: None,
             recursion: Some(false),
             allow_query: None,
             allow_transfer: None,
@@ -2409,6 +2491,7 @@ mod tests {
 
         // DNSSEC signing with auto-generated keys
         let config = Bind9Config {
+            rate_limit: None,
             recursion: Some(false),
             allow_query: None,
             allow_transfer: None,
@@ -2472,6 +2555,7 @@ mod tests {
 
         // DNSSEC signing enabled with minimal config - should default to auto-generate
         let config = Bind9Config {
+            rate_limit: None,
             recursion: Some(false),
             allow_query: None,
             allow_transfer: None,
@@ -2522,6 +2606,7 @@ mod tests {
 
         // Global config with auto-generate
         let global_config = Bind9Config {
+            rate_limit: None,
             recursion: Some(false),
             allow_query: None,
             allow_transfer: None,
@@ -2550,6 +2635,7 @@ mod tests {
 
         // Instance config with user-supplied Secret (overrides global)
         let instance_config = Bind9Config {
+            rate_limit: None,
             recursion: Some(false),
             allow_query: None,
             allow_transfer: None,

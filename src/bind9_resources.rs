@@ -658,6 +658,26 @@ fn build_named_conf(instance: &Bind9Instance, cluster: Option<&Bind9Cluster>) ->
         .replace("{{RNDC_KEY_NAMES}}", rndc_key_names)
 }
 
+/// Default `allow-transfer` directive emitted at the options level when no
+/// explicit transfer ACL is configured anywhere (no instance, role, or global
+/// `allow_transfer`).
+///
+/// BIND9's built-in default is `allow-transfer { any; }`, which would expose
+/// every zone served by the instance to AXFR from any client — bulk zone
+/// enumeration (threat model I2) and an amplification vector (D3). We deny by
+/// default instead. Zones that legitimately need transfers get a **zone-level**
+/// `allow-transfer` ACL scoped to their secondary IPs (see
+/// `bind9::zone_ops`), and a zone-level ACL overrides this options-level
+/// default in BIND9 — so replication is unaffected by this hardening.
+const DEFAULT_ALLOW_TRANSFER_NONE: &str = "allow-transfer { none; };";
+
+/// Default `responses-per-second` for BIND9 Response Rate Limiting (RRL) when
+/// `spec.config.rateLimit` is not set. RRL is on by default (threat model
+/// D1/D3 — DNS amplification/reflection); a per-source-prefix cap of 15/s is
+/// ISC's recommended conservative starting point and rarely affects legitimate
+/// clients. Set `rateLimit.responsesPerSecond: 0` in the CRD to disable.
+const DEFAULT_RATE_LIMIT_RESPONSES_PER_SECOND: u32 = 15;
+
 /// Build the named.conf.options configuration from template
 ///
 /// Generates the BIND9 options configuration file from the instance's config spec.
@@ -759,11 +779,12 @@ fn build_options_conf(
                 };
                 allow_transfer = format!("allow-transfer {{ {acl_list}; }};");
             } else {
-                allow_transfer = String::new();
+                // No explicit ACL anywhere — deny by default (see const doc).
+                allow_transfer = DEFAULT_ALLOW_TRANSFER_NONE.to_string();
             }
         } else {
-            // No default - let BIND9 use its own defaults (none)
-            allow_transfer = String::new();
+            // No explicit ACL anywhere — deny by default (see const doc).
+            allow_transfer = DEFAULT_ALLOW_TRANSFER_NONE.to_string();
         }
 
         // DNSSEC configuration - instance overrides global
@@ -822,7 +843,8 @@ fn build_options_conf(
                 };
                 allow_transfer = format!("allow-transfer {{ {acl_list}; }};");
             } else {
-                allow_transfer = String::new();
+                // No explicit ACL anywhere — deny by default (see const doc).
+                allow_transfer = DEFAULT_ALLOW_TRANSFER_NONE.to_string();
             }
 
             // DNSSEC from global
@@ -834,8 +856,8 @@ fn build_options_conf(
         } else {
             // Defaults when no config is specified
             recursion = "recursion no;".to_string();
-            // No default for allow-transfer - let BIND9 use its own defaults (none)
-            allow_transfer = String::new();
+            // No explicit ACL anywhere — deny by default (see const doc).
+            allow_transfer = DEFAULT_ALLOW_TRANSFER_NONE.to_string();
         }
     }
 
@@ -862,6 +884,13 @@ fn build_options_conf(
             .or_else(|| global_config.and_then(|g| g.listen_on_v6.as_ref())),
     )?;
 
+    // Response Rate Limiting - instance overrides global; on by default.
+    let rate_limit = render_rate_limit(
+        instance_cfg
+            .and_then(|c| c.rate_limit.as_ref())
+            .or_else(|| global_config.and_then(|g| g.rate_limit.as_ref())),
+    );
+
     // Perform template substitutions
     Ok(NAMED_CONF_OPTIONS_TEMPLATE
         .replace("{{LISTEN_ON}}", &listen_on)
@@ -870,6 +899,7 @@ fn build_options_conf(
         .replace("{{FORWARDERS}}", &forwarders)
         .replace("{{ALLOW_QUERY}}", &allow_query)
         .replace("{{ALLOW_TRANSFER}}", &allow_transfer)
+        .replace("{{RATE_LIMIT}}", &rate_limit)
         .replace("{{DNSSEC_VALIDATE}}", &dnssec_validate)
         .replace("{{DNSSEC_POLICIES}}", &dnssec_policies))
 }
@@ -910,6 +940,29 @@ fn render_forwarders(forwarders: Option<&Vec<String>>) -> anyhow::Result<String>
         .collect::<Vec<_>>()
         .join("; ");
     Ok(format!("forwarders {{ {joined}; }};"))
+}
+
+/// Render the `rate-limit { responses-per-second N; };` block for
+/// named.conf.options.
+///
+/// Response Rate Limiting (RRL) is **on by default**: when `rate_limit` is
+/// `None`, or its `responses_per_second` is `None`, the conservative default
+/// [`DEFAULT_RATE_LIMIT_RESPONSES_PER_SECOND`] is used. An explicit value of
+/// `0` disables RRL — an empty string is returned so no directive is emitted.
+///
+/// # Arguments
+///
+/// * `rate_limit` - Optional RRL config (instance value takes priority over the
+///   cluster `global` value; resolve that before calling).
+fn render_rate_limit(rate_limit: Option<&crate::crd::RateLimitConfig>) -> String {
+    let rps = rate_limit
+        .and_then(|r| r.responses_per_second)
+        .unwrap_or(DEFAULT_RATE_LIMIT_RESPONSES_PER_SECOND);
+    if rps == 0 {
+        // Explicitly disabled — emit nothing.
+        return String::new();
+    }
+    format!("rate-limit {{ responses-per-second {rps}; }};")
 }
 
 /// Render a `listen-on` / `listen-on-v6` directive for named.conf.options.

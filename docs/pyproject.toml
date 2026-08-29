@@ -24,7 +24,7 @@ mkdocs-redirects = "^1.2.1"
 mkdocs-macros-plugin = "^1.0.5"
 
 # Markdown extensions
-pymdown-extensions = "^10.7"
+pymdown-extensions = "^11.0.1"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
