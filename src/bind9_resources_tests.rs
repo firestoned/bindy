@@ -1672,6 +1672,51 @@ mod tests {
     }
 
     #[test]
+    fn test_cluster_options_conf_substitutes_rate_limit_placeholder() {
+        // Regression: #466 added {{RATE_LIMIT}} to named.conf.options.tmpl but only
+        // substituted it in the instance-level builder. The cluster-level builder
+        // shipped the literal placeholder, and named exits on the syntax error
+        // ("'}' expected near '{'"), crash-looping every operand pod.
+        use crate::bind9_resources::build_cluster_configmap;
+        use crate::crd::{Bind9Cluster, Bind9ClusterCommonSpec, Bind9ClusterSpec};
+
+        let cluster = Bind9Cluster {
+            metadata: ObjectMeta {
+                name: Some("test-cluster".to_string()),
+                namespace: Some("test-ns".to_string()),
+                ..Default::default()
+            },
+            spec: Bind9ClusterSpec {
+                common: Bind9ClusterCommonSpec {
+                    version: None,
+                    primary: None,
+                    secondary: None,
+                    image: None,
+                    config_map_refs: None,
+                    global: None,
+                    rndc_secret_refs: None,
+                    acls: None,
+                    volumes: None,
+                    volume_mounts: None,
+                },
+            },
+            status: None,
+        };
+
+        let cm = build_cluster_configmap("test-cluster", "test-ns", &cluster).unwrap();
+        let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
+
+        assert!(
+            options.contains("rate-limit { responses-per-second 15; };"),
+            "cluster default RRL must be rendered, got: {options}"
+        );
+        assert!(
+            !options.contains("{{"),
+            "no template placeholder may survive substitution, got: {options}"
+        );
+    }
+
+    #[test]
     fn test_service_api_port_default() {
         // Test default API port (8080) when no bindcar_config is specified
         let instance = create_test_instance("test");

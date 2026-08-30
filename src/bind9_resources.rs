@@ -1106,6 +1106,9 @@ fn build_cluster_options_conf(cluster: &Bind9Cluster) -> anyhow::Result<String> 
         global.and_then(|g| g.listen_on_v6.as_ref()),
     )?;
 
+    // Response Rate Limiting from global config; on by default.
+    let rate_limit = render_rate_limit(global.and_then(|g| g.rate_limit.as_ref()));
+
     Ok(NAMED_CONF_OPTIONS_TEMPLATE
         .replace("{{LISTEN_ON}}", &listen_on)
         .replace("{{LISTEN_ON_V6}}", &listen_on_v6)
@@ -1113,6 +1116,7 @@ fn build_cluster_options_conf(cluster: &Bind9Cluster) -> anyhow::Result<String> 
         .replace("{{FORWARDERS}}", &forwarders)
         .replace("{{ALLOW_QUERY}}", &allow_query)
         .replace("{{ALLOW_TRANSFER}}", &allow_transfer)
+        .replace("{{RATE_LIMIT}}", &rate_limit)
         .replace("{{DNSSEC_VALIDATE}}", &dnssec_validate)
         .replace("{{DNSSEC_POLICIES}}", &dnssec_policies))
 }
