@@ -26,6 +26,7 @@ mod tests {
                 ..Default::default()
             },
             spec: Bind9InstanceSpec {
+                placement: None,
                 cluster_ref: "test-cluster".to_string(),
                 role: crate::crd::ServerRole::Primary,
                 replicas: Some(2),
@@ -2729,5 +2730,320 @@ mod tests {
         );
         let secret = volume.secret.as_ref().unwrap();
         assert_eq!(secret.secret_name, Some("instance-keys".to_string()));
+    }
+
+    // ==================================================================
+    // Pod placement / topology spreading
+    // ==================================================================
+
+    fn cluster_with_primaries(primaries: i32) -> crate::crd::Bind9Cluster {
+        crate::crd::Bind9Cluster::new(
+            "my-dns",
+            crate::crd::Bind9ClusterSpec {
+                common: crate::crd::Bind9ClusterCommonSpec {
+                    version: Some("9.18".into()),
+                    primary: Some(crate::crd::PrimaryConfig {
+                        replicas: Some(primaries),
+                        ..Default::default()
+                    }),
+                    secondary: None,
+                    image: None,
+                    config_map_refs: None,
+                    global: None,
+                    rndc_secret_refs: None,
+                    acls: None,
+                    volumes: None,
+                    volume_mounts: None,
+                },
+            },
+        )
+    }
+
+    /// A cluster-managed instance: one replica, owned by `my-dns`.
+    fn managed_instance(name: &str) -> Bind9Instance {
+        let mut instance = create_test_instance(name);
+        instance.spec.cluster_ref = "my-dns".into();
+        instance.spec.replicas = Some(1);
+        instance
+    }
+
+    fn pod_spec_of(
+        deployment: &k8s_openapi::api::apps::v1::Deployment,
+    ) -> &k8s_openapi::api::core::v1::PodSpec {
+        deployment
+            .spec
+            .as_ref()
+            .unwrap()
+            .template
+            .spec
+            .as_ref()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_deployment_selector_excludes_the_cluster_label() {
+        // REGRESSION GUARD. `spec.selector` is immutable in Kubernetes: once a
+        // Deployment exists, any change is rejected with "field is immutable"
+        // and the operator wedges. The cluster label was added for topology
+        // spreading and must live on the Pod template ONLY.
+        let instance = managed_instance("my-dns-primary-0");
+        let deployment = build_deployment(
+            "my-dns-primary-0",
+            "dns",
+            &instance,
+            None,
+            None,
+            "test-rndc-key",
+        );
+
+        let selector = deployment
+            .spec
+            .as_ref()
+            .unwrap()
+            .selector
+            .match_labels
+            .as_ref()
+            .unwrap();
+        assert!(
+            !selector.contains_key("bindy.firestoned.io/cluster"),
+            "adding a label to spec.selector is a breaking change for every existing Deployment"
+        );
+
+        let pod_labels = deployment
+            .spec
+            .as_ref()
+            .unwrap()
+            .template
+            .metadata
+            .as_ref()
+            .unwrap()
+            .labels
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            pod_labels
+                .get("bindy.firestoned.io/cluster")
+                .map(String::as_str),
+            Some("my-dns")
+        );
+
+        // Kubernetes requires the selector to still match the template.
+        for (key, value) in selector {
+            assert_eq!(
+                pod_labels.get(key),
+                Some(value),
+                "selector key {key} must still match the Pod template"
+            );
+        }
+    }
+
+    #[test]
+    fn test_pod_labels_carry_role_derived_from_spec() {
+        // Cluster-managed instances get the role label from their CR metadata,
+        // but a hand-written Bind9Instance may carry no labels at all. The Pod
+        // label is derived from spec.role so Role-scoped spreading works either
+        // way.
+        let instance = managed_instance("my-dns-primary-0");
+        assert!(instance.metadata.labels.is_none());
+
+        let labels =
+            crate::bind9_resources::build_pod_labels_from_instance("my-dns-primary-0", &instance);
+        assert_eq!(
+            labels.get("bindy.firestoned.io/role").map(String::as_str),
+            Some("primary")
+        );
+    }
+
+    #[test]
+    fn test_pod_labels_are_a_superset_of_selector_labels() {
+        // Two invariants depend on this:
+        //   1. Kubernetes requires spec.selector to match the Pod template, so
+        //      the template may add labels but never drop one.
+        //   2. The reconcile short-circuit in reconcilers/bind9instance/mod.rs
+        //      uses "Pod template is missing an operator-managed label" as its
+        //      upgrade signal, which only works if pod labels ⊇ selector labels.
+        for name in ["my-dns-primary-0", "solo"] {
+            let mut instance = create_test_instance(name);
+            if name == "solo" {
+                instance.spec.cluster_ref = String::new();
+            }
+            let selector = build_labels_from_instance(name, &instance);
+            let pod = crate::bind9_resources::build_pod_labels_from_instance(name, &instance);
+
+            for (key, value) in &selector {
+                assert_eq!(
+                    pod.get(key),
+                    Some(value),
+                    "pod labels dropped selector key {key} for {name}"
+                );
+            }
+            assert!(pod.len() >= selector.len());
+        }
+    }
+
+    #[test]
+    fn test_standalone_instance_pod_labels_have_no_cluster_label() {
+        let mut instance = create_test_instance("solo");
+        instance.spec.cluster_ref = String::new();
+        let labels = crate::bind9_resources::build_pod_labels_from_instance("solo", &instance);
+        assert!(!labels.contains_key("bindy.firestoned.io/cluster"));
+    }
+
+    #[test]
+    fn test_deployment_spreads_multi_primary_cluster_by_default() {
+        let instance = managed_instance("my-dns-primary-0");
+        let cluster = cluster_with_primaries(3);
+        let deployment = build_deployment(
+            "my-dns-primary-0",
+            "dns",
+            &instance,
+            Some(&cluster),
+            None,
+            "test-rndc-key",
+        );
+
+        let constraints = pod_spec_of(&deployment)
+            .topology_spread_constraints
+            .as_ref()
+            .expect("a 3-primary cluster gets a default zone spread");
+        assert_eq!(constraints.len(), 1);
+        assert_eq!(constraints[0].topology_key, "topology.kubernetes.io/zone");
+        assert_eq!(constraints[0].when_unsatisfiable, "ScheduleAnyway");
+
+        let match_labels = constraints[0]
+            .label_selector
+            .as_ref()
+            .unwrap()
+            .match_labels
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            match_labels
+                .get("bindy.firestoned.io/cluster")
+                .map(String::as_str),
+            Some("my-dns")
+        );
+        assert_eq!(
+            match_labels
+                .get("bindy.firestoned.io/role")
+                .map(String::as_str),
+            Some("primary")
+        );
+    }
+
+    #[test]
+    fn test_deployment_has_no_spread_for_single_primary_cluster() {
+        let instance = managed_instance("my-dns-primary-0");
+        let cluster = cluster_with_primaries(1);
+        let deployment = build_deployment(
+            "my-dns-primary-0",
+            "dns",
+            &instance,
+            Some(&cluster),
+            None,
+            "test-rndc-key",
+        );
+        assert!(pod_spec_of(&deployment)
+            .topology_spread_constraints
+            .is_none());
+    }
+
+    #[test]
+    fn test_deployment_applies_role_level_placement() {
+        let instance = managed_instance("my-dns-primary-0");
+        let mut cluster = cluster_with_primaries(3);
+        cluster.spec.common.primary.as_mut().unwrap().placement =
+            Some(crate::crd::PlacementConfig {
+                spread: Some(vec![crate::crd::SpreadRule {
+                    topology_key: "failure-domain.acme.io/rack".into(),
+                    max_skew: Some(1),
+                    when_unsatisfiable: Some(crate::crd::WhenUnsatisfiable::DoNotSchedule),
+                    scope: None,
+                    min_domains: None,
+                    node_affinity_policy: None,
+                    node_taints_policy: None,
+                }]),
+            });
+
+        let deployment = build_deployment(
+            "my-dns-primary-0",
+            "dns",
+            &instance,
+            Some(&cluster),
+            None,
+            "test-rndc-key",
+        );
+        let pod = pod_spec_of(&deployment);
+
+        let constraints = pod.topology_spread_constraints.as_ref().unwrap();
+        assert_eq!(constraints.len(), 1);
+        assert_eq!(constraints[0].topology_key, "failure-domain.acme.io/rack");
+        assert_eq!(constraints[0].when_unsatisfiable, "DoNotSchedule");
+    }
+
+    #[test]
+    fn test_instance_placement_overrides_role_placement() {
+        let mut instance = managed_instance("my-dns-primary-0");
+        instance.spec.placement = Some(crate::crd::PlacementConfig {
+            spread: Some(vec![]),
+        });
+
+        let mut cluster = cluster_with_primaries(3);
+        cluster.spec.common.primary.as_mut().unwrap().placement =
+            Some(crate::crd::PlacementConfig {
+                spread: Some(vec![crate::crd::SpreadRule {
+                    topology_key: "topology.kubernetes.io/zone".into(),
+                    max_skew: None,
+                    when_unsatisfiable: None,
+                    scope: None,
+                    min_domains: None,
+                    node_affinity_policy: None,
+                    node_taints_policy: None,
+                }]),
+            });
+
+        let deployment = build_deployment(
+            "my-dns-primary-0",
+            "dns",
+            &instance,
+            Some(&cluster),
+            None,
+            "test-rndc-key",
+        );
+        assert!(
+            pod_spec_of(&deployment)
+                .topology_spread_constraints
+                .is_none(),
+            "instance-level `spread: []` must win outright over the role block"
+        );
+    }
+
+    #[test]
+    fn test_standalone_multi_replica_instance_spreads_its_own_pods() {
+        let mut instance = create_test_instance("solo");
+        instance.spec.cluster_ref = String::new();
+        instance.spec.replicas = Some(3);
+
+        let deployment = build_deployment("solo", "dns", &instance, None, None, "test-rndc-key");
+        let constraints = pod_spec_of(&deployment)
+            .topology_spread_constraints
+            .as_ref()
+            .unwrap();
+
+        let match_labels = constraints[0]
+            .label_selector
+            .as_ref()
+            .unwrap()
+            .match_labels
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            match_labels
+                .get("app.kubernetes.io/instance")
+                .map(String::as_str),
+            Some("solo"),
+            "a standalone Deployment owns every Pod in its own set"
+        );
+        assert!(!match_labels.contains_key("bindy.firestoned.io/cluster"));
     }
 }

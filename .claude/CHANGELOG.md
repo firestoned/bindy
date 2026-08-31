@@ -1,3 +1,47 @@
+## Zone spreading review round 3 (PR #473)
+
+### Fixed
+- `docs/src/guide/zone-spreading.md`: `topologyKey` documented as 1–316 chars; the schema
+  and ADR-0003 both say 317 (253 prefix + `/` + 63 name). Also documented the `maxSkew`
+  (1–100), `minDomains` (1–1000) and 253-char-prefix bounds.
+- `docs/src/installation/crds.md`: removed a reference to `placement.affinity`, which does
+  not exist — the affinity/tolerations passthrough was dropped per ADR-0003. Replaced the
+  "Updating Existing CRDs" instruction to use `kubectl apply --server-side` instead of
+  `kubectl replace --force -f deploy/crds/`, which pointed at a nonexistent path AND would
+  have cascaded a CRD delete to every custom resource.
+- `deploy/kind-config-multizone.yaml`: dropped a reference to
+  `deploy/admission-policies/17-bindy-placement-policy.yaml`, deleted in the previous round.
+- `src/bind9_resources.rs`: `build_pod_spec` docstring still listed node selector /
+  tolerations / affinity as placement inputs.
+- Completed the `deploy/crds/` → `deploy/operator/crds/` path cleanup across 12 docs, plus
+  dead `deploy/controller/` and `deploy/rbac/` paths in `deploy/README.md` /
+  `deploy/TESTING.md`. Every `deploy/` path referenced by the touched docs now exists.
+
+### Added
+- `tests/zone_spread_test.sh` is now self-contained: creates its own three-zone kind
+  cluster, installs CRDs (server-side) and RBAC, and deploys the operator. Takes
+  `--image` / `--skip-deploy` like `tests/integration_test.sh`, addresses the cluster
+  through an explicit `--context` rather than the ambient one, and no longer needs
+  `python3`.
+- CI wiring: new `make zone-spread-test` target; `make ci-e2e` now runs the suite as a
+  third stage; `e2e.yaml` gains path triggers for the placement sources and dumps
+  diagnostics for the new cluster. Previously the suite was manual-only.
+- Unit coverage for the convergence machinery, which had none: `deployment_needs_update`
+  (constraint added / changed / removed, stale pod labels, and a no-op guard against a
+  hot-patch loop), `build_placement_patch` (the `$patch: replace` directive and the
+  `null` removal path), `deployment_labels_are_current` (the upgrade regression, foreign
+  labels, missing labels), and `validate_user_pod_shape`'s placement block including a
+  shadowed-but-invalid role block. 17 tests; mutation-checked.
+
+### Changed
+- Extracted the reconcile short-circuit's label comparison from
+  `reconcilers/bind9instance/mod.rs` into `deployment_labels_are_current`, so it can be
+  tested without a live API server.
+- Test flake fixes: TEST 3 (zone occupancy) is informational — the default rule is
+  `ScheduleAnyway`, so even distribution is scheduler scoring, not a contract; TEST 5
+  makes the contractual claim. TEST 8 waits for the secondary rollout instead of
+  `sleep 10`. TEST 4's rollout wait no longer swallows failures with `|| true`.
+
 ## [2026-07-21] - Fix CI: cargo fmt and clippy failures in PR #445's new gateway-resolution tests
 
 **Author:** Erick Bourgeois

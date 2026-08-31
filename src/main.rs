@@ -1464,6 +1464,16 @@ async fn run_bind9instance_operator(context: Arc<Context>) -> Result<()> {
     let client_for_watch = client.clone();
     let stores_for_watch = context.stores.clone();
 
+    // Cluster / provider watches: an instance inherits configuration that is
+    // resolved against the LIVE cluster object at reconcile time rather than
+    // copied into the instance spec (see `crate::placement::resolve_placement`).
+    // Without these watches such a change would only reach the Deployment on
+    // the next 5-minute requeue.
+    let cluster_api = Api::<Bind9Cluster>::all(client.clone());
+    let provider_api = Api::<ClusterBind9Provider>::all(client.clone());
+    let stores_for_cluster_watch = context.stores.clone();
+    let stores_for_provider_watch = context.stores.clone();
+
     // DNSZone API for status-only watcher
     let dnszone_api = Api::<DNSZone>::all(client.clone());
 
@@ -1533,6 +1543,38 @@ async fn run_bind9instance_operator(context: Arc<Context>) -> Result<()> {
 
             // Return empty vec to avoid triggering full reconciliation
             vec![]
+        })
+        .watches(cluster_api, default_watcher_config(), move |cluster| {
+            // A Bind9Cluster changed: reconcile every instance that references
+            // it, so inherited configuration (placement, image, version, ...)
+            // reaches the Deployments immediately instead of on the next
+            // requeue.
+            let cluster_name = cluster.name_any();
+            let Some(cluster_namespace) = cluster.namespace() else {
+                return vec![];
+            };
+            stores_for_cluster_watch
+                .bind9_instances
+                .state()
+                .iter()
+                .filter(|instance| {
+                    instance.spec.cluster_ref == cluster_name
+                        && instance.namespace().as_deref() == Some(cluster_namespace.as_str())
+                })
+                .map(|instance| kube::runtime::reflector::ObjectRef::from_obj(instance.as_ref()))
+                .collect::<Vec<_>>()
+        })
+        .watches(provider_api, default_watcher_config(), move |provider| {
+            // Same, for the cluster-scoped provider. A provider's instances can
+            // live in any namespace, so only the name is matched.
+            let provider_name = provider.name_any();
+            stores_for_provider_watch
+                .bind9_instances
+                .state()
+                .iter()
+                .filter(|instance| instance.spec.cluster_ref == provider_name)
+                .map(|instance| kube::runtime::reflector::ObjectRef::from_obj(instance.as_ref()))
+                .collect::<Vec<_>>()
         })
         .run(reconcile_bind9instance_wrapper, error_policy, context)
         .for_each(|_| futures::future::ready(()))

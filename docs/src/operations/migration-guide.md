@@ -239,7 +239,7 @@ kubectl apply -f https://github.com/firestoned/bindy/releases/download/v0.3.0/cr
 Or if installing from source:
 
 ```bash
-kubectl replace --force -f deploy/crds/
+kubectl apply --server-side -f deploy/operator/crds/
 ```
 
 **IMPORTANT:** Use `kubectl replace --force` instead of `kubectl apply` to avoid the 256KB annotation size limit.
@@ -460,7 +460,7 @@ kubectl get dnszone example-com -n bindy-system -o yaml | grep -A 5 recordsFrom
 **Symptom:** `kubectl apply` fails with "unknown field spec.zoneRef"
 
 **Solution:**
-- Update the CRDs to v0.3.0: `kubectl replace --force -f deploy/crds/`
+- Update the CRDs to v0.3.0: `kubectl apply --server-side -f deploy/operator/crds/`
 - Remove `spec.zoneRef` from your YAML files (field no longer exists)
 
 ## Rollback Procedure

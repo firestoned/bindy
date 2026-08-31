@@ -113,7 +113,7 @@ Bindy is designed for use in regulated banking environments where DNS infrastruc
 
 #### DI-1: Declarative Configuration
 - **Control:** Infrastructure as Code prevents configuration drift
-- **Evidence:** CRD schemas in `deploy/crds/`
+- **Evidence:** CRD schemas in `deploy/operator/crds/`
 - **Implementation:**
   - All DNS configuration in CustomResources
   - Schema validation via OpenAPI v3

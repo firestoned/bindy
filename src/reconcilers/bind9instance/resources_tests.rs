@@ -442,6 +442,7 @@ mod tests {
                 ..Default::default()
             },
             spec: Bind9InstanceSpec {
+                placement: None,
                 cluster_ref: String::new(),
                 role: ServerRole::Primary,
                 replicas: Some(1),
@@ -597,5 +598,472 @@ mod tests {
             msg.contains("Bind9Cluster tenant-a/malicious-cluster spec.volumes"),
             "{msg}"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // validate_user_pod_shape — placement
+    // ------------------------------------------------------------------
+    //
+    // Placement is validated at EVERY level, not just the winning one, so a
+    // user is told about a bad block even while a more specific block shadows
+    // it. Without these, a bad role-level block on a cluster whose instance
+    // overrides placement would reconcile silently and only surface later.
+
+    mod placement_validation {
+        use super::{Bind9Cluster, Bind9ClusterCommonSpec, Bind9ClusterSpec, Bind9Instance};
+        use crate::crd::{PlacementConfig, PrimaryConfig, SecondaryConfig, SpreadRule};
+        use crate::reconcilers::bind9instance::resources::validate_user_pod_shape_for_test;
+
+        fn rule(topology_key: &str) -> SpreadRule {
+            SpreadRule {
+                topology_key: topology_key.into(),
+                max_skew: None,
+                when_unsatisfiable: None,
+                scope: None,
+                min_domains: None,
+                node_affinity_policy: None,
+                node_taints_policy: None,
+            }
+        }
+
+        fn bad_placement() -> PlacementConfig {
+            // Duplicate (topologyKey, whenUnsatisfiable): Kubernetes requires
+            // the pair to be unique and rejects the Pod outright.
+            PlacementConfig {
+                spread: Some(vec![
+                    rule("topology.kubernetes.io/zone"),
+                    rule("topology.kubernetes.io/zone"),
+                ]),
+            }
+        }
+
+        fn instance(placement: Option<PlacementConfig>) -> Bind9Instance {
+            let mut i = super::instance_with_volumes(vec![], vec![]);
+            i.spec.placement = placement;
+            i
+        }
+
+        fn cluster(common: Bind9ClusterCommonSpec) -> Bind9Cluster {
+            Bind9Cluster::new("my-dns", Bind9ClusterSpec { common })
+        }
+
+        fn empty_common() -> Bind9ClusterCommonSpec {
+            Bind9ClusterCommonSpec {
+                version: Some("9.18".into()),
+                primary: None,
+                secondary: None,
+                image: None,
+                config_map_refs: None,
+                global: None,
+                rndc_secret_refs: None,
+                acls: None,
+                volumes: None,
+                volume_mounts: None,
+            }
+        }
+
+        #[test]
+        fn accepts_a_valid_placement_block() {
+            let inst = instance(Some(PlacementConfig {
+                spread: Some(vec![rule("topology.kubernetes.io/zone")]),
+            }));
+            assert!(validate_user_pod_shape_for_test(&inst, None, None).is_ok());
+        }
+
+        #[test]
+        fn accepts_an_absent_placement_block() {
+            let inst = instance(None);
+            assert!(validate_user_pod_shape_for_test(&inst, None, None).is_ok());
+        }
+
+        #[test]
+        fn rejects_a_bad_instance_level_block() {
+            let inst = instance(Some(bad_placement()));
+            let err = validate_user_pod_shape_for_test(&inst, None, None)
+                .expect_err("duplicate spread rules must be rejected");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("spec.placement"),
+                "error must name the offending field: {msg}"
+            );
+        }
+
+        #[test]
+        fn rejects_a_bad_role_level_block_even_when_the_instance_overrides_it() {
+            // The instance sets its own (valid) placement, so the cluster block
+            // never reaches a Pod — but it is still wrong and the user should
+            // hear about it now rather than after an unrelated edit.
+            let inst = instance(Some(PlacementConfig {
+                spread: Some(vec![rule("topology.kubernetes.io/zone")]),
+            }));
+            let mut common = empty_common();
+            common.primary = Some(PrimaryConfig {
+                placement: Some(bad_placement()),
+                ..Default::default()
+            });
+            let c = cluster(common);
+
+            let err = validate_user_pod_shape_for_test(&inst, Some(&c), None)
+                .expect_err("a shadowed but invalid role block must still be rejected");
+            assert!(
+                format!("{err:#}").contains("spec.primary.placement"),
+                "error must name the role block: {err:#}"
+            );
+        }
+
+        #[test]
+        fn rejects_a_bad_secondary_block() {
+            let inst = instance(None);
+            let mut common = empty_common();
+            common.secondary = Some(SecondaryConfig {
+                placement: Some(bad_placement()),
+                ..Default::default()
+            });
+            let c = cluster(common);
+
+            let err = validate_user_pod_shape_for_test(&inst, Some(&c), None)
+                .expect_err("an invalid secondary block must be rejected");
+            assert!(
+                format!("{err:#}").contains("spec.secondary.placement"),
+                "error must name the role block: {err:#}"
+            );
+        }
+    }
+
+    // ==================================================================
+    // Placement convergence
+    // ==================================================================
+    //
+    // This is the machinery that decides whether a live Deployment gets a
+    // scheduling change at all, and how that change is expressed as a patch.
+    // It is the part most likely to break silently: a regression here does not
+    // fail loudly, it just leaves a running Deployment with stale constraints
+    // while every other test stays green.
+
+    mod placement_convergence {
+        use crate::bind9_resources::build_deployment;
+        use crate::crd::{
+            Bind9Cluster, Bind9ClusterCommonSpec, Bind9ClusterSpec, Bind9Instance,
+            Bind9InstanceSpec, PlacementConfig, PrimaryConfig, ServerRole, SpreadRule,
+            WhenUnsatisfiable,
+        };
+        use crate::reconcilers::bind9instance::deployment_labels_are_current_for_test as deployment_labels_are_current;
+        use crate::reconcilers::bind9instance::resources::{
+            build_placement_patch_for_test as build_placement_patch,
+            deployment_needs_update_for_test as deployment_needs_update,
+        };
+        use k8s_openapi::api::apps::v1::Deployment;
+        use kube::api::ObjectMeta;
+
+        fn instance(name: &str, cluster_ref: &str) -> Bind9Instance {
+            #[allow(deprecated)]
+            Bind9Instance {
+                metadata: ObjectMeta {
+                    name: Some(name.into()),
+                    namespace: Some("dns".into()),
+                    ..Default::default()
+                },
+                spec: Bind9InstanceSpec {
+                    cluster_ref: cluster_ref.to_string(),
+                    role: ServerRole::Primary,
+                    replicas: Some(1),
+                    version: Some("9.18".into()),
+                    image: None,
+                    config_map_refs: None,
+                    config: None,
+                    primary_servers: None,
+                    volumes: None,
+                    volume_mounts: None,
+                    rndc_secret_ref: None,
+                    rndc_key: None,
+                    storage: None,
+                    placement: None,
+                    bindcar_config: None,
+                },
+                status: None,
+            }
+        }
+
+        fn cluster(primaries: i32, placement: Option<PlacementConfig>) -> Bind9Cluster {
+            Bind9Cluster::new(
+                "my-dns",
+                Bind9ClusterSpec {
+                    common: Bind9ClusterCommonSpec {
+                        version: Some("9.18".into()),
+                        primary: Some(PrimaryConfig {
+                            replicas: Some(primaries),
+                            placement,
+                            ..Default::default()
+                        }),
+                        secondary: None,
+                        image: None,
+                        config_map_refs: None,
+                        global: None,
+                        rndc_secret_refs: None,
+                        acls: None,
+                        volumes: None,
+                        volume_mounts: None,
+                    },
+                },
+            )
+        }
+
+        fn deployment_for(cluster_spec: Option<&Bind9Cluster>) -> Deployment {
+            let inst = instance("my-dns-primary-0", "my-dns");
+            build_deployment(
+                "my-dns-primary-0",
+                "dns",
+                &inst,
+                cluster_spec,
+                None,
+                "rndc-key",
+            )
+        }
+
+        fn zone_rule(when: WhenUnsatisfiable) -> PlacementConfig {
+            PlacementConfig {
+                spread: Some(vec![SpreadRule {
+                    topology_key: "topology.kubernetes.io/zone".into(),
+                    max_skew: Some(1),
+                    when_unsatisfiable: Some(when),
+                    scope: None,
+                    min_domains: None,
+                    node_affinity_policy: None,
+                    node_taints_policy: None,
+                }]),
+            }
+        }
+
+        // ---------------- deployment_needs_update ----------------
+
+        #[test]
+        fn detects_a_constraint_being_added() {
+            // The upgrade case: a Deployment created before this feature has no
+            // constraints, and must be recognised as stale.
+            let current = deployment_for(Some(&cluster(1, None)));
+            let desired = deployment_for(Some(&cluster(3, None)));
+            assert!(current
+                .spec
+                .as_ref()
+                .unwrap()
+                .template
+                .spec
+                .as_ref()
+                .unwrap()
+                .topology_spread_constraints
+                .is_none());
+            assert!(deployment_needs_update(&current, &desired));
+        }
+
+        #[test]
+        fn detects_a_constraint_being_changed() {
+            let current = deployment_for(Some(&cluster(
+                3,
+                Some(zone_rule(WhenUnsatisfiable::ScheduleAnyway)),
+            )));
+            let desired = deployment_for(Some(&cluster(
+                3,
+                Some(zone_rule(WhenUnsatisfiable::DoNotSchedule)),
+            )));
+            assert!(deployment_needs_update(&current, &desired));
+        }
+
+        #[test]
+        fn detects_a_constraint_being_removed() {
+            // `spread: []` must be seen as a change, or the opt-out never takes.
+            let current = deployment_for(Some(&cluster(3, None)));
+            let desired = deployment_for(Some(&cluster(
+                3,
+                Some(PlacementConfig {
+                    spread: Some(vec![]),
+                }),
+            )));
+            assert!(deployment_needs_update(&current, &desired));
+        }
+
+        #[test]
+        fn detects_stale_pod_template_labels() {
+            let desired = deployment_for(Some(&cluster(3, None)));
+            let mut current = desired.clone();
+            current
+                .spec
+                .as_mut()
+                .unwrap()
+                .template
+                .metadata
+                .as_mut()
+                .unwrap()
+                .labels
+                .as_mut()
+                .unwrap()
+                .remove("bindy.firestoned.io/cluster");
+            assert!(
+                deployment_needs_update(&current, &desired),
+                "a Deployment missing the cluster Pod label must be reconciled"
+            );
+        }
+
+        #[test]
+        fn reports_no_update_when_nothing_changed() {
+            // Guards against a hot-patch loop: if this ever returns true for an
+            // unchanged pair, the operator rewrites the Deployment on every
+            // reconcile and rolls the DNS pods every five minutes.
+            let c = cluster(3, Some(zone_rule(WhenUnsatisfiable::DoNotSchedule)));
+            let current = deployment_for(Some(&c));
+            let desired = deployment_for(Some(&c));
+            assert!(!deployment_needs_update(&current, &desired));
+        }
+
+        // ---------------- build_placement_patch ----------------
+
+        #[test]
+        fn patch_replaces_rather_than_merges_the_constraint_list() {
+            // topologySpreadConstraints has patchStrategy=merge with
+            // patchMergeKey=topologyKey. Without the `$patch: replace`
+            // directive, a strategic merge patch MERGES by key and a removed
+            // constraint survives on the live Deployment.
+            let desired = deployment_for(Some(&cluster(3, None)));
+            let patch = build_placement_patch(&desired);
+            let list = patch["topologySpreadConstraints"].as_array().unwrap();
+
+            assert_eq!(
+                list[0],
+                serde_json::json!({"$patch": "replace"}),
+                "the replace directive must be the first element"
+            );
+            assert_eq!(list.len(), 2, "directive + one generated constraint");
+            assert_eq!(
+                list[1]["topologyKey"].as_str(),
+                Some("topology.kubernetes.io/zone")
+            );
+        }
+
+        #[test]
+        fn patch_nulls_the_field_when_no_constraints_are_desired() {
+            // This is the removal path. Sending an empty list would leave the
+            // field present-but-empty; only an explicit null deletes it.
+            let desired = deployment_for(Some(&cluster(
+                3,
+                Some(PlacementConfig {
+                    spread: Some(vec![]),
+                }),
+            )));
+            let patch = build_placement_patch(&desired);
+            assert!(
+                patch["topologySpreadConstraints"].is_null(),
+                "removal must send null, got {}",
+                patch["topologySpreadConstraints"]
+            );
+        }
+
+        #[test]
+        fn patch_carries_every_rule_in_order() {
+            let mut config = zone_rule(WhenUnsatisfiable::DoNotSchedule);
+            config.spread.as_mut().unwrap().push(SpreadRule {
+                topology_key: "kubernetes.io/hostname".into(),
+                max_skew: Some(1),
+                when_unsatisfiable: Some(WhenUnsatisfiable::ScheduleAnyway),
+                scope: None,
+                min_domains: None,
+                node_affinity_policy: None,
+                node_taints_policy: None,
+            });
+
+            let desired = deployment_for(Some(&cluster(3, Some(config))));
+            let list = build_placement_patch(&desired)["topologySpreadConstraints"]
+                .as_array()
+                .unwrap()
+                .clone();
+
+            assert_eq!(list.len(), 3, "directive + two rules");
+            assert_eq!(
+                list[1]["topologyKey"].as_str(),
+                Some("topology.kubernetes.io/zone")
+            );
+            assert_eq!(
+                list[2]["topologyKey"].as_str(),
+                Some("kubernetes.io/hostname")
+            );
+        }
+
+        // ---------------- reconcile short-circuit ----------------
+
+        #[test]
+        fn label_check_passes_for_a_freshly_built_deployment() {
+            let inst = instance("my-dns-primary-0", "my-dns");
+            let deployment = deployment_for(Some(&cluster(3, None)));
+            assert!(deployment_labels_are_current(
+                &deployment,
+                "my-dns-primary-0",
+                &inst
+            ));
+        }
+
+        #[test]
+        fn label_check_fails_when_the_pod_template_predates_the_feature() {
+            // THE upgrade regression. Metadata labels are correct (they never
+            // changed), only the Pod template lacks the cluster label. Checking
+            // metadata alone would skip this Deployment forever.
+            let inst = instance("my-dns-primary-0", "my-dns");
+            let mut deployment = deployment_for(Some(&cluster(3, None)));
+            deployment
+                .spec
+                .as_mut()
+                .unwrap()
+                .template
+                .metadata
+                .as_mut()
+                .unwrap()
+                .labels
+                .as_mut()
+                .unwrap()
+                .remove("bindy.firestoned.io/cluster");
+
+            assert!(
+                !deployment_labels_are_current(&deployment, "my-dns-primary-0", &inst),
+                "stale Pod template labels must force reconciliation"
+            );
+        }
+
+        #[test]
+        fn label_check_tolerates_foreign_labels() {
+            // Other controllers, kubectl and Helm add labels of their own; the
+            // check is a subset test, not equality.
+            let inst = instance("my-dns-primary-0", "my-dns");
+            let mut deployment = deployment_for(Some(&cluster(3, None)));
+            for target in [
+                deployment.metadata.labels.as_mut().unwrap(),
+                deployment
+                    .spec
+                    .as_mut()
+                    .unwrap()
+                    .template
+                    .metadata
+                    .as_mut()
+                    .unwrap()
+                    .labels
+                    .as_mut()
+                    .unwrap(),
+            ] {
+                target.insert("argocd.argoproj.io/instance".into(), "someapp".into());
+            }
+            assert!(deployment_labels_are_current(
+                &deployment,
+                "my-dns-primary-0",
+                &inst
+            ));
+        }
+
+        #[test]
+        fn label_check_fails_when_a_deployment_has_no_labels_at_all() {
+            let inst = instance("my-dns-primary-0", "my-dns");
+            let mut deployment = deployment_for(Some(&cluster(3, None)));
+            deployment.metadata.labels = None;
+            assert!(!deployment_labels_are_current(
+                &deployment,
+                "my-dns-primary-0",
+                &inst
+            ));
+        }
     }
 }

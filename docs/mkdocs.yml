@@ -219,6 +219,7 @@ nav:
           - Primary Instances: guide/primary-instance.md
           - Secondary Instances: guide/secondary-instance.md
           - Multi-Region: guide/multi-region.md
+          - Zone Spreading & Placement: guide/zone-spreading.md
       - Managing Zones:
           - Overview: guide/zones.md
           - Creating Zones: guide/creating-zones.md

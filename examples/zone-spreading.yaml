@@ -1,0 +1,162 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# Spreading DNS servers across availability zones.
+#
+# Why this matters: a zone's NS records name the individual servers
+# authoritative for it, so Bindy gives each nameserver its own Bind9Instance,
+# Deployment, and Service. `primary.replicas: 3` therefore creates three
+# single-Pod Deployments — and without a topology spread constraint the
+# scheduler is free to put all three in one zone. A zone outage then takes out
+# every primary at once, defeating the point of running three.
+#
+# Apply with:
+#   kubectl apply -f examples/zone-spreading.yaml
+---
+# ---------------------------------------------------------------------------
+# 1. The default. No `placement` block at all.
+#
+# With two or more PRIMARIES the operator applies a soft zone spread on its
+# own: maxSkew 1 over topology.kubernetes.io/zone, scoped to the role, with
+# whenUnsatisfiable: ScheduleAnyway. Zones fill evenly when they can, and a
+# single-zone cluster still schedules rather than hanging in Pending.
+#
+# Secondaries get NO default — see example 2 for how they opt in. A primary is
+# authoritative and holds the writable copy of a zone; a secondary can be
+# rebuilt from a primary. Defaulting secondaries would also silently change
+# where already-running Pods schedule on an operator upgrade.
+#
+# This is the whole configuration most users need.
+# ---------------------------------------------------------------------------
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Cluster
+metadata:
+  name: dns-defaults
+  namespace: bindy-system
+spec:
+  version: "9.18"
+  primary:
+    replicas: 3
+  secondary:
+    replicas: 3
+---
+# ---------------------------------------------------------------------------
+# 2. Hard spread, for a cluster you know has at least three zones.
+#
+# `DoNotSchedule` guarantees the spread instead of merely preferring it, and
+# `minDomains: 3` makes the constraint fail loudly if fewer than three zones
+# are available — better than silently running all three primaries in one zone
+# and finding out during the outage.
+#
+# Only do this when the cluster really has that many zones: a hard constraint
+# turns a shortfall into Pending DNS Pods.
+# ---------------------------------------------------------------------------
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Cluster
+metadata:
+  name: dns-strict-zones
+  namespace: bindy-system
+spec:
+  version: "9.18"
+  primary:
+    replicas: 3
+    placement:
+      spread:
+        - topologyKey: topology.kubernetes.io/zone
+          maxSkew: 1
+          whenUnsatisfiable: DoNotSchedule
+          minDomains: 3
+  secondary:
+    replicas: 3
+    # Secondaries have no default, so this block is how they opt IN. Keep them
+    # soft: if a zone is down, a secondary stacking elsewhere is much better
+    # than no secondary at all.
+    placement:
+      spread:
+        - topologyKey: topology.kubernetes.io/zone
+          maxSkew: 1
+          whenUnsatisfiable: ScheduleAnyway
+---
+# ---------------------------------------------------------------------------
+# 3. A custom failure domain.
+#
+# Not every cluster uses topology.kubernetes.io/zone. On-prem clusters often
+# label racks, power feeds, or cells instead — `topologyKey` takes any node
+# label, so spread across whatever your cluster actually has.
+#
+# Rules are applied in order and compose: spread across racks first, then
+# prefer separate hosts within a rack.
+#
+# Note there is no `nodeSelector` / `tolerations` / `affinity` here on purpose.
+# `placement` covers topology spreading only; see
+# docs/adr/0003-pod-placement-and-zone-spreading.md for why.
+# ---------------------------------------------------------------------------
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Cluster
+metadata:
+  name: dns-onprem
+  namespace: bindy-system
+spec:
+  version: "9.18"
+  primary:
+    replicas: 3
+    placement:
+      spread:
+        # Rack first — the real failure domain in this cluster.
+        - topologyKey: failure-domain.acme.io/rack
+          maxSkew: 1
+          whenUnsatisfiable: DoNotSchedule
+        # Then prefer separate hosts within a rack.
+        - topologyKey: kubernetes.io/hostname
+          maxSkew: 1
+          whenUnsatisfiable: ScheduleAnyway
+  secondary:
+    replicas: 3
+    placement:
+      spread:
+        - topologyKey: failure-domain.acme.io/rack
+          maxSkew: 1
+          whenUnsatisfiable: ScheduleAnyway
+---
+# ---------------------------------------------------------------------------
+# 4. Standalone instance: spreading one server's own replicas.
+#
+# A standalone Bind9Instance with spec.replicas > 1 is one Deployment that
+# really does own every Pod in the set, so the default scope is `Instance`
+# rather than `Role`. No configuration needed — shown here explicitly.
+# ---------------------------------------------------------------------------
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Instance
+metadata:
+  name: ns1
+  namespace: bindy-system
+spec:
+  clusterRef: ""
+  role: primary
+  replicas: 3
+  version: "9.18"
+  placement:
+    spread:
+      - topologyKey: topology.kubernetes.io/zone
+        maxSkew: 1
+        whenUnsatisfiable: ScheduleAnyway
+        scope: Instance
+---
+# ---------------------------------------------------------------------------
+# 5. Opting out.
+#
+# An empty list is the documented opt-out; omitting `spread` entirely gets you
+# the default instead. Useful on a single-zone cluster where the constraint is
+# pure scheduler overhead, or when an external scheduler owns placement.
+# ---------------------------------------------------------------------------
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Cluster
+metadata:
+  name: dns-no-spread
+  namespace: bindy-system
+spec:
+  version: "9.18"
+  primary:
+    replicas: 3
+    placement:
+      spread: []

@@ -370,6 +370,7 @@ async fn create_instance(
             ..Default::default()
         },
         spec: bindy::crd::Bind9InstanceSpec {
+            placement: None,
             cluster_ref: cluster_ref.to_string(),
             role,
             replicas: Some(1),
