@@ -105,7 +105,7 @@ jobs:
           cache-key: ${{ matrix.tag }}
 
       - name: Build binary (x86_64)
-        uses: firestoned/github-actions/rust/build-binary@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        uses: firestoned/github-actions/rust/build-binary@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
         with:
           target: x86_64-unknown-linux-gnu
 
@@ -122,7 +122,7 @@ jobs:
           cache-key: ${{ matrix.tag }}
 
       - name: Build binary (aarch64)
-        uses: firestoned/github-actions/rust/build-binary@53b483254bc648903c364ee3c73a546d0936a91e # v1.3.6
+        uses: firestoned/github-actions/rust/build-binary@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
         with:
           target: aarch64-unknown-linux-gnu
 
@@ -154,7 +154,7 @@ jobs:
 
       - name: Build and push Chainguard image
         id: docker_chainguard
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           file: docker/Dockerfile.chainguard
@@ -179,7 +179,7 @@ jobs:
 
       - name: Build and push Distroless image
         id: docker_distroless
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           file: docker/Dockerfile
