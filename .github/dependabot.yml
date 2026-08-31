@@ -23,7 +23,8 @@ updates:
     commit-message:
       prefix: "deps"
       include: "scope"
-    # Group minor and patch updates together
+    # Group all updates together: one weekly PR for kube-ecosystem (which must
+    # move as a unit) and one for everything else, instead of a PR per crate.
     groups:
       # The kube ecosystem is tightly version-coupled: kube 4.x requires
       # k8s-openapi 0.28, and kube-lease-manager pins a specific kube minor.
@@ -44,6 +45,7 @@ updates:
         patterns:
           - "*"
         update-types:
+          - "major"
           - "minor"
           - "patch"
 
@@ -64,6 +66,17 @@ updates:
     commit-message:
       prefix: "ci"
       include: "scope"
+    # Group all action bumps into a single weekly PR — one CI cycle instead of
+    # a serialized chain (the main ruleset requires up-to-date branches, so N
+    # separate PRs cost N full CI runs).
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+        update-types:
+          - "major"
+          - "minor"
+          - "patch"
 
   # Docker base images
   - package-ecosystem: "docker"
