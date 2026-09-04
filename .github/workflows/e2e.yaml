@@ -48,7 +48,7 @@ jobs:
           target: x86_64-unknown-linux-gnu
 
       - name: Install Kind
-        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
+        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
         with:
           # kind v0.24.0 provisions Kubernetes v1.31 by default. ValidatingAdmissionPolicy
           # (exercised by the regression suite) is GA only on 1.30+, so this must
