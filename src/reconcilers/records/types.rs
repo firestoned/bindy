@@ -7,7 +7,7 @@
 
 // Re-export commonly used types
 pub use crate::crd::{
-    AAAARecord, ARecord, CAARecord, CNAMERecord, Condition, DNSZone, MXRecord, NSRecord,
+    AAAARecord, ARecord, CAARecord, CNAMERecord, Condition, DNSZone, MXRecord, NSRecord, PTRRecord,
     RecordStatus, SRVRecord, TXTRecord, ZoneReference,
 };
 pub use anyhow::{Context as AnyhowContext, Result};

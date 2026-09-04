@@ -14,6 +14,7 @@ Bindy supports all common DNS record types:
 - **NS Records** - Nameserver delegation
 - **SRV Records** - Service location
 - **CAA Records** - Certificate authority authorization
+- **PTR Records** - Reverse DNS (pointer)
 
 ## Record Structure
 
@@ -132,4 +133,5 @@ spec:
 - [NS Records](./ns-records.md) - Delegation
 - [SRV Records](./srv-records.md) - Services
 - [CAA Records](./caa-records.md) - Certificate authority
+- [PTR Records](./ptr-records.md) - Reverse DNS
 - [Label Selector Guide](./label-selectors.md) - Advanced selector patterns

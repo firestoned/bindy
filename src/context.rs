@@ -14,7 +14,7 @@
 
 use crate::crd::{
     AAAARecord, ARecord, Bind9Cluster, Bind9Instance, CAARecord, CNAMERecord, ClusterBind9Provider,
-    DNSZone, LabelSelector, MXRecord, NSRecord, SRVRecord, TXTRecord,
+    DNSZone, LabelSelector, MXRecord, NSRecord, PTRRecord, SRVRecord, TXTRecord,
 };
 use k8s_openapi::api::apps::v1::Deployment;
 use kube::runtime::reflector::Store;
@@ -68,12 +68,13 @@ pub struct Stores {
     pub ns_records: Store<NSRecord>,
     pub srv_records: Store<SRVRecord>,
     pub caa_records: Store<CAARecord>,
+    pub ptr_records: Store<PTRRecord>,
 }
 
 impl Stores {
     /// Query all record stores and return matching records for a label selector.
     ///
-    /// This method searches across all 8 record type stores to find records that:
+    /// This method searches across all 9 record type stores to find records that:
     /// 1. Exist in the specified namespace
     /// 2. Match the provided label selector
     ///
@@ -115,6 +116,7 @@ impl Stores {
         collect_matching!(self.ns_records, NS);
         collect_matching!(self.srv_records, SRV);
         collect_matching!(self.caa_records, CAA);
+        collect_matching!(self.ptr_records, PTR);
 
         results
     }
@@ -330,6 +332,8 @@ pub enum RecordRef {
     SRV(String, String),
     /// CAA record (certificate authority authorization)
     CAA(String, String),
+    /// PTR record (reverse DNS pointer)
+    PTR(String, String),
 }
 
 impl RecordRef {
@@ -344,7 +348,8 @@ impl RecordRef {
             | RecordRef::MX(name, _)
             | RecordRef::NS(name, _)
             | RecordRef::SRV(name, _)
-            | RecordRef::CAA(name, _) => name,
+            | RecordRef::CAA(name, _)
+            | RecordRef::PTR(name, _) => name,
         }
     }
 
@@ -359,7 +364,8 @@ impl RecordRef {
             | RecordRef::MX(_, ns)
             | RecordRef::NS(_, ns)
             | RecordRef::SRV(_, ns)
-            | RecordRef::CAA(_, ns) => ns,
+            | RecordRef::CAA(_, ns)
+            | RecordRef::PTR(_, ns) => ns,
         }
     }
 
@@ -375,6 +381,7 @@ impl RecordRef {
             RecordRef::NS(_, _) => "NS",
             RecordRef::SRV(_, _) => "SRV",
             RecordRef::CAA(_, _) => "CAA",
+            RecordRef::PTR(_, _) => "PTR",
         }
     }
 }

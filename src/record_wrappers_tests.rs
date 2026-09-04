@@ -216,7 +216,7 @@ mod tests {
     // because it generates code at compile time. Instead:
     //
     // 1. The macro is tested through its usage in reconcilers/records.rs where it
-    //    generates wrapper functions for all 8 DNS record types
+    //    generates wrapper functions for all 9 DNS record types
     //
     // 2. Integration tests in tests/ directory verify the generated wrappers work
     //    correctly for each record type

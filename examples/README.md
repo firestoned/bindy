@@ -152,6 +152,10 @@ metadata:
    - MX records (mail servers)
    - TXT records (SPF, DMARC)
 
+4a. **[ptr-records.yaml](ptr-records.yaml)** - Reverse DNS (PTR) records
+   - Reverse zone example (`0.168.192.in-addr.arpa`)
+   - PTR records mapping IP addresses back to canonical hostnames
+
 ### Custom Configuration
 
 5. **[custom-zones-configmap.yaml](custom-zones-configmap.yaml)** - Custom zones configuration

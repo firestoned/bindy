@@ -21,6 +21,17 @@ spec:
       labels: { app: pwn }
     spec:
       serviceAccountName: clusterrole-aggregation-controller   # a privileged SA
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: c
           image: busybox
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

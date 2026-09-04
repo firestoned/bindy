@@ -72,7 +72,7 @@ use std::time::Duration;
 
 use crate::crd::{
     AAAARecord, ARecord, Bind9Cluster, Bind9Instance, CAARecord, CNAMERecord, ClusterBind9Provider,
-    DNSZone, MXRecord, NSRecord, SRVRecord, TXTRecord,
+    DNSZone, MXRecord, NSRecord, PTRRecord, SRVRecord, TXTRecord,
 };
 
 /// Default namespace for the bindy operator deployment.
@@ -1038,7 +1038,7 @@ pub fn build_crd<T: CustomResourceExt>() -> Result<CustomResourceDefinition> {
     serde_json::from_value(crd_json).context("Failed to deserialize CRD from JSON")
 }
 
-/// Build all 12 CRDs in the same order as `crdgen`.
+/// Build all 13 CRDs in the same order as `crdgen`.
 pub fn build_all_crds() -> Result<Vec<CustomResourceDefinition>> {
     Ok(vec![
         build_crd::<ARecord>()?,
@@ -1049,6 +1049,7 @@ pub fn build_all_crds() -> Result<Vec<CustomResourceDefinition>> {
         build_crd::<TXTRecord>()?,
         build_crd::<SRVRecord>()?,
         build_crd::<CAARecord>()?,
+        build_crd::<PTRRecord>()?,
         build_crd::<DNSZone>()?,
         build_crd::<Bind9Cluster>()?,
         build_crd::<ClusterBind9Provider>()?,

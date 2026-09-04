@@ -11,6 +11,7 @@ pub mod caa;
 pub mod cname;
 pub mod mx;
 pub mod ns;
+pub mod ptr;
 pub mod srv;
 pub mod txt;
 

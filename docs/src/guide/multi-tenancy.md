@@ -230,6 +230,7 @@ rules:
     - "nsrecords"
     - "srvrecords"
     - "caarecords"
+    - "ptrrecords"
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
 # View resource status
@@ -326,6 +327,7 @@ rules:
     - "nsrecords"
     - "srvrecords"
     - "caarecords"
+    - "ptrrecords"
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
 # View status for all resources

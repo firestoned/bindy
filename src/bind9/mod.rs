@@ -47,7 +47,8 @@ pub use rndc::{
     create_rndc_secret_data, create_tsig_signer, generate_rndc_key, parse_rndc_secret_data,
 };
 pub use types::{
-    RndcError, RndcKeyData, SRVRecordData, BINDCAR_TOKEN_PATH, SERVICE_ACCOUNT_TOKEN_PATH,
+    PTRRecordData, RndcError, RndcKeyData, SRVRecordData, BINDCAR_TOKEN_PATH,
+    SERVICE_ACCOUNT_TOKEN_PATH,
 };
 
 use anyhow::{Context, Result};
@@ -905,6 +906,27 @@ impl Bind9Manager {
     ) -> Result<()> {
         records::caa::add_caa_record(zone_name, name, flags, tag, value, ttl, server, key_data)
             .await
+    }
+
+    /// Add a PTR record using dynamic DNS update (RFC 2136).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - DNS server connection fails
+    /// - TSIG signer creation fails
+    /// - DNS update is rejected by the server
+    /// - Invalid domain name or target
+    #[allow(clippy::too_many_arguments)]
+    pub async fn add_ptr_record(
+        &self,
+        zone_name: &str,
+        name: &str,
+        ptr_data: &PTRRecordData,
+        server: &str,
+        key_data: &RndcKeyData,
+    ) -> Result<()> {
+        records::ptr::add_ptr_record(zone_name, name, ptr_data, server, key_data).await
     }
 
     /// Delete a DNS record using dynamic DNS update (RFC 2136).

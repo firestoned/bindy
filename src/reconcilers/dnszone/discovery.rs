@@ -99,6 +99,8 @@ pub async fn reconcile_zone_records(
             .extend(discover_srv_records(&client, &namespace, selector, zone_name).await?);
         all_record_refs
             .extend(discover_caa_records(&client, &namespace, selector, zone_name).await?);
+        all_record_refs
+            .extend(discover_ptr_records(&client, &namespace, selector, zone_name).await?);
     }
 
     info!(
@@ -289,6 +291,7 @@ fn hickory_record_type_for_kind(kind: &str) -> Result<hickory_proto::rr::RecordT
         DNSRecordKind::NS => RecordType::NS,
         DNSRecordKind::SRV => RecordType::SRV,
         DNSRecordKind::CAA => RecordType::CAA,
+        DNSRecordKind::PTR => RecordType::PTR,
     })
 }
 
@@ -719,9 +722,23 @@ impl DiscoverableRecord for crate::crd::CAARecord {
     }
 }
 
+impl DiscoverableRecord for crate::crd::PTRRecord {
+    fn dns_record_kind() -> crate::crd::DNSRecordKind {
+        crate::crd::DNSRecordKind::PTR
+    }
+
+    fn spec_name(&self) -> &str {
+        &self.spec.name
+    }
+
+    fn record_status(&self) -> Option<&crate::crd::RecordStatus> {
+        self.status.as_ref()
+    }
+}
+
 /// Generic helper function to discover DNS records matching a label selector.
 ///
-/// This function eliminates duplication across the 8 record-type-specific discovery functions.
+/// This function eliminates duplication across the 9 record-type-specific discovery functions.
 /// It works for any record type implementing the `DiscoverableRecord` trait.
 ///
 /// # Type Parameters
@@ -876,6 +893,16 @@ async fn discover_caa_records(
     discover_records_generic::<crate::crd::CAARecord>(client, namespace, selector, zone_name).await
 }
 
+/// Helper function to discover PTR records matching a label selector.
+async fn discover_ptr_records(
+    client: &Client,
+    namespace: &str,
+    selector: &crate::crd::LabelSelector,
+    zone_name: &str,
+) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
+    discover_records_generic::<crate::crd::PTRRecord>(client, namespace, selector, zone_name).await
+}
+
 /// Checks if all DNS records are ready.
 ///
 /// Iterates through all record references and verifies their readiness status.
@@ -899,8 +926,8 @@ pub async fn check_all_records_ready(
     record_refs: &[crate::crd::RecordReferenceWithTimestamp],
 ) -> Result<bool> {
     use crate::crd::{
-        AAAARecord, ARecord, CAARecord, CNAMERecord, DNSRecordKind, MXRecord, NSRecord, SRVRecord,
-        TXTRecord,
+        AAAARecord, ARecord, CAARecord, CNAMERecord, DNSRecordKind, MXRecord, NSRecord, PTRRecord,
+        SRVRecord, TXTRecord,
     };
 
     for record_ref in record_refs {
@@ -936,6 +963,10 @@ pub async fn check_all_records_ready(
             }
             DNSRecordKind::CAA => {
                 let api: Api<CAARecord> = Api::namespaced(client.clone(), namespace);
+                check_record_ready(&api, &record_ref.name).await?
+            }
+            DNSRecordKind::PTR => {
+                let api: Api<PTRRecord> = Api::namespaced(client.clone(), namespace);
                 check_record_ready(&api, &record_ref.name).await?
             }
         };
@@ -1072,7 +1103,8 @@ pub async fn trigger_record_reconciliation(
     zone_name: &str,
 ) -> Result<()> {
     use crate::crd::{
-        AAAARecord, ARecord, CAARecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, TXTRecord,
+        AAAARecord, ARecord, CAARecord, CNAMERecord, MXRecord, NSRecord, PTRRecord, SRVRecord,
+        TXTRecord,
     };
 
     debug!(
@@ -1129,6 +1161,7 @@ pub async fn trigger_record_reconciliation(
     count_records!(NSRecord, "NS");
     count_records!(SRVRecord, "SRV");
     count_records!(CAARecord, "CAA");
+    count_records!(PTRRecord, "PTR");
 
     Ok(())
 }

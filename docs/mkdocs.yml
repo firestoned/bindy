@@ -235,6 +235,7 @@ nav:
           - NS Records: guide/ns-records.md
           - SRV Records: guide/srv-records.md
           - CAA Records: guide/caa-records.md
+          - PTR Records: guide/ptr-records.md
       - RNDC Key Rotation: guide/rndc-key-rotation.md
       - Scout: guide/scout.md
       - Scout Topology (CAPI/k0rdent): guide/scout-topology.md

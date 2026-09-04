@@ -11,7 +11,7 @@
 
 use bindy::crd::{
     AAAARecord, ARecord, Bind9Cluster, Bind9Instance, CAARecord, CNAMERecord, DNSZone, MXRecord,
-    NSRecord, SRVRecord, TXTRecord,
+    NSRecord, PTRRecord, SRVRecord, TXTRecord,
 };
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::JSONSchemaProps;
 use kube::{CustomResourceExt, Resource};
@@ -39,6 +39,7 @@ fn main() {
     println!("  - [TXTRecord](#txtrecord)");
     println!("  - [SRVRecord](#srvrecord)");
     println!("  - [CAARecord](#caarecord)");
+    println!("  - [PTRRecord](#ptrrecord)");
     println!("- [Infrastructure](#infrastructure)");
     println!("  - [Bind9Cluster](#bind9cluster)");
     println!("  - [Bind9Instance](#bind9instance)");
@@ -60,6 +61,7 @@ fn main() {
     generate_crd_doc::<TXTRecord>();
     generate_crd_doc::<SRVRecord>();
     generate_crd_doc::<CAARecord>();
+    generate_crd_doc::<PTRRecord>();
 
     // Infrastructure
     println!("## Infrastructure");

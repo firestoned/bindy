@@ -549,7 +549,7 @@ mkdir -p "$BACKUP_DIR"
 kubectl get dnszones -n $NAMESPACE -o yaml > "$BACKUP_DIR/zones.yaml"
 
 # Backup all records
-kubectl get arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords \
+kubectl get arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords,ptrrecords \
   -n $NAMESPACE -o yaml > "$BACKUP_DIR/records.yaml"
 
 echo "Backup completed: $BACKUP_DIR"

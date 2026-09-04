@@ -388,11 +388,15 @@ jobs:
             description: "Chainguard Zero-CVE (glibc, ~15MB, FIPS-ready)"
             image-tag: ${{ needs.extract-version.outputs.image-tag-chainguard }}
             image-repository: ${{ needs.extract-version.outputs.image-repository-chainguard }}
+            main-tag: main
+            latest-tag: latest
           - name: Distroless
             dockerfile: docker/Dockerfile
             description: "Google Distroless (glibc, ~20MB)"
             image-tag: ${{ needs.extract-version.outputs.image-tag-distroless }}
             image-repository: ${{ needs.extract-version.outputs.image-repository-distroless }}
+            main-tag: main-distroless
+            latest-tag: latest-distroless
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -411,12 +415,17 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ghcr.io/${{ matrix.variant.image-repository }}
-          # `main-<date>` and `latest` only on pushes to main.
+          # Floating `main`/`main-distroless` and `latest`/`latest-distroless`
+          # tags on pushes to main. The nightly Trivy scan (security-scan.yaml)
+          # and ghcr-cleanup.yaml's exclude-tags both expect these exact names;
+          # without them the scheduled scan targets tags that do not exist and
+          # its stale code-scanning alerts never auto-close.
           tags: |
             type=raw,value=${{ matrix.variant.image-tag }}
             type=raw,value=sha-${{ needs.extract-version.outputs.short-sha }}
             type=raw,value=main-{{date 'YYYY-MM-DD'}},enable=${{ github.event_name == 'push' }}
-            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
+            type=raw,value=${{ matrix.variant.main-tag }},enable=${{ github.event_name == 'push' }}
+            type=raw,value=${{ matrix.variant.latest-tag }},enable=${{ github.event_name == 'push' }}
           flavor: |
             latest=false
 

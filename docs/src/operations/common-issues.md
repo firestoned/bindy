@@ -236,7 +236,7 @@ kubectl get dnszone example-com -n bindy-system -o jsonpath='{.spec.recordsFrom[
 
 With the **event-driven architecture**, DNS records are matched to DNSZones via watch events:
 
-1. **DNSZone watches all 8 record types** (ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord)
+1. **DNSZone watches all 9 record types** (ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord, PTRRecord)
 2. When a record is created/updated, **DNSZone receives a watch event immediately** (⚡ sub-second)
 3. DNSZone evaluates if record labels match `spec.recordsFrom` selectors
 4. If matched, DNSZone **sets `record.status.zoneRef`** with full zone metadata

@@ -22,9 +22,13 @@
 
 # Build stage to install BIND9 and create user
 # Pinned to the multi-arch manifest-list digest (Scorecard PinnedDependencies).
-FROM debian:13-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2 AS builder
+FROM debian:13-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS builder
 
 RUN apt-get update && \
+    # Upgrade base packages first so the libs copied into the runtime stage
+    # (libc6, libssl3t64, zlib1g, ...) carry the latest security patches even
+    # when the pinned base-image digest lags behind Debian security updates.
+    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     bind9 \
     bind9utils \
@@ -32,7 +36,7 @@ RUN apt-get update && \
 
 # Runtime stage - Distroless with glibc
 # Pinned to the multi-arch manifest-list digest (Scorecard PinnedDependencies).
-FROM gcr.io/distroless/cc-debian13:nonroot@sha256:d3cda6e91129130d7229a1806b6a73d292ef245ab032da7851907798024cefba
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:c31ff9abcb1910f3ab25c7957bdaf0bfe12a01eb546e8df2282f1c8f682b606c
 
 ARG TARGETARCH
 ARG VERSION=0.1.0

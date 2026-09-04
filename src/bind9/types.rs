@@ -121,6 +121,17 @@ pub struct SRVRecordData {
     pub ttl: Option<i32>,
 }
 
+/// Parameters for creating PTR records.
+///
+/// Contains the canonical hostname target required for PTR (reverse DNS) records.
+#[derive(Clone)]
+pub struct PTRRecordData {
+    /// Canonical hostname the address points to (FQDN ending with a dot)
+    pub target: String,
+    /// Time to live in seconds
+    pub ttl: Option<i32>,
+}
+
 #[cfg(test)]
 #[path = "types_tests.rs"]
 mod types_tests;

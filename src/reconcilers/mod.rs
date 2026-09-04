@@ -42,6 +42,7 @@
 //! - [`reconcile_ns_record`] - Manages nameserver delegation
 //! - [`reconcile_srv_record`] - Manages service location records
 //! - [`reconcile_caa_record`] - Manages certificate authority authorization
+//! - [`reconcile_ptr_record`] - Manages reverse DNS (pointer) records
 //!
 //! # Example: Using a Reconciler
 //!
@@ -84,8 +85,8 @@ pub use clusterbind9provider::{delete_clusterbind9provider, reconcile_clusterbin
 pub use dnszone::{delete_dnszone, discovery::find_zones_selecting_record, reconcile_dnszone};
 pub use records::{
     delete_record, reconcile_a_record, reconcile_aaaa_record, reconcile_caa_record,
-    reconcile_cname_record, reconcile_mx_record, reconcile_ns_record, reconcile_srv_record,
-    reconcile_txt_record,
+    reconcile_cname_record, reconcile_mx_record, reconcile_ns_record, reconcile_ptr_record,
+    reconcile_srv_record, reconcile_txt_record,
 };
 
 /// Check if a resource's spec has changed by comparing generation with `observed_generation`.

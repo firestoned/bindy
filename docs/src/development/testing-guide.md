@@ -332,7 +332,7 @@ kubectl get events -n bindy-system --sort-by='.lastTimestamp'
 
 ```bash
 # Delete test resources
-kubectl delete bind9instances,dnszones,arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords --all -n bindy-system
+kubectl delete bind9instances,dnszones,arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords,ptrrecords --all -n bindy-system
 
 # Delete cluster
 kind delete cluster --name bindy-test

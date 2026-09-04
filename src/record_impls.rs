@@ -9,12 +9,13 @@
 
 use crate::context::Context;
 use crate::crd::{
-    AAAARecord, ARecord, CAARecord, CNAMERecord, MXRecord, NSRecord, RecordStatus, SRVRecord,
-    TXTRecord,
+    AAAARecord, ARecord, CAARecord, CNAMERecord, MXRecord, NSRecord, PTRRecord, RecordStatus,
+    SRVRecord, TXTRecord,
 };
 use crate::reconcilers::{
     reconcile_a_record, reconcile_aaaa_record, reconcile_caa_record, reconcile_cname_record,
-    reconcile_mx_record, reconcile_ns_record, reconcile_srv_record, reconcile_txt_record,
+    reconcile_mx_record, reconcile_ns_record, reconcile_ptr_record, reconcile_srv_record,
+    reconcile_txt_record,
 };
 use crate::record_operator::{DnsRecordType, ReconcileError};
 use anyhow::Result;
@@ -248,6 +249,36 @@ impl DnsRecordType for CAARecord {
     ) -> impl std::future::Future<Output = Result<(), ReconcileError>> + Send {
         async move {
             reconcile_caa_record(context, record)
+                .await
+                .map_err(ReconcileError::from)
+        }
+    }
+
+    fn metadata(&self) -> &ObjectMeta {
+        &self.metadata
+    }
+
+    fn status(&self) -> &Option<RecordStatus> {
+        &self.status
+    }
+}
+
+// PTR Record Implementation
+impl DnsRecordType for PTRRecord {
+    const KIND: &'static str = "PTRRecord";
+    const FINALIZER: &'static str = crate::labels::FINALIZER_PTR_RECORD;
+    const RECORD_TYPE_STR: &'static str = "PTR";
+
+    fn hickory_record_type() -> RecordType {
+        RecordType::PTR
+    }
+
+    fn reconcile_record(
+        context: Arc<Context>,
+        record: Self,
+    ) -> impl std::future::Future<Output = Result<(), ReconcileError>> + Send {
+        async move {
+            reconcile_ptr_record(context, record)
                 .await
                 .map_err(ReconcileError::from)
         }

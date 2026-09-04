@@ -221,7 +221,7 @@ Creates zone `example.com` in all instances of `my-cluster` via HTTP API.
 
 **Purpose**: Create DNS records in zones using **hickory DNS UPDATE (RFC 2136)** and notify secondaries via bindcar HTTP API.
 
-**Watches**: `ARecord`, `AAAARecord`, `CNAMERecord`, `TXTRecord`, `MXRecord`, `NSRecord`, `SRVRecord`, `CAARecord`
+**Watches**: `ARecord`, `AAAARecord`, `CNAMERecord`, `TXTRecord`, `MXRecord`, `NSRecord`, `SRVRecord`, `CAARecord`, `PTRRecord`
 
 **Creates**: DNS records in BIND9 using two protocols:
 1. **DNS UPDATE (RFC 2136)** via hickory client - for creating records

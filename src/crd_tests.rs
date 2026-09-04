@@ -291,6 +291,19 @@ mod tests {
     }
 
     #[test]
+    fn test_ptrrecord_spec() {
+        let spec = PTRRecordSpec {
+            name: "10".into(),
+            target: "host10.example.com.".into(),
+            ttl: Some(3600),
+        };
+
+        assert_eq!(spec.name, "10");
+        assert_eq!(spec.target, "host10.example.com.");
+        assert_eq!(spec.ttl, Some(3600));
+    }
+
+    #[test]
     fn test_record_status_default() {
         let status = RecordStatus::default();
         assert!(status.conditions.is_empty());
@@ -1005,10 +1018,10 @@ mod tests {
 
     #[test]
     fn dns_record_kind_try_from_returns_err_on_unknown() {
-        let result = DNSRecordKind::try_from("PTRRecord");
+        let result = DNSRecordKind::try_from("UnknownRecord");
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert_eq!(err, UnknownDNSRecordKind("PTRRecord".to_string()));
+        assert_eq!(err, UnknownDNSRecordKind("UnknownRecord".to_string()));
     }
 
     #[test]

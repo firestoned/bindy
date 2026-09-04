@@ -19,7 +19,7 @@ use bindy::{
     context::{Context, Metrics, Stores},
     crd::{
         AAAARecord, ARecord, Bind9Cluster, Bind9Instance, CAARecord, CNAMERecord,
-        ClusterBind9Provider, DNSZone, MXRecord, NSRecord, SRVRecord, TXTRecord,
+        ClusterBind9Provider, DNSZone, MXRecord, NSRecord, PTRRecord, SRVRecord, TXTRecord,
     },
     metrics,
     reconcilers::{
@@ -461,6 +461,7 @@ async fn initialize_shared_context(client: Client) -> Result<Arc<Context>> {
     let ns_records_api = Api::<NSRecord>::all(client.clone());
     let srv_records_api = Api::<SRVRecord>::all(client.clone());
     let caa_records_api = Api::<CAARecord>::all(client.clone());
+    let ptr_records_api = Api::<PTRRecord>::all(client.clone());
 
     // Create stores (will be populated by reflectors)
     let (cluster_bind9_providers_store, cluster_bind9_providers_writer) = reflector::store();
@@ -476,6 +477,7 @@ async fn initialize_shared_context(client: Client) -> Result<Arc<Context>> {
     let (ns_records_store, ns_records_writer) = reflector::store();
     let (srv_records_store, srv_records_writer) = reflector::store();
     let (caa_records_store, caa_records_writer) = reflector::store();
+    let (ptr_records_store, ptr_records_writer) = reflector::store();
 
     // Start reflector tasks (one per CRD type)
     // These run in the background and continuously update the stores
@@ -640,6 +642,14 @@ async fn initialize_shared_context(client: Client) -> Result<Arc<Context>> {
         warn!("CAARecord reflector stream ended");
     });
 
+    tokio::spawn(async move {
+        let stream = watcher(ptr_records_api, watcher::Config::default());
+        reflector(ptr_records_writer, stream)
+            .for_each(|_| futures::future::ready(()))
+            .await;
+        warn!("PTRRecord reflector stream ended");
+    });
+
     // Create the stores structure
     let stores = Stores {
         cluster_bind9_providers: cluster_bind9_providers_store,
@@ -655,6 +665,7 @@ async fn initialize_shared_context(client: Client) -> Result<Arc<Context>> {
         ns_records: ns_records_store,
         srv_records: srv_records_store,
         caa_records: caa_records_store,
+        ptr_records: ptr_records_store,
     };
 
     // Create HTTP client for bindcar API calls
@@ -1232,6 +1243,11 @@ async fn run_all_operators(context: Arc<Context>, bind9_manager: Arc<Bind9Manage
             result?;
             anyhow::bail!("CAARecord operator exited unexpectedly without error")
         }
+        result = run_generic_record_operator::<PTRRecord>(context.clone(), bind9_manager.clone()) => {
+            error!("CRITICAL: PTRRecord operator exited unexpectedly: {:?}", result);
+            result?;
+            anyhow::bail!("PTRRecord operator exited unexpectedly without error")
+        }
     }
 }
 
@@ -1585,6 +1601,7 @@ async fn run_dnszone_operator(
     let nsrecord_api = Api::<NSRecord>::all(client.clone());
     let srvrecord_api = Api::<SRVRecord>::all(client.clone());
     let caarecord_api = Api::<CAARecord>::all(client.clone());
+    let ptrrecord_api = Api::<PTRRecord>::all(client.clone());
 
     // Clone context for watch closures
     let ctx_for_a = context.clone();
@@ -1595,6 +1612,7 @@ async fn run_dnszone_operator(
     let ctx_for_ns = context.clone();
     let ctx_for_srv = context.clone();
     let ctx_for_caa = context.clone();
+    let ctx_for_ptr = context.clone();
     let ctx_for_instance_watch = context.clone();
 
     // Event-Driven Architecture for DNSZone (Zone-Centric Selection):
@@ -1760,6 +1778,19 @@ async fn run_dnszone_operator(
             let record_labels = record.labels();
 
             ctx_for_caa
+                .stores
+                .dnszones_selecting_record(record_labels, &namespace)
+                .into_iter()
+                .map(|(name, ns)| kube::runtime::reflector::ObjectRef::new(&name).within(&ns))
+                .collect::<Vec<_>>()
+        })
+        .watches(ptrrecord_api, default_watcher_config(), move |record| {
+            let Some(namespace) = record.namespace() else {
+                return vec![];
+            };
+            let record_labels = record.labels();
+
+            ctx_for_ptr
                 .stores
                 .dnszones_selecting_record(record_labels, &namespace)
                 .into_iter()

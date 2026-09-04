@@ -57,11 +57,11 @@ update_digest() {
     old_digest=$(grep "FROM ${image}@sha256:" "$dockerfile" | sed 's/.*@\(sha256:[a-f0-9]*\).*/\1/' | head -1)
 
     if [[ "$old_digest" == "$new_digest" ]]; then
-      echo "   ↔ $dockerfile: unchanged"
+      echo "   ↔ $dockerfile: unchanged" >&2
       continue
     fi
 
-    echo "   ✅ $dockerfile: ${old_digest:7:12}... → ${new_digest:7:12}..."
+    echo "   ✅ $dockerfile: ${old_digest:7:12}... → ${new_digest:7:12}..." >&2
     if [[ "$DRY_RUN" == false ]]; then
       sed -i.bak "s|FROM ${image}@sha256:[a-f0-9]*|FROM ${image}@${new_digest}|g" "$dockerfile"
       rm -f "${dockerfile}.bak"
@@ -69,6 +69,8 @@ update_digest() {
     any_changed=true
   done
 
+  # Only the change flag goes to stdout; status lines above go to stderr so
+  # the caller's $(update_digest ...) capture is a clean true/false.
   echo "$any_changed"
 }
 

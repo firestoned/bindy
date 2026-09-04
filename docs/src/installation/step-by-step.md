@@ -228,7 +228,7 @@ kubectl apply -f dns-zone.yaml
 
 Create a file `dns-records.yaml`:
 
-> **Note**: DNS records reference zones using labels. The operator uses an **event-driven architecture** that watches all 8 record types (ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord). When you create a record, the DNSZone operator receives a watch event **immediately** (⚡ sub-second), evaluates label selectors, and sets `status.zoneRef` if the record matches. The record operator then watches for this status change and reconciles to BIND9 instantly. **Total time: ~500ms** from record creation to BIND9 update ✅
+> **Note**: DNS records reference zones using labels. The operator uses an **event-driven architecture** that watches all 9 record types (ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord, PTRRecord). When you create a record, the DNSZone operator receives a watch event **immediately** (⚡ sub-second), evaluates label selectors, and sets `status.zoneRef` if the record matches. The record operator then watches for this status change and reconciles to BIND9 instantly. **Total time: ~500ms** from record creation to BIND9 update ✅
 
 ```yaml
 # Web server A record

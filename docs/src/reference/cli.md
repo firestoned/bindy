@@ -186,6 +186,7 @@ bindy run
 | `TXTRecord` | TXTRecord | TXT record in BIND9 |
 | `SRVRecord` | SRVRecord | SRV record in BIND9 |
 | `CAARecord` | CAARecord | CAA record in BIND9 |
+| `PTRRecord` | PTRRecord | PTR record in BIND9 |
 
 ### Environment variables
 

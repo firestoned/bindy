@@ -479,9 +479,9 @@ mod tests {
     // --- CRD generation ---
 
     #[test]
-    fn test_build_all_crds_returns_twelve() {
+    fn test_build_all_crds_returns_thirteen() {
         let crds = build_all_crds().unwrap();
-        assert_eq!(crds.len(), 12, "Expected exactly 12 CRDs");
+        assert_eq!(crds.len(), 13, "Expected exactly 13 CRDs");
     }
 
     #[test]

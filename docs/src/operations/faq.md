@@ -147,7 +147,7 @@ kubectl delete arecords,aaaarecords,cnamerecords,mxrecords,txtrecords \
 
 ```bash
 # Export all CRDs
-kubectl get bind9instances,dnszones,arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords \
+kubectl get bind9instances,dnszones,arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords,ptrrecords \
   -A -o yaml > bindy-backup.yaml
 ```
 

@@ -26,6 +26,7 @@
 //! - [`NSRecord`] - Nameserver delegation records
 //! - [`SRVRecord`] - Service location records
 //! - [`CAARecord`] - Certificate authority authorization records
+//! - [`PTRRecord`] - Reverse DNS (pointer) records
 //!
 //! # Example: Creating a DNS Zone
 //!
@@ -116,6 +117,8 @@ pub enum DNSRecordKind {
     SRV,
     /// Certificate authority authorization record (CAA)
     CAA,
+    /// Reverse DNS pointer record (PTR)
+    PTR,
 }
 
 impl DNSRecordKind {
@@ -140,6 +143,7 @@ impl DNSRecordKind {
             Self::NS => "NSRecord",
             Self::SRV => "SRVRecord",
             Self::CAA => "CAARecord",
+            Self::PTR => "PTRRecord",
         }
     }
 
@@ -167,6 +171,7 @@ impl DNSRecordKind {
             Self::NS,
             Self::SRV,
             Self::CAA,
+            Self::PTR,
         ]
     }
 
@@ -197,6 +202,7 @@ impl DNSRecordKind {
             Self::NS => RecordType::NS,
             Self::SRV => RecordType::SRV,
             Self::CAA => RecordType::CAA,
+            Self::PTR => RecordType::PTR,
         }
     }
 }
@@ -207,7 +213,7 @@ impl DNSRecordKind {
 /// fallible `TryFrom` impls surface this error so the caller can return it
 /// through normal `Result` propagation rather than crashing the reconciler.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
-#[error("unknown DNS record kind {0:?} (expected one of: ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord)")]
+#[error("unknown DNS record kind {0:?} (expected one of: ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord, PTRRecord)")]
 pub struct UnknownDNSRecordKind(pub String);
 
 impl TryFrom<&str> for DNSRecordKind {
@@ -223,6 +229,7 @@ impl TryFrom<&str> for DNSRecordKind {
             "NSRecord" => Ok(Self::NS),
             "SRVRecord" => Ok(Self::SRV),
             "CAARecord" => Ok(Self::CAA),
+            "PTRRecord" => Ok(Self::PTR),
             _ => Err(UnknownDNSRecordKind(s.to_string())),
         }
     }
@@ -1694,6 +1701,64 @@ pub struct CAARecordSpec {
     /// For "issue"/"issuewild": CA domain (e.g., "letsencrypt.org")
     /// For "iodef": mailto: or https: URL
     pub value: String,
+
+    /// Time To Live in seconds.
+    #[serde(default)]
+    #[schemars(range(min = 0, max = 2_147_483_647))]
+    pub ttl: Option<i32>,
+}
+
+/// `PTRRecord` specifies a reverse DNS (pointer) record.
+///
+/// PTR (Pointer) records map an IP address back to a canonical hostname.
+/// They live in reverse zones (`in-addr.arpa` for IPv4, `ip6.arpa` for IPv6)
+/// and are the reverse counterpart of A/AAAA records.
+///
+/// # Example
+///
+/// ```yaml
+/// apiVersion: bindy.firestoned.io/v1beta1
+/// kind: PTRRecord
+/// metadata:
+///   name: host-10-ptr
+///   namespace: bindy-system
+///   labels:
+///     zone: 0.168.192.in-addr.arpa
+/// spec:
+///   name: "10"
+///   target: host10.example.com.
+///   ttl: 3600
+/// ```
+///
+/// Records are associated with `DNSZones` via label selectors.
+/// The `DNSZone` must have a `recordsFrom` selector that matches this record's labels.
+#[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[kube(
+    group = "bindy.firestoned.io",
+    version = "v1beta1",
+    kind = "PTRRecord",
+    namespaced,
+    shortname = "ptr",
+    doc = "PTRRecord specifies a reverse DNS (pointer) record mapping an IP address back to a canonical hostname. PTR records live in reverse zones (in-addr.arpa for IPv4, ip6.arpa for IPv6).",
+    printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.name"}"#,
+    printcolumn = r#"{"name":"Zone","type":"string","jsonPath":".status.zoneRef.zoneName"}"#,
+    printcolumn = r#"{"name":"Target","type":"string","jsonPath":".spec.target"}"#,
+    printcolumn = r#"{"name":"TTL","type":"integer","jsonPath":".spec.ttl"}"#,
+    printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
+)]
+#[kube(status = "RecordStatus")]
+#[serde(rename_all = "camelCase")]
+pub struct PTRRecordSpec {
+    /// Host portion of the reverse record name within the reverse zone.
+    ///
+    /// Example: "10" for 10.0.168.192.in-addr.arpa. (192.168.0.10) in the
+    /// 0.168.192.in-addr.arpa zone.
+    pub name: String,
+
+    /// Fully qualified domain name of the canonical host.
+    ///
+    /// Must end with a dot. Example: "host10.example.com."
+    pub target: String,
 
     /// Time To Live in seconds.
     #[serde(default)]

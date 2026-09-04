@@ -838,6 +838,110 @@ spec:
 
 ---
 
+## PTR Record (Reverse DNS)
+
+Maps an IP address back to a canonical hostname. PTR records live in reverse zones (`in-addr.arpa` for IPv4, `ip6.arpa` for IPv6).
+
+### Resource Definition
+
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: PTRRecord
+metadata:
+  name: host-10-ptr
+  namespace: bindy-system
+  labels:
+    zone: 0.168.192.in-addr.arpa
+spec:
+  name: "10"
+  target: host10.example.com.
+  ttl: 3600
+```
+
+### Fields
+
+#### name
+**Type**: string
+**Required**: Yes
+
+Host portion of the reverse record name within the reverse zone.
+
+For `192.168.0.10` in the `0.168.192.in-addr.arpa` zone, the name is `"10"` (producing `10.0.168.192.in-addr.arpa.`).
+
+```yaml
+spec:
+  name: "10"    # 10.0.168.192.in-addr.arpa.
+  name: "@"     # Zone apex
+```
+
+**Note:** Quote numeric values (`"10"`, not `10`) so YAML treats them as strings.
+
+#### target
+**Type**: string
+**Required**: Yes
+**Format**: FQDN ending with a dot
+
+Canonical hostname the address points to.
+
+```yaml
+spec:
+  target: host10.example.com.   # ✅ Absolute FQDN
+  target: host10.example.com    # ❌ WRONG - missing trailing dot
+```
+
+### Example: Reverse Records for a Subnet
+
+Publish PTR records for hosts in `192.168.0.0/24`:
+
+```yaml
+---
+# Reverse zone for 192.168.0.0/24
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: 0-168-192-in-addr-arpa
+  namespace: bindy-system
+spec:
+  zoneName: 0.168.192.in-addr.arpa
+  clusterRef: production-dns
+  recordsFrom:
+    - selector:
+        matchLabels:
+          zone: 0.168.192.in-addr.arpa
+  soaRecord:
+    primaryNs: ns1.example.com.
+    adminEmail: admin.example.com.
+    serial: 2024010101
+---
+# 192.168.0.10 -> host10.example.com.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: PTRRecord
+metadata:
+  name: host-10-ptr
+  namespace: bindy-system
+  labels:
+    zone: 0.168.192.in-addr.arpa
+spec:
+  name: "10"
+  target: host10.example.com.
+  ttl: 3600
+---
+# 192.168.0.11 -> host11.example.com.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: PTRRecord
+metadata:
+  name: host-11-ptr
+  namespace: bindy-system
+  labels:
+    zone: 0.168.192.in-addr.arpa
+spec:
+  name: "11"
+  target: host11.example.com.
+  ttl: 3600
+```
+
+---
+
 ## Related Resources
 
 - [API Reference](./api.md) - Complete CRD API documentation

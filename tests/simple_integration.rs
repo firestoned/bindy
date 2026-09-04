@@ -327,6 +327,7 @@ async fn test_crds_installed() {
                 "NSRecord",
                 "SRVRecord",
                 "CAARecord",
+                "PTRRecord",
             ];
 
             for crd in &bindy_crds {

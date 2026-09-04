@@ -79,6 +79,7 @@ rules:
       - "nsrecords"
       - "srvrecords"
       - "caarecords"
+      - "ptrrecords"
     verbs: ["get", "list", "watch", "create", "update", "patch"]
     # Removed: "delete" - Use bindy-admin-role for deletions
 
@@ -93,6 +94,7 @@ rules:
       - "nsrecords/status"
       - "srvrecords/status"
       - "caarecords/status"
+      - "ptrrecords/status"
     verbs: ["get", "update", "patch"]
     # Status updates only need get/update/patch, not create/delete
 
