@@ -68,7 +68,7 @@ pub fn requeue_based_on_readiness(is_ready: bool) -> Action {
 /// Macro to generate record reconciliation wrapper functions.
 ///
 /// This eliminates ~900 lines of duplicate code by generating identical wrappers
-/// for all 8 DNS record types with only the type and constant names changing.
+/// for all 9 DNS record types with only the type and constant names changing.
 ///
 /// # Generated Function Pattern
 ///

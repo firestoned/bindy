@@ -7,15 +7,15 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: aaaarecords.bindy.firestoned.io
+  name: ptrrecords.bindy.firestoned.io
 spec:
   group: bindy.firestoned.io
   names:
-    kind: AAAARecord
-    plural: aaaarecords
+    kind: PTRRecord
+    plural: ptrrecords
     shortNames:
-    - aaaa
-    singular: aaaarecord
+    - ptr
+    singular: ptrrecord
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -25,8 +25,8 @@ spec:
     - jsonPath: .status.zoneRef.zoneName
       name: Zone
       type: string
-    - jsonPath: .status.addresses
-      name: Addresses
+    - jsonPath: .spec.target
+      name: Target
       type: string
     - jsonPath: .spec.ttl
       name: TTL
@@ -37,49 +37,47 @@ spec:
     name: v1beta1
     schema:
       openAPIV3Schema:
-        description: AAAARecord maps a DNS hostname to an IPv6 address. This is the IPv6 equivalent of an A record.
+        description: PTRRecord specifies a reverse DNS (pointer) record mapping an IP address back to a canonical hostname. PTR records live in reverse zones (in-addr.arpa for IPv4, ip6.arpa for IPv6).
         properties:
           spec:
             description: |-
-              `AAAARecord` maps a DNS name to an IPv6 address.
+              `PTRRecord` specifies a reverse DNS (pointer) record.
 
-              AAAA records are the IPv6 equivalent of A records, mapping hostnames to IPv6 addresses.
+              PTR (Pointer) records map an IP address back to a canonical hostname.
+              They live in reverse zones (`in-addr.arpa` for IPv4, `ip6.arpa` for IPv6)
+              and are the reverse counterpart of A/AAAA records.
 
               # Example
 
               ```yaml
               apiVersion: bindy.firestoned.io/v1beta1
-              kind: AAAARecord
+              kind: PTRRecord
               metadata:
-                name: www-example-com-ipv6
+                name: host-10-ptr
                 namespace: bindy-system
                 labels:
-                  zone: example.com
+                  zone: 0.168.192.in-addr.arpa
               spec:
-                name: www
-                ipv6Address: "2001:db8::1"
-                ttl: 300
+                name: "10"
+                target: host10.example.com.
+                ttl: 3600
               ```
 
               Records are associated with `DNSZones` via label selectors.
               The `DNSZone` must have a `recordsFrom` selector that matches this record's labels.
             properties:
-              ipv6Addresses:
-                description: |-
-                  List of IPv6 addresses for this DNS record.
-
-                  Multiple addresses create round-robin DNS (load balancing).
-                  All addresses in the list belong to the same DNS name.
-
-                  Must contain at least one valid IPv6 address in standard notation.
-
-                  Examples: `["2001:db8::1"]`, `["2001:db8::1", "2001:db8::2"]`
-                items:
-                  type: string
-                minItems: 1
-                type: array
               name:
-                description: Record name within the zone.
+                description: |-
+                  Host portion of the reverse record name within the reverse zone.
+
+                  Example: "10" for 10.0.168.192.in-addr.arpa. (192.168.0.10) in the
+                  0.168.192.in-addr.arpa zone.
+                type: string
+              target:
+                description: |-
+                  Fully qualified domain name of the canonical host.
+
+                  Must end with a dot. Example: "host10.example.com."
                 type: string
               ttl:
                 description: Time To Live in seconds.
@@ -89,8 +87,8 @@ spec:
                 nullable: true
                 type: integer
             required:
-            - ipv6Addresses
             - name
+            - target
             type: object
           status:
             description: Generic record status
@@ -245,7 +243,7 @@ spec:
             type: object
         required:
         - spec
-        title: AAAARecord
+        title: PTRRecord
         type: object
     served: true
     storage: true

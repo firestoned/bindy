@@ -160,7 +160,7 @@ pub async fn cleanup_stale_records(
 ) -> Result<usize> {
     use crate::bind9::records::query_dns_record;
     use crate::crd::{
-        AAAARecord, ARecord, CAARecord, CNAMERecord, DNSRecordKind, MXRecord, NSRecord,
+        AAAARecord, ARecord, CAARecord, CNAMERecord, DNSRecordKind, MXRecord, NSRecord, PTRRecord,
         RecordReferenceWithTimestamp, SRVRecord, TXTRecord,
     };
     use kube::{Api, ResourceExt};
@@ -235,6 +235,10 @@ pub async fn cleanup_stale_records(
             }
             DNSRecordKind::CAA => {
                 let api: Api<CAARecord> = Api::namespaced(client.clone(), &record_ref.namespace);
+                resource_exists(&api, &record_ref.name).await?
+            }
+            DNSRecordKind::PTR => {
+                let api: Api<PTRRecord> = Api::namespaced(client.clone(), &record_ref.namespace);
                 resource_exists(&api, &record_ref.name).await?
             }
         };

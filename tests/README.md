@@ -99,7 +99,7 @@ This will:
 - ✅ Run Rust integration tests
 - ✅ Test Bind9Instance creation
 - ✅ Test DNSZone creation
-- ✅ Test all 8 DNS record types (A, AAAA, CNAME, MX, TXT, NS, SRV, CAA)
+- ✅ Test all 9 DNS record types (A, AAAA, CNAME, MX, TXT, NS, SRV, CAA, PTR)
 - ✅ Verify resource creation
 - ✅ Clean up test resources
 
@@ -127,7 +127,7 @@ cargo test --test simple_integration -- --ignored
 - SOA record configuration
 - Instance selector matching
 
-✅ **DNS Records** (All 8 Types)
+✅ **DNS Records** (All 9 Types)
 - A Record (IPv4)
 - AAAA Record (IPv6)
 - CNAME Record
@@ -136,6 +136,7 @@ cargo test --test simple_integration -- --ignored
 - NS Record
 - SRV Record
 - CAA Record
+- PTR Record (reverse DNS)
 
 ### Test Scenarios
 
@@ -174,6 +175,7 @@ Testing all DNS record types...
   ✓ nsrecord created
   ✓ srvrecord created
   ✓ caarecord created
+  ✓ ptrrecord created
 
 ✅ All integration tests passed!
 ```
@@ -206,7 +208,7 @@ kubectl logs -n bindy-system -l app=bindy
 
 ```bash
 # Delete test resources
-kubectl delete bind9instances,dnszones,arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords --all -n bindy-system
+kubectl delete bind9instances,dnszones,arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords,ptrrecords --all -n bindy-system
 
 # Delete cluster
 kind delete cluster --name bindy-test

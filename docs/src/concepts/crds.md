@@ -89,6 +89,7 @@ Bindy supports all common DNS record types:
 - **NSRecord** - Nameserver delegation
 - **SRVRecord** - Service discovery
 - **CAARecord** - Certificate authority authorization
+- **PTRRecord** - Reverse DNS (pointer) records
 
 [Learn more about DNS Records](./records.md)
 

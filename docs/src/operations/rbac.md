@@ -41,6 +41,8 @@ rules:
       - "srvrecords/status"
       - "caarecords"
       - "caarecords/status"
+      - "ptrrecords"
+      - "ptrrecords/status"
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   
   # Kubernetes resources

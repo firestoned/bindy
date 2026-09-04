@@ -294,7 +294,7 @@ while true; do dig @$SERVICE_IP example.com +short; sleep 1; done
 
 ```bash
 # Regular backups of all CRDs
-kubectl get bind9instances,dnszones,arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords \
+kubectl get bind9instances,dnszones,arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords,ptrrecords \
   -A -o yaml > backup-$(date +%Y%m%d).yaml
 ```
 

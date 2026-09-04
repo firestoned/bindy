@@ -182,6 +182,7 @@ Bindy provides 4 types of resources:
 | **NSRecord** | Nameserver delegation (NS) |
 | **SRVRecord** | Service location (SRV) |
 | **CAARecord** | Certificate authority authorization (CAA) |
+| **PTRRecord** | Reverse DNS pointer (PTR) |
 
 ### How It Works
 

@@ -33,6 +33,7 @@ Bindy introduces these Custom Resource Definitions (CRDs):
   - NSRecord (Name Server)
   - SRVRecord (Service)
   - CAARecord (Certificate Authority Authorization)
+  - PTRRecord (Reverse DNS Pointer)
 
 ## How It Works
 

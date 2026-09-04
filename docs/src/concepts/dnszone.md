@@ -80,8 +80,8 @@ The DNSZone operator uses an **event-driven architecture** to automatically disc
 
 ### How It Works
 
-1. **DNSZone watches all 8 record types**
-   - ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord
+1. **DNSZone watches all 9 record types**
+   - ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord, PTRRecord
    - Watches trigger immediately when records are created/updated/deleted
    - No polling delays - sub-second reaction time
 
@@ -276,7 +276,7 @@ The `status.records` field provides a real-time inventory of all DNS records suc
 
 #### How It Works
 
-When a DNS record (ARecord, AAAARecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, TXTRecord, or CAARecord) is successfully reconciled and added to the zone, the record reconciler automatically adds a reference to the `DNSZone.status.records` list.
+When a DNS record (ARecord, AAAARecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, TXTRecord, CAARecord, or PTRRecord) is successfully reconciled and added to the zone, the record reconciler automatically adds a reference to the `DNSZone.status.records` list.
 
 Each record reference contains:
 - `apiVersion` - The API version of the record resource (always `bindy.firestoned.io/v1beta1`)

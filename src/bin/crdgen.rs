@@ -13,7 +13,7 @@
 
 use bindy::crd::{
     AAAARecord, ARecord, Bind9Cluster, Bind9Instance, CAARecord, CNAMERecord, ClusterBind9Provider,
-    DNSZone, MXRecord, NSRecord, SRVRecord, TXTRecord,
+    DNSZone, MXRecord, NSRecord, PTRRecord, SRVRecord, TXTRecord,
 };
 use kube::CustomResourceExt;
 use serde_json::Value;
@@ -45,6 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     generate_crd::<TXTRecord>("txtrecords.crd.yaml", output_dir)?;
     generate_crd::<SRVRecord>("srvrecords.crd.yaml", output_dir)?;
     generate_crd::<CAARecord>("caarecords.crd.yaml", output_dir)?;
+    generate_crd::<PTRRecord>("ptrrecords.crd.yaml", output_dir)?;
     generate_crd::<DNSZone>("dnszones.crd.yaml", output_dir)?;
     generate_crd::<Bind9Cluster>("bind9clusters.crd.yaml", output_dir)?;
     generate_crd::<ClusterBind9Provider>("clusterbind9providers.crd.yaml", output_dir)?;

@@ -127,6 +127,9 @@ pub const FINALIZER_SRV_RECORD: &str = "bindy.firestoned.io/srvrecord-finalizer"
 /// Finalizer for `CAARecord` resources
 pub const FINALIZER_CAA_RECORD: &str = "bindy.firestoned.io/caarecord-finalizer";
 
+/// Finalizer for `PTRRecord` resources
+pub const FINALIZER_PTR_RECORD: &str = "bindy.firestoned.io/ptrrecord-finalizer";
+
 // ============================================================================
 // Role Values
 // ============================================================================

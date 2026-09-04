@@ -28,7 +28,7 @@ All metrics use the namespace prefix `bindy_firestoned_io_`.
 Total number of reconciliation attempts by resource type and outcome.
 
 Labels:
-- `resource_type`: Kind of resource (`Bind9Cluster`, `Bind9Instance`, `DNSZone`, `ARecord`, `AAAARecord`, `TXTRecord`, `CNAMERecord`, `MXRecord`, `NSRecord`, `SRVRecord`, `CAARecord`)
+- `resource_type`: Kind of resource (`Bind9Cluster`, `Bind9Instance`, `DNSZone`, `ARecord`, `AAAARecord`, `TXTRecord`, `CNAMERecord`, `MXRecord`, `NSRecord`, `SRVRecord`, `CAARecord`, `PTRRecord`)
 - `status`: Outcome (`success`, `error`, `requeue`)
 
 ```promql

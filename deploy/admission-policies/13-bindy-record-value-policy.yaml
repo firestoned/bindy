@@ -3,7 +3,7 @@
 #
 # ValidatingAdmissionPolicy: defense-in-depth checks on DNS record *target*
 # values that name another host — CNAMERecord.spec.target, MXRecord.spec.mailServer,
-# NSRecord.spec.nameserver, and SRVRecord.spec.target.
+# NSRecord.spec.nameserver, SRVRecord.spec.target, and PTRRecord.spec.target.
 #
 # bindcar 0.7.0 tightened record-value validation (migration §3): CNAME / NS /
 # PTR / MX values must be fully-qualified and end with a trailing dot, and no
@@ -43,6 +43,7 @@ spec:
           - mxrecords
           - nsrecords
           - srvrecords
+          - ptrrecords
   variables:
     # Collect every host-target field present on this record. Each record kind
     # carries exactly one of these, so the union yields a single value.
@@ -61,7 +62,7 @@ spec:
     - expression: |
         variables.targets.all(v, v.endsWith('.'))
       messageExpression: |
-        "CNAME/MX/NS/SRV target values must be fully-qualified and end with a " +
+        "CNAME/MX/NS/SRV/PTR target values must be fully-qualified and end with a " +
         "trailing dot (e.g. 'example.com.'). Offending values: " +
         variables.targets.filter(v, !v.endsWith('.')).join(", ")
 
@@ -70,7 +71,7 @@ spec:
     - expression: |
         variables.targets.all(v, v.matches('^[A-Za-z0-9._-]+$'))
       messageExpression: |
-        "CNAME/MX/NS/SRV target values may contain only [A-Za-z0-9._-] " +
+        "CNAME/MX/NS/SRV/PTR target values may contain only [A-Za-z0-9._-] " +
         "(no whitespace, control characters, or ';', '{', '}', '\"', '\\', '$'). " +
         "Offending values: " +
         variables.targets.filter(v, !v.matches('^[A-Za-z0-9._-]+$')).join(", ")
@@ -79,7 +80,7 @@ spec:
     - expression: |
         variables.targets.all(v, size(v) <= variables.maxDnsNameLength)
       messageExpression: |
-        "CNAME/MX/NS/SRV target values exceed the RFC 1035 limit of " +
+        "CNAME/MX/NS/SRV/PTR target values exceed the RFC 1035 limit of " +
         string(variables.maxDnsNameLength) + " octets. Offending values: " +
         variables.targets.filter(v, size(v) > variables.maxDnsNameLength).join(", ")
 
@@ -87,7 +88,7 @@ spec:
     - expression: |
         variables.targets.all(v, !v.startsWith('.') && !v.contains('..'))
       messageExpression: |
-        "CNAME/MX/NS/SRV target values must not start with '.' or contain '..'. " +
+        "CNAME/MX/NS/SRV/PTR target values must not start with '.' or contain '..'. " +
         "Offending values: " +
         variables.targets.filter(v, v.startsWith('.') || v.contains('..')).join(", ")
   auditAnnotations:

@@ -4,7 +4,7 @@
 # ValidatingAdmissionPolicy: defense-in-depth checks on `spec.zoneName` for
 # DNSZone and on the per-record `spec.zoneRef.zoneName` / `spec.zoneName`
 # fields used by ARecord, AAAARecord, CNAMERecord, MXRecord, NSRecord,
-# SRVRecord, CAARecord, TXTRecord.
+# SRVRecord, CAARecord, TXTRecord, PTRRecord.
 #
 # The CRD JSONSchema already enforces a regex pattern, but this policy adds:
 #   - explicit length cap (DNS names max 253 octets, RFC 1035)
@@ -40,6 +40,7 @@ spec:
           - srvrecords
           - caarecords
           - txtrecords
+          - ptrrecords
   variables:
     # Collect every DNS-name-bearing field present in this resource. Records
     # carry zoneName under spec.zoneRef; DNSZone carries it directly.

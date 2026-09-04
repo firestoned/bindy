@@ -12,6 +12,7 @@ Bindy supports all common DNS record types as Custom Resources.
 - **NSRecord** - Nameserver delegation
 - **SRVRecord** - Service location
 - **CAARecord** - Certificate authority authorization
+- **PTRRecord** - Reverse DNS (pointer)
 
 ## Common Fields
 
@@ -315,6 +316,24 @@ spec:
 
 [Learn more about CAA Records](../guide/caa-records.md)
 
+## PTRRecord (Reverse DNS)
+
+```yaml
+apiVersion: bindy.firestoned.io/v1beta1
+kind: PTRRecord
+metadata:
+  name: host-10-ptr
+  namespace: bindy-system
+  labels:
+    zone: 0.168.192.in-addr.arpa
+spec:
+  name: "10"
+  target: host10.example.com.
+  ttl: 3600
+```
+
+[Learn more about PTR Records](../guide/ptr-records.md)
+
 ## Record Status
 
 All DNS record types use granular status conditions to provide real-time visibility into the record configuration process.
@@ -376,7 +395,7 @@ All DNS record types use the following condition types:
 1. **Real-time progress** - See when records are being configured
 2. **Better debugging** - Know immediately if/why a record failed
 3. **Accurate reporting** - Status shows exact number of endpoints configured
-4. **Consistent across types** - All 8 record types use the same status pattern
+4. **Consistent across types** - All 9 record types use the same status pattern
 
 ## Record Management
 

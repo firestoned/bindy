@@ -130,7 +130,7 @@ flowchart TB
 ### DNSZone Reconciler
 
 **Primary Responsibilities:**
-1. **Watch all 8 record types** (ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord)
+1. **Watch all 9 record types** (ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord, PTRRecord)
 2. **Set `record.status.zoneRef`** when records match `spec.recordsFrom` label selectors
 3. **Update `DNSZone.status.records[]`** with discovered records
 4. **Trigger zone transfers** to secondaries when all records are ready
@@ -271,6 +271,7 @@ graph TB
         NS[NSRecord]
         SRV[SRVRecord]
         CAA[CAARecord]
+        PTR[PTRRecord]
     end
 
     subgraph "Record Operators"
@@ -282,6 +283,7 @@ graph TB
         NSRC[NSRecord Reconciler]
         SRVRC[SRVRecord Reconciler]
         CAARC[CAARecord Reconciler]
+        PTRRC[PTRRecord Reconciler]
     end
 
     AR -->|⚡ Change event| DZ
@@ -292,6 +294,7 @@ graph TB
     NS -->|⚡ Change event| DZ
     SRV -->|⚡ Change event| DZ
     CAA -->|⚡ Change event| DZ
+    PTR -->|⚡ Change event| DZ
 
     DZ -->|Sets status.zoneRef| AR
     DZ -->|Sets status.zoneRef| AAAA
@@ -301,6 +304,7 @@ graph TB
     DZ -->|Sets status.zoneRef| NS
     DZ -->|Sets status.zoneRef| SRV
     DZ -->|Sets status.zoneRef| CAA
+    DZ -->|Sets status.zoneRef| PTR
 
     AR -->|⚡ Status change| ARC
     AAAA -->|⚡ Status change| AAARC
@@ -310,6 +314,7 @@ graph TB
     NS -->|⚡ Status change| NSRC
     SRV -->|⚡ Status change| SRVRC
     CAA -->|⚡ Status change| CAARC
+    PTR -->|⚡ Status change| PTRRC
 
     style DZ fill:#90EE90
     style AR fill:#87CEEB
@@ -320,6 +325,7 @@ graph TB
     style NS fill:#87CEEB
     style SRV fill:#87CEEB
     style CAA fill:#87CEEB
+    style PTR fill:#87CEEB
 ```
 
 ---

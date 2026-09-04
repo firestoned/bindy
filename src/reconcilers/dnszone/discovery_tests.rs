@@ -51,6 +51,7 @@ mod tests {
             ("NSRecord", RecordType::NS),
             ("SRVRecord", RecordType::SRV),
             ("CAARecord", RecordType::CAA),
+            ("PTRRecord", RecordType::PTR),
         ];
 
         for (kind, record_type) in expected {
@@ -66,7 +67,7 @@ mod tests {
     fn test_hickory_record_type_for_kind_rejects_unknown_kind() {
         use super::super::hickory_record_type_for_kind;
 
-        assert!(hickory_record_type_for_kind("PTRRecord").is_err());
+        assert!(hickory_record_type_for_kind("UnknownRecord").is_err());
         assert!(hickory_record_type_for_kind("").is_err());
     }
 

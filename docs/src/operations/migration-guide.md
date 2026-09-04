@@ -104,7 +104,8 @@ ServiceAccount token, which bindcar validates via a Kubernetes TokenReview.
    move to **53**. The Service-facing port was already 53 and is unchanged.
 
 8. **Record hygiene**: `CNAMERecord.spec.target`, `MXRecord.spec.mailServer`,
-   `NSRecord.spec.nameserver`, and `SRVRecord.spec.target` must be absolute
+   `NSRecord.spec.nameserver`, `SRVRecord.spec.target`, and
+   `PTRRecord.spec.target` must be absolute
    FQDNs ending with a trailing dot (e.g. `mail.example.com.`). The new
    `bindy-record-value-validation` admission policy rejects violations at the
    API server.
@@ -225,7 +226,7 @@ spec:
 ```bash
 # Backup all DNS resources
 kubectl get bind9clusters,dnszones -A -o yaml > clusters-zones-backup.yaml
-kubectl get arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords -A -o yaml > records-backup.yaml
+kubectl get arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords,ptrrecords -A -o yaml > records-backup.yaml
 ```
 
 ### Step 2: Update CRDs
@@ -304,7 +305,7 @@ kubectl label arecord www -n bindy-system zone=example.com
 #!/bin/bash
 # auto-migrate-records.sh
 
-RECORD_TYPES="arecords aaaarecords cnamerecords mxrecords txtrecords nsrecords srvrecords caarecords"
+RECORD_TYPES="arecords aaaarecords cnamerecords mxrecords txtrecords nsrecords srvrecords caarecords ptrrecords"
 
 for record_type in $RECORD_TYPES; do
   echo "Migrating $record_type..."

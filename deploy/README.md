@@ -16,6 +16,7 @@ deploy/
 │   ├── dnszones.crd.yaml          # DNSZone CRD
 │   ├── mxrecords.crd.yaml         # MX record CRD
 │   ├── nsrecords.crd.yaml         # NS record CRD
+│   ├── ptrrecords.crd.yaml        # PTR record CRD
 │   ├── srvrecords.crd.yaml        # SRV record CRD
 │   ├── txtrecords.crd.yaml        # TXT record CRD
 │   └── kustomization.yaml         # Kustomize config for CRDs

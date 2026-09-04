@@ -54,7 +54,7 @@
       "unique-id": "crd-records",
       "node-type": "data-asset",
       "name": "DNS Record CRDs",
-      "description": "Eight namespaced record CRDs (ARecord, AAAARecord, CNAMERecord, MXRecord, TXTRecord, NSRecord, SRVRecord, CAARecord) associated to a zone by label selector."
+      "description": "Nine namespaced record CRDs (ARecord, AAAARecord, CNAMERecord, MXRecord, TXTRecord, NSRecord, SRVRecord, CAARecord, PTRRecord) associated to a zone by label selector."
     },
     {
       "unique-id": "bind9-pod",

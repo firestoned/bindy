@@ -35,7 +35,7 @@ fi
 echo ""
 
 echo -e "${GREEN}2️⃣  Checking CRDs...${NC}"
-CRDS=("dnszones" "bind9instances" "arecords" "aaaarecords" "txtrecords" "cnamerecords" "mxrecords" "nsrecords" "srvrecords" "caarecords")
+CRDS=("dnszones" "bind9instances" "arecords" "aaaarecords" "txtrecords" "cnamerecords" "mxrecords" "nsrecords" "srvrecords" "caarecords" "ptrrecords")
 for crd in "${CRDS[@]}"; do
     if kubectl get crd "${crd}.bindy.firestoned.io" &>/dev/null; then
         echo -e "  ${GREEN}✓${NC} ${crd}.bindy.firestoned.io"

@@ -73,6 +73,7 @@ cnamerecords.bindy.firestoned.io        2024-01-01T00:00:00Z
 dnszones.bindy.firestoned.io            2024-01-01T00:00:00Z
 mxrecords.bindy.firestoned.io           2024-01-01T00:00:00Z
 nsrecords.bindy.firestoned.io           2024-01-01T00:00:00Z
+ptrrecords.bindy.firestoned.io          2024-01-01T00:00:00Z
 srvrecords.bindy.firestoned.io          2024-01-01T00:00:00Z
 txtrecords.bindy.firestoned.io          2024-01-01T00:00:00Z
 ```

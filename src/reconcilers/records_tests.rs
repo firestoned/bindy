@@ -9,7 +9,7 @@
 mod tests {
     #![allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 
-    use crate::bind9::SRVRecordData;
+    use crate::bind9::{PTRRecordData, SRVRecordData};
     use crate::crd::*;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 
@@ -497,6 +497,69 @@ mod tests {
     }
 
     // ========================================================================
+    // Data Structure Tests - PTR Records
+    // ========================================================================
+
+    #[test]
+    fn test_ptr_record_spec_creation() {
+        let spec = PTRRecordSpec {
+            name: "10".to_string(),
+            target: "host10.example.com.".to_string(),
+            ttl: Some(3600),
+        };
+
+        assert_eq!(spec.name, "10");
+        assert_eq!(spec.target, "host10.example.com.");
+        assert_eq!(spec.ttl, Some(3600));
+    }
+
+    #[test]
+    fn test_ptr_record_data_from_spec() {
+        let spec = PTRRecordSpec {
+            name: "20".to_string(),
+            target: "host20.example.com.".to_string(),
+            ttl: Some(7200),
+        };
+
+        let ptr_data = PTRRecordData {
+            target: spec.target.clone(),
+            ttl: spec.ttl,
+        };
+
+        assert_eq!(ptr_data.target, "host20.example.com.");
+        assert_eq!(ptr_data.ttl, Some(7200));
+    }
+
+    #[test]
+    fn test_ptr_record_reverse_zone_names() {
+        let names = vec!["10", "100", "1.2"];
+
+        for name in names {
+            let spec = PTRRecordSpec {
+                name: name.to_string(),
+                target: "host.example.com.".to_string(),
+                ttl: None,
+            };
+
+            assert_eq!(spec.name, name);
+        }
+    }
+
+    #[test]
+    fn test_ptr_record_data_clone() {
+        let ptr_data1 = PTRRecordData {
+            target: "host10.example.com.".to_string(),
+            ttl: Some(3600),
+        };
+
+        // Test that Clone trait is implemented correctly
+        let ptr_data2 = ptr_data1.clone();
+
+        assert_eq!(ptr_data1.target, ptr_data2.target);
+        assert_eq!(ptr_data1.ttl, ptr_data2.ttl);
+    }
+
+    // ========================================================================
     // Record Status Tests
     // ========================================================================
 
@@ -934,7 +997,7 @@ mod tests {
     mod status_records_tests {
         use crate::constants::{
             API_GROUP_VERSION, KIND_AAAA_RECORD, KIND_A_RECORD, KIND_CAA_RECORD, KIND_CNAME_RECORD,
-            KIND_MX_RECORD, KIND_NS_RECORD, KIND_SRV_RECORD, KIND_TXT_RECORD,
+            KIND_MX_RECORD, KIND_NS_RECORD, KIND_PTR_RECORD, KIND_SRV_RECORD, KIND_TXT_RECORD,
         };
         use crate::crd::{DNSZoneStatus, RecordReference, RecordReferenceWithTimestamp};
         use serde_json::json;
@@ -1152,6 +1215,7 @@ mod tests {
                 (KIND_NS_RECORD, "NSRecord"),
                 (KIND_SRV_RECORD, "SRVRecord"),
                 (KIND_CAA_RECORD, "CAARecord"),
+                (KIND_PTR_RECORD, "PTRRecord"),
             ];
 
             for (constant, expected) in record_kinds {
@@ -1179,6 +1243,7 @@ mod tests {
                 (KIND_NS_RECORD, "test-ns-record"),
                 (KIND_SRV_RECORD, "test-srv-record"),
                 (KIND_CAA_RECORD, "test-caa-record"),
+                (KIND_PTR_RECORD, "test-ptr-record"),
             ];
 
             for (kind, name) in test_cases {

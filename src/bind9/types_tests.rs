@@ -1,11 +1,11 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: MIT
 
-//! Tests for BIND9 data types (`RndcKeyData`, `SRVRecordData`, `RndcError`).
+//! Tests for BIND9 data types (`RndcKeyData`, `SRVRecordData`, `PTRRecordData`, `RndcError`).
 
 #[cfg(test)]
 mod tests {
-    use crate::bind9::{RndcKeyData, SRVRecordData};
+    use crate::bind9::{PTRRecordData, RndcKeyData, SRVRecordData};
 
     #[test]
     fn test_rndc_key_data_clone() {
@@ -248,5 +248,75 @@ mod tests {
         };
 
         assert_eq!(srv.ttl, Some(i32::MAX));
+    }
+
+    #[test]
+    fn test_ptr_record_data_creation() {
+        let ptr = PTRRecordData {
+            target: "host10.example.com.".to_string(),
+            ttl: Some(3600),
+        };
+
+        assert_eq!(ptr.target, "host10.example.com.");
+        assert_eq!(ptr.ttl, Some(3600));
+    }
+
+    #[test]
+    fn test_ptr_record_data_without_ttl() {
+        let ptr = PTRRecordData {
+            target: "host10.example.com.".to_string(),
+            ttl: None,
+        };
+
+        assert_eq!(ptr.ttl, None);
+    }
+
+    #[test]
+    fn test_ptr_record_data_clone() {
+        let ptr1 = PTRRecordData {
+            target: "host10.example.com.".to_string(),
+            ttl: Some(3600),
+        };
+
+        let ptr2 = ptr1.clone();
+
+        assert_eq!(ptr1.target, ptr2.target);
+        assert_eq!(ptr1.ttl, ptr2.ttl);
+    }
+
+    #[test]
+    fn test_ptr_record_target_trailing_dot() {
+        let ptr_with_dot = PTRRecordData {
+            target: "host10.example.com.".to_string(), // With trailing dot
+            ttl: None,
+        };
+
+        let ptr_without_dot = PTRRecordData {
+            target: "host10.example.com".to_string(), // Without trailing dot
+            ttl: None,
+        };
+
+        assert!(ptr_with_dot.target.ends_with('.'));
+        assert!(!ptr_without_dot.target.ends_with('.'));
+    }
+
+    #[test]
+    fn test_ptr_record_zero_ttl() {
+        let ptr = PTRRecordData {
+            target: "host10.example.com.".to_string(),
+            ttl: Some(0),
+        };
+
+        assert_eq!(ptr.ttl, Some(0));
+    }
+
+    #[test]
+    fn test_ptr_record_max_i32_ttl() {
+        let ptr = PTRRecordData {
+            target: "host10.example.com.".to_string(),
+            ttl: Some(i32::MAX),
+        };
+
+        assert_eq!(ptr.ttl, Some(i32::MAX));
     }
 }

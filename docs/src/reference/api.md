@@ -18,6 +18,7 @@ This document describes the Custom Resource Definitions (CRDs) provided by Bindy
   - [TXTRecord](#txtrecord)
   - [SRVRecord](#srvrecord)
   - [CAARecord](#caarecord)
+  - [PTRRecord](#ptrrecord)
 - [Infrastructure](#infrastructure)
   - [Bind9Cluster](#bind9cluster)
   - [Bind9Instance](#bind9instance)
@@ -282,6 +283,35 @@ CAARecord specifies which certificate authorities are authorized to issue certif
 | `tag` | string | Yes | Property tag. Common values: "issue", "issuewild", "iodef".  - "issue": Authorize CA to issue certificates - "issuewild": Authorize CA to issue wildcard certificates - "iodef": URL/email for violation reports |
 | `ttl` | integer | No | Time To Live in seconds. |
 | `value` | string | Yes | Property value. Format depends on the tag.  For "issue"/"issuewild": CA domain (e.g., "letsencrypt.org") For "iodef": mailto: or https: URL |
+
+#### Status Fields
+
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `addresses` | string | No | Comma-separated list of addresses for display purposes.  For \`ARecord\` and \`AAAARecord\` resources, this field contains the IP addresses from \`spec.ipv4Addresses\` or \`spec.ipv6Addresses\` joined with commas. This is used for prettier kubectl output instead of showing JSON arrays.  Example: "192.0.2.1,192.0.2.2,192.0.2.3"  For other record types, this field is not used. |
+| `conditions` | array | No |  |
+| `lastUpdated` | string | No | Timestamp of the last successful update to BIND9.  This is updated after a successful nsupdate operation. Uses RFC 3339 format (e.g., "2025-12-26T10:30:00Z"). |
+| `observedGeneration` | integer | No |  |
+| `publishedName` | string | No | DNS record name (from \`spec.name\`) most recently published to BIND9.  Set by the record reconciler after a successful dynamic DNS update. When \`spec.name\` changes (a rename), the reconciler compares it against this field, deletes the old FQDN from the zone, publishes the new name, and then updates this field. Without it, renamed records would leave their old FQDN orphaned in BIND9. |
+| `recordHash` | string | No | SHA-256 hash of the record's spec data.  Used to detect when a record's data has actually changed, avoiding unnecessary BIND9 updates and zone transfers.  The hash is calculated from all fields in the record's spec that affect the DNS record data (name, addresses, TTL, etc.). |
+| `zone` | string | No | The FQDN of the zone that owns this record (set by \`DNSZone\` controller).  When a \`DNSZone\`'s label selector matches this record, the \`DNSZone\` controller sets this field to the zone's FQDN (e.g., \`"example.com"\`). The record reconciler uses this to determine which zone to update in BIND9.  If this field is empty, the record is not matched by any zone and should not be reconciled into BIND9.  **DEPRECATED**: Use \`zone_ref\` instead for structured zone reference. |
+| `zoneRef` | object | No | Structured reference to the \`DNSZone\` that owns this record.  Set by the \`DNSZone\` controller when the zone's \`recordsFrom\` selector matches this record's labels. Contains the complete Kubernetes object reference including apiVersion, kind, name, namespace, and zoneName.  The record reconciler uses this to: 1. Look up the parent \`DNSZone\` resource 2. Find the zone's primary \`Bind9Instance\` servers 3. Add this record to BIND9 on primaries 4. Trigger zone transfer (retransfer) on secondaries  If this field is None, the record is not selected by any zone and will not be added to BIND9. |
+
+---
+
+### PTRRecord
+
+**API Version**: `bindy.firestoned.io/v1beta1`
+
+PTRRecord specifies a reverse DNS (pointer) record mapping an IP address back to a canonical hostname. PTR records live in reverse zones (in-addr.arpa for IPv4, ip6.arpa for IPv6).
+
+#### Spec Fields
+
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `name` | string | Yes | Host portion of the reverse record name within the reverse zone.  Example: "10" for 10.0.168.192.in-addr.arpa. (192.168.0.10) in the 0.168.192.in-addr.arpa zone. |
+| `target` | string | Yes | Fully qualified domain name of the canonical host.  Must end with a dot. Example: "host10.example.com." |
+| `ttl` | integer | No | Time To Live in seconds. |
 
 #### Status Fields
 

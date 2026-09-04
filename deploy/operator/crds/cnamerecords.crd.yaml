@@ -11,7 +11,6 @@ metadata:
 spec:
   group: bindy.firestoned.io
   names:
-    categories: []
     kind: CNAMERecord
     plural: cnamerecords
     shortNames:

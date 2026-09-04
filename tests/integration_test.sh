@@ -233,6 +233,36 @@ EOF
 
 sleep 3
 
+# Test reverse DNSZone creation (for PTR records)
+echo -e "${YELLOW}Testing reverse DNSZone creation...${NC}"
+${KUBECTL} apply -f - <<EOF
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: integration-test-reverse-zone
+  namespace: ${NAMESPACE}
+spec:
+  zoneName: 0.168.192.in-addr.arpa
+  clusterRef: integration-test-cluster
+  recordsFrom:
+    - selector:
+        matchLabels:
+          bindy.firestoned.io/zone: 0.168.192.in-addr.arpa
+  nameServerIps:
+    ns1.example.com.: 192.168.0.60
+  soaRecord:
+    primaryNs: ns1.integration.test.
+    adminEmail: admin.integration.test.
+    serial: 2024010101
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTtl: 86400
+  ttl: 3600
+EOF
+
+sleep 3
+
 # Test all record types
 echo -e "${YELLOW}Testing all DNS record types...${NC}"
 
@@ -365,6 +395,21 @@ spec:
   ttl: 3600
 EOF
 
+# PTR Record (reverse zone)
+${KUBECTL} apply -f - <<EOF
+apiVersion: bindy.firestoned.io/v1beta1
+kind: PTRRecord
+metadata:
+  name: integration-ptr
+  namespace: ${NAMESPACE}
+  labels:
+    bindy.firestoned.io/zone: 0.168.192.in-addr.arpa
+spec:
+  name: "10"
+  target: www.integration.test.
+  ttl: 300
+EOF
+
 echo -e "${GREEN}⏳ Waiting for reconciliation (10 seconds)...${NC}"
 sleep 10
 
@@ -395,8 +440,15 @@ else
     ERRORS=$((ERRORS + 1))
 fi
 
+if ${KUBECTL} get dnszone integration-test-reverse-zone -n "${NAMESPACE}" &>/dev/null; then
+    echo -e "  ${GREEN}✓${NC} Reverse DNSZone created"
+else
+    echo -e "  ${RED}✗${NC} Reverse DNSZone not found"
+    ERRORS=$((ERRORS + 1))
+fi
+
 # Check all record types
-RECORD_TYPES=("arecord:integration-a" "aaaarecord:integration-aaaa" "cnamerecord:integration-cname" "mxrecord:integration-mx" "txtrecord:integration-txt" "nsrecord:integration-ns" "srvrecord:integration-srv" "caarecord:integration-caa")
+RECORD_TYPES=("arecord:integration-a" "aaaarecord:integration-aaaa" "cnamerecord:integration-cname" "mxrecord:integration-mx" "txtrecord:integration-txt" "nsrecord:integration-ns" "srvrecord:integration-srv" "caarecord:integration-caa" "ptrrecord:integration-ptr")
 
 for record in "${RECORD_TYPES[@]}"; do
     IFS=':' read -r type name <<< "$record"
@@ -423,15 +475,16 @@ ${KUBECTL} get dnszones -n "${NAMESPACE}" 2>/dev/null || echo "  No DNSZones fou
 
 echo ""
 echo -e "${BLUE}DNS Records:${NC}"
-${KUBECTL} get arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords -n "${NAMESPACE}" -l test=integration 2>/dev/null || \
-${KUBECTL} get arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords -n "${NAMESPACE}" 2>/dev/null || \
+${KUBECTL} get arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords,ptrrecords -n "${NAMESPACE}" -l test=integration 2>/dev/null || \
+${KUBECTL} get arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords,ptrrecords -n "${NAMESPACE}" 2>/dev/null || \
 echo "  No DNS records found"
 
 echo ""
 echo -e "${GREEN}5️⃣  Cleanup test resources...${NC}"
-${KUBECTL} delete arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords -l test=integration -n "${NAMESPACE}" --ignore-not-found=true 2>/dev/null || true
-${KUBECTL} delete arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords integration-a,integration-aaaa,integration-cname,integration-mx,integration-txt,integration-ns,integration-srv,integration-caa -n "${NAMESPACE}" --ignore-not-found=true 2>/dev/null || true
+${KUBECTL} delete arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords,ptrrecords -l test=integration -n "${NAMESPACE}" --ignore-not-found=true 2>/dev/null || true
+${KUBECTL} delete arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords,ptrrecords integration-a,integration-aaaa,integration-cname,integration-mx,integration-txt,integration-ns,integration-srv,integration-caa,integration-ptr -n "${NAMESPACE}" --ignore-not-found=true 2>/dev/null || true
 ${KUBECTL} delete dnszone integration-test-zone -n "${NAMESPACE}" --ignore-not-found=true
+${KUBECTL} delete dnszone integration-test-reverse-zone -n "${NAMESPACE}" --ignore-not-found=true
 ${KUBECTL} delete bind9instance integration-test-primary -n "${NAMESPACE}" --ignore-not-found=true
 ${KUBECTL} delete bind9cluster integration-test-cluster -n "${NAMESPACE}" --ignore-not-found=true
 
@@ -441,7 +494,7 @@ echo ""
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     rust_status=$([ $TEST_EXIT -eq 0 ] && echo '✅ passed' || echo '❌ failed')
     func_status=$([ $ERRORS -eq 0 ] && echo '✅ passed' || echo "❌ failed (${ERRORS} error(s))")
-    records_status=$([ $ERRORS -eq 0 ] && echo '✅ all 8 created & verified' || echo '⚠️ see errors')
+    records_status=$([ $ERRORS -eq 0 ] && echo '✅ all 9 created & verified' || echo '⚠️ see errors')
     {
         echo "## Integration suite — zone/record lifecycle"
         echo ""
@@ -449,7 +502,7 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
         echo "|---|---|"
         echo "| Rust integration tests (\`cargo test --test simple_integration\`) | ${rust_status} |"
         echo "| Functional tests (kubectl create/verify) | ${func_status} |"
-        echo "| DNS record types (A, AAAA, CNAME, MX, TXT, NS, SRV, CAA) | ${records_status} |"
+        echo "| DNS record types (A, AAAA, CNAME, MX, TXT, NS, SRV, CAA, PTR) | ${records_status} |"
         echo ""
     } >> "$GITHUB_STEP_SUMMARY"
 fi
@@ -460,7 +513,7 @@ if [ $ERRORS -eq 0 ] && [ $TEST_EXIT -eq 0 ]; then
     echo -e "${YELLOW}📋 Summary:${NC}"
     echo "  - Rust integration tests: PASSED"
     echo "  - Functional tests: PASSED"
-    echo "  - All 8 DNS record types tested: PASSED"
+    echo "  - All 9 DNS record types tested: PASSED"
     exit 0
 else
     echo -e "${RED}❌ Some tests failed${NC}"

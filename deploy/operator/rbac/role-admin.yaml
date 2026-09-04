@@ -49,6 +49,7 @@ rules:
       - "nsrecords"
       - "srvrecords"
       - "caarecords"
+      - "ptrrecords"
     verbs: ["delete", "deletecollection"]
 
   # Kubernetes resources - admin delete permission

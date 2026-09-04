@@ -16,7 +16,8 @@ use status_helpers::update_record_status;
 
 // Removed ANNOTATION_ZONE_OWNER - using status.zoneRef instead (event-driven architecture)
 use crate::crd::{
-    AAAARecord, ARecord, CAARecord, CNAMERecord, DNSZone, MXRecord, NSRecord, SRVRecord, TXTRecord,
+    AAAARecord, ARecord, CAARecord, CNAMERecord, DNSZone, MXRecord, NSRecord, PTRRecord, SRVRecord,
+    TXTRecord,
 };
 use anyhow::{Context, Result};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
@@ -342,7 +343,7 @@ trait RecordOperation: Clone + Send + Sync {
 ///
 /// This trait provides the interface for generic record reconciliation,
 /// allowing a single `reconcile_record<T>()` function to handle all record types.
-/// It eliminates duplication across 8 record type reconcilers by providing
+/// It eliminates duplication across 9 record type reconcilers by providing
 /// type-specific operations through trait methods.
 ///
 /// # Example
@@ -422,7 +423,7 @@ trait ReconcilableRecord:
 
 /// Generic helper to add a record to all primary instances.
 ///
-/// This function eliminates duplication across the 8 `add_*_record_to_instances` functions
+/// This function eliminates duplication across the 9 `add_*_record_to_instances` functions
 /// by providing a generic implementation that works for any record type implementing
 /// the `RecordOperation` trait.
 ///
@@ -1068,10 +1069,76 @@ impl ReconcilableRecord for CAARecord {
     }
 }
 
+/// PTR record operation wrapper.
+#[derive(Clone)]
+struct PTRRecordOp {
+    target: String,
+}
+
+impl RecordOperation for PTRRecordOp {
+    fn record_type_name(&self) -> &'static str {
+        "PTR"
+    }
+
+    async fn add_to_bind9(
+        &self,
+        zone_manager: &crate::bind9::Bind9Manager,
+        zone_name: &str,
+        record_name: &str,
+        ttl: Option<i32>,
+        server: &str,
+        key_data: &crate::bind9::RndcKeyData,
+    ) -> Result<()> {
+        let ptr_data = crate::bind9::PTRRecordData {
+            target: self.target.clone(),
+            ttl,
+        };
+        zone_manager
+            .add_ptr_record(zone_name, record_name, &ptr_data, server, key_data)
+            .await
+    }
+}
+
+/// Implement `ReconcilableRecord` for `PTRRecord`.
+impl ReconcilableRecord for PTRRecord {
+    type Spec = crate::crd::PTRRecordSpec;
+    type Operation = PTRRecordOp;
+
+    fn get_spec(&self) -> &Self::Spec {
+        &self.spec
+    }
+
+    fn get_status(&self) -> Option<&crate::crd::RecordStatus> {
+        self.status.as_ref()
+    }
+
+    fn record_type_name() -> &'static str {
+        "PTR"
+    }
+
+    fn record_type_hickory() -> hickory_proto::rr::RecordType {
+        hickory_proto::rr::RecordType::PTR
+    }
+
+    fn create_operation(spec: &Self::Spec) -> Self::Operation {
+        PTRRecordOp {
+            target: spec.target.clone(),
+        }
+    }
+
+    fn get_record_name(spec: &Self::Spec) -> &str {
+        &spec.name
+    }
+
+    fn get_ttl(spec: &Self::Spec) -> Option<i32> {
+        spec.ttl
+    }
+}
+
 /// Generic record reconciliation function.
 ///
 /// This function handles reconciliation for all DNS record types that implement
-/// the `ReconcilableRecord` trait. It eliminates duplication across 8 record types
+/// the `ReconcilableRecord` trait. It eliminates duplication across 9 record types
 /// by providing a single implementation of the reconciliation logic.
 ///
 /// The function:
@@ -1418,6 +1485,22 @@ pub async fn reconcile_srv_record(
 pub async fn reconcile_caa_record(
     ctx: std::sync::Arc<crate::context::Context>,
     record: CAARecord,
+) -> Result<()> {
+    reconcile_record(ctx, record).await
+}
+
+/// Reconciles a `PTRRecord` (reverse DNS pointer) resource.
+///
+/// Finds `DNSZones` that have selected this record via label selectors and creates/updates
+/// the record in BIND9 primaries for those zones using dynamic DNS updates.
+/// PTR records map an IP address back to a canonical hostname in reverse zones.
+///
+/// # Errors
+///
+/// Returns an error if Kubernetes API operations fail or BIND9 record creation fails.
+pub async fn reconcile_ptr_record(
+    ctx: std::sync::Arc<crate::context::Context>,
+    record: PTRRecord,
 ) -> Result<()> {
     reconcile_record(ctx, record).await
 }

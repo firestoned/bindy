@@ -1,0 +1,80 @@
+---
+# Reverse DNS (PTR) records for the 192.168.0.0/24 network
+# PTR records live in reverse zones (in-addr.arpa for IPv4, ip6.arpa for IPv6)
+# and map an IP address back to a canonical hostname.
+#
+# Records are associated with DNSZones via labels
+# The DNSZone must have a recordsFrom selector that matches these labels
+
+# Reverse zone for 192.168.0.0/24
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: 0-168-192-in-addr-arpa
+  namespace: bindy-system
+  labels:
+    environment: prod
+    team: platform
+    zone: 0.168.192.in-addr.arpa
+spec:
+  zoneName: 0.168.192.in-addr.arpa
+  # Reference to the Bind9Cluster that manages this zone
+  # This must match the Bind9Cluster name, NOT the Bind9Instance name
+  # clusterProviderRef: production-dns
+  # Instead of referencing cluster or Bind9Instances directly, use label selector to find them.
+  bind9InstancesFrom:
+    - selector:
+        matchLabels:
+          app.kubernetes.io/part-of: bindy
+          bindy.firestoned.io/cluster: production-dns
+          bindy.firestoned.io/managed-by: Bind9Cluster
+        matchExpressions:
+          - key: bindy.firestoned.io/role
+            operator: In
+            values:
+              - primary
+              - secondary
+  nameServers:
+    - hostname: ns1.example.com.
+      ipv4Address: "192.168.0.60"
+    - hostname: ns2.example.com.
+      ipv4Address: "192.168.0.61"
+  recordsFrom:
+    - selector:
+        matchLabels:
+          zone: 0.168.192.in-addr.arpa
+  soaRecord:
+    primaryNs: ns1.example.com.
+    adminEmail: admin.example.com.  # Note: @ replaced with .
+    serial: 2025012101
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTtl: 86400
+  ttl: 3600
+---
+# PTR record: 192.168.0.10 -> host10.example.com.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: PTRRecord
+metadata:
+  name: host-10-ptr
+  namespace: bindy-system
+  labels:
+    zone: 0.168.192.in-addr.arpa
+spec:
+  name: "10"                      # 10.0.168.192.in-addr.arpa.
+  target: host10.example.com.     # FQDN ending with a dot
+  ttl: 3600
+---
+# PTR record: 192.168.0.11 -> host11.example.com.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: PTRRecord
+metadata:
+  name: host-11-ptr
+  namespace: bindy-system
+  labels:
+    zone: 0.168.192.in-addr.arpa
+spec:
+  name: "11"                      # 11.0.168.192.in-addr.arpa.
+  target: host11.example.com.     # FQDN ending with a dot
+  ttl: 3600

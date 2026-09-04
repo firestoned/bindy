@@ -9,7 +9,8 @@
 #[cfg(test)]
 mod tests {
     use crate::crd::{
-        AAAARecord, ARecord, CAARecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, TXTRecord,
+        AAAARecord, ARecord, CAARecord, CNAMERecord, MXRecord, NSRecord, PTRRecord, SRVRecord,
+        TXTRecord,
     };
     use crate::labels;
     use crate::record_operator::DnsRecordType;
@@ -119,6 +120,19 @@ mod tests {
         assert_eq!(CAARecord::hickory_record_type(), RecordType::CAA);
     }
 
+    // PTR Record Tests
+    #[test]
+    fn test_ptr_record_constants() {
+        assert_eq!(PTRRecord::KIND, "PTRRecord");
+        assert_eq!(PTRRecord::FINALIZER, labels::FINALIZER_PTR_RECORD);
+        assert_eq!(PTRRecord::RECORD_TYPE_STR, "PTR");
+    }
+
+    #[test]
+    fn test_ptr_record_hickory_type() {
+        assert_eq!(PTRRecord::hickory_record_type(), RecordType::PTR);
+    }
+
     // Cross-record validation tests
     #[test]
     fn test_all_finalizers_unique() {
@@ -132,6 +146,7 @@ mod tests {
             NSRecord::FINALIZER,
             SRVRecord::FINALIZER,
             CAARecord::FINALIZER,
+            PTRRecord::FINALIZER,
         ];
 
         let unique_count = finalizers
@@ -157,6 +172,7 @@ mod tests {
             NSRecord::KIND,
             SRVRecord::KIND,
             CAARecord::KIND,
+            PTRRecord::KIND,
         ];
 
         let unique_count = kinds.iter().collect::<std::collections::HashSet<_>>().len();
@@ -179,6 +195,7 @@ mod tests {
             NSRecord::RECORD_TYPE_STR,
             SRVRecord::RECORD_TYPE_STR,
             CAARecord::RECORD_TYPE_STR,
+            PTRRecord::RECORD_TYPE_STR,
         ];
 
         let unique_count = record_types

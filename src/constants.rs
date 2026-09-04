@@ -46,6 +46,9 @@ pub const KIND_SRV_RECORD: &str = "SRVRecord";
 /// Kind name for `CAARecord` resource
 pub const KIND_CAA_RECORD: &str = "CAARecord";
 
+/// Kind name for `PTRRecord` resource
+pub const KIND_PTR_RECORD: &str = "PTRRecord";
+
 /// Kind name for `Bind9Cluster` resource
 pub const KIND_BIND9_CLUSTER: &str = "Bind9Cluster";
 

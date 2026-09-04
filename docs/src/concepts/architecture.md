@@ -64,7 +64,7 @@ Each reconciler handles a specific resource type:
   - Tracks cluster-wide status
 
 - **DNSZone Reconciler** - Manages DNS zones (EVENT-DRIVEN)
-  - **Watches all 8 record types** (ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord)
+  - **Watches all 9 record types** (ARecord, AAAARecord, TXTRecord, CNAMERecord, MXRecord, NSRecord, SRVRecord, CAARecord, PTRRecord)
   - Evaluates label selectors when records change
   - Sets `record.status.zoneRef` for matching records
   - Generates zone files
