@@ -74,7 +74,7 @@ pub(super) fn resolve_full_rndc_config(
             return resolve_rndc_config_from_deprecated(
                 None,
                 deprecated_instance_ref,
-                instance.spec.role.clone(),
+                instance.spec.role,
             );
         }
     }
@@ -1011,7 +1011,61 @@ fn deployment_needs_update(current: &Deployment, desired: &Deployment) -> bool {
         return true;
     }
 
+    // Scheduling fields. Without this the operator would happily create a
+    // Deployment with topology spread constraints and then never reconcile a
+    // later change to them: every field below is absent from the comparison
+    // above, so `placement` edits would silently never reach a running
+    // Deployment.
+    let current_pod = current.spec.as_ref().and_then(|s| s.template.spec.as_ref());
+    let desired_pod = desired.spec.as_ref().and_then(|s| s.template.spec.as_ref());
+
+    if current_pod.and_then(|p| p.topology_spread_constraints.as_ref())
+        != desired_pod.and_then(|p| p.topology_spread_constraints.as_ref())
+    {
+        debug!("Pod topologySpreadConstraints changed");
+        return true;
+    }
+
+    // Pod template labels. `bindy.firestoned.io/cluster` is added here rather
+    // than in the (immutable) selector, so an operator upgrade has to be able
+    // to patch it onto Deployments that predate it.
+    let current_pod_labels = current
+        .spec
+        .as_ref()
+        .and_then(|s| s.template.metadata.as_ref())
+        .and_then(|m| m.labels.as_ref());
+    let desired_pod_labels = desired
+        .spec
+        .as_ref()
+        .and_then(|s| s.template.metadata.as_ref())
+        .and_then(|m| m.labels.as_ref());
+    if current_pod_labels != desired_pod_labels {
+        debug!("Pod template labels changed");
+        return true;
+    }
+
     false
+}
+
+/// Builds the `spec.template.spec` fragment that reconciles scheduling fields.
+///
+/// `topologySpreadConstraints` carries `patchMergeKey=topologyKey` +
+/// `patchStrategy=merge`, so sending a plain list MERGES it by key and stale
+/// constraints survive a removal. The `{"$patch": "replace"}` directive forces
+/// the whole list to be replaced; `null` deletes the field outright.
+fn build_placement_patch(desired: &Deployment) -> serde_json::Value {
+    let desired_pod = desired.spec.as_ref().and_then(|s| s.template.spec.as_ref());
+
+    let constraints = match desired_pod.and_then(|p| p.topology_spread_constraints.as_ref()) {
+        Some(list) => {
+            let mut items = vec![json!({"$patch": "replace"})];
+            items.extend(list.iter().map(|c| json!(c)));
+            json!(items)
+        }
+        None => json!(null),
+    };
+
+    json!({ "topologySpreadConstraints": constraints })
 }
 
 /// Create or update the Deployment for BIND9
@@ -1140,6 +1194,15 @@ async fn create_or_update_deployment(
             }
         }
     });
+
+    // Merge the scheduling fields into the same Pod spec fragment.
+    if let Some(pod_spec) = patch["spec"]["template"]["spec"].as_object_mut() {
+        if let Some(placement) = build_placement_patch(&deployment).as_object() {
+            for (key, value) in placement {
+                pod_spec.insert(key.clone(), value.clone());
+            }
+        }
+    }
 
     // Add metadata labels if present
     // NOTE: Strategic merge will update/add our labels but preserve any other labels
@@ -1340,6 +1403,22 @@ pub(super) async fn delete_resources(client: &Client, namespace: &str, name: &st
     Ok(())
 }
 
+/// Test-only re-exports of the private placement-convergence helpers.
+///
+/// Same rationale as `validate_user_pod_shape_for_test` below: these decide
+/// whether a live Deployment gets a scheduling change and how that change is
+/// expressed as a patch, so they need direct coverage — but they are not part
+/// of the production API surface.
+#[cfg(test)]
+pub(super) fn deployment_needs_update_for_test(current: &Deployment, desired: &Deployment) -> bool {
+    deployment_needs_update(current, desired)
+}
+
+#[cfg(test)]
+pub(super) fn build_placement_patch_for_test(desired: &Deployment) -> serde_json::Value {
+    build_placement_patch(desired)
+}
+
 /// Test-only re-export of the private `validate_user_pod_shape` helper.
 ///
 /// Tests live in a sibling `_tests.rs` module (per project convention) and
@@ -1404,6 +1483,37 @@ fn validate_user_pod_shape(
                 },
             )?;
         }
+    }
+
+    // Placement carries topology spreading only, so unlike volumes it is not a
+    // privilege-escalation surface — these are correctness checks. The CRD
+    // schema rejects most bad input at admission; this catches the rest, and
+    // anything reaching a cluster still running an older CRD revision.
+    // Validating every level, not just the winning one, means a user is told
+    // about a bad block even when a more specific block currently shadows it.
+    crate::placement::validate_optional_placement(instance.spec.placement.as_ref())
+        .with_context(|| format!("Bind9Instance {} spec.placement", instance.name_any()))?;
+    for (label, common) in [
+        (
+            cluster.map(|c| format!("Bind9Cluster {}", c.name_any())),
+            cluster.map(|c| &c.spec.common),
+        ),
+        (
+            cluster_provider.map(|p| format!("ClusterBind9Provider {}", p.name_any())),
+            cluster_provider.map(|p| &p.spec.common),
+        ),
+    ] {
+        let (Some(label), Some(common)) = (label, common) else {
+            continue;
+        };
+        crate::placement::validate_optional_placement(
+            common.primary.as_ref().and_then(|p| p.placement.as_ref()),
+        )
+        .with_context(|| format!("{label} spec.primary.placement"))?;
+        crate::placement::validate_optional_placement(
+            common.secondary.as_ref().and_then(|s| s.placement.as_ref()),
+        )
+        .with_context(|| format!("{label} spec.secondary.placement"))?;
     }
 
     // Instance-level fields.

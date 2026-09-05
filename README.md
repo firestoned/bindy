@@ -379,6 +379,7 @@ Useful for testing or when you need full control over a single instance.
 ✅ **Cluster-Scoped** - ClusterBind9Provider for platform-managed DNS
 ✅ **DNSSEC** - Automatic key management and zone signing
 ✅ **High Availability** - Leader election, automatic failover
+✅ **Zone-Aware Scheduling** - Spread nameservers across availability zones, racks, or any node topology ([guide](docs/src/guide/zone-spreading.md))
 ✅ **Compliance** - SOX, NIST 800-53, CIS documented
 ✅ **Secure** - Non-root containers, RBAC, signed releases
 

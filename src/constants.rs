@@ -451,3 +451,36 @@ pub const ALLOWED_USER_PVC_PREFIX: &str = "bindy-";
 /// Required name prefix for any ConfigMap that the user references via a
 /// `configMap:` volume. Same rationale as [`ALLOWED_USER_SECRET_PREFIX`].
 pub const ALLOWED_USER_CONFIGMAP_PREFIX: &str = "bindy-";
+
+// ============================================================================
+// Pod Placement / Topology Spreading
+// ============================================================================
+//
+// Constants backing `spec.placement` (see `src/placement.rs`). The operator
+// spreads DNS pods across failure domains so a single zone outage cannot take
+// out every authoritative server at once.
+
+/// Well-known Kubernetes node label identifying the availability zone.
+///
+/// Used as the default `topologyKey` when the user does not configure
+/// `spec.placement.spread` explicitly. Clusters that label failure domains
+/// differently (racks, cells, custom regions) override this per spread rule.
+pub const TOPOLOGY_KEY_ZONE: &str = "topology.kubernetes.io/zone";
+
+/// Default `maxSkew` for generated topology spread constraints.
+///
+/// A skew of 1 is the tightest useful value: it forces the scheduler to fill
+/// every domain evenly before doubling up in any one of them.
+pub const DEFAULT_SPREAD_MAX_SKEW: i32 = 1;
+
+/// Maximum number of spread rules accepted on a single `placement.spread`.
+///
+/// Each rule becomes one `topologySpreadConstraint` on the Pod, and every
+/// constraint multiplies scheduler work per scheduling attempt. The cap keeps
+/// a malformed or hostile CR from degrading cluster-wide scheduling latency.
+///
+/// Kept in sync with the `maxItems` on `PlacementConfig::spread` in
+/// `src/crd.rs`, which is what actually enforces the limit at admission. This
+/// constant backs the reconcile-time backstop for clusters still running an
+/// older CRD revision.
+pub const MAX_SPREAD_RULES: usize = 8;

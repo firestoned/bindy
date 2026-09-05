@@ -202,7 +202,7 @@ kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/cr
 Or from local files:
 
 ```bash
-kubectl apply -k deploy/crds/
+kubectl apply --server-side -f deploy/operator/crds/
 ```
 
 ### 2. Install RBAC

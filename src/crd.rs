@@ -2808,6 +2808,266 @@ pub struct ServiceConfig {
     pub spec: Option<ServiceSpec>,
 }
 
+/// How the scheduler should react when a spread rule cannot be satisfied.
+///
+/// Mirrors Kubernetes `topologySpreadConstraints[].whenUnsatisfiable`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum WhenUnsatisfiable {
+    /// Refuse to schedule the Pod at all (hard constraint).
+    ///
+    /// Guarantees the spread, at the cost of leaving Pods `Pending` when there
+    /// are not enough distinct domains. Only safe when the cluster is known to
+    /// have at least as many domains as replicas.
+    DoNotSchedule,
+
+    /// Schedule anyway, preferring nodes that minimise skew (soft constraint).
+    ///
+    /// The scheduler still spreads whenever it can, but a single-zone cluster
+    /// (or a zone outage) degrades to stacking instead of an outage. This is
+    /// the operator default.
+    ScheduleAnyway,
+}
+
+/// Whether node affinity / taints are honoured when computing spread skew.
+///
+/// Mirrors Kubernetes `nodeAffinityPolicy` / `nodeTaintsPolicy`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum NodeInclusionPolicy {
+    /// Only nodes matching the Pod's node affinity / tolerations are counted.
+    Honor,
+    /// All nodes are counted, regardless of affinity / taints.
+    Ignore,
+}
+
+/// Which set of DNS Pods a spread rule balances across failure domains.
+///
+/// This is the field that makes zone spreading actually work in Bindy, and it
+/// exists because a DNS server is not an anonymous replica.
+///
+/// A `Bind9Cluster` with `primary.replicas: 3` does **not** create one
+/// three-Pod Deployment. Each primary is an individually addressable
+/// nameserver (its hostname ends up in an `NS` record), so the cluster
+/// controller creates three separate `Bind9Instance` resources, each backed by
+/// its own single-Pod Deployment. A spread constraint whose label selector
+/// matches only its own Deployment's Pods would therefore balance a set of
+/// size one — which is always trivially balanced, and spreads nothing.
+///
+/// `scope` selects the label selector the operator generates, and so decides
+/// which Pods the scheduler counts per domain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum SpreadScope {
+    /// Balance only the Pods of this one `Bind9Instance`.
+    ///
+    /// Correct for a standalone `Bind9Instance` with `spec.replicas: 2` or
+    /// more, where one Deployment really does own every Pod in the set.
+    /// A no-op for cluster-managed instances, which have one Pod each.
+    Instance,
+
+    /// Balance every Pod of the same role across the whole cluster.
+    ///
+    /// Selects on `bindy.firestoned.io/cluster` + `bindy.firestoned.io/role`,
+    /// so all primaries of `my-dns` are balanced against each other (and all
+    /// secondaries separately against each other). This is the default for
+    /// cluster-managed instances and the setting that satisfies "spread
+    /// primaries across zones before stacking two in one zone".
+    Role,
+
+    /// Balance every Pod of the cluster, primaries and secondaries together.
+    ///
+    /// Selects on `bindy.firestoned.io/cluster` alone. Useful when total DNS
+    /// footprint per zone matters more than per-role balance — for example
+    /// when primaries and secondaries are sized alike and you simply want an
+    /// even spread of nameservers per zone. Set it on both `primary.placement`
+    /// and `secondary.placement` so every Pod carries the same constraint.
+    Cluster,
+}
+
+/// A single topology spread rule.
+///
+/// Each rule becomes exactly one entry in the Pod's
+/// `spec.topologySpreadConstraints`, with the `labelSelector` generated from
+/// [`SpreadScope`] rather than written by hand — users have no way to know the
+/// operator's internal Pod labels, and getting the selector wrong silently
+/// produces a constraint that does nothing.
+///
+/// # Example
+///
+/// ```yaml
+/// spread:
+///   # Spread primaries across zones first — hard requirement.
+///   - topologyKey: topology.kubernetes.io/zone
+///     maxSkew: 1
+///     whenUnsatisfiable: DoNotSchedule
+///     scope: Role
+///   # Then, within a zone, prefer separate nodes.
+///   - topologyKey: kubernetes.io/hostname
+///     maxSkew: 1
+///     whenUnsatisfiable: ScheduleAnyway
+///     scope: Role
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+// Cross-field rules the structural schema cannot express on its own. Enforcing
+// them here means the API server rejects a bad rule at admission, rather than
+// the user discovering it as a failed Deployment several reconciles later.
+#[schemars(extend("x-kubernetes-validations" = [
+    serde_json::json!({
+        "rule": "!has(self.minDomains) || (has(self.whenUnsatisfiable) && self.whenUnsatisfiable == 'DoNotSchedule')",
+        "message": "minDomains is only valid together with whenUnsatisfiable: DoNotSchedule"
+    }),
+    // The `topologyKey` pattern constrains the prefix charset but cannot bound
+    // its length: CRD patterns are RE2, which has no lookahead. `indexOf` is
+    // the prefix length when a '/' is present, and -1 when it is not.
+    serde_json::json!({
+        "rule": "self.topologyKey.indexOf('/') <= 253",
+        "message": "topologyKey prefix (the part before '/') must be at most 253 characters"
+    })
+]))]
+pub struct SpreadRule {
+    /// Node label key that defines the failure domain.
+    ///
+    /// Nodes sharing a value for this label are in the same domain. Any node
+    /// label works, which is the point: clusters that do not use the
+    /// well-known zone label can spread across whatever they do use.
+    ///
+    /// Examples:
+    /// - `topology.kubernetes.io/zone` - availability zone (the usual choice)
+    /// - `topology.kubernetes.io/region` - region, for multi-region clusters
+    /// - `kubernetes.io/hostname` - individual nodes
+    /// - `failure-domain.acme.io/rack` - a custom, on-prem failure domain
+    /// - `karpenter.sh/capacity-type` - spot vs. on-demand capacity
+    ///
+    /// Must be a valid Kubernetes qualified name, matching what the API server
+    /// accepts for a node label key: an optional lowercase RFC 1123 subdomain
+    /// prefix of at most 253 characters, a `/`, and a name segment of at most
+    /// 63 characters. The maximum overall length is therefore 317.
+    ///
+    /// The 253-character prefix cap is enforced by an
+    /// `x-kubernetes-validations` rule on the parent rule rather than by the
+    /// pattern below: CRD patterns are RE2, which has no lookahead, so a
+    /// length bound on a variable-length prefix cannot be expressed in the
+    /// regex itself.
+    #[schemars(length(min = 1, max = 317))]
+    #[schemars(regex(
+        pattern = r"^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$"
+    ))]
+    pub topology_key: String,
+
+    /// Maximum permitted difference in Pod count between any two domains.
+    ///
+    /// Default: `1` (the tightest useful value — every domain is filled before
+    /// any domain doubles up).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 100))]
+    pub max_skew: Option<i32>,
+
+    /// What the scheduler does when the rule cannot be satisfied.
+    ///
+    /// Default: `ScheduleAnyway` (soft). The operator defaults to soft
+    /// deliberately: a hard constraint turns a single-zone cluster, or a zone
+    /// outage, into `Pending` DNS Pods — trading an availability problem for a
+    /// total outage. Set `DoNotSchedule` only when you know the cluster has at
+    /// least as many domains as you have replicas.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when_unsatisfiable: Option<WhenUnsatisfiable>,
+
+    /// Which Pods this rule balances. See [`SpreadScope`].
+    ///
+    /// Default: `Role` for a cluster-managed instance (spread all primaries of
+    /// the cluster across zones), `Instance` for a standalone `Bind9Instance`
+    /// (spread that instance's own replicas).
+    ///
+    /// The default is almost always what you want. Override it only when you
+    /// deliberately want primaries and secondaries balanced together
+    /// (`Cluster`), or want to opt a multi-replica standalone instance out of
+    /// cluster-wide balancing (`Instance`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<SpreadScope>,
+
+    /// Minimum number of domains that must be eligible.
+    ///
+    /// Only meaningful together with `whenUnsatisfiable: DoNotSchedule`. When
+    /// fewer than `minDomains` domains exist, the constraint is treated as
+    /// unsatisfiable. Use it to fail loudly rather than silently running all
+    /// your nameservers in one zone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 1000))]
+    pub min_domains: Option<i32>,
+
+    /// Whether the Pod's node affinity / node selector is honoured when
+    /// counting domains.
+    ///
+    /// Default: `Honor` (the Kubernetes default). `Ignore` counts every node,
+    /// including ones this Pod could never be scheduled onto.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_affinity_policy: Option<NodeInclusionPolicy>,
+
+    /// Whether node taints are honoured when counting domains.
+    ///
+    /// Default: `Ignore` (the Kubernetes default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_taints_policy: Option<NodeInclusionPolicy>,
+}
+
+/// Topology spreading for the Pods backing a DNS server.
+///
+/// Controls how nameservers are distributed across failure domains, so a zone
+/// (or rack, or whatever your cluster labels nodes with) going down cannot
+/// take out every authoritative server at once.
+///
+/// `placement` can be set at two levels, resolved highest-priority first:
+///
+/// 1. `Bind9Instance.spec.placement` — one specific DNS server
+/// 2. `spec.primary.placement` / `spec.secondary.placement` — one role, on the
+///    owning `Bind9Cluster` or `ClusterBind9Provider`
+///
+/// Resolution is whole-block: the more specific level wins outright rather
+/// than merging field-by-field, so what will be scheduled is answerable by
+/// reading one block.
+///
+/// # Scope
+///
+/// This type deliberately covers **only** topology spreading. It is not a
+/// general pod-spec passthrough: `nodeSelector`, `tolerations`, and `affinity`
+/// are not accepted here. Embedding the full Kubernetes `Affinity` and
+/// `Toleration` schemas inflated the generated CRDs by roughly 450KB and would
+/// have handed a namespace tenant the scheduling primitives needed to place an
+/// operator-credentialed Pod onto a control-plane node — a large validation and
+/// security surface for a feature whose job is zone spreading. See
+/// `docs/adr/0003-pod-placement-and-zone-spreading.md`.
+///
+/// # Example
+///
+/// ```yaml
+/// placement:
+///   spread:
+///     - topologyKey: failure-domain.acme.io/rack
+///       maxSkew: 1
+///       whenUnsatisfiable: DoNotSchedule
+/// ```
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PlacementConfig {
+    /// Topology spread rules applied to the Pods of this DNS server.
+    ///
+    /// Three distinct states:
+    ///
+    /// - **absent** — for a **primary** role with two or more servers, the
+    ///   operator applies its default: one soft (`ScheduleAnyway`) rule over
+    ///   `topology.kubernetes.io/zone` with `maxSkew: 1`. Secondaries and
+    ///   single-server roles get no constraint unless you ask for one.
+    /// - **empty list** (`spread: []`) — explicitly no spread constraints.
+    ///   Use this to opt a multi-primary cluster out of the default.
+    /// - **non-empty list** — exactly these rules, and no default. This is how
+    ///   secondaries opt *in*.
+    ///
+    /// At most 8 rules; each becomes one `topologySpreadConstraint`, and every
+    /// constraint is re-evaluated on each scheduling attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 8))]
+    pub spread: Option<Vec<SpreadRule>>,
+}
+
 /// Primary instance configuration
 ///
 /// Groups all configuration specific to primary (authoritative) DNS instances.
@@ -2862,6 +3122,30 @@ pub struct PrimaryConfig {
     /// - Selector matching the instance labels (always set)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service: Option<ServiceConfig>,
+
+    /// Topology spreading for all primary instances in this cluster.
+    ///
+    /// This is the level most users want: it spreads every primary nameserver
+    /// of the cluster across failure domains, which is exactly what protects
+    /// against a zone outage taking out authoritative DNS.
+    ///
+    /// When unset, the operator applies a soft zone-spread default as soon as
+    /// `primary.replicas` is 2 or more. Overridden per-server by
+    /// `Bind9Instance.spec.placement`.
+    ///
+    /// # Example
+    ///
+    /// ```yaml
+    /// primary:
+    ///   replicas: 3
+    ///   placement:
+    ///     spread:
+    ///       - topologyKey: topology.kubernetes.io/zone
+    ///         maxSkew: 1
+    ///         whenUnsatisfiable: DoNotSchedule
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<PlacementConfig>,
 
     /// Allow-transfer ACL for primary instances
     ///
@@ -2979,6 +3263,31 @@ pub struct SecondaryConfig {
     /// See `PrimaryConfig.service` for detailed field documentation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service: Option<ServiceConfig>,
+
+    /// Topology spreading for all secondary instances in this cluster.
+    ///
+    /// **No default applies here.** The operator's automatic zone spread is
+    /// limited to primaries, which is what issue #467 asked for and what a
+    /// zone outage most threatens: primaries are authoritative and, unlike
+    /// secondaries, cannot be re-created from another server's data. Silently
+    /// changing where existing secondary workloads schedule would be an
+    /// unannounced policy change on a running cluster.
+    ///
+    /// Secondaries therefore opt in explicitly:
+    ///
+    /// ```yaml
+    /// secondary:
+    ///   replicas: 3
+    ///   placement:
+    ///     spread:
+    ///       - topologyKey: topology.kubernetes.io/zone
+    ///         maxSkew: 1
+    ///         whenUnsatisfiable: ScheduleAnyway
+    /// ```
+    ///
+    /// See `PrimaryConfig.placement` for field documentation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<PlacementConfig>,
 
     /// Allow-transfer ACL for secondary instances
     ///
@@ -3259,7 +3568,7 @@ pub struct Bind9ClusterStatus {
 /// Server role in the DNS cluster.
 ///
 /// Determines whether the instance is authoritative (primary) or replicates from primaries (secondary).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ServerRole {
     /// Primary DNS server - authoritative source for zones.
@@ -3445,6 +3754,19 @@ pub struct Bind9InstanceSpec {
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rndc_key: Option<RndcKeyConfig>,
+
+    /// Topology spreading for this one DNS server's Pods.
+    ///
+    /// Highest-priority placement level: set here, it wins outright over the
+    /// role-level block rather than merging with it.
+    ///
+    /// For a standalone `Bind9Instance` with `spec.replicas` of 2 or more,
+    /// the default spread scope is `Instance` — the instance's own replicas
+    /// are balanced across zones. For a cluster-managed instance (one Pod
+    /// each) the default scope is `Role`, balancing this Pod against its
+    /// sibling instances of the same role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<PlacementConfig>,
 
     /// Storage configuration for zone files.
     ///

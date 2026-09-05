@@ -8,6 +8,11 @@
 #   1. Integration suite   — simple zone/record lifecycle (tests/integration_test.sh)
 #   2. Regression suite     — admission policies + operand pod-shape + liveness
 #                             (tests/regression_test.sh: bindcar 0.7.x Mode B contract)
+#   3. Zone-spreading suite — spec.placement topology spread, on a three-zone
+#                             cluster (tests/zone_spread_test.sh). Needs its own
+#                             cluster: deploy/kind-config-multizone.yaml labels
+#                             three workers with distinct availability zones,
+#                             which the single-node config cannot express.
 #
 # All logic lives in the `ci-e2e` Makefile target (workflows delegate to the
 # Makefile per repo convention). Self-contained: no pushed image, no
@@ -24,6 +29,14 @@ on:
       - '.github/workflows/e2e.yaml'
       - 'Makefile'
       - 'rust-toolchain.toml'
+      # Scheduling behaviour is only observable against a real scheduler, so
+      # changes to it must run the kind gate.
+      - 'src/placement.rs'
+      - 'src/bind9_resources.rs'
+      - 'src/reconcilers/bind9instance/**'
+      - 'tests/zone_spread_test.sh'
+      - 'deploy/kind-config-multizone.yaml'
+      - 'deploy/operator/crds/**'
   workflow_call: {}
   workflow_dispatch: {}
 
@@ -36,7 +49,7 @@ env:
 
 jobs:
   e2e:
-    name: Integration + Regression (kind)
+    name: Integration + Regression + Zone Spread (kind)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -67,7 +80,7 @@ jobs:
       - name: Dump Kubernetes diagnostics on failure
         if: failure()
         run: |
-          for ctx in kind-bindy-e2e kind-bindy-regression; do
+          for ctx in kind-bindy-e2e kind-bindy-regression kind-bindy-e2e-zonespread; do
             echo "::group::cluster summary ($ctx)"
             kubectl --context "$ctx" get nodes -o wide 2>/dev/null || true
             kubectl --context "$ctx" get ns 2>/dev/null || true

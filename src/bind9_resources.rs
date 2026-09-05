@@ -440,6 +440,65 @@ pub fn build_labels_from_instance(
     labels
 }
 
+/// Builds the label set stamped onto the **Pods** of a `Bind9Instance`.
+///
+/// This is deliberately a superset of [`build_labels_from_instance`], which
+/// remains the Deployment's `spec.selector` and the Service's selector.
+///
+/// # Why the two are separate
+///
+/// `spec.selector` on a Deployment is **immutable** — Kubernetes rejects any
+/// change to it, because changing which Pods a Deployment claims would orphan
+/// the ones it used to own. When one label map fed both the selector and the
+/// Pod template (as it did before topology spreading landed), adding any new
+/// label to Pods would have changed the selector too, wedging the reconciler
+/// on every Deployment that already existed.
+///
+/// So: [`build_labels_from_instance`] is frozen and owns the selector, and
+/// everything added afterwards goes here. Kubernetes only requires that the
+/// selector *matches* the template labels, so the template may carry extras.
+/// Service selectors are subset matches and are unaffected.
+///
+/// # Extra labels
+///
+/// * `bindy.firestoned.io/cluster` — the owning cluster, taken from
+///   `spec.clusterRef`. Without it there is no label shared by the sibling
+///   single-Pod Deployments of a cluster, and so no way to write a topology
+///   spread selector that balances all primaries against each other.
+/// * `bindy.firestoned.io/role` — derived from `spec.role` rather than from
+///   the CR's metadata, so it is present even on a hand-written
+///   `Bind9Instance` that carries no role label. Only inserted when the
+///   selector does not already carry the key, so the Pod can never stop
+///   matching its own Deployment's selector.
+#[must_use]
+pub fn build_pod_labels_from_instance(
+    instance_name: &str,
+    instance: &Bind9Instance,
+) -> BTreeMap<String, String> {
+    use crate::labels::{BINDY_CLUSTER_LABEL, BINDY_ROLE_LABEL, ROLE_PRIMARY, ROLE_SECONDARY};
+
+    let mut labels = build_labels_from_instance(instance_name, instance);
+
+    if !instance.spec.cluster_ref.is_empty() {
+        labels.insert(
+            BINDY_CLUSTER_LABEL.to_string(),
+            instance.spec.cluster_ref.clone(),
+        );
+    }
+
+    labels
+        .entry(BINDY_ROLE_LABEL.to_string())
+        .or_insert_with(|| {
+            match instance.spec.role {
+                crate::crd::ServerRole::Primary => ROLE_PRIMARY,
+                crate::crd::ServerRole::Secondary => ROLE_SECONDARY,
+            }
+            .to_string()
+        });
+
+    labels
+}
+
 /// Builds owner references for a resource owned by a `Bind9Instance`
 ///
 /// Sets up cascade deletion so that when the `Bind9Instance` is deleted,
@@ -1247,6 +1306,48 @@ fn resolve_deployment_config<'a>(
     }
 }
 
+/// Counts how many instances of each role the owning cluster asks for.
+///
+/// Returns `(role_instance_count, cluster_instance_count)`, defaulting to
+/// `(1, 1)` for a standalone `Bind9Instance` that has no owning cluster.
+///
+/// These counts drive the *default* spread decision only. They matter because
+/// a cluster-managed instance always has `replicas: 1` — the cluster
+/// controller creates one single-Pod Deployment per nameserver — so replica
+/// count alone would never reach the "two or more Pods" threshold, and the
+/// default would never fire for exactly the topology it exists to protect.
+fn resolve_role_counts(
+    instance: &Bind9Instance,
+    cluster: Option<&Bind9Cluster>,
+    cluster_provider: Option<&crate::crd::ClusterBind9Provider>,
+) -> (i32, i32) {
+    let common = cluster
+        .map(|c| &c.spec.common)
+        .or_else(|| cluster_provider.map(|p| &p.spec.common));
+
+    let Some(common) = common else {
+        return (1, 1);
+    };
+
+    let primaries = common
+        .primary
+        .as_ref()
+        .and_then(|p| p.replicas)
+        .unwrap_or(0);
+    let secondaries = common
+        .secondary
+        .as_ref()
+        .and_then(|s| s.replicas)
+        .unwrap_or(0);
+
+    let role_count = match instance.spec.role {
+        crate::crd::ServerRole::Primary => primaries,
+        crate::crd::ServerRole::Secondary => secondaries,
+    };
+
+    (role_count.max(1), (primaries + secondaries).max(1))
+}
+
 pub fn build_deployment(
     name: &str,
     namespace: &str,
@@ -1263,10 +1364,30 @@ pub fn build_deployment(
         "Building Deployment for Bind9Instance"
     );
 
-    // Build labels, checking if instance is managed by a cluster
-    let labels = build_labels_from_instance(name, instance);
+    // Two label sets, deliberately. `selector_labels` is frozen and owns the
+    // Deployment's immutable `spec.selector`; `pod_labels` is a superset
+    // stamped on the Pod template. See `build_pod_labels_from_instance`.
+    let selector_labels = build_labels_from_instance(name, instance);
+    let pod_labels = build_pod_labels_from_instance(name, instance);
     let replicas = instance.spec.replicas.unwrap_or(1);
     debug!(replicas, "Deployment replica count");
+
+    // Resolve scheduling: instance -> role -> cluster, then turn the winning
+    // block (or the operator default) into concrete Pod spec fields.
+    let (role_instance_count, cluster_instance_count) =
+        resolve_role_counts(instance, cluster, cluster_provider);
+    let placement_config = crate::placement::resolve_placement(instance, cluster, cluster_provider);
+    let placement_ctx = crate::placement::PlacementContext {
+        instance_name: name,
+        cluster_name: (!instance.spec.cluster_ref.is_empty())
+            .then_some(instance.spec.cluster_ref.as_str()),
+        role: instance.spec.role,
+        instance_replicas: replicas,
+        role_instance_count,
+        cluster_instance_count,
+        instance_selector_labels: &selector_labels,
+    };
+    let placement = crate::placement::build_pod_placement(placement_config, &placement_ctx);
 
     let config = resolve_deployment_config(name, instance, cluster, cluster_provider);
 
@@ -1306,19 +1427,26 @@ pub fn build_deployment(
         metadata: ObjectMeta {
             name: Some(name.into()),
             namespace: Some(namespace.into()),
-            labels: Some(labels.clone()),
+            // Deployment metadata keeps the original (selector) label set:
+            // widening it is not needed for scheduling and would change a
+            // contract other tooling may select on. Only the Pod template
+            // gains the cluster label.
+            labels: Some(selector_labels.clone()),
             owner_references: Some(owner_refs),
             ..Default::default()
         },
         spec: Some(DeploymentSpec {
             replicas: Some(replicas),
+            // IMMUTABLE. Never widen this set — see
+            // `build_pod_labels_from_instance` for why new labels go on the
+            // Pod template instead.
             selector: LabelSelector {
-                match_labels: Some(labels.clone()),
+                match_labels: Some(selector_labels.clone()),
                 ..Default::default()
             },
             template: PodTemplateSpec {
                 metadata: Some(ObjectMeta {
-                    labels: Some(labels.clone()),
+                    labels: Some(pod_labels.clone()),
                     ..Default::default()
                 }),
                 spec: Some(build_pod_spec(
@@ -1330,6 +1458,7 @@ pub fn build_deployment(
                     all_volumes.as_ref(),
                     all_volume_mounts.as_ref(),
                     config.bindcar_config,
+                    &placement,
                 )),
             },
             ..Default::default()
@@ -1349,6 +1478,7 @@ pub fn build_deployment(
 /// * `custom_volumes` - Optional custom volumes to add
 /// * `custom_volume_mounts` - Optional custom volume mounts to add
 /// * `bindcar_config` - Optional API sidecar configuration
+/// * `placement` - Resolved topology spread constraints from `crate::placement`
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_lines)]
 fn build_pod_spec(
@@ -1360,6 +1490,7 @@ fn build_pod_spec(
     custom_volumes: Option<&Vec<Volume>>,
     custom_volume_mounts: Option<&Vec<VolumeMount>>,
     bindcar_config: Option<&crate::crd::BindcarConfig>,
+    placement: &crate::placement::ResolvedPlacement,
 ) -> PodSpec {
     // Determine image to use
     let image = if let Some(img_cfg) = image_config {
@@ -1494,6 +1625,9 @@ fn build_pod_spec(
         )),
         image_pull_secrets,
         service_account_name: Some(BIND9_SERVICE_ACCOUNT.into()),
+        // Scheduling. Topology spreading only — see `crate::placement` for why
+        // this is not a general pod-spec passthrough.
+        topology_spread_constraints: placement.topology_spread_constraints.clone(),
         security_context: Some(PodSecurityContext {
             run_as_user: Some(BIND9_NONROOT_UID),
             run_as_group: Some(BIND9_NONROOT_UID),
