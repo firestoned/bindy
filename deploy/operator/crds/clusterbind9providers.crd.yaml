@@ -991,6 +991,192 @@ spec:
                       by `DNSZone` resources using `bind9InstancesFrom.selector.matchLabels`.
                     nullable: true
                     type: object
+                  placement:
+                    description: |-
+                      Topology spreading for all primary instances in this cluster.
+
+                      This is the level most users want: it spreads every primary nameserver
+                      of the cluster across failure domains, which is exactly what protects
+                      against a zone outage taking out authoritative DNS.
+
+                      When unset, the operator applies a soft zone-spread default as soon as
+                      `primary.replicas` is 2 or more. Overridden per-server by
+                      `Bind9Instance.spec.placement`.
+
+                      # Example
+
+                      ```yaml
+                      primary:
+                        replicas: 3
+                        placement:
+                          spread:
+                            - topologyKey: topology.kubernetes.io/zone
+                              maxSkew: 1
+                              whenUnsatisfiable: DoNotSchedule
+                      ```
+                    nullable: true
+                    properties:
+                      spread:
+                        description: |-
+                          Topology spread rules applied to the Pods of this DNS server.
+
+                          Three distinct states:
+
+                          - **absent** — for a **primary** role with two or more servers, the
+                            operator applies its default: one soft (`ScheduleAnyway`) rule over
+                            `topology.kubernetes.io/zone` with `maxSkew: 1`. Secondaries and
+                            single-server roles get no constraint unless you ask for one.
+                          - **empty list** (`spread: []`) — explicitly no spread constraints.
+                            Use this to opt a multi-primary cluster out of the default.
+                          - **non-empty list** — exactly these rules, and no default. This is how
+                            secondaries opt *in*.
+
+                          At most 8 rules; each becomes one `topologySpreadConstraint`, and every
+                          constraint is re-evaluated on each scheduling attempt.
+                        items:
+                          description: |-
+                            A single topology spread rule.
+
+                            Each rule becomes exactly one entry in the Pod's
+                            `spec.topologySpreadConstraints`, with the `labelSelector` generated from
+                            [`SpreadScope`] rather than written by hand — users have no way to know the
+                            operator's internal Pod labels, and getting the selector wrong silently
+                            produces a constraint that does nothing.
+
+                            # Example
+
+                            ```yaml
+                            spread:
+                              # Spread primaries across zones first — hard requirement.
+                              - topologyKey: topology.kubernetes.io/zone
+                                maxSkew: 1
+                                whenUnsatisfiable: DoNotSchedule
+                                scope: Role
+                              # Then, within a zone, prefer separate nodes.
+                              - topologyKey: kubernetes.io/hostname
+                                maxSkew: 1
+                                whenUnsatisfiable: ScheduleAnyway
+                                scope: Role
+                            ```
+                          properties:
+                            maxSkew:
+                              description: |-
+                                Maximum permitted difference in Pod count between any two domains.
+
+                                Default: `1` (the tightest useful value — every domain is filled before
+                                any domain doubles up).
+                              format: int32
+                              maximum: 100.0
+                              minimum: 1.0
+                              nullable: true
+                              type: integer
+                            minDomains:
+                              description: |-
+                                Minimum number of domains that must be eligible.
+
+                                Only meaningful together with `whenUnsatisfiable: DoNotSchedule`. When
+                                fewer than `minDomains` domains exist, the constraint is treated as
+                                unsatisfiable. Use it to fail loudly rather than silently running all
+                                your nameservers in one zone.
+                              format: int32
+                              maximum: 1000.0
+                              minimum: 1.0
+                              nullable: true
+                              type: integer
+                            nodeAffinityPolicy:
+                              description: |-
+                                Whether node affinity / taints are honoured when computing spread skew.
+
+                                Mirrors Kubernetes `nodeAffinityPolicy` / `nodeTaintsPolicy`.
+                              enum:
+                              - Honor
+                              - Ignore
+                              nullable: true
+                              type: string
+                            nodeTaintsPolicy:
+                              description: |-
+                                Whether node affinity / taints are honoured when computing spread skew.
+
+                                Mirrors Kubernetes `nodeAffinityPolicy` / `nodeTaintsPolicy`.
+                              enum:
+                              - Honor
+                              - Ignore
+                              nullable: true
+                              type: string
+                            scope:
+                              description: |-
+                                Which set of DNS Pods a spread rule balances across failure domains.
+
+                                This is the field that makes zone spreading actually work in Bindy, and it
+                                exists because a DNS server is not an anonymous replica.
+
+                                A `Bind9Cluster` with `primary.replicas: 3` does **not** create one
+                                three-Pod Deployment. Each primary is an individually addressable
+                                nameserver (its hostname ends up in an `NS` record), so the cluster
+                                controller creates three separate `Bind9Instance` resources, each backed by
+                                its own single-Pod Deployment. A spread constraint whose label selector
+                                matches only its own Deployment's Pods would therefore balance a set of
+                                size one — which is always trivially balanced, and spreads nothing.
+
+                                `scope` selects the label selector the operator generates, and so decides
+                                which Pods the scheduler counts per domain.
+                              enum:
+                              - Instance
+                              - Role
+                              - Cluster
+                              nullable: true
+                              type: string
+                            topologyKey:
+                              description: |-
+                                Node label key that defines the failure domain.
+
+                                Nodes sharing a value for this label are in the same domain. Any node
+                                label works, which is the point: clusters that do not use the
+                                well-known zone label can spread across whatever they do use.
+
+                                Examples:
+                                - `topology.kubernetes.io/zone` - availability zone (the usual choice)
+                                - `topology.kubernetes.io/region` - region, for multi-region clusters
+                                - `kubernetes.io/hostname` - individual nodes
+                                - `failure-domain.acme.io/rack` - a custom, on-prem failure domain
+                                - `karpenter.sh/capacity-type` - spot vs. on-demand capacity
+
+                                Must be a valid Kubernetes qualified name, matching what the API server
+                                accepts for a node label key: an optional lowercase RFC 1123 subdomain
+                                prefix of at most 253 characters, a `/`, and a name segment of at most
+                                63 characters. The maximum overall length is therefore 317.
+
+                                The 253-character prefix cap is enforced by an
+                                `x-kubernetes-validations` rule on the parent rule rather than by the
+                                pattern below: CRD patterns are RE2, which has no lookahead, so a
+                                length bound on a variable-length prefix cannot be expressed in the
+                                regex itself.
+                              maxLength: 317
+                              minLength: 1
+                              pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$
+                              type: string
+                            whenUnsatisfiable:
+                              description: |-
+                                How the scheduler should react when a spread rule cannot be satisfied.
+
+                                Mirrors Kubernetes `topologySpreadConstraints[].whenUnsatisfiable`.
+                              enum:
+                              - DoNotSchedule
+                              - ScheduleAnyway
+                              nullable: true
+                              type: string
+                          required:
+                          - topologyKey
+                          type: object
+                          x-kubernetes-validations:
+                          - message: 'minDomains is only valid together with whenUnsatisfiable: DoNotSchedule'
+                            rule: '!has(self.minDomains) || (has(self.whenUnsatisfiable) && self.whenUnsatisfiable == ''DoNotSchedule'')'
+                          - message: topologyKey prefix (the part before '/') must be at most 253 characters
+                            rule: self.topologyKey.indexOf('/') <= 253
+                        maxItems: 8
+                        nullable: true
+                        type: array
+                    type: object
                   replicas:
                     description: |-
                       Number of primary instance replicas (default: 1)
@@ -1603,6 +1789,193 @@ spec:
                       These labels will appear on the `Bind9Instance` metadata and can be referenced
                       by `DNSZone` resources using `bind9InstancesFrom.selector.matchLabels`.
                     nullable: true
+                    type: object
+                  placement:
+                    description: |-
+                      Topology spreading for all secondary instances in this cluster.
+
+                      **No default applies here.** The operator's automatic zone spread is
+                      limited to primaries, which is what issue #467 asked for and what a
+                      zone outage most threatens: primaries are authoritative and, unlike
+                      secondaries, cannot be re-created from another server's data. Silently
+                      changing where existing secondary workloads schedule would be an
+                      unannounced policy change on a running cluster.
+
+                      Secondaries therefore opt in explicitly:
+
+                      ```yaml
+                      secondary:
+                        replicas: 3
+                        placement:
+                          spread:
+                            - topologyKey: topology.kubernetes.io/zone
+                              maxSkew: 1
+                              whenUnsatisfiable: ScheduleAnyway
+                      ```
+
+                      See `PrimaryConfig.placement` for field documentation.
+                    nullable: true
+                    properties:
+                      spread:
+                        description: |-
+                          Topology spread rules applied to the Pods of this DNS server.
+
+                          Three distinct states:
+
+                          - **absent** — for a **primary** role with two or more servers, the
+                            operator applies its default: one soft (`ScheduleAnyway`) rule over
+                            `topology.kubernetes.io/zone` with `maxSkew: 1`. Secondaries and
+                            single-server roles get no constraint unless you ask for one.
+                          - **empty list** (`spread: []`) — explicitly no spread constraints.
+                            Use this to opt a multi-primary cluster out of the default.
+                          - **non-empty list** — exactly these rules, and no default. This is how
+                            secondaries opt *in*.
+
+                          At most 8 rules; each becomes one `topologySpreadConstraint`, and every
+                          constraint is re-evaluated on each scheduling attempt.
+                        items:
+                          description: |-
+                            A single topology spread rule.
+
+                            Each rule becomes exactly one entry in the Pod's
+                            `spec.topologySpreadConstraints`, with the `labelSelector` generated from
+                            [`SpreadScope`] rather than written by hand — users have no way to know the
+                            operator's internal Pod labels, and getting the selector wrong silently
+                            produces a constraint that does nothing.
+
+                            # Example
+
+                            ```yaml
+                            spread:
+                              # Spread primaries across zones first — hard requirement.
+                              - topologyKey: topology.kubernetes.io/zone
+                                maxSkew: 1
+                                whenUnsatisfiable: DoNotSchedule
+                                scope: Role
+                              # Then, within a zone, prefer separate nodes.
+                              - topologyKey: kubernetes.io/hostname
+                                maxSkew: 1
+                                whenUnsatisfiable: ScheduleAnyway
+                                scope: Role
+                            ```
+                          properties:
+                            maxSkew:
+                              description: |-
+                                Maximum permitted difference in Pod count between any two domains.
+
+                                Default: `1` (the tightest useful value — every domain is filled before
+                                any domain doubles up).
+                              format: int32
+                              maximum: 100.0
+                              minimum: 1.0
+                              nullable: true
+                              type: integer
+                            minDomains:
+                              description: |-
+                                Minimum number of domains that must be eligible.
+
+                                Only meaningful together with `whenUnsatisfiable: DoNotSchedule`. When
+                                fewer than `minDomains` domains exist, the constraint is treated as
+                                unsatisfiable. Use it to fail loudly rather than silently running all
+                                your nameservers in one zone.
+                              format: int32
+                              maximum: 1000.0
+                              minimum: 1.0
+                              nullable: true
+                              type: integer
+                            nodeAffinityPolicy:
+                              description: |-
+                                Whether node affinity / taints are honoured when computing spread skew.
+
+                                Mirrors Kubernetes `nodeAffinityPolicy` / `nodeTaintsPolicy`.
+                              enum:
+                              - Honor
+                              - Ignore
+                              nullable: true
+                              type: string
+                            nodeTaintsPolicy:
+                              description: |-
+                                Whether node affinity / taints are honoured when computing spread skew.
+
+                                Mirrors Kubernetes `nodeAffinityPolicy` / `nodeTaintsPolicy`.
+                              enum:
+                              - Honor
+                              - Ignore
+                              nullable: true
+                              type: string
+                            scope:
+                              description: |-
+                                Which set of DNS Pods a spread rule balances across failure domains.
+
+                                This is the field that makes zone spreading actually work in Bindy, and it
+                                exists because a DNS server is not an anonymous replica.
+
+                                A `Bind9Cluster` with `primary.replicas: 3` does **not** create one
+                                three-Pod Deployment. Each primary is an individually addressable
+                                nameserver (its hostname ends up in an `NS` record), so the cluster
+                                controller creates three separate `Bind9Instance` resources, each backed by
+                                its own single-Pod Deployment. A spread constraint whose label selector
+                                matches only its own Deployment's Pods would therefore balance a set of
+                                size one — which is always trivially balanced, and spreads nothing.
+
+                                `scope` selects the label selector the operator generates, and so decides
+                                which Pods the scheduler counts per domain.
+                              enum:
+                              - Instance
+                              - Role
+                              - Cluster
+                              nullable: true
+                              type: string
+                            topologyKey:
+                              description: |-
+                                Node label key that defines the failure domain.
+
+                                Nodes sharing a value for this label are in the same domain. Any node
+                                label works, which is the point: clusters that do not use the
+                                well-known zone label can spread across whatever they do use.
+
+                                Examples:
+                                - `topology.kubernetes.io/zone` - availability zone (the usual choice)
+                                - `topology.kubernetes.io/region` - region, for multi-region clusters
+                                - `kubernetes.io/hostname` - individual nodes
+                                - `failure-domain.acme.io/rack` - a custom, on-prem failure domain
+                                - `karpenter.sh/capacity-type` - spot vs. on-demand capacity
+
+                                Must be a valid Kubernetes qualified name, matching what the API server
+                                accepts for a node label key: an optional lowercase RFC 1123 subdomain
+                                prefix of at most 253 characters, a `/`, and a name segment of at most
+                                63 characters. The maximum overall length is therefore 317.
+
+                                The 253-character prefix cap is enforced by an
+                                `x-kubernetes-validations` rule on the parent rule rather than by the
+                                pattern below: CRD patterns are RE2, which has no lookahead, so a
+                                length bound on a variable-length prefix cannot be expressed in the
+                                regex itself.
+                              maxLength: 317
+                              minLength: 1
+                              pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$
+                              type: string
+                            whenUnsatisfiable:
+                              description: |-
+                                How the scheduler should react when a spread rule cannot be satisfied.
+
+                                Mirrors Kubernetes `topologySpreadConstraints[].whenUnsatisfiable`.
+                              enum:
+                              - DoNotSchedule
+                              - ScheduleAnyway
+                              nullable: true
+                              type: string
+                          required:
+                          - topologyKey
+                          type: object
+                          x-kubernetes-validations:
+                          - message: 'minDomains is only valid together with whenUnsatisfiable: DoNotSchedule'
+                            rule: '!has(self.minDomains) || (has(self.whenUnsatisfiable) && self.whenUnsatisfiable == ''DoNotSchedule'')'
+                          - message: topologyKey prefix (the part before '/') must be at most 253 characters
+                            rule: self.topologyKey.indexOf('/') <= 253
+                        maxItems: 8
+                        nullable: true
+                        type: array
                     type: object
                   replicas:
                     description: |-

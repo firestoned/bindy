@@ -96,7 +96,7 @@ For production clusters, use the latest stable release:
 kubectl create namespace bindy-system
 
 # 2. Install CRDs
-kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
+kubectl apply --server-side -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
 
 # 3. Install RBAC
 kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/serviceaccount.yaml
@@ -117,10 +117,12 @@ For development or custom builds:
 
 #### 1. Install CRDs
 
-Use kustomize to apply the split CRD manifests:
+Use kustomize to apply the split CRD manifests. `--server-side` is required:
+the cluster CRDs exceed the 256 KB `last-applied-configuration` annotation
+limit that client-side apply relies on.
 
 ```bash
-kubectl apply -k deploy/crds
+kubectl apply --server-side -f deploy/operator/crds/
 ```
 
 #### 2. Create Namespace
@@ -132,7 +134,7 @@ kubectl create namespace bindy-system
 #### 3. Install RBAC
 
 ```bash
-kubectl apply -f deploy/rbac/
+kubectl apply -f deploy/operator/rbac/
 ```
 
 #### 4. Build and Push Image
@@ -251,7 +253,7 @@ kubectl logs -n bindy-system -l app=bindy | grep ERROR
 ### Upgrade CRDs
 
 ```bash
-kubectl apply -k deploy/crds
+kubectl apply --server-side -f deploy/operator/crds/
 ```
 
 ### Upgrade Operator
@@ -274,13 +276,13 @@ kubectl rollout status deployment/bindy -n bindy-system
 
 ```bash
 # Delete operator
-kubectl delete -f deploy/controller/deployment.yaml
+kubectl delete -f deploy/operator/deployment.yaml
 
 # Delete RBAC
-kubectl delete -f deploy/rbac/
+kubectl delete -f deploy/operator/rbac/
 
 # Delete CRDs (this will delete all custom resources!)
-kubectl delete -k deploy/crds
+kubectl delete -f deploy/operator/crds/
 
 # Delete namespace
 kubectl delete namespace bindy-system

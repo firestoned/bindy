@@ -88,7 +88,7 @@ kind load docker-image bindy:latest --name bindy-test
 ### Step 3: Deploy CRDs
 
 ```bash
-kubectl apply -k deploy/crds/
+kubectl apply --server-side -f deploy/operator/crds/
 ```
 
 Verify CRDs are installed:
@@ -118,7 +118,7 @@ txtrecords.dns.firestoned.io
 kubectl create namespace bindy-system
 
 # Deploy RBAC
-kubectl apply -f deploy/rbac/
+kubectl apply -f deploy/operator/rbac/
 
 # Deploy operator
 kubectl apply -f deploy/operator/deployment.yaml
@@ -446,8 +446,8 @@ kubectl delete arecords,txtrecords,cnamerecords,dnszones,bind9instances --all -n
 
 ```bash
 kubectl delete -f deploy/operator/deployment.yaml
-kubectl delete -f deploy/rbac/
-kubectl delete -f deploy/crds/dns-crds.yaml
+kubectl delete -f deploy/operator/rbac/
+kubectl delete -f deploy/operator/crds/
 kubectl delete namespace bindy-system
 ```
 
@@ -474,8 +474,8 @@ Example GitHub Actions workflow snippet:
   run: |
     docker build -t bindy:test .
     kind load docker-image bindy:test --name bindy-test
-    kubectl apply -k deploy/crds/
-    kubectl apply -f deploy/rbac/
+    kubectl apply --server-side -f deploy/operator/crds/
+    kubectl apply -f deploy/operator/rbac/
     kubectl apply -f deploy/operator/
 
 - name: Run Tests

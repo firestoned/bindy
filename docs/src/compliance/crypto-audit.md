@@ -117,7 +117,7 @@ let secret = Secret {
 
 **Evidence:**
 - [src/bind9_resources.rs](https://github.com/firestoned/bindy/blob/main/src/bind9_resources.rs) - Secret generation
-- [deploy/crds/bind9instances.crd.yaml](../../deploy/crds/bind9instances.crd.yaml) - TSIG configuration
+- [deploy/operator/crds/bind9instances.crd.yaml](../../deploy/operator/crds/bind9instances.crd.yaml) - TSIG configuration
 
 ---
 

@@ -78,6 +78,7 @@ pub mod dns_errors;
 pub mod http_errors;
 pub mod labels;
 pub mod metrics;
+pub mod placement;
 pub mod record_impls;
 pub mod record_operator;
 pub mod safe_volume;

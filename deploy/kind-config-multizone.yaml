@@ -1,0 +1,52 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# A kind cluster that fakes a three-zone cloud region, for exercising
+# `spec.placement` topology spreading locally.
+#
+# kind nodes are containers on one host, so there are no real failure domains
+# here. What matters to the scheduler is only the node label: it buckets nodes
+# by the value of `topology.kubernetes.io/zone` and balances Pods across those
+# buckets. Labelling three workers `zone-a` / `zone-b` / `zone-c` therefore
+# reproduces multi-zone scheduling behaviour exactly, without a cloud account.
+#
+# The control-plane node is deliberately left unlabelled and keeps its default
+# NoSchedule taint, so it forms no zone and takes no DNS Pods. Three zones is
+# the minimum that makes maxSkew: 1 interesting: with two, every placement is
+# trivially balanced.
+#
+# Usage:
+#   kind create cluster --config deploy/kind-config-multizone.yaml
+#   ./tests/zone_spread_test.sh
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: bindy-multizone
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+  - role: worker
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "topology.kubernetes.io/zone=zone-a,topology.kubernetes.io/region=local,node-tier=dns"
+  - role: worker
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "topology.kubernetes.io/zone=zone-b,topology.kubernetes.io/region=local,node-tier=dns"
+  - role: worker
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "topology.kubernetes.io/zone=zone-c,topology.kubernetes.io/region=local,node-tier=dns"

@@ -362,7 +362,7 @@ pub(super) async fn update_existing_managed_instances(
             // Backward compatibility: preserve deprecated rndc_secret_ref if set
             let updated_spec = Bind9InstanceSpec {
                 cluster_ref: instance.spec.cluster_ref.clone(),
-                role: instance.spec.role.clone(),
+                role: instance.spec.role,
                 replicas: instance.spec.replicas, // Preserve instance replicas (always 1 for managed)
                 version: common_spec.version.clone(),
                 image: common_spec.image.clone(),
@@ -374,6 +374,13 @@ pub(super) async fn update_existing_managed_instances(
                 rndc_secret_ref: instance.spec.rndc_secret_ref.clone(), // Preserve if set (deprecated)
                 rndc_key: instance.spec.rndc_key.clone(),               // Preserve if set
                 storage: instance.spec.storage.clone(),                 // Preserve if set
+                // Preserve any instance-level placement the user set directly.
+                // Cluster- and role-level placement is NOT copied down here:
+                // it is resolved against the live cluster when the Deployment
+                // is built (see `crate::placement::resolve_placement`), so a
+                // cluster-level change converges without rewriting every
+                // managed instance spec.
+                placement: instance.spec.placement.clone(),
                 bindcar_config: desired_bindcar_config,
             };
 
@@ -664,6 +671,7 @@ async fn create_managed_instance_with_owner(
         rndc_secret_ref: None, // Inherit from cluster/role config (deprecated)
         rndc_key: None,        // Inherit from cluster/role config
         storage: None,         // Use default (emptyDir)
+        placement: None,       // Inherit from role / cluster level at build time
         bindcar_config: common_spec
             .global
             .as_ref()

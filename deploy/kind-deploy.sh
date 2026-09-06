@@ -86,8 +86,11 @@ EOF
 fi
 
 echo -e "${GREEN}📋 Installing CRDs...${NC}"
-# Use 'kubectl replace --force' to avoid annotation size limits with large CRDs
-kubectl replace --force -f deploy/operator/crds 2>/dev/null || kubectl create -f deploy/operator/crds
+# Server-side apply: the cluster CRDs exceed the 256KB last-applied-configuration
+# annotation that client-side apply relies on. Note this replaces an earlier
+# `kubectl replace --force`, which deleted and recreated the CRDs — taking every
+# existing custom resource with them.
+kubectl apply --server-side --force-conflicts -f deploy/operator/crds
 
 echo -e "${GREEN}🔐 Creating namespace and RBAC...${NC}"
 kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -

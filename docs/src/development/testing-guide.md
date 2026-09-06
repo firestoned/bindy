@@ -313,7 +313,7 @@ kubectl logs -n bindy-system -l app=bindy
 kubectl get crds | grep bindy.firestoned.io
 
 # Install
-kubectl apply -k deploy/crds
+kubectl apply --server-side -f deploy/operator/crds/
 ```
 
 **Resource creation fails**

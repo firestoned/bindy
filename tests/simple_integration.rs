@@ -606,6 +606,7 @@ async fn test_bind9instance_create_read_delete() {
             ..Default::default()
         },
         spec: Bind9InstanceSpec {
+            placement: None,
             cluster_ref: cluster_ref.to_string(),
             role: ServerRole::Primary,
             replicas: Some(1),
@@ -1142,6 +1143,7 @@ async fn test_instance_pod_label_selector_finds_pods() {
             ..Default::default()
         },
         spec: Bind9InstanceSpec {
+            placement: None,
             cluster_ref: cluster_name.to_string(),
             role: ServerRole::Primary,
             replicas: Some(1),

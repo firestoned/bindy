@@ -347,6 +347,7 @@ mod tests {
     #[test]
     fn test_bind9instance_spec() {
         let spec = Bind9InstanceSpec {
+            placement: None,
             cluster_ref: "my-cluster".into(),
             role: ServerRole::Primary,
             replicas: Some(3),

@@ -33,7 +33,7 @@ cargo fmt
 5. **Validate CRDs**
 ```bash
 # Ensure generated CRDs are valid
-kubectl apply --dry-run=client -f deploy/crds/
+kubectl apply --dry-run=server -f deploy/operator/crds/
 ```
 
 6. **Commit changes**
@@ -50,7 +50,7 @@ git push origin feature/my-feature
 
 ## CRD Development
 
-**IMPORTANT:** `src/crd.rs` is the source of truth. CRD YAML files in `deploy/crds/` are auto-generated.
+**IMPORTANT:** `src/crd.rs` is the source of truth. CRD YAML files in `deploy/operator/crds/` are auto-generated.
 
 ### Modifying Existing CRDs
 
@@ -81,10 +81,10 @@ make crds
 3. **Verify the generated YAML**:
 ```bash
 # Check the generated file
-cat deploy/crds/bind9clusters.crd.yaml
+cat deploy/operator/crds/bind9clusters.crd.yaml
 
 # Validate it
-kubectl apply --dry-run=client -f deploy/crds/bind9clusters.crd.yaml
+kubectl apply --dry-run=server -f deploy/operator/crds/bind9clusters.crd.yaml
 ```
 
 4. **Update documentation** to describe the new field
@@ -116,7 +116,7 @@ kind create cluster --name bindy-dev
 
 # Deploy CRDs (regenerate first if modified)
 make crds
-kubectl apply -k deploy/crds/
+kubectl apply --server-side -f deploy/operator/crds/
 
 # Run operator locally
 RUST_LOG=debug cargo run

@@ -2,6 +2,15 @@
 
 Distribute your DNS infrastructure across multiple regions or availability zones for maximum availability and performance.
 
+!!! tip "Spreading within one cluster"
+    This page covers running *separate* instances per region, each with its own
+    identity and address. If instead you have one Kubernetes cluster spanning
+    several availability zones and want the operator to distribute nameservers
+    across them automatically, see
+    [Zone Spreading and Pod Placement](zone-spreading.md) — that is handled by
+    `spec.placement`, and a soft zone spread is applied by default whenever a
+    role has two or more servers.
+
 ## Architecture Overview
 
 A multi-region DNS setup typically includes:

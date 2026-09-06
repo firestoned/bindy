@@ -48,6 +48,7 @@ mod tests {
                 ..Default::default()
             },
             spec: Bind9InstanceSpec {
+                placement: None,
                 cluster_ref: "test-cluster".to_string(),
                 role: ServerRole::Primary,
                 replicas: Some(1),

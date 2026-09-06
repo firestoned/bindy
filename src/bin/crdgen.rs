@@ -54,7 +54,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Successfully generated CRD YAML files in deploy/operator/crds/");
     println!("\nNext steps:");
     println!("  1. Review the generated files");
-    println!("  2. Deploy with: kubectl apply -f deploy/operator/crds/");
+    println!("  2. Deploy with: kubectl apply --server-side -f deploy/operator/crds/");
+    println!();
+    println!("     --server-side is required: the Bind9Cluster / ClusterBind9Provider /");
+    println!("     Bind9Instance CRDs exceed the 256KB last-applied-configuration");
+    println!("     annotation limit, so a plain 'kubectl apply' is rejected.");
 
     Ok(())
 }

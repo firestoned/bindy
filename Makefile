@@ -71,7 +71,11 @@ crds-combined: crds ## Generate combined crds.yaml file for releases
 	@echo "# SPDX-License-Identifier: MIT" >> deploy/crds.yaml
 	@echo "#" >> deploy/crds.yaml
 	@echo "# Combined CRD definitions for Bindy" >> deploy/crds.yaml
-	@echo "# Install with: kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml" >> deploy/crds.yaml
+	@echo "# Install with: kubectl apply --server-side -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml" >> deploy/crds.yaml
+	@echo "#" >> deploy/crds.yaml
+	@echo "# --server-side is REQUIRED: the cluster CRDs exceed the 256KB" >> deploy/crds.yaml
+	@echo "# kubectl.kubernetes.io/last-applied-configuration annotation limit that" >> deploy/crds.yaml
+	@echo "# client-side apply relies on, and a plain 'kubectl apply' fails outright." >> deploy/crds.yaml
 	@echo "#" >> deploy/crds.yaml
 	@echo "# DO NOT EDIT MANUALLY - Generated from individual CRD files in deploy/operator/crds/" >> deploy/crds.yaml
 	@echo "---" >> deploy/crds.yaml
@@ -782,8 +786,15 @@ regression-test-fresh: ## Run the regression suite on a freshly recreated kind c
 	@chmod +x tests/regression_test.sh
 	@CLUSTER_NAME=$(REGRESSION_CLUSTER) tests/regression_test.sh --fresh $(if $(REGRESSION_IMAGE),--image "$(REGRESSION_IMAGE)")
 
+ZONESPREAD_CLUSTER ?= bindy-zonespread
+
+zone-spread-test: ## Run the zone-spreading e2e on a fresh three-zone kind cluster (topology spread across failure domains)
+	@chmod +x tests/zone_spread_test.sh
+	@CLUSTER_NAME=$(ZONESPREAD_CLUSTER) tests/zone_spread_test.sh $(if $(ZONESPREAD_IMAGE),--image "$(ZONESPREAD_IMAGE)")
+
 CI_E2E_IMAGE ?= ghcr.io/firestoned/bindy:ci-e2e
 CI_E2E_INTEGRATION_CLUSTER ?= bindy-e2e
+CI_E2E_ZONESPREAD_CLUSTER ?= bindy-e2e-zonespread
 
 ci-e2e: ## Self-contained full e2e: build local image, run integration + regression against it (no registry). Used by the e2e.yaml workflow.
 	@echo "==> Building operator image locally ($(CI_E2E_IMAGE))"
@@ -793,9 +804,13 @@ ci-e2e: ## Self-contained full e2e: build local image, run integration + regress
 	@CLUSTER_NAME=$(CI_E2E_INTEGRATION_CLUSTER) tests/integration_test.sh --image "$(CI_E2E_IMAGE)"
 	@echo "==> Regression suite (admission policies + operand pod-shape + liveness) against $(CI_E2E_IMAGE)"
 	@$(MAKE) regression-test-fresh REGRESSION_IMAGE=$(CI_E2E_IMAGE)
+	@echo "==> Zone-spreading suite (topology spread on a 3-zone cluster) against $(CI_E2E_IMAGE)"
+	@chmod +x tests/zone_spread_test.sh
+	@CLUSTER_NAME=$(CI_E2E_ZONESPREAD_CLUSTER) tests/zone_spread_test.sh --image "$(CI_E2E_IMAGE)"
 	@echo "==> Cleaning up e2e kind clusters"
 	@kind delete cluster --name $(CI_E2E_INTEGRATION_CLUSTER) 2>/dev/null || true
 	@kind delete cluster --name $(REGRESSION_CLUSTER) 2>/dev/null || true
+	@kind delete cluster --name $(CI_E2E_ZONESPREAD_CLUSTER) 2>/dev/null || true
 
 # ── CALM (Architecture as Code) ──────────────────────────────────────────────
 # FINOS CALM models live in ./calm; the Mermaid diagrams under

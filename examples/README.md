@@ -4,7 +4,7 @@ This directory contains example YAML manifests for deploying and configuring Bin
 
 ## ⚠️ Important: Schema Validation
 
-All examples in this directory MUST be valid and match the CRD schemas in `/deploy/crds/`.
+All examples in this directory MUST be valid and match the CRD schemas in `/deploy/operator/crds/`.
 
 After any CRD changes, run:
 
@@ -174,6 +174,18 @@ metadata:
    - Bind9Cluster with persistent volumes
    - Instance-level storage overrides
 
+### High Availability / Scheduling
+
+8. **[zone-spreading.yaml](zone-spreading.yaml)** - Spreading DNS servers across failure domains
+   - The operator default (no configuration needed for a soft zone spread)
+   - Hard `DoNotSchedule` spreading with `minDomains` for known multi-zone clusters
+   - Custom failure domains (racks, regions) via any node label
+   - Standalone-instance spreading, and how to opt out with `spread: []`
+   - Note: `placement` covers topology spreading only — no `nodeSelector`,
+     `tolerations`, or `affinity`. See
+     [ADR-0003](../docs/adr/0003-pod-placement-and-zone-spreading.md)
+   - See the [Zone Spreading guide](https://firestoned.github.io/bindy/guide/zone-spreading/)
+
 ## Quick Start
 
 ### Prerequisites: Install Bindy
@@ -183,7 +195,7 @@ Before running the examples, install Bindy:
 ```bash
 # Install from latest release (recommended)
 kubectl create namespace bindy-system
-kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
+kubectl apply --server-side -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml
 kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/serviceaccount.yaml
 kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/role.yaml
 kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/rbac/rolebinding.yaml
@@ -191,8 +203,8 @@ kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/op
 
 # Or install from local files (development)
 kubectl create namespace bindy-system
-kubectl apply -k ../deploy/crds/
-kubectl apply -f ../deploy/rbac/
+kubectl apply --server-side -f ../deploy/operator/crds/
+kubectl apply -f ../deploy/operator/rbac/
 kubectl apply -f ../deploy/operator/deployment.yaml
 ```
 
@@ -285,4 +297,4 @@ These examples use placeholder values. Customize them for your environment:
 
 - [Quickstart Guide](../docs/src/installation/quickstart.md)
 - [API Reference](../docs/src/reference/api.md)
-- [CRD Schemas](../deploy/crds/)
+- [CRD Schemas](../deploy/operator/crds/)

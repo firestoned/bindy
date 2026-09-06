@@ -26,8 +26,8 @@ Before migrating, ensure:
 1. **Bindy operator updated** to version supporting RNDC rotation (v0.4.0+)
 2. **CRDs regenerated** with latest schema:
    ```bash
-   kubectl replace --force -f deploy/crds/bind9instances.crd.yaml
-   kubectl replace --force -f deploy/crds/bind9clusters.crd.yaml
+   kubectl apply --server-side -f deploy/operator/crds/bind9instances.crd.yaml
+   kubectl apply --server-side -f deploy/operator/crds/bind9clusters.crd.yaml
    ```
 3. **Backup existing Secrets**:
    ```bash
@@ -376,7 +376,7 @@ kubectl exec -n bindy-system deployment/dns-primary -- cat /etc/bind/rndc.key
 
 1. **CRD schema not updated**:
    ```bash
-   kubectl replace --force -f deploy/crds/bind9instances.crd.yaml
+   kubectl apply --server-side -f deploy/operator/crds/bind9instances.crd.yaml
    ```
 
 2. **Auto-rotation disabled**:

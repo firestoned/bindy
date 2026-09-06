@@ -192,6 +192,7 @@ mod tests {
         let instance = Bind9Instance {
             metadata: ObjectMeta::default(),
             spec: Bind9InstanceSpec {
+                placement: None,
                 cluster_ref: String::new(),
                 role: ServerRole::Primary,
                 rndc_key: Some(RndcKeyConfig {
@@ -234,6 +235,7 @@ mod tests {
         let instance = Bind9Instance {
             metadata: ObjectMeta::default(),
             spec: Bind9InstanceSpec {
+                placement: None,
                 cluster_ref: String::new(),
                 role: ServerRole::Primary,
                 rndc_key: None,

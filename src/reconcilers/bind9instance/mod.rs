@@ -399,24 +399,10 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
 
         // Fetch deployment to check if it exists AND if OUR labels match
         let (deployment_exists, labels_match) = match deployment_api.get(&name).await {
-            Ok(deployment) => {
-                // Build desired labels from instance - these are the labels WE manage
-                let desired_labels =
-                    crate::bind9_resources::build_labels_from_instance(&name, &instance);
-
-                // Check if deployment has all OUR labels with correct values
-                // IMPORTANT: Only check labels we explicitly set via build_labels_from_instance()
-                // Other controllers or users may add additional labels - we don't care about those
-                let labels_match = if let Some(actual_labels) = &deployment.metadata.labels {
-                    desired_labels
-                        .iter()
-                        .all(|(key, value)| actual_labels.get(key) == Some(value))
-                } else {
-                    false // No labels at all = no match
-                };
-
-                (true, labels_match)
-            }
+            Ok(deployment) => (
+                true,
+                deployment_labels_are_current(&deployment, &name, &instance),
+            ),
             Err(_) => (false, false),
         };
 
@@ -665,6 +651,66 @@ pub async fn delete_bind9instance(ctx: Arc<Context>, instance: Bind9Instance) ->
 
     // Deletion is now handled by the finalizer in reconcile_bind9instance
     Ok(())
+}
+
+/// Whether a Deployment already carries every label the operator manages.
+///
+/// Used by the reconcile short-circuit: when this returns `false`, resource
+/// reconciliation runs even though nothing else looks stale.
+///
+/// Two label sets are checked, and the second is what makes an operator
+/// upgrade converge. `spec.selector` is immutable, so labels added after a
+/// Deployment exists can only go on the Pod template
+/// (`build_pod_labels_from_instance`, a superset of the metadata set). A
+/// Deployment created before topology spreading has correct *metadata* labels
+/// but no `bindy.firestoned.io/cluster` on its Pod template; checking metadata
+/// alone would let the short-circuit skip it forever, leaving it permanently
+/// without spread constraints.
+///
+/// Both checks are subset tests, not equality: other controllers, `kubectl`,
+/// and Helm add labels of their own, and those are none of our business.
+fn deployment_labels_are_current(
+    deployment: &Deployment,
+    name: &str,
+    instance: &Bind9Instance,
+) -> bool {
+    let desired_metadata = crate::bind9_resources::build_labels_from_instance(name, instance);
+    let metadata_matches = deployment.metadata.labels.as_ref().is_some_and(|actual| {
+        desired_metadata
+            .iter()
+            .all(|(key, value)| actual.get(key) == Some(value))
+    });
+
+    let desired_pod = crate::bind9_resources::build_pod_labels_from_instance(name, instance);
+    let pod_matches = deployment
+        .spec
+        .as_ref()
+        .and_then(|s| s.template.metadata.as_ref())
+        .and_then(|m| m.labels.as_ref())
+        .is_some_and(|actual| {
+            desired_pod
+                .iter()
+                .all(|(key, value)| actual.get(key) == Some(value))
+        });
+
+    if metadata_matches && !pod_matches {
+        debug!(
+            "Deployment {name} Pod template labels are stale (missing operator-managed labels); \
+             reconciling resources"
+        );
+    }
+
+    metadata_matches && pod_matches
+}
+
+/// Test-only re-export of `deployment_labels_are_current`.
+#[cfg(test)]
+pub(crate) fn deployment_labels_are_current_for_test(
+    deployment: &Deployment,
+    name: &str,
+    instance: &Bind9Instance,
+) -> bool {
+    deployment_labels_are_current(deployment, name, instance)
 }
 
 #[cfg(test)]
