@@ -55,6 +55,23 @@ This creates:
 
 ---
 
+## Gateway API
+
+Scout watches `HTTPRoute`, `TLSRoute` and `TCPRoute` in addition to `Ingress` and
+`LoadBalancer` Services. Gateway API is not installed by default in Kubernetes, so Scout
+probes for it once at startup:
+
+- **CRDs present** — all five controllers run, and the startup line reads
+  `Scout controller running — watching Ingresses, Services, HTTPRoutes, TLSRoutes, and TCPRoutes`.
+- **CRDs absent** — the three route controllers are not started, and Scout logs
+  `Gateway API CRDs not found; HTTPRoute/TLSRoute/TCPRoute watching disabled.`
+
+No configuration is required either way. If the probe itself fails for a reason other than
+`404` — an API server that is briefly unavailable at startup, say — Scout assumes the
+Gateway API *is* present rather than disabling route watching for the lifetime of the pod.
+
+---
+
 ## Configure
 
 Scout requires one mandatory setting: the **logical cluster name** that is stamped on every `ARecord` it creates. Set it via environment variable or CLI flag.

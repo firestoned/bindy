@@ -21,7 +21,9 @@
 //! The local client still handles Ingress watching and finalizer management.
 //! The remote client handles ARecord creation/deletion and DNSZone validation.
 
-use crate::constants::{ALLOW_ZONE_NAMESPACES_WILDCARD, ANNOTATION_ALLOW_ZONE_NAMESPACES};
+use crate::constants::{
+    ALLOW_ZONE_NAMESPACES_WILDCARD, ANNOTATION_ALLOW_ZONE_NAMESPACES, HTTP_NOT_FOUND,
+};
 use crate::crd::{ARecord, ARecordSpec, DNSZone};
 use anyhow::{anyhow, Context, Result};
 use k8s_openapi::api::core::v1::{Namespace, Secret, Service};
@@ -43,7 +45,7 @@ use kube::{
     },
     Api, Client, Error as KubeError, ResourceExt,
 };
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc, time::Duration};
 use tracing::{debug, error, info, warn};
 
 // ============================================================================
@@ -3768,7 +3770,17 @@ pub async fn run_scout(
     // Watch TCPRoutes across all namespaces using the LOCAL client
     let tcproute_api: Api<TCPRoute> = Api::all(local_client.clone());
 
-    info!("Scout controller running — watching Ingresses, Services, HTTPRoutes, TLSRoutes, and TCPRoutes");
+    // Gateway API is not part of a stock Kubernetes install, so check before
+    // watching rather than discovering its absence one error at a time.
+    let gateway_enabled = gateway_api_available(&httproute_api).await;
+    if gateway_enabled {
+        info!("Scout controller running — watching Ingresses, Services, HTTPRoutes, TLSRoutes, and TCPRoutes");
+    } else {
+        info!(
+            "Gateway API CRDs not found; HTTPRoute/TLSRoute/TCPRoute watching disabled. \
+             Scout controller running — watching Ingresses and Services"
+        );
+    }
 
     let ingress_controller = Controller::new(ingress_api, WatcherConfig::default())
         .run(reconcile, error_policy, ctx.clone())
@@ -3815,14 +3827,49 @@ pub async fn run_scout(
             }
         });
 
-    futures::future::join5(
-        ingress_controller,
-        service_controller,
-        httproute_controller,
-        tlsroute_controller,
-        tcproute_controller,
-    )
-    .await;
+    // Boxed so the Gateway API controllers can be left out entirely. The
+    // futures above are lazy — constructing one starts nothing — so the three
+    // route controllers are simply never polled when their CRDs are absent.
+    let mut controllers: Vec<Pin<Box<dyn Future<Output = ()> + Send>>> =
+        vec![Box::pin(ingress_controller), Box::pin(service_controller)];
+    if gateway_enabled {
+        controllers.push(Box::pin(httproute_controller));
+        controllers.push(Box::pin(tlsroute_controller));
+        controllers.push(Box::pin(tcproute_controller));
+    }
+
+    futures::future::join_all(controllers).await;
 
     Ok(())
+}
+
+/// Returns whether the cluster serves the Gateway API route kinds Scout watches.
+///
+/// Gateway API is not installed by default in Kubernetes. A [`Controller`]
+/// started against a kind whose CRD is absent does not fail loudly: it retries
+/// forever, logging an error per attempt for an API that will never appear.
+/// Probing once at startup turns that into a single informational line.
+///
+/// # Arguments
+/// * `httproute_api` - Cluster-wide `HTTPRoute` API handle. `HTTPRoute` stands
+///   in for all three route kinds: they ship in the same CRD bundle, so either
+///   all are served or none are.
+///
+/// # Returns
+/// `true` when the kind is served, `false` only when the API server answers
+/// `404`. Any other error is reported as `true`, so a transient problem during
+/// startup cannot silently disable route watching for the lifetime of the
+/// process — loud-but-working is the safer failure here.
+pub async fn gateway_api_available(httproute_api: &Api<HTTPRoute>) -> bool {
+    match httproute_api.list(&ListParams::default().limit(1)).await {
+        Ok(_) => true,
+        Err(kube::Error::Api(err)) if err.code == HTTP_NOT_FOUND => false,
+        Err(err) => {
+            warn!(
+                error = %err,
+                "could not determine whether the Gateway API is installed; assuming it is"
+            );
+            true
+        }
+    }
 }

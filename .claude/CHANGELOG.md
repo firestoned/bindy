@@ -1,3 +1,26 @@
+## Scout: detect the Gateway API before watching it (#478)
+
+### Fixed
+- `src/scout.rs`: Scout started the `HTTPRoute`, `TLSRoute` and `TCPRoute` controllers
+  unconditionally. On a cluster without the Gateway API CRDs every reconcile 404s and
+  retries forever — measured at ~18 `ERROR` lines a minute, indefinitely, for an API that
+  will never appear. `gateway_api_available` now probes once at startup and the three
+  route controllers are only started when the kind is served; otherwise a single `info`
+  line says so. Only a `404` counts as absent, so a transient API problem at startup
+  cannot silently disable route watching for the life of the process.
+- `futures::future::join5` became `join_all` over a boxed vector, since the set of
+  controllers is now decided at runtime.
+
+### Changed
+- `HTTP_NOT_FOUND` moved from a private const in `src/bootstrap.rs` to `src/constants.rs`,
+  now that a second module needs it. Same value, one definition.
+
+### Tests
+- `src/scout_tests.rs`: four `wiremock` cases covering every branch of the new probe —
+  a plain-text `404` (the real shape: kube logs "Unsuccessful data error parse" and
+  reconstructs a `Status`, so matching on the code has to survive that), a JSON `Status`
+  `404`, a successful list, and a `500` that must NOT disable watching.
+
 ## Zone spreading review round 3 (PR #473)
 
 ### Fixed

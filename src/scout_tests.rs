@@ -1,7 +1,9 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: MIT
 
-//! Unit tests for `scout.rs` — pure helper functions (no Kubernetes API calls)
+//! Unit tests for `scout.rs` — pure helper functions, plus
+//! `gateway_api_available`, which is exercised against a `wiremock` server
+//! rather than a live cluster.
 
 #[cfg(test)]
 mod tests {
@@ -22,8 +24,12 @@ mod tests {
         LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER, LABEL_SOURCE_NAME, LABEL_SOURCE_NAMESPACE,
         LABEL_ZONE, REMOTE_CLEANUP_GRACE_SECS,
     };
+    use crate::scout::{gateway_api_available, HTTPRoute};
     use k8s_openapi::jiff::{SignedDuration, Timestamp};
+    use kube::Api;
     use std::sync::Arc;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// Fixed reference instant (2026-07-19T12:00:00Z) for deterministic
     /// grace-period tests.
@@ -2024,5 +2030,99 @@ mod tests {
         assert_eq!(arecord.spec.name, record_name);
         assert_eq!(arecord.spec.ipv4_addresses, ips);
         assert_eq!(arecord.spec.ttl, Some(300));
+    }
+
+    // ------------------------------------------------------------------
+    // gateway_api_available
+    //
+    // The only tests in this file that speak to an API. Gateway API is not
+    // installed by default in Kubernetes, and a Controller started against an
+    // absent CRD retries forever rather than failing — so the detection has to
+    // be right, and its three outcomes are covered here.
+    // ------------------------------------------------------------------
+
+    /// The path kube derives for a cluster-wide HTTPRoute list.
+    const HTTPROUTE_LIST_PATH: &str = "/apis/gateway.networking.k8s.io/v1/httproutes";
+
+    /// A client pointed at a mock API server.
+    fn client_for(server: &MockServer) -> kube::Client {
+        let config = kube::Config::new(server.uri().parse().expect("mock server uri"));
+        kube::Client::try_from(config).expect("client from mock config")
+    }
+
+    #[tokio::test]
+    async fn gateway_api_is_absent_when_the_api_server_returns_a_plain_text_404() {
+        // The REAL shape of this failure. A cluster without the CRDs answers
+        // with `404 page not found` as plain text, not a JSON Status — which
+        // is why kube logs "Unsuccessful data error parse" before it
+        // reconstructs a Status carrying the code. Matching on the code has to
+        // survive that reconstruction, so the body here is deliberately not
+        // JSON.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(HTTPROUTE_LIST_PATH))
+            .respond_with(ResponseTemplate::new(404).set_body_string("404 page not found"))
+            .mount(&server)
+            .await;
+
+        let api: Api<HTTPRoute> = Api::all(client_for(&server));
+        assert!(!gateway_api_available(&api).await);
+    }
+
+    #[tokio::test]
+    async fn gateway_api_is_absent_when_the_404_is_a_json_status() {
+        // The same conclusion via the other encoding, so the check does not
+        // depend on which form the API server happens to use.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(HTTPROUTE_LIST_PATH))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "kind": "Status",
+                "apiVersion": "v1",
+                "status": "Failure",
+                "message": "the server could not find the requested resource",
+                "reason": "NotFound",
+                "code": 404,
+            })))
+            .mount(&server)
+            .await;
+
+        let api: Api<HTTPRoute> = Api::all(client_for(&server));
+        assert!(!gateway_api_available(&api).await);
+    }
+
+    #[tokio::test]
+    async fn gateway_api_is_present_when_the_list_succeeds() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(HTTPROUTE_LIST_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "apiVersion": "gateway.networking.k8s.io/v1",
+                "kind": "HTTPRouteList",
+                "metadata": {},
+                "items": [],
+            })))
+            .mount(&server)
+            .await;
+
+        let api: Api<HTTPRoute> = Api::all(client_for(&server));
+        assert!(gateway_api_available(&api).await);
+    }
+
+    #[tokio::test]
+    async fn a_transient_server_error_does_not_disable_gateway_watching() {
+        // Fail open. Treating a 500 as "absent" would silently stop watching
+        // routes for the lifetime of the process because the API server was
+        // briefly unwell at startup — a far worse outcome than the noise this
+        // detection exists to remove.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(HTTPROUTE_LIST_PATH))
+            .respond_with(ResponseTemplate::new(500).set_body_string("internal server error"))
+            .mount(&server)
+            .await;
+
+        let api: Api<HTTPRoute> = Api::all(client_for(&server));
+        assert!(gateway_api_available(&api).await);
     }
 }
