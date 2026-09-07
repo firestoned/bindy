@@ -57,18 +57,39 @@ This creates:
 
 ## Gateway API
 
-Scout watches `HTTPRoute`, `TLSRoute` and `TCPRoute` in addition to `Ingress` and
-`LoadBalancer` Services. Gateway API is not installed by default in Kubernetes, so Scout
-probes for it once at startup:
+Scout watches `HTTPRoute`, `TLSRoute` and `TCPRoute` in addition to `Ingress`
+and `LoadBalancer` Services. Gateway API is not installed by default in
+Kubernetes, so Scout probes for **each route kind separately** at startup and
+only starts the controllers for kinds the cluster actually serves.
 
-- **CRDs present** — all five controllers run, and the startup line reads
-  `Scout controller running — watching Ingresses, Services, HTTPRoutes, TLSRoutes, and TCPRoutes`.
-- **CRDs absent** — the three route controllers are not started, and Scout logs
-  `Gateway API CRDs not found; HTTPRoute/TLSRoute/TCPRoute watching disabled.`
+The probe is per kind because the route kinds did not arrive together. Gateway
+API ships in two channels, and graduation dates differ:
 
-No configuration is required either way. If the probe itself fails for a reason other than
-`404` — an API server that is briefly unavailable at startup, say — Scout assumes the
-Gateway API *is* present rather than disabling route watching for the lifetime of the pod.
+| Kind | Standard channel since |
+|---|---|
+| `HTTPRoute` | v1.0 |
+| `TLSRoute` | v1.5 |
+| `TCPRoute` | v1.6 |
+
+A standard-channel install older than v1.5 therefore serves `HTTPRoute` and not
+`TLSRoute` or `TCPRoute` — common, since ingress implementations pin the CRD
+version they ship. Probing one kind and inferring the rest would leave the
+other controllers retrying a 404 indefinitely.
+
+Startup logs the result:
+
+- **All kinds present** —
+  `Scout controller running — watching Ingresses, Services, HTTPRoutes, TLSRoutes, TCPRoutes`
+- **Some absent** — the same line listing only what is watched, followed by
+  `Gateway API CRDs not found for TLSRoute/TCPRoute; watching disabled for those kinds`
+
+No configuration is required either way. If a probe fails for a reason other
+than `404` — an API server briefly unavailable at startup, say — Scout assumes
+the kind *is* served rather than disabling watching for the lifetime of the pod.
+
+!!! warning "The probe runs once, at startup"
+    Installing Gateway API CRDs after Scout is running does **not** enable
+    those controllers. Restart Scout to pick them up.
 
 ---
 

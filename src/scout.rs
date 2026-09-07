@@ -45,6 +45,8 @@ use kube::{
     },
     Api, Client, Error as KubeError, ResourceExt,
 };
+use serde::de::DeserializeOwned;
+use std::fmt::Debug;
 use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc, time::Duration};
 use tracing::{debug, error, info, warn};
 
@@ -3770,15 +3772,48 @@ pub async fn run_scout(
     // Watch TCPRoutes across all namespaces using the LOCAL client
     let tcproute_api: Api<TCPRoute> = Api::all(local_client.clone());
 
-    // Gateway API is not part of a stock Kubernetes install, so check before
-    // watching rather than discovering its absence one error at a time.
-    let gateway_enabled = gateway_api_available(&httproute_api).await;
-    if gateway_enabled {
-        info!("Scout controller running — watching Ingresses, Services, HTTPRoutes, TLSRoutes, and TCPRoutes");
-    } else {
+    // Probe EACH route kind, not one as a proxy for the others. Gateway API
+    // ships in two channels and the kinds graduated at different times —
+    // HTTPRoute Standard since v1.0, TLSRoute since v1.5, TCPRoute since v1.6 —
+    // so a standard-channel install older than those serves HTTPRoute and not
+    // the rest. Inferring from one kind would leave the other two controllers
+    // retrying a 404 forever, which is exactly what this check prevents.
+    //
+    // Ingress and Service are core API and always served, so they are not
+    // probed: a check that can never fail is noise.
+    let httproute_enabled = kind_served(&httproute_api).await;
+    let tlsroute_enabled = kind_served(&tlsroute_api).await;
+    let tcproute_enabled = kind_served(&tcproute_api).await;
+
+    let mut watching = vec!["Ingresses", "Services"];
+    if httproute_enabled {
+        watching.push("HTTPRoutes");
+    }
+    if tlsroute_enabled {
+        watching.push("TLSRoutes");
+    }
+    if tcproute_enabled {
+        watching.push("TCPRoutes");
+    }
+    info!(
+        "Scout controller running — watching {}",
+        watching.join(", ")
+    );
+
+    let mut disabled = vec![];
+    if !httproute_enabled {
+        disabled.push("HTTPRoute");
+    }
+    if !tlsroute_enabled {
+        disabled.push("TLSRoute");
+    }
+    if !tcproute_enabled {
+        disabled.push("TCPRoute");
+    }
+    if !disabled.is_empty() {
         info!(
-            "Gateway API CRDs not found; HTTPRoute/TLSRoute/TCPRoute watching disabled. \
-             Scout controller running — watching Ingresses and Services"
+            "Gateway API CRDs not found for {}; watching disabled for those kinds",
+            disabled.join("/")
         );
     }
 
@@ -3832,9 +3867,13 @@ pub async fn run_scout(
     // route controllers are simply never polled when their CRDs are absent.
     let mut controllers: Vec<Pin<Box<dyn Future<Output = ()> + Send>>> =
         vec![Box::pin(ingress_controller), Box::pin(service_controller)];
-    if gateway_enabled {
+    if httproute_enabled {
         controllers.push(Box::pin(httproute_controller));
+    }
+    if tlsroute_enabled {
         controllers.push(Box::pin(tlsroute_controller));
+    }
+    if tcproute_enabled {
         controllers.push(Box::pin(tcproute_controller));
     }
 
@@ -3843,31 +3882,43 @@ pub async fn run_scout(
     Ok(())
 }
 
-/// Returns whether the cluster serves the Gateway API route kinds Scout watches.
+/// Returns whether the cluster serves a given resource kind.
 ///
-/// Gateway API is not installed by default in Kubernetes. A [`Controller`]
-/// started against a kind whose CRD is absent does not fail loudly: it retries
-/// forever, logging an error per attempt for an API that will never appear.
-/// Probing once at startup turns that into a single informational line.
+/// Gateway API is not installed by default in Kubernetes, and — critically —
+/// its route kinds do NOT arrive together. Gateway API ships in two channels:
+/// `HTTPRoute` has been Standard since v1.0, `TLSRoute` only became Standard in
+/// v1.5 and `TCPRoute` in v1.6. A standard-channel install older than those has
+/// `HTTPRoute` and neither of the others, so probing one kind and inferring the
+/// rest re-creates the very error loop this check exists to prevent.
+///
+/// A [`Controller`] started against a kind whose CRD is absent does not fail
+/// loudly: it retries forever, logging an error per attempt for an API that
+/// will never appear. Probing once at startup turns that into a single
+/// informational line.
 ///
 /// # Arguments
-/// * `httproute_api` - Cluster-wide `HTTPRoute` API handle. `HTTPRoute` stands
-///   in for all three route kinds: they ship in the same CRD bundle, so either
-///   all are served or none are.
+/// * `api` - Cluster-wide handle for the kind to probe.
 ///
 /// # Returns
 /// `true` when the kind is served, `false` only when the API server answers
 /// `404`. Any other error is reported as `true`, so a transient problem during
-/// startup cannot silently disable route watching for the lifetime of the
-/// process — loud-but-working is the safer failure here.
-pub async fn gateway_api_available(httproute_api: &Api<HTTPRoute>) -> bool {
-    match httproute_api.list(&ListParams::default().limit(1)).await {
+/// startup cannot silently disable watching for the lifetime of the process —
+/// loud-but-working is the safer failure here.
+///
+/// The probe runs ONCE, at startup. Installing the CRDs later requires a Scout
+/// restart before the corresponding controller begins watching.
+pub async fn kind_served<R>(api: &Api<R>) -> bool
+where
+    R: Clone + DeserializeOwned + Debug + k8s_openapi::Resource,
+{
+    match api.list(&ListParams::default().limit(1)).await {
         Ok(_) => true,
         Err(kube::Error::Api(err)) if err.code == HTTP_NOT_FOUND => false,
         Err(err) => {
             warn!(
+                kind = R::KIND,
                 error = %err,
-                "could not determine whether the Gateway API is installed; assuming it is"
+                "could not determine whether this kind is served; assuming it is"
             );
             true
         }

@@ -15,11 +15,25 @@
 - `HTTP_NOT_FOUND` moved from a private const in `src/bootstrap.rs` to `src/constants.rs`,
   now that a second module needs it. Same value, one definition.
 
+### Changed (review round 2)
+- The probe is now PER KIND (`kind_served<R>`), not `HTTPRoute` standing in for all three.
+  Gateway API ships in two channels and the kinds graduated separately — `HTTPRoute` Standard
+  since v1.0, `TLSRoute` v1.5, `TCPRoute` v1.6 — so a standard-channel install older than v1.5
+  serves `HTTPRoute` and not the others. The original probe would have reported the Gateway API
+  present and left the TLS/TCP controllers in exactly the 404 loop this PR removes. Each
+  controller is now gated on its own kind.
+- `docs/src/guide/scout.md` updated in both places that described route watching as
+  unconditional; `docs/src/installation/scout.md` documents the per-kind table and that the
+  probe runs ONCE at startup (installing CRDs later needs a restart).
+- `.github/workflows/e2e.yaml`: added `src/scout.rs` to the `pull_request.paths` filter — Scout
+  changes did not trigger the e2e gate at all.
+
 ### Tests
-- `src/scout_tests.rs`: four `wiremock` cases covering every branch of the new probe —
+- `src/scout_tests.rs`: five `wiremock` cases covering every branch of the probe —
   a plain-text `404` (the real shape: kube logs "Unsuccessful data error parse" and
   reconstructs a `Status`, so matching on the code has to survive that), a JSON `Status`
-  `404`, a successful list, and a `500` that must NOT disable watching.
+  `404`, a successful list, a `500` that must NOT disable watching, and a cluster serving
+  `HTTPRoute` but NOT `TLSRoute` — the standard-channel case that motivated per-kind probing.
 
 ## Zone spreading review round 3 (PR #473)
 

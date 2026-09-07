@@ -34,6 +34,11 @@ on:
       - 'src/placement.rs'
       - 'src/bind9_resources.rs'
       - 'src/reconcilers/bind9instance/**'
+      # Scout's Gateway API detection is only observable against a real API
+      # server: whether a kind is served, and whether the disabled path stays
+      # quiet, cannot be asserted from unit tests. `make kind-create-scout`
+      # builds a cluster with no Gateway API CRDs, which is exactly that path.
+      - 'src/scout.rs'
       - 'tests/zone_spread_test.sh'
       - 'deploy/kind-config-multizone.yaml'
       - 'deploy/operator/crds/**'
