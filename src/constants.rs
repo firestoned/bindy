@@ -484,3 +484,10 @@ pub const DEFAULT_SPREAD_MAX_SKEW: i32 = 1;
 /// constant backs the reconcile-time backstop for clusters still running an
 /// older CRD revision.
 pub const MAX_SPREAD_RULES: usize = 8;
+
+/// HTTP 404 Not Found.
+///
+/// Used to distinguish "this resource kind is not served by the cluster" from
+/// a genuine failure — both when revoking multi-cluster credentials and when
+/// detecting whether the Gateway API CRDs are installed.
+pub const HTTP_NOT_FOUND: u16 = 404;
