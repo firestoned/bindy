@@ -319,7 +319,7 @@ kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-name=<service
 
 ### 3. Gateway API (HTTPRoute, TLSRoute, and TCPRoute)
 
-Scout watches `HTTPRoute`, `TLSRoute`, and `TCPRoute` resources from the Gateway API. The same opt-in annotation (`bindy.firestoned.io/scout-enabled: "true"`) and zone/IP/TTL annotations apply. For `HTTPRoute` and `TLSRoute`, Scout creates one `ARecord` per hostname in `spec.hostnames[]`. `TCPRoute` has no `spec.hostnames[]` field — Scout creates a single `ARecord` using the name supplied by the `bindy.firestoned.io/record-name` annotation.
+Scout watches `HTTPRoute`, `TLSRoute`, and `TCPRoute` resources from the Gateway API, **for each kind the cluster actually serves** — see [Gateway API detection](../installation/scout.md#gateway-api). The same opt-in annotation (`bindy.firestoned.io/scout-enabled: "true"`) and zone/IP/TTL annotations apply. For `HTTPRoute` and `TLSRoute`, Scout creates one `ARecord` per hostname in `spec.hostnames[]`. `TCPRoute` has no `spec.hostnames[]` field — Scout creates a single `ARecord` using the name supplied by the `bindy.firestoned.io/record-name` annotation.
 
 !!! note "IP resolution follows the gateway chain"
     Gateway API routes have no `LoadBalancer` status of their own. When no `bindy.firestoned.io/ip` annotation is set, Scout follows the route's `parentRefs` to the serving `Gateway`, and — for a Gateway whose `gatewayClassName` is in the operator-configured `--gateway-service` map — reads the external IP from the Gateway's `status.addresses`, or, when those are empty, from the mapped LoadBalancer `Service`. This lets operators avoid making every route repeat an IP that is already discoverable from the gateway (e.g. Traefik's proxy Service). The full precedence is: `bindy.firestoned.io/ip` annotation → discovered gateway IP → `--default-ips` → requeue.
@@ -595,7 +595,7 @@ In addition to watching `Ingress` resources, Scout also supports **Gateway API**
 
 Scout treats HTTPRoute, TLSRoute, and TCPRoute similarly to Ingress:
 
-- Watches all HTTPRoute/TLSRoute/TCPRoute resources cluster-wide (excluding its own namespace)
+- Watches all HTTPRoute/TLSRoute/TCPRoute resources cluster-wide (excluding its own namespace), for each kind whose CRD is installed — kinds that are not served are detected at startup and skipped, see [Gateway API detection](../installation/scout.md#gateway-api)
 - Requires the same `bindy.firestoned.io/scout-enabled: "true"` opt-in annotation
 - Uses the same annotation scheme for zone, IP, and TTL configuration
 - `HTTPRoute` / `TLSRoute`: creates one `ARecord` per hostname in `spec.hostnames[]` with an index suffix

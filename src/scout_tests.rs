@@ -1,7 +1,9 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: MIT
 
-//! Unit tests for `scout.rs` — pure helper functions (no Kubernetes API calls)
+//! Unit tests for `scout.rs` — pure helper functions, plus
+//! `gateway_api_available`, which is exercised against a `wiremock` server
+//! rather than a live cluster.
 
 #[cfg(test)]
 mod tests {
@@ -22,8 +24,12 @@ mod tests {
         LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER, LABEL_SOURCE_NAME, LABEL_SOURCE_NAMESPACE,
         LABEL_ZONE, REMOTE_CLEANUP_GRACE_SECS,
     };
+    use crate::scout::{kind_served, HTTPRoute, TLSRoute};
     use k8s_openapi::jiff::{SignedDuration, Timestamp};
+    use kube::Api;
     use std::sync::Arc;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// Fixed reference instant (2026-07-19T12:00:00Z) for deterministic
     /// grace-period tests.
@@ -2024,5 +2030,157 @@ mod tests {
         assert_eq!(arecord.spec.name, record_name);
         assert_eq!(arecord.spec.ipv4_addresses, ips);
         assert_eq!(arecord.spec.ttl, Some(300));
+    }
+
+    // ------------------------------------------------------------------
+    // kind_served
+    //
+    // The only tests in this file that speak to an API. Gateway API is not
+    // installed by default in Kubernetes, and a Controller started against an
+    // absent CRD retries forever rather than failing — so the detection has to
+    // be right, and its three outcomes are covered here.
+    //
+    // Note the probe is PER KIND. Gateway API ships in two channels and the
+    // route kinds graduated at different times (HTTPRoute Standard since v1.0,
+    // TLSRoute v1.5, TCPRoute v1.6), so one kind cannot stand in for another.
+    // ------------------------------------------------------------------
+
+    /// Paths kube derives for a cluster-wide list of each route kind.
+    const HTTPROUTE_LIST_PATH: &str = "/apis/gateway.networking.k8s.io/v1/httproutes";
+    const TLSROUTE_LIST_PATH: &str = "/apis/gateway.networking.k8s.io/v1alpha2/tlsroutes";
+
+    /// A client pointed at a mock API server.
+    fn client_for(server: &MockServer) -> kube::Client {
+        let config = kube::Config::new(server.uri().parse().expect("mock server uri"));
+        kube::Client::try_from(config).expect("client from mock config")
+    }
+
+    /// Mount a canned response for one path on the mock server.
+    async fn mount(server: &MockServer, path_str: &str, response: ResponseTemplate) {
+        Mock::given(method("GET"))
+            .and(path(path_str))
+            .respond_with(response)
+            .mount(server)
+            .await;
+    }
+
+    /// An empty list body for the given kind, as the API server would return.
+    fn empty_list(kind: &str) -> serde_json::Value {
+        serde_json::json!({
+            "apiVersion": "gateway.networking.k8s.io/v1",
+            "kind": format!("{kind}List"),
+            "metadata": {},
+            "items": [],
+        })
+    }
+
+    #[tokio::test]
+    async fn a_kind_is_absent_when_the_api_server_returns_a_plain_text_404() {
+        // The REAL shape of this failure. A cluster without the CRDs answers
+        // with `404 page not found` as plain text, not a JSON Status — which
+        // is why kube logs "Unsuccessful data error parse" before it
+        // reconstructs a Status carrying the code. Matching on the code has to
+        // survive that reconstruction, so the body here is deliberately not
+        // JSON.
+        let server = MockServer::start().await;
+        mount(
+            &server,
+            HTTPROUTE_LIST_PATH,
+            ResponseTemplate::new(404).set_body_string("404 page not found"),
+        )
+        .await;
+
+        let api: Api<HTTPRoute> = Api::all(client_for(&server));
+        assert!(!kind_served(&api).await);
+    }
+
+    #[tokio::test]
+    async fn a_kind_is_absent_when_the_404_is_a_json_status() {
+        // The same conclusion via the other encoding, so the check does not
+        // depend on which form the API server happens to use.
+        let server = MockServer::start().await;
+        mount(
+            &server,
+            HTTPROUTE_LIST_PATH,
+            ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "kind": "Status",
+                "apiVersion": "v1",
+                "status": "Failure",
+                "message": "the server could not find the requested resource",
+                "reason": "NotFound",
+                "code": 404,
+            })),
+        )
+        .await;
+
+        let api: Api<HTTPRoute> = Api::all(client_for(&server));
+        assert!(!kind_served(&api).await);
+    }
+
+    #[tokio::test]
+    async fn a_kind_is_present_when_the_list_succeeds() {
+        let server = MockServer::start().await;
+        mount(
+            &server,
+            HTTPROUTE_LIST_PATH,
+            ResponseTemplate::new(200).set_body_json(empty_list("HTTPRoute")),
+        )
+        .await;
+
+        let api: Api<HTTPRoute> = Api::all(client_for(&server));
+        assert!(kind_served(&api).await);
+    }
+
+    #[tokio::test]
+    async fn a_transient_server_error_does_not_disable_watching() {
+        // Fail open. Treating a 500 as "absent" would silently stop watching
+        // for the lifetime of the process because the API server was briefly
+        // unwell at startup — a far worse outcome than the noise this
+        // detection exists to remove.
+        let server = MockServer::start().await;
+        mount(
+            &server,
+            HTTPROUTE_LIST_PATH,
+            ResponseTemplate::new(500).set_body_string("internal server error"),
+        )
+        .await;
+
+        let api: Api<HTTPRoute> = Api::all(client_for(&server));
+        assert!(kind_served(&api).await);
+    }
+
+    #[tokio::test]
+    async fn each_route_kind_is_probed_independently() {
+        // THE STANDARD-CHANNEL CASE, and the reason this probe is per kind.
+        //
+        // Gateway API ships in two channels. HTTPRoute has been Standard since
+        // v1.0; TLSRoute only became Standard in v1.5 and TCPRoute in v1.6. A
+        // standard-channel install older than those serves HTTPRoute and NOT
+        // the others — common, since Traefik, Envoy Gateway and Cilium all pin
+        // CRD versions.
+        //
+        // Probing HTTPRoute alone would report the Gateway API "present",
+        // start all three controllers, and leave the TLS and TCP ones retrying
+        // a 404 forever: precisely the failure this check was added to remove.
+        let server = MockServer::start().await;
+        mount(
+            &server,
+            HTTPROUTE_LIST_PATH,
+            ResponseTemplate::new(200).set_body_json(empty_list("HTTPRoute")),
+        )
+        .await;
+        mount(
+            &server,
+            TLSROUTE_LIST_PATH,
+            ResponseTemplate::new(404).set_body_string("404 page not found"),
+        )
+        .await;
+
+        let client = client_for(&server);
+        let httproute_api: Api<HTTPRoute> = Api::all(client.clone());
+        let tlsroute_api: Api<TLSRoute> = Api::all(client);
+
+        assert!(kind_served(&httproute_api).await);
+        assert!(!kind_served(&tlsroute_api).await);
     }
 }

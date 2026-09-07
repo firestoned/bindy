@@ -70,6 +70,7 @@ use kube::{
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use crate::constants::HTTP_NOT_FOUND;
 use crate::crd::{
     AAAARecord, ARecord, Bind9Cluster, Bind9Instance, CAARecord, CNAMERecord, ClusterBind9Provider,
     DNSZone, MXRecord, NSRecord, PTRRecord, SRVRecord, TXTRecord,
@@ -266,10 +267,6 @@ pub const REMOTE_KUBECONFIG_SECRET_SUFFIX: &str = "-remote-kubeconfig";
 
 /// `app.kubernetes.io/component` label value for all resources created by `bootstrap mc`.
 const MC_COMPONENT_LABEL: &str = "scout-remote";
-
-/// HTTP 404 Not Found — used to detect missing resources during revoke so they can be
-/// skipped rather than treated as errors.
-const HTTP_NOT_FOUND: u16 = 404;
 
 /// Maximum polling attempts while waiting for the SA token Secret to be populated.
 const SA_TOKEN_WAIT_MAX_ATTEMPTS: usize = 20;
