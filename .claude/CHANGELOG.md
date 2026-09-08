@@ -1,3 +1,35 @@
+## [2026-09-07] Dependabot: cover the Docker base images
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `.github/dependabot.yml`: the `docker` ecosystem entry pointed at `directory: "/"`,
+  but every Dockerfile lives under `docker/`. Dependabot's Docker updater does not
+  recurse, so the entry matched no manifests and no base image had ever been proposed
+  for an update. Switched to `directories: ["/docker"]`, which picks up
+  `Dockerfile`, `Dockerfile.chainguard` and `Dockerfile.local`.
+- `docker/Dockerfile.chainguard`: `wolfi-base` and `glibc-dynamic` were pinned to the
+  floating `:latest` tag with no digest — nothing for Dependabot to bump, and a
+  non-reproducible build. Both are now pinned to their multi-arch manifest list digests
+  (OCI image index, linux/amd64 + linux/arm64), which is what the surrounding comments
+  already claimed and what the repo's base-image policy requires.
+
+### Changed
+- `.github/dependabot.yml`: added a `docker-base-images` group so all base image bumps
+  arrive as one weekly PR, matching the cargo and github-actions entries. The builder and
+  runtime stages of `docker/Dockerfile` share a Debian major and must move together.
+
+### Why
+Base images (Chainguard wolfi-base/glibc-dynamic, Google Distroless cc-debian13, Debian
+slim) were silently outside automated dependency updates — a CVE in a base layer would
+never have opened a PR.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
 ## Scout: detect the Gateway API before watching it (#478)
 
 ### Fixed

@@ -78,9 +78,14 @@ updates:
           - "minor"
           - "patch"
 
-  # Docker base images
+  # Docker base images (Dockerfiles live under /docker, not the repo root).
+  # Covers every base image referenced by a FROM: the Debian builder and the
+  # Google Distroless runtime (docker/Dockerfile), the Chainguard wolfi-base
+  # builder and glibc-dynamic runtime (docker/Dockerfile.chainguard), and the
+  # Debian base of the local dev image (docker/Dockerfile.local).
   - package-ecosystem: "docker"
-    directory: "/"
+    directories:
+      - "/docker"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -95,3 +100,14 @@ updates:
     commit-message:
       prefix: "docker"
       include: "scope"
+    # One weekly PR for all base images instead of a PR per Dockerfile — the
+    # builder and runtime stages must stay on matching Debian majors, and the
+    # main ruleset requires up-to-date branches (N PRs = N full CI runs).
+    groups:
+      docker-base-images:
+        patterns:
+          - "*"
+        update-types:
+          - "major"
+          - "minor"
+          - "patch"
