@@ -30,6 +30,37 @@ never have opened a PR.
 - [x] Config change only
 - [ ] Documentation only
 
+## [2026-09-08] - Dependabot auto-merge: approval now releases a held PR
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `.github/workflows/dependabot-auto-merge.yaml`: the workflow only triggered on
+  `pull_request`, so approving a held PR re-ran nothing and it sat open forever.
+  Added a `pull_request_review: [submitted]` trigger, gated on
+  `review.state == 'approved'` so a `changes_requested` or `commented` review is
+  not treated as a merge signal.
+
+### Changed
+- `.github/workflows/dependabot-auto-merge.yaml`: merge eligibility is decided
+  once in a new `Classify` step whose `auto-merge` output both the `auto-merge`
+  and `hold-major` jobs branch on, so their conditions cannot drift apart.
+  Eligible when patch/minor, **or** a human approved it, **or** the new version
+  contains no `.` (a commit SHA — an action pinned to a moving tag with no
+  release, which can never yield a semver delta).
+
+### Why
+`dependabot/fetch-metadata` reports a *group's* update-type as the highest across
+its members, and classifies an update with no comparable version as
+`semver-major`. Combined with the workflow only triggering on `pull_request`,
+that left grouped PRs held open with no way for a human to release them:
+approving one re-ran nothing. Ported from the sceau investigation.
+
+### Impact
+- [ ] Breaking change
+- [x] Config change only
+- [ ] Documentation only
+
 ## Scout: detect the Gateway API before watching it (#478)
 
 ### Fixed

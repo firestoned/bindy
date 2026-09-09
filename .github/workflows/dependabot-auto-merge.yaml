@@ -25,9 +25,14 @@
 
 name: Dependabot Auto-merge
 
+# `pull_request_review` is a trigger, not just `pull_request`: a held major sat
+# open forever because approving it re-ran nothing. Approval is the sign-off
+# the hold was waiting for, so it has to be able to wake this workflow up.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  pull_request_review:
+    types: [submitted]
 
 # Elevated so the auto-injected GITHUB_TOKEN can enable auto-merge / comment on
 # the Dependabot PR. (Custom repo/org secrets are still unavailable to
@@ -50,11 +55,18 @@ jobs:
     # auto-merge keeps working after a maintainer merges main in. For any other
     # author this (and every downstream job) is skipped, so the workflow no-ops
     # on human PRs.
-    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    #
+    # On a review event, ignore everything except an approval — a
+    # `changes_requested` or `commented` review is not a merge signal.
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]'
+      && (github.event_name != 'pull_request_review'
+          || github.event.review.state == 'approved')
     runs-on: ubuntu-latest
     outputs:
       update-type: ${{ steps.meta.outputs.update-type }}
       dependency-names: ${{ steps.meta.outputs.dependency-names }}
+      auto-merge: ${{ steps.classify.outputs.auto-merge }}
     steps:
       - name: Fetch metadata
         id: meta
@@ -63,6 +75,46 @@ jobs:
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The single place that decides "may this merge itself?". Both the
+      # auto-merge and hold-major jobs branch on this one output so they cannot
+      # drift into overlapping or contradictory conditions.
+      #
+      #   patch / minor  -> yes, unchanged behaviour.
+      #
+      #   human approval -> yes. A maintainer approving a held PR *is* the
+      #                     manual review the hold was waiting for. Before the
+      #                     pull_request_review trigger above, approving did
+      #                     nothing at all.
+      #
+      #   SHA-only bump  -> yes. An action pinned to a moving tag with no
+      #                     release can never produce a semver delta, and
+      #                     fetch-metadata reports that unknown delta as
+      #                     `semver-major`. That is a missing version number,
+      #                     not a breaking change, so holding it for "manual
+      #                     review of the major" reviews nothing. The gate is
+      #                     what actually vets these. Detection is deliberately
+      #                     dumb and dependency-free: every semver contains a
+      #                     dot, no commit SHA does.
+      #
+      #   otherwise      -> no; held for manual review.
+      - name: Classify
+        id: classify
+        env:
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          NEW_VERSION: ${{ steps.meta.outputs.new-version }}
+          REVIEW_STATE: ${{ github.event.review.state }}
+        run: |
+          auto=false
+          if [ "$UPDATE_TYPE" != "version-update:semver-major" ]; then
+            auto=true
+          elif [ "$REVIEW_STATE" = "approved" ]; then
+            auto=true
+          elif [ -n "$NEW_VERSION" ] && [ "${NEW_VERSION#*.}" = "$NEW_VERSION" ]; then
+            auto=true
+          fi
+          echo "auto-merge=$auto" >> "$GITHUB_OUTPUT"
+          echo "update-type=$UPDATE_TYPE new-version=$NEW_VERSION review=${REVIEW_STATE:-none} -> auto-merge=$auto"
 
   e2e:
     name: E2E gate
@@ -75,7 +127,7 @@ jobs:
     needs: [metadata, e2e]
     # success() ensures BOTH metadata and the e2e gate passed before we ever
     # enable a merge. Major bumps are excluded — held for manual review.
-    if: ${{ success() && needs.metadata.outputs.update-type != 'version-update:semver-major' }}
+    if: ${{ success() && needs.metadata.outputs.auto-merge == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Enable auto-merge (squash)
@@ -88,7 +140,7 @@ jobs:
     name: Hold major update for review
     needs: [metadata, e2e]
     # e2e passed but it is a major bump — leave open, tell the reviewer.
-    if: ${{ success() && needs.metadata.outputs.update-type == 'version-update:semver-major' }}
+    if: ${{ success() && needs.metadata.outputs.auto-merge != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Comment (major held)
