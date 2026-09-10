@@ -820,6 +820,25 @@ pub struct DNSZoneStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bind9_instances_count: Option<i32>,
 
+    /// Whether every selected record CR must be re-pushed into BIND9 before
+    /// this zone can be considered Ready.
+    ///
+    /// The zone controller sets this to `true` whenever it *creates* the zone on
+    /// any server endpoint. A created zone contains only the SOA and NS records
+    /// generated from `spec`, so it is authoritative for a zone with no data -
+    /// which happens every time a BIND9 pod or Deployment is wiped and comes
+    /// back with empty (non-persistent) storage.
+    ///
+    /// While this is `true`:
+    /// - every reconciliation replays all records in `records` into BIND9
+    /// - the zone reports `Ready=False` / `Degraded=True`, so a server that is
+    ///   authoritative for an empty zone is never reported healthy
+    ///
+    /// The controller clears it only after every record has been successfully
+    /// pushed to every primary endpoint.
+    #[serde(default)]
+    pub records_resync_pending: bool,
+
     /// DNSSEC signing status for this zone
     ///
     /// Populated when DNSSEC signing is enabled. Contains DS records,

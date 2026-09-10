@@ -671,6 +671,20 @@ pub async fn reconcile_dnszone(
         discovery::discover_and_update_records(&client, &dnszone, &mut status_updater, &ctx.stores)
             .await?;
 
+    // Replay the zone's records whenever the zone had to be (re)created on any
+    // server, or a previous replay did not finish. Without this a wiped pod
+    // comes back authoritative for a zone containing only SOA and NS - see
+    // `records::replay_zone_records` for the full rationale.
+    replay_records_if_zone_was_recreated(
+        &ctx,
+        &dnszone,
+        &mut status_updater,
+        &instance_refs,
+        &record_refs,
+        primary_outcome.zones_created + secondary_outcome.zones_created,
+    )
+    .await?;
+
     // Check if all discovered records are ready and trigger zone transfers if needed
     if records_count > 0 {
         let all_records_ready =
@@ -712,19 +726,148 @@ pub async fn reconcile_dnszone(
     )
     .await?;
 
-    // Trigger record reconciliation: Update all matching records with a "zone-reconciled" annotation
-    // This ensures records are re-added to BIND9 after pod restarts or zone recreation
-    if !status_updater.has_degraded_condition() {
-        if let Err(e) =
-            discovery::trigger_record_reconciliation(&client, &namespace, &spec.zone_name).await
-        {
-            warn!(
-                "Failed to trigger record reconciliation for zone {}: {}",
-                spec.zone_name, e
-            );
-            // Don't fail the entire reconciliation for this - records will eventually reconcile
-        }
+    Ok(())
+}
+
+/// Replay all of a zone's records into BIND9 when the zone was (re)created.
+///
+/// # Why
+///
+/// BIND9 operand pods keep zone data in ephemeral storage. Any event that
+/// replaces a pod - an operator upgrade, a `placement` change that rolls the
+/// Deployment, an eviction, a node reboot, a manual `kubectl delete pod` -
+/// brings the pod back with no zones. The zone reconciler then recreates the
+/// zone from `spec`, which yields SOA and NS records ONLY. The pod is now
+/// *authoritative* for a zone with no data: it answers authoritative NXDOMAIN,
+/// or, when `global.recursion` and `global.forwarders` are set, silently
+/// forwards the query and returns the PUBLIC answer for an internal name.
+///
+/// Nothing about the record CRs changed, so their own controllers have no
+/// reason to act. This function is the missing link: the moment the zone
+/// reconciler observes that it created a zone, it pushes every record CR the
+/// zone selects back into BIND9.
+///
+/// The intent is recorded in `status.recordsResyncPending` before the replay is
+/// attempted, so an operator crash mid-replay, or a partial failure, is retried
+/// on the next reconciliation instead of being forgotten. While the flag is set
+/// the zone reports `Ready=False` / `Degraded=True`, so a server authoritative
+/// for an empty zone is never advertised as healthy.
+///
+/// # Arguments
+///
+/// * `ctx` - Application context (Kubernetes client and reflector stores)
+/// * `dnszone` - The zone being reconciled
+/// * `status_updater` - Status updater collecting in-memory condition changes
+/// * `instance_refs` - All instances assigned to the zone
+/// * `record_refs` - The records just discovered for the zone
+/// * `zones_created` - Number of endpoints where the zone was newly created
+///
+/// # Errors
+///
+/// Returns an error if the PRIMARY instances cannot be determined. Individual
+/// record push failures are reported through the `Degraded` condition and
+/// retried on the next reconciliation rather than aborting the zone reconcile.
+async fn replay_records_if_zone_was_recreated(
+    ctx: &Arc<crate::context::Context>,
+    dnszone: &DNSZone,
+    status_updater: &mut crate::reconcilers::status::DNSZoneStatusUpdater,
+    instance_refs: &[crate::crd::InstanceReference],
+    record_refs: &[crate::crd::RecordReferenceWithTimestamp],
+    zones_created: usize,
+) -> Result<()> {
+    let client = ctx.client.clone();
+    let namespace = dnszone.namespace().unwrap_or_default();
+    let name = dnszone.name_any();
+    let zone_name = &dnszone.spec.zone_name;
+
+    // A replay left over from a previous reconciliation is just as binding as
+    // one triggered right now.
+    let resync_outstanding = dnszone
+        .status
+        .as_ref()
+        .is_some_and(|status| status.records_resync_pending);
+
+    if zones_created == 0 && !resync_outstanding {
+        return Ok(());
     }
+
+    if zones_created > 0 {
+        warn!(
+            "Zone {} was created on {} endpoint(s) during this reconciliation of DNSZone {}/{} - \
+             those servers hold SOA and NS records only. Replaying {} record(s).",
+            zone_name,
+            zones_created,
+            namespace,
+            name,
+            record_refs.len()
+        );
+    } else {
+        info!(
+            "DNSZone {}/{} still has an outstanding record resync - retrying {} record(s) for zone {}",
+            namespace,
+            name,
+            record_refs.len(),
+            zone_name
+        );
+    }
+
+    // A zone with no records is fully described by its SOA and NS records, so
+    // recreating it already restored the declared state - nothing to replay and
+    // nothing to keep the zone out of Ready.
+    if record_refs.is_empty() {
+        debug!(
+            "Zone {} selects no records - nothing to replay for DNSZone {}/{}",
+            zone_name, namespace, name
+        );
+        status_updater.set_records_resync_pending(false);
+        return Ok(());
+    }
+
+    // Persist the intent BEFORE touching BIND9: if the operator dies mid-replay
+    // the flag survives and the next reconciliation retries.
+    status_updater.set_records_resync_pending(true);
+    status_updater.apply(&client).await?;
+
+    // Records are written to PRIMARY servers only; secondaries pull the zone
+    // via AXFR once the primary's serial advances.
+    let primary_refs = primary::filter_primary_instances(&client, instance_refs).await?;
+
+    if primary_refs.is_empty() {
+        let message = format!(
+            "Zone {zone_name} must replay {} record(s) but has no primary instances to write them to",
+            record_refs.len()
+        );
+        warn!("DNSZone {}/{}: {}", namespace, name, message);
+        status_updater.set_condition("Degraded", "True", "RecordsResyncPending", &message);
+        return Ok(());
+    }
+
+    let outcome = crate::reconcilers::records::replay_zone_records(
+        &client,
+        &ctx.stores,
+        zone_name,
+        record_refs,
+        &primary_refs,
+    )
+    .await;
+
+    if outcome.is_complete() {
+        info!(
+            "Record resync complete for DNSZone {}/{}: {}",
+            namespace,
+            name,
+            outcome.summary(zone_name)
+        );
+        status_updater.set_records_resync_pending(false);
+        return Ok(());
+    }
+
+    let message = outcome.summary(zone_name);
+    warn!(
+        "Record resync incomplete for DNSZone {}/{}: {} - zone stays Degraded and will be retried",
+        namespace, name, message
+    );
+    status_updater.set_condition("Degraded", "True", "RecordsResyncPending", &message);
 
     Ok(())
 }
@@ -937,6 +1080,10 @@ pub async fn add_dnszone(
     // Mark each instance as reconciled immediately after first successful endpoint configuration
     let first_endpoint = Arc::new(Mutex::new(None::<String>));
     let total_endpoints = Arc::new(Mutex::new(0_usize));
+    // Endpoints where the zone did NOT exist and had to be created. A created
+    // zone holds only SOA + NS, so every one of these endpoints is missing all
+    // of the zone's record data and needs a replay.
+    let zones_created = Arc::new(Mutex::new(0_usize));
     let errors = Arc::new(Mutex::new(Vec::<String>::new()));
     let status_updater_shared = Arc::new(Mutex::new(status_updater));
 
@@ -955,6 +1102,7 @@ pub async fn add_dnszone(
             let secondary_ips = secondary_ips.clone();
             let first_endpoint = Arc::clone(&first_endpoint);
             let total_endpoints = Arc::clone(&total_endpoints);
+            let zones_created = Arc::clone(&zones_created);
             let errors = Arc::clone(&errors);
             let status_updater_shared = Arc::clone(&status_updater_shared);
             let instance_ref = instance_ref.clone();
@@ -1006,6 +1154,7 @@ pub async fn add_dnszone(
                         let secondary_ips = secondary_ips.clone();
                         let first_endpoint = Arc::clone(&first_endpoint);
                         let total_endpoints = Arc::clone(&total_endpoints);
+                        let zones_created = Arc::clone(&zones_created);
                         let errors = Arc::clone(&errors);
                         let instance_ref = instance_ref.clone();
                         let endpoint = endpoint.clone();
@@ -1068,10 +1217,16 @@ pub async fn add_dnszone(
                             {
                                 Ok(was_added) => {
                                     if was_added {
-                                        info!(
-                                            "Successfully added zone {} to endpoint {} (instance: {}/{})",
+                                        // The zone was absent from this pod and has just been
+                                        // recreated from spec - it currently holds only SOA and
+                                        // NS records, so the pod is authoritative for an empty
+                                        // zone until the records are replayed.
+                                        warn!(
+                                            "Zone {} was MISSING on endpoint {} (instance: {}/{}) and has been recreated \
+                                             with SOA and NS records only - all records for this zone will be replayed",
                                             zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
                                         );
+                                        *zones_created.lock().await += 1;
                                     }
                                     *total_endpoints.lock().await += 1;
                                     // Return was_added so we can check if zone was actually configured
@@ -1130,6 +1285,9 @@ pub async fn add_dnszone(
         .into_inner();
     let total_endpoints = Arc::try_unwrap(total_endpoints)
         .expect("Failed to unwrap total_endpoints Arc")
+        .into_inner();
+    let zones_created = Arc::try_unwrap(zones_created)
+        .expect("Failed to unwrap zones_created Arc")
         .into_inner();
     let errors = Arc::try_unwrap(errors)
         .expect("Failed to unwrap errors Arc")
@@ -1213,6 +1371,7 @@ pub async fn add_dnszone(
     Ok(types::ZoneConfigOutcome {
         instances_configured,
         endpoints_configured: total_endpoints,
+        zones_created,
     })
 }
 
@@ -1296,6 +1455,9 @@ pub async fn add_dnszone_to_secondaries(
     // Process all secondary instances concurrently using async streams
     // Mark each instance as reconciled immediately after first successful endpoint configuration
     let total_endpoints = Arc::new(Mutex::new(0_usize));
+    // Endpoints where the secondary zone had to be created (see the primary
+    // path for why this matters).
+    let zones_created = Arc::new(Mutex::new(0_usize));
     let errors = Arc::new(Mutex::new(Vec::<String>::new()));
     let status_updater_shared = Arc::new(Mutex::new(status_updater));
 
@@ -1310,6 +1472,7 @@ pub async fn add_dnszone_to_secondaries(
             let zone_name = spec.zone_name.clone();
             let primary_ips = primary_ips.to_vec();
             let total_endpoints = Arc::clone(&total_endpoints);
+            let zones_created = Arc::clone(&zones_created);
             let errors = Arc::clone(&errors);
             let status_updater_shared = Arc::clone(&status_updater_shared);
             let instance_ref = instance_ref.clone();
@@ -1358,6 +1521,7 @@ pub async fn add_dnszone_to_secondaries(
                         let key_data = key_data.clone();
                         let primary_ips = primary_ips.clone();
                         let total_endpoints = Arc::clone(&total_endpoints);
+                        let zones_created = Arc::clone(&zones_created);
                         let errors = Arc::clone(&errors);
                         let instance_ref = instance_ref.clone();
                         let endpoint = endpoint.clone();
@@ -1417,6 +1581,7 @@ pub async fn add_dnszone_to_secondaries(
                                                 "Successfully added secondary zone {} to endpoint {} (instance: {}/{})",
                                                 zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
                                             );
+                                            *zones_created.lock().await += 1;
                                         } else {
                                             info!(
                                                 "Secondary zone {} already exists on endpoint {} (instance: {}/{})",
@@ -1511,6 +1676,9 @@ pub async fn add_dnszone_to_secondaries(
     let total_endpoints = Arc::try_unwrap(total_endpoints)
         .expect("Failed to unwrap total_endpoints Arc")
         .into_inner();
+    let zones_created = Arc::try_unwrap(zones_created)
+        .expect("Failed to unwrap zones_created Arc")
+        .into_inner();
     let errors = Arc::try_unwrap(errors)
         .expect("Failed to unwrap errors Arc")
         .into_inner();
@@ -1535,6 +1703,7 @@ pub async fn add_dnszone_to_secondaries(
     Ok(types::ZoneConfigOutcome {
         instances_configured,
         endpoints_configured: total_endpoints,
+        zones_created,
     })
 }
 

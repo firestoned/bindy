@@ -208,6 +208,74 @@ kubectl describe dnszone example-com -n bindy-system
 kubectl annotate dnszone example-com reconcile=true -n bindy-system
 ```
 
+### Zone Answers NXDOMAIN (or a Public Address) After a Pod Restart
+
+**Symptom:** A BIND9 pod was replaced — an operator upgrade, a `placement` change that
+rolled the Deployment, an eviction, a node reboot, a `kubectl delete pod` — and the server
+now answers for the zone but has no data in it.
+
+Two shapes, depending on the zone's `global` settings:
+
+```console
+# Without recursion: authoritative NXDOMAIN. Note the `aa` flag - the server is
+# authoritative and confidently wrong, so clients do NOT fail over.
+$ dig @<pod-ip> www.example.com
+;; ->>HEADER<<- opcode: QUERY, status: NXDOMAIN, id: 3132
+;; flags: qr aa rd ra; QUERY: 1, ANSWER: 0, AUTHORITY: 1, ADDITIONAL: 1
+```
+
+```console
+# With `global.recursion: true` and `global.forwarders`: the query is forwarded
+# upstream and the PUBLIC answer is returned for an internal name. Nothing errors,
+# monitoring that only checks "does it resolve" passes, and traffic silently leaves
+# the LAN.
+$ dig @<pod-ip> internal.example.com
+internal.example.com.  IN  CNAME  public-endpoint.example.net.
+```
+
+**What This Means:**
+BIND9 operand pods keep zone data in ephemeral storage, so a replaced pod comes back with
+no zones at all. The operator recreates the zone from `spec`, which yields the SOA and NS
+records **only** — roughly a 250-byte zone file. Until the zone's records are pushed back
+in, the server is authoritative for a zone with no data.
+
+**Diagnosis:**
+
+```bash
+# The zone reports the outstanding replay
+kubectl get dnszone <zone-name> -n bindy-system \
+  -o jsonpath='{.status.recordsResyncPending}{"\n"}'
+
+# ... and stays out of Ready while it does
+kubectl get dnszone <zone-name> -n bindy-system \
+  -o jsonpath='{.status.conditions[?(@.type=="Degraded")]}{"\n"}'
+# {"type":"Degraded","status":"True","reason":"RecordsResyncPending",
+#  "message":"Replayed 8/10 record(s) into zone example.com; 2 failed: ..."}
+
+# Operator log lines for the same event
+kubectl logs -n bindy-system deploy/bindy | grep -E 'was MISSING on endpoint|Record resync'
+```
+
+**Resolution:**
+
+Bindy repairs this on its own. When the zone reconciler *creates* a zone (rather than
+finding it already present) it replays every record CR the zone selects into BIND9 in the
+same reconciliation, and the `DNSZone` controller watches `Endpoints`, so a pod becoming
+ready triggers that reconciliation within seconds.
+
+If `status.recordsResyncPending` stays `true` across several reconciliations, the replay
+is failing rather than pending — read the `Degraded` message, which names each record that
+could not be pushed. The usual causes are the ones in
+[DNS Record Issues](#dns-record-issues): an unreachable pod endpoint, or an RNDC/TSIG key
+mismatch rejecting the dynamic update.
+
+!!! note "Why readiness matters here"
+    A zone with an outstanding replay reports `Ready=False` deliberately. Clients fail
+    over on timeouts, not on NXDOMAIN, so a server that answers confidently and wrongly is
+    worse than one that is unreachable — nothing routes around it. Keeping the `DNSZone`
+    out of `Ready` is what makes the condition visible to operators and to any automation
+    gating on it.
+
 ## DNS Record Issues
 
 ### Record Not Matching DNSZone (Event-Driven Architecture)

@@ -143,6 +143,27 @@ When you create a DNSZone:
 4. **Computes status** - Sets `bind9InstancesCount` from array length
 5. **Sets conditions** - Updates Ready/Progressing/Degraded conditions
 
+### Recovery After a Pod or Deployment Is Wiped
+
+BIND9 operand pods keep zone data in ephemeral storage. Any event that replaces a pod —
+an operator upgrade, a `placement` change that rolls the Deployment, an eviction, a node
+reboot, a `kubectl delete pod` — brings it back with no zones.
+
+Every reconciliation the operator therefore checks whether the zone exists on each server
+endpoint. When it finds one missing it recreates the zone from `spec` — which yields the
+SOA and NS records **only** — and then immediately replays every record CR the zone
+selects back into BIND9, in the same reconciliation.
+
+The intent is recorded in `status.recordsResyncPending` before BIND9 is touched, so an
+operator restart or a partial failure mid-replay is retried rather than forgotten. While
+that flag is set the zone reports `Ready=False` / `Degraded=True` with reason
+`RecordsResyncPending`: a server that is authoritative for a zone whose records have not
+been pushed back must never be advertised as healthy.
+
+The `DNSZone` controller watches `Endpoints`, which change exactly when the set of ready
+BIND9 pods changes, so a replaced pod is picked up within seconds rather than at the next
+periodic reconciliation.
+
 ## Verifying Zone Creation
 
 Check the zone status:
@@ -188,6 +209,9 @@ Key status fields:
 - **bind9InstancesCount**: Number of instances serving the zone
 - **bind9Instances[]**: List of instances with their sync status
 - **recordCount**: Number of DNS records in the zone
+- **recordsResyncPending**: `true` while the zone still owes BIND9 a full record replay
+  after the zone was recreated on a server (see above). The zone stays out of `Ready`
+  until it clears.
 - **conditions**: Ready/Progressing/Degraded status
 
 ## Next Steps

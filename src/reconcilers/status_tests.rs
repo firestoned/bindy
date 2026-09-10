@@ -511,4 +511,52 @@ mod tests {
         assert!(degraded.is_some());
         assert_eq!(degraded.unwrap().status, "False");
     }
+
+    #[test]
+    fn test_set_records_resync_pending_marks_status_dirty() {
+        // Flipping the flag alone must be enough to trigger a status patch -
+        // otherwise the zone would never be marked as owing a record replay.
+        let mut dnszone = create_test_dnszone("test-zone", "bindy-system");
+        dnszone.status = Some(crate::crd::DNSZoneStatus::default());
+        let mut updater = DNSZoneStatusUpdater::new(&dnszone);
+        assert!(!updater.has_changes());
+
+        updater.set_records_resync_pending(true);
+
+        assert!(updater.records_resync_pending());
+        assert!(
+            updater.has_changes(),
+            "a resync request must be persisted to the API server"
+        );
+    }
+
+    #[test]
+    fn test_clear_records_resync_pending_marks_status_dirty() {
+        // Clearing must be equally persistable, or a zone that has been fully
+        // replayed would stay Degraded forever.
+        let mut dnszone = create_test_dnszone("test-zone", "bindy-system");
+        dnszone.status = Some(crate::crd::DNSZoneStatus {
+            records_resync_pending: true,
+            ..Default::default()
+        });
+        let mut updater = DNSZoneStatusUpdater::new(&dnszone);
+
+        updater.set_records_resync_pending(false);
+
+        assert!(!updater.records_resync_pending());
+        assert!(updater.has_changes());
+    }
+
+    #[test]
+    fn test_set_records_resync_pending_to_same_value_is_not_a_change() {
+        // Re-asserting the current value must not create status churn - the
+        // zone reconciler calls this on every pass.
+        let mut dnszone = create_test_dnszone("test-zone", "bindy-system");
+        dnszone.status = Some(crate::crd::DNSZoneStatus::default());
+        let mut updater = DNSZoneStatusUpdater::new(&dnszone);
+
+        updater.set_records_resync_pending(false);
+
+        assert!(!updater.has_changes());
+    }
 }

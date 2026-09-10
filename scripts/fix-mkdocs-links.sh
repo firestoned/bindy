@@ -109,8 +109,8 @@ FIXES=$((FIXES + 1))
 # 6. Fix roadmaps references (../../roadmaps -> ../roadmaps)
 echo -e "${YELLOW}6. Fixing roadmaps references...${NC}"
 
-# ../../roadmaps/ -> GitHub links (roadmaps are in docs/roadmaps, not docs/src/roadmaps)
-find . -name "*.md" -exec sed -i '' 's|../../roadmaps/|https://github.com/firestoned/bindy/blob/main/docs/roadmaps/|g' {} \;
+# ../../roadmaps/ -> GitHub links (roadmaps live in .github/community/, not under docs/)
+find . -name "*.md" -exec sed -i '' 's|../../roadmaps/|https://github.com/firestoned/bindy/blob/main/.github/community/|g' {} \;
 FIXES=$((FIXES + 1))
 
 # 7. Fix Cargo.toml reference

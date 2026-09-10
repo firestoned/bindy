@@ -58,4 +58,14 @@ pub struct ZoneConfigOutcome {
     /// Total number of endpoints that accepted the zone (including
     /// endpoints where the zone already existed).
     pub endpoints_configured: usize,
+    /// Number of endpoints where the zone was NEWLY created by this
+    /// reconciliation (it did not exist on that endpoint beforehand).
+    ///
+    /// A newly created zone holds only the SOA and NS records rendered from
+    /// `spec` - every record CR that belongs to it is missing. This is the
+    /// signal that a pod (or a whole Deployment) was wiped and came back with
+    /// empty storage, and it is what drives the record replay: any value
+    /// greater than zero means the zone's records must be pushed again before
+    /// the zone can be reported Ready.
+    pub zones_created: usize,
 }

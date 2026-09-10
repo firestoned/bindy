@@ -186,10 +186,12 @@ mod tests {
             ZoneConfigOutcome {
                 instances_configured: 2,
                 endpoints_configured: 4,
+                ..Default::default()
             },
             ZoneConfigOutcome {
                 instances_configured: 1,
                 endpoints_configured: 2,
+                ..Default::default()
             },
             2, // expected primaries
             1, // expected secondaries
@@ -221,6 +223,7 @@ mod tests {
             ZoneConfigOutcome {
                 instances_configured: 1, // only instance A fully configured
                 endpoints_configured: 2, // ... but it has 2 endpoints
+                ..Default::default()
             },
             ZoneConfigOutcome::default(),
             2, // expected primaries: A and B
@@ -265,6 +268,7 @@ mod tests {
             ZoneConfigOutcome {
                 instances_configured: 1,
                 endpoints_configured: 1,
+                ..Default::default()
             },
             ZoneConfigOutcome::default(),
             1,

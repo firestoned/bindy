@@ -8,7 +8,7 @@
 //! `bindy.firestoned.io/recordKind: "ARecord"`, Scout creates an [`ARecord`] CR in the
 //! configured target namespace.
 //!
-//! See `docs/roadmaps/bindy-scout-ingress-controller.md` for the full design.
+//! See `.github/community/30-SCOUT-INGRESS-CONTROLLER.md` for the full design.
 //!
 //! ## Phase 1 / 1.5 — Same-cluster mode (current)
 //!

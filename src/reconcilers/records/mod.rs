@@ -1903,3 +1903,234 @@ pub async fn update_record_reconciled_timestamp(
 
     Ok(())
 }
+
+// ============================================================================
+// Zone record replay (recovery after a BIND9 pod or Deployment is wiped)
+// ============================================================================
+
+/// Result of replaying a zone's record CRs into BIND9.
+///
+/// Produced by [`replay_zone_records`]. The replay is only complete - and the
+/// zone only safe to report as Ready - when `failures` is empty.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RecordReplayOutcome {
+    /// Number of record references the replay tried to push.
+    pub attempted: usize,
+    /// Number of record references pushed to every primary endpoint successfully.
+    pub succeeded: usize,
+    /// Human-readable description of every record that could not be pushed.
+    pub failures: Vec<String>,
+}
+
+impl RecordReplayOutcome {
+    /// Whether every attempted record reached every primary endpoint.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.failures.is_empty()
+    }
+
+    /// One-line summary suitable for a status condition message.
+    #[must_use]
+    pub fn summary(&self, zone_name: &str) -> String {
+        if self.is_complete() {
+            return format!(
+                "Replayed {}/{} record(s) into zone {zone_name}",
+                self.succeeded, self.attempted
+            );
+        }
+
+        format!(
+            "Replayed {}/{} record(s) into zone {zone_name}; {} failed: {}",
+            self.succeeded,
+            self.attempted,
+            self.failures.len(),
+            self.failures.join("; ")
+        )
+    }
+}
+
+/// Push a single record CR of a known type to every primary endpoint.
+///
+/// Fetches the record from the API server (the reflector store may lag behind a
+/// just-created zone) and reuses the same BIND9 write path as the record
+/// controller, so a replayed record is byte-for-byte what a normal reconcile
+/// would have written.
+async fn replay_single_record<T>(
+    client: &Client,
+    stores: &crate::context::Stores,
+    zone_name: &str,
+    namespace: &str,
+    name: &str,
+    primary_refs: &[crate::crd::InstanceReference],
+) -> Result<()>
+where
+    T: ReconcilableRecord,
+{
+    let api: Api<T> = Api::namespaced(client.clone(), namespace);
+    let record = api
+        .get(name)
+        .await
+        .with_context(|| format!("Failed to get {} {namespace}/{name}", T::record_type_name()))?;
+
+    let spec = record.get_spec();
+
+    add_record_to_instances_generic(
+        client,
+        stores,
+        primary_refs,
+        zone_name,
+        T::get_record_name(spec),
+        T::get_ttl(spec),
+        T::create_operation(spec),
+    )
+    .await
+}
+
+/// Re-push every record CR selected by a zone into that zone on BIND9.
+///
+/// # Why this exists
+///
+/// BIND9 operand pods hold zone data in ephemeral storage. When a pod - or the
+/// whole Deployment - is wiped, the zone is gone, and the zone reconciler
+/// recreates it from `spec`: SOA and NS records only. The server is then
+/// *authoritative* for a zone with no data, so it answers authoritative
+/// NXDOMAIN (or, with `recursion` and `forwarders` enabled, silently returns
+/// the public answer) for every name it should be serving. Record CRs are not
+/// replayed by their own controllers because, from Kubernetes' point of view,
+/// nothing about them changed.
+///
+/// This function closes that gap: whenever the zone reconciler *creates* a zone
+/// on any endpoint, it replays the zone's records immediately, in the same
+/// reconciliation, rather than waiting for an unrelated record event.
+///
+/// The push itself is idempotent (each record type queries the server first and
+/// writes an RRset only when it differs), so replaying against endpoints that
+/// already hold the data costs one DNS query per record and changes nothing.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `stores` - Context stores used to build a `Bind9Manager` per instance
+/// * `zone_name` - DNS zone name (e.g. "example.com")
+/// * `record_refs` - The zone's `status.records[]` entries to replay
+/// * `primary_refs` - PRIMARY instances to push to (secondaries pull via AXFR)
+///
+/// # Returns
+///
+/// A [`RecordReplayOutcome`] describing what was pushed. Individual record
+/// failures are collected rather than propagated so that one broken record
+/// cannot block the recovery of every other record in the zone.
+pub async fn replay_zone_records(
+    client: &Client,
+    stores: &crate::context::Stores,
+    zone_name: &str,
+    record_refs: &[crate::crd::RecordReferenceWithTimestamp],
+    primary_refs: &[crate::crd::InstanceReference],
+) -> RecordReplayOutcome {
+    let mut outcome = RecordReplayOutcome::default();
+
+    if record_refs.is_empty() || primary_refs.is_empty() {
+        return outcome;
+    }
+
+    for record_ref in record_refs {
+        outcome.attempted += 1;
+
+        let namespace = record_ref.namespace.as_str();
+        let name = record_ref.name.as_str();
+
+        let result = match replay_dispatch(
+            client,
+            stores,
+            zone_name,
+            &record_ref.kind,
+            namespace,
+            name,
+            primary_refs,
+        )
+        .await
+        {
+            Some(result) => result,
+            None => {
+                warn!(
+                    "Cannot replay unknown record kind '{}' for {}/{} in zone {}",
+                    record_ref.kind, namespace, name, zone_name
+                );
+                outcome.failures.push(format!(
+                    "{} {namespace}/{name}: unknown record kind",
+                    record_ref.kind
+                ));
+                continue;
+            }
+        };
+
+        match result {
+            Ok(()) => {
+                outcome.succeeded += 1;
+                debug!(
+                    "Replayed {} {}/{} into zone {}",
+                    record_ref.kind, namespace, name, zone_name
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to replay {} {}/{} into zone {}: {e:#}",
+                    record_ref.kind, namespace, name, zone_name
+                );
+                outcome
+                    .failures
+                    .push(format!("{} {namespace}/{name}: {e}", record_ref.kind));
+            }
+        }
+    }
+
+    outcome
+}
+
+/// Dispatch a replay to the concrete record type named by `kind`.
+///
+/// `kind` is the value stored in `DNSZone.status.records[].kind`, which is
+/// always [`crate::crd::DNSRecordKind::as_str`]. Returns `None` when it names a
+/// kind this operator does not manage, so the caller can distinguish "unknown
+/// kind" from "push failed".
+async fn replay_dispatch(
+    client: &Client,
+    stores: &crate::context::Stores,
+    zone_name: &str,
+    kind: &str,
+    namespace: &str,
+    name: &str,
+    primary_refs: &[crate::crd::InstanceReference],
+) -> Option<Result<()>> {
+    use crate::crd::DNSRecordKind;
+
+    let kind = DNSRecordKind::try_from(kind).ok()?;
+
+    macro_rules! replay {
+        ($record_type:ty) => {
+            Some(
+                replay_single_record::<$record_type>(
+                    client,
+                    stores,
+                    zone_name,
+                    namespace,
+                    name,
+                    primary_refs,
+                )
+                .await,
+            )
+        };
+    }
+
+    match kind {
+        DNSRecordKind::A => replay!(ARecord),
+        DNSRecordKind::AAAA => replay!(AAAARecord),
+        DNSRecordKind::TXT => replay!(TXTRecord),
+        DNSRecordKind::CNAME => replay!(CNAMERecord),
+        DNSRecordKind::MX => replay!(MXRecord),
+        DNSRecordKind::NS => replay!(NSRecord),
+        DNSRecordKind::SRV => replay!(SRVRecord),
+        DNSRecordKind::CAA => replay!(CAARecord),
+        DNSRecordKind::PTR => replay!(PTRRecord),
+    }
+}

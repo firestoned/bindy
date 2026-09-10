@@ -1077,95 +1077,6 @@ pub async fn find_zones_selecting_record(
 
     Ok(selecting_zones)
 }
-/// Counts DNS records matching a zone for logging purposes.
-///
-/// **Event-Driven Architecture**: This function only counts and logs records that have
-/// `status.zoneRef.zoneName` matching the zone. The actual reconciliation is triggered
-/// automatically by Kubernetes watches - when the `DNSZone` status changes, record operators
-/// are notified via watch events and reconcile automatically.
-///
-/// This function is called after zone recreation (e.g., pod restarts) to log how many
-/// records will be automatically reconciled via the event-driven architecture.
-///
-/// # Arguments
-///
-/// * `client` - Kubernetes API client
-/// * `namespace` - Namespace to search for records
-/// * `zone_name` - Zone FQDN to match
-///
-/// # Errors
-///
-/// Returns an error if listing records fails. Errors are logged but don't fail
-/// the parent `DNSZone` reconciliation.
-pub async fn trigger_record_reconciliation(
-    client: &Client,
-    namespace: &str,
-    zone_name: &str,
-) -> Result<()> {
-    use crate::crd::{
-        AAAARecord, ARecord, CAARecord, CNAMERecord, MXRecord, NSRecord, PTRRecord, SRVRecord,
-        TXTRecord,
-    };
-
-    debug!(
-        "Triggering record reconciliation for zone {} in namespace {}",
-        zone_name, namespace
-    );
-
-    // Helper macro to count records by status.zoneRef
-    // Note: We don't need to patch anything - the event-driven architecture (watches)
-    // will automatically trigger reconciliation when records see zone status changes
-    macro_rules! count_records {
-        ($record_type:ty, $type_name:expr) => {{
-            let api: Api<$record_type> = Api::namespaced(client.clone(), namespace);
-            let lp = ListParams::default();
-
-            match api.list(&lp).await {
-                Ok(records) => {
-                    let matching_count = records
-                        .items
-                        .iter()
-                        .filter(|r| {
-                            // Check if status.zoneRef.zoneName matches
-                            r.status
-                                .as_ref()
-                                .and_then(|s| s.zone_ref.as_ref())
-                                .map(|zr| zr.zone_name == zone_name)
-                                .unwrap_or(false)
-                        })
-                        .count();
-
-                    debug!(
-                        "Found {} {} record(s) for zone {} (event-driven watches will trigger reconciliation)",
-                        matching_count,
-                        $type_name,
-                        zone_name
-                    );
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to list {} records in namespace {}: {}",
-                        $type_name, namespace, e
-                    );
-                }
-            }
-        }};
-    }
-
-    // Count records for each type (event-driven watches will trigger reconciliation automatically)
-    count_records!(ARecord, "A");
-    count_records!(AAAARecord, "AAAA");
-    count_records!(TXTRecord, "TXT");
-    count_records!(CNAMERecord, "CNAME");
-    count_records!(MXRecord, "MX");
-    count_records!(NSRecord, "NS");
-    count_records!(SRVRecord, "SRV");
-    count_records!(CAARecord, "CAA");
-    count_records!(PTRRecord, "PTR");
-
-    Ok(())
-}
-
 /// Discover and update DNSZone status with DNS records.
 ///
 /// This wrapper function orchestrates record discovery and status updates:
@@ -1240,3 +1151,46 @@ pub async fn discover_and_update_records(
 #[cfg(test)]
 #[path = "discovery_tests.rs"]
 mod discovery_tests;
+
+/// Returns the zones that are configured on a given `Bind9Instance`.
+///
+/// Used by the `DNSZone` controller's `Endpoints` watch: an `Endpoints` object
+/// is named after the instance's Service, and it changes exactly when the set of
+/// ready BIND9 pods for that instance changes - a pod being replaced, a
+/// Deployment being rolled, a node draining. That is precisely when a zone may
+/// have disappeared from a server and must be reconciled, so this maps the
+/// instance back to every zone that expects to be served by it.
+///
+/// Matching is done against `status.bind9Instances`, the authoritative record of
+/// which instances a zone has been configured on.
+///
+/// # Arguments
+///
+/// * `zones` - The zones to search (typically the reflector store contents)
+/// * `instance_namespace` - Namespace of the instance whose pods changed
+/// * `instance_name` - Name of the instance whose pods changed
+///
+/// # Returns
+///
+/// `(namespace, name)` of every zone configured on that instance.
+#[must_use]
+pub fn zones_configured_on_instance(
+    zones: &[crate::crd::DNSZone],
+    instance_namespace: &str,
+    instance_name: &str,
+) -> Vec<(String, String)> {
+    zones
+        .iter()
+        .filter_map(|zone| {
+            let zone_namespace = zone.namespace()?;
+            let status = zone.status.as_ref()?;
+
+            let serves_instance = status
+                .bind9_instances
+                .iter()
+                .any(|inst| inst.name == instance_name && inst.namespace == instance_namespace);
+
+            serves_instance.then(|| (zone_namespace, zone.name_any()))
+        })
+        .collect()
+}

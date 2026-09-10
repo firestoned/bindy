@@ -140,7 +140,7 @@ Areas needing additional test coverage:
 - [ ] Complex multi-region failure scenarios
 - [ ] Performance under high load (addressed in load testing)
 
-See [Load Testing Roadmap](https://github.com/firestoned/bindy/blob/main/docs/roadmaps/loadtest-roadmap.md) for performance testing plans.
+See [Load Testing Roadmap](https://github.com/firestoned/bindy/blob/main/.github/community/50-LOAD-TESTING-FRAMEWORK.md) for performance testing plans.
 
 ## Contributing Tests
 

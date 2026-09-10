@@ -1,3 +1,208 @@
+## [2026-09-10] - Hold three security roadmaps out of the public repo
+
+**Author:** Erick Bourgeois
+
+### Removed
+- `.github/community/01-RBAC-SECURITY-ANALYSIS.md`,
+  `.github/community/11-NAMESPACE-SCOPED-OPERATOR.md`,
+  `.github/community/40-SECURITY-REMEDIATION.md`: these three cover security hardening
+  work that is still in flight. Tracked privately until it lands; the numbers stay
+  reserved so they can be published under the same IDs later.
+
+### Changed
+- `ROADMAPS.md`, `.github/community/README.md`: rows removed and replaced with a short
+  "reserved numbers" note that does **not** restate the underlying finding — an index
+  entry explaining why a security doc is withheld would disclose what withholding it is
+  meant to protect.
+
+### Why
+The migrated set was written as private notes. Two of these three documents describe an
+unremediated weakness in shipped code and the third is the live audit tracking it;
+publishing them would have disclosed it ahead of the fix. The remaining 22 roadmaps
+carry no such exposure.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-09-10] - PII / sensitive-data scan of the migrated roadmaps
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/10-CONTROLLER-CRATE-SPLIT.md`: removed a reference to a local
+  filesystem path in a separate project (`~/dev/<other-project>/Cargo.toml`) that had no
+  meaning to a reader of this repo; the workspace instruction is now self-contained.
+- `.github/community/22-EXTERNAL-BIND9-GATEWAY.md`: literal tunnel token values in the
+  draft's example config (`remoteToken:` / `token =`) replaced with `<tunnel-token>` /
+  `<rndc-tunnel-token>` placeholders plus a note that real values belong in a Secret.
+  They were illustrative, not real, but a design doc should not model hardcoding a token
+  into a manifest.
+
+### Why
+The 24 migrated docs were written as private working notes and now sit in a public repo.
+Scanned all 25 files for emails, credentials, keys, certificates, kubeconfig fragments,
+IP addresses, internal hostnames/domains, internal systems, account IDs, personal names
+and org names. No PII was found; the two items above were the only changes needed, and
+both were introduced during the migration rather than present in the original notes.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-09-10] - Migrate all roadmaps into `.github/community/`
+
+**Author:** Erick Bourgeois
+
+### Added
+- `.github/community/`: 24 roadmap docs migrated from the external roadmap set and
+  renumbered into bands — `00`–`09` reference/analysis, `10`–`19` architecture &
+  refactoring, `20`–`29` features, `30`–`39` Scout, `40`–`49` security & compliance,
+  `50`–`59` testing/ops/deps.
+- Each migrated doc gained a `> **Status:**` block under its title recording a status
+  (✅/🔶/⛔/📄) that was **verified against the tree**, not copied from the doc's own
+  header. Several self-reported statuses were wrong: `phase-4-records-refactoring-plan`
+  claimed "in progress" but had shipped (now `12`, ✅); `scout-namespace-selectors`
+  claimed "proposed" but had partly shipped (now `31`, 🔶); `bindy-scout-ingress-controller`
+  understated what exists (Scout runs 5 controllers today, not 1). Each doc's own
+  now-stale `**Status:**` line was relabelled `**Original status (as written):**` (18 docs)
+  so it cannot be mistaken for current.
+
+### Changed
+- `ROADMAPS.md`: expanded from a single row to the full banded status board with a
+  verified status and note per item.
+- `.github/community/README.md`: full index by band, plus a note that migrated bodies
+  are as-originally-written and their paths/line numbers have drifted.
+- `src/scout.rs`, `src/main.rs`: doc comments pointed at
+  `docs/roadmaps/bindy-scout-ingress-controller.md` — a path that has never existed in
+  this repo. Repointed at `.github/community/30-SCOUT-INGRESS-CONTROLLER.md`.
+- `examples/dnssec-signing-enabled.yaml`, `docs/src/advanced/dnssec.md`,
+  `docs/src/operations/dnszone-migration-troubleshooting.md`,
+  `docs/src/development/TEST_SUMMARY.md`, `scripts/fix-mkdocs-links.sh`: same fix — five
+  more dead `docs/roadmaps/` references (three of them published GitHub URLs returning
+  404) repointed at the migrated docs.
+
+### Merged
+- `50-LOAD-TESTING-FRAMEWORK.md` combines two external docs that covered the same work
+  (`loadtest-roadmap.md` + `load-testing-prompt.md`); the latter is kept verbatim as
+  "Appendix A", headings demoted one level.
+
+### Not migrated
+- `medium-blog-post.md` — a blog draft, not a roadmap; left in the external set.
+
+### Why
+Roadmaps were invisible to anyone reading the repo, and six documents linked to a
+`docs/roadmaps/` directory that does not exist — including three public GitHub URLs on
+the docs site that 404. Consolidating into `.github/community/` with a verified status
+board makes the backlog reviewable and the links resolvable.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (two `.rs` changes are doc comments; `cargo fmt`/`clippy`/`test` green — 1,403 tests pass)
+
+## [2026-09-10] - Roadmap: controller crate split & watch-layer simplification
+
+**Author:** Erick Bourgeois
+
+### Added
+- `ROADMAPS.md`: repo-root status board indexing the roadmap docs in `.github/community/`.
+- `.github/community/README.md`: roadmap index, numbering convention, and how roadmaps
+  relate to ADRs (`docs/adr/`) and `.claude/rules/`.
+- `.github/community/10-CONTROLLER-CRATE-SPLIT.md`: analysis of the controller and watch
+  layer plus a 7-phase plan to split the single 40.6k-line `bindy` crate into a workspace
+  (one crate per controller + `bindy-controller-sdk` + `bindy-api` + `bindy-bind9`) and
+  rebuild the watch wiring on kube-runtime 4.2's shared-stream APIs.
+
+### Why
+`src/main.rs` (2,086 lines) is the de facto controller framework: 14 hand-written
+reflector `tokio::spawn`s, 22 `.watches()`/`.owns()` call sites, 9 byte-identical record
+watch mappers, and a 13-arm `tokio::select!` that cancels rather than drains on shutdown.
+Every CRD is watched twice (reflector + controller), one watch mapper performs writes from
+a detached task with no retry or metrics, and `reconcile_dnszone_wrapper` carries a
+hand-rolled 2-second rate limiter to compensate for its own status writes retriggering it.
+Recording the analysis as a roadmap so the work can be phased rather than attempted in one
+branch.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-09-09] - Records are replayed when a BIND9 zone is recreated (idempotency, #486)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/reconcilers/dnszone.rs`: after a BIND9 pod (or its whole Deployment) was wiped,
+  the zone reconciler recreated the zone from `spec` — SOA and NS records **only** — and
+  then did nothing. The pod came back *authoritative* for an empty zone, answering
+  authoritative NXDOMAIN for every name it should have served, or, with
+  `global.recursion` + `global.forwarders` set, silently forwarding upstream and
+  returning the **public** address for an internal name. The zone reconciler now detects
+  that it created the zone (rather than found it already present) and replays every
+  record CR the zone selects into BIND9 in the same reconciliation.
+- `src/reconcilers/dnszone/discovery.rs`: removed `trigger_record_reconciliation()`. Its
+  call site claimed it annotated matching records so they would be re-pushed after a pod
+  restart; the function only listed records, counted them and logged. Nothing was ever
+  triggered, which is why a wiped pod never recovered without an operator restart.
+- `src/reconcilers/status.rs`: `has_changes()` now also compares
+  `status.recordsResyncPending`, so flipping that flag on its own is actually persisted
+  instead of being dropped as "no change".
+
+### Added
+- `src/crd.rs`: `DNSZoneStatus.recordsResyncPending` (`boolean`, default `false`).
+  Set before the replay is attempted and cleared only once every record has reached every
+  primary endpoint, so an operator crash or a partial failure mid-replay is retried on the
+  next reconciliation instead of being forgotten.
+- `src/reconcilers/records/mod.rs`: `replay_zone_records()` and `RecordReplayOutcome`.
+  The replay reuses the record controllers' own BIND9 write path, so a replayed record is
+  identical to a normally reconciled one, and it is idempotent — against an endpoint that
+  already holds the data it costs one DNS query per record and writes nothing. A single
+  broken record is collected as a failure rather than aborting the whole replay.
+- `src/reconcilers/dnszone/types.rs`: `ZoneConfigOutcome.zones_created` — endpoints where
+  the zone was newly created by this reconciliation.
+- `src/reconcilers/dnszone/discovery.rs`: `zones_configured_on_instance()` maps a
+  `Bind9Instance` back to the zones served by it.
+- `src/main.rs`: the `DNSZone` controller now watches `Endpoints`. An `Endpoints` object
+  is named after the instance's Service and changes exactly when the set of ready BIND9
+  pods changes, so a replaced pod triggers a zone reconciliation within seconds instead of
+  waiting up to the 5-minute requeue. No RBAC change — `endpoints` `get`/`list`/`watch`
+  was already granted.
+
+### Changed
+- A `DNSZone` with an outstanding record resync now reports `Ready=False` /
+  `Degraded=True` with reason `RecordsResyncPending`. A server that is authoritative for
+  a zone whose records have not been (re)pushed is no longer reported healthy.
+- `deploy/operator/crds/dnszones.crd.yaml`, `docs/src/reference/api.md`: regenerated.
+
+### Why
+Issue #486. BIND9 operand pods hold zone data in ephemeral storage, so any pod
+replacement — operator upgrade, `placement` change rolling the Deployment, eviction, node
+reboot, `kubectl delete pod` — loses every zone. Recreating the zone restored its shape
+but never its contents, and the record CRs were not replayed because, as far as
+Kubernetes was concerned, nothing about them had changed. The only known repair was
+`kubectl -n bindy-system rollout restart deploy/bindy`, which worked purely because the
+controllers re-list and reconcile everything on startup. In practice a `Bind9Cluster`
+could not survive an unattended pod restart with correct answers.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+CRDs must be re-applied (`kubectl replace --force -f deploy/operator/crds/`) for the new
+`status.recordsResyncPending` field to persist; without it the operator still replays
+records on every zone recreation, but cannot remember an incomplete replay across
+reconciliations. See `docs/src/operations/migration-guide.md` for the full rollout order.
+
 ## [2026-09-07] Dependabot: cover the Docker base images
 
 **Author:** Erick Bourgeois
