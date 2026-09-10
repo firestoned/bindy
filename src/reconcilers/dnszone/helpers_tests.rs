@@ -58,6 +58,7 @@ mod tests {
             records: vec![],
             records_count: 0,
             dnssec: None,
+            ..Default::default()
         });
         zone
     }

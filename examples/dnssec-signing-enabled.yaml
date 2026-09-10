@@ -11,7 +11,7 @@
 #   Phase 4: Per-zone dnssecPolicy field with inline-signing
 #
 # Phase 5 (DS record status reporting) is not yet implemented.
-# See: docs/roadmaps/dnssec-zone-signing-implementation.md
+# See: .github/community/20-DNSSEC-ZONE-SIGNING.md
 
 ---
 # Bind9Cluster with DNSSEC Signing Enabled

@@ -297,4 +297,4 @@ Publish the output DS records at your domain registrar or parent zone operator.
 - [Security Overview](./security.md)
 - [Access Control](./access-control.md)
 - [RNDC Key Rotation](../guide/rndc-key-rotation.md)
-- [DNSSEC Zone Signing Implementation Roadmap](https://github.com/firestoned/bindy/blob/main/docs/roadmaps/dnssec-zone-signing-implementation.md)
+- [DNSSEC Zone Signing Implementation Roadmap](https://github.com/firestoned/bindy/blob/main/.github/community/20-DNSSEC-ZONE-SIGNING.md)

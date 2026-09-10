@@ -1058,7 +1058,7 @@ async fn bootstrap_multi_cluster_command(
 /// Entry point for `bindy scout` — watches Ingresses and creates ARecords on the bindy cluster.
 ///
 /// Phase 1 (same-cluster) and Phase 2 (remote cluster) are tracked in
-/// `docs/roadmaps/bindy-scout-ingress-controller.md`.
+/// `.github/community/30-SCOUT-INGRESS-CONTROLLER.md`.
 async fn scout_command(
     cluster_name: Option<String>,
     namespace: Option<String>,
@@ -1656,16 +1656,69 @@ async fn run_dnszone_operator(
     let ctx_for_caa = context.clone();
     let ctx_for_ptr = context.clone();
     let ctx_for_instance_watch = context.clone();
+    let ctx_for_endpoints_watch = context.clone();
+
+    // Endpoints are named after the instance's Service, and they change exactly
+    // when the set of READY BIND9 pods for that instance changes - a pod being
+    // replaced, a Deployment rolled, a node drained. A replaced pod comes back
+    // with no zones (BIND9 zone data is not persisted), so this is the earliest
+    // reliable signal that a zone may need to be recreated and its records
+    // replayed. Watching Endpoints rather than Pods keeps the event rate low:
+    // it fires on readiness transitions, not on every pod status write.
+    let endpoints_api = Api::<k8s_openapi::api::core::v1::Endpoints>::all(client.clone());
 
     // Event-Driven Architecture for DNSZone (Zone-Centric Selection):
     // 1. Watches Bind9Instance label changes - trigger zones with matching bind9_instances_from selectors
-    // 2. Watches Records: Record changes → zones check selectors → update status.zoneRef
+    // 2. Watches Endpoints - a BIND9 pod was replaced, so its zones may be gone
+    // 3. Watches Records: Record changes → zones check selectors → update status.zoneRef
     //
     // CRITICAL: Zone-to-Instance Selection
     // - Zones select instances via spec.bind9_instances_from label selectors
     // - When instance labels change, all zones with matching selectors must reconcile
     // - Uses reflector store for efficient lookups without API calls
     Controller::new(api.clone(), semantic_watcher_config())
+        .watches(
+            endpoints_api,
+            default_watcher_config(),
+            move |endpoints| {
+                // The Endpoints object shares its name with the Bind9Instance's
+                // Service, which shares its name with the Bind9Instance.
+                let Some(instance_namespace) = endpoints.namespace() else {
+                    return vec![];
+                };
+                let instance_name = endpoints.name_any();
+
+                let zones: Vec<DNSZone> = ctx_for_endpoints_watch
+                    .stores
+                    .dnszones
+                    .state()
+                    .iter()
+                    .map(|zone| (**zone).clone())
+                    .collect();
+
+                let matched = bindy::reconcilers::dnszone::discovery::zones_configured_on_instance(
+                    &zones,
+                    &instance_namespace,
+                    &instance_name,
+                );
+
+                if !matched.is_empty() {
+                    debug!(
+                        "Endpoints change for {}/{} triggers reconciliation of {} DNSZone(s)",
+                        instance_namespace,
+                        instance_name,
+                        matched.len()
+                    );
+                }
+
+                matched
+                    .into_iter()
+                    .map(|(zone_namespace, zone_name)| {
+                        kube::runtime::reflector::ObjectRef::new(&zone_name).within(&zone_namespace)
+                    })
+                    .collect()
+            },
+        )
         .watches(
             bind9instance_api,
             default_watcher_config(),

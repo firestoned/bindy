@@ -83,6 +83,55 @@ mod tests {
         assert!(status.conditions.is_empty());
         assert!(status.observed_generation.is_none());
         assert!(status.records.is_empty());
+        assert!(
+            !status.records_resync_pending,
+            "a fresh status must not request a record resync"
+        );
+    }
+
+    #[test]
+    fn test_dnszone_status_records_resync_pending_serializes_as_camel_case() {
+        // The status updater sends the whole typed struct as a merge patch, so a
+        // key that does not match the structural schema is silently pruned
+        // (HTTP 200, nothing persisted). Pin the wire name.
+        let status = DNSZoneStatus {
+            records_resync_pending: true,
+            ..Default::default()
+        };
+
+        let json = serde_json::to_value(&status).expect("status serializes");
+
+        assert_eq!(
+            json.get("recordsResyncPending"),
+            Some(&serde_json::Value::Bool(true))
+        );
+    }
+
+    #[test]
+    fn test_dnszone_status_records_resync_pending_is_always_serialized() {
+        // `false` MUST stay on the wire: a merge patch that omits the key leaves
+        // the previous `true` in place, so the zone would never leave the
+        // resync-pending state.
+        let status = DNSZoneStatus::default();
+
+        let json = serde_json::to_value(&status).expect("status serializes");
+
+        assert_eq!(
+            json.get("recordsResyncPending"),
+            Some(&serde_json::Value::Bool(false)),
+            "clearing the flag must be expressible in a merge patch"
+        );
+    }
+
+    #[test]
+    fn test_dnszone_status_records_resync_pending_defaults_when_absent() {
+        // Zones created before this field existed have no such key in status.
+        let json = serde_json::json!({ "conditions": [] });
+
+        let status: DNSZoneStatus =
+            serde_json::from_value(json).expect("legacy status deserializes");
+
+        assert!(!status.records_resync_pending);
     }
 
     #[test]
@@ -555,6 +604,7 @@ mod tests {
             records: vec![],
             bind9_instances: vec![],
             bind9_instances_count: None,
+            records_resync_pending: false,
             dnssec: None,
         };
 

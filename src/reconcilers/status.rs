@@ -400,6 +400,31 @@ impl DNSZoneStatusUpdater {
         self.has_changes = true;
     }
 
+    /// Record whether this zone still owes BIND9 a full record replay
+    /// (in-memory only, no API call).
+    ///
+    /// Set to `true` as soon as the controller creates the zone on any server
+    /// endpoint - a created zone holds only SOA and NS records, so every record
+    /// CR is missing from it. Set to `false` only once every record has been
+    /// pushed to every primary endpoint successfully.
+    ///
+    /// # Arguments
+    ///
+    /// * `pending` - Whether a full record replay is still outstanding
+    pub fn set_records_resync_pending(&mut self, pending: bool) {
+        if self.new_status.records_resync_pending == pending {
+            return;
+        }
+        self.new_status.records_resync_pending = pending;
+        self.has_changes = true;
+    }
+
+    /// Whether a full record replay is currently marked as outstanding.
+    #[must_use]
+    pub fn records_resync_pending(&self) -> bool {
+        self.new_status.records_resync_pending
+    }
+
     /// Set the observed generation to match the current generation.
     pub fn set_observed_generation(&mut self, generation: Option<i64>) {
         self.new_status.observed_generation = generation;
@@ -508,6 +533,7 @@ impl DNSZoneStatusUpdater {
                     || !conditions_equal(&current.conditions, &self.new_status.conditions)
                     || current.bind9_instances != self.new_status.bind9_instances
                     || current.bind9_instances_count != self.new_status.bind9_instances_count
+                    || current.records_resync_pending != self.new_status.records_resync_pending
             }
         }
     }

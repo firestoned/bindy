@@ -2,6 +2,66 @@
 
 This document collects the breaking-change migrations for Bindy, newest first.
 
+## `DNSZone` gains `status.recordsResyncPending` (record replay after a pod is wiped)
+
+Fixes [#486](https://github.com/firestoned/bindy/issues/486). BIND9 operand pods
+hold zone data in ephemeral storage, so any pod replacement — an operator
+upgrade, a `placement` change that rolls the Deployment, an eviction, a node
+reboot, a `kubectl delete pod` — brings the pod back with no zones. The operator
+recreated the zone from `spec` (SOA and NS records only) but never replayed the
+record CRs, leaving the server **authoritative for an empty zone**: authoritative
+NXDOMAIN, or, with `global.recursion` + `global.forwarders`, the silently
+returned **public** answer for an internal name.
+
+The zone reconciler now replays every record CR a zone selects whenever it
+*creates* the zone on a server, and records that intent in the new
+`DNSZone.status.recordsResyncPending` field so an incomplete replay is retried
+rather than forgotten.
+
+### Required: re-apply the CRDs
+
+`status.recordsResyncPending` is a new field in the `dnszones` CRD schema. Until
+the CRD is updated, the API server **prunes it silently** (the status patch
+returns HTTP 200 and nothing persists). The operator still replays records on
+every zone recreation, but it cannot remember an incomplete replay across
+reconciliations, so a partial failure would not be retried and the zone would not
+stay out of `Ready`.
+
+```bash
+kubectl replace --force -f deploy/operator/crds/
+```
+
+> ⚠️ Use `replace --force`, **not** `apply`. The `Bind9Instance`,
+> `Bind9Cluster` and `ClusterBind9Provider` CRDs exceed the 256KB
+> `last-applied-configuration` annotation limit, so a plain `kubectl apply` is
+> rejected. (`kubectl apply --server-side` also works.)
+
+This is a status-only schema addition: it does not touch any `spec`, so existing
+`DNSZone`, record and instance resources are unaffected and no resource needs to
+be recreated. Rolling the CRDs does not interrupt DNS serving.
+
+### Rollout order
+
+1. Re-apply the CRDs (above).
+2. Roll out the new operator image.
+3. Verify — a healthy zone reports the field as `false`:
+
+```bash
+kubectl get dnszone <zone-name> -n bindy-system \
+  -o jsonpath='{.status.recordsResyncPending}{"\n"}'
+# false
+```
+
+### New behaviour to be aware of
+
+A `DNSZone` with an outstanding record replay now reports `Ready=False` /
+`Degraded=True` with reason `RecordsResyncPending`. If you have automation or
+alerting that gates on `DNSZone` readiness, it will now (correctly) fire while a
+zone's records are being restored after a pod restart — typically for a few
+seconds. A zone stuck in that state means the replay is failing rather than
+pending; the `Degraded` message names each record that could not be pushed. See
+[Common Issues](./common-issues.md#zone-answers-nxdomain-or-a-public-address-after-a-pod-restart).
+
 ## `named` moves to the unprivileged port 5353
 
 `named` now binds the **unprivileged container port 5353** instead of 53, so the

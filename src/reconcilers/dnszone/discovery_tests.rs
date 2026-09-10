@@ -7,6 +7,7 @@
 //! Full implementation requires Kubernetes API mocking infrastructure.
 
 #[cfg(test)]
+#[allow(deprecated)] // DNSZoneSpec::name_server_ips is set to None in test fixtures
 mod tests {
     use crate::crd::LabelSelector;
     use std::collections::BTreeMap;
@@ -135,5 +136,138 @@ mod tests {
 
         // Should not match when value differs
         assert!(!selector.matches(&pod_labels));
+    }
+
+    // ========================================================================
+    // zones_configured_on_instance - Endpoints watch mapper (issue #486)
+    // ========================================================================
+
+    fn zone_on_instances(
+        zone_namespace: &str,
+        zone_name: &str,
+        instances: &[(&str, &str)],
+    ) -> crate::crd::DNSZone {
+        use crate::crd::{
+            DNSZone, DNSZoneSpec, DNSZoneStatus, InstanceReferenceWithStatus, SOARecord,
+        };
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+
+        DNSZone {
+            metadata: ObjectMeta {
+                name: Some(zone_name.to_string()),
+                namespace: Some(zone_namespace.to_string()),
+                ..Default::default()
+            },
+            spec: DNSZoneSpec {
+                zone_name: "example.com".to_string(),
+                cluster_ref: None,
+                soa_record: SOARecord {
+                    primary_ns: "ns1.example.com.".to_string(),
+                    admin_email: "admin.example.com.".to_string(),
+                    serial: 1,
+                    refresh: 3600,
+                    retry: 1800,
+                    expire: 604_800,
+                    negative_ttl: 86400,
+                },
+                ttl: None,
+                name_servers: None,
+                name_server_ips: None,
+                records_from: None,
+                bind9_instances_from: None,
+                dnssec_policy: None,
+            },
+            status: Some(DNSZoneStatus {
+                bind9_instances: instances
+                    .iter()
+                    .map(|(namespace, name)| InstanceReferenceWithStatus {
+                        api_version: crate::constants::API_GROUP_VERSION.to_string(),
+                        kind: crate::constants::KIND_BIND9_INSTANCE.to_string(),
+                        name: (*name).to_string(),
+                        namespace: (*namespace).to_string(),
+                        status: crate::crd::InstanceStatus::Configured,
+                        last_reconciled_at: None,
+                        message: None,
+                    })
+                    .collect(),
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn test_zones_configured_on_instance_matches_serving_zone() {
+        // A pod of `primary-dns` was replaced: every zone served by that
+        // instance must reconcile so a wiped zone is recreated and replayed.
+        let zones = vec![zone_on_instances(
+            "bindy-system",
+            "example-zone",
+            &[("bindy-system", "primary-dns")],
+        )];
+
+        let matched =
+            super::super::zones_configured_on_instance(&zones, "bindy-system", "primary-dns");
+
+        assert_eq!(
+            matched,
+            vec![("bindy-system".to_string(), "example-zone".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_zones_configured_on_instance_ignores_other_instances() {
+        let zones = vec![zone_on_instances(
+            "bindy-system",
+            "example-zone",
+            &[("bindy-system", "primary-dns")],
+        )];
+
+        assert!(
+            super::super::zones_configured_on_instance(&zones, "bindy-system", "other-dns")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_zones_configured_on_instance_is_namespace_scoped() {
+        // Same instance name in a different namespace must NOT match - two
+        // tenants may each run a `primary-dns`.
+        let zones = vec![zone_on_instances(
+            "bindy-system",
+            "example-zone",
+            &[("bindy-system", "primary-dns")],
+        )];
+
+        assert!(
+            super::super::zones_configured_on_instance(&zones, "tenant-a", "primary-dns")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_zones_configured_on_instance_skips_zones_without_status() {
+        // A zone that has never reconciled has no configured instances yet.
+        let mut zone = zone_on_instances("bindy-system", "example-zone", &[]);
+        zone.status = None;
+
+        assert!(
+            super::super::zones_configured_on_instance(&[zone], "bindy-system", "primary-dns")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_zones_configured_on_instance_returns_all_zones_sharing_an_instance() {
+        // One instance commonly serves many zones - a single pod restart must
+        // fan out to every one of them.
+        let zones = vec![
+            zone_on_instances("bindy-system", "zone-a", &[("bindy-system", "primary-dns")]),
+            zone_on_instances("bindy-system", "zone-b", &[("bindy-system", "primary-dns")]),
+        ];
+
+        let matched =
+            super::super::zones_configured_on_instance(&zones, "bindy-system", "primary-dns");
+
+        assert_eq!(matched.len(), 2);
     }
 }
