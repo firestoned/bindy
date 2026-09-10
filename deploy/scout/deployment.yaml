@@ -25,6 +25,12 @@ spec:
       securityContext:
         fsGroup: 65534
         runAsNonRoot: true
+        # Required for Pod Security Admission `restricted` (recommended on
+        # bindy-system since the bindcar 0.7.0 migration — see deploy/pod-hardening.yaml).
+        # Parity with deploy/operator/deployment.yaml — Scout was previously the only
+        # pod in the fleet not asserting a seccomp profile (audit finding P2-1).
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: scout
           image: ghcr.io/firestoned/bindy:latest

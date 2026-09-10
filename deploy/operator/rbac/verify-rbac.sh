@@ -3,8 +3,19 @@
 # SPDX-License-Identifier: MIT
 
 # Verification script for RBAC least privilege implementation
-# Tests that the bindy operator ServiceAccount has minimal required permissions
-# and NO delete permissions on any resources (PCI-DSS 7.1.2 compliance)
+# Tests that the bindy operator ServiceAccount has exactly the permissions the
+# ClusterRole in role.yaml intends — no more, no less (PCI-DSS 7.1.2).
+#
+# The operator DOES hold `delete` on the Kubernetes workload objects it owns
+# (deployments, services, configmaps, serviceaccounts) and on the two CRD kinds
+# it authors (bind9instances, bind9clusters) — it tears those down during
+# finalizer cleanup and Bind9Cluster scale-down. What it must NEVER hold is
+# `create`/`delete` on user-authored kinds (dnszones, records,
+# clusterbind9providers) or cluster-wide Secret writes.
+#
+# Keep this script in lockstep with deploy/operator/rbac/role.yaml and with
+# src/bootstrap_tests.rs::test_operator_cluster_role_* — they assert the same
+# policy from three angles (live cluster, YAML, embedded constant).
 
 set -e
 
@@ -78,8 +89,10 @@ test_allowed "create" "bind9instances.bindy.firestoned.io"
 test_allowed "update" "bind9instances.bindy.firestoned.io"
 test_allowed "patch" "bind9instances.bindy.firestoned.io"
 
-# Operator MUST NOT be able to delete Bind9Instance (CRITICAL)
-test_denied "delete" "bind9instances.bindy.firestoned.io"
+# Operator DOES delete Bind9Instances — Bind9Cluster scale-down and finalizer
+# cleanup (src/reconcilers/bind9cluster/instances.rs:789,871). Bulk deletion is
+# still denied: deletecollection is never used and would be a blast-radius risk.
+test_allowed "delete" "bind9instances.bindy.firestoned.io"
 test_denied "deletecollection" "bind9instances.bindy.firestoned.io"
 
 echo ""
@@ -92,11 +105,12 @@ echo ""
 test_allowed "get" "dnszones.bindy.firestoned.io"
 test_allowed "list" "dnszones.bindy.firestoned.io"
 test_allowed "watch" "dnszones.bindy.firestoned.io"
-test_allowed "create" "dnszones.bindy.firestoned.io"
 test_allowed "update" "dnszones.bindy.firestoned.io"
 test_allowed "patch" "dnszones.bindy.firestoned.io"
 
-# Operator MUST NOT be able to delete DNSZone (CRITICAL)
+# Operator MUST NOT create or delete DNSZones — they are authored by users/GitOps;
+# the operator only reconciles them into BIND9 config and patches status.
+test_denied "create" "dnszones.bindy.firestoned.io"
 test_denied "delete" "dnszones.bindy.firestoned.io"
 test_denied "deletecollection" "dnszones.bindy.firestoned.io"
 
@@ -106,10 +120,14 @@ echo "3. Testing DNS Record CRD Permissions"
 echo "========================================"
 echo ""
 
-# Test all record types
-for record_type in "arecords" "aaaarecords" "cnamerecords" "mxrecords" "txtrecords" "srvrecords" "nsrecords" "ptrrecords" "soarecords"; do
+# Test all nine record types. NOTE: there is no `soarecords` CRD — SOA is a field
+# on DNSZone, not a record kind. `caarecords` exists and was previously untested.
+for record_type in "arecords" "aaaarecords" "cnamerecords" "mxrecords" "txtrecords" "srvrecords" "nsrecords" "caarecords" "ptrrecords"; do
     test_allowed "get" "${record_type}.bindy.firestoned.io"
     test_allowed "update" "${record_type}.bindy.firestoned.io"
+    # Records are authored by users/GitOps or by Scout under its OWN identity
+    # (bindy-scout SA, deploy/scout/role.yaml). The operator must not author them.
+    test_denied "create" "${record_type}.bindy.firestoned.io"
     test_denied "delete" "${record_type}.bindy.firestoned.io"
 done
 
@@ -150,8 +168,9 @@ test_allowed "create" "configmaps" "--namespace=${NAMESPACE}"
 test_allowed "update" "configmaps" "--namespace=${NAMESPACE}"
 test_allowed "patch" "configmaps" "--namespace=${NAMESPACE}"
 
-# Operator MUST NOT be able to delete ConfigMaps (least privilege)
-test_denied "delete" "configmaps" "--namespace=${NAMESPACE}"
+# Operator DOES delete ConfigMaps it owns, during instance teardown
+# (src/reconcilers/bind9instance/resources.rs:1349).
+test_allowed "delete" "configmaps" "--namespace=${NAMESPACE}"
 
 echo ""
 echo "========================================"
@@ -167,8 +186,9 @@ test_allowed "create" "deployments" "--namespace=${NAMESPACE}"
 test_allowed "update" "deployments" "--namespace=${NAMESPACE}"
 test_allowed "patch" "deployments" "--namespace=${NAMESPACE}"
 
-# Operator MUST NOT be able to delete Deployments (least privilege)
-test_denied "delete" "deployments" "--namespace=${NAMESPACE}"
+# Operator DOES delete Deployments it owns, during instance teardown
+# (src/reconcilers/bind9instance/resources.rs:1341).
+test_allowed "delete" "deployments" "--namespace=${NAMESPACE}"
 
 echo ""
 echo "========================================"
@@ -184,8 +204,9 @@ test_allowed "create" "services" "--namespace=${NAMESPACE}"
 test_allowed "update" "services" "--namespace=${NAMESPACE}"
 test_allowed "patch" "services" "--namespace=${NAMESPACE}"
 
-# Operator MUST NOT be able to delete Services (least privilege)
-test_denied "delete" "services" "--namespace=${NAMESPACE}"
+# Operator DOES delete Services it owns, during instance teardown
+# (src/reconcilers/bind9instance/resources.rs:1334).
+test_allowed "delete" "services" "--namespace=${NAMESPACE}"
 
 echo ""
 echo "========================================"
@@ -201,8 +222,9 @@ test_allowed "create" "serviceaccounts" "--namespace=${NAMESPACE}"
 test_allowed "update" "serviceaccounts" "--namespace=${NAMESPACE}"
 test_allowed "patch" "serviceaccounts" "--namespace=${NAMESPACE}"
 
-# Operator MUST NOT be able to delete ServiceAccounts (least privilege)
-test_denied "delete" "serviceaccounts" "--namespace=${NAMESPACE}"
+# Operator DOES delete ServiceAccounts it owns, during instance teardown
+# (src/reconcilers/bind9instance/resources.rs:1381).
+test_allowed "delete" "serviceaccounts" "--namespace=${NAMESPACE}"
 
 echo ""
 echo "========================================"
@@ -232,17 +254,19 @@ if [ ${FAILED} -eq 0 ]; then
     echo -e "${GREEN}✓ ALL TESTS PASSED${NC}"
     echo ""
     echo "RBAC configuration follows least privilege principle:"
-    echo "  - Operator has NO delete permissions on most resources"
+    echo "  - Operator cannot create or delete user-authored kinds"
+    echo "    (dnszones, records, clusterbind9providers)"
+    echo "  - Operator can delete only the workload objects and CRDs it owns"
     echo "  - Secrets: READ-ONLY cluster-wide; write confined to the operator namespace (B-5)"
-    echo "  - Destructive operations require bindy-admin-role"
+    echo "  - deletecollection is denied everywhere"
     echo ""
     exit 0
 else
     echo -e "${RED}✗ SOME TESTS FAILED${NC}"
     echo ""
     echo "RBAC configuration does NOT meet least privilege requirements."
-    echo "Review deploy/rbac/role.yaml and ensure:"
-    echo "  - NO 'delete' verbs on most resources"
+    echo "Review deploy/operator/rbac/role.yaml and ensure:"
+    echo "  - NO 'create'/'delete' verbs on dnszones, records, clusterbind9providers"
     echo "  - ClusterRole Secrets have ONLY: get, list, watch (writes in bindy-secrets-writer Role)"
     echo "  - Admin operations use bindy-admin-role (NOT operator role)"
     echo ""

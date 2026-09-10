@@ -1,3 +1,147 @@
+## [2026-09-10 18:05] - Scout input validation, wildcard guardrail, and a fixed integration-test harness
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `tests/integration_test.sh`: the no-`--image` local-build path could never have
+  worked. It ran `docker build -t bindy:latest "${PROJECT_ROOT}"` when there is no
+  `Dockerfile` at the repo root (they all live under `docker/`), and then deployed
+  `deploy/operator/deployment.yaml` unmodified — which references
+  `ghcr.io/firestoned/bindy:latest`, not the `bindy:latest` it had just built, so the
+  image name would not have matched either. It now delegates to
+  `scripts/build-docker-fast.sh` (the same builder `make ci-e2e` uses) and falls
+  through to a single shared load-and-deploy path. `make kind-integration-test` works
+  again.
+
+### Changed
+- `src/scout.rs`: `resolve_ips_from_annotation` now validates every entry of the
+  tenant-writable `bindy.firestoned.io/ip` annotation as an IPv4 dotted-quad
+  (P2-6). Invalid entries are dropped with a warning; an all-invalid list returns
+  `None` so `resolve_ips` still falls through to `default_ips` / LB status rather
+  than creating an address-less record. IPv6 literals are rejected — `ARecord` is
+  IPv4-only.
+- `src/scout.rs`: the `bindy.firestoned.io/record-name` override is now syntax-checked
+  by `validate_record_name_override` (P2-7). It still bypasses host→zone matching by
+  design, but the value reaches a zone file, so newlines, spaces, `;`, `"`, malformed
+  or overlong labels are rejected. `@`, wildcards (`*`, `*.api`) and `_`-prefixed
+  labels stay valid.
+- `src/scout.rs`: `zone_allows_source_namespace` now logs a warning when a
+  cross-namespace grant comes from the `*` wildcard (P3-3). Split out a pure
+  `zone_namespace_grant` returning `NamespaceGrant` so an explicit listing, a
+  same-namespace zone and a wildcard are distinguishable — an explicit match is
+  reported in preference to a wildcard, so only genuinely wildcard-driven grants warn.
+- `Makefile`: all four image substitutions now match `bindy[:@]...` instead of a
+  tag-only pattern (P2-8, partial). The source manifests still carry a tag, but a
+  tag-only `sed` would silently no-op against a digest-pinned manifest and ship a
+  stale digest forever.
+
+### Added
+- `src/scout_tests.rs`: 18 tests — 6 for IPv4 annotation validation, 6 for the
+  record-name override grammar, 6 for the namespace-grant classification.
+- `src/namespace_scope.rs`: `NamespaceScope::api_targets()` maps a scope to per-watch
+  `Api` targets (`None` = `Api::all`, `Some(ns)` = `Api::namespaced`), with 4 tests
+  including a guard that the target list is never empty. This is the seam the P1-2
+  watch-loop rewrite hangs off; it is additive and changes no behaviour on its own.
+
+### Why
+P2-6 and P2-7 are both tenant-writable annotations whose values are written verbatim
+into a zone file. P3-3's wildcard re-opens the cross-tenant path H1 closed and was
+previously indistinguishable from an explicit grant in the logs.
+
+P2-8 could not be closed as written. The roadmap lists it as "pin digests in deploy
+manifests, effort S", but a digest only exists after an image is built and pushed, so
+the pin belongs in the release pipeline. Making the substitutions digest-tolerant is
+the part that can be done in-repo, and it removes the trap that would have made a
+future pin fail silently.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+Behaviour note: a `bindy.firestoned.io/ip` annotation that was previously accepted as
+free text is now ignored with a warning unless it parses as IPv4, and a malformed
+`record-name` override now fails reconciliation instead of writing an invalid record.
+Both were producing broken DNS before; the change makes the failure visible.
+
+## [2026-09-10 16:20] - Security hardening: base-image digests, VAP wiring, RBAC least privilege, DNSSEC runtime whitelist
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docker/Dockerfile.chainguard`: bumped `wolfi-base` and `glibc-dynamic` to the current
+  multi-arch manifest-list digests. `docker/Dockerfile` (debian, distroless) was already
+  current. Verified with `./scripts/pin-image-digests.sh --dry-run`.
+- `scripts/pin-image-digests.sh`: dropped three entries that matched no `FROM` line
+  (`docker/Dockerfile.fast`, `rust:1.94.0`, `alpine:3.21`) — they silently no-opped.
+- `Makefile` (`admission-policies-install`): now applies 14 of the 16 policy manifests.
+  **07/08 (pod-shape), 11/12 (operator-workload-SA) and 15/16 (image-provenance) were
+  wired into no install target at all.** 05/06 (RNDC strict) stays opt-in because it
+  rejects pre-existing hmac-sha1 keys.
+- `deploy/scout/deployment.yaml`: added `seccompProfile: RuntimeDefault` — Scout was the
+  only pod in the fleet not asserting one (P2-1).
+- `.github/workflows/security-scan.yaml`: workflow-level `issues: write` /
+  `security-events: write` reduced to `contents: read`; each job now opts into the single
+  scope it needs (P3-8).
+- `deploy/operator/rbac/role.yaml`: removed the unused `create` verb from
+  `clusterbind9providers`, `dnszones` and all nine record kinds. Verified no reconciler
+  creates these — records are authored by users/GitOps or by Scout under its own
+  `bindy-scout` identity. `bootstrap.rs` picks this up automatically via `include_str!`.
+- `deploy/operator/rbac/verify-rbac.sh`: corrected ten assertions that contradicted the
+  policy they verify (P3-1). It asserted `delete` was denied on bind9instances, dnszones
+  and configmaps while the ClusterRole grants it, so the script failed against a correctly
+  configured cluster. Also removed the nonexistent `soarecords` kind, added the untested
+  `caarecords`, and fixed a reference to the nonexistent path `deploy/rbac/role.yaml`.
+- `src/bind9_resources.rs`: `generate_dnssec_policies` now returns
+  `anyhow::Result<String>` and validates `policy` / `algorithm` / `kskLifetime` /
+  `zskLifetime` before interpolating them into `named.conf` (P2-5). Uses the same grammar
+  as the CRD schema and ValidatingAdmissionPolicy 09 so all three layers agree.
+- `src/crd.rs` + `deploy/operator/crds/dnszones.crd.yaml`: `nameServers[].ipv4Address`
+  pattern is now octet-bounded; the previous `[0-9]{1,3}` form accepted
+  `999.999.999.999` (P3-6).
+- `docs/src/guide/scout.md`: corrected a false claim that Scout never mutates routes or
+  adds finalizers. It does (`add_finalizer_to_httproute`), which is why its ClusterRole
+  grants `patch`/`update` on route kinds. The RBAC example was wrong to match.
+- `docs/src/security/threat-model.md`: reconciled with the code — immutable ConfigMaps
+  marked MISSING (they are not set), log sanitization marked implemented, RNDC rotation
+  downgraded to PARTIAL (a manual runbook, not automation), M-24's "16 policies"
+  corrected to "8 policies + 8 bindings", and M-22 marked NOT IMPLEMENTED.
+- `deploy/scout/clusterrole.yaml`: removed a stale comment referring to a cluster-wide
+  Secret rule that was removed in #437.
+- `.wolf/cerebrum.md`: the "never pin Chainguard/Distroless digests" rule is superseded —
+  Dependabot now manages the bumps. Marked the reverted port-53/`NET_BIND_SERVICE` entry
+  as historical; `named` runs on 5353 with no added capability.
+
+### Added
+- `src/bootstrap_tests.rs`: two regression tests pinning the RBAC reduction — the
+  operator must not hold `create`/`delete` on user-authored kinds, and must retain
+  `create` on the kinds it does author.
+- `src/bind9_resources_tests.rs`: seven tests for the DNSSEC whitelist, covering policy
+  name / algorithm / KSK / ZSK injection, overlong and empty values, and that the
+  built-in defaults pass their own whitelist.
+- `src/crd_tests.rs`: schema test asserting the octet-bounded glue IPv4 pattern.
+
+### Why
+Re-verification of the external security audit against `sec-hardening` found that the
+compensating control for the C2 critical finding (VAP 11/12) shipped in the repo but was
+installed by no `make` target, so a default install had no mitigation for the cluster-wide
+Deployment-create escalation. The same pass found the RBAC verification script asserting
+the opposite of the shipped policy, and three threat-model claims that disagreed with the
+code in both directions.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+Rollout notes: the operator ClusterRole is narrower, so re-apply
+`deploy/operator/rbac/role.yaml`. `make admission-policies-install` now installs six more
+manifests; policy 15/16 rejects CRD image overrides outside `ghcr.io/firestoned/` or the
+ISC BIND9 repo, and rejects `:latest` — the shipped examples and integration tests already
+comply, but a cluster with a custom operand image override will need it allow-listed.
+
 ## [2026-09-10] - Hold three security roadmaps out of the public repo
 
 **Author:** Erick Bourgeois

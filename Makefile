@@ -86,6 +86,13 @@ crds-combined: crds ## Generate combined crds.yaml file for releases
 	done
 	@echo "✓ Combined CRD file generated: deploy/crds.yaml"
 
+# NOTE: the image substitutions below match `bindy[:@]...`, i.e. both a tag
+# (`bindy:latest`) and a digest (`bindy@sha256:...`). The source deployment
+# manifests currently carry a tag, but if they are ever digest-pinned (audit
+# finding P2-8) a tag-only pattern would silently fail to match and the release
+# would ship whatever digest was hardcoded, forever. Digest pinning itself cannot
+# happen here — a digest only exists after the image is built and pushed, so the
+# actual pin belongs in the release pipeline, after the push step.
 install-yaml: crds-combined ## Generate single-file install.yaml (CRDs + RBAC + Deployment) for a given VERSION
 	$(if $(VERSION),,$(error VERSION is required, e.g. make install-yaml VERSION=v0.1.0))
 	@echo "Creating install.yaml for version $(VERSION)..."
@@ -120,7 +127,7 @@ install-yaml: crds-combined ## Generate single-file install.yaml (CRDs + RBAC + 
 		echo "# ============================================================"; \
 		echo "# Deployment"; \
 		echo "# ============================================================"; \
-		sed "s|image: ghcr.io/firestoned/bindy:.*|image: ghcr.io/firestoned/bindy:$(VERSION)|" deploy/operator/deployment.yaml; \
+		sed "s|image: ghcr.io/firestoned/bindy[:@].*|image: ghcr.io/firestoned/bindy:$(VERSION)|" deploy/operator/deployment.yaml; \
 	} > deploy/install.yaml
 	@echo "✓ install.yaml generated: deploy/install.yaml"
 
@@ -152,7 +159,7 @@ scout-yaml: ## Generate single-file scout.yaml (RBAC + Deployment) for a given V
 		echo "# ============================================================"; \
 		echo "# Deployment"; \
 		echo "# ============================================================"; \
-		sed "s|image: ghcr.io/firestoned/bindy:.*|image: ghcr.io/firestoned/bindy:$(VERSION)|" deploy/scout/deployment.yaml; \
+		sed "s|image: ghcr.io/firestoned/bindy[:@].*|image: ghcr.io/firestoned/bindy:$(VERSION)|" deploy/scout/deployment.yaml; \
 	} > deploy/scout.yaml
 	@echo "✓ scout.yaml generated: deploy/scout.yaml"
 
@@ -208,12 +215,20 @@ admission-policies-install: ## Install bindy ValidatingAdmissionPolicies (k8s 1.
 	@kubectl apply -f deploy/admission-policies/02-bindy-acl-binding.yaml
 	@kubectl apply -f deploy/admission-policies/03-bindy-zone-name-policy.yaml
 	@kubectl apply -f deploy/admission-policies/04-bindy-zone-name-binding.yaml
+	@kubectl apply -f deploy/admission-policies/07-bindy-pod-shape-policy.yaml
+	@kubectl apply -f deploy/admission-policies/08-bindy-pod-shape-binding.yaml
 	@kubectl apply -f deploy/admission-policies/09-bindy-dnssec-policy-policy.yaml
 	@kubectl apply -f deploy/admission-policies/10-bindy-dnssec-policy-binding.yaml
+	@kubectl apply -f deploy/admission-policies/11-bindy-operator-workload-sa-policy.yaml
+	@kubectl apply -f deploy/admission-policies/12-bindy-operator-workload-sa-binding.yaml
 	@kubectl apply -f deploy/admission-policies/13-bindy-record-value-policy.yaml
 	@kubectl apply -f deploy/admission-policies/14-bindy-record-value-binding.yaml
-	@echo "✓ Core admission policies installed."
-	@echo "  Recommended (default since bindcar 0.7.0) posture-strict RNDC policy (rejects hmac-sha1):"
+	@kubectl apply -f deploy/admission-policies/15-bindy-image-provenance-policy.yaml
+	@kubectl apply -f deploy/admission-policies/16-bindy-image-provenance-binding.yaml
+	@echo "✓ Admission policies installed (07/08 pod-shape, 11/12 operator-workload-SA,"
+	@echo "  15/16 image-provenance included — 11/12 is the compensating control for the"
+	@echo "  cluster-wide operator Deployment grant, so it must not be skipped)."
+	@echo "  Opt-in (breaking for clusters with existing hmac-sha1 RNDC keys):"
 	@echo "    kubectl apply -f deploy/admission-policies/05-bindy-rndc-strict-policy.yaml"
 	@echo "    kubectl apply -f deploy/admission-policies/06-bindy-rndc-strict-binding.yaml"
 
@@ -852,7 +867,7 @@ kind-integration-test-ci: ## Run integration tests in CI mode (requires IMAGE_TA
 	@echo "Installing RBAC..."
 	@kubectl --context $(KIND_CONTEXT) apply -f deploy/operator/rbac/
 	@echo "Deploying operator with image: $(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)"
-	@sed "s|ghcr.io/firestoned/bindy:latest|$(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)|g" deploy/operator/deployment.yaml | kubectl --context $(KIND_CONTEXT) apply -f -
+	@sed -E "s|ghcr.io/firestoned/bindy[:@][^\"[:space:]]*|$(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)|g" deploy/operator/deployment.yaml | kubectl --context $(KIND_CONTEXT) apply -f -
 	@kubectl --context $(KIND_CONTEXT) wait --for=condition=available --timeout=300s deployment/bindy -n $(NAMESPACE)
 	@echo ""
 	@echo "================================================"
@@ -895,7 +910,7 @@ kind-create-scout: ## Create a second Kind cluster and install Scout (child clus
 	@kubectl --context $(KIND_SCOUT_CONTEXT) apply -f deploy/scout/role.yaml
 	@kubectl --context $(KIND_SCOUT_CONTEXT) apply -f deploy/scout/rolebinding.yaml
 	@echo "Deploying Scout with image: $(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)..."
-	@sed "s|image: ghcr.io/firestoned/bindy:latest|image: $(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)|g" deploy/scout/deployment.yaml \
+	@sed -E "s|image: ghcr.io/firestoned/bindy[:@][^\"[:space:]]*|image: $(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)|g" deploy/scout/deployment.yaml \
 		| kubectl --context $(KIND_SCOUT_CONTEXT) apply -f -
 	@kubectl --context $(KIND_SCOUT_CONTEXT) wait --for=condition=available --timeout=120s deployment/bindy-scout -n $(NAMESPACE)
 	@echo ""

@@ -11,7 +11,8 @@
 > updates the model to reflect several mitigations merged since v1.0: the B-5
 > Secret-RBAC split, the opt-in namespace-scoped operator mode, the BIND9
 > operand's move to an unprivileged DNS port (no `NET_BIND_SERVICE`), the
-> expansion of `ValidatingAdmissionPolicy` coverage from 0 to 16 policies, Scout
+> expansion of `ValidatingAdmissionPolicy` coverage from 0 to 8 policies (16 manifests
+> including bindings), Scout
 > namespace whitelisting (`--namespace-selector`, M-30), and automated
 > Dependabot auto-merge.
 >
@@ -388,7 +389,7 @@ act against a remote cluster.
 - ✅ RBAC limits secret read access to operator only
 - ✅ RNDC port (9530) not exposed externally
 - ❌ **MISSING**: Secret access audit trail (H-3)
-- ❌ **MISSING**: RNDC key rotation policy
+- ⚠️ **PARTIAL**: RNDC key rotation — documented manual runbook only, not automated
 
 **Residual Risk:** MEDIUM (need secret audit trail)
 
@@ -487,7 +488,9 @@ act against a remote cluster.
   (`bindy-secrets-writer`) bound **only in the operator's own namespace**. A
   compromised operator can no longer create/modify/delete Secrets in other
   namespaces such as `kube-system`.
-- ✅ Immutable ConfigMaps (once created, cannot be modified - requires recreation)
+- ❌ **MISSING**: Immutable ConfigMaps — `build_configmap` / `build_cluster_configmap`
+  (`src/bind9_resources.rs`) do not set `immutable: true`, so a generated ConfigMap can
+  be edited in place by anyone holding namespace write access (audit finding P2-2)
 - ❌ **MISSING**: ConfigMap/Secret integrity checks (hash validation)
 - ❌ **MISSING**: Automated drift detection (compare running config vs desired state)
 
@@ -604,8 +607,12 @@ exists to constrain that further)
 - ✅ Pre-commit hooks to detect secrets in code
 - ✅ GitHub secret scanning enabled
 - ✅ CI/CD fails if secrets detected
-- ❌ **MISSING**: Log sanitization (ensure secrets never appear in logs)
-- ❌ **MISSING**: Secret rotation policy (rotate RNDC keys periodically)
+- ✅ Log sanitization — RNDC keys and bindcar bearer tokens are redacted in their
+  `Debug` impls (`src/bind9/types.rs`, `src/bind9/mod.rs`), so a key cannot reach a log
+  line through structured logging
+- ⚠️ **PARTIAL**: RNDC key rotation is a **documented manual procedure**
+  (`docs/src/security/incident-response.md`), not an automated policy. There is no
+  scheduled/automatic rotation in the operator.
 
 **Residual Risk:** LOW (good controls, but rotation would improve)
 
@@ -669,7 +676,7 @@ just the one kubeconfig Secret it legitimately needs for multi-cluster mode.
 **Likelihood:** LOW (requires compromising the Scout pod/token specifically), but
 **this had the largest blast radius of any threat in this document** — worse than
 compromising the main operator, whose Secret access is namespace-scoped for
-mutation and (with `BINDY_WATCH_NAMESPACES` set) can be namespace-scoped for read too.
+mutation (B-5) — though the operator's Secret *read* is still cluster-wide, see M-22.
 
 **Original finding:** Scout's `ClusterRole` (`deploy/scout/clusterrole.yaml`) granted
 `apiGroups: [""], resources: ["secrets"], verbs: ["get"]` with **no `resourceNames`
@@ -822,11 +829,13 @@ kubeconfig Secret, in deployments that use Phase 2 mode at all.
 - ✅ **B-5 hardening:** operator's cluster-wide Secret access reduced to
   read-only; mutating verbs confined to a namespaced Role in the operator's own
   namespace (see T3)
-- ✅ **Namespace-scoped operator mode (opt-in):** `BINDY_WATCH_NAMESPACES`
-  restricts the set of namespaces the operator watches; when set, the operator
-  uses `Api::namespaced` and needs only per-namespace RoleBindings instead of a
-  cluster-wide ClusterRoleBinding — eliminating cluster-wide Secret/workload
-  access entirely for deployments that opt in. **Default remains cluster-wide**
+- ⛔ **Namespace-scoped operator mode — NOT IMPLEMENTED.** `BINDY_WATCH_NAMESPACES`
+  is parsed by `src/namespace_scope.rs` but **nothing consumes it**: `src/main.rs`
+  does not reference `NamespaceScope` and builds every watch cluster-wide. Setting
+  the variable today has no effect. The operator is cluster-wide in every
+  deployment. Tracked as audit finding P1-2; the compensating control for the
+  resulting Deployment-create escalation is VAP 11/12
+  (`deploy/admission-policies/11-bindy-operator-workload-sa-policy.yaml`)
   (unset = watch everything), so this mitigation is not yet load-bearing unless
   a deployer explicitly configures it.
 - ✅ Automated RBAC verification script (`deploy/rbac/verify-rbac.sh`)
@@ -1282,9 +1291,9 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-09 | SBOM generation | T2 (supply chain) | ✅ SLSA Level 2 |
 | M-10 | Chainguard zero-CVE images | I3 (CVE disclosure) | ✅ Container security |
 | M-21 | **B-5 Secret RBAC split** (2026-06-30): operator's cluster-wide `ClusterRole` is read-only on Secrets; mutating verbs moved to a namespaced Role bound only in the operator's own namespace | T3 (Secret tampering), E2 (privilege escalation) | ✅ RBAC |
-| M-22 | **Namespace-scoped operator mode** (opt-in via `BINDY_WATCH_NAMESPACES`): when set, operator uses per-namespace RoleBindings instead of a cluster-wide ClusterRoleBinding, eliminating cluster-wide Secret/workload access | E2, R2, I1 | ⚠️ Opt-in — default is still cluster-wide |
+| M-22 | **Namespace-scoped operator mode** (`BINDY_WATCH_NAMESPACES`) | E2, R2, I1 | ⛔ **NOT IMPLEMENTED** — the env var is parsed but unused (`src/main.rs` never imports `NamespaceScope`); setting it has no effect. Audit finding P1-2. When built, it can eliminate cluster-wide Secret/workload access, but **not** cluster-wide access entirely — `Bind9Cluster` and `ClusterBind9Provider` are cluster-scoped kinds and will always need a slim ClusterRole |
 | M-23 | **Unprivileged DNS port + capability drop**: BIND9 operand binds container port 5353 (Service still exposes 53) and adds zero Linux capabilities (`NET_BIND_SERVICE` removed) | E1 (container escape) | ✅ Pod Security |
-| M-24 | **ValidatingAdmissionPolicy suite** (16 policies as of 2026-07-01): ACL syntax, zone-name validation, RNDC strictness, operand pod shape, DNSSEC policy, operator-workload ServiceAccount identity, DNS record value validation, image provenance, and `volumeMount.mountPath` allow-listing (`safe_volume.rs`, closes audit finding F-001) | T1 (DNS tampering), T3 (ConfigMap/Secret tampering), E1 (container escape via malicious volume mounts), T2 (image provenance) | ✅ Kubernetes VAP — supersedes M-13 below |
+| M-24 | **ValidatingAdmissionPolicy suite** (8 policies + 8 bindings = 16 manifests, as of 2026-07-01): ACL syntax, zone-name validation, RNDC strictness, operand pod shape, DNSSEC policy, operator-workload ServiceAccount identity, DNS record value validation, image provenance, and `volumeMount.mountPath` allow-listing (`safe_volume.rs`, closes audit finding F-001) | T1 (DNS tampering), T3 (ConfigMap/Secret tampering), E1 (container escape via malicious volume mounts), T2 (image provenance) | ✅ Kubernetes VAP — supersedes M-13 below |
 | M-30 | **Scout namespace whitelisting** (`--namespace-selector` / `BINDY_SCOUT_NAMESPACE_SELECTOR`, new in v1.1): a source object's namespace must match a configured Kubernetes label selector *in addition to* the object's own opt-in annotation before Scout acts on it. Label-selector matching delegates to the API server (no client-side selector parser). Reduces Scout's day-to-day operating footprint — bounds T4 (cross-tenant patch/update) during normal operation. **Does not reduce the `ClusterRole`'s RBAC ceiling** for Ingress/Service/route types — a directly compromised token is unaffected for those. **Opt-in — unset by default**, matching pre-v1.1 behavior for backward compatibility; Scout logs a startup warning when unset. See the Scout guide's "Namespace Whitelisting" section for the rollout/migration note. | T4 (partial) | ⚠️ Opt-in, recommended for all production deployments |
 | M-25 | **Scout Secret RBAC scoped** (fixed 2026-07-19, same day as this finding's discovery): removed the cluster-wide `secrets: get` `PolicyRule` from the `bindy-scout` `ClusterRole` entirely. Replaced with a namespaced, `resourceNames`-restricted Role (`bindy-scout-secrets-reader`) scoped to exactly the one Phase 2 kubeconfig Secret, applied only when `--remote-secret` is configured. Same-cluster-only deployments (the default) now get zero Secret access. See I4/E4/Scenario 6 for the full before/after. | I4, E4, T4 (Secret-read component), Scenario 6 | ✅ RBAC — **was the highest-priority open item in v1.1; closed same-day** |
 
@@ -1334,7 +1343,7 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 
 ### Medium Residual Risks
 
-1. **DNS Tampering (T1)** - Substantially reduced by RBAC and, as of 2026-07-01, a 16-policy `ValidatingAdmissionPolicy` suite (M-24) covering ACLs, zone names, RNDC strictness, pod shape, and record values. DNSSEC signing remains the main outstanding defense-in-depth gap for in-transit tampering (Scenario 2).
+1. **DNS Tampering (T1)** - Substantially reduced by RBAC and, as of 2026-07-01, an 8-policy `ValidatingAdmissionPolicy` suite (M-24) covering ACLs, zone names, RNDC strictness, pod shape, and record values. DNSSEC signing remains the main outstanding defense-in-depth gap for in-transit tampering (Scenario 2).
 
 2. **Operator Resource Exhaustion (D2)** - Risk reduced by resource limits, but rate limiting (M-3) and admission webhooks are needed.
 

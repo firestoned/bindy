@@ -1153,6 +1153,24 @@ mod dnssec_policy_schema_tests {
         serde_json::to_value(T::crd()).expect("CRD serializes to JSON")
     }
 
+    /// Octet-bounded IPv4. The previous `^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$` form
+    /// admitted `999.999.999.999`, which the operator would then render into a
+    /// glue A record (audit finding P3-6).
+    const IPV4_PATTERN: &str = r"^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$";
+
+    #[test]
+    fn test_dnszone_nameserver_glue_ipv4_is_octet_bounded() {
+        let crd = schema_json::<DNSZone>();
+        let pattern = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]
+            ["spec"]["properties"]["nameServers"]["items"]["properties"]["ipv4Address"]["pattern"];
+        assert_eq!(
+            pattern.as_str(),
+            Some(IPV4_PATTERN),
+            "DNSZone nameServers[].ipv4Address must carry the octet-bounded IPv4 pattern \
+             so the API server rejects out-of-range octets like 999.999.999.999"
+        );
+    }
+
     #[test]
     fn test_dnszone_dnssec_policy_has_safe_pattern() {
         let crd = schema_json::<DNSZone>();

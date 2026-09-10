@@ -112,6 +112,74 @@ const DEFAULT_KSK_LIFETIME: &str = "unlimited";
 const DEFAULT_ZSK_LIFETIME: &str = "unlimited";
 const DEFAULT_NSEC3_SALT_LENGTH: u8 = 16;
 
+/// Max length of a DNSSEC policy NAME, matching the CRD schema pattern
+/// `^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$` and ValidatingAdmissionPolicy 09.
+const MAX_DNSSEC_POLICY_NAME_LEN: usize = 63;
+
+/// Max length of a DNSSEC signing TOKEN (algorithm, KSK/ZSK lifetime), matching
+/// the CRD schema pattern `^[A-Za-z0-9]{1,32}$` and ValidatingAdmissionPolicy 09.
+const MAX_DNSSEC_TOKEN_LEN: usize = 32;
+
+/// Validate a DNSSEC policy name against `^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`.
+///
+/// This is the RUNTIME arm of a three-layer defence. The CRD schema rejects a
+/// bad value at the API server and ValidatingAdmissionPolicy 09 rejects it at
+/// admission — but a cluster running a stale CRD, or one that never installed
+/// the policy suite, would otherwise interpolate the value straight into the
+/// `dnssec-policy { ... }` block of `named.conf` (audit finding P2-5). All three
+/// layers deliberately share one grammar so they cannot disagree.
+///
+/// # Errors
+/// Returns an error naming the field when `name` does not match the grammar.
+fn validate_dnssec_policy_name(name: &str) -> anyhow::Result<()> {
+    if name.is_empty() || name.len() > MAX_DNSSEC_POLICY_NAME_LEN {
+        anyhow::bail!(
+            "invalid dnssec policy name {name:?}: must be 1-{MAX_DNSSEC_POLICY_NAME_LEN} characters"
+        );
+    }
+
+    let mut chars = name.chars();
+    // Guard clause: the first character may not be '-' or '_'.
+    let first = chars.next().unwrap_or_default();
+    if !first.is_ascii_alphanumeric() {
+        anyhow::bail!(
+            "invalid dnssec policy name {name:?}: must start with an ASCII letter or digit"
+        );
+    }
+    if let Some(bad) = chars.find(|c| !c.is_ascii_alphanumeric() && *c != '-' && *c != '_') {
+        anyhow::bail!(
+            "invalid dnssec policy name {name:?}: illegal character {bad:?} \
+             (allowed: ASCII letters, digits, '-', '_')"
+        );
+    }
+
+    Ok(())
+}
+
+/// Validate a DNSSEC signing token (algorithm, KSK/ZSK lifetime) against
+/// `^[A-Za-z0-9]{1,32}$`.
+///
+/// These are interpolated UNQUOTED into `named.conf`, so the grammar is stricter
+/// than for policy names: alphanumeric only. `field` names the offending input in
+/// the error so an operator can find it without reading the template.
+///
+/// # Errors
+/// Returns an error naming `field` when `value` does not match the grammar.
+fn validate_dnssec_token(field: &str, value: &str) -> anyhow::Result<()> {
+    if value.is_empty() || value.len() > MAX_DNSSEC_TOKEN_LEN {
+        anyhow::bail!(
+            "invalid {field} {value:?}: must be 1-{MAX_DNSSEC_TOKEN_LEN} alphanumeric characters"
+        );
+    }
+    if let Some(bad) = value.chars().find(|c| !c.is_ascii_alphanumeric()) {
+        anyhow::bail!(
+            "invalid {field} {value:?}: illegal character {bad:?} (allowed: ASCII letters and digits)"
+        );
+    }
+
+    Ok(())
+}
+
 /// Generate DNSSEC policy configuration from cluster or instance config
 ///
 /// Checks both instance and global configuration for DNSSEC signing settings.
@@ -124,17 +192,25 @@ const DEFAULT_NSEC3_SALT_LENGTH: u8 = 16;
 ///
 /// # Returns
 ///
-/// A string containing DNSSEC policy definitions, or empty string if signing is not enabled
+/// A string containing DNSSEC policy definitions, or an empty string if signing
+/// is not enabled anywhere (which is not an error).
+///
+/// # Errors
+///
+/// Returns an error if any signing parameter that is interpolated into
+/// `named.conf` (`policy`, `algorithm`, `kskLifetime`, `zskLifetime`) fails the
+/// runtime whitelist — see [`validate_dnssec_policy_name`] and
+/// [`validate_dnssec_token`] (audit finding P2-5).
 pub(crate) fn generate_dnssec_policies(
     global_config: Option<&crate::crd::Bind9Config>,
     instance_config: Option<&crate::crd::Bind9Config>,
-) -> String {
+) -> anyhow::Result<String> {
     // Resolve the signing config with the same precedence/fallback semantics
     // as get_dnssec_signing_config: instance config wins when it enables
     // signing, otherwise fall back to the global config. Returns None when
     // signing is not enabled anywhere.
     let Some(signing) = get_dnssec_signing_config(global_config, instance_config) else {
-        return String::new();
+        return Ok(String::new());
     };
 
     // Extract policy parameters with defaults
@@ -168,13 +244,20 @@ pub(crate) fn generate_dnssec_policies(
         String::new()
     };
 
+    // P2-5: every value below is interpolated UNQUOTED into named.conf. Validate
+    // before templating so a malformed value can never reach the rendered config.
+    validate_dnssec_policy_name(policy_name)?;
+    validate_dnssec_token("dnssec algorithm", algorithm)?;
+    validate_dnssec_token("dnssec ksk lifetime", ksk_lifetime)?;
+    validate_dnssec_token("dnssec zsk lifetime", zsk_lifetime)?;
+
     // Substitute template variables
-    DNSSEC_POLICY_TEMPLATE
+    Ok(DNSSEC_POLICY_TEMPLATE
         .replace("{{POLICY_NAME}}", policy_name)
         .replace("{{ALGORITHM}}", algorithm)
         .replace("{{KSK_LIFETIME}}", ksk_lifetime)
         .replace("{{ZSK_LIFETIME}}", zsk_lifetime)
-        .replace("{{NSEC_CONFIG}}", &nsec_config)
+        .replace("{{NSEC_CONFIG}}", &nsec_config))
 }
 
 /// Check if DNSSEC signing is enabled in either instance or global config
@@ -921,7 +1004,7 @@ fn build_options_conf(
     }
 
     // Generate DNSSEC policies (instance config overrides global)
-    let dnssec_policies = generate_dnssec_policies(global_config, instance.spec.config.as_ref());
+    let dnssec_policies = generate_dnssec_policies(global_config, instance.spec.config.as_ref())?;
 
     // Forwarders and listen addresses - instance overrides global, per field
     let instance_cfg = instance.spec.config.as_ref();
@@ -1151,7 +1234,7 @@ fn build_cluster_options_conf(cluster: &Bind9Cluster) -> anyhow::Result<String> 
     }
 
     // Generate DNSSEC policies from global config
-    let dnssec_policies = generate_dnssec_policies(cluster.spec.common.global.as_ref(), None);
+    let dnssec_policies = generate_dnssec_policies(cluster.spec.common.global.as_ref(), None)?;
 
     // Forwarders and listen addresses from global config
     let global = cluster.spec.common.global.as_ref();
