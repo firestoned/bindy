@@ -23,6 +23,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 IMAGE_REF=""
 SKIP_DEPLOY=false
+# Tag used when no --image is supplied and we build locally. Deliberately not
+# "latest": containerd keeps an existing tag when an image of that name is
+# already present from a registry, so `kind load` of a "latest" build can
+# silently leave the registry image in place. Matches scripts/build-docker-fast.sh.
+LOCAL_BUILD_TAG="${LOCAL_BUILD_TAG:-local-integration}"
 KUBECTL="kubectl --context kind-${CLUSTER_NAME}"
 
 # Parse arguments
@@ -71,31 +76,42 @@ if [ "$SKIP_DEPLOY" = false ]; then
         ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/operator/rbac/"
 
         if [ -z "$IMAGE_REF" ]; then
-            # No image reference specified, build and deploy locally
-            echo -e "${GREEN}🏗️  Building Docker image...${NC}"
-            docker build -t bindy:latest "${PROJECT_ROOT}"
-
-            echo -e "${GREEN}📤 Loading image into Kind...${NC}"
-            kind load docker-image bindy:latest --name "${CLUSTER_NAME}"
-
-            echo -e "${GREEN}🚀 Deploying operator...${NC}"
-            ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/operator/deployment.yaml"
-        else
-            # Image reference specified. If it is present in the local Docker
-            # daemon (e.g. a CI-built `make docker-build` image that was never
-            # pushed), load it into the kind node so the pod does not try to
-            # pull it from a registry. Otherwise assume the kind node can pull
-            # it. Mirrors tests/regression_test.sh.
-            if docker image inspect "${IMAGE_REF}" >/dev/null 2>&1; then
-                echo -e "${GREEN}📤 Loading local image ${IMAGE_REF} into Kind...${NC}"
-                kind load docker-image "${IMAGE_REF}" --name "${CLUSTER_NAME}"
-            else
-                echo -e "${YELLOW}⚠️  ${IMAGE_REF} not in local Docker; assuming the kind node can pull it${NC}"
-            fi
-            echo -e "${YELLOW}📦 Deploying operator with image: ${IMAGE_REF}${NC}"
-            sed "s|ghcr.io/firestoned/bindy:latest|${IMAGE_REF}|g" \
-                "${PROJECT_ROOT}/deploy/operator/deployment.yaml" | ${KUBECTL} apply -f -
+            # No image reference specified: build one locally.
+            #
+            # This used to run `docker build -t bindy:latest "${PROJECT_ROOT}"`,
+            # which could never work — there is no Dockerfile at the repo root
+            # (they all live under docker/). It then deployed
+            # deploy/operator/deployment.yaml unmodified, which references
+            # ghcr.io/firestoned/bindy:latest rather than the bindy:latest it had
+            # just built, so the image name would not have matched either.
+            #
+            # Delegate to the same fast local build `make ci-e2e` uses, so there
+            # is exactly ONE local-build path, then fall through to the shared
+            # load-and-deploy block below.
+            IMAGE_REF="ghcr.io/firestoned/bindy:${LOCAL_BUILD_TAG}"
+            echo -e "${GREEN}🏗️  Building Docker image (${IMAGE_REF})...${NC}"
+            TAG="${LOCAL_BUILD_TAG}" KIND_CLUSTER="${CLUSTER_NAME}" \
+                "${PROJECT_ROOT}/scripts/build-docker-fast.sh" local "${LOCAL_BUILD_TAG}" || {
+                echo -e "${RED}❌ Local image build failed${NC}"
+                exit 1
+            }
         fi
+
+        # Single deploy path, whether the image was just built locally or passed
+        # in with --image. If it is present in the local Docker daemon (e.g. a
+        # CI-built `make docker-build` image that was never pushed), load it into
+        # the kind node so the pod does not try to pull it from a registry.
+        # Otherwise assume the kind node can pull it. Mirrors
+        # tests/regression_test.sh.
+        if docker image inspect "${IMAGE_REF}" >/dev/null 2>&1; then
+            echo -e "${GREEN}📤 Loading local image ${IMAGE_REF} into Kind...${NC}"
+            kind load docker-image "${IMAGE_REF}" --name "${CLUSTER_NAME}"
+        else
+            echo -e "${YELLOW}⚠️  ${IMAGE_REF} not in local Docker; assuming the kind node can pull it${NC}"
+        fi
+        echo -e "${YELLOW}📦 Deploying operator with image: ${IMAGE_REF}${NC}"
+        sed "s|ghcr.io/firestoned/bindy:latest|${IMAGE_REF}|g" \
+            "${PROJECT_ROOT}/deploy/operator/deployment.yaml" | ${KUBECTL} apply -f -
 
         echo -e "${GREEN}⏳ Waiting for operator to be ready...${NC}"
         ${KUBECTL} wait --for=condition=available --timeout=300s deployment/bindy -n "${NAMESPACE}" || {

@@ -587,7 +587,12 @@ pub struct NameServer {
     /// Glue records allow resolvers to find the IP addresses of nameservers that are
     /// within the zone they serve, avoiding circular dependencies.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(regex(pattern = r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$"))]
+    // Octet-bounded: the previous `[0-9]{1,3}` form accepted 999.999.999.999,
+    // which the API server would admit and the operator would then render into a
+    // glue A record (audit finding P3-6).
+    #[schemars(regex(
+        pattern = r"^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$"
+    ))]
     pub ipv4_address: Option<String>,
 
     /// Optional IPv6 address for glue record generation (AAAA record).

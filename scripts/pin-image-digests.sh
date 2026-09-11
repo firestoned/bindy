@@ -49,7 +49,7 @@ update_digest() {
   local new_digest="$2"
   local any_changed=false
 
-  for dockerfile in docker/Dockerfile docker/Dockerfile.chainguard docker/Dockerfile.fast; do
+  for dockerfile in docker/Dockerfile docker/Dockerfile.chainguard; do
     [[ -f "$dockerfile" ]] || continue
     grep -q "FROM ${image}@sha256:" "$dockerfile" || continue
 
@@ -80,13 +80,13 @@ echo "============================================"
 echo ""
 
 # Images to update: must match exactly what appears in FROM lines
+# NOTE: docker/Dockerfile.local is deliberately absent — it tracks a floating
+# tag for fast local iteration and is never shipped.
 IMAGES=(
   "debian:13-slim"
   "gcr.io/distroless/cc-debian13:nonroot"
   "cgr.dev/chainguard/wolfi-base:latest"
   "cgr.dev/chainguard/glibc-dynamic:latest"
-  "rust:1.94.0"
-  "alpine:3.21"
 )
 
 FAILED=()

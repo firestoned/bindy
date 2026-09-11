@@ -633,6 +633,81 @@ pub fn derive_record_name(host: &str, zone: &str) -> Result<String> {
     Ok(record_name.to_string())
 }
 
+/// Maximum length of a single DNS label (RFC 1035 §2.3.4).
+const MAX_DNS_LABEL_LEN: usize = 63;
+
+/// Maximum length of a full DNS name in presentation form (RFC 1035 §2.3.4).
+const MAX_DNS_NAME_LEN: usize = 253;
+
+/// Validate a `bindy.firestoned.io/record-name` override as a legal relative DNS name.
+///
+/// The override deliberately bypasses host->zone matching — the annotator has
+/// explicitly chosen the record name (see [`resolve_record_name`]). But the value
+/// is set by whoever can edit the source Ingress / Service / Route, and it is
+/// written into a zone file, so it must still be syntactically legal (audit
+/// finding P2-7). Without this, a newline or space in the annotation could close
+/// the current record and append another.
+///
+/// Accepts `@` (zone apex), and otherwise a dot-separated sequence of labels:
+/// each 1-[`MAX_DNS_LABEL_LEN`] characters of ASCII alphanumerics, `-` or `_`,
+/// starting and ending with an alphanumeric or `_`; a whole label of `*` is
+/// allowed so wildcard records (`*`, `*.api`) keep working. The full name is
+/// capped at [`MAX_DNS_NAME_LEN`].
+///
+/// # Errors
+/// Returns an error describing the first violation found.
+fn validate_record_name_override(name: &str) -> Result<()> {
+    // Guard clause: the apex is a legal name but not a legal label.
+    if name == "@" {
+        return Ok(());
+    }
+
+    if name.len() > MAX_DNS_NAME_LEN {
+        return Err(anyhow!(
+            "record-name override {name:?} is {} characters; the DNS limit is {MAX_DNS_NAME_LEN}",
+            name.len()
+        ));
+    }
+
+    for label in name.split('.') {
+        if label.is_empty() {
+            return Err(anyhow!(
+                "record-name override {name:?} has an empty label (leading, trailing or doubled '.')"
+            ));
+        }
+        if label == "*" {
+            continue;
+        }
+        if label.len() > MAX_DNS_LABEL_LEN {
+            return Err(anyhow!(
+                "record-name override {name:?} has a {}-character label; the DNS limit is {MAX_DNS_LABEL_LEN}",
+                label.len()
+            ));
+        }
+        if let Some(bad) = label
+            .chars()
+            .find(|c| !c.is_ascii_alphanumeric() && *c != '-' && *c != '_')
+        {
+            return Err(anyhow!(
+                "record-name override {name:?} contains illegal character {bad:?} \
+                 (allowed: ASCII letters, digits, '-', '_')"
+            ));
+        }
+        // Unwraps are safe: the label is non-empty per the guard above.
+        let first = label.chars().next().unwrap_or_default();
+        let last = label.chars().next_back().unwrap_or_default();
+        if !(first.is_ascii_alphanumeric() || first == '_')
+            || !(last.is_ascii_alphanumeric() || last == '_')
+        {
+            return Err(anyhow!(
+                "record-name override {name:?} has a label that starts or ends with '-'"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 /// Returns the explicit DNS record name override from `bindy.firestoned.io/record-name`.
 ///
 /// The annotation value is trimmed of surrounding whitespace. Returns `None` if the
@@ -651,17 +726,23 @@ pub fn get_record_name_annotation(annotations: &BTreeMap<String, String>) -> Opt
 ///
 /// When the override annotation is present, the host is **not** validated against the zone:
 /// the operator has explicitly chosen the record name and is responsible for its correctness.
+/// The override's *syntax* is still checked by [`validate_record_name_override`], because the
+/// value reaches a zone file and the annotation is tenant-writable (audit finding P2-7).
 ///
 /// # Errors
 ///
-/// Returns the error from [`derive_record_name`] only when no override is set and the host
-/// does not belong to the zone.
+/// Returns an error when the override is present but is not a legal DNS name, or — when no
+/// override is set — the error from [`derive_record_name`] if the host does not belong to
+/// the zone.
 pub fn resolve_record_name(
     annotations: &BTreeMap<String, String>,
     host: &str,
     zone: &str,
 ) -> Result<String> {
     if let Some(override_name) = get_record_name_annotation(annotations) {
+        // P2-7: the override skips zone matching by design, but it still has to be
+        // a legal DNS name — it ends up in a zone file.
+        validate_record_name_override(&override_name)?;
         return Ok(override_name);
     }
     derive_record_name(host, zone)
@@ -673,14 +754,38 @@ pub fn resolve_record_name(
 /// (`"10.0.0.1,10.0.0.2,10.0.0.3"`). Whitespace around each entry is trimmed
 /// and empty entries are skipped, preserving order and duplicates.
 ///
-/// Returns `None` if the annotation is absent, empty, or contains only
-/// separators/whitespace.
+/// Every entry is validated as an **IPv4 dotted-quad** before it is accepted
+/// (audit finding P2-6). This annotation is set by whoever can edit the source
+/// Ingress / Service / Route — i.e. a namespace tenant — and whatever survives
+/// here is written verbatim into `ARecordSpec.ipv4Addresses` and rendered into a
+/// zone file. IPv6 literals are rejected too: `ARecord` is IPv4-only, so an IPv6
+/// address here would produce an invalid A record.
+///
+/// Invalid entries are dropped with a warning rather than failing the whole
+/// record, so one fat-fingered entry in a list does not take down valid DNS.
+///
+/// Returns `None` if the annotation is absent, empty, contains only
+/// separators/whitespace, or if **no** entry is a valid IPv4 address. `None`
+/// (rather than an empty `Vec`) matters: it lets [`resolve_ips`] fall through to
+/// `default_ips` and then the load-balancer status, whereas `Some(vec![])` would
+/// create a record with no addresses.
 pub fn resolve_ips_from_annotation(annotations: &BTreeMap<String, String>) -> Option<Vec<String>> {
     let raw = annotations.get(ANNOTATION_IP)?;
     let ips: Vec<String> = raw
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
+        .filter(|entry| {
+            if entry.parse::<std::net::Ipv4Addr>().is_ok() {
+                return true;
+            }
+            warn!(
+                annotation = ANNOTATION_IP,
+                value = %entry,
+                "Ignoring invalid IPv4 address in annotation — entries must be dotted-quad IPv4 (ARecord is IPv4-only)"
+            );
+            false
+        })
         .map(ToString::to_string)
         .collect();
     if ips.is_empty() {
@@ -704,19 +809,82 @@ pub fn resolve_ips_from_annotation(annotations: &BTreeMap<String, String>) -> Op
 /// with a cluster-privileged remote client.
 #[must_use]
 pub fn zone_allows_source_namespace(zone: &DNSZone, source_namespace: &str) -> bool {
+    let grant = zone_namespace_grant(zone, source_namespace);
+
+    // P3-3: `*` re-opens the cross-tenant path that H1 closed. It stays supported —
+    // some platform teams genuinely want a shared zone — but an armed wildcard should
+    // never be silent, because it looks identical to an explicit grant from outside.
+    if grant == NamespaceGrant::Wildcard {
+        warn!(
+            zone = %zone.name_any(),
+            zone_namespace = %zone.namespace().unwrap_or_default(),
+            source_namespace = %source_namespace,
+            annotation = ANNOTATION_ALLOW_ZONE_NAMESPACES,
+            "Cross-namespace DNS grant allowed by WILDCARD '*' — any namespace in the cluster \
+             may create records in this zone. Replace '*' with an explicit namespace list \
+             unless this zone is deliberately cluster-public."
+        );
+    }
+
+    grant.is_authorized()
+}
+
+/// Why a [`DNSZone`] did (or did not) authorize a source namespace.
+///
+/// Kept separate from the boolean so a wildcard grant can be distinguished from an
+/// explicit one — they authorize identically but have very different blast radius.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NamespaceGrant {
+    /// The zone lives in the source's own namespace — no cross-namespace access.
+    SameNamespace,
+    /// The source namespace is named explicitly in the allow-list.
+    ExplicitlyListed,
+    /// The allow-list contains `*`; every namespace in the cluster is permitted.
+    Wildcard,
+    /// No rule authorizes this source namespace.
+    Denied,
+}
+
+impl NamespaceGrant {
+    /// Whether this grant permits the operation.
+    #[must_use]
+    pub fn is_authorized(self) -> bool {
+        !matches!(self, Self::Denied)
+    }
+}
+
+/// Classify how `zone` authorizes `source_namespace`, without logging.
+///
+/// An explicit listing is reported in preference to a wildcard when both are
+/// present: the grant would have been made regardless of the `*`, so it is not the
+/// wildcard's doing and should not raise a cross-namespace warning.
+#[must_use]
+pub fn zone_namespace_grant(zone: &DNSZone, source_namespace: &str) -> NamespaceGrant {
     if zone.namespace().as_deref() == Some(source_namespace) {
-        return true;
+        return NamespaceGrant::SameNamespace;
     }
     let Some(annotations) = zone.metadata.annotations.as_ref() else {
-        return false;
+        return NamespaceGrant::Denied;
     };
     let Some(value) = annotations.get(ANNOTATION_ALLOW_ZONE_NAMESPACES) else {
-        return false;
+        return NamespaceGrant::Denied;
     };
-    value
-        .split(',')
-        .map(str::trim)
-        .any(|entry| entry == ALLOW_ZONE_NAMESPACES_WILDCARD || entry == source_namespace)
+
+    let mut wildcard = false;
+    for entry in value.split(',').map(str::trim) {
+        if entry == source_namespace {
+            return NamespaceGrant::ExplicitlyListed;
+        }
+        if entry == ALLOW_ZONE_NAMESPACES_WILDCARD {
+            wildcard = true;
+        }
+    }
+
+    if wildcard {
+        NamespaceGrant::Wildcard
+    } else {
+        NamespaceGrant::Denied
+    }
 }
 
 /// Outcome of resolving a zone name against the DNSZone store for a given

@@ -197,6 +197,75 @@ mod tests {
         }
     }
 
+    // --- P3-2 / least privilege: no `create` on user-authored kinds ---
+
+    /// The operator never creates a ClusterBind9Provider, a DNSZone, or any
+    /// record CR — those are authored by users/GitOps, or (for records) by Scout
+    /// under its own `bindy-scout` identity. Granting `create` on them would let
+    /// a compromised operator token manufacture DNS records cluster-wide, so the
+    /// verb is deliberately absent. If a reconciler ever legitimately needs to
+    /// create one of these, this test is the place to make that decision explicit.
+    #[test]
+    fn test_operator_cluster_role_cannot_create_user_authored_kinds() {
+        let role = parse_cluster_role(BINDY_ROLE_YAML).unwrap();
+        let rules = role.rules.unwrap();
+
+        for kind in [
+            "clusterbind9providers",
+            "dnszones",
+            "arecords",
+            "aaaarecords",
+            "txtrecords",
+            "cnamerecords",
+            "mxrecords",
+            "nsrecords",
+            "srvrecords",
+            "caarecords",
+            "ptrrecords",
+        ] {
+            let rule = rules
+                .iter()
+                .find(|r| {
+                    r.resources
+                        .as_ref()
+                        .is_some_and(|res| res.iter().any(|x| x == kind))
+                })
+                .unwrap_or_else(|| panic!("operator ClusterRole must have a rule for {kind}"));
+
+            for forbidden in ["create", "delete", "deletecollection"] {
+                assert!(
+                    !rule.verbs.iter().any(|v| v == forbidden),
+                    "operator ClusterRole must NOT grant '{forbidden}' on {kind}"
+                );
+            }
+        }
+    }
+
+    /// The operator DOES create Bind9Instances (Bind9Cluster scaling) and
+    /// Bind9Clusters (from a ClusterBind9Provider), so those keep `create`.
+    /// This guards the reduction above from being over-applied.
+    #[test]
+    fn test_operator_cluster_role_retains_create_on_operator_authored_kinds() {
+        let role = parse_cluster_role(BINDY_ROLE_YAML).unwrap();
+        let rules = role.rules.unwrap();
+
+        for kind in ["bind9instances", "bind9clusters"] {
+            let rule = rules
+                .iter()
+                .find(|r| {
+                    r.resources
+                        .as_ref()
+                        .is_some_and(|res| res.iter().any(|x| x == kind))
+                })
+                .unwrap_or_else(|| panic!("operator ClusterRole must have a rule for {kind}"));
+
+            assert!(
+                rule.verbs.iter().any(|v| v == "create"),
+                "operator ClusterRole must retain 'create' on {kind} — the operator authors these"
+            );
+        }
+    }
+
     #[test]
     fn test_build_secrets_writer_role_name_and_namespace() {
         let role = build_secrets_writer_role("bindy-system");

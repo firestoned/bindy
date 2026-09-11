@@ -52,7 +52,7 @@ rules:
   # Read Namespace labels for --namespace-selector / BINDY_SCOUT_NAMESPACE_SELECTOR: scout
   # checks each source object's namespace against the configured selector before acting, via
   # a List scoped to that single namespace by name. Namespace metadata (name/labels) is
-  # low-sensitivity, unlike the cluster-wide secrets read above.
+  # low-sensitivity.
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list"]

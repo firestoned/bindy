@@ -2033,7 +2033,7 @@ mod tests {
         use crate::bind9_resources::generate_dnssec_policies;
 
         // No DNSSEC config at all
-        let result = generate_dnssec_policies(None, None);
+        let result = generate_dnssec_policies(None, None).expect("valid DNSSEC config must render");
         assert_eq!(
             result, "",
             "Should return empty string when no DNSSEC config"
@@ -2055,7 +2055,8 @@ mod tests {
             rndc_secret_ref: None,
             bindcar_config: None,
         };
-        let result = generate_dnssec_policies(Some(&config), None);
+        let result =
+            generate_dnssec_policies(Some(&config), None).expect("valid DNSSEC config must render");
         assert_eq!(
             result, "",
             "Should return empty string when signing is not configured"
@@ -2089,7 +2090,8 @@ mod tests {
             rndc_secret_ref: None,
             bindcar_config: None,
         };
-        let result = generate_dnssec_policies(Some(&config), None);
+        let result =
+            generate_dnssec_policies(Some(&config), None).expect("valid DNSSEC config must render");
         assert_eq!(
             result, "",
             "Should return empty string when signing is explicitly disabled"
@@ -2128,7 +2130,8 @@ mod tests {
             rndc_secret_ref: None,
             bindcar_config: None,
         };
-        let result = generate_dnssec_policies(Some(&config), None);
+        let result =
+            generate_dnssec_policies(Some(&config), None).expect("valid DNSSEC config must render");
 
         // Verify the result contains expected default values
         assert!(
@@ -2183,7 +2186,8 @@ mod tests {
             rndc_secret_ref: None,
             bindcar_config: None,
         };
-        let result = generate_dnssec_policies(Some(&config), None);
+        let result =
+            generate_dnssec_policies(Some(&config), None).expect("valid DNSSEC config must render");
 
         // Verify the result contains custom values
         assert!(
@@ -2257,7 +2261,8 @@ mod tests {
             bindcar_config: None,
         };
 
-        let result = generate_dnssec_policies(Some(&global_config), Some(&instance_config));
+        let result = generate_dnssec_policies(Some(&global_config), Some(&instance_config))
+            .expect("valid DNSSEC config must render");
 
         // Must fall back to global config, matching get_dnssec_signing_config.
         assert!(
@@ -2298,7 +2303,8 @@ mod tests {
             rndc_secret_ref: None,
             bindcar_config: None,
         };
-        let result = generate_dnssec_policies(Some(&config), None);
+        let result =
+            generate_dnssec_policies(Some(&config), None).expect("valid DNSSEC config must render");
 
         // Verify NSEC3 configuration
         assert!(
@@ -2378,7 +2384,8 @@ mod tests {
             bindcar_config: None,
         };
 
-        let result = generate_dnssec_policies(Some(&global_config), Some(&instance_config));
+        let result = generate_dnssec_policies(Some(&global_config), Some(&instance_config))
+            .expect("valid DNSSEC config must render");
 
         // Verify instance config takes precedence
         assert!(
@@ -3045,5 +3052,164 @@ mod tests {
             "a standalone Deployment owns every Pod in its own set"
         );
         assert!(!match_labels.contains_key("bindy.firestoned.io/cluster"));
+    }
+
+    // --- P2-5: runtime whitelist on DNSSEC signing parameters ---
+    //
+    // `policy` / `algorithm` / `kskLifetime` / `zskLifetime` are interpolated
+    // UNQUOTED into the BIND9 `dnssec-policy { ... }` block. The CRD schema and
+    // ValidatingAdmissionPolicy 09 both enforce a grammar, but those are the only
+    // two layers — a stale CRD or an uninstalled policy leaves named.conf
+    // injectable. These tests pin the third, runtime layer, using the SAME
+    // grammar as the other two so all three agree.
+
+    /// Build a signing config with the four interpolated fields set.
+    fn dnssec_signing_config(
+        policy: Option<&str>,
+        algorithm: Option<&str>,
+        ksk: Option<&str>,
+        zsk: Option<&str>,
+    ) -> Bind9Config {
+        Bind9Config {
+            rate_limit: None,
+            recursion: Some(false),
+            allow_query: None,
+            allow_transfer: None,
+            dnssec: Some(DNSSECConfig {
+                validation: Some(true),
+                signing: Some(crate::crd::DNSSECSigningConfig {
+                    enabled: true,
+                    policy: policy.map(str::to_string),
+                    algorithm: algorithm.map(str::to_string),
+                    ksk_lifetime: ksk.map(str::to_string),
+                    zsk_lifetime: zsk.map(str::to_string),
+                    nsec3: Some(false),
+                    nsec3_salt: None,
+                    nsec3_iterations: None,
+                    keys_from: None,
+                    auto_generate: None,
+                    export_to_secret: None,
+                }),
+            }),
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        }
+    }
+
+    #[test]
+    fn test_generate_dnssec_policies_accepts_valid_params() {
+        use crate::bind9_resources::generate_dnssec_policies;
+
+        let config = dnssec_signing_config(
+            Some("high-security"),
+            Some("ECDSAP384SHA384"),
+            Some("365d"),
+            Some("90d"),
+        );
+        let result = generate_dnssec_policies(Some(&config), None)
+            .expect("valid DNSSEC signing parameters must be accepted");
+        assert!(result.contains("dnssec-policy \"high-security\""));
+        assert!(result.contains("algorithm ECDSAP384SHA384"));
+    }
+
+    #[test]
+    fn test_generate_dnssec_policies_defaults_are_valid() {
+        use crate::bind9_resources::generate_dnssec_policies;
+
+        // All four unset -> the built-in defaults must themselves pass the whitelist.
+        let config = dnssec_signing_config(None, None, None, None);
+        let result = generate_dnssec_policies(Some(&config), None)
+            .expect("built-in DNSSEC defaults must pass their own whitelist");
+        assert!(result.contains("dnssec-policy \"default\""));
+        assert!(result.contains("algorithm ECDSAP256SHA256"));
+    }
+
+    #[test]
+    fn test_generate_dnssec_policies_rejects_policy_name_injection() {
+        use crate::bind9_resources::generate_dnssec_policies;
+
+        // Closing the block and appending a directive is the canonical escape.
+        let config = dnssec_signing_config(
+            Some("evil\"; }; zone \"attacker.com\" { type master; file \"/etc/passwd\"; };"),
+            None,
+            None,
+            None,
+        );
+        let err = generate_dnssec_policies(Some(&config), None)
+            .expect_err("policy name with named.conf metacharacters must be rejected");
+        assert!(
+            err.to_string().contains("dnssec policy name"),
+            "error should name the offending field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_generate_dnssec_policies_rejects_algorithm_injection() {
+        use crate::bind9_resources::generate_dnssec_policies;
+
+        let config = dnssec_signing_config(None, Some("ECDSAP256SHA256; };"), None, None);
+        let err = generate_dnssec_policies(Some(&config), None)
+            .expect_err("algorithm with metacharacters must be rejected");
+        assert!(
+            err.to_string().contains("dnssec algorithm"),
+            "error should name the offending field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_generate_dnssec_policies_rejects_ksk_lifetime_injection() {
+        use crate::bind9_resources::generate_dnssec_policies;
+
+        let config = dnssec_signing_config(None, None, Some("365d; };"), None);
+        let err = generate_dnssec_policies(Some(&config), None)
+            .expect_err("ksk lifetime with metacharacters must be rejected");
+        assert!(
+            err.to_string().contains("dnssec ksk lifetime"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_generate_dnssec_policies_rejects_zsk_lifetime_injection() {
+        use crate::bind9_resources::generate_dnssec_policies;
+
+        let config = dnssec_signing_config(None, None, None, Some("90d\n    key-directory \"/\";"));
+        let err = generate_dnssec_policies(Some(&config), None)
+            .expect_err("zsk lifetime with metacharacters must be rejected");
+        assert!(
+            err.to_string().contains("dnssec zsk lifetime"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_generate_dnssec_policies_rejects_overlong_and_empty_values() {
+        use crate::bind9_resources::generate_dnssec_policies;
+
+        // Empty string is not a valid identifier (pattern requires >= 1 char).
+        let empty = dnssec_signing_config(Some(""), None, None, None);
+        assert!(generate_dnssec_policies(Some(&empty), None).is_err());
+
+        // 33 chars exceeds the 32-char token cap for algorithm.
+        let long_algo = "A".repeat(33);
+        let overlong = dnssec_signing_config(None, Some(&long_algo), None, None);
+        assert!(generate_dnssec_policies(Some(&overlong), None).is_err());
+
+        // A leading '-' is rejected by the identifier grammar.
+        let leading_dash = dnssec_signing_config(Some("-nope"), None, None, None);
+        assert!(generate_dnssec_policies(Some(&leading_dash), None).is_err());
+    }
+
+    #[test]
+    fn test_generate_dnssec_policies_disabled_returns_empty_ok() {
+        use crate::bind9_resources::generate_dnssec_policies;
+
+        // Signing not enabled anywhere -> Ok(empty), never an error.
+        let result = generate_dnssec_policies(None, None)
+            .expect("absent DNSSEC config must not be an error");
+        assert!(result.is_empty());
     }
 }

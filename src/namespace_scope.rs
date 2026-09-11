@@ -80,6 +80,24 @@ impl NamespaceScope {
         matches!(self, Self::All)
     }
 
+    /// The namespace targets to build `Api` handles from, one per watch.
+    ///
+    /// `None` means "cluster-wide" (build with `Api::all`); `Some(ns)` means
+    /// "this namespace only" (build with `Api::namespaced`). The result is
+    /// **never empty** — an empty target list would silently disable every
+    /// watch, leaving the operator healthy but reconciling nothing.
+    ///
+    /// [`NamespaceScope::All`] deliberately yields exactly one `None` target so
+    /// the default deployment keeps its current single-watch-per-kind shape,
+    /// byte-for-byte. All the fan-out risk is confined to the opt-in scoped mode.
+    #[must_use]
+    pub fn api_targets(&self) -> Vec<Option<&str>> {
+        match self {
+            Self::All => vec![None],
+            Self::Namespaces(ns) => ns.iter().map(|n| Some(n.as_str())).collect(),
+        }
+    }
+
     /// The watched namespaces, or an empty slice when cluster-wide.
     #[must_use]
     pub fn namespaces(&self) -> &[String] {

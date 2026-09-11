@@ -749,15 +749,27 @@ metadata:
 rules:
   # ... existing Ingress and Service rules ...
 
-  # Watch HTTPRoutes/TLSRoutes/TCPRoutes and read Gateways (Gateway API)
+  # Watch HTTPRoutes/TLSRoutes/TCPRoutes (Gateway API).
+  # patch+update are required to add and remove the Scout finalizer on route
+  # metadata — without them Scout cannot guarantee ARecord cleanup on deletion.
   - apiGroups: ["gateway.networking.k8s.io"]
-    resources: ["httproutes", "tlsroutes", "tcproutes", "gateways"]
+    resources: ["httproutes", "tlsroutes", "tcproutes"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  # route/finalizers subresource for forward-compatibility.
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["httproutes/finalizers", "tlsroutes/finalizers", "tcproutes/finalizers"]
+    verbs: ["update"]
+  # Gateways ARE read-only — Scout reads status.addresses to discover external IPs.
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["gateways"]
     verbs: ["get", "list", "watch"]
 ```
 
 When gateway-chain IP resolution reads the LoadBalancer `Service` behind a Gateway, it uses the existing `services` `get`/`list` permissions (a `namespace/<label-selector>` target lists Services in the namespace).
 
-**Note:** Gateway API resources are read-only for Scout. Scout does NOT add finalizers to routes/gateways or mutate them — it only reads spec/metadata/status and creates corresponding ARecords in the target namespace.
+**Note:** `Gateway` objects are read-only for Scout — it only reads their `status.addresses` to discover external IPs, and never mutates them.
+
+**Routes are not read-only.** Scout adds and removes its own finalizer on the `HTTPRoute` / `TLSRoute` / `TCPRoute` objects it manages (`add_finalizer_to_httproute` and friends in `src/scout.rs`), which is why the ClusterRole above grants `patch` and `update` on route kinds. The finalizer is what lets Scout delete the corresponding ARecords before the route disappears; on a Phase-2 remote that is unreachable, it is released anyway after a 300s grace period so route deletion is never blocked. Scout does not modify any other field of a route.
 
 ---
 

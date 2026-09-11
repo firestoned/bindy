@@ -44,11 +44,15 @@ rules:
     verbs: ["get", "update", "patch"]
     # Status updates only need get/update/patch, not create/delete
 
-  # ClusterBind9Provider resources - cluster-scoped, NO DELETE (least privilege)
+  # ClusterBind9Provider resources - cluster-scoped, NO CREATE, NO DELETE (least privilege)
   - apiGroups: ["bindy.firestoned.io"]
     resources: ["clusterbind9providers"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    verbs: ["get", "list", "watch", "update", "patch"]
     # Removed: "delete" - Use bindy-admin-role for deletions
+    # Removed: "create" - a ClusterBind9Provider is authored by a platform admin;
+    #   the operator only ever reads one and creates Bind9Clusters FROM it
+    #   (src/reconcilers/clusterbind9provider.rs:394 creates Bind9Cluster, never a
+    #   provider). Verified: no create/SSA-apply call targets this kind.
 
   # ClusterBind9Provider status subresource (separate permissions for least privilege)
   - apiGroups: ["bindy.firestoned.io"]
@@ -56,11 +60,14 @@ rules:
     verbs: ["get", "update", "patch"]
     # Status updates only need get/update/patch, not create/delete
 
-  # DNSZone resources - NO DELETE (least privilege)
+  # DNSZone resources - NO CREATE, NO DELETE (least privilege)
   - apiGroups: ["bindy.firestoned.io"]
     resources: ["dnszones"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    verbs: ["get", "list", "watch", "update", "patch"]
     # Removed: "delete" - Use bindy-admin-role for deletions
+    # Removed: "create" - DNSZones are authored by users/GitOps. The operator
+    #   reconciles them into BIND9 config and patches status; it never creates
+    #   one. Verified: no create/SSA-apply call targets this kind.
 
   # DNSZone status subresource (separate permissions for least privilege)
   - apiGroups: ["bindy.firestoned.io"]
@@ -80,8 +87,13 @@ rules:
       - "srvrecords"
       - "caarecords"
       - "ptrrecords"
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    verbs: ["get", "list", "watch", "update", "patch"]
     # Removed: "delete" - Use bindy-admin-role for deletions
+    # Removed: "create" - record CRs are authored by users/GitOps, or by SCOUT
+    #   under its own identity (`bindy-scout` SA, deploy/scout/role.yaml grants
+    #   arecords create namespaced). The operator reconciles records into BIND9
+    #   and patches their status; it never creates one. Verified: the only
+    #   SSA-applies of record kinds are in src/scout.rs.
 
   # Record status subresources (separate permissions for least privilege)
   - apiGroups: ["bindy.firestoned.io"]

@@ -18,9 +18,9 @@ mod tests {
         resolve_ips_from_annotation, resolve_record_name, resolve_zone, service_arecord_cr_name,
         service_arecord_label_selector, service_ref_from_str, stale_arecord_label_selector,
         stale_tcproute_arecord_label_selector, tcproute_arecord_cr_name,
-        tcproute_arecord_label_selector, zone_allows_source_namespace, Gateway,
-        GatewayServiceTarget, NamespacedName, ParentReference, ServiceARecordParams,
-        TCPRouteARecordParams, ZoneAuthz, FINALIZER_SCOUT, LABEL_MANAGED_BY,
+        tcproute_arecord_label_selector, zone_allows_source_namespace, zone_namespace_grant,
+        Gateway, GatewayServiceTarget, NamespaceGrant, NamespacedName, ParentReference,
+        ServiceARecordParams, TCPRouteARecordParams, ZoneAuthz, FINALIZER_SCOUT, LABEL_MANAGED_BY,
         LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER, LABEL_SOURCE_NAME, LABEL_SOURCE_NAMESPACE,
         LABEL_ZONE, REMOTE_CLEANUP_GRACE_SECS,
     };
@@ -440,6 +440,278 @@ mod tests {
     fn test_resolve_ips_from_annotation_empty_value() {
         let mut annotations = BTreeMap::new();
         annotations.insert("bindy.firestoned.io/ip".to_string(), "".to_string());
+        assert_eq!(resolve_ips_from_annotation(&annotations), None);
+    }
+
+    // --- P3-3: make the cross-namespace wildcard grant observable ---
+    //
+    // `allow-zone-namespaces: "*"` re-opens the cross-tenant path that H1 closed.
+    // It stays supported, but the operator must be able to tell WHY a grant was
+    // made so a wildcard can be warned about (and audited) rather than looking
+    // identical to an explicit grant.
+
+    #[test]
+    fn test_zone_namespace_grant_same_namespace() {
+        let zone = zone_fixture("tenant-a", serde_json::json!({}));
+        assert_eq!(
+            zone_namespace_grant(&zone, "tenant-a"),
+            NamespaceGrant::SameNamespace
+        );
+    }
+
+    #[test]
+    fn test_zone_namespace_grant_explicit_listing() {
+        let zone = zone_fixture(
+            "platform",
+            serde_json::json!({ "bindy.firestoned.io/allow-zone-namespaces": "tenant-a,tenant-b" }),
+        );
+        assert_eq!(
+            zone_namespace_grant(&zone, "tenant-a"),
+            NamespaceGrant::ExplicitlyListed
+        );
+        assert_eq!(
+            zone_namespace_grant(&zone, "tenant-c"),
+            NamespaceGrant::Denied
+        );
+    }
+
+    #[test]
+    fn test_zone_namespace_grant_wildcard_is_distinguishable() {
+        let zone = zone_fixture(
+            "platform",
+            serde_json::json!({ "bindy.firestoned.io/allow-zone-namespaces": "*" }),
+        );
+        // The grant is allowed, but reported as Wildcard so it can be warned about.
+        assert_eq!(
+            zone_namespace_grant(&zone, "any-tenant"),
+            NamespaceGrant::Wildcard
+        );
+        assert!(zone_allows_source_namespace(&zone, "any-tenant"));
+    }
+
+    #[test]
+    fn test_zone_namespace_grant_same_namespace_wins_over_wildcard() {
+        // A zone in the source's own namespace is authorized on that basis, not the
+        // wildcard — so it must NOT produce a cross-namespace warning.
+        let zone = zone_fixture(
+            "tenant-a",
+            serde_json::json!({ "bindy.firestoned.io/allow-zone-namespaces": "*" }),
+        );
+        assert_eq!(
+            zone_namespace_grant(&zone, "tenant-a"),
+            NamespaceGrant::SameNamespace
+        );
+    }
+
+    #[test]
+    fn test_zone_namespace_grant_explicit_wins_over_wildcard() {
+        // "*" alongside an explicit entry: the explicit match is reported, since the
+        // grant would have been made regardless of the wildcard.
+        let zone = zone_fixture(
+            "platform",
+            serde_json::json!({ "bindy.firestoned.io/allow-zone-namespaces": "tenant-a,*" }),
+        );
+        assert_eq!(
+            zone_namespace_grant(&zone, "tenant-a"),
+            NamespaceGrant::ExplicitlyListed
+        );
+        assert_eq!(
+            zone_namespace_grant(&zone, "tenant-z"),
+            NamespaceGrant::Wildcard
+        );
+    }
+
+    #[test]
+    fn test_zone_namespace_grant_no_annotation_is_denied() {
+        let zone = zone_fixture("platform", serde_json::json!({}));
+        assert_eq!(
+            zone_namespace_grant(&zone, "tenant-a"),
+            NamespaceGrant::Denied
+        );
+    }
+
+    // --- P2-7: the `record-name` override is tenant-controlled ---
+    //
+    // The override deliberately bypasses host->zone matching (the annotator is
+    // trusted to pick the name), but the VALUE still lands in a zone file, so it
+    // must at least be a syntactically legal DNS name.
+
+    fn record_name_annotations(value: &str) -> BTreeMap<String, String> {
+        let mut a = BTreeMap::new();
+        a.insert(
+            "bindy.firestoned.io/record-name".to_string(),
+            value.to_string(),
+        );
+        a
+    }
+
+    #[test]
+    fn test_resolve_record_name_accepts_legal_overrides() {
+        for good in ["myapp", "@", "a.b", "web-01", "*", "*.api", "_sip._tcp"] {
+            let got = resolve_record_name(
+                &record_name_annotations(good),
+                "x.example.com",
+                "example.com",
+            );
+            assert!(got.is_ok(), "{good:?} should be accepted, got {got:?}");
+            assert_eq!(got.unwrap(), good);
+        }
+    }
+
+    #[test]
+    fn test_resolve_record_name_rejects_zone_file_injection() {
+        // A newline lets the value close the current record and start another.
+        let err = resolve_record_name(
+            &record_name_annotations("ok\n@ IN NS evil.example.com."),
+            "x.example.com",
+            "example.com",
+        );
+        assert!(err.is_err(), "newline in override must be rejected");
+    }
+
+    #[test]
+    fn test_resolve_record_name_rejects_spaces_and_control_chars() {
+        for bad in ["has space", "tab\there", "semi;colon", "quote\"here"] {
+            assert!(
+                resolve_record_name(
+                    &record_name_annotations(bad),
+                    "x.example.com",
+                    "example.com"
+                )
+                .is_err(),
+                "{bad:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_resolve_record_name_rejects_malformed_labels() {
+        for bad in ["-leading", "trailing-", "a..b", ".leading-dot", "a.-b"] {
+            assert!(
+                resolve_record_name(
+                    &record_name_annotations(bad),
+                    "x.example.com",
+                    "example.com"
+                )
+                .is_err(),
+                "{bad:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_resolve_record_name_rejects_overlong_label_and_name() {
+        let long_label = "a".repeat(64);
+        assert!(
+            resolve_record_name(
+                &record_name_annotations(&long_label),
+                "x.example.com",
+                "example.com"
+            )
+            .is_err(),
+            "a 64-character label exceeds the DNS limit of 63"
+        );
+
+        // 63-char labels are fine individually; 4 of them exceed the 253-char name cap.
+        let long_name = vec!["a".repeat(63); 4].join(".");
+        assert!(
+            resolve_record_name(
+                &record_name_annotations(&long_name),
+                "x.example.com",
+                "example.com"
+            )
+            .is_err(),
+            "a name over 253 characters must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_resolve_record_name_without_override_still_derives() {
+        // No annotation -> unchanged behaviour: derive from host, error if out of zone.
+        let empty = BTreeMap::new();
+        assert_eq!(
+            resolve_record_name(&empty, "web.example.com", "example.com").unwrap(),
+            "web"
+        );
+        assert!(resolve_record_name(&empty, "web.other.com", "example.com").is_err());
+    }
+
+    // --- P2-6: the `bindy.firestoned.io/ip` annotation is tenant-controlled ---
+    //
+    // Whatever survives here is written verbatim into `ARecordSpec.ipv4Addresses`
+    // and rendered into a zone file. A tenant who can annotate an Ingress/Service
+    // must not be able to put arbitrary text there.
+
+    #[test]
+    fn test_resolve_ips_from_annotation_rejects_non_ipv4() {
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            "bindy.firestoned.io/ip".to_string(),
+            "not-an-ip".to_string(),
+        );
+        assert_eq!(
+            resolve_ips_from_annotation(&annotations),
+            None,
+            "a non-IP annotation must not reach ARecordSpec"
+        );
+    }
+
+    #[test]
+    fn test_resolve_ips_from_annotation_rejects_out_of_range_octets() {
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            "bindy.firestoned.io/ip".to_string(),
+            "999.999.999.999".to_string(),
+        );
+        assert_eq!(resolve_ips_from_annotation(&annotations), None);
+    }
+
+    #[test]
+    fn test_resolve_ips_from_annotation_rejects_ipv6_for_a_record() {
+        // ARecord is IPv4-only; an IPv6 literal here would render an invalid A record.
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            "bindy.firestoned.io/ip".to_string(),
+            "2001:db8::1".to_string(),
+        );
+        assert_eq!(resolve_ips_from_annotation(&annotations), None);
+    }
+
+    #[test]
+    fn test_resolve_ips_from_annotation_drops_invalid_keeps_valid() {
+        // A partially-bad list keeps the good entries rather than failing the whole
+        // record — one fat-fingered entry should not take down valid DNS.
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            "bindy.firestoned.io/ip".to_string(),
+            "10.0.0.1,bogus,10.0.0.2".to_string(),
+        );
+        assert_eq!(
+            resolve_ips_from_annotation(&annotations),
+            Some(vec!["10.0.0.1".to_string(), "10.0.0.2".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_resolve_ips_from_annotation_all_invalid_is_none() {
+        // All-invalid must be None, not Some(vec![]) — None lets resolve_ips fall
+        // through to default_ips / LB status; an empty Vec would create a record
+        // with no addresses.
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            "bindy.firestoned.io/ip".to_string(),
+            "bogus,also-bogus".to_string(),
+        );
+        assert_eq!(resolve_ips_from_annotation(&annotations), None);
+    }
+
+    #[test]
+    fn test_resolve_ips_from_annotation_rejects_injection_text() {
+        let mut annotations = BTreeMap::new();
+        annotations.insert(
+            "bindy.firestoned.io/ip".to_string(),
+            "10.0.0.1 IN NS evil.example.com.".to_string(),
+        );
         assert_eq!(resolve_ips_from_annotation(&annotations), None);
     }
 
