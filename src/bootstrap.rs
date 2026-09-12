@@ -117,6 +117,19 @@ pub const DEFAULT_IMAGE_TAG: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 pub const BINDY_ROLE_YAML: &str = include_str!("../deploy/operator/rbac/role.yaml");
 pub const BINDY_ADMIN_ROLE_YAML: &str = include_str!("../deploy/operator/rbac/role-admin.yaml");
 
+/// Namespace-scoped split of [`BINDY_ROLE_YAML`]: the irreducible cluster-scoped half.
+///
+/// Used when the operator runs with `BINDY_WATCH_NAMESPACES` set. Contains only
+/// `clusterbind9providers` — the one bindy kind with `scope: Cluster`.
+pub const BINDY_NAMESPACED_CLUSTER_ROLE_YAML: &str =
+    include_str!("../deploy/operator/rbac/namespaced/clusterrole.yaml");
+
+/// Namespace-scoped split of [`BINDY_ROLE_YAML`]: the per-namespace half.
+///
+/// Applied once per watched namespace, with `metadata.namespace` substituted.
+pub const BINDY_NAMESPACED_ROLE_YAML: &str =
+    include_str!("../deploy/operator/rbac/namespaced/role.yaml");
+
 /// Embedded TokenReview ClusterRole (bindcar `0.7.0` Mode B).
 ///
 /// Grants `create tokenreviews` so the bindcar sidecar (running as the operand

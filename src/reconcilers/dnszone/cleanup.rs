@@ -156,7 +156,7 @@ pub async fn cleanup_stale_records(
     client: &Client,
     dnszone: &DNSZone,
     status_updater: &mut crate::reconcilers::status::DNSZoneStatusUpdater,
-    bind9_instances_store: &kube::runtime::reflector::Store<crate::crd::Bind9Instance>,
+    bind9_instances_store: &crate::context::MultiStore<crate::crd::Bind9Instance>,
 ) -> Result<usize> {
     use crate::bind9::records::query_dns_record;
     use crate::crd::{

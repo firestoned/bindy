@@ -9,11 +9,11 @@
 mod tests {
     use crate::crd::DNSZone;
     use crate::scout::{
-        arecord_cr_name, arecord_label_selector, build_service_arecord, build_tcproute_arecord,
-        check_zone_authorization, cleanup_grace_expired, derive_record_name,
-        gateway_addresses_as_ips, gateway_parent_refs, get_record_name_annotation,
-        get_zone_annotation, has_finalizer, is_arecord_enabled, is_being_deleted,
-        is_loadbalancer_service, is_scout_opted_in, parse_gateway_service_entry,
+        arecord_cr_name, arecord_label_selector, authorizing_zone, build_service_arecord,
+        build_tcproute_arecord, check_zone_authorization, cleanup_grace_expired,
+        derive_record_name, gateway_addresses_as_ips, gateway_parent_refs,
+        get_record_name_annotation, get_zone_annotation, has_finalizer, is_arecord_enabled,
+        is_being_deleted, is_loadbalancer_service, is_scout_opted_in, parse_gateway_service_entry,
         parse_gateway_services, resolve_ip_from_service_lb_status, resolve_ips,
         resolve_ips_from_annotation, resolve_record_name, resolve_zone, service_arecord_cr_name,
         service_arecord_label_selector, service_ref_from_str, stale_arecord_label_selector,
@@ -441,6 +441,47 @@ mod tests {
         let mut annotations = BTreeMap::new();
         annotations.insert("bindy.firestoned.io/ip".to_string(), "".to_string());
         assert_eq!(resolve_ips_from_annotation(&annotations), None);
+    }
+
+    // --- P3-4: identify WHICH zone granted access, so it can be re-verified ---
+
+    #[test]
+    fn test_authorizing_zone_returns_the_granting_zone() {
+        let same_ns = zone_fixture("tenant-a", serde_json::json!({}));
+        let zones = vec![std::sync::Arc::new(same_ns)];
+        let got = authorizing_zone(&zones, "example.com", "tenant-a");
+        assert!(got.is_some(), "a same-namespace zone must be the grantor");
+    }
+
+    #[test]
+    fn test_authorizing_zone_none_when_forbidden() {
+        // Zone exists but does not authorize this source namespace — there is no
+        // grantor to re-verify, so the caller keeps the Forbidden decision.
+        let zone = zone_fixture("platform", serde_json::json!({}));
+        let zones = vec![std::sync::Arc::new(zone)];
+        assert!(authorizing_zone(&zones, "example.com", "tenant-a").is_none());
+    }
+
+    #[test]
+    fn test_authorizing_zone_none_when_zone_name_does_not_match() {
+        let zone = zone_fixture("tenant-a", serde_json::json!({}));
+        let zones = vec![std::sync::Arc::new(zone)];
+        assert!(authorizing_zone(&zones, "other.com", "tenant-a").is_none());
+    }
+
+    #[test]
+    fn test_authorizing_zone_picks_the_wildcard_grantor() {
+        let zone = zone_fixture(
+            "platform",
+            serde_json::json!({ "bindy.firestoned.io/allow-zone-namespaces": "*" }),
+        );
+        let zones = vec![std::sync::Arc::new(zone)];
+        let got = authorizing_zone(&zones, "example.com", "any-tenant");
+        assert!(
+            got.is_some(),
+            "a wildcard grant still identifies a grantor to re-verify"
+        );
+        assert_eq!(got.unwrap().metadata.namespace.as_deref(), Some("platform"));
     }
 
     // --- P3-3: make the cross-namespace wildcard grant observable ---

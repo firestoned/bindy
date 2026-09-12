@@ -425,6 +425,126 @@ async fn initialize_services() -> Result<(Client, Arc<Bind9Manager>)> {
     Ok((client, bind9_manager))
 }
 
+/// Spawn one reflector per namespace target and return a combined view.
+///
+/// `predicate` filters objects into the store; pass `|_| true` to keep everything.
+/// `Init` and `InitDone` are always passed through — they drive the store's buffer
+/// swap, and dropping them would leave the shard permanently empty.
+///
+/// Each target gets its **own** `Store`, deliberately: merging namespace watches into
+/// one writer corrupts it (see [`MultiStore`](bindy::context::MultiStore)).
+fn spawn_sharded_reflector<K, P>(
+    client: &Client,
+    scope: &bindy::namespace_scope::NamespaceScope,
+    kind: &'static str,
+    predicate: P,
+) -> bindy::context::MultiStore<K>
+where
+    K: kube::Resource<Scope = kube::core::NamespaceResourceScope>
+        + Clone
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + serde::de::DeserializeOwned
+        + 'static,
+    K::DynamicType: Default + Clone + Eq + std::hash::Hash + std::fmt::Debug + Unpin,
+    P: Fn(&K) -> bool + Clone + Send + 'static,
+{
+    let mut shards = Vec::new();
+
+    for target in scope.api_targets() {
+        let api = bindy::namespace_scope::scoped_namespaced_api::<K>(client, target);
+        let (store, writer) = reflector::store();
+        shards.push(store);
+
+        let predicate = predicate.clone();
+        let shard = target.map(ToString::to_string);
+        tokio::spawn(async move {
+            let stream = watcher(api, watcher::Config::default()).filter_map(move |event| {
+                let out = match event {
+                    Ok(watcher::Event::Apply(o)) if predicate(&o) => {
+                        Some(Ok(watcher::Event::Apply(o)))
+                    }
+                    Ok(watcher::Event::Delete(o)) if predicate(&o) => {
+                        Some(Ok(watcher::Event::Delete(o)))
+                    }
+                    Ok(watcher::Event::InitApply(o)) if predicate(&o) => {
+                        Some(Ok(watcher::Event::InitApply(o)))
+                    }
+                    // Rejected by the predicate.
+                    Ok(
+                        watcher::Event::Apply(_)
+                        | watcher::Event::Delete(_)
+                        | watcher::Event::InitApply(_),
+                    ) => None,
+                    // Lifecycle events must always reach the store.
+                    Ok(other) => Some(Ok(other)),
+                    Err(e) => Some(Err(e)),
+                };
+                futures::future::ready(out)
+            });
+
+            reflector(writer, stream)
+                .for_each(|_| futures::future::ready(()))
+                .await;
+            warn!(
+                kind = kind,
+                namespace = shard.as_deref().unwrap_or("<all>"),
+                "Reflector stream ended"
+            );
+        });
+    }
+
+    bindy::context::MultiStore::new(shards)
+}
+
+/// Owned copies of the scope's namespace targets.
+///
+/// [`NamespaceScope::api_targets`] borrows the scope; controllers need targets that
+/// outlive that borrow so they can be moved into per-namespace tasks.
+///
+/// [`NamespaceScope::api_targets`]: bindy::namespace_scope::NamespaceScope::api_targets
+fn owned_targets(scope: &bindy::namespace_scope::NamespaceScope) -> Vec<Option<String>> {
+    scope
+        .api_targets()
+        .into_iter()
+        .map(|t| t.map(ToString::to_string))
+        .collect()
+}
+
+/// Spawn a single cluster-wide reflector for a **cluster-scoped** kind.
+///
+/// `ClusterBind9Provider` is the one bindy kind with `scope: Cluster`, so it can
+/// never be watched per-namespace: there is no namespace to scope to. Even a fully
+/// namespace-scoped operator therefore keeps a slim `ClusterRole` granting
+/// `get/list/watch` on `clusterbind9providers` — this is the irreducible residue of
+/// cluster-wide RBAC, and the reason M-22 cannot claim to eliminate cluster-wide
+/// access *entirely*.
+fn spawn_cluster_reflector<K>(client: &Client, kind: &'static str) -> bindy::context::MultiStore<K>
+where
+    K: kube::Resource<Scope = kube::core::ClusterResourceScope>
+        + Clone
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + serde::de::DeserializeOwned
+        + 'static,
+    K::DynamicType: Default + Clone + Eq + std::hash::Hash + std::fmt::Debug + Unpin,
+{
+    let api: Api<K> = Api::all(client.clone());
+    let (store, writer) = reflector::store();
+
+    tokio::spawn(async move {
+        let stream = watcher(api, watcher::Config::default());
+        reflector(writer, stream)
+            .for_each(|_| futures::future::ready(()))
+            .await;
+        warn!(kind = kind, "Reflector stream ended");
+    });
+
+    bindy::context::MultiStore::new(vec![store])
+}
+
 /// Initialize reflectors for all CRD types and create shared context.
 ///
 /// This function creates reflector tasks for all custom resources, populating
@@ -447,208 +567,58 @@ async fn initialize_services() -> Result<(Client, Arc<Bind9Manager>)> {
 async fn initialize_shared_context(client: Client) -> Result<Arc<Context>> {
     info!("Initializing reflectors for all CRD types");
 
-    // Create APIs for all CRD types
-    let cluster_bind9_providers_api = Api::<ClusterBind9Provider>::all(client.clone());
-    let bind9_clusters_api = Api::<Bind9Cluster>::all(client.clone());
-    let bind9_instances_api = Api::<Bind9Instance>::all(client.clone());
-    let bind9_deployments_api = Api::<Deployment>::all(client.clone());
-    let dnszones_api = Api::<DNSZone>::all(client.clone());
-    let a_records_api = Api::<ARecord>::all(client.clone());
-    let aaaa_records_api = Api::<AAAARecord>::all(client.clone());
-    let cname_records_api = Api::<CNAMERecord>::all(client.clone());
-    let txt_records_api = Api::<TXTRecord>::all(client.clone());
-    let mx_records_api = Api::<MXRecord>::all(client.clone());
-    let ns_records_api = Api::<NSRecord>::all(client.clone());
-    let srv_records_api = Api::<SRVRecord>::all(client.clone());
-    let caa_records_api = Api::<CAARecord>::all(client.clone());
-    let ptr_records_api = Api::<PTRRecord>::all(client.clone());
-
-    // Create stores (will be populated by reflectors)
-    let (cluster_bind9_providers_store, cluster_bind9_providers_writer) = reflector::store();
-    let (bind9_clusters_store, bind9_clusters_writer) = reflector::store();
-    let (bind9_instances_store, bind9_instances_writer) = reflector::store();
-    let (bind9_deployments_store, bind9_deployments_writer) = reflector::store();
-    let (dnszones_store, dnszones_writer) = reflector::store();
-    let (a_records_store, a_records_writer) = reflector::store();
-    let (aaaa_records_store, aaaa_records_writer) = reflector::store();
-    let (cname_records_store, cname_records_writer) = reflector::store();
-    let (txt_records_store, txt_records_writer) = reflector::store();
-    let (mx_records_store, mx_records_writer) = reflector::store();
-    let (ns_records_store, ns_records_writer) = reflector::store();
-    let (srv_records_store, srv_records_writer) = reflector::store();
-    let (caa_records_store, caa_records_writer) = reflector::store();
-    let (ptr_records_store, ptr_records_writer) = reflector::store();
-
-    // Start reflector tasks (one per CRD type)
-    // These run in the background and continuously update the stores
-    tokio::spawn(async move {
-        let stream = watcher(cluster_bind9_providers_api, watcher::Config::default());
-        reflector(cluster_bind9_providers_writer, stream)
-            .for_each(|_| futures::future::ready(()))
-            .await;
-        warn!("ClusterBind9Provider reflector stream ended");
-    });
-
-    tokio::spawn(async move {
-        let stream = watcher(bind9_clusters_api, watcher::Config::default());
-        reflector(bind9_clusters_writer, stream)
-            .for_each(|_| futures::future::ready(()))
-            .await;
-        warn!("Bind9Cluster reflector stream ended");
-    });
-
-    tokio::spawn(async move {
-        let stream = watcher(bind9_instances_api, watcher::Config::default());
-        reflector(bind9_instances_writer, stream)
-            .for_each(|_| futures::future::ready(()))
-            .await;
-        warn!("Bind9Instance reflector stream ended");
-    });
-
-    tokio::spawn(async move {
-        // Filter deployments to only include those owned by Bind9Instance
-        // We'll use a streaming filter to check ownerReferences
-        let stream =
-            watcher(bind9_deployments_api, watcher::Config::default()).filter_map(
-                |event| async move {
-                    match event {
-                        Ok(watcher::Event::Apply(deployment)) => {
-                            // Check if this deployment is owned by a Bind9Instance
-                            let is_bind9_deployment =
-                                deployment.metadata.owner_references.as_ref().is_some_and(
-                                    |owners| {
-                                        owners.iter().any(|owner| owner.kind == "Bind9Instance")
-                                    },
-                                );
-
-                            if is_bind9_deployment {
-                                Some(Ok(watcher::Event::Apply(deployment)))
-                            } else {
-                                None
-                            }
-                        }
-                        Ok(watcher::Event::Delete(deployment)) => {
-                            // Also filter deleted events
-                            let is_bind9_deployment =
-                                deployment.metadata.owner_references.as_ref().is_some_and(
-                                    |owners| {
-                                        owners.iter().any(|owner| owner.kind == "Bind9Instance")
-                                    },
-                                );
-
-                            if is_bind9_deployment {
-                                Some(Ok(watcher::Event::Delete(deployment)))
-                            } else {
-                                None
-                            }
-                        }
-                        Ok(watcher::Event::InitApply(deployment)) => {
-                            // Also filter init events
-                            let is_bind9_deployment =
-                                deployment.metadata.owner_references.as_ref().is_some_and(
-                                    |owners| {
-                                        owners.iter().any(|owner| owner.kind == "Bind9Instance")
-                                    },
-                                );
-
-                            if is_bind9_deployment {
-                                Some(Ok(watcher::Event::InitApply(deployment)))
-                            } else {
-                                None
-                            }
-                        }
-                        Ok(watcher::Event::Init) => Some(Ok(watcher::Event::Init)),
-                        Ok(watcher::Event::InitDone) => Some(Ok(watcher::Event::InitDone)),
-                        Err(e) => Some(Err(e)),
-                    }
-                },
+    let scope = bindy::namespace_scope::NamespaceScope::from_env();
+    match &scope {
+        bindy::namespace_scope::NamespaceScope::All => {
+            info!("Namespace scope: ALL (cluster-wide) — requires cluster-wide RBAC");
+        }
+        bindy::namespace_scope::NamespaceScope::Namespaces(ns) => {
+            info!(
+                namespaces = ?ns,
+                "Namespace scope: RESTRICTED — one watch per namespace, needs only per-namespace RoleBindings"
             );
+        }
+    }
 
-        reflector(bind9_deployments_writer, stream)
-            .for_each(|_| futures::future::ready(()))
-            .await;
-        warn!("Deployment reflector stream ended");
-    });
-
-    tokio::spawn(async move {
-        let stream = watcher(dnszones_api, watcher::Config::default());
-        reflector(dnszones_writer, stream)
-            .for_each(|_| futures::future::ready(()))
-            .await;
-        warn!("DNSZone reflector stream ended");
-    });
-
-    tokio::spawn(async move {
-        let stream = watcher(a_records_api, watcher::Config::default());
-        reflector(a_records_writer, stream)
-            .for_each(|_| futures::future::ready(()))
-            .await;
-        warn!("ARecord reflector stream ended");
-    });
-
-    tokio::spawn(async move {
-        let stream = watcher(aaaa_records_api, watcher::Config::default());
-        reflector(aaaa_records_writer, stream)
-            .for_each(|_| futures::future::ready(()))
-            .await;
-        warn!("AAAARecord reflector stream ended");
-    });
-
-    tokio::spawn(async move {
-        let stream = watcher(cname_records_api, watcher::Config::default());
-        reflector(cname_records_writer, stream)
-            .for_each(|_| futures::future::ready(()))
-            .await;
-        warn!("CNAMERecord reflector stream ended");
-    });
-
-    tokio::spawn(async move {
-        let stream = watcher(txt_records_api, watcher::Config::default());
-        reflector(txt_records_writer, stream)
-            .for_each(|_| futures::future::ready(()))
-            .await;
-        warn!("TXTRecord reflector stream ended");
-    });
-
-    tokio::spawn(async move {
-        let stream = watcher(mx_records_api, watcher::Config::default());
-        reflector(mx_records_writer, stream)
-            .for_each(|_| futures::future::ready(()))
-            .await;
-        warn!("MXRecord reflector stream ended");
-    });
-
-    tokio::spawn(async move {
-        let stream = watcher(ns_records_api, watcher::Config::default());
-        reflector(ns_records_writer, stream)
-            .for_each(|_| futures::future::ready(()))
-            .await;
-        warn!("NSRecord reflector stream ended");
-    });
-
-    tokio::spawn(async move {
-        let stream = watcher(srv_records_api, watcher::Config::default());
-        reflector(srv_records_writer, stream)
-            .for_each(|_| futures::future::ready(()))
-            .await;
-        warn!("SRVRecord reflector stream ended");
-    });
-
-    tokio::spawn(async move {
-        let stream = watcher(caa_records_api, watcher::Config::default());
-        reflector(caa_records_writer, stream)
-            .for_each(|_| futures::future::ready(()))
-            .await;
-        warn!("CAARecord reflector stream ended");
-    });
-
-    tokio::spawn(async move {
-        let stream = watcher(ptr_records_api, watcher::Config::default());
-        reflector(ptr_records_writer, stream)
-            .for_each(|_| futures::future::ready(()))
-            .await;
-        warn!("PTRRecord reflector stream ended");
-    });
+    // One reflector shard per namespace target. See `MultiStore` for why these
+    // cannot be merged into a single store with `select_all`.
+    // Cluster-scoped: always one cluster-wide watch, in every scope mode.
+    let cluster_bind9_providers_store =
+        spawn_cluster_reflector::<ClusterBind9Provider>(&client, "ClusterBind9Provider");
+    let bind9_clusters_store =
+        spawn_sharded_reflector::<Bind9Cluster, _>(&client, &scope, "Bind9Cluster", |_| true);
+    let bind9_instances_store =
+        spawn_sharded_reflector::<Bind9Instance, _>(&client, &scope, "Bind9Instance", |_| true);
+    // Deployments are filtered to those owned by a Bind9Instance — the operator has
+    // no interest in every Deployment in every watched namespace.
+    let bind9_deployments_store =
+        spawn_sharded_reflector::<Deployment, _>(&client, &scope, "Deployment", |deployment| {
+            deployment
+                .metadata
+                .owner_references
+                .as_ref()
+                .is_some_and(|owners| owners.iter().any(|owner| owner.kind == "Bind9Instance"))
+        });
+    let dnszones_store =
+        spawn_sharded_reflector::<DNSZone, _>(&client, &scope, "DNSZone", |_| true);
+    let a_records_store =
+        spawn_sharded_reflector::<ARecord, _>(&client, &scope, "ARecord", |_| true);
+    let aaaa_records_store =
+        spawn_sharded_reflector::<AAAARecord, _>(&client, &scope, "AAAARecord", |_| true);
+    let cname_records_store =
+        spawn_sharded_reflector::<CNAMERecord, _>(&client, &scope, "CNAMERecord", |_| true);
+    let txt_records_store =
+        spawn_sharded_reflector::<TXTRecord, _>(&client, &scope, "TXTRecord", |_| true);
+    let mx_records_store =
+        spawn_sharded_reflector::<MXRecord, _>(&client, &scope, "MXRecord", |_| true);
+    let ns_records_store =
+        spawn_sharded_reflector::<NSRecord, _>(&client, &scope, "NSRecord", |_| true);
+    let srv_records_store =
+        spawn_sharded_reflector::<SRVRecord, _>(&client, &scope, "SRVRecord", |_| true);
+    let caa_records_store =
+        spawn_sharded_reflector::<CAARecord, _>(&client, &scope, "CAARecord", |_| true);
+    let ptr_records_store =
+        spawn_sharded_reflector::<PTRRecord, _>(&client, &scope, "PTRRecord", |_| true);
 
     // Create the stores structure
     let stores = Stores {
@@ -679,6 +649,7 @@ async fn initialize_shared_context(client: Client) -> Result<Arc<Context>> {
         stores,
         http_client,
         metrics: Metrics::default(),
+        namespace_scope: scope,
     });
 
     info!("Shared context initialized with reflectors for all CRD types");
@@ -1326,11 +1297,24 @@ async fn run_clusterbind9provider_operator(context: Arc<Context>) -> Result<()> 
     info!("Starting ClusterBind9Provider operator");
 
     let client = context.client.clone();
+    // ClusterBind9Provider is cluster-scoped, so the PRIMARY watch is always
+    // cluster-wide. Only the owned Bind9Clusters are scoped: `.owns()` can be
+    // chained, so one controller gains one owned watch per watched namespace
+    // rather than a single cluster-wide one.
     let api = Api::<ClusterBind9Provider>::all(client.clone());
-    let bind9_cluster_api = Api::<Bind9Cluster>::all(client.clone());
 
-    Controller::new(api, default_watcher_config())
-        .owns(bind9_cluster_api, semantic_watcher_config())
+    let mut controller = Controller::new(api, default_watcher_config());
+    for target in owned_targets(&context.namespace_scope) {
+        controller = controller.owns(
+            bindy::namespace_scope::scoped_namespaced_api::<Bind9Cluster>(
+                &client,
+                target.as_deref(),
+            ),
+            semantic_watcher_config(),
+        );
+    }
+
+    controller
         .run(
             reconcile_clusterbind9provider_wrapper,
             error_policy,
@@ -1391,17 +1375,35 @@ async fn reconcile_clusterbind9provider_wrapper(
 async fn run_bind9cluster_operator(context: Arc<Context>) -> Result<()> {
     info!("Starting Bind9Cluster operator");
 
+    // Bind9Cluster is namespaced, so a `Controller` can only watch one namespace.
+    // Run one controller per watched namespace, all sharing the same reconciler
+    // and context. Cluster-wide mode yields exactly one controller, unchanged.
+    let targets = owned_targets(&context.namespace_scope);
+    futures::future::join_all(
+        targets
+            .into_iter()
+            .map(|target| run_bind9cluster_controller(context.clone(), target)),
+    )
+    .await;
+
+    Ok(())
+}
+
+/// Run the Bind9Cluster controller for a single namespace target.
+///
+/// `target` is `None` for cluster-wide, or `Some(namespace)`.
+async fn run_bind9cluster_controller(context: Arc<Context>, target: Option<String>) {
     let client = context.client.clone();
-    let api = Api::<Bind9Cluster>::all(client.clone());
-    let instance_api = Api::<Bind9Instance>::all(client.clone());
+    let api =
+        bindy::namespace_scope::scoped_namespaced_api::<Bind9Cluster>(&client, target.as_deref());
+    let instance_api =
+        bindy::namespace_scope::scoped_namespaced_api::<Bind9Instance>(&client, target.as_deref());
 
     Controller::new(api, default_watcher_config())
         .owns(instance_api, semantic_watcher_config())
         .run(reconcile_bind9cluster_wrapper, error_policy, context)
         .for_each(|_| futures::future::ready(()))
         .await;
-
-    Ok(())
 }
 
 /// Reconcile wrapper for `Bind9Cluster`
@@ -1451,14 +1453,44 @@ async fn reconcile_bind9cluster_wrapper(
 async fn run_bind9instance_operator(context: Arc<Context>) -> Result<()> {
     info!("Starting Bind9Instance operator");
 
+    // Bind9Instance is namespaced: one controller per watched namespace, all
+    // sharing the reconciler and context. Cluster-wide mode yields exactly one.
+    let targets = owned_targets(&context.namespace_scope);
+    futures::future::join_all(
+        targets
+            .into_iter()
+            .map(|target| run_bind9instance_controller(context.clone(), target)),
+    )
+    .await;
+
+    Ok(())
+}
+
+/// Run the Bind9Instance controller for a single namespace target.
+///
+/// `target` is `None` for cluster-wide, or `Some(namespace)`.
+#[allow(clippy::too_many_lines)]
+async fn run_bind9instance_controller(context: Arc<Context>, target: Option<String>) {
+    debug!(
+        namespace = target.as_deref().unwrap_or("<all>"),
+        "Starting Bind9Instance controller"
+    );
+
     let client = context.client.clone();
-    let api = Api::<Bind9Instance>::all(client.clone());
-    let deployment_api = Api::<Deployment>::all(client.clone());
-    let service_account_api = Api::<ServiceAccount>::all(client.clone());
-    let secret_api = Api::<Secret>::all(client.clone());
-    let configmap_api = Api::<ConfigMap>::all(client.clone());
-    let service_api = Api::<Service>::all(client.clone());
-    let _dnszone_api = Api::<DNSZone>::all(client.clone());
+    let api =
+        bindy::namespace_scope::scoped_namespaced_api::<Bind9Instance>(&client, target.as_deref());
+    let deployment_api =
+        bindy::namespace_scope::scoped_namespaced_api::<Deployment>(&client, target.as_deref());
+    let service_account_api =
+        bindy::namespace_scope::scoped_namespaced_api::<ServiceAccount>(&client, target.as_deref());
+    let secret_api =
+        bindy::namespace_scope::scoped_namespaced_api::<Secret>(&client, target.as_deref());
+    let configmap_api =
+        bindy::namespace_scope::scoped_namespaced_api::<ConfigMap>(&client, target.as_deref());
+    let service_api =
+        bindy::namespace_scope::scoped_namespaced_api::<Service>(&client, target.as_deref());
+    let _dnszone_api =
+        bindy::namespace_scope::scoped_namespaced_api::<DNSZone>(&client, target.as_deref());
 
     // Clone client and stores for the watch mapper closure
     let client_for_watch = client.clone();
@@ -1469,13 +1501,15 @@ async fn run_bind9instance_operator(context: Arc<Context>) -> Result<()> {
     // copied into the instance spec (see `crate::placement::resolve_placement`).
     // Without these watches such a change would only reach the Deployment on
     // the next 5-minute requeue.
-    let cluster_api = Api::<Bind9Cluster>::all(client.clone());
+    let cluster_api =
+        bindy::namespace_scope::scoped_namespaced_api::<Bind9Cluster>(&client, target.as_deref());
     let provider_api = Api::<ClusterBind9Provider>::all(client.clone());
     let stores_for_cluster_watch = context.stores.clone();
     let stores_for_provider_watch = context.stores.clone();
 
     // DNSZone API for status-only watcher
-    let dnszone_api = Api::<DNSZone>::all(client.clone());
+    let dnszone_api =
+        bindy::namespace_scope::scoped_namespaced_api::<DNSZone>(&client, target.as_deref());
 
     // Build the controller
     // Note: We use .owns(deployment_api) which already triggers reconciliation
@@ -1579,8 +1613,6 @@ async fn run_bind9instance_operator(context: Arc<Context>) -> Result<()> {
         .run(reconcile_bind9instance_wrapper, error_policy, context)
         .for_each(|_| futures::future::ready(()))
         .await;
-
-    Ok(())
 }
 
 /// Reconcile wrapper for `Bind9Instance`
@@ -1630,20 +1662,56 @@ async fn run_dnszone_operator(
 ) -> Result<()> {
     info!("Starting DNSZone operator");
 
+    // DNSZone is namespaced: one controller per watched namespace, all sharing the
+    // reconciler, context and zone manager. Cluster-wide mode yields exactly one.
+    let targets = owned_targets(&context.namespace_scope);
+    futures::future::join_all(
+        targets
+            .into_iter()
+            .map(|target| run_dnszone_controller(context.clone(), bind9_manager.clone(), target)),
+    )
+    .await;
+
+    Ok(())
+}
+
+/// Run the DNSZone controller for a single namespace target.
+///
+/// `target` is `None` for cluster-wide, or `Some(namespace)`.
+async fn run_dnszone_controller(
+    context: Arc<Context>,
+    bind9_manager: Arc<Bind9Manager>,
+    target: Option<String>,
+) {
+    debug!(
+        namespace = target.as_deref().unwrap_or("<all>"),
+        "Starting DNSZone controller"
+    );
+
     let client = context.client.clone();
-    let api = Api::<DNSZone>::all(client.clone());
+    let api = bindy::namespace_scope::scoped_namespaced_api::<DNSZone>(&client, target.as_deref());
 
     // Create API clients for Bind9Instance and all record types
-    let bind9instance_api = Api::<Bind9Instance>::all(client.clone());
-    let arecord_api = Api::<ARecord>::all(client.clone());
-    let aaaarecord_api = Api::<AAAARecord>::all(client.clone());
-    let txtrecord_api = Api::<TXTRecord>::all(client.clone());
-    let cnamerecord_api = Api::<CNAMERecord>::all(client.clone());
-    let mxrecord_api = Api::<MXRecord>::all(client.clone());
-    let nsrecord_api = Api::<NSRecord>::all(client.clone());
-    let srvrecord_api = Api::<SRVRecord>::all(client.clone());
-    let caarecord_api = Api::<CAARecord>::all(client.clone());
-    let ptrrecord_api = Api::<PTRRecord>::all(client.clone());
+    let bind9instance_api =
+        bindy::namespace_scope::scoped_namespaced_api::<Bind9Instance>(&client, target.as_deref());
+    let arecord_api =
+        bindy::namespace_scope::scoped_namespaced_api::<ARecord>(&client, target.as_deref());
+    let aaaarecord_api =
+        bindy::namespace_scope::scoped_namespaced_api::<AAAARecord>(&client, target.as_deref());
+    let txtrecord_api =
+        bindy::namespace_scope::scoped_namespaced_api::<TXTRecord>(&client, target.as_deref());
+    let cnamerecord_api =
+        bindy::namespace_scope::scoped_namespaced_api::<CNAMERecord>(&client, target.as_deref());
+    let mxrecord_api =
+        bindy::namespace_scope::scoped_namespaced_api::<MXRecord>(&client, target.as_deref());
+    let nsrecord_api =
+        bindy::namespace_scope::scoped_namespaced_api::<NSRecord>(&client, target.as_deref());
+    let srvrecord_api =
+        bindy::namespace_scope::scoped_namespaced_api::<SRVRecord>(&client, target.as_deref());
+    let caarecord_api =
+        bindy::namespace_scope::scoped_namespaced_api::<CAARecord>(&client, target.as_deref());
+    let ptrrecord_api =
+        bindy::namespace_scope::scoped_namespaced_api::<PTRRecord>(&client, target.as_deref());
 
     // Clone context for watch closures
     let ctx_for_a = context.clone();
@@ -1899,8 +1967,6 @@ async fn run_dnszone_operator(
         )
         .for_each(|_| futures::future::ready(()))
         .await;
-
-    Ok(())
 }
 
 /// Reconcile wrapper for `DNSZone`

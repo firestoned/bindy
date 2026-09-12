@@ -14,15 +14,16 @@ mod tests {
         build_tokenreview_cluster_role_binding, parse_cluster_role, resolve_image,
         ScoutDeploymentOptions, BINDCAR_TOKENREVIEW_CLUSTER_ROLE_YAML, BINDCAR_TOKENREVIEW_NAME,
         BINDCAR_TOKEN_EXPIRATION_SECONDS, BINDCAR_TOKEN_FILENAME, BINDCAR_TOKEN_MOUNT_PATH,
-        BINDCAR_TOKEN_VOLUME_NAME, BINDY_ADMIN_ROLE_YAML, BINDY_ROLE_YAML,
-        CLUSTER_ROLE_BINDING_NAME, DEFAULT_IMAGE_TAG, DEFAULT_NAMESPACE,
-        DEFAULT_SCOUT_CLUSTER_NAME, MC_DEFAULT_SERVICE_ACCOUNT_NAME, OPERATOR_CLUSTER_ROLE_YAMLS,
-        OPERATOR_DEPLOYMENT_NAME, OPERATOR_IMAGE_BASE, OPERATOR_ROLE_NAME, POD_NAMESPACE_ENV,
-        REMOTE_KUBECONFIG_SECRET_SUFFIX, REMOTE_KUBECONFIG_SECRET_TYPE, SA_TOKEN_SECRET_SUFFIX,
-        SCOUT_CLUSTER_ROLE_BINDING_NAME, SCOUT_CLUSTER_ROLE_NAME, SCOUT_DEPLOYMENT_NAME,
-        SCOUT_SECRETS_READER_ROLE_BINDING_NAME, SCOUT_SECRETS_READER_ROLE_NAME,
-        SCOUT_SERVICE_ACCOUNT_NAME, SCOUT_WRITER_ROLE_BINDING_NAME, SCOUT_WRITER_ROLE_NAME,
-        SECRETS_WRITER_ROLE_BINDING_NAME, SECRETS_WRITER_ROLE_NAME, SERVICE_ACCOUNT_NAME,
+        BINDCAR_TOKEN_VOLUME_NAME, BINDY_ADMIN_ROLE_YAML, BINDY_NAMESPACED_CLUSTER_ROLE_YAML,
+        BINDY_NAMESPACED_ROLE_YAML, BINDY_ROLE_YAML, CLUSTER_ROLE_BINDING_NAME, DEFAULT_IMAGE_TAG,
+        DEFAULT_NAMESPACE, DEFAULT_SCOUT_CLUSTER_NAME, MC_DEFAULT_SERVICE_ACCOUNT_NAME,
+        OPERATOR_CLUSTER_ROLE_YAMLS, OPERATOR_DEPLOYMENT_NAME, OPERATOR_IMAGE_BASE,
+        OPERATOR_ROLE_NAME, POD_NAMESPACE_ENV, REMOTE_KUBECONFIG_SECRET_SUFFIX,
+        REMOTE_KUBECONFIG_SECRET_TYPE, SA_TOKEN_SECRET_SUFFIX, SCOUT_CLUSTER_ROLE_BINDING_NAME,
+        SCOUT_CLUSTER_ROLE_NAME, SCOUT_DEPLOYMENT_NAME, SCOUT_SECRETS_READER_ROLE_BINDING_NAME,
+        SCOUT_SECRETS_READER_ROLE_NAME, SCOUT_SERVICE_ACCOUNT_NAME, SCOUT_WRITER_ROLE_BINDING_NAME,
+        SCOUT_WRITER_ROLE_NAME, SECRETS_WRITER_ROLE_BINDING_NAME, SECRETS_WRITER_ROLE_NAME,
+        SERVICE_ACCOUNT_NAME,
     };
 
     /// Convenience helper: build a minimal `ScoutDeploymentOptions` for tests.
@@ -195,6 +196,80 @@ mod tests {
                 "operator ClusterRole must NOT grant cluster-wide secrets '{forbidden}'"
             );
         }
+    }
+
+    // --- P1-2: the namespace-scoped RBAC split must stay faithful ---
+
+    /// The only bindy kind with `scope: Cluster`. Everything else is Namespaced and
+    /// therefore belongs in the per-namespace Role.
+    const CLUSTER_SCOPED_KINDS: [&str; 2] =
+        ["clusterbind9providers", "clusterbind9providers/status"];
+
+    fn parse_role_rules(yaml: &str) -> Vec<k8s_openapi::api::rbac::v1::PolicyRule> {
+        let doc: serde_yaml::Value = serde_yaml::from_str(yaml).expect("valid RBAC YAML");
+        serde_yaml::from_value(doc["rules"].clone()).expect("rules parse")
+    }
+
+    fn rule_resources(rules: &[k8s_openapi::api::rbac::v1::PolicyRule]) -> Vec<String> {
+        rules
+            .iter()
+            .flat_map(|r| r.resources.clone().unwrap_or_default())
+            .collect()
+    }
+
+    /// The namespaced Role must not grant any cluster-scoped kind — a Role cannot
+    /// authorize one, so such a rule would be silently dead and misleading.
+    #[test]
+    fn test_namespaced_role_grants_no_cluster_scoped_kind() {
+        let resources = rule_resources(&parse_role_rules(BINDY_NAMESPACED_ROLE_YAML));
+        for kind in CLUSTER_SCOPED_KINDS {
+            assert!(
+                !resources.iter().any(|r| r == kind),
+                "namespaced Role must not grant cluster-scoped {kind}"
+            );
+        }
+    }
+
+    /// The slim ClusterRole must grant ONLY cluster-scoped kinds. Anything else here
+    /// re-introduces exactly the cluster-wide access this split exists to remove —
+    /// a `secrets` or `deployments` rule would silently undo audit findings H3 and C2.
+    #[test]
+    fn test_namespaced_clusterrole_grants_only_cluster_scoped_kinds() {
+        let resources = rule_resources(&parse_role_rules(BINDY_NAMESPACED_CLUSTER_ROLE_YAML));
+        assert!(
+            !resources.is_empty(),
+            "the slim ClusterRole must not be empty"
+        );
+        for r in &resources {
+            assert!(
+                CLUSTER_SCOPED_KINDS.contains(&r.as_str()),
+                "slim ClusterRole must not grant {r} — only cluster-scoped kinds belong here"
+            );
+        }
+    }
+
+    /// The two halves together must cover every resource the cluster-wide role grants.
+    /// Without this, adding a rule to role.yaml and forgetting the split would quietly
+    /// drop a permission in scoped mode — visible only as a 403 at runtime.
+    #[test]
+    fn test_namespaced_split_covers_every_cluster_wide_resource() {
+        let full: std::collections::BTreeSet<String> =
+            rule_resources(&parse_role_rules(BINDY_ROLE_YAML))
+                .into_iter()
+                .collect();
+        let mut split: std::collections::BTreeSet<String> =
+            rule_resources(&parse_role_rules(BINDY_NAMESPACED_ROLE_YAML))
+                .into_iter()
+                .collect();
+        split.extend(rule_resources(&parse_role_rules(
+            BINDY_NAMESPACED_CLUSTER_ROLE_YAML,
+        )));
+
+        let missing: Vec<_> = full.difference(&split).collect();
+        assert!(
+            missing.is_empty(),
+            "these resources are granted cluster-wide but missing from the namespaced split: {missing:?}"
+        );
     }
 
     // --- P3-2 / least privilege: no `create` on user-authored kinds ---

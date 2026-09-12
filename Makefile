@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 
-.PHONY: help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny cargo-machete gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh ci-e2e calm-validate calm-docs calm-docs-check
+.PHONY: pin-release-images help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny cargo-machete gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh ci-e2e calm-validate calm-docs calm-docs-check
 
 # Detect host architecture and derive the matching Linux cross-compilation target.
 # `uname -m` reports arm64 on Apple Silicon macOS but aarch64 on Linux ARM, so
@@ -187,6 +187,12 @@ admission-policies-yaml: ## Generate combined admission-policies.yaml (all Valid
 	} > deploy/admission-policies.yaml
 	@echo "✓ Combined admission policies file generated: deploy/admission-policies.yaml"
 
+pin-release-images: ## Rewrite the generated release manifests to pin the operator image by digest (P2-8)
+	$(if $(VERSION),,$(error VERSION is required, e.g. make pin-release-images VERSION=v0.1.0))
+	@echo "Resolving multi-arch digest for $(REGISTRY)/$(IMAGE_REPOSITORY):$(VERSION)..."
+	@digest=$$(docker buildx imagetools inspect "$(REGISTRY)/$(IMAGE_REPOSITORY):$(VERSION)" --raw 2>/dev/null | sha256sum | awk '{print "sha256:"$$1}'); 	empty="sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"; 	if [ -z "$$digest" ] || [ "$$digest" = "$$empty" ]; then 	  echo "ERROR: could not resolve a digest for $(REGISTRY)/$(IMAGE_REPOSITORY):$(VERSION)."; 	  echo "       The image must be BUILT AND PUSHED before manifests can be digest-pinned."; 	  exit 1; 	fi; 	echo "  digest: $$digest"; 	for f in deploy/install.yaml deploy/scout.yaml; do 	  [ -f "$$f" ] || { echo "ERROR: $$f not generated; run 'make release-manifests' first"; exit 1; }; 	  sed -i.bak -E "s|image: $(REGISTRY)/$(IMAGE_REPOSITORY)[:@][^\"[:space:]]*|image: $(REGISTRY)/$(IMAGE_REPOSITORY)@$$digest|g" "$$f"; 	  rm -f "$$f.bak"; 	  if grep -q "image: $(REGISTRY)/$(IMAGE_REPOSITORY):" "$$f"; then 	    echo "ERROR: $$f still contains a tag reference after pinning"; exit 1; 	  fi; 	  echo "  ✓ pinned $$f"; 	done
+	@echo "✓ Release manifests pinned by digest."
+
 release-manifests: install-yaml scout-yaml admission-policies-yaml ## Generate all release manifests (install.yaml + scout.yaml + admission-policies.yaml) for a given VERSION
 	@echo "✓ All release manifests generated for version $(VERSION)"
 
@@ -225,7 +231,10 @@ admission-policies-install: ## Install bindy ValidatingAdmissionPolicies (k8s 1.
 	@kubectl apply -f deploy/admission-policies/14-bindy-record-value-binding.yaml
 	@kubectl apply -f deploy/admission-policies/15-bindy-image-provenance-policy.yaml
 	@kubectl apply -f deploy/admission-policies/16-bindy-image-provenance-binding.yaml
+	@kubectl apply -f deploy/admission-policies/17-bindy-configmap-integrity-policy.yaml
+	@kubectl apply -f deploy/admission-policies/18-bindy-configmap-integrity-binding.yaml
 	@echo "✓ Admission policies installed (07/08 pod-shape, 11/12 operator-workload-SA,"
+	@echo "  17/18 ConfigMap integrity,"
 	@echo "  15/16 image-provenance included — 11/12 is the compensating control for the"
 	@echo "  cluster-wide operator Deployment grant, so it must not be skipped)."
 	@echo "  Opt-in (breaking for clusters with existing hmac-sha1 RNDC keys):"

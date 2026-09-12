@@ -111,9 +111,43 @@ where
 {
     info!("Starting {} operator", T::KIND);
 
+    // Record kinds are namespaced: one controller per watched namespace, all sharing
+    // the reconciler, context and zone manager. Cluster-wide mode yields exactly one.
+    let targets: Vec<Option<String>> = context
+        .namespace_scope
+        .api_targets()
+        .into_iter()
+        .map(|t| t.map(ToString::to_string))
+        .collect();
+
+    futures::future::join_all(targets.into_iter().map(|target| {
+        run_generic_record_controller::<T>(context.clone(), bind9_manager.clone(), target)
+    }))
+    .await;
+
+    Ok(())
+}
+
+/// Run the record controller for one record kind in a single namespace target.
+///
+/// `target` is `None` for cluster-wide, or `Some(namespace)`.
+async fn run_generic_record_controller<T>(
+    context: Arc<Context>,
+    bind9_manager: Arc<Bind9Manager>,
+    target: Option<String>,
+) where
+    T: DnsRecordType,
+{
+    tracing::debug!(
+        kind = T::KIND,
+        namespace = target.as_deref().unwrap_or("<all>"),
+        "Starting record controller"
+    );
+
     let client = context.client.clone();
-    let api = Api::<T>::all(client.clone());
-    let dnszone_api = Api::<DNSZone>::all(client.clone());
+    let api = crate::namespace_scope::scoped_namespaced_api::<T>(&client, target.as_deref());
+    let dnszone_api =
+        crate::namespace_scope::scoped_namespaced_api::<DNSZone>(&client, target.as_deref());
 
     // Configure controller to watch for ALL changes including status updates
     let watcher_config = WatcherConfig::default().any_semantic();
@@ -156,8 +190,6 @@ where
         )
         .for_each(|_| futures::future::ready(()))
         .await;
-
-    Ok(())
 }
 
 /// Generic reconciliation wrapper with finalizer support.
