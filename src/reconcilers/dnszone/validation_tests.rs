@@ -21,6 +21,19 @@ mod tests {
         }
     }
 
+    /// Wrap a plain reflector `Store` as a single-shard `MultiStore`.
+    ///
+    /// The production code takes a `MultiStore` so it can span several namespace
+    /// watches; a unit test only ever needs one shard, and a single shard is exactly
+    /// the cluster-wide shape.
+    fn single_shard<K>(store: kube::runtime::reflector::Store<K>) -> crate::context::MultiStore<K>
+    where
+        K: kube::Resource + Clone + 'static,
+        K::DynamicType: std::hash::Hash + Eq + Clone + std::fmt::Debug + Default,
+    {
+        crate::context::MultiStore::new(vec![store])
+    }
+
     #[test]
     fn test_filter_instances_needing_reconciliation_all_need_reconciliation() {
         let instances = vec![
@@ -145,7 +158,7 @@ mod tests {
     fn test_get_instances_no_selectors() {
         let zone = create_test_zone_with_selectors("test-zone", "default", None);
         let (store, _writer) = kube::runtime::reflector::store::<Bind9Instance>();
-        let result = get_instances_from_zone(&zone, &store);
+        let result = get_instances_from_zone(&zone, &single_shard(store.clone()));
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -157,7 +170,7 @@ mod tests {
     fn test_get_instances_empty_selectors() {
         let zone = create_test_zone_with_selectors("test-zone", "default", Some(vec![]));
         let (store, _writer) = kube::runtime::reflector::store::<Bind9Instance>();
-        let result = get_instances_from_zone(&zone, &store);
+        let result = get_instances_from_zone(&zone, &single_shard(store.clone()));
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -186,7 +199,7 @@ mod tests {
         let zone =
             create_test_zone_with_selectors("test-zone", "default", Some(bind9_instances_from));
 
-        let result = get_instances_from_zone(&zone, &store);
+        let result = get_instances_from_zone(&zone, &single_shard(store.clone()));
         assert!(result.is_ok());
         let instances = result.unwrap();
         assert_eq!(instances.len(), 1);
@@ -214,7 +227,7 @@ mod tests {
         let zone =
             create_test_zone_with_selectors("test-zone", "default", Some(bind9_instances_from));
 
-        let result = get_instances_from_zone(&zone, &store);
+        let result = get_instances_from_zone(&zone, &single_shard(store.clone()));
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -264,7 +277,7 @@ mod tests {
         let zone =
             create_test_zone_with_selectors("test-zone", "default", Some(bind9_instances_from));
 
-        let result = get_instances_from_zone(&zone, &store);
+        let result = get_instances_from_zone(&zone, &single_shard(store.clone()));
         assert!(result.is_ok());
         let instances = result.unwrap();
         assert_eq!(instances.len(), 2);
@@ -319,7 +332,7 @@ mod tests {
         let zone =
             create_test_zone_with_selectors("test-zone", "default", Some(bind9_instances_from));
 
-        let result = get_instances_from_zone(&zone, &store);
+        let result = get_instances_from_zone(&zone, &single_shard(store.clone()));
         assert!(
             result.is_err(),
             "F-003: cross-namespace match without instance annotation must be rejected"
@@ -368,7 +381,7 @@ mod tests {
         let zone =
             create_test_zone_with_selectors("tenant-zone", "tenant-a", Some(bind9_instances_from));
 
-        let result = get_instances_from_zone(&zone, &store);
+        let result = get_instances_from_zone(&zone, &single_shard(store.clone()));
         assert!(result.is_ok(), "annotation opt-in must succeed: {result:?}");
         let found = result.unwrap();
         assert_eq!(found.len(), 2);
@@ -406,7 +419,7 @@ mod tests {
             Some(bind9_instances_from),
         );
 
-        let result = get_instances_from_zone(&zone, &store);
+        let result = get_instances_from_zone(&zone, &single_shard(store.clone()));
         assert!(result.is_ok(), "wildcard '*' must allow any namespace");
         assert_eq!(result.unwrap().len(), 1);
     }
@@ -441,7 +454,7 @@ mod tests {
             Some(bind9_instances_from),
         );
 
-        let result = get_instances_from_zone(&zone, &store);
+        let result = get_instances_from_zone(&zone, &single_shard(store.clone()));
         assert!(
             result.is_err(),
             "annotation that does not list the zone's namespace must reject"
@@ -468,7 +481,7 @@ mod tests {
         let zone =
             create_test_zone_with_selectors("tenant-zone", "tenant-a", Some(bind9_instances_from));
 
-        let result = get_instances_from_zone(&zone, &instance_store);
+        let result = get_instances_from_zone(&zone, &single_shard(instance_store.clone()));
         assert!(
             result.is_ok(),
             "same-namespace match must always succeed: {result:?}"
@@ -497,7 +510,7 @@ mod tests {
         let zone =
             create_test_zone_with_selectors("test-zone", "default", Some(bind9_instances_from));
 
-        let result = get_instances_from_zone(&zone, &store);
+        let result = get_instances_from_zone(&zone, &single_shard(store.clone()));
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -591,7 +604,7 @@ mod tests {
         writer.apply_watcher_event(&kube::runtime::watcher::Event::Apply(zone2));
 
         let current_zone = create_zone_with_status("my-zone", "team-c", "third.com", &[]);
-        let result = check_for_duplicate_zones(&current_zone, &store);
+        let result = check_for_duplicate_zones(&current_zone, &single_shard(store.clone()));
         assert!(result.is_none());
     }
 
@@ -642,7 +655,7 @@ mod tests {
         let new_zone: crate::crd::DNSZone =
             serde_json::from_value(new_zone_json).expect("Failed to create new zone");
 
-        let result = check_for_duplicate_zones(&new_zone, &store);
+        let result = check_for_duplicate_zones(&new_zone, &single_shard(store.clone()));
         assert!(result.is_some());
 
         let duplicate_info = result.unwrap();
@@ -700,7 +713,7 @@ mod tests {
         let team_b_zone: crate::crd::DNSZone =
             serde_json::from_value(team_b_zone_json).expect("Failed to create team B zone");
 
-        let result = check_for_duplicate_zones(&team_b_zone, &store);
+        let result = check_for_duplicate_zones(&team_b_zone, &single_shard(store.clone()));
         assert!(result.is_some());
 
         let duplicate_info = result.unwrap();
@@ -756,7 +769,7 @@ mod tests {
         let new_zone: crate::crd::DNSZone =
             serde_json::from_value(new_zone_json).expect("Failed to create new zone");
 
-        let result = check_for_duplicate_zones(&new_zone, &store);
+        let result = check_for_duplicate_zones(&new_zone, &single_shard(store.clone()));
         assert!(
             result.is_some(),
             "F-003: the newer zone must lose to the older zone with the same zoneName"
@@ -822,7 +835,7 @@ mod tests {
         let new_zone: crate::crd::DNSZone =
             serde_json::from_value(new_zone_json).expect("Failed to create new zone");
 
-        let result = check_for_duplicate_zones(&new_zone, &store);
+        let result = check_for_duplicate_zones(&new_zone, &single_shard(store.clone()));
         assert!(
             result.is_some(),
             "F-003: failed-state of the older zone must not unblock the newer claimant"
@@ -884,7 +897,7 @@ mod tests {
         });
         let older: crate::crd::DNSZone = serde_json::from_value(older_zone_json).unwrap();
 
-        let result = check_for_duplicate_zones(&older, &store);
+        let result = check_for_duplicate_zones(&older, &single_shard(store.clone()));
         assert!(
             result.is_none(),
             "current zone is older → it wins; result must be None"
@@ -938,7 +951,7 @@ mod tests {
         let updated_zone: crate::crd::DNSZone =
             serde_json::from_value(updated_zone_json).expect("Failed to create updated zone");
 
-        let result = check_for_duplicate_zones(&updated_zone, &store);
+        let result = check_for_duplicate_zones(&updated_zone, &single_shard(store.clone()));
         assert!(result.is_none());
     }
 
@@ -1005,7 +1018,7 @@ mod tests {
         let zone3: crate::crd::DNSZone =
             serde_json::from_value(zone3_json).expect("Failed to create zone3");
 
-        let result = check_for_duplicate_zones(&zone3, &store);
+        let result = check_for_duplicate_zones(&zone3, &single_shard(store.clone()));
         assert!(result.is_some());
 
         let duplicate_info = result.unwrap();

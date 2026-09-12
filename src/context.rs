@@ -22,6 +22,75 @@ use kube::{Client, ResourceExt};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+/// A reflector view over one or more namespace-scoped watches.
+///
+/// When the operator runs cluster-wide ([`NamespaceScope::All`]) this holds exactly
+/// one shard built from `Api::all`, and every operation is a direct pass-through —
+/// the cluster-wide deployment behaves exactly as it did before namespace scoping
+/// existed.
+///
+/// When the operator is scoped to a namespace set it holds **one shard per
+/// namespace**. That sharding is load-bearing, not an implementation detail: a
+/// single reflector `Store` cannot be fed by several namespace watches merged with
+/// `select_all`, because `watcher::Event::InitDone` makes the store *replace* its
+/// entire contents with the buffer of whichever watch just finished listing
+/// (`kube_runtime::reflector::store` does `mem::swap(&mut *store, &mut self.buffer)`).
+/// Merging N watches into one writer would leave the store holding only the last
+/// namespace to sync — silently, and again on every watch reconnect. Sharding keeps
+/// each watch's `Init`/`InitDone` cycle confined to its own store.
+///
+/// [`NamespaceScope::All`]: crate::namespace_scope::NamespaceScope::All
+#[derive(Clone)]
+pub struct MultiStore<K>
+where
+    K: kube::Resource + Clone + 'static,
+    K::DynamicType: std::hash::Hash + Eq + Clone + std::fmt::Debug + Default,
+{
+    shards: Vec<Store<K>>,
+}
+
+impl<K> MultiStore<K>
+where
+    K: kube::Resource + Clone + 'static,
+    K::DynamicType: std::hash::Hash + Eq + Clone + std::fmt::Debug + Default,
+{
+    /// Build a view over the given shards.
+    ///
+    /// # Panics
+    /// Panics if `shards` is empty. An empty view would make every lookup return
+    /// nothing while the operator reported itself healthy — a far worse failure
+    /// than a loud one at startup.
+    #[must_use]
+    pub fn new(shards: Vec<Store<K>>) -> Self {
+        assert!(
+            !shards.is_empty(),
+            "MultiStore requires at least one shard; an empty view would silently \
+             make every reflector lookup return nothing"
+        );
+        Self { shards }
+    }
+
+    /// All objects across every shard.
+    ///
+    /// Shards are disjoint by construction (one namespace each, or a single
+    /// cluster-wide shard), so no de-duplication is needed.
+    #[must_use]
+    pub fn state(&self) -> Vec<Arc<K>> {
+        // Fast path: the cluster-wide default is a single shard. Return its state
+        // directly so the default deployment allocates exactly as it did before.
+        if let [only] = self.shards.as_slice() {
+            return only.state();
+        }
+        self.shards.iter().flat_map(Store::state).collect()
+    }
+
+    /// Number of shards backing this view (1 when cluster-wide).
+    #[must_use]
+    pub fn shard_count(&self) -> usize {
+        self.shards.len()
+    }
+}
+
 /// Shared context passed to all operators.
 ///
 /// This context provides access to:
@@ -42,6 +111,15 @@ pub struct Context {
 
     /// Metrics registry for observability
     pub metrics: Metrics,
+
+    /// The set of namespaces this operator watches and manages.
+    ///
+    /// Drives how every controller builds its `Api` handles: [`NamespaceScope::All`]
+    /// (the default) uses `Api::all` and needs cluster-wide RBAC, while a namespace
+    /// list uses `Api::namespaced` per namespace and needs only RoleBindings.
+    ///
+    /// [`NamespaceScope::All`]: crate::namespace_scope::NamespaceScope::All
+    pub namespace_scope: crate::namespace_scope::NamespaceScope,
 }
 
 /// Collection of all reflector stores for cross-operator queries.
@@ -51,24 +129,24 @@ pub struct Context {
 #[derive(Clone)]
 pub struct Stores {
     // Cluster-scoped resources
-    pub cluster_bind9_providers: Store<ClusterBind9Provider>,
+    pub cluster_bind9_providers: MultiStore<ClusterBind9Provider>,
 
     // Namespace-scoped resources
-    pub bind9_clusters: Store<Bind9Cluster>,
-    pub bind9_instances: Store<Bind9Instance>,
-    pub bind9_deployments: Store<Deployment>,
-    pub dnszones: Store<DNSZone>,
+    pub bind9_clusters: MultiStore<Bind9Cluster>,
+    pub bind9_instances: MultiStore<Bind9Instance>,
+    pub bind9_deployments: MultiStore<Deployment>,
+    pub dnszones: MultiStore<DNSZone>,
 
     // DNS Record types
-    pub a_records: Store<ARecord>,
-    pub aaaa_records: Store<AAAARecord>,
-    pub cname_records: Store<CNAMERecord>,
-    pub txt_records: Store<TXTRecord>,
-    pub mx_records: Store<MXRecord>,
-    pub ns_records: Store<NSRecord>,
-    pub srv_records: Store<SRVRecord>,
-    pub caa_records: Store<CAARecord>,
-    pub ptr_records: Store<PTRRecord>,
+    pub a_records: MultiStore<ARecord>,
+    pub aaaa_records: MultiStore<AAAARecord>,
+    pub cname_records: MultiStore<CNAMERecord>,
+    pub txt_records: MultiStore<TXTRecord>,
+    pub mx_records: MultiStore<MXRecord>,
+    pub ns_records: MultiStore<NSRecord>,
+    pub srv_records: MultiStore<SRVRecord>,
+    pub caa_records: MultiStore<CAARecord>,
+    pub ptr_records: MultiStore<PTRRecord>,
 }
 
 impl Stores {

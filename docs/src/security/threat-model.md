@@ -676,7 +676,7 @@ just the one kubeconfig Secret it legitimately needs for multi-cluster mode.
 **Likelihood:** LOW (requires compromising the Scout pod/token specifically), but
 **this had the largest blast radius of any threat in this document** — worse than
 compromising the main operator, whose Secret access is namespace-scoped for
-mutation (B-5) — though the operator's Secret *read* is still cluster-wide, see M-22.
+mutation (B-5) and — when `BINDY_WATCH_NAMESPACES` is set — for read as well (M-22).
 
 **Original finding:** Scout's `ClusterRole` (`deploy/scout/clusterrole.yaml`) granted
 `apiGroups: [""], resources: ["secrets"], verbs: ["get"]` with **no `resourceNames`
@@ -829,13 +829,15 @@ kubeconfig Secret, in deployments that use Phase 2 mode at all.
 - ✅ **B-5 hardening:** operator's cluster-wide Secret access reduced to
   read-only; mutating verbs confined to a namespaced Role in the operator's own
   namespace (see T3)
-- ⛔ **Namespace-scoped operator mode — NOT IMPLEMENTED.** `BINDY_WATCH_NAMESPACES`
-  is parsed by `src/namespace_scope.rs` but **nothing consumes it**: `src/main.rs`
-  does not reference `NamespaceScope` and builds every watch cluster-wide. Setting
-  the variable today has no effect. The operator is cluster-wide in every
-  deployment. Tracked as audit finding P1-2; the compensating control for the
-  resulting Deployment-create escalation is VAP 11/12
-  (`deploy/admission-policies/11-bindy-operator-workload-sa-policy.yaml`)
+- ✅ **Namespace-scoped operator mode (opt-in):** set `BINDY_WATCH_NAMESPACES` to a
+  comma-separated namespace list and the operator builds one watch and one controller
+  per namespace (`Api::namespaced`), needing only a Role + RoleBinding in each. With
+  the cluster-wide ClusterRoleBinding removed, the operator SA can no longer read
+  Secrets or create workloads outside the watched set — closing C2 and H3 by
+  construction rather than by compensating control. VAP 11/12 remains as
+  defence-in-depth, and is still the only mitigation in the default cluster-wide
+  deployment. **Default is unchanged:** unset means cluster-wide, exactly as before.
+  Install guide: `deploy/operator/rbac/namespaced/README.md`
   (unset = watch everything), so this mitigation is not yet load-bearing unless
   a deployer explicitly configures it.
 - ✅ Automated RBAC verification script (`deploy/rbac/verify-rbac.sh`)
@@ -1291,7 +1293,7 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-09 | SBOM generation | T2 (supply chain) | ✅ SLSA Level 2 |
 | M-10 | Chainguard zero-CVE images | I3 (CVE disclosure) | ✅ Container security |
 | M-21 | **B-5 Secret RBAC split** (2026-06-30): operator's cluster-wide `ClusterRole` is read-only on Secrets; mutating verbs moved to a namespaced Role bound only in the operator's own namespace | T3 (Secret tampering), E2 (privilege escalation) | ✅ RBAC |
-| M-22 | **Namespace-scoped operator mode** (`BINDY_WATCH_NAMESPACES`) | E2, R2, I1 | ⛔ **NOT IMPLEMENTED** — the env var is parsed but unused (`src/main.rs` never imports `NamespaceScope`); setting it has no effect. Audit finding P1-2. When built, it can eliminate cluster-wide Secret/workload access, but **not** cluster-wide access entirely — `Bind9Cluster` and `ClusterBind9Provider` are cluster-scoped kinds and will always need a slim ClusterRole |
+| M-22 | **Namespace-scoped operator mode** (opt-in via `BINDY_WATCH_NAMESPACES`): every watch is built per-namespace and the operator needs only Role/RoleBinding in each watched namespace | E2, R2, I1 | ✅ **Implemented** (opt-in; default remains cluster-wide). Eliminates cluster-wide Secret read (H3) and cluster-wide workload write (C2) — verified with `kubectl auth can-i`. A slim ClusterRole remains for `clusterbind9providers`, the only cluster-scoped bindy kind, so this does **not** eliminate cluster-wide access *entirely*. See `deploy/operator/rbac/namespaced/README.md` |
 | M-23 | **Unprivileged DNS port + capability drop**: BIND9 operand binds container port 5353 (Service still exposes 53) and adds zero Linux capabilities (`NET_BIND_SERVICE` removed) | E1 (container escape) | ✅ Pod Security |
 | M-24 | **ValidatingAdmissionPolicy suite** (8 policies + 8 bindings = 16 manifests, as of 2026-07-01): ACL syntax, zone-name validation, RNDC strictness, operand pod shape, DNSSEC policy, operator-workload ServiceAccount identity, DNS record value validation, image provenance, and `volumeMount.mountPath` allow-listing (`safe_volume.rs`, closes audit finding F-001) | T1 (DNS tampering), T3 (ConfigMap/Secret tampering), E1 (container escape via malicious volume mounts), T2 (image provenance) | ✅ Kubernetes VAP — supersedes M-13 below |
 | M-30 | **Scout namespace whitelisting** (`--namespace-selector` / `BINDY_SCOUT_NAMESPACE_SELECTOR`, new in v1.1): a source object's namespace must match a configured Kubernetes label selector *in addition to* the object's own opt-in annotation before Scout acts on it. Label-selector matching delegates to the API server (no client-side selector parser). Reduces Scout's day-to-day operating footprint — bounds T4 (cross-tenant patch/update) during normal operation. **Does not reduce the `ClusterRole`'s RBAC ceiling** for Ingress/Service/route types — a directly compromised token is unaffected for those. **Opt-in — unset by default**, matching pre-v1.1 behavior for backward compatibility; Scout logs a startup warning when unset. See the Scout guide's "Namespace Whitelisting" section for the rollout/migration note. | T4 (partial) | ⚠️ Opt-in, recommended for all production deployments |

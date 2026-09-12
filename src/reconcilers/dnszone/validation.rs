@@ -57,7 +57,7 @@ use crate::crd::DNSZone;
 /// if `spec.bind9_instances_from` is missing or empty.
 pub fn get_instances_from_zone(
     dnszone: &DNSZone,
-    bind9_instances_store: &kube::runtime::reflector::Store<crate::crd::Bind9Instance>,
+    bind9_instances_store: &crate::context::MultiStore<crate::crd::Bind9Instance>,
 ) -> Result<Vec<crate::crd::InstanceReference>> {
     let namespace = dnszone.namespace().unwrap_or_default();
     let name = dnszone.name_any();
@@ -212,7 +212,7 @@ pub fn instance_allows_zone_namespace(
 /// ```
 pub fn check_for_duplicate_zones(
     dnszone: &DNSZone,
-    zones_store: &kube::runtime::reflector::Store<DNSZone>,
+    zones_store: &crate::context::MultiStore<DNSZone>,
 ) -> Option<DuplicateZoneInfo> {
     let current_namespace = dnszone.namespace().unwrap_or_default();
     let current_name = dnszone.name_any();

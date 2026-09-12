@@ -102,7 +102,7 @@ async fn prepare_record_reconciliation<T, S>(
     record: &T,
     record_type: &str,
     spec_hashable: &S,
-    bind9_instances_store: &kube::runtime::reflector::Store<crate::crd::Bind9Instance>,
+    bind9_instances_store: &crate::context::MultiStore<crate::crd::Bind9Instance>,
 ) -> Result<Option<RecordReconciliationContext>>
 where
     T: Resource<DynamicType = (), Scope = k8s_openapi::NamespaceResourceScope>
