@@ -1,0 +1,23 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# DO NOT EDIT BY HAND — derived from deploy/operator/rbac/role.yaml.
+# If you change role.yaml, re-split it (see README.md in this directory).
+#
+# The IRREDUCIBLE cluster-wide grant. ClusterBind9Provider is the only bindy
+# kind with `scope: Cluster`, so it can never be watched per-namespace and a
+# namespace-scoped operator still needs this. Note what is NOT here: no
+# cluster-wide Secret read (audit H3), no cluster-wide Deployment write (C2).
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: bindy-role-cluster
+  labels: {app.kubernetes.io/name: bindy, app.kubernetes.io/component: rbac}
+rules:
+- apiGroups: [bindy.firestoned.io]
+  resources: [clusterbind9providers]
+  verbs: [get, list, watch, update, patch]
+- apiGroups: [bindy.firestoned.io]
+  resources: [clusterbind9providers/status]
+  verbs: [get, update, patch]

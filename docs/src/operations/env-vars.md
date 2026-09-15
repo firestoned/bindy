@@ -13,6 +13,38 @@ Configure Bindy using environment variables. See also the [CLI Reference](../ref
 | `BINDY_KUBE_QPS` | `50.0` | API server request rate (queries per second). |
 | `BINDY_KUBE_BURST` | `100` | API server burst cap above QPS. |
 
+### Namespace Scoping
+
+| Variable | Default | Description |
+|---|---|---|
+| `BINDY_WATCH_NAMESPACES` | *(unset — cluster-wide)* | Comma-separated list of namespaces to watch, e.g. `tenant-a,tenant-b`. When set, the operator builds one watch and one controller **per namespace** (`Api::namespaced`) and needs only a `Role`/`RoleBinding` in each, instead of a cluster-wide `ClusterRoleBinding`. |
+
+Leaving this unset is the default and keeps the operator cluster-wide, exactly as
+before. Setting it is a deliberate opt-in that **also requires applying the namespaced
+RBAC** — see [`deploy/operator/rbac/namespaced/README.md`](https://github.com/firestoned/bindy/blob/main/deploy/operator/rbac/namespaced/README.md).
+
+!!! warning "The namespace list and the RBAC must match exactly"
+    If the operator watches a namespace with no `Role`, it crash-loops on 403s. If a
+    `Role` exists for a namespace the operator does not watch, that is a silent
+    over-grant. Change both together.
+
+**What this buys you.** With the cluster-wide `ClusterRoleBinding` removed, the
+operator ServiceAccount can no longer read `Secrets` or create workloads outside the
+watched namespaces. That closes the two findings behind the cluster-wide deployment:
+a compromised operator token can no longer read every Secret in the cluster, nor
+create a Deployment whose pod template names a privileged ServiceAccount.
+
+**What it does not buy you.** A slim `ClusterRole` remains, granting
+`get/list/watch` on `clusterbind9providers`. `ClusterBind9Provider` is the only bindy
+kind with `scope: Cluster`, and a cluster-scoped object has no namespace to scope a
+watch to. So this reduces cluster-wide access to a single read-only CRD; it does not
+eliminate cluster-wide access entirely.
+
+!!! note "Leader election is independent"
+    The lease lives in `BINDY_LEASE_NAMESPACE` (default `bindy-system`), which is not
+    required to be in the watched set. If it is not, apply the namespaced `Role` and
+    `RoleBinding` there too, or grant a dedicated lease-only Role.
+
 ### Leader Election
 
 | Variable | Default | Description |

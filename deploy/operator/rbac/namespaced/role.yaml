@@ -1,0 +1,71 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# DO NOT EDIT BY HAND — derived from deploy/operator/rbac/role.yaml.
+# If you change role.yaml, re-split it (see README.md in this directory).
+#
+# Apply ONE COPY PER WATCHED NAMESPACE, with metadata.namespace set to that
+# namespace and a matching RoleBinding. The namespace list must equal
+# BINDY_WATCH_NAMESPACES on the operator Deployment, or the operator will watch
+# a namespace it cannot read and crash-loop on 403s.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: bindy-role
+  namespace: REPLACE_NAMESPACE
+  labels: {app.kubernetes.io/name: bindy, app.kubernetes.io/component: rbac}
+rules:
+- apiGroups: [bindy.firestoned.io]
+  resources: [bind9instances]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [bindy.firestoned.io]
+  resources: [bind9instances/status]
+  verbs: [get, update, patch]
+- apiGroups: [bindy.firestoned.io]
+  resources: [bind9clusters]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [bindy.firestoned.io]
+  resources: [bind9clusters/status]
+  verbs: [get, update, patch]
+- apiGroups: [bindy.firestoned.io]
+  resources: [dnszones]
+  verbs: [get, list, watch, update, patch]
+- apiGroups: [bindy.firestoned.io]
+  resources: [dnszones/status]
+  verbs: [get, update, patch]
+- apiGroups: [bindy.firestoned.io]
+  resources: [arecords, aaaarecords, txtrecords, cnamerecords, mxrecords, nsrecords, srvrecords, caarecords,
+    ptrrecords]
+  verbs: [get, list, watch, update, patch]
+- apiGroups: [bindy.firestoned.io]
+  resources: [arecords/status, aaaarecords/status, txtrecords/status, cnamerecords/status, mxrecords/status,
+    nsrecords/status, srvrecords/status, caarecords/status, ptrrecords/status]
+  verbs: [get, update, patch]
+- apiGroups: [apps]
+  resources: [deployments]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: ['']
+  resources: [services]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: ['']
+  resources: [configmaps]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: ['']
+  resources: [secrets]
+  verbs: [get, list, watch]
+- apiGroups: ['']
+  resources: [serviceaccounts]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: ['']
+  resources: [pods]
+  verbs: [get, list, watch]
+- apiGroups: ['']
+  resources: [endpoints]
+  verbs: [get, list, watch]
+- apiGroups: ['']
+  resources: [events]
+  verbs: [create, patch]
+- apiGroups: [coordination.k8s.io]
+  resources: [leases]
+  verbs: [get, create, update, patch]

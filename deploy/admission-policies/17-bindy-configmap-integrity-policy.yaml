@@ -1,0 +1,70 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# ValidatingAdmissionPolicy: protect operator-generated ConfigMaps from tampering.
+# Closes audit finding P2-2 / threat T3 (ConfigMap tampering).
+#
+# WHY NOT `immutable: true`:
+# The obvious fix — setting `immutable: true` on generated ConfigMaps — is wrong
+# here. These ConfigMaps carry named.conf and are MOUNTED AS VOLUMES by the BIND9
+# operand pods. The kubelet deliberately stops watching an immutable ConfigMap
+# (that is the feature: it saves API server load), so marking them immutable would
+# mean a DNS configuration change could no longer reach a running pod at all. The
+# operator would have to delete and recreate the ConfigMap and then restart every
+# operand pod to apply any zone or ACL change — converting a live config update
+# into a rolling DNS outage. In a banking environment that trades a tampering risk
+# for an availability risk, which is not a good trade.
+#
+# This policy gets the same tamper-resistance without that cost: the ConfigMaps
+# stay mutable for the OPERATOR, and become effectively read-only for everybody
+# else. A namespace tenant who can write ConfigMaps can no longer rewrite
+# named.conf underneath a running DNS server.
+#
+# Scope: matches only ConfigMaps labelled `app.kubernetes.io/part-of: bindy`,
+# i.e. those the operator generated (`build_labels_from_instance`). Tenant-authored
+# ConfigMaps — including the custom ones referenced by `spec.configMapRefs` — are
+# not labelled this way and are unaffected.
+#
+# Requires Kubernetes 1.30+ (admissionregistration.k8s.io/v1 GA).
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: bindy-configmap-integrity
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/part-of: bindy
+    app.kubernetes.io/component: admission-policy
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["UPDATE", "DELETE"]
+        resources: ["configmaps"]
+    # Only bindy-generated ConfigMaps.
+    objectSelector:
+      matchLabels:
+        app.kubernetes.io/part-of: bindy
+  matchConditions:
+    # Exempt the operator itself — it is the legitimate writer.
+    - name: not-the-operator
+      expression: >-
+        request.userInfo.username != 'system:serviceaccount:bindy-system:bindy'
+    # Exempt Kubernetes' own garbage collector and namespace controller, which
+    # must be able to delete these objects when an owner or namespace goes away.
+    - name: not-kube-controller
+      expression: >-
+        !(request.userInfo.username in [
+          'system:serviceaccount:kube-system:generic-garbage-collector',
+          'system:serviceaccount:kube-system:namespace-controller'
+        ])
+  validations:
+    - expression: "false"
+      message: >-
+        This ConfigMap is generated and owned by the bindy operator
+        (app.kubernetes.io/part-of: bindy) and carries live BIND9 configuration.
+        It may only be modified by the operator ServiceAccount. Change the owning
+        Bind9Instance / Bind9Cluster spec instead, or use spec.configMapRefs to
+        supply your own ConfigMap.

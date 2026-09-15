@@ -58,7 +58,20 @@ spec:
         - port: 5353
           protocol: UDP
     # bindcar HTTP API: container port 8080 and Service port 80.
-    - ports:
+    #
+    # RESTRICTED TO THE OPERATOR. This rule previously had no `from:` selector, so
+    # every pod in the cluster could reach the bindcar API. Only the operator has any
+    # legitimate reason to call it, so it is now scoped to the operator pod — ordinary
+    # least privilege for a management API.
+    #
+    # Keep this rule in place. Enforcing it is a prerequisite for the transport
+    # hardening tracked for the bindcar sidecar; do not widen the selector without
+    # reviewing that work first.
+    - from:
+        - podSelector:
+            matchLabels:
+              app: bindy
+      ports:
         - port: 8080
           protocol: TCP
         - port: 80

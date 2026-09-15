@@ -1,3 +1,81 @@
+## [2026-09-11 20:40] - Namespace-scoped operator (C2/H3), ConfigMap integrity, zone-authz TOCTOU, digest-pinned releases
+
+**Author:** Erick Bourgeois
+
+### Added
+- **Namespace-scoped operator mode (P1-2).** `BINDY_WATCH_NAMESPACES` is now wired
+  through the whole control plane. When set, every reflector and controller is built
+  with `Api::namespaced` per namespace and the operator needs only a Role/RoleBinding
+  in each — closing audit findings **C2** (cluster-wide `deployments create/update/
+  patch`, a privilege-escalation path via `serviceAccountName`) and **H3**
+  (cluster-wide `secrets get/list/watch`). Unset remains cluster-wide and unchanged.
+  - `src/context.rs`: new `MultiStore<K>` — one reflector `Store` shard per watched
+    namespace. **This sharding is load-bearing.** A single `Store` cannot be fed by
+    several namespace watches merged with `select_all`: `watcher::Event::InitDone`
+    makes the store *replace* its contents with the finishing watch's buffer
+    (`kube_runtime::reflector::store` does `mem::swap`), so a merged design would
+    silently leave the store holding only the last namespace to sync — and again on
+    every watch reconnect. Cluster-wide mode is a single shard with a pass-through.
+  - `src/main.rs`: `spawn_sharded_reflector` (one watcher per namespace, predicate-
+    filtered) and `spawn_cluster_reflector` for cluster-scoped kinds; per-namespace
+    controller fan-out for Bind9Cluster, Bind9Instance and DNSZone.
+  - `src/record_operator.rs`: same fan-out for all 9 record kinds.
+  - `src/namespace_scope.rs`: `scoped_namespaced_api` helper.
+  - `deploy/operator/rbac/namespaced/`: slim ClusterRole (`clusterbind9providers`
+    only), per-namespace Role, bindings, and an install README.
+- **VAP 17/18 — ConfigMap integrity (P2-2).** Operator-generated ConfigMaps
+  (`app.kubernetes.io/part-of: bindy`) may only be modified by the operator SA.
+- `Makefile`: `pin-release-images` resolves the pushed image's multi-arch digest and
+  rewrites the generated release manifests to `@sha256:` (P2-8). Fails the release if
+  the digest cannot be resolved, rather than shipping an unpinned manifest.
+
+### Changed
+- `src/scout.rs`: `check_zone_authorization_live` re-reads the granting DNSZone
+  immediately before the server-side apply (P3-4), shrinking the TOCTOU window from
+  watch latency to one API round trip. Fails **open** on a transient API error — the
+  cached grant was affirmative and failing closed would drop legitimate records
+  during an API-server blip.
+- `deploy/pod-hardening.yaml`: the bindcar API ingress rule had **no `from:`
+  selector**, so any pod in the cluster could reach it. Restricted to the operator —
+  least privilege for a management API (P2-4, partial).
+- `.github/workflows/build.yaml`: `package-deploy-manifests` now also needs
+  `docker-release`. It previously needed only `extract-version`, so it did not wait
+  for the image push — meaning a digest could not have been resolved there at all.
+- `docs/src/security/threat-model.md`: M-22 flipped to implemented (opt-in).
+
+### Why P2-2 was NOT fixed with `immutable: true`
+The roadmap's stated fix is wrong for this codebase. These ConfigMaps carry
+`named.conf` and are **mounted as volumes** by the BIND9 operand pods. The kubelet
+deliberately stops watching an immutable ConfigMap, so marking them immutable would
+mean a zone or ACL change could never reach a running pod — every DNS config update
+would become a rolling restart of the DNS servers. That trades a tampering risk for
+an availability risk. VAP 17/18 gives the same tamper-resistance at no availability
+cost. Literal immutability would require content-hashed ConfigMap names plus
+Deployment rollout; that is a feature, not a hardening tweak.
+
+### Why P2-4 is only partial
+Transport hardening for the operator-to-sidecar link depends on capability that lives
+in the bindcar project, not here. What is in scope for this repo — restricting who may
+reach the sidecar's management port — is done. The remainder is tracked privately
+until the upstream support lands, in line with how the other unremediated findings in
+this audit are handled.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+Rollout: default behaviour is unchanged (`BINDY_WATCH_NAMESPACES` unset = cluster-wide).
+To opt in, follow `deploy/operator/rbac/namespaced/README.md` — the namespace list in
+the RBAC must match the env var exactly, or the operator crash-loops on 403s.
+`make admission-policies-install` now also applies 17/18.
+
+Verified: `cargo fmt`/`clippy` clean, 1383 lib tests; `make kind-integration-test`
+green in default mode; scoped mode verified on kind with `kubectl auth can-i`
+(cluster-wide Secret read and Deployment create both denied) and a three-namespace
+fan-out test where the two watched namespaces reconciled and the unwatched one did not.
+
 ## [2026-09-10 18:05] - Scout input validation, wildcard guardrail, and a fixed integration-test harness
 
 **Author:** Erick Bourgeois

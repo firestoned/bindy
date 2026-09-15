@@ -927,6 +927,87 @@ pub(crate) fn check_zone_authorization(
     }
 }
 
+/// The DNSZone that authorizes `source_namespace` for `zone_name`, if any.
+///
+/// Same matching rules as [`check_zone_authorization`], but returns the granting
+/// object so the caller can re-verify it against the API server.
+#[must_use]
+pub(crate) fn authorizing_zone(
+    zones: &[Arc<DNSZone>],
+    zone_name: &str,
+    source_namespace: &str,
+) -> Option<Arc<DNSZone>> {
+    zones
+        .iter()
+        .find(|zone| {
+            zone.spec.zone_name == zone_name && zone_allows_source_namespace(zone, source_namespace)
+        })
+        .map(Arc::clone)
+}
+
+/// Authorize `zone_name` for `source_namespace`, re-checking the grant live.
+///
+/// [`check_zone_authorization`] reads a reflector cache, which lags the API server by
+/// the watch latency. Between that read and the server-side-apply that writes the
+/// ARecord there is a window in which a DNSZone's
+/// [`ANNOTATION_ALLOW_ZONE_NAMESPACES`] may have been tightened — the record would
+/// then be published under a grant that no longer exists (audit finding P3-4).
+///
+/// This re-reads the *specific* zone that granted access, immediately before the
+/// caller writes, shrinking the window from "watch latency" to "one API round trip".
+/// It is a narrowing, not an elimination: a true elimination needs the write itself to
+/// be conditional on the zone's `resourceVersion`, which server-side apply on a
+/// *different* object cannot express.
+///
+/// A failed live read is treated as **still authorized**: the cached grant was
+/// affirmative, and failing closed on a transient API error would drop legitimate DNS
+/// records during an API server blip. The error is logged.
+pub(crate) async fn check_zone_authorization_live(
+    client: &Client,
+    zones: &[Arc<DNSZone>],
+    zone_name: &str,
+    source_namespace: &str,
+) -> ZoneAuthz {
+    let cached = check_zone_authorization(zones, zone_name, source_namespace);
+    if cached != ZoneAuthz::Authorized {
+        return cached;
+    }
+
+    let Some(granting) = authorizing_zone(zones, zone_name, source_namespace) else {
+        return cached;
+    };
+    let (Some(ns), Some(name)) = (granting.namespace(), granting.metadata.name.clone()) else {
+        return cached;
+    };
+
+    let api: Api<DNSZone> = Api::namespaced(client.clone(), &ns);
+    match api.get(&name).await {
+        Ok(live) => {
+            if zone_allows_source_namespace(&live, source_namespace) {
+                return ZoneAuthz::Authorized;
+            }
+            warn!(
+                zone = %zone_name,
+                dnszone = %name,
+                dnszone_namespace = %ns,
+                source_namespace = %source_namespace,
+                "Zone authorization was revoked between the cached check and the write — \
+                 refusing to publish (audit finding P3-4)"
+            );
+            ZoneAuthz::Forbidden
+        }
+        Err(e) => {
+            warn!(
+                zone = %zone_name,
+                dnszone = %name,
+                error = %e,
+                "Could not re-verify zone authorization live; proceeding on the cached grant"
+            );
+            ZoneAuthz::Authorized
+        }
+    }
+}
+
 /// Resolves the IP address(es) to use for an ARecord, in priority order:
 ///
 /// 1. `bindy.firestoned.io/ip` annotation — explicit override (single IP or comma-separated list)
@@ -2437,7 +2518,14 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
     // Guard: a matching DNSZone must exist AND authorize this Ingress's
     // namespace (finding H1 — otherwise any tenant's Ingress could publish
     // into any zone Scout serves).
-    match check_zone_authorization(&ctx.zone_store.state(), &zone, &namespace) {
+    match check_zone_authorization_live(
+        &ctx.remote_client,
+        &ctx.zone_store.state(),
+        &zone,
+        &namespace,
+    )
+    .await
+    {
         ZoneAuthz::Authorized => {}
         ZoneAuthz::Forbidden => {
             warn!(
@@ -2683,7 +2771,14 @@ async fn reconcile_service(
 
     // Guard: a matching DNSZone must exist AND authorize this Service's
     // namespace (finding H1).
-    match check_zone_authorization(&ctx.zone_store.state(), &zone, &namespace) {
+    match check_zone_authorization_live(
+        &ctx.remote_client,
+        &ctx.zone_store.state(),
+        &zone,
+        &namespace,
+    )
+    .await
+    {
         ZoneAuthz::Authorized => {}
         ZoneAuthz::Forbidden => {
             warn!(service = %name, ns = %namespace, zone = %zone, "Service namespace not authorized for zone — the DNSZone must live in this namespace or set annotation {ANNOTATION_ALLOW_ZONE_NAMESPACES} to include it (or '*') — skipping");
@@ -2942,7 +3037,14 @@ async fn reconcile_httproute(
 
     // Guard: a matching DNSZone must exist AND authorize this HTTPRoute's
     // namespace (finding H1).
-    match check_zone_authorization(&ctx.zone_store.state(), &zone, &namespace) {
+    match check_zone_authorization_live(
+        &ctx.remote_client,
+        &ctx.zone_store.state(),
+        &zone,
+        &namespace,
+    )
+    .await
+    {
         ZoneAuthz::Authorized => {}
         ZoneAuthz::Forbidden => {
             warn!(httproute = %name, ns = %namespace, zone = %zone, "HTTPRoute namespace not authorized for zone — the DNSZone must live in this namespace or set annotation {ANNOTATION_ALLOW_ZONE_NAMESPACES} to include it (or '*') — skipping");
@@ -3209,7 +3311,14 @@ async fn reconcile_tlsroute(
 
     // Guard: a matching DNSZone must exist AND authorize this TLSRoute's
     // namespace (finding H1).
-    match check_zone_authorization(&ctx.zone_store.state(), &zone, &namespace) {
+    match check_zone_authorization_live(
+        &ctx.remote_client,
+        &ctx.zone_store.state(),
+        &zone,
+        &namespace,
+    )
+    .await
+    {
         ZoneAuthz::Authorized => {}
         ZoneAuthz::Forbidden => {
             warn!(tlsroute = %name, ns = %namespace, zone = %zone, "TLSRoute namespace not authorized for zone — the DNSZone must live in this namespace or set annotation {ANNOTATION_ALLOW_ZONE_NAMESPACES} to include it (or '*') — skipping");
@@ -3462,7 +3571,14 @@ async fn reconcile_tcproute(
         }
     };
 
-    match check_zone_authorization(&ctx.zone_store.state(), &zone, &namespace) {
+    match check_zone_authorization_live(
+        &ctx.remote_client,
+        &ctx.zone_store.state(),
+        &zone,
+        &namespace,
+    )
+    .await
+    {
         ZoneAuthz::Authorized => {}
         ZoneAuthz::Forbidden => {
             warn!(tcproute = %name, ns = %namespace, zone = %zone, "TCPRoute namespace not authorized for zone — the DNSZone must live in this namespace or set annotation {ANNOTATION_ALLOW_ZONE_NAMESPACES} to include it (or '*') — skipping");

@@ -824,7 +824,9 @@ jobs:
     name: Package Deployment Manifests
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
-    needs: extract-version
+    # docker-release is required: the manifests are digest-pinned below, and an image
+    # only HAS a digest once it has been built and pushed (audit finding P2-8).
+    needs: [extract-version, docker-release]
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -837,6 +839,12 @@ jobs:
 
       - name: Generate release manifests
         run: make release-manifests VERSION=${{ github.event.release.tag_name }}
+
+      # Pin the operator image by multi-arch digest so a published install.yaml
+      # cannot silently change under a moved tag. Fails the release rather than
+      # shipping an unpinned manifest.
+      - name: Pin release manifests by digest
+        run: make pin-release-images VERSION=${{ github.event.release.tag_name }}
 
       - name: Upload deploy manifests
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

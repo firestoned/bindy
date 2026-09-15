@@ -1,0 +1,14 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# DO NOT EDIT BY HAND — derived from deploy/operator/rbac/role.yaml.
+# If you change role.yaml, re-split it (see README.md in this directory).
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: bindy-rolebinding-cluster
+  labels: {app.kubernetes.io/name: bindy, app.kubernetes.io/component: rbac}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: bindy-role-cluster}
+subjects:
+- {kind: ServiceAccount, name: bindy, namespace: bindy-system}

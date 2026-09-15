@@ -108,6 +108,21 @@ impl NamespaceScope {
     }
 }
 
+/// Build an `Api` for a single namespace target.
+///
+/// `None` means cluster-wide (`Api::all`); `Some(ns)` means that namespace only
+/// (`Api::namespaced`). Pair with [`NamespaceScope::api_targets`].
+pub fn scoped_namespaced_api<K>(client: &kube::Client, target: Option<&str>) -> kube::Api<K>
+where
+    K: kube::Resource<Scope = kube::core::NamespaceResourceScope>,
+    K::DynamicType: Default,
+{
+    match target {
+        None => kube::Api::all(client.clone()),
+        Some(ns) => kube::Api::namespaced(client.clone(), ns),
+    }
+}
+
 #[cfg(test)]
 #[path = "namespace_scope_tests.rs"]
 mod namespace_scope_tests;
