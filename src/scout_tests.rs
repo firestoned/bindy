@@ -1096,7 +1096,8 @@ mod tests {
     fn test_stale_arecord_label_selector_uses_not_equal_for_cluster() {
         // Must use != so it matches ARecords from any previous cluster name,
         // regardless of what that name was.
-        let selector = stale_arecord_label_selector("new-cluster", "my-ns", "my-ingress");
+        let selector =
+            stale_arecord_label_selector("new-cluster", "my-ns", "my-ingress", "example.com");
         assert!(
             selector.contains(&format!("{}!=new-cluster", LABEL_SOURCE_CLUSTER)),
             "selector must use != for source-cluster: got {selector}"
@@ -1104,8 +1105,23 @@ mod tests {
     }
 
     #[test]
+    fn test_stale_arecord_label_selector_requires_matching_zone() {
+        // The zone clause is what prevents this selector from matching a live
+        // ARecord belonging to a genuinely different cluster that happens to
+        // share the same namespace + ingress name but publishes into a
+        // different DNS zone.
+        let selector =
+            stale_arecord_label_selector("new-cluster", "my-ns", "my-ingress", "example.com");
+        assert!(
+            selector.contains(&format!("{}=example.com", LABEL_ZONE)),
+            "selector must require an equality match on zone: got {selector}"
+        );
+    }
+
+    #[test]
     fn test_stale_arecord_label_selector_still_filters_by_managed_by() {
-        let selector = stale_arecord_label_selector("new-cluster", "my-ns", "my-ingress");
+        let selector =
+            stale_arecord_label_selector("new-cluster", "my-ns", "my-ingress", "example.com");
         assert!(
             selector.contains(&format!("{}={}", LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT)),
             "selector must still filter managed-by=scout"
@@ -1114,7 +1130,8 @@ mod tests {
 
     #[test]
     fn test_stale_arecord_label_selector_contains_namespace_and_ingress() {
-        let selector = stale_arecord_label_selector("new-cluster", "my-ns", "my-ingress");
+        let selector =
+            stale_arecord_label_selector("new-cluster", "my-ns", "my-ingress", "example.com");
         assert!(selector.contains(&format!("{}=my-ns", LABEL_SOURCE_NAMESPACE)));
         assert!(selector.contains(&format!("{}=my-ingress", LABEL_SOURCE_NAME)));
     }
@@ -1122,7 +1139,7 @@ mod tests {
     #[test]
     fn test_stale_arecord_label_selector_does_not_match_current_cluster() {
         // The whole point: current cluster is excluded, not selected.
-        let selector = stale_arecord_label_selector("current", "ns", "ing");
+        let selector = stale_arecord_label_selector("current", "ns", "ing", "example.com");
         // Must NOT contain an equality match on the current cluster
         assert!(
             !selector.contains(&format!("{}=current", LABEL_SOURCE_CLUSTER)),
@@ -1612,6 +1629,7 @@ mod tests {
             "new-cluster",
             "default",
             "api-route",
+            "example.com",
         );
 
         // Assert
@@ -1621,18 +1639,47 @@ mod tests {
     }
 
     #[test]
+    fn test_stale_httproute_arecord_label_selector_requires_matching_zone() {
+        let selector = crate::scout::stale_httproute_arecord_label_selector(
+            "new-cluster",
+            "default",
+            "api-route",
+            "example.com",
+        );
+        assert!(
+            selector.contains(&format!("{}=example.com", LABEL_ZONE)),
+            "selector must require an equality match on zone: got {selector}"
+        );
+    }
+
+    #[test]
     fn test_stale_tlsroute_arecord_label_selector_uses_not_equal() {
         // Arrange & Act
         let selector = crate::scout::stale_tlsroute_arecord_label_selector(
             "new-cluster",
             "default",
             "secure-route",
+            "example.com",
         );
 
         // Assert
         assert!(selector.contains(&format!("{}!=new-cluster", LABEL_SOURCE_CLUSTER)));
         assert!(selector.contains("source-name=secure-route"));
         assert!(selector.contains("default"));
+    }
+
+    #[test]
+    fn test_stale_tlsroute_arecord_label_selector_requires_matching_zone() {
+        let selector = crate::scout::stale_tlsroute_arecord_label_selector(
+            "new-cluster",
+            "default",
+            "secure-route",
+            "example.com",
+        );
+        assert!(
+            selector.contains(&format!("{}=example.com", LABEL_ZONE)),
+            "selector must require an equality match on zone: got {selector}"
+        );
     }
 
     #[test]
@@ -1790,12 +1837,30 @@ mod tests {
 
     #[test]
     fn test_stale_tcproute_arecord_label_selector_uses_not_equal() {
-        let selector =
-            stale_tcproute_arecord_label_selector("new-cluster", "default", "database-route");
+        let selector = stale_tcproute_arecord_label_selector(
+            "new-cluster",
+            "default",
+            "database-route",
+            "example.com",
+        );
 
         assert!(selector.contains(&format!("{}!=new-cluster", LABEL_SOURCE_CLUSTER)));
         assert!(selector.contains("source-name=database-route"));
         assert!(selector.contains("default"));
+    }
+
+    #[test]
+    fn test_stale_tcproute_arecord_label_selector_requires_matching_zone() {
+        let selector = stale_tcproute_arecord_label_selector(
+            "new-cluster",
+            "default",
+            "database-route",
+            "example.com",
+        );
+        assert!(
+            selector.contains(&format!("{}=example.com", LABEL_ZONE)),
+            "selector must require an equality match on zone: got {selector}"
+        );
     }
 
     #[test]
@@ -2346,12 +2411,226 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // delete_stale_cluster_*_arecords (issue #474)
+    //
+    // The selector-builder tests above prove the *string* carries a zone
+    // clause. These prove the zone value actually reaches the API request —
+    // exactly the class of bug where a fix wires the right value into the
+    // wrong call (or drops it), which a selector-string-only test can't
+    // catch because it never calls the delete function at all.
+    // ------------------------------------------------------------------
+
+    /// An ARecord, as the API server would return it in a list, carrying the
+    /// labels Scout uses to identify ownership and scope stale-cleanup.
+    fn arecord_item(name: &str, source_cluster: &str, zone: &str) -> serde_json::Value {
+        let mut labels = serde_json::Map::new();
+        labels.insert(
+            LABEL_MANAGED_BY.to_string(),
+            serde_json::json!(LABEL_MANAGED_BY_SCOUT),
+        );
+        labels.insert(
+            LABEL_SOURCE_CLUSTER.to_string(),
+            serde_json::json!(source_cluster),
+        );
+        labels.insert(
+            LABEL_SOURCE_NAMESPACE.to_string(),
+            serde_json::json!("team-checkout"),
+        );
+        labels.insert(
+            LABEL_SOURCE_NAME.to_string(),
+            serde_json::json!("web-frontend"),
+        );
+        labels.insert(LABEL_ZONE.to_string(), serde_json::json!(zone));
+        serde_json::json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "ARecord",
+            "metadata": {
+                "name": name,
+                "namespace": "bindy-system",
+                "labels": serde_json::Value::Object(labels),
+            },
+            "spec": {
+                "name": "web-frontend",
+                "ipv4Addresses": ["10.0.0.1"],
+            }
+        })
+    }
+
+    fn arecord_list_body(items: Vec<serde_json::Value>) -> serde_json::Value {
+        serde_json::json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "ARecordList",
+            "metadata": {},
+            "items": items,
+        })
+    }
+
+    const ARECORD_LIST_PATH: &str =
+        "/apis/bindy.firestoned.io/v1beta1/namespaces/bindy-system/arecords";
+
+    #[tokio::test]
+    async fn delete_stale_cluster_arecords_scopes_list_request_by_zone() {
+        // Reproduces the fix's premise directly: south's cleanup call for
+        // its own zone must ask the API server for records in that zone —
+        // not silently fall back to an unscoped (or wrong-zone) query, which
+        // is exactly how north's live ARecord got deleted before the fix.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(ARECORD_LIST_PATH))
+            .and(wiremock::matchers::query_param_contains(
+                "labelSelector",
+                format!("{LABEL_ZONE}=zone-beta.example.internal"),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![])))
+            .mount(&server)
+            .await;
+
+        let result = crate::scout::delete_stale_cluster_arecords(
+            &client_for(&server),
+            "bindy-system",
+            "south",
+            "team-checkout",
+            "web-frontend",
+            "zone-beta.example.internal",
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "expected the zone-scoped selector to match the mock, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_stale_cluster_arecords_deletes_only_returned_records() {
+        // The delete loop itself: whatever the (server-side-filtered) list
+        // returns is what gets deleted — no additional client-side filtering
+        // to get backwards.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(ARECORD_LIST_PATH))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![arecord_item(
+                    "scout-north-team-checkout-web-frontend-0",
+                    "north",
+                    "zone-beta.example.internal",
+                )])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path(format!(
+                "{ARECORD_LIST_PATH}/scout-north-team-checkout-web-frontend-0"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "apiVersion": "bindy.firestoned.io/v1beta1",
+                "kind": "ARecord",
+                "metadata": {"name": "scout-north-team-checkout-web-frontend-0"},
+                "spec": {"name": "web-frontend", "ipv4Addresses": ["10.0.0.1"]},
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let result = crate::scout::delete_stale_cluster_arecords(
+            &client_for(&server),
+            "bindy-system",
+            "south",
+            "team-checkout",
+            "web-frontend",
+            "zone-beta.example.internal",
+        )
+        .await;
+
+        assert!(result.is_ok(), "got {result:?}");
+        // wiremock's `.expect(1)` above is verified when `server` drops.
+    }
+
+    #[tokio::test]
+    async fn delete_stale_cluster_httproute_arecords_scopes_list_request_by_zone() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(ARECORD_LIST_PATH))
+            .and(wiremock::matchers::query_param_contains(
+                "labelSelector",
+                format!("{LABEL_ZONE}=zone-beta.example.internal"),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![])))
+            .mount(&server)
+            .await;
+
+        let result = crate::scout::delete_stale_cluster_httproute_arecords(
+            &client_for(&server),
+            "bindy-system",
+            "south",
+            "team-checkout",
+            "web-frontend",
+            "zone-beta.example.internal",
+        )
+        .await;
+
+        assert!(result.is_ok(), "got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn delete_stale_cluster_tlsroute_arecords_scopes_list_request_by_zone() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(ARECORD_LIST_PATH))
+            .and(wiremock::matchers::query_param_contains(
+                "labelSelector",
+                format!("{LABEL_ZONE}=zone-beta.example.internal"),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![])))
+            .mount(&server)
+            .await;
+
+        let result = crate::scout::delete_stale_cluster_tlsroute_arecords(
+            &client_for(&server),
+            "bindy-system",
+            "south",
+            "team-checkout",
+            "web-frontend",
+            "zone-beta.example.internal",
+        )
+        .await;
+
+        assert!(result.is_ok(), "got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn delete_stale_cluster_tcproute_arecords_scopes_list_request_by_zone() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(ARECORD_LIST_PATH))
+            .and(wiremock::matchers::query_param_contains(
+                "labelSelector",
+                format!("{LABEL_ZONE}=zone-beta.example.internal"),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![])))
+            .mount(&server)
+            .await;
+
+        let result = crate::scout::delete_stale_cluster_tcproute_arecords(
+            &client_for(&server),
+            "bindy-system",
+            "south",
+            "team-checkout",
+            "web-frontend",
+            "zone-beta.example.internal",
+        )
+        .await;
+
+        assert!(result.is_ok(), "got {result:?}");
+    }
+
+    // ------------------------------------------------------------------
     // kind_served
     //
-    // The only tests in this file that speak to an API. Gateway API is not
-    // installed by default in Kubernetes, and a Controller started against an
-    // absent CRD retries forever rather than failing — so the detection has to
-    // be right, and its three outcomes are covered here.
+    // Gateway API is not installed by default in Kubernetes, and a
+    // Controller started against an absent CRD retries forever rather than
+    // failing — so the detection has to be right, and its three outcomes are
+    // covered here.
     //
     // Note the probe is PER KIND. Gateway API ships in two channels and the
     // route kinds graduated at different times (HTTPRoute Standard since v1.0,

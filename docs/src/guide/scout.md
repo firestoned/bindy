@@ -1121,14 +1121,16 @@ If you restart Scout with a different `--cluster-name` (or `BINDY_SCOUT_CLUSTER_
 
 ### How It Works
 
-`ARecord` CRs created by Scout carry a `bindy.firestoned.io/source-cluster` label with the cluster name that created them. The CR name also embeds the cluster name (e.g., `scout-<cluster>-<namespace>-<ingress>-<idx>`).
+`ARecord` CRs created by Scout carry `bindy.firestoned.io/source-cluster` and `bindy.firestoned.io/zone` labels identifying the cluster that created them and the DNS zone they publish into. The CR name also embeds the cluster name (e.g., `scout-<cluster>-<namespace>-<ingress>-<idx>`).
 
 When Scout reconciles an Ingress under a new cluster name:
 1. It creates new `ARecord` CRs under the new cluster name.
-2. It selects all `ARecord` CRs for the same Ingress whose `source-cluster` label does **not** match the current cluster name.
+2. It selects all `ARecord` CRs for the same Ingress namespace + name whose `source-cluster` label does **not** match the current cluster name **and** whose `zone` label matches the Ingress's currently resolved zone.
 3. It deletes those stale records automatically.
 
-This happens on every reconcile, so all stale records are cleaned up on the next controller loop after the restart — no manual intervention required.
+The zone match matters: two entirely unrelated clusters can happen to run an Ingress with the same namespace + name (e.g. both deploy `team-checkout/web-frontend`) while publishing into different DNS zones. Without scoping by zone, each cluster's cleanup would treat the other's live `ARecord` as "stale" purely because the `source-cluster` label differs — and delete it, over and over, on every reconcile. Scoping by zone limits the stale-cleanup match to true renames of the *same* physical Scout instance (same zone, old cluster name), which was the original intent.
+
+This happens on every reconcile, so all stale records are cleaned up on the next controller loop after the restart — no manual intervention required. If Scout cannot resolve a zone for the resource being cleaned up (no `bindy.firestoned.io/zone` annotation and no `BINDY_SCOUT_DEFAULT_ZONE`), it logs a warning and skips only the stale-cluster cleanup step for that reconcile; the resource's own `ARecord`s are still removed normally.
 
 ### Example
 

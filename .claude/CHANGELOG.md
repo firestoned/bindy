@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 ## [2026-09-20 17:55] - Fix: operator dialled TLS-enabled bindcar sidecars over plaintext on NOTIFY and secondary delete
 
 **Author:** Erick Bourgeois
@@ -850,6 +851,37 @@ old uppercase paths on purpose — they record what the files were called at the
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
+=======
+## [2026-09-16 21:52] - Scout stale-cluster ARecord cleanup scoped by DNS zone (#474)
+
+**Author:** Prabhjot Singh Bawa
+
+### Fixed
+- `src/scout.rs`: Scout's stale -`ARecord` cleanup — which runs on every reconcile and
+  on Ingress/HTTPRoute/TLSRoute/TCPRoute deletion or opt-out — matched only on
+  `source-cluster != current_cluster`, with no DNS-zone scoping. Two genuinely
+  unrelated clusters that happen to share the same source namespace + resource name,
+  but publish into different DNS zones, would each delete the other's live `ARecord`
+  on every reconcile loop. `stale_arecord_label_selector`,
+  `stale_httproute_arecord_label_selector`, `stale_tlsroute_arecord_label_selector`,
+  `stale_tcproute_arecord_label_selector` and their `delete_stale_cluster_*_arecords`
+  callers now also require `zone=<current_zone>`, resolved the same way the
+  create path resolves it (`resolve_zone()` from the object's annotations, falling
+  back to the operator's default zone) — including on the delete/opt-out cleanup
+  paths, where the zone is taken from the object being deleted. When no zone can be
+  resolved on a delete/opt-out path, stale-cluster cleanup is now skipped with a
+  warning rather than matching an unscoped (empty-zone) selector; the object's own
+  `ARecord`s are still removed and the finalizer still released.
+- `src/scout_tests.rs`: added `wiremock`-backed tests asserting the zone clause
+  actually reaches the outgoing `labelSelector` for all four
+  `delete_stale_cluster_*_arecords` functions, and that the delete loop only removes
+  what the (server-side-filtered) list returns — the existing selector-string tests
+  proved the string was built correctly but never exercised the functions that use
+  it, which is exactly the class of bug the `git apply` mis-application produced.
+- `docs/src/guide/scout.md`: the "Changing the Cluster Name" section described the
+  pre-fix, zone-unaware selector; updated to describe zone scoping and the
+  no-zone-available skip behavior.
+>>>>>>> 51fde36 (Scout stale-cluster ARecord cleanup scoped by DNS zone)
 
 ## [2026-09-11 20:40] - Namespace-scoped operator (C2/H3), ConfigMap integrity, zone-authz TOCTOU, digest-pinned releases
 
