@@ -1,6 +1,6 @@
 # Kubernetes API Rate Limiting Improvements
 
-> **Status:** 🔶 In progress — `src/reconcilers/pagination.rs` and `src/reconcilers/retry.rs` landed. No explicit client-side rate limiter exists (nothing in `Cargo.toml` provides one). Overlaps [10](10-CONTROLLER-CRATE-SPLIT.md), which halves watch connections.
+> **Status:** 🔶 In progress — `src/reconcilers/pagination.rs` and `src/reconcilers/retry.rs` landed. No explicit client-side rate limiter exists (nothing in `Cargo.toml` provides one). Overlaps [10](10-controller-crate-split.md), which halves watch connections.
 >
 > *Migrated 2026-09-10 from the external roadmap set. Status verified against `fix-idempotency` @ `648ff7a`.*
 

@@ -1,3 +1,60 @@
+## [2026-09-15 10:45] - Bump rustls to 0.23.45 (RUSTSEC-2026-0285)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.lock`: `rustls` 0.23.44 -> 0.23.45 (lockfile only; the `Cargo.toml`
+  requirement stays `rustls = { version = "0.23", ... }`).
+
+### Why
+RUSTSEC-2026-0285 — "TLS 1.3 handshake messages incorrectly accepted across
+encryption level boundaries" — affects rustls `>=0.23.13, <0.23.45`
+(CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N, `crypto-failure`). The advisory
+landed in the RustSec DB and broke the `cargo-audit` step of the Security
+Vulnerability Scan job on every branch, not just the PR it first surfaced on
+(#494). rustls is a direct dependency and also arrives transitively via
+`kube-client`, `reqwest`, `hyper-rustls`, `tokio-rustls` and
+`rustls-platform-verifier`; the single lockfile bump covers all of them.
+
+No source changes were required — bindy only calls
+`rustls::crypto::ring::default_provider()` (`src/main.rs:244`, plus the provider
+installs in `bind9/mod_tests.rs` and `bind9/zone_ops_tests.rs`), which is
+unchanged in this patch release. Verified with `cargo fmt --check`,
+`cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`
+(1383 + 16 + 47 passing, 0 failures) and a clean local `cargo audit`.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-15 06:34] - Lowercase roadmap filenames in .github/community/
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/*.md`: all 25 numbered roadmap docs renamed to lowercase
+  (e.g. `53-BINDCAR-MIGRATION-V0-7-0.md` -> `53-bindcar-migration-v0-7-0.md`).
+  `README.md` keeps its name.
+- `ROADMAPS.md`, `.github/community/README.md` and the cross-links inside the
+  roadmap docs: repointed at the lowercase paths.
+- `src/main.rs`, `src/scout.rs`: doc-comment references to
+  `30-scout-ingress-controller.md` updated (comments only, no behaviour change).
+- `docs/src/advanced/dnssec.md`, `docs/src/development/TEST_SUMMARY.md`,
+  `docs/src/operations/dnszone-migration-troubleshooting.md`,
+  `examples/dnssec-signing-enabled.yaml`: updated roadmap links.
+
+### Why
+Roadmap filenames must be all lowercase. Historical entries below this one keep the
+old uppercase paths on purpose — they record what the files were called at the time.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-09-11 20:40] - Namespace-scoped operator (C2/H3), ConfigMap integrity, zone-authz TOCTOU, digest-pinned releases
 
 **Author:** Erick Bourgeois

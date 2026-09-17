@@ -1,6 +1,6 @@
 # VEX Documents Roadmap
 
-> **Status:** ⛔ Not started — no VEX generation step in `.github/workflows/`. Builds on the SBOM pipeline from [41](41-SECURITY-SCANNING.md).
+> **Status:** ⛔ Not started — no VEX generation step in `.github/workflows/`. Builds on the SBOM pipeline from [41](41-security-scanning.md).
 >
 > *Migrated 2026-09-10 from the external roadmap set. Status verified against `fix-idempotency` @ `648ff7a`.*
 
