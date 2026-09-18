@@ -1,6 +1,6 @@
 # Phase 4: Records Reconciler Refactoring Plan
 
-> **Status:** ✅ Done — the generic `reconcile_record<T>()` exists (`src/reconcilers/records/mod.rs:1170`) and the 9 `reconcile_*_record()` functions are thin wrappers (`:1373`–`:1516`). [10](10-CONTROLLER-CRATE-SPLIT.md) phase D turns those wrappers into `RecordKind` trait impls.
+> **Status:** ✅ Done — the generic `reconcile_record<T>()` exists (`src/reconcilers/records/mod.rs:1170`) and the 9 `reconcile_*_record()` functions are thin wrappers (`:1373`–`:1516`). [10](10-controller-crate-split.md) phase D turns those wrappers into `RecordKind` trait impls.
 >
 > *Migrated 2026-09-10 from the external roadmap set. Status verified against `fix-idempotency` @ `648ff7a`.*
 
@@ -422,8 +422,8 @@ This proves the trait-based approach works well in this codebase and is already 
 
 ## Related Documents
 
-- [Future Refactoring Opportunities](02-FUTURE-REFACTORING-OPPORTUNITIES.md) - Overall analysis
-- DNSZone refactoring plan — similar modular extraction pattern (external doc, not migrated; the outcome is recorded in [02](02-FUTURE-REFACTORING-OPPORTUNITIES.md))
+- [Future Refactoring Opportunities](02-future-refactoring-opportunities.md) - Overall analysis
+- DNSZone refactoring plan — similar modular extraction pattern (external doc, not migrated; the outcome is recorded in [02](02-future-refactoring-opportunities.md))
 
 ---
 

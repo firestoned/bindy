@@ -354,6 +354,6 @@ If issues persist:
 ## See Also
 
 - [Architecture Overview](../concepts/architecture.md)
-- [Integration Test Plan](https://github.com/firestoned/bindy/blob/main/.github/community/51-INTEGRATION-TESTING.md)
+- [Integration Test Plan](https://github.com/firestoned/bindy/blob/main/.github/community/51-integration-testing.md)
 - [API Reference](../reference/api.md)
 - [Common Issues](./common-issues.md)
