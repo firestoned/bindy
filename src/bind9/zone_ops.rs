@@ -103,11 +103,29 @@ fn is_zone_already_exists_error(err: &anyhow::Error) -> bool {
 /// Converts "service-name.namespace.svc.cluster.local:8080" or "service-name:8080"
 /// to `<http://service-name.namespace.svc.cluster.local:8080>` or `<http://service-name:8080>`
 pub(crate) fn build_api_url(server: &str) -> String {
+    build_api_url_with_scheme(server, false)
+}
+
+/// Build the base URL for a bindcar endpoint, choosing the scheme.
+///
+/// Call sites pass a bare `<pod-ip>:<port>`, so `tls` is what actually moves
+/// the operator onto the encrypted transport (ADR-0004).
+///
+/// An explicit scheme already present on `server` is always preserved — in
+/// both directions. Silently upgrading a configured `http://` would be
+/// surprising, and silently downgrading an `https://` would be dangerous.
+///
+/// # Arguments
+/// * `server` - endpoint, with or without a scheme
+/// * `tls` - whether TLS is enabled for this instance
+#[must_use]
+pub(crate) fn build_api_url_with_scheme(server: &str, tls: bool) -> String {
     if server.starts_with("http://") || server.starts_with("https://") {
-        server.trim_end_matches('/').to_string()
-    } else {
-        format!("http://{}", server.trim_end_matches('/'))
+        return server.trim_end_matches('/').to_string();
     }
+
+    let scheme = if tls { "https" } else { "http" };
+    format!("{}://{}", scheme, server.trim_end_matches('/'))
 }
 
 /// Execute a request to the bindcar API with automatic retry.

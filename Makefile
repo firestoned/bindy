@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 
-.PHONY: pin-release-images help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny cargo-machete gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh ci-e2e calm-validate calm-docs calm-docs-check
+.PHONY: pin-release-images help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny cargo-machete gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh tls-transport-test ci-e2e e2e-image e2e-image-load e2e-lifecycle e2e-idempotency e2e-restart e2e-rust e2e-multi-tenancy e2e-regression e2e-zone-spread e2e-tls e2e-all e2e-clean calm-validate calm-docs calm-docs-check
 
 # Detect host architecture and derive the matching Linux cross-compilation target.
 # `uname -m` reports arm64 on Apple Silicon macOS but aarch64 on Linux ARM, so
@@ -54,7 +54,7 @@ help: ## Show this help message
 	@echo 'Usage: make [target]'
 	@echo ''
 	@echo 'Available targets:'
-	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_-]+:.*?## / {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 install: ## Install dependencies
 	@echo "Ensure Rust toolchain is installed (rustup)."
@@ -816,25 +816,123 @@ zone-spread-test: ## Run the zone-spreading e2e on a fresh three-zone kind clust
 	@chmod +x tests/zone_spread_test.sh
 	@CLUSTER_NAME=$(ZONESPREAD_CLUSTER) tests/zone_spread_test.sh $(if $(ZONESPREAD_IMAGE),--image "$(ZONESPREAD_IMAGE)")
 
+TLS_TRANSPORT_CLUSTER ?= bindy-tls
+
+tls-transport-test: ## Run the bindcar TLS e2e (cert-manager issues the sidecar cert; proves audit finding P2-4)
+	@chmod +x tests/tls_transport_test.sh
+	@CLUSTER_NAME=$(TLS_TRANSPORT_CLUSTER) tests/tls_transport_test.sh $(if $(TLS_TRANSPORT_IMAGE),--image "$(TLS_TRANSPORT_IMAGE)")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E2E suites
+#
+# The old monolithic e2e was one target that ran everything for ~40 minutes and
+# told you "it failed" once, at the end. It is now one target per suite: each
+# owns its own kind cluster, can be run on its own locally, and maps 1:1 to a
+# job in .github/workflows/e2e.yaml so the suites run in parallel and report
+# independently.
+#
+#   make e2e-lifecycle      zones/records come up and BIND9 actually serves them
+#   make e2e-idempotency    re-applying the identical spec changes nothing
+#   make e2e-restart        zones/records survive operator + operand restarts
+#   make e2e-rust           tests/simple_integration.rs against a live API server
+#   make e2e-multi-tenancy  namespace isolation
+#   make e2e-regression     admission policies + operand pod shape + liveness
+#   make e2e-zone-spread    spec.placement topology spread on a 3-zone cluster
+#   make e2e-tls            cert-manager-issued sidecar cert (audit P2-4)
+#   make e2e-all            all of the above, sequentially
+#
+# Options:
+#   E2E_IMAGE=<ref>   run against a prebuilt image instead of building locally
+#   KEEP_CLUSTER=1    leave the kind cluster up after the suite (for debugging)
+# ─────────────────────────────────────────────────────────────────────────────
+
+E2E_IMAGE ?=
+KEEP_CLUSTER ?=
+
+E2E_LIFECYCLE_CLUSTER    ?= bindy-e2e-lifecycle
+E2E_IDEMPOTENCY_CLUSTER  ?= bindy-e2e-idempotency
+E2E_RESTART_CLUSTER      ?= bindy-e2e-restart
+E2E_RUST_CLUSTER         ?= bindy-e2e-rust
+E2E_MULTITENANCY_CLUSTER ?= bindy-e2e-multitenancy
+
+# Shared image handoff for CI: one job builds and saves the tarball, every suite
+# job loads it. Avoids paying for the same cross-compile once per suite.
+E2E_IMAGE_TAG ?= ci-e2e
+E2E_IMAGE_REF ?= ghcr.io/firestoned/bindy:$(E2E_IMAGE_TAG)
+E2E_IMAGE_TAR ?= dist/bindy-e2e-image.tar
+
+# $(1) = script path, $(2) = kind cluster name, $(3) = extra script arguments
+define run-e2e-suite
+	@chmod +x $(1)
+	@CLUSTER_NAME=$(2) $(1) $(if $(E2E_IMAGE),--image "$(E2E_IMAGE)") $(3)
+	@$(if $(KEEP_CLUSTER),echo "KEEP_CLUSTER set — leaving kind cluster '$(2)' up",kind delete cluster --name $(2) >/dev/null 2>&1 || true)
+endef
+
+e2e-image: ## Build the operator image once and save it to $(E2E_IMAGE_TAR) for the suite jobs to load
+	@mkdir -p $(dir $(E2E_IMAGE_TAR))
+	@TAG=$(E2E_IMAGE_TAG) ./scripts/build-docker-fast.sh local $(E2E_IMAGE_TAG)
+	@docker save -o $(E2E_IMAGE_TAR) $(E2E_IMAGE_REF)
+	@echo "✓ Saved $(E2E_IMAGE_REF) to $(E2E_IMAGE_TAR)"
+
+e2e-image-load: ## Load the image saved by `make e2e-image` into the local Docker daemon
+	@docker load -i $(E2E_IMAGE_TAR)
+	@echo "✓ Loaded $(E2E_IMAGE_REF)"
+
+e2e-lifecycle: ## E2E: zones/records come up and BIND9 actually serves them
+	$(call run-e2e-suite,tests/e2e/lifecycle_test.sh,$(E2E_LIFECYCLE_CLUSTER))
+
+e2e-idempotency: ## E2E: re-applying the identical spec creates no duplicates and loses nothing
+	$(call run-e2e-suite,tests/e2e/idempotency_test.sh,$(E2E_IDEMPOTENCY_CLUSTER))
+
+e2e-restart: ## E2E: zones/records survive an operator restart and an operand Pod wipe
+	$(call run-e2e-suite,tests/e2e/restart_test.sh,$(E2E_RESTART_CLUSTER))
+
+e2e-rust: ## E2E: tests/simple_integration.rs against a live API server
+	$(call run-e2e-suite,tests/e2e/rust_api_test.sh,$(E2E_RUST_CLUSTER))
+
+e2e-multi-tenancy: ## E2E: namespace isolation across Bind9Cluster/Bind9Instance/DNSZone
+	$(call run-e2e-suite,tests/e2e/multi_tenancy_test.sh,$(E2E_MULTITENANCY_CLUSTER))
+
+e2e-regression: ## E2E: admission policies + operand pod shape + liveness
+	$(call run-e2e-suite,tests/regression_test.sh,$(REGRESSION_CLUSTER),--fresh)
+
+e2e-zone-spread: ## E2E: spec.placement topology spread on a three-zone cluster
+	$(call run-e2e-suite,tests/zone_spread_test.sh,$(ZONESPREAD_CLUSTER))
+
+e2e-tls: ## E2E: cert-manager-issued bindcar sidecar certificate (audit P2-4)
+	$(call run-e2e-suite,tests/tls_transport_test.sh,$(TLS_TRANSPORT_CLUSTER))
+
+E2E_SUITES = e2e-rust e2e-lifecycle e2e-idempotency e2e-restart e2e-multi-tenancy \
+             e2e-regression e2e-zone-spread e2e-tls
+
+e2e-all: ## Run every e2e suite sequentially (CI runs them in parallel instead)
+	@for target in $(E2E_SUITES); do \
+		echo ""; \
+		echo "════════════════════════════════════════════════════════"; \
+		echo "  make $$target"; \
+		echo "════════════════════════════════════════════════════════"; \
+		$(MAKE) $$target || exit 1; \
+	done
+	@echo ""
+	@echo "✓ All e2e suites passed"
+
+e2e-clean: ## Delete every kind cluster the e2e suites create
+	@for c in $(E2E_LIFECYCLE_CLUSTER) $(E2E_IDEMPOTENCY_CLUSTER) $(E2E_RESTART_CLUSTER) \
+	          $(E2E_RUST_CLUSTER) $(E2E_MULTITENANCY_CLUSTER) $(REGRESSION_CLUSTER) \
+	          $(ZONESPREAD_CLUSTER) $(TLS_TRANSPORT_CLUSTER) $(CI_E2E_INTEGRATION_CLUSTER); do \
+		kind delete cluster --name $$c >/dev/null 2>&1 || true; \
+	done
+	@echo "✓ E2E kind clusters deleted"
+
 CI_E2E_IMAGE ?= ghcr.io/firestoned/bindy:ci-e2e
 CI_E2E_INTEGRATION_CLUSTER ?= bindy-e2e
-CI_E2E_ZONESPREAD_CLUSTER ?= bindy-e2e-zonespread
 
-ci-e2e: ## Self-contained full e2e: build local image, run integration + regression against it (no registry). Used by the e2e.yaml workflow.
+ci-e2e: ## Deprecated alias for `make e2e-all` (builds the image once, then runs every suite)
 	@echo "==> Building operator image locally ($(CI_E2E_IMAGE))"
-	@TAG=ci-e2e KIND_CLUSTER=$(CI_E2E_INTEGRATION_CLUSTER) ./scripts/build-docker-fast.sh local ci-e2e
-	@echo "==> Integration suite (simple zone/record lifecycle) against $(CI_E2E_IMAGE)"
-	@chmod +x tests/integration_test.sh
-	@CLUSTER_NAME=$(CI_E2E_INTEGRATION_CLUSTER) tests/integration_test.sh --image "$(CI_E2E_IMAGE)"
-	@echo "==> Regression suite (admission policies + operand pod-shape + liveness) against $(CI_E2E_IMAGE)"
-	@$(MAKE) regression-test-fresh REGRESSION_IMAGE=$(CI_E2E_IMAGE)
-	@echo "==> Zone-spreading suite (topology spread on a 3-zone cluster) against $(CI_E2E_IMAGE)"
-	@chmod +x tests/zone_spread_test.sh
-	@CLUSTER_NAME=$(CI_E2E_ZONESPREAD_CLUSTER) tests/zone_spread_test.sh --image "$(CI_E2E_IMAGE)"
-	@echo "==> Cleaning up e2e kind clusters"
-	@kind delete cluster --name $(CI_E2E_INTEGRATION_CLUSTER) 2>/dev/null || true
-	@kind delete cluster --name $(REGRESSION_CLUSTER) 2>/dev/null || true
-	@kind delete cluster --name $(CI_E2E_ZONESPREAD_CLUSTER) 2>/dev/null || true
+	@TAG=ci-e2e ./scripts/build-docker-fast.sh local ci-e2e
+	@$(MAKE) e2e-all E2E_IMAGE=$(CI_E2E_IMAGE)
+	@$(MAKE) e2e-clean
+
 
 # ── CALM (Architecture as Code) ──────────────────────────────────────────────
 # FINOS CALM models live in ./calm; the Mermaid diagrams under

@@ -53,7 +53,7 @@ EXPECTED_AUDIENCE="bindcar"
 EXPECTED_TMPDIR="/tmp"
 EXPECTED_ALLOWED_SA="system:serviceaccount:${NAMESPACE}:bindy"
 EXPECTED_RNDC_ALGORITHM="hmac-sha256"
-EXPECTED_BINDCAR_IMAGE_PREFIX="ghcr.io/firestoned/bindcar:v0.7"
+EXPECTED_BINDCAR_IMAGE_PREFIX="ghcr.io/firestoned/bindcar:v0.8"
 
 # Timeouts (seconds)
 VAP_PROPAGATION_TIMEOUT=60

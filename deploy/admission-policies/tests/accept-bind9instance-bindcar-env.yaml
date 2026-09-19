@@ -1,0 +1,19 @@
+# Should be ACCEPTED: bindcarConfig.envVars sets only tenant-owned variables.
+# Tuning the sidecar's own knobs is legitimate; only the operator-managed names
+# are reserved.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Instance
+metadata:
+  name: vap-test-bindcar-env-accept
+  namespace: bindy-system
+spec:
+  clusterRef: production-dns
+  role: primary
+  replicas: 1
+  version: "9.18"
+  bindcarConfig:
+    envVars:
+      - name: RATE_LIMIT_REQUESTS
+        value: "600"
+      - name: RATE_LIMIT_BURST
+        value: "50"

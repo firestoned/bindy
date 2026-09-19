@@ -28,6 +28,7 @@ pub use k8s_openapi::{
     api::{
         apps::v1::Deployment,
         core::v1::{ConfigMap, Secret, Service},
+        policy::v1::PodDisruptionBudget,
     },
     apimachinery::pkg::apis::meta::v1::ObjectMeta,
 };

@@ -228,3 +228,59 @@ mod tests {
         assert_eq!(original.ipv6_address, cloned.ipv6_address);
     }
 }
+
+#[cfg(test)]
+mod notify_target_tests {
+    use super::super::*;
+
+    const INSTANCE_A: &str = "tlsdemo-primary-0";
+    const INSTANCE_B: &str = "tlsdemo-primary-1";
+    const NAMESPACE: &str = "bindy-system";
+    const ENDPOINT_A: &str = "10.244.0.9:8080";
+    const ENDPOINT_B: &str = "10.244.0.10:8080";
+
+    /// The first endpoint seen is the one NOTIFY goes to.
+    #[test]
+    fn test_remember_first_notify_target_records_the_first_endpoint() {
+        let mut slot = None;
+
+        remember_first_notify_target(&mut slot, ENDPOINT_A, INSTANCE_A, NAMESPACE);
+
+        let target = slot.expect("first endpoint should have been recorded");
+        assert_eq!(target.endpoint, ENDPOINT_A);
+        assert_eq!(target.instance_name, INSTANCE_A);
+        assert_eq!(target.instance_namespace, NAMESPACE);
+    }
+
+    /// Endpoints are offered concurrently; only the first may win, or NOTIFY
+    /// would chase a different endpoint on every reconcile.
+    #[test]
+    fn test_remember_first_notify_target_does_not_overwrite() {
+        let mut slot = None;
+
+        remember_first_notify_target(&mut slot, ENDPOINT_A, INSTANCE_A, NAMESPACE);
+        remember_first_notify_target(&mut slot, ENDPOINT_B, INSTANCE_B, NAMESPACE);
+
+        let target = slot.expect("a target should have been recorded");
+        assert_eq!(target.endpoint, ENDPOINT_A);
+        assert_eq!(target.instance_name, INSTANCE_A);
+    }
+
+    /// The regression this type exists for: the endpoint must stay bound to the
+    /// instance that serves it. Losing that link is what made NOTIFY fall back
+    /// to the shared startup manager — which carries no TLS config — and dial a
+    /// TLS-only sidecar over plaintext `http://`.
+    #[test]
+    fn test_notify_target_keeps_instance_identity_for_its_endpoint() {
+        let mut slot = None;
+
+        remember_first_notify_target(&mut slot, ENDPOINT_B, INSTANCE_B, NAMESPACE);
+
+        let target = slot.expect("a target should have been recorded");
+        assert_eq!(
+            (target.endpoint.as_str(), target.instance_name.as_str()),
+            (ENDPOINT_B, INSTANCE_B),
+            "the endpoint and the instance that serves it must travel together"
+        );
+    }
+}

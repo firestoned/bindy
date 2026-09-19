@@ -73,7 +73,8 @@ Numbers are stable once assigned and grouped by band:
 | 53 | [`53-bindcar-migration-v0-7-0.md`](53-bindcar-migration-v0-7-0.md) | bindcar v0.6.0 → v0.7.0 upgrade guide — superseded by 56 |
 | 54 | [`54-bindcar-migration-v0-7-1.md`](54-bindcar-migration-v0-7-1.md) | bindcar v0.6.0 → v0.7.1 upgrade guide — superseded by 56 |
 | 55 | [`55-bindcar-migration-v0-7-2.md`](55-bindcar-migration-v0-7-2.md) | bindcar v0.6.0 → v0.7.2 upgrade guide — superseded by 56 |
-| 56 | [`56-bindcar-migration-v0-7-4.md`](56-bindcar-migration-v0-7-4.md) | bindcar v0.7.2 → v0.7.4 upgrade guide — **current**, actionable |
+| 56 | [`56-bindcar-migration-v0-7-4.md`](56-bindcar-migration-v0-7-4.md) | bindcar v0.7.2 → v0.7.4 upgrade guide — superseded by 57 |
+| 57 | [`57-bindcar-migration-v0-8-0.md`](57-bindcar-migration-v0-8-0.md) | bindcar v0.7.4 → v0.8.0 upgrade guide — **current**: TLS, mTLS, cert reload, feature gating |
 
 ## Reserved numbers
 

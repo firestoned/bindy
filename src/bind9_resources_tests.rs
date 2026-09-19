@@ -6,16 +6,38 @@
 #[cfg(test)]
 mod tests {
     use crate::bind9_resources::{
-        build_configmap, build_deployment, build_labels_from_instance, build_service,
+        build_configmap, build_deployment, build_labels_from_instance, build_pod_disruption_budget,
+        build_service, resolve_bindcar_config,
     };
-    use crate::constants::KIND_BIND9_CLUSTER;
+    use crate::constants::{
+        BIND9_PRESTOP_DRAIN_SECS, BIND9_TERMINATION_GRACE_PERIOD_SECS, KIND_BIND9_CLUSTER,
+    };
     use crate::crd::{
-        Bind9Config, Bind9Instance, Bind9InstanceSpec, DNSSECConfig, RateLimitConfig,
+        Bind9Cluster, Bind9Config, Bind9Instance, Bind9InstanceSpec, BindcarConfig, DNSSECConfig,
+        RateLimitConfig, ServerRole,
     };
-    use crate::labels::BINDY_MANAGED_BY_LABEL;
+    use crate::labels::{BINDY_CLUSTER_LABEL, BINDY_MANAGED_BY_LABEL, BINDY_ROLE_LABEL};
     use k8s_openapi::api::core::v1::ServiceSpec;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+    use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
     use std::collections::BTreeMap;
+
+    // Built through serde rather than a struct literal: Bind9ClusterCommonSpec
+    // has no Default derive, and adding one to production code purely for a test
+    // is the wrong trade.
+    fn create_test_cluster(name: &str, namespace: &str) -> Bind9Cluster {
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "Bind9Cluster",
+            "metadata": {
+                "name": name,
+                "namespace": namespace,
+                "uid": "test-cluster-uid",
+            },
+            "spec": {},
+        }))
+        .expect("test Bind9Cluster must deserialize")
+    }
 
     fn create_test_instance(name: &str) -> Bind9Instance {
         #[allow(deprecated)]
@@ -319,6 +341,369 @@ mod tests {
         assert_eq!(ports[0].port, 53); // dns-tcp
         assert_eq!(ports[1].port, 53); // dns-udp
         assert_eq!(ports[2].port, 80); // http api
+    }
+
+    /// A deleted Pod is removed from the Service endpoints in parallel with its
+    /// SIGTERM, so without a preStop delay `named` can die while kube-proxy is
+    /// still forwarding queries to it. The hook holds the container open long
+    /// enough for that removal to propagate.
+    #[test]
+    fn test_bind9_container_has_prestop_drain_hook() {
+        let instance = create_test_instance("test");
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+        let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
+        let container = &pod_spec.containers[0];
+        assert_eq!(container.name, "bind9");
+
+        let lifecycle = container
+            .lifecycle
+            .as_ref()
+            .expect("bind9 container must define a lifecycle");
+        let pre_stop = lifecycle
+            .pre_stop
+            .as_ref()
+            .expect("bind9 container must define a preStop hook");
+        let command = pre_stop
+            .exec
+            .as_ref()
+            .expect("preStop must be an exec hook")
+            .command
+            .as_ref()
+            .expect("preStop exec must define a command");
+
+        let joined = command.join(" ");
+        assert!(
+            joined.contains(&BIND9_PRESTOP_DRAIN_SECS.to_string()),
+            "preStop must wait BIND9_PRESTOP_DRAIN_SECS for endpoint removal, got: {joined}"
+        );
+        assert!(
+            joined.contains("rndc") && joined.contains("sync"),
+            "preStop must flush journals to disk so a Pod backed by a PVC does not \
+             lose dynamic updates, got: {joined}"
+        );
+    }
+
+    /// The grace period has to outlast the preStop drain, or the kubelet SIGKILLs
+    /// the container mid-hook and the drain never happens.
+    #[test]
+    fn test_pod_spec_termination_grace_period_outlasts_prestop() {
+        let instance = create_test_instance("test");
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+        let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
+
+        let grace = pod_spec
+            .termination_grace_period_seconds
+            .expect("pod spec must set terminationGracePeriodSeconds explicitly");
+        assert_eq!(grace, BIND9_TERMINATION_GRACE_PERIOD_SECS);
+        assert!(
+            grace > i64::from(BIND9_PRESTOP_DRAIN_SECS),
+            "grace period {grace}s must exceed the {BIND9_PRESTOP_DRAIN_SECS}s preStop drain"
+        );
+    }
+
+    /// Without a PodDisruptionBudget a node drain or cluster upgrade can evict
+    /// every primary of a cluster at once, which is the case that produced a
+    /// ~115s window where the Pods were Ready but served no zones.
+    #[test]
+    fn test_pdb_allows_only_one_primary_down_at_a_time() {
+        let pdb = build_pod_disruption_budget("prod-dns", "dns-ns", ServerRole::Primary, None);
+
+        assert_eq!(pdb.metadata.name.as_deref(), Some("prod-dns-primary-pdb"));
+        assert_eq!(pdb.metadata.namespace.as_deref(), Some("dns-ns"));
+
+        let spec = pdb.spec.expect("PDB must have a spec");
+        // maxUnavailable, not minAvailable: with a single primary minAvailable
+        // would block every eviction and hang `kubectl drain` forever.
+        assert!(
+            spec.min_available.is_none(),
+            "minAvailable would deadlock drains on a single-primary cluster"
+        );
+        assert_eq!(spec.max_unavailable, Some(IntOrString::Int(1)));
+
+        // The selector must match the labels the operand Pods actually carry.
+        let labels = spec
+            .selector
+            .expect("PDB must select Pods")
+            .match_labels
+            .expect("PDB selector must use matchLabels");
+        assert_eq!(labels.get("app").map(String::as_str), Some("bind9"));
+        assert_eq!(
+            labels.get(BINDY_CLUSTER_LABEL).map(String::as_str),
+            Some("prod-dns")
+        );
+        assert_eq!(
+            labels.get(BINDY_ROLE_LABEL).map(String::as_str),
+            Some("primary")
+        );
+    }
+
+    /// Secondaries get their own budget so draining a secondary can never count
+    /// against the primaries' allowance.
+    #[test]
+    fn test_pdb_is_built_per_role() {
+        let secondary =
+            build_pod_disruption_budget("prod-dns", "dns-ns", ServerRole::Secondary, None);
+        assert_eq!(
+            secondary.metadata.name.as_deref(),
+            Some("prod-dns-secondary-pdb")
+        );
+        let labels = secondary
+            .spec
+            .unwrap()
+            .selector
+            .unwrap()
+            .match_labels
+            .unwrap();
+        assert_eq!(
+            labels.get(BINDY_ROLE_LABEL).map(String::as_str),
+            Some("secondary")
+        );
+    }
+
+    /// The PDB is owned by its Bind9Cluster, so deleting the cluster garbage
+    /// collects it instead of leaving a budget that blocks future drains.
+    #[test]
+    fn test_pdb_has_owner_reference_to_cluster() {
+        let cluster = create_test_cluster("prod-dns", "dns-ns");
+        let pdb =
+            build_pod_disruption_budget("prod-dns", "dns-ns", ServerRole::Primary, Some(&cluster));
+
+        let owners = pdb
+            .metadata
+            .owner_references
+            .expect("PDB must be owned by its Bind9Cluster");
+        assert_eq!(owners.len(), 1);
+        assert_eq!(owners[0].kind, KIND_BIND9_CLUSTER);
+        assert_eq!(owners[0].name, "prod-dns");
+        assert_eq!(owners[0].controller, Some(true));
+    }
+
+    // BindcarConfig has no Default derive, so tests build it from JSON rather
+    // than force a derive onto a production CRD type.
+    fn bindcar(spec: serde_json::Value) -> BindcarConfig {
+        serde_json::from_value(spec).expect("test BindcarConfig must deserialize")
+    }
+
+    fn cluster_with_bindcar(spec: serde_json::Value) -> Bind9Cluster {
+        let mut cluster = create_test_cluster("prod-dns", "dns-ns");
+        cluster.spec.common.global = Some(
+            serde_json::from_value(serde_json::json!({ "bindcarConfig": spec }))
+                .expect("test Bind9Config must deserialize"),
+        );
+        cluster
+    }
+
+    /// An instance that says nothing about the sidecar inherits the cluster's
+    /// configuration wholesale.
+    #[test]
+    fn test_bindcar_config_inherited_when_instance_is_silent() {
+        let cluster = cluster_with_bindcar(serde_json::json!({
+            "image": "ghcr.io/firestoned/bindcar:v0.7.4",
+            "envVars": [{"name": "RATE_LIMIT_REQUESTS", "value": "600"}],
+        }));
+        let mut instance = create_test_instance("inherits");
+        instance.spec.bindcar_config = None;
+
+        let resolved = resolve_bindcar_config(&instance, Some(&cluster), None)
+            .expect("cluster config must be inherited");
+        assert_eq!(
+            resolved.image.as_deref(),
+            Some("ghcr.io/firestoned/bindcar:v0.7.4")
+        );
+        assert_eq!(resolved.env_vars.as_ref().map(Vec::len), Some(1));
+    }
+
+    /// Setting one unrelated instance-level field must not discard everything the
+    /// cluster configured. Before the merge fix this dropped the cluster's pinned
+    /// image and every environment variable with it.
+    #[test]
+    fn test_instance_field_does_not_discard_cluster_config() {
+        let cluster = cluster_with_bindcar(serde_json::json!({
+            "image": "ghcr.io/firestoned/bindcar:v0.7.4",
+            "port": 8080,
+            "envVars": [{"name": "RATE_LIMIT_REQUESTS", "value": "600"}],
+        }));
+        let mut instance = create_test_instance("partial");
+        instance.spec.bindcar_config = Some(bindcar(serde_json::json!({
+            "logLevel": "debug",
+        })));
+
+        let resolved = resolve_bindcar_config(&instance, Some(&cluster), None).unwrap();
+        assert_eq!(resolved.log_level.as_deref(), Some("debug"));
+        assert_eq!(
+            resolved.image.as_deref(),
+            Some("ghcr.io/firestoned/bindcar:v0.7.4"),
+            "instance logLevel must not drop the cluster's pinned image"
+        );
+        assert_eq!(resolved.port, Some(8080));
+        assert_eq!(
+            resolved.env_vars.as_ref().map(Vec::len),
+            Some(1),
+            "instance logLevel must not drop the cluster's env vars"
+        );
+    }
+
+    /// Environment variables merge by name so an instance can override or add a
+    /// single variable without restating the cluster's whole list.
+    #[test]
+    fn test_env_vars_merge_by_name_with_instance_winning() {
+        let cluster = cluster_with_bindcar(serde_json::json!({
+            "envVars": [
+                {"name": "SHARED", "value": "cluster"},
+                {"name": "ONLY_CLUSTER", "value": "1"},
+            ],
+        }));
+        let mut instance = create_test_instance("merging");
+        instance.spec.bindcar_config = Some(bindcar(serde_json::json!({
+            "envVars": [
+                {"name": "SHARED", "value": "instance"},
+                {"name": "ONLY_INSTANCE", "value": "2"},
+            ],
+        })));
+
+        let resolved = resolve_bindcar_config(&instance, Some(&cluster), None).unwrap();
+        let vars = resolved.env_vars.expect("merged env vars");
+        let get = |n: &str| {
+            vars.iter()
+                .find(|v| v.name == n)
+                .and_then(|v| v.value.clone())
+        };
+
+        assert_eq!(get("SHARED").as_deref(), Some("instance"));
+        assert_eq!(get("ONLY_CLUSTER").as_deref(), Some("1"));
+        assert_eq!(get("ONLY_INSTANCE").as_deref(), Some("2"));
+        assert_eq!(vars.len(), 3, "a name must not appear twice: {vars:?}");
+    }
+
+    /// With nothing configured anywhere the sidecar keeps its built-in defaults.
+    #[test]
+    fn test_bindcar_config_absent_everywhere_is_none() {
+        let mut instance = create_test_instance("bare");
+        instance.spec.bindcar_config = None;
+        assert!(resolve_bindcar_config(&instance, None, None).is_none());
+    }
+
+    /// End-to-end through build_deployment: the merged configuration has to reach
+    /// the sidecar container, not just the resolver. This is the shape that bit
+    /// the integration suite — an instance pinning only `logLevel` ran with the
+    /// default image and none of the cluster's env vars.
+    #[test]
+    fn test_merged_bindcar_config_reaches_the_sidecar_container() {
+        let cluster = cluster_with_bindcar(serde_json::json!({
+            "image": "ghcr.io/firestoned/bindcar:v0.7.4",
+            "envVars": [{"name": "RATE_LIMIT_REQUESTS", "value": "600"}],
+        }));
+        let mut instance = create_test_instance("e2e");
+        instance.spec.cluster_ref = "prod-dns".to_string();
+        instance.spec.bindcar_config = Some(bindcar(serde_json::json!({
+            "logLevel": "debug",
+        })));
+
+        let deployment = build_deployment(
+            "e2e",
+            "dns-ns",
+            &instance,
+            Some(&cluster),
+            None,
+            "test-rndc-key",
+        );
+        let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
+        let sidecar = pod_spec
+            .containers
+            .iter()
+            .find(|c| c.name == "api")
+            .expect("sidecar container must exist");
+
+        assert_eq!(
+            sidecar.image.as_deref(),
+            Some("ghcr.io/firestoned/bindcar:v0.7.4"),
+            "cluster's pinned image must survive an instance-level logLevel"
+        );
+        let names: Vec<&str> = sidecar
+            .env
+            .as_ref()
+            .expect("sidecar env")
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert!(
+            names.contains(&"RATE_LIMIT_REQUESTS"),
+            "cluster env vars must survive an instance-level logLevel, got: {names:?}"
+        );
+    }
+
+    /// The sidecar had no probes at all, so a wedged bindcar still counted as
+    /// Ready and the operator would push zones into it. /api/v1/ready checks the
+    /// zone directory and that rndc answers, which means `named` is alive.
+    #[test]
+    fn test_sidecar_has_readiness_probe_on_ready_endpoint() {
+        let instance = create_test_instance("probe");
+        let deployment =
+            build_deployment("probe", "test-ns", &instance, None, None, "test-rndc-key");
+        let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
+        let sidecar = pod_spec
+            .containers
+            .iter()
+            .find(|c| c.name == "api")
+            .expect("sidecar container");
+
+        let http = sidecar
+            .readiness_probe
+            .as_ref()
+            .expect("sidecar must have a readiness probe")
+            .http_get
+            .as_ref()
+            .expect("readiness probe must be an httpGet");
+
+        assert_eq!(http.path.as_deref(), Some("/api/v1/ready"));
+        // Plaintext sidecar: the probe must not ask for TLS.
+        assert!(
+            http.scheme.as_deref() != Some("HTTPS"),
+            "probe must use HTTP when the sidecar is not serving TLS"
+        );
+    }
+
+    /// With TLS on, the sidecar serves HTTPS *only* — an HTTP probe would be
+    /// refused and the Pod would never become Ready, which is exactly the
+    /// failure the TLS e2e exists to catch.
+    #[test]
+    fn test_sidecar_readiness_probe_uses_https_when_tls_enabled() {
+        let mut instance = create_test_instance("probe-tls");
+        instance.spec.bindcar_config = Some(bindcar(serde_json::json!({
+            "tls": {
+                "enabled": true,
+                "secretName": "bindcar-tls",
+                "caBundle": {"secretRef": {"name": "bindy-ca", "key": "ca.crt"}},
+            },
+        })));
+
+        let deployment = build_deployment(
+            "probe-tls",
+            "test-ns",
+            &instance,
+            None,
+            None,
+            "test-rndc-key",
+        );
+        let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
+        let sidecar = pod_spec
+            .containers
+            .iter()
+            .find(|c| c.name == "api")
+            .expect("sidecar container");
+
+        let http = sidecar
+            .readiness_probe
+            .as_ref()
+            .expect("sidecar must have a readiness probe")
+            .http_get
+            .as_ref()
+            .expect("readiness probe must be an httpGet");
+
+        assert_eq!(http.scheme.as_deref(), Some("HTTPS"));
+        assert_eq!(http.path.as_deref(), Some("/api/v1/ready"));
     }
 
     #[test]
@@ -1754,6 +2139,7 @@ mod tests {
             service_spec: None,
             env_vars: None,
             log_level: None,
+            tls: None,
         });
 
         let service = build_service("test", "test-ns", &instance, None);
@@ -1802,6 +2188,7 @@ mod tests {
             }),
             env_vars: None,
             log_level: None,
+            tls: None,
         });
 
         let service = build_service("test", "test-ns", &instance, None);
@@ -3211,5 +3598,169 @@ mod tests {
         let result = generate_dnssec_policies(None, None)
             .expect("absent DNSSEC config must not be an error");
         assert!(result.is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
+    // bindcar TLS transport (ADR-0004)
+    // ---------------------------------------------------------------------------
+
+    fn tls_config(enabled: bool) -> crate::crd::BindcarTlsConfig {
+        crate::crd::BindcarTlsConfig {
+            enabled: Some(enabled),
+            secret_name: Some("bindcar-tls".into()),
+            ca_bundle: Some(crate::crd::CaBundleSource {
+                config_map_ref: Some(crate::crd::CaBundleKeyRef {
+                    name: "bindcar-ca".into(),
+                    key: None,
+                }),
+                secret_ref: None,
+            }),
+            server_name: None,
+            reload_interval_seconds: None,
+        }
+    }
+
+    fn bindcar_config_with_tls(
+        tls: Option<crate::crd::BindcarTlsConfig>,
+    ) -> crate::crd::BindcarConfig {
+        crate::crd::BindcarConfig {
+            image: None,
+            image_pull_policy: None,
+            resources: None,
+            port: None,
+            service_spec: None,
+            log_level: None,
+            env_vars: None,
+            tls,
+        }
+    }
+
+    /// With no TLS configured the sidecar must look exactly as it always has — no
+    /// TLS env vars, no extra mount. This is the upgrade-safety property.
+    #[test]
+    fn test_sidecar_has_no_tls_env_when_tls_is_absent() {
+        let cfg = bindcar_config_with_tls(None);
+        let c = crate::bind9_resources::build_api_sidecar_container(Some(&cfg), "rndc-key");
+
+        let env = c.env.expect("env");
+        assert!(
+            !env.iter().any(|e| e.name.starts_with("BIND_TLS_")),
+            "no BIND_TLS_* env may be set when TLS is not configured"
+        );
+        let mounts = c.volume_mounts.expect("mounts");
+        assert!(!mounts
+            .iter()
+            .any(|m| m.name == crate::bind9_resources::VOLUME_BINDCAR_TLS));
+    }
+
+    /// `enabled: false` is explicit opt-out and must behave like absent.
+    #[test]
+    fn test_sidecar_has_no_tls_env_when_tls_disabled() {
+        let cfg = bindcar_config_with_tls(Some(tls_config(false)));
+        let c = crate::bind9_resources::build_api_sidecar_container(Some(&cfg), "rndc-key");
+
+        let env = c.env.expect("env");
+        assert!(!env.iter().any(|e| e.name.starts_with("BIND_TLS_")));
+    }
+
+    /// Enabling TLS points bindcar at the mounted key pair.
+    #[test]
+    fn test_sidecar_gets_tls_cert_and_key_when_enabled() {
+        let cfg = bindcar_config_with_tls(Some(tls_config(true)));
+        let c = crate::bind9_resources::build_api_sidecar_container(Some(&cfg), "rndc-key");
+
+        let env = c.env.expect("env");
+        let get = |n: &str| {
+            env.iter()
+                .find(|e| e.name == n)
+                .unwrap_or_else(|| panic!("{n} must be set"))
+                .value
+                .clone()
+                .unwrap_or_default()
+        };
+
+        assert!(get("BIND_TLS_CERT").ends_with("tls.crt"));
+        assert!(get("BIND_TLS_KEY").ends_with("tls.key"));
+        assert!(
+            get("BIND_TLS_CERT").starts_with(crate::bind9_resources::BINDCAR_TLS_PATH),
+            "cert must live under the mounted TLS directory"
+        );
+
+        let mounts = c.volume_mounts.expect("mounts");
+        let m = mounts
+            .iter()
+            .find(|m| m.name == crate::bind9_resources::VOLUME_BINDCAR_TLS)
+            .expect("TLS volume must be mounted");
+        assert_eq!(m.read_only, Some(true), "TLS material must mount read-only");
+    }
+
+    /// The reload interval is passed through when set, and left to bindcar's own
+    /// default otherwise.
+    #[test]
+    fn test_sidecar_reload_interval_passthrough() {
+        let mut tls = tls_config(true);
+        tls.reload_interval_seconds = Some(30);
+        let cfg = bindcar_config_with_tls(Some(tls));
+        let c = crate::bind9_resources::build_api_sidecar_container(Some(&cfg), "rndc-key");
+        let env = c.env.expect("env");
+        assert_eq!(
+            env.iter()
+                .find(|e| e.name == "BIND_TLS_RELOAD_INTERVAL")
+                .and_then(|e| e.value.clone()),
+            Some("30".to_string())
+        );
+
+        let cfg = bindcar_config_with_tls(Some(tls_config(true)));
+        let c = crate::bind9_resources::build_api_sidecar_container(Some(&cfg), "rndc-key");
+        let env = c.env.expect("env");
+        assert!(
+            !env.iter().any(|e| e.name == "BIND_TLS_RELOAD_INTERVAL"),
+            "unset interval must defer to bindcar's default, not pin a value"
+        );
+    }
+
+    /// A tenant-supplied `BIND_TLS_*` env var must not be able to override the
+    /// operator-managed one. The kubelet takes the LAST duplicate, so an appended
+    /// user value would win (bindy guide 57 section 25).
+    #[test]
+    fn test_user_env_cannot_override_operator_tls_settings() {
+        let mut cfg = bindcar_config_with_tls(Some(tls_config(true)));
+        cfg.env_vars = Some(vec![
+            k8s_openapi::api::core::v1::EnvVar {
+                name: "BIND_TLS_CERT".into(),
+                value: Some("/tmp/attacker.crt".into()),
+                ..Default::default()
+            },
+            k8s_openapi::api::core::v1::EnvVar {
+                name: "BIND_TLS_RELOAD_INTERVAL".into(),
+                value: Some("0".into()),
+                ..Default::default()
+            },
+            k8s_openapi::api::core::v1::EnvVar {
+                name: "HARMLESS".into(),
+                value: Some("kept".into()),
+                ..Default::default()
+            },
+        ]);
+
+        let c = crate::bind9_resources::build_api_sidecar_container(Some(&cfg), "rndc-key");
+        let env = c.env.expect("env");
+
+        let cert: Vec<_> = env.iter().filter(|e| e.name == "BIND_TLS_CERT").collect();
+        assert_eq!(cert.len(), 1, "exactly one BIND_TLS_CERT must survive");
+        assert_ne!(
+            cert[0].value.as_deref(),
+            Some("/tmp/attacker.crt"),
+            "a tenant must not be able to repoint the TLS certificate"
+        );
+        assert!(
+            !env.iter()
+                .any(|e| e.name == "BIND_TLS_RELOAD_INTERVAL" && e.value.as_deref() == Some("0")),
+            "a tenant must not be able to pin a rotating certificate"
+        );
+        assert!(
+            env.iter().any(|e| e.name == "HARMLESS"),
+            "unreserved user env vars must still pass through"
+        );
     }
 }

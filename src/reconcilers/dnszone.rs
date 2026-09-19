@@ -466,7 +466,7 @@ fn detect_instance_changes(
 ///
 /// async fn handle_zone(ctx: Arc<Context>, zone: DNSZone) -> anyhow::Result<()> {
 ///     let manager = Bind9Manager::new();
-///     reconcile_dnszone(ctx, zone, &manager).await?;
+///     reconcile_dnszone(ctx, zone).await?;
 ///     Ok(())
 /// }
 /// ```
@@ -475,11 +475,7 @@ fn detect_instance_changes(
 ///
 /// Returns an error if Kubernetes API operations fail or BIND9 zone operations fail.
 #[allow(clippy::too_many_lines)]
-pub async fn reconcile_dnszone(
-    ctx: Arc<crate::context::Context>,
-    dnszone: DNSZone,
-    zone_manager: &crate::bind9::Bind9Manager,
-) -> Result<()> {
+pub async fn reconcile_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZone) -> Result<()> {
     let client = ctx.client.clone();
     let bind9_instances_store = &ctx.stores.bind9_instances;
 
@@ -659,7 +655,6 @@ pub async fn reconcile_dnszone(
     let (primary_outcome, secondary_outcome) = bind9_config::configure_zone_on_instances(
         ctx.clone(),
         &dnszone,
-        zone_manager,
         &mut status_updater,
         &instance_refs,
         &unreconciled_instances,
@@ -896,10 +891,87 @@ async fn replay_records_if_zone_was_recreated(
 ///
 /// Panics if the RNDC key is not loaded by the helper function (should never happen in practice).
 #[allow(clippy::too_many_lines)]
+/// Builds the `Bind9Manager` to use for one instance's endpoints.
+///
+/// Zone operations must not reuse the process-wide manager built at startup.
+/// That one is constructed before any `Bind9Instance` exists, so it has neither
+/// the instance's TLS configuration nor the Kubernetes client needed to read the
+/// configured CA bundle — it can only ever speak plaintext. Records already
+/// resolve a manager per instance (`reconcilers::records`); zones did not, so a
+/// TLS-enabled sidecar was dialled over `http://` and every zone operation
+/// failed, with the ServiceAccount token attached to the plaintext request.
+///
+/// # Arguments
+///
+/// * `ctx` - Controller context, for the instance stores and the client
+/// * `instance_ref` - The instance whose endpoints are about to be addressed
+///
+/// # Returns
+///
+/// A manager carrying that instance's TLS configuration, if it has any.
+/// The endpoint a zone NOTIFY is sent to, plus the instance that serves it.
+///
+/// NOTIFY used to record only `<pod-ip>:<port>`, which threw away the one thing
+/// needed to dial it correctly: which `Bind9Instance` owns the endpoint, and so
+/// whether that instance's sidecar speaks TLS. Without it the call fell back to
+/// the shared startup manager, which carries no TLS configuration, and went out
+/// over plaintext `http://` against a TLS-only sidecar — refused, then retried
+/// until the reconcile ran out of time. Keeping the two together is what lets
+/// the notify site resolve a manager through [`zone_manager_for_instance`] like
+/// every other bindcar call in this reconciler.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct NotifyTarget {
+    /// Bare `<host>:<port>` of the endpoint to notify.
+    pub endpoint: String,
+    /// Name of the `Bind9Instance` serving that endpoint.
+    pub instance_name: String,
+    /// Namespace of the `Bind9Instance` serving that endpoint.
+    pub instance_namespace: String,
+}
+
+/// Record `endpoint` as the NOTIFY target if none has been chosen yet.
+///
+/// Endpoints are configured concurrently, so this is called from every task;
+/// only the first caller may win. A later endpoint must not displace it, or
+/// NOTIFY would chase a different server on every reconcile.
+///
+/// # Arguments
+/// * `slot` - The shared target, empty until the first endpoint is configured
+/// * `endpoint` - Bare `<host>:<port>` of the endpoint just configured
+/// * `instance_name` - Name of the `Bind9Instance` serving it
+/// * `instance_namespace` - Namespace of that instance
+pub(crate) fn remember_first_notify_target(
+    slot: &mut Option<NotifyTarget>,
+    endpoint: &str,
+    instance_name: &str,
+    instance_namespace: &str,
+) {
+    if slot.is_some() {
+        return;
+    }
+
+    *slot = Some(NotifyTarget {
+        endpoint: endpoint.to_string(),
+        instance_name: instance_name.to_string(),
+        instance_namespace: instance_namespace.to_string(),
+    });
+}
+
+fn zone_manager_for_instance(
+    ctx: &crate::context::Context,
+    instance_name: &str,
+    instance_namespace: &str,
+) -> crate::bind9::Bind9Manager {
+    ctx.stores.create_bind9_manager_for_instance_with_client(
+        instance_name,
+        instance_namespace,
+        Some(ctx.client.clone()),
+    )
+}
+
 pub async fn add_dnszone(
     ctx: Arc<crate::context::Context>,
     dnszone: DNSZone,
-    zone_manager: &crate::bind9::Bind9Manager,
     status_updater: &mut crate::reconcilers::status::DNSZoneStatusUpdater,
     instance_refs: &[crate::crd::InstanceReference],
 ) -> Result<types::ZoneConfigOutcome> {
@@ -1078,7 +1150,7 @@ pub async fn add_dnszone(
 
     // Process all primary instances concurrently using async streams
     // Mark each instance as reconciled immediately after first successful endpoint configuration
-    let first_endpoint = Arc::new(Mutex::new(None::<String>));
+    let first_endpoint = Arc::new(Mutex::new(None::<NotifyTarget>));
     let total_endpoints = Arc::new(Mutex::new(0_usize));
     // Endpoints where the zone did NOT exist and had to be created. A created
     // zone holds only SOA + NS, so every one of these endpoints is missing all
@@ -1094,7 +1166,10 @@ pub async fn add_dnszone(
     let instance_results = stream::iter(primary_instance_refs.iter())
         .then(|instance_ref| {
             let client = client.clone();
-            let zone_manager = zone_manager.clone();
+            // Per instance, not the shared startup manager: only this carries the
+            // instance's TLS configuration. See zone_manager_for_instance.
+            let zone_manager =
+                zone_manager_for_instance(&ctx, &instance_ref.name, &instance_ref.namespace);
             let zone_name = spec.zone_name.clone();
             let soa_record = spec.soa_record.clone();
             let all_nameserver_hostnames = all_nameserver_hostnames.clone();
@@ -1162,12 +1237,17 @@ pub async fn add_dnszone(
                         async move {
                             let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
 
-                            // Save the first endpoint (globally)
+                            // Save the first endpoint (globally), together with
+                            // the instance serving it -- NOTIFY needs that
+                            // instance's TLS configuration to dial it.
                             {
                                 let mut first = first_endpoint.lock().await;
-                                if first.is_none() {
-                                    *first = Some(pod_endpoint.clone());
-                                }
+                                remember_first_notify_target(
+                                    &mut first,
+                                    &pod_endpoint,
+                                    &instance_ref.name,
+                                    &instance_ref.namespace,
+                                );
                             }
 
                             // Check if zone already exists before attempting creation
@@ -1348,10 +1428,17 @@ pub async fn add_dnszone(
 
     // Notify secondaries about the new zone via the first endpoint
     // This triggers zone transfer (AXFR) from primary to secondaries
-    if let Some(first_pod_endpoint) = first_endpoint {
+    if let Some(notify_target) = first_endpoint {
         info!("Notifying secondaries about new zone {}", spec.zone_name);
-        if let Err(e) = zone_manager
-            .notify_zone(&spec.zone_name, &first_pod_endpoint)
+        // Per instance, not the shared startup manager: only this carries the
+        // instance's TLS configuration. See zone_manager_for_instance.
+        let notify_manager = zone_manager_for_instance(
+            &ctx,
+            &notify_target.instance_name,
+            &notify_target.instance_namespace,
+        );
+        if let Err(e) = notify_manager
+            .notify_zone(&spec.zone_name, &notify_target.endpoint)
             .await
         {
             // Don't fail if NOTIFY fails - the zone was successfully created
@@ -1385,7 +1472,6 @@ pub async fn add_dnszone(
 ///
 /// * `client` - Kubernetes API client
 /// * `dnszone` - The `DNSZone` resource
-/// * `zone_manager` - BIND9 manager for adding zone
 /// * `primary_ips` - List of primary server IPs to configure in the primaries field
 ///
 /// # Returns
@@ -1407,7 +1493,6 @@ pub async fn add_dnszone(
 pub async fn add_dnszone_to_secondaries(
     ctx: Arc<crate::context::Context>,
     dnszone: DNSZone,
-    zone_manager: &crate::bind9::Bind9Manager,
     primary_ips: &[String],
     status_updater: &mut crate::reconcilers::status::DNSZoneStatusUpdater,
     instance_refs: &[crate::crd::InstanceReference],
@@ -1468,7 +1553,8 @@ pub async fn add_dnszone_to_secondaries(
     let instance_results = stream::iter(secondary_instance_refs.iter())
         .then(|instance_ref| {
             let client = client.clone();
-            let zone_manager = zone_manager.clone();
+            let zone_manager =
+                zone_manager_for_instance(&ctx, &instance_ref.name, &instance_ref.namespace);
             let zone_name = spec.zone_name.clone();
             let primary_ips = primary_ips.to_vec();
             let total_endpoints = Arc::clone(&total_endpoints);
@@ -1723,11 +1809,7 @@ pub async fn add_dnszone_to_secondaries(
 /// # Errors
 ///
 /// Returns an error if BIND9 zone deletion fails.
-pub async fn delete_dnszone(
-    ctx: Arc<crate::context::Context>,
-    dnszone: DNSZone,
-    zone_manager: &crate::bind9::Bind9Manager,
-) -> Result<()> {
+pub async fn delete_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZone) -> Result<()> {
     let client = ctx.client.clone();
     let bind9_instances_store = &ctx.stores.bind9_instances;
     let namespace = dnszone.namespace().unwrap_or_default();
@@ -1754,6 +1836,12 @@ pub async fn delete_dnszone(
     let secondary_instance_refs =
         secondary::filter_secondary_instances(&client, &instance_refs).await?;
 
+    // Namespace per instance name, for the deletion callbacks below.
+    let primary_ns_by_name: std::collections::HashMap<String, String> = primary_instance_refs
+        .iter()
+        .map(|r| (r.name.clone(), r.namespace.clone()))
+        .collect();
+
     // Delete from all primary instances.
     // Deletion cleanup uses SkipUnavailable: an instance with zero ready
     // endpoints must not block finalizer removal forever - its DNS data is
@@ -1768,7 +1856,14 @@ pub async fn delete_dnszone(
             helpers::EndpointFailurePolicy::SkipUnavailable,
             |pod_endpoint, instance_name, _rndc_key| {
                 let zone_name = spec.zone_name.clone();
-                let zone_manager = zone_manager.clone();
+                // The callback only names the instance, so recover its namespace
+                // from the refs being iterated to build the per-instance manager.
+                let instance_namespace = primary_ns_by_name
+                    .get(instance_name.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| namespace.clone());
+                let zone_manager =
+                    zone_manager_for_instance(&ctx, &instance_name, &instance_namespace);
 
                 async move {
                     info!(
@@ -1809,6 +1904,13 @@ pub async fn delete_dnszone(
         let mut secondary_endpoints_deleted = 0;
 
         for instance_ref in &secondary_instance_refs {
+            // Per instance, not the shared startup manager: only this carries
+            // the instance's TLS configuration. A secondary whose sidecar
+            // speaks TLS would otherwise be dialled over plaintext http://,
+            // refused, and its zone left orphaned. See zone_manager_for_instance.
+            let zone_manager =
+                zone_manager_for_instance(&ctx, &instance_ref.name, &instance_ref.namespace);
+
             // Deletion cleanup: skip secondary instances with no reachable
             // endpoints instead of blocking finalizer removal forever. Real
             // (potentially transient) API errors still propagate for retry.

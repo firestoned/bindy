@@ -481,7 +481,11 @@ where
 
             // Create Bind9Manager for this specific instance with deployment-aware auth
             let zone_manager =
-                stores.create_bind9_manager_for_instance(&instance_name, &instance_namespace);
+                stores.create_bind9_manager_for_instance_with_client(
+                    &instance_name,
+                    &instance_namespace,
+                    Some(client.clone()),
+                );
 
             // Clone record_op for the async block
             let record_op_clone = record_op.clone();
@@ -1249,6 +1253,23 @@ where
         }
     }
 
+    // A write BIND9 rejected is re-attempted on this record's own timed requeue
+    // and on nothing else. The reconciler is woken by every status patch on the
+    // owning zone and on each primary instance, so without this a permanently
+    // rejected record (an MX whose exchange has no address record, say) drives a
+    // sustained delete/add storm against named. See `REJECTED_WRITE_COOLDOWN`.
+    let write_key = format!("{}Record/{namespace}/{name}", T::record_type_name());
+    if crate::reconcilers::retry::write_in_cooldown(&write_key, &rec_ctx.current_hash) {
+        debug!(
+            "Skipping {} record {}.{}: the identical spec was rejected less than {:?} ago",
+            T::record_type_name(),
+            T::get_record_name(spec),
+            rec_ctx.zone_ref.zone_name,
+            crate::reconcilers::retry::REJECTED_WRITE_COOLDOWN
+        );
+        return Ok(());
+    }
+
     // Create type-specific operation from spec
     let record_op = T::create_operation(spec);
 
@@ -1265,6 +1286,7 @@ where
     .await
     {
         Ok(()) => {
+            crate::reconcilers::retry::clear_rejected_write(&write_key);
             info!(
                 "Successfully added {} record {}.{} via {} primary instance(s)",
                 T::record_type_name(),
@@ -1306,12 +1328,12 @@ where
             .await?;
         }
         Err(e) => {
+            crate::reconcilers::retry::note_rejected_write(&write_key, &rec_ctx.current_hash);
             warn!(
-                "Failed to add {} record {}.{}: {}",
+                "Failed to add {} record {}.{}: {e:#}",
                 T::record_type_name(),
                 T::get_record_name(spec),
-                rec_ctx.zone_ref.zone_name,
-                e
+                rec_ctx.zone_ref.zone_name
             );
             update_record_status(
                 &client,
@@ -1319,7 +1341,7 @@ where
                 "Ready",
                 "False",
                 "ReconcileFailed",
-                &format!("Failed to add record to zone: {e}"),
+                &format!("Failed to add record to zone: {e:#}"),
                 current_generation,
                 None, // record_hash
                 None, // last_updated
@@ -1740,7 +1762,11 @@ pub(crate) async fn delete_record_from_primaries(
 
                 // Create Bind9Manager for this specific instance with deployment-aware auth
                 let zone_manager =
-                    stores.create_bind9_manager_for_instance(&instance_name, &instance_namespace);
+                    stores.create_bind9_manager_for_instance_with_client(
+                    &instance_name,
+                    &instance_namespace,
+                    Some(client.clone()),
+                );
 
                 async move {
                     let key_data = rndc_key.expect("RNDC key should be loaded");

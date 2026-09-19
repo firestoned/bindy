@@ -383,12 +383,15 @@ where
             )
             .await
             {
+                // `{e:#}` renders the whole anyhow context chain. Plain `{e}`
+                // shows only the outermost context, which hid the reason BIND9
+                // rejected an update behind "Failed to add MX record ...".
                 error!(
-                    "Failed operation on endpoint {} (instance {}/{}): {}",
-                    pod_endpoint, instance_ref.namespace, instance_ref.name, e
+                    "Failed operation on endpoint {} (instance {}/{}): {e:#}",
+                    pod_endpoint, instance_ref.namespace, instance_ref.name
                 );
                 errors.push(format!(
-                    "endpoint {pod_endpoint} (instance {}/{}): {e}",
+                    "endpoint {pod_endpoint} (instance {}/{}): {e:#}",
                     instance_ref.namespace, instance_ref.name
                 ));
             } else {

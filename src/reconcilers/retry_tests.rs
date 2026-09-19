@@ -211,3 +211,150 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod reconcile_backoff_tests {
+    use super::super::{
+        clear_rejected_write, note_rejected_write, reconcile_error_backoff,
+        reset_reconcile_backoff, write_in_cooldown, write_in_cooldown_at, RECONCILE_BACKOFF_MAX,
+        REJECTED_WRITE_COOLDOWN,
+    };
+    use std::time::{Duration, Instant};
+
+    /// The first failure must come back quickly. A flat 30s requeue was the floor
+    /// on how fast a DNSZone could recover after its operand Pods were replaced:
+    /// measured at 57s of idling before the reconcile that actually re-pushed the
+    /// zone, which itself took about 1 second.
+    #[test]
+    fn test_first_failure_requeues_quickly() {
+        let key = "ns/first-failure";
+        reset_reconcile_backoff(key);
+
+        let first = reconcile_error_backoff(key);
+        assert!(
+            first <= Duration::from_secs(5),
+            "first retry should be prompt, got {first:?}"
+        );
+    }
+
+    /// Repeated failures must back off, so a permanently broken object does not
+    /// hammer the API server at the fast initial interval forever.
+    #[test]
+    fn test_repeated_failures_back_off_and_cap() {
+        let key = "ns/repeated-failures";
+        reset_reconcile_backoff(key);
+
+        let first = reconcile_error_backoff(key);
+        let mut last = first;
+        for _ in 0..12 {
+            let next = reconcile_error_backoff(key);
+            assert!(
+                next >= last || next == RECONCILE_BACKOFF_MAX,
+                "backoff must grow monotonically until it caps: {last:?} -> {next:?}"
+            );
+            last = next;
+        }
+
+        assert!(last > first, "backoff must grow with consecutive failures");
+        assert_eq!(last, RECONCILE_BACKOFF_MAX, "backoff must cap");
+    }
+
+    /// Two different objects must not share a failure counter.
+    #[test]
+    fn test_backoff_is_tracked_per_object() {
+        let hot = "ns/hot";
+        let cold = "ns/cold";
+        reset_reconcile_backoff(hot);
+        reset_reconcile_backoff(cold);
+
+        for _ in 0..8 {
+            let _ = reconcile_error_backoff(hot);
+        }
+        let hot_delay = reconcile_error_backoff(hot);
+        let cold_delay = reconcile_error_backoff(cold);
+
+        assert!(
+            cold_delay < hot_delay,
+            "a healthy object must not inherit another object's backoff: {cold_delay:?} vs {hot_delay:?}"
+        );
+    }
+
+    /// A reconcile that stops failing must return to the fast interval.
+    #[test]
+    fn test_reset_returns_to_fast_interval() {
+        let key = "ns/recovering";
+        reset_reconcile_backoff(key);
+        for _ in 0..6 {
+            let _ = reconcile_error_backoff(key);
+        }
+        reset_reconcile_backoff(key);
+
+        assert!(
+            reconcile_error_backoff(key) <= Duration::from_secs(5),
+            "after a reset the next failure should requeue promptly again"
+        );
+    }
+
+    // ========== Tests for the rejected-write cooldown ==========
+
+    #[test]
+    fn test_unknown_key_is_not_in_cooldown() {
+        assert!(
+            !write_in_cooldown("ns/never-written", "hash-a"),
+            "a record with no recorded rejection must be written immediately"
+        );
+    }
+
+    #[test]
+    fn test_rejected_write_is_skipped_until_the_cooldown_expires() {
+        let key = "ns/rejected";
+        clear_rejected_write(key);
+        note_rejected_write(key, "hash-a");
+
+        assert!(
+            write_in_cooldown(key, "hash-a"),
+            "a just-rejected write must not be re-attempted on the next watch event"
+        );
+        assert!(
+            !write_in_cooldown_at(
+                key,
+                "hash-a",
+                Instant::now() + REJECTED_WRITE_COOLDOWN + Duration::from_secs(1)
+            ),
+            "once the cooldown expires the timed requeue must attempt it again"
+        );
+    }
+
+    #[test]
+    fn test_a_changed_spec_bypasses_the_cooldown() {
+        let key = "ns/respecified";
+        clear_rejected_write(key);
+        note_rejected_write(key, "hash-a");
+
+        assert!(
+            !write_in_cooldown(key, "hash-b"),
+            "editing the record is the user's fix for a rejection; it must not wait"
+        );
+    }
+
+    #[test]
+    fn test_clearing_a_rejection_allows_the_next_write() {
+        let key = "ns/recovered";
+        note_rejected_write(key, "hash-a");
+        clear_rejected_write(key);
+
+        assert!(
+            !write_in_cooldown(key, "hash-a"),
+            "a succeeding write clears the rejection"
+        );
+    }
+
+    #[test]
+    fn test_cooldown_matches_the_not_ready_requeue_interval() {
+        assert_eq!(
+            REJECTED_WRITE_COOLDOWN,
+            Duration::from_secs(crate::record_wrappers::REQUEUE_WHEN_NOT_READY_SECS),
+            "the cooldown exists to let the timed requeue drive retries, so it must not outlast it"
+        );
+    }
+}

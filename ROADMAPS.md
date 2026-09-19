@@ -78,7 +78,8 @@ Statuses were verified against `fix-idempotency` @ `648ff7a` on 2026-09-10.
 | [53](.github/community/53-bindcar-migration-v0-7-0.md) | bindcar upgrade — v0.7.0 | 📄 | Superseded by 56. Absorbed 2026-07-01/02 (Mode B / TokenReview) |
 | [54](.github/community/54-bindcar-migration-v0-7-1.md) | bindcar upgrade — v0.7.1 | 📄 | Superseded by 56. Absorbed 2026-07-05 |
 | [55](.github/community/55-bindcar-migration-v0-7-2.md) | bindcar upgrade — v0.7.2 | 📄 | Superseded by 56. §14's `bindcarConfig.envVars` override hole is bindy-side and may still be open |
-| [56](.github/community/56-bindcar-migration-v0-7-4.md) | bindcar upgrade — v0.7.4 | 🔶 | **Current and actionable.** 🔴 metric `bindcar_zones_managed_total` → `bindcar_zones_managed` (silent dashboard/alert breakage); `primaries`/`alsoNotify` take `ip:port`, which lets the operand drop `NET_BIND_SERVICE`; `sha2` 0.10→0.11; the v0.7.4 tag still self-reports `0.7.3` |
+| [56](.github/community/56-bindcar-migration-v0-7-4.md) | bindcar upgrade — v0.7.4 | 📄 | Superseded by 57. Its §14 (envVars override) and §15 (metric rename) remain open bindy-side |
+| [57](.github/community/57-bindcar-migration-v0-8-0.md) | bindcar upgrade — v0.8.0 | 🔶 | **Current and actionable.** 🟢 TLS/mTLS available (remediates audit P2-4, needs a bindy CRD surface for scheme + CA); 🟢 cert hot-reload; 🟠 `default-features = false` sheds 80 of 178 crates; 🔴 rate-limit defaults changed (100→600 req, burst 10→50); 🔴 the envVars override hole now reaches `BIND_TLS_*` |
 
 ## Tracked privately
 

@@ -1,0 +1,23 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# Single-node kind cluster for the per-suite e2e targets (tests/e2e/*.sh).
+#
+# Deliberately publishes NO host ports, unlike deploy/kind-config.yaml. Each
+# e2e suite owns its own cluster so the suites can run in parallel — one make
+# target per CI job — and two clusters cannot both bind hostPort 30053/30953:
+# the second `kind create` dies with "port is already allocated". The suites
+# query BIND9 from inside the operand Pod (dig @127.0.0.1), so nothing here
+# needs to be reachable from the host.
+#
+# Mirrors deploy/kind-config-tls.yaml, which is portless for the same reason.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"

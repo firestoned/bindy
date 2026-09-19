@@ -1,544 +1,74 @@
 #!/usr/bin/env bash
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
+#
+# Runs every DNS e2e suite in tests/e2e/ against ONE kind cluster, in order.
+#
+# This used to be a 947-line monolith. It is now a thin orchestrator: the suites
+# it calls are independent programs, each with its own Makefile target and its
+# own CI job (see .github/workflows/e2e.yaml). Keep this script for the local
+# "just run everything against one cluster" workflow and for `make
+# kind-integration-test`; use the individual targets when you want one answer
+# fast, or when you want them running in parallel.
+#
+#   make e2e-rust          tests/e2e/rust_api_test.sh
+#   make e2e-lifecycle     tests/e2e/lifecycle_test.sh
+#   make e2e-idempotency   tests/e2e/idempotency_test.sh
+#   make e2e-restart       tests/e2e/restart_test.sh
+#
+# Usage: integration_test.sh [--image REF] [--skip-deploy] [--skip-restart]
 
 set -euo pipefail
 
-# Usage: integration_test.sh [--image IMAGE_REF] [--skip-deploy]
-# Examples:
-#   integration_test.sh                                                        # Use local deployment
-#   integration_test.sh --image ghcr.io/firestoned/bindy:main-2025.12.17     # Use specific image from registry
-#   integration_test.sh --skip-deploy                                         # Skip cluster/operator setup
-
-# Colors for output
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
-
-NAMESPACE="bindy-system"
-CLUSTER_NAME="${CLUSTER_NAME:=bindy-test}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-IMAGE_REF=""
-SKIP_DEPLOY=false
-# Tag used when no --image is supplied and we build locally. Deliberately not
-# "latest": containerd keeps an existing tag when an image of that name is
-# already present from a registry, so `kind load` of a "latest" build can
-# silently leave the registry image in place. Matches scripts/build-docker-fast.sh.
-LOCAL_BUILD_TAG="${LOCAL_BUILD_TAG:-local-integration}"
+CLUSTER_NAME="${CLUSTER_NAME:-bindy-test}"
+# shellcheck disable=SC2034  # read by the libraries sourced below
 KUBECTL="kubectl --context kind-${CLUSTER_NAME}"
 
-# Parse arguments
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/lib" && pwd)/cluster.sh"
+
+SKIP_RESTART=false
+ARGS=()
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --image)
-            IMAGE_REF="$2"
-            shift 2
-            ;;
-        --skip-deploy)
-            SKIP_DEPLOY=true
-            shift
-            ;;
-        *)
-            echo -e "${RED}Unknown option: $1${NC}"
-            echo "Usage: $0 [--image IMAGE_REF] [--skip-deploy]"
-            exit 1
-            ;;
+        --skip-restart) SKIP_RESTART=true; shift ;;
+        *)              ARGS+=("$1"); shift ;;
     esac
 done
+parse_common_args ${ARGS[@]+"${ARGS[@]}"}
 
-echo -e "${BLUE}🧪 Running Bindy Integration Tests${NC}"
-echo ""
+# Suites to run, in dependency order: the Rust API tests and the lifecycle suite
+# establish that the basics work before idempotency and restart-persistence
+# claim anything about them.
+SUITES=(rust_api lifecycle idempotency)
+if [ "${SKIP_RESTART}" = true ]; then
+    echo -e "${YELLOW}⏭️  --skip-restart: omitting the restart-persistence suite${NC}"
+else
+    SUITES+=(restart)
+fi
 
-if [ "$SKIP_DEPLOY" = false ]; then
-    # Check if cluster exists
-    if ! kind get clusters 2>/dev/null | grep -q "^${CLUSTER_NAME}$"; then
-        echo -e "${YELLOW}⚠️  Cluster '${CLUSTER_NAME}' not found${NC}"
-        echo -e "${YELLOW}📦 Creating Kind cluster...${NC}"
+info "🧪 Running every e2e suite against kind cluster '${CLUSTER_NAME}'"
 
-        # Create cluster without deploying operator if IMAGE_TAG is specified
-        kind create cluster --name "${CLUSTER_NAME}" --config "${PROJECT_ROOT}/deploy/kind-config.yaml" || {
-            echo -e "${RED}❌ Failed to create cluster${NC}"
-            exit 1
-        }
+# Bring the cluster up exactly once; the suites then run with --skip-deploy so
+# they share it instead of each building their own.
+bindy_setup deploy/kind-config.yaml
 
-        kubectl config use-context "kind-${CLUSTER_NAME}"
-
-        # Install CRDs and RBAC
-        echo -e "${GREEN}📋 Installing CRDs...${NC}"
-        ${KUBECTL} create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
-        # Use 'kubectl replace --force' to avoid annotation size limits with large CRDs
-        ${KUBECTL} replace --force -f "${PROJECT_ROOT}/deploy/operator/crds/" 2>/dev/null || ${KUBECTL} create -f "${PROJECT_ROOT}/deploy/operator/crds/"
-
-        echo -e "${GREEN}🔐 Creating RBAC...${NC}"
-        ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/operator/rbac/"
-
-        if [ -z "$IMAGE_REF" ]; then
-            # No image reference specified: build one locally.
-            #
-            # This used to run `docker build -t bindy:latest "${PROJECT_ROOT}"`,
-            # which could never work — there is no Dockerfile at the repo root
-            # (they all live under docker/). It then deployed
-            # deploy/operator/deployment.yaml unmodified, which references
-            # ghcr.io/firestoned/bindy:latest rather than the bindy:latest it had
-            # just built, so the image name would not have matched either.
-            #
-            # Delegate to the same fast local build `make ci-e2e` uses, so there
-            # is exactly ONE local-build path, then fall through to the shared
-            # load-and-deploy block below.
-            IMAGE_REF="ghcr.io/firestoned/bindy:${LOCAL_BUILD_TAG}"
-            echo -e "${GREEN}🏗️  Building Docker image (${IMAGE_REF})...${NC}"
-            TAG="${LOCAL_BUILD_TAG}" KIND_CLUSTER="${CLUSTER_NAME}" \
-                "${PROJECT_ROOT}/scripts/build-docker-fast.sh" local "${LOCAL_BUILD_TAG}" || {
-                echo -e "${RED}❌ Local image build failed${NC}"
-                exit 1
-            }
-        fi
-
-        # Single deploy path, whether the image was just built locally or passed
-        # in with --image. If it is present in the local Docker daemon (e.g. a
-        # CI-built `make docker-build` image that was never pushed), load it into
-        # the kind node so the pod does not try to pull it from a registry.
-        # Otherwise assume the kind node can pull it. Mirrors
-        # tests/regression_test.sh.
-        if docker image inspect "${IMAGE_REF}" >/dev/null 2>&1; then
-            echo -e "${GREEN}📤 Loading local image ${IMAGE_REF} into Kind...${NC}"
-            kind load docker-image "${IMAGE_REF}" --name "${CLUSTER_NAME}"
-        else
-            echo -e "${YELLOW}⚠️  ${IMAGE_REF} not in local Docker; assuming the kind node can pull it${NC}"
-        fi
-        echo -e "${YELLOW}📦 Deploying operator with image: ${IMAGE_REF}${NC}"
-        sed "s|ghcr.io/firestoned/bindy:latest|${IMAGE_REF}|g" \
-            "${PROJECT_ROOT}/deploy/operator/deployment.yaml" | ${KUBECTL} apply -f -
-
-        echo -e "${GREEN}⏳ Waiting for operator to be ready...${NC}"
-        ${KUBECTL} wait --for=condition=available --timeout=300s deployment/bindy -n "${NAMESPACE}" || {
-            echo -e "${RED}❌ Operator failed to start. Checking logs:${NC}"
-            ${KUBECTL} logs -n "${NAMESPACE}" -l app=bindy --tail=50
-            exit 1
-        }
-    else
-        echo -e "${GREEN}✅ Using existing cluster '${CLUSTER_NAME}'${NC}"
-        ${KUBECTL} config use-context "kind-${CLUSTER_NAME}" > /dev/null
-
-        # If IMAGE_REF is specified, update the operator deployment
-        if [ -n "$IMAGE_REF" ]; then
-            echo -e "${YELLOW}📦 Updating operator with image: ${IMAGE_REF}${NC}"
-
-            # Update deployment with specific image (container is named "bindy")
-            ${KUBECTL} set image deployment/bindy \
-                bindy="${IMAGE_REF}" \
-                -n "${NAMESPACE}"
-
-            # Wait for rollout
-            ${KUBECTL} rollout status deployment/bindy -n "${NAMESPACE}" --timeout=300s || {
-                echo -e "${RED}❌ Operator rollout failed${NC}"
-                ${KUBECTL} logs -n "${NAMESPACE}" -l app=bindy --tail=50
-                exit 1
-            }
-        fi
+FAILED=()
+for suite in "${SUITES[@]}"; do
+    echo ""
+    info "════════════════════════════════════════════════════════════"
+    info " ${suite}"
+    info "════════════════════════════════════════════════════════════"
+    if CLUSTER_NAME="${CLUSTER_NAME}" "${TESTS_DIR}/e2e/${suite}_test.sh" --skip-deploy; then
+        continue
     fi
-else
-    echo -e "${YELLOW}⏭️  Skipping cluster and operator deployment${NC}"
-    kubectl config use-context "kind-${CLUSTER_NAME}" > /dev/null || {
-        echo -e "${RED}❌ Cluster '${CLUSTER_NAME}' not found${NC}"
-        exit 1
-    }
-fi
-
-echo ""
-echo -e "${GREEN}1️⃣  Running Rust integration tests...${NC}"
-cd "${PROJECT_ROOT}"
-
-# Run integration tests with kind cluster
-export KUBECONFIG="${HOME}/.kube/config"
-cargo test --test simple_integration -- --ignored --test-threads=1 --nocapture
-
-TEST_EXIT=$?
-
-if [ $TEST_EXIT -eq 0 ]; then
-    echo -e "${GREEN}✅ Integration tests passed!${NC}"
-else
-    echo -e "${RED}❌ Integration tests failed with exit code ${TEST_EXIT}${NC}"
-    echo -e "${YELLOW}Checking operator logs:${NC}"
-    ${KUBECTL} logs -n "${NAMESPACE}" -l app=bindy --tail=50 || true
-fi
-
-echo ""
-echo -e "${GREEN}2️⃣  Running functional tests with kubectl...${NC}"
-
-# Test Bind9Cluster creation
-echo -e "${YELLOW}Testing Bind9Cluster creation...${NC}"
-${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1beta1
-kind: Bind9Cluster
-metadata:
-  name: integration-test-cluster
-  namespace: ${NAMESPACE}
-  labels:
-    test: integration
-spec:
-  version: "9.18"
-  primary:
-    replicas: 1
-  global:
-    recursion: false
-    allowQuery:
-      - "0.0.0.0/0"
-    bindcarConfig:
-      image: "ghcr.io/firestoned/bindcar:v0.7.2"
-      imagePullPolicy: IfNotPresent
-      logLevel: debug
-EOF
-
-sleep 2
-
-# Test Bind9Instance creation (managed by cluster)
-echo -e "${YELLOW}Testing Bind9Instance creation...${NC}"
-${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1beta1
-kind: Bind9Instance
-metadata:
-  name: integration-test-primary
-  namespace: ${NAMESPACE}
-  labels:
-    test: integration
-    role: primary
-spec:
-  clusterRef: integration-test-cluster
-  role: primary
-  replicas: 1
-  bindcarConfig:
-    image: "ghcr.io/firestoned/bindcar:v0.7.2"
-    imagePullPolicy: IfNotPresent
-    logLevel: debug
-
-EOF
-
-sleep 2
-
-# Test DNSZone creation
-echo -e "${YELLOW}Testing DNSZone creation...${NC}"
-${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1beta1
-kind: DNSZone
-metadata:
-  name: integration-test-zone
-  namespace: ${NAMESPACE}
-spec:
-  zoneName: integration.test
-  clusterRef: integration-test-cluster
-  recordsFrom:
-    - selector:
-        matchLabels:
-          bindy.firestoned.io/zone: integration.test
-  nameServerIps:
-    ns1.example.com.: 192.168.0.60
-  soaRecord:
-    primaryNs: ns1.integration.test.
-    adminEmail: admin.integration.test.
-    serial: 2024010101
-    refresh: 3600
-    retry: 600
-    expire: 604800
-    negativeTtl: 86400
-  ttl: 3600
-EOF
-
-sleep 3
-
-# Test reverse DNSZone creation (for PTR records)
-echo -e "${YELLOW}Testing reverse DNSZone creation...${NC}"
-${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1beta1
-kind: DNSZone
-metadata:
-  name: integration-test-reverse-zone
-  namespace: ${NAMESPACE}
-spec:
-  zoneName: 0.168.192.in-addr.arpa
-  clusterRef: integration-test-cluster
-  recordsFrom:
-    - selector:
-        matchLabels:
-          bindy.firestoned.io/zone: 0.168.192.in-addr.arpa
-  nameServerIps:
-    ns1.example.com.: 192.168.0.60
-  soaRecord:
-    primaryNs: ns1.integration.test.
-    adminEmail: admin.integration.test.
-    serial: 2024010101
-    refresh: 3600
-    retry: 600
-    expire: 604800
-    negativeTtl: 86400
-  ttl: 3600
-EOF
-
-sleep 3
-
-# Test all record types
-echo -e "${YELLOW}Testing all DNS record types...${NC}"
-
-# A Record
-${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1beta1
-kind: ARecord
-metadata:
-  name: integration-a
-  namespace: ${NAMESPACE}
-  labels:
-    bindy.firestoned.io/zone: integration.test
-spec:
-  name: www
-  ipv4Addresses:
-    - "192.0.2.10"
-  ttl: 300
-EOF
-
-# AAAA Record
-${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1beta1
-kind: AAAARecord
-metadata:
-  name: integration-aaaa
-  namespace: ${NAMESPACE}
-  labels:
-    bindy.firestoned.io/zone: integration.test
-spec:
-  name: www
-  ipv6Addresses:
-    - "2001:db8::1"
-  ttl: 300
-EOF
-
-# CNAME Record
-${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1beta1
-kind: CNAMERecord
-metadata:
-  name: integration-cname
-  namespace: ${NAMESPACE}
-  labels:
-    bindy.firestoned.io/zone: integration.test
-spec:
-  name: blog
-  target: www.integration.test.
-  ttl: 300
-EOF
-
-# MX Record
-${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1beta1
-kind: MXRecord
-metadata:
-  name: integration-mx
-  namespace: ${NAMESPACE}
-  labels:
-    bindy.firestoned.io/zone: integration.test
-spec:
-  name: "@"
-  priority: 10
-  mailServer: mail.integration.test.
-  ttl: 3600
-EOF
-
-# TXT Record
-${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1beta1
-kind: TXTRecord
-metadata:
-  name: integration-txt
-  namespace: ${NAMESPACE}
-  labels:
-    bindy.firestoned.io/zone: integration.test
-spec:
-  name: "@"
-  text:
-    - "v=spf1 mx ~all"
-  ttl: 3600
-EOF
-
-# NS Record
-${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1beta1
-kind: NSRecord
-metadata:
-  name: integration-ns
-  namespace: ${NAMESPACE}
-  labels:
-    bindy.firestoned.io/zone: integration.test
-spec:
-  name: "@"
-  nameserver: ns2.integration.test.
-  ttl: 3600
-EOF
-
-# SRV Record
-${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1beta1
-kind: SRVRecord
-metadata:
-  name: integration-srv
-  namespace: ${NAMESPACE}
-  labels:
-    bindy.firestoned.io/zone: integration.test
-spec:
-  name: _sip._tcp
-  priority: 10
-  weight: 60
-  port: 5060
-  target: sip.integration.test.
-  ttl: 3600
-EOF
-
-# CAA Record
-${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1beta1
-kind: CAARecord
-metadata:
-  name: integration-caa
-  namespace: ${NAMESPACE}
-  labels:
-    bindy.firestoned.io/zone: integration.test
-spec:
-  name: "@"
-  flags: 0
-  tag: issue
-  value: letsencrypt.org
-  ttl: 3600
-EOF
-
-# PTR Record (reverse zone)
-${KUBECTL} apply -f - <<EOF
-apiVersion: bindy.firestoned.io/v1beta1
-kind: PTRRecord
-metadata:
-  name: integration-ptr
-  namespace: ${NAMESPACE}
-  labels:
-    bindy.firestoned.io/zone: 0.168.192.in-addr.arpa
-spec:
-  name: "10"
-  target: www.integration.test.
-  ttl: 300
-EOF
-
-echo -e "${GREEN}⏳ Waiting for reconciliation (10 seconds)...${NC}"
-sleep 10
-
-echo ""
-echo -e "${GREEN}3️⃣  Verifying resources...${NC}"
-
-# Check if resources were created
-ERRORS=0
-
-if ${KUBECTL} get bind9cluster integration-test-cluster -n "${NAMESPACE}" &>/dev/null; then
-    echo -e "  ${GREEN}✓${NC} Bind9Cluster created"
-else
-    echo -e "  ${RED}✗${NC} Bind9Cluster not found"
-    ERRORS=$((ERRORS + 1))
-fi
-
-if ${KUBECTL} get bind9instance integration-test-primary -n "${NAMESPACE}" &>/dev/null; then
-    echo -e "  ${GREEN}✓${NC} Bind9Instance created"
-else
-    echo -e "  ${RED}✗${NC} Bind9Instance not found"
-    ERRORS=$((ERRORS + 1))
-fi
-
-if ${KUBECTL} get dnszone integration-test-zone -n "${NAMESPACE}" &>/dev/null; then
-    echo -e "  ${GREEN}✓${NC} DNSZone created"
-else
-    echo -e "  ${RED}✗${NC} DNSZone not found"
-    ERRORS=$((ERRORS + 1))
-fi
-
-if ${KUBECTL} get dnszone integration-test-reverse-zone -n "${NAMESPACE}" &>/dev/null; then
-    echo -e "  ${GREEN}✓${NC} Reverse DNSZone created"
-else
-    echo -e "  ${RED}✗${NC} Reverse DNSZone not found"
-    ERRORS=$((ERRORS + 1))
-fi
-
-# Check all record types
-RECORD_TYPES=("arecord:integration-a" "aaaarecord:integration-aaaa" "cnamerecord:integration-cname" "mxrecord:integration-mx" "txtrecord:integration-txt" "nsrecord:integration-ns" "srvrecord:integration-srv" "caarecord:integration-caa" "ptrrecord:integration-ptr")
-
-for record in "${RECORD_TYPES[@]}"; do
-    IFS=':' read -r type name <<< "$record"
-    if ${KUBECTL} get "${type}" "${name}" -n "${NAMESPACE}" &>/dev/null; then
-        echo -e "  ${GREEN}✓${NC} ${type} created"
-    else
-        echo -e "  ${RED}✗${NC} ${type} not found"
-        ERRORS=$((ERRORS + 1))
-    fi
+    FAILED+=("${suite}")
 done
 
 echo ""
-echo -e "${GREEN}4️⃣  Resource Status:${NC}"
-echo -e "${BLUE}Bind9Clusters:${NC}"
-${KUBECTL} get bind9clusters -n "${NAMESPACE}" -l test=integration 2>/dev/null || echo "  No Bind9Clusters found"
-
-echo ""
-echo -e "${BLUE}Bind9Instances:${NC}"
-${KUBECTL} get bind9instances -n "${NAMESPACE}" -l test=integration 2>/dev/null || echo "  No Bind9Instances found"
-
-echo ""
-echo -e "${BLUE}DNSZones:${NC}"
-${KUBECTL} get dnszones -n "${NAMESPACE}" 2>/dev/null || echo "  No DNSZones found"
-
-echo ""
-echo -e "${BLUE}DNS Records:${NC}"
-${KUBECTL} get arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords,ptrrecords -n "${NAMESPACE}" -l test=integration 2>/dev/null || \
-${KUBECTL} get arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords,ptrrecords -n "${NAMESPACE}" 2>/dev/null || \
-echo "  No DNS records found"
-
-echo ""
-echo -e "${GREEN}5️⃣  Cleanup test resources...${NC}"
-${KUBECTL} delete arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords,ptrrecords -l test=integration -n "${NAMESPACE}" --ignore-not-found=true 2>/dev/null || true
-${KUBECTL} delete arecords,aaaarecords,cnamerecords,mxrecords,txtrecords,nsrecords,srvrecords,caarecords,ptrrecords integration-a,integration-aaaa,integration-cname,integration-mx,integration-txt,integration-ns,integration-srv,integration-caa,integration-ptr -n "${NAMESPACE}" --ignore-not-found=true 2>/dev/null || true
-${KUBECTL} delete dnszone integration-test-zone -n "${NAMESPACE}" --ignore-not-found=true
-${KUBECTL} delete dnszone integration-test-reverse-zone -n "${NAMESPACE}" --ignore-not-found=true
-${KUBECTL} delete bind9instance integration-test-primary -n "${NAMESPACE}" --ignore-not-found=true
-${KUBECTL} delete bind9cluster integration-test-cluster -n "${NAMESPACE}" --ignore-not-found=true
-
-echo ""
-
-# Render a summary on the GitHub Actions run page (when running in CI).
-if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-    rust_status=$([ $TEST_EXIT -eq 0 ] && echo '✅ passed' || echo '❌ failed')
-    func_status=$([ $ERRORS -eq 0 ] && echo '✅ passed' || echo "❌ failed (${ERRORS} error(s))")
-    records_status=$([ $ERRORS -eq 0 ] && echo '✅ all 9 created & verified' || echo '⚠️ see errors')
-    {
-        echo "## Integration suite — zone/record lifecycle"
-        echo ""
-        echo "| Check | Result |"
-        echo "|---|---|"
-        echo "| Rust integration tests (\`cargo test --test simple_integration\`) | ${rust_status} |"
-        echo "| Functional tests (kubectl create/verify) | ${func_status} |"
-        echo "| DNS record types (A, AAAA, CNAME, MX, TXT, NS, SRV, CAA, PTR) | ${records_status} |"
-        echo ""
-    } >> "$GITHUB_STEP_SUMMARY"
-fi
-
-if [ $ERRORS -eq 0 ] && [ $TEST_EXIT -eq 0 ]; then
-    echo -e "${GREEN}✅ All integration tests passed!${NC}"
-    echo ""
-    echo -e "${YELLOW}📋 Summary:${NC}"
-    echo "  - Rust integration tests: PASSED"
-    echo "  - Functional tests: PASSED"
-    echo "  - All 9 DNS record types tested: PASSED"
+if [ ${#FAILED[@]} -eq 0 ]; then
+    echo -e "${GREEN}✅ All e2e suites passed (${SUITES[*]})${NC}"
     exit 0
-else
-    echo -e "${RED}❌ Some tests failed${NC}"
-    echo ""
-    echo -e "${YELLOW}📋 Summary:${NC}"
-    echo "  - Rust integration tests: $([ $TEST_EXIT -eq 0 ] && echo 'PASSED' || echo 'FAILED')"
-    echo "  - Functional tests: $([ $ERRORS -eq 0 ] && echo 'PASSED' || echo "FAILED ($ERRORS errors)")"
-    echo ""
-    echo -e "${YELLOW}Operator logs (last 30 lines):${NC}"
-    ${KUBECTL} logs -n "${NAMESPACE}" -l app=bindy --tail=30 || true
-    exit 1
 fi
+
+echo -e "${RED}❌ Failed suites: ${FAILED[*]}${NC}"
+exit 1

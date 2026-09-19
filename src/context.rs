@@ -362,20 +362,101 @@ impl Stores {
     /// );
     /// # }
     /// ```
+    /// Resolve the sidecar TLS configuration for an instance.
+    ///
+    /// Merges `bindcarConfig` across instance, cluster and provider using the
+    /// same precedence as the reconciler, then returns its `tls` block.
+    /// Returns `None` when TLS is not configured, which is the default.
+    #[must_use]
+    pub fn resolve_bindcar_tls(
+        &self,
+        instance_name: &str,
+        instance_namespace: &str,
+    ) -> Option<crate::crd::BindcarTlsConfig> {
+        let instance = self.get_bind9instance(instance_name, instance_namespace)?;
+
+        // Resolve the owning cluster from the store. `cluster_ref` is the
+        // declared link; ownerReferences are the authoritative one for
+        // cluster-generated instances, so try both (mirrors fetch_cluster_info,
+        // without the API round trip).
+        let cluster = self
+            .bind9_clusters
+            .state()
+            .iter()
+            .find(|c| {
+                c.namespace().as_deref() == Some(instance_namespace)
+                    && (c.name_any() == instance.spec.cluster_ref
+                        || instance
+                            .metadata
+                            .owner_references
+                            .as_ref()
+                            .is_some_and(|refs| {
+                                refs.iter()
+                                    .any(|r| r.kind == "Bind9Cluster" && r.name == c.name_any())
+                            }))
+            })
+            .cloned();
+
+        let provider = cluster.as_ref().and_then(|c| {
+            let owners = c.metadata.owner_references.as_ref()?;
+            self.cluster_bind9_providers
+                .state()
+                .iter()
+                .find(|p| {
+                    owners
+                        .iter()
+                        .any(|r| r.kind == "ClusterBind9Provider" && r.name == p.name_any())
+                })
+                .cloned()
+        });
+
+        crate::bind9_resources::resolve_bindcar_config(
+            &instance,
+            cluster.as_deref(),
+            provider.as_deref(),
+        )
+        .and_then(|c| c.tls)
+    }
+
     #[must_use]
     pub fn create_bind9_manager_for_instance(
         &self,
         instance_name: &str,
         instance_namespace: &str,
     ) -> crate::bind9::Bind9Manager {
+        self.create_bind9_manager_for_instance_with_client(instance_name, instance_namespace, None)
+    }
+
+    /// As [`Self::create_bind9_manager_for_instance`], but supplying the
+    /// Kubernetes client needed to read a TLS CA bundle.
+    ///
+    /// Callers that may talk to a TLS-enabled sidecar must use this form:
+    /// without a client the manager cannot read the configured CA bundle and
+    /// will refuse to connect rather than fall back to plaintext.
+    #[must_use]
+    pub fn create_bind9_manager_for_instance_with_client(
+        &self,
+        instance_name: &str,
+        instance_namespace: &str,
+        kube_client: Option<kube::Client>,
+    ) -> crate::bind9::Bind9Manager {
+        let tls = self.resolve_bindcar_tls(instance_name, instance_namespace);
+        let apply = |m: crate::bind9::Bind9Manager| {
+            let m = m.with_tls(tls.clone());
+            match kube_client.clone() {
+                Some(c) => m.with_kube_client(c),
+                None => m,
+            }
+        };
+
         // Try to get the deployment for this instance
         if let Some(deployment) = self.get_deployment(instance_name, instance_namespace) {
             // Found deployment - create manager with auth detection
-            crate::bind9::Bind9Manager::new_with_deployment(
+            apply(crate::bind9::Bind9Manager::new_with_deployment(
                 deployment,
                 instance_name.to_string(),
                 instance_namespace.to_string(),
-            )
+            ))
         } else {
             // No deployment found - fall back to basic manager (auth assumed enabled)
             tracing::debug!(
@@ -383,7 +464,7 @@ impl Stores {
                 namespace = instance_namespace,
                 "Deployment not found in store, using basic Bind9Manager (auth enabled)"
             );
-            crate::bind9::Bind9Manager::new()
+            apply(crate::bind9::Bind9Manager::new())
         }
     }
 }

@@ -1,0 +1,20 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# Cluster for tests/tls_transport_test.sh.
+#
+# Deliberately publishes NO host ports. deploy/kind-config.yaml maps 30053 and
+# 30953 onto the host, and `make ci-e2e` runs its suites back to back without
+# tearing the earlier clusters down, so a second cluster using that config dies
+# with:
+#
+#   docker: Bind for 0.0.0.0:30053 failed: port is already allocated
+#
+# The TLS suite never needs them: every probe runs inside the cluster, either as
+# `dig` in the BIND9 container or as a throwaway curl Pod addressing the sidecar
+# by Pod IP. Publishing ports here would buy nothing and collide with whichever
+# suite ran first.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane

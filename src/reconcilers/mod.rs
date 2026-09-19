@@ -56,7 +56,7 @@
 //! async fn reconcile_zone(ctx: Arc<Context>, dnszone: DNSZone) -> anyhow::Result<()> {
 //!     let zone_manager = Bind9Manager::new();
 //!
-//!     reconcile_dnszone(ctx, dnszone, &zone_manager).await?;
+//!     reconcile_dnszone(ctx, dnszone).await?;
 //!     Ok(())
 //! }
 //! ```

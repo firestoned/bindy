@@ -121,6 +121,17 @@ rules:
     # - "delete": Finalizer cleanup (Bind9Instance reconciler)
     # Note: Owner references provide automatic GC, but finalizer explicitly deletes
 
+  # PodDisruptionBudgets for the BIND9 operands
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    # Caps voluntary disruption (node drain, cluster upgrade) at one operand Pod
+    # per cluster+role. Without it a drain can evict every primary at once, and
+    # because BIND9 holds zone data in the Pod the replacements answer REFUSED
+    # until the operator has pushed every zone back.
+    # No "delete": the budgets carry an ownerReference to their Bind9Cluster, so
+    # Kubernetes garbage collects them.
+
   # Kubernetes Services
   # trivy:ignore:KSV-0056
   # Suppression Justification (KSV-0056 - Services/Endpoints Access):

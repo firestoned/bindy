@@ -54,6 +54,21 @@ pub use types::{
 use anyhow::{Context, Result};
 use bindcar::ZoneConfig;
 use k8s_openapi::api::apps::v1::Deployment;
+pub mod tls_client;
+
+/// Default key read from a CA bundle ConfigMap or Secret.
+const DEFAULT_CA_BUNDLE_KEY: &str = "ca.crt";
+
+/// `kube::Client` wrapper that satisfies the `Debug` derive on `Bind9Manager`.
+#[derive(Clone)]
+struct KubeClientDebug(kube::Client);
+
+impl std::fmt::Debug for KubeClientDebug {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("kube::Client")
+    }
+}
+
 use reqwest::Client as HttpClient;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -186,6 +201,18 @@ pub struct Bind9Manager {
     instance_name: Option<String>,
     /// Instance namespace (for auth checking)
     instance_namespace: Option<String>,
+    /// Resolved TLS configuration for this instance's sidecar, if any.
+    tls: Option<Arc<crate::crd::BindcarTlsConfig>>,
+    /// Kubernetes client used to read the CA bundle referenced by [`Self::tls`].
+    ///
+    /// `kube::Client` is not `Debug`, so it is skipped in the derive.
+    kube_client: Option<KubeClientDebug>,
+    /// Lazily built, then cached, CA-pinned HTTPS client.
+    ///
+    /// Built on first use rather than at construction because reading the CA
+    /// bundle is an API call and the manager is created synchronously per
+    /// reconcile.
+    tls_client: Arc<tokio::sync::RwLock<Option<Arc<HttpClient>>>>,
 }
 
 impl Bind9Manager {
@@ -206,6 +233,9 @@ impl Bind9Manager {
             deployment: None,
             instance_name: None,
             instance_namespace: None,
+            tls: None,
+            kube_client: None,
+            tls_client: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
 
@@ -249,7 +279,146 @@ impl Bind9Manager {
             deployment: Some(deployment),
             instance_name: Some(instance_name),
             instance_namespace: Some(instance_namespace),
+            tls: None,
+            kube_client: None,
+            tls_client: Arc::new(tokio::sync::RwLock::new(None)),
         }
+    }
+
+    /// Attach the sidecar TLS configuration for this instance.
+    ///
+    /// Returns the manager unchanged when `tls` is `None` or disabled, so the
+    /// plaintext path costs nothing.
+    #[must_use]
+    pub fn with_tls(mut self, tls: Option<crate::crd::BindcarTlsConfig>) -> Self {
+        self.tls = tls.map(Arc::new);
+        self
+    }
+
+    /// Attach the Kubernetes client used to read the configured CA bundle.
+    #[must_use]
+    pub fn with_kube_client(mut self, client: kube::Client) -> Self {
+        self.kube_client = Some(KubeClientDebug(client));
+        self
+    }
+
+    /// Whether this instance's sidecar is reached over TLS.
+    #[must_use]
+    pub fn tls_enabled(&self) -> bool {
+        self.tls.as_ref().is_some_and(|t| t.is_enabled())
+    }
+
+    /// Qualify a bare `host:port` endpoint with the scheme in use.
+    ///
+    /// Call sites build endpoints as `<pod-ip>:<port>`, so this is what moves
+    /// the operator onto HTTPS. An endpoint that already carries a scheme is
+    /// returned unchanged.
+    #[must_use]
+    pub fn qualify_server(&self, server: &str) -> String {
+        zone_ops::build_api_url_with_scheme(server, self.tls_enabled())
+    }
+
+    /// The HTTP client to use for this instance.
+    ///
+    /// Returns the shared plaintext client when TLS is off. When TLS is on,
+    /// builds a CA-pinned client on first call and caches it.
+    ///
+    /// # Errors
+    /// Fails when TLS is enabled but the CA bundle cannot be resolved — no
+    /// Kubernetes client, no `caBundle` configured, the referenced object or
+    /// key is missing, or the bundle does not parse.
+    ///
+    /// It deliberately does **not** fall back to the plaintext client on
+    /// error. Doing so would send the ServiceAccount token in the clear on a
+    /// deployment whose operator believes TLS is on.
+    pub async fn resolve_client(&self) -> Result<Arc<HttpClient>> {
+        let Some(tls) = self.tls.as_ref().filter(|t| t.is_enabled()) else {
+            return Ok(Arc::clone(&self.client));
+        };
+
+        if let Some(cached) = self.tls_client.read().await.as_ref() {
+            return Ok(Arc::clone(cached));
+        }
+
+        let ca_pem = self.read_ca_bundle(tls).await?;
+        let built = Arc::new(crate::bind9::tls_client::build_tls_client(
+            &ca_pem,
+            tls.server_name.clone(),
+            Duration::from_secs(BINDCAR_HTTP_CONNECT_TIMEOUT_SECS),
+            Duration::from_secs(BINDCAR_HTTP_REQUEST_TIMEOUT_SECS),
+        )?);
+
+        *self.tls_client.write().await = Some(Arc::clone(&built));
+        Ok(built)
+    }
+
+    /// Read the PEM CA bundle referenced by the TLS configuration.
+    async fn read_ca_bundle(&self, tls: &crate::crd::BindcarTlsConfig) -> Result<Vec<u8>> {
+        use k8s_openapi::api::core::v1::{ConfigMap, Secret};
+        use kube::Api;
+
+        let source = tls.ca_bundle.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "bindcarConfig.tls.enabled is true but no caBundle is configured; \
+                 refusing to connect without a trust anchor"
+            )
+        })?;
+
+        let kube_client = self.kube_client.clone().map(|c| c.0).ok_or_else(|| {
+            anyhow::anyhow!(
+                "TLS is enabled but this Bind9Manager has no Kubernetes client, \
+                 so the CA bundle cannot be read"
+            )
+        })?;
+
+        let namespace = self.instance_namespace.as_deref().unwrap_or("default");
+
+        if let Some(cm_ref) = source.config_map_ref.as_ref() {
+            let key = cm_ref.key.as_deref().unwrap_or(DEFAULT_CA_BUNDLE_KEY);
+            let api: Api<ConfigMap> = Api::namespaced(kube_client, namespace);
+            let cm = api.get(&cm_ref.name).await.with_context(|| {
+                format!(
+                    "failed to read CA bundle ConfigMap {}/{}",
+                    namespace, cm_ref.name
+                )
+            })?;
+            let data = cm.data.unwrap_or_default();
+            return data
+                .get(key)
+                .map(|v| v.clone().into_bytes())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "CA bundle ConfigMap {}/{} has no key {:?}",
+                        namespace,
+                        cm_ref.name,
+                        key
+                    )
+                });
+        }
+
+        if let Some(sec_ref) = source.secret_ref.as_ref() {
+            let key = sec_ref.key.as_deref().unwrap_or(DEFAULT_CA_BUNDLE_KEY);
+            let api: Api<Secret> = Api::namespaced(kube_client, namespace);
+            let secret = api.get(&sec_ref.name).await.with_context(|| {
+                format!(
+                    "failed to read CA bundle Secret {}/{}",
+                    namespace, sec_ref.name
+                )
+            })?;
+            let data = secret.data.unwrap_or_default();
+            return data.get(key).map(|v| v.0.clone()).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "CA bundle Secret {}/{} has no key {:?}",
+                    namespace,
+                    sec_ref.name,
+                    key
+                )
+            });
+        }
+
+        Err(anyhow::anyhow!(
+            "bindcarConfig.tls.caBundle must set either configMapRef or secretRef"
+        ))
     }
 
     /// Read the operator's `ServiceAccount` token for bindcar authentication.
@@ -427,7 +596,9 @@ impl Bind9Manager {
     /// Returns an error if the HTTP request fails or the zone cannot be reloaded.
     pub async fn reload_zone(&self, zone_name: &str, server: &str) -> Result<()> {
         let token = self.get_token();
-        zone_ops::reload_zone(&self.client, token.as_deref(), zone_name, server).await
+        let client = self.resolve_client().await?;
+        let server = &self.qualify_server(server);
+        zone_ops::reload_zone(&client, token.as_deref(), zone_name, server).await
     }
 
     /// Reload all zones via HTTP API.
@@ -436,7 +607,9 @@ impl Bind9Manager {
     ///
     /// Returns an error if the HTTP request fails.
     pub async fn reload_all_zones(&self, server: &str) -> Result<()> {
-        zone_ops::reload_all_zones(&self.client, self.get_token().as_deref(), server).await
+        let client = self.resolve_client().await?;
+        let server = &self.qualify_server(server);
+        zone_ops::reload_all_zones(&client, self.get_token().as_deref(), server).await
     }
 
     /// Trigger zone transfer via HTTP API.
@@ -445,8 +618,9 @@ impl Bind9Manager {
     ///
     /// Returns an error if the HTTP request fails or the zone transfer cannot be initiated.
     pub async fn retransfer_zone(&self, zone_name: &str, server: &str) -> Result<()> {
-        zone_ops::retransfer_zone(&self.client, self.get_token().as_deref(), zone_name, server)
-            .await
+        let client = self.resolve_client().await?;
+        let server = &self.qualify_server(server);
+        zone_ops::retransfer_zone(&client, self.get_token().as_deref(), zone_name, server).await
     }
 
     /// Freeze a zone to prevent dynamic updates via HTTP API.
@@ -455,7 +629,9 @@ impl Bind9Manager {
     ///
     /// Returns an error if the HTTP request fails or the zone cannot be frozen.
     pub async fn freeze_zone(&self, zone_name: &str, server: &str) -> Result<()> {
-        zone_ops::freeze_zone(&self.client, self.get_token().as_deref(), zone_name, server).await
+        let client = self.resolve_client().await?;
+        let server = &self.qualify_server(server);
+        zone_ops::freeze_zone(&client, self.get_token().as_deref(), zone_name, server).await
     }
 
     /// Thaw a frozen zone to allow dynamic updates via HTTP API.
@@ -464,7 +640,9 @@ impl Bind9Manager {
     ///
     /// Returns an error if the HTTP request fails or the zone cannot be thawed.
     pub async fn thaw_zone(&self, zone_name: &str, server: &str) -> Result<()> {
-        zone_ops::thaw_zone(&self.client, self.get_token().as_deref(), zone_name, server).await
+        let client = self.resolve_client().await?;
+        let server = &self.qualify_server(server);
+        zone_ops::thaw_zone(&client, self.get_token().as_deref(), zone_name, server).await
     }
 
     /// Get zone status via HTTP API.
@@ -473,7 +651,9 @@ impl Bind9Manager {
     ///
     /// Returns an error if the HTTP request fails or the zone status cannot be retrieved.
     pub async fn zone_status(&self, zone_name: &str, server: &str) -> Result<String> {
-        zone_ops::zone_status(&self.client, self.get_token().as_deref(), zone_name, server).await
+        let client = self.resolve_client().await?;
+        let server = &self.qualify_server(server);
+        zone_ops::zone_status(&client, self.get_token().as_deref(), zone_name, server).await
     }
 
     /// Check if a zone exists by trying to get its status.
@@ -490,7 +670,9 @@ impl Bind9Manager {
     /// - The server returns a 5xx error
     /// - Any other non-404 error occurs
     pub async fn zone_exists(&self, zone_name: &str, server: &str) -> Result<bool> {
-        zone_ops::zone_exists(&self.client, self.get_token().as_deref(), zone_name, server).await
+        let client = self.resolve_client().await?;
+        let server = &self.qualify_server(server);
+        zone_ops::zone_exists(&client, self.get_token().as_deref(), zone_name, server).await
     }
 
     /// Get server status via HTTP API.
@@ -499,7 +681,9 @@ impl Bind9Manager {
     ///
     /// Returns an error if the HTTP request fails or the server status cannot be retrieved.
     pub async fn server_status(&self, server: &str) -> Result<String> {
-        zone_ops::server_status(&self.client, self.get_token().as_deref(), server).await
+        let client = self.resolve_client().await?;
+        let server = &self.qualify_server(server);
+        zone_ops::server_status(&client, self.get_token().as_deref(), server).await
     }
 
     /// Add a zone via HTTP API (primary or secondary).
@@ -543,8 +727,10 @@ impl Bind9Manager {
         dnssec_policy: Option<&str>,
     ) -> Result<bool> {
         let token = self.get_token();
+        let client = self.resolve_client().await?;
+        let server = &self.qualify_server(server);
         zone_ops::add_zones(
-            &self.client,
+            &client,
             token.as_deref(),
             zone_name,
             zone_type,
@@ -603,8 +789,10 @@ impl Bind9Manager {
         secondary_ips: Option<&[String]>,
         dnssec_policy: Option<&str>,
     ) -> Result<bool> {
+        let client = self.resolve_client().await?;
+        let server = &self.qualify_server(server);
         zone_ops::add_primary_zone(
-            &self.client,
+            &client,
             self.get_token().as_deref(),
             zone_name,
             server,
@@ -643,8 +831,10 @@ impl Bind9Manager {
         key_data: &RndcKeyData,
         primary_ips: &[String],
     ) -> Result<bool> {
+        let client = self.resolve_client().await?;
+        let server = &self.qualify_server(server);
         zone_ops::add_secondary_zone(
-            &self.client,
+            &client,
             self.get_token().as_deref(),
             zone_name,
             server,
@@ -678,8 +868,10 @@ impl Bind9Manager {
         server: &str,
         key_data: &RndcKeyData,
     ) -> Result<()> {
+        let client = self.resolve_client().await?;
+        let server = &self.qualify_server(server);
         zone_ops::create_zone_http(
-            &self.client,
+            &client,
             self.get_token().as_deref(),
             zone_name,
             zone_type,
@@ -706,8 +898,10 @@ impl Bind9Manager {
         server: &str,
         freeze_before_delete: bool,
     ) -> Result<()> {
+        let client = self.resolve_client().await?;
+        let server = &self.qualify_server(server);
         zone_ops::delete_zone(
-            &self.client,
+            &client,
             self.get_token().as_deref(),
             zone_name,
             server,
@@ -722,7 +916,9 @@ impl Bind9Manager {
     ///
     /// Returns an error if the HTTP request fails or the notification cannot be sent.
     pub async fn notify_zone(&self, zone_name: &str, server: &str) -> Result<()> {
-        zone_ops::notify_zone(&self.client, self.get_token().as_deref(), zone_name, server).await
+        let client = self.resolve_client().await?;
+        let server = &self.qualify_server(server);
+        zone_ops::notify_zone(&client, self.get_token().as_deref(), zone_name, server).await
     }
 
     // ===== DNS record management methods =====

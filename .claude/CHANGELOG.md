@@ -1,3 +1,799 @@
+## [2026-09-20 17:55] - Fix: operator dialled TLS-enabled bindcar sidecars over plaintext on NOTIFY and secondary delete
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/reconcilers/dnszone.rs`: zone NOTIFY used the shared startup
+  `Bind9Manager`, which carries no per-instance TLS configuration, so
+  `qualify_server` produced `http://` and the call was refused by a TLS-only
+  sidecar — then retried until the reconcile ran out of time.
+- `src/reconcilers/dnszone.rs`: deleting a zone from a **secondary** instance
+  had the same defect, leaving zone data orphaned on a TLS-enabled secondary.
+
+### Added
+- `NotifyTarget` + `remember_first_notify_target()` in `src/reconcilers/dnszone.rs`:
+  the NOTIFY endpoint now travels with the `Bind9Instance` that serves it, which
+  is what lets the notify site resolve a manager via `zone_manager_for_instance`.
+- `src/reconcilers/dnszone_tests.rs`: `notify_target_tests` — records the first
+  endpoint, never overwrites it, and keeps the endpoint bound to its instance.
+
+### Changed
+- Removed the now-dead `zone_manager: &Bind9Manager` parameter from
+  `reconcile_dnszone`, `delete_dnszone`, `add_dnszone` and
+  `configure_zone_on_instances`, and the local binding in `src/main.rs`. Every
+  bindcar call in the DNSZone reconciler resolves a per-instance manager, so the
+  shared one has no callers left. This is the actual regression barrier: the
+  reconciler can no longer be *handed* a manager without TLS configuration.
+- `.github/workflows/e2e.yaml`: suite jobs run with `KEEP_CLUSTER=1` and delete
+  the cluster in an `always()` step, so the `if: failure()` diagnostics step has
+  a live cluster to inspect. Log tails deepened (operator 200 → 2000, operand
+  200 → 1000) and `--timestamps` added.
+- `tests/tls_transport_test.sh`: its own failure dump widened from `--tail=80` to
+  2000 lines with timestamps, plus the operand/sidecar logs.
+
+### Why
+Caught by `make e2e-tls` on PR #498 — the first run in which that suite executed
+end to end (the previous run died on the kind host-port collision before reaching
+any TLS assertion). The evidence was unambiguous:
+
+```
+POST https://10.244.0.9:8080/api/v1/zones                 → 201 Created
+POST http://10.244.0.9:8080/api/v1/zones/tls.test/notify  → refused, attempt=13
+```
+
+The doc comment on `zone_manager_for_instance` already described this exact bug
+class for the zone-add path; NOTIFY and secondary-delete were call sites that
+fix missed. Note that the ServiceAccount token was attached to those plaintext
+requests.
+
+The CI diagnostics changes exist because the failure arrived half-truncated: the
+suite's EXIT trap deleted the kind cluster before the workflow's diagnostics step
+ran, leaving only an 80-line tail that had already scrolled past the first
+reconcile.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (operator image)
+- [ ] Config change only
+- [ ] Documentation only
+
+`cargo fmt`, `cargo clippy --all-targets --all-features` (clean) and
+`cargo test --all` (1435 passed, 0 failed) all pass. The `e2e-tls` suite could
+not be re-run locally — the dev machine ran out of disk and the Docker VM went
+read-only mid-run — so CI is the end-to-end verification.
+
+## [2026-09-20 12:46] - VAP for reserved bindcar env names; readiness probe on the sidecar
+
+**Author:** Erick Bourgeois
+
+### Added
+- `deploy/admission-policies/19-bindy-bindcar-env-policy.yaml` +
+  `20-...-binding.yaml`: rejects `bindcarConfig.envVars` entries naming an
+  operator-managed variable, by exact name (`BIND_API_TOKEN`, `DISABLE_AUTH`,
+  `BIND_ALLOW_ANY_SERVICEACCOUNT`, `BIND_ALLOWED_SERVICE_ACCOUNTS`,
+  `BIND_ALLOWED_NAMESPACES`, `BIND_TOKEN_AUDIENCES`, `BIND_ZONE_DIR`,
+  `RNDC_SECRET`, `RNDC_ALGORITHM`, `RNDC_KEY_NAME`) or by prefix (`BIND_TLS_*`,
+  `KUBE_*`). Covers `Bind9Instance`, `Bind9Cluster` and `ClusterBind9Provider`,
+  including the cluster-level `spec.global.bindcarConfig` path.
+- Four fixtures under `deploy/admission-policies/tests/`: one accept
+  (tenant-owned vars are still allowed) and three reject (exact name, `KUBE_*`
+  at cluster level, `BIND_TLS_*`).
+- `src/bind9_resources.rs`: readiness probe on the bindcar sidecar, an httpGet
+  to `/api/v1/ready`, with the scheme following the sidecar (HTTPS when TLS is
+  enabled, HTTP otherwise).
+
+### Why
+**The VAP** closes roadmap 55 §14 at the admission layer. The load-bearing fix
+is still the reconciler's `is_reserved_bindcar_env` guard, which drops reserved
+names; this rejects the object outright so a tenant gets an error instead of a
+silently-ignored field. Note the roadmap calls this "VAP 15/16"; those numbers
+are taken by image-provenance, so it landed as 19/20.
+
+**The probe**: the sidecar had none at all, so a wedged bindcar still counted as
+Ready and the operator would push zones into it. `/api/v1/ready` verifies the
+zone directory is usable and that rndc answers, which means `named` is alive —
+strictly more than the bind9 container's bare TCP connect.
+
+### What the probe deliberately does NOT do
+It does not require any zone to be loaded, so it does **not** close the
+Ready-but-empty window. That window cannot be closed this way: the operator
+reaches sidecars through the Service's *ready* endpoints
+(`reconcilers/dnszone/helpers.rs`), so a Pod that stayed unready until it had
+zones could never be given any — not ready, not an endpoint, nothing to push,
+never ready. Closing it properly needs management traffic decoupled from DNS
+readiness (a separate Service with `publishNotReadyAddresses`, addressing Pods
+by IP, or an operator-set readiness gate). That is a design decision, not a
+mechanical fix.
+
+### Verified
+VAP fixtures run against a live kind API server: the accept case is admitted and
+all three reject cases are denied by `bindy-bindcar-env-validation` specifically
+(message quoted in the denial), not by some other validation.
+
+`tests/tls_transport_test.sh` green end to end after the probe change — the case
+that matters, since an HTTP-scheme probe against a TLS-only sidecar would leave
+the Pod permanently unready. 1496 unit tests pass; fmt and clippy clean.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-20 15:40] - Split the e2e monolith into eight per-suite Makefile targets
+
+**Author:** Erick Bourgeois
+
+### Added
+- `tests/lib/common.sh`: shared colours, logging, `pass`/`fail` assertions, common
+  argument parsing (`--image`, `--skip-deploy`) and the GitHub step-summary writer.
+- `tests/lib/cluster.sh`: `bindy_setup` — idempotent kind cluster creation, image
+  build-or-load, and operator deploy. One bring-up path for every bash suite.
+- `tests/lib/dns_fixtures.sh`: the zone/record fixture (Bind9Cluster with 2
+  primaries + standalone instance, forward and reverse DNSZone, all 9 record
+  types) plus every assertion over it — pre-clean, readiness, `dig`-in-Pod DNS
+  verification, resource census, teardown.
+- `tests/e2e/lifecycle_test.sh`, `idempotency_test.sh`, `restart_test.sh`,
+  `rust_api_test.sh`, `multi_tenancy_test.sh`: one suite per file, each a
+  standalone program with its own kind cluster.
+- `deploy/kind-config-e2e.yaml`: single-node cluster publishing **no** host ports,
+  used by all five new suites.
+- Makefile: `e2e-lifecycle`, `e2e-idempotency`, `e2e-restart`, `e2e-rust`,
+  `e2e-multi-tenancy`, `e2e-regression`, `e2e-zone-spread`, `e2e-tls`, plus
+  `e2e-all`, `e2e-clean`, `e2e-image` and `e2e-image-load`.
+
+### Changed
+- `tests/integration_test.sh`: 947-line monolith → ~75-line orchestrator that runs
+  the DNS suites against one shared cluster. Still honours `--image`,
+  `--skip-deploy` and `--skip-restart`; now reports *which* suites failed.
+- `.github/workflows/e2e.yaml`: one `make ci-e2e` job → a `build` job that saves
+  the image as an artifact, an 8-way `fail-fast: false` suite matrix, and an
+  `e2e` gate job for branch protection.
+- `Makefile`: `ci-e2e` is now a thin alias for `e2e-all` (build once, run all,
+  clean up). The `help` target's awk filter now accepts digits in target names,
+  without which none of the `e2e-*` targets were listed.
+- `tests/README.md`: documents the per-suite targets, the shared libraries and
+  what each suite actually proves. Dropped the stale "MXRecord is never added to
+  BIND9" known-failure note — all 11 expected answers now verify on all 3 primaries.
+- `.gitignore`: `/dist/` (the `make e2e-image` tarball).
+
+### Why
+The e2e gate was a single ~40-minute job that reported one red X with no
+indication of which suite broke, and a 947-line script that mixed cluster setup,
+fixture definition, six distinct assertions and reporting. Splitting it by *what
+is being proven* means a failure names the suite, the suites run in parallel in
+CI, and a developer can run the one that matters in isolation.
+
+Suite boundaries follow the failure modes, not the old phase numbering:
+`lifecycle` (does it come up and does BIND9 actually answer), `idempotency` (does
+re-applying change anything), `restart` (does it survive operator and operand
+restarts — the slowest, ~100s of replay per operand wipe, hence its own job).
+
+`deploy/kind-config-e2e.yaml` exists because `deploy/kind-config.yaml` maps host
+ports 30053/30953. Two suites cannot both bind those, so the second
+`kind create` dies with `port is already allocated` — which is exactly what
+happened the first time two suites were run concurrently. Same reasoning as
+`deploy/kind-config-tls.yaml`. The suites `dig` from inside the operand Pod, so
+they never needed a published port.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (CI workflow + Makefile targets)
+- [ ] Documentation only
+
+Verified locally on kind: `e2e-lifecycle`, `e2e-idempotency`, `e2e-restart`,
+`e2e-rust` and `e2e-multi-tenancy` all pass, with `e2e-idempotency` + `e2e-restart`
+and `e2e-rust` + `e2e-multi-tenancy` run concurrently to confirm the clusters no
+longer collide.
+
+## [2026-09-20 11:32] - TLS e2e: own kind config, so ci-e2e stops colliding on host ports
+
+**Author:** Erick Bourgeois
+
+### Added
+- `deploy/kind-config-tls.yaml`: single-node cluster publishing **no** host ports.
+
+### Changed
+- `tests/tls_transport_test.sh`: creates its cluster from that config instead of
+  `deploy/kind-config.yaml`.
+- `.github/workflows/e2e.yaml`: added the new config to the path triggers.
+
+### Why
+`make ci-e2e` runs its suites back to back and only deletes the clusters at the
+very end, so the integration suite's cluster is still up when the TLS suite
+starts. Both were using `deploy/kind-config.yaml`, which maps 30053 and 30953
+onto the host, and the second bind fails:
+
+```
+docker: Bind for 0.0.0.0:30053 failed: port is already allocated
+```
+
+That is why the e2e workflow went red on PR #498 while the suite passed locally —
+locally there was no other cluster holding the ports. The zone-spread suite was
+unaffected because `kind-config-multizone.yaml` publishes none.
+
+The TLS suite never needed them: every probe runs inside the cluster, either as
+`dig` in the BIND9 container or a throwaway curl Pod addressing the sidecar by
+Pod IP.
+
+### Verified
+Reproduced locally with a leftover `bindy-e2e` cluster holding all three ports:
+creating a cluster from `kind-config.yaml` failed with the same
+`port is already allocated`, while `kind-config-tls.yaml` came up cleanly under
+the identical condition.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Test/CI only
+
+## [2026-09-19 20:05] - Stop hammering BIND9 with a rejected record write; stop claiming success when it failed
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/reconcilers/retry.rs`: `REJECTED_WRITE_COOLDOWN` plus
+  `note_rejected_write`, `clear_rejected_write`, `write_in_cooldown` and
+  `write_in_cooldown_at` (the last takes `now`, so expiry is testable without
+  sleeping). Tracks the spec hash BIND9 last rejected for an object.
+- `src/record_wrappers.rs`: `ReadyState` and `ready_state()`, which read the
+  `Ready` condition and carry its reason and message.
+
+### Changed
+- `src/reconcilers/records/mod.rs`: the reconciler skips the BIND9 write while
+  the identical spec hash is inside the cooldown, records a rejection on
+  failure, and clears it on success.
+- `src/record_operator.rs`: the post-reconcile log now reads the status it just
+  wrote — `info!` only on `Ready`, otherwise a `warn!` naming the reason and
+  message. Deleting a record clears any rejection recorded for it.
+- `src/record_wrappers.rs`: `is_resource_ready` is now `matches!(ready_state(..),
+  Ready)`. It previously inspected only `conditions.first()`, so a `Ready`
+  condition in any other position read as not-ready.
+
+### Why
+A record BIND9 permanently rejects was re-attempted on every watch event, not
+just on its own 30s requeue: a status patch on the owning zone or on any primary
+instance re-runs the record reconciler. Measured against a real operand, one bad
+MX drove a sustained delete/add storm — roughly three updates per second, about
+300ms apart. There is no retry loop inside the DDNS path itself; every repeat was
+a fresh reconcile. Keying the cooldown on the spec hash keeps the user's fix
+instant: editing the record bypasses it.
+
+Separately, `record_operator.rs` logged `Successfully reconciled <Kind>: <name>`
+immediately after a failed write, because `reconcile_record` swallows the error
+to write `ReconcileFailed` into the status and returns `Ok(())`. The log
+contradicted the status on the same object.
+
+Verified on a kind cluster with an MXRecord whose exchange has no address record
+(permanently `Refused`). Attempts went from ~300ms apart to seven attempts at
+30.2s intervals — exactly `REQUEUE_WHEN_NOT_READY_SECS`, i.e. the timed requeue
+and nothing else — and the operator now logs `Reconciled MXRecord probe-bad-mx
+but it is not Ready — ReconcileFailed: ...`.
+
+No DNS response-code classifier was added: the cooldown bounds every failure
+kind, permanent or transient, and a classifier would mean touching all nine
+`add_*_record` functions. Worth doing later so permanent rejections can back off
+harder than transient ones.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-19 19:20] - Log the full anyhow chain on record-add failures
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/reconcilers/dnszone/helpers.rs`: the per-endpoint `error!` and the
+  aggregated `errors.push(format!(...))` now render `{e:#}` instead of `{}`.
+- `src/reconcilers/records/mod.rs`: the add-failure `warn!` and the
+  `ReconcileFailed` status message (`"Failed to add record to zone: {e:#}"`)
+  likewise.
+
+### Why
+`{}` on an `anyhow::Error` prints only the outermost context, so every
+record-add failure reached the log, the CR condition and the Kubernetes event
+as `Failed to add MX record @.integration.test to primary <ip> (...)` with the
+reason discarded. `{e:#}` renders the whole chain; the same idiom was already
+used a few lines above (`SKIPPING instance ... ({e:#})`).
+
+This immediately paid for itself: the first local run with it printed
+`... : DNS update failed with response code: Refused`, which identified the
+long-standing MX failure in the e2e suite (buglog bug-186). BIND 9.18 refuses a
+dynamic MX add whose exchange is inside the zone and has no A/AAAA record —
+`tests/integration_test.sh` points `mailServer` at `mail.integration.test.` and
+never creates an address record for it. Confirmed by hand with `nsupdate`
+against the operand: an MX to a target with no address record is REFUSED, the
+same MX to a target with an A record is accepted and served.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-19 17:49] - Zone operations now reach the sidecar over TLS (closes audit P2-4)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/reconcilers/dnszone.rs`: `zone_manager_for_instance()` resolves a
+  `Bind9Manager` per instance, carrying that instance's TLS configuration and the
+  client needed to read its CA bundle.
+
+### Changed
+- `src/reconcilers/dnszone.rs`: the primary, secondary and deletion loops now
+  build a per-instance manager instead of cloning the process-wide one created in
+  `src/main.rs:422`. That manager is constructed before any `Bind9Instance`
+  exists, so it has no TLS configuration and no kube client — it could only ever
+  speak plaintext.
+- `src/reconcilers/dnszone.rs`, `src/reconcilers/dnszone/bind9_config.rs`:
+  dropped the now-unused `zone_manager` parameter from
+  `add_dnszone_to_secondaries` rather than leave a misleading parameter that
+  invites the same bug back.
+
+### Why
+TLS was plumbed for **record** operations only. Zone operations — `addzone`,
+`freeze`, `thaw`, `notify`, the bulk of the API surface — still dialled
+`http://`, with the ServiceAccount token attached:
+
+```
+POST url=http://10.244.0.9:8080/api/v1/zones ... auth_enabled=true
+```
+
+Against a TLS-enabled sidecar every zone operation failed outright (fail-closed,
+per ADR-0004), so TLS was not merely unproven, it was unusable. Against a plain
+sidecar that token crossed the pod network in cleartext, which is audit finding
+P2-4 itself.
+
+Every unit test passed throughout, and the ADR claimed remediation. Only an
+end-to-end run against a real CA surfaced it.
+
+### Verified
+`tests/tls_transport_test.sh` against kind with cert-manager v1.21.2 issuing the
+sidecar certificate. All five assertions pass, including the two that matter:
+BIND9 serves `www.tls.test` pushed over a CA-verified HTTPS connection, and the
+operator made no plaintext calls to the sidecar. Assertion 4 was RED on the same
+script before this change — same cert-manager, same fixtures, only the operator
+differed.
+
+1483 unit tests pass; `cargo fmt --check` and `clippy -D warnings` clean.
+
+### Also fixed in the harness
+- A failed probe-image pull reported "sidecar did not answer over HTTPS" — a
+  false security failure. `probe_selftest()` now distinguishes it explicitly.
+- `kubectl run --rm -i` streams over an interactive attach and broke under
+  kubectl/apiserver version skew. Replaced with create → poll → `logs`, reading
+  the container's real exit code.
+- Teardown now verifies the kind cluster actually went away instead of assuming.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-19 16:00] - Bind9Manager TLS plumbing: the operator now dials sidecars over HTTPS
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/bind9/mod.rs`: `Bind9Manager` carries the instance's resolved
+  `BindcarTlsConfig` and a Kubernetes client. New `with_tls`,
+  `with_kube_client`, `tls_enabled`, `qualify_server` and `resolve_client`.
+  The CA-pinned HTTPS client is built on first use and cached, because reading
+  the CA bundle is an API call and the manager is constructed synchronously per
+  reconcile.
+- `src/context.rs`: `Stores::resolve_bindcar_tls` merges `bindcarConfig` across
+  instance, cluster and provider (resolving the cluster by `clusterRef` or
+  ownerReference, and the provider by the cluster's ownerReference, mirroring
+  `fetch_cluster_info` without the API round trip) and returns its `tls` block.
+  `create_bind9_manager_for_instance_with_client` supplies both.
+- 7 tests in `src/bind9/mod_tests.rs`, written first.
+
+### Changed
+- All 14 `zone_ops` call sites in `Bind9Manager` now resolve the client through
+  `resolve_client()` and qualify the endpoint through `qualify_server()`. The
+  endpoint gains an explicit scheme, which `build_api_url` then passes through
+  untouched — so no `zone_ops` signature changed.
+- `src/reconcilers/records/mod.rs`: both manager call sites pass the kube
+  client.
+
+### Why
+Completes ADR-0004 and guide 57 section 21. Before this the CRD fields
+configured the sidecar to serve TLS while the operator still connected over
+plaintext, which would have produced a broken deployment rather than a secure
+one.
+
+**`resolve_client` fails closed.** When TLS is enabled but the CA bundle cannot
+be read — no Kubernetes client, no `caBundle` configured, a missing object or
+key, or a bundle that does not parse — it returns an error instead of falling
+back to the plaintext client. A fallback would send the ServiceAccount token in
+the clear on a deployment whose operator believes TLS is on, which is the exact
+failure this work exists to prevent. Three of the seven tests cover that path.
+
+### Impact
+- [ ] Breaking change
+- [ ] API change
+- [ ] Config change only
+- [ ] Documentation only
+
+No behaviour change for any existing deployment: without `bindcarConfig.tls`
+the manager returns the same shared plaintext client and the same `http://`
+endpoints as before.
+
+Verified: `cargo fmt --check`, `cargo clippy --all-targets -D warnings`,
+`cargo test`.
+
+### NOT verified
+No end-to-end run against a live cluster with cert-manager — no cluster is
+available in this environment. The unit tests cover configuration resolution,
+scheme selection, fail-closed behaviour and certificate verification
+(including rejection of an untrusted CA), but nothing has yet completed a real
+TLS handshake between this operator and a bindcar sidecar.
+
+VAP 15/16 also remains outstanding as defence in depth behind the reconciler's
+reserved-env guard.
+
+### Correction (2026-09-20)
+This entry's title — "the operator now dials sidecars over HTTPS" — was true of
+**record** operations only. The per-instance TLS manager was wired into
+`src/reconcilers/records/mod.rs`; the DNSZone reconciler kept using the
+process-wide `Bind9Manager` created in `src/main.rs`, which carries no TLS
+configuration and no client for reading a CA bundle. Zone operations — `addzone`,
+`freeze`, `thaw`, `notify` — therefore still dialled `http://` with the
+ServiceAccount token attached, so audit finding P2-4 was not closed and, against
+a TLS-enabled sidecar, zone work failed outright.
+
+Fixed and verified end to end in the 2026-09-19 17:49 entry above. The unit
+suite passed throughout both states, which is precisely why it could not be the
+evidence for this finding.
+
+## [2026-09-19 14:00] - CRD surface for bindcar TLS (ADR-0004), partial
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0004-bindcar-tls-transport.md`: NEW. Records why ordinary TLS
+  hostname verification cannot work here and what was chosen instead.
+- `src/crd.rs`: `BindcarConfig.tls` -> `BindcarTlsConfig` with `enabled`,
+  `secretName`, `caBundle` (`CaBundleSource` -> ConfigMap or Secret),
+  `serverName` and `reloadIntervalSeconds`. Regenerated the three CRDs.
+- `src/bind9_resources.rs`: when TLS is enabled the sidecar gets the Secret
+  mounted read-only at `/etc/bindcar/tls` with `defaultMode` 0400, plus
+  `BIND_TLS_CERT` / `BIND_TLS_KEY`, and `BIND_TLS_RELOAD_INTERVAL` when set.
+- `src/bind9_resources.rs`: `is_reserved_bindcar_env` - user-supplied
+  `bindcarConfig.envVars` matching an operator-owned name or the `BIND_TLS_` /
+  `KUBE_` prefixes are dropped and logged instead of appended.
+- `src/bind9/zone_ops.rs`: `build_api_url_with_scheme` selects `https://`.
+- `src/bind9/tls_client.rs`: NEW. `build_root_store`, `CaPinnedVerifier` and
+  `build_tls_client`.
+- 15 tests across `bind9_resources_tests.rs`, `zone_ops_tests.rs` and
+  `tls_client_tests.rs`, all written before the code.
+
+### Why
+bindcar 0.8.0 can serve TLS but bindy had no way to ask for it, leaving the
+ServiceAccount token in cleartext on the pod network (audit finding P2-4).
+
+**The design problem, and why it needed an ADR.** The operator reaches sidecars
+at their *pod IP*: `get_endpoint` collects ready pod IPs and every zone
+operation is fanned out to *all* of them, because `Bind9Instance.replicas` can
+exceed 1 and a zone must land on every replica. A Service ClusterIP would
+load-balance to one and silently leave the others without the zone. A
+certificate cannot carry a SAN for an ephemeral pod IP, so standard hostname
+verification cannot succeed.
+
+Chosen (ADR-0004 option C): verify the chain against an operator-configured CA
+bundle, and skip the SAN check by default. That encrypts the token and requires
+a key signed by a CA the platform controls. **It does not bind the certificate
+to an address** - any certificate from that CA is accepted from any pod, so the
+CA must be dedicated to sidecars. `serverName` restores full verification where
+certificates can cover a stable name.
+
+There is deliberately no `insecureSkipVerify`: encryption without peer
+authentication would let anything on the pod network impersonate a sidecar and
+collect tokens, which is worse than honest plaintext because it looks secure.
+
+### Impact
+- [ ] Breaking change
+- [x] API change (additive: `bindcarConfig.tls`, absent = today's behaviour)
+- [ ] Config change only
+- [ ] Documentation only
+
+The reserved-env guard is a behaviour change for anyone currently setting a
+reserved name through `bindcarConfig.envVars` - previously it silently took
+effect, now it is dropped with a warning. That was the vulnerability.
+
+Verified: `cargo fmt --check`, `cargo clippy --all-targets -D warnings`,
+`cargo test` (1,476 passing, 0 failures), `make crds`.
+
+### NOT yet complete
+`Bind9Manager` holds a single shared `reqwest::Client`; giving it a per-instance
+TLS client is the remaining step. **Until that lands the CRD fields configure
+the sidecar to serve TLS but the operator still connects over plaintext, so
+P2-4 is not closed.** Tracked in guide 57 section 21.
+
+VAP 15/16 (admission-level rejection of reserved env names) also remains; the
+reconciler guard above is the load-bearing fix, the policy is defence in depth.
+
+## [2026-09-19 12:00] - Upgrade to bindcar v0.8.0 (types-only dependency)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: `bindcar = "0.7"` -> `{ version = "0.8", default-features = false }`.
+  Bindy imports only `ZoneConfig`, `SoaRecord`, `DnsRecord`, `ZoneResponse` and
+  the `ZONE_TYPE_*` constants - all pure data types - so bindcar's new `server`
+  and `tls` features can both be dropped.
+- `src/constants.rs`: `DEFAULT_BINDCAR_IMAGE` `v0.7.2` -> `v0.8.0`. Bindy was
+  pinning an image two releases behind.
+- `src/crd.rs` + regenerated `deploy/operator/crds/*.crd.yaml`: the sidecar image
+  example follows the new default.
+- `examples/{multi-tenancy,complete-setup,cluster-bind9-provider}.yaml`,
+  `tests/integration_test.sh`: image pins -> `v0.8.0`.
+- `tests/regression_test.sh`: `EXPECTED_BINDCAR_IMAGE_PREFIX` -> `v0.8`; it would
+  otherwise have failed against the new default.
+- `README.md`, `docs/src/operations/common-issues.md`: corrected the stated
+  default sidecar image.
+- `docs/src/operations/migration-guide.md`: new "Migrating to bindcar 0.8.0"
+  section. The existing 0.7.0 section is untouched - it documents that migration.
+
+### Fixed
+- `docs/grafana-dashboard-bindcar.json` and `docs/src/operations/metrics.md`:
+  `bindcar_zones_managed_total` -> `bindcar_zones_managed`. **The bundled Grafana
+  panel has been returning no data since bindcar v0.7.3**, when the `_total`
+  suffix was dropped (it is a gauge; `_total` is reserved for counters). A
+  renamed Prometheus metric fails silently - the query simply matches nothing.
+  Anyone maintaining their own dashboards or `PrometheusRule`s against the old
+  name has the same dead query; `bindcar_zones_managed or
+  bindcar_zones_managed_total` covers both during a rolling upgrade.
+
+### Why
+bindcar 0.8.0 adds TLS, mutual TLS and certificate hot-reload, and feature-gates
+its HTTP and TLS stacks. Completes phase 6 of bindcar's roadmap 02. Full delta in
+`.github/community/57-bindcar-migration-v0-8-0.md`.
+
+**31 crates left bindy's dependency graph** (290 -> 260): `utoipa`,
+`utoipa-swagger-ui`, `utoipa-gen`, `rust-embed` (+ `-impl`, `-utils`),
+`tower-http`, `tower_governor`, `governor`, `dashmap`, `quanta`, `tonic`, `h2`,
+`walkdir`, `mime_guess` and others. `axum` and `rustls` remain - bindy depends on
+those directly.
+
+### Considered and deliberately not changed
+- **bindcar's rate-limit defaults** (guide 57 section 24) moved at v0.7.4
+  (`RATE_LIMIT_REQUESTS` 100 -> 600, burst 10 -> 50). The `RATE_LIMIT` handling in
+  `src/bind9_resources.rs` is BIND9's *response* rate limiting
+  (`responses-per-second`), a different mechanism. Bindy never sets bindcar's API
+  limit, so it inherits the new defaults, which are a fix: the old burst of 10
+  guaranteed HTTP 429 during the record replay after a BIND9 pod restart.
+
+### Impact
+- [ ] Breaking change
+- [ ] API change
+- [x] Requires cluster rollout (new default sidecar image)
+- [ ] Documentation only
+
+No source change was needed for the crate API - bindcar's public paths are
+unchanged. Verified: `cargo fmt --check`, `cargo clippy --all-targets -D
+warnings`, `cargo test` (1,461 passing, 0 failures), `make crds`.
+
+### Still outstanding
+- **TLS is available but unreachable from bindy.** `Bind9Instance` /
+  `Bind9Cluster` / `ClusterBind9Provider` need a way to express the sidecar
+  scheme and CA bundle. `build_api_url` already honours an explicit `https://`,
+  so only the configuration surface is missing. Audit finding **P2-4** is not
+  remediated end to end until that lands (guide 57 section 21).
+- **The `bindcarConfig.envVars` override hole** now also reaches `BIND_TLS_*`;
+  setting `BIND_TLS_RELOAD_INTERVAL=0` pins a certificate being rotated away
+  from. Needs the reserved-env guard plus VAP 15/16 (guide 57 section 25).
+
+## [2026-09-19 10:59] - bindcarConfig now merges per field instead of replacing wholesale
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/bind9_resources.rs`: `resolve_bindcar_config()` merges the sidecar
+  configuration field by field, precedence instance > cluster `global` >
+  `ClusterBind9Provider` `global`.
+
+### Changed
+- `src/bind9_resources.rs`: replaced the `.or_else()` chain that picked the first
+  non-`None` block. `DeploymentConfig.bindcar_config` is now owned rather than
+  borrowed, since a merged value has no source to borrow from.
+
+### Why
+The chain took the whole block from the most specific level that set anything, so
+setting a single instance-level field silently discarded everything the cluster
+had configured — image, port, resources, serviceSpec and every environment
+variable. Hit in practice: the integration fixture sets `logLevel: debug` on its
+standalone instance, so that instance ignored the cluster's `bindcarConfig`
+entirely and ran with a different sidecar configuration than its peers.
+
+The CRD documents the field as "inherited by all instances unless overridden"
+(`src/crd.rs:2377`), and per-field is what that reads as. The neighbouring
+`rndcSecretRef` field already documents an explicit level-by-level precedence.
+
+`envVars` merge by variable name, so an instance can override or add one variable
+without restating the cluster's list. `resources` and `serviceSpec` are taken
+whole from the most specific level that sets them: they are Kubernetes objects
+with their own internal defaulting, and splicing them field-wise would produce
+combinations nobody wrote.
+
+### Not covered
+This is precedence between two operator-trusted levels. It does **not** address
+`.github/community/55-bindcar-migration-v0-7-2.md` §14, where user-supplied
+`envVars` shadow operator-managed ones on the sidecar because the kubelet takes
+the last duplicate. That still needs the reserved-name filter in
+`build_api_sidecar_container` plus the admission policy.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-18 07:17] - Recovery latency: per-object reconcile backoff (finding #3)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/reconcilers/retry.rs`: `reconcile_error_backoff()` / `reset_reconcile_backoff()`
+  with `RECONCILE_BACKOFF_INITIAL` (2s), `RECONCILE_BACKOFF_MAX` (60s) and a 300s
+  age-based decay. Per-object, keyed by kind + namespace + name.
+
+### Changed
+- `src/main.rs`, `src/record_operator.rs`: both `error_policy` implementations now
+  use that backoff instead of a flat `ERROR_REQUEUE_DURATION_SECS` (30s), and are
+  bounded on `kube::ResourceExt` so they can identify the object.
+
+### Why
+Measured on a kind cluster, deleting one operand Pod:
+
+| Event | Time |
+|---|---|
+| Pod deleted | 11:09:00 |
+| Endpoints repopulated, Pod Ready | 11:09:13 |
+| First DNSZone reconcile after that | 11:10:10 |
+| Serving | 11:10:11 |
+
+The zone push takes **1 second**. The other 57 were spent waiting for a reconcile
+to be triggered at all. The Endpoints watch does not reliably pull the object
+forward when a retry is already scheduled — the pending requeue wins — so the
+fixed 30s requeue set the floor on recovery. Repeated wipes measured 32s, 33s,
+96s, 130s and 249s to recover: the spread is where in the requeue cycle the Pods
+happened to come back.
+
+### Ruled out along the way
+Two earlier hypotheses were wrong and are recorded so they are not re-chased:
+- **Status being cleared on failure.** `status.bind9Instances` was sampled every 5s
+  through a full wipe and stayed at 3 the whole time, so the Endpoints -> DNSZone
+  mapping never breaks.
+- **bindcar rate limiting.** Raising bindcar's limits removed the 429s entirely
+  (0 during three consecutive wipes) and recovery was still 33s / 96s / 249s. The
+  429s were real and worth fixing, but they were not what made recovery slow.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-18 06:33] - Graceful operand shutdown: preStop drain + PodDisruptionBudgets
+
+**Author:** Erick Bourgeois
+
+### Added
+- `src/bind9_resources.rs`: `build_pod_disruption_budget()` builds a
+  `PodDisruptionBudget` per cluster+role selecting the operand Pods via
+  `app=bind9` + `bindy.firestoned.io/cluster` + `bindy.firestoned.io/role`, owned
+  by its `Bind9Cluster` so it is garbage collected with the cluster.
+- `src/reconcilers/bind9cluster/config.rs`: `reconcile_pod_disruption_budgets()`,
+  called from `reconcile_bind9cluster` alongside the shared ConfigMap.
+- `src/constants.rs`: `BIND9_PRESTOP_DRAIN_SECS` (10),
+  `BIND9_TERMINATION_GRACE_PERIOD_SECS` (45), `MAX_UNAVAILABLE_OPERANDS` (1).
+
+### Changed
+- `src/bind9_resources.rs`: the bind9 container now has a `preStop` hook that
+  sleeps `BIND9_PRESTOP_DRAIN_SECS` before `named` receives SIGTERM, then runs
+  `rndc sync -clean` best-effort. The Pod spec sets
+  `terminationGracePeriodSeconds` explicitly so the kubelet cannot SIGKILL the
+  container mid-drain.
+- `deploy/operator/rbac/role.yaml`, `deploy/operator/rbac/namespaced/role.yaml`,
+  `deploy/install.yaml`, `deploy/operator/rbac/verify-rbac.sh`: added
+  `policy/poddisruptionbudgets` with get/list/watch/create/update/patch. No
+  `delete` — ownerReferences handle collection.
+
+### Why
+Measured on a kind cluster: deleting every primary at once left the replacement
+Pods `Ready` but serving no zones for **115 seconds**, answering REFUSED the whole
+time, because the readiness probe is a bare TCP connect and BIND9 keeps zone data
+in the Pod. Replacing a single primary while its peers kept serving was **1
+second**. The PDB keeps voluntary disruption (node drain, cluster upgrade) in the
+one-second regime.
+
+Separately, Kubernetes removes a terminating Pod from the Service endpoints and
+signals the container in parallel, so `named` could exit while kube-proxy still
+forwarded queries to it. The preStop delay outlives that propagation.
+
+### Still open
+The readiness probe still does not reflect whether any zone is loaded, so a Pod
+is advertised as able to serve before it can. Closing that needs either a Pod
+readiness gate set by the operator (which makes data-plane readiness depend on
+the operator being alive) or teaching bindcar's `/api/v1/ready` the expected zone
+set. Deliberately deferred — it is a design decision, not a mechanical fix.
+`error_policy` also remains a flat 30s requeue rather than event-driven recovery.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-16 22:36] - Integration suite: verify BIND9 actually serves records, and survive restarts
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `tests/integration_test.sh`: extended the suite from 3 phases to 9. New phases wait
+  for operand readiness, verify every zone and record by running `dig` **inside each
+  BIND9 container**, re-apply every manifest unchanged to prove idempotency, restart
+  the operator, delete every operand Pod, and re-verify after each step. Added
+  `--skip-restart` to opt out of the restart phases.
+- `tests/integration_test.sh`: the Bind9Cluster now uses `primary.replicas: 2`, which
+  the cluster controller expands into two separate Bind9Instances. With the existing
+  standalone instance that gives three primaries, and every assertion runs against
+  all three.
+- `tests/integration_test.sh`: pre-clean at the start plus a shared teardown helper,
+  so a run on a dirty cluster behaves like a run on a clean one.
+- `tests/integration_test.sh`: `TEST_EXIT=$?` after `cargo test` was dead code under
+  `set -euo pipefail` (a failing Rust test aborted the script instead), so the status
+  was always 0. Captured with `|| TEST_EXIT=$?`.
+
+### Fixed (test fixtures — all pre-existing, all silent)
+- DNSZones set only `spec.clusterRef`. `get_instances_from_zone()`
+  (`src/reconcilers/dnszone/validation.rs:58`) selects instances *only* through
+  `spec.bind9_instances_from` and fails the zone without it, so **every zone in this
+  suite had been failing reconciliation on a 30s retry loop while the suite reported
+  PASS**. Added `bind9InstancesFrom` selectors.
+- Added a glue A record for `ns1.integration.test.`. It is the SOA `primaryNs` and is
+  in-zone, and BIND will not load a zone whose in-zone NS target has no address:
+  `rndc addzone` returned "bad zone".
+- Added a glue A record for `ns2.integration.test.`, published by the NSRecord. Without
+  it BIND's post-update name server sanity check rejected the whole DDNS transaction,
+  taking the batched MX update down with it.
+- Teardown ordering: a DNSZone finalizer removes the zone from each primary over the
+  bindcar API, so zones must finalize *before* their instances are deleted. Deletes are
+  now `--wait=false` with bounded waits here, plus a loud escape hatch that clears a
+  wedged finalizer so one bad run cannot permanently break re-runs.
+
+### Why
+The suite only ever asserted that CRs existed in Kubernetes, which says nothing about
+whether BIND9 serves them. That hid four fixture bugs and could not have caught a
+regression in zone or record delivery.
+
+### Known failure, not fixed
+`MXRecord` is never added to BIND9 on any primary, while NS/TXT/CAA using the same
+`name: "@"` land correctly at the apex. The operator logs `Failed to add MX record
+@.integration.test` against all three primaries and then logs `Successfully reconciled
+MXRecord` on the next line (`src/record_operator.rs:226`). The fixture matches
+`mxrecords.crd.yaml` exactly, so this is operator-side and still open.
+
+### Verified
+Phases 1-8 run against a kind cluster. Rust tests 12/12. Counts exact at every stage
+(3 Bind9Instances / 2 DNSZones / 9 record CRs) including after re-apply. 9 of 10 DNS
+expectations served on all three primaries; MX is the only miss. After deleting every
+operand Pod, all 13 RRs replayed identically on all three primaries in about 100s.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Test-only change
+
 ## [2026-09-15 10:45] - Bump rustls to 0.23.45 (RUSTSEC-2026-0285)
 
 **Author:** Erick Bourgeois

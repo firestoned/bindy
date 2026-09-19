@@ -8,27 +8,31 @@
 
 use crate::bind9_acl::build_acl_list;
 use crate::constants::{
-    API_GROUP_VERSION, BIND9_MALLOC_CONF, BIND9_NONROOT_UID, BIND9_SERVICE_ACCOUNT,
-    CONTAINER_NAME_BIND9, CONTAINER_NAME_BINDCAR, DEFAULT_BIND9_VERSION, DNS_CONTAINER_PORT,
-    DNS_PORT, KIND_BIND9_INSTANCE, LIVENESS_FAILURE_THRESHOLD, LIVENESS_INITIAL_DELAY_SECS,
-    LIVENESS_PERIOD_SECS, LIVENESS_TIMEOUT_SECS, READINESS_FAILURE_THRESHOLD,
-    READINESS_INITIAL_DELAY_SECS, READINESS_PERIOD_SECS, READINESS_TIMEOUT_SECS, RNDC_PORT,
+    API_GROUP_VERSION, BIND9_MALLOC_CONF, BIND9_NONROOT_UID, BIND9_PRESTOP_DRAIN_SECS,
+    BIND9_SERVICE_ACCOUNT, BIND9_TERMINATION_GRACE_PERIOD_SECS, CONTAINER_NAME_BIND9,
+    CONTAINER_NAME_BINDCAR, DEFAULT_BIND9_VERSION, DNS_CONTAINER_PORT, DNS_PORT,
+    KIND_BIND9_CLUSTER, KIND_BIND9_INSTANCE, LIVENESS_FAILURE_THRESHOLD,
+    LIVENESS_INITIAL_DELAY_SECS, LIVENESS_PERIOD_SECS, LIVENESS_TIMEOUT_SECS,
+    MAX_UNAVAILABLE_OPERANDS, READINESS_FAILURE_THRESHOLD, READINESS_INITIAL_DELAY_SECS,
+    READINESS_PERIOD_SECS, READINESS_TIMEOUT_SECS, RNDC_PORT,
 };
-use crate::crd::{Bind9Cluster, Bind9Instance, ConfigMapRefs, ImageConfig};
+use crate::crd::{Bind9Cluster, Bind9Instance, ConfigMapRefs, ImageConfig, ServerRole};
 use crate::labels::{
-    APP_NAME_BIND9, COMPONENT_DNS_CLUSTER, COMPONENT_DNS_SERVER, K8S_COMPONENT, K8S_INSTANCE,
-    K8S_MANAGED_BY, K8S_NAME, K8S_PART_OF, MANAGED_BY_BIND9_CLUSTER, MANAGED_BY_BIND9_INSTANCE,
-    PART_OF_BINDY,
+    APP_NAME_BIND9, BINDY_CLUSTER_LABEL, BINDY_ROLE_LABEL, COMPONENT_DNS_CLUSTER,
+    COMPONENT_DNS_SERVER, K8S_COMPONENT, K8S_INSTANCE, K8S_MANAGED_BY, K8S_NAME, K8S_PART_OF,
+    MANAGED_BY_BIND9_CLUSTER, MANAGED_BY_BIND9_INSTANCE, PART_OF_BINDY, ROLE_PRIMARY,
+    ROLE_SECONDARY,
 };
 use anyhow::Context;
 use k8s_openapi::api::{
     apps::v1::{Deployment, DeploymentSpec},
     core::v1::{
         Capabilities, ConfigMap, Container, ContainerPort, EmptyDirVolumeSource, EnvVar,
-        EnvVarSource, PodSecurityContext, PodSpec, PodTemplateSpec, Probe, SeccompProfile,
-        SecretKeySelector, SecurityContext, Service, ServiceAccount, ServicePort, ServiceSpec,
-        TCPSocketAction, Volume, VolumeMount,
+        EnvVarSource, ExecAction, HTTPGetAction, Lifecycle, LifecycleHandler, PodSecurityContext,
+        PodSpec, PodTemplateSpec, Probe, SeccompProfile, SecretKeySelector, SecurityContext,
+        Service, ServiceAccount, ServicePort, ServiceSpec, TCPSocketAction, Volume, VolumeMount,
     },
+    policy::v1::{PodDisruptionBudget, PodDisruptionBudgetSpec},
 };
 use k8s_openapi::apimachinery::pkg::{
     apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference},
@@ -77,6 +81,10 @@ const BIND_NAMED_CONF_PATH: &str = "/etc/bind/named.conf";
 const BIND_NAMED_CONF_OPTIONS_PATH: &str = "/etc/bind/named.conf.options";
 const BIND_NAMED_CONF_ZONES_PATH: &str = "/etc/bind/named.conf.zones";
 const BIND_RNDC_CONF_PATH: &str = "/etc/bind/rndc.conf";
+
+/// bindcar's unauthenticated readiness endpoint. It reports whether the zone
+/// directory is usable and rndc answers; it does not require any zone.
+const BINDCAR_READY_PATH: &str = "/api/v1/ready";
 
 // BIND configuration file names
 const NAMED_CONF_FILENAME: &str = "named.conf";
@@ -604,6 +612,186 @@ pub fn build_owner_references(instance: &Bind9Instance) -> Vec<OwnerReference> {
         controller: Some(true),
         block_owner_deletion: Some(true),
     }]
+}
+
+/// Resolves the Bindcar sidecar configuration for an instance by merging the
+/// instance, cluster and cluster-provider settings field by field.
+///
+/// Precedence is instance > cluster `global` > `ClusterBind9Provider` `global`,
+/// applied **per field** rather than to the block as a whole. Picking the first
+/// non-`None` block instead — which is what this used to do — meant a single
+/// instance-level field silently discarded everything the cluster had
+/// configured: setting `logLevel: debug` on one instance dropped the cluster's
+/// pinned sidecar image, its port, its resources and every environment variable
+/// with it. The CRD documents this field as "inherited by all instances unless
+/// overridden", and per-field is what that reads as.
+///
+/// `envVars` merge by variable name, so an instance can override or add a single
+/// variable without restating the cluster's whole list. `resources` and
+/// `serviceSpec` are taken whole from the most specific level that sets them:
+/// they are Kubernetes objects with their own internal defaulting, and splicing
+/// them together field-wise would produce combinations nobody wrote.
+///
+/// Note this is about **operator-facing** precedence between two
+/// operator-trusted levels. It does not address the separate concern that
+/// user-supplied `envVars` can shadow operator-managed ones on the sidecar
+/// (`.github/community/55-bindcar-migration-v0-7-2.md` §14), which needs a
+/// reserved-name filter and an admission policy.
+///
+/// # Arguments
+///
+/// * `instance` - The `Bind9Instance` being reconciled
+/// * `cluster` - The owning `Bind9Cluster`, if any
+/// * `cluster_provider` - The owning `ClusterBind9Provider`, if any
+///
+/// # Returns
+///
+/// The merged configuration, or `None` when no level configures the sidecar.
+#[must_use]
+pub fn resolve_bindcar_config(
+    instance: &Bind9Instance,
+    cluster: Option<&Bind9Cluster>,
+    cluster_provider: Option<&crate::crd::ClusterBind9Provider>,
+) -> Option<crate::crd::BindcarConfig> {
+    let instance_cfg = instance.spec.bindcar_config.as_ref();
+    let cluster_cfg = cluster.and_then(|c| {
+        c.spec
+            .common
+            .global
+            .as_ref()
+            .and_then(|g| g.bindcar_config.as_ref())
+    });
+    let provider_cfg = cluster_provider.and_then(|cp| {
+        cp.spec
+            .common
+            .global
+            .as_ref()
+            .and_then(|g| g.bindcar_config.as_ref())
+    });
+
+    // Most specific first; every field below takes the first level that sets it.
+    let levels = [instance_cfg, cluster_cfg, provider_cfg];
+    if levels.iter().all(Option::is_none) {
+        return None;
+    }
+
+    let pick_string = |get: fn(&crate::crd::BindcarConfig) -> Option<&String>| {
+        levels.iter().flatten().find_map(|cfg| get(cfg).cloned())
+    };
+
+    // Least specific first, so more specific names overwrite inherited ones.
+    let mut merged_env: BTreeMap<String, k8s_openapi::api::core::v1::EnvVar> = BTreeMap::new();
+    for cfg in levels.iter().flatten().rev() {
+        if let Some(vars) = cfg.env_vars.as_ref() {
+            for var in vars {
+                merged_env.insert(var.name.clone(), var.clone());
+            }
+        }
+    }
+
+    Some(crate::crd::BindcarConfig {
+        image: pick_string(|c| c.image.as_ref()),
+        image_pull_policy: pick_string(|c| c.image_pull_policy.as_ref()),
+        log_level: pick_string(|c| c.log_level.as_ref()),
+        port: levels.iter().flatten().find_map(|c| c.port),
+        resources: levels
+            .iter()
+            .flatten()
+            .find_map(|c| c.resources.as_ref().cloned()),
+        service_spec: levels
+            .iter()
+            .flatten()
+            .find_map(|c| c.service_spec.as_ref().cloned()),
+        // TLS is taken whole from the most specific level that sets it rather
+        // than merged field-by-field: a half-inherited trust configuration (say
+        // an instance's secret with a provider's CA bundle) is a footgun, and
+        // the fields only make sense together.
+        tls: levels
+            .iter()
+            .flatten()
+            .find_map(|c| c.tls.as_ref().cloned()),
+        env_vars: if merged_env.is_empty() {
+            None
+        } else {
+            Some(merged_env.into_values().collect())
+        },
+    })
+}
+
+/// Builds a `PodDisruptionBudget` covering every BIND9 Pod of one cluster in one role.
+///
+/// Voluntary disruption — a node drain, a cluster upgrade, a descheduler — is
+/// otherwise free to evict every primary of a cluster simultaneously. That is
+/// not hypothetical: deleting all primaries at once leaves the replacement Pods
+/// `Ready` (the readiness probe is a bare TCP connect) while they serve no
+/// zones at all, because BIND9 keeps zone data in the Pod and the operator has
+/// to push every zone back. Measured at roughly 115 seconds of REFUSED answers,
+/// against about 1 second when a single primary is replaced and its peers keep
+/// serving. Capping disruption at one Pod keeps a restart in the second regime.
+///
+/// Uses `maxUnavailable: 1` rather than `minAvailable`. A cluster with a single
+/// primary and `minAvailable: 1` can never release that Pod, which does not
+/// protect the zone — it just hangs `kubectl drain` forever.
+///
+/// # Arguments
+///
+/// * `cluster_name` - Name of the owning `Bind9Cluster`
+/// * `namespace` - Namespace to create the budget in
+/// * `role` - Which role's Pods this budget covers; primaries and secondaries
+///   get separate budgets so draining one never spends the other's allowance
+/// * `cluster` - The owning `Bind9Cluster`, when available, for the owner
+///   reference that garbage collects this budget with its cluster
+///
+/// # Returns
+///
+/// A `PodDisruptionBudget` selecting the operand Pods of `cluster_name` in `role`
+#[must_use]
+pub fn build_pod_disruption_budget(
+    cluster_name: &str,
+    namespace: &str,
+    role: ServerRole,
+    cluster: Option<&Bind9Cluster>,
+) -> PodDisruptionBudget {
+    let role_str = match role {
+        ServerRole::Primary => ROLE_PRIMARY,
+        ServerRole::Secondary => ROLE_SECONDARY,
+    };
+
+    // Matches the labels build_labels_from_instance puts on the operand Pods.
+    let mut match_labels = BTreeMap::new();
+    match_labels.insert("app".to_string(), APP_NAME_BIND9.to_string());
+    match_labels.insert(BINDY_CLUSTER_LABEL.to_string(), cluster_name.to_string());
+    match_labels.insert(BINDY_ROLE_LABEL.to_string(), role_str.to_string());
+
+    let owner_references = cluster.map(|c| {
+        vec![OwnerReference {
+            api_version: API_GROUP_VERSION.to_string(),
+            kind: KIND_BIND9_CLUSTER.to_string(),
+            name: c.name_any(),
+            uid: c.metadata.uid.clone().unwrap_or_default(),
+            controller: Some(true),
+            block_owner_deletion: Some(true),
+        }]
+    });
+
+    PodDisruptionBudget {
+        metadata: ObjectMeta {
+            name: Some(format!("{cluster_name}-{role_str}-pdb")),
+            namespace: Some(namespace.to_string()),
+            labels: Some(build_cluster_labels(cluster_name)),
+            owner_references,
+            ..Default::default()
+        },
+        spec: Some(PodDisruptionBudgetSpec {
+            max_unavailable: Some(IntOrString::Int(MAX_UNAVAILABLE_OPERANDS)),
+            selector: Some(LabelSelector {
+                match_labels: Some(match_labels),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
 }
 
 /// Builds a Kubernetes `ConfigMap` containing BIND9 configuration files.
@@ -1293,7 +1481,7 @@ struct DeploymentConfig<'a> {
     version: &'a str,
     volumes: Option<&'a Vec<Volume>>,
     volume_mounts: Option<&'a Vec<VolumeMount>>,
-    bindcar_config: Option<&'a crate::crd::BindcarConfig>,
+    bindcar_config: Option<crate::crd::BindcarConfig>,
     configmap_name: String,
 }
 
@@ -1345,29 +1533,9 @@ fn resolve_deployment_config<'a>(
         .or_else(|| cluster.and_then(|c| c.spec.common.volume_mounts.as_ref()))
         .or_else(|| cluster_provider.and_then(|cp| cp.spec.common.volume_mounts.as_ref()));
 
-    // Get bindcar_config (instance overrides cluster global overrides cluster provider global)
-    let bindcar_config = instance
-        .spec
-        .bindcar_config
-        .as_ref()
-        .or_else(|| {
-            cluster.and_then(|c| {
-                c.spec
-                    .common
-                    .global
-                    .as_ref()
-                    .and_then(|g| g.bindcar_config.as_ref())
-            })
-        })
-        .or_else(|| {
-            cluster_provider.and_then(|cp| {
-                cp.spec
-                    .common
-                    .global
-                    .as_ref()
-                    .and_then(|g| g.bindcar_config.as_ref())
-            })
-        });
+    // Merged per field, so an instance setting one field does not discard the
+    // rest of the cluster's sidecar configuration. See resolve_bindcar_config.
+    let bindcar_config = resolve_bindcar_config(instance, cluster, cluster_provider);
 
     // Determine ConfigMap name: use cluster ConfigMap if instance belongs to a cluster
     let configmap_name = if instance.spec.cluster_ref.is_empty() {
@@ -1540,7 +1708,7 @@ pub fn build_deployment(
                     config.config_map_refs,
                     all_volumes.as_ref(),
                     all_volume_mounts.as_ref(),
-                    config.bindcar_config,
+                    config.bindcar_config.as_ref(),
                     &placement,
                 )),
             },
@@ -1656,6 +1824,32 @@ fn build_pod_spec(
             failure_threshold: Some(READINESS_FAILURE_THRESHOLD),
             ..Default::default()
         }),
+        // Graceful shutdown. Kubernetes removes the Pod from the Service
+        // endpoints and signals the container at the same time, so `named` can
+        // otherwise exit while kube-proxy still forwards queries to it. Sleep
+        // first so the removal propagates, then flush journals to disk — that
+        // last part only matters when the zone directory is a PVC rather than
+        // the default emptyDir, but it is cheap and correct either way.
+        //
+        // Every step is best-effort: a preStop hook that exits non-zero is
+        // logged as a Pod event, and a zone that cannot be frozen must not
+        // block termination.
+        lifecycle: Some(Lifecycle {
+            pre_stop: Some(LifecycleHandler {
+                exec: Some(ExecAction {
+                    command: Some(vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        format!(
+                            "sleep {BIND9_PRESTOP_DRAIN_SECS}; \
+                             rndc -c {BIND_RNDC_CONF_PATH} sync -clean || true"
+                        ),
+                    ]),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
         security_context: Some(SecurityContext {
             run_as_non_root: Some(true),
             run_as_user: Some(BIND9_NONROOT_UID),
@@ -1705,9 +1899,13 @@ fn build_pod_spec(
             rndc_secret_name,
             config_map_refs,
             custom_volumes,
+            bindcar_config.and_then(|c| c.tls.as_ref()),
         )),
         image_pull_secrets,
         service_account_name: Some(BIND9_SERVICE_ACCOUNT.into()),
+        // Must outlast the preStop drain above, or the kubelet SIGKILLs the
+        // container mid-hook.
+        termination_grace_period_seconds: Some(BIND9_TERMINATION_GRACE_PERIOD_SECS),
         // Scheduling. Topology spreading only — see `crate::placement` for why
         // this is not a general pod-spec passthrough.
         topology_spread_constraints: placement.topology_spread_constraints.clone(),
@@ -1740,7 +1938,47 @@ fn build_pod_spec(
 ///
 /// A `Container` configured to run the Bindcar RNDC API sidecar
 #[allow(clippy::too_many_lines)]
-fn build_api_sidecar_container(
+/// Volume carrying the sidecar's TLS key pair.
+pub(crate) const VOLUME_BINDCAR_TLS: &str = "bindcar-tls";
+
+/// Mount path for that volume inside the bindcar container.
+pub(crate) const BINDCAR_TLS_PATH: &str = "/etc/bindcar/tls";
+
+/// Environment variables the operator owns and a tenant may not set.
+///
+/// User-supplied `bindcarConfig.envVars` are appended after the
+/// operator-managed ones, and the kubelet resolves a duplicate name to the
+/// **last** occurrence — so without this guard a tenant entry silently wins.
+/// The `BIND_TLS_` prefix matters as much as the rest: repointing
+/// `BIND_TLS_CERT` substitutes the server's identity, and
+/// `BIND_TLS_RELOAD_INTERVAL=0` pins a certificate that is being rotated away
+/// from. See ADR-0004 and bindy guide 57 section 25.
+pub(crate) const RESERVED_BINDCAR_ENV_PREFIXES: &[&str] = &["BIND_TLS_", "KUBE_"];
+
+/// Exact environment variable names the operator owns.
+pub(crate) const RESERVED_BINDCAR_ENV_NAMES: &[&str] = &[
+    "BIND_API_TOKEN",
+    "DISABLE_AUTH",
+    "BIND_ALLOW_ANY_SERVICEACCOUNT",
+    "BIND_ALLOWED_SERVICE_ACCOUNTS",
+    "BIND_ALLOWED_NAMESPACES",
+    "BIND_TOKEN_AUDIENCES",
+    "BIND_ZONE_DIR",
+    "RNDC_SECRET",
+    "RNDC_ALGORITHM",
+    "RNDC_KEY_NAME",
+];
+
+/// Whether `name` is an operator-reserved environment variable.
+#[must_use]
+pub(crate) fn is_reserved_bindcar_env(name: &str) -> bool {
+    RESERVED_BINDCAR_ENV_NAMES.contains(&name)
+        || RESERVED_BINDCAR_ENV_PREFIXES
+            .iter()
+            .any(|p| name.starts_with(p))
+}
+
+pub(crate) fn build_api_sidecar_container(
     bindcar_config: Option<&crate::crd::BindcarConfig>,
     rndc_secret_name: &str,
 ) -> Container {
@@ -1847,10 +2085,49 @@ fn build_api_sidecar_container(
         },
     ];
 
-    // Add user-provided environment variables if any
+    // TLS transport (ADR-0004). Opt-in: with no `tls` block the sidecar is
+    // configured exactly as in earlier releases.
+    let tls = bindcar_config
+        .and_then(|c| c.tls.as_ref())
+        .filter(|t| t.is_enabled());
+
+    if tls.is_some() {
+        env_vars.push(EnvVar {
+            name: "BIND_TLS_CERT".into(),
+            value: Some(format!("{BINDCAR_TLS_PATH}/tls.crt")),
+            ..Default::default()
+        });
+        env_vars.push(EnvVar {
+            name: "BIND_TLS_KEY".into(),
+            value: Some(format!("{BINDCAR_TLS_PATH}/tls.key")),
+            ..Default::default()
+        });
+    }
+    if let Some(interval) = tls.and_then(|t| t.reload_interval_seconds) {
+        // Only set when configured; otherwise bindcar's own default applies.
+        env_vars.push(EnvVar {
+            name: "BIND_TLS_RELOAD_INTERVAL".into(),
+            value: Some(interval.to_string()),
+            ..Default::default()
+        });
+    }
+
+    // Add user-provided environment variables, dropping any that would override
+    // an operator-managed one. Appending them unfiltered would hand a tenant
+    // control of the sidecar's auth and TLS configuration, because the kubelet
+    // honours the last duplicate.
     if let Some(config) = bindcar_config {
         if let Some(user_env_vars) = &config.env_vars {
-            env_vars.extend(user_env_vars.clone());
+            for var in user_env_vars {
+                if is_reserved_bindcar_env(&var.name) {
+                    warn!(
+                        env_var = %var.name,
+                        "Ignoring operator-reserved environment variable supplied via bindcarConfig.envVars"
+                    );
+                    continue;
+                }
+                env_vars.push(var.clone());
+            }
         }
     }
 
@@ -1865,33 +2142,70 @@ fn build_api_sidecar_container(
             ..Default::default()
         }]),
         env: Some(env_vars),
-        volume_mounts: Some(vec![
-            VolumeMount {
-                name: VOLUME_CACHE.into(),
-                mount_path: BIND_CACHE_PATH.into(),
-                ..Default::default()
-            },
-            VolumeMount {
-                name: VOLUME_RNDC_KEY.into(),
-                mount_path: BIND_KEYS_PATH.into(),
+        volume_mounts: Some(
+            vec![
+                VolumeMount {
+                    name: VOLUME_CACHE.into(),
+                    mount_path: BIND_CACHE_PATH.into(),
+                    ..Default::default()
+                },
+                VolumeMount {
+                    name: VOLUME_RNDC_KEY.into(),
+                    mount_path: BIND_KEYS_PATH.into(),
+                    read_only: Some(true),
+                    ..Default::default()
+                },
+                VolumeMount {
+                    name: VOLUME_CONFIG.into(),
+                    mount_path: BIND_RNDC_CONF_PATH.into(),
+                    sub_path: Some(RNDC_CONF_FILENAME.into()),
+                    ..Default::default()
+                },
+                // Writable /tmp (TMPDIR) for the bindcar TSIG key file, required
+                // because readOnlyRootFilesystem is enabled below.
+                VolumeMount {
+                    name: VOLUME_TMP.into(),
+                    mount_path: crate::constants::BINDCAR_TMP_PATH.into(),
+                    ..Default::default()
+                },
+            ]
+            .into_iter()
+            .chain(tls.map(|_| VolumeMount {
+                name: VOLUME_BINDCAR_TLS.into(),
+                mount_path: BINDCAR_TLS_PATH.into(),
                 read_only: Some(true),
                 ..Default::default()
-            },
-            VolumeMount {
-                name: VOLUME_CONFIG.into(),
-                mount_path: BIND_RNDC_CONF_PATH.into(),
-                sub_path: Some(RNDC_CONF_FILENAME.into()),
-                ..Default::default()
-            },
-            // Writable /tmp (TMPDIR) for the bindcar TSIG key file, required
-            // because readOnlyRootFilesystem is enabled below.
-            VolumeMount {
-                name: VOLUME_TMP.into(),
-                mount_path: crate::constants::BINDCAR_TMP_PATH.into(),
-                ..Default::default()
-            },
-        ]),
+            }))
+            .collect(),
+        ),
         resources,
+        // The sidecar had no probes at all, so a wedged bindcar still counted as
+        // Ready and the operator would push zones into it. /api/v1/ready checks
+        // that the zone directory is usable and that rndc answers, which means
+        // `named` is alive — strictly more than the bind9 container's TCP probe.
+        //
+        // This deliberately does NOT require any zone to be loaded. The operator
+        // reaches sidecars through the Service's *ready* endpoints
+        // (reconcilers/dnszone/helpers.rs), so a Pod that stays unready until it
+        // has zones could never be given any: not ready -> not an endpoint ->
+        // nothing to push -> never ready.
+        //
+        // The scheme must follow the sidecar: with TLS on it serves HTTPS only,
+        // and an HTTP probe would be refused, leaving the Pod permanently
+        // unready.
+        readiness_probe: Some(Probe {
+            http_get: Some(HTTPGetAction {
+                path: Some(BINDCAR_READY_PATH.into()),
+                port: IntOrString::Int(port),
+                scheme: Some(if tls.is_some() { "HTTPS" } else { "HTTP" }.to_string()),
+                ..Default::default()
+            }),
+            initial_delay_seconds: Some(READINESS_INITIAL_DELAY_SECS),
+            period_seconds: Some(READINESS_PERIOD_SECS),
+            timeout_seconds: Some(READINESS_TIMEOUT_SECS),
+            failure_threshold: Some(READINESS_FAILURE_THRESHOLD),
+            ..Default::default()
+        }),
         security_context: Some(SecurityContext {
             run_as_non_root: Some(true),
             run_as_user: Some(BIND9_NONROOT_UID),
@@ -2063,6 +2377,7 @@ fn build_volumes(
     rndc_secret_name: &str,
     config_map_refs: Option<&ConfigMapRefs>,
     custom_volumes: Option<&Vec<Volume>>,
+    bindcar_tls: Option<&crate::crd::BindcarTlsConfig>,
 ) -> Vec<Volume> {
     let mut volumes = vec![
         Volume {
@@ -2095,6 +2410,22 @@ fn build_volumes(
             ..Default::default()
         },
     ];
+
+    // The sidecar's TLS key pair (ADR-0004). `defaultMode` 0400 keeps the
+    // private key unreadable by anything but the container's own user.
+    if let Some(tls) = bindcar_tls.filter(|t| t.is_enabled()) {
+        if let Some(secret_name) = tls.secret_name.as_ref() {
+            volumes.push(Volume {
+                name: VOLUME_BINDCAR_TLS.into(),
+                secret: Some(k8s_openapi::api::core::v1::SecretVolumeSource {
+                    secret_name: Some(secret_name.clone()),
+                    default_mode: Some(0o400),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+        }
+    }
 
     // Add ConfigMap volumes
     if let Some(refs) = config_map_refs {

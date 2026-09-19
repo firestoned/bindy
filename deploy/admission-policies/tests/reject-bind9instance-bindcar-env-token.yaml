@@ -1,0 +1,17 @@
+# Should be REJECTED: BIND_API_TOKEN is operator-managed. Since bindcar 0.7.2 a
+# shared secret DISABLES TokenReview, so a tenant setting this turns off sidecar
+# authentication and holds the only credential.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Instance
+metadata:
+  name: vap-test-bindcar-env-reject
+  namespace: bindy-system
+spec:
+  clusterRef: production-dns
+  role: primary
+  replicas: 1
+  version: "9.18"
+  bindcarConfig:
+    envVars:
+      - name: BIND_API_TOKEN
+        value: "attacker-chosen-secret"

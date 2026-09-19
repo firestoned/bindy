@@ -630,8 +630,8 @@ kubectl rollout restart deployment/bindy -n bindy-system
 (no `BIND_API_TOKEN`), so the image **must** be built with `--features
 k8s-token-review`. Published images `>= v0.7.2` include it; `v0.7.0`/`v0.7.1` do not.
 
-**Solution:** use `ghcr.io/firestoned/bindcar:v0.7.2` or newer (the default). If
-you pin `bindcarConfig.image`, bump it to `v0.7.2+`.
+**Solution:** use `ghcr.io/firestoned/bindcar:v0.8.0` (the current default) or
+any `>= v0.7.2`. If you pin `bindcarConfig.image`, bump it to `v0.7.2+`.
 
 ### Operator gets HTTP 401 from the bindcar API
 
@@ -655,6 +655,60 @@ kubectl get deploy/bindy -n bindy-system -o jsonpath='{.spec.template.spec.volum
 - **Wrong allow-list** → `BIND_ALLOWED_SERVICE_ACCOUNTS` must name the **operator** SA (`system:serviceaccount:<ns>:bindy`), not the operand `bind9` SA.
 
 See the [bindcar 0.7.x migration guide](./migration-guide.md) and [RBAC](./rbac.md).
+
+## Pod Restarts and Node Drains
+
+### Queries fail right after a BIND9 Pod restarts
+
+BIND9 keeps its zone data inside the Pod (`/etc/bind/zones` and `/var/cache/bind`
+are `emptyDir` unless you attach a PersistentVolumeClaim). A replacement Pod
+therefore starts empty, and the operator has to push every zone and record back
+into it.
+
+The readiness probe is a TCP connect to the DNS port, so it passes as soon as
+`named` accepts connections — before any zone is loaded. For a short window the
+Pod is in the Service endpoints and answers `REFUSED`.
+
+How large that window is depends entirely on whether other primaries are still
+serving:
+
+| Situation | Time to serve after the Pod is Ready |
+|---|---|
+| One primary replaced, peers still serving | ~1 second |
+| Every primary of a cluster replaced at once | ~115 seconds |
+
+**Keep restarts in the first row.** Bindy creates a `PodDisruptionBudget` per
+cluster and role (`<cluster>-primary-pdb`, `<cluster>-secondary-pdb`) with
+`maxUnavailable: 1`, so a node drain or cluster upgrade can only take one operand
+at a time:
+
+```bash
+kubectl get poddisruptionbudget -n bindy-system
+```
+
+If a drain appears to hang, that budget is doing its job — it is waiting for the
+previous operand to come back before releasing the next.
+
+The budgets only govern **voluntary** disruption. `kubectl delete pod -l app=bind9`
+bypasses them entirely and will produce the slow case, as will losing several
+nodes at once.
+
+### Making restarts cheaper
+
+- Run more than one primary (`spec.primary.replicas: 2` or more) so a restart
+  never takes the last server for a zone.
+- Attach a PersistentVolumeClaim for the zone directory (see
+  `examples/bind9-cluster-with-storage.yaml`) so zone data survives the Pod and
+  does not need to be re-pushed.
+
+### Graceful shutdown
+
+Terminating operand Pods run a `preStop` hook that waits before `named` receives
+SIGTERM, because Kubernetes removes the Pod from the Service endpoints and
+signals the container at the same time. Without that pause `named` can exit while
+kube-proxy is still forwarding queries to it. The hook then runs
+`rndc sync -clean` to flush journals, which matters when the zone directory is a
+PVC. `terminationGracePeriodSeconds` is set to comfortably outlast the drain.
 
 ## Next Steps
 

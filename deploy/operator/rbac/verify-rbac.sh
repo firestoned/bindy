@@ -190,6 +190,19 @@ test_allowed "patch" "deployments" "--namespace=${NAMESPACE}"
 # (src/reconcilers/bind9instance/resources.rs:1341).
 test_allowed "delete" "deployments" "--namespace=${NAMESPACE}"
 
+# Operator manages PodDisruptionBudgets so a node drain cannot take every
+# primary of a cluster at once (src/reconcilers/bind9cluster/config.rs).
+test_allowed "get" "poddisruptionbudgets" "--namespace=${NAMESPACE}"
+test_allowed "list" "poddisruptionbudgets" "--namespace=${NAMESPACE}"
+test_allowed "watch" "poddisruptionbudgets" "--namespace=${NAMESPACE}"
+test_allowed "create" "poddisruptionbudgets" "--namespace=${NAMESPACE}"
+test_allowed "update" "poddisruptionbudgets" "--namespace=${NAMESPACE}"
+test_allowed "patch" "poddisruptionbudgets" "--namespace=${NAMESPACE}"
+
+# No delete: the budgets carry an ownerReference to their Bind9Cluster, so
+# Kubernetes garbage collects them.
+test_denied "delete" "poddisruptionbudgets" "--namespace=${NAMESPACE}"
+
 echo ""
 echo "========================================"
 echo "7. Testing Service Permissions"

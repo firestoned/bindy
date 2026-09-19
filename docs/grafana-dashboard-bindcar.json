@@ -74,7 +74,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "bindcar_zones_managed_total",
+          "expr": "bindcar_zones_managed",
           "refId": "A"
         }
       ],

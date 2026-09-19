@@ -87,3 +87,6 @@ docs/.venv/
 
 # Wolf agent working dir (kept locally, never committed)
 .wolf/
+
+# E2E image handoff tarball (make e2e-image)
+/dist/

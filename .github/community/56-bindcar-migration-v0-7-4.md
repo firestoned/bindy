@@ -1,6 +1,12 @@
 # bindcar `v0.7.2` → `v0.7.4` — bindy Integration & Upgrade Guide
 
-> **Status:** 🔶 Actionable — the live guide in the series, superseding
+> **Status:** 📄 Reference — **superseded** by
+> [`57-bindcar-migration-v0-8-0.md`](57-bindcar-migration-v0-8-0.md). Its §14
+> (`bindcarConfig.envVars` override) and §15 (the `bindcar_zones_managed_total`
+> rename) are still open bindy-side and are carried forward there; §19's
+> tag/version divergence is fixed as of bindcar v0.8.0.
+>
+> Originally: the live guide in the series, superseding
 > [`55-bindcar-migration-v0-7-2.md`](55-bindcar-migration-v0-7-2.md). Built from
 > `git diff v0.7.2..v0.7.4` in `firestoned/bindcar` and verified against that
 > tree on 2026-09-12.

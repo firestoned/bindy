@@ -139,6 +139,35 @@ pub const READINESS_TIMEOUT_SECS: i32 = 3;
 pub const READINESS_FAILURE_THRESHOLD: i32 = 3;
 
 // ============================================================================
+// Graceful Shutdown Constants
+// ============================================================================
+
+/// How long the bind9 container's preStop hook waits before letting `named`
+/// receive SIGTERM.
+///
+/// Kubernetes removes a terminating Pod from the Service endpoints and signals
+/// the container **in parallel**, so without this delay `named` can exit while
+/// kube-proxy is still forwarding queries to it — the client sees a timeout
+/// rather than an answer from another primary. The hook simply outlives the
+/// endpoint propagation.
+pub const BIND9_PRESTOP_DRAIN_SECS: u32 = 10;
+
+/// Grace period for a terminating BIND9 Pod.
+///
+/// Must exceed [`BIND9_PRESTOP_DRAIN_SECS`], or the kubelet SIGKILLs the
+/// container part-way through the drain and the hook accomplishes nothing. The
+/// remaining budget lets `named` finish in-flight queries and write out its
+/// journals.
+pub const BIND9_TERMINATION_GRACE_PERIOD_SECS: i64 = 45;
+
+/// How many operand Pods of one cluster+role may be voluntarily disrupted at once.
+///
+/// Expressed as `maxUnavailable` on the PodDisruptionBudget, not `minAvailable`:
+/// a single-primary cluster with `minAvailable: 1` can never release its Pod,
+/// which hangs `kubectl drain` instead of protecting anything.
+pub const MAX_UNAVAILABLE_OPERANDS: i32 = 1;
+
+// ============================================================================
 // Controller Error Handling Constants
 // ============================================================================
 
@@ -194,7 +223,7 @@ pub const BIND9_NONROOT_UID: i64 = 101;
 /// This is the default image used for the bindcar HTTP API sidecar container
 /// when no image is specified in the `BindcarConfig` of a `Bind9Instance`,
 /// `Bind9Cluster`, or `ClusterBind9Provider`.
-pub const DEFAULT_BINDCAR_IMAGE: &str = "ghcr.io/firestoned/bindcar:v0.7.2";
+pub const DEFAULT_BINDCAR_IMAGE: &str = "ghcr.io/firestoned/bindcar:v0.8.0";
 
 // ============================================================================
 // Bindcar Authentication Constants (Mode B — TokenReview)

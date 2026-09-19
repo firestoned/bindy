@@ -212,6 +212,105 @@ mod tests {
         assert_eq!(ERROR_TYPE_RECONCILE, "reconcile_error");
     }
 
+    // ========== Tests for ready_state() ==========
+
+    #[test]
+    fn test_ready_state_reports_ready() {
+        // Arrange
+        let status = Some(create_status(vec![create_condition(
+            CONDITION_TYPE_READY,
+            CONDITION_STATUS_TRUE,
+        )]));
+
+        // Act
+        let state = ready_state(&status);
+
+        // Assert
+        assert_eq!(state, ReadyState::Ready);
+    }
+
+    #[test]
+    fn test_ready_state_carries_reason_and_message_when_not_ready() {
+        // Arrange: the shape the record reconciler writes when an add fails
+        let mut condition = create_condition(CONDITION_TYPE_READY, "False");
+        condition.reason = Some("ReconcileFailed".to_string());
+        condition.message = Some("Failed to add record to zone: Refused".to_string());
+        let status = Some(create_status(vec![condition]));
+
+        // Act
+        let state = ready_state(&status);
+
+        // Assert
+        assert_eq!(
+            state,
+            ReadyState::NotReady {
+                reason: "ReconcileFailed",
+                message: "Failed to add record to zone: Refused",
+            },
+            "the log line must be able to name why the record is not ready"
+        );
+    }
+
+    #[test]
+    fn test_ready_state_substitutes_placeholders_for_absent_reason_and_message() {
+        // Arrange: reason and message are both optional in the CRD
+        let mut condition = create_condition(CONDITION_TYPE_READY, "False");
+        condition.reason = None;
+        condition.message = None;
+        let status = Some(create_status(vec![condition]));
+
+        // Act
+        let state = ready_state(&status);
+
+        // Assert
+        assert_eq!(
+            state,
+            ReadyState::NotReady {
+                reason: UNKNOWN_CONDITION_FIELD,
+                message: UNKNOWN_CONDITION_FIELD,
+            }
+        );
+    }
+
+    #[test]
+    fn test_ready_state_is_unknown_without_a_ready_condition() {
+        // Arrange
+        let status = Some(create_status(vec![create_condition(
+            "Progressing",
+            CONDITION_STATUS_TRUE,
+        )]));
+
+        // Act / Assert
+        assert_eq!(ready_state(&status), ReadyState::Unknown);
+    }
+
+    #[test]
+    fn test_ready_state_is_unknown_for_empty_conditions_and_no_status() {
+        // Arrange / Act / Assert
+        assert_eq!(
+            ready_state(&Some(create_status(vec![]))),
+            ReadyState::Unknown
+        );
+        assert_eq!(ready_state(&None), ReadyState::Unknown);
+    }
+
+    #[test]
+    fn test_ready_state_finds_the_ready_condition_in_any_position() {
+        // Arrange: Ready is not first. A status writer is free to order these,
+        // so position must not decide readiness.
+        let status = Some(create_status(vec![
+            create_condition("Progressing", "False"),
+            create_condition(CONDITION_TYPE_READY, CONDITION_STATUS_TRUE),
+        ]));
+
+        // Act / Assert
+        assert_eq!(ready_state(&status), ReadyState::Ready);
+        assert!(
+            is_resource_ready(&status),
+            "is_resource_ready must agree with ready_state"
+        );
+    }
+
     // NOTE: The generate_record_wrapper! macro cannot be directly unit tested
     // because it generates code at compile time. Instead:
     //
