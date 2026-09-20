@@ -52,7 +52,6 @@ use crate::crd::{DNSZone, InstanceReference};
 pub async fn configure_zone_on_instances(
     ctx: Arc<crate::context::Context>,
     dnszone: &DNSZone,
-    zone_manager: &crate::bind9::Bind9Manager,
     status_updater: &mut crate::reconcilers::status::DNSZoneStatusUpdater,
     instance_refs: &[InstanceReference],
     _unreconciled_instances: &[InstanceReference],
@@ -115,39 +114,33 @@ pub async fn configure_zone_on_instances(
     // Primary instances are marked as reconciled inside add_dnszone() immediately after success
     // CRITICAL: We pass ALL instances (not just unreconciled ones) to ensure zones are recreated
     // after pod restarts. The add_zones() function is idempotent (checks zone_exists first).
-    let primary_outcome = match super::add_dnszone(
-        ctx.clone(),
-        dnszone.clone(),
-        zone_manager,
-        status_updater,
-        instance_refs,
-    )
-    .await
-    {
-        Ok(outcome) => {
-            // Update status after successful primary reconciliation (in-memory)
-            status_updater.set_condition(
-                "Progressing",
-                "True",
-                "PrimaryReconciled",
-                &format!(
-                    "Zone {} configured on {} primary instance(s) ({} endpoint(s))",
-                    spec.zone_name, outcome.instances_configured, outcome.endpoints_configured
-                ),
-            );
-            outcome
-        }
-        Err(e) => {
-            set_failure_conditions(
-                status_updater,
-                "PrimaryFailed",
-                &format!("Failed to configure zone on primary servers: {e}"),
-            );
-            // Apply status before returning error
-            status_updater.apply(&client).await?;
-            return Err(e);
-        }
-    };
+    let primary_outcome =
+        match super::add_dnszone(ctx.clone(), dnszone.clone(), status_updater, instance_refs).await
+        {
+            Ok(outcome) => {
+                // Update status after successful primary reconciliation (in-memory)
+                status_updater.set_condition(
+                    "Progressing",
+                    "True",
+                    "PrimaryReconciled",
+                    &format!(
+                        "Zone {} configured on {} primary instance(s) ({} endpoint(s))",
+                        spec.zone_name, outcome.instances_configured, outcome.endpoints_configured
+                    ),
+                );
+                outcome
+            }
+            Err(e) => {
+                set_failure_conditions(
+                    status_updater,
+                    "PrimaryFailed",
+                    &format!("Failed to configure zone on primary servers: {e}"),
+                );
+                // Apply status before returning error
+                status_updater.apply(&client).await?;
+                return Err(e);
+            }
+        };
 
     // Update to secondary reconciliation phase (in-memory)
     status_updater.set_condition(
@@ -164,7 +157,6 @@ pub async fn configure_zone_on_instances(
     let secondary_outcome = match super::add_dnszone_to_secondaries(
         ctx.clone(),
         dnszone.clone(),
-        zone_manager,
         &primary_ips,
         status_updater,
         instance_refs,

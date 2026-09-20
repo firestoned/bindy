@@ -387,3 +387,176 @@ fn is_retryable_error(err: &kube::Error) -> bool {
 #[cfg(test)]
 #[path = "retry_tests.rs"]
 mod retry_tests;
+
+// ============================================================================
+// Per-object reconcile backoff
+// ============================================================================
+
+/// Delay before the first retry of a failing reconcile.
+///
+/// Deliberately short. A fixed 30s requeue used to set the floor on how fast a
+/// DNSZone could recover after its operand Pods were replaced: the Endpoints
+/// watch does not reliably pull the object forward when a retry is already
+/// scheduled, so the pending requeue decides recovery time. Measured on a kind
+/// cluster, a zone sat idle for 57 seconds after its Pod was back and Ready,
+/// then reconciled once and served in about 1 second.
+pub const RECONCILE_BACKOFF_INITIAL: Duration = Duration::from_secs(2);
+
+/// Ceiling for the per-object reconcile backoff.
+///
+/// A permanently broken object must not hammer the API server at
+/// [`RECONCILE_BACKOFF_INITIAL`] forever.
+pub const RECONCILE_BACKOFF_MAX: Duration = Duration::from_secs(60);
+
+/// How long an object must go without a failure before its backoff decays.
+///
+/// The controller only calls the error policy on failure, so there is no success
+/// hook to clear the counter from. Decaying on age gets the same result without
+/// threading a reset through every reconcile's happy path: an object that stops
+/// failing simply ages out and starts from the fast interval next time.
+const RECONCILE_BACKOFF_RESET_AFTER: Duration = Duration::from_secs(300);
+
+/// Consecutive-failure counters, keyed by namespaced object name.
+static RECONCILE_FAILURES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, (u32, Instant)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Returns how long to wait before retrying a failed reconcile of `key`.
+///
+/// Doubles on each consecutive failure, capped at [`RECONCILE_BACKOFF_MAX`], and
+/// decays back to [`RECONCILE_BACKOFF_INITIAL`] once the object has gone
+/// [`RECONCILE_BACKOFF_RESET_AFTER`] without failing.
+///
+/// # Arguments
+///
+/// * `key` - Stable identity for the object, e.g. `"namespace/name"`
+///
+/// # Returns
+///
+/// The requeue delay for this failure.
+#[must_use]
+pub fn reconcile_error_backoff(key: &str) -> Duration {
+    let now = Instant::now();
+    let Ok(mut failures) = RECONCILE_FAILURES.lock() else {
+        // A poisoned lock must not take the operator down; fall back to the
+        // initial interval, which is always a safe requeue.
+        return RECONCILE_BACKOFF_INITIAL;
+    };
+
+    let entry = failures.entry(key.to_string()).or_insert((0, now));
+    if now.duration_since(entry.1) >= RECONCILE_BACKOFF_RESET_AFTER {
+        entry.0 = 0;
+    }
+    entry.1 = now;
+
+    let delay = RECONCILE_BACKOFF_INITIAL
+        .checked_mul(1_u32.checked_shl(entry.0).unwrap_or(u32::MAX))
+        .unwrap_or(RECONCILE_BACKOFF_MAX)
+        .min(RECONCILE_BACKOFF_MAX);
+
+    entry.0 = entry.0.saturating_add(1);
+    delay
+}
+
+/// Shortest interval between re-attempts of a record write BIND9 rejected.
+///
+/// A rejected write must not be re-issued on every watch event. BIND9 rejects
+/// some updates for reasons no amount of retrying changes — an MX whose exchange
+/// has no address record comes back `Refused` every time — and the record
+/// reconciler is woken by far more than its own timer: a status patch on the
+/// owning zone or on any primary instance re-runs it. Left alone that produced a
+/// sustained several-updates-per-second delete/add storm against named for a
+/// single bad record.
+///
+/// Matching [`crate::record_wrappers::REQUEUE_WHEN_NOT_READY_SECS`] means a
+/// failing record is re-attempted by its own timed requeue and by nothing else.
+pub const REJECTED_WRITE_COOLDOWN: Duration =
+    Duration::from_secs(crate::record_wrappers::REQUEUE_WHEN_NOT_READY_SECS);
+
+/// Rejected writes, keyed by object, holding the spec hash and when it failed.
+static REJECTED_WRITES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, (String, Instant)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Record that writing `spec_hash` for `key` was rejected.
+///
+/// # Arguments
+///
+/// * `key` - Stable identity for the object, e.g. `"ARecord/namespace/name"`
+/// * `spec_hash` - Hash of the spec that was rejected
+pub fn note_rejected_write(key: &str, spec_hash: &str) {
+    if let Ok(mut rejected) = REJECTED_WRITES.lock() {
+        rejected.insert(key.to_string(), (spec_hash.to_string(), Instant::now()));
+    }
+}
+
+/// Clears any rejection recorded for `key`.
+///
+/// Call this when a write succeeds or the object goes away, so the next failure
+/// is treated as the first one.
+///
+/// # Arguments
+///
+/// * `key` - Stable identity for the object
+pub fn clear_rejected_write(key: &str) {
+    if let Ok(mut rejected) = REJECTED_WRITES.lock() {
+        rejected.remove(key);
+    }
+}
+
+/// Whether writing `spec_hash` for `key` should be skipped right now.
+///
+/// # Arguments
+///
+/// * `key` - Stable identity for the object
+/// * `spec_hash` - Hash of the spec about to be written
+///
+/// # Returns
+///
+/// `true` while the identical spec is inside [`REJECTED_WRITE_COOLDOWN`] of its
+/// last rejection. A changed spec is never held back: editing the record is how
+/// a user fixes a permanent rejection, and that fix must take effect at once.
+#[must_use]
+pub fn write_in_cooldown(key: &str, spec_hash: &str) -> bool {
+    write_in_cooldown_at(key, spec_hash, Instant::now())
+}
+
+/// [`write_in_cooldown`] with the current time supplied, so expiry is testable.
+///
+/// # Arguments
+///
+/// * `key` - Stable identity for the object
+/// * `spec_hash` - Hash of the spec about to be written
+/// * `now` - The instant to judge the cooldown against
+///
+/// # Returns
+///
+/// `true` if the write should be skipped at `now`.
+#[must_use]
+pub fn write_in_cooldown_at(key: &str, spec_hash: &str, now: Instant) -> bool {
+    let Ok(rejected) = REJECTED_WRITES.lock() else {
+        // A poisoned lock must not stall writes; attempting one is always safe.
+        return false;
+    };
+
+    let Some((rejected_hash, rejected_at)) = rejected.get(key) else {
+        return false;
+    };
+
+    if rejected_hash != spec_hash {
+        return false;
+    }
+
+    now.duration_since(*rejected_at) < REJECTED_WRITE_COOLDOWN
+}
+
+/// Clears the failure counter for `key`, so its next failure requeues promptly.
+///
+/// # Arguments
+///
+/// * `key` - Stable identity for the object, e.g. `"namespace/name"`
+pub fn reset_reconcile_backoff(key: &str) {
+    if let Ok(mut failures) = RECONCILE_FAILURES.lock() {
+        failures.remove(key);
+    }
+}

@@ -1,0 +1,18 @@
+# Should be REJECTED: KUBE_* is operator-managed. Repointing it aims TokenReview
+# at an API server the tenant controls, which approves anything.
+# Also covers the cluster-level path: bindcarConfig nests under spec.global here,
+# not directly under spec as on a Bind9Instance.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Cluster
+metadata:
+  name: vap-test-bindcar-env-cluster-reject
+  namespace: bindy-system
+spec:
+  version: "9.18"
+  primary:
+    replicas: 1
+  global:
+    bindcarConfig:
+      envVars:
+        - name: KUBE_API_SERVER
+          value: "https://rogue.example.com"

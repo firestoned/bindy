@@ -246,7 +246,7 @@ spec:
                         description: |-
                           Container image for the RNDC API sidecar
 
-                          Example: "ghcr.io/firestoned/bindcar:v0.7.2"
+                          Example: "ghcr.io/firestoned/bindcar:v0.8.0"
                         nullable: true
                         type: string
                       imagePullPolicy:
@@ -441,6 +441,90 @@ spec:
                             type: string
                           type:
                             description: 'type determines how the Service is exposed. Defaults to ClusterIP. Valid options are ExternalName, ClusterIP, NodePort, and LoadBalancer. "ClusterIP" allocates a cluster-internal IP address for load-balancing to endpoints. Endpoints are determined by the selector or if that is not specified, by manual construction of an Endpoints object or EndpointSlice objects. If clusterIP is "None", no virtual IP is allocated and the endpoints are published as a set of endpoints rather than a virtual IP. "NodePort" builds on ClusterIP and allocates a port on every node which routes to the same endpoints as the clusterIP. "LoadBalancer" builds on NodePort and creates an external load-balancer (if supported in the current cloud) which routes to the same endpoints as the clusterIP. "ExternalName" aliases this service to the specified externalName. Several other fields do not apply to ExternalName services. More info: https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types'
+                            type: string
+                        type: object
+                      tls:
+                        description: |-
+                          TLS for the operator-to-sidecar connection.
+
+                          When omitted (the default) the operator talks to the sidecar over
+                          plaintext HTTP, exactly as in earlier releases. See
+                          [`BindcarTlsConfig`] and ADR-0004.
+                        nullable: true
+                        properties:
+                          caBundle:
+                            description: CA bundle the operator verifies the sidecar certificate against.
+                            nullable: true
+                            properties:
+                              configMapRef:
+                                description: ConfigMap holding the PEM CA bundle, in the instance's namespace.
+                                nullable: true
+                                properties:
+                                  key:
+                                    description: Key holding the PEM bundle. Defaults to `ca.crt`.
+                                    nullable: true
+                                    type: string
+                                  name:
+                                    description: Object name.
+                                    type: string
+                                required:
+                                - name
+                                type: object
+                              secretRef:
+                                description: Secret holding the PEM CA bundle, in the instance's namespace.
+                                nullable: true
+                                properties:
+                                  key:
+                                    description: Key holding the PEM bundle. Defaults to `ca.crt`.
+                                    nullable: true
+                                    type: string
+                                  name:
+                                    description: Object name.
+                                    type: string
+                                required:
+                                - name
+                                type: object
+                            type: object
+                          enabled:
+                            description: |-
+                              Serve and consume the sidecar API over HTTPS.
+
+                              Defaults to `false`. When `true`, both
+                              [`secret_name`](Self::secret_name) and [`ca_bundle`](Self::ca_bundle)
+                              are required; the operator refuses to reconcile rather than fall back to
+                              plaintext, so a half-configured instance cannot silently serve in the
+                              clear.
+                            nullable: true
+                            type: boolean
+                          reloadIntervalSeconds:
+                            description: |-
+                              How often the sidecar re-reads its certificate, in seconds.
+
+                              Passed through as bindcar's `BIND_TLS_RELOAD_INTERVAL`. Defaults to
+                              bindcar's own default (60s); `0` disables reloading. Rotation needs no
+                              restart, which matters because restarting the sidecar restarts the BIND9
+                              operand beside it.
+                            format: uint64
+                            minimum: 0.0
+                            nullable: true
+                            type: integer
+                          secretName:
+                            description: |-
+                              Secret holding the sidecar's `tls.crt` and `tls.key`.
+
+                              Mounted read-only into the bindcar container, which is pointed at it via
+                              `BIND_TLS_CERT` / `BIND_TLS_KEY`. A cert-manager `Certificate` writing a
+                              Secret of this shape is the expected source.
+                            nullable: true
+                            type: string
+                          serverName:
+                            description: |-
+                              Expected certificate name, restoring full hostname verification.
+
+                              Leave unset for the default pod-IP behaviour described on this type. Set
+                              it only when the certificate genuinely covers the name the operator will
+                              dial, or every connection will fail.
+                            nullable: true
                             type: string
                         type: object
                     type: object

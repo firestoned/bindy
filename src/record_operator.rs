@@ -9,6 +9,7 @@
 use crate::bind9::Bind9Manager;
 use crate::context::Context;
 use crate::crd::{DNSZone, RecordStatus};
+use crate::record_wrappers::ReadyState;
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
@@ -23,8 +24,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fmt::Debug;
 use std::sync::Arc;
-use std::time::Duration;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// Reconciliation error wrapper
 #[derive(Debug, thiserror::Error)]
@@ -33,21 +33,38 @@ pub struct ReconcileError(#[from] anyhow::Error);
 
 /// Error policy for record operators.
 ///
-/// Returns an action to requeue the resource after a delay when reconciliation fails.
+/// Uses the same per-object exponential backoff as the main controllers: records
+/// have to be re-pushed into a replaced BIND9 Pod just like the zone does, so a
+/// long fixed requeue here delays recovery in exactly the same way.
+///
+/// # Arguments
+///
+/// * `resource` - The record whose reconciliation failed
+/// * `err` - The reconciliation error
+///
+/// # Returns
+///
+/// An `Action` requeueing the record after its current backoff.
 #[allow(clippy::needless_pass_by_value)] // Signature required by kube::runtime::Controller
 fn error_policy<T, C>(resource: Arc<T>, err: &ReconcileError, _ctx: Arc<C>) -> Action
 where
-    T: Debug,
+    T: Debug + kube::ResourceExt,
 {
+    let key = format!(
+        "{}/{}/{}",
+        std::any::type_name::<T>(),
+        resource.namespace().unwrap_or_default(),
+        resource.name_any()
+    );
+    let delay = crate::reconcilers::retry::reconcile_error_backoff(&key);
+
     error!(
         error = %err,
         resource = ?resource,
-        "Reconciliation error - will retry in {}s",
-        crate::constants::ERROR_REQUEUE_DURATION_SECS
+        "Reconciliation error - will retry in {:?}",
+        delay
     );
-    Action::requeue(Duration::from_secs(
-        crate::constants::ERROR_REQUEUE_DURATION_SECS,
-    ))
+    Action::requeue(delay)
 }
 
 /// Trait for DNS record types that can be reconciled with a generic operator.
@@ -223,18 +240,41 @@ where
                 // Create or update the record
                 T::reconcile_record(context.clone(), (*rec).clone()).await?;
 
-                info!("Successfully reconciled {}: {}", T::KIND, rec.name_any());
-
                 // Re-fetch to get updated status
                 let updated_record = api
                     .get(&rec.name_any())
                     .await
                     .map_err(|e| ReconcileError::from(anyhow::Error::from(e)))?;
 
-                // Check readiness
-                let is_ready = crate::record_wrappers::is_resource_ready(updated_record.status());
+                // A failed BIND9 write is reported through the record's own
+                // conditions, not through the return value above: the reconcile
+                // swallows it so the status can be written. The outcome therefore
+                // has to be read back before this can claim the record was
+                // published, or the log contradicts the status it just set.
+                let state = crate::record_wrappers::ready_state(updated_record.status());
+                match state {
+                    ReadyState::Ready => {
+                        info!("Successfully reconciled {}: {}", T::KIND, rec.name_any());
+                    }
+                    ReadyState::NotReady { reason, message } => {
+                        warn!(
+                            "Reconciled {} {} but it is not Ready — {reason}: {message}",
+                            T::KIND,
+                            rec.name_any()
+                        );
+                    }
+                    ReadyState::Unknown => {
+                        warn!(
+                            "Reconciled {} {} but it reports no Ready condition",
+                            T::KIND,
+                            rec.name_any()
+                        );
+                    }
+                }
 
-                Ok(crate::record_wrappers::requeue_based_on_readiness(is_ready))
+                Ok(crate::record_wrappers::requeue_based_on_readiness(
+                    matches!(state, ReadyState::Ready),
+                ))
             }
             finalizer::Event::Cleanup(rec) => {
                 // Delete the record from BIND9
@@ -249,6 +289,15 @@ where
                 )
                 .await
                 .map_err(ReconcileError::from)?;
+
+                // The object is gone; a recreated one must not inherit its
+                // rejection cooldown.
+                crate::reconcilers::retry::clear_rejected_write(&format!(
+                    "{}/{}/{}",
+                    T::KIND,
+                    rec.namespace().unwrap_or_default(),
+                    rec.name_any()
+                ));
 
                 info!(
                     "Successfully deleted {} from BIND9: {}",

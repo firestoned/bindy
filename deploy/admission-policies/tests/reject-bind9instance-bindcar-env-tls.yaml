@@ -1,0 +1,17 @@
+# Should be REJECTED: BIND_TLS_* is operator-managed. BIND_TLS_CERT substitutes
+# the server's identity; BIND_TLS_RELOAD_INTERVAL=0 pins a certificate that is
+# being rotated away from.
+apiVersion: bindy.firestoned.io/v1beta1
+kind: Bind9Instance
+metadata:
+  name: vap-test-bindcar-env-tls-reject
+  namespace: bindy-system
+spec:
+  clusterRef: production-dns
+  role: primary
+  replicas: 1
+  version: "9.18"
+  bindcarConfig:
+    envVars:
+      - name: BIND_TLS_RELOAD_INTERVAL
+        value: "0"

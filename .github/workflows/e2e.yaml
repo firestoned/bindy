@@ -3,20 +3,34 @@
 #
 # Reusable end-to-end test workflow.
 #
-# Builds the operator image locally (no registry) and runs the full e2e gate
-# against it in kind:
-#   1. Integration suite   — simple zone/record lifecycle (tests/integration_test.sh)
-#   2. Regression suite     — admission policies + operand pod-shape + liveness
-#                             (tests/regression_test.sh: bindcar 0.7.x Mode B contract)
-#   3. Zone-spreading suite — spec.placement topology spread, on a three-zone
-#                             cluster (tests/zone_spread_test.sh). Needs its own
-#                             cluster: deploy/kind-config-multizone.yaml labels
-#                             three workers with distinct availability zones,
-#                             which the single-node config cannot express.
+# One job per suite. The operator image is cross-compiled and packaged ONCE in
+# the `build` job and handed to every suite job as an artifact, so the suites
+# pay for kind and their own assertions but not for a repeated Rust build.
 #
-# All logic lives in the `ci-e2e` Makefile target (workflows delegate to the
-# Makefile per repo convention). Self-contained: no pushed image, no
-# cross-workflow timing, no registry credentials.
+# Each job maps 1:1 to a Makefile target (workflows delegate logic to the
+# Makefile per repo convention) and owns its own kind cluster, which is why
+# they can run concurrently:
+#
+#   e2e-rust           tests/simple_integration.rs against a live API server
+#   e2e-lifecycle      zones/records come up and BIND9 actually answers for them
+#   e2e-idempotency    re-applying the identical spec creates no duplicates
+#   e2e-restart        zones/records survive operator + operand restarts (#486)
+#   e2e-multi-tenancy  namespace isolation
+#   e2e-regression     admission policies + operand pod shape + liveness
+#                      (bindcar 0.7.x Mode B contract)
+#   e2e-zone-spread    spec.placement topology spread; needs its own three-zone
+#                      cluster (deploy/kind-config-multizone.yaml), which the
+#                      single-node config cannot express
+#   e2e-tls            cert-manager issues the bindcar sidecar's certificate and
+#                      the operator pushes a zone over a CA-verified HTTPS
+#                      connection. End-to-end evidence for audit finding P2-4,
+#                      which unit tests cannot supply: they can assert how the
+#                      client is built, not that a real certificate was issued,
+#                      served and verified.
+#
+# Before this split the whole gate was a single `make ci-e2e` job: ~40 minutes
+# of serial work that reported one red X with no indication of which suite
+# broke. `make e2e-all` still runs everything serially for local use.
 #
 # Callable via `workflow_call` (e.g. from dependabot-auto-merge.yaml) or run
 # manually via `workflow_dispatch`.
@@ -29,6 +43,10 @@ on:
       - '.github/workflows/e2e.yaml'
       - 'Makefile'
       - 'rust-toolchain.toml'
+      - 'tests/lib/**'
+      - 'tests/e2e/**'
+      - 'tests/integration_test.sh'
+      - 'tests/regression_test.sh'
       # Scheduling behaviour is only observable against a real scheduler, so
       # changes to it must run the kind gate.
       - 'src/placement.rs'
@@ -36,12 +54,19 @@ on:
       - 'src/reconcilers/bind9instance/**'
       # Scout's Gateway API detection is only observable against a real API
       # server: whether a kind is served, and whether the disabled path stays
-      # quiet, cannot be asserted from unit tests. `make kind-create-scout`
-      # builds a cluster with no Gateway API CRDs, which is exactly that path.
+      # quiet, cannot be asserted from unit tests.
       - 'src/scout.rs'
       - 'tests/zone_spread_test.sh'
+      - 'deploy/kind-config.yaml'
+      - 'deploy/kind-config-e2e.yaml'
       - 'deploy/kind-config-multizone.yaml'
       - 'deploy/operator/crds/**'
+      # The TLS transport path is only observable against a real CA and a real
+      # handshake, so changes to the client or its CRD surface must run the gate.
+      - 'src/bind9/tls_client.rs'
+      - 'src/bind9/mod.rs'
+      - 'tests/tls_transport_test.sh'
+      - 'deploy/kind-config-tls.yaml'
   workflow_call: {}
   workflow_dispatch: {}
 
@@ -51,10 +76,12 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Every suite job runs against the image the build job produced.
+  E2E_IMAGE: ghcr.io/firestoned/bindy:ci-e2e
 
 jobs:
-  e2e:
-    name: Integration + Regression + Zone Spread (kind)
+  build:
+    name: Build operator image
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -65,12 +92,77 @@ jobs:
         with:
           target: x86_64-unknown-linux-gnu
 
+      - name: Build and save the image
+        run: make e2e-image
+
+      - name: Upload the image tarball
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: e2e-operator-image
+          path: dist/bindy-e2e-image.tar
+          retention-days: 1
+          compression-level: 0
+
+  suite:
+    name: ${{ matrix.name }}
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      # One suite breaking should not hide the state of the other seven — that
+      # is the whole point of splitting them up.
+      fail-fast: false
+      matrix:
+        include:
+          - target: e2e-rust
+            name: Rust API tests (kind)
+            cluster: kind-bindy-e2e-rust
+            needs_rust: true
+          - target: e2e-lifecycle
+            name: Zone/record lifecycle (kind)
+            cluster: kind-bindy-e2e-lifecycle
+            needs_rust: false
+          - target: e2e-idempotency
+            name: Idempotent re-apply (kind)
+            cluster: kind-bindy-e2e-idempotency
+            needs_rust: false
+          - target: e2e-restart
+            name: Restart persistence (kind)
+            cluster: kind-bindy-e2e-restart
+            needs_rust: false
+          - target: e2e-multi-tenancy
+            name: Multi-tenancy (kind)
+            cluster: kind-bindy-e2e-multitenancy
+            needs_rust: false
+          - target: e2e-regression
+            name: Regression — admission policies + pod shape (kind)
+            cluster: kind-bindy-regression
+            needs_rust: false
+          - target: e2e-zone-spread
+            name: Zone spreading (kind, 3 zones)
+            cluster: kind-bindy-zonespread
+            needs_rust: false
+          - target: e2e-tls
+            name: TLS transport (kind, cert-manager)
+            cluster: kind-bindy-tls
+            needs_rust: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # Only the Rust API suite compiles anything; the rest need nothing but
+      # kind, kubectl and docker.
+      - name: Setup Rust build environment
+        if: matrix.needs_rust
+        uses: firestoned/github-actions/rust/setup-rust-build@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        with:
+          target: x86_64-unknown-linux-gnu
+
       - name: Install Kind
         uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
         with:
-          # kind v0.24.0 provisions Kubernetes v1.31 by default. ValidatingAdmissionPolicy
-          # (exercised by the regression suite) is GA only on 1.30+, so this must
-          # stay >= v0.23.0.
+          # kind v0.24.0 provisions Kubernetes v1.31 by default.
+          # ValidatingAdmissionPolicy (exercised by the regression suite) is GA
+          # only on 1.30+, so this must stay >= v0.23.0.
           install_only: true
           version: v0.24.0
 
@@ -79,37 +171,73 @@ jobs:
         with:
           version: 'v1.31.0'
 
-      - name: Run full e2e (integration + regression)
-        run: make ci-e2e
+      - name: Download the operator image
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: e2e-operator-image
+          path: dist
+
+      - name: Load the operator image
+        run: make e2e-image-load
+
+      # KEEP_CLUSTER stops the suite from deleting its kind cluster, so the
+      # diagnostics step below has something left to inspect. Without it a
+      # script that tears down in an EXIT trap leaves nothing but its own short
+      # log tail, which is how the first real TLS failure arrived half-truncated.
+      # The runner is ephemeral; the explicit cleanup step still runs.
+      - name: Run ${{ matrix.target }}
+        env:
+          KEEP_CLUSTER: '1'
+        run: make ${{ matrix.target }}
 
       - name: Dump Kubernetes diagnostics on failure
         if: failure()
+        env:
+          CTX: ${{ matrix.cluster }}
         run: |
-          for ctx in kind-bindy-e2e kind-bindy-regression kind-bindy-e2e-zonespread; do
-            echo "::group::cluster summary ($ctx)"
-            kubectl --context "$ctx" get nodes -o wide 2>/dev/null || true
-            kubectl --context "$ctx" get ns 2>/dev/null || true
-            kubectl --context "$ctx" get crd -o wide 2>/dev/null || true
-            kubectl --context "$ctx" get pods -A -o wide 2>/dev/null || true
-            echo "::endgroup::"
+          echo "::group::cluster summary ($CTX)"
+          kubectl --context "$CTX" get nodes -o wide 2>/dev/null || true
+          kubectl --context "$CTX" get ns 2>/dev/null || true
+          kubectl --context "$CTX" get crd -o wide 2>/dev/null || true
+          kubectl --context "$CTX" get pods -A -o wide 2>/dev/null || true
+          echo "::endgroup::"
 
-            echo "::group::events ($ctx)"
-            kubectl --context "$ctx" get events -A --sort-by=.lastTimestamp 2>/dev/null || true
-            echo "::endgroup::"
+          echo "::group::cert-manager ($CTX)"
+          kubectl --context "$CTX" get certificate,certificaterequest,issuer -A 2>/dev/null || true
+          kubectl --context "$CTX" -n cert-manager get pods -o wide 2>/dev/null || true
+          echo "::endgroup::"
 
-            echo "::group::bindy operator ($ctx)"
-            kubectl --context "$ctx" -n bindy-system get deploy,rs,pod,svc,secret -o wide 2>/dev/null || true
-            kubectl --context "$ctx" -n bindy-system describe pod -l app=bindy 2>/dev/null || true
-            kubectl --context "$ctx" -n bindy-system logs -l app=bindy --all-containers --tail=300 --prefix 2>/dev/null || true
-            echo "::endgroup::"
+          echo "::group::events ($CTX)"
+          kubectl --context "$CTX" get events -A --sort-by=.lastTimestamp 2>/dev/null || true
+          echo "::endgroup::"
 
-            echo "::group::label-selector integration namespace ($ctx)"
-            kubectl --context "$ctx" -n bindy-label-selector-test get bind9cluster,bind9instance,deploy,rs,pod,svc,secret,configmap -o wide 2>/dev/null || true
-            kubectl --context "$ctx" -n bindy-label-selector-test get bind9instance test-pod-labels -o yaml 2>/dev/null || true
-            kubectl --context "$ctx" -n bindy-label-selector-test describe pod -l app.kubernetes.io/instance=test-pod-labels 2>/dev/null || true
-            kubectl --context "$ctx" -n bindy-label-selector-test logs -l app.kubernetes.io/instance=test-pod-labels --all-containers --tail=300 --prefix 2>/dev/null || true
-            kubectl --context "$ctx" auth can-i create secrets -n bindy-label-selector-test --as system:serviceaccount:bindy-system:bindy 2>/dev/null || true
-            kubectl --context "$ctx" auth can-i create tokenreviews.authentication.k8s.io --as system:serviceaccount:bindy-label-selector-test:bind9 2>/dev/null || true
-            kubectl --context "$ctx" get clusterrolebinding bindcar-tokenreview -o yaml 2>/dev/null || true
-            echo "::endgroup::"
-          done
+          # Deep enough to reach the first reconcile: a failure that only shows
+          # up after minutes of retries pushes its own cause off a short tail.
+          echo "::group::operator logs ($CTX)"
+          kubectl --context "$CTX" -n bindy-system logs -l app=bindy --tail=2000 --timestamps --all-containers 2>/dev/null || true
+          echo "::endgroup::"
+
+          echo "::group::operand logs ($CTX)"
+          kubectl --context "$CTX" -n bindy-system logs -l app=bind9 --tail=1000 --timestamps --all-containers 2>/dev/null || true
+          echo "::endgroup::"
+
+      - name: Delete the kind cluster
+        if: always()
+        env:
+          CTX: ${{ matrix.cluster }}
+        run: kind delete cluster --name "${CTX#kind-}" 2>/dev/null || true
+
+  # Single required check for branch protection and for callers of this
+  # workflow: green only when every suite is green.
+  e2e:
+    name: E2E gate
+    needs: suite
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check suite results
+        env:
+          RESULT: ${{ needs.suite.result }}
+        run: |
+          echo "Suite matrix result: $RESULT"
+          [ "$RESULT" = "success" ] || exit 1

@@ -228,7 +228,7 @@ using the `bindcar_` prefix. Scrape it with the same
 | `bindcar_zone_operations_total` | Counter | `operation`, `result` | Zone and record operations (record ops use the `record_*` operation prefix) |
 | `bindcar_rndc_commands_total` | Counter | `command`, `result` | `rndc` commands executed (nsupdate uses the `nsupdate_*` command prefix) |
 | `bindcar_rndc_command_duration_seconds` | Histogram | `command` | `rndc`/nsupdate command latency |
-| `bindcar_zones_managed_total` | Gauge | — | Zones currently managed by this instance |
+| `bindcar_zones_managed` | Gauge | — | Zones currently managed by this instance |
 | `bindcar_rate_limit_requests_total` | Counter | `result` (`allowed`, `rejected`) | Rate-limit decisions |
 | `bindcar_app_info` | Counter | `version` | Build/version info |
 

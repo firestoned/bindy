@@ -27,7 +27,7 @@ pub use instances::{create_managed_instance, delete_bind9cluster, delete_managed
 pub use status_helpers::calculate_cluster_status;
 
 // Internal imports
-use config::create_or_update_cluster_configmap;
+use config::{create_or_update_cluster_configmap, reconcile_pod_disruption_budgets};
 use drift::detect_instance_drift;
 use instances::reconcile_managed_instances;
 use status_helpers::update_status;
@@ -121,6 +121,9 @@ pub async fn reconcile_bind9cluster(ctx: Arc<Context>, cluster: Bind9Cluster) ->
 
         // Create or update shared cluster ConfigMap
         create_or_update_cluster_configmap(&client, &cluster).await?;
+
+        // Cap voluntary disruption so a drain cannot take every primary at once
+        reconcile_pod_disruption_budgets(&client, &cluster).await?;
 
         // Reconcile managed instances (create/update as needed)
         reconcile_managed_instances(&ctx, &cluster).await?;

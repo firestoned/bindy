@@ -34,6 +34,40 @@ mod tests {
         assert_eq!(url, "http://localhost:8080");
     }
 
+    // --- TLS transport (ADR-0004) -------------------------------------------
+
+    /// With TLS on, a bare `ip:port` endpoint must become an `https://` URL —
+    /// this is what actually switches the operator onto the encrypted
+    /// transport, since every call site passes a bare pod address.
+    #[test]
+    fn test_build_api_url_uses_https_when_tls_enabled() {
+        let url = crate::bind9::zone_ops::build_api_url_with_scheme("10.1.2.3:8080", true);
+        assert_eq!(url, "https://10.1.2.3:8080");
+    }
+
+    /// With TLS off the behaviour is byte-for-byte what it was before.
+    #[test]
+    fn test_build_api_url_uses_http_when_tls_disabled() {
+        let url = crate::bind9::zone_ops::build_api_url_with_scheme("10.1.2.3:8080", false);
+        assert_eq!(url, "http://10.1.2.3:8080");
+    }
+
+    /// An explicit scheme on the endpoint always wins, in either direction, so
+    /// an operator can override per-endpoint without fighting the flag.
+    #[test]
+    fn test_explicit_scheme_is_never_rewritten() {
+        assert_eq!(
+            crate::bind9::zone_ops::build_api_url_with_scheme("http://host:8080", true),
+            "http://host:8080",
+            "an explicit http:// must not be silently upgraded"
+        );
+        assert_eq!(
+            crate::bind9::zone_ops::build_api_url_with_scheme("https://host:8443", false),
+            "https://host:8443",
+            "an explicit https:// must not be silently downgraded"
+        );
+    }
+
     #[test]
     fn test_build_api_url_with_https() {
         let url = Bind9Manager::build_api_url("https://api.example.com:8443");

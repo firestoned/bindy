@@ -1,0 +1,99 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: MIT
+#
+# ValidatingAdmissionPolicy: reject tenant-supplied `bindcarConfig.envVars`
+# entries whose names the operator owns.
+#
+# The kubelet resolves duplicate environment variable names to the LAST
+# occurrence, and user-supplied vars are appended after the operator-managed
+# ones. Before bindcar 0.7.2 that was a low-severity concern; 0.7.2 made
+# shared-secret and TokenReview mutually exclusive with the shared secret
+# winning, which promotes it to a real authentication bypass:
+#
+#   BIND_API_TOKEN=<attacker value>   TokenReview off; the attacker knows the
+#                                     only credential, and the operator's own
+#                                     SA-token requests start failing 401
+#   DISABLE_AUTH / BIND_ALLOW_ANY_SERVICEACCOUNT       auth weakened outright
+#   BIND_ALLOWED_SERVICE_ACCOUNTS / _NAMESPACES /
+#   BIND_TOKEN_AUDIENCES                               allowlist tampering
+#   KUBE_*                                             point TokenReview at a
+#                                                      rogue API server that
+#                                                      approves anything
+#   BIND_TLS_*                                         substitute the server's
+#                                                      identity, or pin a
+#                                                      certificate being rotated
+#                                                      away from (RELOAD=0)
+#   RNDC_* / BIND_ZONE_DIR                             hijack the operator-managed
+#                                                      RNDC and zone plumbing
+#
+# This is DEFENCE IN DEPTH. The load-bearing fix is in the reconciler:
+# `is_reserved_bindcar_env` in src/bind9_resources.rs drops (and logs) any
+# reserved name instead of appending it, so a cluster without this policy is
+# still protected. This policy stops the object being admitted at all, which
+# gives the tenant an immediate error instead of a silently-ignored field.
+#
+# Keep the two lists below in sync with RESERVED_BINDCAR_ENV_NAMES and
+# RESERVED_BINDCAR_ENV_PREFIXES in src/bind9_resources.rs.
+#
+# See .github/community/55-bindcar-migration-v0-7-2.md section 14 and ADR-0004.
+#
+# Requires Kubernetes 1.30+ (admissionregistration.k8s.io/v1 GA).
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: bindy-bindcar-env-validation
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/part-of: bindy
+    app.kubernetes.io/component: admission-policy
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups:   ["bindy.firestoned.io"]
+        apiVersions: ["v1beta1"]
+        operations:  ["CREATE", "UPDATE"]
+        resources:
+          - bind9instances
+          - bind9clusters
+          - clusterbind9providers
+  variables:
+    # bindcarConfig lives directly on a Bind9Instance, and under `global` on a
+    # Bind9Cluster / ClusterBind9Provider. Collect envVars from wherever it is.
+    - name: envNames
+      expression: |
+        (object.spec.?bindcarConfig.?envVars.orValue([]) +
+         object.spec.?global.?bindcarConfig.?envVars.orValue([])
+        ).map(e, e.?name.orValue(''))
+    # Exact names the operator sets on the sidecar.
+    - name: reservedNames
+      expression: |
+        ['BIND_API_TOKEN', 'DISABLE_AUTH', 'BIND_ALLOW_ANY_SERVICEACCOUNT',
+         'BIND_ALLOWED_SERVICE_ACCOUNTS', 'BIND_ALLOWED_NAMESPACES',
+         'BIND_TOKEN_AUDIENCES', 'BIND_ZONE_DIR', 'RNDC_SECRET',
+         'RNDC_ALGORITHM', 'RNDC_KEY_NAME']
+    # Whole families the operator owns.
+    - name: reservedPrefixes
+      expression: "['BIND_TLS_', 'KUBE_']"
+  validations:
+    - expression: |
+        !variables.envNames.exists(n, n in variables.reservedNames)
+      message: >-
+        bindcarConfig.envVars may not set an operator-managed variable
+        (BIND_API_TOKEN, DISABLE_AUTH, BIND_ALLOW_ANY_SERVICEACCOUNT,
+        BIND_ALLOWED_SERVICE_ACCOUNTS, BIND_ALLOWED_NAMESPACES,
+        BIND_TOKEN_AUDIENCES, BIND_ZONE_DIR, RNDC_SECRET, RNDC_ALGORITHM,
+        RNDC_KEY_NAME). The kubelet honours the last duplicate, so such an entry
+        would override the operator's value and can disable sidecar
+        authentication.
+      reason: Forbidden
+    - expression: |
+        !variables.envNames.exists(n,
+          variables.reservedPrefixes.exists(p, n.startsWith(p)))
+      message: >-
+        bindcarConfig.envVars may not set a variable in an operator-managed
+        namespace (BIND_TLS_*, KUBE_*). BIND_TLS_* controls the sidecar's TLS
+        identity and certificate reload; KUBE_* can repoint TokenReview at
+        another API server.
+      reason: Forbidden

@@ -4149,13 +4149,125 @@ pub struct PersistentVolumeClaimConfig {
     pub access_modes: Option<Vec<String>>,
 }
 
+/// Source of the CA bundle the operator uses to verify the sidecar certificate.
+///
+/// Exactly one of the two must be set. There is deliberately no "use the system
+/// trust store" option: the sidecar certificate is issued by a private CA, and
+/// falling back to public roots would silently weaken verification.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CaBundleSource {
+    /// ConfigMap holding the PEM CA bundle, in the instance's namespace.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_map_ref: Option<CaBundleKeyRef>,
+
+    /// Secret holding the PEM CA bundle, in the instance's namespace.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_ref: Option<CaBundleKeyRef>,
+}
+
+/// A named key within a ConfigMap or Secret.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CaBundleKeyRef {
+    /// Object name.
+    pub name: String,
+
+    /// Key holding the PEM bundle. Defaults to `ca.crt`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+}
+
+/// TLS configuration for the operator-to-bindcar-sidecar connection.
+///
+/// # Security model (ADR-0004)
+///
+/// The operator reaches each sidecar at its **pod IP**, because a zone
+/// operation must be applied to every replica of an instance and a Service
+/// ClusterIP would load-balance it to one. A certificate cannot carry a SAN for
+/// an ephemeral pod IP, so by default the operator verifies that the presented
+/// certificate **chains to [`ca_bundle`](Self::ca_bundle)** and does **not**
+/// check the address against the certificate's SANs.
+///
+/// That encrypts the ServiceAccount token in transit and requires the peer to
+/// hold a key signed by a CA you control. It does **not** bind the certificate
+/// to a particular address: **any** certificate issued by that CA is accepted
+/// from any pod. Use a CA dedicated to issuing sidecar certificates — not a
+/// general-purpose cluster issuer.
+///
+/// Set [`server_name`](Self::server_name) to restore full hostname
+/// verification where certificates can cover a stable name.
+///
+/// There is no `insecureSkipVerify`. Encryption without peer authentication
+/// would let anything on the pod network impersonate a sidecar and collect
+/// tokens, which is worse than honest plaintext because it looks secure.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BindcarTlsConfig {
+    /// Serve and consume the sidecar API over HTTPS.
+    ///
+    /// Defaults to `false`. When `true`, both
+    /// [`secret_name`](Self::secret_name) and [`ca_bundle`](Self::ca_bundle)
+    /// are required; the operator refuses to reconcile rather than fall back to
+    /// plaintext, so a half-configured instance cannot silently serve in the
+    /// clear.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+
+    /// Secret holding the sidecar's `tls.crt` and `tls.key`.
+    ///
+    /// Mounted read-only into the bindcar container, which is pointed at it via
+    /// `BIND_TLS_CERT` / `BIND_TLS_KEY`. A cert-manager `Certificate` writing a
+    /// Secret of this shape is the expected source.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_name: Option<String>,
+
+    /// CA bundle the operator verifies the sidecar certificate against.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ca_bundle: Option<CaBundleSource>,
+
+    /// Expected certificate name, restoring full hostname verification.
+    ///
+    /// Leave unset for the default pod-IP behaviour described on this type. Set
+    /// it only when the certificate genuinely covers the name the operator will
+    /// dial, or every connection will fail.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_name: Option<String>,
+
+    /// How often the sidecar re-reads its certificate, in seconds.
+    ///
+    /// Passed through as bindcar's `BIND_TLS_RELOAD_INTERVAL`. Defaults to
+    /// bindcar's own default (60s); `0` disables reloading. Rotation needs no
+    /// restart, which matters because restarting the sidecar restarts the BIND9
+    /// operand beside it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reload_interval_seconds: Option<u64>,
+}
+
+impl BindcarTlsConfig {
+    /// Whether TLS is switched on.
+    #[must_use]
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.unwrap_or(false)
+    }
+
+    /// Whether the operator should verify the certificate's hostname.
+    ///
+    /// Only when an explicit [`server_name`](Self::server_name) is configured;
+    /// see the type documentation for why the default is off.
+    #[must_use]
+    pub fn verifies_hostname(&self) -> bool {
+        self.server_name.is_some()
+    }
+}
+
 /// Bindcar container configuration
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct BindcarConfig {
     /// Container image for the RNDC API sidecar
     ///
-    /// Example: "ghcr.io/firestoned/bindcar:v0.7.2"
+    /// Example: "ghcr.io/firestoned/bindcar:v0.8.0"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
 
@@ -4197,6 +4309,14 @@ pub struct BindcarConfig {
     /// Environment variables for the Bindcar container
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env_vars: Option<Vec<EnvVar>>,
+
+    /// TLS for the operator-to-sidecar connection.
+    ///
+    /// When omitted (the default) the operator talks to the sidecar over
+    /// plaintext HTTP, exactly as in earlier releases. See
+    /// [`BindcarTlsConfig`] and ADR-0004.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls: Option<BindcarTlsConfig>,
     // NOTE: `volumes` and `volume_mounts` were removed in v0.5.1 (audit
     // finding F-001 mitigation). They were declared on `BindcarConfig` but
     // never plumbed into `build_api_sidecar_container`, so removing them is

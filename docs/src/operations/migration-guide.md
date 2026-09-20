@@ -90,6 +90,53 @@ sidecar so dynamic updates reach `named`. `allow-transfer` remains a bare-IP ACL
 > rolled out. Requires **bindcar 0.7.2+**. `NetworkPolicy` ingress and peer
 > egress must allow 5353 (see `deploy/pod-hardening.yaml`).
 
+## Migrating to bindcar 0.8.0
+
+Bindy now provisions **bindcar 0.8.0** (`ghcr.io/firestoned/bindcar:v0.8.0`).
+
+**No action is required to upgrade.** Everything bindy relies on is unchanged,
+and bindcar 0.8.0 is backward compatible with the 0.7.x configuration bindy
+already emits.
+
+### What changed in bindcar
+
+- **TLS and mutual TLS are available** for bindcar's REST API
+  (`BIND_TLS_CERT` / `BIND_TLS_KEY` / `BIND_TLS_CLIENT_CA`), with certificate
+  hot-reload (`BIND_TLS_RELOAD_INTERVAL`, default 60s). TLS is **opt-in** —
+  bindcar serves plaintext unless configured otherwise, so this changes nothing
+  until bindy grows a way to configure it.
+- **Rate-limit defaults were raised** at v0.7.4: `RATE_LIMIT_REQUESTS`
+  100 → 600 and the burst 10 → 50. This is a fix, not a regression — the old
+  burst of 10 guaranteed HTTP 429 during the record replay that follows a BIND9
+  pod restart, turning a ~30s recovery into ~130s. Bindy does not set these, so
+  it simply inherits the better defaults.
+- **The crate is feature-gated.** Bindy now depends on
+  `bindcar = { version = "0.8", default-features = false }`, which drops
+  bindcar's HTTP and TLS stacks from bindy's dependency graph — **31 crates**,
+  including `utoipa`, `utoipa-swagger-ui`, `rust-embed`, `tower-http`,
+  `tower_governor` and `governor`. Bindy imports only the data types
+  (`ZoneConfig`, `SoaRecord`, `DnsRecord`, `ZoneResponse`, `ZONE_TYPE_*`), which
+  are unaffected.
+
+### Metrics
+
+`bindcar_zones_managed_total` was renamed to **`bindcar_zones_managed`** in
+bindcar v0.7.3 (the `_total` suffix is reserved for counters, and this is a
+gauge). Bindy's bundled Grafana dashboard and metrics reference have been
+updated. **If you maintain your own dashboards or `PrometheusRule`s against the
+old name, they are silently returning no data** — rename them. During a rolling
+upgrade, `bindcar_zones_managed or bindcar_zones_managed_total` covers both.
+
+### Still outstanding
+
+Serving the API over TLS requires a way to express the scheme and CA bundle on
+`Bind9Instance` / `Bind9Cluster` / `ClusterBind9Provider`. `build_api_url`
+already honours an explicit `https://`, so only the configuration surface is
+missing. Until that lands, the operator's ServiceAccount token still crosses the
+pod network in cleartext (audit finding P2-4).
+
+---
+
 ## Migrating to bindcar 0.7.0 (Mode B / TokenReview)
 
 Bindy now provisions and consumes **bindcar 0.7.2**

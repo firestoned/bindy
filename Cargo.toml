@@ -52,11 +52,21 @@ rand = "0.10"
 hickory-net = { version = "0.26", features = ["dnssec-ring"] }
 hickory-proto = { version = "0.26", features = ["dnssec-ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# Chain-only certificate verification for the bindcar sidecar transport, where
+# the peer is dialled by pod IP and has no matching SAN (ADR-0004). Already in
+# the lock via rustls; promoted to a direct dep so it can be used explicitly.
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["ring", "std"] }
+rustls-pki-types = "1"
 url = "2.5.8"
 # Types-only dependency (CreateZoneRequest / ZoneConfig / SoaRecord / ZONE_TYPE_*).
 # bindcar 0.7.0's optional `k8s-token-review` feature (default = []) pulls kube 4.0 /
 # k8s-openapi 0.28, which now matches the operator's own kube 4.0 / k8s-openapi 0.28 stack.
-bindcar = "0.7"
+# Types only: bindy imports ZoneConfig/SoaRecord/DnsRecord/ZoneResponse and the
+# ZONE_TYPE_* constants, never the HTTP handlers. `default-features = false`
+# drops bindcar's server and TLS stacks (axum, tower-http, utoipa,
+# utoipa-swagger-ui, tower_governor, rustls, ring) from bindy's graph.
+# See .github/community/57-bindcar-migration-v0-8-0.md section 23.
+bindcar = { version = "0.8", default-features = false }
 prometheus = "0.14"
 axum = "0.8"
 sha2 = "0.11"

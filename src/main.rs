@@ -12,8 +12,8 @@ use bindy::{
     bind9::Bind9Manager,
     constants::{
         DEFAULT_LEASE_DURATION_SECS, DEFAULT_LEASE_RENEW_DEADLINE_SECS,
-        DEFAULT_LEASE_RETRY_PERIOD_SECS, ERROR_REQUEUE_DURATION_SECS, KUBE_CLIENT_BURST,
-        KUBE_CLIENT_QPS, METRICS_SERVER_BIND_ADDRESS, METRICS_SERVER_PATH, METRICS_SERVER_PORT,
+        DEFAULT_LEASE_RETRY_PERIOD_SECS, KUBE_CLIENT_BURST, KUBE_CLIENT_QPS,
+        METRICS_SERVER_BIND_ADDRESS, METRICS_SERVER_PATH, METRICS_SERVER_PORT,
         TOKIO_WORKER_THREADS,
     },
     context::{Context, Metrics, Stores},
@@ -24,7 +24,7 @@ use bindy::{
     metrics,
     reconcilers::{
         delete_dnszone, reconcile_bind9cluster, reconcile_bind9instance,
-        reconcile_clusterbind9provider, reconcile_dnszone,
+        reconcile_clusterbind9provider, reconcile_dnszone, retry::reconcile_error_backoff,
     },
     record_operator::run_generic_record_operator,
 };
@@ -1984,7 +1984,9 @@ async fn reconcile_dnszone_wrapper(
 
     let context = ctx.0.clone();
     let client = context.client.clone();
-    let bind9_manager = ctx.1.clone();
+    // No shared Bind9Manager here on purpose: every bindcar call the DNSZone
+    // reconciler makes resolves a manager for the specific instance it is
+    // addressing, so it picks up that instance's TLS configuration.
     let namespace = dnszone.namespace().unwrap_or_default();
     let api: Api<DNSZone> = Api::namespaced(client.clone(), &namespace);
 
@@ -2046,7 +2048,7 @@ async fn reconcile_dnszone_wrapper(
         match event {
             finalizer::Event::Apply(zone) => {
                 // Create or update the zone
-                reconcile_dnszone(context.clone(), (*zone).clone(), &bind9_manager)
+                reconcile_dnszone(context.clone(), (*zone).clone())
                     .await
                     .map_err(ReconcileError::from)?;
                 info!("Successfully reconciled DNSZone: {}", zone.name_any());
@@ -2093,7 +2095,7 @@ async fn reconcile_dnszone_wrapper(
             }
             finalizer::Event::Cleanup(zone) => {
                 // Delete the zone
-                delete_dnszone(context.clone(), (*zone).clone(), &bind9_manager)
+                delete_dnszone(context.clone(), (*zone).clone())
                     .await
                     .map_err(ReconcileError::from)?;
                 info!(
@@ -2131,20 +2133,47 @@ async fn reconcile_dnszone_wrapper(
 
 /// Error policy for controllers.
 ///
-/// Returns an action to requeue the resource after a delay when reconciliation fails.
-/// An `Action` to requeue the resource after `ERROR_REQUEUE_DURATION_SECS` seconds.
+/// Requeues the resource with a per-object exponential backoff: fast on the
+/// first failure, doubling while it keeps failing, capped, and decaying back to
+/// the fast interval once the object stops failing.
+///
+/// This delay is what actually bounds recovery. When an operand Pod is replaced
+/// the Endpoints watch does not reliably pull the DNSZone forward — a retry is
+/// already scheduled, and the pending requeue wins — so the zone waits out that
+/// timer. With the previous flat 30s requeue a zone was measured idling for 57
+/// seconds after its Pod was back and Ready, then reconciling once and serving
+/// in about 1 second.
+///
+/// # Arguments
+///
+/// * `resource` - The object whose reconciliation failed
+/// * `err` - The reconciliation error
+///
+/// # Returns
+///
+/// An `Action` requeueing the resource after its current backoff.
 #[allow(clippy::needless_pass_by_value)] // Signature required by kube::runtime::Controller
 fn error_policy<T, C>(resource: Arc<T>, err: &ReconcileError, _ctx: Arc<C>) -> Action
 where
-    T: std::fmt::Debug,
+    T: std::fmt::Debug + kube::ResourceExt,
 {
+    // Keyed by kind as well as name: two different kinds can share a namespaced
+    // name, and they must not share a failure counter.
+    let key = format!(
+        "{}/{}/{}",
+        std::any::type_name::<T>(),
+        resource.namespace().unwrap_or_default(),
+        resource.name_any()
+    );
+    let delay = reconcile_error_backoff(&key);
+
     error!(
         error = %err,
         resource = ?resource,
-        "Reconciliation error - will retry in {}s",
-        ERROR_REQUEUE_DURATION_SECS
+        "Reconciliation error - will retry in {:?}",
+        delay
     );
-    Action::requeue(Duration::from_secs(ERROR_REQUEUE_DURATION_SECS))
+    Action::requeue(delay)
 }
 
 // Tests are in main_tests.rs

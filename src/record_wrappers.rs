@@ -25,10 +25,77 @@ pub const CONDITION_STATUS_TRUE: &str = "True";
 /// Error type label for reconciliation errors
 pub const ERROR_TYPE_RECONCILE: &str = "reconcile_error";
 
+/// Stand-in for a condition that omits its optional `reason` or `message`.
+pub const UNKNOWN_CONDITION_FIELD: &str = "<none>";
+
+/// What a record's own status says about whether it reached BIND9.
+///
+/// A reconcile pass can finish without the record being published — the add is
+/// reported through `status.conditions`, not through the reconcile's return
+/// value — so callers that want to describe the outcome need the reason, not
+/// just a boolean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadyState<'a> {
+    /// The `Ready` condition is `True`: the record is published.
+    Ready,
+    /// The `Ready` condition is not `True`, with the reason it reports.
+    NotReady {
+        /// CamelCase reason from the condition, e.g. `ReconcileFailed`.
+        reason: &'a str,
+        /// Human-readable detail from the condition.
+        message: &'a str,
+    },
+    /// No status, or no `Ready` condition to read.
+    Unknown,
+}
+
+/// Read the `Ready` condition of a record's status.
+///
+/// The condition is located by type rather than by position: a status writer is
+/// free to order conditions, so position must not decide readiness.
+///
+/// # Arguments
+///
+/// * `status` - Optional status containing conditions
+///
+/// # Returns
+///
+/// [`ReadyState::Ready`], [`ReadyState::NotReady`] carrying the condition's
+/// reason and message, or [`ReadyState::Unknown`] when there is no `Ready`
+/// condition to read.
+#[must_use]
+pub fn ready_state(status: &Option<RecordStatus>) -> ReadyState<'_> {
+    let Some(status) = status.as_ref() else {
+        return ReadyState::Unknown;
+    };
+
+    let Some(condition) = status
+        .conditions
+        .iter()
+        .find(|condition| condition.r#type == CONDITION_TYPE_READY)
+    else {
+        return ReadyState::Unknown;
+    };
+
+    if condition.status == CONDITION_STATUS_TRUE {
+        return ReadyState::Ready;
+    }
+
+    ReadyState::NotReady {
+        reason: condition
+            .reason
+            .as_deref()
+            .unwrap_or(UNKNOWN_CONDITION_FIELD),
+        message: condition
+            .message
+            .as_deref()
+            .unwrap_or(UNKNOWN_CONDITION_FIELD),
+    }
+}
+
 /// Check if a resource with status conditions is ready.
 ///
-/// A resource is considered ready if it has a status with at least one condition
-/// where type="Ready" and status="True".
+/// A resource is considered ready if its `Ready` condition has status `"True"`.
 ///
 /// # Arguments
 ///
@@ -39,11 +106,7 @@ pub const ERROR_TYPE_RECONCILE: &str = "reconcile_error";
 /// `true` if the resource is ready, `false` otherwise
 #[must_use]
 pub fn is_resource_ready(status: &Option<RecordStatus>) -> bool {
-    status.as_ref().is_some_and(|s| {
-        s.conditions.first().is_some_and(|condition| {
-            condition.r#type == CONDITION_TYPE_READY && condition.status == CONDITION_STATUS_TRUE
-        })
-    })
+    matches!(ready_state(status), ReadyState::Ready)
 }
 
 /// Determine requeue action based on readiness status.
