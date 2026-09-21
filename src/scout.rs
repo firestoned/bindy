@@ -1158,13 +1158,14 @@ pub fn stale_arecord_label_selector(
     current_zone: &str,
 ) -> String {
     format!(
-        "{}={},{cluster_key}!={current_cluster},{ns_key}={namespace},{name_key}={ingress_name},{zone_key}={current_zone}",
+        "{}={},{cluster_key}!={current_cluster},{ns_key}={namespace},{name_key}={ingress_name},{zone_key}={zone_val}",
         LABEL_MANAGED_BY,
         LABEL_MANAGED_BY_SCOUT,
         cluster_key = LABEL_SOURCE_CLUSTER,
         ns_key = LABEL_SOURCE_NAMESPACE,
         name_key = LABEL_SOURCE_NAME,
         zone_key = LABEL_ZONE,
+        zone_val = current_zone,
     )
 }
 
@@ -1725,13 +1726,14 @@ pub fn stale_httproute_arecord_label_selector(
     current_zone: &str,
 ) -> String {
     format!(
-        "{}={},{cluster_key}!={current_cluster},{ns_key}={namespace},{name_key}={route_name},{zone_key}={current_zone}",
+        "{}={},{cluster_key}!={current_cluster},{ns_key}={namespace},{name_key}={route_name},{zone_key}={zone_val}",
         LABEL_MANAGED_BY,
         LABEL_MANAGED_BY_SCOUT,
         cluster_key = LABEL_SOURCE_CLUSTER,
         ns_key = LABEL_SOURCE_NAMESPACE,
         name_key = LABEL_SOURCE_NAME,
         zone_key = LABEL_ZONE,
+        zone_val = current_zone,
     )
 }
 
@@ -1745,13 +1747,14 @@ pub fn stale_tlsroute_arecord_label_selector(
     current_zone: &str,
 ) -> String {
     format!(
-        "{}={},{cluster_key}!={current_cluster},{ns_key}={namespace},{name_key}={route_name},{zone_key}={current_zone}",
+        "{}={},{cluster_key}!={current_cluster},{ns_key}={namespace},{name_key}={route_name},{zone_key}={zone_val}",
         LABEL_MANAGED_BY,
         LABEL_MANAGED_BY_SCOUT,
         cluster_key = LABEL_SOURCE_CLUSTER,
         ns_key = LABEL_SOURCE_NAMESPACE,
         name_key = LABEL_SOURCE_NAME,
         zone_key = LABEL_ZONE,
+        zone_val = current_zone,
     )
 }
 
@@ -1765,13 +1768,14 @@ pub fn stale_tcproute_arecord_label_selector(
     current_zone: &str,
 ) -> String {
     format!(
-        "{}={},{cluster_key}!={current_cluster},{ns_key}={namespace},{name_key}={route_name},{zone_key}={current_zone}",
+        "{}={},{cluster_key}!={current_cluster},{ns_key}={namespace},{name_key}={route_name},{zone_key}={zone_val}",
         LABEL_MANAGED_BY,
         LABEL_MANAGED_BY_SCOUT,
         cluster_key = LABEL_SOURCE_CLUSTER,
         ns_key = LABEL_SOURCE_NAMESPACE,
         name_key = LABEL_SOURCE_NAME,
         zone_key = LABEL_ZONE,
+        zone_val = current_zone,
     )
 }
 
