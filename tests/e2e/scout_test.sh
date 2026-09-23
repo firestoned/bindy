@@ -111,6 +111,60 @@ spec:
 EOF
 }
 
+# Waits until Scout logs that its watches are established.
+#
+# `kubectl rollout status` only proves the container started — Scout's Ingress
+# watch comes up a moment later, and an Ingress applied inside that window is
+# never delivered, so the reconcile simply never happens (observed in CI: the
+# pod logged startup and then nothing at all for 90s while step 1 timed out).
+wait_for_scout_watching() {
+    local deadline=$((SECONDS + SCOUT_READY_TIMEOUT))
+    while [ ${SECONDS} -lt ${deadline} ]; do
+        if scout_logs | grep -q "Scout controller running"; then
+            # The log line is emitted just before the watcher's initial list,
+            # so give the watch a moment to actually establish.
+            sleep "${SETTLE_SECS}"
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
+# Re-applies the Ingress so a missed watch event cannot wedge the suite.
+#
+# Scout is watch-driven and does not re-list on a timer, so an event lost at
+# startup is lost for good until the object changes again. Re-applying is
+# idempotent and turns a permanent hang into at most one extra reconcile.
+nudge_ingress() {
+    ${KUBECTL} annotate ingress "${1:-$INGRESS_NAME}" -n "${SOURCE_NS}" \
+        "e2e.bindy.firestoned.io/nudge=$(date +%s)" --overwrite >/dev/null 2>&1 || true
+}
+
+# Like wait_for_arecord present, but nudges the Ingress between polls.
+wait_for_arecord_with_nudge() {
+    local record="$1" deadline=$((SECONDS + POLL_TIMEOUT))
+    while [ ${SECONDS} -lt ${deadline} ]; do
+        if ${KUBECTL} get arecord "${record}" -n "${NAMESPACE}" >/dev/null 2>&1; then
+            return 0
+        fi
+        nudge_ingress
+        sleep 3
+    done
+    return 1
+}
+
+# Dumps everything needed to tell "Scout ignored it" from "it was never there".
+dump_ingress_state() {
+    echo "  --- Ingress state ---"
+    ${KUBECTL} get ingress -n "${SOURCE_NS}" -o wide 2>&1 | sed 's/^/    /'
+    ${KUBECTL} get ingress "${INGRESS_NAME}" -n "${SOURCE_NS}" \
+        -o jsonpath='{.metadata.annotations}' 2>&1 | sed 's/^/    annotations: /'
+    echo ""
+    echo "  --- DNSZones ---"
+    ${KUBECTL} get dnszone -n "${NAMESPACE}" 2>&1 | sed 's/^/    /'
+}
+
 # Restarts Scout under a new --cluster-name and waits for it to come back.
 # $1 — new cluster name.
 redeploy_scout_as() {
@@ -119,7 +173,7 @@ redeploy_scout_as() {
         "BINDY_SCOUT_CLUSTER_NAME=$1" >/dev/null
     ${KUBECTL} rollout status deployment/bindy-scout -n "${NAMESPACE}" \
         --timeout="${SCOUT_READY_TIMEOUT}s" >/dev/null
-    sleep "${SETTLE_SECS}"
+    wait_for_scout_watching || fail "Scout never reported its watches were up after rename"
 }
 
 scout_logs() {
@@ -173,7 +227,12 @@ sed -E -e "s|image: ghcr.io/firestoned/bindy[:@][^\"[:space:]]*|image: ${IMAGE_R
     "${PROJECT_ROOT}/deploy/scout/deployment.yaml" | ${KUBECTL} apply -f - >/dev/null
 ${KUBECTL} rollout status deployment/bindy-scout -n "${NAMESPACE}" \
     --timeout="${SCOUT_READY_TIMEOUT}s" >/dev/null
-pass "Scout is available"
+if wait_for_scout_watching; then
+    pass "Scout is available and watching"
+else
+    fail "Scout never logged that its watches were established"
+    scout_logs | tail -30
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. Scout creates a labelled ARecord for an opted-in Ingress
@@ -183,10 +242,13 @@ phase "1. Scout creates a zone-labelled ARecord"
 apply_ingress "${ZONE_ALPHA}"
 
 OWN_RECORD="scout-north-${SOURCE_NS}-${INGRESS_NAME}-0"
-if wait_for_arecord "${OWN_RECORD}" present; then
+OWN_RECORD_CREATED=false
+if wait_for_arecord_with_nudge "${OWN_RECORD}"; then
+    OWN_RECORD_CREATED=true
     pass "ARecord ${OWN_RECORD} created"
 else
     fail "Scout never created ${OWN_RECORD}"
+    dump_ingress_state
     scout_logs | tail -40
 fi
 
@@ -244,7 +306,13 @@ else
     scout_logs | tail -40
 fi
 
-if wait_for_arecord "${OWN_RECORD}" absent; then
+# Guard against a vacuous pass: if step 1 never created this record, "it is
+# absent now" proves nothing about stale cleanup. Observed in CI — step 1 timed
+# out, and this assertion then reported success for a record that never existed.
+if [ "${OWN_RECORD_CREATED}" != true ]; then
+    fail "${OWN_RECORD} was never created in step 1, so stale cleanup on rename \
+could not be tested (not asserting a vacuous absence)"
+elif wait_for_arecord "${OWN_RECORD}" absent; then
     pass "${OWN_RECORD} deleted — the old cluster name's record was cleaned up"
 else
     fail "Scout left ${OWN_RECORD} behind after a --cluster-name change"

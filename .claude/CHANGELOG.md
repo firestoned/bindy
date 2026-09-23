@@ -1,3 +1,44 @@
+## [2026-09-23 15:20] - Fix flaky e2e-scout: Ingress applied before Scout's watch was up
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `tests/e2e/scout_test.sh`: step 1 applied the Ingress as soon as
+  `kubectl rollout status` returned, which only proves the container started —
+  Scout's Ingress watch comes up a moment later. In CI (run 35875589371) the
+  Ingress landed ~0.8s after startup, the create event was never delivered, and
+  Scout logged nothing at all for the full 90s timeout: no reconcile, and no
+  `Zone not found in DNSZone store` warning, which is what an unsynced zone
+  store would have produced. A fresh pod in step 3 created the record in 4s,
+  because startup does a full LIST rather than relying on a watch. New
+  `wait_for_scout_watching` polls for the `Scout controller running` log line
+  before anything is applied, on the initial deploy and after the rename, and
+  `wait_for_arecord_with_nudge` re-annotates the Ingress between polls so a lost
+  event self-heals — Scout is watch-driven and never re-lists on a timer, so
+  without that a missed event wedges the suite permanently.
+- `tests/e2e/scout_test.sh`: step 3 asserted that `scout-north-…` was absent
+  after the rename without checking it had ever existed. When step 1 timed out
+  the record was never created, so `wait_for_arecord absent` returned true
+  vacuously and reported a green tick for an assertion that tested nothing.
+  Step 1 now records `OWN_RECORD_CREATED` and step 3 fails explicitly rather
+  than asserting a meaningless absence.
+- `tests/e2e/scout_test.sh`: added `dump_ingress_state` so a step-1 failure
+  dumps the Ingress with its annotations and the DNSZones. The previous
+  diagnostics could not distinguish "Scout ignored the Ingress" from "the
+  Ingress was never created", which is why the CI failure had to be diagnosed
+  from the *absence* of an expected log line.
+
+### Why
+`e2e-scout` was intermittently red: it passed in run 35854027308 and twice
+locally, then failed in 35875589371 on a startup race that only shows up when
+the runner is slow enough to widen the window.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-09-23 12:15] - Fix flaky multi-tenancy e2e: 409 on a terminating resource treated as success
 
 **Author:** Erick Bourgeois
