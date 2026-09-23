@@ -1,7 +1,7 @@
 # bindcar `v0.6.0` → `v0.7.2` — bindy Integration & Upgrade Guide
 
 > **Status:** 📄 Reference — superseded by
-> [`56-bindcar-migration-v0-7-4.md`](56-bindcar-migration-v0-7-4.md), which carries
+> [`24-bindcar-migration-v0-7-4.md`](24-bindcar-migration-v0-7-4.md), which carries
 > the v0.7.2 → v0.7.4 delta this guide stops short of.
 >
 > *Migrated 2026-09-12 from the external roadmap set into `.github/community/`.*

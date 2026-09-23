@@ -11,8 +11,9 @@ cluster, so any of them can be run on its own — and several can run at once.
 make e2e-lifecycle       # zones/records come up and BIND9 actually serves them
 make e2e-idempotency     # re-applying the identical spec changes nothing
 make e2e-restart         # zones/records survive operator + operand restarts
-make e2e-rust            # tests/simple_integration.rs against a live API server
+make e2e-rust            # simple_integration.rs + scout_integration.rs, live API server
 make e2e-multi-tenancy   # namespace isolation
+make e2e-scout           # Scout's zone-scoped stale-cluster ARecord cleanup (#474)
 make e2e-regression      # admission policies + operand pod shape + liveness
 make e2e-zone-spread     # spec.placement topology spread (3-zone cluster)
 make e2e-tls             # cert-manager-issued bindcar sidecar cert
@@ -60,7 +61,10 @@ tests/
 │   ├── idempotency_test.sh
 │   ├── restart_test.sh
 │   ├── rust_api_test.sh
-│   └── multi_tenancy_test.sh
+│   ├── multi_tenancy_test.sh
+│   └── scout_test.sh
+├── simple_integration.rs    CRD/client contract across every record kind
+├── scout_integration.rs     Scout stale-cleanup selectors vs a real API server
 ├── integration_test.sh      orchestrator: every DNS suite against one cluster
 ├── regression_test.sh       admission policies + operand pod shape + liveness
 ├── zone_spread_test.sh      spec.placement topology spread

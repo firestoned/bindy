@@ -1,11 +1,11 @@
 # bindcar `v0.6.0` → `v0.7.1` — bindy Integration & Upgrade Guide
 
 > **Status:** 📄 Reference — **superseded** by 56. Read
-> [`56-bindcar-migration-v0-7-4.md`](56-bindcar-migration-v0-7-4.md) instead.
+> [`24-bindcar-migration-v0-7-4.md`](24-bindcar-migration-v0-7-4.md) instead.
 >
 > *Migrated 2026-09-12 from the external roadmap set into `.github/community/`.*
 
-> Supersedes [`53-bindcar-migration-v0-7-0.md`](53-bindcar-migration-v0-7-0.md). Built from the actual
+> Supersedes [`21-bindcar-migration-v0-7-0.md`](21-bindcar-migration-v0-7-0.md). Built from the actual
 > `git diff v0.6.0..v0.7.1` and verified against published artifacts
 > (ghcr images + crates.io) on 2026-07-05.
 >

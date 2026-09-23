@@ -1,7 +1,7 @@
 # bindcar `v0.6.0` → `main` (0.7.0) — bindy Integration & Upgrade Guide
 
 > **Status:** 📄 Reference — **superseded** by 56. Read
-> [`56-bindcar-migration-v0-7-4.md`](56-bindcar-migration-v0-7-4.md) instead; this is kept
+> [`24-bindcar-migration-v0-7-4.md`](24-bindcar-migration-v0-7-4.md) instead; this is kept
 > for the v0.6.0→v0.7.0 detail it carries and for the audit trail.
 >
 > *Migrated 2026-09-12 from the external roadmap set into `.github/community/`.*

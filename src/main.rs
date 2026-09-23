@@ -1029,7 +1029,7 @@ async fn bootstrap_multi_cluster_command(
 /// Entry point for `bindy scout` — watches Ingresses and creates ARecords on the bindy cluster.
 ///
 /// Phase 1 (same-cluster) and Phase 2 (remote cluster) are tracked in
-/// `.github/community/30-scout-ingress-controller.md`.
+/// `.github/community/12-scout-ingress-controller.md`.
 async fn scout_command(
     cluster_name: Option<String>,
     namespace: Option<String>,

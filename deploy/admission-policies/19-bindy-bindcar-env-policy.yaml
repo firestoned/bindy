@@ -35,7 +35,7 @@
 # Keep the two lists below in sync with RESERVED_BINDCAR_ENV_NAMES and
 # RESERVED_BINDCAR_ENV_PREFIXES in src/bind9_resources.rs.
 #
-# See .github/community/55-bindcar-migration-v0-7-2.md section 14 and ADR-0004.
+# See .github/community/23-bindcar-migration-v0-7-2.md section 14 and ADR-0004.
 #
 # Requires Kubernetes 1.30+ (admissionregistration.k8s.io/v1 GA).
 ---

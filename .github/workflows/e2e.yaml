@@ -16,6 +16,15 @@
 #   e2e-idempotency    re-applying the identical spec creates no duplicates
 #   e2e-restart        zones/records survive operator + operand restarts (#486)
 #   e2e-multi-tenancy  namespace isolation
+#   e2e-scout          Scout's stale-cluster ARecord cleanup is scoped by DNS
+#                      zone (#474): a live record from an unrelated cluster in a
+#                      different zone survives, a same-zone record from a prior
+#                      --cluster-name is deleted, a label-illegal zone is refused
+#                      without a hot loop, and opting out by stripping every
+#                      annotation still cleans up via the records' zone labels.
+#                      Unit tests assert selector text and wiremock echoes it
+#                      back; only a real API server evaluating a real selector
+#                      against real records can show the scoping actually holds.
 #   e2e-regression     admission policies + operand pod shape + liveness
 #                      (bindcar 0.7.x Mode B contract)
 #   e2e-zone-spread    spec.placement topology spread; needs its own three-zone
@@ -52,10 +61,12 @@ on:
       - 'src/placement.rs'
       - 'src/bind9_resources.rs'
       - 'src/reconcilers/bind9instance/**'
-      # Scout's Gateway API detection is only observable against a real API
-      # server: whether a kind is served, and whether the disabled path stays
-      # quiet, cannot be asserted from unit tests.
+      # Scout is only fully observable against a real API server: whether a
+      # Gateway API kind is served, whether the disabled path stays quiet, and
+      # whether a stale-cleanup label selector actually matches the records it
+      # is meant to (#474) — none of which a unit test or wiremock can assert.
       - 'src/scout.rs'
+      - 'tests/scout_integration.rs'
       - 'tests/zone_spread_test.sh'
       - 'deploy/kind-config.yaml'
       - 'deploy/kind-config-e2e.yaml'
@@ -108,7 +119,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     strategy:
-      # One suite breaking should not hide the state of the other seven — that
+      # One suite breaking should not hide the state of the other eight — that
       # is the whole point of splitting them up.
       fail-fast: false
       matrix:
@@ -132,6 +143,10 @@ jobs:
           - target: e2e-multi-tenancy
             name: Multi-tenancy (kind)
             cluster: kind-bindy-e2e-multitenancy
+            needs_rust: false
+          - target: e2e-scout
+            name: Scout zone-scoped stale cleanup (kind)
+            cluster: kind-bindy-e2e-scout
             needs_rust: false
           - target: e2e-regression
             name: Regression — admission policies + pod shape (kind)

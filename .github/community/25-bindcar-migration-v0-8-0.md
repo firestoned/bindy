@@ -10,7 +10,7 @@
 > audit finding P2-4 is not remediated end to end.
 >
 > Originally: actionable, the live guide in the series, superseding
-> [`56-bindcar-migration-v0-7-4.md`](56-bindcar-migration-v0-7-4.md). Built from
+> [`24-bindcar-migration-v0-7-4.md`](24-bindcar-migration-v0-7-4.md). Built from
 > `git diff v0.7.4..v0.8.0` in `firestoned/bindcar` and verified against that
 > tree on 2026-09-19.
 >
@@ -29,7 +29,7 @@
 | Cert hot-reload | ✗ | ✗ | **✓** |
 | Cargo features | `k8s-token-review` | `k8s-token-review` | `server`, `tls`, `k8s-token-review` |
 
-**The tag/version divergence flagged in [56 §19](56-bindcar-migration-v0-7-4.md)
+**The tag/version divergence flagged in [24 §19](24-bindcar-migration-v0-7-4.md)
 is fixed.** `v0.8.0` reports `0.8.0` on `/api/v1/health`, in the OpenAPI
 `info.version`, in the startup log and in `bindcar_app_info{version}`. From this
 release onward the reported version is a reliable discriminator again.
@@ -37,7 +37,7 @@ release onward the reported version is a reliable discriminator again.
 ## 1–20. Everything through v0.7.4
 
 Absorbed previously; see guides
-[53](53-bindcar-migration-v0-7-0.md)–[56](56-bindcar-migration-v0-7-4.md).
+[21](21-bindcar-migration-v0-7-0.md)–[24](24-bindcar-migration-v0-7-4.md).
 
 Two carry-overs still worth confirming, both bindy-side and neither touched by
 v0.8.0:

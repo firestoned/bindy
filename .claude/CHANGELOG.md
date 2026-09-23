@@ -1,3 +1,143 @@
+## [2026-09-23 12:15] - Fix flaky multi-tenancy e2e: 409 on a terminating resource treated as success
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `tests/multi_tenancy_integration.rs`: `create_global_cluster` swallowed an
+  HTTP 409 as "already exists, carry on". Three tests share the cluster-scoped
+  name `test-global-cluster`, and `delete_global_cluster` returns as soon as the
+  DELETE is accepted — while the object lingers in `Terminating` until the
+  operator clears its `bind9cluster-finalizer`. Tests run serially in
+  alphabetical order, so `test_bind9instance_references_global_cluster` deletes
+  the provider immediately before `test_clusterbind9provider_creation` creates
+  it: the create hit a 409 against the tombstone, returned `Ok(())` without
+  creating anything, and the caller's `wait_for_resource` then polled a 404
+  until it timed out with `Timeout waiting for resource: test-global-cluster`.
+  A 409 is now only treated as success when the existing object has no
+  `deletionTimestamp`; otherwise the new `wait_for_deletion` helper waits for
+  the name to be released and the create is retried.
+
+### Why
+Intermittent red on the `Multi-tenancy (kind)` e2e job (run 35854027308). The
+race is timing-dependent — the following test using the same name passed in the
+same run, once the tombstone had cleared — so it presented as flake rather than
+a consistent failure.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-23 14:20] - Renumber roadmaps contiguously from 00
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/*.md`: renumbered all 26 roadmaps contiguously from `00` to
+  `25`, dropping the `10`/`20`/`30`/`40`/`50` decade bands. The relative order is
+  unchanged — reference and analysis, architecture and refactoring, features,
+  Scout, security and compliance, testing/operations/dependencies — only the gaps
+  are gone. Old → new: 02→00, 10→01, 12→02, 13→03, 14→04, 15→05, 16→06, 20→07,
+  21→08, 22→09, 23→10, 24→11, 30→12, 31→13, 32→14, 41→15, 42→16, 43→17, 50→18,
+  51→19, 52→20, 53→21, 54→22, 55→23, 56→24, 57→25.
+- `.github/community/README.md`: replaced the band table with the contiguous
+  numbering rule, rewrote the reserved-numbers section (privately tracked
+  roadmaps carry no number until they move in), and fixed the "Adding a roadmap"
+  filename rule to lowercase-hyphenated — it previously said
+  `NN-SCREAMING-KEBAB-TITLE.md`, which no file in the directory has ever followed.
+- `ROADMAPS.md`: renumbered every index row and every in-prose cross-reference,
+  and replaced "Tracked privately"'s reserved-number note with a numbering
+  section stating that numbers are an ordering, not an identity.
+- `src/main.rs`, `src/scout.rs`, `src/bind9_resources.rs`, `Cargo.toml`,
+  `examples/dnssec-signing-enabled.yaml`,
+  `deploy/admission-policies/19-bindy-bindcar-env-policy.yaml`,
+  `docs/src/advanced/dnssec.md`,
+  `docs/src/operations/dnszone-migration-troubleshooting.md`,
+  `docs/src/development/TEST_SUMMARY.md`: updated the roadmap paths they cite.
+  Rust changes are doc-comment text only — no code.
+
+### Why
+The global roadmap convention is a zero-padded two-digit prefix, contiguous from
+`00` with no gaps and no decade grouping; this repo had drifted to banded
+numbering with three reserved-but-absent numbers (`01`, `11`, `40`) and holes at
+`00`, `11`, `17`–`19`, `25`–`29`, `33`–`39`, `44`–`49`. Renumbering the run and
+fixing every reference in one change brings it back in line.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+Any external link to a roadmap file by its old number (issues, PRs, bookmarks)
+now 404s — the files moved, they were not left behind as redirects.
+
+## [2026-09-23 10:40] - Scout: validate zones on reconcile, recover the cleanup zone from record labels
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/scout.rs`: the four reconcile paths passed the resolved zone straight into
+  `delete_stale_cluster_*_arecords` without checking it is a legal Kubernetes label
+  value, while the eight delete/opt-out paths did check — contradicting the contract
+  `is_valid_zone_label_value` documents. A `DNSZone`'s `zoneName` is validated per DNS
+  label but not in total, so an ordinary internal zone such as
+  `payments-gateway.team-checkout.production.eu-west-1.example.internal` (68 chars)
+  passes admission and is still illegal as a label value. For a resource whose rules
+  are all skipped (default-backend-only, or hosts outside the zone) no `ARecord` apply
+  happens to surface the `422` first, so the stale-cleanup `list` went out with an
+  illegal selector, the API server returned `400`, and the reconcile retried it every
+  `SCOUT_ERROR_REQUEUE_SECS` forever. New `resolve_usable_zone` / `ZoneResolution`
+  reject such a zone at the guard in all five reconcilers with a warning naming it.
+- `src/scout.rs`: opting out by stripping every `bindy.firestoned.io/*` annotation in
+  one edit removed the zone along with the opt-in, so no zone resolved, stale-cluster
+  cleanup was skipped, and the finalizer was released regardless — orphaning any
+  `ARecord` from a previous cluster name permanently, with only a log line as evidence.
+  `delete_arecords_for_{ingress,httproute,tlsroute,tcproute}` now return the `zone`
+  labels of the records they deleted, and new `stale_cleanup_zones` unions those with
+  the annotation-resolved zone. The labels are authoritative — Scout wrote them — so
+  they survive the annotation edit, and they also cover a `BINDY_SCOUT_DEFAULT_ZONE`
+  changed after the records were written.
+
+### Changed
+- `src/scout.rs`: all four stale-cluster selectors and the diagnostic listing in
+  `log_unscoped_stale_cluster_arecord_candidates` were five copies of the same
+  `format!`; they now share `stale_selector_base` / `stale_selector_for_zone`, so a
+  change to the label keys cannot drift between the cleanup and the diagnostic that
+  reports what cleanup would have removed. This also clears CodeQL alert 862
+  (`rust/unused-variable` on `current_cluster`), a false positive on `format!`
+  inline-argument capture that the shared builder's explicit named arguments avoid.
+
+### Added
+- `tests/scout_integration.rs`: the stale-cleanup selectors evaluated by a **real**
+  API server. The unit tests assert selector *text* and `wiremock` echoes back
+  whatever it is handed, so nothing verified that a Kubernetes API server matches the
+  records Scout intends and no others — which is the gap #474 lived in. Covers the
+  cross-zone record surviving, the same-zone rename being collected, own/stale
+  selectors staying disjoint, all four resource kinds agreeing, and an over-long zone
+  being rejected by the server. Run by the `e2e-rust` suite.
+- `tests/e2e/scout_test.sh`, `make e2e-scout`, and a `Scout zone-scoped stale cleanup`
+  job in `.github/workflows/e2e.yaml`: Scout had no e2e suite of its own. The new one
+  drives a real `--cluster-name` rename against a live Scout deployment and asserts an
+  unrelated cluster's cross-zone record survives it, the prior name's same-zone record
+  is collected, a label-illegal zone is refused without a crash loop, and an opt-out
+  that strips every annotation still cleans up via the records' zone labels.
+- `src/scout_tests.rs`: 13 unit tests for `resolve_usable_zone`, `stale_cleanup_zones`,
+  the shared selector base, and `delete_arecords_for_ingress` returning deleted zones.
+
+### Why
+Follow-up to the review of #497. The zone validation added there was applied to the
+delete and opt-out paths but not the reconcile paths, and the opt-out path's permanent
+orphan was documented rather than fixed — the `zone` label on the records being deleted
+is a reliable source for it, so it did not have to stay a known limitation.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-09-21 19:21] - Scout stale-cluster ARecord cleanup scoped by DNS zone
 
 **Author:** Prabhjot Singh Bawa
@@ -23,10 +163,23 @@
   `delete_stale_cluster_*_arecords` functions, and that the delete loop only removes
   what the (server-side-filtered) list returns — the existing selector-string tests
   proved the string was built correctly but never exercised the functions that use
-  it, which is exactly the class of bug the `git apply` mis-application produced.
+  it.
 - `docs/src/guide/scout.md`: the "Changing the Cluster Name" section described the
   pre-fix, zone-unaware selector; updated to describe zone scoping and the
   no-zone-available skip behavior.
+
+### Why
+Stale-cluster cleanup existed to collect `ARecord`s a Scout left behind under a
+previous `--cluster-name`, but its only differentiator was
+`source-cluster != current_cluster` — true of *any* other cluster, not just a
+renamed instance of this one. Two unrelated clusters sharing a namespace +
+resource name deleted each other's live DNS records in a loop.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
 
 ## [2026-09-20 17:55] - Fix: operator dialled TLS-enabled bindcar sidecars over plaintext on NOTIFY and secondary delete
 

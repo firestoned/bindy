@@ -1132,7 +1132,30 @@ The zone match matters: two entirely unrelated clusters can happen to run an Ing
 
 **This does not protect clusters that share a zone.** If several clusters publish into the *same* DNS zone — a normal multi-cluster-DNS topology — and happen to run resources with the same namespace + name, they still match each other's selector and will mutually delete each other's live `ARecord`s in a flapping loop. Give such resources distinct namespaces, names, or zones to avoid this; fully identifying "this same physical Scout instance under a prior cluster name" would need an instance-level marker that this mechanism does not provide.
 
-This happens on every reconcile, so all stale records for the reconcile path are cleaned up on the next controller loop after the restart — no manual intervention required there. The **delete** and **opt-out** paths are different: if Scout cannot resolve a usable zone for the resource being removed (no `bindy.firestoned.io/zone` annotation, no `BINDY_SCOUT_DEFAULT_ZONE`, or the resolved zone is not a legal label value), it logs a warning, lists (without deleting) any candidate stale `ARecord`s left behind under a previous cluster name so an operator can review them, and then still removes the resource's own `ARecord`s and finalizer. Because the resource is gone, there is no future reconcile to retry that skipped cleanup — it is permanent unless an operator acts on the logged candidates.
+This happens on every reconcile, so all stale records for the reconcile path are cleaned up on the next controller loop after the restart — no manual intervention required there.
+
+On the **delete** and **opt-out** paths the zone is not taken from annotations alone. Opting out is documented as removing the `bindy.firestoned.io/*` annotations, and stripping them all in one edit removes the zone along with the opt-in — so by the time cleanup runs there may be no annotation left to read. Scout therefore cleans up every zone in the union of:
+
+- the zone resolved from the resource's annotations (or `BINDY_SCOUT_DEFAULT_ZONE`), if there still is one; and
+- the `zone` labels of the `ARecord`s it just deleted for that resource, which Scout wrote itself and which survive the annotation edit.
+
+The labels also cover a `BINDY_SCOUT_DEFAULT_ZONE` that changed after the records were written, where the resolved zone no longer matches what is actually on disk.
+
+Only if *neither* source yields a usable zone does Scout skip the stale-cluster step. It then logs a warning and lists (without deleting) any candidate stale `ARecord`s left behind under a previous cluster name, before removing the resource's own `ARecord`s and finalizer. Because the resource is gone, there is no future reconcile to retry that skipped cleanup — it is permanent unless an operator acts on the logged candidates.
+
+### Zones that cannot be used as a label value
+
+Scout stamps the resolved zone onto every `ARecord` as the `bindy.firestoned.io/zone` label, and matches on that same label when cleaning up. A zone must therefore be a legal Kubernetes **label value**: at most 63 characters, starting and ending with an alphanumeric character, containing only `-`, `_` and `.` in between.
+
+A `DNSZone`'s `zoneName` is validated per DNS label, not in total, so an ordinary internal zone can pass admission and still be too long overall:
+
+```text
+payments-gateway.team-checkout.production.eu-west-1.example.internal   # 68 characters
+```
+
+A trailing dot (`example.com.`) is likewise a legal DNS name but not a legal label value, though the `DNSZone` CRD's `zoneName` pattern already rejects that one at admission.
+
+When the resolved zone is not a usable label value, Scout logs a warning naming the zone and skips the resource entirely rather than attempting work that cannot succeed — creating the `ARecord` would fail with a `422`, and the stale-cleanup query would fail with a `400`. Shorten the zone name, or set a shorter `bindy.firestoned.io/zone` annotation on the resource.
 
 ### Example
 

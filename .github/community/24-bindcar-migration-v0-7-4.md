@@ -1,13 +1,13 @@
 # bindcar `v0.7.2` → `v0.7.4` — bindy Integration & Upgrade Guide
 
 > **Status:** 📄 Reference — **superseded** by
-> [`57-bindcar-migration-v0-8-0.md`](57-bindcar-migration-v0-8-0.md). Its §14
+> [`25-bindcar-migration-v0-8-0.md`](25-bindcar-migration-v0-8-0.md). Its §14
 > (`bindcarConfig.envVars` override) and §15 (the `bindcar_zones_managed_total`
 > rename) are still open bindy-side and are carried forward there; §19's
 > tag/version divergence is fixed as of bindcar v0.8.0.
 >
 > Originally: the live guide in the series, superseding
-> [`55-bindcar-migration-v0-7-2.md`](55-bindcar-migration-v0-7-2.md). Built from
+> [`23-bindcar-migration-v0-7-2.md`](23-bindcar-migration-v0-7-2.md). Built from
 > `git diff v0.7.2..v0.7.4` in `firestoned/bindcar` and verified against that
 > tree on 2026-09-12.
 >
@@ -34,8 +34,8 @@ version** plus dependency and CI changes.
 
 Sections 1–10 (v0.6.0 → v0.7.0), 11–12 (→ v0.7.1) and 13–14 (→ v0.7.2) are
 unchanged and were absorbed in bindy between 2026-07-01 and 2026-07-06. See
-[`53`](53-bindcar-migration-v0-7-0.md), [`54`](54-bindcar-migration-v0-7-1.md)
-and [`55`](55-bindcar-migration-v0-7-2.md).
+[`21`](21-bindcar-migration-v0-7-0.md), [`22`](22-bindcar-migration-v0-7-1.md)
+and [`23`](23-bindcar-migration-v0-7-2.md).
 
 One carry-over worth re-checking: **§14's `bindcarConfig.envVars` override hole**
 (a tenant-supplied `BIND_API_TOKEN` or `KUBE_API_SERVER` silently overrides the

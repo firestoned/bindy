@@ -1,6 +1,6 @@
 # Future Refactoring Opportunities
 
-> **Status:** 📄 Reference — largely superseded. Its top recommendation (a generic record reconciler) landed as [12](12-records-reconciler-refactoring.md); the remainder is subsumed by [10](10-controller-crate-split.md).
+> **Status:** 📄 Reference — largely superseded. Its top recommendation (a generic record reconciler) landed as [02](02-records-reconciler-refactoring.md); the remainder is subsumed by [01](01-controller-crate-split.md).
 >
 > *Migrated 2026-09-10 from the external roadmap set. Status verified against `fix-idempotency` @ `648ff7a`.*
 
