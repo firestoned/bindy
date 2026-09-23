@@ -1,3 +1,53 @@
+## [2026-09-23 17:30] - Fix main integration failures: racy scout_integration cleanup, e2e operand-readiness diagnostics and pre-clean overlap
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `tests/scout_integration.rs`: `cleanup()` called `delete_collection` and
+  returned immediately, but the operator running in the e2e cluster holds a
+  finalizer on every ARecord it has reconciled, so deletion is asynchronous.
+  The next test's list still saw the previous test's terminating records —
+  in CI (run 35884975991) `stale-oldsouth-alpha` leaked into
+  `stale_selector_still_matches_a_different_cluster_in_the_same_zone` and
+  failed the canary assertion. `cleanup()` now polls until the namespace is
+  actually empty (60s budget), stripping finalizers after 20s as an escape
+  hatch for a wedged Cleanup pass (a planted record matches no DNSZone, so
+  the operator can end up in a retry loop). Safe because a terminating object
+  cannot gain new finalizers.
+- `tests/scout_integration.rs`: a panicking test skipped its trailing
+  `cleanup()`, permanently leaking planted records — the operator retried
+  `live-north-alpha` for the rest of the CI run and polluted every later
+  suite's operator-log dump. New `with_clean_slate` wrapper runs each stateful
+  test body under `catch_unwind` so cleanup always runs, then re-raises the
+  original panic.
+- `tests/lib/dns_fixtures.sh`: `wait_for_test_resources_gone` (used by both
+  pre-clean and teardown) waited only for the CRs to be gone, then the next
+  suite re-applied identically-named fixtures ~1s later while the previous
+  suite's operand Deployments/ReplicaSets/Pods were still being GC'd and
+  terminated. Deployments and Pods are now included in the wait, removing the
+  overlap suspected of causing the "Pod never became ready" failures that have
+  been red on every main run since the suites landed (2026-09-20).
+- `tests/lib/dns_fixtures.sh`: `assert_operands_ready` printed only a bare
+  `kubectl get pods` on failure — useless for a Pod that is 2/2 Running by the
+  time it prints. New `dump_operand_diagnostics` captures per-container
+  ready/restart/state, Pod conditions, `kubectl describe` tail, and the
+  namespace's recent events, so the next CI failure is diagnosable from its
+  log alone.
+
+### Why
+Main's Integration Tests job has failed on every run since 2026-09-20
+(idempotency/restart: one operand Pod per suite takes >300s to become Ready),
+and PR #502 added a third failing suite (rust_api) via the new racy
+`scout_integration` cleanup. This fixes the new failure outright and gives the
+pre-existing one both a likely fix (pre-clean overlap) and real diagnostics if
+it recurs.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Test-harness change only
+
 ## [2026-09-23 15:20] - Fix flaky e2e-scout: Ingress applied before Scout's watch was up
 
 **Author:** Erick Bourgeois
