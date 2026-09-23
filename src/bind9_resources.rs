@@ -635,7 +635,7 @@ pub fn build_owner_references(instance: &Bind9Instance) -> Vec<OwnerReference> {
 /// Note this is about **operator-facing** precedence between two
 /// operator-trusted levels. It does not address the separate concern that
 /// user-supplied `envVars` can shadow operator-managed ones on the sidecar
-/// (`.github/community/55-bindcar-migration-v0-7-2.md` §14), which needs a
+/// (`.github/community/23-bindcar-migration-v0-7-2.md` §14), which needs a
 /// reserved-name filter and an admission policy.
 ///
 /// # Arguments

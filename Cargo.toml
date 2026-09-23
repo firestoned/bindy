@@ -65,7 +65,7 @@ url = "2.5.8"
 # ZONE_TYPE_* constants, never the HTTP handlers. `default-features = false`
 # drops bindcar's server and TLS stacks (axum, tower-http, utoipa,
 # utoipa-swagger-ui, tower_governor, rustls, ring) from bindy's graph.
-# See .github/community/57-bindcar-migration-v0-8-0.md section 23.
+# See .github/community/25-bindcar-migration-v0-8-0.md section 23.
 bindcar = { version = "0.8", default-features = false }
 prometheus = "0.14"
 axum = "0.8"

@@ -2,7 +2,8 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 #
-# E2E suite: the Rust integration tests (tests/simple_integration.rs).
+# E2E suite: the Rust integration tests (tests/simple_integration.rs and
+# tests/scout_integration.rs).
 #
 # These drive the Kubernetes API through the same kube-rs client the operator
 # uses, in their own namespaces, so they exercise the client/CRD contract rather
@@ -31,20 +32,31 @@ info "🧪 E2E: Rust API integration tests (cluster '${CLUSTER_NAME}')"
 phase "Setting up cluster and operator"
 bindy_setup deploy/kind-config-e2e.yaml
 
-phase "Running cargo test --test simple_integration -- --ignored"
+phase "Running the Rust integration tests -- --ignored"
 # Client::try_default() reads the ambient context, so point it at this cluster.
 kubectl config use-context "kind-${CLUSTER_NAME}" >/dev/null
 export KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/config}"
 
 cd "${PROJECT_ROOT}"
-# `set -e` would abort before the summary, so capture the status instead.
-if cargo test --test simple_integration -- --ignored --test-threads=1 --nocapture; then
-    pass "Rust integration tests passed"
-else
-    fail "Rust integration tests failed"
-fi
 
-summary_row "Rust integration tests (\`cargo test --test simple_integration\`)" \
+# Each suite is its own test binary. `set -e` would abort before the summary,
+# so capture each status instead and report them together.
+#
+#   simple_integration  the CRD/client contract across every record kind
+#   scout_integration   Scout's stale-cleanup label selectors, evaluated by a
+#                       REAL API server — the unit tests assert selector text
+#                       and wiremock just echoes it back, so this is the only
+#                       layer that can show the #474 zone scoping holds
+for suite in simple_integration scout_integration; do
+    step "cargo test --test ${suite} -- --ignored"
+    if cargo test --test "${suite}" -- --ignored --test-threads=1 --nocapture; then
+        pass "${suite} passed"
+    else
+        fail "${suite} failed"
+    fi
+done
+
+summary_row "Rust integration tests (\`simple_integration\`, \`scout_integration\`)" \
             "$([ ${ERRORS} -eq 0 ] && echo '✅ passed' || echo '❌ failed')"
 
 finish "E2E — Rust API integration tests"

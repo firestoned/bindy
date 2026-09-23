@@ -1,6 +1,6 @@
 # Bindy Load Testing Framework - Claude Code Roadmap
 
-> **Status:** ⛔ Not started — the target layout (`crates/loadtest/`) does not exist; the repo has no `crates/` directory at all, so this lands **after** the workspace conversion in [10](10-controller-crate-split.md).
+> **Status:** ⛔ Not started — the target layout (`crates/loadtest/`) does not exist; the repo has no `crates/` directory at all, so this lands **after** the workspace conversion in [01](01-controller-crate-split.md).
 >
 > *Migrated 2026-09-10 from the external roadmap set. Status verified against `fix-idempotency` @ `648ff7a`.*
 

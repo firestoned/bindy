@@ -16,14 +16,15 @@ mod tests {
         is_being_deleted, is_loadbalancer_service, is_scout_opted_in, is_valid_zone_label_value,
         log_unscoped_stale_cluster_arecord_candidates, parse_gateway_service_entry,
         parse_gateway_services, resolve_ip_from_service_lb_status, resolve_ips,
-        resolve_ips_from_annotation, resolve_record_name, resolve_zone, service_arecord_cr_name,
-        service_arecord_label_selector, service_ref_from_str, stale_arecord_label_selector,
+        resolve_ips_from_annotation, resolve_record_name, resolve_usable_zone, resolve_zone,
+        service_arecord_cr_name, service_arecord_label_selector, service_ref_from_str,
+        stale_arecord_label_selector, stale_cleanup_zones, stale_selector_base,
         stale_tcproute_arecord_label_selector, tcproute_arecord_cr_name,
         tcproute_arecord_label_selector, zone_allows_source_namespace, zone_namespace_grant,
         Gateway, GatewayServiceTarget, NamespaceGrant, NamespacedName, ParentReference,
-        ServiceARecordParams, TCPRouteARecordParams, ZoneAuthz, FINALIZER_SCOUT, LABEL_MANAGED_BY,
-        LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER, LABEL_SOURCE_NAME, LABEL_SOURCE_NAMESPACE,
-        LABEL_ZONE, REMOTE_CLEANUP_GRACE_SECS,
+        ServiceARecordParams, TCPRouteARecordParams, ZoneAuthz, ZoneResolution, FINALIZER_SCOUT,
+        LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER, LABEL_SOURCE_NAME,
+        LABEL_SOURCE_NAMESPACE, LABEL_ZONE, REMOTE_CLEANUP_GRACE_SECS,
     };
     use crate::scout::{kind_served, HTTPRoute, TLSRoute};
     use k8s_openapi::jiff::{SignedDuration, Timestamp};
@@ -2966,5 +2967,259 @@ mod tests {
 
         assert!(kind_served(&httproute_api).await);
         assert!(!kind_served(&tlsroute_api).await);
+    }
+
+    // ========================================================================
+    // Zone usability guard (reconcile paths)
+    // ========================================================================
+
+    /// A zone long enough to be a legal DNS name (each label <= 63) but longer
+    /// than the 63-char Kubernetes label-value limit. This passes the DNSZone
+    /// CRD's `zoneName` pattern, so it can reach Scout from a real cluster.
+    const OVERLONG_ZONE: &str =
+        "payments-gateway.team-checkout.production.eu-west-1.example.internal";
+
+    fn annotations_with_zone(zone: &str) -> std::collections::BTreeMap<String, String> {
+        let mut a = std::collections::BTreeMap::new();
+        a.insert("bindy.firestoned.io/zone".to_string(), zone.to_string());
+        a
+    }
+
+    #[test]
+    fn resolve_usable_zone_accepts_a_legal_zone() {
+        let annotations = annotations_with_zone("example.com");
+        assert_eq!(
+            resolve_usable_zone(&annotations, None),
+            ZoneResolution::Usable("example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_usable_zone_falls_back_to_the_operator_default() {
+        let annotations = std::collections::BTreeMap::new();
+        assert_eq!(
+            resolve_usable_zone(&annotations, Some("default.example.com")),
+            ZoneResolution::Usable("default.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_usable_zone_reports_missing_when_nothing_resolves() {
+        let annotations = std::collections::BTreeMap::new();
+        assert_eq!(
+            resolve_usable_zone(&annotations, None),
+            ZoneResolution::Missing
+        );
+    }
+
+    #[test]
+    fn resolve_usable_zone_rejects_a_zone_too_long_for_a_label_value() {
+        // Regression: an over-long zone previously flowed straight into the
+        // stale-cluster `labelSelector`, which the API server rejects with a
+        // 400 — retried forever by the reconcile error path.
+        assert!(OVERLONG_ZONE.len() > 63);
+        let annotations = annotations_with_zone(OVERLONG_ZONE);
+        assert_eq!(
+            resolve_usable_zone(&annotations, None),
+            ZoneResolution::Invalid(OVERLONG_ZONE.to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_usable_zone_rejects_a_trailing_dot_zone() {
+        let annotations = annotations_with_zone("example.com.");
+        assert_eq!(
+            resolve_usable_zone(&annotations, None),
+            ZoneResolution::Invalid("example.com.".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_usable_zone_rejects_an_invalid_operator_default() {
+        let annotations = std::collections::BTreeMap::new();
+        assert_eq!(
+            resolve_usable_zone(&annotations, Some(OVERLONG_ZONE)),
+            ZoneResolution::Invalid(OVERLONG_ZONE.to_string())
+        );
+    }
+
+    // ========================================================================
+    // Stale-cleanup zone selection (delete / opt-out paths)
+    // ========================================================================
+
+    fn zone_set(zones: &[&str]) -> std::collections::BTreeSet<String> {
+        zones.iter().map(|z| (*z).to_string()).collect()
+    }
+
+    #[test]
+    fn stale_cleanup_zones_uses_the_resolved_zone_when_present() {
+        let from_records = zone_set(&["example.com"]);
+        assert_eq!(
+            stale_cleanup_zones(Some("example.com"), &from_records),
+            zone_set(&["example.com"])
+        );
+    }
+
+    #[test]
+    fn stale_cleanup_zones_falls_back_to_record_labels_when_annotations_are_gone() {
+        // The opt-out case: the user stripped every bindy.firestoned.io/*
+        // annotation in one edit, so no zone resolves — but the ARecords we
+        // just deleted still carry an authoritative `zone` label.
+        let from_records = zone_set(&["example.com"]);
+        assert_eq!(
+            stale_cleanup_zones(None, &from_records),
+            zone_set(&["example.com"])
+        );
+    }
+
+    #[test]
+    fn stale_cleanup_zones_unions_resolved_and_record_zones() {
+        // The operator default was changed after the records were written:
+        // both the old zone (from labels) and the new one need cleaning.
+        let from_records = zone_set(&["old.example.com"]);
+        assert_eq!(
+            stale_cleanup_zones(Some("new.example.com"), &from_records),
+            zone_set(&["new.example.com", "old.example.com"])
+        );
+    }
+
+    #[test]
+    fn stale_cleanup_zones_drops_label_illegal_values() {
+        let from_records = zone_set(&[OVERLONG_ZONE, "example.com"]);
+        assert_eq!(
+            stale_cleanup_zones(Some("example.com."), &from_records),
+            zone_set(&["example.com"])
+        );
+    }
+
+    #[test]
+    fn stale_cleanup_zones_is_empty_when_nothing_is_usable() {
+        let from_records = zone_set(&[OVERLONG_ZONE]);
+        assert!(stale_cleanup_zones(None, &from_records).is_empty());
+    }
+
+    // ========================================================================
+    // Shared stale-selector construction
+    // ========================================================================
+
+    #[test]
+    fn stale_selector_base_omits_the_zone_clause() {
+        assert_eq!(
+            stale_selector_base("south", "team-checkout", "web-frontend"),
+            format!(
+                "{LABEL_MANAGED_BY}={LABEL_MANAGED_BY_SCOUT},\
+                 {LABEL_SOURCE_CLUSTER}!=south,\
+                 {LABEL_SOURCE_NAMESPACE}=team-checkout,\
+                 {LABEL_SOURCE_NAME}=web-frontend"
+            )
+            .replace(' ', "")
+        );
+    }
+
+    #[test]
+    fn every_stale_selector_builder_appends_the_zone_clause_to_the_shared_base() {
+        // All four resource kinds must produce byte-identical selectors, so a
+        // future change to the shared base cannot drift between them.
+        let base = stale_selector_base("south", "team-checkout", "web-frontend");
+        let expected = format!("{base},{LABEL_ZONE}=example.com");
+
+        for actual in [
+            stale_arecord_label_selector("south", "team-checkout", "web-frontend", "example.com"),
+            crate::scout::stale_httproute_arecord_label_selector(
+                "south",
+                "team-checkout",
+                "web-frontend",
+                "example.com",
+            ),
+            crate::scout::stale_tlsroute_arecord_label_selector(
+                "south",
+                "team-checkout",
+                "web-frontend",
+                "example.com",
+            ),
+            stale_tcproute_arecord_label_selector(
+                "south",
+                "team-checkout",
+                "web-frontend",
+                "example.com",
+            ),
+        ] {
+            assert_eq!(actual, expected);
+        }
+    }
+
+    // ========================================================================
+    // delete_arecords_for_* reports the zones it removed
+    // ========================================================================
+
+    #[tokio::test]
+    async fn delete_arecords_for_ingress_returns_the_zone_labels_it_deleted() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(ARECORD_LIST_PATH))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![
+                    arecord_item(
+                        "scout-south-team-checkout-web-frontend-0",
+                        "south",
+                        "example.com",
+                    ),
+                    arecord_item(
+                        "scout-south-team-checkout-web-frontend-1",
+                        "south",
+                        "example.com",
+                    ),
+                    arecord_item(
+                        "scout-south-team-checkout-web-frontend-2",
+                        "south",
+                        "other.example.com",
+                    ),
+                ])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(arecord_item(
+                "scout-south-team-checkout-web-frontend-0",
+                "south",
+                "example.com",
+            )))
+            .mount(&server)
+            .await;
+
+        let zones = crate::scout::delete_arecords_for_ingress(
+            &client_for(&server),
+            "bindy-system",
+            "south",
+            "team-checkout",
+            "web-frontend",
+        )
+        .await
+        .expect("cleanup succeeds");
+
+        // Distinct zones, so a later stale-cleanup pass runs once per zone.
+        assert_eq!(zones, zone_set(&["example.com", "other.example.com"]));
+    }
+
+    #[tokio::test]
+    async fn delete_arecords_for_ingress_returns_empty_when_nothing_matched() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(ARECORD_LIST_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![])))
+            .mount(&server)
+            .await;
+
+        let zones = crate::scout::delete_arecords_for_ingress(
+            &client_for(&server),
+            "bindy-system",
+            "south",
+            "team-checkout",
+            "web-frontend",
+        )
+        .await
+        .expect("cleanup succeeds");
+
+        assert!(zones.is_empty());
     }
 }

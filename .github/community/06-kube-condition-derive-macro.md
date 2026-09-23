@@ -1,6 +1,6 @@
 # Bindy: Implementing kube-condition for Enhanced Status Conditions
 
-> **Status:** ⛔ Not started — `kube-condition` is not a dependency. Conditions are hand-built in `src/reconcilers/status.rs`; see [21](21-status-conditions.md) for what shipped instead.
+> **Status:** ⛔ Not started — `kube-condition` is not a dependency. Conditions are hand-built in `src/reconcilers/status.rs`; see [08](08-status-conditions.md) for what shipped instead.
 >
 > *Migrated 2026-09-10 from the external roadmap set. Status verified against `fix-idempotency` @ `648ff7a`.*
 

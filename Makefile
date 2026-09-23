@@ -836,6 +836,7 @@ tls-transport-test: ## Run the bindcar TLS e2e (cert-manager issues the sidecar 
 #   make e2e-restart        zones/records survive operator + operand restarts
 #   make e2e-rust           tests/simple_integration.rs against a live API server
 #   make e2e-multi-tenancy  namespace isolation
+#   make e2e-scout          Scout's zone-scoped stale-cluster ARecord cleanup
 #   make e2e-regression     admission policies + operand pod shape + liveness
 #   make e2e-zone-spread    spec.placement topology spread on a 3-zone cluster
 #   make e2e-tls            cert-manager-issued sidecar cert (audit P2-4)
@@ -854,6 +855,7 @@ E2E_IDEMPOTENCY_CLUSTER  ?= bindy-e2e-idempotency
 E2E_RESTART_CLUSTER      ?= bindy-e2e-restart
 E2E_RUST_CLUSTER         ?= bindy-e2e-rust
 E2E_MULTITENANCY_CLUSTER ?= bindy-e2e-multitenancy
+E2E_SCOUT_CLUSTER        ?= bindy-e2e-scout
 
 # Shared image handoff for CI: one job builds and saves the tarball, every suite
 # job loads it. Avoids paying for the same cross-compile once per suite.
@@ -893,6 +895,9 @@ e2e-rust: ## E2E: tests/simple_integration.rs against a live API server
 e2e-multi-tenancy: ## E2E: namespace isolation across Bind9Cluster/Bind9Instance/DNSZone
 	$(call run-e2e-suite,tests/e2e/multi_tenancy_test.sh,$(E2E_MULTITENANCY_CLUSTER))
 
+e2e-scout: ## E2E: Scout's zone-scoped stale-cluster ARecord cleanup (#474)
+	$(call run-e2e-suite,tests/e2e/scout_test.sh,$(E2E_SCOUT_CLUSTER))
+
 e2e-regression: ## E2E: admission policies + operand pod shape + liveness
 	$(call run-e2e-suite,tests/regression_test.sh,$(REGRESSION_CLUSTER),--fresh)
 
@@ -903,7 +908,7 @@ e2e-tls: ## E2E: cert-manager-issued bindcar sidecar certificate (audit P2-4)
 	$(call run-e2e-suite,tests/tls_transport_test.sh,$(TLS_TRANSPORT_CLUSTER))
 
 E2E_SUITES = e2e-rust e2e-lifecycle e2e-idempotency e2e-restart e2e-multi-tenancy \
-             e2e-regression e2e-zone-spread e2e-tls
+             e2e-scout e2e-regression e2e-zone-spread e2e-tls
 
 e2e-all: ## Run every e2e suite sequentially (CI runs them in parallel instead)
 	@for target in $(E2E_SUITES); do \
@@ -918,8 +923,9 @@ e2e-all: ## Run every e2e suite sequentially (CI runs them in parallel instead)
 
 e2e-clean: ## Delete every kind cluster the e2e suites create
 	@for c in $(E2E_LIFECYCLE_CLUSTER) $(E2E_IDEMPOTENCY_CLUSTER) $(E2E_RESTART_CLUSTER) \
-	          $(E2E_RUST_CLUSTER) $(E2E_MULTITENANCY_CLUSTER) $(REGRESSION_CLUSTER) \
-	          $(ZONESPREAD_CLUSTER) $(TLS_TRANSPORT_CLUSTER) $(CI_E2E_INTEGRATION_CLUSTER); do \
+	          $(E2E_RUST_CLUSTER) $(E2E_MULTITENANCY_CLUSTER) $(E2E_SCOUT_CLUSTER) \
+	          $(REGRESSION_CLUSTER) $(ZONESPREAD_CLUSTER) $(TLS_TRANSPORT_CLUSTER) \
+	          $(CI_E2E_INTEGRATION_CLUSTER); do \
 		kind delete cluster --name $$c >/dev/null 2>&1 || true; \
 	done
 	@echo "✓ E2E kind clusters deleted"

@@ -287,10 +287,61 @@ async fn create_global_cluster(
             Ok(())
         }
         Err(kube::Error::Api(ae)) if ae.code == 409 => {
-            println!("  ClusterBind9Provider already exists: {name}");
-            Ok(())
+            // A 409 does NOT mean "it is there and usable". Three tests share
+            // this cluster-scoped name, and `delete_global_cluster` returns as
+            // soon as the DELETE is accepted — while the object lingers in
+            // Terminating until the operator clears its bind9cluster
+            // finalizer. Treating that tombstone as success is a race: it
+            // disappears moments later, and the caller's `wait_for_resource`
+            // then polls a 404 until it times out.
+            match cluster_providers.get(name).await {
+                Ok(existing) if existing.metadata.deletion_timestamp.is_none() => {
+                    println!("  ClusterBind9Provider already exists: {name}");
+                    Ok(())
+                }
+                _ => {
+                    println!(
+                        "  ClusterBind9Provider {name} is terminating — waiting for it to clear"
+                    );
+                    wait_for_deletion(&cluster_providers, name, TEST_TIMEOUT).await?;
+                    cluster_providers
+                        .create(&PostParams::default(), &cluster)
+                        .await?;
+                    println!("✓ Created ClusterBind9Provider: {name}");
+                    Ok(())
+                }
+            }
         }
         Err(e) => Err(Box::new(e)),
+    }
+}
+
+/// Wait until `name` is genuinely gone from the API server.
+///
+/// Needed because a cluster-scoped resource with a finalizer stays visible in
+/// `Terminating` after its DELETE is accepted, so "the delete call returned" is
+/// not the same as "the name is free to reuse".
+async fn wait_for_deletion<K>(
+    api: &Api<K>,
+    name: &str,
+    timeout: Duration,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    K: kube::Resource + Clone + std::fmt::Debug + serde::de::DeserializeOwned,
+    <K as kube::Resource>::DynamicType: Default,
+{
+    let start = std::time::Instant::now();
+    loop {
+        match api.get(name).await {
+            Err(kube::Error::Api(ae)) if ae.code == 404 => return Ok(()),
+            Ok(_) => {
+                if start.elapsed() > timeout {
+                    return Err(format!("Timeout waiting for {name} to be deleted").into());
+                }
+                sleep(POLLING_INTERVAL).await;
+            }
+            Err(e) => return Err(Box::new(e)),
+        }
     }
 }
 

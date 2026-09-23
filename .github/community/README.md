@@ -7,16 +7,16 @@ them and carries the current completion state.
 
 ## Numbering
 
-Numbers are stable once assigned and grouped by band:
+Numbers are a zero-padded two-digit prefix, **contiguous from `00` with no
+gaps** and no thematic banding. They are an ordering, not an identity —
+inserting or retiring a roadmap renumbers the run, and every reference to the
+moved numbers is fixed in the same commit. The section headings below carry the
+theme; the numbers only carry the order.
 
-| Band | Theme |
-|---|---|
-| `00`–`09` | Reference and analysis — no completion state |
-| `10`–`19` | Architecture and refactoring |
-| `20`–`29` | Features |
-| `30`–`39` | Scout |
-| `40`–`49` | Security and compliance |
-| `50`–`59` | Testing, operations and dependencies |
+Roadmaps are ordered reference and analysis → architecture and refactoring →
+features → Scout → security and compliance → testing, operations and
+dependencies. A new roadmap takes the number at the end of its section and
+everything after it shifts up.
 
 ## Index
 
@@ -24,63 +24,65 @@ Numbers are stable once assigned and grouped by band:
 
 | # | File | What |
 |---|---|---|
-| 02 | [`02-future-refactoring-opportunities.md`](02-future-refactoring-opportunities.md) | Post-DNSZone-refactor survey; mostly superseded by 10 and 12 |
+| 00 | [`00-future-refactoring-opportunities.md`](00-future-refactoring-opportunities.md) | Post-DNSZone-refactor survey; mostly superseded by 01 and 02 |
 
 ### Architecture and refactoring
 
 | # | File | What |
 |---|---|---|
-| 10 | [`10-controller-crate-split.md`](10-controller-crate-split.md) | Split the single crate into a workspace and simplify the watch layer |
-| 12 | [`12-records-reconciler-refactoring.md`](12-records-reconciler-refactoring.md) | One generic record reconciler in place of 9 near-identical ones |
-| 13 | [`13-early-return-refactoring.md`](13-early-return-refactoring.md) | Guard-clause refactor of 9 deeply nested functions |
-| 14 | [`14-remove-clusterref-use-ownerreference.md`](14-remove-clusterref-use-ownerreference.md) | Replace `Bind9Instance.spec.clusterRef` with `ownerReference` |
-| 15 | [`15-kubernetes-api-rate-limiting.md`](15-kubernetes-api-rate-limiting.md) | Pagination, retry and explicit client-side rate limiting |
-| 16 | [`16-kube-condition-derive-macro.md`](16-kube-condition-derive-macro.md) | Adopt a `kube-condition` derive macro for status conditions |
+| 01 | [`01-controller-crate-split.md`](01-controller-crate-split.md) | Split the single crate into a workspace and simplify the watch layer |
+| 02 | [`02-records-reconciler-refactoring.md`](02-records-reconciler-refactoring.md) | One generic record reconciler in place of 9 near-identical ones |
+| 03 | [`03-early-return-refactoring.md`](03-early-return-refactoring.md) | Guard-clause refactor of 9 deeply nested functions |
+| 04 | [`04-remove-clusterref-use-ownerreference.md`](04-remove-clusterref-use-ownerreference.md) | Replace `Bind9Instance.spec.clusterRef` with `ownerReference` |
+| 05 | [`05-kubernetes-api-rate-limiting.md`](05-kubernetes-api-rate-limiting.md) | Pagination, retry and explicit client-side rate limiting |
+| 06 | [`06-kube-condition-derive-macro.md`](06-kube-condition-derive-macro.md) | Adopt a `kube-condition` derive macro for status conditions |
 
 ### Features
 
 | # | File | What |
 |---|---|---|
-| 20 | [`20-dnssec-zone-signing.md`](20-dnssec-zone-signing.md) | DNSSEC zone signing, key management and rotation |
-| 21 | [`21-status-conditions.md`](21-status-conditions.md) | Standard status conditions across every CRD |
-| 22 | [`22-external-bind9-gateway.md`](22-external-bind9-gateway.md) | Manage BIND9 on bare metal / VMs outside the cluster |
-| 23 | [`23-rndc-secret-hot-reload.md`](23-rndc-secret-hot-reload.md) | Rotate RNDC keys without restarting pods (ADR-0001) |
-| 24 | [`24-compliance-gamification.md`](24-compliance-gamification.md) | Cluster-scoped security/compliance policies with scored reports |
+| 07 | [`07-dnssec-zone-signing.md`](07-dnssec-zone-signing.md) | DNSSEC zone signing, key management and rotation |
+| 08 | [`08-status-conditions.md`](08-status-conditions.md) | Standard status conditions across every CRD |
+| 09 | [`09-external-bind9-gateway.md`](09-external-bind9-gateway.md) | Manage BIND9 on bare metal / VMs outside the cluster |
+| 10 | [`10-rndc-secret-hot-reload.md`](10-rndc-secret-hot-reload.md) | Rotate RNDC keys without restarting pods (ADR-0001) |
+| 11 | [`11-compliance-gamification.md`](11-compliance-gamification.md) | Cluster-scoped security/compliance policies with scored reports |
 
 ### Scout
 
 | # | File | What |
 |---|---|---|
-| 30 | [`30-scout-ingress-controller.md`](30-scout-ingress-controller.md) | Ingress → ARecord controller, same-cluster and remote modes |
-| 31 | [`31-scout-namespace-selectors.md`](31-scout-namespace-selectors.md) | Label-selector namespace inclusion/exclusion via a `Namespace` watch |
-| 32 | [`32-scout-srv-records.md`](32-scout-srv-records.md) | Create `SRVRecord` CRs from Services and Ingresses |
+| 12 | [`12-scout-ingress-controller.md`](12-scout-ingress-controller.md) | Ingress → ARecord controller, same-cluster and remote modes |
+| 13 | [`13-scout-namespace-selectors.md`](13-scout-namespace-selectors.md) | Label-selector namespace inclusion/exclusion via a `Namespace` watch |
+| 14 | [`14-scout-srv-records.md`](14-scout-srv-records.md) | Create `SRVRecord` CRs from Services and Ingresses |
 
 ### Security and compliance
 
 | # | File | What |
 |---|---|---|
-| 41 | [`41-security-scanning.md`](41-security-scanning.md) | Container, dependency, secret, SAST and license scanning |
-| 42 | [`42-audit-logging-secret-operations.md`](42-audit-logging-secret-operations.md) | Structured audit trail for every Secret operation |
-| 43 | [`43-vex-documents.md`](43-vex-documents.md) | VEX documents in the release pipeline |
+| 15 | [`15-security-scanning.md`](15-security-scanning.md) | Container, dependency, secret, SAST and license scanning |
+| 16 | [`16-audit-logging-secret-operations.md`](16-audit-logging-secret-operations.md) | Structured audit trail for every Secret operation |
+| 17 | [`17-vex-documents.md`](17-vex-documents.md) | VEX documents in the release pipeline |
 
 ### Testing, operations and dependencies
 
 | # | File | What |
 |---|---|---|
-| 50 | [`50-load-testing-framework.md`](50-load-testing-framework.md) | `crates/loadtest` — performance and failure-mode validation |
-| 51 | [`51-integration-testing.md`](51-integration-testing.md) | Live-cluster integration testing for the DNSZone consolidation |
-| 52 | [`52-hickory-client-migration-target.md`](52-hickory-client-migration-target.md) | Scheduled Q3 2026 revisit of the hickory migration target |
-| 53 | [`53-bindcar-migration-v0-7-0.md`](53-bindcar-migration-v0-7-0.md) | bindcar v0.6.0 → v0.7.0 upgrade guide — superseded by 56 |
-| 54 | [`54-bindcar-migration-v0-7-1.md`](54-bindcar-migration-v0-7-1.md) | bindcar v0.6.0 → v0.7.1 upgrade guide — superseded by 56 |
-| 55 | [`55-bindcar-migration-v0-7-2.md`](55-bindcar-migration-v0-7-2.md) | bindcar v0.6.0 → v0.7.2 upgrade guide — superseded by 56 |
-| 56 | [`56-bindcar-migration-v0-7-4.md`](56-bindcar-migration-v0-7-4.md) | bindcar v0.7.2 → v0.7.4 upgrade guide — superseded by 57 |
-| 57 | [`57-bindcar-migration-v0-8-0.md`](57-bindcar-migration-v0-8-0.md) | bindcar v0.7.4 → v0.8.0 upgrade guide — **current**: TLS, mTLS, cert reload, feature gating |
+| 18 | [`18-load-testing-framework.md`](18-load-testing-framework.md) | `crates/loadtest` — performance and failure-mode validation |
+| 19 | [`19-integration-testing.md`](19-integration-testing.md) | Live-cluster integration testing for the DNSZone consolidation |
+| 20 | [`20-hickory-client-migration-target.md`](20-hickory-client-migration-target.md) | Scheduled Q3 2026 revisit of the hickory migration target |
+| 21 | [`21-bindcar-migration-v0-7-0.md`](21-bindcar-migration-v0-7-0.md) | bindcar v0.6.0 → v0.7.0 upgrade guide — superseded by 24 |
+| 22 | [`22-bindcar-migration-v0-7-1.md`](22-bindcar-migration-v0-7-1.md) | bindcar v0.6.0 → v0.7.1 upgrade guide — superseded by 24 |
+| 23 | [`23-bindcar-migration-v0-7-2.md`](23-bindcar-migration-v0-7-2.md) | bindcar v0.6.0 → v0.7.2 upgrade guide — superseded by 24 |
+| 24 | [`24-bindcar-migration-v0-7-4.md`](24-bindcar-migration-v0-7-4.md) | bindcar v0.7.2 → v0.7.4 upgrade guide — superseded by 25 |
+| 25 | [`25-bindcar-migration-v0-8-0.md`](25-bindcar-migration-v0-8-0.md) | bindcar v0.7.4 → v0.8.0 upgrade guide — **current**: TLS, mTLS, cert reload, feature gating |
 
-## Reserved numbers
+## Privately tracked roadmaps
 
-`01`, `11` and `40` are **assigned but deliberately absent** — they cover
-in-flight security hardening work and are tracked privately until it lands. Do
-not reuse the numbers; they are reserved for those documents.
+Some in-flight security hardening work is tracked privately until it lands, so
+it has no file here. Those documents carry **no number** while they are outside
+the repo — numbering here is contiguous and holds no gaps, so such a document is
+numbered only when it is moved in, taking the next free number in its section at
+that point.
 
 ## How these relate to the rest of the repo
 
@@ -96,18 +98,21 @@ not reuse the numbers; they are reserved for those documents.
 
 ## Reading a migrated doc
 
-Everything numbered `01`–`52` was migrated on 2026-09-10 from an external
-roadmap set (`53`–`55` followed on 2026-09-12, from the bindcar repo; `56` was
-written there on the same date), and each carries a `> **Status:**` block under its title
-recording what was verified against the tree at that point. **The body
+Everything here was migrated from an external roadmap set on 2026-09-10 (the
+bindcar upgrade guides followed on 2026-09-12, from the bindcar repo), and each
+carries a `> **Status:**` block under its title recording what was verified
+against the tree at that point. **The body
 below that block is the document as originally written** — file paths and
 line numbers in older docs have drifted (several modules have since been
 split into directories). Trust the status block; re-verify the body.
 
 ## Adding a roadmap
 
-1. Pick the next free number in the right band.
-2. Filename: `NN-SCREAMING-KEBAB-TITLE.md`.
+1. Take the number at the end of the section it belongs to, and renumber
+   every roadmap after it — files, index rows and every reference in the
+   repo — in the same commit.
+2. Filename: `NN-lowercase-hyphenated-title.md`. Lowercase only, hyphens as
+   the only separator; `README.md` is the one exception.
 3. Open with a `> **Goal.**` / `> **Stop condition.**` block so a reader
    knows what "done" means before reading the analysis.
 4. Add a row to the table above **and** to `ROADMAPS.md`.

@@ -8,7 +8,7 @@
 //! `bindy.firestoned.io/recordKind: "ARecord"`, Scout creates an [`ARecord`] CR in the
 //! configured target namespace.
 //!
-//! See `.github/community/30-scout-ingress-controller.md` for the full design.
+//! See `.github/community/12-scout-ingress-controller.md` for the full design.
 //!
 //! ## Phase 1 / 1.5 — Same-cluster mode (current)
 //!
@@ -47,7 +47,13 @@ use kube::{
 };
 use serde::de::DeserializeOwned;
 use std::fmt::Debug;
-use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    time::Duration,
+};
 use tracing::{debug, error, info, warn};
 
 // ============================================================================
@@ -747,6 +753,83 @@ pub(crate) fn is_valid_zone_label_value(zone: &str) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
 }
 
+/// Outcome of resolving a DNS zone that Scout can actually manage records for.
+///
+/// Distinguishes "no zone configured" from "a zone was configured but Scout
+/// cannot use it", because the two need different operator-facing messages.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ZoneResolution {
+    /// A zone resolved and is a legal Kubernetes label value.
+    Usable(String),
+    /// A zone resolved but cannot be used as a label value — carries the
+    /// offending value so it can be named in the warning.
+    Invalid(String),
+    /// Neither the `bindy.firestoned.io/zone` annotation nor the operator
+    /// default supplied a zone.
+    Missing,
+}
+
+/// Resolves the DNS zone for a reconcile and checks Scout can actually use it.
+///
+/// [`resolve_zone`] returns the annotation (or operator default) verbatim. That
+/// value is both stamped onto every ARecord as the [`LABEL_ZONE`] label *and*
+/// interpolated into the stale-cluster `labelSelector`, so a value that is a
+/// legal DNS name but not a legal label value breaks both: the server-side
+/// apply fails with a 422, and the stale-cluster `list` fails with a 400 that
+/// the reconcile error path retries indefinitely.
+///
+/// The `DNSZone` CRD constrains `zoneName` per DNS label but not in total, so
+/// an ordinary internal zone such as
+/// `payments-gateway.team-checkout.production.eu-west-1.example.internal`
+/// (68 characters) passes admission and still fails the label-value rule.
+/// Callers reject [`ZoneResolution::Invalid`] up front rather than letting it
+/// reach either call.
+///
+/// # Arguments
+/// * `annotations` - Annotations of the resource being reconciled
+/// * `default_zone` - Operator-wide fallback (`BINDY_SCOUT_DEFAULT_ZONE`)
+pub(crate) fn resolve_usable_zone(
+    annotations: &BTreeMap<String, String>,
+    default_zone: Option<&str>,
+) -> ZoneResolution {
+    match resolve_zone(annotations, default_zone) {
+        None => ZoneResolution::Missing,
+        Some(zone) if is_valid_zone_label_value(&zone) => ZoneResolution::Usable(zone),
+        Some(zone) => ZoneResolution::Invalid(zone),
+    }
+}
+
+/// Returns every DNS zone a delete/opt-out path should run stale-cluster
+/// cleanup for: the zone resolved from the object's annotations, unioned with
+/// the `zone` labels of the ARecords that were just deleted.
+///
+/// The annotation alone is not sufficient on these paths. Opting out is
+/// documented as removing the `bindy.firestoned.io/*` annotations, and users
+/// routinely strip them all in a single edit — so by the time cleanup runs the
+/// zone annotation may already be gone. The deleted records' [`LABEL_ZONE`]
+/// label is authoritative (Scout wrote it when it created them) and survives
+/// that edit, so it recovers the zone the annotation no longer carries. It
+/// also covers a changed `BINDY_SCOUT_DEFAULT_ZONE`, where the resolved zone
+/// no longer matches what was actually written.
+///
+/// Values that are not legal Kubernetes label values are dropped, since they
+/// cannot appear in a `labelSelector` — see [`is_valid_zone_label_value`].
+///
+/// # Arguments
+/// * `resolved` - Zone from annotations/operator default, if any
+/// * `from_records` - `zone` labels of the ARecords just deleted
+pub(crate) fn stale_cleanup_zones(
+    resolved: Option<&str>,
+    from_records: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    resolved
+        .into_iter()
+        .map(ToString::to_string)
+        .chain(from_records.iter().cloned())
+        .filter(|z| is_valid_zone_label_value(z))
+        .collect()
+}
+
 /// Returns the explicit DNS record name override from `bindy.firestoned.io/record-name`.
 ///
 /// The annotation value is trimmed of surrounding whitespace. Returns `None` if the
@@ -1176,6 +1259,57 @@ pub fn arecord_label_selector(cluster: &str, namespace: &str, ingress_name: &str
     )
 }
 
+/// Builds the zone-less core shared by every stale-cluster label selector:
+/// `managed-by=scout,source-cluster!=<current>,source-namespace=<ns>,source-name=<name>`.
+///
+/// Every stale-cluster selector — for all four resource kinds, plus the
+/// diagnostic listing in [`log_unscoped_stale_cluster_arecord_candidates`] —
+/// is built from this one function, so a change to the label keys cannot drift
+/// between them and leave the diagnostic reporting different records than the
+/// cleanup would actually delete.
+///
+/// # Arguments
+/// * `current_cluster` - Cluster name to exclude (the one running this Scout)
+/// * `namespace` - Source namespace of the Ingress/Route
+/// * `resource_name` - Source name of the Ingress/Route
+pub(crate) fn stale_selector_base(
+    current_cluster: &str,
+    namespace: &str,
+    resource_name: &str,
+) -> String {
+    format!(
+        "{managed_key}={managed_val},{cluster_key}!={cluster_val},{ns_key}={ns_val},{name_key}={name_val}",
+        managed_key = LABEL_MANAGED_BY,
+        managed_val = LABEL_MANAGED_BY_SCOUT,
+        cluster_key = LABEL_SOURCE_CLUSTER,
+        cluster_val = current_cluster,
+        ns_key = LABEL_SOURCE_NAMESPACE,
+        ns_val = namespace,
+        name_key = LABEL_SOURCE_NAME,
+        name_val = resource_name,
+    )
+}
+
+/// Builds a stale-cluster selector scoped to a single DNS zone, by appending a
+/// `zone=<current_zone>` clause to [`stale_selector_base`].
+///
+/// `current_zone` must be a legal Kubernetes label value — see
+/// [`is_valid_zone_label_value`]; an illegal value makes the API server reject
+/// the resulting `list` with a 400.
+fn stale_selector_for_zone(
+    current_cluster: &str,
+    namespace: &str,
+    resource_name: &str,
+    current_zone: &str,
+) -> String {
+    format!(
+        "{base},{zone_key}={zone_val}",
+        base = stale_selector_base(current_cluster, namespace, resource_name),
+        zone_key = LABEL_ZONE,
+        zone_val = current_zone,
+    )
+}
+
 /// Builds a label selector string matching ARecords for the given Ingress that
 /// belong to **any cluster other than `current_cluster`, in the same DNS zone**.
 ///
@@ -1202,16 +1336,7 @@ pub fn stale_arecord_label_selector(
     ingress_name: &str,
     current_zone: &str,
 ) -> String {
-    format!(
-        "{}={},{cluster_key}!={current_cluster},{ns_key}={namespace},{name_key}={ingress_name},{zone_key}={zone_val}",
-        LABEL_MANAGED_BY,
-        LABEL_MANAGED_BY_SCOUT,
-        cluster_key = LABEL_SOURCE_CLUSTER,
-        ns_key = LABEL_SOURCE_NAMESPACE,
-        name_key = LABEL_SOURCE_NAME,
-        zone_key = LABEL_ZONE,
-        zone_val = current_zone,
-    )
+    stale_selector_for_zone(current_cluster, namespace, ingress_name, current_zone)
 }
 
 // ============================================================================
@@ -1771,16 +1896,7 @@ pub fn stale_httproute_arecord_label_selector(
     route_name: &str,
     current_zone: &str,
 ) -> String {
-    format!(
-        "{}={},{cluster_key}!={current_cluster},{ns_key}={namespace},{name_key}={route_name},{zone_key}={zone_val}",
-        LABEL_MANAGED_BY,
-        LABEL_MANAGED_BY_SCOUT,
-        cluster_key = LABEL_SOURCE_CLUSTER,
-        ns_key = LABEL_SOURCE_NAMESPACE,
-        name_key = LABEL_SOURCE_NAME,
-        zone_key = LABEL_ZONE,
-        zone_val = current_zone,
-    )
+    stale_selector_for_zone(current_cluster, namespace, route_name, current_zone)
 }
 
 /// Builds a label selector string matching ARecords for the given TLSRoute that
@@ -1792,16 +1908,7 @@ pub fn stale_tlsroute_arecord_label_selector(
     route_name: &str,
     current_zone: &str,
 ) -> String {
-    format!(
-        "{}={},{cluster_key}!={current_cluster},{ns_key}={namespace},{name_key}={route_name},{zone_key}={zone_val}",
-        LABEL_MANAGED_BY,
-        LABEL_MANAGED_BY_SCOUT,
-        cluster_key = LABEL_SOURCE_CLUSTER,
-        ns_key = LABEL_SOURCE_NAMESPACE,
-        name_key = LABEL_SOURCE_NAME,
-        zone_key = LABEL_ZONE,
-        zone_val = current_zone,
-    )
+    stale_selector_for_zone(current_cluster, namespace, route_name, current_zone)
 }
 
 /// Builds a label selector string matching ARecords for the given TCPRoute that
@@ -1813,16 +1920,7 @@ pub fn stale_tcproute_arecord_label_selector(
     route_name: &str,
     current_zone: &str,
 ) -> String {
-    format!(
-        "{}={},{cluster_key}!={current_cluster},{ns_key}={namespace},{name_key}={route_name},{zone_key}={zone_val}",
-        LABEL_MANAGED_BY,
-        LABEL_MANAGED_BY_SCOUT,
-        cluster_key = LABEL_SOURCE_CLUSTER,
-        ns_key = LABEL_SOURCE_NAMESPACE,
-        name_key = LABEL_SOURCE_NAME,
-        zone_key = LABEL_ZONE,
-        zone_val = current_zone,
-    )
+    stale_selector_for_zone(current_cluster, namespace, route_name, current_zone)
 }
 
 /// Parameters for building an ARecord CR from an HTTPRoute.
@@ -2203,20 +2301,24 @@ async fn remove_finalizer_from_tcproute(client: &Client, route: &TCPRoute) -> Re
 ///
 /// Must be called with the **remote** client so it targets the cluster where
 /// ARecords live (which may differ from the local cluster in Phase 2+).
-async fn delete_arecords_for_ingress(
+pub(crate) async fn delete_arecords_for_ingress(
     remote_client: &Client,
     target_namespace: &str,
     cluster: &str,
     ingress_namespace: &str,
     ingress_name: &str,
-) -> Result<()> {
+) -> Result<BTreeSet<String>> {
     let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
     let selector = arecord_label_selector(cluster, ingress_namespace, ingress_name);
     let lp = ListParams::default().labels(&selector);
 
     let arecords = api.list(&lp).await?;
+    let mut deleted_zones = BTreeSet::new();
     for ar in arecords.items {
         let ar_name = ar.name_any();
+        if let Some(zone) = ar.metadata.labels.as_ref().and_then(|l| l.get(LABEL_ZONE)) {
+            deleted_zones.insert(zone.clone());
+        }
         api.delete(&ar_name, &DeleteParams::default()).await?;
         info!(
             arecord = %ar_name,
@@ -2225,7 +2327,7 @@ async fn delete_arecords_for_ingress(
             "Deleted ARecord during Ingress cleanup"
         );
     }
-    Ok(())
+    Ok(deleted_zones)
 }
 
 /// Deletes all ARecords in `target_namespace` that were created by Scout for
@@ -2308,20 +2410,24 @@ async fn delete_arecords_for_service(
 }
 
 /// Deletes all ARecords created by Scout for a specific HTTPRoute.
-async fn delete_arecords_for_httproute(
+pub(crate) async fn delete_arecords_for_httproute(
     remote_client: &Client,
     target_namespace: &str,
     cluster: &str,
     route_namespace: &str,
     route_name: &str,
-) -> Result<()> {
+) -> Result<BTreeSet<String>> {
     let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
     let selector = httproute_arecord_label_selector(cluster, route_namespace, route_name);
     let lp = ListParams::default().labels(&selector);
 
     let arecords = api.list(&lp).await?;
+    let mut deleted_zones = BTreeSet::new();
     for ar in arecords.items {
         let ar_name = ar.name_any();
+        if let Some(zone) = ar.metadata.labels.as_ref().and_then(|l| l.get(LABEL_ZONE)) {
+            deleted_zones.insert(zone.clone());
+        }
         api.delete(&ar_name, &DeleteParams::default()).await?;
         info!(
             arecord = %ar_name,
@@ -2330,24 +2436,28 @@ async fn delete_arecords_for_httproute(
             "Deleted ARecord during HTTPRoute cleanup"
         );
     }
-    Ok(())
+    Ok(deleted_zones)
 }
 
 /// Deletes all ARecords created by Scout for a specific TLSRoute.
-async fn delete_arecords_for_tlsroute(
+pub(crate) async fn delete_arecords_for_tlsroute(
     remote_client: &Client,
     target_namespace: &str,
     cluster: &str,
     route_namespace: &str,
     route_name: &str,
-) -> Result<()> {
+) -> Result<BTreeSet<String>> {
     let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
     let selector = tlsroute_arecord_label_selector(cluster, route_namespace, route_name);
     let lp = ListParams::default().labels(&selector);
 
     let arecords = api.list(&lp).await?;
+    let mut deleted_zones = BTreeSet::new();
     for ar in arecords.items {
         let ar_name = ar.name_any();
+        if let Some(zone) = ar.metadata.labels.as_ref().and_then(|l| l.get(LABEL_ZONE)) {
+            deleted_zones.insert(zone.clone());
+        }
         api.delete(&ar_name, &DeleteParams::default()).await?;
         info!(
             arecord = %ar_name,
@@ -2356,7 +2466,7 @@ async fn delete_arecords_for_tlsroute(
             "Deleted ARecord during TLSRoute cleanup"
         );
     }
-    Ok(())
+    Ok(deleted_zones)
 }
 
 /// Deletes stale ARecords for an HTTPRoute from a previous cluster name, in
@@ -2425,20 +2535,24 @@ pub(crate) async fn delete_stale_cluster_tlsroute_arecords(
 }
 
 /// Deletes all ARecords created by Scout for a specific TCPRoute.
-async fn delete_arecords_for_tcproute(
+pub(crate) async fn delete_arecords_for_tcproute(
     remote_client: &Client,
     target_namespace: &str,
     cluster: &str,
     route_namespace: &str,
     route_name: &str,
-) -> Result<()> {
+) -> Result<BTreeSet<String>> {
     let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
     let selector = tcproute_arecord_label_selector(cluster, route_namespace, route_name);
     let lp = ListParams::default().labels(&selector);
 
     let arecords = api.list(&lp).await?;
+    let mut deleted_zones = BTreeSet::new();
     for ar in arecords.items {
         let ar_name = ar.name_any();
+        if let Some(zone) = ar.metadata.labels.as_ref().and_then(|l| l.get(LABEL_ZONE)) {
+            deleted_zones.insert(zone.clone());
+        }
         api.delete(&ar_name, &DeleteParams::default()).await?;
         info!(
             arecord = %ar_name,
@@ -2447,7 +2561,7 @@ async fn delete_arecords_for_tcproute(
             "Deleted ARecord during TCPRoute cleanup"
         );
     }
-    Ok(())
+    Ok(deleted_zones)
 }
 
 /// Deletes stale ARecords for a TCPRoute from a previous cluster name, in the
@@ -2508,14 +2622,7 @@ pub(crate) async fn log_unscoped_stale_cluster_arecord_candidates(
     source_name: &str,
 ) {
     let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
-    let selector = format!(
-        "{}={},{cluster_key}!={current_cluster},{ns_key}={source_namespace},{name_key}={source_name}",
-        LABEL_MANAGED_BY,
-        LABEL_MANAGED_BY_SCOUT,
-        cluster_key = LABEL_SOURCE_CLUSTER,
-        ns_key = LABEL_SOURCE_NAMESPACE,
-        name_key = LABEL_SOURCE_NAME,
-    );
+    let selector = stale_selector_base(current_cluster, source_namespace, source_name);
     let lp = ListParams::default().labels(&selector);
 
     match api.list(&lp).await {
@@ -2576,10 +2683,9 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
                 .annotations
                 .as_ref()
                 .unwrap_or(&EMPTY_ANNOTATIONS);
-            let deleting_zone = resolve_zone(deleting_annotations, ctx.default_zone.as_deref())
-                .filter(|z| is_valid_zone_label_value(z));
+            let deleting_zone = resolve_zone(deleting_annotations, ctx.default_zone.as_deref());
             let cleanup: Result<()> = async {
-                delete_arecords_for_ingress(
+                let deleted_zones = delete_arecords_for_ingress(
                     &ctx.remote_client,
                     &ctx.target_namespace,
                     &ctx.cluster_name,
@@ -2587,32 +2693,32 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
                     &name,
                 )
                 .await?;
-                match &deleting_zone {
-                    Some(zone) => {
-                        delete_stale_cluster_arecords(
-                            &ctx.remote_client,
-                            &ctx.target_namespace,
-                            &ctx.cluster_name,
-                            &namespace,
-                            &name,
-                            zone,
-                        )
-                        .await
-                    }
-                    None => {
-                        warn!(ingress = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this Ingress's own ARecords were still removed");
-                        log_unscoped_stale_cluster_arecord_candidates(
-                            &ctx.remote_client,
-                            &ctx.target_namespace,
-                            &ctx.cluster_name,
-                            "Ingress",
-                            &namespace,
-                            &name,
-                        )
-                        .await;
-                        Ok(())
-                    }
+                let cleanup_zones = stale_cleanup_zones(deleting_zone.as_deref(), &deleted_zones);
+                if cleanup_zones.is_empty() {
+                    warn!(ingress = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this Ingress's own ARecords were still removed");
+                    log_unscoped_stale_cluster_arecord_candidates(
+                    &ctx.remote_client,
+                    &ctx.target_namespace,
+                    &ctx.cluster_name,
+                    "Ingress",
+                    &namespace,
+                    &name,
+                    )
+                    .await;
+                    return Ok(());
                 }
+                for zone in &cleanup_zones {
+                    delete_stale_cluster_arecords(
+                    &ctx.remote_client,
+                    &ctx.target_namespace,
+                    &ctx.cluster_name,
+                    &namespace,
+                    &name,
+                        zone,
+                    )
+                    .await?;
+                }
+                Ok(())
             }
             .await;
             if let Err(e) = cleanup {
@@ -2651,9 +2757,8 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
         // Annotation may have been removed after a finalizer was added — clean up
         if has_finalizer(&ingress) {
             info!(ingress = %name, ns = %namespace, "Scout opt-in annotation removed — cleaning up ARecords and finalizer");
-            let opt_out_zone = resolve_zone(annotations, ctx.default_zone.as_deref())
-                .filter(|z| is_valid_zone_label_value(z));
-            delete_arecords_for_ingress(
+            let opt_out_zone = resolve_zone(annotations, ctx.default_zone.as_deref());
+            let deleted_zones = delete_arecords_for_ingress(
                 &ctx.remote_client,
                 &ctx.target_namespace,
                 &ctx.cluster_name,
@@ -2662,8 +2767,21 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
             )
             .await
             .map_err(ScoutError::from)?;
-            match &opt_out_zone {
-                Some(zone) => delete_stale_cluster_arecords(
+            let cleanup_zones = stale_cleanup_zones(opt_out_zone.as_deref(), &deleted_zones);
+            if cleanup_zones.is_empty() {
+                warn!(ingress = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this Ingress's own ARecords were still removed");
+                log_unscoped_stale_cluster_arecord_candidates(
+                    &ctx.remote_client,
+                    &ctx.target_namespace,
+                    &ctx.cluster_name,
+                    "Ingress",
+                    &namespace,
+                    &name,
+                )
+                .await;
+            }
+            for zone in &cleanup_zones {
+                delete_stale_cluster_arecords(
                     &ctx.remote_client,
                     &ctx.target_namespace,
                     &ctx.cluster_name,
@@ -2672,19 +2790,7 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
                     zone,
                 )
                 .await
-                .map_err(ScoutError::from)?,
-                None => {
-                    warn!(ingress = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this Ingress's own ARecords were still removed");
-                    log_unscoped_stale_cluster_arecord_candidates(
-                        &ctx.remote_client,
-                        &ctx.target_namespace,
-                        &ctx.cluster_name,
-                        "Ingress",
-                        &namespace,
-                        &name,
-                    )
-                    .await;
-                }
+                .map_err(ScoutError::from)?;
             }
             remove_finalizer(&ctx.client, &ingress)
                 .await
@@ -2706,9 +2812,15 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
     }
 
     // Guard: zone required (annotation or operator default)
-    let zone = match resolve_zone(annotations, ctx.default_zone.as_deref()) {
-        Some(z) => z,
-        None => {
+    let zone = match resolve_usable_zone(annotations, ctx.default_zone.as_deref()) {
+        ZoneResolution::Usable(z) => z,
+        ZoneResolution::Invalid(z) => {
+            warn!(ingress = %name, ns = %namespace, zone = %z, "Resolved DNS zone is not a usable Kubernetes label value (max {MAX_K8S_LABEL_VALUE_LEN} characters, alphanumeric first and last character, and only '-', '_' or '.' between) — skipping; Scout stamps the zone onto every ARecord as a label and matches on it when cleaning up records from a previous cluster name, so neither can work with this value");
+            return Ok(Action::requeue(Duration::from_secs(
+                SCOUT_ERROR_REQUEUE_SECS,
+            )));
+        }
+        ZoneResolution::Missing => {
             warn!(ingress = %name, ns = %namespace, "No DNS zone available (set bindy.firestoned.io/zone annotation or BINDY_SCOUT_DEFAULT_ZONE) — skipping");
             return Ok(Action::requeue(Duration::from_secs(
                 SCOUT_ERROR_REQUEUE_SECS,
@@ -2960,9 +3072,15 @@ async fn reconcile_service(
     }
 
     // Guard: zone required
-    let zone = match resolve_zone(annotations, ctx.default_zone.as_deref()) {
-        Some(z) => z,
-        None => {
+    let zone = match resolve_usable_zone(annotations, ctx.default_zone.as_deref()) {
+        ZoneResolution::Usable(z) => z,
+        ZoneResolution::Invalid(z) => {
+            warn!(service = %name, ns = %namespace, zone = %z, "Resolved DNS zone is not a usable Kubernetes label value (max {MAX_K8S_LABEL_VALUE_LEN} characters, alphanumeric first and last character, and only '-', '_' or '.' between) — skipping; Scout stamps the zone onto every ARecord as a label and matches on it when cleaning up records from a previous cluster name, so neither can work with this value");
+            return Ok(Action::requeue(Duration::from_secs(
+                SCOUT_ERROR_REQUEUE_SECS,
+            )));
+        }
+        ZoneResolution::Missing => {
             warn!(service = %name, ns = %namespace, "No DNS zone available — skipping");
             return Ok(Action::requeue(Duration::from_secs(
                 SCOUT_ERROR_REQUEUE_SECS,
@@ -3128,10 +3246,9 @@ async fn reconcile_httproute(
                 .annotations
                 .as_ref()
                 .unwrap_or(&EMPTY_ANNOTATIONS);
-            let deleting_zone = resolve_zone(deleting_annotations, ctx.default_zone.as_deref())
-                .filter(|z| is_valid_zone_label_value(z));
+            let deleting_zone = resolve_zone(deleting_annotations, ctx.default_zone.as_deref());
             let cleanup: Result<()> = async {
-                delete_arecords_for_httproute(
+                let deleted_zones = delete_arecords_for_httproute(
                     &ctx.remote_client,
                     &ctx.target_namespace,
                     &ctx.cluster_name,
@@ -3139,32 +3256,32 @@ async fn reconcile_httproute(
                     &name,
                 )
                 .await?;
-                match &deleting_zone {
-                    Some(zone) => {
-                        delete_stale_cluster_httproute_arecords(
-                            &ctx.remote_client,
-                            &ctx.target_namespace,
-                            &ctx.cluster_name,
-                            &namespace,
-                            &name,
-                            zone,
-                        )
-                        .await
-                    }
-                    None => {
-                        warn!(httproute = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this HTTPRoute's own ARecords were still removed");
-                        log_unscoped_stale_cluster_arecord_candidates(
-                            &ctx.remote_client,
-                            &ctx.target_namespace,
-                            &ctx.cluster_name,
-                            "HTTPRoute",
-                            &namespace,
-                            &name,
-                        )
-                        .await;
-                        Ok(())
-                    }
+                let cleanup_zones = stale_cleanup_zones(deleting_zone.as_deref(), &deleted_zones);
+                if cleanup_zones.is_empty() {
+                    warn!(httproute = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this HTTPRoute's own ARecords were still removed");
+                    log_unscoped_stale_cluster_arecord_candidates(
+                    &ctx.remote_client,
+                    &ctx.target_namespace,
+                    &ctx.cluster_name,
+                    "HTTPRoute",
+                    &namespace,
+                    &name,
+                    )
+                    .await;
+                    return Ok(());
                 }
+                for zone in &cleanup_zones {
+                    delete_stale_cluster_httproute_arecords(
+                    &ctx.remote_client,
+                    &ctx.target_namespace,
+                    &ctx.cluster_name,
+                    &namespace,
+                    &name,
+                        zone,
+                    )
+                    .await?;
+                }
+                Ok(())
             }
             .await;
             if let Err(e) = cleanup {
@@ -3208,9 +3325,8 @@ async fn reconcile_httproute(
             .unwrap_or(false);
         if has_fin {
             info!(httproute = %name, ns = %namespace, "Scout opt-in annotation removed — cleaning up ARecords and finalizer");
-            let opt_out_zone = resolve_zone(annotations, ctx.default_zone.as_deref())
-                .filter(|z| is_valid_zone_label_value(z));
-            delete_arecords_for_httproute(
+            let opt_out_zone = resolve_zone(annotations, ctx.default_zone.as_deref());
+            let deleted_zones = delete_arecords_for_httproute(
                 &ctx.remote_client,
                 &ctx.target_namespace,
                 &ctx.cluster_name,
@@ -3219,8 +3335,21 @@ async fn reconcile_httproute(
             )
             .await
             .map_err(ScoutError::from)?;
-            match &opt_out_zone {
-                Some(zone) => delete_stale_cluster_httproute_arecords(
+            let cleanup_zones = stale_cleanup_zones(opt_out_zone.as_deref(), &deleted_zones);
+            if cleanup_zones.is_empty() {
+                warn!(httproute = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this HTTPRoute's own ARecords were still removed");
+                log_unscoped_stale_cluster_arecord_candidates(
+                    &ctx.remote_client,
+                    &ctx.target_namespace,
+                    &ctx.cluster_name,
+                    "HTTPRoute",
+                    &namespace,
+                    &name,
+                )
+                .await;
+            }
+            for zone in &cleanup_zones {
+                delete_stale_cluster_httproute_arecords(
                     &ctx.remote_client,
                     &ctx.target_namespace,
                     &ctx.cluster_name,
@@ -3229,19 +3358,7 @@ async fn reconcile_httproute(
                     zone,
                 )
                 .await
-                .map_err(ScoutError::from)?,
-                None => {
-                    warn!(httproute = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this HTTPRoute's own ARecords were still removed");
-                    log_unscoped_stale_cluster_arecord_candidates(
-                        &ctx.remote_client,
-                        &ctx.target_namespace,
-                        &ctx.cluster_name,
-                        "HTTPRoute",
-                        &namespace,
-                        &name,
-                    )
-                    .await;
-                }
+                .map_err(ScoutError::from)?;
             }
             remove_finalizer_from_httproute(&ctx.client, &route)
                 .await
@@ -3267,9 +3384,15 @@ async fn reconcile_httproute(
     }
 
     // Guard: zone required
-    let zone = match resolve_zone(annotations, ctx.default_zone.as_deref()) {
-        Some(z) => z,
-        None => {
+    let zone = match resolve_usable_zone(annotations, ctx.default_zone.as_deref()) {
+        ZoneResolution::Usable(z) => z,
+        ZoneResolution::Invalid(z) => {
+            warn!(httproute = %name, ns = %namespace, zone = %z, "Resolved DNS zone is not a usable Kubernetes label value (max {MAX_K8S_LABEL_VALUE_LEN} characters, alphanumeric first and last character, and only '-', '_' or '.' between) — skipping; Scout stamps the zone onto every ARecord as a label and matches on it when cleaning up records from a previous cluster name, so neither can work with this value");
+            return Ok(Action::requeue(Duration::from_secs(
+                SCOUT_ERROR_REQUEUE_SECS,
+            )));
+        }
+        ZoneResolution::Missing => {
             warn!(httproute = %name, ns = %namespace, "No DNS zone available — skipping");
             return Ok(Action::requeue(Duration::from_secs(
                 SCOUT_ERROR_REQUEUE_SECS,
@@ -3444,10 +3567,9 @@ async fn reconcile_tlsroute(
                 .annotations
                 .as_ref()
                 .unwrap_or(&EMPTY_ANNOTATIONS);
-            let deleting_zone = resolve_zone(deleting_annotations, ctx.default_zone.as_deref())
-                .filter(|z| is_valid_zone_label_value(z));
+            let deleting_zone = resolve_zone(deleting_annotations, ctx.default_zone.as_deref());
             let cleanup: Result<()> = async {
-                delete_arecords_for_tlsroute(
+                let deleted_zones = delete_arecords_for_tlsroute(
                     &ctx.remote_client,
                     &ctx.target_namespace,
                     &ctx.cluster_name,
@@ -3455,32 +3577,32 @@ async fn reconcile_tlsroute(
                     &name,
                 )
                 .await?;
-                match &deleting_zone {
-                    Some(zone) => {
-                        delete_stale_cluster_tlsroute_arecords(
-                            &ctx.remote_client,
-                            &ctx.target_namespace,
-                            &ctx.cluster_name,
-                            &namespace,
-                            &name,
-                            zone,
-                        )
-                        .await
-                    }
-                    None => {
-                        warn!(tlsroute = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this TLSRoute's own ARecords were still removed");
-                        log_unscoped_stale_cluster_arecord_candidates(
-                            &ctx.remote_client,
-                            &ctx.target_namespace,
-                            &ctx.cluster_name,
-                            "TLSRoute",
-                            &namespace,
-                            &name,
-                        )
-                        .await;
-                        Ok(())
-                    }
+                let cleanup_zones = stale_cleanup_zones(deleting_zone.as_deref(), &deleted_zones);
+                if cleanup_zones.is_empty() {
+                    warn!(tlsroute = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this TLSRoute's own ARecords were still removed");
+                    log_unscoped_stale_cluster_arecord_candidates(
+                    &ctx.remote_client,
+                    &ctx.target_namespace,
+                    &ctx.cluster_name,
+                    "TLSRoute",
+                    &namespace,
+                    &name,
+                    )
+                    .await;
+                    return Ok(());
                 }
+                for zone in &cleanup_zones {
+                    delete_stale_cluster_tlsroute_arecords(
+                    &ctx.remote_client,
+                    &ctx.target_namespace,
+                    &ctx.cluster_name,
+                    &namespace,
+                    &name,
+                        zone,
+                    )
+                    .await?;
+                }
+                Ok(())
             }
             .await;
             if let Err(e) = cleanup {
@@ -3524,9 +3646,8 @@ async fn reconcile_tlsroute(
             .unwrap_or(false);
         if has_fin {
             info!(tlsroute = %name, ns = %namespace, "Scout opt-in annotation removed — cleaning up ARecords and finalizer");
-            let opt_out_zone = resolve_zone(annotations, ctx.default_zone.as_deref())
-                .filter(|z| is_valid_zone_label_value(z));
-            delete_arecords_for_tlsroute(
+            let opt_out_zone = resolve_zone(annotations, ctx.default_zone.as_deref());
+            let deleted_zones = delete_arecords_for_tlsroute(
                 &ctx.remote_client,
                 &ctx.target_namespace,
                 &ctx.cluster_name,
@@ -3535,8 +3656,21 @@ async fn reconcile_tlsroute(
             )
             .await
             .map_err(ScoutError::from)?;
-            match &opt_out_zone {
-                Some(zone) => delete_stale_cluster_tlsroute_arecords(
+            let cleanup_zones = stale_cleanup_zones(opt_out_zone.as_deref(), &deleted_zones);
+            if cleanup_zones.is_empty() {
+                warn!(tlsroute = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this TLSRoute's own ARecords were still removed");
+                log_unscoped_stale_cluster_arecord_candidates(
+                    &ctx.remote_client,
+                    &ctx.target_namespace,
+                    &ctx.cluster_name,
+                    "TLSRoute",
+                    &namespace,
+                    &name,
+                )
+                .await;
+            }
+            for zone in &cleanup_zones {
+                delete_stale_cluster_tlsroute_arecords(
                     &ctx.remote_client,
                     &ctx.target_namespace,
                     &ctx.cluster_name,
@@ -3545,19 +3679,7 @@ async fn reconcile_tlsroute(
                     zone,
                 )
                 .await
-                .map_err(ScoutError::from)?,
-                None => {
-                    warn!(tlsroute = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this TLSRoute's own ARecords were still removed");
-                    log_unscoped_stale_cluster_arecord_candidates(
-                        &ctx.remote_client,
-                        &ctx.target_namespace,
-                        &ctx.cluster_name,
-                        "TLSRoute",
-                        &namespace,
-                        &name,
-                    )
-                    .await;
-                }
+                .map_err(ScoutError::from)?;
             }
             remove_finalizer_from_tlsroute(&ctx.client, &route)
                 .await
@@ -3583,9 +3705,15 @@ async fn reconcile_tlsroute(
     }
 
     // Guard: zone required
-    let zone = match resolve_zone(annotations, ctx.default_zone.as_deref()) {
-        Some(z) => z,
-        None => {
+    let zone = match resolve_usable_zone(annotations, ctx.default_zone.as_deref()) {
+        ZoneResolution::Usable(z) => z,
+        ZoneResolution::Invalid(z) => {
+            warn!(tlsroute = %name, ns = %namespace, zone = %z, "Resolved DNS zone is not a usable Kubernetes label value (max {MAX_K8S_LABEL_VALUE_LEN} characters, alphanumeric first and last character, and only '-', '_' or '.' between) — skipping; Scout stamps the zone onto every ARecord as a label and matches on it when cleaning up records from a previous cluster name, so neither can work with this value");
+            return Ok(Action::requeue(Duration::from_secs(
+                SCOUT_ERROR_REQUEUE_SECS,
+            )));
+        }
+        ZoneResolution::Missing => {
             warn!(tlsroute = %name, ns = %namespace, "No DNS zone available — skipping");
             return Ok(Action::requeue(Duration::from_secs(
                 SCOUT_ERROR_REQUEUE_SECS,
@@ -3751,10 +3879,9 @@ async fn reconcile_tcproute(
                 .annotations
                 .as_ref()
                 .unwrap_or(&EMPTY_ANNOTATIONS);
-            let deleting_zone = resolve_zone(deleting_annotations, ctx.default_zone.as_deref())
-                .filter(|z| is_valid_zone_label_value(z));
+            let deleting_zone = resolve_zone(deleting_annotations, ctx.default_zone.as_deref());
             let cleanup: Result<()> = async {
-                delete_arecords_for_tcproute(
+                let deleted_zones = delete_arecords_for_tcproute(
                     &ctx.remote_client,
                     &ctx.target_namespace,
                     &ctx.cluster_name,
@@ -3762,32 +3889,32 @@ async fn reconcile_tcproute(
                     &name,
                 )
                 .await?;
-                match &deleting_zone {
-                    Some(zone) => {
-                        delete_stale_cluster_tcproute_arecords(
-                            &ctx.remote_client,
-                            &ctx.target_namespace,
-                            &ctx.cluster_name,
-                            &namespace,
-                            &name,
-                            zone,
-                        )
-                        .await
-                    }
-                    None => {
-                        warn!(tcproute = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this TCPRoute's own ARecords were still removed");
-                        log_unscoped_stale_cluster_arecord_candidates(
-                            &ctx.remote_client,
-                            &ctx.target_namespace,
-                            &ctx.cluster_name,
-                            "TCPRoute",
-                            &namespace,
-                            &name,
-                        )
-                        .await;
-                        Ok(())
-                    }
+                let cleanup_zones = stale_cleanup_zones(deleting_zone.as_deref(), &deleted_zones);
+                if cleanup_zones.is_empty() {
+                    warn!(tcproute = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this TCPRoute's own ARecords were still removed");
+                    log_unscoped_stale_cluster_arecord_candidates(
+                    &ctx.remote_client,
+                    &ctx.target_namespace,
+                    &ctx.cluster_name,
+                    "TCPRoute",
+                    &namespace,
+                    &name,
+                    )
+                    .await;
+                    return Ok(());
                 }
+                for zone in &cleanup_zones {
+                    delete_stale_cluster_tcproute_arecords(
+                    &ctx.remote_client,
+                    &ctx.target_namespace,
+                    &ctx.cluster_name,
+                    &namespace,
+                    &name,
+                        zone,
+                    )
+                    .await?;
+                }
+                Ok(())
             }
             .await;
             if let Err(e) = cleanup {
@@ -3830,9 +3957,8 @@ async fn reconcile_tcproute(
             .unwrap_or(false);
         if has_fin {
             info!(tcproute = %name, ns = %namespace, "Scout opt-in annotation removed — cleaning up ARecords and finalizer");
-            let opt_out_zone = resolve_zone(annotations, ctx.default_zone.as_deref())
-                .filter(|z| is_valid_zone_label_value(z));
-            delete_arecords_for_tcproute(
+            let opt_out_zone = resolve_zone(annotations, ctx.default_zone.as_deref());
+            let deleted_zones = delete_arecords_for_tcproute(
                 &ctx.remote_client,
                 &ctx.target_namespace,
                 &ctx.cluster_name,
@@ -3841,8 +3967,21 @@ async fn reconcile_tcproute(
             )
             .await
             .map_err(ScoutError::from)?;
-            match &opt_out_zone {
-                Some(zone) => delete_stale_cluster_tcproute_arecords(
+            let cleanup_zones = stale_cleanup_zones(opt_out_zone.as_deref(), &deleted_zones);
+            if cleanup_zones.is_empty() {
+                warn!(tcproute = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this TCPRoute's own ARecords were still removed");
+                log_unscoped_stale_cluster_arecord_candidates(
+                    &ctx.remote_client,
+                    &ctx.target_namespace,
+                    &ctx.cluster_name,
+                    "TCPRoute",
+                    &namespace,
+                    &name,
+                )
+                .await;
+            }
+            for zone in &cleanup_zones {
+                delete_stale_cluster_tcproute_arecords(
                     &ctx.remote_client,
                     &ctx.target_namespace,
                     &ctx.cluster_name,
@@ -3851,19 +3990,7 @@ async fn reconcile_tcproute(
                     zone,
                 )
                 .await
-                .map_err(ScoutError::from)?,
-                None => {
-                    warn!(tcproute = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this TCPRoute's own ARecords were still removed");
-                    log_unscoped_stale_cluster_arecord_candidates(
-                        &ctx.remote_client,
-                        &ctx.target_namespace,
-                        &ctx.cluster_name,
-                        "TCPRoute",
-                        &namespace,
-                        &name,
-                    )
-                    .await;
-                }
+                .map_err(ScoutError::from)?;
             }
             remove_finalizer_from_tcproute(&ctx.client, &route)
                 .await
@@ -3887,9 +4014,15 @@ async fn reconcile_tcproute(
         return Ok(Action::await_change());
     }
 
-    let zone = match resolve_zone(annotations, ctx.default_zone.as_deref()) {
-        Some(z) => z,
-        None => {
+    let zone = match resolve_usable_zone(annotations, ctx.default_zone.as_deref()) {
+        ZoneResolution::Usable(z) => z,
+        ZoneResolution::Invalid(z) => {
+            warn!(tcproute = %name, ns = %namespace, zone = %z, "Resolved DNS zone is not a usable Kubernetes label value (max {MAX_K8S_LABEL_VALUE_LEN} characters, alphanumeric first and last character, and only '-', '_' or '.' between) — skipping; Scout stamps the zone onto every ARecord as a label and matches on it when cleaning up records from a previous cluster name, so neither can work with this value");
+            return Ok(Action::requeue(Duration::from_secs(
+                SCOUT_ERROR_REQUEUE_SECS,
+            )));
+        }
+        ZoneResolution::Missing => {
             warn!(tcproute = %name, ns = %namespace, "No DNS zone available — skipping");
             return Ok(Action::requeue(Duration::from_secs(
                 SCOUT_ERROR_REQUEUE_SECS,
