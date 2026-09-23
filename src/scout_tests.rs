@@ -13,7 +13,8 @@ mod tests {
         build_tcproute_arecord, check_zone_authorization, cleanup_grace_expired,
         derive_record_name, gateway_addresses_as_ips, gateway_parent_refs,
         get_record_name_annotation, get_zone_annotation, has_finalizer, is_arecord_enabled,
-        is_being_deleted, is_loadbalancer_service, is_scout_opted_in, parse_gateway_service_entry,
+        is_being_deleted, is_loadbalancer_service, is_scout_opted_in, is_valid_zone_label_value,
+        log_unscoped_stale_cluster_arecord_candidates, parse_gateway_service_entry,
         parse_gateway_services, resolve_ip_from_service_lb_status, resolve_ips,
         resolve_ips_from_annotation, resolve_record_name, resolve_zone, service_arecord_cr_name,
         service_arecord_label_selector, service_ref_from_str, stale_arecord_label_selector,
@@ -1096,7 +1097,8 @@ mod tests {
     fn test_stale_arecord_label_selector_uses_not_equal_for_cluster() {
         // Must use != so it matches ARecords from any previous cluster name,
         // regardless of what that name was.
-        let selector = stale_arecord_label_selector("new-cluster", "my-ns", "my-ingress");
+        let selector =
+            stale_arecord_label_selector("new-cluster", "my-ns", "my-ingress", "example.com");
         assert!(
             selector.contains(&format!("{}!=new-cluster", LABEL_SOURCE_CLUSTER)),
             "selector must use != for source-cluster: got {selector}"
@@ -1104,8 +1106,23 @@ mod tests {
     }
 
     #[test]
+    fn test_stale_arecord_label_selector_requires_matching_zone() {
+        // The zone clause is what prevents this selector from matching a live
+        // ARecord belonging to a genuinely different cluster that happens to
+        // share the same namespace + ingress name but publishes into a
+        // different DNS zone.
+        let selector =
+            stale_arecord_label_selector("new-cluster", "my-ns", "my-ingress", "example.com");
+        assert!(
+            selector.contains(&format!("{}=example.com", LABEL_ZONE)),
+            "selector must require an equality match on zone: got {selector}"
+        );
+    }
+
+    #[test]
     fn test_stale_arecord_label_selector_still_filters_by_managed_by() {
-        let selector = stale_arecord_label_selector("new-cluster", "my-ns", "my-ingress");
+        let selector =
+            stale_arecord_label_selector("new-cluster", "my-ns", "my-ingress", "example.com");
         assert!(
             selector.contains(&format!("{}={}", LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT)),
             "selector must still filter managed-by=scout"
@@ -1114,15 +1131,73 @@ mod tests {
 
     #[test]
     fn test_stale_arecord_label_selector_contains_namespace_and_ingress() {
-        let selector = stale_arecord_label_selector("new-cluster", "my-ns", "my-ingress");
+        let selector =
+            stale_arecord_label_selector("new-cluster", "my-ns", "my-ingress", "example.com");
         assert!(selector.contains(&format!("{}=my-ns", LABEL_SOURCE_NAMESPACE)));
         assert!(selector.contains(&format!("{}=my-ingress", LABEL_SOURCE_NAME)));
+    }
+
+    // ------------------------------------------------------------------
+    // is_valid_zone_label_value
+    //
+    // The resolved zone (from an unvalidated annotation) is interpolated
+    // directly into a labelSelector on the stale-cluster delete/opt-out
+    // paths. A value that is legal DNS but not a legal Kubernetes label
+    // value (trailing dot, over 63 chars) must be rejected here so the
+    // caller falls back to the skip path instead of sending a `list` that
+    // the API server rejects with a 400.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_is_valid_zone_label_value_accepts_plain_domain() {
+        assert!(is_valid_zone_label_value("example.com"));
+    }
+
+    #[test]
+    fn test_is_valid_zone_label_value_accepts_hyphens_and_underscores() {
+        assert!(is_valid_zone_label_value("my-zone_1.example.com"));
+    }
+
+    #[test]
+    fn test_is_valid_zone_label_value_rejects_empty() {
+        assert!(!is_valid_zone_label_value(""));
+    }
+
+    #[test]
+    fn test_is_valid_zone_label_value_rejects_trailing_dot() {
+        // DNS-idiomatic (fully-qualified), but not a legal label value.
+        assert!(!is_valid_zone_label_value("example.com."));
+    }
+
+    #[test]
+    fn test_is_valid_zone_label_value_rejects_leading_dot() {
+        assert!(!is_valid_zone_label_value(".example.com"));
+    }
+
+    #[test]
+    fn test_is_valid_zone_label_value_rejects_over_63_chars() {
+        let too_long = format!("{}.com", "a".repeat(60));
+        assert!(!is_valid_zone_label_value(&too_long));
+    }
+
+    #[test]
+    fn test_is_valid_zone_label_value_accepts_exactly_63_chars() {
+        let exactly = format!("{}m", "a".repeat(62));
+        assert_eq!(exactly.len(), 63);
+        assert!(is_valid_zone_label_value(&exactly));
+    }
+
+    #[test]
+    fn test_is_valid_zone_label_value_rejects_illegal_characters() {
+        assert!(!is_valid_zone_label_value("example.com/evil"));
+        assert!(!is_valid_zone_label_value("example.com,other=value"));
+        assert!(!is_valid_zone_label_value("example.com "));
     }
 
     #[test]
     fn test_stale_arecord_label_selector_does_not_match_current_cluster() {
         // The whole point: current cluster is excluded, not selected.
-        let selector = stale_arecord_label_selector("current", "ns", "ing");
+        let selector = stale_arecord_label_selector("current", "ns", "ing", "example.com");
         // Must NOT contain an equality match on the current cluster
         assert!(
             !selector.contains(&format!("{}=current", LABEL_SOURCE_CLUSTER)),
@@ -1225,6 +1300,24 @@ mod tests {
     fn test_resolve_zone_none_when_no_annotation_and_no_default() {
         let annotations = BTreeMap::new();
         assert_eq!(resolve_zone(&annotations, None), None);
+    }
+
+    #[test]
+    fn test_opt_out_edit_removing_all_annotations_also_removes_zone() {
+        // A user opting out by deleting every bindy.firestoned.io/* annotation
+        // in one edit removes the opt-in and the zone in the same patch. The
+        // reconciler must see both "not opted in" and "no zone" together on
+        // this reconcile — there is no in-between state where the opt-out is
+        // detected but the old zone annotation still lingers — which is
+        // exactly the case that sends stale-cluster cleanup down the
+        // no-usable-zone path (log_unscoped_stale_cluster_arecord_candidates)
+        // instead of a normal zone-scoped delete.
+        let annotations_after_edit: BTreeMap<String, String> = BTreeMap::new();
+        assert!(!is_scout_opted_in(&annotations_after_edit));
+        assert_eq!(
+            resolve_zone(&annotations_after_edit, /* default_zone */ None),
+            None
+        );
     }
 
     #[test]
@@ -1612,6 +1705,7 @@ mod tests {
             "new-cluster",
             "default",
             "api-route",
+            "example.com",
         );
 
         // Assert
@@ -1621,18 +1715,47 @@ mod tests {
     }
 
     #[test]
+    fn test_stale_httproute_arecord_label_selector_requires_matching_zone() {
+        let selector = crate::scout::stale_httproute_arecord_label_selector(
+            "new-cluster",
+            "default",
+            "api-route",
+            "example.com",
+        );
+        assert!(
+            selector.contains(&format!("{}=example.com", LABEL_ZONE)),
+            "selector must require an equality match on zone: got {selector}"
+        );
+    }
+
+    #[test]
     fn test_stale_tlsroute_arecord_label_selector_uses_not_equal() {
         // Arrange & Act
         let selector = crate::scout::stale_tlsroute_arecord_label_selector(
             "new-cluster",
             "default",
             "secure-route",
+            "example.com",
         );
 
         // Assert
         assert!(selector.contains(&format!("{}!=new-cluster", LABEL_SOURCE_CLUSTER)));
         assert!(selector.contains("source-name=secure-route"));
         assert!(selector.contains("default"));
+    }
+
+    #[test]
+    fn test_stale_tlsroute_arecord_label_selector_requires_matching_zone() {
+        let selector = crate::scout::stale_tlsroute_arecord_label_selector(
+            "new-cluster",
+            "default",
+            "secure-route",
+            "example.com",
+        );
+        assert!(
+            selector.contains(&format!("{}=example.com", LABEL_ZONE)),
+            "selector must require an equality match on zone: got {selector}"
+        );
     }
 
     #[test]
@@ -1790,12 +1913,30 @@ mod tests {
 
     #[test]
     fn test_stale_tcproute_arecord_label_selector_uses_not_equal() {
-        let selector =
-            stale_tcproute_arecord_label_selector("new-cluster", "default", "database-route");
+        let selector = stale_tcproute_arecord_label_selector(
+            "new-cluster",
+            "default",
+            "database-route",
+            "example.com",
+        );
 
         assert!(selector.contains(&format!("{}!=new-cluster", LABEL_SOURCE_CLUSTER)));
         assert!(selector.contains("source-name=database-route"));
         assert!(selector.contains("default"));
+    }
+
+    #[test]
+    fn test_stale_tcproute_arecord_label_selector_requires_matching_zone() {
+        let selector = stale_tcproute_arecord_label_selector(
+            "new-cluster",
+            "default",
+            "database-route",
+            "example.com",
+        );
+        assert!(
+            selector.contains(&format!("{}=example.com", LABEL_ZONE)),
+            "selector must require an equality match on zone: got {selector}"
+        );
     }
 
     #[test]
@@ -2346,12 +2487,342 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // delete_stale_cluster_*_arecords (issue #474)
+    //
+    // The selector-builder tests above prove the *string* carries a zone
+    // clause. These prove the zone value actually reaches the API request —
+    // exactly the class of bug where a fix wires the right value into the
+    // wrong call (or drops it), which a selector-string-only test can't
+    // catch because it never calls the delete function at all.
+    // ------------------------------------------------------------------
+
+    /// An ARecord, as the API server would return it in a list, carrying the
+    /// labels Scout uses to identify ownership and scope stale-cleanup.
+    fn arecord_item(name: &str, source_cluster: &str, zone: &str) -> serde_json::Value {
+        let mut labels = serde_json::Map::new();
+        labels.insert(
+            LABEL_MANAGED_BY.to_string(),
+            serde_json::json!(LABEL_MANAGED_BY_SCOUT),
+        );
+        labels.insert(
+            LABEL_SOURCE_CLUSTER.to_string(),
+            serde_json::json!(source_cluster),
+        );
+        labels.insert(
+            LABEL_SOURCE_NAMESPACE.to_string(),
+            serde_json::json!("team-checkout"),
+        );
+        labels.insert(
+            LABEL_SOURCE_NAME.to_string(),
+            serde_json::json!("web-frontend"),
+        );
+        labels.insert(LABEL_ZONE.to_string(), serde_json::json!(zone));
+        serde_json::json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "ARecord",
+            "metadata": {
+                "name": name,
+                "namespace": "bindy-system",
+                "labels": serde_json::Value::Object(labels),
+            },
+            "spec": {
+                "name": "web-frontend",
+                "ipv4Addresses": ["10.0.0.1"],
+            }
+        })
+    }
+
+    fn arecord_list_body(items: Vec<serde_json::Value>) -> serde_json::Value {
+        serde_json::json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "ARecordList",
+            "metadata": {},
+            "items": items,
+        })
+    }
+
+    const ARECORD_LIST_PATH: &str =
+        "/apis/bindy.firestoned.io/v1beta1/namespaces/bindy-system/arecords";
+
+    #[tokio::test]
+    async fn delete_stale_cluster_arecords_scopes_list_request_by_zone() {
+        // Reproduces the fix's premise directly: south's cleanup call for
+        // its own zone must ask the API server for records in that zone —
+        // not silently fall back to an unscoped (or wrong-zone) query, which
+        // is exactly how north's live ARecord got deleted before the fix.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(ARECORD_LIST_PATH))
+            .and(wiremock::matchers::query_param_contains(
+                "labelSelector",
+                format!("{LABEL_ZONE}=zone-beta.example.internal"),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![])))
+            .mount(&server)
+            .await;
+
+        let result = crate::scout::delete_stale_cluster_arecords(
+            &client_for(&server),
+            "bindy-system",
+            "south",
+            "team-checkout",
+            "web-frontend",
+            "zone-beta.example.internal",
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "expected the zone-scoped selector to match the mock, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_stale_cluster_arecords_deletes_only_returned_records() {
+        // The delete loop itself: whatever the (server-side-filtered) list
+        // returns is what gets deleted — no additional client-side filtering
+        // to get backwards. The `labelSelector` matcher below also guards
+        // against this test passing vacuously if zone scoping regressed.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(ARECORD_LIST_PATH))
+            .and(wiremock::matchers::query_param_contains(
+                "labelSelector",
+                format!("{LABEL_ZONE}=zone-beta.example.internal"),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![arecord_item(
+                    "scout-north-team-checkout-web-frontend-0",
+                    "north",
+                    "zone-beta.example.internal",
+                )])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path(format!(
+                "{ARECORD_LIST_PATH}/scout-north-team-checkout-web-frontend-0"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "apiVersion": "bindy.firestoned.io/v1beta1",
+                "kind": "ARecord",
+                "metadata": {"name": "scout-north-team-checkout-web-frontend-0"},
+                "spec": {"name": "web-frontend", "ipv4Addresses": ["10.0.0.1"]},
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let result = crate::scout::delete_stale_cluster_arecords(
+            &client_for(&server),
+            "bindy-system",
+            "south",
+            "team-checkout",
+            "web-frontend",
+            "zone-beta.example.internal",
+        )
+        .await;
+
+        assert!(result.is_ok(), "got {result:?}");
+        // wiremock's `.expect(1)` above is verified when `server` drops.
+    }
+
+    #[tokio::test]
+    async fn delete_stale_cluster_httproute_arecords_scopes_list_request_by_zone() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(ARECORD_LIST_PATH))
+            .and(wiremock::matchers::query_param_contains(
+                "labelSelector",
+                format!("{LABEL_ZONE}=zone-beta.example.internal"),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![])))
+            .mount(&server)
+            .await;
+
+        let result = crate::scout::delete_stale_cluster_httproute_arecords(
+            &client_for(&server),
+            "bindy-system",
+            "south",
+            "team-checkout",
+            "web-frontend",
+            "zone-beta.example.internal",
+        )
+        .await;
+
+        assert!(result.is_ok(), "got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn delete_stale_cluster_tlsroute_arecords_scopes_list_request_by_zone() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(ARECORD_LIST_PATH))
+            .and(wiremock::matchers::query_param_contains(
+                "labelSelector",
+                format!("{LABEL_ZONE}=zone-beta.example.internal"),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![])))
+            .mount(&server)
+            .await;
+
+        let result = crate::scout::delete_stale_cluster_tlsroute_arecords(
+            &client_for(&server),
+            "bindy-system",
+            "south",
+            "team-checkout",
+            "web-frontend",
+            "zone-beta.example.internal",
+        )
+        .await;
+
+        assert!(result.is_ok(), "got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn delete_stale_cluster_tcproute_arecords_scopes_list_request_by_zone() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(ARECORD_LIST_PATH))
+            .and(wiremock::matchers::query_param_contains(
+                "labelSelector",
+                format!("{LABEL_ZONE}=zone-beta.example.internal"),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![])))
+            .mount(&server)
+            .await;
+
+        let result = crate::scout::delete_stale_cluster_tcproute_arecords(
+            &client_for(&server),
+            "bindy-system",
+            "south",
+            "team-checkout",
+            "web-frontend",
+            "zone-beta.example.internal",
+        )
+        .await;
+
+        assert!(result.is_ok(), "got {result:?}");
+    }
+
+    // ------------------------------------------------------------------
+    // log_unscoped_stale_cluster_arecord_candidates
+    //
+    // Exercised on the delete/opt-out paths when no usable zone resolves.
+    // It must ask for candidates with an unscoped (no zone clause) selector
+    // — that's the whole point, there's no zone to scope by — and it must
+    // never issue a DELETE: it is a diagnostic, not a cleanup.
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn log_unscoped_stale_cluster_arecord_candidates_omits_zone_clause() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(ARECORD_LIST_PATH))
+            .and(wiremock::matchers::query_param(
+                "labelSelector",
+                format!(
+                    "{}={},{}!=south,{}=team-checkout,{}=web-frontend",
+                    LABEL_MANAGED_BY,
+                    LABEL_MANAGED_BY_SCOUT,
+                    LABEL_SOURCE_CLUSTER,
+                    LABEL_SOURCE_NAMESPACE,
+                    LABEL_SOURCE_NAME,
+                ),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![arecord_item(
+                    "scout-north-team-checkout-web-frontend-0",
+                    "north",
+                    "zone-beta.example.internal",
+                )])),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        log_unscoped_stale_cluster_arecord_candidates(
+            &client_for(&server),
+            "bindy-system",
+            "south",
+            "Ingress",
+            "team-checkout",
+            "web-frontend",
+        )
+        .await;
+
+        // wiremock's `.expect(1)` above is verified when `server` drops —
+        // proving the request had exactly this unscoped selector.
+    }
+
+    #[tokio::test]
+    async fn log_unscoped_stale_cluster_arecord_candidates_never_deletes() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(ARECORD_LIST_PATH))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![arecord_item(
+                    "scout-north-team-checkout-web-frontend-0",
+                    "north",
+                    "zone-beta.example.internal",
+                )])),
+            )
+            .mount(&server)
+            .await;
+        // No DELETE mock is mounted at all — if the diagnostic ever issued
+        // one, wiremock would return its default 404 and this test's intent
+        // (verified indirectly: nothing panics, nothing errors) would still
+        // hold, so assert explicitly that DELETE is never called.
+        Mock::given(method("DELETE"))
+            .and(path(format!(
+                "{ARECORD_LIST_PATH}/scout-north-team-checkout-web-frontend-0"
+            )))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        log_unscoped_stale_cluster_arecord_candidates(
+            &client_for(&server),
+            "bindy-system",
+            "south",
+            "Ingress",
+            "team-checkout",
+            "web-frontend",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn log_unscoped_stale_cluster_arecord_candidates_swallows_list_errors() {
+        // A best-effort diagnostic must never panic or propagate an error
+        // that could block the finalizer removal it's called alongside.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(ARECORD_LIST_PATH))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        log_unscoped_stale_cluster_arecord_candidates(
+            &client_for(&server),
+            "bindy-system",
+            "south",
+            "Ingress",
+            "team-checkout",
+            "web-frontend",
+        )
+        .await;
+        // No panic — that's the assertion.
+    }
+
+    // ------------------------------------------------------------------
     // kind_served
     //
-    // The only tests in this file that speak to an API. Gateway API is not
-    // installed by default in Kubernetes, and a Controller started against an
-    // absent CRD retries forever rather than failing — so the detection has to
-    // be right, and its three outcomes are covered here.
+    // Gateway API is not installed by default in Kubernetes, and a
+    // Controller started against an absent CRD retries forever rather than
+    // failing — so the detection has to be right, and its three outcomes are
+    // covered here.
     //
     // Note the probe is PER KIND. Gateway API ships in two channels and the
     // route kinds graduated at different times (HTTPRoute Standard since v1.0,

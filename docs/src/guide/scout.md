@@ -1121,14 +1121,18 @@ If you restart Scout with a different `--cluster-name` (or `BINDY_SCOUT_CLUSTER_
 
 ### How It Works
 
-`ARecord` CRs created by Scout carry a `bindy.firestoned.io/source-cluster` label with the cluster name that created them. The CR name also embeds the cluster name (e.g., `scout-<cluster>-<namespace>-<ingress>-<idx>`).
+`ARecord` CRs created by Scout carry `bindy.firestoned.io/source-cluster` and `bindy.firestoned.io/zone` labels identifying the cluster that created them and the DNS zone they publish into. The CR name also embeds the cluster name (e.g., `scout-<cluster>-<namespace>-<ingress>-<idx>`).
 
 When Scout reconciles an Ingress under a new cluster name:
 1. It creates new `ARecord` CRs under the new cluster name.
-2. It selects all `ARecord` CRs for the same Ingress whose `source-cluster` label does **not** match the current cluster name.
+2. It selects all `ARecord` CRs for the same Ingress namespace + name whose `source-cluster` label does **not** match the current cluster name **and** whose `zone` label matches the Ingress's currently resolved zone.
 3. It deletes those stale records automatically.
 
-This happens on every reconcile, so all stale records are cleaned up on the next controller loop after the restart — no manual intervention required.
+The zone match matters: two entirely unrelated clusters can happen to run an Ingress with the same namespace + name (e.g. both deploy `team-checkout/web-frontend`) while publishing into **different** DNS zones. Without scoping by zone, each cluster's cleanup would treat the other's live `ARecord` as "stale" purely because the `source-cluster` label differs — and delete it, over and over, on every reconcile. Scoping by zone protects clusters publishing into distinct zones from this.
+
+**This does not protect clusters that share a zone.** If several clusters publish into the *same* DNS zone — a normal multi-cluster-DNS topology — and happen to run resources with the same namespace + name, they still match each other's selector and will mutually delete each other's live `ARecord`s in a flapping loop. Give such resources distinct namespaces, names, or zones to avoid this; fully identifying "this same physical Scout instance under a prior cluster name" would need an instance-level marker that this mechanism does not provide.
+
+This happens on every reconcile, so all stale records for the reconcile path are cleaned up on the next controller loop after the restart — no manual intervention required there. The **delete** and **opt-out** paths are different: if Scout cannot resolve a usable zone for the resource being removed (no `bindy.firestoned.io/zone` annotation, no `BINDY_SCOUT_DEFAULT_ZONE`, or the resolved zone is not a legal label value), it logs a warning, lists (without deleting) any candidate stale `ARecord`s left behind under a previous cluster name so an operator can review them, and then still removes the resource's own `ARecord`s and finalizer. Because the resource is gone, there is no future reconcile to retry that skipped cleanup — it is permanent unless an operator acts on the logged candidates.
 
 ### Example
 
