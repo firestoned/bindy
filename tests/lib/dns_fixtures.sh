@@ -182,10 +182,19 @@ force_clear_zone_finalizers() {
 
 # Wait for the operator's finalizers to actually release everything, so the run
 # starts from a clean slate instead of racing a half-deleted zone.
+#
+# Deployments and Pods are in the list deliberately: the suites all reuse the
+# same fixture names, and the CRs vanishing only means the finalizers ran — the
+# operand Deployments/ReplicaSets/Pods they own are garbage-collected and
+# terminated asynchronously after that. A suite that re-applies the fixtures
+# one second later races the operator's fresh Deployment against the GC of the
+# previous suite's identically-named one, and its readiness wait against the
+# old Pod's preStop drain. Waiting for the operands to be gone removes that
+# overlap entirely.
 wait_for_test_resources_gone() {
     local deadline=$((SECONDS + PRECLEAN_TIMEOUT)) left
     while [ "${SECONDS}" -lt "${deadline}" ]; do
-        left=$(${KUBECTL} get ${RECORD_KINDS},dnszones,bind9instances,bind9clusters \
+        left=$(${KUBECTL} get ${RECORD_KINDS},dnszones,bind9instances,bind9clusters,deployments,pods \
                    -n "${NAMESPACE}" --no-headers 2>/dev/null | grep -c integration || true)
         if [ "${left:-0}" -eq 0 ]; then
             return 0
@@ -219,6 +228,32 @@ teardown_fixtures() {
 # These record failures through fail() and always return 0, so callers can chain
 # them without `set -e` aborting on the first problem.
 
+# Everything the CI log needs to explain a missed readiness deadline: which
+# container was unready and why, what the kubelet was doing to the Pod, and the
+# namespace's recent events. Without this, a failure only says "never became
+# ready" about a Pod that is often 2/2 Running by the time anyone looks.
+dump_operand_diagnostics() {
+    local inst=$1 pod
+    warn "diagnostics for ${inst}:"
+    ${KUBECTL} get pods -n "${NAMESPACE}" \
+        -l "app.kubernetes.io/instance=${inst}" -o wide 2>/dev/null || true
+    # Not instance_pod(): that filters to phase=Running, and the whole point
+    # here is a Pod that may be stuck in ContainerCreating or Pending.
+    pod=$(${KUBECTL} get pods -n "${NAMESPACE}" \
+        -l "app.kubernetes.io/instance=${inst}" \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [ -n "${pod}" ]; then
+        echo "── container statuses (${pod}) ──"
+        ${KUBECTL} get pod "${pod}" -n "${NAMESPACE}" -o jsonpath='{range .status.containerStatuses[*]}{.name}{" ready="}{.ready}{" restarts="}{.restartCount}{" state="}{.state}{"\n"}{end}' 2>/dev/null || true
+        echo "── pod conditions ──"
+        ${KUBECTL} get pod "${pod}" -n "${NAMESPACE}" -o jsonpath='{range .status.conditions[*]}{.type}{"="}{.status}{" reason="}{.reason}{" message="}{.message}{"\n"}{end}' 2>/dev/null || true
+        echo "── describe (tail) ──"
+        ${KUBECTL} describe pod "${pod}" -n "${NAMESPACE}" 2>/dev/null | tail -30 || true
+    fi
+    echo "── namespace events (most recent last) ──"
+    ${KUBECTL} get events -n "${NAMESPACE}" --sort-by=.lastTimestamp 2>/dev/null | tail -25 || true
+}
+
 # Block until every expected primary has a Ready Pod. kubectl wait fails
 # immediately when nothing matches its selector, so wait for the Pod to be
 # created first, then for it to become Ready.
@@ -235,8 +270,7 @@ assert_operands_ready() {
             pass "${inst}: Pod ready"
         else
             fail "${inst}: Pod never became ready"
-            ${KUBECTL} get pods -n "${NAMESPACE}" \
-                -l "app.kubernetes.io/instance=${inst}" 2>/dev/null || true
+            dump_operand_diagnostics "${inst}"
         fi
     done
     return 0
