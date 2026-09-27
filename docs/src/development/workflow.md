@@ -2,6 +2,12 @@
 
 Daily development workflow for Bindy contributors.
 
+> **ADD governs all work.** Before starting the cycle below, check whether the
+> change is architecturally significant — if so, it starts with an ADR and a
+> CALM model update, *then* test-driven implementation. See the
+> [Developer Guide overview](index.md) for the full
+> `ADR → CALM → TDD → implement → docs → threat model` pipeline.
+
 ## Development Cycle
 
 1. **Create feature branch**

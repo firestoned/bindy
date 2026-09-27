@@ -286,6 +286,7 @@ nav:
           - Service Discovery: advanced/service-discovery.md
 
   - Developer Guide:
+      - Overview: development/index.md
       - Development Setup:
           - Overview: development/setup.md
           - Building: development/building.md

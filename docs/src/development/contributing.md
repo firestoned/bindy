@@ -12,10 +12,12 @@ Thank you for contributing to Bindy!
 
 ## Getting Started
 
-1. [Set up development environment](./setup.md)
-2. Read [Code Style](./code-style.md)
-3. Check [Testing Guide](./testing-guide.md)
-4. Follow [PR Process](./pr-process.md)
+1. Understand [ADD — Architecture Driven Development](./index.md), the
+   methodology governing all changes (`ADR → CALM → TDD`)
+2. [Set up development environment](./setup.md)
+3. Read [Code Style](./code-style.md)
+4. Check [Testing Guide](./testing-guide.md)
+5. Follow [PR Process](./pr-process.md)
 
 ## Code of Conduct
 

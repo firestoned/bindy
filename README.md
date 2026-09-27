@@ -476,6 +476,13 @@ Includes:
 
 ## Development
 
+Bindy follows **ADD — Architecture Driven Development**: significant changes
+start with an [ADR](docs/adr/) and a [CALM](https://github.com/finos/architecture-as-code)
+architecture update (`calm/`), *then* test-driven implementation
+(`ADR → CALM → TDD`). See
+[`.claude/rules/architecture-driven-development.md`](.claude/rules/architecture-driven-development.md)
+and the [Developer Guide](https://firestoned.github.io/bindy/development/).
+
 **Prerequisites:**
 - Rust 1.85+
 - Kubernetes 1.27+

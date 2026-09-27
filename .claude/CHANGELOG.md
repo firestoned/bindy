@@ -1,3 +1,96 @@
+## [2026-09-27 12:30] - Complete roadmap 03: early-return / guard-clause refactor
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/bind9_resources.rs`: refactored `build_options_conf` and
+  `build_cluster_options_conf` onto shared flat per-directive resolvers —
+  `render_recursion`, `render_dnssec_validation`, `resolve_dnssec_validation`,
+  `render_acl_directive`, `render_allow_transfer` — removing the 3–4-level
+  nested if-else precedence chains and both `#[allow(clippy::too_many_lines)]`
+  attributes. Added `ALLOW_QUERY_DIRECTIVE` / `ALLOW_TRANSFER_DIRECTIVE` and
+  `SOURCE_GLOBAL_ALLOW_QUERY` / `SOURCE_GLOBAL_ALLOW_TRANSFER` constants for
+  strings now shared by both builders.
+- `src/bind9_resources.rs`: flattened `build_pod_spec`'s image selection to an
+  `and_then`/`unwrap_or_else` chain; flattened `build_volume_mounts` via the
+  new `config_file_mount` helper; flattened the user-env loop in
+  `build_api_sidecar_container` and moved its rustdoc back onto the function
+  (it had been left attached to the `VOLUME_BINDCAR_TLS` const when the TLS
+  constants were inserted).
+- `src/reconcilers/clusterbind9provider.rs`: extracted the four-way condition
+  chain in `calculate_cluster_status` into the early-return helper
+  `cluster_ready_condition`.
+- `src/bind9_resources_tests.rs`: added pinning tests for the previously
+  untested precedence paths of `build_options_conf` — global-config fallback
+  (recursion/allow-query/allow-transfer/dnssec, plus a placeholder-free
+  assertion for the instance-level builder), role-specific `allow-transfer`
+  overriding global, and the historical dnssec-validation asymmetry when the
+  instance has no `config` block.
+- `ROADMAPS.md`, `.github/community/03-early-return-refactoring.md`: roadmap
+  03 closed as ✅ Done.
+
+### Why
+Finishes and closes roadmap 03. The refactor is behavior-preserving: the new
+pinning tests were written first and pass against both the old and new code.
+Two pre-existing quirks were deliberately preserved and are now documented in
+code comments: (1) with no instance `config` block, a global
+`dnssec.validation: false` emits no directive instead of an explicit
+`dnssec-validation no;`; (2) the cluster-level options builder still lacks the
+instance-level builder's `allow-transfer { none; };` deny-by-default (the #466
+gap). Both are candidates for a separate, deliberate behavior change.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout (refactor is behavior-preserving; generated
+  named.conf output and Kubernetes resources are byte-identical)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-27 11:38] - Adopt ADD (Architecture Driven Development) as the governing methodology
+
+**Author:** Erick Bourgeois
+
+### Added
+- `.claude/rules/architecture-driven-development.md`: the ADD rule, ported from
+  `~/dev/banlieue` and adapted to this repo's layout (CALM models in `calm/`,
+  `make calm-validate` / `calm-docs` / `calm-docs-check`, CRDs in
+  `deploy/operator/crds/`, roadmaps in `.github/community/` + `ROADMAPS.md`,
+  threat model at `docs/src/security/threat-model.md`). Fixed pipeline:
+  `ADR → CALM → TDD → implement → docs → threat model`.
+- `.claude/skills/build-docs/SKILL.md`: registered `build-docs` as a real,
+  invocable project skill wrapping `make docs` (it was referenced throughout
+  `.claude/` but only described in the monolithic `SKILL.md`, so invoking it
+  failed). `.claude/SKILL.md` §build-docs now points at the registered skill.
+- `docs/src/development/index.md`: new Developer Guide landing page documenting
+  the ADD pipeline prominently (Mermaid flow, per-step guidance, applicability
+  table, guide contents). Wired into `docs/mkdocs.yml` nav as
+  Developer Guide → Overview.
+
+### Changed
+- `.claude/CLAUDE.md`: new "🚨 CRITICAL: ADD" section + ADD lead bullet in the
+  coding-patterns list.
+- `README.md`: Development section now states the ADD methodology and links the
+  rule and the Developer Guide.
+- `docs/src/development/workflow.md`, `contributing.md`, `setup.md`:
+  cross-links to the ADD overview.
+- New ADRs use metadata bullets (`- **Status:**` / `- **Date:**`) instead of a
+  `## Status` section; existing ADRs 0001–0004 migrate when next touched.
+- `.claude/CLAUDE.md`: replaced the stale "NO Roadmaps in This Repo" section
+  with the current policy (roadmaps checked in at `.github/community/` +
+  `ROADMAPS.md`; only infra-naming / unremediated-security docs stay external),
+  matching the global roadmap policy and the ADD rule's step 4.
+
+### Why
+User decision (2026-09-27): bindy moves completely to the ADD way of developing
+already in force in banlieue — architecture is decided (ADR) and modeled (CALM)
+before test-driven implementation, and the threat model is re-verified after.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-09-23 17:30] - Fix main integration failures: racy scout_integration cleanup, e2e operand-readiness diagnostics and pre-clean overlap
 
 **Author:** Erick Bourgeois

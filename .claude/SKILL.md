@@ -202,6 +202,10 @@ Brief explanation of the business or technical reason.
 
 ## `build-docs`
 
+> Registered project skill: `.claude/skills/build-docs/SKILL.md` — invoke it
+> via the Skill tool (`/build-docs`) rather than treating this section as the
+> skill itself.
+
 **When to use:**
 - After any documentation change
 - Before any documentation release

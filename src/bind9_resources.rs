@@ -16,7 +16,9 @@ use crate::constants::{
     MAX_UNAVAILABLE_OPERANDS, READINESS_FAILURE_THRESHOLD, READINESS_INITIAL_DELAY_SECS,
     READINESS_PERIOD_SECS, READINESS_TIMEOUT_SECS, RNDC_PORT,
 };
-use crate::crd::{Bind9Cluster, Bind9Instance, ConfigMapRefs, ImageConfig, ServerRole};
+use crate::crd::{
+    Bind9Cluster, Bind9Config, Bind9Instance, ConfigMapRefs, ImageConfig, ServerRole,
+};
 use crate::labels::{
     APP_NAME_BIND9, BINDY_CLUSTER_LABEL, BINDY_ROLE_LABEL, COMPONENT_DNS_CLUSTER,
     COMPONENT_DNS_SERVER, K8S_COMPONENT, K8S_INSTANCE, K8S_MANAGED_BY, K8S_NAME, K8S_PART_OF,
@@ -1008,6 +1010,20 @@ const DEFAULT_ALLOW_TRANSFER_NONE: &str = "allow-transfer { none; };";
 /// clients. Set `rateLimit.responsesPerSecond: 0` in the CRD to disable.
 const DEFAULT_RATE_LIMIT_RESPONSES_PER_SECOND: u32 = 15;
 
+/// Directive name for query ACLs in named.conf.options.
+const ALLOW_QUERY_DIRECTIVE: &str = "allow-query";
+
+/// Directive name for zone-transfer ACLs in named.conf.options.
+const ALLOW_TRANSFER_DIRECTIVE: &str = "allow-transfer";
+
+/// Error-context name for the cluster-level `allow_query` field, shared by the
+/// instance-level (global fallback) and cluster-level options builders.
+const SOURCE_GLOBAL_ALLOW_QUERY: &str = "cluster spec.global.allow_query";
+
+/// Error-context name for the cluster-level `allow_transfer` field, shared by
+/// the instance-level (global fallback) and cluster-level options builders.
+const SOURCE_GLOBAL_ALLOW_TRANSFER: &str = "cluster spec.global.allow_transfer";
+
 /// Build the named.conf.options configuration from template
 ///
 /// Generates the BIND9 options configuration file from the instance's config spec.
@@ -1029,173 +1045,59 @@ const DEFAULT_RATE_LIMIT_RESPONSES_PER_SECOND: u32 = 15;
 /// # Returns
 ///
 /// A string containing the complete named.conf.options configuration
-#[allow(clippy::too_many_lines)]
 fn build_options_conf(
     instance: &Bind9Instance,
     cluster: Option<&Bind9Cluster>,
     role_allow_transfer: Option<&Vec<String>>,
 ) -> anyhow::Result<String> {
-    let recursion;
-    let mut allow_query = String::new();
-    let allow_transfer;
-    let mut dnssec_validate = String::new();
-
-    // Get global config from cluster if available
+    let instance_cfg = instance.spec.config.as_ref();
     let global_config = cluster.and_then(|c| c.spec.common.global.as_ref());
 
-    if let Some(config) = &instance.spec.config {
-        // Recursion setting - instance overrides global
-        let recursion_value = if let Some(rec) = config.recursion {
-            if rec {
-                "yes"
-            } else {
-                "no"
-            }
-        } else if let Some(global) = global_config {
-            if global.recursion.unwrap_or(false) {
-                "yes"
-            } else {
-                "no"
-            }
-        } else {
-            "no"
-        };
-        recursion = format!("recursion {recursion_value};");
+    // Recursion - instance overrides global; off when neither sets it.
+    let recursion = render_recursion(
+        instance_cfg
+            .and_then(|c| c.recursion)
+            .or_else(|| global_config.and_then(|g| g.recursion))
+            .unwrap_or(false),
+    );
 
-        // Allow-query ACL - instance overrides global
-        if let Some(acls) = &config.allow_query {
-            if !acls.is_empty() {
-                let acl_list = build_acl_list(acls)
-                    .context("invalid entry in instance spec.config.allow_query")?;
-                allow_query = format!("allow-query {{ {acl_list}; }};");
-            }
-        } else if let Some(global) = global_config {
-            if let Some(global_acls) = &global.allow_query {
-                if !global_acls.is_empty() {
-                    let acl_list = build_acl_list(global_acls)
-                        .context("invalid entry in cluster spec.global.allow_query")?;
-                    allow_query = format!("allow-query {{ {acl_list}; }};");
-                }
-            }
-        }
-
-        // Allow-transfer ACL - priority: instance config > role-specific > global > no default
-        if let Some(acls) = &config.allow_transfer {
-            // Instance-level config takes highest priority
-            let acl_list = if acls.is_empty() {
-                "none".to_string()
-            } else {
-                build_acl_list(acls)
-                    .context("invalid entry in instance spec.config.allow_transfer")?
-            };
-            allow_transfer = format!("allow-transfer {{ {acl_list}; }};");
-        } else if let Some(role_acls) = role_allow_transfer {
-            // Role-specific override from cluster config (primary/secondary)
-            let acl_list = if role_acls.is_empty() {
-                "none".to_string()
-            } else {
-                build_acl_list(role_acls)
-                    .context("invalid entry in cluster role-specific allow_transfer")?
-            };
-            allow_transfer = format!("allow-transfer {{ {acl_list}; }};");
-        } else if let Some(global) = global_config {
-            // Global cluster settings
-            if let Some(global_acls) = &global.allow_transfer {
-                let acl_list = if global_acls.is_empty() {
-                    "none".to_string()
-                } else {
-                    build_acl_list(global_acls)
-                        .context("invalid entry in cluster spec.global.allow_transfer")?
-                };
-                allow_transfer = format!("allow-transfer {{ {acl_list}; }};");
-            } else {
-                // No explicit ACL anywhere — deny by default (see const doc).
-                allow_transfer = DEFAULT_ALLOW_TRANSFER_NONE.to_string();
-            }
-        } else {
-            // No explicit ACL anywhere — deny by default (see const doc).
-            allow_transfer = DEFAULT_ALLOW_TRANSFER_NONE.to_string();
-        }
-
-        // DNSSEC configuration - instance overrides global
-        // Note: dnssec-enable was removed in BIND 9.15+ (DNSSEC is always enabled)
-        // Only dnssec-validation is configurable now
-        if let Some(dnssec) = &config.dnssec {
-            if dnssec.validation.unwrap_or(false) {
-                dnssec_validate = "dnssec-validation yes;".to_string();
-            } else {
-                dnssec_validate = "dnssec-validation no;".to_string();
-            }
-        } else if let Some(global) = global_config {
-            if let Some(global_dnssec) = &global.dnssec {
-                if global_dnssec.validation.unwrap_or(false) {
-                    dnssec_validate = "dnssec-validation yes;".to_string();
-                } else {
-                    dnssec_validate = "dnssec-validation no;".to_string();
-                }
-            }
-        }
+    // Allow-query ACL - the first configured level wins (instance, then
+    // global); an explicitly empty list renders no directive.
+    let allow_query = if let Some(acls) = instance_cfg.and_then(|c| c.allow_query.as_ref()) {
+        render_acl_directive(
+            ALLOW_QUERY_DIRECTIVE,
+            Some(acls),
+            "instance spec.config.allow_query",
+        )?
     } else {
-        // No instance config - use global config if available, otherwise defaults
-        if let Some(global) = global_config {
-            // Recursion from global
-            let recursion_value = if global.recursion.unwrap_or(false) {
-                "yes"
-            } else {
-                "no"
-            };
-            recursion = format!("recursion {recursion_value};");
+        render_acl_directive(
+            ALLOW_QUERY_DIRECTIVE,
+            global_config.and_then(|g| g.allow_query.as_ref()),
+            SOURCE_GLOBAL_ALLOW_QUERY,
+        )?
+    };
 
-            // Allow-query from global
-            if let Some(acls) = &global.allow_query {
-                if !acls.is_empty() {
-                    let acl_list = build_acl_list(acls)
-                        .context("invalid entry in cluster spec.global.allow_query")?;
-                    allow_query = format!("allow-query {{ {acl_list}; }};");
-                }
-            }
+    // Allow-transfer ACL - priority: instance config > role-specific > global.
+    // An explicitly empty list at any level means `none`; with no explicit ACL
+    // anywhere, deny by default (see const doc).
+    let allow_transfer = if let Some(acls) = instance_cfg.and_then(|c| c.allow_transfer.as_ref()) {
+        render_allow_transfer(acls, "instance spec.config.allow_transfer")?
+    } else if let Some(role_acls) = role_allow_transfer {
+        render_allow_transfer(role_acls, "cluster role-specific allow_transfer")?
+    } else if let Some(global_acls) = global_config.and_then(|g| g.allow_transfer.as_ref()) {
+        render_allow_transfer(global_acls, SOURCE_GLOBAL_ALLOW_TRANSFER)?
+    } else {
+        DEFAULT_ALLOW_TRANSFER_NONE.to_string()
+    };
 
-            // Allow-transfer - priority: role-specific > global > no default
-            if let Some(role_acls) = role_allow_transfer {
-                let acl_list = if role_acls.is_empty() {
-                    "none".to_string()
-                } else {
-                    build_acl_list(role_acls)
-                        .context("invalid entry in cluster role-specific allow_transfer")?
-                };
-                allow_transfer = format!("allow-transfer {{ {acl_list}; }};");
-            } else if let Some(global_acls) = &global.allow_transfer {
-                let acl_list = if global_acls.is_empty() {
-                    "none".to_string()
-                } else {
-                    build_acl_list(global_acls)
-                        .context("invalid entry in cluster spec.global.allow_transfer")?
-                };
-                allow_transfer = format!("allow-transfer {{ {acl_list}; }};");
-            } else {
-                // No explicit ACL anywhere — deny by default (see const doc).
-                allow_transfer = DEFAULT_ALLOW_TRANSFER_NONE.to_string();
-            }
-
-            // DNSSEC from global
-            if let Some(dnssec) = &global.dnssec {
-                if dnssec.validation.unwrap_or(false) {
-                    dnssec_validate = "dnssec-validation yes;".to_string();
-                }
-            }
-        } else {
-            // Defaults when no config is specified
-            recursion = "recursion no;".to_string();
-            // No explicit ACL anywhere — deny by default (see const doc).
-            allow_transfer = DEFAULT_ALLOW_TRANSFER_NONE.to_string();
-        }
-    }
+    // DNSSEC validation - instance overrides global. dnssec-enable was removed
+    // in BIND 9.15+ (DNSSEC is always enabled); only validation is configurable.
+    let dnssec_validate = resolve_dnssec_validation(instance_cfg, global_config);
 
     // Generate DNSSEC policies (instance config overrides global)
-    let dnssec_policies = generate_dnssec_policies(global_config, instance.spec.config.as_ref())?;
+    let dnssec_policies = generate_dnssec_policies(global_config, instance_cfg)?;
 
     // Forwarders and listen addresses - instance overrides global, per field
-    let instance_cfg = instance.spec.config.as_ref();
     let forwarders = render_forwarders(
         instance_cfg
             .and_then(|c| c.forwarders.as_ref())
@@ -1321,6 +1223,96 @@ fn render_listen_on(directive: &str, addresses: Option<&Vec<String>>) -> anyhow:
     ))
 }
 
+/// Render the `recursion yes;` / `recursion no;` directive.
+fn render_recursion(enabled: bool) -> String {
+    let value = if enabled { "yes" } else { "no" };
+    format!("recursion {value};")
+}
+
+/// Render the `dnssec-validation yes;` / `dnssec-validation no;` directive.
+fn render_dnssec_validation(enabled: bool) -> String {
+    let value = if enabled { "yes" } else { "no" };
+    format!("dnssec-validation {value};")
+}
+
+/// Resolve the `dnssec-validation` directive for the instance-level options
+/// builder - the instance config overrides the cluster global config.
+///
+/// Emits nothing when neither level configures `dnssec`. One historical
+/// asymmetry is preserved: with no instance `config` block at all, a global
+/// `dnssec.validation: false` also emits nothing (leaving `named` on its own
+/// default), whereas an instance config block that is merely silent on dnssec
+/// renders an explicit `dnssec-validation no;` from that same global value.
+///
+/// # Arguments
+///
+/// * `instance_config` - The instance's `spec.config`, if any
+/// * `global_config` - The cluster's `spec.common.global`, if any
+fn resolve_dnssec_validation(
+    instance_config: Option<&Bind9Config>,
+    global_config: Option<&Bind9Config>,
+) -> String {
+    // Instance-level dnssec wins outright.
+    if let Some(dnssec) = instance_config.and_then(|c| c.dnssec.as_ref()) {
+        return render_dnssec_validation(dnssec.validation.unwrap_or(false));
+    }
+
+    let Some(global_dnssec) = global_config.and_then(|g| g.dnssec.as_ref()) else {
+        return String::new();
+    };
+    let validation = global_dnssec.validation.unwrap_or(false);
+
+    if instance_config.is_some() {
+        // Instance config block present but silent on dnssec: global decides.
+        return render_dnssec_validation(validation);
+    }
+
+    // No instance config block at all: only an explicit "yes" is emitted.
+    if validation {
+        return render_dnssec_validation(true);
+    }
+    String::new()
+}
+
+/// Render an ACL directive (`allow-query` / `allow-transfer`), or nothing.
+///
+/// Returns an empty string when `acls` is `None` or empty, so no directive is
+/// emitted. `source` names the originating CRD field for error context.
+///
+/// # Errors
+///
+/// Returns an error if any entry fails address-match-list validation — see
+/// [`crate::bind9_acl`] for the accepted syntax.
+fn render_acl_directive(
+    directive: &str,
+    acls: Option<&Vec<String>>,
+    source: &str,
+) -> anyhow::Result<String> {
+    let Some(acls) = acls else {
+        return Ok(String::new());
+    };
+    if acls.is_empty() {
+        return Ok(String::new());
+    }
+    let acl_list = build_acl_list(acls).with_context(|| format!("invalid entry in {source}"))?;
+    Ok(format!("{directive} {{ {acl_list}; }};"))
+}
+
+/// Render `allow-transfer` for the instance-level options builder, where an
+/// explicitly **empty** list means `none` (deny) rather than "not configured".
+///
+/// # Errors
+///
+/// Returns an error if any entry fails address-match-list validation — see
+/// [`crate::bind9_acl`] for the accepted syntax.
+fn render_allow_transfer(acls: &[String], source: &str) -> anyhow::Result<String> {
+    if acls.is_empty() {
+        return Ok(DEFAULT_ALLOW_TRANSFER_NONE.to_string());
+    }
+    let acl_list = build_acl_list(acls).with_context(|| format!("invalid entry in {source}"))?;
+    Ok(format!("{ALLOW_TRANSFER_DIRECTIVE} {{ {acl_list}; }};"))
+}
+
 /// Build the main named.conf configuration for a cluster from template
 ///
 /// Generates the main BIND9 configuration file with conditional zones include.
@@ -1373,59 +1365,39 @@ fn build_cluster_named_conf(cluster: &Bind9Cluster) -> String {
 /// # Returns
 ///
 /// A string containing the complete named.conf.options configuration
-#[allow(clippy::too_many_lines)]
 fn build_cluster_options_conf(cluster: &Bind9Cluster) -> anyhow::Result<String> {
-    let recursion;
-    let mut allow_query = String::new();
-    let mut allow_transfer = String::new();
-    let mut dnssec_validate = String::new();
+    let global = cluster.spec.common.global.as_ref();
 
-    // Use cluster global config
-    if let Some(global) = &cluster.spec.common.global {
-        // Recursion setting
-        let recursion_value = if global.recursion.unwrap_or(false) {
-            "yes"
-        } else {
-            "no"
-        };
-        recursion = format!("recursion {recursion_value};");
+    // Recursion - off unless the global config enables it.
+    let recursion = render_recursion(global.and_then(|g| g.recursion).unwrap_or(false));
 
-        // allow-query ACL
-        if let Some(aq) = &global.allow_query {
-            if !aq.is_empty() {
-                let acl_list = build_acl_list(aq)
-                    .context("invalid entry in cluster spec.global.allow_query")?;
-                allow_query = format!("allow-query {{ {acl_list}; }};");
-            }
-        }
+    // allow-query ACL
+    let allow_query = render_acl_directive(
+        ALLOW_QUERY_DIRECTIVE,
+        global.and_then(|g| g.allow_query.as_ref()),
+        SOURCE_GLOBAL_ALLOW_QUERY,
+    )?;
 
-        // allow-transfer ACL
-        if let Some(at) = &global.allow_transfer {
-            if !at.is_empty() {
-                let acl_list = build_acl_list(at)
-                    .context("invalid entry in cluster spec.global.allow_transfer")?;
-                allow_transfer = format!("allow-transfer {{ {acl_list}; }};");
-            }
-        }
+    // allow-transfer ACL. NOTE: unlike the instance-level builder, no explicit
+    // ACL renders no directive rather than the deny-by-default - a known gap
+    // carried over from #466.
+    let allow_transfer = render_acl_directive(
+        ALLOW_TRANSFER_DIRECTIVE,
+        global.and_then(|g| g.allow_transfer.as_ref()),
+        SOURCE_GLOBAL_ALLOW_TRANSFER,
+    )?;
 
-        // DNSSEC validation
-        if let Some(dnssec) = &global.dnssec {
-            if dnssec.validation.unwrap_or(false) {
-                dnssec_validate = "dnssec-validation yes;".to_string();
-            } else {
-                dnssec_validate = "dnssec-validation no;".to_string();
-            }
-        }
-    } else {
-        // No global config, use defaults
-        recursion = "recursion no;".to_string();
-    }
+    // DNSSEC validation - emitted only when the global config sets `dnssec`.
+    let dnssec_validate = global
+        .and_then(|g| g.dnssec.as_ref())
+        .map_or_else(String::new, |dnssec| {
+            render_dnssec_validation(dnssec.validation.unwrap_or(false))
+        });
 
     // Generate DNSSEC policies from global config
-    let dnssec_policies = generate_dnssec_policies(cluster.spec.common.global.as_ref(), None)?;
+    let dnssec_policies = generate_dnssec_policies(global, None)?;
 
     // Forwarders and listen addresses from global config
-    let global = cluster.spec.common.global.as_ref();
     let forwarders = render_forwarders(global.and_then(|g| g.forwarders.as_ref()))?;
     let listen_on = render_listen_on(
         LISTEN_ON_DIRECTIVE,
@@ -1744,14 +1716,9 @@ fn build_pod_spec(
     placement: &crate::placement::ResolvedPlacement,
 ) -> PodSpec {
     // Determine image to use
-    let image = if let Some(img_cfg) = image_config {
-        img_cfg
-            .image
-            .clone()
-            .unwrap_or_else(|| format!("internetsystemsconsortium/bind9:{version}"))
-    } else {
-        format!("internetsystemsconsortium/bind9:{version}")
-    };
+    let image = image_config
+        .and_then(|img_cfg| img_cfg.image.clone())
+        .unwrap_or_else(|| format!("internetsystemsconsortium/bind9:{version}"));
 
     // Determine image pull policy
     let image_pull_policy = image_config
@@ -1927,17 +1894,6 @@ fn build_pod_spec(
     }
 }
 
-/// Build the Bindcar API sidecar container
-///
-/// # Arguments
-///
-/// * `bindcar_config` - Optional Bindcar container configuration from the instance spec
-/// * `rndc_secret_name` - Name of the Secret containing the RNDC key
-///
-/// # Returns
-///
-/// A `Container` configured to run the Bindcar RNDC API sidecar
-#[allow(clippy::too_many_lines)]
 /// Volume carrying the sidecar's TLS key pair.
 pub(crate) const VOLUME_BINDCAR_TLS: &str = "bindcar-tls";
 
@@ -1978,6 +1934,17 @@ pub(crate) fn is_reserved_bindcar_env(name: &str) -> bool {
             .any(|p| name.starts_with(p))
 }
 
+/// Build the Bindcar API sidecar container
+///
+/// # Arguments
+///
+/// * `bindcar_config` - Optional Bindcar container configuration from the instance spec
+/// * `rndc_secret_name` - Name of the Secret containing the RNDC key
+///
+/// # Returns
+///
+/// A `Container` configured to run the Bindcar RNDC API sidecar
+#[allow(clippy::too_many_lines)]
 pub(crate) fn build_api_sidecar_container(
     bindcar_config: Option<&crate::crd::BindcarConfig>,
     rndc_secret_name: &str,
@@ -2116,19 +2083,16 @@ pub(crate) fn build_api_sidecar_container(
     // an operator-managed one. Appending them unfiltered would hand a tenant
     // control of the sidecar's auth and TLS configuration, because the kubelet
     // honours the last duplicate.
-    if let Some(config) = bindcar_config {
-        if let Some(user_env_vars) = &config.env_vars {
-            for var in user_env_vars {
-                if is_reserved_bindcar_env(&var.name) {
-                    warn!(
-                        env_var = %var.name,
-                        "Ignoring operator-reserved environment variable supplied via bindcarConfig.envVars"
-                    );
-                    continue;
-                }
-                env_vars.push(var.clone());
-            }
+    let user_env_vars = bindcar_config.and_then(|config| config.env_vars.as_ref());
+    for var in user_env_vars.into_iter().flatten() {
+        if is_reserved_bindcar_env(&var.name) {
+            warn!(
+                env_var = %var.name,
+                "Ignoring operator-reserved environment variable supplied via bindcarConfig.envVars"
+            );
+            continue;
         }
+        env_vars.push(var.clone());
     }
 
     Container {
@@ -2229,6 +2193,30 @@ pub(crate) fn build_api_sidecar_container(
     }
 }
 
+/// Mount a generated-or-custom BIND9 config file into the container.
+///
+/// Uses the user's custom `ConfigMap` volume (`custom_volume`) when the
+/// corresponding reference is set, otherwise the default generated `config`
+/// volume ([`VOLUME_CONFIG`]).
+fn config_file_mount(
+    custom_volume: &str,
+    custom_ref: Option<&String>,
+    mount_path: &str,
+    sub_path: &str,
+) -> VolumeMount {
+    let name = if custom_ref.is_some() {
+        custom_volume
+    } else {
+        VOLUME_CONFIG
+    };
+    VolumeMount {
+        name: name.into(),
+        mount_path: mount_path.into(),
+        sub_path: Some(sub_path.into()),
+        ..Default::default()
+    }
+}
+
 /// Build volume mounts for the BIND9 container
 ///
 /// Creates volume mounts for:
@@ -2269,67 +2257,33 @@ fn build_volume_mounts(
         },
     ];
 
-    // Add named.conf mount
-    if let Some(refs) = config_map_refs {
-        if let Some(_configmap_name) = &refs.named_conf {
-            mounts.push(VolumeMount {
-                name: VOLUME_NAMED_CONF.into(),
-                mount_path: BIND_NAMED_CONF_PATH.into(),
-                sub_path: Some(NAMED_CONF_FILENAME.into()),
-                ..Default::default()
-            });
-        } else {
-            // Use default generated ConfigMap
-            mounts.push(VolumeMount {
-                name: VOLUME_CONFIG.into(),
-                mount_path: BIND_NAMED_CONF_PATH.into(),
-                sub_path: Some(NAMED_CONF_FILENAME.into()),
-                ..Default::default()
-            });
-        }
+    // named.conf and named.conf.options come from the user's custom ConfigMap
+    // volume when referenced, otherwise from the default generated ConfigMap.
+    mounts.push(config_file_mount(
+        VOLUME_NAMED_CONF,
+        config_map_refs.and_then(|refs| refs.named_conf.as_ref()),
+        BIND_NAMED_CONF_PATH,
+        NAMED_CONF_FILENAME,
+    ));
+    mounts.push(config_file_mount(
+        VOLUME_NAMED_CONF_OPTIONS,
+        config_map_refs.and_then(|refs| refs.named_conf_options.as_ref()),
+        BIND_NAMED_CONF_OPTIONS_PATH,
+        NAMED_CONF_OPTIONS_FILENAME,
+    ));
 
-        if let Some(_configmap_name) = &refs.named_conf_options {
-            mounts.push(VolumeMount {
-                name: VOLUME_NAMED_CONF_OPTIONS.into(),
-                mount_path: BIND_NAMED_CONF_OPTIONS_PATH.into(),
-                sub_path: Some(NAMED_CONF_OPTIONS_FILENAME.into()),
-                ..Default::default()
-            });
-        } else {
-            // Use default generated ConfigMap
-            mounts.push(VolumeMount {
-                name: VOLUME_CONFIG.into(),
-                mount_path: BIND_NAMED_CONF_OPTIONS_PATH.into(),
-                sub_path: Some(NAMED_CONF_OPTIONS_FILENAME.into()),
-                ..Default::default()
-            });
-        }
-
-        // Add zones file mount only if user provided a ConfigMap
-        if let Some(_configmap_name) = &refs.named_conf_zones {
-            mounts.push(VolumeMount {
-                name: VOLUME_NAMED_CONF_ZONES.into(),
-                mount_path: BIND_NAMED_CONF_ZONES_PATH.into(),
-                sub_path: Some(NAMED_CONF_ZONES_FILENAME.into()),
-                ..Default::default()
-            });
-        }
-        // Note: No else block - if user doesn't provide zones ConfigMap, we don't mount it
-    } else {
-        // No custom ConfigMaps, use default
+    // The zones file is mounted only when the user provides a ConfigMap for
+    // it - there is no generated default.
+    if config_map_refs
+        .and_then(|refs| refs.named_conf_zones.as_ref())
+        .is_some()
+    {
         mounts.push(VolumeMount {
-            name: VOLUME_CONFIG.into(),
-            mount_path: BIND_NAMED_CONF_PATH.into(),
-            sub_path: Some(NAMED_CONF_FILENAME.into()),
+            name: VOLUME_NAMED_CONF_ZONES.into(),
+            mount_path: BIND_NAMED_CONF_ZONES_PATH.into(),
+            sub_path: Some(NAMED_CONF_ZONES_FILENAME.into()),
             ..Default::default()
         });
-        mounts.push(VolumeMount {
-            name: VOLUME_CONFIG.into(),
-            mount_path: BIND_NAMED_CONF_OPTIONS_PATH.into(),
-            sub_path: Some(NAMED_CONF_OPTIONS_FILENAME.into()),
-            ..Default::default()
-        });
-        // Note: No zones mount - users must explicitly provide namedConfZones ConfigMap
     }
 
     // Always add rndc.conf mount from default ConfigMap (contains rndc.conf)
