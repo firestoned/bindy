@@ -157,6 +157,76 @@ rate(bindy_firestoned_io_generation_observation_lag_seconds_sum[5m])
 / rate(bindy_firestoned_io_generation_observation_lag_seconds_count[5m])
 ```
 
+#### Kubernetes API Client Metrics
+
+Recorded by the client middleware installed per
+[ADR-0005](https://github.com/firestoned/bindy/blob/main/docs/adr/0005-client-side-kube-api-rate-limiting.md); see the
+[configuration guide](./configuration.md) for the QPS/burst settings they
+observe.
+
+**`bindy_firestoned_io_kube_api_requests_total`** (Counter)
+Every Kubernetes API request issued by the operator's client.
+
+Labels:
+- `resource`: Resource plural parsed from the request path (e.g., `dnszones`)
+- `verb`: Lowercase HTTP method (`get`, `post`, `patch`, ...)
+- `status`: `success` (2xx/3xx) or `error`
+
+**`bindy_firestoned_io_kube_api_request_duration_seconds`** (Histogram)
+Request latency from dispatch to response headers. Time queued behind the
+client-side rate limiter is not included.
+
+Labels: `resource`, `verb`.
+Buckets: 0.001, 0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0
+
+**`bindy_firestoned_io_kube_api_rate_limit_hits_total`** (Counter)
+HTTP 429 responses from the API server. Under the client-side rate limiter
+this should stay at zero — a non-zero rate means the configured QPS/burst
+exceeds what the API server tolerates.
+
+Labels: `resource`, `verb`.
+
+**`bindy_firestoned_io_kube_api_retries_total`** (Counter)
+Retries of transient API failures (429/5xx/network) with exponential backoff.
+
+Labels:
+- `operation`: Operation retried (e.g., `get Bind9Cluster`)
+
+**`bindy_firestoned_io_kube_api_pagination_pages`** (Histogram)
+Pages fetched per paginated list operation (100 items per page).
+
+Labels: `resource`.
+Buckets: 1, 2, 3, 5, 10, 25, 50, 100
+
+```promql
+# Operator API request rate by verb
+sum by (verb) (rate(bindy_firestoned_io_kube_api_requests_total[5m]))
+
+# Server-side throttling — should be zero; alert if sustained
+rate(bindy_firestoned_io_kube_api_rate_limit_hits_total[5m]) > 0.1
+
+# API retry rate — sustained retries indicate API server pressure
+rate(bindy_firestoned_io_kube_api_retries_total[5m]) > 1.0
+```
+
+Suggested alert rules:
+
+```yaml
+- alert: BindyHighAPIRateLimitHits
+  expr: sum(rate(bindy_firestoned_io_kube_api_rate_limit_hits_total[5m])) > 0.1
+  for: 5m
+  annotations:
+    summary: "Bindy hitting Kubernetes API server rate limits"
+    description: "{{ $value }} HTTP 429 responses per second — lower BINDY_KUBE_QPS/BINDY_KUBE_BURST or raise API server priority"
+
+- alert: BindyHighAPIRetryRate
+  expr: sum(rate(bindy_firestoned_io_kube_api_retries_total[5m])) > 1.0
+  for: 10m
+  annotations:
+    summary: "Bindy experiencing a high Kubernetes API retry rate"
+    description: "{{ $value }} retries per second — check API server health and operator logs"
+```
+
 ### Prometheus Configuration
 
 The operator deployment includes Prometheus scrape annotations:

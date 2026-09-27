@@ -10,6 +10,7 @@
 use super::types::*;
 
 use crate::constants::API_GROUP_VERSION;
+use crate::reconcilers::retry::retry_api_call;
 
 pub(super) async fn fetch_cluster_info(
     client: &Client,
@@ -25,7 +26,9 @@ pub(super) async fn fetch_cluster_info(
             // Check if owner is a Bind9Cluster
             if owner_ref.kind == "Bind9Cluster" && owner_ref.api_version == API_GROUP_VERSION {
                 let cluster_api: Api<Bind9Cluster> = Api::namespaced(client.clone(), namespace);
-                if let Ok(cluster) = cluster_api.get(&owner_ref.name).await {
+                if let Ok(cluster) =
+                    retry_api_call(|| cluster_api.get(&owner_ref.name), "get Bind9Cluster").await
+                {
                     debug!(
                         "Found cluster from ownerReference: Bind9Cluster/{}",
                         owner_ref.name
@@ -38,7 +41,12 @@ pub(super) async fn fetch_cluster_info(
                 && owner_ref.api_version == API_GROUP_VERSION
             {
                 let provider_api: Api<crate::crd::ClusterBind9Provider> = Api::all(client.clone());
-                if let Ok(provider) = provider_api.get(&owner_ref.name).await {
+                if let Ok(provider) = retry_api_call(
+                    || provider_api.get(&owner_ref.name),
+                    "get ClusterBind9Provider",
+                )
+                .await
+                {
                     debug!(
                         "Found cluster from ownerReference: ClusterBind9Provider/{}",
                         owner_ref.name
@@ -58,12 +66,22 @@ pub(super) async fn fetch_cluster_info(
 
         // Try namespace-scoped cluster first
         let cluster_api: Api<Bind9Cluster> = Api::namespaced(client.clone(), namespace);
-        let cluster = cluster_api.get(&instance.spec.cluster_ref).await.ok();
+        let cluster = retry_api_call(
+            || cluster_api.get(&instance.spec.cluster_ref),
+            "get Bind9Cluster",
+        )
+        .await
+        .ok();
 
         // If not found, try cluster-scoped provider
         let cluster_provider = if cluster.is_none() {
             let provider_api: Api<crate::crd::ClusterBind9Provider> = Api::all(client.clone());
-            provider_api.get(&instance.spec.cluster_ref).await.ok()
+            retry_api_call(
+                || provider_api.get(&instance.spec.cluster_ref),
+                "get ClusterBind9Provider",
+            )
+            .await
+            .ok()
         } else {
             None
         };

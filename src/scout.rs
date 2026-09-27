@@ -25,6 +25,7 @@ use crate::constants::{
     ALLOW_ZONE_NAMESPACES_WILDCARD, ANNOTATION_ALLOW_ZONE_NAMESPACES, HTTP_NOT_FOUND,
 };
 use crate::crd::{ARecord, ARecordSpec, DNSZone};
+use crate::reconcilers::pagination::list_all_paginated;
 use anyhow::{anyhow, Context, Result};
 use k8s_openapi::api::core::v1::{Namespace, Secret, Service};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
@@ -511,10 +512,10 @@ async fn namespace_matches_selector(
     let lp = ListParams::default()
         .labels(selector)
         .fields(&format!("metadata.name={namespace}"));
-    let list = ns_api.list(&lp).await.with_context(|| {
+    let list = list_all_paginated(&ns_api, lp).await.with_context(|| {
         format!("failed to check namespace '{namespace}' against selector '{selector}'")
     })?;
-    Ok(!list.items.is_empty())
+    Ok(!list.is_empty())
 }
 
 /// Returns whether `namespace` is eligible for Scout to act in.
@@ -1602,9 +1603,8 @@ async fn resolve_ip_from_gateway_service(
         } => {
             let svc_api: Api<Service> = Api::namespaced(client.clone(), namespace);
             let lp = kube::api::ListParams::default().labels(selector);
-            match svc_api.list(&lp).await {
+            match list_all_paginated(&svc_api, lp).await {
                 Ok(list) => list
-                    .items
                     .iter()
                     .filter(|svc| is_loadbalancer_service(svc))
                     .find_map(resolve_ip_from_service_lb_status)
@@ -2312,9 +2312,9 @@ pub(crate) async fn delete_arecords_for_ingress(
     let selector = arecord_label_selector(cluster, ingress_namespace, ingress_name);
     let lp = ListParams::default().labels(&selector);
 
-    let arecords = api.list(&lp).await?;
+    let arecords = list_all_paginated(&api, lp).await?;
     let mut deleted_zones = BTreeSet::new();
-    for ar in arecords.items {
+    for ar in arecords {
         let ar_name = ar.name_any();
         if let Some(zone) = ar.metadata.labels.as_ref().and_then(|l| l.get(LABEL_ZONE)) {
             deleted_zones.insert(zone.clone());
@@ -2358,8 +2358,8 @@ pub(crate) async fn delete_stale_cluster_arecords(
     );
     let lp = ListParams::default().labels(&selector);
 
-    let arecords = api.list(&lp).await?;
-    for ar in arecords.items {
+    let arecords = list_all_paginated(&api, lp).await?;
+    for ar in arecords {
         let ar_name = ar.name_any();
         let old_cluster = ar
             .metadata
@@ -2395,8 +2395,8 @@ async fn delete_arecords_for_service(
     let selector = service_arecord_label_selector(cluster, svc_namespace, svc_name);
     let lp = ListParams::default().labels(&selector);
 
-    let arecords = api.list(&lp).await?;
-    for ar in arecords.items {
+    let arecords = list_all_paginated(&api, lp).await?;
+    for ar in arecords {
         let ar_name = ar.name_any();
         api.delete(&ar_name, &DeleteParams::default()).await?;
         info!(
@@ -2421,9 +2421,9 @@ pub(crate) async fn delete_arecords_for_httproute(
     let selector = httproute_arecord_label_selector(cluster, route_namespace, route_name);
     let lp = ListParams::default().labels(&selector);
 
-    let arecords = api.list(&lp).await?;
+    let arecords = list_all_paginated(&api, lp).await?;
     let mut deleted_zones = BTreeSet::new();
-    for ar in arecords.items {
+    for ar in arecords {
         let ar_name = ar.name_any();
         if let Some(zone) = ar.metadata.labels.as_ref().and_then(|l| l.get(LABEL_ZONE)) {
             deleted_zones.insert(zone.clone());
@@ -2451,9 +2451,9 @@ pub(crate) async fn delete_arecords_for_tlsroute(
     let selector = tlsroute_arecord_label_selector(cluster, route_namespace, route_name);
     let lp = ListParams::default().labels(&selector);
 
-    let arecords = api.list(&lp).await?;
+    let arecords = list_all_paginated(&api, lp).await?;
     let mut deleted_zones = BTreeSet::new();
-    for ar in arecords.items {
+    for ar in arecords {
         let ar_name = ar.name_any();
         if let Some(zone) = ar.metadata.labels.as_ref().and_then(|l| l.get(LABEL_ZONE)) {
             deleted_zones.insert(zone.clone());
@@ -2489,8 +2489,8 @@ pub(crate) async fn delete_stale_cluster_httproute_arecords(
     );
     let lp = ListParams::default().labels(&selector);
 
-    let arecords = api.list(&lp).await?;
-    for ar in arecords.items {
+    let arecords = list_all_paginated(&api, lp).await?;
+    for ar in arecords {
         let ar_name = ar.name_any();
         api.delete(&ar_name, &DeleteParams::default()).await?;
         info!(
@@ -2521,8 +2521,8 @@ pub(crate) async fn delete_stale_cluster_tlsroute_arecords(
     );
     let lp = ListParams::default().labels(&selector);
 
-    let arecords = api.list(&lp).await?;
-    for ar in arecords.items {
+    let arecords = list_all_paginated(&api, lp).await?;
+    for ar in arecords {
         let ar_name = ar.name_any();
         api.delete(&ar_name, &DeleteParams::default()).await?;
         info!(
@@ -2546,9 +2546,9 @@ pub(crate) async fn delete_arecords_for_tcproute(
     let selector = tcproute_arecord_label_selector(cluster, route_namespace, route_name);
     let lp = ListParams::default().labels(&selector);
 
-    let arecords = api.list(&lp).await?;
+    let arecords = list_all_paginated(&api, lp).await?;
     let mut deleted_zones = BTreeSet::new();
-    for ar in arecords.items {
+    for ar in arecords {
         let ar_name = ar.name_any();
         if let Some(zone) = ar.metadata.labels.as_ref().and_then(|l| l.get(LABEL_ZONE)) {
             deleted_zones.insert(zone.clone());
@@ -2583,8 +2583,8 @@ pub(crate) async fn delete_stale_cluster_tcproute_arecords(
     );
     let lp = ListParams::default().labels(&selector);
 
-    let arecords = api.list(&lp).await?;
-    for ar in arecords.items {
+    let arecords = list_all_paginated(&api, lp).await?;
+    for ar in arecords {
         let ar_name = ar.name_any();
         api.delete(&ar_name, &DeleteParams::default()).await?;
         info!(
@@ -2625,9 +2625,9 @@ pub(crate) async fn log_unscoped_stale_cluster_arecord_candidates(
     let selector = stale_selector_base(current_cluster, source_namespace, source_name);
     let lp = ListParams::default().labels(&selector);
 
-    match api.list(&lp).await {
+    match list_all_paginated(&api, lp).await {
         Ok(arecords) => {
-            let candidates: Vec<String> = arecords.items.iter().map(ARecord::name_any).collect();
+            let candidates: Vec<String> = arecords.iter().map(ARecord::name_any).collect();
             if !candidates.is_empty() {
                 warn!(
                     resource_kind = %resource_kind,

@@ -1,9 +1,20 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.1
-**Last Updated:** 2026-07-19
+**Version:** 1.2
+**Last Updated:** 2026-09-27
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
+
+> Last full pass 2026-09-27, against ADR-0001 … ADR-0005.
+>
+> **Revision note (v1.2):** Full pass for ADR-0005 (client-side Kubernetes API
+> rate limiting). Adds mitigation **M-31** (rate-limited client, paginated
+> LISTs, retries with backoff, throttling metrics) and updates threat **D2**
+> (reconciliation flood): its API-server- and memory-amplification paths are
+> now closed; the per-namespace CR-count limit remains open. No new
+> components, trust boundaries, assets, or actors — the change is middleware
+> inside the existing operator → API-server flow. All other sections
+> re-walked; no further changes required.
 
 > **Revision note (v1.1):** The v1.0 model predates the **Scout** controller
 > (added 2026-03-20) and did not cover it. This revision adds Scout as a
@@ -751,12 +762,24 @@ kubeconfig Secret, in deployments that use Phase 2 mode at all.
 
 **Mitigations:**
 - ✅ Resource limits on operator pod
-- ✅ Exponential backoff for failed reconciliations
-- ❌ **MISSING**: Rate limiting on reconciliation loops (M-3)
+- ✅ Exponential backoff for failed reconciliations (per-object, capped, with decay)
+- ✅ **Client-side Kubernetes API rate limiting** (M-31, ADR-0005, 2026-09-27):
+  the operator's client is capped at 20 QPS / 30 burst (tunable via
+  `BINDY_KUBE_QPS`/`BINDY_KUBE_BURST`), so a CR flood cannot turn the operator
+  into an API-server amplifier; excess requests queue client-side
+- ✅ **Paginated LIST operations** (M-31): 100 items per page keeps operator
+  memory O(1) in the number of CRs — bounds the "10,000 CRs exhaust memory"
+  path of this scenario
+- ✅ HTTP 429/retry visibility: `bindy_firestoned_io_kube_api_rate_limit_hits_total`
+  and `..._kube_api_retries_total` alert before degradation cascades
+- ❌ **MISSING**: Global reconciliation-frequency limiter (M-3 layer 1 —
+  API traffic is now bounded, but reconcile CPU work per CR is not)
 - ❌ **MISSING**: Admission webhook to limit number of CRs per namespace
 - ❌ **MISSING**: Horizontal scaling of operator (leader election)
 
-**Residual Risk:** MEDIUM (need M-3 - Rate Limiting)
+**Residual Risk:** MEDIUM → LOW-MEDIUM (API-server and memory amplification
+closed by M-31; unbounded CR count per namespace remains — revisit when a
+CR-quota admission policy lands)
 
 ---
 
@@ -1297,6 +1320,7 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-23 | **Unprivileged DNS port + capability drop**: BIND9 operand binds container port 5353 (Service still exposes 53) and adds zero Linux capabilities (`NET_BIND_SERVICE` removed) | E1 (container escape) | ✅ Pod Security |
 | M-24 | **ValidatingAdmissionPolicy suite** (8 policies + 8 bindings = 16 manifests, as of 2026-07-01): ACL syntax, zone-name validation, RNDC strictness, operand pod shape, DNSSEC policy, operator-workload ServiceAccount identity, DNS record value validation, image provenance, and `volumeMount.mountPath` allow-listing (`safe_volume.rs`, closes audit finding F-001) | T1 (DNS tampering), T3 (ConfigMap/Secret tampering), E1 (container escape via malicious volume mounts), T2 (image provenance) | ✅ Kubernetes VAP — supersedes M-13 below |
 | M-30 | **Scout namespace whitelisting** (`--namespace-selector` / `BINDY_SCOUT_NAMESPACE_SELECTOR`, new in v1.1): a source object's namespace must match a configured Kubernetes label selector *in addition to* the object's own opt-in annotation before Scout acts on it. Label-selector matching delegates to the API server (no client-side selector parser). Reduces Scout's day-to-day operating footprint — bounds T4 (cross-tenant patch/update) during normal operation. **Does not reduce the `ClusterRole`'s RBAC ceiling** for Ingress/Service/route types — a directly compromised token is unaffected for those. **Opt-in — unset by default**, matching pre-v1.1 behavior for backward compatibility; Scout logs a startup warning when unset. See the Scout guide's "Namespace Whitelisting" section for the rollout/migration note. | T4 (partial) | ⚠️ Opt-in, recommended for all production deployments |
+| M-31 | **Client-side Kubernetes API rate limiting** (2026-09-27, ADR-0005): tower `RateLimitLayer` in the operator's client stack (20 QPS / 30 burst default, env-tunable, invalid overrides fall back safely), paginated LISTs (O(1) memory), exponential-backoff retries on transient 429/5xx, and Prometheus visibility of server-side throttling (`kube_api_*` metrics) | D2 (reconciliation flood — API/memory amplification), platform availability (Basel III operational resilience) | ✅ `src/rate_limit.rs` + `reconcilers/{pagination,retry}.rs` |
 | M-25 | **Scout Secret RBAC scoped** (fixed 2026-07-19, same day as this finding's discovery): removed the cluster-wide `secrets: get` `PolicyRule` from the `bindy-scout` `ClusterRole` entirely. Replaced with a namespaced, `resourceNames`-restricted Role (`bindy-scout-secrets-reader`) scoped to exactly the one Phase 2 kubeconfig Secret, applied only when `--remote-secret` is configured. Same-cluster-only deployments (the default) now get zero Secret access. See I4/E4/Scenario 6 for the full before/after. | I4, E4, T4 (Secret-read component), Scenario 6 | ✅ RBAC — **was the highest-priority open item in v1.1; closed same-day** |
 
 ---
@@ -1438,6 +1462,6 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 
 ---
 
-**Last Updated:** 2026-07-19
-**Next Review:** 2026-10-19 (Quarterly)
+**Last Updated:** 2026-09-27
+**Next Review:** 2026-12-27 (Quarterly)
 **Approved By:** Security Team *(pending re-approval for v1.1 — this revision has not yet been formally reviewed/signed off; see the revision note at the top of this document)*

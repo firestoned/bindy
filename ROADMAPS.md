@@ -39,7 +39,7 @@ Statuses were verified against `fix-idempotency` @ `648ff7a` on 2026-09-10.
 | [02](.github/community/02-records-reconciler-refactoring.md) | Records reconciler refactoring | ✅ | Generic `reconcile_record<T>()` at `src/reconcilers/records/mod.rs:1170`; the 9 per-type fns are thin wrappers. 01 turns those into trait impls |
 | [03](.github/community/03-early-return-refactoring.md) | Early-return / guard-clause refactor | ✅ | Completed 2026-09-27 — all 9 target functions refactored or already compliant; behavior-preserving, with pinning tests for the global-fallback and role-precedence paths. Two pre-existing quirks kept deliberately (see doc) |
 | [04](.github/community/04-remove-clusterref-use-ownerreference.md) | Remove `clusterRef`, use `ownerReference` | ⛔ | `pub cluster_ref` still in `src/crd.rs` at `:994`, `:3679`, `:3839`. Breaking CRD change — needs an ADR first |
-| [05](.github/community/05-kubernetes-api-rate-limiting.md) | Kubernetes API rate limiting | 🔶 | `reconcilers/pagination.rs` and `retry.rs` landed; no explicit client-side rate limiter. Overlaps 01, which halves watch connections |
+| [05](.github/community/05-kubernetes-api-rate-limiting.md) | Kubernetes API rate limiting | ✅ | Complete 2026-09-27 (ADR-0005): tower `RateLimitLayer` client (20 QPS/30 burst, env-tunable), pagination + retry applied to all call sites, `kube_api_*` Prometheus metrics. Scale validation → 18 |
 | [06](.github/community/06-kube-condition-derive-macro.md) | `kube-condition` derive macro | ⛔ | Not a dependency; conditions are hand-built in `src/reconcilers/status.rs`. See 08 for what shipped instead |
 
 ### Features

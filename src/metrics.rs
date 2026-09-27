@@ -245,8 +245,143 @@ pub static GENERATION_OBSERVATION_LAG_SECONDS: LazyLock<HistogramVec> = LazyLock
 });
 
 // ============================================================================
+// Kubernetes API Client Metrics (ADR-0005, roadmap 05)
+// ============================================================================
+
+/// Total Kubernetes API requests issued by the client, by resource and verb
+///
+/// Labels:
+/// - `resource`: Resource plural parsed from the request path (e.g., `dnszones`)
+/// - `verb`: Lowercase HTTP method (`get`, `post`, `patch`, ...)
+/// - `status`: Outcome (`success` for 2xx/3xx, `error` otherwise)
+pub static KUBE_API_REQUESTS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
+    let opts = Opts::new(
+        format!("{METRICS_NAMESPACE}_kube_api_requests_total"),
+        "Total Kubernetes API requests by resource, verb, and status",
+    );
+    let counter = CounterVec::new(opts, &["resource", "verb", "status"]).unwrap();
+    METRICS_REGISTRY
+        .register(Box::new(counter.clone()))
+        .unwrap();
+    counter
+});
+
+/// Kubernetes API request duration in seconds, by resource and verb
+///
+/// Measured from dispatch into the HTTP stack to response headers; time spent
+/// queued behind the client-side rate limiter is NOT included.
+pub static KUBE_API_REQUEST_DURATION_SECONDS: LazyLock<HistogramVec> = LazyLock::new(|| {
+    let opts = HistogramOpts::new(
+        format!("{METRICS_NAMESPACE}_kube_api_request_duration_seconds"),
+        "Kubernetes API request duration in seconds by resource and verb",
+    )
+    .buckets(vec![0.001, 0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0]);
+    let histogram = HistogramVec::new(opts, &["resource", "verb"]).unwrap();
+    METRICS_REGISTRY
+        .register(Box::new(histogram.clone()))
+        .unwrap();
+    histogram
+});
+
+/// Total HTTP 429 (Too Many Requests) responses from the API server
+///
+/// Under the client-side rate limiter this should stay at zero; a non-zero
+/// rate means the configured QPS/burst exceeds what the API server tolerates.
+pub static KUBE_API_RATE_LIMIT_HITS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
+    let opts = Opts::new(
+        format!("{METRICS_NAMESPACE}_kube_api_rate_limit_hits_total"),
+        "Total HTTP 429 rate-limit responses from the Kubernetes API server",
+    );
+    let counter = CounterVec::new(opts, &["resource", "verb"]).unwrap();
+    METRICS_REGISTRY
+        .register(Box::new(counter.clone()))
+        .unwrap();
+    counter
+});
+
+/// Total Kubernetes API call retries performed by `reconcilers::retry`
+///
+/// Labels:
+/// - `operation`: Low-cardinality operation name (e.g., `get Bind9Cluster`) —
+///   callers must NOT embed object names in it
+pub static KUBE_API_RETRIES_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
+    let opts = Opts::new(
+        format!("{METRICS_NAMESPACE}_kube_api_retries_total"),
+        "Total Kubernetes API call retries by operation",
+    );
+    let counter = CounterVec::new(opts, &["operation"]).unwrap();
+    METRICS_REGISTRY
+        .register(Box::new(counter.clone()))
+        .unwrap();
+    counter
+});
+
+/// Pages fetched per paginated list operation, by resource kind
+pub static KUBE_API_PAGINATION_PAGES: LazyLock<HistogramVec> = LazyLock::new(|| {
+    let opts = HistogramOpts::new(
+        format!("{METRICS_NAMESPACE}_kube_api_pagination_pages"),
+        "Number of pages fetched per paginated Kubernetes list operation",
+    )
+    .buckets(vec![1.0, 2.0, 3.0, 5.0, 10.0, 25.0, 50.0, 100.0]);
+    let histogram = HistogramVec::new(opts, &["resource"]).unwrap();
+    METRICS_REGISTRY
+        .register(Box::new(histogram.clone()))
+        .unwrap();
+    histogram
+});
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
+
+/// Record a completed Kubernetes API request
+///
+/// # Arguments
+/// * `resource` - Resource plural from the request path (e.g., `dnszones`)
+/// * `verb` - Lowercase HTTP method
+/// * `success` - Whether the response status was 2xx/3xx
+/// * `duration` - Time from dispatch to response headers
+pub fn record_kube_api_request(resource: &str, verb: &str, success: bool, duration: Duration) {
+    let status = if success { "success" } else { "error" };
+    KUBE_API_REQUESTS_TOTAL
+        .with_label_values(&[resource, verb, status])
+        .inc();
+    KUBE_API_REQUEST_DURATION_SECONDS
+        .with_label_values(&[resource, verb])
+        .observe(duration.as_secs_f64());
+}
+
+/// Record an HTTP 429 rate-limit response from the API server
+///
+/// # Arguments
+/// * `resource` - Resource plural from the request path
+/// * `verb` - Lowercase HTTP method
+pub fn record_kube_api_rate_limit_hit(resource: &str, verb: &str) {
+    KUBE_API_RATE_LIMIT_HITS_TOTAL
+        .with_label_values(&[resource, verb])
+        .inc();
+}
+
+/// Record one retry of a Kubernetes API call
+///
+/// # Arguments
+/// * `operation` - Low-cardinality operation name (no object names)
+pub fn record_kube_api_retry(operation: &str) {
+    KUBE_API_RETRIES_TOTAL.with_label_values(&[operation]).inc();
+}
+
+/// Record the page count of a completed paginated list operation
+///
+/// # Arguments
+/// * `resource` - Resource kind listed (e.g., `DNSZone`)
+/// * `pages` - Number of pages fetched
+pub fn record_kube_api_pagination_pages(resource: &str, pages: usize) {
+    // usize→f64 is lossless for any realistic page count (< 2^52).
+    #[allow(clippy::cast_precision_loss)]
+    KUBE_API_PAGINATION_PAGES
+        .with_label_values(&[resource])
+        .observe(pages as f64);
+}
 
 /// Record a successful reconciliation
 ///

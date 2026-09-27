@@ -155,6 +155,8 @@ where
         "Completed paginated list operation"
     );
 
+    crate::metrics::record_kube_api_pagination_pages(K::kind(&()).as_ref(), page_count);
+
     Ok(all_items)
 }
 

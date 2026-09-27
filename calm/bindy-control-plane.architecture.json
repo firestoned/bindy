@@ -111,7 +111,7 @@
     },
     {
       "unique-id": "operator-watches-api",
-      "description": "watches and patches custom resources",
+      "description": "watches and patches custom resources (client-side rate limited: 20 QPS / 30 burst default, paginated LISTs, retries with exponential backoff — ADR-0005)",
       "protocol": "HTTPS",
       "relationship-type": {
         "connects": {

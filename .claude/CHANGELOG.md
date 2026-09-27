@@ -1,3 +1,89 @@
+## [2026-09-27 14:40] - Roadmap 05 complete: client-side Kubernetes API rate limiting (ADR-0005)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0005-client-side-kube-api-rate-limiting.md`: ADR for tower-based
+  client-side rate limiting (kube-rs has no client-go-style QPS/burst fields;
+  the middleware stack is the extension point).
+- `src/rate_limit.rs` + `src/rate_limit_tests.rs`: `RateLimitConfig`
+  (defaults 20 QPS / 30 burst; `BINDY_KUBE_QPS` / `BINDY_KUBE_BURST` overrides
+  with warn-and-default validation), `build_rate_limited_client()`
+  (`ClientBuilder` + `RateLimitLayer` + metrics middleware), and
+  `KubeApiMetricsLayer` recording every API request, its latency, and HTTP 429
+  hits by resource/verb. 17 new unit tests.
+- `src/metrics.rs`: `kube_api_requests_total`, `kube_api_request_duration_seconds`,
+  `kube_api_rate_limit_hits_total`, `kube_api_retries_total`,
+  `kube_api_pagination_pages` and their helper functions.
+- `Cargo.toml`: `tower` (limit, util) and `http` as direct dependencies —
+  both already in the tree via kube; needed for the middleware layer types.
+
+### Changed
+- `src/main.rs`: `initialize_services()` now applies the parsed QPS/burst
+  values (previously parsed, logged, and discarded); startup drift-detection
+  lists use `list_all_paginated`.
+- `src/reconcilers/{clusterbind9provider.rs,bind9cluster/mod.rs,dnszone.rs}`,
+  `src/scout.rs`: every remaining unpaginated `list()` converted to
+  `list_all_paginated` (sole exception: `scout.rs::kind_served`'s intentional
+  `limit(1)` probe).
+- `src/reconcilers/bind9instance/cluster_helpers.rs`: cluster/provider fetches
+  wrapped in `retry_api_call` — transient 429/5xx no longer misread as
+  "cluster not found" (previously swallowed by `.ok()`).
+- `src/reconcilers/bind9instance/mod.rs`, `src/reconcilers/status.rs`:
+  Bind9Instance rotation-status and DNSZone status patches retried with
+  exponential backoff.
+- `src/reconcilers/retry.rs`: retries recorded in Prometheus; operation names
+  documented as low-cardinality. `src/reconcilers/pagination.rs`: page counts
+  recorded per resource kind.
+- `src/main_tests.rs`: env-parsing tests superseded by `rate_limit_tests.rs`
+  (they also mutated process env — race-prone).
+- `calm/bindy-control-plane.architecture.json`: `operator-watches-api`
+  relationship notes the rate limiting; CALM docs regenerated.
+- Docs: `docs/src/operations/{env-vars,metrics}.md`, `docs/src/reference/cli.md`
+  (defaults corrected 50/100 → the real 20/30), `docs/src/security/rate-limiting.md`
+  section 2 rewritten to match the shipped implementation (its proposed
+  `config.api_client_qps` API never existed in kube-rs).
+- `.github/community/05-kubernetes-api-rate-limiting.md` + `ROADMAPS.md`:
+  roadmap 05 marked ✅; load/scale validation delegated to roadmap 18.
+
+### Why
+The operator must bound its own API server load in a regulated multi-tenant
+platform instead of relying on server-side 429 throttling. Pagination and
+retry landed earlier under roadmap 05, but the limiter itself was missing and
+the retry helper had zero call sites.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-27 14:00] - Register all remaining Claude skills as invocable skill directories
+
+**Author:** Erick Bourgeois
+
+### Added
+- `.claude/skills/{cargo-quality,tdd-workflow,regen-crds,regen-api-docs,validate-examples,add-new-crd,update-docs,docs-sync-check,update-changelog,get-multiarch-digest,upgrade-bindcar,pre-commit-checklist}/SKILL.md`:
+  the twelve procedures that existed only as prose in `.claude/SKILL.md` are
+  now real, invocable skills with YAML frontmatter (closes the bug-195 gap for
+  every remaining phantom skill; `build-docs` and `verify-crd-sync` were
+  registered earlier).
+
+### Changed
+- `.claude/SKILL.md`: reduced to a one-row-per-skill index — the skill
+  directories are canonical, eliminating the duplicated prose that would
+  otherwise drift (and trimming the `@`-imported context by ~4k tokens).
+
+### Why
+Skills referenced across CLAUDE.md and rules/ failed to invoke because the
+Skill tool only discovers `.claude/skills/<name>/SKILL.md` directories.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-09-27 12:30] - Complete roadmap 03: early-return / guard-clause refactor
 
 **Author:** Erick Bourgeois

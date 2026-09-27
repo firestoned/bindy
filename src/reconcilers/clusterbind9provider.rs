@@ -18,6 +18,8 @@ use crate::crd::{
     Bind9Cluster, Bind9ClusterStatus, Bind9Instance, ClusterBind9Provider, Condition,
 };
 use crate::labels::FINALIZER_BIND9_CLUSTER;
+use crate::reconcilers::pagination::list_all_paginated;
+
 use crate::reconcilers::finalizers::{
     ensure_cluster_finalizer, handle_cluster_deletion, FinalizerCleanup,
 };
@@ -57,11 +59,10 @@ impl FinalizerCleanup for ClusterBind9Provider {
         );
 
         let clusters_api: Api<Bind9Cluster> = Api::all(client.clone());
-        let all_clusters = clusters_api.list(&ListParams::default()).await?;
+        let all_clusters = list_all_paginated(&clusters_api, ListParams::default()).await?;
 
         // Filter clusters managed by this global cluster
         let managed_clusters: Vec<_> = all_clusters
-            .items
             .iter()
             .filter(|c| {
                 c.metadata.labels.as_ref().is_some_and(|labels| {
@@ -118,10 +119,9 @@ impl FinalizerCleanup for ClusterBind9Provider {
         // Step 2: Check for orphaned Bind9Instance resources (warn only, don't delete)
         // Note: Instances will be cleaned up by their parent Bind9Cluster's finalizer
         let instances_api: Api<Bind9Instance> = Api::all(client.clone());
-        let instances = instances_api.list(&ListParams::default()).await?;
+        let instances = list_all_paginated(&instances_api, ListParams::default()).await?;
 
         let referencing_instances: Vec<_> = instances
-            .items
             .iter()
             .filter(|inst| inst.spec.cluster_ref == name)
             .collect();
@@ -287,10 +287,10 @@ async fn compute_expected_cluster_namespaces(
     let target_namespace = provider_target_namespace(cluster_provider);
 
     let instances_api: Api<Bind9Instance> = Api::all(client.clone());
-    let all_instances = instances_api.list(&ListParams::default()).await?;
+    let all_instances = list_all_paginated(&instances_api, ListParams::default()).await?;
 
     Ok(expected_cluster_namespaces(
-        &all_instances.items,
+        &all_instances,
         &cluster_provider_name,
         &target_namespace,
     ))
@@ -466,11 +466,10 @@ async fn update_cluster_status(client: &Client, cluster: &ClusterBind9Provider) 
     // List all Bind9Instance resources across all namespaces
     let instances_api: Api<Bind9Instance> = Api::all(client.clone());
     let lp = ListParams::default();
-    let all_instances = instances_api.list(&lp).await?;
+    let all_instances = list_all_paginated(&instances_api, lp).await?;
 
     // Filter instances that reference this global cluster
     let instances: Vec<_> = all_instances
-        .items
         .into_iter()
         .filter(|inst| inst.spec.cluster_ref == name)
         .collect();
@@ -717,11 +716,10 @@ async fn detect_cluster_drift(
     for namespace in &expected_namespaces {
         // List all Bind9Cluster resources in this namespace
         let clusters_api: Api<Bind9Cluster> = Api::namespaced(client.clone(), namespace);
-        let clusters = clusters_api.list(&ListParams::default()).await?;
+        let clusters = list_all_paginated(&clusters_api, ListParams::default()).await?;
 
         // Filter for managed clusters
         let managed_clusters: Vec<_> = clusters
-            .items
             .into_iter()
             .filter(|cluster| {
                 cluster.metadata.labels.as_ref().is_some_and(|labels| {
