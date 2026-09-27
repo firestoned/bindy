@@ -27,7 +27,8 @@ mod helpers_tests;
 // Bind9Instance and InstanceReferenceWithStatus are used by dead_code marked functions (Phase 2 cleanup)
 use self::types::DuplicateZoneInfo;
 #[allow(unused_imports)]
-use crate::crd::{Condition, DNSZone, DNSZoneStatus};
+use crate::bind9::zone_ops::{dns_query_endpoint, extract_ds_records, DsRecordInfo};
+use crate::crd::DNSZone;
 use anyhow::{anyhow, Result};
 use bindcar::{ZONE_TYPE_PRIMARY, ZONE_TYPE_SECONDARY};
 use futures::stream::{self, StreamExt};
@@ -918,6 +919,113 @@ async fn replay_records_if_zone_was_recreated(
 /// until the reconcile ran out of time. Keeping the two together is what lets
 /// the notify site resolve a manager through [`zone_manager_for_instance`] like
 /// every other bindcar call in this reconciler.
+/// The `dnssecPolicy` value that explicitly disables signing for a zone.
+const DNSSEC_POLICY_NONE: &str = "none";
+
+/// Decide what `status.dnssec` should say for a zone (ADR-0006).
+///
+/// - DS records present → `signed: true` with every KSK's DS record; `keyTag`
+///   and `algorithm` describe the first KSK.
+/// - Policy explicitly `"none"` → no status at all (signing disabled), even
+///   if stale DNSKEYs are still being served.
+/// - A per-zone policy but no DNSKEYs yet → `signed: false` (keys are still
+///   generating; the requeue refreshes this).
+/// - No policy and no DNSKEYs → no status.
+///
+/// # Arguments
+/// * `dnssec_policy` - The zone's `spec.dnssecPolicy`, if set
+/// * `ds_records` - DS records derived from the zone's DNSKEY RRset
+fn build_dnssec_status(
+    dnssec_policy: Option<&str>,
+    ds_records: &[DsRecordInfo],
+) -> Option<crate::crd::DNSSECStatus> {
+    if dnssec_policy == Some(DNSSEC_POLICY_NONE) {
+        return None;
+    }
+
+    if let Some(first) = ds_records.first() {
+        return Some(crate::crd::DNSSECStatus {
+            signed: true,
+            ds_records: ds_records
+                .iter()
+                .map(|ds| ds.presentation.clone())
+                .collect(),
+            key_tag: Some(u32::from(first.key_tag)),
+            algorithm: Some(first.algorithm.clone()),
+            next_key_rollover: None,
+            last_key_rollover: None,
+        });
+    }
+
+    // No DNSKEYs. Only promise "signing pending" when this zone explicitly
+    // requests a policy; a zone signed solely via the cluster-global policy
+    // simply has no DNSSEC status until its keys appear.
+    dnssec_policy.map(|_| crate::crd::DNSSECStatus {
+        signed: false,
+        ds_records: Vec::new(),
+        key_tag: None,
+        algorithm: None,
+        next_key_rollover: None,
+        last_key_rollover: None,
+    })
+}
+
+/// Query one configured endpoint for DNSKEYs and record the zone's DNSSEC
+/// status on the updater (ADR-0006).
+///
+/// A DNS query failure only logs a warning and keeps the previous status:
+/// DS reporting must never fail a reconcile of an otherwise healthy zone.
+///
+/// # Arguments
+/// * `status_updater` - Collects the in-memory status change
+/// * `zone_name` - The zone that was just configured
+/// * `dnssec_policy` - The zone's `spec.dnssecPolicy`, if set
+/// * `endpoint` - The first configured primary endpoint, if any
+async fn update_dnssec_status(
+    status_updater: &mut crate::reconcilers::status::DNSZoneStatusUpdater,
+    zone_name: &str,
+    dnssec_policy: Option<&str>,
+    endpoint: Option<&NotifyTarget>,
+) {
+    // Explicitly disabled: clear any stale status without querying.
+    if dnssec_policy == Some(DNSSEC_POLICY_NONE) {
+        status_updater.set_dnssec(None);
+        return;
+    }
+
+    let Some(target) = endpoint else {
+        return;
+    };
+
+    let dns_endpoint = dns_query_endpoint(&target.endpoint);
+    match extract_ds_records(zone_name, &dns_endpoint).await {
+        Ok(ds_records) => {
+            let status = build_dnssec_status(dnssec_policy, &ds_records);
+            if let Some(ref dnssec) = status {
+                if dnssec.signed {
+                    info!(
+                        "Zone {} is DNSSEC-signed; publishing {} DS record(s) to status",
+                        zone_name,
+                        dnssec.ds_records.len()
+                    );
+                } else {
+                    debug!(
+                        "Zone {} has DNSSEC policy {:?} but no DNSKEYs yet (keys generating)",
+                        zone_name, dnssec_policy
+                    );
+                }
+            }
+            status_updater.set_dnssec(status);
+        }
+        Err(e) => {
+            warn!(
+                "Failed to extract DS records for zone {} from {}: {}. Keeping previous DNSSEC status.",
+                zone_name, dns_endpoint, e
+            );
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct NotifyTarget {
     /// Bare `<host>:<port>` of the endpoint to notify.
@@ -1371,7 +1479,7 @@ pub async fn add_dnszone(
     let errors = Arc::try_unwrap(errors)
         .expect("Failed to unwrap errors Arc")
         .into_inner();
-    let _status_updater = Arc::try_unwrap(status_updater_shared)
+    let status_updater = Arc::try_unwrap(status_updater_shared)
         .map_err(|_| anyhow!("Failed to unwrap status_updater - multiple references remain"))?
         .into_inner();
 
@@ -1424,6 +1532,16 @@ pub async fn add_dnszone(
     // 1. rndc addzone immediately adds the zone to BIND9's running config
     // 2. The zone file will be created automatically when records are added via dynamic updates
     // 3. Reloading would fail if the zone file doesn't exist yet
+
+    // Publish DNSSEC status (DS records) derived from the zone's DNSKEYs,
+    // queried on the first configured endpoint (ADR-0006).
+    update_dnssec_status(
+        status_updater,
+        &spec.zone_name,
+        dnssec_policy,
+        first_endpoint.as_ref(),
+    )
+    .await;
 
     // Notify secondaries about the new zone via the first endpoint
     // This triggers zone transfer (AXFR) from primary to secondaries

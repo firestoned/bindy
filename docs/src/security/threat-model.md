@@ -1,11 +1,21 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.2
+**Version:** 1.3
 **Last Updated:** 2026-09-27
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
 
-> Last full pass 2026-09-27, against ADR-0001 … ADR-0005.
+> Last full pass 2026-09-27, against ADR-0001 … ADR-0006.
+>
+> **Revision note (v1.3):** Full pass for ADR-0006 (DNSSEC DS record status
+> reporting), which completes roadmap 07. DNSSEC signing was stale as
+> "planned"/"Future" throughout this document although Phases 1–4 shipped
+> earlier — M-14 is now marked implemented (opt-in), and threat T1, Scenario 2
+> (cache poisoning), D1, and the control matrix are updated accordingly. New
+> surface reviewed: DS records/key tags in `DNSZone` status are public data
+> by design; DNSSEC key Secrets were already covered by the H2 allow-list
+> fix; the operator's new DNSKEY query path (operator → `named` :5353,
+> read-only, in-cluster) is modeled in CALM. No new trust boundaries.
 >
 > **Revision note (v1.2):** Full pass for ADR-0005 (client-side Kubernetes API
 > rate limiting). Adds mitigation **M-31** (rate-limited client, paginated
@@ -448,9 +458,13 @@ act against a remote cluster.
 - ✅ GitOps workflow (changes via pull requests, not direct kubectl)
 - ✅ Audit logging in Kubernetes (all CR modifications logged)
 - ❌ **MISSING**: Webhook validation for DNS records (prevent obviously malicious changes)
-- ❌ **MISSING**: DNSSEC signing (prevents tampering of DNS responses in transit)
+- ✅ **DNSSEC signing** (M-14, opt-in, roadmap 07 complete 2026-09-27): zones signed via
+  BIND9 `dnssec-policy`; DS records auto-published in `DNSZone.status.dnssec`
+  (ADR-0006) so the chain of trust can actually be completed in the parent zone.
+  In-transit tampering is detectable by validating resolvers once DS is published.
 
-**Residual Risk:** MEDIUM (need validation webhooks and DNSSEC)
+**Residual Risk:** MEDIUM → LOW-MEDIUM for signed zones (signing is opt-in and
+requires DS publication in the parent zone; unsigned zones keep the prior risk)
 
 ---
 
@@ -994,7 +1008,7 @@ and risk profile below are unchanged.
 **Mitigations:**
 - Rate limiting (BIND9 `rate-limit`)
 - Recursion disabled (authoritative-only)
-- DNSSEC (planned)
+- DNSSEC signing (opt-in, M-14)
 - DDoS protection at edge
 - Operand runs with zero added Linux capabilities (see E1)
 
@@ -1169,11 +1183,13 @@ see T4, [Trust Boundary 6](#boundary-6-scout-controller))
 - Man-in-the-middle attacks
 
 **Mitigations:**
-- DNSSEC (planned) - cryptographically signs DNS responses
+- DNSSEC signing (opt-in, M-14, ADR-0006) - cryptographically signs DNS responses;
+  DS records surfaced in `DNSZone.status.dnssec` for parent-zone publication
 - BIND9 is authoritative-only (not vulnerable to cache poisoning)
 - Recursive resolvers outside our control (client responsibility)
 
-**Residual Risk:** MEDIUM (DNSSEC would eliminate this risk)
+**Residual Risk:** LOW for signed zones with DS published; MEDIUM otherwise
+(signing is opt-in per cluster/zone)
 
 ---
 
@@ -1332,7 +1348,7 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-11 | Audit log retention policy | R1 (non-repudiation) | HIGH | H-2 |
 | M-12 | Secret access audit trail | R2 (secret access), I1 (disclosure) | HIGH | H-3 |
 | ~~M-13~~ | ~~Admission webhooks~~ **DONE — see M-24** | T1 (DNS tampering) | — | Completed |
-| M-14 | DNSSEC signing | T1 (tampering), Scenario 2 (cache poisoning) | MEDIUM | Future |
+| M-14 | **DNSSEC signing** (roadmap 07 complete 2026-09-27, ADR-0006): opt-in `dnssec-policy` zone signing (Secret-backed / auto-generated keys — key Secret names validated against the allow-list prefix, see H2), DS records derived from the zone's KSK DNSKEYs (SHA-256, RFC 8624) and published in `DNSZone.status.dnssec`. DS/keyTag are public data by design; no key material reaches status or logs. Adds one read-only in-cluster query path, operator → `named` :5353 (DNSKEY only, modeled in CALM) | T1 (tampering), Scenario 2 (cache poisoning) | ✅ Opt-in — effective once DS is published in the parent zone |
 | M-15 | Image digest pinning | T2 (image tampering) | MEDIUM | M-1 |
 | M-16 | Rate limiting (operator) | D2 (operator exhaustion) | MEDIUM | M-3 |
 | M-17 | Network policies — a reference manifest now exists (`deploy/pod-hardening.yaml`, ingress/egress scoped to container port 5353) but is **not applied by any install target**; remains opt-in/manual | S1 (API spoofing), E1 (lateral movement), T4/E4 (Scout egress) | LOW | L-1 |
@@ -1369,7 +1385,7 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 
 ### Medium Residual Risks
 
-1. **DNS Tampering (T1)** - Substantially reduced by RBAC and, as of 2026-07-01, an 8-policy `ValidatingAdmissionPolicy` suite (M-24) covering ACLs, zone names, RNDC strictness, pod shape, and record values. DNSSEC signing remains the main outstanding defense-in-depth gap for in-transit tampering (Scenario 2).
+1. **DNS Tampering (T1)** - Substantially reduced by RBAC and, as of 2026-07-01, an 8-policy `ValidatingAdmissionPolicy` suite (M-24) covering ACLs, zone names, RNDC strictness, pod shape, and record values. DNSSEC signing (M-14) shipped 2026-09-27 as the in-transit tampering defense — opt-in, so the residual gap is deployment coverage (unsigned zones) and DS publication in parent zones, not a missing capability.
 
 2. **Operator Resource Exhaustion (D2)** - Risk reduced by resource limits, but rate limiting (M-3) and admission webhooks are needed.
 
@@ -1445,7 +1461,7 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 | Control Category | Implemented | Planned | Residual Risk |
 |------------------|-------------|---------|---------------|
 | **Access Control** | RBAC least privilege (main operator), signed commits, B-5 Secret RBAC split, namespace-scoped operator mode (opt-in), 16 `ValidatingAdmissionPolicy` policies, Scout namespace whitelisting (opt-in, M-30), **Scout Secret RBAC scoped (M-25, fixed 2026-07-19)** | Field-level admission for Scout patches (M-28), Scout egress NetworkPolicy (M-27) | MEDIUM — driven by Scout's remaining cluster-wide `patch`/`update` on Ingress/Service/route (T4); the formerly-HIGH Secret-read risk (I4/E4) is resolved |
-| **Data Protection** | Secrets encrypted, AXFR restricted | DNSSEC, TSIG | MEDIUM |
+| **Data Protection** | Secrets encrypted, AXFR restricted, DNSSEC zone signing (opt-in, M-14/ADR-0006) | TSIG for AXFR; DNSSEC-by-default | MEDIUM |
 | **Supply Chain** | Signed commits/images, SBOM, vuln scanning | Image digest pinning; revisit Dependabot auto-merge human-review gap (M-29) | LOW-MEDIUM (automated auto-merge removed a manual checkpoint — see E3) |
 | **Monitoring** | Kubernetes audit logs, vuln scanning | Audit retention policy, secret access trail | MEDIUM |
 | **Resilience** | Rate limiting, resource limits | Edge DDoS protection, HPA | MEDIUM |

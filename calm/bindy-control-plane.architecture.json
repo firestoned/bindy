@@ -223,6 +223,17 @@
       }
     },
     {
+      "unique-id": "operator-extracts-ds-records",
+      "description": "queries DNSKEY (read-only, DNS over UDP :5353) to derive DS records for DNSZone status — ADR-0006",
+      "protocol": "TCP",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "bindy-operator" },
+          "destination": { "node": "named" }
+        }
+      }
+    },
+    {
       "unique-id": "bindcar-controls-named",
       "description": "rndc / nsupdate (local)",
       "relationship-type": {

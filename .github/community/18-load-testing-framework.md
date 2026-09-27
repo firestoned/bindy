@@ -1358,7 +1358,14 @@ pub struct SuccessCriteria {
 3. **CI integration** - GitHub Actions workflows
 4. **Documentation** - Usage guide, interpretation of results
 5. **Baseline data** - Performance baselines for regression detection
-6. **Grafana dashboards** - Visualization of load test metrics
+6. **Grafana dashboards** - Visualization of load test metrics, plus the
+   operator API-client dashboard deferred from roadmap
+   [05](05-kubernetes-api-rate-limiting.md) / ADR-0005 (`kube_api_*` request
+   rate, latency percentiles, 429 hits, retries, pagination pages — the alert
+   rules and PromQL are already in `docs/src/operations/metrics.md`)
+7. **Scale validation for ADR-0005 rate limiting** - Roadmap 05 Phase 5,
+   delegated here: 1000+ DNSZones with zero 429s, memory O(1) under paginated
+   discovery, chaos-injected 429/5xx recovery via `reconcilers/retry.rs`
 
 ---
 

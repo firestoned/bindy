@@ -46,7 +46,7 @@ Statuses were verified against `fix-idempotency` @ `648ff7a` on 2026-09-10.
 
 | # | Roadmap | Status | Notes |
 |---|---|---|---|
-| [07](.github/community/07-dnssec-zone-signing.md) | DNSSEC zone signing | 🔶 | Phases 1–4 done — `dnssecPolicy` at `src/crd.rs:1228`, signing in `bind9/zone_ops.rs` and `bind9_resources.rs`. Phase 5 open |
+| [07](.github/community/07-dnssec-zone-signing.md) | DNSSEC zone signing | ✅ | Complete 2026-09-27 (ADR-0006): DS records auto-extracted from DNSKEYs and published in `DNSZone.status.dnssec` + `DNSSEC` print column. e2e suite → 19's harness |
 | [08](.github/community/08-status-conditions.md) | Status conditions | ✅ | Phases 1–5 complete (`reconcilers/status.rs`, `status_reasons.rs`); phases 6–7 are explicitly future work inside the doc |
 | [09](.github/community/09-external-bind9-gateway.md) | External BIND9 gateway | ⛔ | Still a draft; no external-endpoint or gateway fields in `src/crd.rs` |
 | [10](.github/community/10-rndc-secret-hot-reload.md) | RNDC secret hot reload | ⛔ | Designed in [ADR-0001](docs/adr/0001-rndc-secret-reload.md); no reload path in `src/` |

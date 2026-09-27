@@ -559,4 +559,61 @@ mod tests {
 
         assert!(!updater.has_changes());
     }
+
+    // ------------------------------------------------------------------
+    // ADR-0006: DNSSEC status on ZoneStatusUpdate
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_set_dnssec_marks_changes() {
+        let dnszone = create_test_dnszone("test-zone", "bindy-system");
+        let mut updater = DNSZoneStatusUpdater::new(&dnszone);
+        assert!(!updater.has_changes());
+
+        updater.set_dnssec(Some(crate::crd::DNSSECStatus {
+            signed: true,
+            ds_records: vec!["example.com. IN DS 12345 13 2 ABCD".to_string()],
+            key_tag: Some(12345),
+            algorithm: Some("ECDSAP256SHA256".to_string()),
+            next_key_rollover: None,
+            last_key_rollover: None,
+        }));
+
+        assert!(
+            updater.has_changes(),
+            "setting DNSSEC status must dirty the update"
+        );
+    }
+
+    #[test]
+    fn test_set_dnssec_same_value_is_a_no_op() {
+        let dnszone = create_test_dnszone("test-zone", "bindy-system");
+        let mut updater = DNSZoneStatusUpdater::new(&dnszone);
+
+        // Zone has no dnssec status; clearing it again must not dirty
+        updater.set_dnssec(None);
+        assert!(
+            !updater.has_changes(),
+            "clearing an absent DNSSEC status is a no-op"
+        );
+    }
+
+    #[test]
+    fn test_set_dnssec_clears_previous_status() {
+        let dnszone = create_test_dnszone("test-zone", "bindy-system");
+        let mut updater = DNSZoneStatusUpdater::new(&dnszone);
+
+        updater.set_dnssec(Some(crate::crd::DNSSECStatus {
+            signed: true,
+            ds_records: vec![],
+            key_tag: None,
+            algorithm: None,
+            next_key_rollover: None,
+            last_key_rollover: None,
+        }));
+        updater.set_dnssec(None);
+
+        assert!(updater.has_changes());
+        assert!(updater.dnssec().is_none(), "DNSSEC status must be cleared");
+    }
 }

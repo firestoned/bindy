@@ -283,4 +283,88 @@ mod notify_target_tests {
             "the endpoint and the instance that serves it must travel together"
         );
     }
+
+    // ------------------------------------------------------------------
+    // ADR-0006: DNSSEC status decision logic (roadmap 07 Phase 5)
+    // ------------------------------------------------------------------
+
+    use crate::bind9::zone_ops::DsRecordInfo;
+
+    fn test_ds_info() -> DsRecordInfo {
+        DsRecordInfo {
+            key_tag: 12345,
+            algorithm: "ECDSAP256SHA256".to_string(),
+            presentation: "example.com. IN DS 12345 13 2 ABCD".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_build_dnssec_status_signed_zone() {
+        let status = build_dnssec_status(Some("default"), &[test_ds_info()])
+            .expect("a zone with DS records must report DNSSEC status");
+
+        assert!(status.signed);
+        assert_eq!(
+            status.ds_records,
+            vec!["example.com. IN DS 12345 13 2 ABCD".to_string()]
+        );
+        assert_eq!(status.key_tag, Some(12345));
+        assert_eq!(status.algorithm, Some("ECDSAP256SHA256".to_string()));
+        assert_eq!(status.next_key_rollover, None);
+        assert_eq!(status.last_key_rollover, None);
+    }
+
+    #[test]
+    fn test_build_dnssec_status_signed_without_explicit_policy() {
+        // Cluster-global signing: no per-zone policy, but DNSKEYs exist.
+        let status = build_dnssec_status(None, &[test_ds_info()])
+            .expect("DS records present must win even without a per-zone policy");
+        assert!(status.signed);
+    }
+
+    #[test]
+    fn test_build_dnssec_status_pending_when_policy_set_but_unsigned() {
+        // Policy requested but keys not generated yet: report signed=false.
+        let status = build_dnssec_status(Some("default"), &[])
+            .expect("an explicit policy must always yield a status");
+        assert!(!status.signed);
+        assert!(status.ds_records.is_empty());
+        assert_eq!(status.key_tag, None);
+    }
+
+    #[test]
+    fn test_build_dnssec_status_cleared_when_no_policy_and_unsigned() {
+        assert!(
+            build_dnssec_status(None, &[]).is_none(),
+            "no policy and no DNSKEYs means no DNSSEC status at all"
+        );
+    }
+
+    #[test]
+    fn test_build_dnssec_status_cleared_when_policy_none() {
+        assert!(
+            build_dnssec_status(Some("none"), &[]).is_none(),
+            "dnssecPolicy 'none' explicitly disables signing"
+        );
+        assert!(
+            build_dnssec_status(Some("none"), &[test_ds_info()]).is_none(),
+            "'none' clears status even if stale DNSKEYs are still served"
+        );
+    }
+
+    #[test]
+    fn test_build_dnssec_status_multiple_ksks_reports_all_ds() {
+        let mut second = test_ds_info();
+        second.key_tag = 54321;
+        second.presentation = "example.com. IN DS 54321 13 2 EF01".to_string();
+
+        let status = build_dnssec_status(Some("default"), &[test_ds_info(), second])
+            .expect("status must be reported");
+        assert_eq!(
+            status.ds_records.len(),
+            2,
+            "every KSK's DS record is published"
+        );
+        assert_eq!(status.key_tag, Some(12345), "keyTag reports the first KSK");
+    }
 }

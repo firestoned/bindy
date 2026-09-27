@@ -958,4 +958,110 @@ mod tests {
     fn test_with_transfer_port_empty() {
         assert!(super::super::with_transfer_port(&[]).is_empty());
     }
+
+    // ------------------------------------------------------------------
+    // ADR-0006: DS record extraction (roadmap 07 Phase 5)
+    // ------------------------------------------------------------------
+
+    use hickory_proto::dnssec::rdata::DNSKEY;
+    use hickory_proto::dnssec::{Algorithm, PublicKeyBuf};
+
+    /// Fixed key material so key tags and digests are deterministic. The DS
+    /// derivation hashes the RDATA; it never validates the key, so any bytes
+    /// of a plausible P-256 length work.
+    const TEST_P256_KEY_BYTES: [u8; 64] = [0xAB; 64];
+
+    fn test_dnskey(secure_entry_point: bool, revoke: bool) -> DNSKEY {
+        DNSKEY::new(
+            true,
+            secure_entry_point,
+            revoke,
+            PublicKeyBuf::new(TEST_P256_KEY_BYTES.to_vec(), Algorithm::ECDSAP256SHA256),
+        )
+    }
+
+    #[test]
+    fn test_dns_query_endpoint_swaps_api_port_for_dns_port() {
+        assert_eq!(
+            super::super::dns_query_endpoint("10.1.2.3:8080"),
+            "10.1.2.3:5353"
+        );
+        assert_eq!(
+            super::super::dns_query_endpoint("[2001:db8::1]:8080"),
+            "[2001:db8::1]:5353"
+        );
+        // No port at all: the DNS port is appended
+        assert_eq!(
+            super::super::dns_query_endpoint("10.1.2.3"),
+            "10.1.2.3:5353"
+        );
+    }
+
+    #[test]
+    fn test_ds_records_from_dnskeys_only_derives_from_ksk() {
+        let zsk = test_dnskey(false, false);
+        let ksk = test_dnskey(true, false);
+
+        let out = super::super::ds_records_from_dnskeys("example.com", &[zsk, ksk])
+            .expect("DS derivation should succeed");
+
+        assert_eq!(out.len(), 1, "only the KSK (SEP flag) yields a DS record");
+    }
+
+    #[test]
+    fn test_ds_records_from_dnskeys_skips_revoked_keys() {
+        let revoked_ksk = test_dnskey(true, true);
+        let out = super::super::ds_records_from_dnskeys("example.com", &[revoked_ksk])
+            .expect("DS derivation should succeed");
+        assert!(out.is_empty(), "revoked keys must not produce DS records");
+    }
+
+    #[test]
+    fn test_ds_records_from_dnskeys_empty_for_unsigned_zone() {
+        let out = super::super::ds_records_from_dnskeys("example.com", &[])
+            .expect("DS derivation should succeed");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_ds_record_presentation_format() {
+        let ksk = test_dnskey(true, false);
+        let expected_tag = ksk.calculate_key_tag().expect("key tag");
+
+        let out = super::super::ds_records_from_dnskeys("example.com", &[ksk])
+            .expect("DS derivation should succeed");
+        let info = &out[0];
+
+        assert_eq!(info.key_tag, expected_tag);
+        assert_eq!(info.algorithm, "ECDSAP256SHA256");
+
+        // "<zone>. IN DS <keytag> <alg> 2 <sha256-hex>"
+        let parts: Vec<&str> = info.presentation.split_whitespace().collect();
+        assert_eq!(parts.len(), 7, "presentation: {}", info.presentation);
+        assert_eq!(parts[0], "example.com.");
+        assert_eq!(parts[1], "IN");
+        assert_eq!(parts[2], "DS");
+        assert_eq!(parts[3], expected_tag.to_string());
+        assert_eq!(parts[4], "13", "ECDSAP256SHA256 is DNSSEC algorithm 13");
+        assert_eq!(parts[5], "2", "digest type is SHA-256");
+        assert_eq!(parts[6].len(), 64, "SHA-256 digest is 32 bytes hex-encoded");
+        assert!(
+            parts[6]
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_lowercase()),
+            "digest must be uppercase hex: {}",
+            parts[6]
+        );
+    }
+
+    #[test]
+    fn test_ds_record_zone_name_trailing_dot_is_normalized() {
+        let with_dot =
+            super::super::ds_records_from_dnskeys("example.com.", &[test_dnskey(true, false)])
+                .expect("DS derivation should succeed");
+        let without_dot =
+            super::super::ds_records_from_dnskeys("example.com", &[test_dnskey(true, false)])
+                .expect("DS derivation should succeed");
+        assert_eq!(with_dot[0].presentation, without_dot[0].presentation);
+    }
 }
