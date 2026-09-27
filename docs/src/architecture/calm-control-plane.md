@@ -60,6 +60,7 @@ classDef highlight fill:#fdf7ec,stroke:#f0c060,stroke-width:1px,color:#000000;
     crd-dnszone -->|selects member records via label selector| crd-records
     bindy-operator -->|add / delete / notify zones #40;SA token, TokenReview#41;| bindcar
     bindy-operator -->|DNS UPDATE #40;RFC 2136, TSIG#41;| named
+    bindy-operator -->|queries DNSKEY #40;read-only, DNS over UDP :5353#41; to derive DS records for DNSZone status — ADR-0006| named
     bindcar -->|rndc / nsupdate #40;local#41;| named
     dns-client -->|DNS query| bind9-svc
     bind9-svc -->|routes :53 to named :5353| named

@@ -425,6 +425,29 @@ impl DNSZoneStatusUpdater {
         self.new_status.records_resync_pending
     }
 
+    /// Set (or clear, with `None`) the zone's DNSSEC status (ADR-0006).
+    ///
+    /// A value equal to what the update already carries is a no-op, so DS
+    /// reporting never dirties an otherwise unchanged status.
+    ///
+    /// # Arguments
+    ///
+    /// * `dnssec` - DS records and signing state, or `None` when the zone has
+    ///   no effective DNSSEC policy
+    pub fn set_dnssec(&mut self, dnssec: Option<crate::crd::DNSSECStatus>) {
+        if self.new_status.dnssec == dnssec {
+            return;
+        }
+        self.new_status.dnssec = dnssec;
+        self.has_changes = true;
+    }
+
+    /// The DNSSEC status this update currently carries.
+    #[must_use]
+    pub fn dnssec(&self) -> Option<&crate::crd::DNSSECStatus> {
+        self.new_status.dnssec.as_ref()
+    }
+
     /// Set the observed generation to match the current generation.
     pub fn set_observed_generation(&mut self, generation: Option<i64>) {
         self.new_status.observed_generation = generation;
@@ -534,6 +557,7 @@ impl DNSZoneStatusUpdater {
                     || current.bind9_instances != self.new_status.bind9_instances
                     || current.bind9_instances_count != self.new_status.bind9_instances_count
                     || current.records_resync_pending != self.new_status.records_resync_pending
+                    || current.dnssec != self.new_status.dnssec
             }
         }
     }

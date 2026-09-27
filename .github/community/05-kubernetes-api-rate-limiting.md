@@ -1,6 +1,6 @@
 # Kubernetes API Rate Limiting Improvements
 
-> **Status:** ✅ Complete (2026-09-27, branch `early-return`, [ADR-0005](../../docs/adr/0005-client-side-kube-api-rate-limiting.md)) — remaining scale validation delegated to roadmap [18](18-load-testing-framework.md).
+> **Status:** ✅ Complete (2026-09-27, branch `rate-limiting-finish`, [ADR-0005](../../docs/adr/0005-client-side-kube-api-rate-limiting.md)) — remaining scale validation and the Grafana dashboard artifact delegated to roadmap [18](18-load-testing-framework.md).
 >
 > - **Phase 1 ✅** Client-side rate limiting via `tower::limit::RateLimitLayer` in `src/rate_limit.rs`, inserted with `kube::client::ClientBuilder` (kube-rs has no `qps`/`burst` Config fields — the roadmap's original snippet was aspirational). Defaults 20 QPS / 30 burst from `constants.rs`; `BINDY_KUBE_QPS` / `BINDY_KUBE_BURST` overrides validated with warn-and-default fallback.
 > - **Phase 2 ✅** `reconcilers/pagination.rs` landed earlier; this pass converted **every** remaining unpaginated `list()` call site (startup drift detection in `main.rs`, `clusterbind9provider.rs`, `bind9cluster/mod.rs`, `dnszone.rs`, all Scout list sites). Sole exception: `scout.rs::kind_served`, whose `limit(1)` probe is intentional.

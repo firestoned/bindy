@@ -1,6 +1,11 @@
 # DNSSEC Zone Signing Implementation Roadmap
 
-> **Status:** 🔶 In progress — phases 1–4 complete per the doc. `dnssecPolicy` is in `src/crd.rs:1228`; signing paths live in `src/bind9/zone_ops.rs` and `src/bind9_resources.rs`. Phase 5 open.
+> **Status:** ✅ Complete (2026-09-27, branch `dnssec-zone-signing`, [ADR-0006](../../docs/adr/0006-dnssec-ds-record-status-reporting.md)) — the e2e DNSSEC suite is delegated to the integration harness (roadmap [19](19-integration-testing.md)'s `tests/integration_test.sh` / `make kind-integration-test`).
+>
+> - **Phases 1–4 ✅** (earlier): CRD schema (`DNSSECConfig`/`DNSSECSigningConfig`/`DNSSECKeySource`), `dnssec-policy` rendering, key sources, per-zone `dnssecPolicy` + inline signing via bindcar.
+> - **Phase 5 ✅** DS record status reporting: after configuring a signed zone the DNSZone reconciler queries its DNSKEY RRset over DNS (`zone_ops::extract_ds_records`, hickory-net — NOT the dead hickory-client this doc's snippets predate), derives one DS per KSK (SHA-256, RFC 8624), and publishes `status.dnssec` (`signed`, `dsRecords`, `keyTag`, `algorithm`) through `DNSZoneStatusUpdater`. `dnssecPolicy: "none"` clears the status; policy-without-keys reports `signed: false`. New `DNSSEC` print column (`-o wide`). `nextKeyRollover`/`lastKeyRollover` stay unpopulated — reading BIND key state files is bindcar API surface, filed 2026-09-27 as a key-timing task on [bindcar roadmap 07 (DNSSEC lifecycle)](https://github.com/firestoned/bindcar/blob/main/.github/community/07-dnssec-lifecycle.md).
+> - **Phase 6 🔶→delegated** Unit coverage landed (DS derivation, KSK/revoked filtering, presentation format, status decision logic — 18 tests). The kind-cluster e2e (delv/dig validation, key persistence, signed transfer) belongs to the shipped integration harness, roadmap 19.
+> - **Phase 7 ✅** `docs/src/advanced/dnssec.md` rewritten for automated DS retrieval; API reference regenerated.
 >
 > *Migrated 2026-09-10 from the external roadmap set. Status verified against `fix-idempotency` @ `648ff7a`.*
 

@@ -1,3 +1,53 @@
+## [2026-09-27 15:20] - Roadmap 07 complete: DNSSEC DS record status reporting (ADR-0006)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0006-dnssec-ds-record-status-reporting.md`: ADR — operator queries
+  DNSKEY over DNS and computes DS records locally (vs. a new bindcar endpoint
+  or pod exec).
+- `src/bind9/zone_ops.rs`: `DsRecordInfo`, `dns_query_endpoint()` (bindcar
+  API endpoint → operand DNS endpoint on 5353), `ds_records_from_dnskeys()`
+  (KSK filter: zone-key + SEP, never revoked; RFC 4034 key tag; SHA-256
+  digest per RFC 8624), `extract_ds_records()` (DNSKEY query via hickory-net).
+- `src/reconcilers/dnszone.rs`: `build_dnssec_status()` decision logic and
+  `update_dnssec_status()` — after configuring a zone's primaries the
+  reconciler publishes `status.dnssec` (`signed`, `dsRecords`, `keyTag`,
+  `algorithm`); `dnssecPolicy: "none"` clears it; a policy whose keys are
+  still generating reports `signed: false`; query failures keep the previous
+  status and never fail the reconcile.
+- `src/reconcilers/status.rs`: `set_dnssec()`/`dnssec()` on
+  `DNSZoneStatusUpdater`; `dnssec` included in the `has_changes()` comparison
+  so DS updates persist and unchanged status never patches.
+- `src/crd.rs`: `DNSSEC` print column on DNSZone (`.status.dnssec.signed`,
+  `-o wide`); `deploy/operator/crds/dnszones.crd.yaml` regenerated.
+- 18 unit tests (DS derivation, KSK/revoked filtering, presentation format,
+  endpoint rewriting, status decision logic, updater dirty-tracking).
+- `calm/bindy-control-plane.architecture.json`: new relationship
+  `operator-extracts-ds-records` (read-only DNSKEY query); diagrams
+  regenerated.
+
+### Changed
+- `docs/src/advanced/dnssec.md`: Phase 5 marked implemented; "Completing the
+  Chain of Trust" rewritten around `kubectl get dnszone -o
+  jsonpath='{.status.dnssec.dsRecords[*]}'` with the manual
+  `dnssec-dsfromkey` flow kept as a cross-check.
+- `.github/community/07-dnssec-zone-signing.md` + `ROADMAPS.md`: roadmap 07
+  ✅; e2e DNSSEC suite delegated to the roadmap-19 integration harness;
+  rollover timestamps deferred to Phase 8 (needs bindcar key-state API).
+
+### Why
+Phases 1–4 sign zones, but the chain of trust ends at the parent zone, and
+users had to exec into pods with dnssec-dsfromkey to get the DS records.
+The status struct existed and nothing populated it; verify_zone_signed()
+had no callers.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-09-27 14:40] - Roadmap 05 complete: client-side Kubernetes API rate limiting (ADR-0005)
 
 **Author:** Erick Bourgeois

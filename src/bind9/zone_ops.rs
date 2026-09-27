@@ -1217,6 +1217,176 @@ pub async fn verify_zone_signed(zone_name: &str, server: &str) -> Result<bool> {
     Ok(is_signed)
 }
 
+// ============================================================================
+// DNSSEC DS record extraction (ADR-0006, roadmap 07 Phase 5)
+// ============================================================================
+
+/// DS digest type published in `DNSZone` status: SHA-256 (digest type 2).
+///
+/// RFC 8624 makes SHA-256 the mandatory-to-implement DS digest; SHA-1 is
+/// deprecated and deliberately not emitted.
+const DS_DIGEST_TYPE: hickory_proto::dnssec::DigestType = hickory_proto::dnssec::DigestType::SHA256;
+
+/// One DS (Delegation Signer) record derived from a zone's KSK DNSKEY.
+///
+/// Carries the fields `DNSZone.status.dnssec` publishes: the key tag, the
+/// algorithm mnemonic, and the full presentation-format record the user
+/// pastes into the parent zone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DsRecordInfo {
+    /// RFC 4034 key tag of the KSK this DS record refers to.
+    pub key_tag: u16,
+    /// DNSSEC algorithm mnemonic (e.g., `ECDSAP256SHA256`).
+    pub algorithm: String,
+    /// Presentation-format DS record:
+    /// `<zone>. IN DS <keytag> <algorithm> 2 <sha256-digest-hex>`
+    pub presentation: String,
+}
+
+/// Rewrite a bindcar API endpoint (`<host>:<port>`) to the operand's DNS
+/// endpoint on [`DNS_CONTAINER_PORT`].
+///
+/// Bracketed IPv6 (`[2001:db8::1]:8080`) keeps its brackets; a bare host
+/// without a port gets the DNS port appended.
+///
+/// # Arguments
+/// * `endpoint` - The `<host>:<port>` endpoint the zone was configured through
+#[must_use]
+pub fn dns_query_endpoint(endpoint: &str) -> String {
+    if let Some(bracket_end) = endpoint.rfind(']') {
+        let host = &endpoint[..=bracket_end];
+        return format!("{host}:{DNS_CONTAINER_PORT}");
+    }
+
+    match endpoint.rsplit_once(':') {
+        Some((host, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => {
+            format!("{host}:{DNS_CONTAINER_PORT}")
+        }
+        _ => format!("{endpoint}:{DNS_CONTAINER_PORT}"),
+    }
+}
+
+/// Derive DS records from a zone's DNSKEY RRset.
+///
+/// Only Key Signing Keys produce DS records: the key must have the zone-key
+/// and SEP (secure entry point) flags set and must not be revoked. ZSKs and
+/// revoked keys are skipped. An unsigned zone (no DNSKEYs) yields an empty
+/// vector, not an error.
+///
+/// # Arguments
+/// * `zone_name` - The zone, with or without a trailing dot
+/// * `dnskeys` - DNSKEY RDATA from the zone's apex
+///
+/// # Errors
+/// Returns an error if the zone name is invalid, or a key tag / digest
+/// cannot be computed from a DNSKEY.
+pub fn ds_records_from_dnskeys(
+    zone_name: &str,
+    dnskeys: &[hickory_proto::dnssec::rdata::DNSKEY],
+) -> Result<Vec<DsRecordInfo>> {
+    use hickory_proto::dnssec::PublicKey;
+    use hickory_proto::rr::Name;
+    use std::str::FromStr;
+
+    let zone = zone_name.trim_end_matches('.');
+    let name = Name::from_str(&format!("{zone}."))
+        .with_context(|| format!("Invalid zone name: {zone_name}"))?;
+
+    let mut ds_records = Vec::new();
+    for key in dnskeys {
+        // KSKs only: zone-key + SEP flags, and never a revoked key.
+        if !key.zone_key() || !key.secure_entry_point() || key.revoke() {
+            continue;
+        }
+
+        let key_tag = key
+            .calculate_key_tag()
+            .with_context(|| format!("Failed to calculate DNSKEY key tag for zone {zone}"))?;
+        let digest = key
+            .to_digest(&name, DS_DIGEST_TYPE)
+            .with_context(|| format!("Failed to compute DS digest for zone {zone}"))?;
+
+        let digest_hex: String = digest
+            .as_ref()
+            .iter()
+            .map(|byte| format!("{byte:02X}"))
+            .collect();
+        let algorithm = key.public_key().algorithm();
+        let algorithm_number = u8::from(algorithm);
+        let digest_type_number = u8::from(DS_DIGEST_TYPE);
+
+        ds_records.push(DsRecordInfo {
+            key_tag,
+            algorithm: algorithm.as_str().to_string(),
+            presentation: format!(
+                "{zone}. IN DS {key_tag} {algorithm_number} {digest_type_number} {digest_hex}"
+            ),
+        });
+    }
+
+    Ok(ds_records)
+}
+
+/// Query a zone's DNSKEY RRset and derive its DS records (ADR-0006).
+///
+/// Queries the operand directly over DNS (read-only, unauthenticated — DNSKEY
+/// data is public by design) and derives one DS record per KSK. An unsigned
+/// zone returns an empty vector.
+///
+/// # Arguments
+/// * `zone_name` - The zone to query, with or without a trailing dot
+/// * `server` - DNS endpoint as `<host>:<port>` (see [`dns_query_endpoint`])
+///
+/// # Errors
+/// Returns an error if the server address or zone name is invalid, the DNS
+/// query fails, or DS derivation fails.
+pub async fn extract_ds_records(zone_name: &str, server: &str) -> Result<Vec<DsRecordInfo>> {
+    use hickory_net::client::{Client, ClientHandle};
+    use hickory_net::runtime::TokioRuntimeProvider;
+    use hickory_net::udp::UdpClientStream;
+    use hickory_proto::dnssec::rdata::DNSSECRData;
+    use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
+    use std::net::SocketAddr;
+    use std::str::FromStr;
+
+    let server_addr: SocketAddr = server
+        .parse()
+        .with_context(|| format!("Invalid DNS server address: {server}"))?;
+
+    let name =
+        Name::from_str(zone_name).with_context(|| format!("Invalid zone name: {zone_name}"))?;
+
+    debug!(
+        "Extracting DS records for zone {} from {}",
+        zone_name, server_addr
+    );
+
+    let stream = UdpClientStream::builder(server_addr, TokioRuntimeProvider::default()).build();
+    let (mut client, bg) = Client::<TokioRuntimeProvider>::from_sender(stream);
+    tokio::spawn(bg);
+
+    let response = client
+        .query(name, DNSClass::IN, RecordType::DNSKEY)
+        .await
+        .with_context(|| {
+            format!("Failed to query DNSKEY records for zone {zone_name} on {server_addr}")
+        })?;
+
+    let dnskeys: Vec<_> = response
+        .answers
+        .iter()
+        .filter_map(|record| {
+            if let RData::DNSSEC(DNSSECRData::DNSKEY(dnskey)) = &record.data {
+                Some(dnskey.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    ds_records_from_dnskeys(zone_name, &dnskeys)
+}
+
 #[cfg(test)]
 #[path = "zone_ops_tests.rs"]
 mod zone_ops_tests;

@@ -22,6 +22,10 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
+    - jsonPath: .status.dnssec.signed
+      name: DNSSEC
+      priority: 1
+      type: boolean
     - jsonPath: .spec.zoneName
       name: Zone
       type: string

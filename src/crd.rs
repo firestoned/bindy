@@ -944,6 +944,7 @@ pub struct SecondaryZoneConfig {
     shortname = "dz",
     shortname = "dzs",
     doc = "DNSZone represents an authoritative DNS zone managed by BIND9. Each DNSZone defines a zone (e.g., example.com) with SOA record parameters. Can reference either a namespace-scoped Bind9Cluster or cluster-scoped ClusterBind9Provider.",
+    printcolumn = r#"{"name":"DNSSEC","type":"boolean","jsonPath":".status.dnssec.signed","priority":1}"#,
     printcolumn = r#"{"name":"Zone","type":"string","jsonPath":".spec.zoneName"}"#,
     printcolumn = r#"{"name":"Provider","type":"string","jsonPath":".spec.clusterProviderRef"}"#,
     printcolumn = r#"{"name":"Records","type":"integer","jsonPath":".status.recordsCount"}"#,

@@ -11,8 +11,8 @@ DNS Security Extensions (DNSSEC) provides cryptographic authentication of DNS da
 | Policy Configuration (Phase 2) | ✅ Implemented | `dnssec-policy` blocks generated in `named.conf` |
 | Key Source Configuration (Phase 3) | ✅ Implemented | Secret-backed and auto-generated keys |
 | Zone Signing Configuration (Phase 4) | ✅ Implemented | Per-zone `dnssecPolicy` field, inline signing via bindcar |
-| DS Record Status Reporting (Phase 5) | 🚧 Planned | Status struct exists; extraction logic not yet implemented |
-| Integration Tests (Phase 6) | 🚧 Planned | Unit tests exist; end-to-end suite pending |
+| DS Record Status Reporting (Phase 5) | ✅ Implemented | DS records published in `DNSZone.status.dnssec` ([ADR-0006](https://github.com/firestoned/bindy/blob/main/docs/adr/0006-dnssec-ds-record-status-reporting.md)) |
+| Integration Tests (Phase 6) | 🚧 Partial | Unit coverage complete; end-to-end DNSSEC suite tracked with the integration harness |
 
 ---
 
@@ -227,19 +227,49 @@ Use `ECDSAP256SHA256` unless you have a specific compatibility requirement. Per 
 
 After zones are signed, publish DS records in the parent zone to complete the DNSSEC chain of trust. The DS record links the child zone's KSK to the parent zone's trust.
 
-**Note:** DS record extraction (Phase 5) is not yet automated. Extract DS records manually:
+The operator extracts DS records automatically: after configuring a signed
+zone it queries the zone's DNSKEY RRset, derives one DS record per KSK
+(SHA-256 digest, RFC 8624), and publishes them in the zone's status.
 
 ```bash
-# Get DS records from signed zone
-kubectl exec -n bindy-system -l app.kubernetes.io/component=bind9 -- \
-  dig @localhost example.com DNSKEY | dnssec-dsfromkey -f - example.com
+# All DS records for the zone, ready to paste into the parent zone
+kubectl get dnszone example-com -n bindy-system \
+  -o jsonpath='{.status.dnssec.dsRecords[*]}'
 
-# Or extract from BIND9's key directory
-kubectl exec -n bindy-system -l app.kubernetes.io/component=bind9 -- \
-  cat /var/cache/bind/keys/dsset-example.com.
+# Example output:
+# example.com. IN DS 12345 13 2 4C3A9C2E...
+
+# Signing state at a glance (kubectl get dnszones -o wide shows a DNSSEC column)
+kubectl get dnszone example-com -n bindy-system \
+  -o jsonpath='{.status.dnssec.signed}'
 ```
 
-Publish the output DS records at your domain registrar or parent zone operator.
+The full status carries the key tag and algorithm as well:
+
+```yaml
+status:
+  dnssec:
+    signed: true
+    dsRecords:
+      - "example.com. IN DS 12345 13 2 4C3A9C2E..."
+    keyTag: 12345
+    algorithm: ECDSAP256SHA256
+```
+
+`signed: false` with empty `dsRecords` means the zone has a DNSSEC policy but
+BIND9 is still generating its keys — the status refreshes on the next
+reconcile. A zone with `dnssecPolicy: "none"` reports no `dnssec` status at
+all.
+
+Publish the `dsRecords` output at your domain registrar or parent zone
+operator. To cross-check by hand:
+
+```bash
+kubectl exec -n bindy-system -l app.kubernetes.io/component=bind9 -- \
+  dig @localhost -p 5353 example.com DNSKEY | dnssec-dsfromkey -2 -f - example.com
+```
+
+The manual output must match `.status.dnssec.dsRecords`.
 
 ---
 
