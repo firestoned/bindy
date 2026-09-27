@@ -8,10 +8,36 @@
 **Service Mesh Standard**: Always use Linkerd in docs, examples, and comments. Never use Istio, Consul Connect, or other implementations unless specifically required.
 
 **CRITICAL Coding Patterns** (full details in `rules/`):
+- **ADD governs ALL work**: ADR → CALM → TDD — `rules/architecture-driven-development.md`
 - **TDD**: Write tests FIRST — `rules/testing.md` + `tdd-workflow` skill
 - **After ANY Rust change**: run `cargo-quality` skill (NON-NEGOTIABLE)
 - **Early returns / magic numbers / style**: `rules/rust-style.md`
 - **Event-Driven controllers**: use watch API, never polling
+
+---
+
+## 🚨 CRITICAL: ADD — Architecture Driven Development
+
+**ADD is the governing methodology for this repo.** Every architecturally
+significant change follows the fixed pipeline — each step complete before the
+next starts:
+
+```
+ADR  →  CALM  →  TDD  →  implement  →  docs  →  threat model
+```
+
+1. **ADR** — record the decision in `docs/adr/NNNN-title.md` (metadata bullets,
+   then Context / Decision / Consequences)
+2. **CALM** — update `calm/*.architecture.json`; `make calm-validate` +
+   `make calm-docs` before any implementation
+3. **TDD** — tests first, then minimum implementation (`tdd-workflow` skill)
+4. **Docs** — CHANGELOG, `docs/src/`, examples, roadmap detail doc + `ROADMAPS.md`
+5. **Threat model** — full pass over `docs/src/security/threat-model.md`; bump
+   the header stamp. An ADR is not implemented until this pass is done.
+
+Full rule, applicability criteria, and checklist:
+`rules/architecture-driven-development.md`. Rendered for contributors on the
+[Developer Guide index](../docs/src/development/index.md).
 
 ---
 
@@ -82,18 +108,17 @@ After code changes: run `cargo fmt`, `cargo clippy`, `cargo test`, then inform t
 
 ---
 
-## 🚨 NO Roadmaps or Planning Docs in This Repo
+## 📍 Roadmaps Live In-Repo at `.github/community/` + `ROADMAPS.md`
 
-Do **NOT** create or commit roadmap / planning / analysis / design documents
-anywhere in this repository — not in `docs/roadmaps/`, not anywhere else. These
-must remain **external** to the repo.
+Roadmaps and planning docs are **checked in**: detail docs in
+`.github/community/NN-*.md` (lowercase-hyphen, zero-padded contiguous
+numbering) and the one-screen status board in `ROADMAPS.md` at the repo root.
+Do NOT create `docs/roadmaps/`, `ROADMAP.md`, or `docs/plans/` — those are the
+wrong locations, not a ban on roadmaps.
 
-```
-❌ docs/roadmaps/anything.md   ❌ ROADMAP.md   ❌ docs/plans/*.md
-```
-
-The external storage location is a personal preference kept in global settings,
-not in this repo.
+Only two categories stay external (in `~/dev/roadmaps/bindy/`): documents
+naming real infrastructure, and security-remediation notes with unremediated
+findings. See the global CLAUDE.md roadmap policy.
 
 ---
 
@@ -224,7 +249,7 @@ src/
 └── bin/ (crdgen.rs, crddoc.rs)
 
 docs/
-├── (NO roadmaps/ — planning docs are stored external to this repo)
+├── (roadmap detail docs live in .github/community/ + root ROADMAPS.md, not under docs/)
 ├── adr/        ← Architecture Decision Records
 ├── mkdocs.yml  ← MkDocs config (Poetry-managed; build via `make docs`)
 └── src/        ← MkDocs source (docs_dir)

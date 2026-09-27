@@ -567,6 +567,50 @@ pub fn cluster_status_needs_update(
     }
 }
 
+/// Determine the encompassing `Ready` condition for a cluster from its
+/// instance counts.
+///
+/// # Arguments
+///
+/// * `ready_instances` - Number of instances whose `Ready` condition is `True`
+/// * `total_instances` - Total number of instances referencing the cluster
+///
+/// # Returns
+///
+/// The `(status, reason, message)` triple for the condition, using the
+/// standard reasons from [`crate::status_reasons`].
+fn cluster_ready_condition(
+    ready_instances: usize,
+    total_instances: usize,
+) -> (&'static str, &'static str, String) {
+    if total_instances == 0 {
+        return (
+            "False",
+            REASON_NO_CHILDREN,
+            "No instances found for this cluster".to_string(),
+        );
+    }
+    if ready_instances == total_instances {
+        return (
+            "True",
+            REASON_ALL_READY,
+            format!("All {total_instances} instances are ready"),
+        );
+    }
+    if ready_instances > 0 {
+        return (
+            "False",
+            REASON_PARTIALLY_READY,
+            format!("{ready_instances}/{total_instances} instances are ready"),
+        );
+    }
+    (
+        "False",
+        REASON_NOT_READY,
+        "No instances are ready".to_string(),
+    )
+}
+
 /// Calculates the cluster status based on instance states.
 ///
 /// # Arguments
@@ -598,31 +642,7 @@ pub fn calculate_cluster_status(
     let total_instances = instances.len();
 
     // Determine cluster ready condition using standard reasons
-    let (status, reason, message) = if total_instances == 0 {
-        (
-            "False",
-            REASON_NO_CHILDREN,
-            "No instances found for this cluster".to_string(),
-        )
-    } else if ready_instances == total_instances {
-        (
-            "True",
-            REASON_ALL_READY,
-            format!("All {total_instances} instances are ready"),
-        )
-    } else if ready_instances > 0 {
-        (
-            "False",
-            REASON_PARTIALLY_READY,
-            format!("{ready_instances}/{total_instances} instances are ready"),
-        )
-    } else {
-        (
-            "False",
-            REASON_NOT_READY,
-            "No instances are ready".to_string(),
-        )
-    };
+    let (status, reason, message) = cluster_ready_condition(ready_instances, total_instances);
 
     // Collect instance names (with namespace for global clusters)
     let instance_names: Vec<String> = instances

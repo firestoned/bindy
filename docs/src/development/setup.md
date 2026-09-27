@@ -105,6 +105,7 @@ If all commands succeed, your development environment is ready!
 
 ## Next Steps
 
+- [Developer Guide Overview](./index.md) - ADD methodology (`ADR → CALM → TDD`)
 - [Building from Source](./building.md) - Build the operator
 - [Testing Guide](./testing-guide.md) - Test your changes
 - [Development Workflow](./workflow.md) - Daily development workflow

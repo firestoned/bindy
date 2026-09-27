@@ -1956,6 +1956,146 @@ mod tests {
         assert!(result.is_err(), "invalid listen-on entry must be rejected");
     }
 
+    /// A cluster with `spec.common.global` for options-conf precedence tests.
+    fn cluster_with_global(global: Bind9Config) -> Bind9Cluster {
+        let mut cluster = create_test_cluster("test-cluster", "test-ns");
+        cluster.spec.common.global = Some(global);
+        cluster
+    }
+
+    /// An instance whose `spec.config` block exists but sets nothing, so every
+    /// option must fall back to the cluster `spec.common.global` level.
+    fn instance_with_empty_config(name: &str) -> Bind9Instance {
+        let mut instance = create_test_instance(name);
+        instance.spec.config = Some(Bind9Config {
+            rate_limit: None,
+            recursion: None,
+            allow_query: None,
+            allow_transfer: None,
+            dnssec: None,
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        });
+        instance
+    }
+
+    #[test]
+    fn test_options_conf_falls_back_to_global_config() {
+        let instance = instance_with_empty_config("test");
+        let cluster = cluster_with_global(Bind9Config {
+            rate_limit: None,
+            recursion: Some(true),
+            allow_query: Some(vec!["10.0.0.0/8".to_string()]),
+            allow_transfer: Some(vec!["10.1.0.0/16".to_string()]),
+            dnssec: Some(DNSSECConfig {
+                validation: Some(false),
+                signing: None,
+            }),
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        });
+
+        let cm = build_configmap("test", "test-ns", &instance, Some(&cluster), None).unwrap();
+        let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
+
+        assert!(
+            options.contains("recursion yes;"),
+            "recursion must fall back to global, got: {options}"
+        );
+        assert!(
+            options.contains("allow-query { 10.0.0.0/8; };"),
+            "allow-query must fall back to global, got: {options}"
+        );
+        assert!(
+            options.contains("allow-transfer { 10.1.0.0/16; };"),
+            "allow-transfer must fall back to global, got: {options}"
+        );
+        assert!(
+            options.contains("dnssec-validation no;"),
+            "an instance config block silent on dnssec must take the global value, got: {options}"
+        );
+        assert!(
+            !options.contains("{{"),
+            "no template placeholder may survive substitution, got: {options}"
+        );
+    }
+
+    #[test]
+    fn test_options_conf_role_allow_transfer_beats_global() {
+        let instance = instance_with_empty_config("test");
+        let cluster = cluster_with_global(Bind9Config {
+            rate_limit: None,
+            recursion: None,
+            allow_query: None,
+            allow_transfer: Some(vec!["10.1.0.0/16".to_string()]),
+            dnssec: None,
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        });
+        let role_acls = vec!["192.168.0.0/24".to_string()];
+
+        let cm = build_configmap(
+            "test",
+            "test-ns",
+            &instance,
+            Some(&cluster),
+            Some(&role_acls),
+        )
+        .unwrap();
+        let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
+
+        assert!(
+            options.contains("allow-transfer { 192.168.0.0/24; };"),
+            "role-specific allow-transfer must override global, got: {options}"
+        );
+        assert!(
+            !options.contains("10.1.0.0/16"),
+            "global allow-transfer must not render when role overrides it, got: {options}"
+        );
+    }
+
+    #[test]
+    fn test_options_conf_no_config_section_global_dnssec_false_emits_no_directive() {
+        // Pins historical behavior: with NO instance `config` block at all, a
+        // global `dnssec.validation: false` emits no directive (named then uses
+        // its own default), whereas an instance config block that is merely
+        // silent on dnssec renders an explicit `dnssec-validation no;`.
+        let mut instance = create_test_instance("test");
+        instance.spec.config = None;
+        let cluster = cluster_with_global(Bind9Config {
+            rate_limit: None,
+            recursion: None,
+            allow_query: None,
+            allow_transfer: None,
+            dnssec: Some(DNSSECConfig {
+                validation: Some(false),
+                signing: None,
+            }),
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        });
+
+        let cm = build_configmap("test", "test-ns", &instance, Some(&cluster), None).unwrap();
+        let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
+
+        assert!(
+            !options.contains("dnssec-validation"),
+            "global validation=false with no instance config block must emit nothing, got: {options}"
+        );
+    }
+
     #[test]
     fn test_cluster_options_conf_renders_forwarders_and_listen_on() {
         use crate::bind9_resources::build_cluster_configmap;

@@ -1,8 +1,27 @@
 # Early Return / Guard Clause Pattern Refactoring Roadmap
 
-> **Status:** 🔶 In progress — the rule is codified in [`.claude/rules/rust-style.md`](../../.claude/rules/rust-style.md), but all 9 named target functions still exist (`build_options_conf` `src/bind9_resources.rs:762`, `build_cluster_options_conf` `:1106`, `build_pod_spec` `:1484`, `build_volume_mounts` `:1852`, `update_cluster_status` `src/reconcilers/clusterbind9provider.rs:463`, …). Line numbers in the doc are from 2026-01 and have drifted; re-audit before starting.
+> **Status:** ✅ Done (2026-09-27) — all 9 target functions now follow the
+> early-return/guard-clause rule codified in
+> [`.claude/rules/rust-style.md`](../../.claude/rules/rust-style.md).
+> Three were already compliant when re-audited (`update_cluster_status` and
+> `update_status` gained early-return change-detection helpers in earlier work;
+> `finalize_zone_status` was rewritten during the dnszone modularization). The
+> remaining six were refactored on 2026-09-27: `build_options_conf` and
+> `build_cluster_options_conf` now share flat per-directive resolvers
+> (`render_recursion`, `render_acl_directive`, `render_allow_transfer`,
+> `resolve_dnssec_validation`) and both dropped their
+> `#[allow(clippy::too_many_lines)]`; `build_pod_spec`'s image selection,
+> `build_volume_mounts` (via `config_file_mount`) and
+> `build_api_sidecar_container`'s env loop were flattened; and
+> `calculate_cluster_status`'s condition chain moved into the early-return
+> helper `cluster_ready_condition`. The refactor is behavior-preserving: new
+> pinning tests cover the previously untested global-fallback and
+> role-precedence paths, and two pre-existing quirks were deliberately kept
+> (documented in code): the `dnssec-validation` asymmetry when the instance has
+> no `config` block, and the cluster-level builder's missing `allow-transfer`
+> deny-by-default (the #466 gap).
 >
-> *Migrated 2026-09-10 from the external roadmap set. Status verified against `fix-idempotency` @ `648ff7a`.*
+> *Migrated 2026-09-10 from the external roadmap set. Status verified against `fix-idempotency` @ `648ff7a`; completed on `main` 2026-09-27.*
 
 ---
 
