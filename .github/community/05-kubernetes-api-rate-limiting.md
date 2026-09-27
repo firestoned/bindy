@@ -1,6 +1,12 @@
 # Kubernetes API Rate Limiting Improvements
 
-> **Status:** 🔶 In progress — `src/reconcilers/pagination.rs` and `src/reconcilers/retry.rs` landed. No explicit client-side rate limiter exists (nothing in `Cargo.toml` provides one). Overlaps [01](01-controller-crate-split.md), which halves watch connections.
+> **Status:** ✅ Complete (2026-09-27, branch `early-return`, [ADR-0005](../../docs/adr/0005-client-side-kube-api-rate-limiting.md)) — remaining scale validation delegated to roadmap [18](18-load-testing-framework.md).
+>
+> - **Phase 1 ✅** Client-side rate limiting via `tower::limit::RateLimitLayer` in `src/rate_limit.rs`, inserted with `kube::client::ClientBuilder` (kube-rs has no `qps`/`burst` Config fields — the roadmap's original snippet was aspirational). Defaults 20 QPS / 30 burst from `constants.rs`; `BINDY_KUBE_QPS` / `BINDY_KUBE_BURST` overrides validated with warn-and-default fallback.
+> - **Phase 2 ✅** `reconcilers/pagination.rs` landed earlier; this pass converted **every** remaining unpaginated `list()` call site (startup drift detection in `main.rs`, `clusterbind9provider.rs`, `bind9cluster/mod.rs`, `dnszone.rs`, all Scout list sites). Sole exception: `scout.rs::kind_served`, whose `limit(1)` probe is intentional.
+> - **Phase 3 ✅** `reconcilers/retry.rs` landed earlier but had **zero call sites**; now applied to the critical paths the roadmap named: cluster/provider fetches (`bind9instance/cluster_helpers.rs` — previously swallowed transient errors via `.ok()`), Bind9Instance rotation-status patch, DNSZone status patch. Retries recorded in Prometheus.
+> - **Phase 4 ✅** `bindy_firestoned_io_kube_api_{requests_total,request_duration_seconds,rate_limit_hits_total,retries_total,pagination_pages}` via a metrics middleware in the client stack; documented with alert rules in `docs/src/operations/metrics.md`. *Deferred:* Grafana dashboard JSON artifact.
+> - **Phase 5 ➡️** Load/scale validation (1000+ resources, chaos) is owned by roadmap [18](18-load-testing-framework.md).
 >
 > *Migrated 2026-09-10 from the external roadmap set. Status verified against `fix-idempotency` @ `648ff7a`.*
 

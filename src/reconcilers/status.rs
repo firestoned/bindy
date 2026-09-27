@@ -611,8 +611,13 @@ impl DNSZoneStatusUpdater {
             "status": self.new_status
         });
 
-        api.patch_status(&self.name, &PatchParams::default(), &Patch::Merge(&patch))
-            .await?;
+        let patch_params = PatchParams::default();
+        let merge_patch = Patch::Merge(&patch);
+        crate::reconcilers::retry::retry_api_call(
+            || api.patch_status(&self.name, &patch_params, &merge_patch),
+            "patch DNSZone status",
+        )
+        .await?;
 
         debug!(
             "Updated DNSZone {}/{} status: {} condition(s), {} record(s)",

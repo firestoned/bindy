@@ -10,8 +10,8 @@ Configure Bindy using environment variables. See also the [CLI Reference](../ref
 
 | Variable | Default | Description |
 |---|---|---|
-| `BINDY_KUBE_QPS` | `50.0` | API server request rate (queries per second). |
-| `BINDY_KUBE_BURST` | `100` | API server burst cap above QPS. |
+| `BINDY_KUBE_QPS` | `20.0` | Sustained API server request rate (queries per second), enforced client-side ([ADR-0005](https://github.com/firestoned/bindy/blob/main/docs/adr/0005-client-side-kube-api-rate-limiting.md)). Requests over budget queue; they are not rejected. |
+| `BINDY_KUBE_BURST` | `30` | Requests allowed to burst above the sustained rate. Invalid or non-positive values for either variable fall back to the default with a warning. |
 
 ### Namespace Scoping
 

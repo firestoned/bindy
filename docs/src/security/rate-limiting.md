@@ -1,6 +1,6 @@
 # Rate Limiting Implementation Plan (M-3)
 
-**Status:** 📝 Planned (Documentation Complete)
+**Status:** 🔶 Partially implemented — layer 2 (Kubernetes API client QPS/burst, pagination, retry) shipped via [ADR-0005](https://github.com/firestoned/bindy/blob/main/docs/adr/0005-client-side-kube-api-rate-limiting.md); other layers planned
 **Compliance:** Basel III Availability, Operational Resilience
 **Effort:** 1-2 weeks
 **Priority:** MEDIUM
@@ -83,46 +83,36 @@ data:
 
 ## 2. Kubernetes API Client Rate Limiting
 
-### Current Behavior
+### Status: ✅ Implemented ([ADR-0005](https://github.com/firestoned/bindy/blob/main/docs/adr/0005-client-side-kube-api-rate-limiting.md))
 
-`kube-rs` uses default Kubernetes client-go rate limits:
-- QPS (Queries Per Second): 5
-- Burst: 10
+Unlike client-go, `kube-rs` has no QPS/burst fields on `Config`; its extension
+point is the tower middleware stack. `src/rate_limit.rs` builds the operator's
+client through `kube::client::ClientBuilder` with two layers:
 
-**Problem:**
-- Too low for 1,000+ DNS zones (need ~3.3 QPS just for normal reconciliation)
-- Can cause artificial delays and reconciliation lag
-- Client-side rate limiting should match server capacity
+- `tower::limit::RateLimitLayer` — allows `burst` requests per `burst / qps`
+  seconds (a windowed approximation of client-go's token bucket, sustained
+  20 QPS with bursts of 30 by default). Requests over budget queue on the
+  client; they are not rejected.
+- A metrics middleware that counts every request, times it, and counts HTTP
+  429 responses, so server-side throttling is visible in Prometheus
+  (`bindy_firestoned_io_kube_api_*` metrics).
 
-### Proposed Solution
+Paginated LIST operations (`reconcilers/pagination.rs`, 100 items/page) and
+exponential-backoff retries for transient 429/5xx errors
+(`reconcilers/retry.rs`) round out the client-side controls.
 
-```rust
-use kube::Client;
-use kube::config::{Config, KubeConfigOptions};
+**Configuration** (environment variables on the operator Deployment):
 
-pub async fn create_kubernetes_client() -> Result<Client> {
-    let mut config = Config::infer().await?;
-
-    // Set API client rate limits
-    // QPS: 50 (allow 50 API calls per second)
-    // Burst: 100 (allow bursts up to 100 calls)
-    config.api_client_qps = 50.0;
-    config.api_client_burst = 100;
-
-    let client = Client::try_from(config)?;
-    Ok(client)
-}
-```
-
-**Configuration:**
-
-Add to `ConfigMap` (`bindy-config`):
 ```yaml
-data:
-  # Kubernetes API client rate limiting
-  api-client-qps: "50"
-  api-client-burst: "100"
+env:
+  - name: BINDY_KUBE_QPS
+    value: "20.0"
+  - name: BINDY_KUBE_BURST
+    value: "30"
 ```
+
+Invalid or non-positive values fall back to the compiled defaults with a
+warning — a misconfigured limiter never disables the operator or the limit.
 
 **Tuning Guidelines:**
 
@@ -398,7 +388,7 @@ pub async fn reconcile(zone: Arc<DNSZone>, ctx: Arc<Context>) -> Result<Action, 
 - [ ] Add `governor` crate dependency to `Cargo.toml`
 - [ ] Implement global reconciliation rate limiter (10/sec)
 - [ ] Add ConfigMap keys for rate limit configuration
-- [ ] Update Kubernetes API client with QPS/burst limits
+- [x] Update Kubernetes API client with QPS/burst limits (ADR-0005; env vars, not ConfigMap)
 - [ ] Add Prometheus metrics for rate limiting
 - [ ] Test with 1,000 DNS zones (load testing)
 - [ ] Document rate limit tuning guidelines

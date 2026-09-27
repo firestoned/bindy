@@ -216,10 +216,11 @@ async fn update_rotation_status(
     });
 
     let api: Api<Bind9Instance> = Api::namespaced(client.clone(), &namespace);
-    api.patch_status(
-        &name,
-        &PatchParams::default(),
-        &kube::api::Patch::Merge(&status),
+    let patch_params = PatchParams::default();
+    let patch = kube::api::Patch::Merge(&status);
+    crate::reconcilers::retry::retry_api_call(
+        || api.patch_status(&name, &patch_params, &patch),
+        "patch Bind9Instance status",
     )
     .await?;
 

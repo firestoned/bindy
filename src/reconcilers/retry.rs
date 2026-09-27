@@ -234,7 +234,9 @@ pub fn is_retryable_http_status(status: StatusCode) -> bool {
 /// # Arguments
 ///
 /// * `operation` - Async function that performs the API call
-/// * `operation_name` - Human-readable name for logging (e.g., "get cluster")
+/// * `operation_name` - Human-readable name for logging and the
+///   `kube_api_retries_total` metric label. Must be LOW-CARDINALITY: name the
+///   operation and kind (e.g., "get Bind9Cluster"), never the object.
 ///
 /// # Returns
 ///
@@ -322,6 +324,7 @@ where
 
                 // Calculate next backoff interval
                 if let Some(duration) = backoff.next_backoff() {
+                    crate::metrics::record_kube_api_retry(operation_name);
                     warn!(
                         operation = operation_name,
                         attempt = attempt,

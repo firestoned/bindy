@@ -188,15 +188,14 @@ async fn list_cluster_instances(
     let list_params = ListParams::default();
     debug!(namespace = %namespace, "Listing Bind9Instance resources");
 
-    match instances_api.list(&list_params).await {
+    match crate::reconcilers::pagination::list_all_paginated(&instances_api, list_params).await {
         Ok(list) => {
             debug!(
-                total_instances_in_ns = list.items.len(),
+                total_instances_in_ns = list.len(),
                 "Listed Bind9Instance resources"
             );
             // Filter instances that reference this cluster
             let filtered: Vec<_> = list
-                .items
                 .into_iter()
                 .filter(|instance| instance.spec.cluster_ref == name)
                 .collect();
@@ -223,7 +222,7 @@ async fn list_cluster_instances(
             };
             update_status(client, cluster, vec![error_condition], 0, 0, vec![]).await?;
 
-            Err(e.into())
+            Err(e)
         }
     }
 }

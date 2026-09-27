@@ -120,11 +120,10 @@ pub async fn generate_nameserver_ips(
             let label_selector = format!("app=bind9,instance={}", instance_ref.name);
             let lp = ListParams::default().labels(&label_selector);
 
-            match pod_api.list(&lp).await {
+            match crate::reconcilers::pagination::list_all_paginated(&pod_api, lp).await {
                 Ok(pods) => {
                     // Find first running pod
-                    pods.items
-                        .iter()
+                    pods.iter()
                         .find(|pod| {
                             let phase = pod
                                 .status

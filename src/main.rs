@@ -8,13 +8,13 @@
 
 use anyhow::Result;
 use axum::{routing::get, Router};
+use bindy::reconcilers::pagination::list_all_paginated;
 use bindy::{
     bind9::Bind9Manager,
     constants::{
         DEFAULT_LEASE_DURATION_SECS, DEFAULT_LEASE_RENEW_DEADLINE_SECS,
-        DEFAULT_LEASE_RETRY_PERIOD_SECS, KUBE_CLIENT_BURST, KUBE_CLIENT_QPS,
-        METRICS_SERVER_BIND_ADDRESS, METRICS_SERVER_PATH, METRICS_SERVER_PORT,
-        TOKIO_WORKER_THREADS,
+        DEFAULT_LEASE_RETRY_PERIOD_SECS, METRICS_SERVER_BIND_ADDRESS, METRICS_SERVER_PATH,
+        METRICS_SERVER_PORT, TOKIO_WORKER_THREADS,
     },
     context::{Context, Metrics, Stores},
     crd::{
@@ -396,27 +396,10 @@ async fn initialize_services() -> Result<(Client, Arc<Bind9Manager>)> {
     // Load kubeconfig
     let config = kube::Config::infer().await?;
 
-    // Parse rate limit configuration from environment variables or use defaults
-    // Note: kube-rs 2.0 uses Tower middleware (RateLimitLayer) for rate limiting
-    // instead of direct QPS/burst config fields like client-go.
-    // Phase 3 of the rate limiting roadmap will implement Tower-based rate limiting.
-    let qps: f32 = std::env::var("BINDY_KUBE_QPS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(KUBE_CLIENT_QPS);
-
-    let burst: u32 = std::env::var("BINDY_KUBE_BURST")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(KUBE_CLIENT_BURST);
-
-    let client = Client::try_from(config)?;
-
-    info!(
-        qps = qps,
-        burst = burst,
-        "Kubernetes client initialized (Tower-based rate limiting to be added in Phase 3)"
-    );
+    // Client-side rate limiting via tower middleware (ADR-0005): kube-rs has
+    // no QPS/burst fields on Config, so the limiter lives in the client stack.
+    let limits = bindy::rate_limit::RateLimitConfig::from_env();
+    let client = bindy::rate_limit::build_rate_limited_client(config, &limits)?;
 
     debug!("Creating BIND9 manager");
     let bind9_manager = Arc::new(Bind9Manager::new());
@@ -864,16 +847,10 @@ async fn run_operators_without_leader_election(
 async fn perform_startup_drift_detection(client: Client, context: Arc<Context>) -> Result<()> {
     info!("Starting drift detection for ClusterBind9Provider resources...");
     let cluster_providers_api: Api<ClusterBind9Provider> = Api::all(client.clone());
-    match cluster_providers_api
-        .list(&kube::api::ListParams::default())
-        .await
-    {
+    match list_all_paginated(&cluster_providers_api, kube::api::ListParams::default()).await {
         Ok(providers) => {
-            info!(
-                "Found {} ClusterBind9Provider resources",
-                providers.items.len()
-            );
-            for provider in providers.items {
+            info!("Found {} ClusterBind9Provider resources", providers.len());
+            for provider in providers {
                 let name = provider.name_any();
                 debug!(
                     "Triggering reconciliation for ClusterBind9Provider: {}",
@@ -899,10 +876,10 @@ async fn perform_startup_drift_detection(client: Client, context: Arc<Context>) 
 
     info!("Starting drift detection for Bind9Cluster resources...");
     let clusters_api: Api<Bind9Cluster> = Api::all(client.clone());
-    match clusters_api.list(&kube::api::ListParams::default()).await {
+    match list_all_paginated(&clusters_api, kube::api::ListParams::default()).await {
         Ok(clusters) => {
-            info!("Found {} Bind9Cluster resources", clusters.items.len());
-            for cluster in clusters.items {
+            info!("Found {} Bind9Cluster resources", clusters.len());
+            for cluster in clusters {
                 let name = cluster.name_any();
                 let namespace = cluster.namespace().unwrap_or_else(|| "default".to_string());
                 debug!(
@@ -930,10 +907,10 @@ async fn perform_startup_drift_detection(client: Client, context: Arc<Context>) 
 
     info!("Starting drift detection for Bind9Instance resources...");
     let instances_api: Api<Bind9Instance> = Api::all(client.clone());
-    match instances_api.list(&kube::api::ListParams::default()).await {
+    match list_all_paginated(&instances_api, kube::api::ListParams::default()).await {
         Ok(instances) => {
-            info!("Found {} Bind9Instance resources", instances.items.len());
-            for instance in instances.items {
+            info!("Found {} Bind9Instance resources", instances.len());
+            for instance in instances {
                 let name = instance.name_any();
                 let namespace = instance
                     .namespace()

@@ -194,8 +194,8 @@ bindy run
 
 | Variable | Default | Description |
 |---|---|---|
-| `BINDY_KUBE_QPS` | `50.0` | API server request rate (queries per second) |
-| `BINDY_KUBE_BURST` | `100` | API server burst cap above QPS |
+| `BINDY_KUBE_QPS` | `20.0` | Sustained API server request rate (queries per second), enforced client-side |
+| `BINDY_KUBE_BURST` | `30` | Requests allowed to burst above the sustained rate |
 
 #### Leader election
 

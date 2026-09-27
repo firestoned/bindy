@@ -49,7 +49,7 @@ classDef highlight fill:#fdf7ec,stroke:#f0c060,stroke-width:1px,color:#000000;
     k8s-api["Kubernetes API Server"]:::node
     admission-policies["ValidatingAdmissionPolicies"]:::node
 
-    bindy-operator -->|watches and patches custom resources| k8s-api
+    bindy-operator -->|watches and patches custom resources #40;client-side rate limited: 20 QPS / 30 burst default, paginated LISTs, retries with exponential backoff — ADR-0005#41;| k8s-api
     k8s-api -->|enforces CEL policies on CR and pod admission| admission-policies
     bindy-operator -->|reconciles| crd-cluster
     bindy-operator -->|reconciles| crd-dnszone
