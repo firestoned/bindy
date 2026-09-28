@@ -79,7 +79,8 @@ Statuses were verified against `fix-idempotency` @ `648ff7a` on 2026-09-10.
 | [22](.github/community/22-bindcar-migration-v0-7-1.md) | bindcar upgrade — v0.7.1 | 📄 | Superseded by 24. Absorbed 2026-07-05 |
 | [23](.github/community/23-bindcar-migration-v0-7-2.md) | bindcar upgrade — v0.7.2 | 📄 | Superseded by 24. §14's `bindcarConfig.envVars` override hole is bindy-side and may still be open |
 | [24](.github/community/24-bindcar-migration-v0-7-4.md) | bindcar upgrade — v0.7.4 | 📄 | Superseded by 25. Its §14 (envVars override) and §15 (metric rename) remain open bindy-side |
-| [25](.github/community/25-bindcar-migration-v0-8-0.md) | bindcar upgrade — v0.8.0 | 🔶 | **Current and actionable.** 🟢 TLS/mTLS available (remediates audit P2-4, needs a bindy CRD surface for scheme + CA); 🟢 cert hot-reload; 🟠 `default-features = false` sheds 80 of 178 crates; 🔴 rate-limit defaults changed (100→600 req, burst 10→50); 🔴 the envVars override hole now reaches `BIND_TLS_*` |
+| [25](.github/community/25-bindcar-migration-v0-8-0.md) | bindcar upgrade — v0.8.0 | 🔶 | Re-audited 2026-09-28: code complete — TLS CRD surface + client, reserved-env guard AND admission policy (shipped as VAP 19/20, not the planned "15/16") all in the tree. Only live-cluster verification remains (`make tls-transport-test` / `e2e-tls` + `regression-test`); until then P2-4 is unverified. New work → 26 |
+| [26](.github/community/26-bindcar-migration-v0-8-2.md) | bindcar upgrade — v0.8.2 | ✅ | Applied 2026-09-28: crate floor 0.8.1 (API-identical; lock→0.8.2 when published), image v0.8.2, `status.dnssec.nextKeyRollover` wired (ADR-0006 amended). Deferred behind ADRs: live-zone DNSSEC enable, checkds automation. Skip v0.8.1 images (self-report 0.8.0) |
 
 ## Tracked privately
 

@@ -3,6 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-09-27
 - **Deciders:** Erick Bourgeois
+- **Amended:** 2026-09-28 (`nextKeyRollover` populated via bindcar 0.8.1+ —
+  see Decision addendum)
 - **Related:** Completes roadmap 07 Phase 5 (`.github/community/07-dnssec-zone-signing.md`)
 
 ## Context
@@ -62,6 +64,17 @@ conditions and records. A `DNSSEC` print column on the DNSZone CRD surfaces
 `nextKeyRollover`/`lastKeyRollover` stay unpopulated: they require reading
 BIND's key state files, which is bindcar API surface — recorded as a future
 enhancement in roadmap 07, not silently guessed from policy lifetimes.
+
+**Addendum (2026-09-28):** bindcar 0.8.1+ ships that surface
+(`ZoneStatusResponse.dnssec`, parsed from `rndc dnssec -status`), so
+`nextKeyRollover` is now populated: after DS extraction reports a signed
+zone, the reconciler fetches the sidecar's zone status over the existing
+authenticated bindcar channel and takes the earliest `next_rollover` among
+non-removed key-signing keys (KSK/CSK — a ZSK event does not change the DS
+at the parent). The fetch is best-effort: any failure keeps the
+previously-published value rather than flapping the field.
+`lastKeyRollover` remains null — bindcar 0.8.x exposes the next scheduled
+event and current key states, not history.
 
 ## Consequences
 

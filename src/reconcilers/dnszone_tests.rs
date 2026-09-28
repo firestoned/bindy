@@ -300,7 +300,7 @@ mod notify_target_tests {
 
     #[test]
     fn test_build_dnssec_status_signed_zone() {
-        let status = build_dnssec_status(Some("default"), &[test_ds_info()])
+        let status = build_dnssec_status(Some("default"), &[test_ds_info()], None)
             .expect("a zone with DS records must report DNSSEC status");
 
         assert!(status.signed);
@@ -317,7 +317,7 @@ mod notify_target_tests {
     #[test]
     fn test_build_dnssec_status_signed_without_explicit_policy() {
         // Cluster-global signing: no per-zone policy, but DNSKEYs exist.
-        let status = build_dnssec_status(None, &[test_ds_info()])
+        let status = build_dnssec_status(None, &[test_ds_info()], None)
             .expect("DS records present must win even without a per-zone policy");
         assert!(status.signed);
     }
@@ -325,7 +325,7 @@ mod notify_target_tests {
     #[test]
     fn test_build_dnssec_status_pending_when_policy_set_but_unsigned() {
         // Policy requested but keys not generated yet: report signed=false.
-        let status = build_dnssec_status(Some("default"), &[])
+        let status = build_dnssec_status(Some("default"), &[], None)
             .expect("an explicit policy must always yield a status");
         assert!(!status.signed);
         assert!(status.ds_records.is_empty());
@@ -335,7 +335,7 @@ mod notify_target_tests {
     #[test]
     fn test_build_dnssec_status_cleared_when_no_policy_and_unsigned() {
         assert!(
-            build_dnssec_status(None, &[]).is_none(),
+            build_dnssec_status(None, &[], None).is_none(),
             "no policy and no DNSKEYs means no DNSSEC status at all"
         );
     }
@@ -343,11 +343,11 @@ mod notify_target_tests {
     #[test]
     fn test_build_dnssec_status_cleared_when_policy_none() {
         assert!(
-            build_dnssec_status(Some("none"), &[]).is_none(),
+            build_dnssec_status(Some("none"), &[], None).is_none(),
             "dnssecPolicy 'none' explicitly disables signing"
         );
         assert!(
-            build_dnssec_status(Some("none"), &[test_ds_info()]).is_none(),
+            build_dnssec_status(Some("none"), &[test_ds_info()], None).is_none(),
             "'none' clears status even if stale DNSKEYs are still served"
         );
     }
@@ -358,7 +358,7 @@ mod notify_target_tests {
         second.key_tag = 54321;
         second.presentation = "example.com. IN DS 54321 13 2 EF01".to_string();
 
-        let status = build_dnssec_status(Some("default"), &[test_ds_info(), second])
+        let status = build_dnssec_status(Some("default"), &[test_ds_info(), second], None)
             .expect("status must be reported");
         assert_eq!(
             status.ds_records.len(),
@@ -366,5 +366,20 @@ mod notify_target_tests {
             "every KSK's DS record is published"
         );
         assert_eq!(status.key_tag, Some(12345), "keyTag reports the first KSK");
+    }
+
+    #[test]
+    fn test_build_dnssec_status_carries_next_key_rollover() {
+        let status = build_dnssec_status(
+            Some("default"),
+            &[test_ds_info()],
+            Some("2027-09-27T00:00:00".to_string()),
+        )
+        .expect("signed zone must report status");
+        assert_eq!(
+            status.next_key_rollover.as_deref(),
+            Some("2027-09-27T00:00:00")
+        );
+        assert_eq!(status.last_key_rollover, None, "no source in bindcar 0.8.x");
     }
 }

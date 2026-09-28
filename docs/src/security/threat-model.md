@@ -1,11 +1,20 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.4
-**Last Updated:** 2026-09-27
+**Version:** 1.5
+**Last Updated:** 2026-09-28
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
 
-> Last full pass 2026-09-27, against ADR-0001 … ADR-0007.
+> Last full pass 2026-09-28, against ADR-0001 … ADR-0007 (ADR-0006 as amended).
+>
+> **Revision note (v1.5):** Pass for the bindcar v0.8.2 upgrade and the
+> ADR-0006 amendment (`nextKeyRollover` from the sidecar's zone status). No
+> new surface: the field is read over the existing authenticated
+> operator → bindcar channel (SA token / TLS per ADR-0004), and key timing
+> metadata is public-by-design scheduling information — no key material.
+> Operand image default moves to bindcar v0.8.2; v0.8.1 images are skipped
+> (version self-reporting divergence). All sections re-walked; no threat or
+> mitigation rows changed.
 >
 > **Revision note (v1.4):** Full pass for ADR-0007 (uniform options
 > rendering). Threat I2 (zone enumeration) updated: the cluster-level options

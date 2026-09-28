@@ -1387,6 +1387,48 @@ pub async fn extract_ds_records(zone_name: &str, server: &str) -> Result<Vec<DsR
     ds_records_from_dnskeys(zone_name, &dnskeys)
 }
 
+// ============================================================================
+// DNSSEC key timing from the sidecar's zone status (bindcar 0.8.1+, ADR-0006)
+// ============================================================================
+
+/// Parse the DNSSEC block out of a bindcar zone-status response body.
+///
+/// bindcar 0.8.1+ returns `ZoneStatusResponse` JSON whose optional `dnssec`
+/// field carries the state parsed from `rndc dnssec -status`. Returns `None`
+/// for older sidecars, unsigned zones, or an unparsable body — key timing is
+/// best-effort and must never fail a reconcile.
+///
+/// # Arguments
+/// * `body` - The raw zone-status response body
+#[must_use]
+pub fn parse_zone_status_dnssec(body: &str) -> Option<bindcar::DnssecStatus> {
+    serde_json::from_str::<bindcar::zones_types::ZoneStatusResponse>(body)
+        .ok()
+        .and_then(|response| response.dnssec)
+}
+
+/// The next scheduled KSK rollover event for a zone, if BIND reports one.
+///
+/// Only keys with the key-signing duty (KSK/CSK) are considered — a ZSK
+/// rollover does not change the DS at the parent, and
+/// `DNSZone.status.dnssec.keyTag` describes the KSK. Removed keys are
+/// skipped; with several eligible keys the earliest event wins (the
+/// timestamps share one ISO 8601 format, so lexicographic order is
+/// chronological).
+///
+/// # Arguments
+/// * `status` - The zone's DNSSEC status from the sidecar
+#[must_use]
+pub fn next_ksk_rollover(status: &bindcar::DnssecStatus) -> Option<String> {
+    status
+        .keys
+        .iter()
+        .filter(|key| key.key_signing && !key.removed)
+        .filter_map(|key| key.next_rollover.as_ref())
+        .min()
+        .cloned()
+}
+
 #[cfg(test)]
 #[path = "zone_ops_tests.rs"]
 mod zone_ops_tests;

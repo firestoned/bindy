@@ -935,9 +935,12 @@ const DNSSEC_POLICY_NONE: &str = "none";
 /// # Arguments
 /// * `dnssec_policy` - The zone's `spec.dnssecPolicy`, if set
 /// * `ds_records` - DS records derived from the zone's DNSKEY RRset
+/// * `next_key_rollover` - Next scheduled KSK rollover from the sidecar's
+///   zone status (bindcar 0.8.1+), if known
 fn build_dnssec_status(
     dnssec_policy: Option<&str>,
     ds_records: &[DsRecordInfo],
+    next_key_rollover: Option<String>,
 ) -> Option<crate::crd::DNSSECStatus> {
     if dnssec_policy == Some(DNSSEC_POLICY_NONE) {
         return None;
@@ -952,7 +955,9 @@ fn build_dnssec_status(
                 .collect(),
             key_tag: Some(u32::from(first.key_tag)),
             algorithm: Some(first.algorithm.clone()),
-            next_key_rollover: None,
+            next_key_rollover,
+            // No source: bindcar 0.8.x exposes the next scheduled event and
+            // current key states, not rollover history.
             last_key_rollover: None,
         });
     }
@@ -981,11 +986,13 @@ fn build_dnssec_status(
 /// * `zone_name` - The zone that was just configured
 /// * `dnssec_policy` - The zone's `spec.dnssecPolicy`, if set
 /// * `endpoint` - The first configured primary endpoint, if any
+/// * `ctx` - Operator context, for the instance's TLS-aware bindcar client
 async fn update_dnssec_status(
     status_updater: &mut crate::reconcilers::status::DNSZoneStatusUpdater,
     zone_name: &str,
     dnssec_policy: Option<&str>,
     endpoint: Option<&NotifyTarget>,
+    ctx: &crate::context::Context,
 ) {
     // Explicitly disabled: clear any stale status without querying.
     if dnssec_policy == Some(DNSSEC_POLICY_NONE) {
@@ -1000,7 +1007,12 @@ async fn update_dnssec_status(
     let dns_endpoint = dns_query_endpoint(&target.endpoint);
     match extract_ds_records(zone_name, &dns_endpoint).await {
         Ok(ds_records) => {
-            let status = build_dnssec_status(dnssec_policy, &ds_records);
+            let next_rollover = if ds_records.is_empty() {
+                None
+            } else {
+                fetch_next_ksk_rollover(ctx, target, zone_name, status_updater).await
+            };
+            let status = build_dnssec_status(dnssec_policy, &ds_records, next_rollover);
             if let Some(ref dnssec) = status {
                 if dnssec.signed {
                     info!(
@@ -1022,6 +1034,44 @@ async fn update_dnssec_status(
                 "Failed to extract DS records for zone {} from {}: {}. Keeping previous DNSSEC status.",
                 zone_name, dns_endpoint, e
             );
+        }
+    }
+}
+
+/// Fetch the next scheduled KSK rollover for `zone_name` from the sidecar's
+/// zone status (bindcar 0.8.1+, ADR-0006 as amended).
+///
+/// Best-effort: any failure (older sidecar, transient error, unparsable
+/// body) logs at debug and returns the value the update already carries, so
+/// a transient status failure never flaps the field.
+///
+/// # Arguments
+/// * `ctx` - Operator context, for the instance's TLS-aware bindcar client
+/// * `target` - The endpoint the zone was configured through
+/// * `zone_name` - The zone to query
+/// * `status_updater` - Source of the previously-known value
+async fn fetch_next_ksk_rollover(
+    ctx: &crate::context::Context,
+    target: &NotifyTarget,
+    zone_name: &str,
+    status_updater: &crate::reconcilers::status::DNSZoneStatusUpdater,
+) -> Option<String> {
+    let previous = status_updater
+        .dnssec()
+        .and_then(|d| d.next_key_rollover.clone());
+
+    let manager = zone_manager_for_instance(ctx, &target.instance_name, &target.instance_namespace);
+    match manager.zone_status(zone_name, &target.endpoint).await {
+        Ok(body) => crate::bind9::zone_ops::parse_zone_status_dnssec(&body)
+            .as_ref()
+            .and_then(crate::bind9::zone_ops::next_ksk_rollover)
+            .or(previous),
+        Err(e) => {
+            debug!(
+                "Could not fetch zone status for {} (keeping previous nextKeyRollover): {}",
+                zone_name, e
+            );
+            previous
         }
     }
 }
@@ -1540,6 +1590,7 @@ pub async fn add_dnszone(
         &spec.zone_name,
         dnssec_policy,
         first_endpoint.as_ref(),
+        &ctx,
     )
     .await;
 

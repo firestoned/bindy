@@ -254,7 +254,14 @@ status:
       - "example.com. IN DS 12345 13 2 4C3A9C2E..."
     keyTag: 12345
     algorithm: ECDSAP256SHA256
+    nextKeyRollover: "2027-09-27T00:00:00"   # requires bindcar 0.8.2+
 ```
+
+`nextKeyRollover` is the next KSK/CSK rollover event BIND has scheduled
+(server-local clock), read from the sidecar's `rndc dnssec -status` parsing —
+it needs the bindcar `v0.8.2`+ sidecar and is omitted with older sidecars.
+`lastKeyRollover` is always `null` today: bindcar exposes the next scheduled
+event and current key states, not rollover history.
 
 `signed: false` with empty `dsRecords` means the zone has a DNSSEC policy but
 BIND9 is still generating its keys — the status refreshes on the next

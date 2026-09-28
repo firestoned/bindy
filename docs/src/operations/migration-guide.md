@@ -2,6 +2,23 @@
 
 This document collects the breaking-change migrations for Bindy, newest first.
 
+## Migrating to bindcar 0.8.2
+
+Bindy now provisions **bindcar 0.8.2** (`ghcr.io/firestoned/bindcar:v0.8.2`),
+the live-zone DNSSEC lifecycle release (bindcar roadmap 07 / bindcar
+ADR-0001). Not breaking: no env vars, defaults, or API contracts consumed by
+bindy changed. What bindy gains:
+
+- `DNSZone.status.dnssec.nextKeyRollover` is now populated for signed zones
+  from the sidecar's `rndc dnssec -status` parsing (the field existed since
+  [ADR-0006](https://github.com/firestoned/bindy/blob/main/docs/adr/0006-dnssec-ds-record-status-reporting.md)
+  but had no data source). `lastKeyRollover` remains `null` — bindcar 0.8.x
+  exposes the next scheduled event and current key states, not history.
+- The v0.8.1 tag of bindcar carries a `Cargo.toml` version of `0.8.0`
+  (tag/version divergence); v0.8.2 is the corrected release. Deployments
+  should skip v0.8.1 images — they self-report `0.8.0`.
+
+
 ## Options rendering: explicit `dnssec.validation` always honored; cluster-level transfers denied by default (ADR-0007)
 
 Two `named.conf.options` rendering asymmetries preserved by the roadmap-03

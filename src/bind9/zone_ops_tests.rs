@@ -1064,4 +1064,103 @@ mod tests {
                 .expect("DS derivation should succeed");
         assert_eq!(with_dot[0].presentation, without_dot[0].presentation);
     }
+
+    // ------------------------------------------------------------------
+    // Roadmap 26 (bindcar 0.8.1+): nextKeyRollover from zone status
+    // ------------------------------------------------------------------
+
+    fn key_status(
+        role: &str,
+        key_signing: bool,
+        removed: bool,
+        next: Option<&str>,
+    ) -> bindcar::DnssecKeyStatus {
+        bindcar::DnssecKeyStatus {
+            tag: 12345,
+            role: role.to_string(),
+            key_signing,
+            removed,
+            next_rollover: next.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_parse_zone_status_dnssec_extracts_block() {
+        let body = r#"{
+            "success": true,
+            "message": "ok",
+            "dnssec": {
+                "policy": "default",
+                "signed": true,
+                "keys": [
+                    {"tag": 12345, "algorithm": "ECDSAP256SHA256", "role": "KSK",
+                     "published": true, "keySigning": true, "zoneSigning": false,
+                     "removed": false, "nextRollover": "2027-09-27T00:00:00"}
+                ]
+            }
+        }"#;
+
+        let dnssec = super::super::parse_zone_status_dnssec(body).expect("dnssec block must parse");
+        assert!(dnssec.signed);
+        assert_eq!(dnssec.keys.len(), 1);
+        assert_eq!(
+            dnssec.keys[0].next_rollover.as_deref(),
+            Some("2027-09-27T00:00:00")
+        );
+    }
+
+    #[test]
+    fn test_parse_zone_status_dnssec_absent_block_or_garbage_is_none() {
+        assert!(
+            super::super::parse_zone_status_dnssec(r#"{"success": true, "message": "ok"}"#)
+                .is_none()
+        );
+        assert!(super::super::parse_zone_status_dnssec("rndc: not json").is_none());
+    }
+
+    #[test]
+    fn test_next_ksk_rollover_from_key_signing_key() {
+        let status = bindcar::DnssecStatus {
+            policy: Some("default".to_string()),
+            signed: true,
+            keys: vec![
+                key_status("ZSK", false, false, Some("2026-12-01T00:00:00")),
+                key_status("KSK", true, false, Some("2027-09-27T00:00:00")),
+            ],
+        };
+        assert_eq!(
+            super::super::next_ksk_rollover(&status).as_deref(),
+            Some("2027-09-27T00:00:00"),
+            "only key-signing keys drive nextKeyRollover (ZSK events are not KSK rollovers)"
+        );
+    }
+
+    #[test]
+    fn test_next_ksk_rollover_earliest_wins_and_removed_skipped() {
+        let status = bindcar::DnssecStatus {
+            policy: None,
+            signed: true,
+            keys: vec![
+                key_status("KSK", true, true, Some("2026-10-01T00:00:00")),
+                key_status("CSK", true, false, Some("2027-01-01T00:00:00")),
+                key_status("KSK", true, false, Some("2027-06-01T00:00:00")),
+            ],
+        };
+        assert_eq!(
+            super::super::next_ksk_rollover(&status).as_deref(),
+            Some("2027-01-01T00:00:00"),
+            "removed keys are skipped; the earliest remaining event wins"
+        );
+    }
+
+    #[test]
+    fn test_next_ksk_rollover_none_when_no_ksk_event() {
+        let status = bindcar::DnssecStatus {
+            policy: Some("default".to_string()),
+            signed: true,
+            keys: vec![key_status("ZSK", false, false, Some("2026-12-01T00:00:00"))],
+        };
+        assert!(super::super::next_ksk_rollover(&status).is_none());
+    }
 }
