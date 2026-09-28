@@ -1,11 +1,20 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.3
+**Version:** 1.4
 **Last Updated:** 2026-09-27
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
 
-> Last full pass 2026-09-27, against ADR-0001 … ADR-0006.
+> Last full pass 2026-09-27, against ADR-0001 … ADR-0007.
+>
+> **Revision note (v1.4):** Full pass for ADR-0007 (uniform options
+> rendering). Threat I2 (zone enumeration) updated: the cluster-level options
+> builder previously emitted no `allow-transfer` directive, leaving AXFR open
+> on BIND 9.18 operands configured at cluster level — now deny-by-default at
+> both levels. The `dnssec-validation` fix also removes a silent
+> intent-inversion (explicit `validation: false` was overridden by named's
+> `auto` default). No new components, trust boundaries, assets, or actors;
+> all other sections re-walked, no further changes required.
 >
 > **Revision note (v1.3):** Full pass for ADR-0006 (DNSSEC DS record status
 > reporting), which completes roadmap 07. DNSSEC signing was stale as
@@ -657,11 +666,19 @@ exists to constrain that further)
 
 **Mitigations:**
 - ✅ AXFR restricted to secondary servers only (BIND9 `allow-transfer` directive)
+- ✅ **Deny-by-default at BOTH options levels** (ADR-0007, 2026-09-27): with no
+  `allowTransfer` ACL configured anywhere, the generated options render
+  `allow-transfer { none; };` in the instance-level AND cluster-level
+  ConfigMaps. Previously the cluster-level builder emitted no directive, and
+  BIND 9.18's own default allows AXFR to ANY host (upstream deny-by-default
+  only landed in BIND 9.20, GL #3567) — cluster-configured operands were
+  enumerable
 - ✅ BIND9 configuration managed by operator (prevents manual misconfig)
 - ❌ **MISSING**: TSIG authentication for zone transfers (H-4)
 - ❌ **MISSING**: Rate limiting on AXFR requests
 
-**Residual Risk:** MEDIUM (need TSIG for AXFR)
+**Residual Risk:** MEDIUM → LOW-MEDIUM (open-by-default window closed; TSIG
+for AXFR remains the outstanding hardening)
 
 ---
 

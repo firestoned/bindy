@@ -2064,11 +2064,11 @@ mod tests {
     }
 
     #[test]
-    fn test_options_conf_no_config_section_global_dnssec_false_emits_no_directive() {
-        // Pins historical behavior: with NO instance `config` block at all, a
-        // global `dnssec.validation: false` emits no directive (named then uses
-        // its own default), whereas an instance config block that is merely
-        // silent on dnssec renders an explicit `dnssec-validation no;`.
+    fn test_options_conf_no_config_section_global_dnssec_false_renders_no() {
+        // ADR-0007: global `dnssec.validation: false` must render an explicit
+        // `dnssec-validation no;` whether or not the instance has a `config`
+        // block. (Historically the no-config-block case emitted nothing, and
+        // named's default of `auto` silently turned validation back ON.)
         let mut instance = create_test_instance("test");
         instance.spec.config = None;
         let cluster = cluster_with_global(Bind9Config {
@@ -2091,8 +2091,121 @@ mod tests {
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
         assert!(
+            options.contains("dnssec-validation no;"),
+            "global validation=false must render an explicit directive even with no instance config block (ADR-0007), got: {options}"
+        );
+    }
+
+    #[test]
+    fn test_options_conf_no_config_section_no_dnssec_anywhere_emits_no_directive() {
+        // With `dnssec` configured at NEITHER level, no directive is emitted
+        // and named's own default (`auto`) applies.
+        let mut instance = create_test_instance("test");
+        instance.spec.config = None;
+        let cluster = cluster_with_global(Bind9Config {
+            rate_limit: None,
+            recursion: None,
+            allow_query: None,
+            allow_transfer: None,
+            dnssec: None,
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        });
+
+        let cm = build_configmap("test", "test-ns", &instance, Some(&cluster), None).unwrap();
+        let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
+
+        assert!(
             !options.contains("dnssec-validation"),
-            "global validation=false with no instance config block must emit nothing, got: {options}"
+            "no dnssec config at either level must emit no directive, got: {options}"
+        );
+    }
+
+    #[test]
+    fn test_cluster_options_conf_allow_transfer_deny_by_default() {
+        // ADR-0007: the cluster-level builder gets the same deny-by-default
+        // as the instance-level builder (#466). On BIND 9.18 an absent
+        // allow-transfer allows AXFR to ANY host.
+        use crate::bind9_resources::build_cluster_configmap;
+
+        let cluster = cluster_with_global(Bind9Config {
+            rate_limit: None,
+            recursion: None,
+            allow_query: None,
+            allow_transfer: None,
+            dnssec: None,
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        });
+
+        let cm = build_cluster_configmap("test-cluster", "test-ns", &cluster).unwrap();
+        let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
+
+        assert!(
+            options.contains("allow-transfer { none; };"),
+            "cluster options must deny transfers when no ACL is configured (ADR-0007), got: {options}"
+        );
+    }
+
+    #[test]
+    fn test_cluster_options_conf_allow_transfer_empty_list_renders_none() {
+        use crate::bind9_resources::build_cluster_configmap;
+
+        let cluster = cluster_with_global(Bind9Config {
+            rate_limit: None,
+            recursion: None,
+            allow_query: None,
+            allow_transfer: Some(vec![]),
+            dnssec: None,
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        });
+
+        let cm = build_cluster_configmap("test-cluster", "test-ns", &cluster).unwrap();
+        let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
+
+        assert!(
+            options.contains("allow-transfer { none; };"),
+            "an explicitly empty cluster allow_transfer must render none, got: {options}"
+        );
+    }
+
+    #[test]
+    fn test_cluster_options_conf_allow_transfer_global_acl_renders() {
+        use crate::bind9_resources::build_cluster_configmap;
+
+        let cluster = cluster_with_global(Bind9Config {
+            rate_limit: None,
+            recursion: None,
+            allow_query: None,
+            allow_transfer: Some(vec!["10.1.0.0/16".to_string()]),
+            dnssec: None,
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        });
+
+        let cm = build_cluster_configmap("test-cluster", "test-ns", &cluster).unwrap();
+        let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
+
+        assert!(
+            options.contains("allow-transfer { 10.1.0.0/16; };"),
+            "an explicit cluster allow_transfer ACL must render, got: {options}"
+        );
+        assert!(
+            !options.contains("allow-transfer { none; };"),
+            "the deny-by-default must not render alongside an explicit ACL, got: {options}"
         );
     }
 

@@ -17,9 +17,15 @@
 > helper `cluster_ready_condition`. The refactor is behavior-preserving: new
 > pinning tests cover the previously untested global-fallback and
 > role-precedence paths, and two pre-existing quirks were deliberately kept
-> (documented in code): the `dnssec-validation` asymmetry when the instance has
-> no `config` block, and the cluster-level builder's missing `allow-transfer`
-> deny-by-default (the #466 gap).
+> at the time (documented in code): the `dnssec-validation` asymmetry when
+> the instance has no `config` block, and the cluster-level builder's missing
+> `allow-transfer` deny-by-default (the #466 gap).
+>
+> **Follow-up resolved 2026-09-27:** both quirks were fixed as a deliberate
+> behavior change via
+> [ADR-0007](../../docs/adr/0007-uniform-options-rendering-deny-by-default.md)
+> (decision: fix both). The pinning tests were inverted to pin the new
+> behavior; migration notes are in `docs/src/operations/migration-guide.md`.
 >
 > *Migrated 2026-09-10 from the external roadmap set. Status verified against `fix-idempotency` @ `648ff7a`; completed on `main` 2026-09-27.*
 

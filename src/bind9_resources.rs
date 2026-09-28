@@ -1238,11 +1238,12 @@ fn render_dnssec_validation(enabled: bool) -> String {
 /// Resolve the `dnssec-validation` directive for the instance-level options
 /// builder - the instance config overrides the cluster global config.
 ///
-/// Emits nothing when neither level configures `dnssec`. One historical
-/// asymmetry is preserved: with no instance `config` block at all, a global
-/// `dnssec.validation: false` also emits nothing (leaving `named` on its own
-/// default), whereas an instance config block that is merely silent on dnssec
-/// renders an explicit `dnssec-validation no;` from that same global value.
+/// Whichever level configures `dnssec` first (instance, then global) renders
+/// an explicit directive, regardless of whether the instance has a `config`
+/// block at all (ADR-0007 — an absent directive means `auto` to `named`,
+/// which would silently re-enable validation a user explicitly disabled).
+/// When neither level configures `dnssec`, no directive is emitted and
+/// `named`'s own default applies.
 ///
 /// # Arguments
 ///
@@ -1257,21 +1258,11 @@ fn resolve_dnssec_validation(
         return render_dnssec_validation(dnssec.validation.unwrap_or(false));
     }
 
-    let Some(global_dnssec) = global_config.and_then(|g| g.dnssec.as_ref()) else {
-        return String::new();
-    };
-    let validation = global_dnssec.validation.unwrap_or(false);
-
-    if instance_config.is_some() {
-        // Instance config block present but silent on dnssec: global decides.
-        return render_dnssec_validation(validation);
-    }
-
-    // No instance config block at all: only an explicit "yes" is emitted.
-    if validation {
-        return render_dnssec_validation(true);
-    }
-    String::new()
+    global_config
+        .and_then(|g| g.dnssec.as_ref())
+        .map_or_else(String::new, |dnssec| {
+            render_dnssec_validation(dnssec.validation.unwrap_or(false))
+        })
 }
 
 /// Render an ACL directive (`allow-query` / `allow-transfer`), or nothing.
@@ -1378,14 +1369,15 @@ fn build_cluster_options_conf(cluster: &Bind9Cluster) -> anyhow::Result<String> 
         SOURCE_GLOBAL_ALLOW_QUERY,
     )?;
 
-    // allow-transfer ACL. NOTE: unlike the instance-level builder, no explicit
-    // ACL renders no directive rather than the deny-by-default - a known gap
-    // carried over from #466.
-    let allow_transfer = render_acl_directive(
-        ALLOW_TRANSFER_DIRECTIVE,
-        global.and_then(|g| g.allow_transfer.as_ref()),
-        SOURCE_GLOBAL_ALLOW_TRANSFER,
-    )?;
+    // allow-transfer ACL - same deny-by-default as the instance-level builder
+    // (ADR-0007, closes the #466 gap): an explicit ACL renders it, an
+    // explicitly empty list renders `none`, and no ACL at all denies AXFR
+    // (BIND 9.18's own default is to allow transfers to ANY host).
+    let allow_transfer = if let Some(global_acls) = global.and_then(|g| g.allow_transfer.as_ref()) {
+        render_allow_transfer(global_acls, SOURCE_GLOBAL_ALLOW_TRANSFER)?
+    } else {
+        DEFAULT_ALLOW_TRANSFER_NONE.to_string()
+    };
 
     // DNSSEC validation - emitted only when the global config sets `dnssec`.
     let dnssec_validate = global

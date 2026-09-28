@@ -6,6 +6,18 @@ Configure and optimize DNS zone transfers between primary and secondary instance
 
 Zone transfers replicate DNS zone data from primary to secondary servers using AXFR (full transfer) or IXFR (incremental transfer).
 
+## Default: transfers are denied
+
+When no `allowTransfer` ACL is configured at any level (instance config,
+cluster role-specific, or cluster global), the generated `named.conf.options`
+contains `allow-transfer { none; };` — in **both** the instance-level and
+cluster-level configurations
+([ADR-0007](https://github.com/firestoned/bindy/blob/main/docs/adr/0007-uniform-options-rendering-deny-by-default.md)).
+This matters on BIND 9.18, whose own default is to allow transfers to *any*
+host. Transfers to legitimate secondaries still work: the per-zone
+`allow-transfer` ACLs the operator sets with the secondaries' IPs override
+the options-level default.
+
 ## Configuring Zone Transfers
 
 ### Primary Instance Setup

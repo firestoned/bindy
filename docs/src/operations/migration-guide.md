@@ -2,6 +2,42 @@
 
 This document collects the breaking-change migrations for Bindy, newest first.
 
+## Options rendering: explicit `dnssec.validation` always honored; cluster-level transfers denied by default (ADR-0007)
+
+Two `named.conf.options` rendering asymmetries preserved by the roadmap-03
+refactor are fixed
+([ADR-0007](https://github.com/firestoned/bindy/blob/main/docs/adr/0007-uniform-options-rendering-deny-by-default.md)).
+Both change the generated ConfigMaps, so operand pods pick the change up on
+their next config rollout.
+
+**1. `dnssec-validation` is now rendered whenever `dnssec` is configured.**
+Previously, a `Bind9Instance` with **no** `spec.config` block ignored a
+cluster-global `dnssec.validation: false` and emitted no directive — and an
+absent directive means `auto` to `named`, i.e. validation ON. Explicit
+configuration is now always honored.
+
+- *How to detect:* `Bind9Cluster` has `spec.global.dnssec.validation: false`
+  and instances without a `spec.config` block. Those operands validated
+  upstream responses before; after the upgrade they will not.
+- *Remediation:* if you actually wanted validation, set
+  `spec.global.dnssec.validation: true` (or remove the `dnssec` block
+  entirely to get named's default).
+
+**2. Cluster-level options now deny zone transfers by default.** The
+cluster-level `named.conf.options` builder previously emitted no
+`allow-transfer` directive when `spec.global.allowTransfer` was unset —
+and BIND 9.18's own default allows AXFR to **any** host. It now renders
+`allow-transfer { none; };`, matching the instance-level builder (#466).
+
+- *How to detect:* anything performing ad-hoc AXFR (monitoring probes,
+  scripts using `dig axfr`) against operands configured via the
+  cluster-level ConfigMap will start receiving transfer refusals.
+  Operator-managed secondaries are unaffected — per-zone ACLs with the
+  secondaries' IPs override the options-level default.
+- *Remediation:* add the consumers' CIDRs to
+  `Bind9Cluster.spec.global.allowTransfer`.
+
+
 ## `DNSZone` gains `status.recordsResyncPending` (record replay after a pod is wiped)
 
 Fixes [#486](https://github.com/firestoned/bindy/issues/486). BIND9 operand pods

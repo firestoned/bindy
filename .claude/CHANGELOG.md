@@ -1,3 +1,39 @@
+## [2026-09-27 16:40] - Fix roadmap-03 quirks: honor explicit dnssec-validation, cluster-level transfer deny-by-default (ADR-0007)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `src/bind9_resources.rs`: `resolve_dnssec_validation` now renders from the
+  cluster-global `dnssec` block whether or not the instance has a `config`
+  block — previously a global `validation: false` with no instance config
+  block emitted nothing, and named's default (`auto`, verified against the
+  BIND 9.18 ARM) silently re-enabled the validation the user disabled.
+- `src/bind9_resources.rs`: `build_cluster_options_conf` gains the same
+  `allow-transfer { none; };` deny-by-default as the instance builder
+  (closes the #466 gap): explicit ACL renders, empty list renders `none`,
+  nothing configured denies. BIND 9.18's own default allows AXFR to ANY
+  host (the upstream deny-by-default only landed in BIND 9.20, GL #3567).
+- `src/bind9_resources_tests.rs`: roadmap-03 pinning test inverted to pin the
+  new behavior; 4 new tests (no-dnssec-anywhere, cluster deny-by-default,
+  empty list, explicit ACL).
+- `docs/adr/0007-uniform-options-rendering-deny-by-default.md`: the decision.
+- `docs/src/operations/migration-guide.md`: detection + remediation for both.
+- `docs/src/advanced/zone-transfers.md`: "Default: transfers are denied".
+- `.github/community/03-early-return-refactoring.md` + `ROADMAPS.md`: the
+  deferred quirks decision recorded as resolved.
+
+### Why
+Roadmap 03 preserved both behaviors to keep the refactor behavior-preserving,
+deferring the decision. Decision (Erick, 2026-09-27): fix both. Quirk 1
+inverted explicit user intent; quirk 2 left AXFR open at cluster level in a
+banking environment.
+
+### Impact
+- [x] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-09-27 15:20] - Roadmap 07 complete: DNSSEC DS record status reporting (ADR-0006)
 
 **Author:** Erick Bourgeois
