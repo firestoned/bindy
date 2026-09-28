@@ -1,13 +1,18 @@
 # bindcar `v0.7.4` → `v0.8.0` — bindy Integration & Upgrade Guide
 
-> **Status:** 🔶 Mostly applied (2026-09-19). §21 is implemented end to end —
-> CRD surface, sidecar wiring and operator client — pending live verification.
-> §23 (types-only dependency),
-> §24 (rate-limit defaults reviewed — no bindy change needed) and the
-> carried-over metric rename are **done**: bindy is on `bindcar 0.8.0` with
-> `default-features = false`, shedding 31 crates. **§21 (CRD surface for TLS)
-> and §25 (reserved-env guard + VAP 15/16) remain open** — until §21 lands,
-> audit finding P2-4 is not remediated end to end.
+> **Status:** 🔶 Code complete (re-audited 2026-09-28) — **only live-cluster
+> verification remains** (`make tls-transport-test` / `make e2e-tls` +
+> `make regression-test`; no cluster in this environment). Everything else is
+> done: §21 CRD surface + sidecar wiring + operator client, §23 types-only
+> dependency, §24 rate-limit review, the metric rename, the reserved-env
+> reconciler guard, **and** the admission policy — which shipped as VAP
+> **19/20** (`19-bindy-bindcar-env-policy.yaml` +
+> `20-bindy-bindcar-env-binding.yaml`, with accept/reject fixtures under
+> `deploy/admission-policies/tests/`), not the "15/16" this doc planned:
+> numbers 15/16 were taken by the image-provenance policy in the meantime.
+> Until the live TLS verification runs, audit finding P2-4 is remediated in
+> code but not *verified* end to end. Superseded for new work by
+> [26](26-bindcar-migration-v0-8-1.md) (bindcar v0.8.1).
 >
 > Originally: actionable, the live guide in the series, superseding
 > [`24-bindcar-migration-v0-7-4.md`](24-bindcar-migration-v0-7-4.md). Built from
@@ -197,10 +202,12 @@ four more names to the list of things that can be tampered with:
 as this series records — but the reserved-name list must now include the
 `BIND_TLS_` prefix:
 
-- [ ] Reserved-env guard in `build_api_sidecar_container`: drop and log any
+- [x] Reserved-env guard in `build_api_sidecar_container`: drop and log any
       user-supplied var whose name is operator-reserved, now including
-      `BIND_TLS_*`.
-- [ ] VAP 15/16 to reject reserved names at admission, with fixtures.
+      `BIND_TLS_*` (`is_reserved_bindcar_env`, `src/bind9_resources.rs`).
+- [x] VAP to reject reserved names at admission, with fixtures — shipped as
+      **19/20** (`bindy-bindcar-env-validation`), not 15/16 (those numbers
+      went to image provenance).
 
 ---
 
@@ -214,8 +221,8 @@ as this series records — but the reserved-name list must now include the
 - [x] Reserved-env guard: `is_reserved_bindcar_env` in `src/bind9_resources.rs`
       drops and logs tenant-supplied `BIND_TLS_*`, `KUBE_*`, `BIND_API_TOKEN`,
       `DISABLE_AUTH`, the allowlists and the RNDC vars.
-- [ ] VAP 15/16 to reject reserved names at admission (defence in depth; the
-      reconciler guard above is the load-bearing fix).
+- [x] VAP to reject reserved names at admission (defence in depth; the
+      reconciler guard above is the load-bearing fix) — shipped as **19/20**.
 - [x] Still outstanding from 56: rename `bindcar_zones_managed_total` →
       `bindcar_zones_managed` in dashboards and alerts.
 - [x] Design the CRD surface for TLS scheme + CA bundle (§21) — `bindcarConfig.tls`

@@ -1,3 +1,77 @@
+## [2026-09-28 10:30] - Roadmap 26 applied: bindcar v0.8.2 + DNSZone nextKeyRollover (ADR-0006 amended)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: `bindcar` floor raised to `0.8.1` (`default-features = false`
+  kept); lock resolves 0.8.1 from crates.io — API-identical to v0.8.2
+  (`git diff v0.8.1..v0.8.2` touches exactly Cargo.toml). Bump the lock to
+  0.8.2 when its crates.io publish lands.
+- `src/constants.rs` + 12 other references (crd.rs doc example, examples/,
+  deploy CRD yamls via regen-crds, tests/lib/dns_fixtures.sh, README, docs):
+  `DEFAULT_BINDCAR_IMAGE` → `ghcr.io/firestoned/bindcar:v0.8.2`. v0.8.1
+  images are skipped deliberately — they self-report 0.8.0 (tag/version
+  divergence, resolved in v0.8.2).
+- `src/bind9/zone_ops.rs`: `parse_zone_status_dnssec()` (ZoneStatusResponse
+  JSON → DnssecStatus, tolerant of older sidecars) and `next_ksk_rollover()`
+  (earliest event among non-removed key-signing keys — ZSK events excluded,
+  they do not change the DS at the parent).
+- `src/reconcilers/dnszone.rs`: `fetch_next_ksk_rollover()` — after DS
+  extraction reports a signed zone, the reconciler reads the sidecar's zone
+  status (TLS-aware per-instance manager, bug-188 lesson) and populates
+  `DNSZone.status.dnssec.nextKeyRollover`; best-effort, keeps the previous
+  value on any failure. `lastKeyRollover` stays null (no source in 0.8.x).
+- `docs/adr/0006-dnssec-ds-record-status-reporting.md`: Amended bullet +
+  Decision addendum. `docs/src/advanced/dnssec.md`, migration guide: new
+  field documented (requires bindcar v0.8.2+ sidecar).
+- `.github/community/26-bindcar-migration-v0-8-2.md` (renamed from
+  `…-v0-8-1.md`) + `ROADMAPS.md`: roadmap 26 ✅ applied; live-zone DNSSEC
+  enable and checkds automation stay deferred behind their own ADRs.
+- 6 new unit tests (status parsing, KSK filtering/earliest-wins/removed,
+  rollover carried into DNSSECStatus). 1517 total green.
+
+### Why
+bindcar v0.8.2 ships the key-state surface bindy filed for on 2026-09-27,
+closing ADR-0006's deferred field.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-09-28 09:20] - Roadmap 25 re-audited (only live verification left); roadmap 26 opened for bindcar v0.8.1
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/25-bindcar-migration-v0-8-0.md` + `ROADMAPS.md`: the two
+  "open" §25 boxes were stale — the reserved-env admission policy shipped as
+  VAP **19/20** (`bindy-bindcar-env-validation`, with accept/reject fixtures)
+  under different numbers than the planned "15/16" (taken by image
+  provenance). Doc corrected and boxes ticked; remaining work is
+  live-cluster verification only (`tls-transport-test`/`e2e-tls`,
+  `regression-test`).
+- `.github/community/26-bindcar-migration-v0-8-2.md` (new): migration guide
+  for bindcar v0.8.1, built from `git diff v0.8.0..v0.8.1`. Blocked: the
+  v0.8.1 tag carries `Cargo.toml` version `0.8.0` (the 24 §19 tag/version
+  regression), so the crates.io publish fails and images self-report 0.8.0.
+  Once fixed, v0.8.1 delivers the key-state surface bindy filed for
+  (ADR-0006 `nextKeyRollover`; `lastKeyRollover` still has no source),
+  the DS endpoint, checkds, and live-zone DNSSEC enable via
+  `ModifyZoneRequest` (bindy-side ADR required before consuming that).
+
+### Why
+Roadmap 25 was flagged "current and actionable" but its checklist lagged the
+tree; bindcar v0.8.1 (just released) changes the migration target and
+unblocks the ADR-0006 deferred fields — behind a release fix.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-09-27 16:40] - Fix roadmap-03 quirks: honor explicit dnssec-validation, cluster-level transfer deny-by-default (ADR-0007)
 
 **Author:** Erick Bourgeois

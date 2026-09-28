@@ -28,7 +28,7 @@ REVERSE_ZONE_CR="integration-test-reverse-zone"
 ZONE_FQDN="integration.test"
 REVERSE_ZONE_FQDN="0.168.192.in-addr.arpa"
 BIND9_CONTAINER="bind9"
-BINDCAR_IMAGE="${BINDCAR_IMAGE:-ghcr.io/firestoned/bindcar:v0.8.0}"
+BINDCAR_IMAGE="${BINDCAR_IMAGE:-ghcr.io/firestoned/bindcar:v0.8.2}"
 
 # The operand serves DNS on an unprivileged port so the Pod can drop
 # NET_BIND_SERVICE; querying :53 gets connection refused. Matches
