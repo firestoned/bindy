@@ -56,7 +56,8 @@ Statuses were verified against `fix-idempotency` @ `648ff7a` on 2026-09-10.
 
 | # | Roadmap | Status | Notes |
 |---|---|---|---|
-| [12](.github/community/12-scout-ingress-controller.md) | Scout — Ingress → ARecord controller | 🔶 | Phases 1/1.5 shipped, phase 2 (`BINDY_SCOUT_REMOTE_SECRET`) implemented. Scout has outgrown the doc: 5 controllers today (Ingress, Service, HTTPRoute, TLSRoute, TCPRoute) |
+| [12](.github/community/12-scout-ingress-controller.md) | Scout — Ingress → ARecord controller | ✅ | Complete 2026-09-28: Phase 3 closed via ADR-0008 (endpoint + token-file remote mode, fail-closed vs. kubeconfig Secret; original Linkerd wording superseded — API servers aren't meshed). Live Linkerd verification → staging. Leftover Qs → 27 |
+| [27](.github/community/27-scout-followups.md) | Scout follow-ups | ⛔ | Survivors of 12's closure: Scout Prometheus metrics, cross-cluster conflict detection, AAAA support, bootstrap parity for the endpoint mode, live Linkerd verification |
 | [13](.github/community/13-scout-namespace-selectors.md) | Scout — namespace label selectors | 🔶 | `namespace_selector` landed (#437), evaluated per event by `source_namespace_eligible()`. The `Namespace` **watch** — the part that actually cuts event volume — is not implemented |
 | [14](.github/community/14-scout-srv-records.md) | Scout — SRV record support | ⛔ | No `SRVRecord` reference anywhere in `src/scout.rs` |
 
