@@ -143,6 +143,9 @@ See [Bindy Scout](../guide/scout.md) for the full conceptual guide.
 | `BINDY_SCOUT_NAMESPACE` | `--namespace` | `bindy-system` | Namespace where `ARecord` CRs are created. |
 | `POD_NAMESPACE` | — | `default` | Scout's own namespace. Always excluded from Ingress watching. Inject via Kubernetes downward API. |
 | `BINDY_SCOUT_EXCLUDE_NAMESPACES` | — | — | Comma-separated list of additional namespaces to exclude from Ingress watching. |
+| `BINDY_SCOUT_REMOTE_ENDPOINT` | — | Bindy cluster API URL for the endpoint remote mode (ADR-0008): Linkerd-mirrored meshed proxy, konnectivity, or the API server. Requires `BINDY_SCOUT_REMOTE_TOKEN_FILE`; mutually exclusive with `BINDY_SCOUT_REMOTE_SECRET`. |
+| `BINDY_SCOUT_REMOTE_TOKEN_FILE` | — | Bearer-token file minted by the Bindy cluster; re-read on rotation. |
+| `BINDY_SCOUT_REMOTE_CA_FILE` | — | Endpoint CA bundle (PEM); unset means webpki public roots. |
 | `RUST_LOG` | — | `info` | Log level filter. |
 | `RUST_LOG_FORMAT` | — | `text` | Log format (`text` or `json`). |
 

@@ -4183,6 +4183,166 @@ fn tcproute_error_policy(
 ///
 /// Returns an error if the Secret cannot be read, the `kubeconfig` key is absent,
 /// the YAML is malformed, or the resulting client configuration is invalid.
+/// How Scout reaches the cluster that holds `ARecord`s and `DNSZone`s (ADR-0008).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RemoteTransport {
+    /// No remote configuration: the local cluster is the bindy cluster.
+    SameCluster,
+    /// Phase 2: kubeconfig blob read from a local Secret.
+    KubeconfigSecret {
+        /// Secret name (`BINDY_SCOUT_REMOTE_SECRET`).
+        name: String,
+        /// Secret namespace (`BINDY_SCOUT_REMOTE_SECRET_NAMESPACE`).
+        namespace: String,
+    },
+    /// Phase 3 (ADR-0008): explicit endpoint + file-based credentials.
+    Endpoint {
+        /// Bindy cluster API URL (Linkerd-mirrored proxy, konnectivity, or direct).
+        endpoint: String,
+        /// Bearer-token file minted by the bindy cluster; re-read on rotation.
+        token_file: String,
+        /// Endpoint CA bundle (PEM). `None` means webpki public roots.
+        ca_file: Option<String>,
+    },
+}
+
+/// Resolve which remote transport the configuration selects, failing closed
+/// on ambiguous or incomplete combinations (ADR-0008).
+///
+/// # Arguments
+/// * `endpoint` - `BINDY_SCOUT_REMOTE_ENDPOINT`, if set
+/// * `token_file` - `BINDY_SCOUT_REMOTE_TOKEN_FILE`, if set
+/// * `ca_file` - `BINDY_SCOUT_REMOTE_CA_FILE`, if set
+/// * `secret_name` - `BINDY_SCOUT_REMOTE_SECRET`, if set
+/// * `secret_namespace` - Effective remote-Secret namespace
+///
+/// # Errors
+/// Returns an error when both remote modes are configured at once, when the
+/// endpoint mode is missing its token file, or when credential files are
+/// given without an endpoint.
+pub(crate) fn resolve_remote_transport(
+    endpoint: Option<String>,
+    token_file: Option<String>,
+    ca_file: Option<String>,
+    secret_name: Option<String>,
+    secret_namespace: &str,
+) -> Result<RemoteTransport> {
+    if let Some(endpoint) = endpoint {
+        if secret_name.is_some() {
+            return Err(anyhow!(
+                "BINDY_SCOUT_REMOTE_ENDPOINT and BINDY_SCOUT_REMOTE_SECRET are both set; \
+                 the two remote modes are mutually exclusive — configure exactly one"
+            ));
+        }
+        let Some(token_file) = token_file else {
+            return Err(anyhow!(
+                "BINDY_SCOUT_REMOTE_ENDPOINT is set but BINDY_SCOUT_REMOTE_TOKEN_FILE is not; \
+                 the endpoint mode requires a bearer-token file minted by the bindy cluster"
+            ));
+        };
+        return Ok(RemoteTransport::Endpoint {
+            endpoint,
+            token_file,
+            ca_file,
+        });
+    }
+
+    if token_file.is_some() || ca_file.is_some() {
+        return Err(anyhow!(
+            "BINDY_SCOUT_REMOTE_TOKEN_FILE / BINDY_SCOUT_REMOTE_CA_FILE are set without \
+             BINDY_SCOUT_REMOTE_ENDPOINT; credential files only apply to the endpoint mode"
+        ));
+    }
+
+    if let Some(name) = secret_name {
+        return Ok(RemoteTransport::KubeconfigSecret {
+            name,
+            namespace: secret_namespace.to_string(),
+        });
+    }
+
+    Ok(RemoteTransport::SameCluster)
+}
+
+/// Kubeconfig entry names used by the synthesized endpoint-mode config.
+const ENDPOINT_KUBECONFIG_NAME: &str = "bindy-remote";
+
+/// Synthesize an in-memory kubeconfig for the endpoint transport (ADR-0008).
+///
+/// Feeding this through `Config::from_custom_kubeconfig` reuses kube-rs's
+/// PEM handling and token-file refresh instead of hand-rolling either.
+///
+/// # Arguments
+/// * `endpoint` - Bindy cluster API URL
+/// * `token_file` - Path to the bearer-token file
+/// * `ca_file` - Path to the endpoint CA bundle, if pinned
+#[must_use]
+pub(crate) fn build_endpoint_kubeconfig(
+    endpoint: &str,
+    token_file: &str,
+    ca_file: Option<&str>,
+) -> Kubeconfig {
+    use kube::config::{
+        AuthInfo, Cluster, Context as KubeContext, NamedAuthInfo, NamedCluster, NamedContext,
+    };
+
+    Kubeconfig {
+        clusters: vec![NamedCluster {
+            name: ENDPOINT_KUBECONFIG_NAME.to_string(),
+            cluster: Some(Cluster {
+                server: Some(endpoint.to_string()),
+                certificate_authority: ca_file.map(str::to_string),
+                ..Default::default()
+            }),
+            other: Default::default(),
+        }],
+        auth_infos: vec![NamedAuthInfo {
+            name: ENDPOINT_KUBECONFIG_NAME.to_string(),
+            auth_info: Some(AuthInfo {
+                token_file: Some(token_file.to_string()),
+                ..Default::default()
+            }),
+            other: Default::default(),
+        }],
+        contexts: vec![NamedContext {
+            name: ENDPOINT_KUBECONFIG_NAME.to_string(),
+            context: Some(KubeContext {
+                cluster: ENDPOINT_KUBECONFIG_NAME.to_string(),
+                user: Some(ENDPOINT_KUBECONFIG_NAME.to_string()),
+                ..Default::default()
+            }),
+            other: Default::default(),
+        }],
+        current_context: Some(ENDPOINT_KUBECONFIG_NAME.to_string()),
+        ..Default::default()
+    }
+}
+
+/// Build the remote [`Client`] for the endpoint transport (ADR-0008).
+///
+/// # Arguments
+/// * `endpoint` - Bindy cluster API URL
+/// * `token_file` - Path to the bearer-token file
+/// * `ca_file` - Path to the endpoint CA bundle, if pinned
+///
+/// # Errors
+/// Returns an error if the synthesized configuration cannot be turned into a
+/// client (e.g., an unreadable CA file — fails closed at startup).
+pub(crate) async fn build_remote_client_from_endpoint(
+    endpoint: &str,
+    token_file: &str,
+    ca_file: Option<&str>,
+) -> Result<Client> {
+    let kubeconfig = build_endpoint_kubeconfig(endpoint, token_file, ca_file);
+    let config = kube::Config::from_custom_kubeconfig(kubeconfig, &KubeConfigOptions::default())
+        .await
+        .map_err(|e| {
+            anyhow!("Failed to build client config for remote endpoint {endpoint}: {e}")
+        })?;
+    Client::try_from(config)
+        .map_err(|e| anyhow!("Failed to create remote Kubernetes client for {endpoint}: {e}"))
+}
+
 async fn build_remote_client(
     local_client: &Client,
     secret_name: &str,
@@ -4236,11 +4396,21 @@ struct ScoutConfig {
     /// every namespace is eligible (backward-compatible default). Set via
     /// `BINDY_SCOUT_NAMESPACE_SELECTOR` or `--namespace-selector` CLI flag.
     namespace_selector: Option<String>,
-    /// Name of the Secret containing the remote cluster kubeconfig (Phase 2).
-    /// When `None`, Scout operates in same-cluster mode.
-    remote_secret_name: Option<String>,
-    /// Namespace of the remote kubeconfig Secret. Defaults to Scout's own namespace.
-    remote_secret_namespace: String,
+    /// How to reach the bindy cluster: same-cluster, kubeconfig Secret
+    /// (Phase 2) or endpoint + token file (Phase 3, ADR-0008).
+    remote_transport: RemoteTransport,
+}
+
+/// CLI overrides for the remote transport (ADR-0008); each takes precedence
+/// over its `BINDY_SCOUT_REMOTE_*` environment variable when set.
+#[derive(Debug, Default, Clone)]
+pub struct ScoutRemoteOverrides {
+    /// Overrides `BINDY_SCOUT_REMOTE_ENDPOINT`.
+    pub endpoint: Option<String>,
+    /// Overrides `BINDY_SCOUT_REMOTE_TOKEN_FILE`.
+    pub token_file: Option<String>,
+    /// Overrides `BINDY_SCOUT_REMOTE_CA_FILE`.
+    pub ca_file: Option<String>,
 }
 
 impl ScoutConfig {
@@ -4254,6 +4424,7 @@ impl ScoutConfig {
         cli_gateway_services: Vec<String>,
         cli_default_zone: Option<String>,
         cli_namespace_selector: Option<String>,
+        cli_remote: ScoutRemoteOverrides,
     ) -> Result<Self> {
         let target_namespace = cli_namespace
             .filter(|s| !s.is_empty())
@@ -4335,6 +4506,18 @@ impl ScoutConfig {
         let remote_secret_namespace =
             std::env::var("BINDY_SCOUT_REMOTE_SECRET_NAMESPACE").unwrap_or(own_namespace);
 
+        let env_or = |cli: Option<String>, var: &str| {
+            cli.filter(|s| !s.is_empty())
+                .or_else(|| std::env::var(var).ok().filter(|s| !s.is_empty()))
+        };
+        let remote_transport = resolve_remote_transport(
+            env_or(cli_remote.endpoint, "BINDY_SCOUT_REMOTE_ENDPOINT"),
+            env_or(cli_remote.token_file, "BINDY_SCOUT_REMOTE_TOKEN_FILE"),
+            env_or(cli_remote.ca_file, "BINDY_SCOUT_REMOTE_CA_FILE"),
+            remote_secret_name,
+            &remote_secret_namespace,
+        )?;
+
         Ok(Self {
             target_namespace,
             cluster_name,
@@ -4343,8 +4526,7 @@ impl ScoutConfig {
             gateway_services,
             default_zone,
             namespace_selector,
-            remote_secret_name,
-            remote_secret_namespace,
+            remote_transport,
         })
     }
 }
@@ -4410,6 +4592,7 @@ pub async fn run_scout(
     cli_gateway_services: Vec<String>,
     cli_default_zone: Option<String>,
     cli_namespace_selector: Option<String>,
+    cli_remote: ScoutRemoteOverrides,
 ) -> Result<()> {
     let config = ScoutConfig::from_env(
         cli_cluster_name,
@@ -4418,34 +4601,57 @@ pub async fn run_scout(
         cli_gateway_services,
         cli_default_zone,
         cli_namespace_selector,
+        cli_remote,
     )?;
 
     let local_client = Client::try_default().await?;
 
-    let remote_client = if let Some(ref secret_name) = config.remote_secret_name {
-        info!(
-            cluster = %config.cluster_name,
-            target_ns = %config.target_namespace,
-            secret = %secret_name,
-            secret_ns = %config.remote_secret_namespace,
-            excluded = ?config.excluded_namespaces,
-            default_ips = ?config.default_ips,
-            default_zone = ?config.default_zone,
-            namespace_selector = ?config.namespace_selector,
-            "Starting bindy scout in remote cluster mode"
-        );
-        build_remote_client(&local_client, secret_name, &config.remote_secret_namespace).await?
-    } else {
-        info!(
-            cluster = %config.cluster_name,
-            target_ns = %config.target_namespace,
-            excluded = ?config.excluded_namespaces,
-            default_ips = ?config.default_ips,
-            default_zone = ?config.default_zone,
-            namespace_selector = ?config.namespace_selector,
-            "Starting bindy scout in same-cluster mode"
-        );
-        local_client.clone()
+    let remote_client = match &config.remote_transport {
+        RemoteTransport::KubeconfigSecret { name, namespace } => {
+            info!(
+                cluster = %config.cluster_name,
+                target_ns = %config.target_namespace,
+                secret = %name,
+                secret_ns = %namespace,
+                excluded = ?config.excluded_namespaces,
+                default_ips = ?config.default_ips,
+                default_zone = ?config.default_zone,
+                namespace_selector = ?config.namespace_selector,
+                "Starting bindy scout in remote cluster mode (kubeconfig Secret)"
+            );
+            build_remote_client(&local_client, name, namespace).await?
+        }
+        RemoteTransport::Endpoint {
+            endpoint,
+            token_file,
+            ca_file,
+        } => {
+            info!(
+                cluster = %config.cluster_name,
+                target_ns = %config.target_namespace,
+                endpoint = %endpoint,
+                token_file = %token_file,
+                ca_file = ?ca_file,
+                excluded = ?config.excluded_namespaces,
+                default_ips = ?config.default_ips,
+                default_zone = ?config.default_zone,
+                namespace_selector = ?config.namespace_selector,
+                "Starting bindy scout in remote cluster mode (endpoint override, ADR-0008)"
+            );
+            build_remote_client_from_endpoint(endpoint, token_file, ca_file.as_deref()).await?
+        }
+        RemoteTransport::SameCluster => {
+            info!(
+                cluster = %config.cluster_name,
+                target_ns = %config.target_namespace,
+                excluded = ?config.excluded_namespaces,
+                default_ips = ?config.default_ips,
+                default_zone = ?config.default_zone,
+                namespace_selector = ?config.namespace_selector,
+                "Starting bindy scout in same-cluster mode"
+            );
+            local_client.clone()
+        }
     };
 
     if config.namespace_selector.is_none() {

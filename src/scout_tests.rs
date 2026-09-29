@@ -3222,4 +3222,169 @@ mod tests {
 
         assert!(zones.is_empty());
     }
+
+    // ------------------------------------------------------------------
+    // ADR-0008: remote transport resolution (roadmap 12 Phase 3)
+    // ------------------------------------------------------------------
+
+    use crate::scout::{build_endpoint_kubeconfig, resolve_remote_transport, RemoteTransport};
+
+    const EP: &str = "https://bindy-api.mirror.svc.cluster.local:6443";
+    const TOKEN_FILE: &str = "/var/run/secrets/bindy/remote-token";
+    const CA_FILE: &str = "/var/run/secrets/bindy/remote-ca.crt";
+
+    fn some(s: &str) -> Option<String> {
+        Some(s.to_string())
+    }
+
+    #[test]
+    fn test_resolve_remote_transport_same_cluster_default() {
+        let t = resolve_remote_transport(None, None, None, None, "bindy-system")
+            .expect("no remote config is valid");
+        assert_eq!(t, RemoteTransport::SameCluster);
+    }
+
+    #[test]
+    fn test_resolve_remote_transport_kubeconfig_secret() {
+        let t = resolve_remote_transport(None, None, None, some("remote-kubeconfig"), "scout-ns")
+            .expect("secret mode is valid");
+        assert_eq!(
+            t,
+            RemoteTransport::KubeconfigSecret {
+                name: "remote-kubeconfig".to_string(),
+                namespace: "scout-ns".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_resolve_remote_transport_endpoint_with_token() {
+        let t = resolve_remote_transport(some(EP), some(TOKEN_FILE), some(CA_FILE), None, "ns")
+            .expect("endpoint mode is valid");
+        assert_eq!(
+            t,
+            RemoteTransport::Endpoint {
+                endpoint: EP.to_string(),
+                token_file: TOKEN_FILE.to_string(),
+                ca_file: Some(CA_FILE.to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn test_resolve_remote_transport_endpoint_ca_optional() {
+        let t = resolve_remote_transport(some(EP), some(TOKEN_FILE), None, None, "ns")
+            .expect("CA file is optional (webpki roots)");
+        assert_eq!(
+            t,
+            RemoteTransport::Endpoint {
+                endpoint: EP.to_string(),
+                token_file: TOKEN_FILE.to_string(),
+                ca_file: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_resolve_remote_transport_endpoint_requires_token_file() {
+        let err = resolve_remote_transport(some(EP), None, None, None, "ns")
+            .expect_err("endpoint without token file must fail closed");
+        assert!(
+            err.to_string().contains("BINDY_SCOUT_REMOTE_TOKEN_FILE"),
+            "error must name the missing variable, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_remote_transport_endpoint_and_secret_conflict() {
+        let err = resolve_remote_transport(
+            some(EP),
+            some(TOKEN_FILE),
+            None,
+            some("remote-kubeconfig"),
+            "ns",
+        )
+        .expect_err("two remote modes at once is ambiguous and must fail closed");
+        assert!(
+            err.to_string().contains("BINDY_SCOUT_REMOTE_SECRET")
+                && err.to_string().contains("BINDY_SCOUT_REMOTE_ENDPOINT"),
+            "error must name both conflicting variables, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_remote_transport_credentials_without_endpoint() {
+        let err = resolve_remote_transport(None, some(TOKEN_FILE), None, None, "ns")
+            .expect_err("token file without an endpoint is a misconfiguration");
+        assert!(err.to_string().contains("BINDY_SCOUT_REMOTE_ENDPOINT"));
+
+        let err = resolve_remote_transport(None, None, some(CA_FILE), None, "ns")
+            .expect_err("CA file without an endpoint is a misconfiguration");
+        assert!(err.to_string().contains("BINDY_SCOUT_REMOTE_ENDPOINT"));
+    }
+
+    #[test]
+    fn test_build_endpoint_kubeconfig_shape() {
+        let kc = build_endpoint_kubeconfig(EP, TOKEN_FILE, Some(CA_FILE));
+
+        let cluster = &kc.clusters[0];
+        assert_eq!(
+            cluster.cluster.as_ref().unwrap().server.as_deref(),
+            Some(EP)
+        );
+        assert_eq!(
+            cluster
+                .cluster
+                .as_ref()
+                .unwrap()
+                .certificate_authority
+                .as_deref(),
+            Some(CA_FILE)
+        );
+
+        let user = &kc.auth_infos[0];
+        assert_eq!(
+            user.auth_info.as_ref().unwrap().token_file.as_deref(),
+            Some(TOKEN_FILE),
+            "token must be file-based so kube-rs re-reads it on rotation"
+        );
+
+        // The context must tie the cluster and user together and be current.
+        let context = &kc.contexts[0];
+        let ctx = context.context.as_ref().unwrap();
+        assert_eq!(ctx.cluster, cluster.name);
+        assert_eq!(ctx.user.as_deref(), Some(user.name.as_str()));
+        assert_eq!(kc.current_context.as_deref(), Some(context.name.as_str()));
+    }
+
+    #[test]
+    fn test_build_endpoint_kubeconfig_without_ca() {
+        let kc = build_endpoint_kubeconfig(EP, TOKEN_FILE, None);
+        assert!(
+            kc.clusters[0]
+                .cluster
+                .as_ref()
+                .unwrap()
+                .certificate_authority
+                .is_none(),
+            "no CA file means webpki public roots"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_remote_client_from_endpoint_constructs() {
+        // Client construction is lazy — no connection until a request goes out.
+        let dir = std::env::temp_dir().join("scout-adr0008-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let token_path = dir.join("token");
+        std::fs::write(&token_path, "test-token").unwrap();
+
+        let client = crate::scout::build_remote_client_from_endpoint(
+            "https://127.0.0.1:9",
+            token_path.to_str().unwrap(),
+            None,
+        )
+        .await;
+        assert!(client.is_ok(), "client must build: {:?}", client.err());
+    }
 }

@@ -1,11 +1,22 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.5
+**Version:** 1.6
 **Last Updated:** 2026-09-28
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
 
-> Last full pass 2026-09-28, against ADR-0001 … ADR-0007 (ADR-0006 as amended).
+> Last full pass 2026-09-28, against ADR-0001 … ADR-0008 (ADR-0006 as amended).
+>
+> **Revision note (v1.6):** Pass for ADR-0008 (Scout remote endpoint mode).
+> New mitigation **M-32**: the endpoint + token-file transport is a
+> smaller-surface alternative to the Phase 2 kubeconfig Secret — no
+> kubeconfig blob, no `secrets: get` use in this mode, endpoint and CA
+> auditable in the Deployment spec, credential rotatable as a file without
+> restart. The credential remains a bindy-cluster-minted scoped SA token
+> (ADR-0002 credential direction, M-25 scoping unchanged); configuration is
+> fail-closed against ambiguous dual-mode setups. No new trust boundary —
+> same scout → queen-API edge with a second transport. All sections
+> re-walked; I4/E4/T4 analyses unchanged.
 >
 > **Revision note (v1.5):** Pass for the bindcar v0.8.2 upgrade and the
 > ADR-0006 amendment (`nextKeyRollover` from the sidecar's zone status). No
@@ -1362,6 +1373,7 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-23 | **Unprivileged DNS port + capability drop**: BIND9 operand binds container port 5353 (Service still exposes 53) and adds zero Linux capabilities (`NET_BIND_SERVICE` removed) | E1 (container escape) | ✅ Pod Security |
 | M-24 | **ValidatingAdmissionPolicy suite** (8 policies + 8 bindings = 16 manifests, as of 2026-07-01): ACL syntax, zone-name validation, RNDC strictness, operand pod shape, DNSSEC policy, operator-workload ServiceAccount identity, DNS record value validation, image provenance, and `volumeMount.mountPath` allow-listing (`safe_volume.rs`, closes audit finding F-001) | T1 (DNS tampering), T3 (ConfigMap/Secret tampering), E1 (container escape via malicious volume mounts), T2 (image provenance) | ✅ Kubernetes VAP — supersedes M-13 below |
 | M-30 | **Scout namespace whitelisting** (`--namespace-selector` / `BINDY_SCOUT_NAMESPACE_SELECTOR`, new in v1.1): a source object's namespace must match a configured Kubernetes label selector *in addition to* the object's own opt-in annotation before Scout acts on it. Label-selector matching delegates to the API server (no client-side selector parser). Reduces Scout's day-to-day operating footprint — bounds T4 (cross-tenant patch/update) during normal operation. **Does not reduce the `ClusterRole`'s RBAC ceiling** for Ingress/Service/route types — a directly compromised token is unaffected for those. **Opt-in — unset by default**, matching pre-v1.1 behavior for backward compatibility; Scout logs a startup warning when unset. See the Scout guide's "Namespace Whitelisting" section for the rollout/migration note. | T4 (partial) | ⚠️ Opt-in, recommended for all production deployments |
+| M-32 | **Scout endpoint + token-file remote transport** (2026-09-28, ADR-0008): alternative to the kubeconfig-Secret mode — bare bindy-minted token file (rotatable, no restart), endpoint/CA in the Deployment spec, fail-closed mode selection. Removes the kubeconfig blob and the `secrets: get` dependency in this mode; supports Linkerd-meshed proxy mirrors for cross-cluster mTLS | I4/E4 (smaller credential surface), T4 (unchanged ceiling) | ✅ `src/scout.rs` (`resolve_remote_transport`) |
 | M-31 | **Client-side Kubernetes API rate limiting** (2026-09-27, ADR-0005): tower `RateLimitLayer` in the operator's client stack (20 QPS / 30 burst default, env-tunable, invalid overrides fall back safely), paginated LISTs (O(1) memory), exponential-backoff retries on transient 429/5xx, and Prometheus visibility of server-side throttling (`kube_api_*` metrics) | D2 (reconciliation flood — API/memory amplification), platform availability (Basel III operational resilience) | ✅ `src/rate_limit.rs` + `reconcilers/{pagination,retry}.rs` |
 | M-25 | **Scout Secret RBAC scoped** (fixed 2026-07-19, same day as this finding's discovery): removed the cluster-wide `secrets: get` `PolicyRule` from the `bindy-scout` `ClusterRole` entirely. Replaced with a namespaced, `resourceNames`-restricted Role (`bindy-scout-secrets-reader`) scoped to exactly the one Phase 2 kubeconfig Secret, applied only when `--remote-secret` is configured. Same-cluster-only deployments (the default) now get zero Secret access. See I4/E4/Scenario 6 for the full before/after. | I4, E4, T4 (Secret-read component), Scenario 6 | ✅ RBAC — **was the highest-priority open item in v1.1; closed same-day** |
 

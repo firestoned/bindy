@@ -1,3 +1,49 @@
+## [2026-09-28 12:10] - Roadmap 12 complete: Scout remote endpoint mode (ADR-0008)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0008-scout-remote-endpoint-override.md`: Phase 3's premise
+  corrected (Linkerd meshes workloads, not the API server; a drone-local SA
+  token never authenticates to the bindy cluster) and the sound core
+  decided: an endpoint + file-based-credential remote mode.
+- `src/scout.rs`: `RemoteTransport` enum + `resolve_remote_transport`
+  (fail-closed: endpoint requires token file; endpoint and kubeconfig-Secret
+  modes mutually exclusive; credential files without an endpoint rejected),
+  `build_endpoint_kubeconfig` (synthesized in-memory kubeconfig →
+  `Config::from_custom_kubeconfig`, inheriting kube-rs PEM handling and
+  token-file rotation refresh), `build_remote_client_from_endpoint`,
+  `ScoutRemoteOverrides`; `run_scout` selection now matches on the transport.
+- `src/main.rs`: `--remote-endpoint` / `--remote-token-file` /
+  `--remote-ca-file` on `bindy scout`.
+- New env vars `BINDY_SCOUT_REMOTE_ENDPOINT` / `_TOKEN_FILE` / `_CA_FILE`,
+  documented in the Scout guide (incl. the Linkerd multicluster pattern:
+  meshed proxy + mirrored Service + bindy-minted token) and env-vars
+  reference.
+- `.github/community/27-scout-followups.md`: survivors of 12's closure
+  (Scout metrics, conflict detection, AAAA, bootstrap parity, live Linkerd
+  verification).
+- 11 new unit tests (transport resolution matrix, kubeconfig shape, client
+  construction). 1527 total green.
+
+### Changed
+- `calm/bindy-multi-cluster.architecture.json`: scout→queen ARecord
+  relationships note both transports; diagrams regenerated.
+- `.github/community/12-scout-ingress-controller.md` + `ROADMAPS.md`:
+  roadmap 12 ✅; Phase 3 rewritten to what ADR-0008 settled; open-questions
+  audit (Gateway API long since shipped; Q1/Q2/Q4 → roadmap 27).
+
+### Why
+Roadmap 12 was the last 🔶 Scout roadmap; Phase 3 as drafted could not work
+as specified, so the decision (and its correction) went through an ADR per
+ADD rather than shipping a mechanism that silently fails authentication.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-09-28 10:30] - Roadmap 26 applied: bindcar v0.8.2 + DNSZone nextKeyRollover (ADR-0006 amended)
 
 **Author:** Erick Bourgeois

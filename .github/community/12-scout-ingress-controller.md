@@ -1,6 +1,23 @@
 # Bindy Scout — Ingress-to-ARecord Controller
 
-> **Status:** 🔶 In progress — phases 1/1.5 shipped and phase 2 (`BINDY_SCOUT_REMOTE_SECRET`) is implemented in `src/scout.rs`. Scout has since grown past this doc's scope: it now runs 5 controllers (Ingress, Service, HTTPRoute, TLSRoute, TCPRoute). The doc understates what exists.
+> **Status:** ✅ Complete (2026-09-28). Phases 0–2 shipped earlier; Phase 3
+> closed via [ADR-0008](../../docs/adr/0008-scout-remote-endpoint-override.md)
+> — an endpoint + token-file remote mode (`BINDY_SCOUT_REMOTE_ENDPOINT` /
+> `_TOKEN_FILE` / `_CA_FILE`, fail-closed against the kubeconfig-Secret
+> mode). The ADR **supersedes this doc's Phase 3 wording**: Linkerd meshes
+> workloads, not the API server (mTLS requires a mirrored *meshed proxy*),
+> and the credential must be minted by the bindy cluster regardless of
+> transport (ADR-0002's credential direction) — a drone-local SA token was
+> never going to authenticate. Live Linkerd multicluster verification is
+> deferred to the two-cluster staging environment with the other
+> live-cluster checks.
+>
+> Scout long ago outgrew this doc's scope — 5 controllers today (Ingress,
+> Service, HTTPRoute, TLSRoute, TCPRoute), namespace whitelisting (roadmap
+> [13](13-scout-namespace-selectors.md)), zone authorization, stale-cluster
+> cleanup. Open-questions audit (2026-09-28): Q3 Gateway API **shipped**;
+> Q1 conflict detection, Q2 AAAARecord and Q4 Scout metrics moved to roadmap
+> [27](27-scout-followups.md).
 >
 > *Migrated 2026-09-10 from the external roadmap set. Status verified against `fix-idempotency` @ `648ff7a`.*
 
@@ -326,27 +343,40 @@ a Kubernetes Secret on the local cluster.
 
 ---
 
-## Phase 3 — Scout: Linkerd mTLS
+## Phase 3 — Scout: Remote endpoint mode (Linkerd-compatible)
 
-**Goal:** Replace the kubeconfig Secret with a Linkerd multicluster service mirror connection. The
-bindy cluster's Kubernetes API is exposed as a mirrored service in the workload cluster. Scout
-connects to this endpoint using its local ServiceAccount token, authenticated via Linkerd mTLS.
+**Goal (as revised by [ADR-0008](../../docs/adr/0008-scout-remote-endpoint-override.md)):**
+an endpoint + file-based-credential remote mode. The original goal ("local
+ServiceAccount token authenticated via Linkerd mTLS") was unsound — the API
+server is not meshed, and no trust federation makes a drone-local token valid
+on the bindy cluster — see the ADR's Context.
+
+**Status:** ✅ Complete (2026-09-28)
 
 ### Tasks
 
-- [ ] Research Linkerd multicluster service mirror API endpoint configuration
-- [ ] Update `RemoteClientBuilder` to support a `BINDY_SCOUT_REMOTE_ENDPOINT` override (skip
-  kubeconfig Secret; use endpoint + in-cluster token)
-- [ ] Add Linkerd mesh annotations to scout Deployment manifest
-- [ ] Verify mTLS policy enforces server identity (bindy cluster API server certificate)
-- [ ] Document Linkerd setup in `docs/src/scout/linkerd.md`
-- [ ] Update `.claude/CHANGELOG.md`
+- [x] ADR-0008: transport and authentication model settled
+- [x] `resolve_remote_transport` — fail-closed mode selection (endpoint vs.
+      kubeconfig Secret vs. same-cluster; ambiguous combinations are startup
+      errors)
+- [x] `build_remote_client_from_endpoint` — synthesized in-memory kubeconfig
+      through `Config::from_custom_kubeconfig`, inheriting kube-rs PEM
+      handling and token-file refresh
+- [x] CLI flags `--remote-endpoint` / `--remote-token-file` / `--remote-ca-file`
+- [x] Linkerd multicluster pattern documented in the Scout guide (meshed
+      proxy + mirrored Service + bindy-minted token file) — in
+      `docs/src/guide/scout.md`, not a separate `docs/src/scout/linkerd.md`
+- [ ] Live verification against a real Linkerd multicluster pair (two-cluster
+      staging environment; tracked with the other live-cluster checks)
+- [x] Update `.claude/CHANGELOG.md`
 
 ### New `BINDY_SCOUT_` env vars
 
 | Variable | Default | Description |
 |---|---|---|
-| `BINDY_SCOUT_REMOTE_ENDPOINT` | `""` | Override API server URL (Linkerd mirrored service). When set, `BINDY_SCOUT_REMOTE_SECRET` is not required |
+| `BINDY_SCOUT_REMOTE_ENDPOINT` | `""` | Bindy cluster API URL (Linkerd-mirrored meshed proxy, konnectivity, or direct). Requires the token file; mutually exclusive with `BINDY_SCOUT_REMOTE_SECRET` |
+| `BINDY_SCOUT_REMOTE_TOKEN_FILE` | `""` | Bearer-token file minted by the bindy cluster; re-read on rotation |
+| `BINDY_SCOUT_REMOTE_CA_FILE` | `""` | Endpoint CA bundle (PEM); unset means webpki public roots |
 
 ---
 

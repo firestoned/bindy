@@ -51,8 +51,8 @@ classDef highlight fill:#fdf7ec,stroke:#f0c060,stroke-width:1px,color:#000000;
 
     scout-a -->|watches Ingress / Service / HTTPRoute / TLSRoute| ingress-a
     scout-b -->|watches Ingress / Service / HTTPRoute / TLSRoute| ingress-b
-    scout-a -->|server-side-applies ARecord CRs via remote kubeconfig #40;per-cluster SA#41;| queen-api
-    scout-b -->|server-side-applies ARecord CRs via remote kubeconfig #40;per-cluster SA#41;| queen-api
+    scout-a -->|server-side-applies ARecord CRs via remote kubeconfig Secret or endpoint + token-file override #40;per-cluster SA minted by the queen cluster — ADR-0008#41;| queen-api
+    scout-b -->|server-side-applies ARecord CRs via remote kubeconfig Secret or endpoint + token-file override #40;per-cluster SA minted by the queen cluster — ADR-0008#41;| queen-api
     queen-api -->|persists fanned-in ARecords| arecords
     queen-operator -->|reconciles ARecords| arecords
     queen-operator -->|programs zones and records| queen-bind9

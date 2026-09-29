@@ -369,6 +369,9 @@ spec:
 | `--default-zone <ZONE>` | Default DNS zone applied to all Ingresses and Services when no `bindy.firestoned.io/zone` annotation is present (e.g. `example.com`). When combined with `--default-ips`, resources only need `bindy.firestoned.io/scout-enabled: "true"`. |
 | `--default-ips <IP[,IP]>` | Comma-separated default IP address(es) used when no per-resource `bindy.firestoned.io/ip` annotation or LoadBalancer status IP is available. Useful for shared-ingress topologies (e.g. Traefik). |
 | `--gateway-service <class=target>` | Repeatable. Maps a `gatewayClass` to the LoadBalancer Service whose external IP backs it, used to resolve an IP for HTTPRoute/TLSRoute/TCPRoute via their `parentRefs`. `target` is either `namespace/name` (e.g. `traefik=traefik/traefik`) or `namespace/<label-selector>` (e.g. `traefik=traefik/app.kubernetes.io/name=traefik`). Multi-label selectors (with commas) must use this flag rather than the env var. The configured classes double as the allow-list of gateways Scout will follow. |
+| `--remote-endpoint <URL>` | **(Phase 3, [ADR-0008](https://github.com/firestoned/bindy/blob/main/docs/adr/0008-scout-remote-endpoint-override.md))** Bindy cluster API URL for the endpoint remote mode: a Linkerd-mirrored meshed proxy, a konnectivity endpoint, or the API server directly. Requires `--remote-token-file`. Mutually exclusive with `BINDY_SCOUT_REMOTE_SECRET` (startup error if both are set). |
+| `--remote-token-file <PATH>` | **(Phase 3)** Path to a bearer-token file **minted by the Bindy cluster** (mounted Secret, CSI or external-secrets delivery). Re-read by kube-rs on rotation — no restart needed. |
+| `--remote-ca-file <PATH>` | **(Phase 3)** Path to the remote endpoint's CA bundle (PEM). Optional: when unset, webpki public roots are used. |
 | `--namespace-selector <SELECTOR>` | A Kubernetes label selector (e.g. `bindy.firestoned.io/scout-enabled=true`) restricting which namespaces Scout will act in — same syntax as `kubectl get ns -l <selector>`. A namespace must match this selector **and** the individual Ingress/Service/route object must still carry its own opt-in annotation; both gates apply. **Strongly recommended for every production deployment** — see [Namespace Whitelisting](#namespace-whitelisting-namespace-selector) below. |
 
 CLI flags take precedence over the corresponding environment variables.
@@ -387,8 +390,53 @@ CLI flags take precedence over the corresponding environment variables.
 | `BINDY_SCOUT_NAMESPACE_SELECTOR` | — (every namespace eligible) | Label selector restricting which namespaces Scout will act in. Overridden by `--namespace-selector`. **Unset means every namespace in the cluster is eligible — running without this set is not recommended for production.** See [Namespace Whitelisting](#namespace-whitelisting-namespace-selector). |
 | `BINDY_SCOUT_REMOTE_SECRET` | — | **(Phase 2)** Name of a Secret in the local cluster containing a `kubeconfig` key. When set, Scout targets the remote Bindy cluster for ARecord creation and zone validation. When unset, same-cluster mode is used. |
 | `BINDY_SCOUT_REMOTE_SECRET_NAMESPACE` | Scout's own namespace | **(Phase 2)** Namespace of the `BINDY_SCOUT_REMOTE_SECRET`. Defaults to Scout's own namespace (`POD_NAMESPACE`). |
+| `BINDY_SCOUT_REMOTE_ENDPOINT` | — | **(Phase 3, ADR-0008)** Bindy cluster API URL for the endpoint remote mode. Requires `BINDY_SCOUT_REMOTE_TOKEN_FILE`; mutually exclusive with `BINDY_SCOUT_REMOTE_SECRET`. Overridden by `--remote-endpoint`. |
+| `BINDY_SCOUT_REMOTE_TOKEN_FILE` | — | **(Phase 3)** Path to a bearer-token file minted by the Bindy cluster; re-read on rotation. Overridden by `--remote-token-file`. |
+| `BINDY_SCOUT_REMOTE_CA_FILE` | — | **(Phase 3)** Path to the endpoint's CA bundle (PEM); unset means webpki public roots. Overridden by `--remote-ca-file`. |
 | `RUST_LOG` | `info` | Log level: `trace`, `debug`, `info`, `warn`, `error`. |
 | `RUST_LOG_FORMAT` | `text` | Log format: `text` (compact, human-readable) or `json` (structured, for log aggregators). |
+
+### Remote endpoint mode and Linkerd multicluster (Phase 3)
+
+The kubeconfig Secret (Phase 2) bundles endpoint, CA and token into one blob.
+The endpoint mode ([ADR-0008](https://github.com/firestoned/bindy/blob/main/docs/adr/0008-scout-remote-endpoint-override.md))
+splits them: the endpoint and CA live in the Deployment spec, and the
+credential is a bare token **file** — rotatable without restarting Scout, and
+deliverable by external-secrets or a mounted Secret.
+
+```yaml
+env:
+  - name: BINDY_SCOUT_REMOTE_ENDPOINT
+    value: "https://bindy-api-mirror.linkerd-multicluster.svc.cluster.local:6443"
+  - name: BINDY_SCOUT_REMOTE_TOKEN_FILE
+    value: "/var/run/secrets/bindy-remote/token"
+  - name: BINDY_SCOUT_REMOTE_CA_FILE
+    value: "/var/run/secrets/bindy-remote/ca.crt"
+volumeMounts:
+  - name: bindy-remote-credentials
+    mountPath: /var/run/secrets/bindy-remote
+    readOnly: true
+volumes:
+  - name: bindy-remote-credentials
+    secret:
+      secretName: bindy-remote-token   # holds `token` + `ca.crt` keys
+```
+
+Two things Linkerd multicluster does **not** change:
+
+1. **The Kubernetes API server is not meshed** — it runs no sidecar. To get
+   Linkerd mTLS on the cross-cluster hop, mirror a *meshed proxy* in front of
+   the Bindy cluster's API (e.g. a small `kube-api-proxy` Deployment in the
+   mesh), and point `BINDY_SCOUT_REMOTE_ENDPOINT` at the mirrored Service.
+2. **Authentication is unchanged** — whatever the transport, the Bindy
+   cluster's API server must receive a credential *it* accepts. Use the same
+   scoped ServiceAccount from `deploy/scout/remote-cluster-rbac.yaml`
+   (`arecords` CRUD + `dnszones` read) and deliver its token to the workload
+   cluster as the token file. Per ADR-0002's credential-direction principle,
+   the credential always points **at** the Bindy cluster.
+
+Same-cluster mode, the kubeconfig Secret, and the endpoint mode are mutually
+exclusive; Scout fails closed at startup on ambiguous combinations.
 
 ### Full Deployment Example with All Variables
 
@@ -1179,9 +1227,11 @@ kubectl set env deployment/bindy-scout BINDY_SCOUT_CLUSTER_NAME=prod-b -n bindy-
 
 | Feature | Status | Roadmap |
 |---|---|---|
-| Same-cluster mode | ✅ Complete | [`bindy-scout-ingress-controller.md`](../../roadmaps/bindy-scout-ingress-controller.md) |
-| Finalizer on Ingress | ✅ Complete | [`bindy-scout-ingress-controller.md`](../../roadmaps/bindy-scout-ingress-controller.md) |
-| Remote cluster mode | ✅ Complete | [`bindy-scout-ingress-controller.md`](../../roadmaps/bindy-scout-ingress-controller.md) |
-| LoadBalancer Service → ARecord | ✅ Complete | [`scout-service-watching.md`](../../roadmaps/scout-service-watching.md) |
-| SRV records from Service ports and Ingress | 🔲 Planned | [`scout-srv-records.md`](../../roadmaps/scout-srv-records.md) |
-| Namespace inclusion/exclusion via label selectors | 🔲 Planned | [`scout-namespace-selectors.md`](../../roadmaps/scout-namespace-selectors.md) |
+| Same-cluster mode | ✅ Complete | [roadmap 12](https://github.com/firestoned/bindy/blob/main/.github/community/12-scout-ingress-controller.md) |
+| Finalizer on Ingress | ✅ Complete | [roadmap 12](https://github.com/firestoned/bindy/blob/main/.github/community/12-scout-ingress-controller.md) |
+| Remote cluster mode (kubeconfig Secret) | ✅ Complete | [roadmap 12](https://github.com/firestoned/bindy/blob/main/.github/community/12-scout-ingress-controller.md) |
+| Remote endpoint mode (token file; Linkerd-compatible) | ✅ Complete | [roadmap 12](https://github.com/firestoned/bindy/blob/main/.github/community/12-scout-ingress-controller.md), [ADR-0008](https://github.com/firestoned/bindy/blob/main/docs/adr/0008-scout-remote-endpoint-override.md) |
+| LoadBalancer Service → ARecord | ✅ Complete | [roadmap 12](https://github.com/firestoned/bindy/blob/main/.github/community/12-scout-ingress-controller.md) |
+| Namespace whitelisting via label selectors | ✅ Complete (`--namespace-selector`, #437); Namespace *watch* pending | [roadmap 13](https://github.com/firestoned/bindy/blob/main/.github/community/13-scout-namespace-selectors.md) |
+| SRV records from Service ports and Ingress | 🔲 Planned | [roadmap 14](https://github.com/firestoned/bindy/blob/main/.github/community/14-scout-srv-records.md) |
+| Scout metrics, conflict detection, AAAA | 🔲 Planned | [roadmap 27](https://github.com/firestoned/bindy/blob/main/.github/community/27-scout-followups.md) |

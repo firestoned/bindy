@@ -226,6 +226,20 @@ enum Commands {
         /// BINDY_SCOUT_NAMESPACE_SELECTOR environment variable.
         #[arg(long = "namespace-selector")]
         namespace_selector: Option<String>,
+        /// Bindy cluster API URL for the endpoint remote mode (ADR-0008): a
+        /// Linkerd-mirrored meshed proxy, a konnectivity endpoint, or the API
+        /// server itself. Requires --remote-token-file. Mutually exclusive with
+        /// BINDY_SCOUT_REMOTE_SECRET. Overrides BINDY_SCOUT_REMOTE_ENDPOINT.
+        #[arg(long = "remote-endpoint")]
+        remote_endpoint: Option<String>,
+        /// Path to a bearer-token file minted by the bindy cluster, re-read on
+        /// rotation. Overrides BINDY_SCOUT_REMOTE_TOKEN_FILE.
+        #[arg(long = "remote-token-file")]
+        remote_token_file: Option<String>,
+        /// Path to the remote endpoint's CA bundle (PEM). When unset, webpki
+        /// public roots are used. Overrides BINDY_SCOUT_REMOTE_CA_FILE.
+        #[arg(long = "remote-ca-file")]
+        remote_ca_file: Option<String>,
     },
     /// Output shell completion code for the specified shell
     Completion {
@@ -340,6 +354,9 @@ fn main() -> Result<()> {
             gateway_service,
             default_zone,
             namespace_selector,
+            remote_endpoint,
+            remote_token_file,
+            remote_ca_file,
         } => runtime.block_on(scout_command(
             cluster_name,
             namespace,
@@ -347,6 +364,11 @@ fn main() -> Result<()> {
             gateway_service,
             default_zone,
             namespace_selector,
+            bindy::scout::ScoutRemoteOverrides {
+                endpoint: remote_endpoint,
+                token_file: remote_token_file,
+                ca_file: remote_ca_file,
+            },
         )),
         Commands::Completion { .. } | Commands::Version => unreachable!("handled above"),
     }
@@ -1014,6 +1036,7 @@ async fn scout_command(
     gateway_service: Vec<String>,
     default_zone: Option<String>,
     namespace_selector: Option<String>,
+    remote: bindy::scout::ScoutRemoteOverrides,
 ) -> Result<()> {
     initialize_logging();
     info!("Starting Scout controller");
@@ -1024,6 +1047,7 @@ async fn scout_command(
         gateway_service,
         default_zone,
         namespace_selector,
+        remote,
     )
     .await
 }

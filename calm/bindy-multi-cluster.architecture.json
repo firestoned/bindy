@@ -126,7 +126,7 @@
     },
     {
       "unique-id": "scout-a-applies",
-      "description": "server-side-applies ARecord CRs via remote kubeconfig (per-cluster SA)",
+      "description": "server-side-applies ARecord CRs via remote kubeconfig Secret or endpoint + token-file override (per-cluster SA minted by the queen cluster — ADR-0008)",
       "protocol": "HTTPS",
       "relationship-type": {
         "connects": {
@@ -137,7 +137,7 @@
     },
     {
       "unique-id": "scout-b-applies",
-      "description": "server-side-applies ARecord CRs via remote kubeconfig (per-cluster SA)",
+      "description": "server-side-applies ARecord CRs via remote kubeconfig Secret or endpoint + token-file override (per-cluster SA minted by the queen cluster — ADR-0008)",
       "protocol": "HTTPS",
       "relationship-type": {
         "connects": {
