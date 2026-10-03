@@ -1013,6 +1013,75 @@ fn config_hash_of(deployment: &Deployment) -> Option<&str> {
         .map(String::as_str)
 }
 
+/// The bind9 container of a Deployment, if present.
+fn bind9_container(deployment: &Deployment) -> Option<&k8s_openapi::api::core::v1::Container> {
+    deployment
+        .spec
+        .as_ref()?
+        .template
+        .spec
+        .as_ref()?
+        .containers
+        .iter()
+        .find(|c| c.name == crate::constants::CONTAINER_NAME_BIND9)
+}
+
+/// Whether `desired` has a pod volume, or a bind9 volume mount, that
+/// `current` lacks. Compared by name and by (name, mountPath): the API server
+/// adds defaults to the stored object, so whole-value equality would report
+/// a change on every reconcile.
+pub(super) fn volumes_missing(current: &Deployment, desired: &Deployment) -> bool {
+    let volume_names = |d: &Deployment| -> std::collections::BTreeSet<String> {
+        d.spec
+            .as_ref()
+            .and_then(|s| s.template.spec.as_ref())
+            .and_then(|p| p.volumes.as_ref())
+            .map(|v| v.iter().map(|vol| vol.name.clone()).collect())
+            .unwrap_or_default()
+    };
+    let mounts = |d: &Deployment| -> std::collections::BTreeSet<(String, String)> {
+        bind9_container(d)
+            .and_then(|c| c.volume_mounts.as_ref())
+            .map(|m| {
+                m.iter()
+                    .map(|vm| (vm.name.clone(), vm.mount_path.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    !volume_names(desired).is_subset(&volume_names(current))
+        || !mounts(desired).is_subset(&mounts(current))
+}
+
+/// The pod `volumes` and bind9 `volumeMounts` patch fragments for `desired`,
+/// each a strategic-merge `$patch: replace` list, so a volume or mount bindy
+/// no longer renders is removed rather than left behind.
+///
+/// # Returns
+///
+/// `(volumes, bind9 volume mounts)`, either `null` when `desired` has none.
+fn build_volumes_patch(desired: &Deployment) -> (serde_json::Value, serde_json::Value) {
+    let replace_list = |items: Vec<serde_json::Value>| {
+        let mut list = vec![json!({"$patch": "replace"})];
+        list.extend(items);
+        json!(list)
+    };
+    let volumes = desired
+        .spec
+        .as_ref()
+        .and_then(|s| s.template.spec.as_ref())
+        .and_then(|p| p.volumes.as_ref())
+        .map_or(json!(null), |v| {
+            replace_list(v.iter().map(|vol| json!(vol)).collect())
+        });
+    let mounts = bind9_container(desired)
+        .and_then(|c| c.volume_mounts.as_ref())
+        .map_or(json!(null), |m| {
+            replace_list(m.iter().map(|vm| json!(vm)).collect())
+        });
+    (volumes, mounts)
+}
+
 /// Check if a deployment needs updating by comparing current and desired state.
 ///
 /// Returns true if any of the following have changed:
@@ -1030,6 +1099,13 @@ fn deployment_needs_update(current: &Deployment, desired: &Deployment) -> bool {
             debug!("BIND config hash changed: rolling the pods");
             return true;
         }
+    }
+
+    // A volume or bind9 mount bindy now renders (e.g. the DNSSEC key volume
+    // after signing was enabled) is missing from the running Deployment.
+    if volumes_missing(current, desired) {
+        debug!("Pod volumes or bind9 volume mounts changed");
+        return true;
     }
 
     // Compare desired replicas with current replicas
@@ -1233,10 +1309,14 @@ async fn create_or_update_deployment(
 
     let mut patch_containers = vec![];
 
-    // Add bind9 container name to preserve ordering (strategic merge needs this)
-    patch_containers.push(json!({
-        "name": crate::constants::CONTAINER_NAME_BIND9
-    }));
+    // bind9: name for ordering (strategic merge needs it) and its volume
+    // mounts, so a key volume added after creation reaches the container.
+    let (volumes_patch, bind9_mounts_patch) = build_volumes_patch(&deployment);
+    let mut bind9_patch = json!({ "name": crate::constants::CONTAINER_NAME_BIND9 });
+    if !bind9_mounts_patch.is_null() {
+        bind9_patch["volumeMounts"] = bind9_mounts_patch;
+    }
+    patch_containers.push(bind9_patch);
 
     // Add api container with only the fields we want to update
     if let Some(api) = api_container {
@@ -1292,6 +1372,11 @@ async fn create_or_update_deployment(
             }
         }
     });
+
+    // The pod's volumes, in the same Pod spec fragment as the scheduling fields.
+    if !volumes_patch.is_null() {
+        patch["spec"]["template"]["spec"]["volumes"] = volumes_patch;
+    }
 
     // Merge the scheduling fields into the same Pod spec fragment.
     if let Some(pod_spec) = patch["spec"]["template"]["spec"].as_object_mut() {
@@ -1513,6 +1598,13 @@ pub(super) async fn delete_resources(client: &Client, namespace: &str, name: &st
 /// whether a live Deployment gets a scheduling change and how that change is
 /// expressed as a patch, so they need direct coverage — but they are not part
 /// of the production API surface.
+#[cfg(test)]
+pub(super) fn build_volumes_patch_for_test(
+    desired: &Deployment,
+) -> (serde_json::Value, serde_json::Value) {
+    build_volumes_patch(desired)
+}
+
 #[cfg(test)]
 pub(super) fn deployment_needs_update_for_test(current: &Deployment, desired: &Deployment) -> bool {
     deployment_needs_update(current, desired)
