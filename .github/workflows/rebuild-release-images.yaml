@@ -13,8 +13,11 @@
 #
 # Notes:
 #   - Rebuilt images have NEW digests and are signed under THIS workflow's
-#     identity (rebuild-release-images.yaml). `make verify-image` uses a
-#     repo-wide identity regexp and still verifies. Deployments pinning the
+#     identity (rebuild-release-images.yaml on main). `make verify-image`
+#     accepts that identity alongside build.yaml at a release tag.
+#   - Rebuilt images carry BuildKit provenance and a Cosign signature, not
+#     the SLSA Build L3 provenance and SBOM attestations of a release
+#     (ADR-0010). They are recovery copies of releases older than v0.6.0. Deployments pinning the
 #     old digests were unrecoverable the moment the packages were deleted.
 #   - Alias tags (vX.Y) are re-pointed only per the `aliases` input mapping
 #     (newest patch of each minor). `v0`, `v0.6*`, and `latest` are never
@@ -107,6 +110,9 @@ jobs:
       - name: Build binary (x86_64)
         uses: firestoned/github-actions/rust/build-binary@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
         with:
+          # Virtual workspace root (ADR-0009): the action cannot infer the
+          # binary name from Cargo.toml, so name it.
+          binary-name: bindy
           target: x86_64-unknown-linux-gnu
 
       - name: Stage amd64 binary
@@ -124,6 +130,9 @@ jobs:
       - name: Build binary (aarch64)
         uses: firestoned/github-actions/rust/build-binary@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
         with:
+          # Virtual workspace root (ADR-0009): the action cannot infer the
+          # binary name from Cargo.toml, so name it.
+          binary-name: bindy
           target: aarch64-unknown-linux-gnu
 
       - name: Stage arm64 binary and verify both

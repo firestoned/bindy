@@ -6,13 +6,13 @@ description: Regenerate the CRD API reference (docs/src/reference/api.md) from R
 # regen-api-docs
 
 The API reference at `docs/src/reference/api.md` is generated from the CRD
-types in `src/crd.rs` by the `crddoc` binary. Regenerate it as the LAST step
+types in `crates/bindy-api/src/crd.rs` by the `crddoc` binary. Regenerate it as the LAST step
 of any CRD change, after `regen-crds`, example updates, and validation.
 
 ## Steps
 
 ```bash
-cargo run --bin crddoc > docs/src/reference/api.md
+cargo run -p bindy-api --features crdgen --bin crddoc > docs/src/reference/api.md
 ```
 
 ## Verification

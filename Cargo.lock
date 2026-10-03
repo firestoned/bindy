@@ -287,6 +287,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "bindcar",
+ "bindy-api",
  "chrono",
  "clap",
  "clap_complete",
@@ -304,7 +305,6 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "rustls-webpki",
- "schemars",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -317,6 +317,21 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "wiremock",
+]
+
+[[package]]
+name = "bindy-api"
+version = "0.7.1"
+dependencies = [
+ "hickory-proto",
+ "k8s-openapi",
+ "kube",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]

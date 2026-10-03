@@ -1,6 +1,6 @@
 # Security Scanning Implementation Roadmap
 
-> **Status:** 🔶 In progress — phases through 5 (license compliance) complete. `.github/workflows/` carries `security-scan.yaml`, `sbom.yml`, `license-scan.yaml`, `codeql.yml` and `scorecard.yml`.
+> **Status:** 🔶 In progress. Phases through 5 (license compliance) complete; phase 6 SBOM, signing and SLSA Build L3 provenance done 2026-10-03 (ADR-0010), VEX generation and Polaris open. `.github/workflows/` carries `security-scan.yaml`, `sbom.yml`, `license-scan.yaml`, `codeql.yml` and `scorecard.yml`.
 >
 > *Migrated 2026-09-10 from the external roadmap set. Status verified against `fix-idempotency` @ `648ff7a`.*
 
@@ -701,13 +701,24 @@ workflow_dispatch:
 ### Phase 6: Supply Chain Security (Week 6+)
 **Goal:** Implement SBOM generation, VEX documents, and image signing (Optional)
 
+**Status (2026-10-03):** 🔶 SBOM, signing, provenance and Grype done under
+[ADR-0010](../../docs/adr/0010-release-sbom-and-slsa-build-l3.md); VEX
+generation and Polaris open. The ADR replaced the planned approach in places
+(cargo-cyclonedx for binaries, keyless Cosign instead of a key pair), noted
+per item below.
+
 #### Tasks
-1. **Syft SBOM Generation**
-   - [ ] Install Syft: `brew install syft`
-   - [ ] Create Makefile target: `make syft-sbom`
-   - [ ] Generate SBOM in SPDX and CycloneDX formats
-   - [ ] Add SBOM generation to release workflow
-   - [ ] Store SBOMs as release artifacts
+1. **SBOM Generation** *(done 2026-10-03, ADR-0010; superseded the Syft-only plan)*
+   - [x] Binary SBOMs: cargo-cyclonedx 0.5.9, CycloneDX 1.5, one per release
+         platform (`build.yaml` `sbom` job via `rust/generate-sbom` v1.3.8);
+         image SBOMs: Syft by digest in `docker-release`
+   - [x] Makefile targets: `make sbom-generate`, `sbom-stage`, `sbom-annotate`,
+         `sbom-check` (NTIA minimum-elements gate, `scripts/sbom.sh`)
+   - [x] CycloneDX format (SPDX not generated: one format, attested, is the
+         contract; BuildKit's in-image SBOM attestation is SPDX)
+   - [x] Add SBOM generation to release workflow (and PR/main for Linux)
+   - [x] Store SBOMs as release artifacts: `bindy-<os>-<arch>.cdx.json`,
+         `bindy-image-<variant>.cdx.json`, plus signed SBOM attestations
 
 2. **VEX Document Generation**
    - [ ] Install vexctl: `go install github.com/openvex/vexctl@latest` or use Trivy VEX support
@@ -720,18 +731,21 @@ workflow_dispatch:
    - [ ] Create process for updating VEX documents when vulnerability status changes
 
 3. **Grype Scanning** (Alternative to Trivy)
-   - [ ] Install Grype: `brew install grype`
+   - [x] Scan generated SBOMs: scheduled `sbom.yml` runs `anchore/scan-action`
+         (SHA-pinned; replaced an unpinned `curl | sh` install), report-only
    - [ ] Create Makefile target: `make grype-scan`
-   - [ ] Scan generated SBOMs
    - [ ] Compare Grype vs Trivy results
 
-4. **Cosign Image Signing**
-   - [ ] Install Cosign: `brew install cosign`
-   - [ ] Generate signing key pair
-   - [ ] Create Makefile targets: `make cosign-sign`, `make cosign-verify`
-   - [ ] Add image signing to release workflow
-   - [ ] Document signature verification process
-   - [ ] Add signature verification to deployment process
+4. **Cosign Image Signing** *(keyless Sigstore instead of a key pair)*
+   - [x] Install Cosign: `make sign-verify-install`
+   - [x] ~~Generate signing key pair~~ Keyless signing with the workflow's OIDC identity; no key to manage
+   - [x] Makefile targets: `make sign-binary`, `make verify-binary`, `make verify-image`
+         (signer identity anchored to the release workflow, 2026-10-03)
+   - [x] Add image signing to release workflow (`docker-release`)
+   - [x] Document signature verification process (`docs/src/security/signed-releases.md`)
+   - [ ] Add signature verification to deployment process (Kyverno example documented; not enforced by default)
+   - [x] SLSA Build L3 provenance for tarballs, manifests, SBOMs and images,
+         `make verify-provenance` / `verify-image-provenance` (ADR-0010)
 
 5. **Polaris Best Practices**
    - [ ] Install Polaris: `brew install fairwindsops/tap/polaris`

@@ -365,7 +365,7 @@ When submitting a pull request for a new enhancement or feature, you MUST provid
 3. **Complete Documentation**
    - **Rustdoc**: All public functions, types, and modules MUST have comprehensive rustdoc comments
    - **User Documentation**: Feature documentation MUST be added to `/docs/src/features/`
-   - **API Documentation**: CRD changes MUST regenerate API docs (`cargo run --bin crddoc`)
+   - **API Documentation**: CRD changes MUST regenerate API docs (`cargo run -p bindy-api --features crdgen --bin crddoc`)
    - **Examples**: Working YAML examples MUST be added to `/examples/`
    - **Architecture Diagrams**: Complex features MUST include Mermaid diagrams showing flow
    - **Changelog**: Entry MUST be added to `CHANGELOG.md` with author attribution

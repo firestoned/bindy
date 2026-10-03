@@ -11,7 +11,7 @@
 ///
 /// ```rust,no_run
 /// # #[allow(deprecated)]
-/// use bindy::crd::{DNSZone, DNSZoneSpec, SOARecord};
+/// use bindy_api::crd::{DNSZone, DNSZoneSpec, SOARecord};
 ///
 /// let soa = SOARecord {
 ///     primary_ns: "ns1.example.com.".to_string(),
@@ -39,7 +39,7 @@
 /// ## Creating DNS Records
 ///
 /// ```rust,no_run
-/// use bindy::crd::{ARecordSpec, MXRecordSpec, TXTRecordSpec};
+/// use bindy_api::crd::{ARecordSpec, MXRecordSpec, TXTRecordSpec};
 ///
 /// // A Record
 /// let a_record = ARecordSpec {

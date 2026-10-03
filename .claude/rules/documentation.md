@@ -24,17 +24,17 @@ Applies to: code changes, CRD changes, API changes, configuration changes, archi
 
 ## What to Update by Change Type
 
-**Controller/reconciler changes** (`src/reconcilers/`):
+**Controller/reconciler changes** (`crates/bindy/src/reconcilers/`):
 - Update reconciliation flow diagrams
 - Document new behaviors in user guides
 - Update troubleshooting guides
 
-**CRD changes** (`src/crd.rs`):
+**CRD changes** (`crates/bindy-api/src/crd.rs`):
 - Run `regen-crds` skill → update `examples/` → run `regen-api-docs` skill (LAST)
 - Update ALL examples that use the changed CRD
 - Update quickstart guides and configuration reference
 
-**Core logic changes** (`src/bind9.rs`, etc.):
+**Core logic changes** (`crates/bindy/src/bind9.rs`, etc.):
 - Update architecture docs
 - Add examples for new public functions
 - Update troubleshooting guides
@@ -49,7 +49,7 @@ Applies to: code changes, CRD changes, API changes, configuration changes, archi
 
 ## Documentation Examples Must Reference CRDs
 
-ALWAYS verify field names against `deploy/operator/crds/*.crd.yaml` or `src/crd.rs` before writing examples. NEVER guess field names.
+ALWAYS verify field names against `deploy/operator/crds/*.crd.yaml` or `crates/bindy-api/src/crd.rs` before writing examples. NEVER guess field names.
 
 ```yaml
 # ❌ WRONG - guessed field name

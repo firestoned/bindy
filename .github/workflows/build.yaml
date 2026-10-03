@@ -72,7 +72,7 @@ jobs:
         with:
           filters: |
             code:
-              - 'src/**'
+              - 'crates/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
             calm:
@@ -276,7 +276,12 @@ jobs:
       - name: Build binary
         uses: firestoned/github-actions/rust/build-binary@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
         with:
+          # Virtual workspace root (ADR-0009): the action cannot infer the
+          # binary name from Cargo.toml, so name it.
+          binary-name: bindy
           target: ${{ matrix.platform.target }}
+          # Build exactly the reviewed Cargo.lock (ADR-0010).
+          extra-args: --locked
 
       # Run tests in the SAME workspace, profile, and target as the release
       # build above — every dependency rlib is reused, so only the test
@@ -289,20 +294,57 @@ jobs:
           matrix.platform.target == 'x86_64-unknown-linux-gnu' &&
           github.event_name != 'push' &&
           github.event_name != 'release'
-        run: cargo test --release --target ${{ matrix.platform.target }}
+        run: cargo test --locked --release --target ${{ matrix.platform.target }}
 
-      - name: Generate SBOM
-        uses: firestoned/github-actions/rust/generate-sbom@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
-        with:
-          target: ${{ matrix.platform.target }}
-
-      - name: Upload binary and SBOM artifacts
+      # SBOMs are generated in the `sbom` job (one per shipped binary).
+      - name: Upload binary artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.platform.artifact_name }}
-          path: |
-            target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}
-            target/${{ matrix.platform.target }}/release/*.cdx.json
+          path: target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}
+          retention-days: ${{ github.event_name == 'release' && 90 || 1 }}
+          if-no-files-found: error
+
+  # ── SBOM per shipped binary (ADR-0010) ─────────────────────────────────────
+  # cargo-cyclonedx resolves the dependency tree for a target triple from
+  # Cargo metadata alone, so every platform's SBOM is generated on Linux.
+  # PRs and main get the two Linux SBOMs; releases get all five.
+  sbom:
+    name: SBOM - ${{ matrix.platform.name }}
+    runs-on: ubuntu-latest
+    needs: [extract-version]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(github.event_name == 'release' && '[{"name":"Linux x86_64","target":"x86_64-unknown-linux-gnu","artifact_name":"bindy-linux-amd64"},{"name":"Linux ARM64","target":"aarch64-unknown-linux-gnu","artifact_name":"bindy-linux-arm64"},{"name":"macOS x86_64","target":"x86_64-apple-darwin","artifact_name":"bindy-macos-amd64"},{"name":"macOS ARM64","target":"aarch64-apple-darwin","artifact_name":"bindy-macos-arm64"},{"name":"Windows x86_64","target":"x86_64-pc-windows-msvc","artifact_name":"bindy-windows-amd64"}]' || '[{"name":"Linux x86_64","target":"x86_64-unknown-linux-gnu","artifact_name":"bindy-linux-amd64"},{"name":"Linux ARM64","target":"aarch64-unknown-linux-gnu","artifact_name":"bindy-linux-arm64"}]') }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # The SBOM's root component version must be the released version.
+      - name: Update Cargo.toml version (release)
+        if: github.event_name == 'release'
+        shell: bash
+        run: |
+          perl -i -pe 's/^version = ".*"/version = "${{ needs.extract-version.outputs.version }}"/' Cargo.toml
+          grep '^version = ' Cargo.toml
+
+      - name: Generate SBOM
+        uses: firestoned/github-actions/rust/generate-sbom@787be16a6bed7e6c2297683bb75bc9b5f1a54397 # v1.3.8
+        with:
+          package: bindy
+          target: ${{ matrix.platform.target }}
+          spec-version: '1.5'
+          cyclonedx-version: '0.5.9'
+
+      - name: Stage, annotate and gate the SBOM
+        run: make sbom-stage SBOM_NAME=${{ matrix.platform.artifact_name }}
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: sbom-${{ matrix.platform.artifact_name }}
+          path: sbom/${{ matrix.platform.artifact_name }}.cdx.json
           retention-days: ${{ github.event_name == 'release' && 90 || 1 }}
           if-no-files-found: error
 
@@ -357,7 +399,7 @@ jobs:
 
       - name: Build binary
         shell: bash
-        run: cargo build --release --target ${{ matrix.platform.target }}
+        run: cargo build --locked --release --target ${{ matrix.platform.target }}
 
       - name: Upload binary artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -611,7 +653,7 @@ jobs:
   ci-gate:
     name: PR Checks Passed
     runs-on: ubuntu-latest
-    needs: [changes, calm-validate, license-check, verify-commits, format, clippy, build, docker, security, vex-validate, trivy]
+    needs: [changes, calm-validate, license-check, verify-commits, format, clippy, build, sbom, docker, security, vex-validate, trivy]
     if: always()
     steps:
       - name: Fail if any required PR check failed or was cancelled
@@ -631,18 +673,21 @@ jobs:
     permissions:
       contents: write
       packages: write
-      id-token: write  # For keyless signing with Cosign
+      id-token: write      # keyless Cosign signing and SBOM attestation
+      attestations: write  # SBOM attestation (ADR-0010)
     strategy:
       fail-fast: false
       matrix:
         variant:
           - name: Chainguard
+            slug: chainguard
             dockerfile: docker/Dockerfile.chainguard
             suffix: ""
             description: "Firestoned bindy Chainguard Zero-CVE"
             image-tag: ${{ needs.extract-version.outputs.image-tag-chainguard }}
             image-repository: ${{ needs.extract-version.outputs.image-repository-chainguard }}
           - name: Distroless
+            slug: distroless
             dockerfile: docker/Dockerfile
             suffix: "-distroless"
             description: "Firestoned bindy Distroless"
@@ -706,26 +751,111 @@ jobs:
           registry: ghcr.io
           repository: ${{ matrix.variant.image-repository }}
 
-      - name: Generate Docker SBOM for ${{ matrix.variant.name }}
+      # SBOM of the exact pushed image (by digest, never a mutable tag). Our
+      # own steps name and ship it; the action's automatic artifact and
+      # release-asset uploads are off so each SBOM ships exactly once.
+      - name: Generate image SBOM for ${{ matrix.variant.name }}
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
-          image: ghcr.io/${{ matrix.variant.image-repository }}:${{ matrix.variant.image-tag }}
+          image: ghcr.io/${{ matrix.variant.image-repository }}@${{ steps.docker_build.outputs.digest }}
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
           format: cyclonedx-json
-          output-file: docker-sbom-${{ matrix.variant.name }}.json
+          output-file: sbom/bindy-image-${{ matrix.variant.slug }}.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
 
-      - name: Upload Docker SBOM as artifact
+      - name: Annotate image SBOM
+        run: make sbom-annotate SBOM=sbom/bindy-image-${{ matrix.variant.slug }}.cdx.json
+
+      - name: Gate image SBOM
+        run: make sbom-check SBOM=sbom/bindy-image-${{ matrix.variant.slug }}.cdx.json
+
+      - name: Attest image SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-name: ghcr.io/${{ matrix.variant.image-repository }}
+          subject-digest: ${{ steps.docker_build.outputs.digest }}
+          sbom-path: sbom/bindy-image-${{ matrix.variant.slug }}.cdx.json
+          push-to-registry: true
+
+      - name: Upload image SBOM artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: docker-sbom-${{ matrix.variant.name }}
-          path: docker-sbom-${{ matrix.variant.name }}.json
+          name: sbom-image-${{ matrix.variant.slug }}
+          path: sbom/bindy-image-${{ matrix.variant.slug }}.cdx.json
+          if-no-files-found: error
+
+      # Feeds the SLSA container provenance job (one record per variant).
+      - name: Record image digest
+        run: >-
+          make image-digest-record
+          IMAGE=ghcr.io/${{ matrix.variant.image-repository }}
+          DIGEST=${{ steps.docker_build.outputs.digest }}
+          OUT=image-digest-${{ matrix.variant.slug }}.json
+
+      - name: Upload image digest record
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: image-digest-${{ matrix.variant.slug }}
+          path: image-digest-${{ matrix.variant.slug }}.json
+          if-no-files-found: error
+
+  # Collect the per-variant digest records into a matrix for the provenance job.
+  image-digests:
+    name: Collect Image Digests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    needs: [docker-release]
+    outputs:
+      images: ${{ steps.collect.outputs.images }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Download image digest records
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: image-digest-*
+          path: ./digests
+          merge-multiple: true
+
+      - name: Build provenance matrix
+        id: collect
+        run: echo "images=$(make -s image-digests-matrix DIR=digests)" >> "$GITHUB_OUTPUT"
+
+  # SLSA Build L3 provenance for each pushed image (ADR-0010). The generator
+  # runs as an isolated reusable workflow and pushes the signed provenance to
+  # GHCR next to the image. Referenced by tag: slsa-verifier checks it.
+  slsa-image-provenance:
+    name: SLSA Image Provenance
+    if: github.event_name == 'release'
+    needs: [image-digests]
+    permissions:
+      actions: read
+      id-token: write
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.image-digests.outputs.images) }}
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0
+    with:
+      image: ${{ matrix.image }}
+      digest: ${{ matrix.digest }}
+      registry-username: ${{ github.actor }}
+    secrets:
+      registry-password: ${{ secrets.GITHUB_TOKEN }}
 
   sign-artifacts:
     name: Sign Binary Artifacts
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
-    needs: [build, build-extras, extract-version]
+    needs: [build, build-extras, sbom, extract-version]
     permissions:
-      id-token: write  # For keyless signing with Cosign
+      contents: read
+      id-token: write      # keyless Cosign signing and SBOM attestation
+      attestations: write  # SBOM attestation (ADR-0010)
     strategy:
       fail-fast: false
       matrix:
@@ -774,6 +904,19 @@ jobs:
         with:
           artifact-path: artifacts/${{ matrix.platform.artifact_name }}/${{ matrix.platform.artifact_name }}.tar.gz
 
+      - name: Download binary SBOM
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: sbom-${{ matrix.platform.artifact_name }}
+          path: ./sbom
+
+      # Bind the SBOM to the exact tarball users download.
+      - name: Attest binary SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: artifacts/${{ matrix.platform.artifact_name }}/${{ matrix.platform.artifact_name }}.tar.gz
+          sbom-path: sbom/${{ matrix.platform.artifact_name }}.cdx.json
+
       - name: Upload signed artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -786,25 +929,40 @@ jobs:
     name: Generate SLSA Provenance Subjects
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
-    needs: [sign-artifacts, extract-version]
+    # Subjects are every built release file: tarballs, install manifests and
+    # SBOMs (ADR-0010). Signature bundles are signatures, not subjects.
+    needs: [sign-artifacts, sbom, docker-release, package-deploy-manifests, extract-version]
     outputs:
       hashes: ${{ steps.hash.outputs.hashes }}
     steps:
-      - name: Download signed artifacts
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Download signed tarballs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: bindy-*-signed
-          path: ./artifacts
+          path: ./subjects
           merge-multiple: true
+
+      - name: Download SBOMs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: sbom-*
+          path: ./subjects
+          merge-multiple: true
+
+      - name: Download deploy manifests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: deploy-manifests
+          path: ./subjects
 
       - name: Generate hashes for SLSA provenance
         id: hash
         run: |
-          cd artifacts
-          # Generate SHA256 hashes for all signed tarballs
-          sha256sum *.tar.gz > checksums.txt
-          cat checksums.txt
-          echo "hashes=$(cat checksums.txt | base64 -w0)" >> "$GITHUB_OUTPUT"
+          make provenance-subjects DIR=subjects OUT=subjects.b64
+          echo "hashes=$(cat subjects.b64)" >> "$GITHUB_OUTPUT"
 
   slsa-provenance:
     name: Generate SLSA Provenance
@@ -859,7 +1017,7 @@ jobs:
     name: Upload Release Assets
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
-    needs: [build, build-extras, docker-release, sign-artifacts, slsa-provenance, package-deploy-manifests, vex-validate]
+    needs: [build, build-extras, sbom, docker-release, sign-artifacts, slsa-provenance, slsa-image-provenance, package-deploy-manifests, vex-validate]
     permissions:
       contents: write
     steps:
@@ -905,22 +1063,10 @@ jobs:
             fi
           done
 
-          # Collect all SBOM files (using default cargo-cyclonedx naming, Linux builds only)
-          for dir in bindy-linux-amd64 bindy-linux-arm64 bindy-macos-amd64 bindy-macos-arm64 bindy-windows-amd64; do
-            if [ -d "$dir" ]; then
-              # Find any .cdx.json files (cargo-cyclonedx default naming)
-              if compgen -G "$dir/*.cdx.json" > /dev/null; then
-                cp "$dir"/*.cdx.json "sboms/${dir}-sbom.json"
-              fi
-            fi
-          done
-
-          # Copy Docker SBOMs for both variants
-          for variant in Chainguard Distroless; do
-            if [ -d "docker-sbom-${variant}" ] && [ -f "docker-sbom-${variant}/docker-sbom-${variant}.json" ]; then
-              cp "docker-sbom-${variant}/docker-sbom-${variant}.json" "sboms/docker-sbom-${variant}.json"
-            fi
-          done
+          # SBOMs: bindy-<os>-<arch>.cdx.json (one per binary) and
+          # bindy-image-<variant>.cdx.json (one per image), already gated and
+          # attested (ADR-0010). Shipped byte-for-byte as attested.
+          cp sbom-*/*.cdx.json sboms/
 
           # Copy SLSA provenance (generated by slsa-github-generator)
           # The SLSA generator creates a directory named after the provenance file
@@ -948,7 +1094,7 @@ jobs:
             sha256sum admission-policies.yaml >> checksums.sha256
           fi
           cd ../sboms
-          sha256sum *.json >> ../release/checksums.sha256
+          sha256sum *.cdx.json >> ../release/checksums.sha256
           cd ../signatures
           sha256sum *.bundle >> ../release/checksums.sha256
           cd ../provenance
@@ -975,7 +1121,7 @@ jobs:
             artifacts/release/install.yaml
             artifacts/release/scout.yaml
             artifacts/release/admission-policies.yaml
-            artifacts/sboms/*.json
+            artifacts/sboms/*.cdx.json
             artifacts/vex/*.openvex.json
             artifacts/signatures/*.bundle
             artifacts/provenance/*.intoto.jsonl

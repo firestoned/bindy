@@ -31,7 +31,7 @@
 //! # Example: Creating a DNS Zone
 //!
 //! ```rust,no_run,ignore
-//! use bindy::crd::{DNSZoneSpec, SOARecord};
+//! use bindy_api::crd::{DNSZoneSpec, SOARecord};
 //!
 //! let soa = SOARecord {
 //!     primary_ns: "ns1.example.com.".to_string(),
@@ -57,7 +57,7 @@
 //! # Example: Creating DNS Records
 //!
 //! ```rust,no_run
-//! use bindy::crd::{ARecordSpec, MXRecordSpec};
+//! use bindy_api::crd::{ARecordSpec, MXRecordSpec};
 //!
 //! // A Record for www.example.com
 //! let a_record = ARecordSpec {
@@ -90,7 +90,7 @@ use std::collections::{BTreeMap, HashMap};
 /// # Example
 ///
 /// ```rust,ignore
-/// use bindy::crd::DNSRecordKind;
+/// use bindy_api::crd::DNSRecordKind;
 ///
 /// // Parse from string (fallible — unknown kinds return Err instead of panicking)
 /// let kind = DNSRecordKind::try_from("ARecord").unwrap();
@@ -127,7 +127,7 @@ impl DNSRecordKind {
     /// # Example
     ///
     /// ```rust,ignore
-    /// use bindy::crd::DNSRecordKind;
+    /// use bindy_api::crd::DNSRecordKind;
     ///
     /// assert_eq!(DNSRecordKind::A.as_str(), "ARecord");
     /// assert_eq!(DNSRecordKind::MX.as_str(), "MXRecord");
@@ -154,7 +154,7 @@ impl DNSRecordKind {
     /// # Example
     ///
     /// ```rust,ignore
-    /// use bindy::crd::DNSRecordKind;
+    /// use bindy_api::crd::DNSRecordKind;
     ///
     /// for kind in DNSRecordKind::all() {
     ///     println!("Record type: {}", kind.as_str());
@@ -183,7 +183,7 @@ impl DNSRecordKind {
     /// # Example
     ///
     /// ```rust,ignore
-    /// use bindy::crd::DNSRecordKind;
+    /// use bindy_api::crd::DNSRecordKind;
     /// use hickory_proto::rr::RecordType;
     ///
     /// let kind = DNSRecordKind::A;
@@ -376,7 +376,7 @@ impl LabelSelector {
     ///
     /// ```rust
     /// use std::collections::BTreeMap;
-    /// use bindy::crd::LabelSelector;
+    /// use bindy_api::crd::LabelSelector;
     ///
     /// let selector = LabelSelector {
     ///     match_labels: Some(BTreeMap::from([
@@ -475,7 +475,7 @@ impl LabelSelectorRequirement {
 /// # Example
 ///
 /// ```rust
-/// use bindy::crd::SOARecord;
+/// use bindy_api::crd::SOARecord;
 ///
 /// let soa = SOARecord {
 ///     primary_ns: "ns1.example.com.".to_string(),
@@ -3625,7 +3625,7 @@ impl ServerRole {
     /// # Examples
     ///
     /// ```
-    /// use bindy::crd::ServerRole;
+    /// use bindy_api::crd::ServerRole;
     ///
     /// assert_eq!(ServerRole::Primary.as_str(), "primary");
     /// assert_eq!(ServerRole::Secondary.as_str(), "secondary");

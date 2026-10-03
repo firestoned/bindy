@@ -17,8 +17,8 @@
 //!
 //! ```rust,no_run
 //! use std::collections::BTreeMap;
-//! use bindy::crd::LabelSelector;
-//! use bindy::selector::matches_selector;
+//! use bindy_api::crd::LabelSelector;
+//! use bindy_api::selector::matches_selector;
 //!
 //! # fn example() {
 //! let mut labels = BTreeMap::new();
@@ -57,8 +57,8 @@ use std::collections::BTreeMap;
 /// # Examples
 /// ```
 /// use std::collections::BTreeMap;
-/// use bindy::crd::LabelSelector;
-/// use bindy::selector::matches_selector;
+/// use bindy_api::crd::LabelSelector;
+/// use bindy_api::selector::matches_selector;
 ///
 /// let mut labels = BTreeMap::new();
 /// labels.insert("app".to_string(), "web".to_string());

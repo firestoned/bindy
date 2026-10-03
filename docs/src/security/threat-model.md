@@ -1,11 +1,29 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.6
-**Last Updated:** 2026-09-28
+**Version:** 1.7
+**Last Updated:** 2026-10-03
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
 
-> Last full pass 2026-09-28, against ADR-0001 … ADR-0008 (ADR-0006 as amended).
+> Last full pass 2026-10-03, against ADR-0001 … ADR-0010 (ADR-0006 as amended;
+> ADR-0009 at Phase A: build layout only, no runtime change).
+>
+> **Revision note (v1.7):** Pass for ADR-0010 (release SBOMs and SLSA Build
+> L3) and ADR-0009 Phase A. Supply-chain rows re-checked against the release
+> workflow and the GitHub rulesets rather than the previous text, which had
+> drifted. New mitigations **M-33** (SLSA Build L3 provenance for every
+> release artifact, images included), **M-34** (NTIA-gated SBOMs attested to
+> their artifact's digest) and **M-35** (anchored signer identity in every
+> verification path); **M-09** corrected (binary SBOMs had never reached a
+> release). **S3 corrected:** the rulesets require signed commits, PRs and
+> status checks but **0 approving reviews**, and org admins can bypass them;
+> "2+ reviewers required" was not true. Recorded as residual risk with a new
+> planned mitigation **M-36**. T2 and **M-15** updated: release
+> `install.yaml`/`scout.yaml` pin the operator image by digest (P2-8);
+> operand images remain tag-referenced. ADR-0009 Phase A moves source into a
+> Cargo workspace with no change to the binary, its RBAC or its runtime
+> behaviour. No new components, actors, assets or trust boundaries; all
+> other sections re-walked unchanged.
 >
 > **Revision note (v1.6):** Pass for ADR-0008 (Scout remote endpoint mode).
 > New mitigation **M-32**: the endpoint + token-file transport is a
@@ -458,13 +476,18 @@ act against a remote cluster.
 3. Attempts to merge to main without proper review
 
 **Mitigations:**
-- ✅ All commits MUST be signed (GPG/SSH)
-- ✅ GitHub branch protection requires signed commits
-- ✅ CI/CD verifies commit signatures
-- ✅ 2+ reviewers required for all PRs
+- ✅ All commits MUST be signed (GPG/SSH): `required_signatures` ruleset on `main`
+- ✅ CI/CD verifies commit signatures ("Verify Signed Commits" is a required check)
+- ✅ Changes reach `main` only through PRs; force pushes and deletion blocked
 - ✅ Linear history (no merge commits)
+- ❌ **No required approving reviews**: the rulesets require 0 approvals and there
+  is no `CODEOWNERS` file, so a PR author can merge their own change once checks
+  pass (corrected 2026-10-03; earlier revisions claimed 2+ reviewers). See M-36.
+- ⚠️ Organization admins can bypass the `main` rulesets
 
-**Residual Risk:** VERY LOW (strong controls in place)
+**Residual Risk:** LOW-MEDIUM (a stolen account with a valid signing key can
+land a change with no second person in the loop; signatures make it
+attributable, not prevented)
 
 ---
 
@@ -510,14 +533,19 @@ requires DS publication in the parent zone; unsigned zones keep the prior risk)
 3. Operator pulls compromised image on next rollout
 
 **Mitigations:**
-- ✅ All images signed with provenance attestation (SLSA Level 2)
-- ✅ SBOM generated for all releases
+- ✅ Release images Cosign-signed, with SLSA Build L3 provenance and an SBOM
+  attestation bound to the image digest (M-33, M-34; ADR-0010)
+- ✅ Verification anchors on the release workflow identity, so a fork's or a
+  lookalike repository's signature does not pass (M-35)
 - ✅ GitHub Actions signed commits verification
 - ✅ Multi-stage builds minimize attack surface
-- ❌ **MISSING**: Image digests pinned (not tags) - see M-1
-- ❌ **MISSING**: Admission operator to verify image signatures (e.g., Sigstore Cosign)
+- ⚠️ **PARTIAL**: Release `install.yaml` and `scout.yaml` pin the operator image
+  by digest (P2-8); operand images (BIND9, bindcar) are still tag-referenced (M-15)
+- ❌ **MISSING**: Admission-time signature verification (VAP 15 restricts image
+  sources but cannot check signatures; the Kyverno example in Signed Releases does)
 
-**Residual Risk:** LOW (strong supply chain controls, but pinning digests would further reduce risk)
+**Residual Risk:** LOW (a replaced tag fails provenance and signature
+verification, but nothing enforces that verification at admission by default)
 
 ---
 
@@ -543,7 +571,7 @@ requires DS publication in the parent zone; unsigned zones keep the prior risk)
   compromised operator can no longer create/modify/delete Secrets in other
   namespaces such as `kube-system`.
 - ❌ **MISSING**: Immutable ConfigMaps — `build_configmap` / `build_cluster_configmap`
-  (`src/bind9_resources.rs`) do not set `immutable: true`, so a generated ConfigMap can
+  (`crates/bindy/src/bind9_resources.rs`) do not set `immutable: true`, so a generated ConfigMap can
   be edited in place by anyone holding namespace write access (audit finding P2-2)
 - ❌ **MISSING**: ConfigMap/Secret integrity checks (hash validation)
 - ❌ **MISSING**: Automated drift detection (compare running config vs desired state)
@@ -662,7 +690,7 @@ exists to constrain that further)
 - ✅ GitHub secret scanning enabled
 - ✅ CI/CD fails if secrets detected
 - ✅ Log sanitization — RNDC keys and bindcar bearer tokens are redacted in their
-  `Debug` impls (`src/bind9/types.rs`, `src/bind9/mod.rs`), so a key cannot reach a log
+  `Debug` impls (`crates/bindy/src/bind9/types.rs`, `crates/bindy/src/bind9/mod.rs`), so a key cannot reach a log
   line through structured logging
 - ⚠️ **PARTIAL**: RNDC key rotation is a **documented manual procedure**
   (`docs/src/security/incident-response.md`), not an automated policy. There is no
@@ -1087,8 +1115,9 @@ and risk profile below are unchanged.
 
 **Mitigations:**
 - Signed commits (all code changes)
-- Signed container images (provenance)
-- SBOM generation
+- Release images Cosign-signed with SLSA Build L3 provenance (M-33)
+- Signed SBOM attestation per image, bound to its digest (M-34)
+- Base images pinned by multi-arch digest; release manifests pin the operator image by digest
 - Vulnerability scanning (Trivy)
 - Chainguard zero-CVE base images
 - Dependabot for dependency updates
@@ -1246,11 +1275,11 @@ see T4, [Trust Boundary 6](#boundary-6-scout-controller))
 - Backdoor access to cluster
 
 **Mitigations:**
-- Dependency scanning (cargo-audit) - C-3
-- SBOM generation (track all dependencies)
+- Dependency scanning (cargo-audit) - C-3; `cargo-deny` source and ban policy
+- Per-binary SBOM listing the full Rust dependency tree, signed and bound to the tarball (M-34)
 - Signed commits (code changes traceable)
-- Dependency version pinning in `Cargo.lock`
-- Manual review for major dependency updates
+- Dependency version pinning in `Cargo.lock`, enforced in release builds with `--locked`
+- Manual review for major dependency updates (not enforced by the rulesets; see S3)
 
 **Residual Risk:** LOW (strong supply chain controls)
 
@@ -1366,15 +1395,18 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-06 | Secrets encrypted at rest | I1 (RNDC key disclosure) | ✅ Kubernetes |
 | M-07 | AXFR restricted to secondaries | I2 (zone enumeration) | ✅ BIND9 config |
 | M-08 | Rate limiting (BIND9) | D1 (DNS query flood) | ✅ BIND9 config |
-| M-09 | SBOM generation | T2 (supply chain) | ✅ SLSA Level 2 |
+| M-09 | **SBOM generation** (corrected 2026-10-03): CycloneDX SBOM for every release binary (5 platforms, cargo-cyclonedx, spec 1.5) and image (Syft, by digest). Before ADR-0010 the binary SBOMs never reached a release | T2 (supply chain), Scenario 3 | ✅ `build.yaml` `sbom` job, `docker-release` |
+| M-33 | **SLSA v1.0 Build L3 provenance** (2026-10-03, ADR-0010): `slsa-github-generator` generic generator over every release tarball, install manifest and SBOM, and its container generator for each release image (pushed to GHCR). Provenance is generated and signed outside the build jobs | T2, Scenario 3 (forged or substituted artifacts) | ✅ `build.yaml` `slsa-provenance`, `slsa-image-provenance`; `make verify-provenance`, `make verify-image-provenance` |
+| M-34 | **SBOM quality gate and attestation** (2026-10-03, ADR-0010): `scripts/sbom.sh check` fails the build unless an SBOM meets the NTIA minimum elements; each SBOM is a Sigstore-signed `actions/attest-sbom` attestation bound to its tarball or image digest | T2 (SBOM swapped or edited), Scenario 3 | ✅ `make sbom-check`, `make verify-sbom-attestation` |
+| M-35 | **Anchored signer identity** (2026-10-03): verification targets and docs accept only `build.yaml@refs/tags/*` (and `release.yaml` for releases before v0.6.0, `rebuild-release-images.yaml@refs/heads/main` for rebuilt images), not a `https://github.com/firestoned/bindy` prefix that a lookalike repository would also match | T2 (spoofed signer) | ✅ `Makefile` `SIGNER_IDENTITY_REGEXP` |
 | M-10 | Chainguard zero-CVE images | I3 (CVE disclosure) | ✅ Container security |
 | M-21 | **B-5 Secret RBAC split** (2026-06-30): operator's cluster-wide `ClusterRole` is read-only on Secrets; mutating verbs moved to a namespaced Role bound only in the operator's own namespace | T3 (Secret tampering), E2 (privilege escalation) | ✅ RBAC |
 | M-22 | **Namespace-scoped operator mode** (opt-in via `BINDY_WATCH_NAMESPACES`): every watch is built per-namespace and the operator needs only Role/RoleBinding in each watched namespace | E2, R2, I1 | ✅ **Implemented** (opt-in; default remains cluster-wide). Eliminates cluster-wide Secret read (H3) and cluster-wide workload write (C2) — verified with `kubectl auth can-i`. A slim ClusterRole remains for `clusterbind9providers`, the only cluster-scoped bindy kind, so this does **not** eliminate cluster-wide access *entirely*. See `deploy/operator/rbac/namespaced/README.md` |
 | M-23 | **Unprivileged DNS port + capability drop**: BIND9 operand binds container port 5353 (Service still exposes 53) and adds zero Linux capabilities (`NET_BIND_SERVICE` removed) | E1 (container escape) | ✅ Pod Security |
 | M-24 | **ValidatingAdmissionPolicy suite** (8 policies + 8 bindings = 16 manifests, as of 2026-07-01): ACL syntax, zone-name validation, RNDC strictness, operand pod shape, DNSSEC policy, operator-workload ServiceAccount identity, DNS record value validation, image provenance, and `volumeMount.mountPath` allow-listing (`safe_volume.rs`, closes audit finding F-001) | T1 (DNS tampering), T3 (ConfigMap/Secret tampering), E1 (container escape via malicious volume mounts), T2 (image provenance) | ✅ Kubernetes VAP — supersedes M-13 below |
 | M-30 | **Scout namespace whitelisting** (`--namespace-selector` / `BINDY_SCOUT_NAMESPACE_SELECTOR`, new in v1.1): a source object's namespace must match a configured Kubernetes label selector *in addition to* the object's own opt-in annotation before Scout acts on it. Label-selector matching delegates to the API server (no client-side selector parser). Reduces Scout's day-to-day operating footprint — bounds T4 (cross-tenant patch/update) during normal operation. **Does not reduce the `ClusterRole`'s RBAC ceiling** for Ingress/Service/route types — a directly compromised token is unaffected for those. **Opt-in — unset by default**, matching pre-v1.1 behavior for backward compatibility; Scout logs a startup warning when unset. See the Scout guide's "Namespace Whitelisting" section for the rollout/migration note. | T4 (partial) | ⚠️ Opt-in, recommended for all production deployments |
-| M-32 | **Scout endpoint + token-file remote transport** (2026-09-28, ADR-0008): alternative to the kubeconfig-Secret mode — bare bindy-minted token file (rotatable, no restart), endpoint/CA in the Deployment spec, fail-closed mode selection. Removes the kubeconfig blob and the `secrets: get` dependency in this mode; supports Linkerd-meshed proxy mirrors for cross-cluster mTLS | I4/E4 (smaller credential surface), T4 (unchanged ceiling) | ✅ `src/scout.rs` (`resolve_remote_transport`) |
-| M-31 | **Client-side Kubernetes API rate limiting** (2026-09-27, ADR-0005): tower `RateLimitLayer` in the operator's client stack (20 QPS / 30 burst default, env-tunable, invalid overrides fall back safely), paginated LISTs (O(1) memory), exponential-backoff retries on transient 429/5xx, and Prometheus visibility of server-side throttling (`kube_api_*` metrics) | D2 (reconciliation flood — API/memory amplification), platform availability (Basel III operational resilience) | ✅ `src/rate_limit.rs` + `reconcilers/{pagination,retry}.rs` |
+| M-32 | **Scout endpoint + token-file remote transport** (2026-09-28, ADR-0008): alternative to the kubeconfig-Secret mode; bare bindy-minted token file (rotatable, no restart), endpoint/CA in the Deployment spec, fail-closed mode selection. Removes the kubeconfig blob and the `secrets: get` dependency in this mode; supports Linkerd-meshed proxy mirrors for cross-cluster mTLS | I4/E4 (smaller credential surface), T4 (unchanged ceiling) | ✅ `crates/bindy/src/scout.rs` (`resolve_remote_transport`) |
+| M-31 | **Client-side Kubernetes API rate limiting** (2026-09-27, ADR-0005): tower `RateLimitLayer` in the operator's client stack (20 QPS / 30 burst default, env-tunable, invalid overrides fall back safely), paginated LISTs (O(1) memory), exponential-backoff retries on transient 429/5xx, and Prometheus visibility of server-side throttling (`kube_api_*` metrics) | D2 (reconciliation flood; API/memory amplification), platform availability (Basel III operational resilience) | ✅ `crates/bindy/src/rate_limit.rs` + `reconcilers/{pagination,retry}.rs` |
 | M-25 | **Scout Secret RBAC scoped** (fixed 2026-07-19, same day as this finding's discovery): removed the cluster-wide `secrets: get` `PolicyRule` from the `bindy-scout` `ClusterRole` entirely. Replaced with a namespaced, `resourceNames`-restricted Role (`bindy-scout-secrets-reader`) scoped to exactly the one Phase 2 kubeconfig Secret, applied only when `--remote-secret` is configured. Same-cluster-only deployments (the default) now get zero Secret access. See I4/E4/Scenario 6 for the full before/after. | I4, E4, T4 (Secret-read component), Scenario 6 | ✅ RBAC — **was the highest-priority open item in v1.1; closed same-day** |
 
 ---
@@ -1387,7 +1419,7 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-12 | Secret access audit trail | R2 (secret access), I1 (disclosure) | HIGH | H-3 |
 | ~~M-13~~ | ~~Admission webhooks~~ **DONE — see M-24** | T1 (DNS tampering) | — | Completed |
 | M-14 | **DNSSEC signing** (roadmap 07 complete 2026-09-27, ADR-0006): opt-in `dnssec-policy` zone signing (Secret-backed / auto-generated keys — key Secret names validated against the allow-list prefix, see H2), DS records derived from the zone's KSK DNSKEYs (SHA-256, RFC 8624) and published in `DNSZone.status.dnssec`. DS/keyTag are public data by design; no key material reaches status or logs. Adds one read-only in-cluster query path, operator → `named` :5353 (DNSKEY only, modeled in CALM) | T1 (tampering), Scenario 2 (cache poisoning) | ✅ Opt-in — effective once DS is published in the parent zone |
-| M-15 | Image digest pinning | T2 (image tampering) | MEDIUM | M-1 |
+| M-15 | Image digest pinning: **partial**. Release `install.yaml`/`scout.yaml` pin the operator image by digest (P2-8); operand images (BIND9, bindcar) remain tag-referenced | T2 (image tampering) | MEDIUM | M-1 |
 | M-16 | Rate limiting (operator) | D2 (operator exhaustion) | MEDIUM | M-3 |
 | M-17 | Network policies — a reference manifest now exists (`deploy/pod-hardening.yaml`, ingress/egress scoped to container port 5353) but is **not applied by any install target**; remains opt-in/manual | S1 (API spoofing), E1 (lateral movement), T4/E4 (Scout egress) | LOW | L-1 |
 | M-18 | DDoS edge protection | D1 (DNS query flood) | HIGH | External |
@@ -1397,6 +1429,8 @@ tampering (T4), not cluster-wide Secret exposure.
 | ~~M-26~~ | ~~Namespace-scoping option for Scout~~ **DONE — see M-30** (`--namespace-selector`) | T4 | — | Completed (v1.1) |
 | M-27 | Egress NetworkPolicy for Scout (API server + remote-cluster API only) | E4 | MEDIUM | New (v1.1) |
 | M-28 | Field-level admission policy constraining what Scout may `patch` on Ingress/Service/route objects (e.g. only finalizer/annotation fields) | T4 | MEDIUM | New (v1.1) |
+| M-36 | Require at least one approving review (or a `CODEOWNERS`-backed review) on `main` and remove the always-on admin bypass, so no single account can land a change | S3, Scenario 3 | HIGH | New (v1.7) |
+| M-37 | Automated reproducibility check (build a release twice, compare digests) | T2, Scenario 3 | LOW | ADR-0010 follow-up |
 | M-29 | Revisit Dependabot auto-merge: consider requiring a human approval step for patch/minor merges, or expand e2e coverage to compensate | E3 (dependency exploit via unreviewed auto-merge) | MEDIUM | New (v1.1) |
 
 ---
@@ -1432,6 +1466,8 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 4. **Compromised Operator Pod (Scenario 1)** - Risk reduced by Pod Security Standards, but network policies (L-1) would prevent lateral movement. A reference NetworkPolicy manifest now exists (`deploy/pod-hardening.yaml`) but is not applied by any install target.
 
 5. **Cross-Tenant Tampering via Scout (T4)** - Bounded by patch/update-only RBAC scope and, when configured, namespace whitelisting (M-30, opt-in — not on by default). No field-level admission control (M-28) yet constrains what Scout can patch. (Scout's Secret-read risk, formerly part of this component's overall exposure, was resolved separately — see M-25.)
+
+6. **Single-person change path (S3)** - The `main` rulesets require signed commits, PRs and passing checks but no approving review, and organization admins can bypass them. A compromised maintainer account with its signing key can land a change unreviewed; release provenance would faithfully attest it. Planned: M-36.
 
 ---
 
@@ -1500,7 +1536,7 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 |------------------|-------------|---------|---------------|
 | **Access Control** | RBAC least privilege (main operator), signed commits, B-5 Secret RBAC split, namespace-scoped operator mode (opt-in), 16 `ValidatingAdmissionPolicy` policies, Scout namespace whitelisting (opt-in, M-30), **Scout Secret RBAC scoped (M-25, fixed 2026-07-19)** | Field-level admission for Scout patches (M-28), Scout egress NetworkPolicy (M-27) | MEDIUM — driven by Scout's remaining cluster-wide `patch`/`update` on Ingress/Service/route (T4); the formerly-HIGH Secret-read risk (I4/E4) is resolved |
 | **Data Protection** | Secrets encrypted, AXFR restricted, DNSSEC zone signing (opt-in, M-14/ADR-0006) | TSIG for AXFR; DNSSEC-by-default | MEDIUM |
-| **Supply Chain** | Signed commits/images, SBOM, vuln scanning | Image digest pinning; revisit Dependabot auto-merge human-review gap (M-29) | LOW-MEDIUM (automated auto-merge removed a manual checkpoint — see E3) |
+| **Supply Chain** | Signed commits/images, SLSA Build L3 provenance for all release artifacts (M-33), NTIA-gated SBOM attestations (M-34), anchored signer identity (M-35), `--locked` release builds, vuln scanning | Required approving reviews (M-36); operand image digest pinning (M-15); reproducibility check (M-37); revisit Dependabot auto-merge human-review gap (M-29) | LOW-MEDIUM (no required review on `main`, see S3; automated auto-merge removed a manual checkpoint, see E3) |
 | **Monitoring** | Kubernetes audit logs, vuln scanning | Audit retention policy, secret access trail | MEDIUM |
 | **Resilience** | Rate limiting, resource limits | Edge DDoS protection, HPA | MEDIUM |
 | **Container Security** | Non-root, read-only FS, Pod Security Standards, unprivileged DNS port + zero added capabilities (M-23) | Network policies (reference manifest exists, not auto-applied — M-17) | LOW |

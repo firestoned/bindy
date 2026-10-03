@@ -9,7 +9,7 @@
 //! Usage:
 //!   cargo run --bin crddoc > docs/src/reference/api.md
 
-use bindy::crd::{
+use bindy_api::crd::{
     AAAARecord, ARecord, Bind9Cluster, Bind9Instance, CAARecord, CNAMERecord, DNSZone, MXRecord,
     NSRecord, PTRRecord, SRVRecord, TXTRecord,
 };

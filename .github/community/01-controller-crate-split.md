@@ -1,4 +1,4 @@
-# 10 — Controller crate split & watch-layer simplification
+# 01: Controller crate split & watch-layer simplification
 
 > **Goal.** Break the single `bindy` crate into a workspace of focused
 > crates — one per controller, plus a shared controller SDK — and replace
@@ -11,11 +11,36 @@
 > behaviour; `src/main.rs` is under ~300 lines and contains no
 > `Controller::new` calls, no `tokio::spawn` reflector tasks, and no
 > per-kind watch closures; the number of open watch connections against
-> the API server is roughly halved.
+> the API server drops from about 59 to 14 in cluster-wide mode (one per
+> kind).
 
-**Status:** ⛔ Not started
+**Status:** 🔶 Phase A done (2026-10-03); Phase B (`bindy-controller-sdk`) next. [ADR-0009](../../docs/adr/0009-workspace-crate-split-and-shared-watch-layer.md) Accepted, CALM updated
 **Owner:** Erick Bourgeois
-**Analysed against:** `fix-idempotency` @ `648ff7a`, kube / kube-runtime **4.2.0**
+**Analysed against:** `main` @ `d422055` (re-measured 2026-10-03; first analysis was `fix-idempotency` @ `648ff7a`), kube / kube-runtime **4.2.0**
+
+> **Decision record.** The crate boundaries, the shared watch layer, the
+> self-trigger policy and the use of kube's `unstable-runtime-subscribe`
+> feature are decided in ADR-0009. This document is the phase plan; where
+> the two disagree, the ADR wins.
+>
+> **Corrections from the 2026-10-03 re-measure:**
+> - The shared-stream APIs (`store_shared`, `for_shared_stream`,
+>   `owns_shared_stream`, `watches_shared_stream`) are compiled only with
+>   kube's `unstable-runtime-subscribe` feature. §5's "no new dependencies"
+>   holds for crates, not features; ADR-0009 §3 accepts the feature.
+> - Namespace scoping (`NamespaceScope`, `MultiStore`) landed after the
+>   first analysis. Every namespaced reflector and controller stream is
+>   now repeated per namespace target, so the `WatchSet` keys on
+>   (kind, target), not kind alone.
+> - The watch-connection count was undercounted. Today: 14 reflectors +
+>   13 controller primaries (4 hand-written + 9 generic record controllers)
+>   + 23 `.watches()`/`.owns()` in `main.rs` + 9 `DNSZone` watches in the
+>   record controllers ≈ **59** in cluster-wide mode, about 59 × N with N
+>   namespace targets. Target: 14.
+> - `perform_startup_drift_detection` lists with `Api::all` even in
+>   namespace-restricted mode. Another reason for Phase F to delete it.
+> - Line references below (`main.rs:NNN`) date from the first analysis and
+>   have drifted; the function names are still current.
 
 ---
 
@@ -25,11 +50,12 @@
 
 | Metric | Today |
 |---|---|
-| Non-test Rust source | **40,643 lines** |
-| Test source (`*_tests.rs`) | 26,220 lines |
+| Non-test Rust source | **44,362 lines** (was 40,643) |
+| Test source (`*_tests.rs`) | 30,065 lines (was 26,220) |
 | Crates | **1** (`bindy`), plus two extra `[[bin]]` targets |
-| Public modules in `lib.rs` | 21, all `pub` |
-| CRD types in one file | 13 kinds / 64 structs in `src/crd.rs` (**4,203 lines**) |
+| Public modules in `lib.rs` | 24, all `pub` (was 21) |
+| CRD types in one file | 13 kinds in `src/crd.rs` (**4,332 lines**, was 4,203) |
+| `src/main.rs` / `src/scout.rs` / `src/bootstrap.rs` | 2,182 / 4,876 / 2,149 lines |
 
 Everything is one compilation unit, so:
 
@@ -78,9 +104,11 @@ Seven concrete problems, in rough order of severity:
    `reflector` per kind for the shared `Stores`; then each `Controller`
    opens *its own* independent watch for the same kinds via
    `Controller::new` / `.watches()` / `.owns()`. That is 14 reflector
-   streams + 22 controller streams ≈ **36 watch connections** where ~15
+   streams + about 45 controller streams ≈ **59 watch connections** in
+   cluster-wide mode (re-counted 2026-10-03; first counted as 36) where 14
    would do, with two independent caches of the same objects that can
-   disagree mid-flight. kube-runtime 4.2 has the exact fix:
+   disagree mid-flight. kube-runtime 4.2 has the exact fix, behind its
+   `unstable-runtime-subscribe` feature:
    `reflector::store_shared()`, `Controller::for_shared_stream()`,
    `.owns_shared_stream()`, `.watches_shared_stream()`.
 
@@ -259,20 +287,38 @@ code they cover, and `cargo-quality` gates each one.
 
 ### Phase A — Workspace scaffold, no logic moves
 
-- [ ] Convert the root `Cargo.toml` to a `[workspace]` with
+- [x] Convert the root `Cargo.toml` to a `[workspace]` with
       `[workspace.package]` and `[workspace.dependencies]`, hoisting every
       shared dependency (`kube`, `k8s-openapi`, `serde`, `tokio`, …) so
       versions are pinned once; keep `bindy` as `crates/bindy`.
-- [ ] Extract `crates/bindy-api` — `crd.rs`, `labels.rs`,
+      *Landed 2026-10-03: virtual workspace, profiles and
+      `[workspace.lints]` (`unsafe_code = "forbid"`) at the root; the Rust
+      integration tests moved to `crates/bindy/tests/`, the shell suites
+      stay in `tests/`. The release workflow's version rewrite still hits
+      the single `version = ` line in the root `Cargo.toml`.*
+- [x] Extract `crates/bindy-api`: `crd.rs`, `crd_docs.rs`, `labels.rs`,
       `constants.rs`, `selector.rs`, `status_reasons.rs` + their
       `_tests.rs` siblings. Zero behaviour change; `pub use` from
       `bindy` so nothing else has to move yet.
-- [ ] Move `crdgen` / `crddoc` bins into `bindy-api` behind a `crdgen`
+      *Landed 2026-10-03. `bindy/src/lib.rs` re-exports all six modules.
+      Doctests now say `bindy_api::`. `bindy` dropped its direct
+      `schemars` dependency (only the CRD types used it).*
+- [x] Move `crdgen` / `crddoc` bins into `bindy-api` behind a `crdgen`
       feature. Update `make` targets, `regen-crds` and `regen-api-docs`
       skills, and `.github/workflows/*` accordingly.
-- [ ] **DoD:** `cargo build --workspace` green; `regen-crds` produces a
+      *Landed 2026-10-03: `cargo run -p bindy-api --features crdgen --bin
+      crdgen` (and `crddoc`) in the Makefile and every skill; workflow
+      path filters moved from `src/**` to `crates/**`; `.cargo/deny.toml`
+      sets `allow-wildcard-paths` for the path-only workspace deps.*
+- [x] **DoD:** `cargo build --workspace` green; `regen-crds` produces a
       byte-identical `deploy/operator/crds/*.crd.yaml`; `verify-crd-sync`
       passes.
+      *Met 2026-10-03: CRD YAMLs byte-identical; 1597 passed / 95 ignored
+      tests before and after; clippy `-D warnings`, rustdoc,
+      `cargo-machete` and `cargo-deny` clean. `crddoc` regenerated
+      `docs/src/reference/api.md` with one change, which was already stale
+      on `main` (the DNSSEC fix's `dnssecPolicy` description had not been
+      regenerated into it).*
 
 ### Phase B — `bindy-controller-sdk`
 
@@ -362,7 +408,8 @@ code they cover, and `cargo-quality` gates each one.
 
 - [ ] Count watch connections before/after against a `kind` cluster
       (API-server `apiserver_longrunning_requests` or `kubectl get
-      --raw /metrics`). Expect roughly **36 → ~15**.
+      --raw /metrics`). Expect roughly **59 → 14** in cluster-wide mode,
+      and per-namespace-target scaling to match.
 - [ ] `make kind-integration-test` green end-to-end.
 - [ ] Compare `cargo build` wall-clock for a one-line change to
       `crd.rs`, before vs after.
@@ -384,7 +431,9 @@ code they cover, and `cargo-quality` gates each one.
   (`store_shared`, `for_shared_stream`, `owns_shared_stream`,
   `watches_shared_stream`, `graceful_shutdown_on`, `shutdown_on_signal`,
   `predicates::generation`) is already present in the pinned
-  kube-runtime 4.2.0.
+  kube-runtime 4.2.0. The four shared-stream APIs need kube's
+  `unstable-runtime-subscribe` feature turned on: a new feature, not a new
+  crate, accepted in ADR-0009 §3.
 - **Splitting `bindy-api` per API group.** Tempting at 4,203 lines, but
   it is a leaf with no intra-crate deps and it churns least; revisit
   after Phase G.
