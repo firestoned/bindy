@@ -116,7 +116,16 @@ const LISTEN_ON_V6_DIRECTIVE: &str = "listen-on-v6";
 const LISTEN_ON_DEFAULT: &str = "any";
 
 // Default DNSSEC signing parameters
-const DEFAULT_DNSSEC_POLICY_NAME: &str = "default";
+/// Name of the policy bindy defines when the cluster names none. Not
+/// `"default"`: BIND reserves that for a built-in policy (see
+/// [`BIND_BUILTIN_DNSSEC_POLICIES`]).
+const DEFAULT_DNSSEC_POLICY_NAME: &str = "bindy";
+
+/// Policy names BIND reserves for its built-in policies. A
+/// `dnssec-policy "<name>" { ... }` block with one of these makes named refuse
+/// to load its configuration ("dnssec-policy name may not be 'insecure',
+/// 'none', or 'default'"), so a definition may never use them.
+const BIND_BUILTIN_DNSSEC_POLICIES: [&str; 3] = ["default", "insecure", "none"];
 const DEFAULT_DNSSEC_ALGORITHM: &str = "ECDSAP256SHA256";
 const DEFAULT_KSK_LIFETIME: &str = "unlimited";
 const DEFAULT_ZSK_LIFETIME: &str = "unlimited";
@@ -130,7 +139,8 @@ const MAX_DNSSEC_POLICY_NAME_LEN: usize = 63;
 /// the CRD schema pattern `^[A-Za-z0-9]{1,32}$` and ValidatingAdmissionPolicy 09.
 const MAX_DNSSEC_TOKEN_LEN: usize = 32;
 
-/// Validate a DNSSEC policy name against `^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`.
+/// Validate a DNSSEC policy name against `^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`,
+/// and refuse BIND's built-in policy names (`default`, `insecure`, `none`).
 ///
 /// This is the RUNTIME arm of a three-layer defence. The CRD schema rejects a
 /// bad value at the API server and ValidatingAdmissionPolicy 09 rejects it at
@@ -160,6 +170,15 @@ fn validate_dnssec_policy_name(name: &str) -> anyhow::Result<()> {
         anyhow::bail!(
             "invalid dnssec policy name {name:?}: illegal character {bad:?} \
              (allowed: ASCII letters, digits, '-', '_')"
+        );
+    }
+    if BIND_BUILTIN_DNSSEC_POLICIES
+        .iter()
+        .any(|builtin| name.eq_ignore_ascii_case(builtin))
+    {
+        anyhow::bail!(
+            "invalid dnssec policy name {name:?}: it is a BIND built-in policy, which \
+             named refuses to redefine; choose another name (e.g. {DEFAULT_DNSSEC_POLICY_NAME:?})"
         );
     }
 
@@ -268,6 +287,66 @@ pub(crate) fn generate_dnssec_policies(
         .replace("{{KSK_LIFETIME}}", ksk_lifetime)
         .replace("{{ZSK_LIFETIME}}", zsk_lifetime)
         .replace("{{NSEC_CONFIG}}", &nsec_config))
+}
+
+/// The `dnssec-policy` a zone is created or updated with.
+///
+/// An explicit `spec.dnssecPolicy` on the zone always wins, including BIND's
+/// built-in `insecure` and `none`, which a zone names to unsign itself.
+/// Otherwise a zone inherits the signing policy of the instance that serves
+/// it (instance config over cluster `global`, as [`generate_dnssec_policies`]
+/// renders it): its `policy`, or [`DEFAULT_DNSSEC_POLICY_NAME`] when unnamed.
+/// With signing off everywhere, the zone is unsigned.
+///
+/// # Arguments
+///
+/// * `zone_policy` - The zone's `spec.dnssecPolicy`, if set
+/// * `global_config` - The cluster's (or cluster provider's) `global` config
+/// * `instance_config` - The serving instance's own `spec.config`
+///
+/// # Returns
+///
+/// The policy name to configure on the zone, or `None` for an unsigned zone.
+pub(crate) fn resolve_zone_dnssec_policy(
+    zone_policy: Option<&str>,
+    global_config: Option<&crate::crd::Bind9Config>,
+    instance_config: Option<&crate::crd::Bind9Config>,
+) -> Option<String> {
+    if let Some(explicit) = zone_policy {
+        return Some(explicit.to_string());
+    }
+    let signing = get_dnssec_signing_config(global_config, instance_config)?;
+    Some(
+        signing
+            .policy
+            .clone()
+            .unwrap_or_else(|| DEFAULT_DNSSEC_POLICY_NAME.to_string()),
+    )
+}
+
+/// The `key-directory` statement for `named.conf.options`: the DNSSEC key
+/// mount ([`BIND_DNSSEC_KEYS_PATH`]) when signing is enabled, else nothing.
+///
+/// Without it BIND keeps `dnssec-policy` keys in its working directory, a
+/// scratch volume, so keys from `keysFrom` are never read and generated keys
+/// never reach the volume that is meant to keep them.
+///
+/// # Arguments
+///
+/// * `global_config` - Optional global cluster configuration
+/// * `instance_config` - Optional instance-specific configuration
+///
+/// # Returns
+///
+/// The statement, or an empty string when signing is off.
+pub(crate) fn render_key_directory(
+    global_config: Option<&crate::crd::Bind9Config>,
+    instance_config: Option<&crate::crd::Bind9Config>,
+) -> String {
+    if get_dnssec_signing_config(global_config, instance_config).is_none() {
+        return String::new();
+    }
+    format!("key-directory \"{BIND_DNSSEC_KEYS_PATH}\";")
 }
 
 /// Check if DNSSEC signing is enabled in either instance or global config
@@ -1096,6 +1175,7 @@ fn build_options_conf(
 
     // Generate DNSSEC policies (instance config overrides global)
     let dnssec_policies = generate_dnssec_policies(global_config, instance_cfg)?;
+    let key_directory = render_key_directory(global_config, instance_cfg);
 
     // Forwarders and listen addresses - instance overrides global, per field
     let forwarders = render_forwarders(
@@ -1133,6 +1213,7 @@ fn build_options_conf(
         .replace("{{ALLOW_TRANSFER}}", &allow_transfer)
         .replace("{{RATE_LIMIT}}", &rate_limit)
         .replace("{{DNSSEC_VALIDATE}}", &dnssec_validate)
+        .replace("{{KEY_DIRECTORY}}", &key_directory)
         .replace("{{DNSSEC_POLICIES}}", &dnssec_policies))
 }
 
@@ -1388,6 +1469,7 @@ fn build_cluster_options_conf(cluster: &Bind9Cluster) -> anyhow::Result<String> 
 
     // Generate DNSSEC policies from global config
     let dnssec_policies = generate_dnssec_policies(global, None)?;
+    let key_directory = render_key_directory(global, None);
 
     // Forwarders and listen addresses from global config
     let forwarders = render_forwarders(global.and_then(|g| g.forwarders.as_ref()))?;
@@ -1412,6 +1494,7 @@ fn build_cluster_options_conf(cluster: &Bind9Cluster) -> anyhow::Result<String> 
         .replace("{{ALLOW_TRANSFER}}", &allow_transfer)
         .replace("{{RATE_LIMIT}}", &rate_limit)
         .replace("{{DNSSEC_VALIDATE}}", &dnssec_validate)
+        .replace("{{KEY_DIRECTORY}}", &key_directory)
         .replace("{{DNSSEC_POLICIES}}", &dnssec_policies))
 }
 

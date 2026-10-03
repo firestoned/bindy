@@ -2063,6 +2063,36 @@ mod tests {
         );
     }
 
+    /// With signing on, BIND must keep its DNSSEC keys in the directory the
+    /// key volume is mounted at. Without `key-directory` it writes them to
+    /// its working directory, a scratch volume, and the mount goes unused.
+    #[test]
+    fn test_options_conf_signing_sets_key_directory_to_the_key_mount() {
+        let mut instance = create_test_instance("test");
+        instance.spec.config = None;
+        let cluster =
+            cluster_with_global(dnssec_signing_config(Some("core-dns"), None, None, None));
+
+        let cm = build_configmap("test", "test-ns", &instance, Some(&cluster), None).unwrap();
+        let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
+
+        assert!(
+            options.contains("key-directory \"/var/cache/bind/keys\";"),
+            "signing must point key-directory at the key volume, got: {options}"
+        );
+    }
+
+    #[test]
+    fn test_options_conf_without_signing_has_no_key_directory() {
+        let mut instance = create_test_instance("test");
+        instance.spec.config = None;
+
+        let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
+        let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
+
+        assert!(!options.contains("key-directory"), "got: {options}");
+    }
+
     #[test]
     fn test_options_conf_no_config_section_global_dnssec_false_renders_no() {
         // ADR-0007: global `dnssec.validation: false` must render an explicit
@@ -2774,9 +2804,11 @@ mod tests {
             generate_dnssec_policies(Some(&config), None).expect("valid DNSSEC config must render");
 
         // Verify the result contains expected default values
+        // Not "default": BIND reserves that name for its built-in policy and
+        // refuses to load a named.conf that redefines it.
         assert!(
-            result.contains("dnssec-policy \"default\""),
-            "Should use default policy name"
+            result.contains("dnssec-policy \"bindy\""),
+            "Should use bindy's own default policy name, got: {result}"
         );
         assert!(
             result.contains("algorithm ECDSAP256SHA256"),
@@ -3704,6 +3736,92 @@ mod tests {
     // grammar as the other two so all three agree.
 
     /// Build a signing config with the four interpolated fields set.
+    /// BIND reserves `default`, `insecure` and `none` for its built-in
+    /// policies; a `dnssec-policy "default" { ... }` block makes named refuse
+    /// to load its configuration at all, taking every server down.
+    #[test]
+    fn test_dnssec_policy_rejects_bind_builtin_policy_names() {
+        use crate::bind9_resources::generate_dnssec_policies;
+
+        for reserved in ["default", "insecure", "none", "Default", "NONE"] {
+            let config = dnssec_signing_config(Some(reserved), None, None, None);
+            let err = generate_dnssec_policies(Some(&config), None)
+                .expect_err(&format!("{reserved:?} must be refused"));
+            assert!(
+                err.to_string().contains("built-in"),
+                "error for {reserved:?} should say the name is a BIND built-in, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_dnssec_policy_accepts_a_custom_policy_name() {
+        use crate::bind9_resources::generate_dnssec_policies;
+
+        let config = dnssec_signing_config(Some("core-dns"), None, None, None);
+        let rendered =
+            generate_dnssec_policies(Some(&config), None).expect("a custom name must render");
+        assert!(
+            rendered.contains("dnssec-policy \"core-dns\""),
+            "got: {rendered}"
+        );
+    }
+
+    /// A zone with no `dnssecPolicy` inherits the cluster's signing policy:
+    /// the docs promise it, and without it no zone is ever signed.
+    #[test]
+    fn test_zone_dnssec_policy_inherits_cluster_signing_policy() {
+        use crate::bind9_resources::resolve_zone_dnssec_policy;
+
+        let named = dnssec_signing_config(Some("core-dns"), None, None, None);
+        assert_eq!(
+            resolve_zone_dnssec_policy(None, Some(&named), None).as_deref(),
+            Some("core-dns")
+        );
+        // Signing on with no policy name: the zone uses bindy's default name.
+        let unnamed = dnssec_signing_config(None, None, None, None);
+        assert_eq!(
+            resolve_zone_dnssec_policy(None, Some(&unnamed), None).as_deref(),
+            Some("bindy")
+        );
+        // An instance override wins over the cluster.
+        let instance = dnssec_signing_config(Some("strict"), None, None, None);
+        assert_eq!(
+            resolve_zone_dnssec_policy(None, Some(&named), Some(&instance)).as_deref(),
+            Some("strict")
+        );
+    }
+
+    #[test]
+    fn test_zone_dnssec_policy_explicit_value_wins() {
+        use crate::bind9_resources::resolve_zone_dnssec_policy;
+
+        let named = dnssec_signing_config(Some("core-dns"), None, None, None);
+        // Including BIND's built-ins, which a zone may legitimately name to
+        // unsign itself (bindcar's ADR-0001 transitions).
+        for explicit in ["other", "insecure", "none"] {
+            assert_eq!(
+                resolve_zone_dnssec_policy(Some(explicit), Some(&named), None).as_deref(),
+                Some(explicit)
+            );
+        }
+    }
+
+    #[test]
+    fn test_zone_dnssec_policy_none_without_signing() {
+        use crate::bind9_resources::resolve_zone_dnssec_policy;
+
+        assert_eq!(resolve_zone_dnssec_policy(None, None, None), None);
+        let mut disabled = dnssec_signing_config(Some("core-dns"), None, None, None);
+        if let Some(signing) = disabled.dnssec.as_mut().and_then(|d| d.signing.as_mut()) {
+            signing.enabled = false;
+        }
+        assert_eq!(
+            resolve_zone_dnssec_policy(None, Some(&disabled), None),
+            None
+        );
+    }
+
     fn dnssec_signing_config(
         policy: Option<&str>,
         algorithm: Option<&str>,
@@ -3763,7 +3881,7 @@ mod tests {
         let config = dnssec_signing_config(None, None, None, None);
         let result = generate_dnssec_policies(Some(&config), None)
             .expect("built-in DNSSEC defaults must pass their own whitelist");
-        assert!(result.contains("dnssec-policy \"default\""));
+        assert!(result.contains("dnssec-policy \"bindy\""));
         assert!(result.contains("algorithm ECDSAP256SHA256"));
     }
 

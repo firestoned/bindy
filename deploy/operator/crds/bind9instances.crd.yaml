@@ -1147,12 +1147,13 @@ spec:
                             description: |-
                               DNSSEC policy name
 
-                              Name of the DNSSEC policy to apply. Built-in policies:
-                              - `"default"` - Standard policy with ECDSA P-256, 365d KSK, 90d ZSK
+                              Name of the `dnssec-policy` block bindy defines from the settings
+                              below (algorithm, key lifetimes, NSEC/NSEC3). Zones without their own
+                              `dnssecPolicy` are signed with it.
 
-                              Custom policies can be defined in future enhancements.
-
-                              Default: `"default"`
+                              Default: `"bindy"`. BIND's built-in names `"default"`, `"insecure"`
+                              and `"none"` are refused: BIND will not load a configuration that
+                              redefines them.
 
                               The name is restricted to a safe identifier set (`[A-Za-z0-9_-]`, starting
                               alphanumeric, max 63 chars) because it is interpolated into a quoted BIND9
