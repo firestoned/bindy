@@ -42,7 +42,7 @@ graph TD
 - **Spec changed**: Uses `should_reconcile()` to compare `metadata.generation` with `status.observed_generation`
 - **Desired vs actual state**: Verifies all `Bind9Cluster` resources exist in target namespaces
 
-**Implementation**: [`src/reconcilers/clusterbind9provider.rs`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/clusterbind9provider.rs)
+**Implementation**: [`crates/bindy/src/reconcilers/clusterbind9provider.rs`](https://github.com/firestoned/bindy/blob/main/crates/bindy/src/reconcilers/clusterbind9provider.rs)
 
 **Example**:
 ```yaml
@@ -82,7 +82,7 @@ Creates `Bind9Cluster` resources in each namespace: `platform-dns`, `team-web`, 
   - Verifies all `Bind9Instance` resources exist
   - Scales instances up/down based on `primaryReplicas` and `secondaryReplicas`
 
-**Implementation**: [`src/reconcilers/bind9cluster/mod.rs`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/bind9cluster/mod.rs)
+**Implementation**: [`crates/bindy/src/reconcilers/bind9cluster/mod.rs`](https://github.com/firestoned/bindy/blob/main/crates/bindy/src/reconcilers/bind9cluster/mod.rs)
 
 **Example**:
 ```yaml
@@ -123,7 +123,7 @@ Creates:
   - Checks if `Deployment` resource exists
   - Recreates missing resources if detected
 
-**Implementation**: [`src/reconcilers/bind9instance/mod.rs`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/bind9instance/mod.rs)
+**Implementation**: [`crates/bindy/src/reconcilers/bind9instance/mod.rs`](https://github.com/firestoned/bindy/blob/main/crates/bindy/src/reconcilers/bind9instance/mod.rs)
 
 **Drift Detection Logic**:
 ```rust
@@ -177,7 +177,7 @@ Creates: ServiceAccount, Secret, ConfigMap, Deployment, Service for `my-cluster-
   - Checks if zone exists using `zone_manager.zone_exists()` via HTTP API
   - Early returns if spec unchanged
 
-**Implementation**: [`src/reconcilers/dnszone.rs`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/dnszone.rs)
+**Implementation**: [`crates/bindy/src/reconcilers/dnszone.rs`](https://github.com/firestoned/bindy/blob/main/crates/bindy/src/reconcilers/dnszone.rs)
 
 **Protocol Details**:
 - **Zone operations**: HTTP API via bindcar sidecar (port 8080)
@@ -233,7 +233,7 @@ Creates zone `example.com` in all instances of `my-cluster` via HTTP API.
   - Checks if zone exists using HTTP API before adding records
   - Returns error if zone doesn't exist
 
-**Implementation**: [`src/reconcilers/records/mod.rs`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/records/mod.rs)
+**Implementation**: [`crates/bindy/src/reconcilers/records/mod.rs`](https://github.com/firestoned/bindy/blob/main/crates/bindy/src/reconcilers/records/mod.rs)
 
 **Protocol Details**:
 
@@ -281,7 +281,7 @@ All reconcilers implement the **"changed"** detection pattern, which means they 
 
 ### Implementation: `should_reconcile()`
 
-Located in [`src/reconcilers/mod.rs:127-133`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/mod.rs#L127-L133):
+Located in [`crates/bindy/src/reconcilers/mod.rs:127-133`](https://github.com/firestoned/bindy/blob/main/crates/bindy/src/reconcilers/mod.rs#L127-L133):
 
 ```rust
 pub fn should_reconcile(current_generation: Option<i64>, observed_generation: Option<i64>) -> bool {
@@ -414,7 +414,7 @@ graph TD
 
 #### 1. ClusterBind9Provider → Bind9Cluster
 
-**Location:** [`src/reconcilers/clusterbind9provider.rs:340-352`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/clusterbind9provider.rs#L340-L352)
+**Location:** [`crates/bindy/src/reconcilers/clusterbind9provider.rs:340-352`](https://github.com/firestoned/bindy/blob/main/crates/bindy/src/reconcilers/clusterbind9provider.rs#L340-L352)
 
 ```rust
 // Create ownerReference to cluster provider (cluster-scoped can own namespace-scoped)
@@ -436,7 +436,7 @@ let owner_ref = OwnerReference {
 
 #### 2. Bind9Cluster → Bind9Instance
 
-**Location:** [`src/reconcilers/bind9cluster/mod.rs:592-599`](https://github.com/firestoned/bindy/blob/main/src/reconcilers/bind9cluster/mod.rs#L592-L599)
+**Location:** [`crates/bindy/src/reconcilers/bind9cluster/mod.rs:592-599`](https://github.com/firestoned/bindy/blob/main/crates/bindy/src/reconcilers/bind9cluster/mod.rs#L592-L599)
 
 ```rust
 // Create ownerReference to the Bind9Cluster
@@ -457,7 +457,7 @@ let owner_ref = OwnerReference {
 
 #### 3. Bind9Instance → Kubernetes Resources
 
-**Location:** [`src/bind9_resources.rs:188-197`](https://github.com/firestoned/bindy/blob/main/src/bind9_resources.rs#L188-L197)
+**Location:** [`crates/bindy/src/bind9_resources.rs:188-197`](https://github.com/firestoned/bindy/blob/main/crates/bindy/src/bind9_resources.rs#L188-L197)
 
 ```rust
 pub fn build_owner_references(instance: &Bind9Instance) -> Vec<OwnerReference> {

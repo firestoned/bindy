@@ -2,8 +2,8 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 #
-# E2E suite: the Rust integration tests (tests/simple_integration.rs and
-# tests/scout_integration.rs).
+# E2E suite: the Rust integration tests (crates/bindy/tests/simple_integration.rs and
+# crates/bindy/tests/scout_integration.rs).
 #
 # These drive the Kubernetes API through the same kube-rs client the operator
 # uses, in their own namespaces, so they exercise the client/CRD contract rather

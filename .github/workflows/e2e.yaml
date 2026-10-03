@@ -58,15 +58,15 @@ on:
       - 'tests/regression_test.sh'
       # Scheduling behaviour is only observable against a real scheduler, so
       # changes to it must run the kind gate.
-      - 'src/placement.rs'
-      - 'src/bind9_resources.rs'
-      - 'src/reconcilers/bind9instance/**'
+      - 'crates/bindy/src/placement.rs'
+      - 'crates/bindy/src/bind9_resources.rs'
+      - 'crates/bindy/src/reconcilers/bind9instance/**'
       # Scout is only fully observable against a real API server: whether a
       # Gateway API kind is served, whether the disabled path stays quiet, and
       # whether a stale-cleanup label selector actually matches the records it
       # is meant to (#474) — none of which a unit test or wiremock can assert.
-      - 'src/scout.rs'
-      - 'tests/scout_integration.rs'
+      - 'crates/bindy/src/scout.rs'
+      - 'crates/bindy/tests/scout_integration.rs'
       - 'tests/zone_spread_test.sh'
       - 'deploy/kind-config.yaml'
       - 'deploy/kind-config-e2e.yaml'
@@ -74,8 +74,8 @@ on:
       - 'deploy/operator/crds/**'
       # The TLS transport path is only observable against a real CA and a real
       # handshake, so changes to the client or its CRD surface must run the gate.
-      - 'src/bind9/tls_client.rs'
-      - 'src/bind9/mod.rs'
+      - 'crates/bindy/src/bind9/tls_client.rs'
+      - 'crates/bindy/src/bind9/mod.rs'
       - 'tests/tls_transport_test.sh'
       - 'deploy/kind-config-tls.yaml'
   workflow_call: {}

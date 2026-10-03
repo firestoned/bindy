@@ -1,8 +1,17 @@
 # Build Reproducibility Verification
 
-**Status:** ✅ Implemented
-**Compliance:** SLSA Level 3, SOX 404 (Supply Chain), PCI-DSS 6.4.6 (Code Review)
-**Last Updated:** 2025-12-18
+**Status:** 📄 Design and manual procedure. **Not automated.**
+**Compliance:** Supports SOX 404 (Supply Chain) and PCI-DSS 6.4.6 evidence; not part of bindy's SLSA claim
+**Last Updated:** 2026-10-03
+
+> **Status as of 2026-10-03 (ADR-0010 audit).** This page describes a
+> reproducibility programme that has not been built. None of these exist in
+> the repository: the `verify-reproducibility.yaml` workflow, the
+> `scripts/verify-build.sh` script, or `SOURCE_DATE_EPOCH` handling in the
+> Dockerfiles. Read the workflow and script below as designs. Release
+> integrity rests on SLSA Build L3 provenance, Cosign signatures and SBOM
+> attestations instead; see [SLSA compliance](../compliance/slsa.md).
+> SLSA v1.0 does not require reproducible builds at any Build level.
 **Owner:** Security Team
 
 ---

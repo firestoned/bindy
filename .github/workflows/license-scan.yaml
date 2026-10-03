@@ -20,6 +20,7 @@ on:
     branches: [ main ]
     paths:
       - 'Cargo.toml'
+      - 'crates/*/Cargo.toml'
       - 'Cargo.lock'
       - '.cargo/deny.toml'
       - '.github/workflows/license-scan.yaml'

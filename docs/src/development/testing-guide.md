@@ -44,14 +44,16 @@ test result: ok. 62 passed; 0 failed; 0 ignored
 
 ```
 bindy/
-├── src/
-│   ├── crd_tests.rs              # CRD structure tests (28 tests)
-│   └── reconcilers/
-│       └── tests.rs              # Bind9Manager tests (34 tests)
+├── crates/
+│   ├── bindy-api/src/
+│   │   └── crd_tests.rs          # CRD structure tests
+│   └── bindy/
+│       ├── src/**/*_tests.rs     # Unit tests, one file per module
+│       └── tests/
+│           ├── simple_integration.rs  # Rust integration tests
+│           └── common/mod.rs          # Shared test utilities
 ├── tests/
-│   ├── simple_integration.rs     # Rust integration tests
-│   ├── integration_test.sh       # Full integration test suite
-│   └── common/mod.rs            # Shared test utilities
+│   └── integration_test.sh       # Full integration test suite
 └── deploy/
     ├── kind-deploy.sh           # Deploy to Kind cluster
     ├── kind-test.sh             # Basic functional tests
@@ -378,7 +380,7 @@ integration-tests:
 
 ### Writing Unit Tests
 
-Add to `src/crd_tests.rs` or `src/reconcilers/tests.rs`:
+Add to `crates/bindy-api/src/crd_tests.rs` or `crates/bindy/src/reconcilers/tests.rs`:
 
 ```rust
 #[test]
@@ -396,7 +398,7 @@ fn test_my_feature() {
 
 ### Writing Integration Tests
 
-Add to `tests/simple_integration.rs`:
+Add to `crates/bindy/tests/simple_integration.rs`:
 
 ```rust
 #[tokio::test]
@@ -413,7 +415,7 @@ async fn test_my_scenario() {
 
 ### Using Test Helpers
 
-From `tests/common/mod.rs`:
+From `crates/bindy/tests/common/mod.rs`:
 
 ```rust
 use common::*;

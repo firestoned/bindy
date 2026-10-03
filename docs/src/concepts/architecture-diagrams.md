@@ -133,27 +133,27 @@ graph TB
         MAIN[main.rs<br/>Tokio Runtime]
     end
 
-    subgraph "CRD Definitions (src/crd.rs)"
+    subgraph "CRD Definitions (crates/bindy-api/src/crd.rs)"
         CRD_BC[Bind9Cluster]
         CRD_BI[Bind9Instance]
         CRD_DZ[DNSZone]
         CRD_REC[Record Types<br/>A, AAAA, CNAME,<br/>MX, NS, TXT,<br/>SRV, CAA]
     end
 
-    subgraph "Reconcilers (src/reconcilers/)"
+    subgraph "Reconcilers (crates/bindy/src/reconcilers/)"
         RECON_BC[bind9cluster.rs]
         RECON_BI[bind9instance.rs]
         RECON_DZ[dnszone.rs]
         RECON_REC[records.rs]
     end
 
-    subgraph "BIND9 Management (src/bind9/)"
+    subgraph "BIND9 Management (crates/bindy/src/bind9/)"
         BM_MGR[Bind9Manager]
         BM_KEY[RndcKeyData]
         BM_CMD[Zone Operations<br/>HTTP API & RNDC<br/>addzone, delzone,<br/>reload, freeze,<br/>thaw, notify]
     end
 
-    subgraph "Resource Builders (src/bind9_resources.rs)"
+    subgraph "Resource Builders (crates/bindy/src/bind9_resources.rs)"
         RB_DEP[build_deployment]
         RB_CM[build_configmap]
         RB_SVC[build_service]

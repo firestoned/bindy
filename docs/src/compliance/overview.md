@@ -30,8 +30,7 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 | **SOX 404** | ✅ Complete | Phase 2 | 100% | [SOX 404](./sox-404.md) |
 | **PCI-DSS** | ✅ Complete | Phase 2 | 100% | [PCI-DSS](./pci-dss.md) |
 | **Basel III** | ✅ Complete | Phase 2 | 100% | [Basel III](./basel-iii.md) |
-| **SLSA Level 2** | ✅ Complete | Phase 2 | 100% | [SLSA](./slsa.md) |
-| **SLSA Level 3** | ✅ Complete | Phase 2 | 100% | [SLSA](./slsa.md) |
+| **SLSA v1.0 Build L3** | ✅ Complete (release artifacts, ADR-0010) | Phase 2 | 100% | [SLSA](./slsa.md) |
 | **NIST CSF** | ⚠️ Partial | Phase 3 | 60% | [NIST](./nist.md) |
 
 ---
@@ -99,20 +98,21 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 
 ### 4. Build Reproducibility Verification (H-4)
 
-**Status:** ✅ Complete (2025-12-18)
+**Status:** 📄 Designed, not automated (corrected 2026-10-03; it had been marked complete)
 
 **Documentation:**
-- [Build Reproducibility Verification](../security/build-reproducibility.md) - 850 lines, SLSA Level 3
+- [Build Reproducibility Verification](../security/build-reproducibility.md): design and manual procedure
 
-**Frameworks:** SLSA Level 3, SOX 404, PCI-DSS 6.4.6
+**Frameworks:** SOX 404, PCI-DSS 6.4.6 (supporting evidence only)
 
 **Key Controls:**
 
-- ✅ Bit-for-bit reproducible builds (deterministic)
-- ✅ Verification script for external auditors (`scripts/verify-build.sh`)
-- ✅ Automated daily reproducibility checks in CI/CD
-- ✅ 5 sources of non-determinism identified and mitigated
-- ✅ Container image reproducibility with `SOURCE_DATE_EPOCH`
+- ✅ Sources of non-determinism identified and documented
+- ❌ Verification script for external auditors (`scripts/verify-build.sh` does not exist)
+- ❌ Automated reproducibility checks in CI/CD (no workflow)
+- ❌ Container image reproducibility with `SOURCE_DATE_EPOCH` (not in the Dockerfiles)
+- Release integrity instead rests on SLSA Build L3 provenance, signatures and
+  SBOM attestations ([SLSA](./slsa.md))
 
 ---
 
@@ -166,7 +166,7 @@ As a critical DNS infrastructure component in financial services, Bindy must mee
 - [SECURITY.md - Commit Signing](../../../SECURITY.md#commit-signing-critical)
 - [CONTRIBUTING.md](../../../CONTRIBUTING.md)
 
-**Frameworks:** SOX 404, PCI-DSS 6.4.6, SLSA Level 2+
+**Frameworks:** SOX 404, PCI-DSS 6.4.6, SLSA source controls
 
 **Key Controls:**
 
@@ -228,7 +228,7 @@ For external auditors and compliance reviews, all evidence is documented and ver
 - ✅ SOX 404 (IT General Controls, Change Management, Access Controls)
 - ✅ PCI-DSS (6.2, 6.4.1, 6.4.6, 7.1.2, 10.2.1, 10.5.1, 12.10)
 - ✅ Basel III (Cyber Risk Management, Operational Risk)
-- ✅ SLSA Level 2-3 (Supply Chain Security)
+- ✅ SLSA v1.0 Build L3 for release artifacts (Supply Chain Security)
 - ⚠️ NIST CSF (Partial - Phase 3)
 
 ---
@@ -237,7 +237,7 @@ For external auditors and compliance reviews, all evidence is documented and ver
 
 Remaining compliance work in Phase 3 (Medium Priority):
 
-- **M-1**: Pin Container Images by Digest (SLSA Level 2)
+- **M-1**: Pin Container Images by Digest (supply chain)
 - **M-2**: Add Dependency License Scanning (Legal Compliance)
 - **M-3**: Implement Rate Limiting (Basel III Availability)
 - **M-4**: Fix Production Log Level (PCI-DSS 3.4)

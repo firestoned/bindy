@@ -69,7 +69,7 @@ jobs:
         with:
           filters: |
             code:
-              - 'src/**'
+              - 'crates/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
 

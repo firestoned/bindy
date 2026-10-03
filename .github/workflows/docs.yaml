@@ -9,12 +9,12 @@ on:
       - main
     paths:
       - 'docs/**'
-      - 'src/**/*.rs'
+      - 'crates/**/*.rs'
       - '.github/workflows/docs.yaml'
   pull_request:
     paths:
       - 'docs/**'
-      - 'src/**/*.rs'
+      - 'crates/**/*.rs'
       - '.github/workflows/docs.yaml'
   workflow_dispatch:
 

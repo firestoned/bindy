@@ -273,7 +273,7 @@ pub const CONDITION_TYPE_POD_PREFIX: &str = "Pod";
 /// # Example
 ///
 /// ```rust
-/// use bindy::status_reasons::bind9_instance_condition_type;
+/// use bindy_api::status_reasons::bind9_instance_condition_type;
 ///
 /// let condition_type = bind9_instance_condition_type(0);
 /// assert_eq!(condition_type, "Bind9Instance-0");
@@ -296,7 +296,7 @@ pub fn bind9_instance_condition_type(index: usize) -> String {
 /// # Example
 ///
 /// ```rust
-/// use bindy::status_reasons::pod_condition_type;
+/// use bindy_api::status_reasons::pod_condition_type;
 ///
 /// let condition_type = pod_condition_type(0);
 /// assert_eq!(condition_type, "Pod-0");
@@ -319,7 +319,7 @@ pub fn pod_condition_type(index: usize) -> String {
 /// # Example
 ///
 /// ```rust
-/// use bindy::status_reasons::extract_child_index;
+/// use bindy_api::status_reasons::extract_child_index;
 ///
 /// assert_eq!(extract_child_index("Bind9Instance-0"), Some(0));
 /// assert_eq!(extract_child_index("Pod-5"), Some(5));

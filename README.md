@@ -31,7 +31,7 @@
 ## Security & Compliance
 
 [![SPDX](https://img.shields.io/badge/SPDX-License--Identifier-blue)](https://spdx.dev/)
-[![SLSA 3](https://img.shields.io/badge/SLSA-Level%203-blue)](https://slsa.dev)
+[![SLSA Build L3](https://img.shields.io/badge/SLSA-Build%20L3-blue)](docs/src/compliance/slsa.md)
 [![Cosign Signed](https://img.shields.io/badge/releases-signed-brightgreen.svg)](docs/security/SIGNED_RELEASES.md)
 [![Commits Signed](https://img.shields.io/badge/commits-signed-brightgreen.svg)](CONTRIBUTING.md#commit-signing-requirements)
 [![SBOM](https://img.shields.io/badge/SBOM-CycloneDX-orange)](https://cyclonedx.org/)
@@ -520,8 +520,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 ## Security
 
 - **Signed Releases**: All releases signed with Cosign (keyless). [Verify releases →](docs/security/SIGNED_RELEASES.md)
-- **SLSA Level 3**: Build provenance for supply chain security
-- **SBOM**: CycloneDX SBOM included with every release
+- **SLSA Build L3**: Provenance for every release tarball, manifest, SBOM and image, verifiable with `slsa-verifier` ([SLSA compliance](docs/src/compliance/slsa.md))
+- **SBOM**: Signed CycloneDX SBOM for every release binary and image, bound to the artifact's digest
 - **Multi-Layer Security Scanning**:
   - **CodeQL**: Static application security testing (SAST) for Rust code
   - **cargo-deny**: Dependency security, license compliance, and supply chain validation

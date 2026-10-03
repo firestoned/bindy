@@ -83,7 +83,7 @@ Bindy is designed for use in regulated banking environments where DNS infrastruc
 
 #### AC-2: Multi-Tenancy Support
 - **Control:** Tenant isolation via Kubernetes namespaces
-- **Evidence:** `src/reconcilers/dnszone.rs`, namespace filtering
+- **Evidence:** `crates/bindy/src/reconcilers/dnszone.rs`, namespace filtering
 - **Implementation:**
   - Resources scoped to namespaces
   - Cross-namespace access denied by default
@@ -100,7 +100,7 @@ Bindy is designed for use in regulated banking environments where DNS infrastruc
 
 #### AC-4: Audit Logging
 - **Control:** All privileged operations logged
-- **Evidence:** `src/reconcilers/*.rs`, tracing instrumentation
+- **Evidence:** `crates/bindy/src/reconcilers/*.rs`, tracing instrumentation
 - **Implementation:**
   - Structured logging via `tracing` crate
   - All reconciliation events logged with resource names
@@ -122,7 +122,7 @@ Bindy is designed for use in regulated banking environments where DNS infrastruc
 
 #### DI-2: Input Validation
 - **Control:** All input validated against schemas
-- **Evidence:** `src/crd.rs`, JSON Schema validation
+- **Evidence:** `crates/bindy-api/src/crd.rs`, JSON Schema validation
 - **Implementation:**
   - CRD schema validation on admission
   - Rust type safety enforces correctness
@@ -131,7 +131,7 @@ Bindy is designed for use in regulated banking environments where DNS infrastruc
 
 #### DI-3: Idempotent Operations
 - **Control:** Operations can be safely retried without side effects
-- **Evidence:** `src/reconcilers/*.rs`
+- **Evidence:** `crates/bindy/src/reconcilers/*.rs`
 - **Implementation:**
   - All reconcilers idempotent
   - State stored in Kubernetes API (source of truth)
@@ -140,7 +140,7 @@ Bindy is designed for use in regulated banking environments where DNS infrastruc
 
 #### DI-4: Data Consistency
 - **Control:** DNS zones synchronized across primary and secondary servers
-- **Evidence:** `src/bind9_resources.rs`, ConfigMap/Secret generation
+- **Evidence:** `crates/bindy/src/bind9_resources.rs`, ConfigMap/Secret generation
 - **Implementation:**
   - Zone serial numbers auto-incremented
   - AXFR/IXFR for zone transfers

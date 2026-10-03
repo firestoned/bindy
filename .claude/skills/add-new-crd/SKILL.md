@@ -7,7 +7,7 @@ description: Full procedure for adding a new Custom Resource Definition to the o
 
 ## Core steps
 
-1. Add the new `CustomResource` struct to `src/crd.rs`:
+1. Add the new `CustomResource` struct to `crates/bindy-api/src/crd.rs`:
 
    ```rust
    #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -23,7 +23,7 @@ description: Full procedure for adding a new Custom Resource Definition to the o
    }
    ```
 
-2. Register it in `src/bin/crdgen.rs` (and `src/bin/crddoc.rs`):
+2. Register it in `crates/bindy-api/src/bin/crdgen.rs` (and `crates/bindy-api/src/bin/crddoc.rs`):
 
    ```rust
    generate_crd::<MyNewResource>("mynewresources.crd.yaml", output_dir)?;
@@ -45,13 +45,13 @@ architecturally significant: ADR first, CALM model update
 
 Learned from PTRRecord (#475):
 
-- `src/crd.rs` — `DNSRecordKind` enum + `as_str`/`all`/`to_hickory_record_type`/`TryFrom` + `UnknownDNSRecordKind` error msg + spec struct
-- `src/context.rs` — `Stores` field, `RecordRef`, `collect_matching`
-- `src/record_impls.rs`, `src/constants.rs` (`KIND_*`), `src/labels.rs` (`FINALIZER_*`)
-- `src/bind9/types.rs` (`*RecordData`), `src/bind9/mod.rs` (manager method), `src/bind9/records/{mod.rs,<type>.rs,<type>_tests.rs}`
-- `src/reconcilers/records/{mod.rs,types.rs}`, `src/reconcilers/mod.rs`, `src/reconcilers/dnszone/{discovery.rs,cleanup.rs}`
-- `src/main.rs` — reflector api + store + spawn + `Stores` init + select arm + DNSZone `.watches`
-- `src/bootstrap.rs` (`build_all_crds`), `src/bin/{crdgen,crddoc}.rs`
+- `crates/bindy-api/src/crd.rs`: `DNSRecordKind` enum + `as_str`/`all`/`to_hickory_record_type`/`TryFrom` + `UnknownDNSRecordKind` error msg + spec struct
+- `crates/bindy/src/context.rs`: `Stores` field, `RecordRef`, `collect_matching`
+- `crates/bindy/src/record_impls.rs`, `crates/bindy-api/src/constants.rs` (`KIND_*`), `crates/bindy-api/src/labels.rs` (`FINALIZER_*`)
+- `crates/bindy/src/bind9/types.rs` (`*RecordData`), `crates/bindy/src/bind9/mod.rs` (manager method), `crates/bindy/src/bind9/records/{mod.rs,<type>.rs,<type>_tests.rs}`
+- `crates/bindy/src/reconcilers/records/{mod.rs,types.rs}`, `crates/bindy/src/reconcilers/mod.rs`, `crates/bindy/src/reconcilers/dnszone/{discovery.rs,cleanup.rs}`
+- `crates/bindy/src/main.rs`: reflector api + store + spawn + `Stores` init + select arm + DNSZone `.watches`
+- `crates/bindy/src/bootstrap.rs` (`build_all_crds`), `crates/bindy-api/src/bin/{crdgen,crddoc}.rs`
 - Non-src: `deploy/operator/rbac/{role,role-admin}.yaml`, admission policies 03+13, `deploy/kind-test.sh`, `examples/`, `docs/src/**` ("all N record types" counts!), `README.md`, `calm/bindy-control-plane.architecture.json`, `docs/mkdocs.yml` nav
 
 **Gotchas:** grep tests for the new kind string BEFORE implementing — tests

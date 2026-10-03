@@ -11,7 +11,7 @@
 //!
 //! Generated files will be written to deploy/operator/crds/ with proper headers.
 
-use bindy::crd::{
+use bindy_api::crd::{
     AAAARecord, ARecord, Bind9Cluster, Bind9Instance, CAARecord, CNAMERecord, ClusterBind9Provider,
     DNSZone, MXRecord, NSRecord, PTRRecord, SRVRecord, TXTRecord,
 };

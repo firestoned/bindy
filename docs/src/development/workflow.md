@@ -17,14 +17,14 @@ git checkout -b feature/my-feature
 
 2. **Make changes**
 - Edit code in `src/`
-- If modifying CRDs, edit Rust types in `src/crd.rs`
+- If modifying CRDs, edit Rust types in `crates/bindy-api/src/crd.rs`
 - Add tests
 - Update documentation
 
 3. **Regenerate CRDs (if modified)**
 ```bash
-# If you modified src/crd.rs, regenerate YAML files
-cargo run --bin crdgen
+# If you modified crates/bindy-api/src/crd.rs, regenerate YAML files
+cargo run -p bindy-api --features crdgen --bin crdgen
 # or
 make crds
 ```
@@ -56,11 +56,11 @@ git push origin feature/my-feature
 
 ## CRD Development
 
-**IMPORTANT:** `src/crd.rs` is the source of truth. CRD YAML files in `deploy/operator/crds/` are auto-generated.
+**IMPORTANT:** `crates/bindy-api/src/crd.rs` is the source of truth. CRD YAML files in `deploy/operator/crds/` are auto-generated.
 
 ### Modifying Existing CRDs
 
-1. **Edit the Rust type** in `src/crd.rs`:
+1. **Edit the Rust type** in `crates/bindy-api/src/crd.rs`:
 ```rust
 #[derive(CustomResource, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[kube(
@@ -79,7 +79,7 @@ pub struct Bind9ClusterSpec {
 
 2. **Regenerate YAML files**:
 ```bash
-cargo run --bin crdgen
+cargo run -p bindy-api --features crdgen --bin crdgen
 # or
 make crds
 ```
@@ -97,13 +97,13 @@ kubectl apply --dry-run=server -f deploy/operator/crds/bind9clusters.crd.yaml
 
 ### Adding New CRDs
 
-1. **Define the CustomResource** in `src/crd.rs`
-2. **Add to crdgen** in `src/bin/crdgen.rs`:
+1. **Define the CustomResource** in `crates/bindy-api/src/crd.rs`
+2. **Add to crdgen** in `crates/bindy-api/src/bin/crdgen.rs`:
 ```rust
 generate_crd::<MyNewResource>("mynewresources.crd.yaml", output_dir)?;
 ```
 3. **Regenerate YAMLs**: `make crds`
-4. **Export the type** in `src/lib.rs` if needed
+4. **Export the type** in `crates/bindy/src/lib.rs` if needed
 
 ### Generated YAML Format
 
