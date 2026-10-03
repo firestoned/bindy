@@ -11,7 +11,8 @@ use super::types::*;
 
 use crate::bind9::Bind9Manager;
 use crate::bind9_resources::{
-    build_configmap, build_deployment, build_service, build_service_account,
+    build_cluster_configmap, build_configmap, build_deployment, build_service,
+    build_service_account,
 };
 use crate::constants::{API_GROUP_VERSION, KIND_BIND9_INSTANCE};
 use crate::reconcilers::resources::create_or_apply;
@@ -188,17 +189,11 @@ pub(super) async fn create_or_update_resources(
 
     // 3. Create/update ConfigMap
     debug!("Step 3: Creating/updating ConfigMap");
-    create_or_update_configmap(
-        client,
-        namespace,
-        name,
-        instance,
-        cluster.as_ref(),
-        cluster_provider.as_ref(),
-    )
-    .await?;
+    let config_hash =
+        create_or_update_configmap(client, namespace, name, instance, cluster.as_ref()).await?;
 
-    // 4. Create/update Deployment (mounts the resolved RNDC Secret)
+    // 4. Create/update Deployment (mounts the resolved RNDC Secret; its pod
+    // template carries the config hash, so a config change rolls the pods)
     debug!("Step 4: Creating/updating Deployment");
     create_or_update_deployment(
         client,
@@ -208,6 +203,7 @@ pub(super) async fn create_or_update_resources(
         cluster.as_ref(),
         cluster_provider.as_ref(),
         &secret_name,
+        config_hash.as_deref(),
     )
     .await?;
 
@@ -862,33 +858,44 @@ async fn trigger_deployment_rollout(
 /// **Note:** If the instance belongs to a cluster (has `spec.clusterRef`), this function
 /// does NOT create an instance-specific `ConfigMap`. Instead, the instance will use the
 /// cluster-level shared `ConfigMap` created by the `Bind9Cluster` reconciler.
-async fn create_or_update_configmap(
-    client: &Client,
-    namespace: &str,
+/// The ConfigMap `instance`'s pods mount, rendered as bindy wants it.
+///
+/// * A cluster-managed instance (`clusterRef` naming a `Bind9Cluster`)
+///   mounts the cluster's shared `<cluster>-config`, rendered exactly as the
+///   cluster reconciler renders it ([`build_cluster_configmap`]), so either
+///   reconciler writing it writes the same bytes.
+/// * A standalone instance mounts its own `<name>-config` ([`build_configmap`]).
+/// * Custom `configMapRefs` on the cluster, or a `clusterRef` that names no
+///   `Bind9Cluster` here (a `ClusterBind9Provider`), leave nothing for this
+///   reconciler to keep current: `None`.
+///
+/// # Errors
+///
+/// Returns an error if an ACL, forwarder or listen entry fails validation.
+pub(super) fn desired_configmap_for_instance(
     name: &str,
+    namespace: &str,
     instance: &Bind9Instance,
     cluster: Option<&Bind9Cluster>,
-    _cluster_provider: Option<&crate::crd::ClusterBind9Provider>,
-) -> Result<()> {
-    // If instance belongs to a cluster, skip ConfigMap creation
-    // The cluster creates a shared ConfigMap that all instances use
+) -> anyhow::Result<Option<ConfigMap>> {
     if !instance.spec.cluster_ref.is_empty() {
-        debug!(
-            "Instance {}/{} belongs to cluster '{}', using cluster ConfigMap",
-            namespace, name, instance.spec.cluster_ref
-        );
-        return Ok(());
+        let Some(cluster) = cluster else {
+            return Ok(None);
+        };
+        let custom = cluster
+            .spec
+            .common
+            .config_map_refs
+            .as_ref()
+            .is_some_and(|refs| refs.named_conf.is_some() || refs.named_conf_options.is_some());
+        if custom {
+            return Ok(None);
+        }
+        return build_cluster_configmap(&instance.spec.cluster_ref, namespace, cluster).map(Some);
     }
 
-    // Instance is standalone (no clusterRef), create instance-specific ConfigMap
-    info!(
-        "Instance {}/{} is standalone, creating instance-specific ConfigMap",
-        namespace, name
-    );
-
-    // Get role-specific allow-transfer override from cluster config
-    // Note: We only reach this code for standalone instances (no clusterRef),
-    // so we should only have a namespace-scoped cluster here, not a global cluster
+    // Standalone: role-specific allow-transfer from a namespace-scoped
+    // cluster, if one was passed in.
     let role_allow_transfer = cluster.and_then(|c| match instance.spec.role {
         crate::crd::ServerRole::Primary => c
             .spec
@@ -903,30 +910,107 @@ async fn create_or_update_configmap(
             .as_ref()
             .and_then(|s| s.allow_transfer.as_ref()),
     });
+    build_configmap(name, namespace, instance, cluster, role_allow_transfer).map(Some)
+}
 
-    // build_configmap always returns a ConfigMap (it always carries at least
-    // rndc.conf, plus any file not overridden by custom configMapRefs); it
-    // returns Err if any ACL/forwarder/listen entry fails validation. The
-    // generated ConfigMap must always be created because the Deployment's
-    // `config` volume references it unconditionally.
-    let configmap = build_configmap(name, namespace, instance, cluster, role_allow_transfer)?;
-    let cm_api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
-    let cm_name = format!("{name}-config");
-
-    if (cm_api.get(&cm_name).await).is_ok() {
-        // ConfigMap exists, update it
-        info!("Updating ConfigMap {}/{}", namespace, cm_name);
-        cm_api
-            .replace(&cm_name, &PostParams::default(), &configmap)
-            .await?;
-        return Ok(());
+/// Whether the BIND config `instance` runs on is behind what bindy renders:
+/// the mounted ConfigMap's data differs from `desired`, or the Deployment's
+/// pods carry another [`crate::bind9_resources::CONFIG_HASH_ANNOTATION`].
+///
+/// The instance reconciler skips its resource step when the spec, the parent
+/// and every resource look unchanged; this is what makes an operator upgrade
+/// that renders differently count as a change.
+///
+/// # Arguments
+///
+/// * `actual_configmap` - The ConfigMap the pods mount, if it exists
+/// * `deployment` - The instance's Deployment, if it exists
+/// * `desired` - [`desired_configmap_for_instance`]; `None` means nothing is
+///   generated to keep current, which is never drift
+#[must_use]
+pub(super) fn config_drifted(
+    actual_configmap: Option<&ConfigMap>,
+    deployment: Option<&Deployment>,
+    desired: Option<&ConfigMap>,
+) -> bool {
+    let Some(desired) = desired else {
+        return false;
+    };
+    if actual_configmap.map(|cm| &cm.data) != Some(&desired.data) {
+        return true;
     }
+    let desired_hash = crate::bind9_resources::configmap_data_hash(desired);
+    deployment.and_then(config_hash_of) != Some(desired_hash.as_str())
+}
 
-    // ConfigMap doesn't exist, create it
-    info!("Creating ConfigMap {}/{}", namespace, cm_name);
-    cm_api.create(&PostParams::default(), &configmap).await?;
+/// Write the ConfigMap `instance`'s pods mount when its content differs from
+/// what bindy renders, and return the hash of that content.
+///
+/// Comparing content rather than the cluster's generation is what lets an
+/// operator upgrade that renders the same spec differently reach a running
+/// cluster: every instance is reconciled when the operator starts.
+///
+/// # Returns
+///
+/// The [`crate::bind9_resources::configmap_data_hash`] of the desired
+/// ConfigMap, or `None` when there is none to keep current.
+///
+/// # Errors
+///
+/// Returns an error if rendering fails or the API rejects the write.
+async fn create_or_update_configmap(
+    client: &Client,
+    namespace: &str,
+    name: &str,
+    instance: &Bind9Instance,
+    cluster: Option<&Bind9Cluster>,
+) -> Result<Option<String>> {
+    let Some(configmap) = desired_configmap_for_instance(name, namespace, instance, cluster)?
+    else {
+        debug!(
+            "Instance {}/{} has no generated ConfigMap to keep current",
+            namespace, name
+        );
+        return Ok(None);
+    };
+    let hash = crate::bind9_resources::configmap_data_hash(&configmap);
+    let cm_name = configmap.metadata.name.clone().unwrap_or_default();
+    let cm_api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
 
-    Ok(())
+    match cm_api.get_opt(&cm_name).await? {
+        Some(current) if current.data == configmap.data => {
+            debug!("ConfigMap {}/{} is current", namespace, cm_name);
+        }
+        Some(_) => {
+            info!(
+                "Updating ConfigMap {}/{} (rendered config changed)",
+                namespace, cm_name
+            );
+            cm_api
+                .replace(&cm_name, &PostParams::default(), &configmap)
+                .await?;
+        }
+        None => {
+            info!("Creating ConfigMap {}/{}", namespace, cm_name);
+            cm_api.create(&PostParams::default(), &configmap).await?;
+        }
+    }
+    Ok(Some(hash))
+}
+
+/// The [`crate::bind9_resources::CONFIG_HASH_ANNOTATION`] on a Deployment's
+/// pod template, if set.
+fn config_hash_of(deployment: &Deployment) -> Option<&str> {
+    deployment
+        .spec
+        .as_ref()?
+        .template
+        .metadata
+        .as_ref()?
+        .annotations
+        .as_ref()?
+        .get(crate::bind9_resources::CONFIG_HASH_ANNOTATION)
+        .map(String::as_str)
 }
 
 /// Check if a deployment needs updating by comparing current and desired state.
@@ -937,7 +1021,17 @@ async fn create_or_update_configmap(
 /// - API container environment variables
 /// - API container imagePullPolicy
 /// - API container resources
+/// - The BIND config hash on the pod template
+///   ([`crate::bind9_resources::CONFIG_HASH_ANNOTATION`])
 fn deployment_needs_update(current: &Deployment, desired: &Deployment) -> bool {
+    // The BIND config the pods mount changed: roll them.
+    if let Some(desired_hash) = config_hash_of(desired) {
+        if config_hash_of(current) != Some(desired_hash) {
+            debug!("BIND config hash changed: rolling the pods");
+            return true;
+        }
+    }
+
     // Compare desired replicas with current replicas
     let desired_replicas = desired.spec.as_ref().and_then(|s| s.replicas);
     let current_replicas = current.spec.as_ref().and_then(|s| s.replicas);
@@ -1083,8 +1177,9 @@ async fn create_or_update_deployment(
     cluster: Option<&Bind9Cluster>,
     cluster_provider: Option<&crate::crd::ClusterBind9Provider>,
     rndc_secret_name: &str,
+    config_hash: Option<&str>,
 ) -> Result<()> {
-    let deployment = build_deployment(
+    let mut deployment = build_deployment(
         name,
         namespace,
         instance,
@@ -1092,6 +1187,9 @@ async fn create_or_update_deployment(
         cluster_provider,
         rndc_secret_name,
     );
+    if let Some(hash) = config_hash {
+        crate::bind9_resources::stamp_config_hash(&mut deployment, hash);
+    }
     let api: Api<Deployment> = Api::namespaced(client.clone(), namespace);
 
     // Check if deployment exists - if not, create it and return early
@@ -1215,6 +1313,12 @@ async fn create_or_update_deployment(
     // When pod template labels change, Kubernetes will recreate pods with new labels
     if let Some(pod_labels) = pod_labels {
         patch["spec"]["template"]["metadata"] = json!({"labels": pod_labels});
+    }
+
+    // The config hash rolls the pods when the BIND config they mount changed.
+    if let Some(hash) = config_hash_of(&deployment) {
+        patch["spec"]["template"]["metadata"]["annotations"] =
+            json!({ crate::bind9_resources::CONFIG_HASH_ANNOTATION: hash });
     }
 
     api.patch(name, &PatchParams::default(), &Patch::Strategic(&patch))
