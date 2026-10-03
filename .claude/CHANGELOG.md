@@ -8,6 +8,8 @@
   builder pinned to `sha256:a99cfc51…`.
 - `docker/Dockerfile.chainguard`: `wolfi-base` and `glibc-dynamic` digests
   refreshed in the same `make update-image-digests` run.
+- `Cargo.lock`: `yoke-derive` 0.8.3 → 0.8.4. 0.8.3 was yanked, which fails
+  CI's `cargo audit --deny warnings` on every branch.
 
 ### Why
 The security scan on #515 flagged two HIGH OpenSSL CVEs in
