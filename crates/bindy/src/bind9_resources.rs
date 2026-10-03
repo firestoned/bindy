@@ -45,9 +45,10 @@ use std::collections::BTreeMap;
 use tracing::{debug, warn};
 
 // Embed configuration templates at compile time
-const NAMED_CONF_TEMPLATE: &str = include_str!("../templates/named.conf.tmpl");
-const NAMED_CONF_OPTIONS_TEMPLATE: &str = include_str!("../templates/named.conf.options.tmpl");
-const RNDC_CONF_TEMPLATE: &str = include_str!("../templates/rndc.conf.tmpl");
+const NAMED_CONF_TEMPLATE: &str = include_str!("../../../templates/named.conf.tmpl");
+const NAMED_CONF_OPTIONS_TEMPLATE: &str =
+    include_str!("../../../templates/named.conf.options.tmpl");
+const RNDC_CONF_TEMPLATE: &str = include_str!("../../../templates/rndc.conf.tmpl");
 
 // DNSSEC policy template for zone signing
 const DNSSEC_POLICY_TEMPLATE: &str = r#"

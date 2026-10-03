@@ -9,19 +9,42 @@ Bindy releases are cryptographically signed using [Cosign](https://github.com/si
 
 ## What Is Signed
 
-Every Bindy release includes signed artifacts:
+Every Bindy release includes signed artifacts ([ADR-0010](https://github.com/firestoned/bindy/blob/main/docs/adr/0010-release-sbom-and-slsa-build-l3.md)):
 
-1. **Container Images**:
-   - `ghcr.io/firestoned/bindy:*` (Chainguard base - default)
-   - `ghcr.io/firestoned/bindy:*-distroless` (Google Distroless base - alternative)
+1. **Container Images** (release tags only; PR and `main` images are not signed):
+   - `ghcr.io/firestoned/bindy:v*` (Chainguard base, default)
+   - `ghcr.io/firestoned/bindy:v*-distroless` (Google Distroless base, alternative)
 
 2. **Binary Tarballs**:
-   - `bindy-linux-amd64.tar.gz`
-   - `bindy-linux-arm64.tar.gz`
+   - `bindy-linux-amd64.tar.gz`, `bindy-linux-arm64.tar.gz`
+   - `bindy-macos-amd64.tar.gz`, `bindy-macos-arm64.tar.gz`
+   - `bindy-windows-amd64.tar.gz`
 
 3. **Signature Artifacts** (uploaded to releases):
    - `*.tar.gz.bundle` - Cosign signature bundles for binaries
    - Container signatures are stored in the OCI registry
+
+4. **SBOMs** (CycloneDX JSON, one per shipped artifact):
+   - `bindy-<os>-<arch>.cdx.json` for each binary tarball
+   - `bindy-image-chainguard.cdx.json`, `bindy-image-distroless.cdx.json` for the images
+   - Each is also a signed attestation bound to its artifact's digest
+
+5. **SLSA Build L3 provenance**:
+   - `<version>.intoto.jsonl` covering the tarballs, install manifests and SBOMs
+   - Image provenance pushed to GHCR next to each image
+
+Every signature and attestation names the release workflow as signer:
+`https://github.com/firestoned/bindy/.github/workflows/build.yaml@refs/tags/<version>`.
+Releases before v0.6.0 were signed by `release.yaml` instead of `build.yaml`.
+The examples below anchor on the signer, so a fork or a similarly named
+repository cannot pass verification:
+
+```bash
+SIGNER='^https://github\.com/firestoned/bindy/\.github/workflows/build\.yaml@refs/tags/'
+ISSUER='https://token.actions.githubusercontent.com'
+# Releases before v0.6.0:
+# SIGNER='^https://github\.com/firestoned/bindy/\.github/workflows/release\.yaml@refs/tags/'
+```
 
 ## Installing Cosign
 
@@ -51,23 +74,20 @@ Cosign uses **keyless signing** with Sigstore, which means:
 ### Quick Verification
 
 ```bash
-# Verify the latest Chainguard image
+# Verify a release (Chainguard)
 cosign verify \
-  --certificate-identity-regexp='https://github.com/firestoned/bindy' \
-  --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
-  ghcr.io/firestoned/bindy:latest
-
-# Verify a specific version
-cosign verify \
-  --certificate-identity-regexp='https://github.com/firestoned/bindy' \
-  --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
-  ghcr.io/firestoned/bindy:v0.1.0
+  --certificate-identity-regexp="$SIGNER" \
+  --certificate-oidc-issuer="$ISSUER" \
+  ghcr.io/firestoned/bindy:v0.8.0
 
 # Verify the Distroless variant
 cosign verify \
-  --certificate-identity-regexp='https://github.com/firestoned/bindy' \
-  --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
-  ghcr.io/firestoned/bindy:latest-distroless
+  --certificate-identity-regexp="$SIGNER" \
+  --certificate-oidc-issuer="$ISSUER" \
+  ghcr.io/firestoned/bindy:v0.8.0-distroless
+
+# Or, from a checkout of this repository
+make verify-image IMAGE_TAG=v0.8.0
 ```
 
 ### Understanding the Verification Output
@@ -130,8 +150,8 @@ Binary tarballs are signed with Cosign blob signing. Each release includes `.bun
 
 ```bash
 # Download the binary tarball and signature bundle from GitHub Releases
-VERSION="v0.1.0"
-PLATFORM="linux-amd64"  # or linux-arm64
+VERSION="v0.8.0"
+PLATFORM="linux-amd64"  # or linux-arm64, macos-amd64, macos-arm64, windows-amd64
 
 # Download tarball
 curl -LO "https://github.com/firestoned/bindy/releases/download/${VERSION}/bindy-${PLATFORM}.tar.gz"
@@ -142,8 +162,8 @@ curl -LO "https://github.com/firestoned/bindy/releases/download/${VERSION}/bindy
 # Verify the signature
 cosign verify-blob \
   --bundle "bindy-${PLATFORM}.tar.gz.bundle" \
-  --certificate-identity-regexp='https://github.com/firestoned/bindy' \
-  --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
+  --certificate-identity-regexp="$SIGNER" \
+  --certificate-oidc-issuer="$ISSUER" \
   "bindy-${PLATFORM}.tar.gz"
 ```
 
@@ -172,6 +192,7 @@ set -euo pipefail
 
 VERSION="${1:-latest}"
 PLATFORM="${2:-linux-amd64}"
+SIGNER='^https://github\.com/firestoned/bindy/\.github/workflows/build\.yaml@refs/tags/'
 
 if [ "$VERSION" = "latest" ]; then
   VERSION=$(curl -s https://api.github.com/repos/firestoned/bindy/releases/latest | grep tag_name | cut -d '"' -f 4)
@@ -187,7 +208,7 @@ curl -LO "https://github.com/firestoned/bindy/releases/download/${VERSION}/bindy
 echo "Verifying signature..."
 cosign verify-blob \
   --bundle "bindy-${PLATFORM}.tar.gz.bundle" \
-  --certificate-identity-regexp='https://github.com/firestoned/bindy' \
+  --certificate-identity-regexp="$SIGNER" \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
   "bindy-${PLATFORM}.tar.gz"
 
@@ -225,18 +246,56 @@ rekor-cli search --email noreply@github.com --rekor_server https://rekor.sigstor
 # https://search.sigstore.dev/?email=noreply@github.com
 ```
 
-### Verify SLSA Provenance
+### Verify SLSA Build L3 Provenance
 
-Bindy releases also include [SLSA provenance](https://slsa.dev/) attestations:
+Every release file and image has [SLSA v1.0](https://slsa.dev/spec/v1.0/levels)
+Build L3 provenance from the isolated `slsa-github-generator` workflows. Verify
+it with [`slsa-verifier`](https://github.com/slsa-framework/slsa-verifier)
+(`make slsa-verifier-install`):
 
 ```bash
-# Verify SLSA provenance for the container image
-cosign verify-attestation \
-  --type slsaprovenance \
-  --certificate-identity-regexp='https://github.com/firestoned/bindy' \
-  --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
-  ghcr.io/firestoned/bindy:${VERSION}
+# A tarball, install manifest or SBOM, against the release's provenance file
+curl -LO "https://github.com/firestoned/bindy/releases/download/${VERSION}/${VERSION#v}.intoto.jsonl"
+slsa-verifier verify-artifact "bindy-${PLATFORM}.tar.gz" \
+  --provenance-path "${VERSION#v}.intoto.jsonl" \
+  --source-uri github.com/firestoned/bindy \
+  --source-tag "${VERSION}"
+
+# An image: always by digest, never by tag
+DIGEST=$(crane digest ghcr.io/firestoned/bindy:${VERSION})
+slsa-verifier verify-image "ghcr.io/firestoned/bindy@${DIGEST}" \
+  --source-uri github.com/firestoned/bindy \
+  --source-tag "${VERSION}"
+
+# The same checks, from a checkout of this repository
+make verify-provenance ARTIFACT=bindy-${PLATFORM}.tar.gz VERSION=${VERSION}
+make verify-image-provenance IMAGE=ghcr.io/firestoned/bindy@${DIGEST} VERSION=${VERSION}
 ```
+
+### Verify the SBOM
+
+Each SBOM is a signed attestation bound to the artifact it describes, so you
+can prove the SBOM you read is the one generated for the binary or image you
+run:
+
+```bash
+# Binary: the SBOM attestation for this exact tarball
+gh attestation verify "bindy-${PLATFORM}.tar.gz" --repo firestoned/bindy \
+  --predicate-type https://cyclonedx.org/bom \
+  --signer-workflow firestoned/bindy/.github/workflows/build.yaml
+
+# Image: the attestation is also stored in GHCR next to the image
+gh attestation verify "oci://ghcr.io/firestoned/bindy@${DIGEST}" --repo firestoned/bindy \
+  --predicate-type https://cyclonedx.org/bom
+
+# Or
+make verify-sbom-attestation ARTIFACT=bindy-${PLATFORM}.tar.gz
+```
+
+The binary SBOMs list the operator's full Rust dependency tree. The image
+SBOMs list the base image's OS packages; Syft cannot see inside a Rust binary,
+so for the operator's own dependencies read the binary SBOM of the same
+release.
 
 ## Kubernetes Deployment Verification
 
@@ -360,7 +419,7 @@ spec:
                     # Releases are signed by the consolidated build.yaml
                     # workflow. Releases published before the consolidation
                     # were signed by the former release.yaml identity.
-                    subject: "https://github.com/firestoned/bindy/.github/workflows/build.yaml@*"
+                    subject: "https://github.com/firestoned/bindy/.github/workflows/build.yaml@refs/tags/*"
                     issuer: "https://token.actions.githubusercontent.com"
                     rekor:
                       url: https://rekor.sigstore.dev
@@ -514,9 +573,11 @@ Full license text: [LICENSE](../../../LICENSE)
 - **Evidence**: SPDX verification blocks unapproved code (missing headers) from merging
 - **Automation**: CI/CD enforces license compliance before code review
 
-**SLSA Level 3 (Supply Chain Security):**
-- **Requirement**: Build environment provenance and dependencies
-- **Evidence**: SPDX headers enable automated SBOM generation with license info
+**SLSA / SBOM (Supply Chain Security):**
+- **Requirement**: Dependency inventory and license data for every shipped artifact
+- **Evidence**: SPDX headers give the SBOMs machine-readable license data for
+  bindy's own crates; provenance itself is covered under
+  [Verify SLSA Build L3 Provenance](#verify-slsa-build-l3-provenance)
 - **Transparency**: Every dependency's license is machine-readable
 
 ---

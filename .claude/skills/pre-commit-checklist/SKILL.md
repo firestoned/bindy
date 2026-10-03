@@ -18,15 +18,15 @@ Run before committing any change. Every applicable box must pass.
 - [ ] Rustdoc comments on all public items, accurate to actual behavior
 - [ ] `docs/src/` updated for user-facing changes
 
-## If `src/crd.rs` was modified
+## If `crates/bindy-api/src/crd.rs` was modified
 
-- [ ] `cargo run --bin crdgen` run (`regen-crds` skill)
+- [ ] `cargo run -p bindy-api --features crdgen --bin crdgen` run (`regen-crds` skill)
 - [ ] `examples/*.yaml` updated to match new schema
 - [ ] `docs/src/` documentation updated
 - [ ] `kubectl apply --dry-run=client -f examples/` passes (`validate-examples`)
-- [ ] `cargo run --bin crddoc > docs/src/reference/api.md` run LAST (`regen-api-docs`)
+- [ ] `cargo run -p bindy-api --features crdgen --bin crddoc > docs/src/reference/api.md` run LAST (`regen-api-docs`)
 
-## If `src/reconcilers/` was modified
+## If `crates/bindy/src/reconcilers/` was modified
 
 - [ ] Reconciliation flow diagrams updated in `docs/src/architecture/`
 - [ ] New behaviors documented in user guides

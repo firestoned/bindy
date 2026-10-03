@@ -9,8 +9,8 @@ is only the index; the skill files are canonical.
 |---|---|
 | `cargo-quality` | after ANY `.rs` change: fmt + clippy `-D warnings` + test (NON-NEGOTIABLE) |
 | `tdd-workflow` | before writing code: RED → GREEN → REFACTOR, tests in `_tests.rs` files |
-| `verify-crd-sync` | before debugging reconcile loops / non-persisting fields; after `src/crd.rs` edits |
-| `regen-crds` | after editing `src/crd.rs` — regenerate `deploy/operator/crds/` |
+| `verify-crd-sync` | before debugging reconcile loops / non-persisting fields; after `crates/bindy-api/src/crd.rs` edits |
+| `regen-crds` | after editing `crates/bindy-api/src/crd.rs`: regenerate `deploy/operator/crds/` |
 | `validate-examples` | after schema changes / before committing `examples/` |
 | `regen-api-docs` | LAST step of any CRD change — regenerate `docs/src/reference/api.md` |
 | `add-new-crd` | adding a new CRD (full ~20-file checklist) |

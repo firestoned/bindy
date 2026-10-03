@@ -4,11 +4,11 @@ This directory contains the auto-generated API reference documentation for Bindy
 
 ## Generating Documentation
 
-The API reference is automatically generated from the Rust type definitions in `src/crd.rs` using the `crddoc` binary:
+The API reference is automatically generated from the Rust type definitions in `crates/bindy-api/src/crd.rs` using the `crddoc` binary:
 
 ```bash
 # Generate the API reference
-cargo run --bin crddoc > docs/src/reference/api.md
+cargo run -p bindy-api --features crdgen --bin crddoc > docs/src/reference/api.md
 
 # Or use the make target (includes all docs)
 make docs

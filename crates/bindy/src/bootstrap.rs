@@ -114,21 +114,22 @@ pub const OPERATOR_IMAGE_BASE: &str = "ghcr.io/firestoned/bindy";
 pub const DEFAULT_IMAGE_TAG: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 
 /// Embedded RBAC YAML files — compiled into the binary so bootstrap is self-contained.
-pub const BINDY_ROLE_YAML: &str = include_str!("../deploy/operator/rbac/role.yaml");
-pub const BINDY_ADMIN_ROLE_YAML: &str = include_str!("../deploy/operator/rbac/role-admin.yaml");
+pub const BINDY_ROLE_YAML: &str = include_str!("../../../deploy/operator/rbac/role.yaml");
+pub const BINDY_ADMIN_ROLE_YAML: &str =
+    include_str!("../../../deploy/operator/rbac/role-admin.yaml");
 
 /// Namespace-scoped split of [`BINDY_ROLE_YAML`]: the irreducible cluster-scoped half.
 ///
 /// Used when the operator runs with `BINDY_WATCH_NAMESPACES` set. Contains only
 /// `clusterbind9providers` — the one bindy kind with `scope: Cluster`.
 pub const BINDY_NAMESPACED_CLUSTER_ROLE_YAML: &str =
-    include_str!("../deploy/operator/rbac/namespaced/clusterrole.yaml");
+    include_str!("../../../deploy/operator/rbac/namespaced/clusterrole.yaml");
 
 /// Namespace-scoped split of [`BINDY_ROLE_YAML`]: the per-namespace half.
 ///
 /// Applied once per watched namespace, with `metadata.namespace` substituted.
 pub const BINDY_NAMESPACED_ROLE_YAML: &str =
-    include_str!("../deploy/operator/rbac/namespaced/role.yaml");
+    include_str!("../../../deploy/operator/rbac/namespaced/role.yaml");
 
 /// Embedded TokenReview ClusterRole (bindcar `0.7.0` Mode B).
 ///
@@ -136,7 +137,7 @@ pub const BINDY_NAMESPACED_ROLE_YAML: &str =
 /// `bind9` ServiceAccount) can validate the operator's bearer token against the
 /// API server. Mirrors `deploy/operator/rbac/tokenreview-clusterrole.yaml`.
 pub const BINDCAR_TOKENREVIEW_CLUSTER_ROLE_YAML: &str =
-    include_str!("../deploy/operator/rbac/tokenreview-clusterrole.yaml");
+    include_str!("../../../deploy/operator/rbac/tokenreview-clusterrole.yaml");
 
 /// Embedded TokenReview ClusterRoleBinding (bindcar `0.7.0` Mode B).
 ///
@@ -144,7 +145,7 @@ pub const BINDCAR_TOKENREVIEW_CLUSTER_ROLE_YAML: &str =
 /// `bindy-system`; the bootstrap path rewrites the subject namespace to the
 /// requested `--namespace` via [`build_tokenreview_cluster_role_binding`].
 pub const BINDCAR_TOKENREVIEW_CLUSTER_ROLE_BINDING_YAML: &str =
-    include_str!("../deploy/operator/rbac/tokenreview-clusterrolebinding.yaml");
+    include_str!("../../../deploy/operator/rbac/tokenreview-clusterrolebinding.yaml");
 
 /// Name shared by the TokenReview ClusterRole and ClusterRoleBinding.
 pub const BINDCAR_TOKENREVIEW_NAME: &str = "bindcar-tokenreview";

@@ -1,25 +1,25 @@
 ---
 name: verify-crd-sync
-description: Verify that the generated CRD YAMLs in deploy/operator/crds/ match the Rust source of truth in src/crd.rs. Use BEFORE investigating any reconciliation loop, infinite requeue, "field not appearing in kubectl output", or status patch that returns HTTP 200 but doesn't persist; and AFTER any edit to structs in src/crd.rs. Catches schema drift that causes silent field pruning.
+description: Verify that the generated CRD YAMLs in deploy/operator/crds/ match the Rust source of truth in crates/bindy-api/src/crd.rs. Use BEFORE investigating any reconciliation loop, infinite requeue, "field not appearing in kubectl output", or status patch that returns HTTP 200 but doesn't persist; and AFTER any edit to structs in crates/bindy-api/src/crd.rs. Catches schema drift that causes silent field pruning.
 ---
 
 # verify-crd-sync
 
-CRD YAMLs in `deploy/operator/crds/` are **auto-generated** from `src/crd.rs` by
+CRD YAMLs in `deploy/operator/crds/` are **auto-generated** from `crates/bindy-api/src/crd.rs` by
 the `crdgen` binary. When they drift, the API server prunes struct fields that
 exist in Rust but not in the deployed schema: patches succeed (HTTP 200) but the
 data never persists, causing silent reconciliation loops and missing `kubectl`
 output.
 
-`src/crd.rs` is the single source of truth. Never hand-edit the YAMLs.
+`crates/bindy-api/src/crd.rs` is the single source of truth. Never hand-edit the YAMLs.
 
 ## When to use
 
-- **After** any change to a struct in `src/crd.rs` (new field, rename, serde attr).
+- **After** any change to a struct in `crates/bindy-api/src/crd.rs` (new field, rename, serde attr).
 - **Before** investigating: reconciliation/requeue loops, a field not appearing in
   `kubectl get -o yaml`, a status patch that returns 200 but doesn't stick, or any
   "the controller ignores my change" report.
-- As part of a regression run after merging branches that touched `src/crd.rs`
+- As part of a regression run after merging branches that touched `crates/bindy-api/src/crd.rs`
   (large CRDs like `bind9instances.crd.yaml` exceed patch/merge tooling limits and
   are the ones most likely to be left stale).
 
@@ -30,7 +30,7 @@ output.
 Regenerate from Rust and diff against what's committed on disk:
 
 ```bash
-cargo run --bin crdgen
+cargo run -p bindy-api --features crdgen --bin crdgen
 git diff --stat -- deploy/operator/crds/
 ```
 
@@ -43,7 +43,7 @@ git diff -- deploy/operator/crds/<name>.crd.yaml
 ```
 
 The regenerated files ARE the fix — leave them in the working tree so they get
-committed alongside the `src/crd.rs` change.
+committed alongside the `crates/bindy-api/src/crd.rs` change.
 
 ### 2. Confirm a specific field round-trips (optional, cluster required)
 
@@ -54,7 +54,7 @@ If a field still misbehaves after step 1, verify the deployed cluster schema:
 kubectl get crd <plural>.bindy.firestoned.io -o yaml | grep -A 20 "<fieldName>:"
 
 # Rust definition it should match
-rg -A 10 "pub struct <StructName>" src/crd.rs
+rg -A 10 "pub struct <StructName>" crates/bindy-api/src/crd.rs
 ```
 
 ### 3. Apply the corrected CRDs to the cluster (only when asked)
@@ -72,14 +72,14 @@ command, don't execute it unprompted.
 ## Verification
 
 - `git diff --stat -- deploy/operator/crds/` is empty immediately after
-  `cargo run --bin crdgen` (regenerating twice is idempotent).
+  `cargo run -p bindy-api --features crdgen --bin crdgen` (regenerating twice is idempotent).
 - The previously-missing field appears in `kubectl get -o yaml` after the patch.
 - The reconciliation loop stops (observedGeneration catches up to
   metadata.generation).
 
 ## Related
 
-- `regen-crds` — the generation half of this workflow (edit `src/crd.rs` →
+- `regen-crds`: the generation half of this workflow (edit `crates/bindy-api/src/crd.rs` →
   `crdgen` → update `examples/` → `regen-api-docs` LAST).
 - CRD API reference docs are regenerated separately:
-  `cargo run --bin crddoc > docs/src/reference/api.md`.
+  `cargo run -p bindy-api --features crdgen --bin crddoc > docs/src/reference/api.md`.

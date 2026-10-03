@@ -105,16 +105,16 @@ TDD is MANDATORY except for:
 
 This is the **required pattern** for this codebase. Do NOT embed tests directly in source files.
 
-**Correct Pattern:** `src/foo.rs` → declare `#[cfg(test)] mod foo_tests;` at the bottom; `src/foo_tests.rs` → `#[cfg(test)] mod tests { use super::super::*; ... }`.
+**Correct Pattern:** `crates/bindy/src/foo.rs` → declare `#[cfg(test)] mod foo_tests;` at the bottom; `crates/bindy/src/foo_tests.rs` → `#[cfg(test)] mod tests { use super::super::*; ... }`.
 
 > **See:** `tdd-workflow` skill for the full file pattern and Arrange-Act-Assert examples.
 
 **Examples in This Codebase:**
-- `src/main.rs` → `src/main_tests.rs`
-- `src/bind9.rs` → `src/bind9_tests.rs`
-- `src/crd.rs` → `src/crd_tests.rs`
-- `src/bind9_resources.rs` → `src/bind9_resources_tests.rs`
-- `src/reconcilers/bind9cluster.rs` → `src/reconcilers/bind9cluster_tests.rs`
+- `crates/bindy/src/main.rs` → `crates/bindy/src/main_tests.rs`
+- `crates/bindy/src/bind9.rs` → `crates/bindy/src/bind9_tests.rs`
+- `crates/bindy-api/src/crd.rs` → `crates/bindy-api/src/crd_tests.rs`
+- `crates/bindy/src/bind9_resources.rs` → `crates/bindy/src/bind9_resources_tests.rs`
+- `crates/bindy/src/reconcilers/bind9cluster.rs` → `crates/bindy/src/reconcilers/bind9cluster_tests.rs`
 
 ### Test Coverage Requirements
 
@@ -140,9 +140,9 @@ This is the **required pattern** for this codebase. Do NOT embed tests directly 
 - If you add code but cannot write a test, document WHY in the code comments
 
 **Example:**
-If you modify `src/reconcilers/records.rs`:
-1. Update/add tests in `src/reconcilers/records_tests.rs` (separate file)
-2. Ensure `src/reconcilers/records.rs` has: `#[cfg(test)] mod records_tests;`
+If you modify `crates/bindy/src/reconcilers/records.rs`:
+1. Update/add tests in `crates/bindy/src/reconcilers/records_tests.rs` (separate file)
+2. Ensure `crates/bindy/src/reconcilers/records.rs` has: `#[cfg(test)] mod records_tests;`
 3. Run `cargo test --lib reconcilers::records` to verify
 4. Ensure ALL tests pass before moving on
 

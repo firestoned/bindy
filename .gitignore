@@ -90,3 +90,10 @@ docs/.venv/
 
 # E2E image handoff tarball (make e2e-image)
 /dist/
+
+# Generated SBOMs and SLSA subjects (ADR-0010)
+/sbom/
+/crates/*/*.cdx.json
+/crates/*/*.cdx.xml
+/subjects.sha256
+/subjects.b64

@@ -43,7 +43,7 @@ Full rule, applicability criteria, and checklist:
 
 ## 🚨 CRITICAL: Keep Bootstrap RBAC in Sync
 
-Any time you modify ClusterRole/Role/Binding definitions in `src/bootstrap.rs`, update ALL of:
+Any time you modify ClusterRole/Role/Binding definitions in `crates/bindy/src/bootstrap.rs`, update ALL of:
 
 | File | What to update |
 |------|---------------|
@@ -66,9 +66,9 @@ Before investigating any Kubernetes issue, verify CRDs match Rust code definitio
 
 > **How:** Run the `verify-crd-sync` skill.
 
-CRD YAMLs in `deploy/operator/crds/` are AUTO-GENERATED from `src/crd.rs`. Schema mismatches cause silent failures — patches succeed (HTTP 200) but fields don't persist.
+CRD YAMLs in `deploy/operator/crds/` are AUTO-GENERATED from `crates/bindy-api/src/crd.rs`. Schema mismatches cause silent failures: patches succeed (HTTP 200) but fields don't persist.
 
-**When to check:** reconciliation loops, "field not appearing in kubectl output", after `src/crd.rs` edits, when status patches don't persist.
+**When to check:** reconciliation loops, "field not appearing in kubectl output", after `crates/bindy-api/src/crd.rs` edits, when status patches don't persist.
 
 ---
 
@@ -161,7 +161,7 @@ Full style guide: `rules/rust-style.md`. Full testing standards: `rules/testing.
 
 Write failing tests FIRST, then implement minimum code to pass. See `tdd-workflow` skill.
 
-Test file pattern: `src/foo.rs` → `#[cfg(test)] mod foo_tests;` at bottom → `src/foo_tests.rs`
+Test file pattern: `crates/bindy/src/foo.rs` → `#[cfg(test)] mod foo_tests;` at bottom → `crates/bindy/src/foo_tests.rs`
 
 ### Dependency Management
 
@@ -173,7 +173,7 @@ Before adding deps: verify actively maintained (commits in last 6 months), prefe
 
 ### CRD Development — Rust as Source of Truth
 
-`src/crd.rs` is the source of truth. YAML files in `deploy/operator/crds/` are auto-generated — never edit them directly.
+`crates/bindy-api/src/crd.rs` is the source of truth. YAML files in `deploy/operator/crds/` are auto-generated; never edit them directly.
 
 > CRD changes: `regen-crds` skill → update `examples/` → `regen-api-docs` skill (LAST).
 
@@ -183,7 +183,7 @@ Adding a new CRD: follow `add-new-crd` skill.
 
 ### CRD Documentation Examples
 
-ALWAYS read `deploy/operator/crds/*.crd.yaml` or `src/crd.rs` before writing any YAML examples. Never guess field names.
+ALWAYS read `deploy/operator/crds/*.crd.yaml` or `crates/bindy-api/src/crd.rs` before writing any YAML examples. Never guess field names.
 
 ### Controllers: Event-Driven (Watch, Not Poll)
 
@@ -235,18 +235,29 @@ See `rules/testing.md` for full standards.
 
 ## 📁 File Organization
 
+Cargo workspace (ADR-0009, roadmap 01). The split is in progress: crates
+move out of `crates/bindy` one phase at a time.
+
 ```
-src/
-├── main.rs / main_tests.rs
-├── crd.rs / crd_tests.rs
-├── bind9/                  ← BIND9 module (mod.rs, rndc.rs, duration.rs, records/) + *_tests.rs siblings
-├── bind9_resources.rs / bind9_resources_tests.rs
-├── reconcilers/
-│   ├── bind9cluster/       ← modular (mod.rs, config.rs, drift.rs, instances.rs, status_helpers.rs, types.rs)
-│   ├── bind9instance/      ← modular (mod.rs, config.rs, resources.rs, zones.rs, cluster_helpers.rs, ...)
-│   ├── dnszone.rs / dnszone_tests.rs
-│   └── records/            ← modular (mod.rs, status_helpers.rs, types.rs)
-└── bin/ (crdgen.rs, crddoc.rs)
+Cargo.toml                  ← virtual [workspace]: package metadata + every dep pinned once
+crates/
+├── bindy-api/              ← leaf crate, no workspace deps
+│   └── src/
+│       ├── crd.rs / crd_tests.rs, crd_docs.rs, constants.rs, labels.rs,
+│       │   selector.rs, status_reasons.rs
+│       └── bin/ (crdgen.rs, crddoc.rs)   ← need `--features crdgen`
+└── bindy/                  ← the binary + everything not split out yet
+    ├── src/
+    │   ├── lib.rs          ← `pub use bindy_api::{crd, constants, ...}` keeps old paths working
+    │   ├── main.rs / main_tests.rs
+    │   ├── bind9/          ← BIND9 module (mod.rs, rndc.rs, duration.rs, records/) + *_tests.rs siblings
+    │   ├── bind9_resources.rs / bind9_resources_tests.rs
+    │   └── reconcilers/
+    │       ├── bind9cluster/   ← modular (mod.rs, config.rs, drift.rs, instances.rs, status_helpers.rs, types.rs)
+    │       ├── bind9instance/  ← modular (mod.rs, config.rs, resources.rs, zones.rs, cluster_helpers.rs, ...)
+    │       ├── dnszone.rs / dnszone_tests.rs
+    │       └── records/        ← modular (mod.rs, status_helpers.rs, types.rs)
+    └── tests/              ← Rust integration tests (shell suites stay in the root tests/)
 
 docs/
 ├── (roadmap detail docs live in .github/community/ + root ROADMAPS.md, not under docs/)

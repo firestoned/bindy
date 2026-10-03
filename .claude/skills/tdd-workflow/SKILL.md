@@ -35,8 +35,8 @@ cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic -A 
 
 ## Test file pattern (required)
 
-- Source: `src/foo.rs` → declare `#[cfg(test)] mod foo_tests;` at the bottom
-- Tests: `src/foo_tests.rs` → wrap in `#[cfg(test)] mod tests { use super::super::*; ... }`
+- Source: `crates/bindy/src/foo.rs` → declare `#[cfg(test)] mod foo_tests;` at the bottom
+- Tests: `crates/bindy/src/foo_tests.rs` → wrap in `#[cfg(test)] mod tests { use super::super::*; ... }`
 - Never embed `#[cfg(test)] mod tests` blocks inside the source file itself.
 
 ## Coverage requirements

@@ -1,0 +1,42 @@
+[package]
+name = "bindy-api"
+description = "Bindy CRD types, constants, labels and selectors (the workspace's leaf crate)"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+documentation.workspace = true
+homepage.workspace = true
+readme.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Builds the crdgen / crddoc binaries. Off by default so the operator's
+# build never compiles them.
+crdgen = ["dep:serde_yaml"]
+
+[dependencies]
+kube.workspace = true
+k8s-openapi.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hickory-proto.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde_yaml = { workspace = true, optional = true }
+
+[[bin]]
+name = "crdgen"
+path = "src/bin/crdgen.rs"
+required-features = ["crdgen"]
+
+[[bin]]
+name = "crddoc"
+path = "src/bin/crddoc.rs"
+required-features = ["crdgen"]

@@ -1,0 +1,61 @@
+[package]
+name = "bindy"
+description = "BIND9 DNS Operator for Kubernetes"
+keywords = ["kubernetes", "dns", "bind9", "operator", "operator"]
+categories = ["network-programming", "web-programming"]
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+documentation.workspace = true
+homepage.workspace = true
+readme.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints]
+workspace = true
+
+[dependencies]
+bindy-api.workspace = true
+kube.workspace = true
+kube-lease-manager.workspace = true
+tower.workspace = true
+http.workspace = true
+json-patch.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+futures.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+k8s-openapi.workspace = true
+reqwest.workspace = true
+base64.workspace = true
+rand.workspace = true
+hickory-net.workspace = true
+hickory-proto.workspace = true
+rustls.workspace = true
+webpki.workspace = true
+rustls-pki-types.workspace = true
+url.workspace = true
+bindcar.workspace = true
+prometheus.workspace = true
+axum.workspace = true
+sha2.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+wiremock.workspace = true

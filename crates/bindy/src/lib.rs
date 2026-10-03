@@ -65,18 +65,19 @@
 //!
 //! For more information, see the [documentation](https://firestoned.github.io/bindy/).
 
+// The API surface lives in the `bindy-api` leaf crate (ADR-0009). It is
+// re-exported under the old paths so `crate::crd::...` and `bindy::crd::...`
+// keep resolving while the rest of the workspace split lands.
+pub use bindy_api::{constants, crd, crd_docs, labels, selector, status_reasons};
+
 pub mod bind9;
 pub mod bind9_acl;
 pub mod bind9_resources;
 pub mod bootstrap;
-pub mod constants;
 pub mod context;
-pub mod crd;
-pub mod crd_docs;
 pub mod ddns;
 pub mod dns_errors;
 pub mod http_errors;
-pub mod labels;
 pub mod metrics;
 pub mod placement;
 pub mod rate_limit;
@@ -90,8 +91,6 @@ pub mod record_wrappers;
 pub mod namespace_scope;
 pub mod reconcilers;
 pub mod scout;
-pub mod selector;
-pub mod status_reasons;
 
 #[cfg(test)]
 mod bind9_acl_tests;
@@ -99,10 +98,6 @@ mod bind9_acl_tests;
 mod bind9_resources_tests;
 #[cfg(test)]
 mod bootstrap_tests;
-#[cfg(test)]
-mod crd_docs_tests;
-#[cfg(test)]
-mod crd_tests;
 #[cfg(test)]
 mod dns_errors_tests;
 #[cfg(test)]
@@ -115,5 +110,3 @@ mod record_operator_tests;
 mod record_wrappers_tests;
 #[cfg(test)]
 mod scout_tests;
-#[cfg(test)]
-mod status_reasons_tests;
