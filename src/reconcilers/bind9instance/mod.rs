@@ -392,19 +392,20 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
     }
 
     // Check if ALL required resources actually exist AND match desired state (drift detection)
-    let (all_resources_exist, deployment_labels_match, rotation_needed) = {
+    let (all_resources_exist, deployment_labels_match, rotation_needed, config_drifted) = {
         let deployment_api: Api<Deployment> = Api::namespaced(client.clone(), &namespace);
         let service_api: Api<Service> = Api::namespaced(client.clone(), &namespace);
         let configmap_api: Api<ConfigMap> = Api::namespaced(client.clone(), &namespace);
         let secret_api: Api<Secret> = Api::namespaced(client.clone(), &namespace);
 
         // Fetch deployment to check if it exists AND if OUR labels match
-        let (deployment_exists, labels_match) = match deployment_api.get(&name).await {
-            Ok(deployment) => (
+        let current_deployment = deployment_api.get(&name).await.ok();
+        let (deployment_exists, labels_match) = match current_deployment.as_ref() {
+            Some(deployment) => (
                 true,
-                deployment_labels_are_current(&deployment, &name, &instance),
+                deployment_labels_are_current(deployment, &name, &instance),
             ),
-            Err(_) => (false, false),
+            None => (false, false),
         };
 
         let service_exists = service_api.get(&name).await.is_ok();
@@ -415,7 +416,25 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
         } else {
             format!("{name}-config")
         };
-        let configmap_exists = configmap_api.get(&configmap_name).await.is_ok();
+        let current_configmap = configmap_api.get(&configmap_name).await.ok();
+        let configmap_exists = current_configmap.is_some();
+
+        // Config drift: the mounted config is behind what this operator renders
+        // (e.g. after an upgrade), or the pods were never rolled onto it. A
+        // render error counts as drift so the reconcile runs and reports it.
+        let config_drifted = match resources::desired_configmap_for_instance(
+            &name,
+            &namespace,
+            &instance,
+            cluster.as_ref(),
+        ) {
+            Ok(desired) => resources::config_drifted(
+                current_configmap.as_ref(),
+                current_deployment.as_ref(),
+                desired.as_ref(),
+            ),
+            Err(_) => true,
+        };
 
         // Check Secret existence AND rotation status
         let secret_name = format!("{name}-rndc-key");
@@ -445,7 +464,7 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
         };
 
         let all_exist = deployment_exists && service_exists && configmap_exists && secret_exists;
-        (all_exist, labels_match, needs_rotation)
+        (all_exist, labels_match, needs_rotation, config_drifted)
     };
     let cluster_ref = build_cluster_reference(cluster.as_ref(), cluster_provider.as_ref());
 
@@ -479,6 +498,7 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
         && deployment_labels_match
         && !rotation_needed
         && !parent_config_changed
+        && !config_drifted
     {
         debug!(
             "Spec unchanged (generation={:?}), all resources exist, deployment labels match, no rotation needed, and parent config unchanged - skipping resource reconciliation",
@@ -509,6 +529,13 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
     // - Deployment labels don't match desired state (drift), OR
     // - RNDC Secret rotation is due, OR
     // - Parent cluster configuration has changed
+    if config_drifted && all_resources_exist {
+        info!(
+            "BIND config for {}/{} is behind what this operator renders, updating it and rolling the pods",
+            namespace, name
+        );
+    }
+
     if !deployment_labels_match && all_resources_exist {
         info!(
             "Deployment labels don't match desired state for {}/{}, triggering reconciliation to update labels",
