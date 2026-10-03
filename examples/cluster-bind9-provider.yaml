@@ -80,7 +80,7 @@ spec:
       # Enable DNSSEC zone signing (Phases 1-4 implemented)
       signing:
         enabled: true
-        policy: "default"  # Built-in DNSSEC policy
+        policy: "bindy"  # Name of the policy bindy defines; never "default" (a BIND built-in)
         algorithm: "ECDSAP256SHA256"  # ECDSA P-256 (recommended)
         kskLifetime: "365d"  # Key Signing Key lifetime (1 year)
         zskLifetime: "90d"   # Zone Signing Key lifetime (3 months)

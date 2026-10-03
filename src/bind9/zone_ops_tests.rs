@@ -382,6 +382,98 @@ mod tests {
     }
 
     // =====================================================
+    // add_primary_zone on a zone that already exists
+    // =====================================================
+
+    fn test_soa_record() -> crate::crd::SOARecord {
+        crate::crd::SOARecord {
+            primary_ns: "ns1.example.com.".to_string(),
+            admin_email: "admin.example.com.".to_string(),
+            serial: 1,
+            refresh: 3600,
+            retry: 600,
+            expire: 604_800,
+            negative_ttl: 300,
+        }
+    }
+
+    /// A zone created before its DNSSEC policy was set (or before the
+    /// cluster enabled signing) must still be signed: on an existing zone the
+    /// policy goes out in the PATCH, even with no secondaries to update.
+    #[tokio::test]
+    async fn test_add_primary_zone_patches_dnssec_policy_onto_existing_zone() {
+        use wiremock::matchers::body_partial_json;
+        ensure_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/zones"))
+            .respond_with(ResponseTemplate::new(409).set_body_string("zone already exists"))
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/zones/example.com"))
+            .and(body_partial_json(
+                serde_json::json!({"dnssecPolicy": "core-dns"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = Arc::new(reqwest::Client::new());
+        let added = super::super::add_primary_zone(
+            &client,
+            None,
+            "example.com",
+            &server.uri(),
+            &test_key_data(),
+            &test_soa_record(),
+            None,
+            None,
+            None,
+            Some("core-dns"),
+        )
+        .await
+        .expect("an existing zone is not an error");
+
+        assert!(!added, "the zone already existed");
+    }
+
+    /// No policy and no secondaries: nothing to change on an existing zone,
+    /// so no PATCH (which would also cost bindcar an `rndc modzone`).
+    #[tokio::test]
+    async fn test_add_primary_zone_existing_zone_without_policy_sends_no_patch() {
+        ensure_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/zones"))
+            .respond_with(ResponseTemplate::new(409).set_body_string("zone already exists"))
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let client = Arc::new(reqwest::Client::new());
+        super::super::add_primary_zone(
+            &client,
+            None,
+            "example.com",
+            &server.uri(),
+            &test_key_data(),
+            &test_soa_record(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("an existing zone is not an error");
+    }
+
+    // =====================================================
     // create_zone_http via the shared retry path
     // =====================================================
 

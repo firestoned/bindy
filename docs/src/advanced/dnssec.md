@@ -116,7 +116,7 @@ spec:
       validation: true
       signing:
         enabled: true
-        policy: "default"          # Policy name referenced by zones
+        policy: "bindy"            # Name of the policy bindy defines; zones inherit it
         algorithm: "ECDSAP256SHA256"  # Recommended: ECDSA P-256
         kskLifetime: "365d"        # Key Signing Key lifetime
         zskLifetime: "90d"         # Zone Signing Key lifetime
@@ -128,10 +128,16 @@ spec:
         exportToSecret: true       # Back up generated keys to a Secret
 ```
 
+`policy` names the `dnssec-policy` block bindy defines from these settings.
+It defaults to `"bindy"`. BIND reserves `"default"`, `"insecure"` and `"none"`
+for its built-in policies and refuses to load a configuration that redefines
+one, so bindy refuses those names. A `DNSZone` with no `dnssecPolicy` of its
+own is signed with this policy.
+
 This generates a `dnssec-policy` block in `named.conf` similar to:
 
 ```bind
-dnssec-policy "default" {
+dnssec-policy "bindy" {
     keys {
         ksk lifetime 365d algorithm ECDSAP256SHA256;
         zsk lifetime 90d algorithm ECDSAP256SHA256;
@@ -183,19 +189,29 @@ When `dnssecPolicy` is set, `inline-signing yes;` is automatically added to the 
 ```yaml
 signing:
   enabled: true
-  policy: "default"
+  policy: "bindy"
   autoGenerate: true
   exportToSecret: true  # Back up keys to a Kubernetes Secret
 ```
 
-BIND9 generates KSK and ZSK keys automatically. With `exportToSecret: true`, the operator exports the generated keys to a Secret for backup and recovery.
+BIND9 generates KSK and ZSK keys automatically, in the key directory
+(`/var/cache/bind/keys`, which bindy sets as `key-directory` whenever signing
+is enabled).
+
+!!! warning "Auto-generated keys do not survive a pod restart yet"
+    The key directory is an `emptyDir`, so a restarted pod generates new keys
+    and the zone is re-signed with them. `exportToSecret` and
+    `keysFrom.persistentVolume` are accepted by the CRD but **not yet
+    implemented**: nothing is exported, and no volume is created. Until they
+    are, use user-supplied keys (Option 2) for any zone whose DS record is
+    published at its parent.
 
 #### Option 2: User-Supplied Keys (Recommended for Production)
 
 ```yaml
 signing:
   enabled: true
-  policy: "default"
+  policy: "bindy"
   keysFrom:
     secretRef:
       name: my-dnssec-keys

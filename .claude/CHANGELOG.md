@@ -1,3 +1,61 @@
+## [2026-10-03 14:30] - DNSSEC signing actually signs: reserved policy names, inheritance, existing zones, key directory
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/bind9_resources.rs`: a `global.dnssec.signing.policy` of `default`,
+  `insecure` or `none` (any case) is refused. BIND reserves those for its
+  built-in policies, and `dnssec-policy "default" { ... }` made named refuse
+  to load its whole configuration, crash-looping every instance. The unnamed
+  default is now `"bindy"` (`DEFAULT_DNSSEC_POLICY_NAME`); the docs and
+  examples had recommended `policy: "default"`.
+- `src/bind9_resources.rs` (`resolve_zone_dnssec_policy`) and
+  `src/reconcilers/dnszone.rs` (`zone_dnssec_policy`): a `DNSZone` with no
+  `spec.dnssecPolicy` inherits its primary instance's signing policy
+  (instance config over cluster/provider `global`), as the CRD documents.
+  Before, only an explicit `dnssecPolicy` was ever sent, so enabling signing
+  on a cluster signed nothing.
+- `src/bind9/zone_ops.rs` (`add_primary_zone`, `update_primary_zone`): on a
+  zone that already exists, the PATCH now carries `dnssecPolicy` (bindcar
+  0.8.2's ADR-0001 transition), so a policy set or inherited after the zone
+  was created reaches BIND. Absent fields are no longer sent as `null`; no
+  PATCH is sent when there is neither a policy nor secondaries.
+- `templates/named.conf.options.tmpl`, `src/bind9_resources.rs`
+  (`render_key_directory`): with signing enabled, `key-directory
+  "/var/cache/bind/keys"` points BIND at the key mount. Without it BIND kept
+  keys in its working directory, so keys from `keysFrom.secretRef` were
+  never read.
+
+### Changed
+- `src/crd.rs`, regenerated `deploy/operator/crds/*.crd.yaml`: `policy` and
+  `dnssecPolicy` descriptions say what bindy does (defines a policy named
+  `bindy` by default; zones inherit it; BIND's built-ins are refused for
+  definitions, and `insecure`/`none` unsign a zone).
+- `docs/src/advanced/dnssec.md`, `examples/dnssec-signing-enabled.yaml`,
+  `examples/cluster-bind9-provider.yaml`: `policy: "bindy"`; the guide now
+  says `exportToSecret` and `keysFrom.persistentVolume` are not implemented
+  (they never were: a debug log and a `warn!` fallback to `emptyDir`).
+
+### Tests
+- `bind9_resources_tests.rs`: reserved names refused, custom name accepted,
+  zone policy inheritance (named, unnamed, instance override, explicit wins,
+  signing off), `key-directory` rendered only with signing. Two existing
+  tests asserted the broken `dnssec-policy "default"` and now assert `bindy`.
+- `bind9/zone_ops_tests.rs`: existing zone gets a PATCH with
+  `dnssecPolicy`; no PATCH without a policy or secondaries.
+
+### Why
+Found running bindy v0.7.1 as a home network's DNS: following the documented
+DNSSEC example crash-looped the secondaries, and once renamed, no zone was
+ever signed. A restart of a primary was also checked live: the zone is
+re-added within seconds (bindcar 404, then 201), so that path works.
+
+### Impact
+- [x] Breaking change (`policy: "default"` is now refused; rename it)
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-03 09:00] - Refresh base image digests (OpenSSL CVE-2026-75804, CVE-2026-84782)
 
 **Author:** Erick Bourgeois

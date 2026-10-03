@@ -1223,8 +1223,10 @@ pub struct DNSZoneSpec {
     /// dnssecPolicy: "none"  # Disable signing (cluster has signing enabled)
     /// ```
     ///
-    /// **Note**: Custom policies require BIND9 `dnssec-policy` configuration.
-    /// Built-in policies: `"default"`, `"none"`
+    /// When unset, the zone inherits the signing policy of the instances that
+    /// serve it (`global.dnssec.signing.policy`, or `"bindy"` when signing is
+    /// enabled with no policy name). Name BIND's built-in `"insecure"` to
+    /// unsign a signed zone gracefully, and `"none"` once it is unsigned.
     ///
     /// The name is restricted to a safe identifier set (`[A-Za-z0-9_-]`, starting
     /// alphanumeric, max 63 chars) because it is interpolated into a quoted BIND9
@@ -2429,7 +2431,7 @@ pub struct RateLimitConfig {
 ///   validation: true  # Validate upstream DNSSEC responses
 ///   signing:
 ///     enabled: true
-///     policy: "default"
+///     policy: "bindy"
 ///     algorithm: "ECDSAP256SHA256"
 ///     kskLifetime: "365d"
 ///     zskLifetime: "90d"
@@ -2476,7 +2478,7 @@ pub struct DNSSECConfig {
 /// ```yaml
 /// signing:
 ///   enabled: true
-///   policy: "default"
+///   policy: "bindy"
 ///   algorithm: "ECDSAP256SHA256"
 ///   kskLifetime: "365d"
 ///   zskLifetime: "90d"
@@ -2497,12 +2499,13 @@ pub struct DNSSECSigningConfig {
 
     /// DNSSEC policy name
     ///
-    /// Name of the DNSSEC policy to apply. Built-in policies:
-    /// - `"default"` - Standard policy with ECDSA P-256, 365d KSK, 90d ZSK
+    /// Name of the `dnssec-policy` block bindy defines from the settings
+    /// below (algorithm, key lifetimes, NSEC/NSEC3). Zones without their own
+    /// `dnssecPolicy` are signed with it.
     ///
-    /// Custom policies can be defined in future enhancements.
-    ///
-    /// Default: `"default"`
+    /// Default: `"bindy"`. BIND's built-in names `"default"`, `"insecure"`
+    /// and `"none"` are refused: BIND will not load a configuration that
+    /// redefines them.
     ///
     /// The name is restricted to a safe identifier set (`[A-Za-z0-9_-]`, starting
     /// alphanumeric, max 63 chars) because it is interpolated into a quoted BIND9

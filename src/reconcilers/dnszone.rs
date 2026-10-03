@@ -1126,6 +1126,65 @@ fn zone_manager_for_instance(
     )
 }
 
+/// The `dnssec-policy` to configure `spec`'s zone with, resolved from the
+/// reflector caches (no API calls).
+///
+/// Uses the first primary instance: its own `spec.config` and its cluster's
+/// (`Bind9Cluster` in its namespace, else the cluster-scoped
+/// `ClusterBind9Provider`) `global` config, the same pair the instance's
+/// `named.conf` policies are rendered from. See
+/// [`crate::bind9_resources::resolve_zone_dnssec_policy`].
+///
+/// # Arguments
+///
+/// * `ctx` - Operator context holding the reflector stores
+/// * `spec` - The zone's spec
+/// * `primary_instance_refs` - The zone's primary instances
+///
+/// # Returns
+///
+/// The policy name, or `None` for an unsigned zone.
+fn zone_dnssec_policy(
+    ctx: &crate::context::Context,
+    spec: &crate::crd::DNSZoneSpec,
+    primary_instance_refs: &[crate::crd::InstanceReference],
+) -> Option<String> {
+    if spec.dnssec_policy.is_some() {
+        return crate::bind9_resources::resolve_zone_dnssec_policy(
+            spec.dnssec_policy.as_deref(),
+            None,
+            None,
+        );
+    }
+    let primary = primary_instance_refs.first()?;
+    let instance = ctx.stores.bind9_instances.state().into_iter().find(|i| {
+        i.name_any() == primary.name && i.namespace().unwrap_or_default() == primary.namespace
+    })?;
+    let cluster_ref = &instance.spec.cluster_ref;
+    let cluster_global = ctx
+        .stores
+        .bind9_clusters
+        .state()
+        .into_iter()
+        .find(|c| {
+            c.name_any() == *cluster_ref && c.namespace().unwrap_or_default() == primary.namespace
+        })
+        .and_then(|c| c.spec.common.global.clone());
+    let global = cluster_global.or_else(|| {
+        ctx.stores
+            .cluster_bind9_providers
+            .state()
+            .into_iter()
+            .find(|p| p.name_any() == *cluster_ref)
+            .and_then(|p| p.spec.common.global.clone())
+    });
+    crate::bind9_resources::resolve_zone_dnssec_policy(
+        None,
+        global.as_ref(),
+        instance.spec.config.as_ref(),
+    )
+}
+
 pub async fn add_dnszone(
     ctx: Arc<crate::context::Context>,
     dnszone: DNSZone,
@@ -1296,8 +1355,12 @@ pub async fn add_dnszone(
         all_nameserver_hostnames
     );
 
-    // Extract DNSSEC policy if configured
-    let dnssec_policy = spec.dnssec_policy.as_deref();
+    // The zone's DNSSEC policy: its own spec.dnssecPolicy, or the signing
+    // policy its primary instance renders (instance config over cluster
+    // global). Inheriting is what the CRD documents; without it a cluster
+    // with signing enabled would sign nothing.
+    let resolved_dnssec_policy = zone_dnssec_policy(&ctx, spec, &primary_instance_refs);
+    let dnssec_policy = resolved_dnssec_policy.as_deref();
     if let Some(policy) = dnssec_policy {
         info!(
             "DNSSEC policy '{}' will be applied to zone {}/{}",

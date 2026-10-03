@@ -321,8 +321,10 @@ spec:
                   dnssecPolicy: "none"  # Disable signing (cluster has signing enabled)
                   ```
 
-                  **Note**: Custom policies require BIND9 `dnssec-policy` configuration.
-                  Built-in policies: `"default"`, `"none"`
+                  When unset, the zone inherits the signing policy of the instances that
+                  serve it (`global.dnssec.signing.policy`, or `"bindy"` when signing is
+                  enabled with no policy name). Name BIND's built-in `"insecure"` to
+                  unsign a signed zone gracefully, and `"none"` once it is unsigned.
 
                   The name is restricted to a safe identifier set (`[A-Za-z0-9_-]`, starting
                   alphanumeric, max 63 chars) because it is interpolated into a quoted BIND9

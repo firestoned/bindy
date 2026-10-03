@@ -680,23 +680,23 @@ pub async fn add_primary_zone(
             if is_zone_already_exists_error(&e) {
                 info!("Zone {zone_name} already exists on {server} (HTTP 409 Conflict), treating as success");
 
-                // Zone exists - check if we need to update its configuration with secondary IPs
-                if let Some(ips) = secondary_ips {
-                    if !ips.is_empty() {
-                        info!(
-                            "Zone {zone_name} already exists on {server}, updating also-notify and allow-transfer with {} secondary server(s)",
-                            ips.len()
-                        );
-                        // Update the zone's also-notify and allow-transfer configuration
-                        // This is critical when secondary pods restart and get new IPs
-                        let _updated =
-                            update_primary_zone(client, token, zone_name, server, ips).await?;
-                        // IMPORTANT: Return Ok(false) because the zone was NOT newly added, it already existed
-                        // Returning true here would trigger status updates and cause a reconciliation loop
-                        return Ok(false);
-                    }
+                // Zone exists: bring its transfer ACLs (secondary pods get
+                // new IPs when they restart) and its DNSSEC policy (set, or
+                // inherited, after the zone was created) up to date.
+                let ips = secondary_ips.filter(|ips| !ips.is_empty());
+                if ips.is_some() || dnssec_policy.is_some() {
+                    info!(
+                        "Zone {zone_name} already exists on {server}, updating {} secondary server(s), dnssec-policy {:?}",
+                        ips.map_or(0, <[String]>::len),
+                        dnssec_policy
+                    );
+                    let _updated =
+                        update_primary_zone(client, token, zone_name, server, ips, dnssec_policy)
+                            .await?;
                 }
-
+                // IMPORTANT: Ok(false) because the zone was NOT newly added.
+                // Returning true would trigger status updates and cause a
+                // reconciliation loop.
                 Ok(false)
             } else {
                 Err(e).context("Failed to add zone")
@@ -718,7 +718,10 @@ pub async fn add_primary_zone(
 /// * `token` - Authentication token
 /// * `zone_name` - Name of the zone (e.g., "example.com")
 /// * `server` - API endpoint (e.g., "bind9-primary-api:8080")
-/// * `secondary_ips` - Updated list of secondary server IPs for also-notify and allow-transfer
+/// * `secondary_ips` - Updated secondary server IPs for also-notify and
+///   allow-transfer; `None` leaves both as they are
+/// * `dnssec_policy` - The zone's `dnssec-policy`; `None` leaves signing as
+///   it is (bindcar's merge semantics, its ADR-0001), never "unsign"
 ///
 /// # Returns
 ///
@@ -732,15 +735,21 @@ pub async fn update_primary_zone(
     token: Option<&str>,
     zone_name: &str,
     server: &str,
-    secondary_ips: &[String],
+    secondary_ips: Option<&[String]>,
+    dnssec_policy: Option<&str>,
 ) -> Result<bool> {
     // Define the update request structure
-    // IMPORTANT: Must match bindcar's ModifyZoneRequest which uses camelCase
+    // IMPORTANT: Must match bindcar's ModifyZoneRequest which uses camelCase.
+    // Absent fields are left unchanged by bindcar, so None is never sent.
     #[derive(Serialize, Debug)]
     #[serde(rename_all = "camelCase")]
     struct ZoneUpdateRequest {
+        #[serde(skip_serializing_if = "Option::is_none")]
         also_notify: Option<Vec<String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         allow_transfer: Option<Vec<String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dnssec_policy: Option<String>,
     }
 
     let base_url = build_api_url(server);
@@ -749,22 +758,21 @@ pub async fn update_primary_zone(
     let update_request = ZoneUpdateRequest {
         // NOTIFY targets the secondaries' operand port (5353); allow-transfer is
         // a bare-IP ACL.
-        also_notify: Some(with_transfer_port(secondary_ips)),
-        allow_transfer: Some(secondary_ips.to_vec()),
+        also_notify: secondary_ips.map(with_transfer_port),
+        allow_transfer: secondary_ips.map(<[String]>::to_vec),
+        dnssec_policy: dnssec_policy.map(String::from),
     };
 
+    let secondary_count = secondary_ips.map_or(0, <[String]>::len);
     info!(
-        "Updating zone {zone_name} on {server} with {} secondary server(s): {:?}",
-        secondary_ips.len(),
-        secondary_ips
+        "Updating zone {zone_name} on {server}: {secondary_count} secondary server(s), dnssec-policy {dnssec_policy:?}"
     );
 
     // Use PATCH to update only the specified fields
     match bindcar_request(client, token, "PATCH", &url, Some(&update_request)).await {
         Ok(_) => {
             info!(
-                "Successfully updated zone {zone_name} on {server} with also-notify and allow-transfer for {} secondary server(s)",
-                secondary_ips.len()
+                "Successfully updated zone {zone_name} on {server} ({secondary_count} secondary server(s), dnssec-policy {dnssec_policy:?})"
             );
             Ok(true)
         }
