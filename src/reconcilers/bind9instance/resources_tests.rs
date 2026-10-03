@@ -1287,4 +1287,153 @@ mod tests {
             );
         }
     }
+
+    // ------------------------------------------------------------------
+    // Volume convergence: a Deployment created before signing was enabled
+    // must gain the DNSSEC key volume when it is. The update path patched
+    // only the API container, labels and placement, so it never did, and
+    // BIND (now pointed at the key directory) had nowhere to keep keys.
+    // ------------------------------------------------------------------
+    mod volume_convergence {
+        use crate::bind9_resources::build_deployment;
+        use crate::crd::{
+            Bind9Cluster, Bind9ClusterCommonSpec, Bind9ClusterSpec, Bind9Config, Bind9Instance,
+            Bind9InstanceSpec, DNSSECConfig, DNSSECSigningConfig, ServerRole,
+        };
+        use crate::reconcilers::bind9instance::resources::{
+            build_volumes_patch_for_test as build_volumes_patch,
+            deployment_needs_update_for_test as deployment_needs_update,
+        };
+        use kube::api::ObjectMeta;
+
+        fn instance() -> Bind9Instance {
+            #[allow(deprecated)]
+            Bind9Instance {
+                metadata: ObjectMeta {
+                    name: Some("my-dns-primary-0".into()),
+                    namespace: Some("dns".into()),
+                    ..Default::default()
+                },
+                spec: Bind9InstanceSpec {
+                    cluster_ref: "my-dns".to_string(),
+                    role: ServerRole::Primary,
+                    replicas: Some(1),
+                    version: Some("9.18".into()),
+                    image: None,
+                    config_map_refs: None,
+                    config: None,
+                    primary_servers: None,
+                    volumes: None,
+                    volume_mounts: None,
+                    rndc_secret_ref: None,
+                    rndc_key: None,
+                    storage: None,
+                    placement: None,
+                    bindcar_config: None,
+                },
+                status: None,
+            }
+        }
+
+        fn cluster(signing: bool) -> Bind9Cluster {
+            let global = signing.then(|| Bind9Config {
+                rate_limit: None,
+                recursion: None,
+                allow_query: None,
+                allow_transfer: None,
+                dnssec: Some(DNSSECConfig {
+                    validation: Some(true),
+                    signing: Some(DNSSECSigningConfig {
+                        enabled: true,
+                        policy: Some("core-dns".into()),
+                        algorithm: None,
+                        ksk_lifetime: None,
+                        zsk_lifetime: None,
+                        nsec3: None,
+                        nsec3_salt: None,
+                        nsec3_iterations: None,
+                        keys_from: None,
+                        auto_generate: None,
+                        export_to_secret: None,
+                    }),
+                }),
+                forwarders: None,
+                listen_on: None,
+                listen_on_v6: None,
+                rndc_secret_ref: None,
+                bindcar_config: None,
+            });
+            Bind9Cluster::new(
+                "my-dns",
+                Bind9ClusterSpec {
+                    common: Bind9ClusterCommonSpec {
+                        version: Some("9.18".into()),
+                        primary: None,
+                        secondary: None,
+                        image: None,
+                        config_map_refs: None,
+                        global,
+                        rndc_secret_refs: None,
+                        acls: None,
+                        volumes: None,
+                        volume_mounts: None,
+                    },
+                },
+            )
+        }
+
+        #[test]
+        fn enabling_signing_on_an_existing_deployment_needs_an_update() {
+            let inst = instance();
+            let current = build_deployment(
+                "my-dns-primary-0",
+                "dns",
+                &inst,
+                Some(&cluster(false)),
+                None,
+                "k",
+            );
+            let desired = build_deployment(
+                "my-dns-primary-0",
+                "dns",
+                &inst,
+                Some(&cluster(true)),
+                None,
+                "k",
+            );
+            assert!(
+                deployment_needs_update(&current, &desired),
+                "a missing DNSSEC key volume must count as a change"
+            );
+            assert!(
+                !deployment_needs_update(&desired, &desired),
+                "an identical Deployment needs nothing"
+            );
+        }
+
+        #[test]
+        fn the_patch_carries_the_key_volume_and_the_bind9_mount() {
+            let desired = build_deployment(
+                "my-dns-primary-0",
+                "dns",
+                &instance(),
+                Some(&cluster(true)),
+                None,
+                "k",
+            );
+            let (volumes, mounts) = build_volumes_patch(&desired);
+            let volumes = volumes.to_string();
+            let mounts = mounts.to_string();
+            assert!(volumes.contains("\"dnssec-keys\""), "volumes: {volumes}");
+            assert!(
+                volumes.contains("\"$patch\":\"replace\""),
+                "volumes replace, so stale ones go: {volumes}"
+            );
+            assert!(mounts.contains("/var/cache/bind/keys"), "mounts: {mounts}");
+            assert!(
+                mounts.contains("\"$patch\":\"replace\""),
+                "mounts: {mounts}"
+            );
+        }
+    }
 }

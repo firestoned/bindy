@@ -436,6 +436,23 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
             Err(_) => true,
         };
 
+        // Volume drift: the running Deployment lacks a pod volume or bind9
+        // mount this operator renders (the DNSSEC key volume, once signing is
+        // enabled on an existing cluster). Compared by name only, so the RNDC
+        // Secret name passed here does not matter.
+        let volumes_drifted = current_deployment.as_ref().is_some_and(|deployment| {
+            let desired = crate::bind9_resources::build_deployment(
+                &name,
+                &namespace,
+                &instance,
+                cluster.as_ref(),
+                cluster_provider.as_ref(),
+                &format!("{name}-rndc-key"),
+            );
+            resources::volumes_missing(deployment, &desired)
+        });
+        let config_drifted = config_drifted || volumes_drifted;
+
         // Check Secret existence AND rotation status
         let secret_name = format!("{name}-rndc-key");
         let (secret_exists, needs_rotation) = match secret_api.get(&secret_name).await {
