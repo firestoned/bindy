@@ -517,6 +517,60 @@ pub(crate) fn build_dnssec_key_volumes(
     (volumes, volume_mounts)
 }
 
+/// Pod-template annotation holding [`configmap_data_hash`] of the BIND
+/// configuration the pod mounts. BIND reads `named.conf` only at start, so a
+/// changed ConfigMap reaches it only through a new pod; changing this
+/// annotation is what rolls the Deployment. It covers changes from a spec
+/// edit and from an operator upgrade that renders the same spec differently.
+pub const CONFIG_HASH_ANNOTATION: &str = "bindy.firestoned.io/config-hash";
+
+/// Lowercase hex sha256 over a ConfigMap's `data`, key and value pairs in key
+/// order, each NUL-terminated so a byte moving from one file to the next is a
+/// different config.
+///
+/// # Arguments
+///
+/// * `configmap` - The ConfigMap whose content is hashed
+///
+/// # Returns
+///
+/// The digest, 64 hex characters.
+#[must_use]
+pub fn configmap_data_hash(configmap: &ConfigMap) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    for (key, value) in configmap.data.iter().flatten() {
+        hasher.update(key.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(value.as_bytes());
+        hasher.update([0u8]);
+    }
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Set [`CONFIG_HASH_ANNOTATION`] on a Deployment's pod template.
+///
+/// # Arguments
+///
+/// * `deployment` - The Deployment to stamp
+/// * `hash` - The hash of the ConfigMap its pods mount
+pub fn stamp_config_hash(deployment: &mut Deployment, hash: &str) {
+    let Some(spec) = deployment.spec.as_mut() else {
+        return;
+    };
+    spec.template
+        .metadata
+        .get_or_insert_with(Default::default)
+        .annotations
+        .get_or_insert_with(Default::default)
+        .insert(CONFIG_HASH_ANNOTATION.to_string(), hash.to_string());
+}
+
 /// Builds standardized Kubernetes labels for BIND9 instance resources.
 ///
 /// Creates labels for resources managed by `Bind9Instance` controller.
