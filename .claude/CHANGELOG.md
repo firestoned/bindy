@@ -1,3 +1,30 @@
+## [2026-10-03 09:00] - Refresh base image digests (OpenSSL CVE-2026-75804, CVE-2026-84782)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docker/Dockerfile`: `gcr.io/distroless/cc-debian13:nonroot` pinned to
+  `sha256:e792ab3d…` (ships `libssl3t64 3.5.7-1~deb13u3`); `debian:13-slim`
+  builder pinned to `sha256:a99cfc51…`.
+- `docker/Dockerfile.chainguard`: `wolfi-base` and `glibc-dynamic` digests
+  refreshed in the same `make update-image-digests` run.
+- `Cargo.lock`: `yoke-derive` 0.8.3 → 0.8.4. 0.8.3 was yanked, which fails
+  CI's `cargo audit --deny warnings` on every branch.
+
+### Why
+The security scan on #515 flagged two HIGH OpenSSL CVEs in
+`latest-distroless` (`libssl3t64 3.5.7-1~deb13u2`). The builder stage's
+`apt-get upgrade` already patches the copied `.so` files, but Trivy reads
+package versions from the distroless base's dpkg metadata, so only a new base
+digest clears the finding. A remote Trivy scan of the old digest reproduces
+both CVEs; the new digest reports zero HIGH/CRITICAL.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (rebuild and republish images)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-09-28 12:10] - Roadmap 12 complete: Scout remote endpoint mode (ADR-0008)
 
 **Author:** Erick Bourgeois
