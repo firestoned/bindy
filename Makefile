@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 
-.PHONY: kind-kubeconfig pin-release-images help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny cargo-machete gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh tls-transport-test ci-e2e e2e-image e2e-image-load e2e-lifecycle e2e-idempotency e2e-restart e2e-rust e2e-multi-tenancy e2e-regression e2e-zone-spread e2e-tls e2e-all e2e-clean calm-validate calm-docs calm-docs-check sbom-generate sbom-stage sbom-annotate sbom-check provenance-subjects slsa-verifier-install verify-provenance verify-image-provenance verify-sbom-attestation image-digest-record image-digests-matrix
+.PHONY: kind-kubeconfig pin-release-images help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny cargo-machete gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh tls-transport-test ci-e2e e2e-image e2e-image-load e2e-lifecycle e2e-idempotency e2e-restart e2e-rust e2e-multi-tenancy e2e-regression e2e-zone-spread e2e-tls e2e-all e2e-clean calm-validate calm-docs calm-docs-check sbom-generate sbom-stage sbom-annotate sbom-check cbom-generate cbom-check cbom-stage provenance-subjects slsa-verifier-install verify-provenance verify-image-provenance verify-sbom-attestation image-digest-record image-digests-matrix
 
 # Detect host architecture and derive the matching Linux cross-compilation target.
 # `uname -m` reports arm64 on Apple Silicon macOS but aarch64 on Linux ARM, so
@@ -1242,6 +1242,19 @@ sbom-annotate: ## Add producer metadata (supplier, author) to an SBOM if absent 
 sbom-check: ## Fail unless an SBOM meets the NTIA minimum elements (usage: make sbom-check SBOM=file.cdx.json)
 	@if [ -z "$(SBOM)" ]; then echo "Error: SBOM required"; exit 1; fi
 	@./scripts/sbom.sh check "$(SBOM)"
+
+# ── CBOM: cryptographic bill of materials (ADR-0011, roadmap 28) ─────────────
+CBOM_FILE ?= $(SBOM_DIR)/bindy-cbom.cdx.json
+
+cbom-generate: ## Stamp the curated CBOM template with build facts (serial, timestamp, versions from Cargo.lock)
+	@./scripts/cbom.sh generate "$(CBOM_FILE)"
+
+cbom-check: ## Fail unless the CBOM meets the ADR-0011 quality gate (usage: make cbom-check [CBOM_FILE=file.cdx.json])
+	@./scripts/cbom.sh check "$(CBOM_FILE)"
+
+cbom-stage: ## Generate and gate the release CBOM (mirrors sbom-stage)
+	@$(MAKE) --no-print-directory cbom-generate
+	@$(MAKE) --no-print-directory cbom-check
 
 provenance-subjects: ## Write base64 SLSA subjects for every file in DIR (signature bundles excluded) to OUT (usage: make provenance-subjects DIR=subjects OUT=subjects.b64)
 	@if [ -z "$(DIR)" ] || [ -z "$(OUT)" ]; then echo "Error: DIR and OUT required"; exit 1; fi

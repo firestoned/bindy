@@ -348,6 +348,31 @@ jobs:
           retention-days: ${{ github.event_name == 'release' && 90 || 1 }}
           if-no-files-found: error
 
+  # ── CBOM: cryptographic bill of materials (ADR-0011, roadmap 28) ──────────
+  # One curated CycloneDX 1.6 CBOM per release, platform-independent. The
+  # `sbom-` artifact prefix is deliberate: the release collection and the
+  # SLSA provenance subject globs pick it up like the SBOMs.
+  cbom:
+    name: CBOM
+    runs-on: ubuntu-latest
+    needs: [extract-version]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Generate and gate the CBOM
+        env:
+          VERSION: ${{ github.event_name == 'release' && needs.extract-version.outputs.version || '' }}
+        run: make cbom-stage
+
+      - name: Upload CBOM artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: sbom-cbom
+          path: sbom/bindy-cbom.cdx.json
+          retention-days: ${{ github.event_name == 'release' && 90 || 1 }}
+          if-no-files-found: error
+
   # ── Release-only extra platforms (release binaries/assets) ────────────────
   build-extras:
     name: Build - ${{ matrix.platform.name }}
@@ -653,7 +678,7 @@ jobs:
   ci-gate:
     name: PR Checks Passed
     runs-on: ubuntu-latest
-    needs: [changes, calm-validate, license-check, verify-commits, format, clippy, build, sbom, docker, security, vex-validate, trivy]
+    needs: [changes, calm-validate, license-check, verify-commits, format, clippy, build, sbom, cbom, docker, security, vex-validate, trivy]
     if: always()
     steps:
       - name: Fail if any required PR check failed or was cancelled
@@ -931,7 +956,7 @@ jobs:
     if: github.event_name == 'release'
     # Subjects are every built release file: tarballs, install manifests and
     # SBOMs (ADR-0010). Signature bundles are signatures, not subjects.
-    needs: [sign-artifacts, sbom, docker-release, package-deploy-manifests, extract-version]
+    needs: [sign-artifacts, sbom, cbom, docker-release, package-deploy-manifests, extract-version]
     outputs:
       hashes: ${{ steps.hash.outputs.hashes }}
     steps:
@@ -1017,7 +1042,7 @@ jobs:
     name: Upload Release Assets
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
-    needs: [build, build-extras, sbom, docker-release, sign-artifacts, slsa-provenance, slsa-image-provenance, package-deploy-manifests, vex-validate]
+    needs: [build, build-extras, sbom, cbom, docker-release, sign-artifacts, slsa-provenance, slsa-image-provenance, package-deploy-manifests, vex-validate]
     permissions:
       contents: write
     steps:
