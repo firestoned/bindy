@@ -1,3 +1,34 @@
+## [2026-10-04 06:15] - Roadmap 28: post-quantum cryptography (PQC) readiness
+
+**Author:** Erick Bourgeois
+
+### Added
+- `.github/community/28-pqc-readiness.md`: PQC readiness roadmap. Inventories
+  every cryptographic surface (DNSSEC signing, TSIG/RNDC HMAC, control-plane
+  TLS on the ring provider in both bindy and bindcar, supply-chain signatures,
+  Linkerd mTLS) with its quantum exposure, and phases the work: CBOM via the
+  roadmap 15 SBOM pipeline, HMAC-SHA1/224 deprecation, hybrid X25519MLKEM768
+  key exchange (needs a crypto-provider ADR, both ends), DNSSEC and sigstore
+  upstream watch items with revisit dates, closing threat-model pass.
+
+### Changed
+- `ROADMAPS.md`: row for roadmap 28 (⛔) under Security and compliance.
+- `.github/community/README.md`: added the missing index rows for 26 and 27
+  (never added when those roadmaps landed), moved the **current** marker for
+  the bindcar guides from 25 to 26, noted 25's open live verification.
+
+### Why
+Regulated-banking PQC readiness: NIST IR 8547 deprecates every configurable
+DNSSEC algorithm after 2030, and HNDL already applies to the TLS channels
+that carry TSIG secrets. The roadmap stakes out what is actionable now
+versus blocked upstream.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-10-03 21:00] - Release SBOMs and SLSA Build L3 for every release artifact (ADR-0010)
 
 **Author:** Erick Bourgeois

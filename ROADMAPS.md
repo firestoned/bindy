@@ -68,6 +68,7 @@ Statuses were verified against `fix-idempotency` @ `648ff7a` on 2026-09-10.
 | [15](.github/community/15-security-scanning.md) | Security scanning | 🔶 | Through phase 5 (license compliance), plus phase 6 SBOM/signing/provenance (2026-10-03, ADR-0010): NTIA-gated CycloneDX SBOM per binary and image, attested to the artifact digest; SLSA Build L3 for tarballs, manifests, SBOMs and images. Open: VEX generation, Polaris, required PR reviews (threat model M-36) |
 | [16](.github/community/16-audit-logging-secret-operations.md) | Audit logging for Secret operations | ⛔ | Approved 2026-03-09, never implemented — no audit-log emission in `src/`. Compliance-relevant; worth re-triaging rather than leaving to drift |
 | [17](.github/community/17-vex-documents.md) | VEX documents | ⛔ | No VEX generation step in `.github/workflows/`. Builds on the SBOM pipeline from 15 |
+| [28](.github/community/28-pqc-readiness.md) | Post-quantum cryptography (PQC) readiness | ⛔ | Created 2026-10-04. Phase 0 (CBOM via the 15 pipeline) and Phase 1 (TSIG HMAC-SHA1/224 deprecation) actionable now; Phase 2 (hybrid `X25519MLKEM768` on control-plane TLS) needs a crypto-provider ADR on both bindy and bindcar ends; DNSSEC + sigstore phases are upstream watch items with revisit dates |
 
 ### Testing, operations and dependencies
 
