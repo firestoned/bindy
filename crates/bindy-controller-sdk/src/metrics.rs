@@ -17,7 +17,7 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use bindy::metrics::{METRICS_REGISTRY, record_reconciliation_success};
+//! use bindy_controller_sdk::metrics::{METRICS_REGISTRY, record_reconciliation_success};
 //!
 //! // Record a successful reconciliation
 //! record_reconciliation_success("DNSZone", std::time::Duration::from_secs(1));
@@ -299,7 +299,7 @@ pub static KUBE_API_RATE_LIMIT_HITS_TOTAL: LazyLock<CounterVec> = LazyLock::new(
     counter
 });
 
-/// Total Kubernetes API call retries performed by `reconcilers::retry`
+/// Total Kubernetes API call retries performed by `crate::retry`
 ///
 /// Labels:
 /// - `operation`: Low-cardinality operation name (e.g., `get Bind9Cluster`) —

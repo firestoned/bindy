@@ -15,14 +15,14 @@
 //! 2. [`KubeApiMetricsLayer`] — counts every request, times it, and counts
 //!    server-side throttles (HTTP 429) into the Prometheus registry.
 //!
-//! Defaults come from [`crate::constants`] and can be overridden per
+//! Defaults come from [`bindy_api::constants`] and can be overridden per
 //! deployment with the `BINDY_KUBE_QPS` / `BINDY_KUBE_BURST` environment
 //! variables. Invalid overrides fall back to the defaults with a warning —
 //! a misconfigured limiter must never disable the operator or the limit.
 
-use crate::constants::{KUBE_CLIENT_BURST, KUBE_CLIENT_QPS};
 use crate::metrics::{record_kube_api_rate_limit_hit, record_kube_api_request};
 use anyhow::Result;
+use bindy_api::constants::{KUBE_CLIENT_BURST, KUBE_CLIENT_QPS};
 use http::{Request, Response, StatusCode};
 use kube::client::ClientBuilder;
 use kube::Client;

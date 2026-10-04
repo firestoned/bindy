@@ -18,8 +18,8 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use bindy::reconcilers::status::create_condition;
-//! use bindy::crd::Condition;
+//! use bindy_controller_sdk::status::create_condition;
+//! use bindy_api::crd::Condition;
 //!
 //! let condition = create_condition(
 //!     "Ready",
@@ -29,8 +29,8 @@
 //! );
 //! ```
 
-use crate::crd::{Condition, DNSZone, DNSZoneStatus, RecordReferenceWithTimestamp};
 use anyhow::Result;
+use bindy_api::crd::{Condition, DNSZone, DNSZoneStatus, RecordReferenceWithTimestamp};
 use chrono::Utc;
 use kube::api::Patch;
 use kube::{api::PatchParams, Api, Client, ResourceExt};
@@ -56,7 +56,7 @@ use tracing::debug;
 /// # Example
 ///
 /// ```rust,no_run
-/// # use bindy::reconcilers::status::create_condition;
+/// # use bindy_controller_sdk::status::create_condition;
 /// let condition = create_condition(
 ///     "Ready",
 ///     "True",
@@ -109,8 +109,8 @@ pub fn create_condition(
 /// # Example
 ///
 /// ```rust,no_run
-/// # use bindy::reconcilers::status::{create_condition, condition_changed};
-/// # use bindy::crd::Condition;
+/// # use bindy_controller_sdk::status::{create_condition, condition_changed};
+/// # use bindy_api::crd::Condition;
 /// let existing = Some(create_condition("Ready", "False", "Pending", "Waiting"));
 /// let new_cond = create_condition("Ready", "True", "Running", "All pods ready");
 ///
@@ -151,8 +151,8 @@ pub fn condition_changed(existing: &Option<Condition>, new_condition: &Condition
 /// # Example
 ///
 /// ```rust,no_run
-/// # use bindy::reconcilers::status::get_last_transition_time;
-/// # use bindy::crd::Condition;
+/// # use bindy_controller_sdk::status::get_last_transition_time;
+/// # use bindy_api::crd::Condition;
 /// let existing_conditions = vec![]; // From resource status
 /// let time = get_last_transition_time(&existing_conditions, "Ready");
 /// ```
@@ -182,8 +182,8 @@ pub fn get_last_transition_time(existing_conditions: &[Condition], condition_typ
 /// # Example
 ///
 /// ```rust,no_run
-/// # use bindy::reconcilers::status::find_condition;
-/// # use bindy::crd::Condition;
+/// # use bindy_controller_sdk::status::find_condition;
+/// # use bindy_api::crd::Condition;
 /// let conditions = vec![]; // From resource status
 /// if let Some(ready_condition) = find_condition(&conditions, "Ready") {
 ///     println!("Ready status: {}", ready_condition.status);
@@ -218,8 +218,8 @@ pub fn find_condition<'a>(
 /// # Example
 ///
 /// ```rust,ignore
-/// use bindy::reconcilers::status::update_condition_in_memory;
-/// use bindy::crd::DNSZoneStatus;
+/// use bindy_controller_sdk::status::update_condition_in_memory;
+/// use bindy_api::crd::DNSZoneStatus;
 ///
 /// let mut status = DNSZoneStatus::default();
 /// update_condition_in_memory(
@@ -278,7 +278,7 @@ pub fn update_condition_in_memory(
 /// # Example
 ///
 /// ```rust,ignore
-/// use bindy::reconcilers::status::conditions_equal;
+/// use bindy_controller_sdk::status::conditions_equal;
 ///
 /// let current_conditions = vec![/* ... */];
 /// let new_conditions = vec![/* ... */];
@@ -321,7 +321,7 @@ pub fn conditions_equal(current: &[Condition], new: &[Condition]) -> bool {
 /// # Example
 ///
 /// ```rust,ignore
-/// use bindy::reconcilers::status::DNSZoneStatusUpdater;
+/// use bindy_controller_sdk::status::DNSZoneStatusUpdater;
 ///
 /// async fn reconcile(client: Client, zone: DNSZone) -> Result<()> {
 ///     let mut status_updater = DNSZoneStatusUpdater::new(&zone);
@@ -434,7 +434,7 @@ impl DNSZoneStatusUpdater {
     ///
     /// * `dnssec` - DS records and signing state, or `None` when the zone has
     ///   no effective DNSSEC policy
-    pub fn set_dnssec(&mut self, dnssec: Option<crate::crd::DNSSECStatus>) {
+    pub fn set_dnssec(&mut self, dnssec: Option<bindy_api::crd::DNSSECStatus>) {
         if self.new_status.dnssec == dnssec {
             return;
         }
@@ -444,7 +444,7 @@ impl DNSZoneStatusUpdater {
 
     /// The DNSSEC status this update currently carries.
     #[must_use]
-    pub fn dnssec(&self) -> Option<&crate::crd::DNSSECStatus> {
+    pub fn dnssec(&self) -> Option<&bindy_api::crd::DNSSECStatus> {
         self.new_status.dnssec.as_ref()
     }
 
@@ -469,7 +469,7 @@ impl DNSZoneStatusUpdater {
         &mut self,
         name: &str,
         namespace: &str,
-        status: crate::crd::InstanceStatus,
+        status: bindy_api::crd::InstanceStatus,
         message: Option<String>,
     ) {
         use chrono::Utc;
@@ -490,9 +490,9 @@ impl DNSZoneStatusUpdater {
             // Add new instance
             self.new_status
                 .bind9_instances
-                .push(crate::crd::InstanceReferenceWithStatus {
-                    api_version: crate::constants::API_GROUP_VERSION.to_string(),
-                    kind: crate::constants::KIND_BIND9_INSTANCE.to_string(),
+                .push(bindy_api::crd::InstanceReferenceWithStatus {
+                    api_version: bindy_api::constants::API_GROUP_VERSION.to_string(),
+                    kind: bindy_api::constants::KIND_BIND9_INSTANCE.to_string(),
                     name: name.to_string(),
                     namespace: namespace.to_string(),
                     status,
@@ -601,12 +601,14 @@ impl DNSZoneStatusUpdater {
         self.set_condition("Ready", "False", "DuplicateZone", &message);
     }
 
-    /// Get a reference to the conditions list (for testing).
+    /// The conditions collected so far, before they are applied.
+    ///
+    /// Public rather than test-only so the zone reconciler's tests, in another
+    /// crate since the SDK split, can inspect them.
     ///
     /// # Returns
     ///
     /// A reference to the conditions vector in the new status.
-    #[cfg(test)]
     #[must_use]
     pub fn conditions(&self) -> &Vec<Condition> {
         &self.new_status.conditions
@@ -637,7 +639,7 @@ impl DNSZoneStatusUpdater {
 
         let patch_params = PatchParams::default();
         let merge_patch = Patch::Merge(&patch);
-        crate::reconcilers::retry::retry_api_call(
+        crate::retry::retry_api_call(
             || api.patch_status(&self.name, &patch_params, &merge_patch),
             "patch DNSZone status",
         )

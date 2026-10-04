@@ -353,7 +353,7 @@ mod reconcile_backoff_tests {
     fn test_cooldown_matches_the_not_ready_requeue_interval() {
         assert_eq!(
             REJECTED_WRITE_COOLDOWN,
-            Duration::from_secs(crate::record_wrappers::REQUEUE_WHEN_NOT_READY_SECS),
+            Duration::from_secs(crate::requeue::REQUEUE_WHEN_NOT_READY_SECS),
             "the cooldown exists to let the timed requeue drive retries, so it must not outlast it"
         );
     }

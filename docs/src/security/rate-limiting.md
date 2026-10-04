@@ -86,7 +86,7 @@ data:
 ### Status: ✅ Implemented ([ADR-0005](https://github.com/firestoned/bindy/blob/main/docs/adr/0005-client-side-kube-api-rate-limiting.md))
 
 Unlike client-go, `kube-rs` has no QPS/burst fields on `Config`; its extension
-point is the tower middleware stack. `crates/bindy/src/rate_limit.rs` builds the operator's
+point is the tower middleware stack. `crates/bindy-controller-sdk/src/rate_limit.rs` builds the operator's
 client through `kube::client::ClientBuilder` with two layers:
 
 - `tower::limit::RateLimitLayer` — allows `burst` requests per `burst / qps`

@@ -69,6 +69,9 @@
 // re-exported under the old paths so `crate::crd::...` and `bindy::crd::...`
 // keep resolving while the rest of the workspace split lands.
 pub use bindy_api::{constants, crd, crd_docs, labels, selector, status_reasons};
+// The shared controller framework lives in `bindy-controller-sdk` (ADR-0009,
+// roadmap 01 Phase B), re-exported under its old paths.
+pub use bindy_controller_sdk::{http_errors, metrics, namespace_scope, rate_limit};
 
 pub mod bind9;
 pub mod bind9_acl;
@@ -77,10 +80,7 @@ pub mod bootstrap;
 pub mod context;
 pub mod ddns;
 pub mod dns_errors;
-pub mod http_errors;
-pub mod metrics;
 pub mod placement;
-pub mod rate_limit;
 pub mod record_impls;
 pub mod record_operator;
 pub mod safe_volume;
@@ -88,7 +88,6 @@ pub mod safe_volume;
 #[macro_use]
 pub mod record_wrappers;
 
-pub mod namespace_scope;
 pub mod reconcilers;
 pub mod scout;
 
@@ -100,8 +99,6 @@ mod bind9_resources_tests;
 mod bootstrap_tests;
 #[cfg(test)]
 mod dns_errors_tests;
-#[cfg(test)]
-mod http_errors_tests;
 #[cfg(test)]
 mod record_impls_tests;
 #[cfg(test)]

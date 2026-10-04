@@ -1,0 +1,33 @@
+[package]
+name = "bindy-controller-sdk"
+description = "Shared controller framework for the bindy operator: errors, requeue, retry, finalizers, status, metrics"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+documentation.workspace = true
+homepage.workspace = true
+readme.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bindy-api.workspace = true
+kube.workspace = true
+k8s-openapi.workspace = true
+tower.workspace = true
+http.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+reqwest.workspace = true
+rand.workspace = true
+prometheus.workspace = true

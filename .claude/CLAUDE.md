@@ -246,9 +246,14 @@ crates/
 │       ├── crd.rs / crd_tests.rs, crd_docs.rs, constants.rs, labels.rs,
 │       │   selector.rs, status_reasons.rs
 │       └── bin/ (crdgen.rs, crddoc.rs)   ← need `--features crdgen`
+├── bindy-controller-sdk/   ← shared controller framework; depends on bindy-api only
+│   └── src/
+│       └── error.rs (ReconcileError, error_policy), requeue.rs, retry.rs, status.rs,
+│           pagination.rs, resources.rs, rate_limit.rs, namespace_scope.rs,
+│           http_errors.rs, metrics.rs  (+ *_tests.rs siblings)
 └── bindy/                  ← the binary + everything not split out yet
     ├── src/
-    │   ├── lib.rs          ← `pub use bindy_api::{crd, constants, ...}` keeps old paths working
+    │   ├── lib.rs          ← `pub use bindy_api::{...}` / `bindy_controller_sdk::{...}` keep old paths working
     │   ├── main.rs / main_tests.rs
     │   ├── bind9/          ← BIND9 module (mod.rs, rndc.rs, duration.rs, records/) + *_tests.rs siblings
     │   ├── bind9_resources.rs / bind9_resources_tests.rs

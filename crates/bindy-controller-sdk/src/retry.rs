@@ -253,8 +253,8 @@ pub fn is_retryable_http_status(status: StatusCode) -> bool {
 ///
 /// ```no_run
 /// use kube::{Api, Client};
-/// use bindy::crd::Bind9Cluster;
-/// use bindy::reconcilers::retry::retry_api_call;
+/// use bindy_api::crd::Bind9Cluster;
+/// use bindy_controller_sdk::retry::retry_api_call;
 ///
 /// # async fn example() -> anyhow::Result<()> {
 /// let client = Client::try_default().await?;
@@ -471,10 +471,10 @@ pub fn reconcile_error_backoff(key: &str) -> Duration {
 /// sustained several-updates-per-second delete/add storm against named for a
 /// single bad record.
 ///
-/// Matching [`crate::record_wrappers::REQUEUE_WHEN_NOT_READY_SECS`] means a
+/// Matching [`crate::requeue::REQUEUE_WHEN_NOT_READY_SECS`] means a
 /// failing record is re-attempted by its own timed requeue and by nothing else.
 pub const REJECTED_WRITE_COOLDOWN: Duration =
-    Duration::from_secs(crate::record_wrappers::REQUEUE_WHEN_NOT_READY_SECS);
+    Duration::from_secs(crate::requeue::REQUEUE_WHEN_NOT_READY_SECS);
 
 /// Rejected writes, keyed by object, holding the spec hash and when it failed.
 static REJECTED_WRITES: std::sync::LazyLock<

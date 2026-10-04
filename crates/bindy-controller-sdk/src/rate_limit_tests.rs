@@ -4,8 +4,8 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use crate::constants::{KUBE_CLIENT_BURST, KUBE_CLIENT_QPS};
     use crate::metrics::{KUBE_API_RATE_LIMIT_HITS_TOTAL, KUBE_API_REQUESTS_TOTAL};
+    use bindy_api::constants::{KUBE_CLIENT_BURST, KUBE_CLIENT_QPS};
     use http::{Request, Response, StatusCode};
     use std::convert::Infallible;
     use std::time::Duration;

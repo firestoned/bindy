@@ -288,18 +288,17 @@ dependencies = [
  "base64 0.23.1",
  "bindcar",
  "bindy-api",
+ "bindy-controller-sdk",
  "chrono",
  "clap",
  "clap_complete",
  "futures",
  "hickory-net",
  "hickory-proto",
- "http",
  "json-patch",
  "k8s-openapi",
  "kube",
  "kube-lease-manager",
- "prometheus",
  "rand",
  "reqwest",
  "rustls",
@@ -312,7 +311,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
- "tower",
  "tracing",
  "tracing-subscriber",
  "url",
@@ -331,6 +329,27 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "bindy-controller-sdk"
+version = "0.7.1"
+dependencies = [
+ "anyhow",
+ "bindy-api",
+ "chrono",
+ "http",
+ "k8s-openapi",
+ "kube",
+ "prometheus",
+ "rand",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tower",
  "tracing",
 ]
 

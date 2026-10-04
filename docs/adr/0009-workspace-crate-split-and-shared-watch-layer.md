@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-03
 - **Proposed:** 2026-10-03
+- **Amended:** 2026-10-04 (Decision #2: when `finalizers` and `context` move to the SDK)
 - **Deciders:** Erick Bourgeois
 - **Related:** Plan in roadmap 01
   (`.github/community/01-controller-crate-split.md`); keeps
@@ -117,6 +118,18 @@ Dependencies only point downward. `bindy-bind9` never depends on a controller
 crate, and no controller crate depends on another controller crate: what two
 controllers share moves down into the SDK. Retry/backoff helpers move into
 the SDK, which removes the `bind9 → reconcilers` back-edge.
+
+**Amendment (2026-10-04).** Two SDK-bound modules cannot move as they stand:
+
+- `finalizers`: its `FinalizerCleanup` trait would be defined in the SDK
+  and implemented for `bindy-api` types in a controller crate, which Rust's
+  orphan rule forbids. It moves once the trait takes the cleanup as a type
+  the controller owns, in Phase D alongside the impls.
+- `context`: `Context` builds `Bind9Manager`s and resolves bindcar TLS, both
+  BIND9-domain, and `Stores` is rebuilt by the `RecordKind` / `WatchSet`
+  work. It moves with that work, its BIND9 half going to `bindy-bind9`.
+
+Until then both stay in `bindy`; the direction rules above are unchanged.
 
 Each controller crate exposes one public entry point,
 `pub async fn controller(ctx) -> anyhow::Result<()>`. Tests move with the

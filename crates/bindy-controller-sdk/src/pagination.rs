@@ -6,8 +6,8 @@
 //! This module provides utilities for efficiently listing large resource sets
 //! by fetching them in pages, reducing memory usage and API server load.
 
-use crate::constants::KUBE_LIST_PAGE_SIZE;
 use anyhow::Result;
+use bindy_api::constants::KUBE_LIST_PAGE_SIZE;
 use kube::{api::ListParams, Api, Resource};
 use serde::de::DeserializeOwned;
 use std::fmt::Debug;
@@ -39,8 +39,8 @@ const MAX_REASONABLE_PAGES: usize = 10_000;
 ///
 /// ```no_run
 /// use kube::{Api, Client, api::ListParams};
-/// use bindy::crd::DNSZone;
-/// use bindy::reconcilers::pagination::list_all_paginated;
+/// use bindy_api::crd::DNSZone;
+/// use bindy_controller_sdk::pagination::list_all_paginated;
 ///
 /// # async fn example() -> anyhow::Result<()> {
 /// let client = Client::try_default().await?;
