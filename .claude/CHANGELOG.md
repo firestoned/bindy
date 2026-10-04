@@ -1,3 +1,85 @@
+## [2026-10-04 19:30] - Upgrade bindcar to v0.9.0
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml` / `Cargo.lock`: `bindcar` 0.8.1 (locked 0.8.2) to 0.9.0.
+  The types bindy imports are unchanged; one kube / k8s-openapi in the tree.
+- `crates/bindy-api/src/constants.rs`: `DEFAULT_BINDCAR_IMAGE` is
+  `ghcr.io/firestoned/bindcar:v0.9.0`; `crd.rs` rustdoc example and the
+  regenerated `deploy/operator/crds/*` follow.
+- `examples/{complete-setup,cluster-bind9-provider,multi-tenancy}.yaml`,
+  `README.md`, `tests/lib/dns_fixtures.sh`, `tests/regression_test.sh`
+  (`v0.9` prefix), `docs/src/operations/common-issues.md`: v0.9.0.
+- `docs/src/operations/migration-guide.md`: "Migrating to bindcar 0.9.0".
+
+### Why
+bindcar 0.9.0 answers zone commands on a missing zone with 404 (the bindcar
+half of bug-192) and adds post-quantum hybrid TLS key exchange. Its one
+breaking change, SHA-2-only TSIG, cannot affect a working bindy instance:
+bindcar uses the instance's RNDC key for TSIG (bindy sets no `NSUPDATE_*`),
+the CRD rejects `hmac-md5`, and bindcar has refused `hmac-sha1` for RNDC
+since 0.7.0.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (operand pods pick up the new sidecar image)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-10-04 18:00] - Fix zone deletion stalling for minutes (bug-192, red integration tests on main)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/bindy/src/bind9/zone_ops.rs` (`delete_zone`): deleting a zone
+  blocked the DNSZone's reconcile for minutes. It froze the zone first (best
+  effort, error ignored) through the 120s HTTP retry loop, then deleted
+  through the same loop. bindcar answers `freeze`/`delzone` on a zone that is
+  not there with a retryable 500, and an endpoint whose pod is gone fails to
+  connect, so each call cost about 130s per endpoint. Now: no freeze (`rndc
+  delzone` does not need it, and a freeze followed by a failed delete left
+  the zone refusing dynamic updates); the zone's status is checked first and
+  a 404 counts as already deleted; every deletion call gives up within
+  `DELETE_RETRY_BUDGET` (10s) via the new `bindcar_request_within`, which also
+  caps each sleep at the remaining budget. `Bind9Manager::delete_zone` loses
+  its `freeze_before_delete` argument.
+
+### Why
+Integration Tests failed on 6 of the last 8 main runs, including before the
+workspace split. Reproduced on a kind cluster on slate: the `lifecycle`
+suite's teardown deleted its zones, the finalizer stalled on freeze 500s, the
+test force-cleared it after 120s and deleted the instances, and the
+operator's still-running cleanup retried against the dead pod IPs for over
+four minutes. The next suite's identically named DNSZone waited behind it
+(kube runs one reconcile per object name at a time) past the test's 225s DNS
+poll. The GC-race theory recorded in bug-192 was wrong.
+
+### Changed
+- `tests/lib/dns_fixtures.sh`: `dump_zone_diagnostics` on a failed DNS
+  assertion (zone statuses, instance status and uid, Secret/ConfigMap owners,
+  Endpoints, pods, bindcar log, operator lines for the instance); the
+  force-clear comment now says the operator bug is fixed and why firing still
+  matters.
+- `Makefile`: `kind-dump-diagnostics`; `kind-integration-test-ci` runs it
+  before deleting the cluster on failure (CI's later "Operator logs" step
+  found the cluster already gone).
+
+### Tests
+- `bind9/zone_ops_tests.rs`: absent zone is deleted without a DELETE or
+  freeze; present zone is deleted without a freeze; gives up within budget on
+  500s and on a dead endpoint; the production budget is at most 15s.
+  1628 tests pass.
+- bindcar (separate change): rndc "not found" on delete/reload/freeze/thaw/
+  notify/retransfer now returns 404. bindy keeps its status pre-check for
+  released bindcar versions.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-04 15:00] - Kind targets use a dedicated kubeconfig
 
 **Author:** Erick Bourgeois

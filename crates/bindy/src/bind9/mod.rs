@@ -882,32 +882,21 @@ impl Bind9Manager {
         .await
     }
 
-    /// Delete a zone via HTTP API.
+    /// Delete a zone via HTTP API. A zone that is not on the server counts as
+    /// deleted; see [`zone_ops::delete_zone`].
     ///
     /// # Arguments
     /// * `zone_name` - Name of the zone to delete
     /// * `server` - API server address
-    /// * `freeze_before_delete` - Whether to freeze the zone before deletion (true for primary zones, false for secondary zones)
     ///
     /// # Errors
     ///
-    /// Returns an error if the HTTP request fails or the zone cannot be deleted.
-    pub async fn delete_zone(
-        &self,
-        zone_name: &str,
-        server: &str,
-        freeze_before_delete: bool,
-    ) -> Result<()> {
+    /// Returns an error if the zone is present and cannot be deleted within
+    /// [`zone_ops::DELETE_RETRY_BUDGET`] per call.
+    pub async fn delete_zone(&self, zone_name: &str, server: &str) -> Result<()> {
         let client = self.resolve_client().await?;
         let server = &self.qualify_server(server);
-        zone_ops::delete_zone(
-            &client,
-            self.get_token().as_deref(),
-            zone_name,
-            server,
-            freeze_before_delete,
-        )
-        .await
+        zone_ops::delete_zone(&client, self.get_token().as_deref(), zone_name, server).await
     }
 
     /// Notify secondaries about zone changes via HTTP API.

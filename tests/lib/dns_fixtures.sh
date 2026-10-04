@@ -28,7 +28,7 @@ REVERSE_ZONE_CR="integration-test-reverse-zone"
 ZONE_FQDN="integration.test"
 REVERSE_ZONE_FQDN="0.168.192.in-addr.arpa"
 BIND9_CONTAINER="bind9"
-BINDCAR_IMAGE="${BINDCAR_IMAGE:-ghcr.io/firestoned/bindcar:v0.8.2}"
+BINDCAR_IMAGE="${BINDCAR_IMAGE:-ghcr.io/firestoned/bindcar:v0.9.0}"
 
 # The operand serves DNS on an unprivileged port so the Pod can drop
 # NET_BIND_SERVICE; querying :53 gets connection refused. Matches
@@ -161,12 +161,14 @@ wait_for_zones_gone() {
     return 1
 }
 
-# Escape hatch for a DNSZone whose finalizer cannot complete -- see the operator
-# bug where a zone that never got created in BIND9 can never be deleted, because
-# the deletion path freezes the zone first and freeze 500s when it is absent.
-# Without this a single wedged zone makes every later run fail, so the suites
-# would stop being idempotent. Logged loudly: it is a workaround, not a fix, and
-# the operator still needs one.
+# Escape hatch for a DNSZone whose finalizer cannot complete in time. The
+# operator bug that used to trigger it is fixed (bug-192): deletion no longer
+# freezes the zone first (bindcar answers freeze/delzone on a missing zone with
+# a retryable 500), treats a zone absent from an endpoint as deleted, and gives
+# each call a 10s budget instead of two minutes. Firing now means a new problem:
+# it is logged loudly, and it matters, because clearing the finalizer while the
+# operator's cleanup is still running makes a recreated zone of the same name
+# wait behind that cleanup.
 force_clear_zone_finalizers() {
     local zone
     for zone in "${ZONE_CR}" "${REVERSE_ZONE_CR}"; do
@@ -254,6 +256,34 @@ dump_operand_diagnostics() {
     ${KUBECTL} get events -n "${NAMESPACE}" --sort-by=.lastTimestamp 2>/dev/null | tail -25 || true
 }
 
+# Everything needed to tell a lost trigger from a failed push when a primary
+# does not serve its zone, printed into the CI log (bug-192: the operator log
+# tail alone could not distinguish them).
+dump_zone_diagnostics() {
+    local inst=$1
+    warn "zone diagnostics for ${inst}:"
+    echo "── DNSZone status (instances + lastReconciledAt, conditions, resync) ──"
+    ${KUBECTL} get dnszones -n "${NAMESPACE}" -o jsonpath='{range .items[*]}{.metadata.name}{" gen="}{.metadata.generation}{" observed="}{.status.observedGeneration}{" resyncPending="}{.status.recordsResyncPending}{"\n"}{range .status.bind9Instances[*]}{"  instance "}{.namespace}{"/"}{.name}{" lastReconciledAt="}{.lastReconciledAt}{"\n"}{end}{range .status.conditions[*]}{"  "}{.type}{"="}{.status}{" "}{.reason}{": "}{.message}{"\n"}{end}{end}' 2>/dev/null || true
+    echo "── Bind9Instance ${inst} (uid, created, deleting, status) ──"
+    ${KUBECTL} get bind9instance "${inst}" -n "${NAMESPACE}" -o jsonpath='{"uid="}{.metadata.uid}{" created="}{.metadata.creationTimestamp}{" deleting="}{.metadata.deletionTimestamp}{"\n"}{range .status.conditions[*]}{"  "}{.type}{"="}{.status}{" "}{.reason}{"\n"}{end}{"  zones="}{.status.zones}{"\n"}' 2>/dev/null || true
+    echo "── Secrets / ConfigMaps for ${inst} (uid, created, owner uid; owner must match the instance uid) ──"
+    ${KUBECTL} get secrets,configmaps -n "${NAMESPACE}" -o jsonpath='{range .items[*]}{.kind}{" "}{.metadata.name}{" uid="}{.metadata.uid}{" created="}{.metadata.creationTimestamp}{" deleting="}{.metadata.deletionTimestamp}{" owners="}{.metadata.ownerReferences[*].kind}{"/"}{.metadata.ownerReferences[*].name}{"/"}{.metadata.ownerReferences[*].uid}{"\n"}{end}' 2>/dev/null \
+        | grep -E "${inst}|integration-test-cluster-config" || true
+    echo "── Endpoints ${inst} (ready / not ready) ──"
+    ${KUBECTL} get endpoints "${inst}" -n "${NAMESPACE}" -o jsonpath='{range .subsets[*]}{"  ready="}{.addresses[*].ip}{" notReady="}{.notReadyAddresses[*].ip}{"\n"}{end}' 2>/dev/null || true
+    echo "── Pods for ${inst} (ip, phase, created, deleting) ──"
+    ${KUBECTL} get pods -n "${NAMESPACE}" -l "app.kubernetes.io/instance=${inst}" -o jsonpath='{range .items[*]}{"  "}{.metadata.name}{" ip="}{.status.podIP}{" phase="}{.status.phase}{" created="}{.metadata.creationTimestamp}{" deleting="}{.metadata.deletionTimestamp}{"\n"}{end}' 2>/dev/null || true
+    local pod
+    pod=$(instance_pod "${inst}")
+    if [ -n "${pod}" ]; then
+        echo "── bindcar log (${pod}, last 60) ──"
+        ${KUBECTL} logs -n "${NAMESPACE}" "${pod}" -c api --tail=60 --timestamps 2>/dev/null || true
+    fi
+    echo "── operator log lines mentioning ${inst} (last 120) ──"
+    ${KUBECTL} logs -n "${NAMESPACE}" -l app=bindy --tail=20000 --timestamps 2>/dev/null \
+        | grep -F "${inst}" | tail -120 || true
+}
+
 # Block until every expected primary has a Ready Pod. kubectl wait fails
 # immediately when nothing matches its selector, so wait for the Pod to be
 # created first, then for it to become Ready.
@@ -317,6 +347,7 @@ assert_dns_on_primaries() {
             pass "${label}: ${inst} serves all ${#EXPECTED_DNS[@]} expected records"
         else
             fail "${label}: ${inst} missing:${missing}"
+            dump_zone_diagnostics "${inst}"
         fi
     done
     return 0

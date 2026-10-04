@@ -2,6 +2,24 @@
 
 This document collects the breaking-change migrations for Bindy, newest first.
 
+## Migrating to bindcar 0.9.0
+
+Bindy now provisions **bindcar 0.9.0** (`ghcr.io/firestoned/bindcar:v0.9.0`).
+For bindy deployments this is not breaking:
+
+- **Zone commands on a missing zone return 404.** `DELETE` and the
+  `reload`/`freeze`/`thaw`/`notify`/`retransfer` actions used to answer 500
+  when the zone was not loaded, which made bindy's zone deletion retry for
+  minutes per instance (bindy bug-192). Bindy also checks a zone's status
+  before deleting it, so it behaves the same against older bindcar images.
+- **TSIG is SHA-2 only.** bindcar 0.9.0 rejects `hmac-md5` and `hmac-sha1`
+  keys for dynamic updates, matching the RNDC policy it has enforced since
+  0.7.0. Bindy uses each instance's RNDC key for both, the CRD already
+  rejects `hmac-md5`, and the default is `hmac-sha256`, so an instance this
+  affects was already failing RNDC. To check: `kubectl get bind9instances,bind9clusters,clusterbind9providers -A -o yaml | grep -i 'hmac-sha1'`.
+- bindcar 0.9.0 also adds post-quantum hybrid key exchange for its own TLS
+  (bindcar ADR-0002); nothing to configure on the bindy side.
+
 ## Migrating to bindcar 0.8.2
 
 Bindy now provisions **bindcar 0.8.2** (`ghcr.io/firestoned/bindcar:v0.8.2`),
