@@ -248,7 +248,8 @@ crates/
 │       └── bin/ (crdgen.rs, crddoc.rs)   ← need `--features crdgen`
 ├── bindy-controller-sdk/   ← shared controller framework; depends on bindy-api only
 │   └── src/
-│       └── error.rs (ReconcileError, error_policy), requeue.rs, retry.rs, status.rs,
+│       └── context.rs (Context, Stores, RecordKind, RECORD_KINDS), watch.rs (WatchSet),
+│           error.rs (ReconcileError, error_policy), requeue.rs, retry.rs, status.rs,
 │           pagination.rs, resources.rs, rate_limit.rs, namespace_scope.rs,
 │           http_errors.rs, metrics.rs  (+ *_tests.rs siblings)
 └── bindy/                  ← the binary + everything not split out yet

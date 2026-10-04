@@ -1,3 +1,44 @@
+## [2026-10-04 23:00] - Roadmap 01 Phase B step B3: `RecordKind` registry, `context` in the SDK (ADR-0009)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/bindy-controller-sdk/src/context.rs` (new): `Context`, `Stores`,
+  `RecordRef`, `Metrics`, plus the record-kind registry: `RecordKind`
+  (implemented once per record kind), `RecordStores` (typed map of the
+  record views) and `RECORD_KINDS`, the one list that drives WatchSet
+  registration, the stores and `records_matching_selector`. The
+  `collect_matching!` macro and `Stores`' nine record fields are gone; the
+  query results and their kind order are unchanged.
+- `crates/bindy/src/context.rs`: re-exports the SDK types under the old
+  paths and keeps the BIND9-domain half (`resolve_bindcar_tls`,
+  `create_bind9_manager_for_instance*`) as the `StoresBind9Ext` trait (for
+  `bindy-bind9`, Phase C). Three call sites import it.
+- `crates/bindy/src/record_operator.rs`, `record_impls.rs`: `DnsRecordType`
+  takes `RecordKind` as its supertrait; the nine duplicate `KIND` consts are
+  gone.
+- `crates/bindy/src/main.rs`: record kinds registered by looping over
+  `RECORD_KINDS`.
+- `.claude/skills/add-new-crd/SKILL.md`, `.claude/CLAUDE.md`, roadmap 01,
+  `ROADMAPS.md`: updated for the new layout.
+
+### Tests
+- `crates/bindy-controller-sdk/src/context_tests.rs`: 8 new (all nine kinds
+  in order, `RecordRef` variants, selector matching across kinds, namespace
+  isolation, `dnszones_selecting_record`, `get_dnszone`, unregistered kind),
+  plus the 9 `MultiStore`/`RecordRef` tests moved from `bindy`. 1644 pass.
+
+### Why
+Roadmap 01 Phase B step B3: adding a record kind no longer means editing
+the stores, the watch wiring and the selector queries in several files. No
+behaviour change.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only (code reorganisation; behaviour unchanged)
+
 ## [2026-10-04 21:50] - Relicense from MIT to Apache License 2.0
 
 **Author:** Erick Bourgeois

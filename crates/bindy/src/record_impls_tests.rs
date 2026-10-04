@@ -8,6 +8,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::context::RecordKind;
     use crate::crd::{
         AAAARecord, ARecord, CAARecord, CNAMERecord, MXRecord, NSRecord, PTRRecord, SRVRecord,
         TXTRecord,

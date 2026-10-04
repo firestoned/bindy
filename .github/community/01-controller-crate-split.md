@@ -14,7 +14,7 @@
 > the API server drops from about 59 to 14 in cluster-wide mode (one per
 > kind).
 
-**Status:** 🔶 Phase A done (2026-10-03); Phase B in progress: B1 (crate + framework modules) and B2 (shared `WatchSet`) done 2026-10-04; B3 (`RecordKind` + `Stores`/`context`) next. [ADR-0009](../../docs/adr/0009-workspace-crate-split-and-shared-watch-layer.md) Accepted, CALM updated
+**Status:** 🔶 Phase A done (2026-10-03); Phase B in progress: B1 (crate + framework modules), B2 (shared `WatchSet`) and B3 (`RecordKind`, `context` in the SDK) done 2026-10-04; B4 (leader election) next. [ADR-0009](../../docs/adr/0009-workspace-crate-split-and-shared-watch-layer.md) Accepted, CALM updated
 **Owner:** Erick Bourgeois
 **Analysed against:** `main` @ `d422055` (re-measured 2026-10-03; first analysis was `fix-idempotency` @ `648ff7a`), kube / kube-runtime **4.2.0**
 
@@ -336,11 +336,12 @@ the crate exists, the framework modules live in it, behaviour is unchanged.
       ADR-0009 §2). *B1. `bindy` re-exports each under its old path
       (`crate::metrics`, `crate::reconcilers::retry`, ...), so no call site
       changed.*
-- [ ] Move `context` (`Stores`, `MultiStore`, `Context`). *Deferred to the
-      `RecordKind` / `WatchSet` step, which rebuilds `Stores` anyway; and
-      `Context` still builds `Bind9Manager`s and resolves bindcar TLS, which
-      is BIND9-domain code that has to go to `bindy-bind9` (Phase C) or
-      behind an extension trait first.*
+- [x] Move `context` (`Stores`, `MultiStore`, `Context`). *B3 (2026-10-04):
+      `Context`, `Stores`, `RecordRef` and `Metrics` live in
+      `bindy_controller_sdk::context` (`MultiStore` moved with the
+      `WatchSet` in B2). The BIND9 half (`resolve_bindcar_tls`,
+      `create_bind9_manager_for_instance*`) stayed in `bindy` as the
+      `StoresBind9Ext` trait, which moves to `bindy-bind9` in Phase C.*
 - [ ] Move `finalizers`. *Blocked by the orphan rule: with
       `FinalizerCleanup` in the SDK and the CRD types in `bindy-api`,
       `impl FinalizerCleanup for Bind9Cluster` is illegal in any controller
@@ -382,8 +383,16 @@ the crate exists, the framework modules live in it, behaviour is unchanged.
       and `watch_{events,errors,restarts}_total` /
       `watch_last_event_timestamp_seconds` metrics. Still to verify on a
       kind cluster (see Phase G).*
-- [ ] Implement the `RecordKind` trait and rebuild `Stores` on top of
-      it; delete the `collect_matching!` macro. *B3, with `context`.*
+- [x] Implement the `RecordKind` trait and rebuild `Stores` on top of
+      it; delete the `collect_matching!` macro. *B3: `RecordKind` (kind name,
+      `RecordRef` variant) is implemented once per record kind; one
+      `RECORD_KINDS` list drives WatchSet registration, the typed
+      `RecordStores` map and `records_matching_selector` (same kind order as
+      before). `Stores`' nine record fields are gone. `DnsRecordType` (the
+      record controllers' trait) takes `RecordKind` as its supertrait, so
+      each kind's name is declared once. A new record kind is one
+      `record_kind!` line, one `RECORD_KINDS` entry and its `RecordRef`
+      variant.*
 - [ ] Move leader election (`LeaseManagerBuilder` wiring,
       `load_leader_election_config`, `monitor_leadership`) into
       `sdk::leader`. *B4.*

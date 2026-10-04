@@ -14,14 +14,11 @@ use anyhow::{anyhow, Result};
 use futures::StreamExt;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::Api;
-use kube::core::NamespaceResourceScope;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer;
 use kube::runtime::Controller;
-use kube::{Resource, ResourceExt};
-use serde::de::DeserializeOwned;
+use kube::ResourceExt;
 use serde::Serialize;
-use std::fmt::Debug;
 use std::sync::Arc;
 use tracing::{info, warn};
 
@@ -32,19 +29,10 @@ pub use bindy_controller_sdk::error::ReconcileError;
 ///
 /// This trait abstracts over the common operations needed for all DNS record types,
 /// allowing a single operator implementation to handle all record types.
-pub trait DnsRecordType:
-    Resource<DynamicType = (), Scope = NamespaceResourceScope>
-    + Clone
-    + Debug
-    + DeserializeOwned
-    + Serialize
-    + Send
-    + Sync
-    + 'static
-{
-    /// The record type kind (e.g., `ARecord`, `TXTRecord`)
-    const KIND: &'static str;
-
+/// The kind name comes from the supertrait
+/// [`RecordKind`](crate::context::RecordKind), so each record type declares it
+/// once for the stores, the watch layer and this controller.
+pub trait DnsRecordType: crate::context::RecordKind + Serialize {
     /// The finalizer name for this record type
     const FINALIZER: &'static str;
 

@@ -12,6 +12,7 @@ pub mod status_helpers;
 pub mod types;
 
 // Internal imports
+use crate::context::StoresBind9Ext;
 use status_helpers::update_record_status;
 
 // Removed ANNOTATION_ZONE_OWNER - using status.zoneRef instead (event-driven architecture)

@@ -28,6 +28,7 @@ mod helpers_tests;
 use self::types::DuplicateZoneInfo;
 #[allow(unused_imports)]
 use crate::bind9::zone_ops::{dns_query_endpoint, extract_ds_records, DsRecordInfo};
+use crate::context::StoresBind9Ext;
 use crate::crd::DNSZone;
 use anyhow::{anyhow, Result};
 use bindcar::{ZONE_TYPE_PRIMARY, ZONE_TYPE_SECONDARY};

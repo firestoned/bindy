@@ -46,11 +46,11 @@ architecturally significant: ADR first, CALM model update
 Learned from PTRRecord (#475):
 
 - `crates/bindy-api/src/crd.rs`: `DNSRecordKind` enum + `as_str`/`all`/`to_hickory_record_type`/`TryFrom` + `UnknownDNSRecordKind` error msg + spec struct
-- `crates/bindy/src/context.rs`: `Stores` field, `RecordRef`, `collect_matching`
+- `crates/bindy-controller-sdk/src/context.rs`: a `RecordRef` variant (plus its `name`/`namespace`/`record_type` arms), a `record_kind!(Type, "Kind", Variant)` line, and an `ops::<Type>()` entry in `RECORD_KINDS` (that one list drives the WatchSet registration, the store and selector matching)
 - `crates/bindy/src/record_impls.rs`, `crates/bindy-api/src/constants.rs` (`KIND_*`), `crates/bindy-api/src/labels.rs` (`FINALIZER_*`)
 - `crates/bindy/src/bind9/types.rs` (`*RecordData`), `crates/bindy/src/bind9/mod.rs` (manager method), `crates/bindy/src/bind9/records/{mod.rs,<type>.rs,<type>_tests.rs}`
 - `crates/bindy/src/reconcilers/records/{mod.rs,types.rs}`, `crates/bindy/src/reconcilers/mod.rs`, `crates/bindy/src/reconcilers/dnszone/{discovery.rs,cleanup.rs}`
-- `crates/bindy/src/main.rs`: reflector api + store + spawn + `Stores` init + select arm + DNSZone `.watches`
+- `crates/bindy/src/main.rs`: select arm + DNSZone `.watches_stream` (registration and stores come from `RECORD_KINDS`)
 - `crates/bindy/src/bootstrap.rs` (`build_all_crds`), `crates/bindy-api/src/bin/{crdgen,crddoc}.rs`
 - Non-src: `deploy/operator/rbac/{role,role-admin}.yaml`, admission policies 03+13, `deploy/kind-test.sh`, `examples/`, `docs/src/**` ("all N record types" counts!), `README.md`, `calm/bindy-control-plane.architecture.json`, `docs/mkdocs.yml` nav
 

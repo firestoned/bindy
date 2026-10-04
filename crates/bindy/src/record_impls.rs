@@ -25,7 +25,6 @@ use std::sync::Arc;
 
 // A Record Implementation
 impl DnsRecordType for ARecord {
-    const KIND: &'static str = "ARecord";
     const FINALIZER: &'static str = crate::labels::FINALIZER_A_RECORD;
     const RECORD_TYPE_STR: &'static str = "A";
 
@@ -55,7 +54,6 @@ impl DnsRecordType for ARecord {
 
 // AAAA Record Implementation
 impl DnsRecordType for AAAARecord {
-    const KIND: &'static str = "AAAARecord";
     const FINALIZER: &'static str = crate::labels::FINALIZER_AAAA_RECORD;
     const RECORD_TYPE_STR: &'static str = "AAAA";
 
@@ -85,7 +83,6 @@ impl DnsRecordType for AAAARecord {
 
 // TXT Record Implementation
 impl DnsRecordType for TXTRecord {
-    const KIND: &'static str = "TXTRecord";
     const FINALIZER: &'static str = crate::labels::FINALIZER_TXT_RECORD;
     const RECORD_TYPE_STR: &'static str = "TXT";
 
@@ -115,7 +112,6 @@ impl DnsRecordType for TXTRecord {
 
 // CNAME Record Implementation
 impl DnsRecordType for CNAMERecord {
-    const KIND: &'static str = "CNAMERecord";
     const FINALIZER: &'static str = crate::labels::FINALIZER_CNAME_RECORD;
     const RECORD_TYPE_STR: &'static str = "CNAME";
 
@@ -145,7 +141,6 @@ impl DnsRecordType for CNAMERecord {
 
 // MX Record Implementation
 impl DnsRecordType for MXRecord {
-    const KIND: &'static str = "MXRecord";
     const FINALIZER: &'static str = crate::labels::FINALIZER_MX_RECORD;
     const RECORD_TYPE_STR: &'static str = "MX";
 
@@ -175,7 +170,6 @@ impl DnsRecordType for MXRecord {
 
 // NS Record Implementation
 impl DnsRecordType for NSRecord {
-    const KIND: &'static str = "NSRecord";
     const FINALIZER: &'static str = crate::labels::FINALIZER_NS_RECORD;
     const RECORD_TYPE_STR: &'static str = "NS";
 
@@ -205,7 +199,6 @@ impl DnsRecordType for NSRecord {
 
 // SRV Record Implementation
 impl DnsRecordType for SRVRecord {
-    const KIND: &'static str = "SRVRecord";
     const FINALIZER: &'static str = crate::labels::FINALIZER_SRV_RECORD;
     const RECORD_TYPE_STR: &'static str = "SRV";
 
@@ -235,7 +228,6 @@ impl DnsRecordType for SRVRecord {
 
 // CAA Record Implementation
 impl DnsRecordType for CAARecord {
-    const KIND: &'static str = "CAARecord";
     const FINALIZER: &'static str = crate::labels::FINALIZER_CAA_RECORD;
     const RECORD_TYPE_STR: &'static str = "CAA";
 
@@ -265,7 +257,6 @@ impl DnsRecordType for CAARecord {
 
 // PTR Record Implementation
 impl DnsRecordType for PTRRecord {
-    const KIND: &'static str = "PTRRecord";
     const FINALIZER: &'static str = crate::labels::FINALIZER_PTR_RECORD;
     const RECORD_TYPE_STR: &'static str = "PTR";
 
