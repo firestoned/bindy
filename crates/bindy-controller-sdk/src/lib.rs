@@ -13,6 +13,7 @@
 //!
 //! ## Modules
 //!
+//! - [`context`] - The shared `Context`, `Stores` and the record-kind registry
 //! - [`error`] - [`error::ReconcileError`] and [`error::error_policy`]
 //! - [`requeue`] - Requeue intervals for ready and not-ready resources
 //! - [`retry`] - Kubernetes and HTTP retry, reconcile backoff
@@ -25,6 +26,7 @@
 //! - [`metrics`] - Prometheus metrics
 //! - [`watch`] - The shared watch layer: one watch and cache per kind and namespace
 
+pub mod context;
 pub mod error;
 pub mod http_errors;
 pub mod metrics;

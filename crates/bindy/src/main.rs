@@ -500,15 +500,11 @@ async fn initialize_shared_context(client: Client) -> Result<Arc<Context>> {
             .is_some_and(|owners| owners.iter().any(|owner| owner.kind == "Bind9Instance"))
     });
     let dnszones = watch.register::<DNSZone>("DNSZone");
-    let a_records = watch.register::<ARecord>("ARecord");
-    let aaaa_records = watch.register::<AAAARecord>("AAAARecord");
-    let cname_records = watch.register::<CNAMERecord>("CNAMERecord");
-    let txt_records = watch.register::<TXTRecord>("TXTRecord");
-    let mx_records = watch.register::<MXRecord>("MXRecord");
-    let ns_records = watch.register::<NSRecord>("NSRecord");
-    let srv_records = watch.register::<SRVRecord>("SRVRecord");
-    let caa_records = watch.register::<CAARecord>("CAARecord");
-    let ptr_records = watch.register::<PTRRecord>("PTRRecord");
+    // Every record kind, from the one list in the SDK (RECORD_KINDS).
+    let mut records = bindy::context::RecordStores::default();
+    for ops in &bindy::context::RECORD_KINDS {
+        (ops.register)(&mut watch, &mut records);
+    }
     // Endpoints of bindy's own Services only (label-selected on the API
     // server): the zone controller's signal that a BIND9 pod was replaced.
     // One watch per namespace target, like every other kind, so namespace-
@@ -524,15 +520,7 @@ async fn initialize_shared_context(client: Client) -> Result<Arc<Context>> {
         bind9_instances,
         bind9_deployments,
         dnszones,
-        a_records,
-        aaaa_records,
-        cname_records,
-        txt_records,
-        mx_records,
-        ns_records,
-        srv_records,
-        caa_records,
-        ptr_records,
+        records,
     };
 
     // Create HTTP client for bindcar API calls
