@@ -212,13 +212,55 @@ is enabled).
 signing:
   enabled: true
   policy: "bindy"
+  # kskLifetime / zskLifetime: leave unset, or "unlimited"
   keysFrom:
     secretRef:
-      name: my-dnssec-keys
-      namespace: bindy-system
+      name: bindy-dnssec-keys-example-com
 ```
 
-Supply pre-generated keys via a Kubernetes Secret. The Secret is mounted read-only at `/var/cache/bind/keys`. This is the recommended production approach as it gives full control over key material.
+Supply pre-generated keys via a Kubernetes Secret. This is the recommended
+production approach: it gives full control over key material, the keys
+survive pod restarts, and **every primary signs with the same keys**, so a
+zone served by several primaries publishes one DNSKEY RRset and one set of DS
+records ([ADR-0012](https://github.com/firestoned/bindy/blob/main/docs/adr/0012-dnssec-shared-keys-from-secret.md)).
+
+How it works: the Secret is mounted read-only into an init container,
+`dnssec-keys-init`, which copies each key file into BIND's writable key
+directory (`/var/cache/bind/keys`) before `named` starts. `named` never mounts
+the Secret itself, and writes its `.state` files beside the copies.
+
+Rules for the Secret:
+
+- It lives in the same namespace as the `Bind9Instance` pods, and its name
+  starts with `bindy-`.
+- Secret data keys cannot contain `+`, so write each `+` of a BIND key file
+  name as `_`: `Kexample.com.+013+12345.key` is stored as
+  `Kexample.com._013_12345.key`. The init container restores the name. Other
+  data keys are skipped.
+- A Secret with no key file fails the init container, and the pod does not
+  start: otherwise `named` would quietly generate keys of its own.
+
+Generate a KSK and a ZSK and store them:
+
+```bash
+dnssec-keygen -a ECDSAP256SHA256 -f KSK example.com
+dnssec-keygen -a ECDSAP256SHA256 example.com
+
+args=()
+for f in Kexample.com.+*; do
+  args+=(--from-file="$(printf '%s' "$f" | tr '+' '_')=$f")
+done
+kubectl -n bindy-system create secret generic bindy-dnssec-keys-example-com "${args[@]}"
+```
+
+!!! warning "Shared keys do not roll automatically"
+    `kskLifetime` and `zskLifetime` must be unset or `unlimited` with
+    `keysFrom.secretRef`; the API server rejects anything else. A finite
+    lifetime would make each primary roll a successor key on its own, and
+    the primaries would diverge. To rotate, generate the successor, add it
+    to the Secret, and restart the pods
+    (`kubectl rollout restart deployment/<instance>`): the copy happens at
+    pod start, so editing the Secret alone changes nothing.
 
 ### Algorithm Selection
 

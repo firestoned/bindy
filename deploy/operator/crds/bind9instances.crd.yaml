@@ -1070,15 +1070,23 @@ spec:
                                 type: object
                               secretRef:
                                 description: |-
-                                  Secret containing DNSSEC keys
+                                  Secret containing DNSSEC keys, shared by every primary (ADR-0012)
 
-                                  Reference to a Kubernetes Secret with DNSSEC key files.
+                                  The Secret must be in the instance's namespace and its name must
+                                  start with `bindy-`. An init container copies its key files into
+                                  BIND's writable key directory before `named` starts.
 
-                                  Secret data format:
-                                  - `K<zone>.+<alg>+<tag>.key` - Public key file
-                                  - `K<zone>.+<alg>+<tag>.private` - Private key file
+                                  Secret data keys cannot contain `+`, so each `+` of a BIND key file
+                                  name is written as `_`, and the copy restores it:
+                                  - `K<zone>._<alg>_<id>.key` - Public key file
+                                  - `K<zone>._<alg>_<id>.private` - Private key file
+                                  - `K<zone>._<alg>_<id>.state` - Optional key state file
 
-                                  Example: `Kexample.com.+013+12345.key`
+                                  Example: `Kexample.com._013_12345.key` becomes `Kexample.com.+013+12345.key`.
+
+                                  `kskLifetime` and `zskLifetime` must be unset or `unlimited`: shared
+                                  keys never roll on their own. Rotate by updating the Secret and
+                                  restarting the pods.
                                 nullable: true
                                 properties:
                                   name:
@@ -1179,6 +1187,9 @@ spec:
                             pattern: ^[A-Za-z0-9]{1,32}$
                             type: string
                         type: object
+                        x-kubernetes-validations:
+                        - message: 'keysFrom.secretRef keys are shared by every primary: kskLifetime and zskLifetime must be unset or ''unlimited'''
+                          rule: '!has(self.keysFrom) || !has(self.keysFrom.secretRef) || ((!has(self.kskLifetime) || self.kskLifetime == ''unlimited'') && (!has(self.zskLifetime) || self.zskLifetime == ''unlimited''))'
                       validation:
                         description: |-
                           Enable DNSSEC validation of responses

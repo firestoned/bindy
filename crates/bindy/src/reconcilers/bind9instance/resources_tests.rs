@@ -1301,6 +1301,7 @@ mod tests {
             Bind9InstanceSpec, DNSSECConfig, DNSSECSigningConfig, ServerRole,
         };
         use crate::reconcilers::bind9instance::resources::{
+            build_init_containers_patch_for_test as build_init_containers_patch,
             build_volumes_patch_for_test as build_volumes_patch,
             deployment_needs_update_for_test as deployment_needs_update,
         };
@@ -1433,6 +1434,66 @@ mod tests {
             assert!(
                 mounts.contains("\"$patch\":\"replace\""),
                 "mounts: {mounts}"
+            );
+        }
+
+        fn shared_keys_cluster() -> Bind9Cluster {
+            let mut c = cluster(true);
+            if let Some(signing) = c
+                .spec
+                .common
+                .global
+                .as_mut()
+                .and_then(|g| g.dnssec.as_mut())
+                .and_then(|d| d.signing.as_mut())
+            {
+                signing.keys_from = Some(crate::crd::DNSSECKeySource {
+                    secret_ref: Some(crate::crd::SecretReference {
+                        name: "bindy-dnssec-keys".into(),
+                        namespace: None,
+                    }),
+                    persistent_volume: None,
+                });
+            }
+            c
+        }
+
+        /// ADR-0012: switching a running cluster from generated to shared
+        /// keys adds the init container, and the update path must deliver it.
+        #[test]
+        fn switching_to_shared_keys_patches_the_init_container() {
+            let inst = instance();
+            let current = build_deployment(
+                "my-dns-primary-0",
+                "dns",
+                &inst,
+                Some(&cluster(true)),
+                None,
+                "k",
+            );
+            let desired = build_deployment(
+                "my-dns-primary-0",
+                "dns",
+                &inst,
+                Some(&shared_keys_cluster()),
+                None,
+                "k",
+            );
+            assert!(deployment_needs_update(&current, &desired));
+            assert!(
+                deployment_needs_update(&desired, &current),
+                "and back: dropping the init container is a change too"
+            );
+            assert!(!deployment_needs_update(&desired, &desired));
+
+            let patch = build_init_containers_patch(&desired).to_string();
+            assert!(patch.contains("\"$patch\":\"replace\""), "{patch}");
+            assert!(patch.contains("dnssec-keys-init"), "{patch}");
+
+            let cleared = build_init_containers_patch(&current).to_string();
+            assert!(
+                cleared.contains("\"$patch\":\"replace\"") && !cleared.contains("dnssec-keys-init"),
+                "no init container renders a replace with nothing, removing a stale one: {cleared}"
             );
         }
     }

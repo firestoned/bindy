@@ -1082,6 +1082,33 @@ fn build_volumes_patch(desired: &Deployment) -> (serde_json::Value, serde_json::
     (volumes, mounts)
 }
 
+/// The names of a Deployment's init containers, in order.
+fn init_container_names(d: &Deployment) -> Vec<String> {
+    d.spec
+        .as_ref()
+        .and_then(|s| s.template.spec.as_ref())
+        .and_then(|p| p.init_containers.as_ref())
+        .map(|c| c.iter().map(|c| c.name.clone()).collect())
+        .unwrap_or_default()
+}
+
+/// The pod `initContainers` patch fragment for `desired`: a strategic-merge
+/// `$patch: replace` list, empty when `desired` has none, so an init
+/// container bindy no longer renders (e.g. after leaving
+/// `keysFrom.secretRef`, ADR-0012) is removed rather than left behind.
+fn build_init_containers_patch(desired: &Deployment) -> serde_json::Value {
+    let mut list = vec![json!({"$patch": "replace"})];
+    if let Some(init) = desired
+        .spec
+        .as_ref()
+        .and_then(|s| s.template.spec.as_ref())
+        .and_then(|p| p.init_containers.as_ref())
+    {
+        list.extend(init.iter().map(|c| json!(c)));
+    }
+    json!(list)
+}
+
 /// Check if a deployment needs updating by comparing current and desired state.
 ///
 /// Returns true if any of the following have changed:
@@ -1105,6 +1132,12 @@ fn deployment_needs_update(current: &Deployment, desired: &Deployment) -> bool {
     // after signing was enabled) is missing from the running Deployment.
     if volumes_missing(current, desired) {
         debug!("Pod volumes or bind9 volume mounts changed");
+        return true;
+    }
+
+    // An init container added or removed (the DNSSEC key copy, ADR-0012).
+    if init_container_names(current) != init_container_names(desired) {
+        debug!("Pod init containers changed");
         return true;
     }
 
@@ -1373,6 +1406,9 @@ async fn create_or_update_deployment(
         }
     });
 
+    // Init containers, replaced whole: bindy renders every one the pod has.
+    patch["spec"]["template"]["spec"]["initContainers"] = build_init_containers_patch(&deployment);
+
     // The pod's volumes, in the same Pod spec fragment as the scheduling fields.
     if !volumes_patch.is_null() {
         patch["spec"]["template"]["spec"]["volumes"] = volumes_patch;
@@ -1598,6 +1634,11 @@ pub(super) async fn delete_resources(client: &Client, namespace: &str, name: &st
 /// whether a live Deployment gets a scheduling change and how that change is
 /// expressed as a patch, so they need direct coverage — but they are not part
 /// of the production API surface.
+#[cfg(test)]
+pub(super) fn build_init_containers_patch_for_test(desired: &Deployment) -> serde_json::Value {
+    build_init_containers_patch(desired)
+}
+
 #[cfg(test)]
 pub(super) fn build_volumes_patch_for_test(
     desired: &Deployment,

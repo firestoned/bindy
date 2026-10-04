@@ -89,8 +89,8 @@ original wording:
       existing `sbom-*` globs. Per-artifact `attest-sbom` binding is an
       ADR-0011 follow-up
 - [x] Docs page `docs/src/security/pqc-readiness.md` (inventory, posture,
-      verification commands, timeline anchors); threat model v1.8 pass:
-      M-38 (implemented), M-39 (planned), accepted risk 7 (HNDL)
+      verification commands, timeline anchors); threat model v1.9 pass:
+      M-39 (implemented), M-40 (planned), accepted risk 8 (HNDL)
 - [x] CHANGELOG + `ROADMAPS.md` row update
 
 ### Phase 1: Symmetric hygiene (TSIG/RNDC)

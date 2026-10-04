@@ -80,6 +80,9 @@ const BIND_ZONES_PATH: &str = "/etc/bind/zones";
 const BIND_CACHE_PATH: &str = "/var/cache/bind";
 const BIND_KEYS_PATH: &str = "/etc/bind/keys";
 const BIND_DNSSEC_KEYS_PATH: &str = "/var/cache/bind/keys";
+/// Where the init container sees the user's DNSSEC key Secret (ADR-0012).
+/// Mounted read-only, and only into that container: `named` never sees it.
+const BIND_DNSSEC_KEYS_SOURCE_PATH: &str = "/etc/bind/dnssec-keys-source";
 const BIND_NAMED_CONF_PATH: &str = "/etc/bind/named.conf";
 const BIND_NAMED_CONF_OPTIONS_PATH: &str = "/etc/bind/named.conf.options";
 const BIND_NAMED_CONF_ZONES_PATH: &str = "/etc/bind/named.conf.zones";
@@ -104,6 +107,51 @@ const VOLUME_NAMED_CONF: &str = "named-conf";
 const VOLUME_NAMED_CONF_OPTIONS: &str = "named-conf-options";
 const VOLUME_NAMED_CONF_ZONES: &str = "named-conf-zones";
 const VOLUME_DNSSEC_KEYS: &str = "dnssec-keys";
+/// The user's DNSSEC key Secret, the source the init container copies from.
+const VOLUME_DNSSEC_KEYS_SOURCE: &str = "dnssec-keys-source";
+/// Mode of the Secret's files: readable by the bind group (the pod's
+/// `fsGroup`), which the init container runs as. Secret volumes are owned by
+/// root, so an owner-only mode would leave them unreadable.
+const DNSSEC_KEYS_SOURCE_MODE: i32 = 0o440;
+/// Init container that copies Secret-supplied DNSSEC keys into the writable
+/// key directory (ADR-0012).
+const CONTAINER_NAME_DNSSEC_KEYS_INIT: &str = "dnssec-keys-init";
+/// `emptyDir` medium for a tmpfs volume.
+const EMPTY_DIR_MEDIUM_MEMORY: &str = "Memory";
+/// BIND's keyword for a key that never rolls; the only lifetime shared keys
+/// may have (ADR-0012).
+const DNSSEC_LIFETIME_UNLIMITED: &str = "unlimited";
+
+/// Shell script the [`CONTAINER_NAME_DNSSEC_KEYS_INIT`] container runs as
+/// `sh -c SCRIPT sh SRC DST`: copy every DNSSEC key file in `SRC` (the Secret)
+/// to `DST` (the key directory), owner-only.
+///
+/// Secret data keys cannot contain `+`, so the Secret names a key
+/// `K<zone>._<alg>_<id>.<ext>` and the copy restores BIND's
+/// `K<zone>.+<alg>+<id>.<ext>`. The match is anchored at the end, so an
+/// underscore inside the zone name survives. Other entries are skipped. No
+/// key at all fails the container: `named` would otherwise generate keys of
+/// its own, different in every pod.
+pub(crate) const DNSSEC_KEYS_INIT_SCRIPT: &str = r#"set -eu
+src="$1"; dst="$2"; n=0
+for f in "$src"/*; do
+  [ -f "$f" ] || continue
+  base="${f##*/}"
+  name="$(printf '%s' "$base" | sed -nE 's/^(K.+)_([0-9]{3})_([0-9]{5})\.(key|private|state)$/\1+\2+\3.\4/p')"
+  if [ -z "$name" ]; then
+    echo "dnssec-keys-init: skipping $base (not K<zone>._<alg>_<id>.key|private|state)" >&2
+    continue
+  fi
+  cp -L "$f" "$dst/$name"
+  chmod 0600 "$dst/$name"
+  echo "dnssec-keys-init: $base -> $name"
+  n=$((n + 1))
+done
+if [ "$n" -eq 0 ]; then
+  echo "dnssec-keys-init: no DNSSEC key files in $src" >&2
+  exit 1
+fi
+"#;
 /// Memory-backed writable scratch volume for the bindcar sidecar (`TMPDIR`).
 /// Required because the sidecar runs with `readOnlyRootFilesystem: true` under
 /// Pod Security Admission `restricted` yet must write a `0600` TSIG key file
@@ -280,6 +328,10 @@ pub(crate) fn generate_dnssec_policies(
     validate_dnssec_token("dnssec algorithm", algorithm)?;
     validate_dnssec_token("dnssec ksk lifetime", ksk_lifetime)?;
     validate_dnssec_token("dnssec zsk lifetime", zsk_lifetime)?;
+    if dnssec_key_secret(signing).is_some() {
+        require_unlimited_lifetime("kskLifetime", ksk_lifetime)?;
+        require_unlimited_lifetime("zskLifetime", zsk_lifetime)?;
+    }
 
     // Substitute template variables
     Ok(DNSSEC_POLICY_TEMPLATE
@@ -288,6 +340,35 @@ pub(crate) fn generate_dnssec_policies(
         .replace("{{KSK_LIFETIME}}", ksk_lifetime)
         .replace("{{ZSK_LIFETIME}}", zsk_lifetime)
         .replace("{{NSEC_CONFIG}}", &nsec_config))
+}
+
+/// Refuse a finite key lifetime for keys supplied from a Secret (ADR-0012).
+///
+/// The keys are shared by every primary; a finite lifetime makes each `named`
+/// roll a successor of its own, and the pods diverge. The CRD rejects this at
+/// admission; this is the runtime arm for a cluster with an older CRD.
+///
+/// # Errors
+/// Returns an error naming `field` when `value` is not `unlimited`.
+fn require_unlimited_lifetime(field: &str, value: &str) -> anyhow::Result<()> {
+    if value.eq_ignore_ascii_case(DNSSEC_LIFETIME_UNLIMITED) {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "invalid dnssec {field} {value:?}: keys from keysFrom.secretRef are shared by every \
+         primary and must not roll on their own; use {DNSSEC_LIFETIME_UNLIMITED:?} (or leave \
+         it unset) and rotate by updating the Secret"
+    )
+}
+
+/// The Secret a signing config takes its keys from, if any (ADR-0012).
+fn dnssec_key_secret(
+    signing: &crate::crd::DNSSECSigningConfig,
+) -> Option<&crate::crd::SecretReference> {
+    signing
+        .keys_from
+        .as_ref()
+        .and_then(|k| k.secret_ref.as_ref())
 }
 
 /// The `dnssec-policy` a zone is created or updated with.
@@ -410,7 +491,9 @@ pub(crate) fn get_dnssec_signing_config<'a>(
 /// Build DNSSEC key volumes and volume mounts based on configuration
 ///
 /// Creates appropriate volumes for DNSSEC keys based on the key source configuration:
-/// - User-supplied Secret: Mount keys from Secret (read-only for keys, writable for state files)
+/// - User-supplied Secret: the Secret as a source volume plus a writable
+///   `emptyDir` key directory, which is the only one `named` mounts; see
+///   [`build_dnssec_keys_init_container`] (ADR-0012)
 /// - Auto-generated: Use `emptyDir` for BIND9 to generate keys
 /// - Persistent storage: Use `PersistentVolumeClaim` for keys
 ///
@@ -440,15 +523,29 @@ pub(crate) fn build_dnssec_key_volumes(
     // Determine key source and create appropriate volume
     match &signing_config.keys_from {
         // Option 1: User-supplied keys from Secret
+        // Secret volumes are always read-only and named must write `.state`
+        // files beside its keys, so the Secret is only a source: the init
+        // container (`build_dnssec_keys_init_container`) copies it into a
+        // writable emptyDir, which is all named mounts (ADR-0012).
         Some(crate::crd::DNSSECKeySource {
             secret_ref: Some(secret),
             ..
         }) => {
+            // Memory-backed, like the Secret volume itself: the private key
+            // copies never reach the node's disk.
             volumes.push(Volume {
                 name: VOLUME_DNSSEC_KEYS.to_string(),
+                empty_dir: Some(EmptyDirVolumeSource {
+                    medium: Some(EMPTY_DIR_MEDIUM_MEMORY.to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+            volumes.push(Volume {
+                name: VOLUME_DNSSEC_KEYS_SOURCE.to_string(),
                 secret: Some(SecretVolumeSource {
                     secret_name: Some(secret.name.clone()),
-                    default_mode: Some(0o600), // Secure permissions for key files
+                    default_mode: Some(DNSSEC_KEYS_SOURCE_MODE),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -457,13 +554,12 @@ pub(crate) fn build_dnssec_key_volumes(
             volume_mounts.push(VolumeMount {
                 name: VOLUME_DNSSEC_KEYS.to_string(),
                 mount_path: BIND_DNSSEC_KEYS_PATH.to_string(),
-                read_only: Some(false), // BIND9 may update .state files
                 ..Default::default()
             });
 
             debug!(
                 secret_name = %secret.name,
-                "Mounting user-supplied DNSSEC keys from Secret"
+                "DNSSEC keys from Secret, copied into the key directory by an init container"
             );
         }
 
@@ -516,6 +612,78 @@ pub(crate) fn build_dnssec_key_volumes(
     }
 
     (volumes, volume_mounts)
+}
+
+/// The init container that copies Secret-supplied DNSSEC keys into the
+/// writable key directory before `named` starts (ADR-0012).
+///
+/// It runs `named`'s own image, which has `sh`, `sed` and `cp`, under the same
+/// restricted security context plus a read-only root filesystem: its only
+/// write is to the key directory.
+///
+/// # Arguments
+///
+/// * `global_config` - Optional global cluster configuration
+/// * `instance_config` - Optional instance-specific configuration
+/// * `image` - The BIND9 image `named` runs
+/// * `image_pull_policy` - That image's pull policy
+///
+/// # Returns
+///
+/// The container when signing takes its keys from `keysFrom.secretRef`,
+/// otherwise `None`.
+pub(crate) fn build_dnssec_keys_init_container(
+    global_config: Option<&crate::crd::Bind9Config>,
+    instance_config: Option<&crate::crd::Bind9Config>,
+    image: &str,
+    image_pull_policy: &str,
+) -> Option<Container> {
+    let signing = get_dnssec_signing_config(global_config, instance_config)?;
+    dnssec_key_secret(signing)?;
+
+    Some(Container {
+        name: CONTAINER_NAME_DNSSEC_KEYS_INIT.into(),
+        image: Some(image.into()),
+        image_pull_policy: Some(image_pull_policy.into()),
+        command: Some(vec!["sh".into()]),
+        args: Some(vec![
+            "-c".into(),
+            DNSSEC_KEYS_INIT_SCRIPT.into(),
+            "sh".into(),
+            BIND_DNSSEC_KEYS_SOURCE_PATH.into(),
+            BIND_DNSSEC_KEYS_PATH.into(),
+        ]),
+        volume_mounts: Some(vec![
+            VolumeMount {
+                name: VOLUME_DNSSEC_KEYS_SOURCE.into(),
+                mount_path: BIND_DNSSEC_KEYS_SOURCE_PATH.into(),
+                read_only: Some(true),
+                ..Default::default()
+            },
+            VolumeMount {
+                name: VOLUME_DNSSEC_KEYS.into(),
+                mount_path: BIND_DNSSEC_KEYS_PATH.into(),
+                ..Default::default()
+            },
+        ]),
+        security_context: Some(SecurityContext {
+            run_as_non_root: Some(true),
+            run_as_user: Some(BIND9_NONROOT_UID),
+            run_as_group: Some(BIND9_NONROOT_UID),
+            allow_privilege_escalation: Some(false),
+            read_only_root_filesystem: Some(true),
+            capabilities: Some(Capabilities {
+                drop: Some(vec!["ALL".to_string()]),
+                add: None,
+            }),
+            seccomp_profile: Some(SeccompProfile {
+                type_: "RuntimeDefault".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
 }
 
 /// Pod-template annotation holding [`configmap_data_hash`] of the BIND
@@ -1754,6 +1922,15 @@ pub fn build_deployment(
     let (dnssec_volumes, dnssec_volume_mounts) =
         build_dnssec_key_volumes(global_config, instance_config);
 
+    // Copies Secret-supplied keys into the key directory (ADR-0012).
+    let (bind9_image, bind9_pull_policy) = resolve_bind9_image(config.image_config, config.version);
+    let dnssec_init_container = build_dnssec_keys_init_container(
+        global_config,
+        instance_config,
+        &bind9_image,
+        &bind9_pull_policy,
+    );
+
     // Merge DNSSEC volumes with custom volumes from spec
     let all_volumes = if dnssec_volumes.is_empty() {
         config.volumes.map(std::borrow::ToOwned::to_owned)
@@ -1812,12 +1989,25 @@ pub fn build_deployment(
                     all_volume_mounts.as_ref(),
                     config.bindcar_config.as_ref(),
                     &placement,
+                    dnssec_init_container.map(|c| vec![c]),
                 )),
             },
             ..Default::default()
         }),
         ..Default::default()
     }
+}
+
+/// The BIND9 image and its pull policy: the configured image, else the ISC
+/// image at `version`, pulled `IfNotPresent` unless configured otherwise.
+fn resolve_bind9_image(image_config: Option<&ImageConfig>, version: &str) -> (String, String) {
+    let image = image_config
+        .and_then(|img_cfg| img_cfg.image.clone())
+        .unwrap_or_else(|| format!("internetsystemsconsortium/bind9:{version}"));
+    let image_pull_policy = image_config
+        .and_then(|cfg| cfg.image_pull_policy.clone())
+        .unwrap_or_else(|| "IfNotPresent".into());
+    (image, image_pull_policy)
 }
 
 /// Builds pod specification with BIND9 container and API sidecar
@@ -1832,6 +2022,7 @@ pub fn build_deployment(
 /// * `custom_volume_mounts` - Optional custom volume mounts to add
 /// * `bindcar_config` - Optional API sidecar configuration
 /// * `placement` - Resolved topology spread constraints from `crate::placement`
+/// * `init_containers` - Containers to run before `named` (the DNSSEC key copy)
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_lines)]
 fn build_pod_spec(
@@ -1844,16 +2035,9 @@ fn build_pod_spec(
     custom_volume_mounts: Option<&Vec<VolumeMount>>,
     bindcar_config: Option<&crate::crd::BindcarConfig>,
     placement: &crate::placement::ResolvedPlacement,
+    init_containers: Option<Vec<Container>>,
 ) -> PodSpec {
-    // Determine image to use
-    let image = image_config
-        .and_then(|img_cfg| img_cfg.image.clone())
-        .unwrap_or_else(|| format!("internetsystemsconsortium/bind9:{version}"));
-
-    // Determine image pull policy
-    let image_pull_policy = image_config
-        .and_then(|cfg| cfg.image_pull_policy.clone())
-        .unwrap_or_else(|| "IfNotPresent".into());
+    let (image, image_pull_policy) = resolve_bind9_image(image_config, version);
 
     // BIND9 container
     let bind9_container = Container {
@@ -1998,6 +2182,7 @@ fn build_pod_spec(
             custom_volumes,
             bindcar_config.and_then(|c| c.tls.as_ref()),
         )),
+        init_containers,
         image_pull_secrets,
         service_account_name: Some(BIND9_SERVICE_ACCOUNT.into()),
         // Must outlast the preStop drain above, or the kubelet SIGKILLs the
@@ -2488,7 +2673,7 @@ fn build_volumes(
         Volume {
             name: VOLUME_TMP.into(),
             empty_dir: Some(EmptyDirVolumeSource {
-                medium: Some("Memory".to_string()),
+                medium: Some(EMPTY_DIR_MEDIUM_MEMORY.to_string()),
                 ..Default::default()
             }),
             ..Default::default()
