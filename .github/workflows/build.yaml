@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 #
 # Single "Build" workflow for pull requests, pushes to main, and releases —
 # consolidating the former pr.yaml, main.yaml, release.yaml and
@@ -112,7 +112,7 @@ jobs:
         uses: firestoned/github-actions/security/license-check@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
         with:
           copyright-holder: "Erick Bourgeois, firestoned"
-          license-id: "MIT"
+          license-id: "Apache-2.0"
 
   verify-commits:
     name: Verify Signed Commits

@@ -3,7 +3,7 @@
 
 ## Project Status
 
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![GitHub Release](https://img.shields.io/github/v/release/firestoned/bindy)](https://github.com/firestoned/bindy/releases/latest)
 [![GitHub commits since latest release](https://img.shields.io/github/commits-since/firestoned/bindy/latest)](https://github.com/firestoned/bindy/commits/main)
 [![Last Commit](https://img.shields.io/github/last-commit/firestoned/bindy)](https://github.com/firestoned/bindy/commits/main)
@@ -533,7 +533,7 @@ Report security issues to: security@firestoned.io
 
 ## License
 
-MIT License - see [LICENSE](LICENSE)
+Apache License 2.0 - see [LICENSE](LICENSE)
 
 **Copyright (c) 2025 Erick Bourgeois, firestoned**
 

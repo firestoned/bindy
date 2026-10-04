@@ -1,12 +1,12 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 
 [tool.poetry]
 name = "bindy-docs"
 version = "0.1.0"
 description = "Documentation dependencies for Bindy - BIND9 DNS Operator for Kubernetes"
 authors = ["Erick Bourgeois <erick@firestoned.io>"]
-license = "MIT"
+license = "Apache-2.0"
 readme = "README.md"
 package-mode = false
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Pin container image digests for reproducible builds (M-1)
 #
 # Fetches multi-arch manifest list digests and updates all Dockerfiles.

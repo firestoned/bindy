@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 #
 # ValidatingAdmissionPolicy: reject tenant-supplied `bindcarConfig.envVars`
 # entries whose names the operator owns.

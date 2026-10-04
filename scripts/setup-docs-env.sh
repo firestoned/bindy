@@ -1,6 +1,6 @@
 #!/bin/bash
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 
 # Setup script for Bindy documentation development environment
 # This script uses Poetry to manage Python dependencies for building

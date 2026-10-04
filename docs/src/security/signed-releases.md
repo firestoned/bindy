@@ -478,7 +478,7 @@ All Bindy source files include SPDX license identifiers for automated license co
 SPDX (Software Package Data Exchange) is an [ISO standard (ISO/IEC 5962:2021)](https://www.iso.org/standard/81870.html) for communicating software license information. SPDX identifiers enable:
 
 - **Automated SBOM generation**: Tools like `cargo-cyclonedx` detect licenses automatically
-- **License compliance auditing**: Verify no GPL contamination in MIT-licensed project
+- **License compliance auditing**: Verify no GPL contamination in this Apache-2.0-licensed project
 - **Supply chain transparency**: Clear license identification at file granularity
 - **Tooling integration**: GitHub, Snyk, Trivy, and other tools recognize SPDX headers
 
@@ -489,26 +489,26 @@ All source files MUST include SPDX headers in the first 10 lines:
 **Rust files (`.rs`):**
 ```rust
 // Copyright (c) 2025 Erick Bourgeois, firestoned
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 ```
 
 **Shell scripts (`.sh`, `.bash`):**
 ```bash
 #!/usr/bin/env bash
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 ```
 
 **Makefiles (`Makefile`, `*.mk`):**
 ```makefile
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 ```
 
 **GitHub Actions workflows (`.yaml`, `.yml`):**
 ```yaml
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 name: My Workflow
 ```
 
@@ -541,9 +541,9 @@ File types checked:
   - GitHub Actions workflows (.yaml, .yml)
 ```
 
-### License: MIT
+### License: Apache-2.0
 
-Bindy is licensed under the [MIT License](https://opensource.org/licenses/MIT), one of the most permissive open source licenses.
+Bindy is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0), a permissive license with an express patent grant.
 
 **Permissions:**
 - ✅ Commercial use
@@ -552,8 +552,8 @@ Bindy is licensed under the [MIT License](https://opensource.org/licenses/MIT), 
 - ✅ Private use
 
 **Conditions:**
-- 📋 Include copyright notice
-- 📋 Include license text
+- 📋 Include license text and NOTICE file
+- 📋 State significant changes
 
 **Limitations:**
 - ❌ No liability

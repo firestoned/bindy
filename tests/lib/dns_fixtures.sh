@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 #
 # The zone/record fixture set shared by the tests/e2e/ DNS suites, plus the
 # assertions that check it. Sourced, never run.

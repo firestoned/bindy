@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 #![allow(clippy::uninlined_format_args)]
 #![allow(clippy::doc_markdown)]
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 
 //! DNS zone reconciliation logic.
 //!

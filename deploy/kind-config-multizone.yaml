@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 #
 # A kind cluster that fakes a three-zone cloud region, for exercising
 # `spec.placement` topology spreading locally.

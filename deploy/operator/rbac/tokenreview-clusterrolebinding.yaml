@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 #
 # Binds the `bindcar-tokenreview` ClusterRole to the operand BIND9
 # ServiceAccount (`bind9`), which is the identity the bindcar sidecar runs as

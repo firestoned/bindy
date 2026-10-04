@@ -417,4 +417,4 @@ This codebase operates in a regulated banking environment. All changes must be:
 
 ## License
 
-By contributing to this project, you agree that your contributions will be licensed under the MIT License.
+By contributing to this project, you agree that your contributions will be licensed under the Apache License 2.0.
