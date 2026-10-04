@@ -16,7 +16,7 @@ use std::time::Instant;
 use tracing::{debug, error, info, warn};
 
 use crate::constants::{DEFAULT_DNS_RECORD_TTL_SECS, DNS_CONTAINER_PORT};
-use crate::reconcilers::retry::{http_backoff, is_retryable_http_status};
+use bindy_controller_sdk::retry::{http_backoff, is_retryable_http_status};
 
 /// Append the operand's DNS container port to each transfer endpoint, in the
 /// compact `<ip>:<port>` form bindcar accepts (IPv6 addresses are bracketed:

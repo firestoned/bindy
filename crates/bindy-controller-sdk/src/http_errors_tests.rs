@@ -8,7 +8,7 @@
 #[cfg(test)]
 mod tests {
     use crate::http_errors::*;
-    use crate::status_reasons::*;
+    use bindy_api::status_reasons::*;
 
     // ============================================================================
     // Test HTTP 4xx Error Code Mappings

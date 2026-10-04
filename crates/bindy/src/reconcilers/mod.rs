@@ -66,18 +66,16 @@ pub mod bind9instance;
 pub mod clusterbind9provider;
 pub mod dnszone;
 pub mod finalizers;
-pub mod pagination;
 pub mod records;
-pub mod resources;
-pub mod retry;
-pub mod status;
+
+// Framework modules moved to `bindy-controller-sdk` (ADR-0009, roadmap 01
+// Phase B), re-exported under their old paths.
+pub use bindy_controller_sdk::{pagination, resources, retry, status};
 
 #[cfg(test)]
 mod clusterbind9provider_tests;
 #[cfg(test)]
 mod records_tests;
-#[cfg(test)]
-mod status_tests;
 
 pub use bind9cluster::{delete_bind9cluster, reconcile_bind9cluster};
 pub use bind9instance::{delete_bind9instance, reconcile_bind9instance, reconcile_instance_zones};

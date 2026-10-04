@@ -10,11 +10,8 @@ use crate::crd::RecordStatus;
 use kube::runtime::controller::Action;
 use std::time::Duration;
 
-/// Requeue interval for resources that are ready (5 minutes)
-pub const REQUEUE_WHEN_READY_SECS: u64 = 300;
-
-/// Requeue interval for resources that are not ready (30 seconds)
-pub const REQUEUE_WHEN_NOT_READY_SECS: u64 = 30;
+// The requeue policy is shared by every controller (bindy-controller-sdk).
+pub use bindy_controller_sdk::requeue::{REQUEUE_WHEN_NOT_READY_SECS, REQUEUE_WHEN_READY_SECS};
 
 /// Condition type for resource readiness
 pub const CONDITION_TYPE_READY: &str = "Ready";

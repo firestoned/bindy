@@ -23,10 +23,9 @@ workspace = true
 
 [dependencies]
 bindy-api.workspace = true
+bindy-controller-sdk.workspace = true
 kube.workspace = true
 kube-lease-manager.workspace = true
-tower.workspace = true
-http.workspace = true
 json-patch.workspace = true
 tokio.workspace = true
 serde.workspace = true
@@ -50,7 +49,6 @@ webpki.workspace = true
 rustls-pki-types.workspace = true
 url.workspace = true
 bindcar.workspace = true
-prometheus.workspace = true
 axum.workspace = true
 sha2.workspace = true
 clap.workspace = true

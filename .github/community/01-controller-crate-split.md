@@ -14,7 +14,7 @@
 > the API server drops from about 59 to 14 in cluster-wide mode (one per
 > kind).
 
-**Status:** 🔶 Phase A done (2026-10-03); Phase B (`bindy-controller-sdk`) next. [ADR-0009](../../docs/adr/0009-workspace-crate-split-and-shared-watch-layer.md) Accepted, CALM updated
+**Status:** 🔶 Phase A done (2026-10-03); Phase B in progress: B1 (crate + framework modules) done 2026-10-04, B2 (`WatchSet`) next. [ADR-0009](../../docs/adr/0009-workspace-crate-split-and-shared-watch-layer.md) Accepted, CALM updated
 **Owner:** Erick Bourgeois
 **Analysed against:** `main` @ `d422055` (re-measured 2026-10-03; first analysis was `fix-idempotency` @ `648ff7a`), kube / kube-runtime **4.2.0**
 
@@ -320,28 +320,53 @@ code they cover, and `cargo-quality` gates each one.
       on `main` (the DNSSEC fix's `dnssecPolicy` description had not been
       regenerated into it).*
 
-### Phase B — `bindy-controller-sdk`
+### Phase B: `bindy-controller-sdk`
 
-- [ ] Create the crate with `context`, `finalizers`, `status`, `retry`,
-      `pagination`, `resources`, `metrics`.
-- [ ] Move `crate::reconcilers::retry` here and cut the
-      `bind9 → reconcilers` back-edge.
-- [ ] **Single** `ReconcileError` + **single** `error_policy` — delete
+Landed in steps, each its own PR. **B1** (2026-10-04) is the mechanical part:
+the crate exists, the framework modules live in it, behaviour is unchanged.
+
+- [x] Create the crate with `status`, `retry`, `pagination`, `resources`,
+      `metrics` (plus `rate_limit`, `namespace_scope`, `http_errors`, per
+      ADR-0009 §2). *B1. `bindy` re-exports each under its old path
+      (`crate::metrics`, `crate::reconcilers::retry`, ...), so no call site
+      changed.*
+- [ ] Move `context` (`Stores`, `MultiStore`, `Context`). *Deferred to the
+      `RecordKind` / `WatchSet` step, which rebuilds `Stores` anyway; and
+      `Context` still builds `Bind9Manager`s and resolves bindcar TLS, which
+      is BIND9-domain code that has to go to `bindy-bind9` (Phase C) or
+      behind an extension trait first.*
+- [ ] Move `finalizers`. *Blocked by the orphan rule: with
+      `FinalizerCleanup` in the SDK and the CRD types in `bindy-api`,
+      `impl FinalizerCleanup for Bind9Cluster` is illegal in any controller
+      crate. Needs the trait reshaped so the cleanup is a type the
+      controller owns; do it with Phase D, where the impls move.*
+- [x] Move `crate::reconcilers::retry` here and cut the
+      `bind9 → reconcilers` back-edge. *B1: `bind9/zone_ops.rs` imports
+      `bindy_controller_sdk::retry`; `rg crate::reconcilers
+      crates/bindy/src/bind9` is empty.*
+- [x] **Single** `ReconcileError` + **single** `error_policy`: delete
       the copies in `main.rs` and `record_operator.rs`. Give
       `error_policy` exponential backoff (capped) instead of the current
-      flat `ERROR_REQUEUE_DURATION_SECS`.
-- [ ] Move the requeue policy (`REQUEUE_WHEN_READY_SECS` /
+      flat `ERROR_REQUEUE_DURATION_SECS`. *B1: `sdk::error`, with tests.
+      The capped backoff (`retry::reconcile_error_backoff`, 2s doubling to
+      60s, reset after 5 min quiet) had already landed in both copies; B1
+      only deduplicated them.*
+- [x] Move the requeue policy (`REQUEUE_WHEN_READY_SECS` /
       `REQUEUE_WHEN_NOT_READY_SECS`) out of `record_wrappers` into one
-      documented `sdk::requeue` module.
+      documented `sdk::requeue` module. *B1; `record_wrappers` re-exports
+      them.*
 - [ ] Implement `WatchSet` on `reflector::store_shared()` +
-      `Controller::for_shared_stream()`.
+      `Controller::for_shared_stream()`. *Next (B2). Enables kube's
+      `unstable-runtime-subscribe` feature (ADR-0009 §3).*
 - [ ] Implement the `RecordKind` trait and rebuild `Stores` on top of
-      it; delete the `collect_matching!` macro.
+      it; delete the `collect_matching!` macro. *B3, with `context`.*
 - [ ] Move leader election (`LeaseManagerBuilder` wiring,
       `load_leader_election_config`, `monitor_leadership`) into
-      `sdk::leader`.
+      `sdk::leader`. *B4.*
 - [ ] **DoD:** `cargo test -p bindy-controller-sdk` green; unit tests
-      cover `WatchSet` subscriber fan-out and each predicate.
+      cover `WatchSet` subscriber fan-out and each predicate. *B1: 174 SDK
+      tests green (1609 workspace-wide, up from 1605 by the 4 new
+      `error` tests); the `WatchSet` half waits for B2.*
 
 ### Phase C — `bindy-bind9`
 

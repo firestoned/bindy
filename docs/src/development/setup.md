@@ -48,6 +48,7 @@ bindy/
 ├── Cargo.toml        # Cargo workspace (ADR-0009)
 ├── crates/
 │   ├── bindy-api/    # CRD types, constants, labels; crdgen/crddoc bins
+│   ├── bindy-controller-sdk/  # Shared controller framework: errors, requeue, retry, status, metrics
 │   └── bindy/        # The operator binary and everything not yet split out
 │       ├── src/
 │       │   ├── main.rs       # Entry point

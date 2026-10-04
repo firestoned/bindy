@@ -24,48 +24,10 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fmt::Debug;
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
-/// Reconciliation error wrapper
-#[derive(Debug, thiserror::Error)]
-#[error(transparent)]
-pub struct ReconcileError(#[from] anyhow::Error);
-
-/// Error policy for record operators.
-///
-/// Uses the same per-object exponential backoff as the main controllers: records
-/// have to be re-pushed into a replaced BIND9 Pod just like the zone does, so a
-/// long fixed requeue here delays recovery in exactly the same way.
-///
-/// # Arguments
-///
-/// * `resource` - The record whose reconciliation failed
-/// * `err` - The reconciliation error
-///
-/// # Returns
-///
-/// An `Action` requeueing the record after its current backoff.
-#[allow(clippy::needless_pass_by_value)] // Signature required by kube::runtime::Controller
-fn error_policy<T, C>(resource: Arc<T>, err: &ReconcileError, _ctx: Arc<C>) -> Action
-where
-    T: Debug + kube::ResourceExt,
-{
-    let key = format!(
-        "{}/{}/{}",
-        std::any::type_name::<T>(),
-        resource.namespace().unwrap_or_default(),
-        resource.name_any()
-    );
-    let delay = crate::reconcilers::retry::reconcile_error_backoff(&key);
-
-    error!(
-        error = %err,
-        resource = ?resource,
-        "Reconciliation error - will retry in {:?}",
-        delay
-    );
-    Action::requeue(delay)
-}
+use bindy_controller_sdk::error::error_policy;
+pub use bindy_controller_sdk::error::ReconcileError;
 
 /// Trait for DNS record types that can be reconciled with a generic operator.
 ///

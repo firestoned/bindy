@@ -1,7 +1,8 @@
 # 0010: Release SBOMs and SLSA Build L3 provenance
 
-- **Status:** Proposed
-- **Date:** 2026-10-03
+- **Status:** Accepted
+- **Date:** 2026-10-04
+- **Proposed:** 2026-10-03
 - **Deciders:** Erick Bourgeois
 - **Related:** Roadmap 15 Phase 6 (`.github/community/15-security-scanning.md`);
   follows [ADR-0009](0009-workspace-crate-split-and-shared-watch-layer.md),

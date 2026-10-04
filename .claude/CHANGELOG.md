@@ -1,3 +1,52 @@
+## [2026-10-04 10:00] - Roadmap 01 Phase B step B1: `bindy-controller-sdk` crate (ADR-0009)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/bindy-controller-sdk`: the shared controller framework, depending
+  on `bindy-api` only. Moved in unchanged (with their `_tests.rs`):
+  `status`, `retry`, `pagination`, `resources` (from `reconcilers/`),
+  `rate_limit`, `namespace_scope`, `http_errors`, `metrics`.
+- `bindy_controller_sdk::error`: the single `ReconcileError` and
+  `error_policy`, replacing identical copies in `main.rs` and
+  `record_operator.rs`; new `error_tests.rs` (transparent error, initial
+  backoff, doubling to the cap, per-kind counters).
+- `bindy_controller_sdk::requeue`: `REQUEUE_WHEN_READY_SECS` /
+  `REQUEUE_WHEN_NOT_READY_SECS`, moved from `record_wrappers` (which
+  re-exports them).
+
+### Changed
+- `crates/bindy/src/lib.rs`, `reconcilers/mod.rs`: re-export the moved
+  modules under their old paths; no call site changed.
+- `bind9/zone_ops.rs`: imports `bindy_controller_sdk::retry`, cutting the
+  `bind9 → reconcilers` back-edge.
+- `status::DNSZoneStatusUpdater::conditions()`: no longer `#[cfg(test)]`,
+  so the zone reconciler's tests in `bindy` can still call it.
+- `crates/bindy/Cargo.toml`: drops `http`, `prometheus`, `tower` (now only
+  used by the SDK).
+- `docs/adr/0010-release-sbom-and-slsa-build-l3.md`: Accepted (implemented
+  in #519; the release-only jobs are proven by the next release).
+- `docs/adr/0009-…`: amended. `finalizers` (orphan rule) and `context`
+  (BIND9 coupling, `Stores` rebuild) stay in `bindy` until later steps.
+- Roadmap 01 Phase B split into steps B1–B4, B1 ticked; `ROADMAPS.md`,
+  `.claude/CLAUDE.md` and `docs/src/development/setup.md` layout trees,
+  `docs/src/security/{rate-limiting,threat-model}.md` paths updated.
+
+### Why
+Roadmap 01 Phase B, first step: the framework crate exists and the
+duplicated error policy is gone, before the behaviour-changing `WatchSet`
+work (B2).
+
+### Verification
+1609 tests pass (1605 + 4 new), 0 failed; `cargo-machete`, `cargo-deny`,
+clippy `-D warnings` clean. No runtime change, so no threat-model pass.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only (code reorganisation; the binary's behaviour is unchanged)
+
 ## [2026-10-04 06:15] - Roadmap 28: post-quantum cryptography (PQC) readiness
 
 **Author:** Erick Bourgeois

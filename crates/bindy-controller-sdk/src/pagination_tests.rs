@@ -5,7 +5,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::constants::KUBE_LIST_PAGE_SIZE;
+    use bindy_api::constants::KUBE_LIST_PAGE_SIZE;
 
     /// Test that pagination constant has expected value
     #[test]

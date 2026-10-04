@@ -10,7 +10,7 @@
 //! # Usage
 //!
 //! ```rust
-//! use bindy::http_errors::map_http_error_to_reason;
+//! use bindy_controller_sdk::http_errors::map_http_error_to_reason;
 //!
 //! // Map HTTP status codes to Kubernetes condition reasons
 //! let (reason, message) = map_http_error_to_reason(404);
@@ -20,7 +20,7 @@
 //! assert_eq!(reason, "BindcarInternalError");
 //! ```
 
-use crate::status_reasons::{
+use bindy_api::status_reasons::{
     REASON_BINDCAR_AUTH_FAILED, REASON_BINDCAR_BAD_REQUEST, REASON_BINDCAR_INTERNAL_ERROR,
     REASON_BINDCAR_NOT_IMPLEMENTED, REASON_BINDCAR_UNREACHABLE, REASON_GATEWAY_ERROR,
     REASON_ZONE_NOT_FOUND,
@@ -59,7 +59,7 @@ use crate::status_reasons::{
 /// # Example
 ///
 /// ```rust
-/// use bindy::http_errors::map_http_error_to_reason;
+/// use bindy_controller_sdk::http_errors::map_http_error_to_reason;
 ///
 /// let (reason, message) = map_http_error_to_reason(404);
 /// assert_eq!(reason, "ZoneNotFound");
@@ -136,7 +136,7 @@ pub fn map_http_error_to_reason(status_code: u16) -> (&'static str, String) {
 /// # Example
 ///
 /// ```rust,no_run
-/// use bindy::http_errors::map_connection_error;
+/// use bindy_controller_sdk::http_errors::map_connection_error;
 ///
 /// # async fn example() {
 /// # let client = reqwest::Client::new();

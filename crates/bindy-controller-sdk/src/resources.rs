@@ -16,7 +16,7 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use bindy::reconcilers::resources::{create_or_apply, create_or_replace};
+//! use bindy_controller_sdk::resources::{create_or_apply, create_or_replace};
 //! use k8s_openapi::api::core::v1::ServiceAccount;
 //! use kube::Client;
 //! use anyhow::Result;
@@ -68,7 +68,7 @@ use tracing::{debug, info};
 /// # Example
 ///
 /// ```rust,no_run
-/// # use bindy::reconcilers::resources::create_or_apply;
+/// # use bindy_controller_sdk::resources::create_or_apply;
 /// # use k8s_openapi::api::core::v1::ServiceAccount;
 /// # use kube::Client;
 /// # async fn example(client: &Client, namespace: &str, sa: ServiceAccount) {
@@ -159,7 +159,7 @@ where
 /// # Example
 ///
 /// ```rust,no_run
-/// # use bindy::reconcilers::resources::create_or_replace;
+/// # use bindy_controller_sdk::resources::create_or_replace;
 /// # use k8s_openapi::api::apps::v1::Deployment;
 /// # use kube::Client;
 /// # async fn example(client: &Client, namespace: &str, deploy: Deployment) {
@@ -230,8 +230,8 @@ where
 /// # Example
 ///
 /// ```rust,no_run
-/// # use bindy::reconcilers::resources::create_or_patch_json;
-/// # use bindy::crd::Bind9Instance;
+/// # use bindy_controller_sdk::resources::create_or_patch_json;
+/// # use bindy_api::crd::Bind9Instance;
 /// # use kube::Client;
 /// # use serde_json::json;
 /// # async fn example(client: &Client, namespace: &str, instance: Bind9Instance) {

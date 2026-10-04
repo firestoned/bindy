@@ -8,6 +8,7 @@ resolver = "2"
 members = [
     "crates/bindy",
     "crates/bindy-api",
+    "crates/bindy-controller-sdk",
 ]
 
 [workspace.package]
@@ -28,6 +29,7 @@ unsafe_code = "forbid"
 [workspace.dependencies]
 # Workspace crates
 bindy-api = { path = "crates/bindy-api" }
+bindy-controller-sdk = { path = "crates/bindy-controller-sdk" }
 
 kube = { version = "4.0", features = ["runtime", "derive", "client", "jsonpatch"] }
 kube-lease-manager = "0.12"

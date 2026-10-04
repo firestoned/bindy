@@ -6,11 +6,11 @@
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
-    use crate::crd::{Condition, DNSZone, DNSZoneSpec};
-    use crate::reconcilers::status::{
+    use crate::status::{
         condition_changed, create_condition, find_condition, get_last_transition_time,
         DNSZoneStatusUpdater,
     };
+    use bindy_api::crd::{Condition, DNSZone, DNSZoneSpec};
 
     const CONDITION_TYPE_READY: &str = "Ready";
     const STATUS_TRUE: &str = "True";
@@ -353,7 +353,7 @@ mod tests {
 
     // Helper function to create a test DNSZone
     fn create_test_dnszone(name: &str, namespace: &str) -> DNSZone {
-        use crate::crd::SOARecord;
+        use bindy_api::crd::SOARecord;
         use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
         DNSZone {
             metadata: ObjectMeta {
@@ -517,7 +517,7 @@ mod tests {
         // Flipping the flag alone must be enough to trigger a status patch -
         // otherwise the zone would never be marked as owing a record replay.
         let mut dnszone = create_test_dnszone("test-zone", "bindy-system");
-        dnszone.status = Some(crate::crd::DNSZoneStatus::default());
+        dnszone.status = Some(bindy_api::crd::DNSZoneStatus::default());
         let mut updater = DNSZoneStatusUpdater::new(&dnszone);
         assert!(!updater.has_changes());
 
@@ -535,7 +535,7 @@ mod tests {
         // Clearing must be equally persistable, or a zone that has been fully
         // replayed would stay Degraded forever.
         let mut dnszone = create_test_dnszone("test-zone", "bindy-system");
-        dnszone.status = Some(crate::crd::DNSZoneStatus {
+        dnszone.status = Some(bindy_api::crd::DNSZoneStatus {
             records_resync_pending: true,
             ..Default::default()
         });
@@ -552,7 +552,7 @@ mod tests {
         // Re-asserting the current value must not create status churn - the
         // zone reconciler calls this on every pass.
         let mut dnszone = create_test_dnszone("test-zone", "bindy-system");
-        dnszone.status = Some(crate::crd::DNSZoneStatus::default());
+        dnszone.status = Some(bindy_api::crd::DNSZoneStatus::default());
         let mut updater = DNSZoneStatusUpdater::new(&dnszone);
 
         updater.set_records_resync_pending(false);
@@ -570,7 +570,7 @@ mod tests {
         let mut updater = DNSZoneStatusUpdater::new(&dnszone);
         assert!(!updater.has_changes());
 
-        updater.set_dnssec(Some(crate::crd::DNSSECStatus {
+        updater.set_dnssec(Some(bindy_api::crd::DNSSECStatus {
             signed: true,
             ds_records: vec!["example.com. IN DS 12345 13 2 ABCD".to_string()],
             key_tag: Some(12345),
@@ -603,7 +603,7 @@ mod tests {
         let dnszone = create_test_dnszone("test-zone", "bindy-system");
         let mut updater = DNSZoneStatusUpdater::new(&dnszone);
 
-        updater.set_dnssec(Some(crate::crd::DNSSECStatus {
+        updater.set_dnssec(Some(bindy_api::crd::DNSSECStatus {
             signed: true,
             ds_records: vec![],
             key_tag: None,

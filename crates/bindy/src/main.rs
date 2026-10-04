@@ -24,7 +24,7 @@ use bindy::{
     metrics,
     reconcilers::{
         delete_dnszone, reconcile_bind9cluster, reconcile_bind9instance,
-        reconcile_clusterbind9provider, reconcile_dnszone, retry::reconcile_error_backoff,
+        reconcile_clusterbind9provider, reconcile_dnszone,
     },
     record_operator::run_generic_record_operator,
 };
@@ -42,9 +42,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
-#[derive(Debug, thiserror::Error)]
-#[error(transparent)]
-struct ReconcileError(#[from] anyhow::Error);
+use bindy_controller_sdk::error::{error_policy, ReconcileError};
 
 const BANNER: &str = "
 
@@ -2130,51 +2128,6 @@ async fn reconcile_dnszone_wrapper(
             ReconcileError::from(anyhow::anyhow!("Invalid finalizer name"))
         }
     })
-}
-
-/// Error policy for controllers.
-///
-/// Requeues the resource with a per-object exponential backoff: fast on the
-/// first failure, doubling while it keeps failing, capped, and decaying back to
-/// the fast interval once the object stops failing.
-///
-/// This delay is what actually bounds recovery. When an operand Pod is replaced
-/// the Endpoints watch does not reliably pull the DNSZone forward — a retry is
-/// already scheduled, and the pending requeue wins — so the zone waits out that
-/// timer. With the previous flat 30s requeue a zone was measured idling for 57
-/// seconds after its Pod was back and Ready, then reconciling once and serving
-/// in about 1 second.
-///
-/// # Arguments
-///
-/// * `resource` - The object whose reconciliation failed
-/// * `err` - The reconciliation error
-///
-/// # Returns
-///
-/// An `Action` requeueing the resource after its current backoff.
-#[allow(clippy::needless_pass_by_value)] // Signature required by kube::runtime::Controller
-fn error_policy<T, C>(resource: Arc<T>, err: &ReconcileError, _ctx: Arc<C>) -> Action
-where
-    T: std::fmt::Debug + kube::ResourceExt,
-{
-    // Keyed by kind as well as name: two different kinds can share a namespaced
-    // name, and they must not share a failure counter.
-    let key = format!(
-        "{}/{}/{}",
-        std::any::type_name::<T>(),
-        resource.namespace().unwrap_or_default(),
-        resource.name_any()
-    );
-    let delay = reconcile_error_backoff(&key);
-
-    error!(
-        error = %err,
-        resource = ?resource,
-        "Reconciliation error - will retry in {:?}",
-        delay
-    );
-    Action::requeue(delay)
 }
 
 // Tests are in main_tests.rs
