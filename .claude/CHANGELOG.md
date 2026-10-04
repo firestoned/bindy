@@ -43,9 +43,11 @@
 - `.github/workflows/sbom.yml`: same generation and gate as releases; Grype
   through SHA-pinned `anchore/scan-action` v7.4.2 instead of `curl | sh` from
   the `main` branch.
-- Requires `firestoned/github-actions` v1.3.8 (`rust/generate-sbom`:
-  `spec-version`, `extra-args`, working `package`), pinned in `build.yaml`
-  and `sbom.yml` at `787be16a6bed7e6c2297683bb75bc9b5f1a54397`.
+- Requires `firestoned/github-actions` v1.3.9 (`rust/generate-sbom`:
+  `spec-version`, `extra-args`, working `package` from v1.3.8; v1.3.9 fixes
+  a cache fallback that restored an older cargo-cyclonedx and failed the
+  install), pinned in `build.yaml` and `sbom.yml` at
+  `e034489c3a17ffaaaf7f8fb799156ce768d899d5`.
 - Docs: `docs/src/compliance/slsa.md` rewritten against SLSA v1.0; SLSA/SBOM
   claims corrected in `README.md` (badge too), `SECURITY.md`,
   `docs/src/security/{signed-releases,architecture,build-reproducibility}.md`
@@ -136,6 +138,74 @@ runtime behaviour, and the full pass is due when ADR-0009 is implemented.
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only (build layout only; the binary is unchanged)
+
+## [2026-10-03 16:30] - Config changes reach running BIND pods (operator upgrades included)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `src/reconcilers/bind9instance/resources.rs`: the instance reconciler now
+  keeps the ConfigMap its pods mount current by **content**, not by the
+  `Bind9Cluster` generation. `desired_configmap_for_instance` renders the
+  cluster's shared `<cluster>-config` (exactly as the cluster reconciler does)
+  or a standalone instance's own `<name>-config`, and it is written only when
+  its data differs. Before, the shared ConfigMap was re-rendered only when the
+  cluster's spec generation changed and that reconcile won a race, so an
+  operator upgrade that renders the same spec differently (e.g. the
+  `key-directory` fix) never reached a running cluster; a generation bump and
+  deleting the ConfigMap did not reliably repair it either.
+- `src/bind9_resources.rs` (`CONFIG_HASH_ANNOTATION`,
+  `configmap_data_hash`, `stamp_config_hash`) and the Deployment update path:
+  the pod template carries `bindy.firestoned.io/config-hash`, the sha256 of
+  the mounted ConfigMap's data. A changed hash makes `deployment_needs_update`
+  true and is patched onto the template, which rolls the pods. BIND reads
+  `named.conf` only at start, so before, even a rewritten ConfigMap ran only
+  after an unrelated restart.
+
+- `src/reconcilers/bind9instance/mod.rs`, `resources.rs`
+  (`config_drifted`): config drift is a reason to run the instance's
+  resource step. That step was skipped unless the generation changed,
+  something was missing, labels or the parent generation changed, or a key
+  rotation was due, so the content-based write above never ran after an
+  upgrade. Drift is: the mounted ConfigMap's data differs from what this
+  operator renders, or the Deployment's pods carry another config hash. A
+  render error counts as drift, so the reconcile runs and reports it.
+
+- `src/reconcilers/bind9instance/resources.rs` (`volumes_missing`,
+  `build_volumes_patch`) and `mod.rs`: the Deployment update path now
+  converges pod `volumes` and the bind9 container's `volumeMounts`
+  (`$patch: replace`, so stale entries are removed). It patched only the API
+  container, labels and placement, so a Deployment created before signing
+  was enabled never got the DNSSEC key volume; with `key-directory` now
+  pointing at it, BIND had nowhere to keep keys and the zone went unsigned
+  (seen live after rolling onto the fixes above). Missing volumes or mounts
+  are compared by name and path (the API server adds defaults to the stored
+  object) and count as drift, so the resource step runs.
+
+### Tests
+- `reconcilers/bind9instance/resources_tests.rs` (`volume_convergence`):
+  enabling signing on an existing Deployment needs an update, an identical
+  one does not; the patch carries the `dnssec-keys` volume and the bind9
+  mount as replace lists. (`config_rollout`): drift
+  from stale content, from a missing or older hash, and none when nothing is
+  generated; hash
+  determinism and sensitivity (a byte moving between files counts),
+  managed instance wants the cluster's shared ConfigMap with the cluster
+  reconciler's exact data, standalone wants its own, custom `configMapRefs`
+  leave nothing to write, and a changed hash rolls the Deployment while an
+  unchanged one does not.
+
+### Known, not changed here
+- `deployment_needs_update` still ignores the **bind9** container's image, so
+  a BIND version change alone does not roll the pods.
+- Instances sharing one cluster ConfigMap roll together when it changes.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (every BIND pod rolls once, as the annotation
+      is added)
+- [ ] Config change only
+- [ ] Documentation only
 
 ## [2026-10-03 16:00] - ADR-0009: workspace crate split and shared watch layer
 

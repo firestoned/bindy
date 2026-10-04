@@ -330,7 +330,7 @@ jobs:
           grep '^version = ' Cargo.toml
 
       - name: Generate SBOM
-        uses: firestoned/github-actions/rust/generate-sbom@787be16a6bed7e6c2297683bb75bc9b5f1a54397 # v1.3.8
+        uses: firestoned/github-actions/rust/generate-sbom@e034489c3a17ffaaaf7f8fb799156ce768d899d5 # v1.3.9
         with:
           package: bindy
           target: ${{ matrix.platform.target }}

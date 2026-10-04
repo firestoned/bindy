@@ -1066,4 +1066,374 @@ mod tests {
             ));
         }
     }
+
+    // ------------------------------------------------------------------
+    // Config rollout: a change in the rendered BIND config must reach the
+    // running pods, whether it comes from a spec edit or an operator
+    // upgrade that renders differently. The ConfigMap is written when its
+    // content differs, and its hash on the pod template rolls the pods.
+    // ------------------------------------------------------------------
+    mod config_rollout {
+        use crate::bind9_resources::{
+            build_cluster_configmap, build_deployment, configmap_data_hash, stamp_config_hash,
+            CONFIG_HASH_ANNOTATION,
+        };
+        use crate::crd::{
+            Bind9Cluster, Bind9ClusterCommonSpec, Bind9ClusterSpec, Bind9Instance,
+            Bind9InstanceSpec, ConfigMapRefs, ServerRole,
+        };
+        use crate::reconcilers::bind9instance::resources::{
+            config_drifted, deployment_needs_update_for_test as deployment_needs_update,
+            desired_configmap_for_instance,
+        };
+        use k8s_openapi::api::core::v1::ConfigMap;
+        use kube::api::ObjectMeta;
+        use std::collections::BTreeMap;
+
+        fn instance(name: &str, cluster_ref: &str) -> Bind9Instance {
+            #[allow(deprecated)]
+            Bind9Instance {
+                metadata: ObjectMeta {
+                    name: Some(name.into()),
+                    namespace: Some("dns".into()),
+                    ..Default::default()
+                },
+                spec: Bind9InstanceSpec {
+                    cluster_ref: cluster_ref.to_string(),
+                    role: ServerRole::Primary,
+                    replicas: Some(1),
+                    version: Some("9.18".into()),
+                    image: None,
+                    config_map_refs: None,
+                    config: None,
+                    primary_servers: None,
+                    volumes: None,
+                    volume_mounts: None,
+                    rndc_secret_ref: None,
+                    rndc_key: None,
+                    storage: None,
+                    placement: None,
+                    bindcar_config: None,
+                },
+                status: None,
+            }
+        }
+
+        fn cluster() -> Bind9Cluster {
+            let mut c = Bind9Cluster::new(
+                "my-dns",
+                Bind9ClusterSpec {
+                    common: Bind9ClusterCommonSpec {
+                        version: Some("9.18".into()),
+                        primary: None,
+                        secondary: None,
+                        image: None,
+                        config_map_refs: None,
+                        global: None,
+                        rndc_secret_refs: None,
+                        acls: None,
+                        volumes: None,
+                        volume_mounts: None,
+                    },
+                },
+            );
+            c.metadata.namespace = Some("dns".into());
+            c
+        }
+
+        fn cm(data: &[(&str, &str)]) -> ConfigMap {
+            ConfigMap {
+                data: Some(
+                    data.iter()
+                        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                        .collect::<BTreeMap<_, _>>(),
+                ),
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn hash_is_deterministic_and_follows_content() {
+            let a = cm(&[("named.conf", "a"), ("named.conf.options", "b")]);
+            let same = cm(&[("named.conf.options", "b"), ("named.conf", "a")]);
+            let other = cm(&[("named.conf", "a"), ("named.conf.options", "c")]);
+            let moved = cm(&[("named.conf", "ab"), ("named.conf.options", "")]);
+            assert_eq!(configmap_data_hash(&a), configmap_data_hash(&same));
+            assert_ne!(configmap_data_hash(&a), configmap_data_hash(&other));
+            assert_ne!(
+                configmap_data_hash(&a),
+                configmap_data_hash(&moved),
+                "a byte moving between files is a different config"
+            );
+        }
+
+        /// A cluster-managed instance mounts the cluster's shared ConfigMap,
+        /// so that is the one it must keep current, rendered exactly as the
+        /// cluster reconciler renders it.
+        #[test]
+        fn a_managed_instance_wants_the_clusters_shared_configmap() {
+            let c = cluster();
+            let desired = desired_configmap_for_instance(
+                "my-dns-primary-0",
+                "dns",
+                &instance("my-dns-primary-0", "my-dns"),
+                Some(&c),
+            )
+            .expect("renders")
+            .expect("a managed instance has a ConfigMap to keep current");
+            let expected = build_cluster_configmap("my-dns", "dns", &c).expect("renders");
+            assert_eq!(desired.metadata.name.as_deref(), Some("my-dns-config"));
+            assert_eq!(desired.data, expected.data);
+        }
+
+        #[test]
+        fn a_standalone_instance_wants_its_own_configmap() {
+            let desired =
+                desired_configmap_for_instance("solo", "dns", &instance("solo", ""), None)
+                    .expect("renders")
+                    .expect("a standalone instance has its own ConfigMap");
+            assert_eq!(desired.metadata.name.as_deref(), Some("solo-config"));
+        }
+
+        /// Custom configMapRefs replace the generated config: nothing to
+        /// write, nothing to hash.
+        #[test]
+        fn custom_configmaps_are_left_alone() {
+            let mut c = cluster();
+            c.spec.common.config_map_refs = Some(ConfigMapRefs {
+                named_conf: Some("mine".into()),
+                named_conf_options: None,
+                named_conf_zones: None,
+            });
+            let desired = desired_configmap_for_instance(
+                "my-dns-primary-0",
+                "dns",
+                &instance("my-dns-primary-0", "my-dns"),
+                Some(&c),
+            )
+            .expect("renders");
+            assert!(desired.is_none());
+        }
+
+        /// The instance reconciler skips its resource step when nothing
+        /// looks changed. A ConfigMap whose content differs from what bindy
+        /// renders (an operator upgrade), or pods stamped with another hash,
+        /// must count as a change, or the fix never runs.
+        #[test]
+        fn config_drift_is_detected_from_content_and_hash() {
+            let inst = instance("my-dns-primary-0", "my-dns");
+            let c = cluster();
+            let desired =
+                desired_configmap_for_instance("my-dns-primary-0", "dns", &inst, Some(&c))
+                    .expect("renders")
+                    .expect("managed");
+            let hash = configmap_data_hash(&desired);
+            let mut deployment =
+                build_deployment("my-dns-primary-0", "dns", &inst, Some(&c), None, "k");
+            stamp_config_hash(&mut deployment, &hash);
+
+            // Everything current: no drift.
+            assert!(!config_drifted(
+                Some(&desired),
+                Some(&deployment),
+                Some(&desired)
+            ));
+
+            // The ConfigMap's content is stale (rendered by an older operator).
+            let stale = cm(&[("named.conf.options", "options { };")]);
+            assert!(config_drifted(
+                Some(&stale),
+                Some(&deployment),
+                Some(&desired)
+            ));
+
+            // Pods carry no hash yet, or an older one.
+            let unstamped = build_deployment("my-dns-primary-0", "dns", &inst, Some(&c), None, "k");
+            assert!(config_drifted(
+                Some(&desired),
+                Some(&unstamped),
+                Some(&desired)
+            ));
+
+            // Nothing generated to keep current: never drift.
+            assert!(!config_drifted(Some(&stale), Some(&unstamped), None));
+        }
+
+        #[test]
+        fn a_changed_config_hash_rolls_the_deployment() {
+            let inst = instance("my-dns-primary-0", "my-dns");
+            let c = cluster();
+            let mut current =
+                build_deployment("my-dns-primary-0", "dns", &inst, Some(&c), None, "k");
+            let mut desired = current.clone();
+            stamp_config_hash(&mut current, "old");
+            stamp_config_hash(&mut desired, "new");
+            assert_eq!(
+                desired
+                    .spec
+                    .as_ref()
+                    .and_then(|s| s.template.metadata.as_ref())
+                    .and_then(|m| m.annotations.as_ref())
+                    .and_then(|a| a.get(CONFIG_HASH_ANNOTATION))
+                    .map(String::as_str),
+                Some("new")
+            );
+            assert!(deployment_needs_update(&current, &desired));
+
+            stamp_config_hash(&mut current, "new");
+            assert!(
+                !deployment_needs_update(&current, &desired),
+                "same hash, nothing to roll"
+            );
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Volume convergence: a Deployment created before signing was enabled
+    // must gain the DNSSEC key volume when it is. The update path patched
+    // only the API container, labels and placement, so it never did, and
+    // BIND (now pointed at the key directory) had nowhere to keep keys.
+    // ------------------------------------------------------------------
+    mod volume_convergence {
+        use crate::bind9_resources::build_deployment;
+        use crate::crd::{
+            Bind9Cluster, Bind9ClusterCommonSpec, Bind9ClusterSpec, Bind9Config, Bind9Instance,
+            Bind9InstanceSpec, DNSSECConfig, DNSSECSigningConfig, ServerRole,
+        };
+        use crate::reconcilers::bind9instance::resources::{
+            build_volumes_patch_for_test as build_volumes_patch,
+            deployment_needs_update_for_test as deployment_needs_update,
+        };
+        use kube::api::ObjectMeta;
+
+        fn instance() -> Bind9Instance {
+            #[allow(deprecated)]
+            Bind9Instance {
+                metadata: ObjectMeta {
+                    name: Some("my-dns-primary-0".into()),
+                    namespace: Some("dns".into()),
+                    ..Default::default()
+                },
+                spec: Bind9InstanceSpec {
+                    cluster_ref: "my-dns".to_string(),
+                    role: ServerRole::Primary,
+                    replicas: Some(1),
+                    version: Some("9.18".into()),
+                    image: None,
+                    config_map_refs: None,
+                    config: None,
+                    primary_servers: None,
+                    volumes: None,
+                    volume_mounts: None,
+                    rndc_secret_ref: None,
+                    rndc_key: None,
+                    storage: None,
+                    placement: None,
+                    bindcar_config: None,
+                },
+                status: None,
+            }
+        }
+
+        fn cluster(signing: bool) -> Bind9Cluster {
+            let global = signing.then(|| Bind9Config {
+                rate_limit: None,
+                recursion: None,
+                allow_query: None,
+                allow_transfer: None,
+                dnssec: Some(DNSSECConfig {
+                    validation: Some(true),
+                    signing: Some(DNSSECSigningConfig {
+                        enabled: true,
+                        policy: Some("core-dns".into()),
+                        algorithm: None,
+                        ksk_lifetime: None,
+                        zsk_lifetime: None,
+                        nsec3: None,
+                        nsec3_salt: None,
+                        nsec3_iterations: None,
+                        keys_from: None,
+                        auto_generate: None,
+                        export_to_secret: None,
+                    }),
+                }),
+                forwarders: None,
+                listen_on: None,
+                listen_on_v6: None,
+                rndc_secret_ref: None,
+                bindcar_config: None,
+            });
+            Bind9Cluster::new(
+                "my-dns",
+                Bind9ClusterSpec {
+                    common: Bind9ClusterCommonSpec {
+                        version: Some("9.18".into()),
+                        primary: None,
+                        secondary: None,
+                        image: None,
+                        config_map_refs: None,
+                        global,
+                        rndc_secret_refs: None,
+                        acls: None,
+                        volumes: None,
+                        volume_mounts: None,
+                    },
+                },
+            )
+        }
+
+        #[test]
+        fn enabling_signing_on_an_existing_deployment_needs_an_update() {
+            let inst = instance();
+            let current = build_deployment(
+                "my-dns-primary-0",
+                "dns",
+                &inst,
+                Some(&cluster(false)),
+                None,
+                "k",
+            );
+            let desired = build_deployment(
+                "my-dns-primary-0",
+                "dns",
+                &inst,
+                Some(&cluster(true)),
+                None,
+                "k",
+            );
+            assert!(
+                deployment_needs_update(&current, &desired),
+                "a missing DNSSEC key volume must count as a change"
+            );
+            assert!(
+                !deployment_needs_update(&desired, &desired),
+                "an identical Deployment needs nothing"
+            );
+        }
+
+        #[test]
+        fn the_patch_carries_the_key_volume_and_the_bind9_mount() {
+            let desired = build_deployment(
+                "my-dns-primary-0",
+                "dns",
+                &instance(),
+                Some(&cluster(true)),
+                None,
+                "k",
+            );
+            let (volumes, mounts) = build_volumes_patch(&desired);
+            let volumes = volumes.to_string();
+            let mounts = mounts.to_string();
+            assert!(volumes.contains("\"dnssec-keys\""), "volumes: {volumes}");
+            assert!(
+                volumes.contains("\"$patch\":\"replace\""),
+                "volumes replace, so stale ones go: {volumes}"
+            );
+            assert!(mounts.contains("/var/cache/bind/keys"), "mounts: {mounts}");
+            assert!(
+                mounts.contains("\"$patch\":\"replace\""),
+                "mounts: {mounts}"
+            );
+        }
+    }
 }
