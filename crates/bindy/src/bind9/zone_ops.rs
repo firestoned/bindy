@@ -12,11 +12,11 @@ use reqwest::{Client as HttpClient, StatusCode};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
 use crate::constants::{DEFAULT_DNS_RECORD_TTL_SECS, DNS_CONTAINER_PORT};
-use bindy_controller_sdk::retry::{http_backoff, is_retryable_http_status};
+use bindy_controller_sdk::retry::{http_backoff, is_retryable_http_status, ExponentialBackoff};
 
 /// Append the operand's DNS container port to each transfer endpoint, in the
 /// compact `<ip>:<port>` form bindcar accepts (IPv6 addresses are bracketed:
@@ -156,7 +156,40 @@ pub(crate) async fn bindcar_request<T: Serialize + std::fmt::Debug>(
     url: &str,
     body: Option<&T>,
 ) -> Result<String> {
+    bindcar_request_with_backoff(client, token, method, url, body, http_backoff()).await
+}
+
+/// As [`bindcar_request`], giving up once `budget` has elapsed instead of
+/// after the default two minutes.
+///
+/// For calls that must not hold a reconcile for long, such as zone deletion
+/// against endpoints that may already be gone.
+///
+/// # Errors
+///
+/// Returns an error if the request fails after the budget is spent or hits a
+/// non-retryable error.
+pub(crate) async fn bindcar_request_within<T: Serialize + std::fmt::Debug>(
+    client: &HttpClient,
+    token: Option<&str>,
+    method: &str,
+    url: &str,
+    body: Option<&T>,
+    budget: Duration,
+) -> Result<String> {
     let mut backoff = http_backoff();
+    backoff.max_elapsed_time = Some(budget);
+    bindcar_request_with_backoff(client, token, method, url, body, backoff).await
+}
+
+async fn bindcar_request_with_backoff<T: Serialize + std::fmt::Debug>(
+    client: &HttpClient,
+    token: Option<&str>,
+    method: &str,
+    url: &str,
+    body: Option<&T>,
+    mut backoff: ExponentialBackoff,
+) -> Result<String> {
     let start_time = Instant::now();
     let mut attempt = 0;
 
@@ -230,7 +263,11 @@ pub(crate) async fn bindcar_request<T: Serialize + std::fmt::Debug>(
                         error = %e,
                         "Retryable HTTP API error, will retry"
                     );
-                    tokio::time::sleep(duration).await;
+                    // Never sleep past the retry budget.
+                    let remaining = backoff
+                        .max_elapsed_time
+                        .map_or(duration, |max| max.saturating_sub(start_time.elapsed()));
+                    tokio::time::sleep(duration.min(remaining)).await;
                 } else {
                     error!(
                         method = %method,
@@ -1057,46 +1094,74 @@ pub async fn create_zone_http(
     Ok(())
 }
 
+/// Retry budget for each HTTP call made while deleting a zone.
+///
+/// Long enough to ride out a bindcar restart; short enough that an endpoint
+/// whose pod is gone cannot hold the zone's reconcile for minutes. With the
+/// default two-minute budget a single dead endpoint cost over four minutes,
+/// and a zone recreated with the same name waited behind it (bug-192).
+pub const DELETE_RETRY_BUDGET: Duration = Duration::from_secs(10);
+
 /// Delete a zone via HTTP API.
+///
+/// Deleting a zone that is not on the server succeeds: its status is checked
+/// first, and bindcar answers that with 404 for a missing zone (whereas it
+/// answers `rndc delzone` on a missing zone with a retryable 500). The zone is
+/// not frozen first: `rndc delzone` does not need it, and a freeze followed by
+/// a failed delete would leave the zone refusing dynamic updates.
 ///
 /// # Arguments
 /// * `client` - HTTP client
 /// * `token` - Authentication token
 /// * `zone_name` - Name of the zone to delete
 /// * `server` - API server address
-/// * `freeze_before_delete` - Whether to freeze the zone before deletion (true for primary zones, false for secondary zones)
 ///
 /// # Errors
 ///
-/// Returns an error if the HTTP request fails or the zone cannot be deleted.
+/// Returns an error if the zone is present and cannot be deleted within
+/// [`DELETE_RETRY_BUDGET`] per call.
 pub async fn delete_zone(
     client: &Arc<HttpClient>,
     token: Option<&str>,
     zone_name: &str,
     server: &str,
-    freeze_before_delete: bool,
 ) -> Result<()> {
-    // Freeze the zone before deletion if requested (only for primary zones)
-    // Secondary zones should NOT be frozen as they are read-only
-    if freeze_before_delete {
-        if let Err(e) = freeze_zone(client, token, zone_name, server).await {
-            debug!(
-                "Failed to freeze zone {} before deletion (zone may not exist): {}",
-                zone_name, e
-            );
+    delete_zone_within(client, token, zone_name, server, DELETE_RETRY_BUDGET).await
+}
+
+/// [`delete_zone`] with an explicit per-call retry budget.
+///
+/// # Errors
+///
+/// Returns an error if the zone is present and cannot be deleted within
+/// `budget` per call.
+pub(crate) async fn delete_zone_within(
+    client: &Arc<HttpClient>,
+    token: Option<&str>,
+    zone_name: &str,
+    server: &str,
+    budget: Duration,
+) -> Result<()> {
+    let base_url = build_api_url(server);
+
+    // Is the zone there at all? A missing zone is already deleted.
+    let status_url = format!("{base_url}/api/v1/zones/{zone_name}/status");
+    match bindcar_request_within(client, token, "GET", &status_url, None::<&()>, budget).await {
+        Ok(_) => {}
+        Err(e) if is_http_not_found(&e) => {
+            debug!("Zone {zone_name} is not on {server}; nothing to delete");
+            return Ok(());
         }
+        Err(e) => return Err(e).context("Failed to check zone before deletion"),
     }
 
-    let base_url = build_api_url(server);
     let url = format!("{base_url}/api/v1/zones/{zone_name}");
-
-    // Attempt to delete the zone - treat "not found" as success (idempotent)
-    match bindcar_request(client, token, "DELETE", &url, None::<&()>).await {
+    match bindcar_request_within(client, token, "DELETE", &url, None::<&()>, budget).await {
         Ok(_) => {
             info!("Deleted zone {zone_name} from {server}");
             Ok(())
         }
-        // If the zone doesn't exist, consider it already deleted (idempotent)
+        // Gone between the check and the delete (idempotent).
         Err(e) if is_http_not_found(&e) => {
             debug!("Zone {zone_name} already deleted from {server}");
             Ok(())

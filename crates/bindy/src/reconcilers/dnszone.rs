@@ -2105,8 +2105,9 @@ pub async fn delete_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZone)
                     // Attempt to delete zone - if it fails (zone not found, endpoint unreachable, etc.),
                     // log a warning but don't fail the deletion. This ensures DNSZones can be deleted
                     // even if BIND9 instances are unavailable or the zone was already removed.
-                    // Pass freeze_before_delete=true for primary zones to prevent updates during deletion
-                    if let Err(e) = zone_manager.delete_zone(&zone_name, &pod_endpoint, true).await {
+                    // Each call gives up within DELETE_RETRY_BUDGET, so an endpoint
+                    // that is gone cannot hold this reconcile for minutes.
+                    if let Err(e) = zone_manager.delete_zone(&zone_name, &pod_endpoint).await {
                         warn!(
                             "Failed to delete zone {} from endpoint {} (instance: {}): {}. Continuing with deletion anyway.",
                             zone_name, pod_endpoint, instance_name, e
@@ -2174,9 +2175,8 @@ pub async fn delete_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZone)
                 );
 
                 // Attempt to delete zone - if it fails, log a warning but don't fail the deletion
-                // Pass freeze_before_delete=false for secondary zones (they are read-only, no need to freeze)
                 if let Err(e) = zone_manager
-                    .delete_zone(&spec.zone_name, &pod_endpoint, false)
+                    .delete_zone(&spec.zone_name, &pod_endpoint)
                     .await
                 {
                     warn!(

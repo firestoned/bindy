@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 
-.PHONY: kind-kubeconfig pin-release-images help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny cargo-machete gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh tls-transport-test ci-e2e e2e-image e2e-image-load e2e-lifecycle e2e-idempotency e2e-restart e2e-rust e2e-multi-tenancy e2e-regression e2e-zone-spread e2e-tls e2e-all e2e-clean calm-validate calm-docs calm-docs-check sbom-generate sbom-stage sbom-annotate sbom-check cbom-generate cbom-check cbom-stage provenance-subjects slsa-verifier-install verify-provenance verify-image-provenance verify-sbom-attestation image-digest-record image-digests-matrix
+.PHONY: kind-kubeconfig kind-dump-diagnostics pin-release-images help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny cargo-machete gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh tls-transport-test ci-e2e e2e-image e2e-image-load e2e-lifecycle e2e-idempotency e2e-restart e2e-rust e2e-multi-tenancy e2e-regression e2e-zone-spread e2e-tls e2e-all e2e-clean calm-validate calm-docs calm-docs-check sbom-generate sbom-stage sbom-annotate sbom-check cbom-generate cbom-check cbom-stage provenance-subjects slsa-verifier-install verify-provenance verify-image-provenance verify-sbom-attestation image-digest-record image-digests-matrix
 
 # Detect host architecture and derive the matching Linux cross-compilation target.
 # `uname -m` reports arm64 on Apple Silicon macOS but aarch64 on Linux ARM, so
@@ -1007,17 +1007,26 @@ kind-integration-test-ci: ## Run integration tests in CI mode (requires IMAGE_TA
 	@echo "  Running Simple Integration Tests"
 	@echo "================================================"
 	@chmod +x tests/integration_test.sh
-	@CLUSTER_NAME=$(KIND_CLUSTER) tests/integration_test.sh --image "$(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)" --skip-deploy || { echo "Simple integration tests failed"; kind delete cluster --name $(KIND_CLUSTER) || true; exit 1; }
+	@CLUSTER_NAME=$(KIND_CLUSTER) tests/integration_test.sh --image "$(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)" --skip-deploy || { echo "Simple integration tests failed"; $(MAKE) --no-print-directory kind-dump-diagnostics; kind delete cluster --name $(KIND_CLUSTER) || true; exit 1; }
 	@echo ""
 	@echo "================================================"
 	@echo "  Running Multi-Tenancy Integration Tests"
 	@echo "================================================"
 	@chmod +x tests/run_multi_tenancy_tests.sh
-	@CLUSTER_NAME=$(KIND_CLUSTER) tests/run_multi_tenancy_tests.sh || { echo "Multi-tenancy integration tests failed"; kind delete cluster --name $(KIND_CLUSTER) || true; exit 1; }
+	@CLUSTER_NAME=$(KIND_CLUSTER) tests/run_multi_tenancy_tests.sh || { echo "Multi-tenancy integration tests failed"; $(MAKE) --no-print-directory kind-dump-diagnostics; kind delete cluster --name $(KIND_CLUSTER) || true; exit 1; }
 	@echo ""
 	@echo "Cleaning up Kind cluster..."
 	@kind delete cluster --name $(KIND_CLUSTER) || true
 	@echo "✓ All integration tests completed successfully"
+
+kind-dump-diagnostics: ## Print operator logs, bindy CRs, pods and events from the kind cluster (run before deleting it)
+	@echo "════ kind diagnostics ($(KIND_CLUSTER)) ════"
+	@kubectl --context $(KIND_CONTEXT) get pods -A -o wide 2>/dev/null || true
+	@kubectl --context $(KIND_CONTEXT) -n $(NAMESPACE) get bind9clusters,bind9instances,dnszones -o wide 2>/dev/null || true
+	@echo "── operator log (last 3000 lines) ──"
+	@kubectl --context $(KIND_CONTEXT) -n $(NAMESPACE) logs deployment/bindy --tail=3000 --timestamps 2>/dev/null || true
+	@echo "── events (most recent last) ──"
+	@kubectl --context $(KIND_CONTEXT) get events -A --sort-by=.lastTimestamp 2>/dev/null | tail -80 || true
 
 kind-cleanup: ## Delete Kind cluster
 	./deploy/kind-cleanup.sh

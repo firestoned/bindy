@@ -248,9 +248,8 @@ mod tests {
         let manager = Bind9Manager::new();
 
         // Deleting non-existent zone should not error (idempotent)
-        // Test with freeze_before_delete=true (primary zone behavior)
         let result = manager
-            .delete_zone("nonexistent.com", "localhost:8080", true)
+            .delete_zone("nonexistent.com", "localhost:8080")
             .await;
 
         // Should either succeed or return specific "not found" error
@@ -379,6 +378,149 @@ mod tests {
             .expect("200 must map to Ok(true)");
 
         assert!(result);
+    }
+
+    // =====================================================
+    // delete_zone: no freeze, absent zone is already deleted, bounded retries
+    //
+    // bug-192: deleting a zone burned up to ~130s per HTTP call. bindcar maps
+    // rndc's "not found" on freeze/delzone to 500, which is retryable, so a
+    // zone that was not on an endpoint, or an endpoint whose pod was gone, held
+    // the zone's reconcile slot for minutes, and a recreated zone of the same
+    // name waited behind it.
+    // =====================================================
+
+    /// Short budget so these tests stay fast.
+    const TEST_DELETE_BUDGET: std::time::Duration = std::time::Duration::from_millis(300);
+    /// Generous ceiling for "gave up promptly" on a slow CI runner.
+    const PROMPT: std::time::Duration = std::time::Duration::from_secs(5);
+
+    #[tokio::test]
+    async fn test_delete_zone_absent_zone_is_already_deleted() {
+        ensure_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/zones/gone.example.com/status"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("zone not found"))
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let client = Arc::new(reqwest::Client::new());
+        super::super::delete_zone_within(
+            &client,
+            None,
+            "gone.example.com",
+            &server.uri(),
+            TEST_DELETE_BUDGET,
+        )
+        .await
+        .expect("a zone that is not there is already deleted");
+    }
+
+    #[tokio::test]
+    async fn test_delete_zone_deletes_without_freezing() {
+        ensure_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/zones/present.example.com/status"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("zone is loaded"))
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/v1/zones/present.example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/zones/present.example.com/freeze"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let client = Arc::new(reqwest::Client::new());
+        super::super::delete_zone_within(
+            &client,
+            None,
+            "present.example.com",
+            &server.uri(),
+            TEST_DELETE_BUDGET,
+        )
+        .await
+        .expect("delete of a present zone succeeds");
+    }
+
+    #[tokio::test]
+    async fn test_delete_zone_gives_up_within_its_budget_on_server_errors() {
+        ensure_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let client = Arc::new(reqwest::Client::new());
+        let started = std::time::Instant::now();
+        let result = super::super::delete_zone_within(
+            &client,
+            None,
+            "stuck.example.com",
+            &server.uri(),
+            TEST_DELETE_BUDGET,
+        )
+        .await;
+
+        assert!(result.is_err(), "a delete that keeps failing must fail");
+        assert!(
+            started.elapsed() < PROMPT,
+            "gave up after {:?}; the budget is {TEST_DELETE_BUDGET:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_zone_gives_up_within_its_budget_on_a_dead_endpoint() {
+        ensure_crypto_provider();
+        // Nothing listens here: a pod that is gone.
+        let client = Arc::new(reqwest::Client::new());
+        let started = std::time::Instant::now();
+        let result = super::super::delete_zone_within(
+            &client,
+            None,
+            "orphan.example.com",
+            "http://127.0.0.1:1",
+            TEST_DELETE_BUDGET,
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(
+            started.elapsed() < PROMPT,
+            "gave up after {:?}; the budget is {TEST_DELETE_BUDGET:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn test_delete_retry_budget_is_short() {
+        // Long enough to ride out a bindcar restart, short enough that a dead
+        // endpoint cannot hold a zone's reconcile slot for minutes.
+        assert!(super::super::DELETE_RETRY_BUDGET <= std::time::Duration::from_secs(15));
     }
 
     // =====================================================

@@ -256,9 +256,9 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "bindcar"
-version = "0.8.2"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d544384da635c285b8c302480d62937e3640a75ff01f75a39a62f4297d74cee"
+checksum = "69f6f55dd23342c4b6143632bd5bca9a215b5a917422c2385861245817cc353b"
 dependencies = [
  "anyhow",
  "chrono",

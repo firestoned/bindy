@@ -223,7 +223,7 @@ pub const BIND9_NONROOT_UID: i64 = 101;
 /// This is the default image used for the bindcar HTTP API sidecar container
 /// when no image is specified in the `BindcarConfig` of a `Bind9Instance`,
 /// `Bind9Cluster`, or `ClusterBind9Provider`.
-pub const DEFAULT_BINDCAR_IMAGE: &str = "ghcr.io/firestoned/bindcar:v0.8.2";
+pub const DEFAULT_BINDCAR_IMAGE: &str = "ghcr.io/firestoned/bindcar:v0.9.0";
 
 // ============================================================================
 // Bindcar Authentication Constants (Mode B — TokenReview)

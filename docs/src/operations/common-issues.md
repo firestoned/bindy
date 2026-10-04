@@ -630,7 +630,7 @@ kubectl rollout restart deployment/bindy -n bindy-system
 (no `BIND_API_TOKEN`), so the image **must** be built with `--features
 k8s-token-review`. Published images `>= v0.7.2` include it; `v0.7.0`/`v0.7.1` do not.
 
-**Solution:** use `ghcr.io/firestoned/bindcar:v0.8.2` (the current default) or
+**Solution:** use `ghcr.io/firestoned/bindcar:v0.9.0` (the current default) or
 any `>= v0.7.2`. If you pin `bindcarConfig.image`, bump it to `v0.7.2+`.
 
 ### Operator gets HTTP 401 from the bindcar API
