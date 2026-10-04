@@ -826,7 +826,7 @@ You should NOT see any deprecation warnings after migration.
 **Good News:** Existing zones using `nameServerIps` will continue to work in v0.4.0+. The operator automatically converts the old format internally.
 
 ```rust
-// In src/reconcilers/dnszone.rs
+// In crates/bindy/src/reconcilers/dnszone.rs
 fn get_effective_name_servers(spec: &DNSZoneSpec) -> Option<Vec<NameServer>> {
     if let Some(ref new_servers) = spec.name_servers {
         // New field takes precedence

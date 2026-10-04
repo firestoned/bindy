@@ -35,7 +35,7 @@ Statuses were verified against `fix-idempotency` @ `648ff7a` on 2026-09-10.
 
 | # | Roadmap | Status | Notes |
 |---|---|---|---|
-| [01](.github/community/01-controller-crate-split.md) | Controller crate split & watch-layer simplification | ⛔ | One 40.6k-line crate; `main.rs` is 2,086 lines of hand-rolled framework, 22 watch call sites, ~36 API-server watch connections where ~15 would do. Split into a workspace and rebuild watches on kube-runtime's shared-stream APIs |
+| [01](.github/community/01-controller-crate-split.md) | Controller crate split & watch-layer simplification | 🔶 | [ADR-0009](docs/adr/0009-workspace-crate-split-and-shared-watch-layer.md) Accepted, CALM updated. Phase A done 2026-10-03: virtual workspace, `crates/bindy` + leaf `crates/bindy-api` (CRDs byte-identical, test counts unchanged). Phase B (`bindy-controller-sdk`) next. One 44.4k-line crate; `main.rs` is 2,182 lines of hand-rolled framework, ~59 API-server watch streams (×N namespace targets) where 14 would do. Shared streams need kube's `unstable-runtime-subscribe` feature (accepted in the ADR) |
 | [02](.github/community/02-records-reconciler-refactoring.md) | Records reconciler refactoring | ✅ | Generic `reconcile_record<T>()` at `src/reconcilers/records/mod.rs:1170`; the 9 per-type fns are thin wrappers. 01 turns those into trait impls |
 | [03](.github/community/03-early-return-refactoring.md) | Early-return / guard-clause refactor | ✅ | Completed 2026-09-27 — all 9 target functions refactored or already compliant; behavior-preserving, with pinning tests for the global-fallback and role-precedence paths. Both deferred quirks fixed 2026-09-27 via ADR-0007 (explicit dnssec-validation honored; cluster-level transfer deny-by-default) |
 | [04](.github/community/04-remove-clusterref-use-ownerreference.md) | Remove `clusterRef`, use `ownerReference` | ⛔ | `pub cluster_ref` still in `src/crd.rs` at `:994`, `:3679`, `:3839`. Breaking CRD change — needs an ADR first |
@@ -65,7 +65,7 @@ Statuses were verified against `fix-idempotency` @ `648ff7a` on 2026-09-10.
 
 | # | Roadmap | Status | Notes |
 |---|---|---|---|
-| [15](.github/community/15-security-scanning.md) | Security scanning | 🔶 | Through phase 5 (license compliance). `security-scan.yaml`, `sbom.yml`, `license-scan.yaml`, `codeql.yml`, `scorecard.yml` all in place |
+| [15](.github/community/15-security-scanning.md) | Security scanning | 🔶 | Through phase 5 (license compliance), plus phase 6 SBOM/signing/provenance (2026-10-03, ADR-0010): NTIA-gated CycloneDX SBOM per binary and image, attested to the artifact digest; SLSA Build L3 for tarballs, manifests, SBOMs and images. Open: VEX generation, Polaris, required PR reviews (threat model M-36) |
 | [16](.github/community/16-audit-logging-secret-operations.md) | Audit logging for Secret operations | ⛔ | Approved 2026-03-09, never implemented — no audit-log emission in `src/`. Compliance-relevant; worth re-triaging rather than leaving to drift |
 | [17](.github/community/17-vex-documents.md) | VEX documents | ⛔ | No VEX generation step in `.github/workflows/`. Builds on the SBOM pipeline from 15 |
 

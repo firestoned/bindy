@@ -16,7 +16,7 @@ skill is the *procedure to update*.
 3. Update affected pages in `docs/src/`: user guides, quickstart,
    configuration references, troubleshooting.
 4. Update `examples/*.yaml` to reflect schema or behavior changes — verify
-   field names against `src/crd.rs` or `deploy/operator/crds/*.crd.yaml`,
+   field names against `crates/bindy-api/src/crd.rs` or `deploy/operator/crds/*.crd.yaml`,
    never guess.
 5. Update architecture diagrams if structure changed (Mermaid in
    `docs/src/architecture/`; CALM-generated pages via `make calm-docs`).
@@ -26,9 +26,9 @@ skill is the *procedure to update*.
 
 ## By change type
 
-- **Reconcilers** (`src/reconcilers/`): flow diagrams, user guides,
+- **Reconcilers** (`crates/bindy/src/reconcilers/`): flow diagrams, user guides,
   troubleshooting.
-- **CRDs** (`src/crd.rs`): `regen-crds` → examples → `regen-api-docs` (LAST).
+- **CRDs** (`crates/bindy-api/src/crd.rs`): `regen-crds` → examples → `regen-api-docs` (LAST).
 - **New features**: `docs/src/features/`, `README.md`, examples,
   troubleshooting.
 - **Bug fixes**: troubleshooting guides.

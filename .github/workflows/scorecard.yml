@@ -17,6 +17,7 @@ on:
     paths:
       - '.github/workflows/**'
       - 'Cargo.toml'
+      - 'crates/*/Cargo.toml'
       - 'Cargo.lock'
 
 # Declare default permissions as read-only

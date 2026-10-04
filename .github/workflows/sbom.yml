@@ -13,9 +13,8 @@ permissions:
   contents: read
 
 jobs:
-  # This workflow runs on a schedule to perform daily SBOM generation and vulnerability scanning.
-  # For PR and main branch builds, SBOM generation is integrated directly into the build jobs
-  # in pr.yaml and main.yaml using the generate-sbom composite action.
+  # Daily SBOM generation and vulnerability scan. PR, main and release
+  # SBOMs come from the `sbom` job in build.yaml (ADR-0010).
   generate-sbom:
     name: Generate and Verify SBOM (Scheduled)
     runs-on: ubuntu-latest
@@ -29,30 +28,33 @@ jobs:
         with:
           target: x86_64-unknown-linux-gnu
 
-      - name: Generate SBOM (JSON and XML)
-        uses: firestoned/github-actions/rust/generate-sbom@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+      - name: Generate SBOM
+        uses: firestoned/github-actions/rust/generate-sbom@e034489c3a17ffaaaf7f8fb799156ce768d899d5 # v1.3.9
         with:
-          format: both
-          describe: binaries
+          package: bindy
+          target: x86_64-unknown-linux-gnu
+          spec-version: '1.5'
+          cyclonedx-version: '0.5.9'
 
-      - name: Upload SBOM artifacts
+      # Same staging, producer metadata and NTIA gate as the release SBOMs
+      # (ADR-0010); fails the run if the SBOM regresses.
+      - name: Stage, annotate and gate the SBOM
+        run: make sbom-stage SBOM_NAME=bindy-linux-amd64
+
+      - name: Upload SBOM artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: sbom
-          path: |
-            *.cdx.json
-            *.cdx.xml
+          path: sbom/bindy-linux-amd64.cdx.json
           retention-days: 90
+          if-no-files-found: error
 
-      # REMOVED: Auto-commit SBOM to repository
-      # Reason: Would create unsigned commits, violating signed commit policy (C-1)
-      # SBOMs are available as:
-      # - GitHub Actions artifacts (90-day retention)
-      # - Release assets (permanent, attached to GitHub releases)
-      # - Container image attestations (via docker build --sbom=true)
+      # SBOMs are not committed (unsigned commits would violate C-1). They
+      # ship as release assets, as signed SBOM attestations, and as these
+      # artifacts.
 
-  verify-sbom:
-    name: Verify SBOM Quality
+  scan-sbom:
+    name: Scan SBOM for Vulnerabilities
     runs-on: ubuntu-latest
     needs: generate-sbom
 
@@ -62,41 +64,12 @@ jobs:
         with:
           name: sbom
 
-      - name: Verify SBOM contains dependencies
-        run: |
-          # Find the JSON SBOM file (cargo-cyclonedx default naming)
-          SBOM_FILE=$(ls *.cdx.json | head -1)
-
-          if [ -z "$SBOM_FILE" ]; then
-            echo "ERROR: No SBOM JSON file found"
-            exit 1
-          fi
-
-          echo "Verifying SBOM file: $SBOM_FILE"
-
-          # Check that SBOM has content
-          if [ ! -s "$SBOM_FILE" ]; then
-            echo "ERROR: SBOM is empty"
-            exit 1
-          fi
-
-          # Count components (should be > 10 for a real project)
-          component_count=$(jq '.components | length' "$SBOM_FILE")
-          echo "SBOM contains $component_count components"
-
-          if [ "$component_count" -lt 10 ]; then
-            echo "WARNING: SBOM has fewer components than expected"
-          fi
-
-      - name: Check for known vulnerabilities in SBOM
-        run: |
-          # Find the JSON SBOM file
-          SBOM_FILE=$(ls *.cdx.json | head -1)
-
-          # Install grype for vulnerability scanning
-          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
-
-          # Scan SBOM for vulnerabilities
-          grype sbom:"$SBOM_FILE" --fail-on medium || true
-
-          echo "Vulnerability scan complete. See results above."
+      # Report-only, as before: cargo-audit in the Build workflow is the
+      # blocking advisory gate.
+      - name: Scan SBOM with Grype
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          sbom: bindy-linux-amd64.cdx.json
+          fail-build: false
+          severity-cutoff: medium
+          output-format: table

@@ -11,7 +11,7 @@
       "unique-id": "bindy-operator",
       "node-type": "service",
       "name": "Bindy Operator",
-      "description": "Rust controller-manager (ghcr.io/firestoned/bindy, args=[run]). Leader-elected Deployment that hosts every reconciler (ClusterBind9Provider, Bind9Cluster, Bind9Instance, DNSZone, and the 8 record reconcilers) and exposes Prometheus metrics on :8080.",
+      "description": "Rust controller-manager (ghcr.io/firestoned/bindy, args=[run]). Leader-elected Deployment that hosts every reconciler (ClusterBind9Provider, Bind9Cluster, Bind9Instance, DNSZone, and the 9 record reconcilers) and exposes Prometheus metrics on :8080. One binary built from a Cargo workspace (ADR-0009): a controller SDK holding the shared watch layer, BIND9 domain logic, and one crate per controller. All controllers subscribe to one shared watch cache; SIGTERM or leader-lease loss drains in-flight reconciles.",
       "development-language": "Rust"
     },
     {
@@ -111,7 +111,7 @@
     },
     {
       "unique-id": "operator-watches-api",
-      "description": "watches and patches custom resources (client-side rate limited: 20 QPS / 30 burst default, paginated LISTs, retries with exponential backoff — ADR-0005)",
+      "description": "watches and patches custom resources: one shared watch per kind and namespace target, subscribed to by every controller (ADR-0009); client-side rate limited at 20 QPS / 30 burst default, paginated LISTs, retries with exponential backoff (ADR-0005)",
       "protocol": "HTTPS",
       "relationship-type": {
         "connects": {

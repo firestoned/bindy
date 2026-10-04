@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 
-.PHONY: pin-release-images help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny cargo-machete gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh tls-transport-test ci-e2e e2e-image e2e-image-load e2e-lifecycle e2e-idempotency e2e-restart e2e-rust e2e-multi-tenancy e2e-regression e2e-zone-spread e2e-tls e2e-all e2e-clean calm-validate calm-docs calm-docs-check
+.PHONY: pin-release-images help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny cargo-machete gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh tls-transport-test ci-e2e e2e-image e2e-image-load e2e-lifecycle e2e-idempotency e2e-restart e2e-rust e2e-multi-tenancy e2e-regression e2e-zone-spread e2e-tls e2e-all e2e-clean calm-validate calm-docs calm-docs-check sbom-generate sbom-stage sbom-annotate sbom-check provenance-subjects slsa-verifier-install verify-provenance verify-image-provenance verify-sbom-attestation image-digest-record image-digests-matrix
 
 # Detect host architecture and derive the matching Linux cross-compilation target.
 # `uname -m` reports arm64 on Apple Silicon macOS but aarch64 on Linux ARM, so
@@ -61,8 +61,8 @@ install: ## Install dependencies
 	@rustup --version || echo "Install Rust from https://rustup.rs"
 
 crds: ## Generate CRD YAML files from Rust types
-	@echo "Generating CRD YAML files from src/crd.rs..."
-	@cargo run --bin crdgen
+	@echo "Generating CRD YAML files from crates/bindy-api/src/crd.rs..."
+	@cargo run -p bindy-api --features crdgen --bin crdgen
 	@echo "✓ CRD YAML files generated in deploy/operator/crds/"
 
 crds-combined: crds ## Generate combined crds.yaml file for releases
@@ -785,7 +785,7 @@ clean: ## Clean build artifacts
 	rm -rf target/
 
 run-local: ## Run operator locally
-	RUST_LOG=info cargo run --release
+	RUST_LOG=info cargo run --release --bin bindy
 
 # Kind cluster targets
 kind-create: ## Create Kind cluster for testing
@@ -1058,7 +1058,7 @@ docs: ## Build all documentation (MkDocs + rustdoc + CRD API reference)
 	@echo "Ensuring documentation dependencies are installed..."
 	@cd docs && poetry install --no-interaction --quiet
 	@echo "Generating CRD API reference documentation..."
-	@cargo run --bin crddoc > docs/src/reference/api.md
+	@cargo run -p bindy-api --features crdgen --bin crddoc > docs/src/reference/api.md
 	@echo "Building rustdoc API documentation..."
 	@cargo doc --no-deps --all-features
 	@echo "Building MkDocs documentation..."
@@ -1139,7 +1139,7 @@ verify-image: ## Verify container image signature (usage: make verify-image IMAG
 	@echo "Verifying signature for image: $(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG)"
 	@command -v cosign >/dev/null 2>&1 || { echo "Error: cosign not found. Run 'make sign-verify-install' first."; exit 1; }
 	@cosign verify \
-		--certificate-identity-regexp='https://github.com/firestoned/bindy' \
+		--certificate-identity-regexp='$(SIGNER_IDENTITY_REGEXP)' \
 		--certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
 		$(REGISTRY)/$(IMAGE_REPOSITORY):$(IMAGE_TAG) | jq .
 	@echo "✓ Image signature verified successfully"
@@ -1161,7 +1161,7 @@ verify-binary: ## Verify binary tarball signature (usage: make verify-binary TAR
 	@command -v cosign >/dev/null 2>&1 || { echo "Error: cosign not found. Run 'make sign-verify-install' first."; exit 1; }
 	@cosign verify-blob \
 		--bundle "$(TARBALL).bundle" \
-		--certificate-identity-regexp='https://github.com/firestoned/bindy' \
+		--certificate-identity-regexp='$(SIGNER_IDENTITY_REGEXP)' \
 		--certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
 		"$(TARBALL)"
 	@echo "✓ Binary signature verified successfully"
@@ -1182,3 +1182,90 @@ sign-binary: ## Sign a binary tarball locally (requires TARBALL parameter, e.g.,
 		"$(TARBALL)"
 	@echo "✓ Tarball signed successfully"
 	@echo "  - Signature bundle: $(TARBALL).bundle"
+
+# ── SBOMs and SLSA provenance (ADR-0010) ──────────────────────────────────────
+# CI generates binary SBOMs with firestoned/github-actions/rust/generate-sbom
+# and image SBOMs with Syft; these targets post-process, gate and verify them
+# the same way locally and in CI.
+SBOM_DIR             ?= sbom
+SBOM_SPEC_VERSION    ?= 1.5
+SBOM_TARGET          ?= x86_64-unknown-linux-gnu
+SOURCE_URI           := github.com/firestoned/bindy
+SLSA_VERIFIER_VERSION ?= v2.7.1
+CYCLONEDX_PREDICATE  := https://cyclonedx.org/bom
+# Releases are signed by build.yaml at a tag (release.yaml before v0.6.0);
+# historical images rebuilt for disaster recovery are signed by
+# rebuild-release-images.yaml on main. Anchor all three so a fork or a
+# similarly named repository cannot satisfy verification.
+SIGNER_IDENTITY_REGEXP := ^https://github\.com/firestoned/bindy/\.github/workflows/((build|release)\.yaml@refs/tags/|rebuild-release-images\.yaml@refs/heads/main$$)
+
+sbom-generate: ## Generate the bindy binary SBOM locally (usage: make sbom-generate SBOM_TARGET=x86_64-unknown-linux-gnu)
+	@command -v cargo-cyclonedx >/dev/null 2>&1 || { echo "Error: cargo-cyclonedx not found. Run 'cargo install cargo-cyclonedx --locked --version 0.5.9'."; exit 1; }
+	@cargo cyclonedx --manifest-path crates/bindy/Cargo.toml --all --describe crate \
+		--target $(SBOM_TARGET) --spec-version $(SBOM_SPEC_VERSION) --format json
+	@echo "✓ SBOM generated: crates/bindy/bindy.cdx.json"
+
+sbom-stage: ## Stage, annotate and gate the binary SBOM (usage: make sbom-stage SBOM_NAME=bindy-linux-amd64)
+	@if [ -z "$(SBOM_NAME)" ]; then echo "Error: SBOM_NAME required, e.g. SBOM_NAME=bindy-linux-amd64"; exit 1; fi
+	@test -f crates/bindy/bindy.cdx.json || { echo "Error: crates/bindy/bindy.cdx.json not found; generate it first"; exit 1; }
+	@mkdir -p $(SBOM_DIR)
+	@cp crates/bindy/bindy.cdx.json $(SBOM_DIR)/$(SBOM_NAME).cdx.json
+	@$(MAKE) --no-print-directory sbom-annotate SBOM=$(SBOM_DIR)/$(SBOM_NAME).cdx.json
+	@$(MAKE) --no-print-directory sbom-check SBOM=$(SBOM_DIR)/$(SBOM_NAME).cdx.json
+
+sbom-annotate: ## Add producer metadata (supplier, author) to an SBOM if absent (usage: make sbom-annotate SBOM=file.cdx.json)
+	@if [ -z "$(SBOM)" ]; then echo "Error: SBOM required"; exit 1; fi
+	@./scripts/sbom.sh annotate "$(SBOM)"
+
+sbom-check: ## Fail unless an SBOM meets the NTIA minimum elements (usage: make sbom-check SBOM=file.cdx.json)
+	@if [ -z "$(SBOM)" ]; then echo "Error: SBOM required"; exit 1; fi
+	@./scripts/sbom.sh check "$(SBOM)"
+
+provenance-subjects: ## Write base64 SLSA subjects for every file in DIR (signature bundles excluded) to OUT (usage: make provenance-subjects DIR=subjects OUT=subjects.b64)
+	@if [ -z "$(DIR)" ] || [ -z "$(OUT)" ]; then echo "Error: DIR and OUT required"; exit 1; fi
+	@cd "$(DIR)" && find . -maxdepth 1 -type f ! -name '.*' ! -name '*.bundle' -print0 | sort -z \
+		| xargs -0 sha256sum | sed 's| \./| |' > "$(CURDIR)/subjects.sha256"
+	@cat "$(CURDIR)/subjects.sha256"
+	@base64 -w0 < "$(CURDIR)/subjects.sha256" > "$(OUT)"
+	@echo "✓ $$(wc -l < "$(CURDIR)/subjects.sha256" | tr -d ' ') provenance subjects written to $(OUT)"
+
+image-digest-record: ## Record a pushed image and its digest as JSON (usage: make image-digest-record IMAGE=ghcr.io/firestoned/bindy DIGEST=sha256:... OUT=file.json)
+	@if [ -z "$(IMAGE)" ] || [ -z "$(DIGEST)" ] || [ -z "$(OUT)" ]; then echo "Error: IMAGE, DIGEST and OUT required"; exit 1; fi
+	@case "$(DIGEST)" in sha256:*) ;; *) echo "Error: DIGEST must be sha256:<hex>"; exit 1;; esac
+	@jq -n --arg image "$(IMAGE)" --arg digest "$(DIGEST)" '{image: $$image, digest: $$digest}' > "$(OUT)"
+	@cat "$(OUT)"
+
+image-digests-matrix: ## Print the image digest records in DIR as one compact JSON array (usage: make -s image-digests-matrix DIR=digests)
+	@if [ -z "$(DIR)" ]; then echo "Error: DIR required"; exit 1; fi
+	@jq -s -c '.' "$(DIR)"/*.json
+
+slsa-verifier-install: ## Install slsa-verifier (pinned by SLSA_VERIFIER_VERSION)
+	@if command -v slsa-verifier >/dev/null 2>&1; then \
+		echo "✓ slsa-verifier already installed: $$(slsa-verifier version 2>&1 | head -1)"; \
+	else \
+		go install github.com/slsa-framework/slsa-verifier/v2/cli/slsa-verifier@$(SLSA_VERIFIER_VERSION) \
+			&& echo "✓ slsa-verifier $(SLSA_VERIFIER_VERSION) installed"; \
+	fi
+
+verify-provenance: ## Verify SLSA L3 provenance of a release file (usage: make verify-provenance ARTIFACT=bindy-linux-amd64.tar.gz VERSION=v0.8.0)
+	@if [ -z "$(ARTIFACT)" ] || [ -z "$(VERSION)" ]; then echo "Error: ARTIFACT and VERSION required, e.g. ARTIFACT=bindy-linux-amd64.tar.gz VERSION=v0.8.0"; exit 1; fi
+	@command -v slsa-verifier >/dev/null 2>&1 || { echo "Error: slsa-verifier not found. Run 'make slsa-verifier-install'."; exit 1; }
+	@slsa-verifier verify-artifact "$(ARTIFACT)" \
+		--provenance-path "$${PROVENANCE:-$(patsubst v%,%,$(VERSION)).intoto.jsonl}" \
+		--source-uri $(SOURCE_URI) --source-tag $(VERSION)
+	@echo "✓ $(ARTIFACT): SLSA provenance verified against $(SOURCE_URI)@$(VERSION)"
+
+verify-image-provenance: ## Verify SLSA L3 provenance of an image (usage: make verify-image-provenance IMAGE=ghcr.io/firestoned/bindy@sha256:... VERSION=v0.8.0)
+	@if [ -z "$(IMAGE)" ] || [ -z "$(VERSION)" ]; then echo "Error: IMAGE (by digest) and VERSION required"; exit 1; fi
+	@case "$(IMAGE)" in *@sha256:*) ;; *) echo "Error: IMAGE must be pinned by digest (repo@sha256:...)"; exit 1;; esac
+	@command -v slsa-verifier >/dev/null 2>&1 || { echo "Error: slsa-verifier not found. Run 'make slsa-verifier-install'."; exit 1; }
+	@slsa-verifier verify-image "$(IMAGE)" --source-uri $(SOURCE_URI) --source-tag $(VERSION)
+	@echo "✓ $(IMAGE): SLSA provenance verified against $(SOURCE_URI)@$(VERSION)"
+
+verify-sbom-attestation: ## Verify the signed SBOM attestation of a release file or image (usage: make verify-sbom-attestation ARTIFACT=bindy-linux-amd64.tar.gz | ARTIFACT=oci://ghcr.io/firestoned/bindy@sha256:...)
+	@if [ -z "$(ARTIFACT)" ]; then echo "Error: ARTIFACT required"; exit 1; fi
+	@command -v gh >/dev/null 2>&1 || { echo "Error: gh (GitHub CLI) not found"; exit 1; }
+	@gh attestation verify "$(ARTIFACT)" --repo firestoned/bindy \
+		--predicate-type $(CYCLONEDX_PREDICATE) \
+		--signer-workflow firestoned/bindy/.github/workflows/build.yaml
+	@echo "✓ $(ARTIFACT): CycloneDX SBOM attestation verified"

@@ -278,8 +278,9 @@ flowchart TD
 
 - ✅ **C-1**: All commits signed (GPG/SSH)
 - ✅ **C-3**: Vulnerability scanning (cargo-audit + Trivy)
-- ✅ **SLSA Level 2**: Build provenance + SBOM
-- ✅ **Signed Images**: Docker provenance attestation
+- ✅ **SLSA v1.0 Build L3**: Provenance for release tarballs, manifests, SBOMs and images (ADR-0010)
+- ✅ **SBOMs**: CycloneDX per release binary and image, signed and bound to the artifact digest
+- ✅ **Signed Images**: Cosign keyless signatures on release images
 - ❌ **M-1** (planned): Pin images by digest (not tags)
 - ❌ **Image Verification** (planned): Admission operator verifies signatures
 
@@ -705,37 +706,42 @@ ENTRYPOINT ["/usr/local/bin/bindy"]
 
 ## Supply Chain Security
 
-### SLSA Level 2 Compliance
+### SLSA v1.0 Build L3
+
+Full mapping and verification: [SLSA compliance](../compliance/slsa.md).
 
 | Requirement | Implementation | Status |
 |-------------|----------------|--------|
-| **Build provenance** | Signed commits provide authorship proof | ✅ C-1 |
-| **Source integrity** | GPG/SSH signatures verify source | ✅ C-1 |
-| **Build integrity** | SBOM generated for all releases | ✅ SLSA |
-| **Build isolation** | GitHub Actions ephemeral runners | ✅ CI/CD |
-| **Parameterless build** | Reproducible builds (same input = same output) | ❌ H-4 (planned) |
+| **Provenance exists** | `<version>.intoto.jsonl` per release; image provenance in GHCR | ✅ L1 |
+| **Hosted build platform** | GitHub-hosted runners, workflows in Git | ✅ L2 |
+| **Authentic provenance** | Sigstore-signed by the generator workflow, logged in Rekor | ✅ L2 |
+| **Unforgeable provenance** | `slsa-github-generator` reusable workflows, isolated from build steps | ✅ L3 |
+| **Isolated builds** | Ephemeral runner per job | ✅ L3 |
+| **Reproducible builds** | Not required by SLSA v1.0; designed, not automated | ❌ H-4 |
 
-### Supply Chain Flow
+### Supply Chain Flow (release)
 
 ```mermaid
 flowchart LR
-    A[Developer] -->|Signed Commit| B[Git]
-    B -->|Webhook| C[GitHub Actions]
-    C -->|Build| D[Binary]
-    C -->|Scan| E[cargo-audit]
-    E -->|Pass| D
-    D -->|Build| F[Container Image]
-    F -->|Scan| G[Trivy]
-    G -->|Pass| H[Sign Image]
-    H -->|Provenance| I[SBOM]
-    I -->|Push| J[Registry]
-    J -->|Pull| K[Kubernetes]
+    A[Developer] -->|Signed commit, PR| B[Git main]
+    B -->|Release tag| C[build.yaml]
+    C -->|cargo build --locked| D[Binaries]
+    C -->|cargo-cyclonedx| S[Binary SBOMs]
+    D -->|Assemble| F[Images]
+    F -->|Syft by digest| T[Image SBOMs]
+    D -->|Cosign| G[Signed tarballs]
+    F -->|Cosign| H[Signed images]
+    S -->|attest-sbom| G
+    T -->|attest-sbom| H
+    G -->|subjects| P[slsa-github-generator<br/>generic L3]
+    H -->|digest| Q[slsa-github-generator<br/>container L3]
+    P --> R[GitHub Release]
+    Q --> J[GHCR]
+    J -->|Pull by digest| K[Kubernetes]
 
     style A fill:#90EE90
-    style E fill:#FFD700
-    style G fill:#FFD700
-    style H fill:#90EE90
-    style I fill:#90EE90
+    style P fill:#90EE90
+    style Q fill:#90EE90
 ```
 
 **Supply Chain Threats Mitigated:**
@@ -743,8 +749,9 @@ flowchart LR
 - ✅ **Code Injection**: Signed commits prevent unauthorized code changes
 - ✅ **Dependency Confusion**: cargo-audit verifies dependencies from crates.io
 - ✅ **Malicious Dependencies**: Vulnerability scanning detects known CVEs
-- ✅ **Image Tampering**: Signed images with provenance attestation
-- ❌ **Compromised Build Environment** (partially): Ephemeral runners, but build reproducibility not verified (H-4)
+- ✅ **Image Tampering**: Signed images; SLSA Build L3 provenance and SBOM attestations bound to the image digest
+- ✅ **Forged Provenance**: Provenance generated outside the build jobs (SLSA Build L3)
+- ⚠️ **Compromised Build Environment** (partially): Ephemeral, isolated runners, but build reproducibility is not verified (H-4)
 
 ---
 

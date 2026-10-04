@@ -22,13 +22,13 @@ git status --porcelain && git diff --stat     # uncommitted working tree
 
 | Changed path / signal | Required documentation |
 |---|---|
-| `src/crd.rs` (fields/structs) | `regen-api-docs` (`docs/src/reference/api.md`), `examples/*.yaml`, config reference in `docs/src/` |
+| `crates/bindy-api/src/crd.rs` (fields/structs) | `regen-api-docs` (`docs/src/reference/api.md`), `examples/*.yaml`, config reference in `docs/src/` |
 | New `BINDY_*` / other env var | `docs/src/` config/deployment reference + `deploy/operator/deployment.yaml` if applicable |
-| `src/reconcilers/` behavior | `docs/src/architecture/` flow diagrams, user guide, troubleshooting |
+| `crates/bindy/src/reconcilers/` behavior | `docs/src/architecture/` flow diagrams, user guide, troubleshooting |
 | New CRD | `add-new-crd` skill (guide + api docs + examples) |
 | `deploy/admission-policies/NN-*.yaml` (new) | `deploy/admission-policies/README.md` table + `make admission-policies-yaml` |
-| `deploy/**/rbac/`, `src/bootstrap.rs` | `deploy/operator/rbac/README.md`, RBAC guide, keep bootstrap↔YAML in sync (see `.claude/CLAUDE.md`) |
-| `src/scout.rs` behavior | `docs/src/guide/scout.md`, `docs/src/installation/scout.md` |
+| `deploy/**/rbac/`, `crates/bindy/src/bootstrap.rs` | `deploy/operator/rbac/README.md`, RBAC guide, keep bootstrap↔YAML in sync (see `.claude/CLAUDE.md`) |
+| `crates/bindy/src/scout.rs` behavior | `docs/src/guide/scout.md`, `docs/src/installation/scout.md` |
 | New public module / feature | `docs/src/features/` or relevant guide + `README.md` features section |
 
 ### 3. Flag BREAKING changes explicitly
@@ -40,7 +40,7 @@ API/route/annotation contract.
 
 ```bash
 # Deletions/renames in CRD types and public signatures
-git diff "$BASE"..HEAD -- src/crd.rs | rg '^-\s*pub '
+git diff "$BASE"..HEAD -- crates/bindy-api/src/crd.rs | rg '^-\s*pub '
 # New rejections / default-deny / required prefixes introduced
 git diff "$BASE"..HEAD -- src/ | rg -i '^\+.*(reject|deny|must (start|be)|required|Err\()'
 ```
@@ -87,5 +87,5 @@ remains; a genuine "no doc needed" gets a one-line justification.
 - [ ] Every changed path maps to an updated doc, or a stated "no doc needed" reason.
 - [ ] Every breaking change has: CHANGELOG breaking flag + `migration-guide.md` entry + validated examples.
 - [ ] Every new `BINDY_*` env var, admission policy, and CRD field is greppable in `docs/`.
-- [ ] `regen-api-docs` was run if `src/crd.rs` changed.
+- [ ] `regen-api-docs` was run if `crates/bindy-api/src/crd.rs` changed.
 - [ ] `make docs` exits 0 with no new broken-link warnings.

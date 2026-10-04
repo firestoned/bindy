@@ -200,7 +200,7 @@ let mut buf = vec![0u8; 8192];
 ### Where to Define Constants
 
 - **Module-level**: For constants used only within one file
-- **Crate-level** (`src/constants.rs`): For constants used across modules
+- **Crate-level** (`crates/bindy-api/src/constants.rs`): For constants used across modules
 - Group related constants together with documentation
 
 ### Test Files Exception
@@ -255,7 +255,7 @@ fn build_configmap() {
 ### Where to Define Constants
 
 - Module-level constants: At the top of the file for file-specific use
-- Crate-level constants: In a dedicated module (e.g., `src/constants.rs`) for cross-module use
+- Crate-level constants: In a dedicated module (e.g., `crates/bindy-api/src/constants.rs`) for cross-module use
 - Group related constants together with documentation
 
 ### Verification

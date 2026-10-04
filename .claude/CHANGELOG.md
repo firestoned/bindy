@@ -1,3 +1,144 @@
+## [2026-10-03 21:00] - Release SBOMs and SLSA Build L3 for every release artifact (ADR-0010)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `.github/workflows/build.yaml`: binary SBOMs never reached a release. The
+  upload looked in `target/<triple>/release/*.cdx.json`, but cargo-cyclonedx
+  writes into the package directory; v0.7.1 shipped no binary SBOM. macOS and
+  Windows had none at all.
+- `.github/workflows/build.yaml`: image SBOMs were generated from a mutable
+  tag and shipped twice (`anchore/sbom-action` also auto-uploaded
+  `*.cyclonedx.json`). Now by digest, uploaded once.
+- `Makefile` `verify-image` / `verify-binary`: the Cosign identity regexp
+  `https://github.com/firestoned/bindy` was unanchored, so a repository named
+  `bindy-<anything>` matched. Now anchored to `build.yaml@refs/tags/`
+  (`release.yaml` before v0.6.0, `rebuild-release-images.yaml@refs/heads/main`
+  for rebuilt images).
+
+### Added
+- `docs/adr/0010-release-sbom-and-slsa-build-l3.md` (Proposed).
+- `build.yaml` `sbom` job: CycloneDX 1.5 SBOM per shipped binary
+  (cargo-cyclonedx 0.5.9; two Linux targets on PRs/main, all five on
+  release), staged as `bindy-<os>-<arch>.cdx.json`, gated, and a required
+  PR check.
+- `build.yaml` release jobs: SBOM attestations (`actions/attest-sbom`
+  v4.1.0) binding each binary SBOM to its tarball and each image SBOM to its
+  digest (also pushed to GHCR); `image-digests` + `slsa-image-provenance`
+  (`slsa-github-generator` container generator v2.1.0) for SLSA Build L3
+  image provenance; the generic provenance's subjects extended from the
+  tarballs to the tarballs, install manifests and every SBOM.
+- `scripts/sbom.sh` + `make sbom-annotate` / `sbom-check`: producer
+  metadata and an NTIA minimum-elements gate (spec ≥ 1.5, serial, timestamp,
+  tool, author, root component, name/version/purl per package, dependency
+  graph). Tested against the cargo SBOM and the v0.7.1 Syft SBOMs.
+- `Makefile`: `sbom-generate`, `sbom-stage`, `provenance-subjects`,
+  `image-digest-record`, `image-digests-matrix`, `slsa-verifier-install`
+  (v2.7.1), `verify-provenance`, `verify-image-provenance`,
+  `verify-sbom-attestation`.
+
+### Changed
+- Release builds pass `--locked` (Linux via `build-binary` `extra-args`,
+  macOS/Windows, and the PR test step).
+- `.github/workflows/sbom.yml`: same generation and gate as releases; Grype
+  through SHA-pinned `anchore/scan-action` v7.4.2 instead of `curl | sh` from
+  the `main` branch.
+- Requires `firestoned/github-actions` v1.3.9 (`rust/generate-sbom`:
+  `spec-version`, `extra-args`, working `package` from v1.3.8; v1.3.9 fixes
+  a cache fallback that restored an older cargo-cyclonedx and failed the
+  install), pinned in `build.yaml` and `sbom.yml` at
+  `e034489c3a17ffaaaf7f8fb799156ce768d899d5`.
+- Docs: `docs/src/compliance/slsa.md` rewritten against SLSA v1.0; SLSA/SBOM
+  claims corrected in `README.md` (badge too), `SECURITY.md`,
+  `docs/src/security/{signed-releases,architecture,build-reproducibility}.md`
+  and `docs/src/compliance/overview.md`. Removed claims that were not true:
+  a daily reproducibility workflow, `scripts/verify-build.sh`,
+  `SOURCE_DATE_EPOCH` handling, "SLSA Level 3 complete" via signed commits.
+- `docs/src/security/threat-model.md` v1.7: full pass against ADR-0001 …
+  ADR-0010. New M-33, M-34, M-35 (implemented), M-36, M-37 (planned); M-09,
+  M-15, S3, T2 corrected; new residual risk 6.
+- Roadmap 15 Phase 6 and `ROADMAPS.md` updated.
+
+### Not changed, flagged for a decision
+- The `main` rulesets require **0** approving reviews, there is no
+  `CODEOWNERS`, and org admins can bypass. `SECURITY.md`, `CONTRIBUTING.md`,
+  `docs/src/development/security.md`, `docs/src/compliance/sox-404.md` and
+  `pci-dss.md` still say two approvals are enforced. The threat model now
+  records the gap (S3, M-36); the control statements were left for the
+  owner to decide between enabling reviews and correcting them.
+
+### Why
+The docs claimed SLSA Level 3 and an SBOM per release; the release pipeline
+delivered neither for binaries or images. ADR-0010 makes the claim true and
+verifiable.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only (CI/release pipeline and docs; the binary is unchanged)
+
+## [2026-10-03 18:00] - Roadmap 01 Phase A: Cargo workspace, `bindy-api` extracted (ADR-0009)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: now a virtual `[workspace]` (members `crates/bindy`,
+  `crates/bindy-api`) with `[workspace.package]`, `[workspace.lints]`
+  (`unsafe_code = "forbid"`), every dependency pinned once in
+  `[workspace.dependencies]`, and the build profiles. The version stays the
+  only `version = ` line, so the release workflow's rewrite is unchanged.
+- `src/` moved to `crates/bindy/src/`; the Rust integration tests
+  (`simple_integration.rs`, `scout_integration.rs`,
+  `multi_tenancy_integration.rs`, `common/`) moved to `crates/bindy/tests/`.
+  `include_str!` paths to `templates/` and `deploy/` updated.
+- New `crates/bindy-api`: `crd`, `crd_docs`, `constants`, `labels`,
+  `selector`, `status_reasons` and their tests, plus the `crdgen` /
+  `crddoc` bins behind a `crdgen` feature. `crates/bindy/src/lib.rs`
+  re-exports the six modules, so `crate::crd::…` and `bindy::crd::…` still
+  resolve. `bindy` no longer depends on `schemars` directly.
+- `Makefile`: `crds` and `docs` run `cargo run -p bindy-api --features
+  crdgen --bin crdgen|crddoc`; `run` uses `--bin bindy`.
+- `.github/workflows/{build,codeql,docs,e2e,scorecard,license-scan}`:
+  path filters follow `crates/**` and `crates/*/Cargo.toml`.
+- `.github/workflows/{build,rebuild-release-images}.yaml`: pass
+  `binary-name: bindy` to `firestoned/github-actions/rust/build-binary`,
+  which otherwise infers the name with `grep '^name' Cargo.toml` and fails
+  on the virtual workspace root (PR #519 Build jobs).
+- `.github/workflows/sbom.yml`: upload SBOMs from `crates/bindy/`, where
+  cargo-cyclonedx writes them in a workspace.
+- `.cargo/deny.toml`: `allow-wildcard-paths = true` for the path-only
+  workspace dependencies (all crates are `publish = false`).
+- `calm/bindy-control-plane.architecture.json` (+ regenerated
+  `docs/src/architecture/calm-control-plane.md`): the operator node and the
+  `operator-watches-api` relationship describe the workspace and the shared
+  watch layer; record reconciler count corrected to 9.
+- `.claude/` skills, rules and `CLAUDE.md`, `docs/src/**`, `README.md`,
+  `CONTRIBUTING.md`, `TESTING.md`, `tests/README.md`, scripts: source paths
+  point into `crates/`. Historical records (this changelog, ADRs, roadmap
+  detail docs) and generated CRD YAML were left as written.
+- `docs/src/reference/api.md`: regenerated; picks up the `dnssecPolicy`
+  description from the DNSSEC fix, which had not been regenerated on `main`.
+- `docs/adr/0009-…`: Accepted. Roadmap 01 Phase A ticked; `ROADMAPS.md`
+  row updated.
+
+### Why
+Roadmap 01 Phase A under ADR-0009: the workspace scaffold and the leaf API
+crate, with no behaviour change.
+
+### Verification
+CRD YAMLs byte-identical after `crdgen`; 1597 passed / 95 ignored tests
+before and after the move; `cargo clippy --workspace --all-targets
+--all-features -- -D warnings`, `cargo doc`, `make cargo-machete` and
+`make cargo-deny` clean. No threat-model pass yet: Phase A changes no
+runtime behaviour, and the full pass is due when ADR-0009 is implemented.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only (build layout only; the binary is unchanged)
+
 ## [2026-10-03 16:30] - Config changes reach running BIND pods (operator upgrades included)
 
 **Author:** Erick Bourgeois
@@ -65,6 +206,37 @@
       is added)
 - [ ] Config change only
 - [ ] Documentation only
+
+## [2026-10-03 16:00] - ADR-0009: workspace crate split and shared watch layer
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0009-workspace-crate-split-and-shared-watch-layer.md`: decides
+  the Cargo workspace layout (10 `crates/bindy-*` crates, strictly downward
+  dependencies, one unchanged `bindy` binary), one shared watch per (kind,
+  namespace target) via kube-runtime's shared streams, a written
+  self-trigger policy, pure watch mappers, draining shutdown, and enabling
+  kube's `unstable-runtime-subscribe` feature (confined to the SDK's watch
+  module).
+
+### Changed
+- `.github/community/01-controller-crate-split.md`: re-measured against
+  `main` @ `d422055`; heading renumbered `01`; status ADR stage. Corrections:
+  shared-stream APIs are behind `unstable-runtime-subscribe`; watch streams
+  are about 59 (not 36) in cluster-wide mode and scale per namespace target;
+  `perform_startup_drift_detection` lists with `Api::all` in restricted mode.
+- `ROADMAPS.md`: roadmap 01 row to 🔶 with the ADR link.
+
+### Why
+First step of roadmap 01 under ADD: the decision is recorded before CALM
+and before any code moves.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
 
 ## [2026-10-03 14:30] - DNSSEC signing actually signs: reserved policy names, inheritance, existing zones, key directory
 

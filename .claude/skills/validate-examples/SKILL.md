@@ -6,7 +6,7 @@ description: Validate all example YAML manifests in examples/ against the curren
 # validate-examples
 
 Shipped examples must always validate against the current CRD schemas. Field
-names come from `src/crd.rs` / `deploy/operator/crds/*.crd.yaml` — never
+names come from `crates/bindy-api/src/crd.rs` / `deploy/operator/crds/*.crd.yaml`; never
 guessed.
 
 ## Steps

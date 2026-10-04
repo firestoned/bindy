@@ -52,6 +52,9 @@ license-files = [
 multiple-versions = "warn"
 # Lint level for when a crate version requirement is `*`
 wildcards = "deny"
+# Workspace path dependencies (ADR-0009) carry no version; every crate is
+# `publish = false`, so a path-only dependency is not a wildcard risk.
+allow-wildcard-paths = true
 # List of crates to deny
 deny = []
 # List of crates that are allowed

@@ -45,16 +45,20 @@ cd bindy
 
 ```
 bindy/
-├── src/              # Rust source code
-│   ├── main.rs       # Entry point
-│   ├── crd.rs        # CRD definitions
-│   ├── reconcilers/  # Reconciliation logic
-│   └── bind9.rs      # BIND9 integration
+├── Cargo.toml        # Cargo workspace (ADR-0009)
+├── crates/
+│   ├── bindy-api/    # CRD types, constants, labels; crdgen/crddoc bins
+│   └── bindy/        # The operator binary and everything not yet split out
+│       ├── src/
+│       │   ├── main.rs       # Entry point
+│       │   ├── reconcilers/  # Reconciliation logic
+│       │   └── bind9/        # BIND9 integration
+│       └── tests/    # Rust integration tests
 ├── deploy/           # Kubernetes manifests
 │   ├── crds/         # CRD definitions
 │   ├── rbac/         # RBAC resources
 │   └── operator/   # Operator deployment
-├── tests/            # Integration tests
+├── tests/            # Shell integration and e2e suites
 ├── examples/         # Example configurations
 ├── docs/             # Documentation
 └── Cargo.toml        # Rust dependencies

@@ -449,7 +449,7 @@ kubectl logs -n bindy-system -l app.kubernetes.io/name=bindy-operator | grep "Tr
 
 2. **Regenerate and apply CRDs if needed**:
    ```bash
-   cargo run --bin crdgen
+   cargo run -p bindy-api --features crdgen --bin crdgen
    kubectl apply --server-side -f deploy/operator/crds/bind9instances.crd.yaml
    ```
 

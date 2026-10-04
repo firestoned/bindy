@@ -47,7 +47,7 @@ This section provides an overview of Bindy's security posture. For detailed info
 - **[Incident Response Playbooks](docs/security/INCIDENT_RESPONSE.md)**: Step-by-step response procedures for security incidents
 - **[Audit Log Retention Policy](docs/security/AUDIT_LOG_RETENTION.md)**: 7-year retention, WORM storage, log integrity verification
 - **[Secret Access Audit Trail](docs/security/SECRET_ACCESS_AUDIT.md)**: Kubernetes audit logs, pre-built compliance queries, alerting rules
-- **[Build Reproducibility Verification](docs/security/BUILD_REPRODUCIBILITY.md)**: SLSA Level 3, deterministic builds, verification process
+- **[Build Reproducibility Verification](docs/security/BUILD_REPRODUCIBILITY.md)**: How to rebuild a release and compare digests (a manual procedure; not yet automated in CI)
 - **[Vulnerability Management Policy](docs/security/VULNERABILITY_MANAGEMENT.md)**: Remediation SLAs, scanning process, exception handling
 - **[RBAC Verification](deploy/rbac/verify-rbac.sh)**: Automated script to verify least privilege RBAC implementation
 
@@ -63,7 +63,7 @@ This requirement ensures:
 - ✅ Cryptographic proof of code authorship
 - ✅ Prevention of commit forgery
 - ✅ Audit trail for compliance (SOX 404, PCI-DSS 6.4.6)
-- ✅ Supply chain integrity (SLSA Level 2+)
+- ✅ Source integrity, one of the supply-chain controls listed in [SLSA compliance](docs/src/compliance/slsa.md)
 
 **Enforcement:**
 - Branch protection requires signed commits on `main`
@@ -134,11 +134,16 @@ This requirement ensures:
 
 ### Supply Chain Security
 
-**Build provenance (SLSA Level 2+):**
-- All commits cryptographically signed
-- SBOM (Software Bill of Materials) generated for all releases
-- Docker images include SBOM and attestation
-- Reproducible builds with pinned dependencies
+**Build provenance (SLSA v1.0 Build L3, [ADR-0010](docs/adr/0010-release-sbom-and-slsa-build-l3.md)):**
+- Release tarballs, install manifests, SBOMs and images carry SLSA Build L3
+  provenance from the isolated `slsa-github-generator` workflows
+- Every release binary and image has a CycloneDX SBOM that passes an NTIA
+  minimum-elements gate and is a signed attestation bound to the artifact's digest
+- Release builds use the committed `Cargo.lock` (`--locked`); base images are
+  pinned by digest
+- Verify with `make verify-provenance`, `make verify-image-provenance` and
+  `make verify-sbom-attestation` (see [Signed Releases](docs/src/security/signed-releases.md))
+- Builds are not hermetic, and reproducibility is not yet checked in CI
 
 **Container security:**
 - Multi-stage builds minimize attack surface
@@ -210,17 +215,15 @@ This project operates in a **regulated banking environment** and adheres to:
 
 ### SLSA (Supply Chain Levels for Software Artifacts)
 
-**SLSA Level 2 Requirements:**
-- ✅ **Build provenance**: Signed commits provide authorship proof
-- ✅ **Source integrity**: GPG/SSH signatures verify source authenticity
-- ✅ **Build integrity**: Reproducible builds with SBOM
-- ✅ **Availability**: Public repository with immutable history
+**SLSA v1.0 Build L3** for release artifacts; see
+[SLSA compliance](docs/src/compliance/slsa.md) for the requirement mapping,
+what is not claimed, and verification.
 
 **Evidence:**
-- Signed commits in Git history
-- SBOM files in release artifacts
-- Container image attestations
-- CI/CD workflow logs
+- `<version>.intoto.jsonl` provenance on every release; image provenance in GHCR
+- `*.cdx.json` SBOMs on every release, plus their signed attestations
+- Cosign signatures (`*.tar.gz.bundle`, image signatures in GHCR)
+- Signed commits in Git history; CI/CD workflow logs
 
 ## Security Best Practices
 

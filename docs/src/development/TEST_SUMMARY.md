@@ -46,11 +46,11 @@ Located in `/tests/` directory:
 
 | Module | Coverage | Tests | Status |
 |--------|----------|-------|--------|
-| `src/main.rs` | High | Unit | ✅ |
-| `src/bind9.rs` | High | Unit | ✅ |
-| `src/bind9_resources.rs` | High | Unit | ✅ |
-| `src/crd.rs` | Medium | Unit + Integration | ✅ |
-| `src/labels.rs` | High | Unit | ✅ |
+| `crates/bindy/src/main.rs` | High | Unit | ✅ |
+| `crates/bindy/src/bind9.rs` | High | Unit | ✅ |
+| `crates/bindy/src/bind9_resources.rs` | High | Unit | ✅ |
+| `crates/bindy-api/src/crd.rs` | Medium | Unit + Integration | ✅ |
+| `crates/bindy-api/src/labels.rs` | High | Unit | ✅ |
 
 ### Reconcilers
 

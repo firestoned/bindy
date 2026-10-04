@@ -80,16 +80,16 @@ FIXES=$((FIXES + 1))
 # 3. Fix source code links (../../src -> GitHub source links)
 echo -e "${YELLOW}3. Fixing source code links...${NC}"
 
-# ../../src/reconcilers/*.rs -> GitHub links
-find . -name "*.md" -exec sed -i '' 's|../../src/reconcilers/|https://github.com/firestoned/bindy/blob/main/src/reconcilers/|g' {} \;
+# ../../crates/bindy/src/reconcilers/*.rs -> GitHub links
+find . -name "*.md" -exec sed -i '' 's|../../crates/bindy/src/reconcilers/|https://github.com/firestoned/bindy/blob/main/crates/bindy/src/reconcilers/|g' {} \;
 FIXES=$((FIXES + 1))
 
-# ../../src/bind9_resources.rs -> GitHub link
-find . -name "*.md" -exec sed -i '' 's|../../src/bind9_resources\.rs|https://github.com/firestoned/bindy/blob/main/src/bind9_resources.rs|g' {} \;
+# ../../crates/bindy/src/bind9_resources.rs -> GitHub link
+find . -name "*.md" -exec sed -i '' 's|../../crates/bindy/src/bind9_resources\.rs|https://github.com/firestoned/bindy/blob/main/crates/bindy/src/bind9_resources.rs|g' {} \;
 FIXES=$((FIXES + 1))
 
-# ../../../src/reconcilers -> GitHub links
-find . -name "*.md" -exec sed -i '' 's|../../../src/reconcilers/|https://github.com/firestoned/bindy/blob/main/src/reconcilers/|g' {} \;
+# ../../../crates/bindy/src/reconcilers -> GitHub links
+find . -name "*.md" -exec sed -i '' 's|../../../crates/bindy/src/reconcilers/|https://github.com/firestoned/bindy/blob/main/crates/bindy/src/reconcilers/|g' {} \;
 FIXES=$((FIXES + 1))
 
 # 4. Fix .github references

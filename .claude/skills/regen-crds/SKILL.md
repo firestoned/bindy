@@ -1,19 +1,19 @@
 ---
 name: regen-crds
-description: Regenerate the CRD YAMLs in deploy/operator/crds/ from the Rust source of truth (src/crd.rs) via the crdgen binary. Use after ANY edit to types in src/crd.rs and before deploying CRD changes. Never hand-edit the generated YAMLs.
+description: Regenerate the CRD YAMLs in deploy/operator/crds/ from the Rust source of truth (crates/bindy-api/src/crd.rs) via the crdgen binary. Use after ANY edit to types in crates/bindy-api/src/crd.rs and before deploying CRD changes. Never hand-edit the generated YAMLs.
 ---
 
 # regen-crds
 
-CRD YAMLs in `deploy/operator/crds/` are auto-generated from `src/crd.rs` by
-the `crdgen` binary. `src/crd.rs` is the single source of truth — never edit
+CRD YAMLs in `deploy/operator/crds/` are auto-generated from `crates/bindy-api/src/crd.rs` by
+the `crdgen` binary. `crates/bindy-api/src/crd.rs` is the single source of truth; never edit
 the YAMLs directly.
 
 ## Steps
 
 ```bash
 # 1. Regenerate all CRD YAML files from Rust types
-cargo run --bin crdgen
+cargo run -p bindy-api --features crdgen --bin crdgen
 
 # 2. Verify generated YAMLs
 for file in deploy/operator/crds/*.crd.yaml; do
@@ -42,7 +42,7 @@ kubectl create -f deploy/operator/crds/
 ## Verification
 
 - `kubectl apply --dry-run=client -f deploy/operator/crds/` succeeds for all files.
-- Re-running `cargo run --bin crdgen` produces no further diff (idempotent).
+- Re-running `cargo run -p bindy-api --features crdgen --bin crdgen` produces no further diff (idempotent).
 
 ## Related
 

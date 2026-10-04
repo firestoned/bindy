@@ -817,7 +817,7 @@ When gateway-chain IP resolution reads the LoadBalancer `Service` behind a Gatew
 
 **Note:** `Gateway` objects are read-only for Scout — it only reads their `status.addresses` to discover external IPs, and never mutates them.
 
-**Routes are not read-only.** Scout adds and removes its own finalizer on the `HTTPRoute` / `TLSRoute` / `TCPRoute` objects it manages (`add_finalizer_to_httproute` and friends in `src/scout.rs`), which is why the ClusterRole above grants `patch` and `update` on route kinds. The finalizer is what lets Scout delete the corresponding ARecords before the route disappears; on a Phase-2 remote that is unreachable, it is released anyway after a 300s grace period so route deletion is never blocked. Scout does not modify any other field of a route.
+**Routes are not read-only.** Scout adds and removes its own finalizer on the `HTTPRoute` / `TLSRoute` / `TCPRoute` objects it manages (`add_finalizer_to_httproute` and friends in `crates/bindy/src/scout.rs`), which is why the ClusterRole above grants `patch` and `update` on route kinds. The finalizer is what lets Scout delete the corresponding ARecords before the route disappears; on a Phase-2 remote that is unreachable, it is released anyway after a 300s grace period so route deletion is never blocked. Scout does not modify any other field of a route.
 
 ---
 
