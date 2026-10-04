@@ -23,6 +23,7 @@
 //! - [`namespace_scope`] - Cluster-wide or per-namespace watch scope
 //! - [`http_errors`] - HTTP error mapping to status reasons
 //! - [`metrics`] - Prometheus metrics
+//! - [`watch`] - The shared watch layer: one watch and cache per kind and namespace
 
 pub mod error;
 pub mod http_errors;
@@ -34,6 +35,7 @@ pub mod requeue;
 pub mod resources;
 pub mod retry;
 pub mod status;
+pub mod watch;
 
 #[cfg(test)]
 mod http_errors_tests;

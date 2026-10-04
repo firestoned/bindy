@@ -1,12 +1,25 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.7
-**Last Updated:** 2026-10-03
+**Version:** 1.8
+**Last Updated:** 2026-10-04
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
 
 > Last full pass 2026-10-03, against ADR-0001 … ADR-0010 (ADR-0006 as amended;
 > ADR-0009 at Phase A: build layout only, no runtime change).
+>
+> **Revision note (v1.8):** Targeted update for ADR-0009 Phase B step B2
+> (shared watch layer); not a full pass, which is due when ADR-0009 is fully
+> implemented (roadmap 01 Phase G). The operator now holds one watch and
+> cache per (kind, namespace target) instead of one per controller, built on
+> kube-runtime's `unstable-runtime-stream-control` feature. No new
+> component, actor, asset or trust boundary, and the same API access (same
+> RBAC). New mitigation **M-38** (watch supervision and staleness metrics)
+> and residual risk 7 (a shared watch is a common point of failure; the
+> unstable feature). Fixed in passing: in namespace-restricted mode (M-22)
+> the zone controller's `Endpoints` watch was cluster-wide, which the
+> namespaced RBAC does not permit, so it was refused; it is now per
+> namespace, so M-22's "per-namespace Roles only" holds for it.
 >
 > **Revision note (v1.7):** Pass for ADR-0010 (release SBOMs and SLSA Build
 > L3) and ADR-0009 Phase A. Supply-chain rows re-checked against the release
@@ -1407,6 +1420,7 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-30 | **Scout namespace whitelisting** (`--namespace-selector` / `BINDY_SCOUT_NAMESPACE_SELECTOR`, new in v1.1): a source object's namespace must match a configured Kubernetes label selector *in addition to* the object's own opt-in annotation before Scout acts on it. Label-selector matching delegates to the API server (no client-side selector parser). Reduces Scout's day-to-day operating footprint — bounds T4 (cross-tenant patch/update) during normal operation. **Does not reduce the `ClusterRole`'s RBAC ceiling** for Ingress/Service/route types — a directly compromised token is unaffected for those. **Opt-in — unset by default**, matching pre-v1.1 behavior for backward compatibility; Scout logs a startup warning when unset. See the Scout guide's "Namespace Whitelisting" section for the rollout/migration note. | T4 (partial) | ⚠️ Opt-in, recommended for all production deployments |
 | M-32 | **Scout endpoint + token-file remote transport** (2026-09-28, ADR-0008): alternative to the kubeconfig-Secret mode; bare bindy-minted token file (rotatable, no restart), endpoint/CA in the Deployment spec, fail-closed mode selection. Removes the kubeconfig blob and the `secrets: get` dependency in this mode; supports Linkerd-meshed proxy mirrors for cross-cluster mTLS | I4/E4 (smaller credential surface), T4 (unchanged ceiling) | ✅ `crates/bindy/src/scout.rs` (`resolve_remote_transport`) |
 | M-31 | **Client-side Kubernetes API rate limiting** (2026-09-27, ADR-0005): tower `RateLimitLayer` in the operator's client stack (20 QPS / 30 burst default, env-tunable, invalid overrides fall back safely), paginated LISTs (O(1) memory), exponential-backoff retries on transient 429/5xx, and Prometheus visibility of server-side throttling (`kube_api_*` metrics) | D2 (reconciliation flood; API/memory amplification), platform availability (Basel III operational resilience) | ✅ `crates/bindy-controller-sdk/src/{rate_limit,pagination,retry}.rs` |
+| M-38 | **Shared watch supervision** (2026-10-04, ADR-0009 §3): every cached kind is watched once per namespace target by the SDK `WatchSet`; a stream that ends is restarted with backoff, and `bindy_firestoned_io_watch_{events,errors,restarts}_total` / `_watch_last_event_timestamp_seconds` expose each watch's health and staleness. Before, a dead reflector task ended silently. Fan-out applies backpressure instead of dropping events, so a reconcile is never silently skipped | D2 (stale cache acting on old state), availability | ✅ `crates/bindy-controller-sdk/src/watch.rs` |
 | M-25 | **Scout Secret RBAC scoped** (fixed 2026-07-19, same day as this finding's discovery): removed the cluster-wide `secrets: get` `PolicyRule` from the `bindy-scout` `ClusterRole` entirely. Replaced with a namespaced, `resourceNames`-restricted Role (`bindy-scout-secrets-reader`) scoped to exactly the one Phase 2 kubeconfig Secret, applied only when `--remote-secret` is configured. Same-cluster-only deployments (the default) now get zero Secret access. See I4/E4/Scenario 6 for the full before/after. | I4, E4, T4 (Secret-read component), Scenario 6 | ✅ RBAC — **was the highest-priority open item in v1.1; closed same-day** |
 
 ---
@@ -1468,6 +1482,8 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 5. **Cross-Tenant Tampering via Scout (T4)** - Bounded by patch/update-only RBAC scope and, when configured, namespace whitelisting (M-30, opt-in — not on by default). No field-level admission control (M-28) yet constrains what Scout can patch. (Scout's Secret-read risk, formerly part of this component's overall exposure, was resolved separately — see M-25.)
 
 6. **Single-person change path (S3)** - The `main` rulesets require signed commits, PRs and passing checks but no approving review, and organization admins can bypass them. A compromised maintainer account with its signing key can land a change unreviewed; release provenance would faithfully attest it. Planned: M-36.
+
+7. **Shared watch layer (ADR-0009 §3)** - One watch per kind now feeds every controller, so a stalled watch leaves every controller of that kind acting on a stale cache until it recovers, and one slow controller slows its kind's watch for the others (backpressure). It is built on kube-runtime's `unstable-runtime-stream-control` feature, pinned to the 4.2 line. Mitigated by restart with backoff and per-kind staleness metrics (M-38); alert on `watch_last_event_timestamp_seconds`. Revisit when kube stabilises the stream APIs, or before any kube minor upgrade.
 
 ---
 

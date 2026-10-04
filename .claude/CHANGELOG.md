@@ -1,3 +1,105 @@
+## [2026-10-04 15:00] - Kind targets use a dedicated kubeconfig
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Makefile`: new `KIND_KUBECONFIG` (default `~/.kube/kind-bindy.yaml`; the
+  default kubeconfig when `CI` is set). Every `kind-*` and `e2e-*` target,
+  plus `docker-build-kind`, `docker-build-no-cache-kind`, `regression-test`,
+  `regression-test-fresh`, `zone-spread-test`, `tls-transport-test` and
+  `ci-e2e`, runs with `KUBECONFIG` exported to it, and the scripts they call
+  inherit it. Other targets keep the caller's `KUBECONFIG`. New
+  `make kind-kubeconfig` prints the export line; `kind-create` and
+  `kind-create-scout` say where the credentials went.
+- `docs/src/development/testing-guide.md`: how to use the kind cluster's
+  kubeconfig.
+
+### Why
+`kind create cluster` merges its credentials into whatever file `KUBECONFIG`
+points at and switches its current context. A `make kind-deploy` run with
+`KUBECONFIG` exported to a production kubeconfig put `kind-bindy-test` into
+it as the current context.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (local tooling; CI unchanged)
+- [ ] Documentation only
+
+## [2026-10-04 14:00] - Roadmap 01 Phase B step B2: shared watch layer (ADR-0009 §3, amended)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/bindy-controller-sdk/src/watch.rs` (new): `WatchSet`, one watcher
+  per (kind, namespace target) that keeps the target's store and broadcasts
+  every `InitApply` / `Apply` / `Delete` object to subscribed controllers
+  over `async-broadcast` (backpressure, never loss). Late subscribers (a
+  controller started on winning the lease) get the store replayed first. A
+  stream that ends is restarted with backoff (1s doubling to 60s).
+  `MultiStore` moved here from `context.rs` (re-exported).
+- `crates/bindy/src/main.rs`, `record_operator.rs`: every controller takes
+  its primary stream and store from the `WatchSet`
+  (`Controller::for_stream`) and its cached cross-kind watches through
+  `watches_stream` / `owns_stream`. Owned Secret, ConfigMap, ServiceAccount
+  and Service stay ordinary watches (one watcher each, never cached). The hand-rolled `spawn_sharded_reflector` /
+  `spawn_cluster_reflector` and `semantic_watcher_config` are gone; no
+  `Controller::new` remains. Cluster-wide: 19 watch connections instead of
+  about 57, and one cache per kind instead of two.
+- Every cached kind is watched with `Config::default()`. The primaries that
+  used `any_semantic()` only lose a cheaper initial LIST; event delivery is
+  unchanged.
+- `crates/bindy/src/context.rs`: `Context.watch: Arc<WatchSet>`.
+- Fixed: the zone controller watched `Endpoints` with `Api::all` in every
+  mode. In namespace-restricted mode the namespaced RBAC grants `endpoints`
+  per namespace only, so that watch was refused and a replaced BIND9 pod
+  waited for the zone's requeue. `Endpoints` of bindy's Services are now a
+  `WatchSet` kind (`register_selected`, server-side selector
+  `bindy_api::labels::BINDY_PART_OF_SELECTOR`), one watch per namespace.
+  The zone controller subscribes to `Endpoints` and `Bind9Instance` across
+  all namespaces (`WatchSet::subscribe_all`) so cross-namespace zones still
+  hear their instances. No RBAC change.
+- `crates/bindy-controller-sdk/src/metrics.rs`:
+  `bindy_firestoned_io_watch_events_total`, `_watch_errors_total`,
+  `_watch_restarts_total`, `_watch_last_event_timestamp_seconds` (labels
+  `kind`, `namespace`).
+- `Cargo.toml`: direct `kube-runtime` dependency with only
+  `unstable-runtime-stream-control` (the `kube` facade only offers the
+  umbrella `unstable-runtime`); `async-broadcast` promoted from transitive to
+  direct.
+
+### Why
+Roadmap 01 Phase B step B2. ADR-0009 §3 was amended first: kube's
+`store_shared()` subscribers never receive Delete events, which `.owns()`
+(a deleted Deployment, Service or ConfigMap) and the zone controller (a
+deleted record) depend on, so the planned `unstable-runtime-subscribe` path
+would have delayed both to the 5-minute requeue.
+
+### Tests
+- `crates/bindy-controller-sdk/src/watch_tests.rs` (13): store follows
+  init/apply/delete, every subscriber gets deletes, late-subscriber replay,
+  predicate filtering, errors do not stop a shard, ended streams restart and
+  are counted, backoff schedule, routing by kind and namespace,
+  `subscribe_all` merges namespaces, label-selected config.
+  `crates/bindy-api/src/labels_tests.rs`: the selector matches the label
+  bindy sets. 1623 tests pass (1609 + 14).
+
+### Docs
+- `docs/adr/0009-…` §3 and Consequences amended; roadmap 01 B2 ticked with
+  corrections; `ROADMAPS.md`; `docs/src/concepts/architecture.md` resource
+  watching section rewritten; `docs/src/security/threat-model.md` v1.8
+  (M-38, residual risk 7; targeted update, full pass at Phase G).
+- Logged, not fixed: in namespace-restricted mode the `Bind9Instance`
+  controller sees `DNSZone` events from its own namespace only, so a
+  cross-namespace zone does not refresh the instance's `status.zones` until
+  its next reconcile (to fix with that mapper in Phase D).
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (watch wiring changes; verify on kind first)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-04 10:00] - Roadmap 01 Phase B step B1: `bindy-controller-sdk` crate (ADR-0009)
 
 **Author:** Erick Bourgeois

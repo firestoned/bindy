@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-03
 - **Proposed:** 2026-10-03
-- **Amended:** 2026-10-04 (Decision #2: when `finalizers` and `context` move to the SDK)
+- **Amended:** 2026-10-04 (Decision #2: when `finalizers` and `context` move to the SDK; Decision #3: own fan-out with `unstable-runtime-stream-control`, because kube's shared stores drop deletes)
 - **Deciders:** Erick Bourgeois
 - **Related:** Plan in roadmap 01
   (`.github/community/01-controller-crate-split.md`); keeps
@@ -137,30 +137,74 @@ code they cover, keeping the `foo.rs` / `foo_tests.rs` convention.
 
 ### 3. One shared watch per kind and namespace target
 
-The SDK owns a `WatchSet`, built once at startup, holding one reflector per
-(kind, namespace target): one `store_shared()` writer, its `Store`, and its
-subscriber stream. Every controller and every cross-kind watch subscribes to
-it through `for_shared_stream` / `owns_shared_stream` /
-`watches_shared_stream`; no controller opens its own watch. That gives one
-connection and one cache per (kind, target): 14 streams in cluster-wide mode
-instead of about 59.
+The SDK owns a `WatchSet`, built once at startup, holding one watcher per
+(kind, namespace target) for every kind the operator caches: the bindy CRDs,
+the `Deployment`s owned by a `Bind9Instance`, and the `Endpoints` of bindy's
+own Services (selected on the API server by `app.kubernetes.io/part-of=bindy`). Each watcher keeps that
+target's `Store` and forwards every event to the controllers subscribed to
+it, which consume it through kube's `Controller::for_stream` /
+`watches_stream` / `owns_stream`. No controller opens its own watch for a
+cached kind. That gives one connection and one cache per (kind, target).
 
-This needs kube's `unstable-runtime-subscribe` feature, and we enable it.
-Constraints:
+Kinds that are watched once and never cached (owned `Secret`, `ConfigMap`,
+`ServiceAccount` and `Service`) keep ordinary `.owns()` watches: sharing them
+saves nothing, and a shared cache would mean holding every `Secret` in the
+operator's memory. In cluster-wide mode that is 19 watch streams instead of
+about 57.
+
+A controller whose trigger can live in another namespace than the object it
+reconciles subscribes to that kind across **all** namespace targets
+(`WatchSet::subscribe_all`), which costs no extra watch: a zone in namespace
+A can be served by a `Bind9Instance` in namespace B (cross-namespace
+targeting), so A's zone controller hears B's instance and `Endpoints`
+events. Before the `WatchSet`, the zone controller watched `Endpoints` with
+`Api::all` in every mode, which in namespace-restricted mode needs
+cluster-wide `endpoints` access the namespaced RBAC does not grant, so that
+watch was refused and a replaced BIND9 pod waited for the zone's requeue.
+
+**Amended 2026-10-04.** This section first chose kube's shared-store API
+(`store_shared()` with `for_shared_stream` / `owns_shared_stream` /
+`watches_shared_stream`, feature `unstable-runtime-subscribe`). Reading the
+kube-runtime 4.2 source showed that its subscribers receive **Apply** events
+only (plus a replay at `InitDone`); **Delete events are never dispatched**.
+Today's controllers depend on deletes: `.owns()` re-reconciles an instance
+whose `Deployment`, `Service` or `ConfigMap` was deleted, and the zone
+controller re-computes its record list when a record is finally removed.
+On the shared-store API both would wait for the 5-minute requeue. So the
+`WatchSet` does its own fan-out instead:
+
+- the watcher's events (`InitApply`, `Apply` and `Delete`) are applied to
+  the target's `Store` and broadcast to subscribers on an `async-broadcast`
+  channel, which applies backpressure rather than dropping events when a
+  subscriber is slow (the same choice kube makes);
+- a subscriber that joins after the store is warm (a controller started
+  when this replica wins the leader lease) first receives the store's
+  current contents, then the live events, so no object is missed at
+  startup; an object may be delivered twice, which a reconcile tolerates.
+
+This needs kube's `unstable-runtime-stream-control` feature, and we enable
+it instead of `unstable-runtime-subscribe`. Constraints:
 
 - It is the only `unstable-runtime*` feature enabled.
-- Only the SDK's watch module touches those APIs; controllers see
-  `WatchSet`'s own types. If the upstream API changes or is withdrawn, the
-  fix is confined to one module.
+- Only the SDK's watch module and the controller wiring that consumes its
+  streams touch those APIs. If the upstream API changes or is withdrawn,
+  the fix is confined there.
 - kube stays pinned to the 4.2 line; a kube minor bump is a reviewed change
   that re-runs the watch-layer tests.
+- `async-broadcast` (already in the tree through kube-runtime) becomes a
+  direct dependency.
+
+Every cached kind is watched with `Config::default()`. Some controllers
+used `any_semantic()` for their own primary watch; that setting only lets
+the initial LIST be served from any resource version and never filtered
+events, so one strict setting per kind loses nothing.
 
 Per-namespace sharding stays: each target keeps its own `Store`, for the
 reason `MultiStore` documents (merging namespace watches into one writer
 corrupts it). `ClusterBind9Provider` keeps one cluster-wide watch in every
 scope mode.
 
-A shared stream that ends is restarted by the `WatchSet` with backoff and
+A watcher whose stream ends is restarted by the `WatchSet` with backoff and
 counted in a per-kind metric, rather than ending silently as a spawned
 reflector task does today.
 
@@ -218,8 +262,8 @@ period without a reconcile storm.
 - Crate boundaries enforce the layering; a back-edge becomes a compile error.
 - An edit to `bindy-api` no longer rebuilds Scout and bootstrap through the
   controllers, and `crdgen` / `crddoc` build without the controllers.
-- About 4× fewer watch connections against the API server in cluster-wide
-  mode, and one cache per kind, so controllers cannot act on two views of
+- About 3× fewer watch connections against the API server in cluster-wide
+  mode (19 instead of about 57), and one cache per kind, so controllers cannot act on two views of
   the same object.
 - Reconcile work that runs outside the controller (the spawned mapper task)
   and the timestamp rate limiter disappear; SIGTERM and lease loss drain
@@ -235,6 +279,10 @@ period without a reconcile storm.
   subscriber's view of that kind goes stale. Mitigated by the restart with
   backoff and a per-kind metric; today a dead reflector already goes stale
   silently.
+- A slow subscriber slows every subscriber of that kind: the broadcast
+  applies backpressure rather than dropping events. Controllers poll their
+  streams continuously, so this only bites if a mapper blocks; mappers are
+  required to be cheap (§5).
 - Clean builds get somewhat slower (more crates, more linking); incremental
   builds get faster.
 - Ten crates mean more `Cargo.toml` files. `[workspace.dependencies]` keeps

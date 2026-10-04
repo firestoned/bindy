@@ -434,52 +434,78 @@ Benefits:
 
 ## Resource Watching (Event-Driven Architecture)
 
-The operator uses Kubernetes watch API with **cross-resource watches** for immediate event-driven reconciliation:
+Bindy watches the Kubernetes API through one **shared watch layer**
+(`WatchSet`, in `bindy-controller-sdk`; [ADR-0009](https://github.com/firestoned/bindy/blob/main/docs/adr/0009-workspace-crate-split-and-shared-watch-layer.md) §3).
+Each cached kind is watched **once per namespace target** (once in total in
+the default cluster-wide mode), and every controller that reacts to that kind
+subscribes to the same watch and reads the same cache.
+
+| Kind | Watched by the WatchSet | Subscribed by |
+|---|---|---|
+| `ClusterBind9Provider` (cluster-scoped, always one watch) | yes | its controller, `Bind9Instance` |
+| `Bind9Cluster` | yes | its controller, `ClusterBind9Provider` (owns), `Bind9Instance` |
+| `Bind9Instance` | yes | its controller, `Bind9Cluster` (owns), `DNSZone` |
+| `Deployment` (only those owned by a `Bind9Instance`) | yes | `Bind9Instance` (owns) |
+| `DNSZone` | yes | its controller, `Bind9Instance`, every record controller |
+| The 9 record kinds | yes | their controller, `DNSZone` |
+| `Endpoints` of bindy's Services (label `app.kubernetes.io/part-of=bindy`, filtered by the API server) | yes | `DNSZone` (all namespaces) |
+| Owned `Secret`, `ConfigMap`, `ServiceAccount`, `Service` | no, an ordinary watch | `Bind9Instance` (owns) |
+
+Kinds in the last row are watched by one controller only and never cached;
+sharing them would save nothing and would put every `Secret` in the
+operator's memory.
+
+A zone can be served by a `Bind9Instance` in another namespace
+(cross-namespace targeting). In namespace-restricted mode each namespace's
+zone controller therefore subscribes to `Bind9Instance` and `Endpoints`
+events from every watched namespace, at no extra watch cost.
+
+How a shared watch behaves:
+
+- Every event (create, update, **delete**) is applied to the cache first and
+  then delivered to each subscribed controller. A slow controller slows its
+  kind's watch rather than losing events.
+- A controller that starts after the cache is warm (for example when this
+  replica wins the leader lease) first receives everything already in the
+  cache, so existing objects are reconciled at startup.
+- A watch that ends is restarted with backoff. The metrics
+  `bindy_firestoned_io_watch_events_total`, `_watch_errors_total`,
+  `_watch_restarts_total` and `_watch_last_event_timestamp_seconds` (labels
+  `kind`, `namespace`) show each watch's health; a timestamp that stops
+  advancing while objects change means that kind's cache is stale.
+
+In the default cluster-wide mode the operator holds 19 watch connections (15
+shared, 4 ordinary). In namespace-restricted mode the namespaced ones are
+repeated per watched namespace.
 
 ### DNSZone Operator Watches
 
-The DNSZone operator watches **all 8 record types** to react immediately when records are created/updated:
+The zone controller reacts to its own `DNSZone`s, to `Bind9Instance` label
+changes (zones select instances by label), to `Endpoints` (a replaced BIND9
+pod has lost its zones), and to every record kind (zones select records by
+label):
 
 ```rust
-// DNSZone operator with record watches
-let operator = Operator::new(zones_api, default_watcher_config());
-let zone_store = operator.store();
-
-// Clone store for each watch (8 record types)
-let zone_store_1 = zone_store.clone();
-let zone_store_2 = zone_store.clone();
-// ... (8 total)
-
-operator
-    .watches(arecord_api, default_watcher_config(), move |record| {
-        // When ARecord changes, trigger zone reconciliation
-        let namespace = record.namespace()?;
-        zone_store_1.state().iter()
-            .find(|zone| zone.namespace() == namespace)
-            .map(|zone| ObjectRef::new(&zone.name_any()).within(&namespace))
-    })
-    .watches(aaaarecord_api, default_watcher_config(), move |record| {
-        // When AAAARecord changes, trigger zone reconciliation
-        zone_store_2.state().iter()...
-    })
-    // ... 6 more watches for TXT, CNAME, MX, NS, SRV, CAA
-    .run(reconcile_zone, error_policy, ctx)
-    .await
+Controller::for_stream(ws.subscribe::<DNSZone>(target), ws.store::<DNSZone>(target))
+    .watches_stream(ws.subscribe_all::<Endpoints>(), map_endpoints_to_zones)
+    .watches_stream(ws.subscribe_all::<Bind9Instance>(), map_instance_to_zones)
+    .watches_stream(ws.subscribe::<ARecord>(target), map_record_to_zones)
+    // ... the other 8 record kinds
+    .run(reconcile_dnszone_wrapper, error_policy, ctx)
 ```
 
 ### Record Operator Watches
 
-Record operators watch for **status changes** to react when DNSZone sets `status.zoneRef`:
+Each record controller reacts to its own records and to `DNSZone` status
+changes (a zone listing the record as not yet configured):
 
 ```rust
-// Record operator watches ALL changes (spec + status)
-Operator::new(arecord_api, default_watcher_config())
-    .run(reconcile_arecord, error_policy, ctx)
-    .await
-
-// Previously used semantic_watcher_config() (spec only)
-// Now uses default_watcher_config() (spec + status)
+Controller::for_stream(ws.subscribe::<ARecord>(target), ws.store::<ARecord>(target))
+    .watches_stream(ws.subscribe::<DNSZone>(target), map_zone_to_pending_records)
+    .run(reconcile_wrapper, error_policy, ctx)
 ```
+
+Status-only changes are delivered: the shared watch forwards every change.
 
 ### Watch Event Flow
 

@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: MIT
 
-.PHONY: pin-release-images help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny cargo-machete gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh tls-transport-test ci-e2e e2e-image e2e-image-load e2e-lifecycle e2e-idempotency e2e-restart e2e-rust e2e-multi-tenancy e2e-regression e2e-zone-spread e2e-tls e2e-all e2e-clean calm-validate calm-docs calm-docs-check sbom-generate sbom-stage sbom-annotate sbom-check provenance-subjects slsa-verifier-install verify-provenance verify-image-provenance verify-sbom-attestation image-digest-record image-digests-matrix
+.PHONY: kind-kubeconfig pin-release-images help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny cargo-machete gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh tls-transport-test ci-e2e e2e-image e2e-image-load e2e-lifecycle e2e-idempotency e2e-restart e2e-rust e2e-multi-tenancy e2e-regression e2e-zone-spread e2e-tls e2e-all e2e-clean calm-validate calm-docs calm-docs-check sbom-generate sbom-stage sbom-annotate sbom-check provenance-subjects slsa-verifier-install verify-provenance verify-image-provenance verify-sbom-attestation image-digest-record image-digests-matrix
 
 # Detect host architecture and derive the matching Linux cross-compilation target.
 # `uname -m` reports arm64 on Apple Silicon macOS but aarch64 on Linux ARM, so
@@ -42,6 +42,22 @@ KIND_CLUSTER ?= bindy
 KIND_CONTEXT ?= "kind-$(KIND_CLUSTER)"
 KIND_SCOUT_CLUSTER ?= scout
 KIND_SCOUT_CONTEXT ?= "kind-$(KIND_SCOUT_CLUSTER)"
+
+# Kind clusters keep their credentials in a dedicated kubeconfig, never in the
+# file your shell's KUBECONFIG points at: `kind create cluster` merges into
+# that file and switches its current context, which once put a kind context
+# into a production kubeconfig. Use it yourself with
+# `export KUBECONFIG=$(KIND_KUBECONFIG)` (or `--kubeconfig`).
+# CI runners have no other kubeconfig to protect, and the e2e workflow's
+# diagnostics steps call kubectl directly, so CI keeps the default path.
+KIND_KUBECONFIG ?= $(if $(CI),$(HOME)/.kube/config,$(HOME)/.kube/kind-bindy.yaml)
+
+# Every target that creates, loads into, tests against or deletes a kind
+# cluster runs with KUBECONFIG pointed at KIND_KUBECONFIG; the scripts those
+# recipes call (deploy/kind-*.sh, tests/*.sh) inherit it.
+kind-% e2e-%: export KUBECONFIG = $(KIND_KUBECONFIG)
+docker-build-kind docker-build-no-cache-kind regression-test regression-test-fresh \
+zone-spread-test tls-transport-test ci-e2e: export KUBECONFIG = $(KIND_KUBECONFIG)
 
 # Security tool versions
 GITLEAKS_VERSION ?= 8.21.2
@@ -788,8 +804,12 @@ run-local: ## Run operator locally
 	RUST_LOG=info cargo run --release --bin bindy
 
 # Kind cluster targets
-kind-create: ## Create Kind cluster for testing
+kind-create: ## Create Kind cluster for testing (credentials in KIND_KUBECONFIG)
 	kind create cluster --config deploy/kind-config.yaml --name $(KIND_CLUSTER)
+	@echo "✓ kind credentials written to $(KIND_KUBECONFIG); use: export KUBECONFIG=$(KIND_KUBECONFIG)"
+
+kind-kubeconfig: ## Print the export line for the kind clusters' dedicated kubeconfig
+	@echo "export KUBECONFIG=$(KIND_KUBECONFIG)"
 
 kind-deploy: ## Deploy to Kind cluster (creates cluster, builds, and deploys)
 	./deploy/kind-deploy.sh
@@ -1029,6 +1049,8 @@ kind-create-scout: ## Create a second Kind cluster and install Scout (child clus
 	@echo ""
 	@echo "✓ Scout cluster '$(KIND_SCOUT_CLUSTER)' is ready"
 	@echo "  kubectl --context $(KIND_SCOUT_CONTEXT) get pods -n $(NAMESPACE)"
+	@echo ""
+	@echo "  (kind credentials are in $(KIND_KUBECONFIG): export KUBECONFIG=$(KIND_KUBECONFIG))"
 	@echo ""
 	@echo "  To connect Scout to the Queen Bee cluster (multi-cluster mode):"
 	@echo "    kubectl config use-context $(KIND_CONTEXT)"

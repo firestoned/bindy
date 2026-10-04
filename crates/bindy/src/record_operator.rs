@@ -17,7 +17,6 @@ use kube::api::Api;
 use kube::core::NamespaceResourceScope;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer;
-use kube::runtime::watcher::Config as WatcherConfig;
 use kube::runtime::Controller;
 use kube::{Resource, ResourceExt};
 use serde::de::DeserializeOwned;
@@ -123,19 +122,16 @@ async fn run_generic_record_controller<T>(
         "Starting record controller"
     );
 
-    let client = context.client.clone();
-    let api = crate::namespace_scope::scoped_namespaced_api::<T>(&client, target.as_deref());
-    let dnszone_api =
-        crate::namespace_scope::scoped_namespaced_api::<DNSZone>(&client, target.as_deref());
-
-    // Configure controller to watch for ALL changes including status updates
-    let watcher_config = WatcherConfig::default().any_semantic();
+    // The record kind and DNSZone streams come from the shared WatchSet, which
+    // forwards every change, status updates included (ADR-0009 §3).
+    let ws = context.watch.clone();
+    let target = target.as_deref();
 
     // Create controller context tuple
     let ctx = Arc::new((context.clone(), bind9_manager));
 
-    Controller::new(api, watcher_config.clone())
-        .watches(dnszone_api, watcher_config, |zone| {
+    Controller::for_stream(ws.subscribe::<T>(target), ws.store::<T>(target))
+        .watches_stream(ws.subscribe::<DNSZone>(target), |zone| {
             // When DNSZone.status.records[] changes, trigger reconciliation
             // for records that have lastReconciledAt == None (need configuration).
             let Some(namespace) = zone.namespace() else {
