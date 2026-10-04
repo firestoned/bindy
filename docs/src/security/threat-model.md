@@ -1,12 +1,35 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.8
+**Version:** 1.10
 **Last Updated:** 2026-10-04
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
 
-> Last full pass 2026-10-03, against ADR-0001 … ADR-0010 (ADR-0006 as amended;
-> ADR-0009 at Phase A: build layout only, no runtime change).
+> Last full pass 2026-10-04, against ADR-0001 … ADR-0012 (ADR-0006 as amended;
+> ADR-0009 through Phase B step B2: shared watch layer, targeted v1.8 note).
+>
+> **Revision note (v1.10):** Pass for ADR-0012 (shared DNSSEC keys from a
+> Secret). New asset **DNSSEC Private Keys**; Boundary 4 gains the
+> `dnssec-keys-init` init container, which is the only container that mounts
+> the key Secret (read-only, read-only root filesystem, restricted context),
+> copying it into a memory-backed `emptyDir` that `named` signs from. New
+> threat **I5** (DNSSEC private key disclosure), mapped to the H2 Secret-name
+> allow-list, the init-only mount and the tmpfs key directory. **M-14**
+> amended: shared keys require `unlimited` lifetimes, enforced by a CRD CEL
+> rule plus a runtime check. New accepted risk 9: Secret-supplied keys never
+> roll automatically. No new actor, RBAC grant or network path: the operator
+> still never reads the Secret (the kubelet mounts it). All other sections
+> re-walked unchanged.
+>
+> **Revision note (v1.9):** Pass for ADR-0011 (CBOM per release, roadmap 28
+> Phase 0). New implemented mitigation **M-39** (curated CycloneDX 1.6
+> cryptographic inventory, lockfile-stamped, PR-gated, shipped and
+> provenance-bound per release) and planned mitigation **M-40** (hybrid
+> post-quantum key exchange on control-plane TLS, roadmap 28 Phase 2). New
+> accepted risk 8: quantum-capable adversary / harvest-now-decrypt-later,
+> with the full quantum modeling pass deferred to roadmap 28 Phase 5. The
+> CBOM adds no runtime component, actor or trust boundary: it is a release
+> artifact on the ADR-0010 rails; all other sections re-walked unchanged.
 >
 > **Revision note (v1.8):** Targeted update for ADR-0009 Phase B step B2
 > (shared watch layer); not a full pass, which is due when ADR-0009 is fully
@@ -268,6 +291,7 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
 |-------|-------------|-----------------|-----------|--------------|-------|
 | **DNS Zone Data** | Authoritative DNS records for all managed domains | Medium | **Critical** | **Critical** | Teams/Platform |
 | **RNDC Keys** | Symmetric HMAC keys for BIND9 control | **Critical** | **Critical** | High | Security Team |
+| **DNSSEC Private Keys** | KSK/ZSK private keys signing a zone (user Secret with `keysFrom.secretRef`, or generated in the pod); possession forges validly signed answers until the DS is withdrawn | **Critical** | **Critical** | High | Zone owner |
 | **Operator Binary** | Signed container image with operator logic | Medium | **Critical** | High | Development Team |
 | **BIND9 Configuration** | named.conf, zone configs | Low | **Critical** | High | Platform Team |
 | **Kubernetes API Access** | ServiceAccount token for operator | **Critical** | **Critical** | **Critical** | Platform Team |
@@ -356,10 +380,18 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
   the standard DNS port 53 and forwards to the container's 5353.
 - Exposed to internet (Service port 53 → container port 5353)
 - Configuration is managed by operator (read-only)
+- With DNSSEC signing, `named` holds the zone's private keys in its key
+  directory by design. With `keysFrom.secretRef` (ADR-0012) the key Secret
+  is mounted **only** into the `dnssec-keys-init` init container (read-only
+  mount, read-only root filesystem, same restricted context as `named`),
+  which copies the keys into a memory-backed `emptyDir`; `named` never
+  mounts the Secret (`build_dnssec_keys_init_container`,
+  `crates/bindy/src/bind9_resources.rs`).
 
 **Threats if Compromised:**
 - Attacker can serve malicious DNS responses
-- Attacker can exfiltrate zone data
+- Attacker can exfiltrate zone data, and the zone's DNSSEC private keys
+  when the pod signs (see I5)
 - Attacker can pivot to other cluster resources (if network policies weak) —
   a reference `NetworkPolicy` now exists (`deploy/pod-hardening.yaml`,
   ingress/egress scoped to 5353 for peer transfers and 53 for CoreDNS) but is
@@ -810,6 +842,40 @@ before this was reported, but it had not been implemented.
 **Residual Risk:** **LOW** (down from HIGH). The blast radius of a Scout
 compromise for Secret confidentiality is now bounded to the single Phase 2
 kubeconfig Secret, in deployments that use Phase 2 mode at all.
+
+---
+
+#### I5: DNSSEC Private Key Disclosure
+
+**Threat:** The zone's KSK/ZSK private keys leak, letting an attacker forge
+validly signed answers for the zone (Spoofing as a consequence).
+
+**Impact:** CRITICAL (for a zone whose DS is published at its parent)
+**Likelihood:** LOW
+
+**Attack Scenario:**
+1. A tenant names another tenant's Secret, or an arbitrary Secret, as
+   `keysFrom.secretRef`, to get it mounted into a pod they control the config of
+2. Or an attacker with node access reads key files from the node's disk
+3. Or an attacker who compromises `named` reads its key directory
+
+**Mitigations:**
+- ✅ H2 allow-list: the `secretRef` name must start with `bindy-`
+  (`validate_dnssec_key_secret_name`, `crates/bindy/src/safe_volume.rs`), and
+  a pod volume can only reference a Secret in its own namespace
+- ✅ The Secret is mounted only into the `dnssec-keys-init` init container,
+  never into `named` or the bindcar sidecar (ADR-0012,
+  `crates/bindy/src/bind9_resources.rs`)
+- ✅ The key directory is a `medium: Memory` `emptyDir`: key copies stay off
+  the node's disk; copied files are `0600`, the Secret files `0440` to the
+  bind group
+- ✅ The operator never reads key material: it has no RBAC on the key Secret,
+  and DS extraction reads only public DNSKEYs (M-14)
+- ❌ `named` itself holds the keys; a `named` compromise discloses them. This
+  is inherent to online signing (offline signing is out of scope)
+
+**Residual Risk:** **LOW** with the controls above; a `named` compromise
+remains the path, as it is for zone data.
 
 ---
 
@@ -1412,6 +1478,7 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-33 | **SLSA v1.0 Build L3 provenance** (2026-10-03, ADR-0010): `slsa-github-generator` generic generator over every release tarball, install manifest and SBOM, and its container generator for each release image (pushed to GHCR). Provenance is generated and signed outside the build jobs | T2, Scenario 3 (forged or substituted artifacts) | ✅ `build.yaml` `slsa-provenance`, `slsa-image-provenance`; `make verify-provenance`, `make verify-image-provenance` |
 | M-34 | **SBOM quality gate and attestation** (2026-10-03, ADR-0010): `scripts/sbom.sh check` fails the build unless an SBOM meets the NTIA minimum elements; each SBOM is a Sigstore-signed `actions/attest-sbom` attestation bound to its tarball or image digest | T2 (SBOM swapped or edited), Scenario 3 | ✅ `make sbom-check`, `make verify-sbom-attestation` |
 | M-35 | **Anchored signer identity** (2026-10-03): verification targets and docs accept only `build.yaml@refs/tags/*` (and `release.yaml` for releases before v0.6.0, `rebuild-release-images.yaml@refs/heads/main` for rebuilt images), not a `https://github.com/firestoned/bindy` prefix that a lookalike repository would also match | T2 (spoofed signer) | ✅ `Makefile` `SIGNER_IDENTITY_REGEXP` |
+| M-39 | **Cryptographic inventory (CBOM) per release** (2026-10-04, ADR-0011): a curated CycloneDX 1.6 CBOM declares every algorithm bindy ships, configures or depends on, with its quantum exposure. `scripts/cbom.sh` stamps crypto-library versions from `Cargo.lock` (a dropped or renamed crypto dependency fails the build) and gates the document on every PR; it ships as a release asset covered by the SLSA provenance subjects | T2 (silent crypto dependency drift); crypto-agility evidence for the quantum transition (roadmap 28) | ✅ `make cbom-stage`, `build.yaml` `cbom` job required by `ci-gate` |
 | M-10 | Chainguard zero-CVE images | I3 (CVE disclosure) | ✅ Container security |
 | M-21 | **B-5 Secret RBAC split** (2026-06-30): operator's cluster-wide `ClusterRole` is read-only on Secrets; mutating verbs moved to a namespaced Role bound only in the operator's own namespace | T3 (Secret tampering), E2 (privilege escalation) | ✅ RBAC |
 | M-22 | **Namespace-scoped operator mode** (opt-in via `BINDY_WATCH_NAMESPACES`): every watch is built per-namespace and the operator needs only Role/RoleBinding in each watched namespace | E2, R2, I1 | ✅ **Implemented** (opt-in; default remains cluster-wide). Eliminates cluster-wide Secret read (H3) and cluster-wide workload write (C2) — verified with `kubectl auth can-i`. A slim ClusterRole remains for `clusterbind9providers`, the only cluster-scoped bindy kind, so this does **not** eliminate cluster-wide access *entirely*. See `deploy/operator/rbac/namespaced/README.md` |
@@ -1432,7 +1499,7 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-11 | Audit log retention policy | R1 (non-repudiation) | HIGH | H-2 |
 | M-12 | Secret access audit trail | R2 (secret access), I1 (disclosure) | HIGH | H-3 |
 | ~~M-13~~ | ~~Admission webhooks~~ **DONE — see M-24** | T1 (DNS tampering) | — | Completed |
-| M-14 | **DNSSEC signing** (roadmap 07 complete 2026-09-27, ADR-0006): opt-in `dnssec-policy` zone signing (Secret-backed / auto-generated keys — key Secret names validated against the allow-list prefix, see H2), DS records derived from the zone's KSK DNSKEYs (SHA-256, RFC 8624) and published in `DNSZone.status.dnssec`. DS/keyTag are public data by design; no key material reaches status or logs. Adds one read-only in-cluster query path, operator → `named` :5353 (DNSKEY only, modeled in CALM) | T1 (tampering), Scenario 2 (cache poisoning) | ✅ Opt-in — effective once DS is published in the parent zone |
+| M-14 | **DNSSEC signing** (roadmap 07 complete 2026-09-27, ADR-0006): opt-in `dnssec-policy` zone signing (Secret-backed / auto-generated keys; key Secret names validated against the allow-list prefix, see H2; ADR-0012: Secret keys copied by an init container into a tmpfs key directory, shared by every primary, `unlimited` lifetimes enforced by CRD CEL and at render), DS records derived from the zone's KSK DNSKEYs (SHA-256, RFC 8624) and published in `DNSZone.status.dnssec`. DS/keyTag are public data by design; no key material reaches status or logs. Adds one read-only in-cluster query path, operator → `named` :5353 (DNSKEY only, modeled in CALM) | T1 (tampering), Scenario 2 (cache poisoning) | ✅ Opt-in: effective once DS is published in the parent zone |
 | M-15 | Image digest pinning: **partial**. Release `install.yaml`/`scout.yaml` pin the operator image by digest (P2-8); operand images (BIND9, bindcar) remain tag-referenced | T2 (image tampering) | MEDIUM | M-1 |
 | M-16 | Rate limiting (operator) | D2 (operator exhaustion) | MEDIUM | M-3 |
 | M-17 | Network policies — a reference manifest now exists (`deploy/pod-hardening.yaml`, ingress/egress scoped to container port 5353) but is **not applied by any install target**; remains opt-in/manual | S1 (API spoofing), E1 (lateral movement), T4/E4 (Scout egress) | LOW | L-1 |
@@ -1445,6 +1512,7 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-28 | Field-level admission policy constraining what Scout may `patch` on Ingress/Service/route objects (e.g. only finalizer/annotation fields) | T4 | MEDIUM | New (v1.1) |
 | M-36 | Require at least one approving review (or a `CODEOWNERS`-backed review) on `main` and remove the always-on admin bypass, so no single account can land a change | S3, Scenario 3 | HIGH | New (v1.7) |
 | M-37 | Automated reproducibility check (build a release twice, compare digests) | T2, Scenario 3 | LOW | ADR-0010 follow-up |
+| M-40 | Hybrid post-quantum key exchange (`X25519MLKEM768`) on control-plane TLS: the HNDL-exposed channels carrying TSIG/RNDC secrets. Needs a crypto-provider ADR (ring has no ML-KEM) coordinated with bindcar | I1/I3 (harvest-now-decrypt-later capture of key material in transit) | MEDIUM | Roadmap 28 Phase 2 |
 | M-29 | Revisit Dependabot auto-merge: consider requiring a human approval step for patch/minor merges, or expand e2e coverage to compensate | E3 (dependency exploit via unreviewed auto-merge) | MEDIUM | New (v1.1) |
 
 ---
@@ -1484,6 +1552,10 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 6. **Single-person change path (S3)** - The `main` rulesets require signed commits, PRs and passing checks but no approving review, and organization admins can bypass them. A compromised maintainer account with its signing key can land a change unreviewed; release provenance would faithfully attest it. Planned: M-36.
 
 7. **Shared watch layer (ADR-0009 §3)** - One watch per kind now feeds every controller, so a stalled watch leaves every controller of that kind acting on a stale cache until it recovers, and one slow controller slows its kind's watch for the others (backpressure). It is built on kube-runtime's `unstable-runtime-stream-control` feature, pinned to the 4.2 line. Mitigated by restart with backoff and per-kind staleness metrics (M-38); alert on `watch_last_event_timestamp_seconds`. Revisit when kube stabilises the stream APIs, or before any kube minor upgrade.
+
+8. **Quantum-capable adversary (HNDL)** - Control-plane TLS key exchange is classical (X25519/ECDHE), so traffic recorded today, including TSIG/RNDC secrets in transit, is decryptable once a cryptographically relevant quantum computer exists; DNSSEC and release signatures additionally become forgeable at that point. Accepted for now: the inventory is published per release (M-39, ADR-0011), hybrid key exchange is planned (M-40, roadmap 28 Phase 2), and the signature surfaces are blocked on upstream standardization (IETF/BIND9, Sigstore). *Revisit when:* roadmap 28's six-month watch cadence fires (first 2027-04) or any upstream ships PQC support. A full quantum-adversary modeling pass across every trust boundary is roadmap 28 Phase 5.
+
+9. **Secret-supplied DNSSEC keys never roll (ADR-0012)** - With `keysFrom.secretRef`, KSK and ZSK lifetimes are pinned to `unlimited` so every primary keeps the same key set; automatic rollover would make each pod generate a different successor. A key therefore stays in use until the operator rotates it by hand (new key into the Secret, pods restarted), which lengthens the exposure window of a key that leaked unnoticed. Editing the Secret also does not roll the pods by itself. Accepted: the alternative was a DNSKEY RRset that differs per pod, which breaks validation outright. *Revisit when:* coordinated rollover lands (one signer with transfers to the other primaries, or operator-generated successors written into the Secret), or a Secret content hash on the pod template.
 
 ---
 
@@ -1552,7 +1624,7 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 |------------------|-------------|---------|---------------|
 | **Access Control** | RBAC least privilege (main operator), signed commits, B-5 Secret RBAC split, namespace-scoped operator mode (opt-in), 16 `ValidatingAdmissionPolicy` policies, Scout namespace whitelisting (opt-in, M-30), **Scout Secret RBAC scoped (M-25, fixed 2026-07-19)** | Field-level admission for Scout patches (M-28), Scout egress NetworkPolicy (M-27) | MEDIUM — driven by Scout's remaining cluster-wide `patch`/`update` on Ingress/Service/route (T4); the formerly-HIGH Secret-read risk (I4/E4) is resolved |
 | **Data Protection** | Secrets encrypted, AXFR restricted, DNSSEC zone signing (opt-in, M-14/ADR-0006) | TSIG for AXFR; DNSSEC-by-default | MEDIUM |
-| **Supply Chain** | Signed commits/images, SLSA Build L3 provenance for all release artifacts (M-33), NTIA-gated SBOM attestations (M-34), anchored signer identity (M-35), `--locked` release builds, vuln scanning | Required approving reviews (M-36); operand image digest pinning (M-15); reproducibility check (M-37); revisit Dependabot auto-merge human-review gap (M-29) | LOW-MEDIUM (no required review on `main`, see S3; automated auto-merge removed a manual checkpoint, see E3) |
+| **Supply Chain** | Signed commits/images, SLSA Build L3 provenance for all release artifacts (M-33), NTIA-gated SBOM attestations (M-34), anchored signer identity (M-35), gated per-release crypto inventory (M-39), `--locked` release builds, vuln scanning | Required approving reviews (M-36); operand image digest pinning (M-15); reproducibility check (M-37); hybrid PQ key exchange (M-40); revisit Dependabot auto-merge human-review gap (M-29) | LOW-MEDIUM (no required review on `main`, see S3; automated auto-merge removed a manual checkpoint, see E3; classical key exchange is HNDL-exposed, see accepted risk 8) |
 | **Monitoring** | Kubernetes audit logs, vuln scanning | Audit retention policy, secret access trail | MEDIUM |
 | **Resilience** | Rate limiting, resource limits | Edge DDoS protection, HPA | MEDIUM |
 | **Container Security** | Non-root, read-only FS, Pod Security Standards, unprivileged DNS port + zero added capabilities (M-23) | Network policies (reference manifest exists, not auto-applied — M-17) | LOW |

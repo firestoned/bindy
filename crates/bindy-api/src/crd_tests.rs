@@ -1322,3 +1322,41 @@ mod dnssec_param_schema_tests {
         }
     }
 }
+
+/// ADR-0012: keys supplied from a Secret are shared by every primary, so no
+/// pod may roll them on its own schedule. The CRD rejects a finite KSK or ZSK
+/// lifetime next to `keysFrom.secretRef` at admission.
+#[cfg(test)]
+mod dnssec_shared_keys_schema_tests {
+    use crate::crd::Bind9Cluster;
+    use kube::CustomResourceExt;
+
+    fn signing_rules() -> Vec<String> {
+        let crd = serde_json::to_value(Bind9Cluster::crd()).expect("CRD serializes to JSON");
+        crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"]
+            ["global"]["properties"]["dnssec"]["properties"]["signing"]["x-kubernetes-validations"]
+            .as_array()
+            .map(|rules| {
+                rules
+                    .iter()
+                    .filter_map(|r| r["rule"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn secret_ref_requires_unlimited_lifetimes() {
+        let rules = signing_rules();
+        let rule = rules
+            .iter()
+            .find(|r| r.contains("secretRef"))
+            .unwrap_or_else(|| panic!("no secretRef lifetime rule in {rules:?}"));
+        for field in ["kskLifetime", "zskLifetime"] {
+            assert!(
+                rule.contains(&format!("self.{field} == 'unlimited'")),
+                "{field} must be pinned to unlimited: {rule}"
+            );
+        }
+    }
+}

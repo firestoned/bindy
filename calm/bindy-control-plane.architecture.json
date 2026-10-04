@@ -76,6 +76,18 @@
       "development-language": "Rust"
     },
     {
+      "unique-id": "dnssec-keys-init",
+      "node-type": "service",
+      "name": "DNSSEC key init container",
+      "description": "Init container 'dnssec-keys-init' (BIND9 image, read-only root filesystem). Present only with keysFrom.secretRef: copies the shared DNSSEC keys from the Secret into the writable key directory, restoring their BIND names (ADR-0012)."
+    },
+    {
+      "unique-id": "dnssec-key-secret",
+      "node-type": "data-asset",
+      "name": "DNSSEC key Secret",
+      "description": "User-supplied Secret (name prefix bindy-) holding the zone's KSK/ZSK files as K<zone>._<alg>_<id>.key|private|state; shared by every primary (ADR-0012)."
+    },
+    {
       "unique-id": "bind9-svc",
       "node-type": "service",
       "name": "BIND9 Service",
@@ -101,11 +113,11 @@
     },
     {
       "unique-id": "compose-pod",
-      "description": "The operand pod runs named plus the bindcar sidecar",
+      "description": "The operand pod runs named plus the bindcar sidecar, after the DNSSEC key init container when keys come from a Secret",
       "relationship-type": {
         "composed-of": {
           "container": "bind9-pod",
-          "nodes": ["named", "bindcar"]
+          "nodes": ["named", "bindcar", "dnssec-keys-init"]
         }
       }
     },
@@ -239,6 +251,26 @@
       "relationship-type": {
         "connects": {
           "source": { "node": "bindcar" },
+          "destination": { "node": "named" }
+        }
+      }
+    },
+    {
+      "unique-id": "init-reads-dnssec-keys",
+      "description": "reads the shared DNSSEC keys (Secret volume, read-only, init container only) - ADR-0012",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "dnssec-keys-init" },
+          "destination": { "node": "dnssec-key-secret" }
+        }
+      }
+    },
+    {
+      "unique-id": "init-seeds-named-keys",
+      "description": "copies the keys into named's writable key-directory (emptyDir) before named starts - ADR-0012",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "dnssec-keys-init" },
           "destination": { "node": "named" }
         }
       }

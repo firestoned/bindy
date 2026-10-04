@@ -3176,38 +3176,286 @@ mod tests {
 
         let (volumes, volume_mounts) = build_dnssec_key_volumes(Some(&config), None);
 
+        // ADR-0012: the Secret is a read-only source for the init container;
+        // named gets a writable emptyDir copy at the key directory.
+        assert_eq!(volumes.len(), 2, "key directory + Secret source");
+        let keys = volumes
+            .iter()
+            .find(|v| v.name == "dnssec-keys")
+            .expect("writable key directory volume");
         assert_eq!(
-            volumes.len(),
-            1,
-            "Should have 1 volume for user-supplied keys"
+            keys.empty_dir.as_ref().and_then(|e| e.medium.as_deref()),
+            Some("Memory"),
+            "writable, and the private key copies stay off the node's disk"
         );
-        assert_eq!(
-            volume_mounts.len(),
-            1,
-            "Should have 1 volume mount for user-supplied keys"
-        );
+        assert!(keys.secret.is_none(), "named must not see the Secret");
 
-        // Verify volume configuration
-        let volume = &volumes[0];
-        assert_eq!(volume.name, "dnssec-keys");
-        assert!(volume.secret.is_some(), "Volume should be backed by Secret");
-        let secret = volume.secret.as_ref().unwrap();
+        let source = volumes
+            .iter()
+            .find(|v| v.name == "dnssec-keys-source")
+            .expect("Secret source volume");
+        let secret = source.secret.as_ref().expect("source is the Secret");
         assert_eq!(secret.secret_name, Some("my-dnssec-keys".to_string()));
         assert_eq!(
             secret.default_mode,
-            Some(0o600),
-            "Secret should have secure permissions"
+            Some(0o440),
+            "readable by the bind group (fsGroup), nobody else"
         );
 
-        // Verify volume mount configuration
+        // named mounts only the writable copy, never the Secret.
+        assert_eq!(volume_mounts.len(), 1);
         let mount = &volume_mounts[0];
         assert_eq!(mount.name, "dnssec-keys");
         assert_eq!(mount.mount_path, "/var/cache/bind/keys");
-        assert_eq!(
-            mount.read_only,
-            Some(false),
-            "Mount should be writable for .state files"
+        assert_ne!(mount.read_only, Some(true));
+    }
+
+    fn shared_keys_config(ksk: Option<&str>, zsk: Option<&str>) -> Bind9Config {
+        Bind9Config {
+            rate_limit: None,
+            recursion: Some(false),
+            allow_query: None,
+            allow_transfer: None,
+            dnssec: Some(DNSSECConfig {
+                validation: Some(true),
+                signing: Some(crate::crd::DNSSECSigningConfig {
+                    enabled: true,
+                    policy: Some("core-dns".into()),
+                    algorithm: None,
+                    ksk_lifetime: ksk.map(str::to_string),
+                    zsk_lifetime: zsk.map(str::to_string),
+                    nsec3: None,
+                    nsec3_salt: None,
+                    nsec3_iterations: None,
+                    keys_from: Some(crate::crd::DNSSECKeySource {
+                        secret_ref: Some(crate::crd::SecretReference {
+                            name: "bindy-dnssec-keys".to_string(),
+                            namespace: None,
+                        }),
+                        persistent_volume: None,
+                    }),
+                    auto_generate: None,
+                    export_to_secret: None,
+                }),
+            }),
+            forwarders: None,
+            listen_on: None,
+            listen_on_v6: None,
+            rndc_secret_ref: None,
+            bindcar_config: None,
+        }
+    }
+
+    #[test]
+    fn test_dnssec_keys_init_container_only_for_secret_ref() {
+        use crate::bind9_resources::build_dnssec_keys_init_container;
+
+        assert!(build_dnssec_keys_init_container(None, None, "img", "IfNotPresent").is_none());
+
+        let mut generated = shared_keys_config(None, None);
+        if let Some(signing) = generated.dnssec.as_mut().and_then(|d| d.signing.as_mut()) {
+            signing.keys_from = None;
+        }
+        assert!(
+            build_dnssec_keys_init_container(Some(&generated), None, "img", "IfNotPresent")
+                .is_none(),
+            "auto-generated keys need no copy"
         );
+    }
+
+    #[test]
+    fn test_dnssec_keys_init_container_copies_secret_into_key_directory() {
+        use crate::bind9_resources::build_dnssec_keys_init_container;
+
+        let config = shared_keys_config(None, None);
+        let init = build_dnssec_keys_init_container(
+            Some(&config),
+            None,
+            "internetsystemsconsortium/bind9:9.18",
+            "Always",
+        )
+        .expect("secretRef needs the init container");
+
+        assert_eq!(init.name, "dnssec-keys-init");
+        assert_eq!(
+            init.image.as_deref(),
+            Some("internetsystemsconsortium/bind9:9.18")
+        );
+        assert_eq!(init.image_pull_policy.as_deref(), Some("Always"));
+
+        let mounts = init.volume_mounts.as_ref().expect("mounts");
+        let source = mounts
+            .iter()
+            .find(|m| m.name == "dnssec-keys-source")
+            .expect("Secret source mount");
+        assert_eq!(source.read_only, Some(true));
+        let keys = mounts
+            .iter()
+            .find(|m| m.name == "dnssec-keys")
+            .expect("key directory mount");
+        assert_eq!(keys.mount_path, "/var/cache/bind/keys");
+
+        // Source and destination are passed as $1 and $2 of the script.
+        let args = init.args.as_ref().expect("script args");
+        assert!(args.contains(&source.mount_path));
+        assert!(args.contains(&keys.mount_path));
+
+        let sc = init.security_context.as_ref().expect("security context");
+        assert_eq!(sc.run_as_non_root, Some(true));
+        assert_eq!(sc.allow_privilege_escalation, Some(false));
+        assert_eq!(sc.read_only_root_filesystem, Some(true));
+        assert_eq!(
+            sc.capabilities.as_ref().and_then(|c| c.drop.clone()),
+            Some(vec!["ALL".to_string()])
+        );
+    }
+
+    /// Run the init script for real against two temp directories, the way the
+    /// init container does: `sh -c SCRIPT sh SRC DST`.
+    fn run_init_script(src: &std::path::Path, dst: &std::path::Path) -> std::process::Output {
+        use crate::bind9_resources::DNSSEC_KEYS_INIT_SCRIPT;
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg(DNSSEC_KEYS_INIT_SCRIPT)
+            .arg("sh")
+            .arg(src)
+            .arg(dst)
+            .output()
+            .expect("sh runs")
+    }
+
+    #[test]
+    fn test_dnssec_keys_init_script_restores_bind_key_names() {
+        let src = tempfile::tempdir().expect("tempdir");
+        let dst = tempfile::tempdir().expect("tempdir");
+        for name in [
+            "Kexample.com._013_12345.key",
+            "Kexample.com._013_12345.private",
+            "Kexample.com._013_00042.state",
+            "K_tcp.example.com._008_54321.key",
+            "README",
+        ] {
+            std::fs::write(src.path().join(name), name).expect("write key");
+        }
+
+        let out = run_init_script(src.path(), dst.path());
+        assert!(out.status.success(), "{out:?}");
+
+        let mut copied: Vec<String> = std::fs::read_dir(dst.path())
+            .expect("read dst")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        copied.sort();
+        assert_eq!(
+            copied,
+            vec![
+                "K_tcp.example.com.+008+54321.key",
+                "Kexample.com.+013+00042.state",
+                "Kexample.com.+013+12345.key",
+                "Kexample.com.+013+12345.private",
+            ],
+            "every key file renamed, README skipped"
+        );
+        let body = std::fs::read_to_string(dst.path().join("Kexample.com.+013+12345.private"))
+            .expect("read copy");
+        assert_eq!(body, "Kexample.com._013_12345.private");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dst.path().join("Kexample.com.+013+12345.private"))
+                .expect("stat")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "private key is owner-only");
+        }
+    }
+
+    #[test]
+    fn test_dnssec_keys_init_script_fails_without_keys() {
+        let src = tempfile::tempdir().expect("tempdir");
+        let dst = tempfile::tempdir().expect("tempdir");
+        std::fs::write(src.path().join("README"), "not a key").expect("write");
+
+        let out = run_init_script(src.path(), dst.path());
+        assert!(
+            !out.status.success(),
+            "no key file must fail the pod, or named would generate its own"
+        );
+    }
+
+    #[test]
+    fn test_shared_keys_refuse_rolling_lifetimes() {
+        use crate::bind9_resources::generate_dnssec_policies;
+
+        for (ksk, zsk) in [
+            (None, None),
+            (Some("unlimited"), None),
+            (Some("unlimited"), Some("unlimited")),
+        ] {
+            let config = shared_keys_config(ksk, zsk);
+            let policy = generate_dnssec_policies(Some(&config), None)
+                .unwrap_or_else(|e| panic!("{ksk:?}/{zsk:?} must render: {e}"));
+            assert!(policy.contains("ksk lifetime unlimited"), "{policy}");
+            assert!(policy.contains("zsk lifetime unlimited"), "{policy}");
+        }
+
+        for (ksk, zsk) in [(Some("365d"), None), (None, Some("90d"))] {
+            let config = shared_keys_config(ksk, zsk);
+            let err = generate_dnssec_policies(Some(&config), None)
+                .expect_err("a rolling lifetime on shared keys must be refused");
+            assert!(err.to_string().contains("unlimited"), "{err}");
+        }
+    }
+
+    #[test]
+    fn test_deployment_with_shared_keys_runs_the_init_container_first() {
+        let mut instance = create_test_instance("shared-keys");
+        instance.spec.config = Some(shared_keys_config(None, None));
+        let deployment = build_deployment("shared-keys", "test-ns", &instance, None, None, "rndc");
+        let pod = deployment
+            .spec
+            .as_ref()
+            .and_then(|s| s.template.spec.as_ref())
+            .expect("pod spec");
+
+        let init = pod.init_containers.as_ref().expect("init containers");
+        assert_eq!(init.len(), 1);
+        assert_eq!(init[0].name, "dnssec-keys-init");
+        let bind9 = pod
+            .containers
+            .iter()
+            .find(|c| c.name == "bind9")
+            .expect("bind9");
+        assert_eq!(init[0].image, bind9.image, "same image as named");
+        assert!(
+            pod.volumes
+                .as_ref()
+                .is_some_and(|v| v.iter().any(|v| v.name == "dnssec-keys-source")),
+            "the Secret volume is in the pod"
+        );
+        assert!(
+            !bind9
+                .volume_mounts
+                .as_ref()
+                .is_some_and(|m| m.iter().any(|m| m.name == "dnssec-keys-source")),
+            "named never mounts the Secret"
+        );
+
+        let plain = build_deployment(
+            "plain",
+            "test-ns",
+            &create_test_instance("plain"),
+            None,
+            None,
+            "rndc",
+        );
+        assert!(plain
+            .spec
+            .as_ref()
+            .and_then(|s| s.template.spec.as_ref())
+            .and_then(|p| p.init_containers.as_ref())
+            .is_none_or(Vec::is_empty));
     }
 
     #[test]
@@ -3396,17 +3644,12 @@ mod tests {
         let (volumes, _volume_mounts) =
             build_dnssec_key_volumes(Some(&global_config), Some(&instance_config));
 
-        // Should use instance config (Secret) not global (emptyDir)
-        assert_eq!(volumes.len(), 1);
-        let volume = &volumes[0];
-        assert!(
-            volume.secret.is_some(),
-            "Should use Secret from instance config"
-        );
-        assert!(
-            volume.empty_dir.is_none(),
-            "Should not use emptyDir from global config"
-        );
+        // Should use instance config (Secret source + key dir), not global
+        assert_eq!(volumes.len(), 2);
+        let volume = volumes
+            .iter()
+            .find(|v| v.name == "dnssec-keys-source")
+            .expect("Secret source from instance config");
         let secret = volume.secret.as_ref().unwrap();
         assert_eq!(secret.secret_name, Some("instance-keys".to_string()));
     }

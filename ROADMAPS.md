@@ -46,7 +46,7 @@ Statuses were verified against `fix-idempotency` @ `648ff7a` on 2026-09-10.
 
 | # | Roadmap | Status | Notes |
 |---|---|---|---|
-| [07](.github/community/07-dnssec-zone-signing.md) | DNSSEC zone signing | ✅ | Complete 2026-09-27 (ADR-0006): DS records auto-extracted from DNSKEYs and published in `DNSZone.status.dnssec` + `DNSSEC` print column. e2e suite → 19's harness |
+| [07](.github/community/07-dnssec-zone-signing.md) | DNSSEC zone signing | ✅ | Complete 2026-09-27 (ADR-0006): DS records auto-extracted from DNSKEYs and published in `DNSZone.status.dnssec` + `DNSSEC` print column. e2e suite → 19's harness. 2026-10-04 (ADR-0012): `keysFrom.secretRef` fixed, keys shared by every primary |
 | [08](.github/community/08-status-conditions.md) | Status conditions | ✅ | Phases 1–5 complete (`reconcilers/status.rs`, `status_reasons.rs`); phases 6–7 are explicitly future work inside the doc |
 | [09](.github/community/09-external-bind9-gateway.md) | External BIND9 gateway | ⛔ | Still a draft; no external-endpoint or gateway fields in `src/crd.rs` |
 | [10](.github/community/10-rndc-secret-hot-reload.md) | RNDC secret hot reload | ⛔ | Designed in [ADR-0001](docs/adr/0001-rndc-secret-reload.md); no reload path in `src/` |
@@ -68,7 +68,7 @@ Statuses were verified against `fix-idempotency` @ `648ff7a` on 2026-09-10.
 | [15](.github/community/15-security-scanning.md) | Security scanning | 🔶 | Through phase 5 (license compliance), plus phase 6 SBOM/signing/provenance (2026-10-03, ADR-0010): NTIA-gated CycloneDX SBOM per binary and image, attested to the artifact digest; SLSA Build L3 for tarballs, manifests, SBOMs and images. Open: VEX generation, Polaris, required PR reviews (threat model M-36) |
 | [16](.github/community/16-audit-logging-secret-operations.md) | Audit logging for Secret operations | ⛔ | Approved 2026-03-09, never implemented — no audit-log emission in `src/`. Compliance-relevant; worth re-triaging rather than leaving to drift |
 | [17](.github/community/17-vex-documents.md) | VEX documents | ⛔ | No VEX generation step in `.github/workflows/`. Builds on the SBOM pipeline from 15 |
-| [28](.github/community/28-pqc-readiness.md) | Post-quantum cryptography (PQC) readiness | ⛔ | Created 2026-10-04. Phase 0 (CBOM via the 15 pipeline) and Phase 1 (TSIG HMAC-SHA1/224 deprecation) actionable now; Phase 2 (hybrid `X25519MLKEM768` on control-plane TLS) needs a crypto-provider ADR on both bindy and bindcar ends; DNSSEC + sigstore phases are upstream watch items with revisit dates |
+| [28](.github/community/28-pqc-readiness.md) | Post-quantum cryptography (PQC) readiness | 🔶 | Phase 0 complete 2026-10-04 (ADR-0011): curated CycloneDX 1.6 CBOM per release, lockfile-stamped and PR-gated (`make cbom-stage`, `cbom` job), docs page + threat model v1.9 (M-39/M-40, accepted risk 8). Next: Phase 1 (TSIG HMAC-SHA1/224 deprecation); Phase 2 (hybrid `X25519MLKEM768`) needs a crypto-provider ADR on both bindy and bindcar ends; DNSSEC + sigstore phases are upstream watch items |
 
 ### Testing, operations and dependencies
 

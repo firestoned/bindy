@@ -26,6 +26,69 @@ it as the current context.
 - [x] Config change only (local tooling; CI unchanged)
 - [ ] Documentation only
 
+## [2026-10-04 14:30] - Shared DNSSEC keys from a Secret (ADR-0012)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `keysFrom.secretRef` never worked. The Secret was mounted straight at the
+  key directory, but Secret volumes are always read-only and `named` must
+  write `.state` files there. Its documented key names (`K<zone>.+<alg>+<id>`)
+  also could not exist, because Secret data keys refuse `+`.
+
+### Added
+- `docs/adr/0012-dnssec-shared-keys-from-secret.md` (Accepted).
+- `crates/bindy/src/bind9_resources.rs`:
+  - `build_dnssec_keys_init_container` adds a `dnssec-keys-init` init
+    container. It uses the BIND9 image, the restricted security context and
+    a read-only root filesystem, and copies `K<zone>._<alg>_<id>.<ext>` Secret
+    entries into the key directory under their BIND names, mode `0600`.
+  - A Secret holding no key file fails the container.
+  - The Secret is mounted only into that container (mode `0440`, volume
+    `dnssec-keys-source`). The key directory is a memory-backed `emptyDir`.
+  - Shared keys refuse a `kskLifetime` / `zskLifetime` other than
+    `unlimited` when rendering the policy.
+- `crates/bindy-api/src/crd.rs`: an `x-kubernetes-validations` rule on
+  `DNSSECSigningConfig` enforces the same lifetime rule at admission.
+  `secretRef` docs now describe the `_` encoding.
+- `crates/bindy/src/reconcilers/bind9instance/resources.rs`:
+  - Adding or removing an init container counts as Deployment drift.
+  - The update patch carries `initContainers` as a replace list.
+- CALM: `dnssec-keys-init` and `dnssec-key-secret` nodes, with their
+  relationships; diagrams regenerated.
+- Tests:
+  - init container shape;
+  - the copy script run for real (renaming, skipping, `0600`, failure on an
+    empty Secret);
+  - lifetime refusal;
+  - CRD rule present;
+  - Deployment init container;
+  - drift and patch.
+
+### Changed
+- `docs/src/advanced/dnssec.md`: "User-Supplied Keys" rewritten. It covers
+  how the copy works, the naming rule, a keygen and Secret recipe, and
+  manual rotation.
+- Roadmap 07 banner and `ROADMAPS.md` row: Phase 3 amended by ADR-0012.
+- Threat model pass, v1.10, stamp advanced to ADR-0012:
+  - new asset: DNSSEC Private Keys;
+  - Boundary 4 gains the init container;
+  - new threat I5;
+  - M-14 amended;
+  - new accepted risk 9: shared keys never roll automatically.
+
+### Why
+Two primaries serving one zone each signed with their own generated keys,
+so the DNSKEY RRset depended on which server answered. Shared keys give one
+DNSKEY set and one set of DS records.
+
+### Impact
+- [ ] Breaking change. A cluster with `secretRef` plus a finite lifetime is
+  now rejected, but that combination never worked.
+- [x] Requires cluster rollout (CRD update; the pods gain an init container)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-04 14:00] - Roadmap 01 Phase B step B2: shared watch layer (ADR-0009 §3, amended)
 
 **Author:** Erick Bourgeois
@@ -99,6 +162,57 @@ would have delayed both to the 5-minute requeue.
 - [x] Requires cluster rollout (watch wiring changes; verify on kind first)
 - [ ] Config change only
 - [ ] Documentation only
+
+## [2026-10-04 10:43] - Roadmap 28 Phase 0: CBOM per release (ADR-0011)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0011-cryptographic-bill-of-materials.md` (Proposed): a curated
+  CycloneDX 1.6 CBOM per release. No crypto-asset scanner exists for Rust,
+  so the inventory is maintained by review and stamped with build facts.
+- `cbom/bindy-cbom.template.cdx.json` + `cbom/README.md`: the curated
+  inventory (16 cryptographic assets: DNSSEC algorithms, TSIG/RNDC HMAC
+  family, TLS protocol/key-exchange/bulk ciphers, TSIG secret material;
+  each with `nistQuantumSecurityLevel`, OID, surface and PQC-exposure
+  properties) and the curation duty.
+- `scripts/cbom.sh` + `make cbom-generate` / `cbom-check` / `cbom-stage`:
+  generation injects serial, timestamp, release version and the crypto
+  library versions **from `Cargo.lock`** (a dropped or renamed crypto
+  dependency fails the build); the check gates spec version, stamped
+  facts, per-asset properties and the `provides` graph. Output
+  `sbom/bindy-cbom.cdx.json` validates clean against the official
+  CycloneDX 1.6 JSON schema.
+- `.github/workflows/build.yaml`: `cbom` job (uploads artifact
+  `sbom-cbom`, so the existing release-asset and SLSA provenance subject
+  globs include it with no changes); required by `ci-gate`; added to the
+  provenance-subjects and release-assets `needs`.
+- `.github/workflows/sbom.yml`: daily CBOM re-stamp against main's
+  `Cargo.lock` as a drift check.
+- `docs/src/security/pqc-readiness.md` (+ mkdocs nav): the human-readable
+  inventory, migration posture, verification commands, timeline anchors.
+
+### Changed
+- `docs/src/security/threat-model.md` → v1.9, full pass for ADR-0011:
+  new implemented mitigation M-39 (gated per-release crypto inventory),
+  planned M-40 (hybrid `X25519MLKEM768` key exchange, roadmap 28 Phase 2),
+  accepted risk 8 (quantum-capable adversary / HNDL), supply-chain summary
+  row updated, header stamp bumped.
+- `.github/community/28-pqc-readiness.md`: Phase 0 ticked with what landed
+  (one platform-independent CBOM per release, not per binary/image;
+  decision in ADR-0011, not an ADR-0010 amendment; `attest-sbom` binding
+  recorded as follow-up). `ROADMAPS.md`: roadmap 28 → 🔶.
+
+### Why
+Roadmap 28 Phase 0: the PQC inventory becomes schema-valid, release-bound,
+PR-gated evidence instead of a Markdown table, on the ADR-0010 delivery
+rails. Auditable output for the regulated-banking context on its own.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only (CI/release pipeline, docs and build tooling; the binary is unchanged)
 
 ## [2026-10-04 10:00] - Roadmap 01 Phase B step B1: `bindy-controller-sdk` crate (ADR-0009)
 

@@ -2487,6 +2487,15 @@ pub struct DNSSECConfig {
 /// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+// ADR-0012: keys from a Secret are shared by every primary, and a finite
+// lifetime makes each pod roll a successor of its own. Rejected at admission;
+// policy rendering refuses it again at runtime for clusters on an older CRD.
+#[schemars(extend("x-kubernetes-validations" = [
+    serde_json::json!({
+        "rule": "!has(self.keysFrom) || !has(self.keysFrom.secretRef) || ((!has(self.kskLifetime) || self.kskLifetime == 'unlimited') && (!has(self.zskLifetime) || self.zskLifetime == 'unlimited'))",
+        "message": "keysFrom.secretRef keys are shared by every primary: kskLifetime and zskLifetime must be unset or 'unlimited'"
+    })
+]))]
 pub struct DNSSECSigningConfig {
     /// Enable DNSSEC signing for zones
     ///
@@ -2660,15 +2669,23 @@ pub struct DNSSECSigningConfig {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DNSSECKeySource {
-    /// Secret containing DNSSEC keys
+    /// Secret containing DNSSEC keys, shared by every primary (ADR-0012)
     ///
-    /// Reference to a Kubernetes Secret with DNSSEC key files.
+    /// The Secret must be in the instance's namespace and its name must
+    /// start with `bindy-`. An init container copies its key files into
+    /// BIND's writable key directory before `named` starts.
     ///
-    /// Secret data format:
-    /// - `K<zone>.+<alg>+<tag>.key` - Public key file
-    /// - `K<zone>.+<alg>+<tag>.private` - Private key file
+    /// Secret data keys cannot contain `+`, so each `+` of a BIND key file
+    /// name is written as `_`, and the copy restores it:
+    /// - `K<zone>._<alg>_<id>.key` - Public key file
+    /// - `K<zone>._<alg>_<id>.private` - Private key file
+    /// - `K<zone>._<alg>_<id>.state` - Optional key state file
     ///
-    /// Example: `Kexample.com.+013+12345.key`
+    /// Example: `Kexample.com._013_12345.key` becomes `Kexample.com.+013+12345.key`.
+    ///
+    /// `kskLifetime` and `zskLifetime` must be unset or `unlimited`: shared
+    /// keys never roll on their own. Rotate by updating the Secret and
+    /// restarting the pods.
     #[serde(default)]
     pub secret_ref: Option<SecretReference>,
 

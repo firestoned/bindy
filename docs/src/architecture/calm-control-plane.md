@@ -35,6 +35,7 @@ classDef highlight fill:#fdf7ec,stroke:#f0c060,stroke-width:1px,color:#000000;
                 direction TB
                     named["BIND9 named"]:::node
                     bindcar["bindcar API Sidecar"]:::node
+                    dnssec-keys-init["DNSSEC key init container"]:::node
                 end
                 class bind9-pod boundary
         end
@@ -45,6 +46,7 @@ classDef highlight fill:#fdf7ec,stroke:#f0c060,stroke-width:1px,color:#000000;
     crd-provider["ClusterBind9Provider #40;CRD#41;"]:::node
     dns-client["DNS Client"]:::node
     crd-records["DNS Record CRDs"]:::node
+    dnssec-key-secret["DNSSEC key Secret"]:::node
     crd-dnszone["DNSZone #40;CRD#41;"]:::node
     k8s-api["Kubernetes API Server"]:::node
     admission-policies["ValidatingAdmissionPolicies"]:::node
@@ -62,6 +64,8 @@ classDef highlight fill:#fdf7ec,stroke:#f0c060,stroke-width:1px,color:#000000;
     bindy-operator -->|DNS UPDATE #40;RFC 2136, TSIG#41;| named
     bindy-operator -->|queries DNSKEY #40;read-only, DNS over UDP :5353#41; to derive DS records for DNSZone status — ADR-0006| named
     bindcar -->|rndc / nsupdate #40;local#41;| named
+    dnssec-keys-init -->|reads the shared DNSSEC keys #40;Secret volume, read-only, init container only#41; - ADR-0012| dnssec-key-secret
+    dnssec-keys-init -->|copies the keys into named's writable key-directory #40;emptyDir#41; before named starts - ADR-0012| named
     dns-client -->|DNS query| bind9-svc
     bind9-svc -->|routes :53 to named :5353| named
 

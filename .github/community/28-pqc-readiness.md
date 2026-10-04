@@ -73,13 +73,25 @@ Builds on roadmap 15's SBOM pipeline. CycloneDX 1.6 defines cryptographic
 asset properties (CBOM); emit one per release so the inventory above stops
 being a hand-maintained table.
 
-- [ ] Evaluate CycloneDX 1.6 CBOM tooling for Rust binaries and container
-      images; pick the generation point in the existing `sbom.yml` flow
-- [ ] Emit a CBOM per release binary and image, attested like the SBOMs
-      (extends ADR-0010; amend it or write a follow-up ADR)
-- [ ] New docs page `docs/src/security/pqc-readiness.md`: the inventory
-      table above, the migration posture, and the watch items with dates
-- [ ] CHANGELOG + `ROADMAPS.md` row update
+**Complete 2026-10-04 (ADR-0011).** What landed, where it diverged from the
+original wording:
+
+- [x] Evaluated tooling (2026-10-04): no crypto-asset scanner exists for
+      Rust (CBOMkit is Java/Python; system scanners target hosts), so the
+      CBOM is **curated**: `cbom/bindy-cbom.template.cdx.json` +
+      `scripts/cbom.sh`, which stamps serial/timestamp/version and injects
+      crypto-library versions from `Cargo.lock` (a dropped crypto dep fails
+      the build). Decision recorded in ADR-0011, not an ADR-0010 amendment
+- [x] **One CBOM per release** (`bindy-cbom.cdx.json`), not per binary and
+      image: the crypto inventory is platform-independent. `cbom` job in
+      `build.yaml` (required by `ci-gate`), daily re-stamp in `sbom.yml`;
+      ships as a release asset and is a SLSA provenance subject via the
+      existing `sbom-*` globs. Per-artifact `attest-sbom` binding is an
+      ADR-0011 follow-up
+- [x] Docs page `docs/src/security/pqc-readiness.md` (inventory, posture,
+      verification commands, timeline anchors); threat model v1.9 pass:
+      M-39 (implemented), M-40 (planned), accepted risk 8 (HNDL)
+- [x] CHANGELOG + `ROADMAPS.md` row update
 
 ### Phase 1: Symmetric hygiene (TSIG/RNDC)
 

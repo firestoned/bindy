@@ -321,6 +321,7 @@ nav:
       - Security:
           - Architecture: security/architecture.md
           - Threat Model: security/threat-model.md
+          - PQC Readiness: security/pqc-readiness.md
           - Signed Releases: security/signed-releases.md
           - Incident Response: security/incident-response.md
           - Vulnerability Management: security/vulnerability-management.md
