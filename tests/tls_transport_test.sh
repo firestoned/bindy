@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 #
 # End-to-end proof for audit finding P2-4: the operator reaches the bindcar
 # sidecar over TLS, so the ServiceAccount token it presents is never written to

@@ -1,3 +1,45 @@
+## [2026-10-04 21:50] - Relicense from MIT to Apache License 2.0
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `LICENSE`: canonical Apache License 2.0 text (was MIT). New `NOTICE`
+  file (section 4(d)): "bindy, Copyright 2025-2026 Erick Bourgeois,
+  firestoned".
+- SPDX headers: `SPDX-License-Identifier: MIT` → `Apache-2.0` in 279
+  files (source, scripts, workflows, configs, examples, docs,
+  Dockerfiles). Comment-only change in `.rs` files; `cargo fmt --check`
+  clean. Historical text in this CHANGELOG left as written.
+- `Cargo.toml` workspace `license = "Apache-2.0"` (crates inherit via
+  `license.workspace = true`); `docs/pyproject.toml` likewise.
+- `.github/workflows/build.yaml` license-check `license-id:
+  "Apache-2.0"`.
+- `docker/Dockerfile{,.chainguard,.local}`:
+  `org.opencontainers.image.licenses="Apache-2.0"`.
+- `README.md` (badge + license section), `CONTRIBUTING.md`,
+  `docs/src/license.md` (rewritten for Apache-2.0: patent grant, NOTICE,
+  section 5 contribution terms, GPLv2 incompatibility noted),
+  `docs/src/index.md`, `docs/src/development/contributing.md`,
+  `docs/src/security/signed-releases.md`.
+
+### Not changed, deliberately
+- `.cargo/deny.toml` dependency allow-list keeps MIT: dependencies stay
+  MIT-licensed; only bindy's own license changed.
+- Historical CHANGELOG entries, roadmap status notes and vendored
+  `docs/mermaid.min.js` keep their MIT mentions.
+
+### Why
+Requested by Erick, 2026-10-04. Compared with MIT, Apache-2.0 adds an
+express patent grant with retaliation (section 3) and built-in
+contribution terms (section 5). Erick Bourgeois is the sole copyright
+holder, so no contributor relicensing consent is needed.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (legal/metadata; the binary behavior is unchanged)
+
 ## [2026-10-04 19:30] - Upgrade bindcar to v0.9.0
 
 **Author:** Erick Bourgeois

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 
 # Verification script for RBAC least privilege implementation
 # Tests that the bindy operator ServiceAccount has exactly the permissions the

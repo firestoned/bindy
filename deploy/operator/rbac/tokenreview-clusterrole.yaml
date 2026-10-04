@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 #
 # bindcar 0.7.0 Mode B (TokenReview): the bindcar sidecar (which runs in the
 # operand BIND9 pod as the `bind9` ServiceAccount) validates the operator's

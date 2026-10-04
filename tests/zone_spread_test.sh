@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 #
 # End-to-end verification of `spec.placement` zone spreading, against a kind
 # cluster faking a three-zone region (deploy/kind-config-multizone.yaml).

@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 
 # CHAINGUARD PRODUCTION DOCKERFILE - CVE-Free Base Images
 # This Dockerfile uses Chainguard's hardened, zero-CVE base images designed for
@@ -47,7 +47,7 @@ ARG VERSION=0.1.0
 
 LABEL org.opencontainers.image.source="https://github.com/firestoned/bindy"
 LABEL org.opencontainers.image.description="BIND9 DNS Operator for Kubernetes (Chainguard - Zero CVEs)"
-LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.base.name="cgr.dev/chainguard/glibc-dynamic:latest"
 

@@ -1,5 +1,5 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 
 //! Strict validator for BIND9 `address_match_list` entries used in
 //! `allow-query`, `allow-transfer`, and related ACL directives.

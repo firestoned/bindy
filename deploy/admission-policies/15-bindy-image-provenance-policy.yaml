@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 #
 # ValidatingAdmissionPolicy: enforce container-image PROVENANCE on the image
 # references a tenant can set through bindy CRDs (`spec.image.image` /

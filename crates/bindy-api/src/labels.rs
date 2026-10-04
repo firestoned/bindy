@@ -1,5 +1,5 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 
 //! Common label and annotation constants used across all reconcilers.
 //!

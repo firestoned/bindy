@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 #
 # ValidatingAdmissionPolicy: enforce a strict allow-list on every entry of
 # `spec.volumes` / `spec.volumeMounts` on Bind9Instance / Bind9Cluster /

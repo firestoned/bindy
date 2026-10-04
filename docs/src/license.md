@@ -1,169 +1,124 @@
 # License
 
-Bindy is licensed under the MIT License.
+Bindy is licensed under the Apache License, Version 2.0.
 
-**SPDX-License-Identifier:** MIT
+**SPDX-License-Identifier:** Apache-2.0
 
-**Copyright (c) 2025 Erick Bourgeois, firestoned**
+**Copyright 2025-2026 Erick Bourgeois, firestoned**
 
-## MIT License
+## Apache License 2.0
 
-Copyright (c) 2025 Erick Bourgeois, firestoned
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this software except in compliance with the License. You may obtain a
+copy of the License at
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+<http://www.apache.org/licenses/LICENSE-2.0>
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+The full text is in [LICENSE](https://github.com/firestoned/bindy/blob/main/LICENSE)
+at the repository root, together with the
+[NOTICE](https://github.com/firestoned/bindy/blob/main/NOTICE) file that
+section 4(d) of the License asks redistributors to preserve.
 
-## What This Means for You
+## What the License Allows
 
-The MIT License is one of the most permissive open source licenses. Here's what it allows:
+**Permissions:**
 
-### ✅ You Can
+- ✅ Commercial use
+- ✅ Modification
+- ✅ Distribution
+- ✅ Private use
+- ✅ Patent use - contributors grant an express patent license (section 3)
 
-- **Use commercially** - Use Bindy in your commercial products and services
-- **Modify** - Change the code to fit your needs
-- **Distribute** - Share the original or your modified version
-- **Sublicense** - Include Bindy in proprietary software
-- **Private use** - Use Bindy for private/internal purposes without releasing your modifications
+**Conditions:**
 
-### ⚠️ Requirements
+- 📋 Include the license text and the NOTICE file when redistributing
+- 📋 State significant changes made to the code
+- 📋 Preserve copyright, patent, trademark and attribution notices
 
-- **Include the license** - Include the copyright notice and license text in substantial portions of the software
-- **State changes** - Document any modifications you make (recommended best practice)
+**Limitations:**
 
-### ❌ Limitations
+- ❌ No trademark rights
+- ❌ No liability
+- ❌ No warranty
 
-- **No warranty** - The software is provided "as is" without warranty of any kind
-- **No liability** - The authors are not liable for any damages arising from the use of the software
+Patent retaliation: the patent grant terminates for anyone who starts
+patent litigation claiming the software infringes (section 3). This is the
+main practical difference from the MIT license Bindy used before
+2026-10-04, and a protection, not a restriction, for users.
 
-## SPDX License Identifiers
+## SPDX Headers
 
-All source code files in this project include SPDX license identifiers for machine-readable license information:
+Every source file carries the project header, verified in CI on every pull
+request:
 
 ```rust
 // Copyright (c) 2025 Erick Bourgeois, firestoned
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 ```
 
-This makes it easy for automated tools to:
-- Scan the codebase for license compliance
-- Generate Software Bill of Materials (SBOM)
-- Verify license compatibility
+## Dependencies
 
-Learn more about SPDX at [https://spdx.dev/](https://spdx.dev/)
+Bindy depends only on permissively licensed libraries, enforced by
+`cargo-deny` against the allow-list in `.cargo/deny.toml` (copyleft
+licenses are refused). Representative core dependencies:
 
-## Software Bill of Materials (SBOM)
-
-Bindy provides SBOM files in CycloneDX format with every release. These include:
-
-- Binary SBOMs for each platform (Linux, macOS, Windows)
-- Docker image SBOM
-- Complete dependency tree with license information
-
-SBOMs are available as release assets and can be used for:
-- Supply chain security
-- Vulnerability scanning
-- License compliance auditing
-- Dependency tracking
-
-## Third-Party Licenses
-
-Bindy depends on various open-source libraries. All dependencies are permissively licensed and compatible with the MIT License.
-
-### Key Dependencies
-
-| Library | License | Purpose |
-|---------|---------|---------|
-| **kube-rs** | Apache 2.0 / MIT | Kubernetes client library |
+| Dependency | License | Purpose |
+|------------|---------|---------|
+| **kube-rs** | Apache-2.0 | Kubernetes client library |
 | **tokio** | MIT | Async runtime |
-| **serde** | Apache 2.0 / MIT | Serialization framework |
+| **serde** | MIT OR Apache-2.0 | Serialization framework |
 | **tracing** | MIT | Structured logging |
-| **anyhow** | Apache 2.0 / MIT | Error handling |
-| **thiserror** | Apache 2.0 / MIT | Error derivation |
+| **anyhow** / **thiserror** | MIT OR Apache-2.0 | Error handling |
+| **hickory-proto** | MIT OR Apache-2.0 | DNS protocol / TSIG |
+| **rustls** / **ring** | Apache-2.0 / ISC-style | TLS and cryptography |
 
-### Generating License Reports
+The authoritative per-release inventory is the SBOM shipped with every
+release (see [Signed Releases](security/signed-releases.md)); the full
+policy is in [License Policy](security/license-policy.md).
 
-For a complete list of all dependencies and their licenses:
+## Container Images
 
-```bash
-# Install cargo-license tool
-cargo install cargo-license
+- **Bindy operator images** (Chainguard and Distroless variants) contain
+  the bindy binary under Apache-2.0 on their respective minimal base
+  images.
+- **The BIND9 operand image** is upstream ISC BIND 9, licensed under the
+  Mozilla Public License 2.0; bindy configures it but does not
+  redistribute modified BIND sources.
 
-# Generate license report
-cargo license
+## Contributions
 
-# Generate detailed license report with full license text
-cargo license --json > licenses.json
-```
-
-You can also use [cargo-about](https://github.com/EmbarkStudios/cargo-about) for more detailed license auditing:
-
-```bash
-cargo install cargo-about
-cargo about generate about.hbs > licenses.html
-```
-
-## Container Image Licenses
-
-The Docker images for Bindy include:
-
-- **Base Image**: Alpine Linux (MIT License)
-- **BIND9**: ISC License (permissive, BSD-style)
-- **Bindy Binary**: MIT License
-
-All components are open source and permissively licensed.
-
-## Contributing
-
-By contributing to Bindy, you agree that:
-
-1. Your contributions will be licensed under the MIT License
-2. You have the right to submit the contributions
-3. You grant the project maintainers a perpetual, worldwide, non-exclusive, royalty-free license to use your contributions
-
-See the [Contributing Guidelines](./development/contributing.md) for more information on how to contribute.
+The Apache License 2.0 carries its own contribution terms (section 5):
+unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in Bindy is licensed under Apache-2.0, without
+additional terms. You retain copyright to your contributions. See
+[Contributing](development/contributing.md).
 
 ## License Compatibility
 
-The MIT License is compatible with most other open source licenses, including:
-
-- ✅ Apache License 2.0
-- ✅ BSD licenses (2-clause, 3-clause)
-- ✅ GPL v2 and v3 (one-way compatible - MIT code can be included in GPL projects)
-- ✅ ISC License
-- ✅ Other MIT-licensed code
-
-This makes Bindy easy to integrate into various projects and environments.
+- ✅ Code under MIT, BSD (2- and 3-clause), ISC, CC0/Unlicense can be
+  incorporated into Bindy
+- ✅ Apache-2.0 code can be included in GPLv3 projects (one-way)
+- ⚠️ Apache-2.0 is **not** compatible with GPLv2-only projects
+- ✅ Bindy itself remains free to use in commercial and proprietary
+  deployments
 
 ## Questions About Licensing
 
-If you have questions about:
-
-- Using Bindy in your project
-- License compliance
-- Contributing to Bindy
-- Third-party dependencies
-
-Please open a [GitHub Discussion](https://github.com/firestoned/bindy/discussions) or contact the maintainers.
+If you have questions about using Bindy in your project, license
+compliance, contributing, or third-party dependencies, open a
+[GitHub Discussion](https://github.com/firestoned/bindy/discussions) or
+contact the maintainers.
 
 ## Additional Resources
 
 - [Full License Text](https://github.com/firestoned/bindy/blob/main/LICENSE)
-- [MIT License on OSI](https://opensource.org/licenses/MIT)
-- [SPDX MIT License](https://spdx.org/licenses/MIT.html)
-- [GitHub's Choose a License - MIT](https://choosealicense.com/licenses/mit/)
+- [Apache License 2.0 (apache.org)](https://www.apache.org/licenses/LICENSE-2.0)
+- [SPDX Apache-2.0](https://spdx.org/licenses/Apache-2.0.html)
+- [Choose a License - Apache 2.0](https://choosealicense.com/licenses/apache-2.0/)
 - [SPDX Specification](https://spdx.github.io/spdx-spec/)

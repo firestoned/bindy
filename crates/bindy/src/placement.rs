@@ -1,5 +1,5 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 
 //! Pod placement: topology spreading, node selection, tolerations, affinity.
 //!

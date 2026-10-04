@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 
 # ULTRA-FAST LOCAL DEVELOPMENT DOCKERFILE
 # Build the binary locally with `make build-linux-debug`, then let the script
@@ -22,7 +22,7 @@ FROM debian:13-slim
 
 LABEL org.opencontainers.image.source="https://github.com/firestoned/bindy"
 LABEL org.opencontainers.image.description="BIND9 DNS Operator for Kubernetes (Local Dev Build)"
-LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 # Install BIND9 and required libraries
 # --allow-unauthenticated bypasses GPG repo signature verification, which fails when a

@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 #
 # This file is AUTO-GENERATED from src/crd.rs
 # DO NOT EDIT MANUALLY - Run `cargo run --bin crdgen` to regenerate

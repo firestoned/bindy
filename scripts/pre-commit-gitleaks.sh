@@ -1,6 +1,6 @@
 #!/bin/bash
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 #
 # Gitleaks pre-commit hook
 # This hook prevents commits containing secrets from being committed.

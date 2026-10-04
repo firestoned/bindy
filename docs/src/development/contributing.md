@@ -50,7 +50,7 @@ Ask questions in:
 
 By contributing to Bindy, you agree that:
 
-1. **Your contributions will be licensed under the MIT License** - The same license that covers the project
+1. **Your contributions will be licensed under the Apache License 2.0** - The same license that covers the project; section 5 of the License makes this the default for any contribution intentionally submitted for inclusion
 2. **You have the right to submit the work** - You own the copyright or have permission from the copyright holder
 3. **You grant a perpetual license** - The project maintainers receive a perpetual, worldwide, non-exclusive, royalty-free, irrevocable license to use, modify, and distribute your contributions
 
@@ -58,9 +58,9 @@ By contributing to Bindy, you agree that:
 
 When you submit a pull request or contribution to Bindy:
 
-- ✅ Your code will be licensed under the **MIT License**
+- ✅ Your code will be licensed under the **Apache License 2.0**
 - ✅ You retain copyright to your contributions
-- ✅ Others can use your contributions under the MIT License terms
+- ✅ Others can use your contributions under the Apache License 2.0 terms
 - ✅ Your contributions can be used in both open source and commercial projects
 - ✅ You grant irrevocable permission for the project to use your work
 
@@ -71,26 +71,26 @@ All source code files in Bindy include SPDX license identifiers. When adding new
 **For Rust files:**
 ```rust
 // Copyright (c) 2025 Erick Bourgeois, firestoned
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 ```
 
 **For shell scripts:**
 ```bash
 #!/usr/bin/env bash
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 ```
 
 **For YAML/configuration files:**
 ```yaml
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 ```
 
 **For Makefiles and Dockerfiles:**
 ```makefile
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 ```
 
 ### Why SPDX Identifiers?
@@ -108,7 +108,7 @@ Learn more: [https://spdx.dev/](https://spdx.dev/)
 
 If you're adding code from another source:
 
-1. **Ensure compatibility** - The license must be compatible with MIT
+1. **Ensure compatibility** - The license must be compatible with Apache-2.0
 2. **Preserve original copyright** - Keep the original copyright notice
 3. **Document the source** - Note where the code came from
 4. **Check license requirements** - Some licenses require attribution or notices
@@ -132,7 +132,7 @@ Please ask in your pull request or open a discussion before submitting.
 
 ### Additional Resources
 
-- [Full Project License](../../../LICENSE) - MIT License text
+- [Full Project License](../../../LICENSE) - Apache License 2.0 text
 - [License Documentation](../license.md) - Comprehensive licensing information
 - [SPDX License List](https://spdx.org/licenses/) - Standard license identifiers
 - [Choose a License](https://choosealicense.com/) - Help choosing licenses for new projects

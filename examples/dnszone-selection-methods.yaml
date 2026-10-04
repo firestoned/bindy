@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 
 # This file demonstrates the three methods for selecting Bind9Instances for a DNSZone:
 # 1. Using clusterRef (simple cluster reference)

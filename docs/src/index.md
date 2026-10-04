@@ -126,4 +126,4 @@ Current version: **v0.5.0**
 
 ## License
 
-Bindy is open-source software licensed under the [MIT License](./license.md).
+Bindy is open-source software licensed under the [Apache License 2.0](./license.md).

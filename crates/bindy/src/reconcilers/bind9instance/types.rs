@@ -1,5 +1,5 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 
 //! Shared types and imports for `Bind9Instance` reconciliation.
 //!

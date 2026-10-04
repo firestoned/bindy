@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 
 .PHONY: kind-kubeconfig kind-dump-diagnostics pin-release-images help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny cargo-machete gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh tls-transport-test ci-e2e e2e-image e2e-image-load e2e-lifecycle e2e-idempotency e2e-restart e2e-rust e2e-multi-tenancy e2e-regression e2e-zone-spread e2e-tls e2e-all e2e-clean calm-validate calm-docs calm-docs-check sbom-generate sbom-stage sbom-annotate sbom-check cbom-generate cbom-check cbom-stage provenance-subjects slsa-verifier-install verify-provenance verify-image-provenance verify-sbom-attestation image-digest-record image-digests-matrix
 
@@ -84,7 +84,7 @@ crds: ## Generate CRD YAML files from Rust types
 crds-combined: crds ## Generate combined crds.yaml file for releases
 	@echo "Creating combined crds.yaml file..."
 	@echo "# Copyright (c) 2025 Erick Bourgeois, firestoned" > deploy/crds.yaml
-	@echo "# SPDX-License-Identifier: MIT" >> deploy/crds.yaml
+	@echo "# SPDX-License-Identifier: Apache-2.0" >> deploy/crds.yaml
 	@echo "#" >> deploy/crds.yaml
 	@echo "# Combined CRD definitions for Bindy" >> deploy/crds.yaml
 	@echo "# Install with: kubectl apply --server-side -f https://github.com/firestoned/bindy/releases/latest/download/crds.yaml" >> deploy/crds.yaml
@@ -114,7 +114,7 @@ install-yaml: crds-combined ## Generate single-file install.yaml (CRDs + RBAC + 
 	@echo "Creating install.yaml for version $(VERSION)..."
 	@{ \
 		echo "# Copyright (c) 2025 Erick Bourgeois, firestoned"; \
-		echo "# SPDX-License-Identifier: MIT"; \
+		echo "# SPDX-License-Identifier: Apache-2.0"; \
 		echo "#"; \
 		echo "# Bindy $(VERSION) - single-file install"; \
 		echo "# Install with: kubectl apply -f https://github.com/firestoned/bindy/releases/download/$(VERSION)/install.yaml"; \
@@ -152,7 +152,7 @@ scout-yaml: ## Generate single-file scout.yaml (RBAC + Deployment) for a given V
 	@echo "Creating scout.yaml for version $(VERSION)..."
 	@{ \
 		echo "# Copyright (c) 2025 Erick Bourgeois, firestoned"; \
-		echo "# SPDX-License-Identifier: MIT"; \
+		echo "# SPDX-License-Identifier: Apache-2.0"; \
 		echo "#"; \
 		echo "# Bindy Scout $(VERSION) - single-file install"; \
 		echo "# Install with: kubectl apply -f https://github.com/firestoned/bindy/releases/download/$(VERSION)/scout.yaml"; \
@@ -183,7 +183,7 @@ admission-policies-yaml: ## Generate combined admission-policies.yaml (all Valid
 	@echo "Creating combined admission-policies.yaml file..."
 	@{ \
 		echo "# Copyright (c) 2025 Erick Bourgeois, firestoned"; \
-		echo "# SPDX-License-Identifier: MIT"; \
+		echo "# SPDX-License-Identifier: Apache-2.0"; \
 		echo "#"; \
 		echo "# Combined ValidatingAdmissionPolicies for Bindy (defense-in-depth at the kube API server)"; \
 		echo "# Install with: kubectl apply -f https://github.com/firestoned/bindy/releases/latest/download/admission-policies.yaml"; \

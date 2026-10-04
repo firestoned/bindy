@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 
 # PRODUCTION DOCKERFILE - Uses pre-built binaries from GitHub Actions
 # This Dockerfile is optimized for multi-architecture builds in CI/CD pipelines.
@@ -43,7 +43,7 @@ ARG VERSION=0.1.0
 
 LABEL org.opencontainers.image.source="https://github.com/firestoned/bindy"
 LABEL org.opencontainers.image.description="BIND9 DNS Operator for Kubernetes"
-LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.version="${VERSION}"
 
 # Copy BIND9 binaries from builder

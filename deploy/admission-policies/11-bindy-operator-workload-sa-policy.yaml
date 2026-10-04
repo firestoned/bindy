@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 #
 # ValidatingAdmissionPolicy: constrain the workloads the bindy OPERATOR itself
 # creates. Closes audit finding C2 (compensating control).

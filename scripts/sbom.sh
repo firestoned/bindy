@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 #
 # SBOM post-processing and quality gate (ADR-0010).
 #

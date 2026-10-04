@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 #
 # ValidatingAdmissionPolicy: enforce a strict whitelist on every entry of
 # `allowQuery` / `allowTransfer` ACL fields across all bindy CRDs that allow

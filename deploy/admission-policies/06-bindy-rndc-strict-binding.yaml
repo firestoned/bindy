@@ -1,5 +1,5 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 #
 # Optional binding for the posture-strict RNDC policy. Apply only if your
 # environment must reject hmac-sha1 in addition to the already-rejected

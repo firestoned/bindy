@@ -1,5 +1,5 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 
 //! Tests for zone operations (`add_zones`, `add_primary_zone`, `add_secondary_zone`, `delete_zone`, `reload_zone`, `zone_exists`).
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright (c) 2025 Erick Bourgeois, firestoned
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 #
 # E2E suite: the Rust integration tests (crates/bindy/tests/simple_integration.rs and
 # crates/bindy/tests/scout_integration.rs).
