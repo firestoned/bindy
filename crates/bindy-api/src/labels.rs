@@ -33,6 +33,13 @@ pub const K8S_PART_OF: &str = "app.kubernetes.io/part-of";
 /// Value for `app.kubernetes.io/part-of` indicating this resource is part of Bindy
 pub const PART_OF_BINDY: &str = "bindy";
 
+/// Label selector for objects bindy creates (`app.kubernetes.io/part-of=bindy`).
+///
+/// Kubernetes copies a Service's labels onto its `Endpoints`, so this also
+/// selects the `Endpoints` of the BIND9 Services bindy manages; the shared
+/// watch layer uses it to watch only those.
+pub const BINDY_PART_OF_SELECTOR: &str = "app.kubernetes.io/part-of=bindy";
+
 /// Component value for DNS server instances
 pub const COMPONENT_DNS_SERVER: &str = "dns-server";
 
@@ -139,3 +146,7 @@ pub const ROLE_PRIMARY: &str = "primary";
 
 /// Role value for secondary DNS instances
 pub const ROLE_SECONDARY: &str = "secondary";
+
+#[cfg(test)]
+#[path = "labels_tests.rs"]
+mod labels_tests;

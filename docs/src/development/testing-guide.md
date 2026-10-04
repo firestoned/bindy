@@ -149,6 +149,23 @@ make kind-logs
 make kind-cleanup
 ```
 
+#### Kind credentials live in their own kubeconfig
+
+Every `kind-*`, `e2e-*` and kind-based test target runs with `KUBECONFIG`
+set to `~/.kube/kind-bindy.yaml` (override with `KIND_KUBECONFIG=...`),
+whatever your shell exports. `kind create cluster` merges its credentials
+into the file `KUBECONFIG` points at and makes them the current context, so
+without this a kind run could take over a real cluster's kubeconfig. To use
+the kind cluster yourself:
+
+```bash
+eval "$(make -s kind-kubeconfig)"   # export KUBECONFIG=~/.kube/kind-bindy.yaml
+kubectl get pods -n bindy-system
+```
+
+In CI (`CI=true`) the default kubeconfig is used, since the runner has no
+other.
+
 ### Integration Test Coverage
 
 **Rust Integration Tests**

@@ -14,6 +14,10 @@ documentation.workspace = true
 homepage.workspace = true
 readme.workspace = true
 
+# kube-runtime is used through `kube::runtime`; it is listed only to enable a feature.
+[package.metadata.cargo-machete]
+ignored = ["kube-runtime"]
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
@@ -25,6 +29,9 @@ workspace = true
 bindy-api.workspace = true
 bindy-controller-sdk.workspace = true
 kube.workspace = true
+# Feature-only dependency: enables `unstable-runtime-stream-control` on the
+# kube-runtime that `kube::runtime` re-exports (see the workspace Cargo.toml).
+kube-runtime.workspace = true
 kube-lease-manager.workspace = true
 json-patch.workspace = true
 tokio.workspace = true

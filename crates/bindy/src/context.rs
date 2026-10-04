@@ -17,79 +17,13 @@ use crate::crd::{
     DNSZone, LabelSelector, MXRecord, NSRecord, PTRRecord, SRVRecord, TXTRecord,
 };
 use k8s_openapi::api::apps::v1::Deployment;
-use kube::runtime::reflector::Store;
 use kube::{Client, ResourceExt};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-/// A reflector view over one or more namespace-scoped watches.
-///
-/// When the operator runs cluster-wide ([`NamespaceScope::All`]) this holds exactly
-/// one shard built from `Api::all`, and every operation is a direct pass-through —
-/// the cluster-wide deployment behaves exactly as it did before namespace scoping
-/// existed.
-///
-/// When the operator is scoped to a namespace set it holds **one shard per
-/// namespace**. That sharding is load-bearing, not an implementation detail: a
-/// single reflector `Store` cannot be fed by several namespace watches merged with
-/// `select_all`, because `watcher::Event::InitDone` makes the store *replace* its
-/// entire contents with the buffer of whichever watch just finished listing
-/// (`kube_runtime::reflector::store` does `mem::swap(&mut *store, &mut self.buffer)`).
-/// Merging N watches into one writer would leave the store holding only the last
-/// namespace to sync — silently, and again on every watch reconnect. Sharding keeps
-/// each watch's `Init`/`InitDone` cycle confined to its own store.
-///
-/// [`NamespaceScope::All`]: crate::namespace_scope::NamespaceScope::All
-#[derive(Clone)]
-pub struct MultiStore<K>
-where
-    K: kube::Resource + Clone + 'static,
-    K::DynamicType: std::hash::Hash + Eq + Clone + std::fmt::Debug + Default,
-{
-    shards: Vec<Store<K>>,
-}
-
-impl<K> MultiStore<K>
-where
-    K: kube::Resource + Clone + 'static,
-    K::DynamicType: std::hash::Hash + Eq + Clone + std::fmt::Debug + Default,
-{
-    /// Build a view over the given shards.
-    ///
-    /// # Panics
-    /// Panics if `shards` is empty. An empty view would make every lookup return
-    /// nothing while the operator reported itself healthy — a far worse failure
-    /// than a loud one at startup.
-    #[must_use]
-    pub fn new(shards: Vec<Store<K>>) -> Self {
-        assert!(
-            !shards.is_empty(),
-            "MultiStore requires at least one shard; an empty view would silently \
-             make every reflector lookup return nothing"
-        );
-        Self { shards }
-    }
-
-    /// All objects across every shard.
-    ///
-    /// Shards are disjoint by construction (one namespace each, or a single
-    /// cluster-wide shard), so no de-duplication is needed.
-    #[must_use]
-    pub fn state(&self) -> Vec<Arc<K>> {
-        // Fast path: the cluster-wide default is a single shard. Return its state
-        // directly so the default deployment allocates exactly as it did before.
-        if let [only] = self.shards.as_slice() {
-            return only.state();
-        }
-        self.shards.iter().flat_map(Store::state).collect()
-    }
-
-    /// Number of shards backing this view (1 when cluster-wide).
-    #[must_use]
-    pub fn shard_count(&self) -> usize {
-        self.shards.len()
-    }
-}
+/// A reflector view over one or more namespace-scoped watches; it now lives
+/// with the shared watch layer in `bindy-controller-sdk` (ADR-0009 §3).
+pub use bindy_controller_sdk::watch::MultiStore;
 
 /// Shared context passed to all operators.
 ///
@@ -105,6 +39,11 @@ pub struct Context {
 
     /// Reflector stores for all CRD types
     pub stores: Stores,
+
+    /// The shared watch layer behind [`Self::stores`]: one watch and cache per
+    /// kind and namespace target. Controllers subscribe to it instead of
+    /// opening their own watches (ADR-0009 §3).
+    pub watch: Arc<bindy_controller_sdk::watch::WatchSet>,
 
     /// HTTP client for bindcar zone synchronization API calls
     pub http_client: reqwest::Client,

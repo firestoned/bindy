@@ -299,6 +299,7 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "kube-lease-manager",
+ "kube-runtime",
  "rand",
  "reqwest",
  "rustls",
@@ -337,8 +338,10 @@ name = "bindy-controller-sdk"
 version = "0.7.1"
 dependencies = [
  "anyhow",
+ "async-broadcast",
  "bindy-api",
  "chrono",
+ "futures",
  "http",
  "k8s-openapi",
  "kube",

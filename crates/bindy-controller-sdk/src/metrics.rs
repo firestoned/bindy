@@ -483,6 +483,102 @@ pub fn gather_metrics() -> Result<String, prometheus::Error> {
     String::from_utf8(buffer).map_err(|e| prometheus::Error::Msg(format!("UTF-8 error: {e}")))
 }
 
+// ============================================================================
+// Shared watch metrics (ADR-0009 §3)
+// ============================================================================
+
+/// Watcher events applied by the shared `WatchSet`, by kind and namespace
+/// target (`<all>` when cluster-wide).
+pub static WATCH_EVENTS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
+    let opts = Opts::new(
+        format!("{METRICS_NAMESPACE}_watch_events_total"),
+        "Watcher events applied by the shared watch layer, by kind and namespace",
+    );
+    let counter = CounterVec::new(opts, &["kind", "namespace"]).unwrap();
+    METRICS_REGISTRY
+        .register(Box::new(counter.clone()))
+        .unwrap();
+    counter
+});
+
+/// Watcher errors seen by the shared `WatchSet`, by kind and namespace.
+pub static WATCH_ERRORS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
+    let opts = Opts::new(
+        format!("{METRICS_NAMESPACE}_watch_errors_total"),
+        "Watcher errors seen by the shared watch layer, by kind and namespace",
+    );
+    let counter = CounterVec::new(opts, &["kind", "namespace"]).unwrap();
+    METRICS_REGISTRY
+        .register(Box::new(counter.clone()))
+        .unwrap();
+    counter
+});
+
+/// Times a shared watch stream ended and was restarted, by kind and namespace.
+pub static WATCH_RESTARTS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
+    let opts = Opts::new(
+        format!("{METRICS_NAMESPACE}_watch_restarts_total"),
+        "Shared watch streams that ended and were restarted, by kind and namespace",
+    );
+    let counter = CounterVec::new(opts, &["kind", "namespace"]).unwrap();
+    METRICS_REGISTRY
+        .register(Box::new(counter.clone()))
+        .unwrap();
+    counter
+});
+
+/// Unix time of the last event a shared watch applied, by kind and
+/// namespace. A value that stops advancing while objects are changing means
+/// that kind's cache is stale.
+pub static WATCH_LAST_EVENT_TIMESTAMP_SECONDS: LazyLock<GaugeVec> = LazyLock::new(|| {
+    let opts = Opts::new(
+        format!("{METRICS_NAMESPACE}_watch_last_event_timestamp_seconds"),
+        "Unix time of the last event applied by a shared watch, by kind and namespace",
+    );
+    let gauge = GaugeVec::new(opts, &["kind", "namespace"]).unwrap();
+    METRICS_REGISTRY.register(Box::new(gauge.clone())).unwrap();
+    gauge
+});
+
+/// Record one watcher event applied by the shared watch layer.
+///
+/// # Arguments
+/// * `kind` - Resource kind (e.g. `DNSZone`)
+/// * `namespace` - Namespace target, or `<all>` when cluster-wide
+pub fn record_watch_event(kind: &str, namespace: &str) {
+    WATCH_EVENTS_TOTAL
+        .with_label_values(&[kind, namespace])
+        .inc();
+    // Seconds since the epoch fit an f64 exactly for the foreseeable future.
+    #[allow(clippy::cast_precision_loss)]
+    let now = chrono::Utc::now().timestamp() as f64;
+    WATCH_LAST_EVENT_TIMESTAMP_SECONDS
+        .with_label_values(&[kind, namespace])
+        .set(now);
+}
+
+/// Record one watcher error seen by the shared watch layer.
+///
+/// # Arguments
+/// * `kind` - Resource kind
+/// * `namespace` - Namespace target, or `<all>` when cluster-wide
+pub fn record_watch_error(kind: &str, namespace: &str) {
+    WATCH_ERRORS_TOTAL
+        .with_label_values(&[kind, namespace])
+        .inc();
+}
+
+/// Record that a shared watch stream ended and is being restarted.
+///
+/// # Arguments
+/// * `kind` - Resource kind
+/// * `namespace` - Namespace target, or `<all>` when cluster-wide
+pub fn record_watch_restart(kind: &str, namespace: &str) {
+    WATCH_RESTARTS_TOTAL
+        .with_label_values(&[kind, namespace])
+        .inc();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

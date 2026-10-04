@@ -32,6 +32,14 @@ bindy-api = { path = "crates/bindy-api" }
 bindy-controller-sdk = { path = "crates/bindy-controller-sdk" }
 
 kube = { version = "4.0", features = ["runtime", "derive", "client", "jsonpatch"] }
+# Direct dependency on the kube-runtime that `kube` re-exports, only to enable
+# `unstable-runtime-stream-control`: controllers consume the shared WatchSet
+# streams through `Controller::for_stream` / `watches_stream` / `owns_stream`
+# (ADR-0009 §3, amended). The `kube` facade only offers the umbrella
+# `unstable-runtime`, which would also enable `-subscribe` and `-reconcile-on`;
+# this is the only unstable kube feature bindy enables. Keep the version in
+# lockstep with `kube`.
+kube-runtime = { version = "4.2", features = ["unstable-runtime-stream-control"] }
 kube-lease-manager = "0.12"
 # Client-side API rate limiting + request-metrics middleware (ADR-0005).
 # Already in the tree via kube; direct dep for RateLimitLayer and Layer/Service.
@@ -47,6 +55,9 @@ serde_json = "1"
 serde_yaml = "0.9"
 schemars = "1.2"
 futures = "0.3"
+# Fan-out channel of the shared WatchSet (ADR-0009 §3): backpressure, never
+# loss. Already in the tree through kube-runtime, which uses it the same way.
+async-broadcast = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 anyhow = "1"

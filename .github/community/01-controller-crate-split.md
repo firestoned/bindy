@@ -14,13 +14,14 @@
 > the API server drops from about 59 to 14 in cluster-wide mode (one per
 > kind).
 
-**Status:** 🔶 Phase A done (2026-10-03); Phase B in progress: B1 (crate + framework modules) done 2026-10-04, B2 (`WatchSet`) next. [ADR-0009](../../docs/adr/0009-workspace-crate-split-and-shared-watch-layer.md) Accepted, CALM updated
+**Status:** 🔶 Phase A done (2026-10-03); Phase B in progress: B1 (crate + framework modules) and B2 (shared `WatchSet`) done 2026-10-04; B3 (`RecordKind` + `Stores`/`context`) next. [ADR-0009](../../docs/adr/0009-workspace-crate-split-and-shared-watch-layer.md) Accepted, CALM updated
 **Owner:** Erick Bourgeois
 **Analysed against:** `main` @ `d422055` (re-measured 2026-10-03; first analysis was `fix-idempotency` @ `648ff7a`), kube / kube-runtime **4.2.0**
 
 > **Decision record.** The crate boundaries, the shared watch layer, the
-> self-trigger policy and the use of kube's `unstable-runtime-subscribe`
-> feature are decided in ADR-0009. This document is the phase plan; where
+> self-trigger policy and the use of kube's `unstable-runtime-stream-control`
+> feature (amended 2026-10-04 from `unstable-runtime-subscribe`) are decided
+> in ADR-0009. This document is the phase plan; where
 > the two disagree, the ADR wins.
 >
 > **Corrections from the 2026-10-03 re-measure:**
@@ -28,6 +29,10 @@
 >   `owns_shared_stream`, `watches_shared_stream`) are compiled only with
 >   kube's `unstable-runtime-subscribe` feature. §5's "no new dependencies"
 >   holds for crates, not features; ADR-0009 §3 accepts the feature.
+>   *Superseded 2026-10-04 (B2): those shared stores never deliver Delete
+>   events, so the `WatchSet` does its own fan-out and controllers consume it
+>   through `for_stream` / `watches_stream` / `owns_stream`
+>   (`unstable-runtime-stream-control`). See ADR-0009 §3 as amended.*
 > - Namespace scoping (`NamespaceScope`, `MultiStore`) landed after the
 >   first analysis. Every namespaced reflector and controller stream is
 >   now repeated per namespace target, so the `WatchSet` keys on
@@ -107,10 +112,11 @@ Seven concrete problems, in rough order of severity:
    streams + about 45 controller streams ≈ **59 watch connections** in
    cluster-wide mode (re-counted 2026-10-03; first counted as 36) where 14
    would do, with two independent caches of the same objects that can
-   disagree mid-flight. kube-runtime 4.2 has the exact fix, behind its
-   `unstable-runtime-subscribe` feature:
-   `reflector::store_shared()`, `Controller::for_shared_stream()`,
-   `.owns_shared_stream()`, `.watches_shared_stream()`.
+   disagree mid-flight. kube-runtime 4.2 has the building blocks behind its
+   unstable features. *B2 used `unstable-runtime-stream-control`
+   (`Controller::for_stream()`, `.owns_stream()`, `.watches_stream()`) over
+   the SDK's own fan-out, because the `unstable-runtime-subscribe` shared
+   stores (`store_shared()`, `for_shared_stream()`) drop Delete events.*
 
 2. **A watch mapper performs writes.** In `run_bind9instance_operator`,
    the `DNSZone` mapper (`main.rs:1490`) `tokio::spawn`s a task that
@@ -355,9 +361,27 @@ the crate exists, the framework modules live in it, behaviour is unchanged.
       `REQUEUE_WHEN_NOT_READY_SECS`) out of `record_wrappers` into one
       documented `sdk::requeue` module. *B1; `record_wrappers` re-exports
       them.*
-- [ ] Implement `WatchSet` on `reflector::store_shared()` +
-      `Controller::for_shared_stream()`. *Next (B2). Enables kube's
-      `unstable-runtime-subscribe` feature (ADR-0009 §3).*
+- [x] Implement `WatchSet` on `reflector::store_shared()` +
+      `Controller::for_shared_stream()`. *B2 (2026-10-04), on a different
+      mechanism than planned: kube's `store_shared()` subscribers never
+      receive Delete events, which `.owns()` (a deleted child) and the zone
+      controller (a deleted record) rely on. `sdk::watch::WatchSet` runs one
+      watcher per (kind, namespace target), applies events to the store, and
+      broadcasts `InitApply` / `Apply` / `Delete` over `async-broadcast`
+      (backpressure, no loss); late subscribers get the store replayed first.
+      Controllers consume it with `for_stream` / `watches_stream` /
+      `owns_stream` (`unstable-runtime-stream-control`, ADR-0009 §3
+      amended). 15 kinds registered (incl. `Endpoints` of bindy's Services,
+      label-selected server-side); owned Secret/ConfigMap/ServiceAccount/
+      Service keep ordinary watches (single watcher, never cached).
+      Cluster-wide: 19 watch connections, down from about 57. The zone
+      controller subscribes to `Bind9Instance` and `Endpoints` across all
+      namespaces (`subscribe_all`) for cross-namespace targeting.
+      Every cached kind now uses `Config::default()`; the `any_semantic()`
+      primaries changed only initial-LIST freshness. Restarts with backoff
+      and `watch_{events,errors,restarts}_total` /
+      `watch_last_event_timestamp_seconds` metrics. Still to verify on a
+      kind cluster (see Phase G).*
 - [ ] Implement the `RecordKind` trait and rebuild `Stores` on top of
       it; delete the `collect_matching!` macro. *B3, with `context`.*
 - [ ] Move leader election (`LeaseManagerBuilder` wiring,
@@ -366,7 +390,23 @@ the crate exists, the framework modules live in it, behaviour is unchanged.
 - [ ] **DoD:** `cargo test -p bindy-controller-sdk` green; unit tests
       cover `WatchSet` subscriber fan-out and each predicate. *B1: 174 SDK
       tests green (1609 workspace-wide, up from 1605 by the 4 new
-      `error` tests); the `WatchSet` half waits for B2.*
+      `error` tests). B2: 11 `watch` tests (store follows init/apply/delete,
+      every subscriber gets deletes, late-subscriber replay, predicate,
+      errors, restart, routing); 1620 workspace-wide. "Each predicate" waits
+      for the self-trigger policy step. Box ticks when B3/B4 land.*
+- **Fixed in B2:** the zone controller watched `Endpoints` with `Api::all`
+  in every mode. In namespace-restricted mode that needs cluster-wide
+  `endpoints` access the namespaced RBAC does not grant, so the watch was
+  refused and a replaced BIND9 pod waited for the zone's requeue. Now a
+  per-namespace, label-selected `WatchSet` kind; cross-namespace zones are
+  covered by `subscribe_all`. No RBAC change needed.
+- **Observed in B2, not fixed (logged per §5):** in namespace-restricted
+  mode the `Bind9Instance` controller subscribes to `DNSZone` in its own
+  namespace only, so a zone in namespace A selecting an instance in B does
+  not refresh B's `status.zones` until B's next reconcile. `subscribe_all`
+  would fix it, but that mapper does work itself (the spawned task, problem
+  2), which would then run once per namespace; fix it with that mapper in
+  Phase D.
 
 ### Phase C — `bindy-bind9`
 
@@ -456,9 +496,10 @@ the crate exists, the framework modules live in it, behaviour is unchanged.
   (`store_shared`, `for_shared_stream`, `owns_shared_stream`,
   `watches_shared_stream`, `graceful_shutdown_on`, `shutdown_on_signal`,
   `predicates::generation`) is already present in the pinned
-  kube-runtime 4.2.0. The four shared-stream APIs need kube's
-  `unstable-runtime-subscribe` feature turned on: a new feature, not a new
-  crate, accepted in ADR-0009 §3.
+  kube-runtime 4.2.0. The stream APIs B2 uses need kube-runtime's
+  `unstable-runtime-stream-control` feature turned on: a new feature, not a
+  new crate, accepted in ADR-0009 §3 (amended). `async-broadcast`, already in
+  the tree through kube-runtime, became a direct dependency of the SDK.
 - **Splitting `bindy-api` per API group.** Tempting at 4,203 lines, but
   it is a leaf with no intra-crate deps and it churns least; revisit
   after Phase G.
