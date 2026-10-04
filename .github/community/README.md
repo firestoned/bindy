@@ -54,6 +54,7 @@ everything after it shifts up.
 | 12 | [`12-scout-ingress-controller.md`](12-scout-ingress-controller.md) | Ingress → ARecord controller, same-cluster and remote modes |
 | 13 | [`13-scout-namespace-selectors.md`](13-scout-namespace-selectors.md) | Label-selector namespace inclusion/exclusion via a `Namespace` watch |
 | 14 | [`14-scout-srv-records.md`](14-scout-srv-records.md) | Create `SRVRecord` CRs from Services and Ingresses |
+| 27 | [`27-scout-followups.md`](27-scout-followups.md) | Survivors of 12's closure: metrics, conflict detection, AAAA, endpoint-mode bootstrap parity |
 
 ### Security and compliance
 
@@ -62,6 +63,7 @@ everything after it shifts up.
 | 15 | [`15-security-scanning.md`](15-security-scanning.md) | Container, dependency, secret, SAST and license scanning |
 | 16 | [`16-audit-logging-secret-operations.md`](16-audit-logging-secret-operations.md) | Structured audit trail for every Secret operation |
 | 17 | [`17-vex-documents.md`](17-vex-documents.md) | VEX documents in the release pipeline |
+| 28 | [`28-pqc-readiness.md`](28-pqc-readiness.md) | Post-quantum cryptography readiness: CBOM, TSIG hygiene, hybrid PQ TLS, DNSSEC/sigstore watch items |
 
 ### Testing, operations and dependencies
 
@@ -74,7 +76,8 @@ everything after it shifts up.
 | 22 | [`22-bindcar-migration-v0-7-1.md`](22-bindcar-migration-v0-7-1.md) | bindcar v0.6.0 → v0.7.1 upgrade guide — superseded by 24 |
 | 23 | [`23-bindcar-migration-v0-7-2.md`](23-bindcar-migration-v0-7-2.md) | bindcar v0.6.0 → v0.7.2 upgrade guide — superseded by 24 |
 | 24 | [`24-bindcar-migration-v0-7-4.md`](24-bindcar-migration-v0-7-4.md) | bindcar v0.7.2 → v0.7.4 upgrade guide — superseded by 25 |
-| 25 | [`25-bindcar-migration-v0-8-0.md`](25-bindcar-migration-v0-8-0.md) | bindcar v0.7.4 → v0.8.0 upgrade guide — **current**: TLS, mTLS, cert reload, feature gating |
+| 25 | [`25-bindcar-migration-v0-8-0.md`](25-bindcar-migration-v0-8-0.md) | bindcar v0.7.4 → v0.8.0 upgrade guide: TLS, mTLS, cert reload, feature gating; live-cluster verification still open |
+| 26 | [`26-bindcar-migration-v0-8-2.md`](26-bindcar-migration-v0-8-2.md) | bindcar v0.8.0 → v0.8.2 upgrade guide, **current**: crate floor 0.8.1, `nextKeyRollover` |
 
 ## Privately tracked roadmaps
 
