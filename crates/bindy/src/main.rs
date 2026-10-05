@@ -12,9 +12,7 @@ use bindy::reconcilers::pagination::list_all_paginated;
 use bindy::{
     bind9::Bind9Manager,
     constants::{
-        DEFAULT_LEASE_DURATION_SECS, DEFAULT_LEASE_RENEW_DEADLINE_SECS,
-        DEFAULT_LEASE_RETRY_PERIOD_SECS, METRICS_SERVER_BIND_ADDRESS, METRICS_SERVER_PATH,
-        METRICS_SERVER_PORT, TOKIO_WORKER_THREADS,
+        METRICS_SERVER_BIND_ADDRESS, METRICS_SERVER_PATH, METRICS_SERVER_PORT, TOKIO_WORKER_THREADS,
     },
     context::{Context, Metrics, Stores},
     crd::{
@@ -28,6 +26,9 @@ use bindy::{
     },
     record_operator::run_generic_record_operator,
 };
+use bindy_controller_sdk::leader::{
+    acquire_leadership, leadership_lost, LeaderElectionConfig, Leadership,
+};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use futures::StreamExt;
@@ -37,7 +38,6 @@ use kube::{
     runtime::{controller::Action, finalizer, watcher::Config, Controller},
     Api, Client, ResourceExt,
 };
-use kube_lease_manager::{LeaseManager, LeaseManagerBuilder};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
@@ -591,61 +591,6 @@ fn start_metrics_server() -> tokio::task::JoinHandle<()> {
     })
 }
 
-/// Leader election configuration
-struct LeaderElectionConfig {
-    enabled: bool,
-    lease_name: String,
-    lease_namespace: String,
-    identity: String,
-    lease_duration: u64,
-    renew_deadline: u64,
-    retry_period: u64,
-}
-
-/// Load leader election configuration from environment variables
-fn load_leader_election_config() -> LeaderElectionConfig {
-    let enabled = std::env::var("BINDY_ENABLE_LEADER_ELECTION")
-        .unwrap_or_else(|_| "true".to_string())
-        .parse::<bool>()
-        .unwrap_or(true);
-
-    let lease_name =
-        std::env::var("BINDY_LEASE_NAME").unwrap_or_else(|_| "bindy-leader".to_string());
-
-    let lease_namespace = std::env::var("BINDY_LEASE_NAMESPACE")
-        .or_else(|_| std::env::var("POD_NAMESPACE"))
-        .unwrap_or_else(|_| "bindy-system".to_string());
-
-    let lease_duration = std::env::var("BINDY_LEASE_DURATION_SECONDS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(DEFAULT_LEASE_DURATION_SECS);
-
-    let renew_deadline = std::env::var("BINDY_LEASE_RENEW_DEADLINE_SECONDS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(DEFAULT_LEASE_RENEW_DEADLINE_SECS);
-
-    let retry_period = std::env::var("BINDY_LEASE_RETRY_PERIOD_SECONDS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(DEFAULT_LEASE_RETRY_PERIOD_SECS);
-
-    let identity = std::env::var("POD_NAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_else(|_| format!("bindy-{}", rand::random::<u32>()));
-
-    LeaderElectionConfig {
-        enabled,
-        lease_name,
-        lease_namespace,
-        identity,
-        lease_duration,
-        renew_deadline,
-        retry_period,
-    }
-}
-
 /// Create a default watcher configuration.
 ///
 /// Returns a basic watcher configuration without semantic filtering.
@@ -927,7 +872,7 @@ async fn run_command() -> Result<()> {
     // Start the metrics HTTP server
     let _metrics_handle = start_metrics_server();
 
-    let leader_election_config = load_leader_election_config();
+    let leader_election_config = LeaderElectionConfig::from_env();
 
     if leader_election_config.enabled {
         info!(
@@ -939,27 +884,9 @@ async fn run_command() -> Result<()> {
             "Leader election enabled"
         );
 
-        // Create and start lease manager for leader election
-        // The manager returns a watch receiver (to monitor leadership status)
-        // and a join handle (to monitor the lease renewal task)
+        // Builds the lease and blocks until this replica holds it
         info!("Starting leader election, waiting to acquire leadership...");
-
-        let lease_manager =
-            LeaseManagerBuilder::new(client.clone(), &leader_election_config.lease_name)
-                .with_namespace(&leader_election_config.lease_namespace)
-                .with_identity(&leader_election_config.identity)
-                .with_duration(leader_election_config.lease_duration)
-                .with_grace(leader_election_config.retry_period)
-                .build()
-                .await?;
-
-        let (leader_rx, lease_handle) = lease_manager.watch().await;
-
-        // Wait until we become leader
-        let mut rx = leader_rx.clone();
-        while !*rx.borrow_and_update() {
-            rx.changed().await?;
-        }
+        let leadership = acquire_leadership(client.clone(), &leader_election_config).await?;
 
         info!("🎉 Leadership acquired! Starting controllers...");
 
@@ -978,7 +905,7 @@ async fn run_command() -> Result<()> {
         }
 
         // Run operators with leader election monitoring and signal handling
-        run_operators_with_leader_election(context, bind9_manager, leader_rx, lease_handle).await?;
+        run_operators_with_leader_election(context, bind9_manager, leadership).await?;
     } else {
         info!("Leader election disabled, starting controllers immediately...");
 
@@ -1000,19 +927,6 @@ async fn run_command() -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Monitor leadership status - returns when leadership is lost or an error occurs
-async fn monitor_leadership(
-    mut leader_rx: tokio::sync::watch::Receiver<bool>,
-) -> Result<(), anyhow::Error> {
-    loop {
-        leader_rx.changed().await?;
-        if !*leader_rx.borrow() {
-            // Leadership lost
-            return Ok(());
-        }
-    }
 }
 
 /// Run all DNS record operators
@@ -1093,10 +1007,7 @@ async fn run_all_operators(context: Arc<Context>, bind9_manager: Arc<Bind9Manage
 async fn run_operators_with_leader_election(
     context: Arc<Context>,
     bind9_manager: Arc<Bind9Manager>,
-    leader_rx: tokio::sync::watch::Receiver<bool>,
-    _lease_handle: tokio::task::JoinHandle<
-        Result<LeaseManager, kube_lease_manager::LeaseManagerError>,
-    >,
+    leadership: Leadership,
 ) -> Result<()> {
     info!("Running operators with leader election and signal handling");
 
@@ -1131,7 +1042,7 @@ async fn run_operators_with_leader_election(
         }
 
         // Monitor leadership - if lost, stop all controllers
-        result = monitor_leadership(leader_rx) => {
+        result = leadership_lost(leadership.leader_rx) => {
             match result {
                 Ok(()) => {
                     warn!("Leadership lost! Stopping all operators...");

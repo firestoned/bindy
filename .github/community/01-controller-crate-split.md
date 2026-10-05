@@ -14,7 +14,7 @@
 > the API server drops from about 59 to 14 in cluster-wide mode (one per
 > kind).
 
-**Status:** 🔶 Phase A done (2026-10-03); Phase B in progress: B1 (crate + framework modules), B2 (shared `WatchSet`) and B3 (`RecordKind`, `context` in the SDK) done 2026-10-04; B4 (leader election) next. [ADR-0009](../../docs/adr/0009-workspace-crate-split-and-shared-watch-layer.md) Accepted, CALM updated
+**Status:** 🔶 Phase A done (2026-10-03); Phase B done: B1 (crate + framework modules), B2 (shared `WatchSet`) and B3 (`RecordKind`, `context` in the SDK) done 2026-10-04, B4 (leader election in `sdk::leader`) done 2026-10-05; Phase C (`bindy-bind9`) next. [ADR-0009](../../docs/adr/0009-workspace-crate-split-and-shared-watch-layer.md) Accepted, CALM updated
 **Owner:** Erick Bourgeois
 **Analysed against:** `main` @ `d422055` (re-measured 2026-10-03; first analysis was `fix-idempotency` @ `648ff7a`), kube / kube-runtime **4.2.0**
 
@@ -393,16 +393,24 @@ the crate exists, the framework modules live in it, behaviour is unchanged.
       each kind's name is declared once. A new record kind is one
       `record_kind!` line, one `RECORD_KINDS` entry and its `RecordRef`
       variant.*
-- [ ] Move leader election (`LeaseManagerBuilder` wiring,
+- [x] Move leader election (`LeaseManagerBuilder` wiring,
       `load_leader_election_config`, `monitor_leadership`) into
-      `sdk::leader`. *B4.*
-- [ ] **DoD:** `cargo test -p bindy-controller-sdk` green; unit tests
+      `sdk::leader`. *B4: `LeaderElectionConfig::from_env` (built on a pure
+      `from_lookup`, so the env parsing is tested without touching process
+      env), `acquire_leadership` (builds the lease, waits until this replica
+      leads, returns a `Leadership`) and `leadership_lost`. Env vars, defaults
+      and behaviour unchanged. The signal handling duplicated across both run
+      functions stays in `main.rs` for Phase F's graceful shutdown.
+      `kube-lease-manager` is now an SDK dependency only.*
+- [x] **DoD:** `cargo test -p bindy-controller-sdk` green; unit tests
       cover `WatchSet` subscriber fan-out and each predicate. *B1: 174 SDK
       tests green (1609 workspace-wide, up from 1605 by the 4 new
       `error` tests). B2: 11 `watch` tests (store follows init/apply/delete,
       every subscriber gets deletes, late-subscriber replay, predicate,
       errors, restart, routing); 1620 workspace-wide. "Each predicate" waits
-      for the self-trigger policy step. Box ticks when B3/B4 land.*
+      for the self-trigger policy step. B3: 17 `context` tests. B4: 7 `leader`
+      tests; 197 SDK tests, 1651 workspace-wide. The predicate tests land with
+      the generation predicate in Phase D.*
 - **Fixed in B2:** the zone controller watched `Endpoints` with `Api::all`
   in every mode. In namespace-restricted mode that needs cluster-wide
   `endpoints` access the namespaced RBAC does not grant, so the watch was
