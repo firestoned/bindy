@@ -38,6 +38,17 @@ If you're seeing "No matching DNSZone found" errors:
 - Common mistake: Record missing required labels or labels not matching DNSZone selector
 - See [DNS Record Issues - Record Not Matching DNSZone](./common-issues.md#record-not-matching-dnszone-event-driven-architecture) for detailed troubleshooting
 
+### Zone Requeues Forever as "unreconciled" With an Empty INSTANCES Column
+
+If the operator logs `Found N unreconciled instance(s) for zone ...` on every
+cycle while the zone serves queries correctly, and `kubectl get dnszones`
+shows an empty `INSTANCES` column (with `Bind9Instance` resources showing
+`ZONES 0`), the zone's data predates its CR: every endpoint answers "zone
+already exists" and versions before v0.8.0-rc.3 never recorded the instance
+in `status.bind9Instances`. Fixed in v0.8.0-rc.3; on earlier versions the
+loop is harmless to DNS service but re-pushes the zone configuration about
+once a minute. Recreating the `DNSZone` CR does not help; upgrading does.
+
 ## Debugging Steps
 
 See [Debugging Guide](./debugging.md) for detailed debugging procedures.

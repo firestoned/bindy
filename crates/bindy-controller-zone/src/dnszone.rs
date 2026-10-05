@@ -1549,9 +1549,11 @@ pub async fn add_dnszone(
                     .collect::<Vec<Result<bool, ()>>>()
                     .await;
 
-                // Mark this instance as configured ONLY if at least one endpoint actually added the zone
-                // This prevents updating lastReconciledAt when zone already exists (avoids tight loop)
-                let zone_was_configured = endpoint_results.iter().any(|r| r.is_ok() && *r.as_ref().unwrap());
+                // Mark this instance as configured if at least one endpoint accepted
+                // the zone - freshly added OR already present. has_changes() compares
+                // instance lists excluding lastReconciledAt, so re-marking an already
+                // recorded instance does not cause a status patch per cycle.
+                let zone_was_configured = instance_serves_zone(&endpoint_results);
                 if zone_was_configured {
                     status_updater_shared
                         .lock()
@@ -1959,9 +1961,11 @@ pub async fn add_dnszone_to_secondaries(
                     .collect::<Vec<Result<bool, ()>>>()
                     .await;
 
-                // Mark this instance as configured ONLY if at least one endpoint actually added the zone
-                // This prevents updating lastReconciledAt when zone already exists (avoids tight loop)
-                let zone_was_configured = endpoint_results.iter().any(|r| r.is_ok() && *r.as_ref().unwrap());
+                // Mark this instance as configured if at least one endpoint accepted
+                // the zone - freshly added OR already present. has_changes() compares
+                // instance lists excluding lastReconciledAt, so re-marking an already
+                // recorded instance does not cause a status patch per cycle.
+                let zone_was_configured = instance_serves_zone(&endpoint_results);
                 if zone_was_configured {
                     status_updater_shared
                         .lock()
@@ -2517,6 +2521,19 @@ async fn add_glue_record(
             errors.join("; ")
         ))
     }
+}
+
+/// Whether an instance is serving a zone, given per-endpoint results of
+/// pushing the zone (`Ok(was_added)` per endpoint, `Err(())` on failure).
+///
+/// `Ok(false)` means the endpoint already had the zone; the instance is
+/// serving it just the same and must be recorded in `status.bind9Instances`
+/// with a `lastReconciledAt` timestamp. If only `Ok(true)` counted, a zone
+/// whose data predates the CR (a recreated `DNSZone`, an operator restart
+/// after partial status loss) would never record its instances and would
+/// requeue as "unreconciled" on every cycle.
+pub(crate) fn instance_serves_zone(endpoint_results: &[std::result::Result<bool, ()>]) -> bool {
+    endpoint_results.iter().any(std::result::Result::is_ok)
 }
 
 #[cfg(test)]

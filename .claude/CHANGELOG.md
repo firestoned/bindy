@@ -1,3 +1,38 @@
+## [2026-10-05 19:30] - DNSZone: record instances whose endpoints already hold the zone
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/bindy-controller-zone/src/dnszone.rs`: an instance was only
+  recorded in `status.bind9Instances` (and stamped `lastReconciledAt`) when at
+  least one of its endpoints *created* the zone (`was_added == true`). When
+  the zone data predates the CR (a recreated `DNSZone` over existing BIND
+  pods), every endpoint answers "already exists", the instance list stays
+  empty forever, and `filter_instances_needing_reconciliation` reports every
+  instance as unreconciled on every cycle: a permanent one-per-minute requeue
+  loop that re-pushes the zone to live bindcars. Observed on `jeb.ca` in the
+  core cluster while verifying v0.8.0-rc.2 (bug-213). New helper
+  `instance_serves_zone` counts an endpoint that accepted the zone (added or
+  already present); both primary and secondary call sites use it. The old
+  gating's tight-loop fear does not apply: `has_changes()` compares instance
+  lists via `InstanceReferenceWithStatus::eq()`, which excludes
+  `last_reconciled_at`, so idempotent re-marking never patches.
+- Downstream, this also fixes permanently empty `Bind9Instance.status.zones`
+  / `zonesCount` (derived from `DNSZone.status.bind9Instances`) and the blank
+  `INSTANCES` print column.
+- Tests: 5 new unit tests for `instance_serves_zone` in
+  `crates/bindy-controller-zone/src/dnszone_tests.rs` (TDD, red first).
+
+### Why
+Steady-state convergence: a zone must reach a quiet reconciled state even
+when its data already exists on the servers.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-05 18:00] - Release builds may update Cargo.lock for the version rewrite
 
 **Author:** Erick Bourgeois
@@ -13,6 +48,35 @@ A release rewrites the workspace version in `Cargo.toml` from the tag. Since the
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [ ] Documentation only (CI only)
+
+## [2026-10-05 16:30] - CI: create sbom/ before the image SBOM step in the release job
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `.github/workflows/build.yaml` (`Release Docker Image - <variant>` job):
+  the `Generate image SBOM` step writes
+  `output-file: sbom/bindy-image-<variant>.cdx.json`, but
+  `anchore/sbom-action` does not create the output file's parent
+  directory, and nothing else in the job does. The v0.8.0-rc.1 release
+  failed both variants with
+  `ENOENT: no such file or directory, open 'sbom/bindy-image-chainguard.cdx.json'`.
+  A `mkdir -p sbom` step now precedes it. The binary SBOM path was never
+  affected because `make sbom-stage` creates the directory itself. First
+  release to exercise this path: the `sbom/` prefix arrived with the SBOM
+  attestation rework after v0.7.1 (whose release wrote the SBOM to the
+  working directory), and the job only runs on release events. The
+  sbom-action 0.24.2 to 0.24.3 bump merged the same day was unrelated.
+
+### Why
+Release v0.8.0-rc.1 could not publish image SBOMs; the release workflow
+failed at the Chainguard and Distroless image jobs.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
 
 ## [2026-10-05 12:00] - Roadmap 01 Phases C to G: crate split finished, controllers drain, no startup drift pass (ADR-0009)
 

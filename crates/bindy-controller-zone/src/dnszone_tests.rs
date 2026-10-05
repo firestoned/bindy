@@ -382,4 +382,34 @@ mod notify_target_tests {
         );
         assert_eq!(status.last_key_rollover, None, "no source in bindcar 0.8.x");
     }
+
+    #[test]
+    fn test_instance_serves_zone_when_zone_freshly_added() {
+        assert!(instance_serves_zone(&[Ok(true)]));
+    }
+
+    #[test]
+    fn test_instance_serves_zone_when_zone_already_present() {
+        // Ok(false) = the endpoint verified the zone but did not need to add
+        // it. The instance is serving the zone and must be recorded in
+        // status.bind9Instances, otherwise a zone whose data predates the CR
+        // (e.g. a recreated DNSZone) requeues as "unreconciled" forever.
+        assert!(instance_serves_zone(&[Ok(false)]));
+    }
+
+    #[test]
+    fn test_instance_serves_zone_mixed_endpoints() {
+        assert!(instance_serves_zone(&[Err(()), Ok(false)]));
+        assert!(instance_serves_zone(&[Ok(true), Err(())]));
+    }
+
+    #[test]
+    fn test_instance_serves_zone_all_endpoints_failed() {
+        assert!(!instance_serves_zone(&[Err(()), Err(())]));
+    }
+
+    #[test]
+    fn test_instance_serves_zone_no_endpoints() {
+        assert!(!instance_serves_zone(&[]));
+    }
 }
