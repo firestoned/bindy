@@ -14,6 +14,35 @@ A release rewrites the workspace version in `Cargo.toml` from the tag. Since the
 - [ ] Config change only
 - [ ] Documentation only (CI only)
 
+## [2026-10-05 16:30] - CI: create sbom/ before the image SBOM step in the release job
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `.github/workflows/build.yaml` (`Release Docker Image - <variant>` job):
+  the `Generate image SBOM` step writes
+  `output-file: sbom/bindy-image-<variant>.cdx.json`, but
+  `anchore/sbom-action` does not create the output file's parent
+  directory, and nothing else in the job does. The v0.8.0-rc.1 release
+  failed both variants with
+  `ENOENT: no such file or directory, open 'sbom/bindy-image-chainguard.cdx.json'`.
+  A `mkdir -p sbom` step now precedes it. The binary SBOM path was never
+  affected because `make sbom-stage` creates the directory itself. First
+  release to exercise this path: the `sbom/` prefix arrived with the SBOM
+  attestation rework after v0.7.1 (whose release wrote the SBOM to the
+  working directory), and the job only runs on release events. The
+  sbom-action 0.24.2 to 0.24.3 bump merged the same day was unrelated.
+
+### Why
+Release v0.8.0-rc.1 could not publish image SBOMs; the release workflow
+failed at the Chainguard and Distroless image jobs.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
 ## [2026-10-05 12:00] - Roadmap 01 Phases C to G: crate split finished, controllers drain, no startup drift pass (ADR-0009)
 
 **Author:** Erick Bourgeois
