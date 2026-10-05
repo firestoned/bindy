@@ -22,6 +22,7 @@
 //! - [`resources`] - Generic create-or-update helpers
 //! - [`rate_limit`] - The client-side rate-limited Kubernetes client (ADR-0005)
 //! - [`namespace_scope`] - Cluster-wide or per-namespace watch scope
+//! - [`leader`] - Leader election over a Kubernetes `Lease`
 //! - [`http_errors`] - HTTP error mapping to status reasons
 //! - [`metrics`] - Prometheus metrics
 //! - [`watch`] - The shared watch layer: one watch and cache per kind and namespace
@@ -29,6 +30,7 @@
 pub mod context;
 pub mod error;
 pub mod http_errors;
+pub mod leader;
 pub mod metrics;
 pub mod namespace_scope;
 pub mod pagination;

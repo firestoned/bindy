@@ -32,7 +32,6 @@ kube.workspace = true
 # Feature-only dependency: enables `unstable-runtime-stream-control` on the
 # kube-runtime that `kube::runtime` re-exports (see the workspace Cargo.toml).
 kube-runtime.workspace = true
-kube-lease-manager.workspace = true
 json-patch.workspace = true
 tokio.workspace = true
 serde.workspace = true

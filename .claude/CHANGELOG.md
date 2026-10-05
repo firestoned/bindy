@@ -1,3 +1,35 @@
+## [2026-10-05 10:00] - Roadmap 01 Phase B step B4: leader election in `sdk::leader` (ADR-0009)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/bindy-controller-sdk/src/leader.rs` (new): `LeaderElectionConfig`
+  with `from_env` and a pure `from_lookup` (same env vars, defaults and
+  fallbacks as before), `acquire_leadership` (builds the `Lease` manager and
+  waits until this replica leads, returning a `Leadership`) and
+  `leadership_lost`.
+- `crates/bindy/src/main.rs`: the config struct, `load_leader_election_config`,
+  the inline `LeaseManagerBuilder` wiring and `monitor_leadership` are
+  replaced by the SDK calls. Signal handling stays for Phase F.
+- `crates/bindy/Cargo.toml`, `crates/bindy-controller-sdk/Cargo.toml`:
+  `kube-lease-manager` moves from `bindy` to the SDK.
+- Roadmap 01 (B4 and the Phase B DoD ticked; Phase B complete),
+  `ROADMAPS.md`, `.claude/CLAUDE.md` layout tree.
+
+### Tests
+- `crates/bindy-controller-sdk/src/leader_tests.rs`: 7 new (defaults,
+  overrides, unparseable values fall back, namespace and identity
+  precedence, `leadership_lost` on a flip to follower and on a dropped
+  lease task). 1651 pass.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+Refactor only: no behaviour, env var or RBAC change.
+
 ## [2026-10-04 23:00] - Roadmap 01 Phase B step B3: `RecordKind` registry, `context` in the SDK (ADR-0009)
 
 **Author:** Erick Bourgeois
