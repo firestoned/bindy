@@ -1,3 +1,19 @@
+## [2026-10-05 18:00] - Release builds may update Cargo.lock for the version rewrite
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/build.yaml`: dropped `--locked` from the Linux `build-binary` step, the release-profile `cargo test` and the macOS/Windows release `cargo build`.
+
+### Why
+A release rewrites the workspace version in `Cargo.toml` from the tag. Since the crate split (ADR-0009) that changes the version of all eleven workspace crates recorded in `Cargo.lock`, which `--locked` refuses ("cannot update the lock file ... because --locked was passed"), failing the `v0.8.0-rc.1` build. Without `--locked`, Cargo rewrites only the entries `Cargo.toml` no longer matches; third-party dependencies stay as the committed lock pins them.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only (CI only)
+
 ## [2026-10-05 12:00] - Roadmap 01 Phases C to G: crate split finished, controllers drain, no startup drift pass (ADR-0009)
 
 **Author:** Erick Bourgeois
