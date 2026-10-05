@@ -103,7 +103,7 @@ kubectl apply --dry-run=server -f deploy/operator/crds/bind9clusters.crd.yaml
 generate_crd::<MyNewResource>("mynewresources.crd.yaml", output_dir)?;
 ```
 3. **Regenerate YAMLs**: `make crds`
-4. **Export the type** in `crates/bindy/src/lib.rs` if needed
+4. **Export the type** in `crates/bindy-api/src/lib.rs` if needed
 
 ### Generated YAML Format
 

@@ -56,6 +56,113 @@ pub struct Context {
     ///
     /// [`NamespaceScope::All`]: crate::namespace_scope::NamespaceScope::All
     pub namespace_scope: crate::namespace_scope::NamespaceScope,
+
+    /// Fires on SIGTERM, SIGINT or loss of the leader lease. Every controller
+    /// passes [`ShutdownSignal::wait`] to `graceful_shutdown_on`, so a shutdown
+    /// drains in-flight reconciles (ADR-0009 §5).
+    ///
+    /// [`ShutdownSignal::wait`]: crate::shutdown::ShutdownSignal::wait
+    pub shutdown: crate::shutdown::ShutdownSignal,
+}
+
+/// Timeout for one HTTP call to a bindcar sidecar.
+const BINDCAR_HTTP_TIMEOUT_SECS: u64 = 10;
+
+impl Context {
+    /// Build the shared context: the `WatchSet` with every kind the operator
+    /// caches, the stores over it, and the bindcar HTTP client.
+    ///
+    /// Registering a kind starts its watch, so call this inside the Tokio
+    /// runtime. Every controller subscribes to this one `WatchSet` instead of
+    /// opening its own watches (ADR-0009 §3).
+    ///
+    /// # Arguments
+    /// * `client` - The rate-limited Kubernetes client (ADR-0005)
+    /// * `scope` - Cluster-wide, or the namespaces to watch
+    /// * `shutdown` - The signal controllers drain on
+    ///
+    /// # Errors
+    /// Returns an error if the bindcar HTTP client cannot be built.
+    pub fn new(
+        client: Client,
+        scope: crate::namespace_scope::NamespaceScope,
+        shutdown: crate::shutdown::ShutdownSignal,
+    ) -> anyhow::Result<Self> {
+        use crate::namespace_scope::NamespaceScope;
+
+        match &scope {
+            NamespaceScope::All => {
+                tracing::info!("Namespace scope: ALL (cluster-wide), requires cluster-wide RBAC");
+            }
+            NamespaceScope::Namespaces(ns) => {
+                tracing::info!(
+                    namespaces = ?ns,
+                    "Namespace scope: RESTRICTED, one watch per namespace, needs only per-namespace RoleBindings"
+                );
+            }
+        }
+
+        // One shared watch and cache per (kind, namespace target). See
+        // `MultiStore` for why the namespaces are separate shards rather than
+        // one merged store.
+        let mut watch = WatchSet::new(client.clone(), scope.clone());
+        // Cluster-scoped: always one cluster-wide watch, in every scope mode. Even
+        // a fully namespace-scoped operator keeps a slim `ClusterRole` granting
+        // `get/list/watch` on `clusterbind9providers`: the irreducible residue of
+        // cluster-wide RBAC, and the reason M-22 cannot claim to eliminate
+        // cluster-wide access entirely.
+        let cluster_bind9_providers =
+            watch.register_cluster::<ClusterBind9Provider>("ClusterBind9Provider");
+        let bind9_clusters = watch.register::<Bind9Cluster>("Bind9Cluster");
+        let bind9_instances = watch.register::<Bind9Instance>("Bind9Instance");
+        // Deployments are filtered to those owned by a Bind9Instance: the operator
+        // has no interest in every Deployment in every watched namespace.
+        let bind9_deployments =
+            watch.register_filtered::<Deployment, _>("Deployment", |deployment| {
+                deployment
+                    .metadata
+                    .owner_references
+                    .as_ref()
+                    .is_some_and(|owners| owners.iter().any(|owner| owner.kind == "Bind9Instance"))
+            });
+        let dnszones = watch.register::<DNSZone>("DNSZone");
+        // Every record kind, from the one list (RECORD_KINDS).
+        let mut records = RecordStores::default();
+        for ops in &RECORD_KINDS {
+            (ops.register)(&mut watch, &mut records);
+        }
+        // Endpoints of bindy's own Services only (label-selected on the API
+        // server): the zone controller's signal that a BIND9 pod was replaced.
+        // One watch per namespace target, like every other kind, so namespace-
+        // restricted mode needs only its per-namespace `endpoints` Role.
+        let _endpoints = watch.register_selected::<k8s_openapi::api::core::v1::Endpoints>(
+            "Endpoints",
+            bindy_api::labels::BINDY_PART_OF_SELECTOR,
+        );
+
+        let http_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(BINDCAR_HTTP_TIMEOUT_SECS))
+            .build()?;
+
+        tracing::info!("Shared context initialized with one watch per cached kind");
+
+        Ok(Self {
+            client,
+            stores: Stores {
+                cluster_bind9_providers,
+                bind9_clusters,
+                bind9_instances,
+                bind9_deployments,
+                dnszones,
+                records,
+            },
+            watch: Arc::new(watch),
+            http_client,
+            metrics: Metrics::default(),
+            namespace_scope: scope,
+            shutdown,
+        })
+    }
 }
 
 /// A DNS record CRD kind, for the generic store and watch plumbing.

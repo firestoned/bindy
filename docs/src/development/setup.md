@@ -45,25 +45,39 @@ cd bindy
 
 ```
 bindy/
-├── Cargo.toml        # Cargo workspace (ADR-0009)
+├── Cargo.toml        # Cargo workspace (ADR-0009): every dependency pinned once
 ├── crates/
-│   ├── bindy-api/    # CRD types, constants, labels; crdgen/crddoc bins
-│   ├── bindy-controller-sdk/  # Shared controller framework: errors, requeue, retry, status, metrics
-│   └── bindy/        # The operator binary and everything not yet split out
-│       ├── src/
-│       │   ├── main.rs       # Entry point
-│       │   ├── reconcilers/  # Reconciliation logic
-│       │   └── bind9/        # BIND9 integration
-│       └── tests/    # Rust integration tests
+│   ├── bindy-api/                 # CRD types, constants, labels; crdgen/crddoc bins
+│   ├── bindy-controller-sdk/      # Shared framework: Context, WatchSet, shutdown, leader
+│   │                              # election, finalizers, errors, retry, status, metrics
+│   ├── bindy-bind9/               # BIND9 domain logic: bindcar client, RNDC, instance
+│   │                              # resources, record writes (no controllers)
+│   ├── bindy-controller-cluster/  # Bind9Cluster + ClusterBind9Provider controllers
+│   ├── bindy-controller-instance/ # Bind9Instance controller
+│   ├── bindy-controller-zone/     # DNSZone controller
+│   ├── bindy-controller-records/  # The nine record controllers (one generic controller)
+│   ├── bindy-scout/               # `bindy scout`
+│   ├── bindy-bootstrap/           # `bindy bootstrap`
+│   └── bindy/                     # The binary: CLI, logging, client, metrics server,
+│       ├── src/                   # leader-election handoff, running each controller
+│       │   ├── main.rs
+│       │   └── cli.rs
+│       └── tests/                 # Rust integration tests against a live API server
 ├── deploy/           # Kubernetes manifests
 │   ├── crds/         # CRD definitions
 │   ├── rbac/         # RBAC resources
-│   └── operator/   # Operator deployment
+│   └── operator/     # Operator deployment
 ├── tests/            # Shell integration and e2e suites
 ├── examples/         # Example configurations
-├── docs/             # Documentation
-└── Cargo.toml        # Rust dependencies
+└── docs/             # Documentation
 ```
+
+Dependencies only point downward: `bindy` depends on the controller crates,
+Scout and bootstrap; a controller crate depends on `bindy-controller-sdk`,
+`bindy-bind9` and `bindy-api`, never on another controller crate; `bindy-bind9`
+depends on the SDK and `bindy-api`; `bindy-api` depends on nothing in the
+workspace. Each controller crate's only public item is
+`pub async fn controller(ctx: Arc<Context>) -> anyhow::Result<()>`.
 
 ## Dependencies
 

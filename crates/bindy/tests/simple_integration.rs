@@ -17,7 +17,7 @@
 #![allow(clippy::uninlined_format_args)]
 #![allow(clippy::if_not_else)]
 
-use bindy::crd::{
+use bindy_api::crd::{
     ARecord, ARecordSpec, Bind9Cluster, Bind9ClusterCommonSpec, Bind9ClusterSpec, Bind9Instance,
     Bind9InstanceSpec, CNAMERecord, CNAMERecordSpec, ClusterBind9Provider,
     ClusterBind9ProviderSpec, DNSZone, DNSZoneSpec, MXRecord, MXRecordSpec, SOARecord, ServerRole,

@@ -98,4 +98,18 @@ mod tests {
             vec![None]
         );
     }
+
+    #[test]
+    fn owned_targets_is_one_cluster_wide_target_by_default() {
+        assert_eq!(owned_targets(&NamespaceScope::All), vec![None]);
+    }
+
+    #[test]
+    fn owned_targets_lists_each_watched_namespace() {
+        let scope = NamespaceScope::Namespaces(vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            owned_targets(&scope),
+            vec![Some("a".to_string()), Some("b".to_string())]
+        );
+    }
 }

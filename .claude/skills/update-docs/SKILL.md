@@ -26,7 +26,7 @@ skill is the *procedure to update*.
 
 ## By change type
 
-- **Reconcilers** (`crates/bindy/src/reconcilers/`): flow diagrams, user guides,
+- **Reconcilers** (`crates/bindy-controller-*/src/`): flow diagrams, user guides,
   troubleshooting.
 - **CRDs** (`crates/bindy-api/src/crd.rs`): `regen-crds` → examples → `regen-api-docs` (LAST).
 - **New features**: `docs/src/features/`, `README.md`, examples,

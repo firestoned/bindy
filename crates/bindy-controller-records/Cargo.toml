@@ -1,0 +1,42 @@
+[package]
+name = "bindy-controller-records"
+description = "The DNS record controllers (A, AAAA, CNAME, MX, NS, PTR, SRV, TXT, CAA) for the bindy operator"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+documentation.workspace = true
+homepage.workspace = true
+readme.workspace = true
+
+# kube-runtime is used through `kube::runtime`; it is listed only to enable a feature.
+[package.metadata.cargo-machete]
+ignored = ["kube-runtime"]
+
+[lints]
+workspace = true
+
+[dependencies]
+bindy-api.workspace = true
+bindy-controller-sdk.workspace = true
+bindy-bind9.workspace = true
+kube.workspace = true
+# Feature-only dependency: enables `unstable-runtime-stream-control` on the
+# kube-runtime that `kube::runtime` re-exports, so `Controller::for_stream`
+# compiles when this crate is built on its own (see the workspace Cargo.toml).
+kube-runtime.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+k8s-openapi.workspace = true
+hickory-proto.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+wiremock.workspace = true

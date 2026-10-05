@@ -427,3 +427,61 @@ mod multistore_and_record_ref {
         assert_eq!(record.record_type(), cloned.record_type());
     }
 }
+
+#[cfg(test)]
+mod context_new {
+    use super::super::Context;
+    use crate::namespace_scope::NamespaceScope;
+    use crate::shutdown;
+    use bindy_api::crd::{
+        AAAARecord, ARecord, Bind9Cluster, Bind9Instance, CAARecord, CNAMERecord,
+        ClusterBind9Provider, DNSZone, MXRecord, NSRecord, PTRRecord, SRVRecord, TXTRecord,
+    };
+    use k8s_openapi::api::apps::v1::Deployment;
+    use k8s_openapi::api::core::v1::Endpoints;
+
+    fn unreachable_client() -> kube::Client {
+        // Never dialled successfully: these tests only check what is registered.
+        let config = kube::Config::new("http://127.0.0.1:1".parse().unwrap());
+        kube::Client::try_from(config).unwrap()
+    }
+
+    #[tokio::test]
+    async fn context_new_registers_every_cached_kind_per_namespace_target() {
+        let scope = NamespaceScope::Namespaces(vec!["a".to_string(), "b".to_string()]);
+        let (_trigger, signal) = shutdown::channel();
+
+        let ctx = Context::new(unreachable_client(), scope, signal).expect("builds");
+
+        // Cluster-scoped: one cluster-wide shard in every mode.
+        let _ = ctx.watch.store::<ClusterBind9Provider>(None);
+        for target in ["a", "b"] {
+            let t = Some(target);
+            let _ = ctx.watch.store::<Bind9Cluster>(t);
+            let _ = ctx.watch.store::<Bind9Instance>(t);
+            let _ = ctx.watch.store::<Deployment>(t);
+            let _ = ctx.watch.store::<DNSZone>(t);
+            let _ = ctx.watch.store::<Endpoints>(t);
+            let _ = ctx.watch.store::<ARecord>(t);
+            let _ = ctx.watch.store::<AAAARecord>(t);
+            let _ = ctx.watch.store::<TXTRecord>(t);
+            let _ = ctx.watch.store::<CNAMERecord>(t);
+            let _ = ctx.watch.store::<MXRecord>(t);
+            let _ = ctx.watch.store::<NSRecord>(t);
+            let _ = ctx.watch.store::<SRVRecord>(t);
+            let _ = ctx.watch.store::<CAARecord>(t);
+            let _ = ctx.watch.store::<PTRRecord>(t);
+        }
+        assert_eq!(ctx.stores.dnszones.shard_count(), 2);
+        assert_eq!(ctx.stores.cluster_bind9_providers.shard_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn context_new_carries_the_shutdown_signal() {
+        let (trigger, signal) = shutdown::channel();
+        let ctx = Context::new(unreachable_client(), NamespaceScope::All, signal).expect("builds");
+        assert!(!ctx.shutdown.is_triggered());
+        trigger.fire();
+        assert!(ctx.shutdown.is_triggered());
+    }
+}

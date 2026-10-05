@@ -656,3 +656,100 @@ impl DNSZoneStatusUpdater {
         Ok(())
     }
 }
+
+/// Check if a resource's spec has changed by comparing generation with `observed_generation`.
+///
+/// This is the standard Kubernetes pattern for determining if reconciliation is needed.
+/// The `metadata.generation` field is incremented by Kubernetes only when the spec changes,
+/// while `status.observed_generation` is set by the controller after processing a spec.
+///
+/// # Arguments
+///
+/// * `current_generation` - The resource's current `metadata.generation`
+/// * `observed_generation` - The controller's last `status.observed_generation`
+///
+/// # Returns
+///
+/// * `true` - Reconciliation is needed (spec changed or first reconciliation)
+/// * `false` - No reconciliation needed (spec unchanged, status-only update)
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use bindy_controller_sdk::status::should_reconcile;
+///
+/// fn check_if_reconcile_needed(resource: &MyResource) -> bool {
+///     let current = resource.metadata.generation;
+///     let observed = resource.status.as_ref()
+///         .and_then(|s| s.observed_generation);
+///
+///     should_reconcile(current, observed)
+/// }
+/// ```
+///
+/// # Kubernetes Generation Semantics
+///
+/// - **`metadata.generation`**: Incremented by Kubernetes API server when spec changes
+/// - **`status.observed_generation`**: Set by controller to match `metadata.generation` after reconciliation
+/// - When they match: spec hasn't changed since last reconciliation → skip work
+/// - When they differ: spec has changed → reconcile
+/// - When `observed_generation` is None: first reconciliation → reconcile
+#[must_use]
+pub fn should_reconcile(current_generation: Option<i64>, observed_generation: Option<i64>) -> bool {
+    match (current_generation, observed_generation) {
+        (Some(current), Some(observed)) => current != observed,
+        (Some(_), None) => true, // First reconciliation
+        _ => false,              // No generation tracking available
+    }
+}
+
+/// Check if a status value has actually changed compared to the current status.
+///
+/// This helper prevents unnecessary status updates that would trigger reconciliation loops.
+/// It compares a new status value with the existing status and returns `true` only if
+/// they differ, indicating an update is needed.
+///
+/// # Arguments
+///
+/// * `current_value` - The current status value (from existing resource)
+/// * `new_value` - The new status value to potentially set
+///
+/// # Returns
+///
+/// * `true` - Status has changed and needs updating
+/// * `false` - Status is unchanged, skip the update
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use bindy_controller_sdk::status::status_changed;
+///
+/// let current_ready = instance.status.as_ref()
+///     .and_then(|s| s.ready_replicas);
+/// let new_ready = Some(3);
+///
+/// if status_changed(&current_ready, &new_ready) {
+///     // Status has changed, safe to update
+///     update_status(client, instance, new_ready).await?;
+/// }
+/// ```
+///
+/// # Why This Matters
+///
+/// In kube-rs, status updates trigger "object updated" events which cause new reconciliations.
+/// Without this check, updating status on every reconciliation creates a tight loop:
+///
+/// 1. Reconcile → Update status
+/// 2. Status update → "object updated" event
+/// 3. Event → New reconciliation
+/// 4. Repeat from step 1 (infinite loop)
+///
+/// By only updating when status actually changes, we break this cycle.
+#[must_use]
+pub fn status_changed<T: PartialEq>(current_value: &Option<T>, new_value: &Option<T>) -> bool {
+    current_value != new_value
+}
+
+#[cfg(test)]
+#[path = "status_generation_tests.rs"]
+mod status_generation_tests;

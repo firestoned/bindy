@@ -3,7 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-10-03
 - **Proposed:** 2026-10-03
-- **Amended:** 2026-10-04 (Decision #2: when `finalizers` and `context` move to the SDK; Decision #3: own fan-out with `unstable-runtime-stream-control`, because kube's shared stores drop deletes)
+- **Amended:** 2026-10-04 (Decision #2: when `finalizers` and `context` move to the SDK; Decision #3: own fan-out with `unstable-runtime-stream-control`, because kube's shared stores drop deletes); 2026-10-05 (Decision #2: `placement`, the instance-endpoint helpers and the record write path move to `bindy-bind9`, `finalizers` takes its cleanup as a closure; Decision #4: the `DNSZone` predicate; Decision #5: the shutdown trigger and the startup gate test)
+- **Implemented:** 2026-10-05 (roadmap 01 Phases A to G; threat-model pass v1.11)
 - **Deciders:** Erick Bourgeois
 - **Related:** Plan in roadmap 01
   (`.github/community/01-controller-crate-split.md`); keeps
@@ -131,6 +132,37 @@ the SDK, which removes the `bind9 → reconcilers` back-edge.
 
 Until then both stay in `bindy`; the direction rules above are unchanged.
 
+**Amendment (2026-10-05).** Finishing the split showed three places where
+the table above would need a controller crate to depend on another, or a
+cycle between two crates. Each is resolved by moving the shared code down,
+as the direction rule requires, not by relaxing the rule:
+
+- `placement` moves to `bindy-bind9`, not `bindy-controller-instance`:
+  `placement::resolve_placement` builds on `bind9_resources::build_pod_spec`
+  and `bind9_resources` calls back into `placement`, and the cluster
+  controller resolves placement too.
+- The functions that resolve which instances a zone targets and walk their
+  BIND9 endpoints (`get_instances_from_zone`, `filter_primary_instances`,
+  `for_each_instance_endpoint`, and what they call) move from the zone
+  controller to `bindy_bind9::instances`. The record controllers use them.
+- The record write path (`RecordOperation`, `ReconcilableRecord` and its
+  nine impls, `add_record_to_instances_generic`,
+  `delete_record_from_primaries`, `replay_zone_records`) moves from the
+  record controllers to `bindy_bind9::record_push`. The zone controller
+  replays a recreated zone's records and deletes records through it.
+
+`finalizers` moves to the SDK with the trait removed: `handle_deletion` and
+`handle_cluster_deletion` take the cleanup as an async closure, so no
+SDK trait is implemented for a `bindy-api` type and the orphan rule no
+longer applies. `should_reconcile` and `status_changed` move to `sdk::status`.
+The BIND9 half of `context` (`StoresBind9Ext`) moves to `bindy-bind9`.
+
+`bindy-controller-cluster` runs two kinds; its one `controller(ctx)` runs
+both. No controller needs a `Bind9Manager` from the binary (each resolves one
+per instance it addresses), so the entry point takes the shared `Context`
+only. Scout keeps its own clients (local, and the remote bindy cluster) and
+builds one `WatchSet` per client.
+
 Each controller crate exposes one public entry point,
 `pub async fn controller(ctx) -> anyhow::Result<()>`. Tests move with the
 code they cover, keeping the `foo.rs` / `foo_tests.rs` convention.
@@ -225,6 +257,40 @@ guard in `reconcile_dnszone_wrapper` (defect 2) protects nothing and is
 deleted, after the predicate has run on a kind cluster for a full requeue
 period without a reconcile storm.
 
+**Amendment (2026-10-05).** The `DNSZone` primary predicate is
+`generation` combined with `finalizers`, `labels` and `annotations`, not
+`generation` alone. kube's `finalizer()` helper adds the finalizer and
+returns `await_change`, relying on that patch's watch event to come back; a
+generation-only filter swallows it and a new zone would wait for an
+unrelated event. Labels and annotations are user-driven and rare, and
+passing them keeps every behaviour that keys on them. What the predicate
+removes is exactly the self-trigger: status-only writes. Setting
+`deletionTimestamp` bumps a custom resource's generation, so deletion still
+passes. The `WatchSet` keeps `Config::default()` for every kind; the
+predicate is applied to the controller's subscriber stream, so other
+subscribers of `DNSZone` still see every event. The fourth row of the table
+(`any_semantic()` for status-driven streams) is not used: the cross-kind
+status-driven watches (zone status to instance, zone status to record) are
+mappers over subscriber streams.
+
+The other primaries keep unfiltered streams, on measurement rather than by
+assumption: on kind, with every kind's own reconciles counted over a full
+requeue period, none retriggers itself. Their status writers compare before
+writing (`cluster_status_changed`, `instance_status_changed`, the record
+status check) and an unchanged patch is a no-op that emits no event, so an
+own status write costs at most one extra reconcile. `DNSZone` needed the
+predicate because its status carries per-instance timestamps that change on
+every reconcile. Record status must not be filtered: the zone controller
+writes a record's `zoneRef` into the record's status, and that write is how
+the record learns which zone to publish to.
+
+A cross-kind mapper that rebuilds derived state from another kind's status
+filters that stream on what it reads (`sdk::watch::changed_only`, which also
+always passes deletes). The `DNSZone` to `Bind9Instance` mapper is the case
+that needs it: every record reconcile stamps a timestamp into its zone's
+status, and unfiltered each stamp would reconcile every instance the zone
+selected.
+
 ### 5. Controllers own their work and drain on shutdown
 
 - **Watch mappers are pure.** A mapper returns `ObjectRef`s and does no I/O.
@@ -241,6 +307,20 @@ period without a reconcile storm.
 - **One error policy.** A single `ReconcileError` and `error_policy` in the
   SDK, with capped exponential backoff instead of the flat
   `ERROR_REQUEUE_DURATION_SECS`.
+
+**Amendment (2026-10-05).** The shutdown trigger is a cloneable
+(`Shared`) future held in the `Context`, so every controller crate's
+`controller(ctx)` can pass it to `graceful_shutdown_on` without a second
+parameter. The binary joins the controllers with `try_join_all` through an
+SDK `supervise` wrapper: a controller that returns before shutdown was
+triggered is an error (the process exits non-zero and Kubernetes restarts
+it, as the old `select!` did), one that returns after it is a clean drain.
+Loss of the leader lease drains, then exits non-zero; SIGTERM drains, then
+exits zero. The gate test for deleting the startup drift pass deletes an
+owned resource while the operator is scaled to zero and asserts the
+controller recreates it within a bounded time of starting again: that is
+the recovery the drift pass existed for, and it comes from the watcher's own
+`InitApply` events.
 
 ### 6. What does not change
 

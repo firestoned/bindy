@@ -1,12 +1,37 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.10
-**Last Updated:** 2026-10-04
+**Version:** 1.11
+**Last Updated:** 2026-10-05
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
 
-> Last full pass 2026-10-04, against ADR-0001 … ADR-0012 (ADR-0006 as amended;
-> ADR-0009 through Phase B step B2: shared watch layer, targeted v1.8 note).
+> Last full pass 2026-10-05, against ADR-0001 … ADR-0012 (ADR-0006 as amended;
+> ADR-0009 as amended 2026-10-05, fully implemented: roadmap 01 Phases A to G).
+>
+> **Revision note (v1.11):** Full pass for the completion of ADR-0009
+> (roadmap 01 Phases C to G). The operator is one binary built from eleven
+> workspace crates; every controller now runs from the shared watch layer and
+> drains on one shutdown signal. No new component, actor, asset, trust
+> boundary, RBAC grant or network path; the deploy manifests are unchanged,
+> and the operator holds 19 watch connections instead of 58 (measured on
+> kind). Changes walked through every section:
+> **D2** gains **M-41**: the `DNSZone` controller no longer retriggers on its
+> own status writes, and a `DNSZone` event no longer spawns unbounded
+> per-instance work outside the controller (its reconciles now go through the
+> controller queue: deduplicated, rate-limited by backoff, counted). **E2/T4**
+> gain **M-42**: a test fails when the Scout RBAC built by `bindy bootstrap`
+> and its static manifests or documented examples drift. **Availability**
+> gains **M-43**: SIGTERM and lease loss drain in-flight reconciles, and an
+> e2e phase proves drift made while no operator ran is repaired on start, so
+> the separate startup drift pass (which listed cluster-wide even in
+> namespace-restricted mode, M-22) is deleted. New residual risks 10 (a
+> deposed leader finishes its in-flight reconciles after losing the lease)
+> and 11 (a hand-edited `DNSZone` status is corrected at the next requeue, no
+> longer at once). Corrected in passing: the Scout component still described
+> the cluster-wide `secrets: get` that M-25 removed in 2026-07. Supply chain:
+> the new crates are workspace path dependencies (`publish = false`) and
+> appear in the SBOM; one external dependency (`async-trait`) was dropped,
+> none added. All other sections re-walked unchanged.
 >
 > **Revision note (v1.10):** Pass for ADR-0012 (shared DNSSEC keys from a
 > Secret). New asset **DNSSEC Private Keys**; Boundary 4 gains the
@@ -241,8 +266,11 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
 ### Components
 
 1. **Bindy Operator**
-   - Kubernetes operator written in Rust
+   - Kubernetes operator written in Rust: one binary built from a Cargo
+     workspace (ADR-0009), one crate per controller over a shared controller SDK
    - Watches custom resources (Bind9Cluster, Bind9Instance, DNSZone, DNS records)
+     through one shared watch and cache per kind and namespace target
+   - Leader-elected; SIGTERM or loss of the lease drains in-flight reconciles
    - Reconciles desired state with actual state
    - Manages BIND9 deployments, ConfigMaps, Secrets, Services
    - Uses RNDC to update zones on running BIND9 instances
@@ -267,19 +295,17 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
    - ServiceAccounts: RBAC for operator access
 
 5. **Bindy Scout** *(added 2026-03-20; see [Trust Boundary 6](#boundary-6-scout-controller))*
-   - Separate binary/`ServiceAccount` from the main operator, its own `ClusterRole` (`bindy-scout`)
+   - Separate Deployment/`ServiceAccount` from the main operator (same binary, `bindy scout`), its own `ClusterRole` (`bindy-scout`)
    - Watches `Ingress`, `Service` (LoadBalancer), and Gateway API `HTTPRoute`/`TLSRoute`/`TCPRoute`
      resources **cluster-wide, across all namespaces**, for an opt-in annotation
    - On opt-in, auto-creates/deletes `ARecord` CRs and adds/removes its own finalizer —
      which requires cluster-wide `patch`/`update` on the watched resource types, not
      just `get`/`list`/`watch`
-   - **Phase 2 (multi-cluster) mode**: reads a kubeconfig from a Kubernetes `Secret` to
-     target a *different* cluster's Bindy install; the RBAC for this is
-     `resources: ["secrets"], verbs: ["get"]` with **no namespace or resourceName
-     scoping** — i.e. cluster-wide read of every Secret in the cluster where Scout
-     runs. The code comment authoring this rule flags it explicitly: *"Scope this to
-     a Role in the specific Secret's namespace for production deployments."* This has
-     not yet been done — see [Residual Risks](#residual-risks).
+   - **Phase 2 (multi-cluster) mode**: reads a kubeconfig from one Kubernetes `Secret`
+     to target a *different* cluster's Bindy install, through a namespaced,
+     `resourceNames`-restricted Role (`bindy-scout-secrets-reader`), applied only in
+     that mode. Until 2026-07-19 this was a cluster-wide `secrets: get`; see I4 and
+     M-25. The endpoint mode (M-32) needs no Secret access at all.
 
 ---
 
@@ -386,7 +412,7 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
   mount, read-only root filesystem, same restricted context as `named`),
   which copies the keys into a memory-backed `emptyDir`; `named` never
   mounts the Secret (`build_dnssec_keys_init_container`,
-  `crates/bindy/src/bind9_resources.rs`).
+  `crates/bindy-bind9/src/bind9_resources.rs`).
 
 **Threats if Compromised:**
 - Attacker can serve malicious DNS responses
@@ -616,7 +642,7 @@ verification, but nothing enforces that verification at admission by default)
   compromised operator can no longer create/modify/delete Secrets in other
   namespaces such as `kube-system`.
 - ❌ **MISSING**: Immutable ConfigMaps — `build_configmap` / `build_cluster_configmap`
-  (`crates/bindy/src/bind9_resources.rs`) do not set `immutable: true`, so a generated ConfigMap can
+  (`crates/bindy-bind9/src/bind9_resources.rs`) do not set `immutable: true`, so a generated ConfigMap can
   be edited in place by anyone holding namespace write access (audit finding P2-2)
 - ❌ **MISSING**: ConfigMap/Secret integrity checks (hash validation)
 - ❌ **MISSING**: Automated drift detection (compare running config vs desired state)
@@ -735,7 +761,7 @@ exists to constrain that further)
 - ✅ GitHub secret scanning enabled
 - ✅ CI/CD fails if secrets detected
 - ✅ Log sanitization — RNDC keys and bindcar bearer tokens are redacted in their
-  `Debug` impls (`crates/bindy/src/bind9/types.rs`, `crates/bindy/src/bind9/mod.rs`), so a key cannot reach a log
+  `Debug` impls (`crates/bindy-bind9/src/bind9/types.rs`, `crates/bindy-bind9/src/bind9/mod.rs`), so a key cannot reach a log
   line through structured logging
 - ⚠️ **PARTIAL**: RNDC key rotation is a **documented manual procedure**
   (`docs/src/security/incident-response.md`), not an automated policy. There is no
@@ -861,11 +887,11 @@ validly signed answers for the zone (Spoofing as a consequence).
 
 **Mitigations:**
 - ✅ H2 allow-list: the `secretRef` name must start with `bindy-`
-  (`validate_dnssec_key_secret_name`, `crates/bindy/src/safe_volume.rs`), and
+  (`validate_dnssec_key_secret_name`, `crates/bindy-bind9/src/safe_volume.rs`), and
   a pod volume can only reference a Secret in its own namespace
 - ✅ The Secret is mounted only into the `dnssec-keys-init` init container,
   never into `named` or the bindcar sidecar (ADR-0012,
-  `crates/bindy/src/bind9_resources.rs`)
+  `crates/bindy-bind9/src/bind9_resources.rs`)
 - ✅ The key directory is a `medium: Memory` `emptyDir`: key copies stay off
   the node's disk; copied files are `0600`, the Secret files `0440` to the
   bind group
@@ -930,6 +956,16 @@ remains the path, as it is for zone data.
   path of this scenario
 - ✅ HTTP 429/retry visibility: `bindy_firestoned_io_kube_api_rate_limit_hits_total`
   and `..._kube_api_retries_total` alert before degradation cascades
+- ✅ **No self-triggering, no out-of-band work** (M-41, ADR-0009 §4/§5,
+  2026-10-05): the `DNSZone` controller ignores its own status writes, so a
+  CR flood no longer multiplies into a reconcile storm; and a `DNSZone` event
+  enqueues the instances it selected instead of spawning an unbounded task that
+  fetched and patched each one outside the controller, so that work is
+  deduplicated per object, backed off on failure and counted; and only when
+  the zone's instance selection changes, so the timestamps every record
+  reconcile writes into its zone cannot fan out into records x instances
+  reconciles (measured on kind before the filter: 30 instance reconciles in
+  330 s for 10 records and 3 instances)
 - ❌ **MISSING**: Global reconciliation-frequency limiter (M-3 layer 1 —
   API traffic is now bounded, but reconcile CPU work per CR is not)
 - ❌ **MISSING**: Admission webhook to limit number of CRs per namespace
@@ -1022,6 +1058,10 @@ CR-quota admission policy lands)
   (unset = watch everything), so this mitigation is not yet load-bearing unless
   a deployer explicitly configures it.
 - ✅ Automated RBAC verification script (`deploy/rbac/verify-rbac.sh`)
+- ✅ **Scout RBAC drift test** (M-42, 2026-10-05): `cargo test -p bindy-bootstrap
+  rbac_drift` fails when `deploy/scout/*.yaml` or the examples in
+  `docs/src/guide/scout.md` differ from the RBAC `bindy bootstrap scout` builds,
+  so a grant cannot be widened in one representation and not reviewed in the others
 - ✅ No wildcard permissions in operator RBAC
 - ✅ Regular RBAC audits (quarterly)
 - ⚠️ **Scout is a separate, less-reviewed RBAC surface** — see T4/I4/E4 and
@@ -1128,6 +1168,8 @@ scenario.
 - Short-lived tokens (TokenRequest API)
 - RBAC verification script
 - Regular Kubernetes upgrades
+- One shared watch per kind and namespace target (ADR-0009): 19 operator watch
+  connections in cluster-wide mode instead of 58, client-side rate limited (M-31)
 
 **Risk:** MEDIUM
 
@@ -1485,9 +1527,12 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-23 | **Unprivileged DNS port + capability drop**: BIND9 operand binds container port 5353 (Service still exposes 53) and adds zero Linux capabilities (`NET_BIND_SERVICE` removed) | E1 (container escape) | ✅ Pod Security |
 | M-24 | **ValidatingAdmissionPolicy suite** (8 policies + 8 bindings = 16 manifests, as of 2026-07-01): ACL syntax, zone-name validation, RNDC strictness, operand pod shape, DNSSEC policy, operator-workload ServiceAccount identity, DNS record value validation, image provenance, and `volumeMount.mountPath` allow-listing (`safe_volume.rs`, closes audit finding F-001) | T1 (DNS tampering), T3 (ConfigMap/Secret tampering), E1 (container escape via malicious volume mounts), T2 (image provenance) | ✅ Kubernetes VAP — supersedes M-13 below |
 | M-30 | **Scout namespace whitelisting** (`--namespace-selector` / `BINDY_SCOUT_NAMESPACE_SELECTOR`, new in v1.1): a source object's namespace must match a configured Kubernetes label selector *in addition to* the object's own opt-in annotation before Scout acts on it. Label-selector matching delegates to the API server (no client-side selector parser). Reduces Scout's day-to-day operating footprint — bounds T4 (cross-tenant patch/update) during normal operation. **Does not reduce the `ClusterRole`'s RBAC ceiling** for Ingress/Service/route types — a directly compromised token is unaffected for those. **Opt-in — unset by default**, matching pre-v1.1 behavior for backward compatibility; Scout logs a startup warning when unset. See the Scout guide's "Namespace Whitelisting" section for the rollout/migration note. | T4 (partial) | ⚠️ Opt-in, recommended for all production deployments |
-| M-32 | **Scout endpoint + token-file remote transport** (2026-09-28, ADR-0008): alternative to the kubeconfig-Secret mode; bare bindy-minted token file (rotatable, no restart), endpoint/CA in the Deployment spec, fail-closed mode selection. Removes the kubeconfig blob and the `secrets: get` dependency in this mode; supports Linkerd-meshed proxy mirrors for cross-cluster mTLS | I4/E4 (smaller credential surface), T4 (unchanged ceiling) | ✅ `crates/bindy/src/scout.rs` (`resolve_remote_transport`) |
+| M-32 | **Scout endpoint + token-file remote transport** (2026-09-28, ADR-0008): alternative to the kubeconfig-Secret mode; bare bindy-minted token file (rotatable, no restart), endpoint/CA in the Deployment spec, fail-closed mode selection. Removes the kubeconfig blob and the `secrets: get` dependency in this mode; supports Linkerd-meshed proxy mirrors for cross-cluster mTLS | I4/E4 (smaller credential surface), T4 (unchanged ceiling) | ✅ `crates/bindy-scout/src/scout.rs` (`resolve_remote_transport`) |
 | M-31 | **Client-side Kubernetes API rate limiting** (2026-09-27, ADR-0005): tower `RateLimitLayer` in the operator's client stack (20 QPS / 30 burst default, env-tunable, invalid overrides fall back safely), paginated LISTs (O(1) memory), exponential-backoff retries on transient 429/5xx, and Prometheus visibility of server-side throttling (`kube_api_*` metrics) | D2 (reconciliation flood; API/memory amplification), platform availability (Basel III operational resilience) | ✅ `crates/bindy-controller-sdk/src/{rate_limit,pagination,retry}.rs` |
 | M-38 | **Shared watch supervision** (2026-10-04, ADR-0009 §3): every cached kind is watched once per namespace target by the SDK `WatchSet`; a stream that ends is restarted with backoff, and `bindy_firestoned_io_watch_{events,errors,restarts}_total` / `_watch_last_event_timestamp_seconds` expose each watch's health and staleness. Before, a dead reflector task ended silently. Fan-out applies backpressure instead of dropping events, so a reconcile is never silently skipped | D2 (stale cache acting on old state), availability | ✅ `crates/bindy-controller-sdk/src/watch.rs` |
+| M-41 | **No self-triggering, pure watch mappers** (2026-10-05, ADR-0009 §4/§5): the `DNSZone` primary stream passes only generation, finalizer, label and annotation changes (`sdk::watch::primary_predicate`), so the controller's own status writes do not retrigger it and the 2-second timestamp rate limiter is gone; every watch mapper returns object references and does no I/O, so the work the `DNSZone` → `Bind9Instance` mapper used to spawn now runs as a controller reconcile (deduplicated, backed off, counted), and only when the zone's instance selection changes (`sdk::watch::changed_only`), so record timestamps written into zone status cannot fan out into instance reconciles | D2 (reconcile storm; unbounded out-of-band work) | ✅ `crates/bindy-controller-zone/src/watch.rs`, `crates/bindy-controller-instance/src/watch.rs` |
+| M-42 | **Scout RBAC drift test** (2026-10-05, ADR-0009 §6): the Scout ClusterRole, Roles and bindings that `bindy bootstrap scout` builds are compared with `deploy/scout/*.yaml` and the `docs/src/guide/scout.md` examples; any difference in rules, role references or subjects fails the build | E2, T4 (RBAC widened in one representation, unreviewed in the others) | ✅ `crates/bindy-bootstrap/src/bootstrap_tests.rs` (`rbac_drift`) |
+| M-43 | **Draining shutdown and startup recovery** (2026-10-05, ADR-0009 §5): SIGTERM, SIGINT and loss of the leader lease fire one trigger; every controller stops taking work and finishes its in-flight reconciles (`graceful_shutdown_on`), and a controller that stops on its own fails the process (`supervise`). Drift made while no operator runs is repaired from the watchers' initial lists when one starts, proven by the restart e2e suite, so the separate startup pass (cluster-wide LISTs even under M-22) is deleted | Availability, partial writes on shutdown, M-22 scope leak | ✅ `crates/bindy-controller-sdk/src/shutdown.rs`, `crates/bindy/src/main.rs`, `tests/e2e/restart_test.sh` |
 | M-25 | **Scout Secret RBAC scoped** (fixed 2026-07-19, same day as this finding's discovery): removed the cluster-wide `secrets: get` `PolicyRule` from the `bindy-scout` `ClusterRole` entirely. Replaced with a namespaced, `resourceNames`-restricted Role (`bindy-scout-secrets-reader`) scoped to exactly the one Phase 2 kubeconfig Secret, applied only when `--remote-secret` is configured. Same-cluster-only deployments (the default) now get zero Secret access. See I4/E4/Scenario 6 for the full before/after. | I4, E4, T4 (Secret-read component), Scenario 6 | ✅ RBAC — **was the highest-priority open item in v1.1; closed same-day** |
 
 ---
@@ -1541,7 +1586,7 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 
 1. **DNS Tampering (T1)** - Substantially reduced by RBAC and, as of 2026-07-01, an 8-policy `ValidatingAdmissionPolicy` suite (M-24) covering ACLs, zone names, RNDC strictness, pod shape, and record values. DNSSEC signing (M-14) shipped 2026-09-27 as the in-transit tampering defense — opt-in, so the residual gap is deployment coverage (unsigned zones) and DS publication in parent zones, not a missing capability.
 
-2. **Operator Resource Exhaustion (D2)** - Risk reduced by resource limits, but rate limiting (M-3) and admission webhooks are needed.
+2. **Operator Resource Exhaustion (D2)** - Risk reduced by resource limits, client-side API rate limiting (M-31) and the removal of self-triggered and out-of-band reconcile work (M-41); a per-namespace CR quota (admission) is still needed.
 
 3. **Zone Enumeration (I2)** - Risk reduced by AXFR restrictions, but TSIG authentication would eliminate AXFR abuse.
 
@@ -1556,6 +1601,10 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 8. **Quantum-capable adversary (HNDL)** - Control-plane TLS key exchange is classical (X25519/ECDHE), so traffic recorded today, including TSIG/RNDC secrets in transit, is decryptable once a cryptographically relevant quantum computer exists; DNSSEC and release signatures additionally become forgeable at that point. Accepted for now: the inventory is published per release (M-39, ADR-0011), hybrid key exchange is planned (M-40, roadmap 28 Phase 2), and the signature surfaces are blocked on upstream standardization (IETF/BIND9, Sigstore). *Revisit when:* roadmap 28's six-month watch cadence fires (first 2027-04) or any upstream ships PQC support. A full quantum-adversary modeling pass across every trust boundary is roadmap 28 Phase 5.
 
 9. **Secret-supplied DNSSEC keys never roll (ADR-0012)** - With `keysFrom.secretRef`, KSK and ZSK lifetimes are pinned to `unlimited` so every primary keeps the same key set; automatic rollover would make each pod generate a different successor. A key therefore stays in use until the operator rotates it by hand (new key into the Secret, pods restarted), which lengthens the exposure window of a key that leaked unnoticed. Editing the Secret also does not roll the pods by itself. Accepted: the alternative was a DNSKEY RRset that differs per pod, which breaks validation outright. *Revisit when:* coordinated rollover lands (one signer with transfers to the other primaries, or operator-generated successors written into the Secret), or a Secret content hash on the pod template.
+
+10. **A deposed leader drains (ADR-0009 §5)** - On loss of the lease the old leader stops starting reconciles but finishes the ones in flight, so for at most one reconcile's duration it can write while the new leader starts. Accepted: every write it can make is idempotent (record pushes query BIND9 first and write only a differing RRset; zone creation checks existence; Kubernetes objects are written as desired state, create-or-update), the drain is capped by the pod's termination grace period, and cancelling mid-reconcile, the old behaviour, could leave half-applied changes. *Revisit when* a reconcile gains a non-idempotent write, or reconcile durations approach the lease duration (15 s).
+
+11. **Hand-edited `DNSZone` status waits for the requeue (ADR-0009 §4)** - The zone controller no longer reacts to status-only changes, so a status edited by hand (which needs `dnszones/status` write access, granted only to the operator) stands until the zone's next reconcile: at most 5 minutes when Ready, 30 seconds otherwise, or at once on any spec, label, annotation, record or instance change. Accepted: status is informational and rewritten by the controller; DNS data on BIND9 is unaffected. *Revisit when* any decision reads zone status as input from outside the operator.
 
 ---
 

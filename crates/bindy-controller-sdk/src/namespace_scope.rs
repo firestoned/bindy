@@ -123,6 +123,20 @@ where
     }
 }
 
+/// Owned copies of the scope's namespace targets: `[None]` cluster-wide, or
+/// one `Some(namespace)` per watched namespace.
+///
+/// [`NamespaceScope::api_targets`] borrows the scope; a controller needs
+/// targets it can move into one controller per namespace.
+#[must_use]
+pub fn owned_targets(scope: &NamespaceScope) -> Vec<Option<String>> {
+    scope
+        .api_targets()
+        .into_iter()
+        .map(|t| t.map(ToString::to_string))
+        .collect()
+}
+
 #[cfg(test)]
 #[path = "namespace_scope_tests.rs"]
 mod namespace_scope_tests;

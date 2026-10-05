@@ -28,7 +28,7 @@ defense-in-depth on top of the in-process Rust validators in
 
 F-003 (cross-namespace zone hijack) is enforced operator-side via the
 `bindy.firestoned.io/allow-zone-namespaces` annotation on `Bind9Instance`
-(see `src/reconcilers/dnszone/validation.rs::get_instances_from_zone`).
+(see `crates/bindy-bind9/src/instances.rs::get_instances_from_zone`).
 There is no admission policy for it because the gate's input — metadata
 on the platform-owned target instance — isn't visible during `DNSZone`
 admission.

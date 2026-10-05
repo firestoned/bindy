@@ -1,0 +1,35 @@
+[package]
+name = "bindy-bootstrap"
+description = "`bindy bootstrap`: installs the bindy operator, Scout and multi-cluster access"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+documentation.workspace = true
+homepage.workspace = true
+readme.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bindy-api.workspace = true
+kube.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+anyhow.workspace = true
+k8s-openapi.workspace = true
+base64.workspace = true
+
+
+[dev-dependencies]
+# The operator Deployment must mount the token where the operator reads it;
+# bootstrap_tests checks that against bindy-bind9.
+bindy-bind9.workspace = true
+tempfile.workspace = true
+wiremock.workspace = true

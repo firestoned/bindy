@@ -47,8 +47,8 @@ Located in `/tests/` directory:
 | Module | Coverage | Tests | Status |
 |--------|----------|-------|--------|
 | `crates/bindy/src/main.rs` | High | Unit | ✅ |
-| `crates/bindy/src/bind9.rs` | High | Unit | ✅ |
-| `crates/bindy/src/bind9_resources.rs` | High | Unit | ✅ |
+| `crates/bindy-bind9/src/bind9/mod.rs` | High | Unit | ✅ |
+| `crates/bindy-bind9/src/bind9_resources.rs` | High | Unit | ✅ |
 | `crates/bindy-api/src/crd.rs` | Medium | Unit + Integration | ✅ |
 | `crates/bindy-api/src/labels.rs` | High | Unit | ✅ |
 

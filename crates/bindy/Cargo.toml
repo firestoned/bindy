@@ -28,35 +28,26 @@ workspace = true
 [dependencies]
 bindy-api.workspace = true
 bindy-controller-sdk.workspace = true
+bindy-controller-cluster.workspace = true
+bindy-controller-instance.workspace = true
+bindy-controller-zone.workspace = true
+bindy-controller-records.workspace = true
+bindy-scout.workspace = true
+bindy-bootstrap.workspace = true
 kube.workspace = true
 # Feature-only dependency: enables `unstable-runtime-stream-control` on the
 # kube-runtime that `kube::runtime` re-exports (see the workspace Cargo.toml).
 kube-runtime.workspace = true
-json-patch.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde_yaml.workspace = true
 futures.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
-thiserror.workspace = true
-async-trait.workspace = true
-chrono.workspace = true
 k8s-openapi.workspace = true
-reqwest.workspace = true
-base64.workspace = true
-rand.workspace = true
-hickory-net.workspace = true
-hickory-proto.workspace = true
 rustls.workspace = true
-webpki.workspace = true
-rustls-pki-types.workspace = true
-url.workspace = true
-bindcar.workspace = true
 axum.workspace = true
-sha2.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 

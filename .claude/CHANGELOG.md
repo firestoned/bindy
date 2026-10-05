@@ -1,3 +1,65 @@
+## [2026-10-05 12:00] - Roadmap 01 Phases C to G: crate split finished, controllers drain, no startup drift pass (ADR-0009)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **New crates** (all `publish = false`, path dependencies, every version pinned once in the workspace):
+  - `crates/bindy-bind9`: `bind9/**`, `bind9_resources`, `bind9_acl`, `ddns`, `dns_errors`, `safe_volume`, `placement` (it and `bind9_resources` call each other), `context` (`StoresBind9Ext`), plus `instances` and `primary` (which instances a zone targets and how to reach them, from the zone controller) and `record_push` (the record write, delete and replay path, from the record controllers), so no controller crate depends on another.
+  - `crates/bindy-controller-{cluster,instance,zone,records}`: one crate per controller; the only public item of each is `controller(ctx)`.
+  - `crates/bindy-scout`, `crates/bindy-bootstrap`: `bindy scout` and `bindy bootstrap`; `scout_integration.rs` moved with Scout.
+- `crates/bindy-controller-sdk`:
+  - `finalizers` (moved; the `FinalizerCleanup` trait is gone, the cleanup is a closure, so the orphan rule no longer applies);
+  - `shutdown` (new: trigger, cloneable signal held in `Context`, and `supervise`);
+  - `reconcile` (new: `instrumented`, `finalizer_error`, the bookkeeping every reconcile wrapper repeated);
+  - `Context::new` (the `WatchSet` registration, moved from `main.rs`);
+  - `watch::primary_predicate` and `watch::diagnose_watch_error` (moved from Scout; every watch now logs the diagnosis);
+  - `namespace_scope::owned_targets`;
+  - `status::{should_reconcile, status_changed}` (moved from `reconcilers`).
+- `crates/bindy/src/main.rs`: 1,888 to 257 lines. The clap types and the bootstrap/scout dispatch are in `cli.rs`. The binary runs each controller crate through `supervise` + `try_join!`; SIGTERM, SIGINT and loss of the lease fire one shutdown trigger. The `bindy` library target is removed; its integration tests use `bindy_api`.
+- **Behaviour (the four defects ADR-0009 names):**
+  - The `DNSZone` primary stream drops status-only writes (`generation + finalizers + labels + annotations`), and the 2-second timestamp rate limiter is deleted.
+  - The `DNSZone` mapper in the instance controller no longer spawns a task: it enqueues the instances the zone selected, and only when what an instance's `status.zones` is built from changes (`sdk::watch::changed_only` with `zone_selection_key`; deletes always pass). Without that filter, every record reconcile's `lastReconciledAt` write into its zone fanned out into a full reconcile of every selected instance (measured on kind: 30 instance reconciles in 330 s for 10 records and 3 instances).
+  - SIGTERM and lease loss drain in-flight reconciles instead of cancelling them. SIGTERM exits 0; lease loss exits non-zero; a SIGTERM while waiting for the lease exits cleanly.
+  - `perform_startup_drift_detection` is deleted, gated on the new restart e2e phase.
+- Record controllers: the 9 `reconcile_*_record` wrappers are gone (`DnsRecordType::reconcile_record` is a provided method); the controllers no longer take an unused `Bind9Manager`.
+- Scout: its 5 controllers and its `DNSZone` cache run on two `WatchSet`s (local client, remote client) instead of `Controller::new` and a hand-rolled reflector.
+- **Dead code** exposed by making controller modules private, deleted with its tests:
+  - `create_managed_instance`, `delete_bind9cluster`, `delete_clusterbind9provider`, two `delete_bind9instance`s, `is_resource_ready`;
+  - `find_zones_selecting_record`, `detect_spec_changes`, `detect_instance_changes`, `refetch_zone`, `handle_duplicate_zone`, `find_all_secondary_pods`, `for_each_secondary_endpoint`;
+  - the zone `constants` module, `ConflictingZone::instance_names`, the unused `generate_record_wrapper!` macro;
+  - the unused workspace dependency `async-trait`. No new dependency.
+- `docs/adr/0009-*.md`: amended (§2 crate contents, §4 the `DNSZone` predicate, §5 the shutdown signal and the gate test). `calm/bindy-multi-cluster.architecture.json`: Scout node describes the shared watch layer and TCPRoute.
+- Docs: `docs/src/concepts/architecture.md` (watch wiring, instance mapper, drain), `docs/src/development/setup.md` (crate tree and dependency rule), source paths across `docs/src/**`, `deploy/` comments and test comments; `scripts/fix-mkdocs-links.sh` rewrites links for every crate; `.github/workflows/e2e.yaml` path filters; `.claude/CLAUDE.md`, rules and skills (`add-new-crd`, `docs-sync-check`, `tdd-workflow`, `update-docs`, `pre-commit-checklist`, `upgrade-bindcar`). Rustdoc is clean with `-D warnings`.
+- `docs/src/security/threat-model.md` v1.11: full pass; M-41 (no self-triggering, pure mappers), M-42 (Scout RBAC drift test), M-43 (draining shutdown, startup recovery); residual risks 10 (a deposed leader drains) and 11 (hand-edited zone status waits for the requeue); Scout component text corrected (its cluster-wide `secrets: get` was removed in 2026-07).
+- Roadmap 01 (all phases ticked; status Done), `ROADMAPS.md`.
+
+### Tests
+- **New tests:**
+  - SDK: `shutdown` (8), `reconcile` (4), `primary_predicate` (1), `diagnose_watch_error` (4), `changed_only` (3), `owned_targets` (2), `Context::new` (2), and 6 real `handle_deletion` tests against a mock API server that replace 4 ignored placeholders.
+  - Mappers: instance (5, plus 4 for `zone_selection_key`) and zone (2).
+  - `bindy-bootstrap` `rbac_drift` (5): `deploy/scout/*.yaml` and the `docs/src/guide/scout.md` examples against the bootstrap builders. Checked to fail on a changed verb.
+- 1670 workspace tests pass; fmt, clippy `-D warnings`, rustdoc `-D warnings`, `cargo machete`, `cargo deny` clean.
+- `tests/e2e/restart_test.sh`: new phase. It scales the operator to zero, deletes every instance's Service, scales back up, and requires each Service recreated within 120 s.
+- **kind on slate** (image from this branch):
+  - `tests/integration_test.sh` passed (Rust API, lifecycle, idempotency, restart); the Services came back 11 to 16 s after operator start.
+  - `tests/e2e/scout_test.sh` passed.
+  - Also passed: multi-tenancy, regression (admission policies, pod shape, liveness), TLS transport, and `crates/bindy-scout/tests/scout_integration.rs` (ignored by default, live API).
+  - Zone-spread passed after slate's `fs.inotify.max_user_instances` was raised to 512 (the four-node kind cluster would not start at 128).
+  - After the fan-out fix, integration (all four suites), multi-tenancy and zone-spread were run again on the new image: all passed.
+  - API-server WATCH requests held by the operator: 58 with v0.7.1, 20 with this branch (19 from the operator; the code opens one ConfigMap watch, the measured delta has two).
+  - Reconciles per kind over 330 s with the e2e fixture (2 zones, 3 instances, 10 records), after the fan-out fix: every kind at its requeue rate (Bind9Instance 3, DNSZone 2, Bind9Cluster 1, each record kind 1 or 2). Before the fix, Bind9Instance was 30.
+  - Earlier run, DNSZone reconciles over 330 s (more than one 5-minute requeue period) with 5 zones: 17, fully explained by the requeue (2 Ready zones, about 1 each) and the capped error backoff (3 Scout-suite zones with no instances, about 5 each); no self-triggered reconciles.
+- **Incremental build** after a one-line `crd.rs` change, slate: 10.5 to 11.1 s before, 6.7 to 8.6 s after. A change to the zone controller or Scout now rebuilds in about 4 s.
+
+### Why
+ADR-0009: crate boundaries that enforce the layering, one shared watch per kind, and controllers that own their work and drain on shutdown.
+
+### Impact
+- [ ] Breaking change (CLI, env vars, CRDs, RBAC and manifests unchanged)
+- [x] Requires cluster rollout (new binary; shutdown and startup behaviour changed)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-05 10:00] - Roadmap 01 Phase B step B4: leader election in `sdk::leader` (ADR-0009)
 
 **Author:** Erick Bourgeois

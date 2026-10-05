@@ -20,7 +20,7 @@
 
 // mod common; // Not needed for these tests
 
-use bindy::crd::{
+use bindy_api::crd::{
     Bind9Cluster, Bind9ClusterCommonSpec, Bind9ClusterSpec, Bind9Instance, ClusterBind9Provider,
     ClusterBind9ProviderSpec, DNSZone, DNSZoneSpec, SOARecord, ServerRole,
 };
@@ -420,7 +420,7 @@ async fn create_instance(
             namespace: Some(namespace.to_string()),
             ..Default::default()
         },
-        spec: bindy::crd::Bind9InstanceSpec {
+        spec: bindy_api::crd::Bind9InstanceSpec {
             placement: None,
             cluster_ref: cluster_ref.to_string(),
             role,

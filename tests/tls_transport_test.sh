@@ -320,7 +320,7 @@ pass "webhook admitting resources"
 # The CA is dedicated to sidecar certificates on purpose. The operator's default
 # verifier checks that the presented certificate chains to this bundle and does
 # NOT check the dialled address against its SANs, because a certificate cannot
-# carry a SAN for an ephemeral pod IP (see src/bind9/tls_client.rs). Any
+# carry a SAN for an ephemeral pod IP (see crates/bindy-bind9/src/bind9/tls_client.rs). Any
 # certificate from this CA is therefore accepted from any pod, which is only
 # safe while the CA issues nothing else.
 

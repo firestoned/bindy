@@ -283,37 +283,28 @@ name = "bindy"
 version = "0.7.1"
 dependencies = [
  "anyhow",
- "async-trait",
  "axum",
- "base64 0.23.1",
- "bindcar",
  "bindy-api",
+ "bindy-bootstrap",
+ "bindy-controller-cluster",
+ "bindy-controller-instance",
+ "bindy-controller-records",
  "bindy-controller-sdk",
- "chrono",
+ "bindy-controller-zone",
+ "bindy-scout",
  "clap",
  "clap_complete",
  "futures",
- "hickory-net",
- "hickory-proto",
- "json-patch",
  "k8s-openapi",
  "kube",
  "kube-runtime",
- "rand",
- "reqwest",
  "rustls",
- "rustls-pki-types",
- "rustls-webpki",
  "serde",
  "serde_json",
- "serde_yaml",
- "sha2",
  "tempfile",
- "thiserror 2.0.21",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "url",
  "wiremock",
 ]
 
@@ -333,6 +324,115 @@ dependencies = [
 ]
 
 [[package]]
+name = "bindy-bind9"
+version = "0.7.1"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "bindcar",
+ "bindy-api",
+ "bindy-controller-sdk",
+ "chrono",
+ "hickory-net",
+ "hickory-proto",
+ "k8s-openapi",
+ "kube",
+ "rand",
+ "reqwest",
+ "rustls",
+ "rustls-pki-types",
+ "rustls-webpki",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "url",
+ "wiremock",
+]
+
+[[package]]
+name = "bindy-bootstrap"
+version = "0.7.1"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "bindy-api",
+ "bindy-bind9",
+ "k8s-openapi",
+ "kube",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
+name = "bindy-controller-cluster"
+version = "0.7.1"
+dependencies = [
+ "anyhow",
+ "bindy-api",
+ "bindy-bind9",
+ "bindy-controller-sdk",
+ "chrono",
+ "futures",
+ "k8s-openapi",
+ "kube",
+ "kube-runtime",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
+name = "bindy-controller-instance"
+version = "0.7.1"
+dependencies = [
+ "anyhow",
+ "bindy-api",
+ "bindy-bind9",
+ "bindy-controller-sdk",
+ "chrono",
+ "futures",
+ "k8s-openapi",
+ "kube",
+ "kube-runtime",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
+name = "bindy-controller-records"
+version = "0.7.1"
+dependencies = [
+ "anyhow",
+ "bindy-api",
+ "bindy-bind9",
+ "bindy-controller-sdk",
+ "chrono",
+ "futures",
+ "hickory-proto",
+ "k8s-openapi",
+ "kube",
+ "kube-runtime",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
 name = "bindy-controller-sdk"
 version = "0.7.1"
 dependencies = [
@@ -342,6 +442,7 @@ dependencies = [
  "chrono",
  "futures",
  "http",
+ "json-patch",
  "k8s-openapi",
  "kube",
  "kube-lease-manager",
@@ -354,6 +455,49 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+]
+
+[[package]]
+name = "bindy-controller-zone"
+version = "0.7.1"
+dependencies = [
+ "anyhow",
+ "bindcar",
+ "bindy-api",
+ "bindy-bind9",
+ "bindy-controller-sdk",
+ "futures",
+ "hickory-proto",
+ "k8s-openapi",
+ "kube",
+ "kube-runtime",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
+name = "bindy-scout"
+version = "0.7.1"
+dependencies = [
+ "anyhow",
+ "bindy-api",
+ "bindy-controller-sdk",
+ "futures",
+ "k8s-openapi",
+ "kube",
+ "kube-runtime",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "wiremock",
 ]
 
 [[package]]

@@ -20,7 +20,7 @@ use crate::namespace_scope::{scoped_namespaced_api, NamespaceScope};
 use async_broadcast::{InactiveReceiver, Sender};
 use futures::{Stream, StreamExt};
 use kube::runtime::reflector::{self, Store};
-use kube::runtime::{watcher, WatchStreamExt};
+use kube::runtime::{predicates, watcher, Predicate, WatchStreamExt};
 use kube::{Api, Client, Resource};
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -260,7 +260,12 @@ async fn drive<K, P, F, S>(
             let event = match event {
                 Ok(event) => event,
                 Err(error) => {
-                    warn!(kind, namespace = %namespace, %error, "Watch error");
+                    warn!(
+                        kind,
+                        namespace = %namespace,
+                        diagnosis = %diagnose_watch_error(&error),
+                        "Watch error"
+                    );
                     record_watch_error(kind, &namespace);
                     continue;
                 }
@@ -304,7 +309,118 @@ async fn drive<K, P, F, S>(
     }
 }
 
+/// Converts a [`watcher::Error`] into a short, human-readable diagnosis string.
+///
+/// The kube-runtime watcher wraps all errors in a thin enum. This function
+/// peels back the layers to surface the actionable cause: connection refused,
+/// unauthorized, RBAC-forbidden, or a generic API / transport error.
+#[must_use]
+pub fn diagnose_watch_error(e: &watcher::Error) -> String {
+    // Extract the phase label and the inner kube client error, handling the
+    // two variants that don't carry a kube::Error directly.
+    let (phase, client_err) = match e {
+        watcher::Error::InitialListFailed(e) => ("initial list", e),
+        watcher::Error::WatchStartFailed(e) => ("watch start", e),
+        watcher::Error::WatchFailed(e) => ("watch stream", e),
+        watcher::Error::WatchError(status) => {
+            return format!(
+                "API server returned error during watch: {} (HTTP {})",
+                status.message, status.code
+            );
+        }
+        watcher::Error::NoResourceVersion => {
+            return "resource does not support watch (no resourceVersion returned)".to_string();
+        }
+    };
+
+    let detail = match client_err {
+        kube::Error::Api(status) => match status.code {
+            401 => format!(
+                "unauthorized — check credentials/token ({})",
+                status.message
+            ),
+            403 => format!("forbidden — check RBAC permissions ({})", status.message),
+            code => format!("API error HTTP {code} — {}", status.message),
+        },
+        kube::Error::Auth(e) => format!("authentication error — {e}"),
+        kube::Error::Service(e) => format!("cannot connect to API server — {e}"),
+        kube::Error::HyperError(e) => format!("HTTP transport error — {e}"),
+        other => format!("{other}"),
+    };
+
+    format!("{phase} failed: {detail}")
+}
+
 type Shards<K> = Vec<(Option<String>, WatchShard<K>)>;
+
+/// Pass an object only when the part of it a mapper reads has changed.
+///
+/// `key` hashes what the subscriber depends on; an object is passed the first
+/// time it is seen, whenever its key changes, and whenever `cached` says it is
+/// no longer in the store (the `WatchSet` updates the store before it
+/// broadcasts, so that is a Delete). Everything else, typically another
+/// controller stamping a timestamp into the object's status, is dropped, so it
+/// cannot fan out into reconciles of every object the mapper returns.
+/// Watch errors pass through unchanged.
+///
+/// Unlike [`primary_predicate`] (kube's `predicate_filter`), this passes
+/// deletes, which a mapper that rebuilds derived state must see.
+///
+/// # Arguments
+/// * `stream` - A subscriber stream from the `WatchSet`
+/// * `key` - Hash of the fields the mapper reads
+/// * `cached` - Whether the object is still in the store
+pub fn changed_only<K, S, F, C>(
+    stream: S,
+    key: F,
+    cached: C,
+) -> impl Stream<Item = Result<K, watcher::Error>> + Send + 'static
+where
+    K: Resource + Send + 'static,
+    S: Stream<Item = Result<K, watcher::Error>> + Send + 'static,
+    F: Fn(&K) -> u64 + Send + 'static,
+    C: Fn(&K) -> bool + Send + 'static,
+{
+    let mut seen: HashMap<(Option<String>, String), u64> = HashMap::new();
+    stream.filter_map(move |item| {
+        let pass = match &item {
+            Err(_) => true,
+            Ok(object) => {
+                let id = (
+                    object.meta().namespace.clone(),
+                    object.meta().name.clone().unwrap_or_default(),
+                );
+                if cached(object) {
+                    let current = key(object);
+                    seen.insert(id, current) != Some(current)
+                } else {
+                    seen.remove(&id);
+                    true
+                }
+            }
+        };
+        futures::future::ready(pass.then_some(item))
+    })
+}
+
+/// The predicate for a controller's primary stream: passes a change to the
+/// object's generation, finalizers, labels or annotations, and drops the rest,
+/// which in practice is the controller's own status writes (ADR-0009 §4,
+/// amended 2026-10-05).
+///
+/// Finalizers are included because kube's `finalizer()` helper adds the
+/// finalizer and then waits for that patch's event to come back. Setting
+/// `deletionTimestamp` bumps a custom resource's generation, so deletion
+/// passes too. Apply it to the controller's subscriber stream with
+/// `predicate_filter`; the shared watch and its other subscribers still see
+/// every event.
+#[must_use]
+pub fn primary_predicate<K: Resource + 'static>() -> impl Predicate<K> + Send + Sync + 'static {
+    predicates::generation::<K>
+        .combine(predicates::finalizers::<K>)
+        .combine(predicates::labels::<K>)
+        .combine(predicates::annotations::<K>)
+}
 
 /// Watcher configuration that filters on the API server by label selector, so
 /// objects outside the selection are neither sent nor cached.
