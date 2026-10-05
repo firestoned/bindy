@@ -72,6 +72,92 @@ mod tests {
         assert!(hickory_record_type_for_kind("").is_err());
     }
 
+    // ========================================================================
+    // claimed_by_live_record: a deleted or unselected record's DNS data must
+    // survive when another live record in the zone declares the same name and
+    // type (e.g. the same record renamed: delete old CR, create new CR).
+    // ========================================================================
+
+    fn claim_ref(
+        kind: &str,
+        name: &str,
+        record_name: Option<&str>,
+    ) -> crate::crd::RecordReferenceWithTimestamp {
+        crate::crd::RecordReferenceWithTimestamp {
+            api_version: crate::constants::API_GROUP_VERSION.to_string(),
+            kind: kind.to_string(),
+            name: name.to_string(),
+            namespace: "dns".to_string(),
+            record_name: record_name.map(str::to_string),
+            last_reconciled_at: None,
+        }
+    }
+
+    #[test]
+    fn test_claimed_by_live_record_finds_the_renamed_record() {
+        use super::super::claimed_by_live_record;
+
+        let gone = claim_ref("ARecord", "example-com-www", Some("www"));
+        let live = vec![
+            claim_ref("ARecord", "api.example.com", Some("api")),
+            claim_ref("ARecord", "www.example.com", Some("www")),
+        ];
+
+        let claimant = claimed_by_live_record(&gone, &live).expect("www is still declared");
+        assert_eq!(claimant.name, "www.example.com");
+    }
+
+    #[test]
+    fn test_claimed_by_live_record_ignores_other_types_and_names() {
+        use super::super::claimed_by_live_record;
+
+        let gone = claim_ref("ARecord", "example-com-www", Some("www"));
+        let live = vec![
+            // Same name, different type: a different RRset.
+            claim_ref("TXTRecord", "www-txt", Some("www")),
+            // Same type, different name.
+            claim_ref("ARecord", "api.example.com", Some("api")),
+        ];
+
+        assert!(claimed_by_live_record(&gone, &live).is_none());
+    }
+
+    #[test]
+    fn test_claimed_by_live_record_is_case_insensitive() {
+        use super::super::claimed_by_live_record;
+
+        // DNS owner names compare case-insensitively.
+        let gone = claim_ref("ARecord", "old", Some("WWW"));
+        let live = vec![claim_ref("ARecord", "new", Some("www"))];
+
+        assert!(claimed_by_live_record(&gone, &live).is_some());
+    }
+
+    #[test]
+    fn test_claimed_by_live_record_never_counts_itself() {
+        use super::super::claimed_by_live_record;
+
+        // An unselected record can still be listed among the live records of
+        // another selector pass; it must not keep its own data alive.
+        let gone = claim_ref("ARecord", "example-com-www", Some("www"));
+        let live = vec![claim_ref("ARecord", "example-com-www", Some("www"))];
+
+        assert!(claimed_by_live_record(&gone, &live).is_none());
+    }
+
+    #[test]
+    fn test_claimed_by_live_record_without_a_dns_name() {
+        use super::super::claimed_by_live_record;
+
+        let gone = claim_ref("ARecord", "old", None);
+        let live = vec![claim_ref("ARecord", "new", None)];
+
+        assert!(
+            claimed_by_live_record(&gone, &live).is_none(),
+            "no recorded DNS name: nothing to match on"
+        );
+    }
+
     #[test]
     fn test_unselected_previous_records_partitions_correctly() {
         use super::super::unselected_previous_records;

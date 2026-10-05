@@ -77,31 +77,8 @@ pub async fn reconcile_zone_records(
         records_from.len()
     );
 
-    let mut all_record_refs = Vec::new();
-
     // Query all record types and filter by label selectors
-    for record_source in records_from {
-        let selector = &record_source.selector;
-
-        // Discover each record type
-        all_record_refs.extend(discover_a_records(&client, &namespace, selector, zone_name).await?);
-        all_record_refs
-            .extend(discover_aaaa_records(&client, &namespace, selector, zone_name).await?);
-        all_record_refs
-            .extend(discover_txt_records(&client, &namespace, selector, zone_name).await?);
-        all_record_refs
-            .extend(discover_cname_records(&client, &namespace, selector, zone_name).await?);
-        all_record_refs
-            .extend(discover_mx_records(&client, &namespace, selector, zone_name).await?);
-        all_record_refs
-            .extend(discover_ns_records(&client, &namespace, selector, zone_name).await?);
-        all_record_refs
-            .extend(discover_srv_records(&client, &namespace, selector, zone_name).await?);
-        all_record_refs
-            .extend(discover_caa_records(&client, &namespace, selector, zone_name).await?);
-        all_record_refs
-            .extend(discover_ptr_records(&client, &namespace, selector, zone_name).await?);
-    }
+    let mut all_record_refs = discover_selected_records(&client, &dnszone).await?;
 
     info!(
         "Discovered {} DNS record(s) for zone {}",
@@ -181,8 +158,14 @@ pub async fn reconcile_zone_records(
             zone_name, kind, namespace, name
         );
 
-        // Delete the record data from BIND9 before untagging
-        if let Err(e) = cleanup_unselected_record_dns(
+        // Another selected record declares the same RRset (e.g. this record
+        // was renamed): its data is still wanted, so only untag.
+        if let Some(claimant) = claimed_by_live_record(&record_ref, &all_record_refs) {
+            info!(
+                "Keeping DNS data of {} {}/{}: still declared by {} {}/{}",
+                kind, namespace, name, claimant.kind, claimant.namespace, claimant.name
+            );
+        } else if let Err(e) = cleanup_unselected_record_dns(
             &client,
             stores,
             &dnszone,
@@ -268,6 +251,80 @@ fn unselected_previous_records(
         .filter(|r| !current_keys.contains(&format!("{}/{}", r.kind, r.name)))
         .cloned()
         .collect()
+}
+
+/// Every record resource the zone's `recordsFrom` selectors match right now,
+/// of every record kind, in the zone's namespace.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `dnszone` - The zone whose selectors are evaluated
+///
+/// # Returns
+///
+/// The matching record references; empty when the zone has no selectors.
+///
+/// # Errors
+///
+/// Returns an error if listing any record kind fails.
+pub(crate) async fn discover_selected_records(
+    client: &Client,
+    dnszone: &DNSZone,
+) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
+    let namespace = dnszone.namespace().unwrap_or_default();
+    let zone_name = &dnszone.spec.zone_name;
+    let Some(records_from) = dnszone.spec.records_from.as_ref() else {
+        return Ok(Vec::new());
+    };
+
+    let mut refs = Vec::new();
+    for record_source in records_from {
+        let selector = &record_source.selector;
+
+        refs.extend(discover_a_records(client, &namespace, selector, zone_name).await?);
+        refs.extend(discover_aaaa_records(client, &namespace, selector, zone_name).await?);
+        refs.extend(discover_txt_records(client, &namespace, selector, zone_name).await?);
+        refs.extend(discover_cname_records(client, &namespace, selector, zone_name).await?);
+        refs.extend(discover_mx_records(client, &namespace, selector, zone_name).await?);
+        refs.extend(discover_ns_records(client, &namespace, selector, zone_name).await?);
+        refs.extend(discover_srv_records(client, &namespace, selector, zone_name).await?);
+        refs.extend(discover_caa_records(client, &namespace, selector, zone_name).await?);
+        refs.extend(discover_ptr_records(client, &namespace, selector, zone_name).await?);
+    }
+    Ok(refs)
+}
+
+/// The live record, if any, that still declares the DNS data `gone` published.
+///
+/// Deleting a record from BIND9 removes its whole RRset (owner name and type).
+/// When a record resource is deleted or unselected while another live record
+/// of the zone declares the same name and type, most commonly the same record
+/// renamed (old resource deleted, new one created), that RRset is still
+/// wanted and must stay. Owner names compare case-insensitively; a resource
+/// never counts as its own claimant.
+///
+/// # Arguments
+///
+/// * `gone` - The deleted or unselected record
+/// * `live` - The records the zone currently selects
+///
+/// # Returns
+///
+/// The first live record declaring the same RRset, or `None` when the data
+/// is no longer wanted (or `gone` carries no DNS name to compare).
+pub(crate) fn claimed_by_live_record<'a>(
+    gone: &crate::crd::RecordReferenceWithTimestamp,
+    live: &'a [crate::crd::RecordReferenceWithTimestamp],
+) -> Option<&'a crate::crd::RecordReferenceWithTimestamp> {
+    let gone_dns_name = gone.record_name.as_deref()?;
+    live.iter().find(|r| {
+        r.kind == gone.kind
+            && !(r.namespace == gone.namespace && r.name == gone.name)
+            && r.record_name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case(gone_dns_name))
+    })
 }
 
 /// Maps a Kubernetes record kind (e.g., `"ARecord"`) to its hickory `RecordType`.

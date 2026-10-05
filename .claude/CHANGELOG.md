@@ -1,3 +1,19 @@
+## [2026-10-05 18:00] - Release builds may update Cargo.lock for the version rewrite
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/build.yaml`: dropped `--locked` from the Linux `build-binary` step, the release-profile `cargo test` and the macOS/Windows release `cargo build`.
+
+### Why
+A release rewrites the workspace version in `Cargo.toml` from the tag. Since the crate split (ADR-0009) that changes the version of all eleven workspace crates recorded in `Cargo.lock`, which `--locked` refuses ("cannot update the lock file ... because --locked was passed"), failing the `v0.8.0-rc.1` build. Without `--locked`, Cargo rewrites only the entries `Cargo.toml` no longer matches; third-party dependencies stay as the committed lock pins them.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only (CI only)
+
 ## [2026-10-05 12:00] - Roadmap 01 Phases C to G: crate split finished, controllers drain, no startup drift pass (ADR-0009)
 
 **Author:** Erick Bourgeois
@@ -59,6 +75,74 @@ ADR-0009: crate boundaries that enforce the layering, one shared watch per kind,
 - [x] Requires cluster rollout (new binary; shutdown and startup behaviour changed)
 - [ ] Config change only
 - [ ] Documentation only
+
+## [2026-10-05 11:30] - Fix: zone cleanup deleted DNS data still declared by a renamed record
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/bindy-controller-zone/src/dnszone/cleanup.rs`
+  (`cleanup_stale_records`): when a record resource is deleted, the zone's
+  self-healing cleanup removed that name's RRset from BIND, even when
+  another record the zone selects declared the same name and type (the same
+  record renamed: old resource deleted, new one created). The name stopped
+  resolving until the renamed record reconciled again. The cleanup now
+  checks the zone's live, selector-matched records first. It drops the
+  stale reference from status but keeps the DNS data.
+  - The live records are listed rather than read from status, because the
+    cleanup runs before discovery and a just-created record is not in
+    status yet.
+  - A listing error aborts the pass instead of deleting.
+- `crates/bindy-controller-zone/src/dnszone/discovery.rs`: the same guard for
+  records that stop matching the zone's selectors. They are untagged, but
+  their data is kept while another selected record declares it.
+
+### Added
+- `discover_selected_records` (extracted from `reconcile_zone_records`):
+  every record the zone's `recordsFrom` selectors match.
+- `claimed_by_live_record`: the pure claim check. A match needs the same
+  kind and the same owner name (case-insensitive); a resource never claims
+  its own data.
+- 5 unit tests in `discovery_tests.rs`.
+
+### Changed
+- `docs/src/operations/renaming-resources.md`: record-only renames are now
+  gap-free. A note covers older releases.
+
+### Why
+Renaming records under a kept zone briefly took the renamed names offline.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout (operator image only)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-10-05 10:00] - Docs: renaming DNSZones and records without an outage
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/src/operations/renaming-resources.md` (+ mkdocs nav, Operations >
+  Migration): how to rename a `DNSZone` and its records (for example to
+  FQDN names) without taking DNS data offline. Covers:
+  - why a plain delete and re-create is unsafe: finalizers delete the
+    RRset or zone, a second `DNSZone` for the same `zoneName` is refused,
+    and the zone's stale-record cleanup removes deleted records;
+  - the orphan swap: strip finalizers, delete, apply the renamed resources;
+  - verification;
+  - the record-only caveat: the kept zone's stale-record cleanup can drop
+    a renamed name until its record reconciles again.
+
+### Why
+Renaming is a normal day-2 operation, but the finalizer and cleanup
+semantics make the obvious approach an outage.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
 
 ## [2026-10-05 10:00] - Roadmap 01 Phase B step B4: leader election in `sdk::leader` (ADR-0009)
 

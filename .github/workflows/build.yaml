@@ -280,8 +280,10 @@ jobs:
           # binary name from Cargo.toml, so name it.
           binary-name: bindy
           target: ${{ matrix.platform.target }}
-          # Build exactly the reviewed Cargo.lock (ADR-0010).
-          extra-args: --locked
+          # No --locked: a release rewrites the workspace version in
+          # Cargo.toml, so Cargo must update the workspace crates' entries in
+          # Cargo.lock. Third-party dependencies stay as the lock pins them;
+          # Cargo only changes what Cargo.toml no longer matches.
 
       # Run tests in the SAME workspace, profile, and target as the release
       # build above — every dependency rlib is reused, so only the test
@@ -294,7 +296,7 @@ jobs:
           matrix.platform.target == 'x86_64-unknown-linux-gnu' &&
           github.event_name != 'push' &&
           github.event_name != 'release'
-        run: cargo test --locked --release --target ${{ matrix.platform.target }}
+        run: cargo test --release --target ${{ matrix.platform.target }}
 
       # SBOMs are generated in the `sbom` job (one per shipped binary).
       - name: Upload binary artifact
@@ -422,9 +424,11 @@ jobs:
       - name: Cache cargo dependencies
         uses: firestoned/github-actions/rust/cache-cargo@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
 
+      # No --locked: the version rewrite above changes the workspace crates'
+      # entries in Cargo.lock (see the Linux build).
       - name: Build binary
         shell: bash
-        run: cargo build --locked --release --target ${{ matrix.platform.target }}
+        run: cargo build --release --target ${{ matrix.platform.target }}
 
       - name: Upload binary artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
