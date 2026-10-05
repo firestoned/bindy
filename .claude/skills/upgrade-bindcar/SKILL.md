@@ -22,7 +22,7 @@ cargo update bindcar
 | `Cargo.toml` | `bindcar = "<NEW_VERSION>"` |
 | `crates/bindy-api/src/constants.rs` | `DEFAULT_BINDCAR_IMAGE` → `ghcr.io/firestoned/bindcar:<NEW_TAG>` |
 | `crates/bindy-api/src/crd.rs` | rustdoc example `/// Example: "ghcr.io/firestoned/bindcar:<NEW_TAG>"` |
-| `crates/bindy/src/bootstrap.rs` | Any hardcoded image references (check with rg) |
+| `crates/bindy-bootstrap/src/bootstrap.rs` | Any hardcoded image references (check with rg) |
 | `examples/*.yaml` | All `image: "ghcr.io/firestoned/bindcar:*"` lines |
 | `deploy/operator/crds/*.crd.yaml` | Regenerate via `regen-crds` (rustdoc example flows through) |
 | `tests/integration_test.sh` | All `image: "ghcr.io/firestoned/bindcar:*"` lines |

@@ -14,7 +14,7 @@
 > the API server drops from about 59 to 14 in cluster-wide mode (one per
 > kind).
 
-**Status:** 🔶 Phase A done (2026-10-03); Phase B done: B1 (crate + framework modules), B2 (shared `WatchSet`) and B3 (`RecordKind`, `context` in the SDK) done 2026-10-04, B4 (leader election in `sdk::leader`) done 2026-10-05; Phase C (`bindy-bind9`) next. [ADR-0009](../../docs/adr/0009-workspace-crate-split-and-shared-watch-layer.md) Accepted, CALM updated
+**Status:** ✅ Done 2026-10-05. Phase A 2026-10-03; Phase B (B1 to B4) 2026-10-04/05; Phases C to G in one PR on 2026-10-05: eleven crates, `main.rs` 257 lines, 19 operator watches instead of 58, controllers drain on shutdown, no startup drift pass. [ADR-0009](../../docs/adr/0009-workspace-crate-split-and-shared-watch-layer.md) Accepted, CALM updated
 **Owner:** Erick Bourgeois
 **Analysed against:** `main` @ `d422055` (re-measured 2026-10-03; first analysis was `fix-idempotency` @ `648ff7a`), kube / kube-runtime **4.2.0**
 
@@ -342,11 +342,12 @@ the crate exists, the framework modules live in it, behaviour is unchanged.
       `WatchSet` in B2). The BIND9 half (`resolve_bindcar_tls`,
       `create_bind9_manager_for_instance*`) stayed in `bindy` as the
       `StoresBind9Ext` trait, which moves to `bindy-bind9` in Phase C.*
-- [ ] Move `finalizers`. *Blocked by the orphan rule: with
-      `FinalizerCleanup` in the SDK and the CRD types in `bindy-api`,
-      `impl FinalizerCleanup for Bind9Cluster` is illegal in any controller
-      crate. Needs the trait reshaped so the cleanup is a type the
-      controller owns; do it with Phase D, where the impls move.*
+- [x] Move `finalizers`. *Done with Phase D (2026-10-05): the
+      `FinalizerCleanup` trait is gone; `handle_deletion` /
+      `handle_cluster_deletion` take the cleanup as an async closure, so no SDK
+      trait is implemented for a `bindy-api` type and the orphan rule no longer
+      applies. The four placeholder tests that needed a cluster became six real
+      ones against a mock API server.*
 - [x] Move `crate::reconcilers::retry` here and cut the
       `bind9 → reconcilers` back-edge. *B1: `bind9/zone_ops.rs` imports
       `bindy_controller_sdk::retry`; `rg crate::reconcilers
@@ -418,86 +419,157 @@ the crate exists, the framework modules live in it, behaviour is unchanged.
   per-namespace, label-selected `WatchSet` kind; cross-namespace zones are
   covered by `subscribe_all`. No RBAC change needed.
 - **Observed in B2, not fixed (logged per §5):** in namespace-restricted
-  mode the `Bind9Instance` controller subscribes to `DNSZone` in its own
-  namespace only, so a zone in namespace A selecting an instance in B does
-  not refresh B's `status.zones` until B's next reconcile. `subscribe_all`
-  would fix it, but that mapper does work itself (the spawned task, problem
-  2), which would then run once per namespace; fix it with that mapper in
-  Phase D.
+  mode a zone in namespace A that selects an instance in namespace B does not
+  appear in B's `status.zones`. B2 put this down to the instance controller's
+  same-namespace `DNSZone` subscription; Phase D found the cause is
+  `reconcile_instance_zones` itself, which counts only zones in the
+  instance's own namespace. Subscribing across namespaces would only add
+  reconciles that change nothing, so the subscription stays per namespace.
+  Fixing it changes what `status.zones` reports, which is a separate change.
 
-### Phase C — `bindy-bind9`
+### Phase C: `bindy-bind9`
 
-- [ ] Move `bind9/**`, `bind9_resources.rs`, `bind9_acl.rs`, `ddns.rs`,
-      `dns_errors.rs`, `safe_volume.rs`.
-- [ ] Assert the boundary: this crate depends on `bindy-api` and
-      `bindy-controller-sdk` only — never on a controller crate.
-- [ ] **DoD:** `cargo test -p bindy-bind9` green; no `kube::runtime`
-      import anywhere in the crate.
+*Landed 2026-10-05, with D to G, in one PR.*
 
-### Phase D — Split the controllers (one PR per crate)
+- [x] Move `bind9/**`, `bind9_resources.rs`, `bind9_acl.rs`, `ddns.rs`,
+      `dns_errors.rs`, `safe_volume.rs`. *Also `placement` (it and
+      `bind9_resources` call each other), `StoresBind9Ext` (as
+      `bindy_bind9::context`), and, so that no controller crate depends on
+      another (ADR-0009 §2, amended 2026-10-05), two pieces both the zone and
+      the record controllers use: `instances` (which instances a zone targets
+      and how to reach them, from the zone controller's `helpers`/`validation`;
+      `primary.rs` whole) and `record_push` (the BIND9 record write, delete and
+      replay path, from the record controllers). Tests moved with each.*
+- [x] Assert the boundary: this crate depends on `bindy-api` and
+      `bindy-controller-sdk` only, never on a controller crate. *Its
+      `Cargo.toml` lists no controller crate; a back-edge is a compile error.*
+- [x] **DoD:** `cargo test -p bindy-bind9` green; no `kube::runtime`
+      import anywhere in the crate. *Green. No production import; the 25 uses
+      left are `reflector::store()` fixtures in `instances_tests.rs` that build
+      the `MultiStore`s the tests pass in.*
 
-- [ ] `bindy-controller-cluster` — `bind9cluster/**` +
-      `clusterbind9provider.rs`.
-- [ ] `bindy-controller-instance` — `bind9instance/**` + `placement.rs`.
-      **Delete the `tokio::spawn` in the `DNSZone` mapper** (problem 2):
-      the mapper returns real `ObjectRef`s and
-      `reconcile_instance_zones()` runs inside the reconciler where it
-      gets retries, backoff and metrics.
-- [ ] `bindy-controller-zone` — `dnszone/**`. Apply
-      `predicates::generation` to the primary stream and **delete the
-      2-second rate limiter** (problem 3). Collapse the 9 record mappers
-      to `watches_records::<T>()` (problem, §3).
-- [ ] `bindy-controller-records` — `records/**` + `record_operator.rs`
-      + `record_impls.rs` + `record_wrappers.rs`, all generic over
-      `RecordKind`. The 9 thin `reconcile_*_record` wrappers
-      (`records/mod.rs:1373`–`1516`) become trait impls.
-- [ ] **DoD per crate:** its tests move with it and pass; the crate
+### Phase D: Split the controllers
+
+*Landed 2026-10-05 in the same PR as C, E, F and G (not one PR per crate, by
+request).*
+
+- [x] `bindy-controller-cluster`: `bind9cluster/**` +
+      `clusterbind9provider.rs`. *`controller(ctx)` runs both kinds.*
+- [x] `bindy-controller-instance`: `bind9instance/**` (`placement` went to
+      `bindy-bind9`, see C). **Deleted the `tokio::spawn` in the `DNSZone`
+      mapper** (problem 2): `instances_selected_by_zone` returns the instances
+      the zone selected, and their reconcile already refreshes `status.zones`.
+      *Measured on kind, a pure mapper alone was worse than the task: every
+      record reconcile stamps `lastReconciledAt` into its zone's status, and
+      each of those writes enqueued a full reconcile of every instance the
+      zone selected (30 instance reconciles in 330 s with 10 records and 3
+      instances; records × instances at scale). The `DNSZone` stream is now
+      filtered by `sdk::watch::changed_only` on what `status.zones` is built
+      from (`zone_selection_key`: the selected instances, `spec.zoneName`,
+      deletion), so timestamp writes are dropped and deletes always pass.*
+- [x] `bindy-controller-zone`: `dnszone/**`. **Deleted the 2-second rate
+      limiter** (problem 3); the 9 record mappers are nine
+      `watch_records::<T>()` lines. *The primary predicate is
+      `generation + finalizers + labels + annotations`, not `generation`
+      alone: kube's `finalizer()` helper waits for its own patch event
+      (ADR-0009 §4, amended).*
+- [x] `bindy-controller-records`: `records/**` + `record_operator.rs`
+      + `record_impls.rs` + `record_wrappers.rs`. *The 9 `reconcile_*_record`
+      wrappers are gone: `DnsRecordType::reconcile_record` is a provided
+      method over the generic path; the unused `generate_record_wrapper!`
+      macro is deleted.*
+- [x] **DoD per crate:** its tests move with it and pass; the crate
       exposes exactly one public entry point,
-      `pub async fn controller(ctx) -> Result<()>`.
+      `pub async fn controller(ctx) -> Result<()>`. *Every other module is
+      private. That exposed dead code the `pub` modules had hidden, deleted
+      with its tests: `create_managed_instance`, `delete_bind9cluster`,
+      `delete_clusterbind9provider`, two `delete_bind9instance`s,
+      `is_resource_ready`, `find_zones_selecting_record`,
+      `detect_spec_changes`, `detect_instance_changes`, `refetch_zone`,
+      `handle_duplicate_zone`, `find_all_secondary_pods`,
+      `for_each_secondary_endpoint`, the zone `constants` module and
+      `ConflictingZone::instance_names`. The shared wrapper bookkeeping
+      moved to `sdk::reconcile` (`instrumented`, `finalizer_error`).*
 
-### Phase E — `bindy-scout` + `bindy-bootstrap`
+### Phase E: `bindy-scout` + `bindy-bootstrap`
 
-- [ ] Move `scout.rs` (3,926 lines) into `bindy-scout` and rebuild its 5
-      controllers on the SDK's `WatchSet` so Scout stops carrying its own
-      copy of the pattern.
-- [ ] Move `bootstrap.rs` into `bindy-bootstrap`. Keep the RBAC sync
-      contract from `CLAUDE.md` intact — `deploy/scout/*.yaml`,
-      `deploy/scout.yaml` and `docs/src/guide/scout.md` must still
-      mirror `build_scout_cluster_role` / `build_scout_role`. Add a test
-      that fails when they drift, so the rule is enforced rather than
-      remembered.
-- [ ] **DoD:** `bindy bootstrap …` and `bindy scout …` behave
+- [x] Move `scout.rs` into `bindy-scout` and rebuild its 5 controllers on
+      the SDK's `WatchSet`. *Two `WatchSet`s: one over the local client
+      (Ingress, Service and each served route kind) and one over the remote
+      client for the target namespace's `DNSZone`s, replacing the hand-rolled
+      reflector and its sleep-on-error loop. Its watch-error diagnosis moved
+      into the SDK, so every watch logs it. `scout_integration.rs` moved with
+      the crate.*
+- [x] Move `bootstrap.rs` into `bindy-bootstrap`. Keep the RBAC sync
+      contract from `CLAUDE.md` intact. *`rbac_drift` compares the Scout
+      ClusterRole, writer and secrets-reader Roles and their bindings with
+      `deploy/scout/*.yaml` and the `docs/src/guide/scout.md` examples
+      (excerpts may show only rules the role has). Verified by mutating a
+      verb. `deploy/scout.yaml` never existed; `CLAUDE.md` is corrected.*
+- [x] **DoD:** `bindy bootstrap …` and `bindy scout …` behave
       identically; `bootstrap_tests.rs` moves with the crate and passes.
+      *Same clap definitions and dispatch, moved to `crates/bindy/src/cli.rs`.*
 
-### Phase F — Thin the binary
+### Phase F: Thin the binary
 
-- [ ] `main.rs` keeps only: CLI (`clap`), tracing init, client
+- [x] `main.rs` keeps only: CLI (`clap`), tracing init, client
       construction, metrics server, leader election handoff, and
-      `try_join_all` over each crate's `controller()`.
-- [ ] Replace the 13-arm `tokio::select!` with
+      `try_join_all` over each crate's `controller()`. *The clap types and the
+      bootstrap/scout dispatch are in `cli.rs`; `Context::new` (the
+      `WatchSet` registration) moved to the SDK. The `bindy` library target
+      is gone; its integration tests use `bindy_api`.*
+- [x] Replace the 13-arm `tokio::select!` with
       `graceful_shutdown_on(shutdown.clone())` per controller +
       `futures::future::try_join_all` (problem 6), so SIGTERM and
-      leadership loss **drain** instead of cancelling.
-- [ ] Delete `perform_startup_drift_detection` (problem 7) — but first
-      add an integration test that asserts every pre-existing
-      `Bind9Instance` is reconciled within N seconds of controller start
-      from the watcher's own `Init`/`InitApply` events. Only delete once
-      that test is green.
-- [ ] **DoD:** `src/main.rs` < 300 lines; `rg 'Controller::new' crates/bindy/src`
-      returns nothing.
+      leadership loss **drain** instead of cancelling. *`sdk::shutdown`: a
+      trigger and a cloneable signal (held in `Context`), and `supervise`,
+      which turns a controller that stops before shutdown into an error.
+      SIGTERM drains and exits 0; lease loss drains and exits non-zero. A
+      SIGTERM while waiting for the lease exits cleanly.*
+- [x] Delete `perform_startup_drift_detection` (problem 7), gated on an
+      integration test. *The restart e2e suite now scales the operator to
+      zero, deletes every instance's Service, scales back up and requires
+      each Service recreated within 120 s of start (ADR-0009 §5, amended).
+      Results in Phase G.*
+- [x] **DoD:** `src/main.rs` < 300 lines; `rg 'Controller::new' crates/bindy/src`
+      returns nothing. *257 lines; no `Controller::new` anywhere in the
+      workspace.*
 
-### Phase G — Verify
+### Phase G: Verify
 
-- [ ] Count watch connections before/after against a `kind` cluster
+*Run 2026-10-05 on slate (kind, podman) with an image built from the branch.*
+
+- [x] Count watch connections before/after against a `kind` cluster
       (API-server `apiserver_longrunning_requests` or `kubectl get
       --raw /metrics`). Expect roughly **59 → 14** in cluster-wide mode,
-      and per-namespace-target scaling to match.
-- [ ] `make kind-integration-test` green end-to-end.
-- [ ] Compare `cargo build` wall-clock for a one-line change to
-      `crd.rs`, before vs after.
-- [ ] Update `docs/src/architecture/` — the reconciliation-flow diagrams
-      describe the current single-crate layout and will be wrong.
-- [ ] `.claude/CHANGELOG.md` entry with `**Author:**` per phase.
+      and per-namespace-target scaling to match. *Open WATCH requests per
+      resource with the operator running, minus the same with it scaled to
+      zero: **58** with bindy v0.7.1, **20** with this branch (one per
+      cached kind plus the four uncached owned kinds; the code opens one
+      ConfigMap watch and the measured delta shows two, so 19 is the
+      operator's). Not 14: the uncached owned kinds keep ordinary watches by
+      design (ADR-0009 §3). Per-namespace scaling follows from the
+      `WatchSet` keying on (kind, target), covered by its unit tests and the
+      multi-tenancy suite.*
+- [x] `make kind-integration-test` green end-to-end. *`tests/integration_test.sh`
+      passed (Rust API, lifecycle, idempotency, restart, including the
+      startup-repair gate: Services back 11 to 16 s after start), and
+      `tests/e2e/scout_test.sh` passed. Also passed: multi-tenancy, regression, TLS transport, and the live `scout_integration.rs`. Zone-spread passed too, once slate's `fs.inotify.max_user_instances` was raised to 512 for the four-node cluster. After the instance fan-out fix (Phase D) the integration, multi-tenancy and zone-spread suites were run again on the new image and passed.
+      With the fixture's zones applied, 17 `DNSZone` reconciles in 330 s
+      across 5 zones, all from the requeue and error backoff: no reconcile
+      storm without the 2-second limiter.*
+- [x] Compare `cargo build` wall-clock for a one-line change to
+      `crd.rs`, before vs after. *Dev profile, warm, slate: 10.5 to 11.1 s
+      before (`main` @ `a6c95c2`), 6.7 to 8.6 s after. A one-line change in
+      the zone controller or Scout now rebuilds in about 4 s.*
+- [x] Update `docs/src/architecture/` and the concept pages. *Watch wiring,
+      instance mapper, drain and crate tree in `concepts/architecture.md`
+      and `development/setup.md`; source paths across `docs/src/**`. The
+      CALM-generated diagrams already described the target state.*
+- [x] `.claude/CHANGELOG.md` entry with `**Author:**` per phase. *One
+      entry for C to G (one PR).*
+- [x] Threat model full pass (ADR-0009 follow-up). *v1.11: M-41 to M-43,
+      residual risks 10 and 11.*
 
 ---
 

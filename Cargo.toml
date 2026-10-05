@@ -8,7 +8,14 @@ resolver = "2"
 members = [
     "crates/bindy",
     "crates/bindy-api",
+    "crates/bindy-bind9",
+    "crates/bindy-bootstrap",
+    "crates/bindy-controller-cluster",
+    "crates/bindy-controller-instance",
+    "crates/bindy-controller-records",
     "crates/bindy-controller-sdk",
+    "crates/bindy-controller-zone",
+    "crates/bindy-scout",
 ]
 
 [workspace.package]
@@ -30,6 +37,13 @@ unsafe_code = "forbid"
 # Workspace crates
 bindy-api = { path = "crates/bindy-api" }
 bindy-controller-sdk = { path = "crates/bindy-controller-sdk" }
+bindy-bind9 = { path = "crates/bindy-bind9" }
+bindy-controller-cluster = { path = "crates/bindy-controller-cluster" }
+bindy-controller-instance = { path = "crates/bindy-controller-instance" }
+bindy-controller-zone = { path = "crates/bindy-controller-zone" }
+bindy-controller-records = { path = "crates/bindy-controller-records" }
+bindy-scout = { path = "crates/bindy-scout" }
+bindy-bootstrap = { path = "crates/bindy-bootstrap" }
 
 kube = { version = "4.0", features = ["runtime", "derive", "client", "jsonpatch"] }
 # Direct dependency on the kube-runtime that `kube` re-exports, only to enable
@@ -62,7 +76,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 anyhow = "1"
 thiserror = "2"
-async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 k8s-openapi = { version = "0.28", features = ["v1_32", "schemars"] }
 # ring-only: use "rustls-no-provider", NOT reqwest's "rustls" feature. The

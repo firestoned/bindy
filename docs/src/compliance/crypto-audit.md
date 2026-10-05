@@ -116,7 +116,7 @@ let secret = Secret {
 - ✅ Default algorithm is FIPS-compliant
 
 **Evidence:**
-- [crates/bindy/src/bind9_resources.rs](https://github.com/firestoned/bindy/blob/main/crates/bindy/src/bind9_resources.rs) - Secret generation
+- [crates/bindy-bind9/src/bind9_resources.rs](https://github.com/firestoned/bindy/blob/main/crates/bindy-bind9/src/bind9_resources.rs) - Secret generation
 - [deploy/operator/crds/bind9instances.crd.yaml](../../deploy/operator/crds/bind9instances.crd.yaml) - TSIG configuration
 
 ---
@@ -226,7 +226,7 @@ metadata:
 - ✅ TLS certificates managed by Kubernetes (automatic rotation)
 
 **Evidence:**
-- [crates/bindy/src/bind9_resources.rs](https://github.com/firestoned/bindy/blob/main/crates/bindy/src/bind9_resources.rs) - Secret volume mounts
+- [crates/bindy-bind9/src/bind9_resources.rs](https://github.com/firestoned/bindy/blob/main/crates/bindy-bind9/src/bind9_resources.rs) - Secret volume mounts
 - [deploy/rbac/role.yaml](../../deploy/rbac/role.yaml) - RBAC for secrets
 
 ---

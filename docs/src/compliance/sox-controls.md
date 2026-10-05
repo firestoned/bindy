@@ -83,7 +83,7 @@ Bindy is designed for use in regulated banking environments where DNS infrastruc
 
 #### AC-2: Multi-Tenancy Support
 - **Control:** Tenant isolation via Kubernetes namespaces
-- **Evidence:** `crates/bindy/src/reconcilers/dnszone.rs`, namespace filtering
+- **Evidence:** `crates/bindy-controller-zone/src/dnszone.rs`, namespace filtering
 - **Implementation:**
   - Resources scoped to namespaces
   - Cross-namespace access denied by default
@@ -100,7 +100,7 @@ Bindy is designed for use in regulated banking environments where DNS infrastruc
 
 #### AC-4: Audit Logging
 - **Control:** All privileged operations logged
-- **Evidence:** `crates/bindy/src/reconcilers/*.rs`, tracing instrumentation
+- **Evidence:** `crates/bindy-controller-*/src/`, tracing instrumentation
 - **Implementation:**
   - Structured logging via `tracing` crate
   - All reconciliation events logged with resource names
@@ -131,7 +131,7 @@ Bindy is designed for use in regulated banking environments where DNS infrastruc
 
 #### DI-3: Idempotent Operations
 - **Control:** Operations can be safely retried without side effects
-- **Evidence:** `crates/bindy/src/reconcilers/*.rs`
+- **Evidence:** `crates/bindy-controller-*/src/`
 - **Implementation:**
   - All reconcilers idempotent
   - State stored in Kubernetes API (source of truth)
@@ -140,7 +140,7 @@ Bindy is designed for use in regulated banking environments where DNS infrastruc
 
 #### DI-4: Data Consistency
 - **Control:** DNS zones synchronized across primary and secondary servers
-- **Evidence:** `crates/bindy/src/bind9_resources.rs`, ConfigMap/Secret generation
+- **Evidence:** `crates/bindy-bind9/src/bind9_resources.rs`, ConfigMap/Secret generation
 - **Implementation:**
   - Zone serial numbers auto-incremented
   - AXFR/IXFR for zone transfers

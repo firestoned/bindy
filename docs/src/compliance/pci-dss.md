@@ -85,7 +85,7 @@ cat docs/security/vulnerability-management.md
 
 | Control | Implementation | Evidence |
 |---------|----------------|----------|
-| **Input Validation** | All DNS zone names validated against RFC 1035 | `crates/bindy/src/bind9.rs:validate_zone_name()` |
+| **Input Validation** | All DNS zone names validated against RFC 1035 | `crates/bindy-bind9/src/bind9/mod.rs:validate_zone_name()` |
 | **Error Handling** | No panics in production (use `Result<T, E>`) | `cargo clippy -- -D warnings` |
 | **Secure Dependencies** | All dependencies from crates.io (verified sources) | `Cargo.toml`, `Cargo.lock` |
 | **No Hardcoded Secrets** | Pre-commit hooks detect secrets | GitHub Advanced Security |

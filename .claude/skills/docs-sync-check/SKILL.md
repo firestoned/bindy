@@ -24,11 +24,11 @@ git status --porcelain && git diff --stat     # uncommitted working tree
 |---|---|
 | `crates/bindy-api/src/crd.rs` (fields/structs) | `regen-api-docs` (`docs/src/reference/api.md`), `examples/*.yaml`, config reference in `docs/src/` |
 | New `BINDY_*` / other env var | `docs/src/` config/deployment reference + `deploy/operator/deployment.yaml` if applicable |
-| `crates/bindy/src/reconcilers/` behavior | `docs/src/architecture/` flow diagrams, user guide, troubleshooting |
+| `crates/bindy-controller-*/src/` behavior | `docs/src/architecture/` flow diagrams, user guide, troubleshooting |
 | New CRD | `add-new-crd` skill (guide + api docs + examples) |
 | `deploy/admission-policies/NN-*.yaml` (new) | `deploy/admission-policies/README.md` table + `make admission-policies-yaml` |
-| `deploy/**/rbac/`, `crates/bindy/src/bootstrap.rs` | `deploy/operator/rbac/README.md`, RBAC guide, keep bootstrap↔YAML in sync (see `.claude/CLAUDE.md`) |
-| `crates/bindy/src/scout.rs` behavior | `docs/src/guide/scout.md`, `docs/src/installation/scout.md` |
+| `deploy/**/rbac/`, `crates/bindy-bootstrap/src/bootstrap.rs` | `deploy/operator/rbac/README.md`, RBAC guide, keep bootstrap↔YAML in sync (see `.claude/CLAUDE.md`) |
+| `crates/bindy-scout/src/scout.rs` behavior | `docs/src/guide/scout.md`, `docs/src/installation/scout.md` |
 | New public module / feature | `docs/src/features/` or relevant guide + `README.md` features section |
 
 ### 3. Flag BREAKING changes explicitly

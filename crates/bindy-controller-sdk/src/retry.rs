@@ -428,7 +428,7 @@ static RECONCILE_FAILURES: std::sync::LazyLock<
 ///
 /// Doubles on each consecutive failure, capped at [`RECONCILE_BACKOFF_MAX`], and
 /// decays back to [`RECONCILE_BACKOFF_INITIAL`] once the object has gone
-/// [`RECONCILE_BACKOFF_RESET_AFTER`] without failing.
+/// `RECONCILE_BACKOFF_RESET_AFTER` without failing.
 ///
 /// # Arguments
 ///

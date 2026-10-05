@@ -18,6 +18,7 @@ workspace = true
 [dependencies]
 bindy-api.workspace = true
 kube.workspace = true
+json-patch.workspace = true
 kube-lease-manager.workspace = true
 k8s-openapi.workspace = true
 tower.workspace = true

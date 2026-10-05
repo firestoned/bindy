@@ -23,21 +23,27 @@
 //! - [`rate_limit`] - The client-side rate-limited Kubernetes client (ADR-0005)
 //! - [`namespace_scope`] - Cluster-wide or per-namespace watch scope
 //! - [`leader`] - Leader election over a Kubernetes `Lease`
+//! - [`shutdown`] - The draining shutdown signal and the controller supervisor
+//! - [`reconcile`] - Timing, metrics and requeue around one reconcile
+//! - [`finalizers`] - Adding, removing and honouring finalizers
 //! - [`http_errors`] - HTTP error mapping to status reasons
 //! - [`metrics`] - Prometheus metrics
 //! - [`watch`] - The shared watch layer: one watch and cache per kind and namespace
 
 pub mod context;
 pub mod error;
+pub mod finalizers;
 pub mod http_errors;
 pub mod leader;
 pub mod metrics;
 pub mod namespace_scope;
 pub mod pagination;
 pub mod rate_limit;
+pub mod reconcile;
 pub mod requeue;
 pub mod resources;
 pub mod retry;
+pub mod shutdown;
 pub mod status;
 pub mod watch;
 

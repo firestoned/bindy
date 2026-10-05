@@ -318,4 +318,208 @@ mod tests {
         let _ = ws.register::<ConfigMap>("ConfigMap");
         let _ = ws.store::<ConfigMap>(Some("elsewhere"));
     }
+
+    // ------------------------------------------------------------------
+    // primary_predicate: the self-trigger filter (ADR-0009 §4, amended)
+    // ------------------------------------------------------------------
+
+    fn versioned_config_map(
+        generation: i64,
+        resource_version: &str,
+        finalizers: &[&str],
+        labels: &[(&str, &str)],
+        annotations: &[(&str, &str)],
+    ) -> ConfigMap {
+        let map = |kv: &[(&str, &str)]| {
+            (!kv.is_empty()).then(|| {
+                kv.iter()
+                    .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                    .collect()
+            })
+        };
+        ConfigMap {
+            metadata: ObjectMeta {
+                name: Some("zone".to_string()),
+                namespace: Some("a".to_string()),
+                uid: Some("uid-1".to_string()),
+                generation: Some(generation),
+                resource_version: Some(resource_version.to_string()),
+                finalizers: (!finalizers.is_empty())
+                    .then(|| finalizers.iter().map(ToString::to_string).collect()),
+                labels: map(labels),
+                annotations: map(annotations),
+                ..ObjectMeta::default()
+            },
+            ..ConfigMap::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn primary_predicate_drops_status_only_writes_and_passes_everything_else() {
+        use kube::runtime::WatchStreamExt;
+
+        let events = vec![
+            // first sight
+            versioned_config_map(1, "100", &[], &[], &[]),
+            // a status write: only the resourceVersion moved
+            versioned_config_map(1, "101", &[], &[], &[]),
+            // spec change
+            versioned_config_map(2, "102", &[], &[], &[]),
+            // finalizer added by kube's finalizer() helper
+            versioned_config_map(2, "103", &["f"], &[], &[]),
+            // label change
+            versioned_config_map(2, "104", &["f"], &[("k", "v")], &[]),
+            // annotation change
+            versioned_config_map(2, "105", &["f"], &[("k", "v")], &[("a", "b")]),
+            // another status write
+            versioned_config_map(2, "106", &["f"], &[("k", "v")], &[("a", "b")]),
+        ];
+        let stream = futures::stream::iter(events.into_iter().map(Ok::<ConfigMap, watcher::Error>));
+
+        let passed: Vec<String> = stream
+            .predicate_filter(super::super::primary_predicate(), Default::default())
+            .map(|cm| cm.unwrap().metadata.resource_version.unwrap())
+            .collect()
+            .await;
+
+        assert_eq!(passed, vec!["100", "102", "103", "104", "105"]);
+    }
+
+    // ------------------------------------------------------------------
+    // diagnose_watch_error: an actionable message per watch failure
+    // ------------------------------------------------------------------
+
+    fn api_error(code: u16, message: &str) -> kube::Error {
+        kube::Error::Api(
+            kube::core::Status::failure(message, "Reason")
+                .with_code(code)
+                .boxed(),
+        )
+    }
+
+    #[test]
+    fn a_forbidden_list_points_at_rbac() {
+        let error = watcher::Error::InitialListFailed(api_error(403, "dnszones is forbidden"));
+        let diagnosis = super::super::diagnose_watch_error(&error);
+        assert!(diagnosis.starts_with("initial list failed"), "{diagnosis}");
+        assert!(diagnosis.contains("check RBAC"), "{diagnosis}");
+        assert!(diagnosis.contains("dnszones is forbidden"), "{diagnosis}");
+    }
+
+    #[test]
+    fn an_unauthorized_watch_points_at_credentials() {
+        let error = watcher::Error::WatchStartFailed(api_error(401, "token expired"));
+        let diagnosis = super::super::diagnose_watch_error(&error);
+        assert!(diagnosis.starts_with("watch start failed"), "{diagnosis}");
+        assert!(diagnosis.contains("check credentials"), "{diagnosis}");
+    }
+
+    #[test]
+    fn an_error_event_in_the_stream_carries_its_status() {
+        let status = kube::core::Status::failure("too old resource version", "Expired")
+            .with_code(410)
+            .boxed();
+        let diagnosis = super::super::diagnose_watch_error(&watcher::Error::WatchError(status));
+        assert!(
+            diagnosis.contains("too old resource version"),
+            "{diagnosis}"
+        );
+        assert!(diagnosis.contains("HTTP 410"), "{diagnosis}");
+    }
+
+    #[test]
+    fn a_kind_without_resource_versions_says_so() {
+        let diagnosis = super::super::diagnose_watch_error(&watcher::Error::NoResourceVersion);
+        assert!(diagnosis.contains("does not support watch"), "{diagnosis}");
+    }
+
+    // ------------------------------------------------------------------
+    // changed_only: pass an object only when the part a mapper reads changes
+    // ------------------------------------------------------------------
+
+    fn labelled(name: &str, rv: &str, tier: &str) -> ConfigMap {
+        ConfigMap {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                namespace: Some("a".to_string()),
+                resource_version: Some(rv.to_string()),
+                labels: Some([("tier".to_string(), tier.to_string())].into()),
+                ..ObjectMeta::default()
+            },
+            ..ConfigMap::default()
+        }
+    }
+
+    fn tier_key(cm: &ConfigMap) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        cm.metadata
+            .labels
+            .as_ref()
+            .and_then(|l| l.get("tier"))
+            .hash(&mut h);
+        h.finish()
+    }
+
+    async fn run_changed_only(events: Vec<ConfigMap>, cached: &[&str]) -> Vec<String> {
+        let cached: Vec<String> = cached.iter().map(ToString::to_string).collect();
+        let stream = futures::stream::iter(events.into_iter().map(Ok::<_, watcher::Error>));
+        super::super::changed_only(stream, tier_key, move |cm: &ConfigMap| {
+            cached.contains(&cm.metadata.name.clone().unwrap_or_default())
+        })
+        .map(|cm| {
+            let cm = cm.unwrap();
+            format!(
+                "{}@{}",
+                cm.metadata.name.unwrap(),
+                cm.metadata.resource_version.unwrap()
+            )
+        })
+        .collect()
+        .await
+    }
+
+    #[tokio::test]
+    async fn changed_only_passes_first_sight_and_key_changes_and_drops_the_rest() {
+        let passed = run_changed_only(
+            vec![
+                labelled("x", "1", "edge"), // first sight
+                labelled("x", "2", "edge"), // a timestamp write: same key
+                labelled("x", "3", "core"), // the key changed
+                labelled("y", "4", "edge"), // another object's first sight
+                labelled("x", "5", "core"), // same key again
+            ],
+            &["x", "y"],
+        )
+        .await;
+        assert_eq!(passed, vec!["x@1", "x@3", "y@4"]);
+    }
+
+    #[tokio::test]
+    async fn changed_only_always_passes_a_deleted_object_and_forgets_it() {
+        // "x" is no longer in the cache: a Delete event (the store is updated
+        // before the broadcast). It must reach the mapper even though its key
+        // is unchanged, and a recreated "x" is first sight again.
+        let passed = run_changed_only(
+            vec![
+                labelled("x", "1", "edge"),
+                labelled("x", "2", "edge"),
+                labelled("x", "3", "edge"),
+            ],
+            &[],
+        )
+        .await;
+        assert_eq!(passed, vec!["x@1", "x@2", "x@3"]);
+    }
+
+    #[tokio::test]
+    async fn changed_only_passes_watch_errors_through() {
+        let stream =
+            futures::stream::iter(vec![Err::<ConfigMap, _>(watcher::Error::NoResourceVersion)]);
+        let out: Vec<_> = super::super::changed_only(stream, tier_key, |_: &ConfigMap| true)
+            .collect()
+            .await;
+        assert_eq!(out.len(), 1);
+        assert!(out[0].is_err());
+    }
 }

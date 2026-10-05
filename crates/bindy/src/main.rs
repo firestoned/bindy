@@ -1,253 +1,30 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: Apache-2.0
 
-//! Bindy binary entry point — CLI parsing and Tokio runtime setup.
+//! Bindy binary entry point: CLI, logging, the Kubernetes client, the metrics
+//! server, the leader-election handoff, and the controllers from each
+//! controller crate (ADR-0009, roadmap 01 Phase F).
 //!
 //! For full CLI documentation, environment variables, and the Scout guide, see the
 //! [Bindy documentation](https://firestoned.github.io/bindy/).
 
+mod cli;
+
 use anyhow::Result;
 use axum::{routing::get, Router};
-use bindy::reconcilers::pagination::list_all_paginated;
-use bindy::{
-    bind9::Bind9Manager,
-    constants::{
-        METRICS_SERVER_BIND_ADDRESS, METRICS_SERVER_PATH, METRICS_SERVER_PORT, TOKIO_WORKER_THREADS,
-    },
-    context::{Context, Metrics, Stores},
-    crd::{
-        AAAARecord, ARecord, Bind9Cluster, Bind9Instance, CAARecord, CNAMERecord,
-        ClusterBind9Provider, DNSZone, MXRecord, NSRecord, PTRRecord, SRVRecord, TXTRecord,
-    },
-    metrics,
-    reconcilers::{
-        delete_dnszone, reconcile_bind9cluster, reconcile_bind9instance,
-        reconcile_clusterbind9provider, reconcile_dnszone,
-    },
-    record_operator::run_generic_record_operator,
+use bindy_api::constants::{
+    METRICS_SERVER_BIND_ADDRESS, METRICS_SERVER_PATH, METRICS_SERVER_PORT, TOKIO_WORKER_THREADS,
 };
-use bindy_controller_sdk::leader::{
-    acquire_leadership, leadership_lost, LeaderElectionConfig, Leadership,
-};
-use clap::{CommandFactory, Parser, Subcommand};
-use clap_complete::Shell;
-use futures::StreamExt;
-use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{ConfigMap, Secret, Service, ServiceAccount};
-use kube::{
-    runtime::{controller::Action, finalizer, watcher::Config, Controller},
-    Api, Client, ResourceExt,
-};
+use bindy_controller_sdk::context::Context;
+use bindy_controller_sdk::leader::{acquire_leadership, leadership_lost, LeaderElectionConfig};
+use bindy_controller_sdk::namespace_scope::NamespaceScope;
+use bindy_controller_sdk::shutdown::{self, supervise, ShutdownSignal};
+use bindy_controller_sdk::{metrics, rate_limit};
+use clap::{CommandFactory, Parser};
+use cli::{Cli, Commands};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 use tracing::{debug, error, info, warn};
-
-use bindy_controller_sdk::error::{error_policy, ReconcileError};
-
-const BANNER: &str = "
-
-        ()           ()
-         \\\\    ^    //
-       ~~~~\\\\~^^^~//~~~~~~
-     /     (  o o  )      \\
-    /   ___/  ~~~  \\___    \\
-    | /    \\   v   /    \\  |
-    |/   __/|=====|\\__   \\ |
-    |   /   |=====|   \\   ||
-    |  /    |=====|    \\  |/
-    \\ /     |=====|     \\ /
-            |=====|
-             \\===/
-              \\=/
-               *
-";
-
-/// BIND9 DNS Operator for Kubernetes
-#[derive(Parser)]
-#[command(
-    name = "bindy",
-    about = "Bindy - BIND9 DNS Operator for Kubernetes",
-    version,
-    before_help = BANNER,
-)]
-struct Cli {
-    #[command(subcommand)]
-    command: Commands,
-}
-
-#[derive(Subcommand)]
-enum BootstrapCommands {
-    /// Bootstrap the BIND9 operator: apply namespace, CRDs, RBAC, and deploy the operator
-    Operator {
-        /// Namespace to install bindy into
-        #[arg(long, default_value = bindy::bootstrap::DEFAULT_NAMESPACE)]
-        namespace: String,
-        /// Print what would be applied without connecting to a cluster
-        #[arg(long)]
-        dry_run: bool,
-        /// Version (image tag) for the operator Deployment.
-        /// Defaults to the binary's own version in release builds (e.g. "v0.5.0"),
-        /// or "latest" in debug builds.
-        #[arg(long, default_value = bindy::bootstrap::DEFAULT_IMAGE_TAG)]
-        version: String,
-        /// Override the container registry used for the operator image.
-        /// Useful for air-gapped environments where images are mirrored to a private registry.
-        /// When set, the image becomes `<registry>/bindy:<version>` instead of
-        /// `ghcr.io/firestoned/bindy:<version>`.
-        #[arg(long)]
-        registry: Option<String>,
-    },
-    /// Bootstrap the Scout controller: apply RBAC and deploy scout
-    Scout {
-        /// Namespace to install scout into
-        #[arg(long, default_value = bindy::bootstrap::DEFAULT_NAMESPACE)]
-        namespace: String,
-        /// Print what would be applied without connecting to a cluster
-        #[arg(long)]
-        dry_run: bool,
-        /// Version (image tag) for the Scout Deployment.
-        /// Defaults to the binary's own version in release builds (e.g. "v0.5.0"),
-        /// or "latest" in debug builds.
-        #[arg(long, default_value = bindy::bootstrap::DEFAULT_IMAGE_TAG)]
-        version: String,
-        /// Override the container registry used for the scout image.
-        /// Useful for air-gapped environments where images are mirrored to a private registry.
-        /// When set, the image becomes `<registry>/bindy:<version>` instead of
-        /// `ghcr.io/firestoned/bindy:<version>`.
-        #[arg(long)]
-        registry: Option<String>,
-        /// Logical name of this cluster stamped on created ARecord labels.
-        /// Passed to the scout container as `--cluster-name`.
-        /// Overrides the BINDY_SCOUT_CLUSTER_NAME environment variable inside the pod.
-        #[arg(long, default_value = bindy::bootstrap::DEFAULT_SCOUT_CLUSTER_NAME)]
-        cluster_name: String,
-        /// Default IP addresses for all Ingresses when no per-Ingress annotation override
-        /// or LoadBalancer status IP is available. Accepts one or more comma-separated values.
-        /// Passed to the scout container as `--default-ips`.
-        #[arg(long, value_delimiter = ',')]
-        default_ips: Vec<String>,
-        /// Default DNS zone applied to all Ingresses when no annotation is present.
-        /// Passed to the scout container as `--default-zone`.
-        #[arg(long)]
-        default_zone: Option<String>,
-        /// Name of the Secret containing the remote cluster kubeconfig (Phase 2 / multi-cluster).
-        /// The Secret must already exist in the same namespace as the scout (created by
-        /// `bindy bootstrap multi-cluster`). When set, the scout connects to the remote bindy
-        /// cluster to look up DNSZones and write ARecords.
-        /// Sets `BINDY_SCOUT_REMOTE_SECRET` in the scout Deployment.
-        #[arg(long)]
-        remote_secret: Option<String>,
-    },
-    /// Bootstrap multi-cluster access: create a service account on the queen-ship
-    /// and write a `bindy.firestoned.io/remote-kubeconfig` Secret YAML to stdout.
-    ///
-    /// Run this command against the queen-ship (bindy operator) cluster. Pipe the
-    /// output to each child cluster so the scout can connect back to the queen-ship.
-    ///
-    /// To remove access later: `bindy bootstrap mc --revoke --service-account <name>`
-    #[command(alias = "mc")]
-    MultiCluster {
-        /// Namespace on the queen-ship where the SA, Role, and token Secret are created.
-        /// This should be the same namespace the scout is configured to write ARecords into.
-        #[arg(long, default_value = bindy::bootstrap::DEFAULT_NAMESPACE)]
-        namespace: String,
-        /// Name of the service account to create on the queen-ship cluster.
-        /// Use one account per child cluster so access can be revoked independently.
-        #[arg(long, default_value = bindy::bootstrap::MC_DEFAULT_SERVICE_ACCOUNT_NAME)]
-        service_account: String,
-        /// Override the API server URL written into the generated kubeconfig Secret.
-        /// Required when the KUBECONFIG server address is not reachable from inside
-        /// the child cluster (e.g. kind-to-kind: use the queen-ship container's
-        /// Docker network address instead of 127.0.0.1).
-        /// Example: --server https://172.18.0.3:6443
-        #[arg(long)]
-        server: Option<String>,
-        /// Revoke (delete) all resources previously created for --service-account.
-        /// Safe to run multiple times — missing resources are silently skipped.
-        /// Alias: --delete
-        #[arg(long, alias = "delete", default_value_t = false)]
-        revoke: bool,
-        /// Emit `insecure-skip-tls-verify: true` in the generated kubeconfig when the
-        /// source KUBECONFIG has no `certificate-authority-data`. Without this flag the
-        /// command refuses to proceed rather than silently distributing kubeconfigs that
-        /// disable TLS verification to every child cluster. Only use for local testing
-        /// (e.g. kind) where MITM is not a concern.
-        #[arg(long, default_value_t = false)]
-        insecure_skip_tls_verify: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    /// Bootstrap bindy components into the cluster
-    Bootstrap {
-        #[command(subcommand)]
-        subcommand: BootstrapCommands,
-    },
-    /// Run the BIND9 DNS operator
-    Run,
-    /// Run the ingress scout controller (creates ARecords from annotated Ingresses)
-    Scout {
-        /// Logical name of this cluster stamped on created ARecord labels.
-        /// Overrides the BINDY_SCOUT_CLUSTER_NAME environment variable.
-        #[arg(long)]
-        cluster_name: Option<String>,
-        /// Namespace where ARecords are created.
-        /// Overrides the BINDY_SCOUT_NAMESPACE environment variable.
-        #[arg(long)]
-        namespace: Option<String>,
-        /// Default IP addresses used for all Ingresses when no per-Ingress annotation override
-        /// or LoadBalancer status IP is available. Accepts one or more comma-separated values.
-        /// Overrides the BINDY_SCOUT_DEFAULT_IPS environment variable.
-        /// Useful for shared-ingress topologies (e.g. Traefik) where all Ingresses resolve
-        /// to the same IP(s).
-        #[arg(long, value_delimiter = ',')]
-        default_ips: Vec<String>,
-        /// Map a gatewayClass to the LoadBalancer Service whose external IP backs it,
-        /// as `class=namespace/name` (repeatable). When an HTTPRoute/TLSRoute/TCPRoute has no IP
-        /// annotation, scout follows its parentRefs to a Gateway of a configured class
-        /// and uses the mapped Service's external IP. Overrides BINDY_SCOUT_GATEWAY_SERVICES.
-        /// Example: --gateway-service traefik=traefik/traefik
-        #[arg(long = "gateway-service")]
-        gateway_service: Vec<String>,
-        /// Default DNS zone applied to all Ingresses when no bindy.firestoned.io/zone annotation
-        /// is present. Overrides the BINDY_SCOUT_DEFAULT_ZONE environment variable.
-        /// When combined with --default-ips, Ingresses only need: bindy.firestoned.io/scout-enabled: "true"
-        #[arg(long)]
-        default_zone: Option<String>,
-        /// Kubernetes label selector (e.g. "bindy.firestoned.io/scout-enabled=true") restricting
-        /// which namespaces scout will act in. A source object's per-resource opt-in annotation
-        /// is still required in addition to this — the namespace must match the selector AND the
-        /// object must carry the annotation. When unset, every namespace is eligible (unchanged
-        /// default, for backward compatibility) — production deployments are strongly encouraged
-        /// to set this rather than run with cluster-wide scope. Overrides the
-        /// BINDY_SCOUT_NAMESPACE_SELECTOR environment variable.
-        #[arg(long = "namespace-selector")]
-        namespace_selector: Option<String>,
-        /// Bindy cluster API URL for the endpoint remote mode (ADR-0008): a
-        /// Linkerd-mirrored meshed proxy, a konnectivity endpoint, or the API
-        /// server itself. Requires --remote-token-file. Mutually exclusive with
-        /// BINDY_SCOUT_REMOTE_SECRET. Overrides BINDY_SCOUT_REMOTE_ENDPOINT.
-        #[arg(long = "remote-endpoint")]
-        remote_endpoint: Option<String>,
-        /// Path to a bearer-token file minted by the bindy cluster, re-read on
-        /// rotation. Overrides BINDY_SCOUT_REMOTE_TOKEN_FILE.
-        #[arg(long = "remote-token-file")]
-        remote_token_file: Option<String>,
-        /// Path to the remote endpoint's CA bundle (PEM). When unset, webpki
-        /// public roots are used. Overrides BINDY_SCOUT_REMOTE_CA_FILE.
-        #[arg(long = "remote-ca-file")]
-        remote_ca_file: Option<String>,
-    },
-    /// Output shell completion code for the specified shell
-    Completion {
-        /// Shell to generate completions for
-        #[arg(value_enum)]
-        shell: Shell,
-    },
-    /// Print the binary version (same output as --version)
-    Version,
-}
 
 fn main() -> Result<()> {
     // Install ring as the default TLS crypto provider. Both ring (via hickory-client/dnssec-ring)
@@ -259,117 +36,33 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // Shell completion is synchronous — no Tokio runtime needed.
-    if let Commands::Completion { shell } = cli.command {
-        clap_complete::generate(shell, &mut Cli::command(), "bindy", &mut std::io::stdout());
-        return Ok(());
-    }
-
-    // Version output is synchronous — no Tokio runtime needed.
+    // Shell completion and version output are synchronous: no Tokio runtime.
     // render_version() derives from CARGO_PKG_VERSION, matching --version exactly.
-    if let Commands::Version = cli.command {
-        print!("{}", Cli::command().render_version());
-        return Ok(());
+    match cli.command {
+        Commands::Completion { shell } => {
+            clap_complete::generate(shell, &mut Cli::command(), "bindy", &mut std::io::stdout());
+            return Ok(());
+        }
+        Commands::Version => {
+            print!("{}", Cli::command().render_version());
+            return Ok(());
+        }
+        _ => {}
     }
 
-    let thread_name = match &cli.command {
-        Commands::Bootstrap {
-            subcommand: BootstrapCommands::Operator { .. },
-        } => "bindy-bootstrap-operator",
-        Commands::Bootstrap {
-            subcommand: BootstrapCommands::Scout { .. },
-        } => "bindy-bootstrap-scout",
-        Commands::Bootstrap {
-            subcommand: BootstrapCommands::MultiCluster { .. },
-        } => "bindy-bootstrap-mc",
-        Commands::Run => "bindy-run",
-        Commands::Scout { .. } => "bindy-scout",
-        Commands::Completion { .. } | Commands::Version => unreachable!("handled above"),
-    };
-
-    // Build Tokio runtime with custom thread names
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(TOKIO_WORKER_THREADS)
-        .thread_name(thread_name)
+        .thread_name(cli.command.thread_name())
         .enable_all()
         .build()?;
 
-    match cli.command {
-        Commands::Bootstrap {
-            subcommand:
-                BootstrapCommands::Operator {
-                    namespace,
-                    dry_run,
-                    version,
-                    registry,
-                },
-        } => runtime.block_on(bootstrap_operator_command(
-            namespace, dry_run, version, registry,
-        )),
-        Commands::Bootstrap {
-            subcommand:
-                BootstrapCommands::Scout {
-                    namespace,
-                    dry_run,
-                    version,
-                    registry,
-                    cluster_name,
-                    default_ips,
-                    default_zone,
-                    remote_secret,
-                },
-        } => runtime.block_on(bootstrap_scout_command(
-            namespace,
-            dry_run,
-            version,
-            registry,
-            cluster_name,
-            default_ips,
-            default_zone,
-            remote_secret,
-        )),
-        Commands::Bootstrap {
-            subcommand:
-                BootstrapCommands::MultiCluster {
-                    namespace,
-                    service_account,
-                    server,
-                    revoke,
-                    insecure_skip_tls_verify,
-                },
-        } => runtime.block_on(bootstrap_multi_cluster_command(
-            namespace,
-            service_account,
-            server,
-            revoke,
-            insecure_skip_tls_verify,
-        )),
-        Commands::Run => runtime.block_on(run_command()),
-        Commands::Scout {
-            cluster_name,
-            namespace,
-            default_ips,
-            gateway_service,
-            default_zone,
-            namespace_selector,
-            remote_endpoint,
-            remote_token_file,
-            remote_ca_file,
-        } => runtime.block_on(scout_command(
-            cluster_name,
-            namespace,
-            default_ips,
-            gateway_service,
-            default_zone,
-            namespace_selector,
-            bindy::scout::ScoutRemoteOverrides {
-                endpoint: remote_endpoint,
-                token_file: remote_token_file,
-                ca_file: remote_ca_file,
-            },
-        )),
-        Commands::Completion { .. } | Commands::Version => unreachable!("handled above"),
-    }
+    runtime.block_on(async {
+        initialize_logging();
+        match cli.command {
+            Commands::Run => run_operator().await,
+            command => cli::run(command).await,
+        }
+    })
 }
 
 /// Initialize logging with custom format
@@ -382,173 +75,23 @@ fn initialize_logging() {
 
     let log_format = std::env::var("RUST_LOG_FORMAT").unwrap_or_else(|_| "text".to_string());
 
-    match log_format.to_lowercase().as_str() {
-        "json" => {
-            tracing_subscriber::fmt()
-                .with_env_filter(env_filter)
-                .with_file(true)
-                .with_line_number(true)
-                .with_thread_names(true)
-                .with_target(false)
-                .json()
-                .init();
-        }
-        _ => {
-            tracing_subscriber::fmt()
-                .with_env_filter(env_filter)
-                .with_file(true)
-                .with_line_number(true)
-                .with_thread_names(true)
-                .with_target(false)
-                .with_ansi(true)
-                .compact()
-                .init();
-        }
+    let builder = tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .with_file(true)
+        .with_line_number(true)
+        .with_thread_names(true)
+        .with_target(false);
+    if log_format.eq_ignore_ascii_case("json") {
+        builder.json().init();
+    } else {
+        builder.with_ansi(true).compact().init();
     }
 
     debug!("Logging initialized with file and line number tracking");
 }
 
-/// Initialize Kubernetes client and BIND9 manager
-async fn initialize_services() -> Result<(Client, Arc<Bind9Manager>)> {
-    debug!("Initializing Kubernetes client");
-
-    // Load kubeconfig
-    let config = kube::Config::infer().await?;
-
-    // Client-side rate limiting via tower middleware (ADR-0005): kube-rs has
-    // no QPS/burst fields on Config, so the limiter lives in the client stack.
-    let limits = bindy::rate_limit::RateLimitConfig::from_env();
-    let client = bindy::rate_limit::build_rate_limited_client(config, &limits)?;
-
-    debug!("Creating BIND9 manager");
-    let bind9_manager = Arc::new(Bind9Manager::new());
-    debug!("BIND9 manager created");
-
-    Ok((client, bind9_manager))
-}
-
-/// Owned copies of the scope's namespace targets.
-///
-/// [`NamespaceScope::api_targets`] borrows the scope; controllers need targets that
-/// outlive that borrow so they can be moved into per-namespace tasks.
-///
-/// [`NamespaceScope::api_targets`]: bindy::namespace_scope::NamespaceScope::api_targets
-fn owned_targets(scope: &bindy::namespace_scope::NamespaceScope) -> Vec<Option<String>> {
-    scope
-        .api_targets()
-        .into_iter()
-        .map(|t| t.map(ToString::to_string))
-        .collect()
-}
-
-/// Initialize reflectors for all CRD types and create shared context.
-///
-/// This function creates reflector tasks for all custom resources, populating
-/// in-memory stores that enable O(1) label-based lookups without API queries.
-///
-/// # Arguments
-///
-/// * `client` - Kubernetes API client
-///
-/// # Returns
-///
-/// * `Arc<Context>` - Shared context with client, stores, and metrics
-///
-/// # Architecture
-///
-/// Each reflector spawns a background task that watches its resource type
-/// and updates the corresponding store. The stores are then made available
-/// to all controllers through the shared context.
-#[allow(clippy::too_many_lines, clippy::unused_async)]
-async fn initialize_shared_context(client: Client) -> Result<Arc<Context>> {
-    info!("Initializing reflectors for all CRD types");
-
-    let scope = bindy::namespace_scope::NamespaceScope::from_env();
-    match &scope {
-        bindy::namespace_scope::NamespaceScope::All => {
-            info!("Namespace scope: ALL (cluster-wide) — requires cluster-wide RBAC");
-        }
-        bindy::namespace_scope::NamespaceScope::Namespaces(ns) => {
-            info!(
-                namespaces = ?ns,
-                "Namespace scope: RESTRICTED — one watch per namespace, needs only per-namespace RoleBindings"
-            );
-        }
-    }
-
-    // One shared watch and cache per (kind, namespace target), which every
-    // controller subscribes to (ADR-0009 §3). See `MultiStore` for why the
-    // namespaces are separate shards rather than one merged store.
-    let mut watch = bindy_controller_sdk::watch::WatchSet::new(client.clone(), scope.clone());
-    // Cluster-scoped: always one cluster-wide watch, in every scope mode. Even
-    // a fully namespace-scoped operator keeps a slim `ClusterRole` granting
-    // `get/list/watch` on `clusterbind9providers`: the irreducible residue of
-    // cluster-wide RBAC, and the reason M-22 cannot claim to eliminate
-    // cluster-wide access entirely.
-    let cluster_bind9_providers =
-        watch.register_cluster::<ClusterBind9Provider>("ClusterBind9Provider");
-    let bind9_clusters = watch.register::<Bind9Cluster>("Bind9Cluster");
-    let bind9_instances = watch.register::<Bind9Instance>("Bind9Instance");
-    // Deployments are filtered to those owned by a Bind9Instance: the operator
-    // has no interest in every Deployment in every watched namespace.
-    let bind9_deployments = watch.register_filtered::<Deployment, _>("Deployment", |deployment| {
-        deployment
-            .metadata
-            .owner_references
-            .as_ref()
-            .is_some_and(|owners| owners.iter().any(|owner| owner.kind == "Bind9Instance"))
-    });
-    let dnszones = watch.register::<DNSZone>("DNSZone");
-    // Every record kind, from the one list in the SDK (RECORD_KINDS).
-    let mut records = bindy::context::RecordStores::default();
-    for ops in &bindy::context::RECORD_KINDS {
-        (ops.register)(&mut watch, &mut records);
-    }
-    // Endpoints of bindy's own Services only (label-selected on the API
-    // server): the zone controller's signal that a BIND9 pod was replaced.
-    // One watch per namespace target, like every other kind, so namespace-
-    // restricted mode needs only its per-namespace `endpoints` Role.
-    let _endpoints = watch.register_selected::<k8s_openapi::api::core::v1::Endpoints>(
-        "Endpoints",
-        bindy::labels::BINDY_PART_OF_SELECTOR,
-    );
-
-    let stores = Stores {
-        cluster_bind9_providers,
-        bind9_clusters,
-        bind9_instances,
-        bind9_deployments,
-        dnszones,
-        records,
-    };
-
-    // Create HTTP client for bindcar API calls
-    let http_client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()?;
-
-    // Create the shared context
-    let context = Arc::new(Context {
-        client,
-        stores,
-        watch: Arc::new(watch),
-        http_client,
-        metrics: Metrics::default(),
-        namespace_scope: scope,
-    });
-
-    info!("Shared context initialized with reflectors for all CRD types");
-
-    Ok(context)
-}
-
-/// Start the Prometheus metrics HTTP server
-///
-/// Serves metrics on the configured port and path (default: 0.0.0.0:8080/metrics)
-///
-/// # Returns
-/// A `JoinHandle` that can be used to monitor the server task
+/// Start the Prometheus metrics HTTP server on the configured address and
+/// path (default `0.0.0.0:8080/metrics`).
 fn start_metrics_server() -> tokio::task::JoinHandle<()> {
     info!(
         bind_address = METRICS_SERVER_BIND_ADDRESS,
@@ -558,21 +101,14 @@ fn start_metrics_server() -> tokio::task::JoinHandle<()> {
     );
 
     tokio::spawn(async move {
-        // Define the metrics endpoint handler
         async fn metrics_handler() -> String {
-            match metrics::gather_metrics() {
-                Ok(metrics_text) => metrics_text,
-                Err(e) => {
-                    error!("Failed to gather metrics: {}", e);
-                    String::from("# Error gathering metrics\n")
-                }
-            }
+            metrics::gather_metrics().unwrap_or_else(|e| {
+                error!("Failed to gather metrics: {}", e);
+                String::from("# Error gathering metrics\n")
+            })
         }
 
-        // Build the router with the metrics endpoint
         let app = Router::new().route(METRICS_SERVER_PATH, get(metrics_handler));
-
-        // Bind to the configured address and port
         let bind_addr = format!("{METRICS_SERVER_BIND_ADDRESS}:{METRICS_SERVER_PORT}");
         let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
             Ok(listener) => listener,
@@ -583,1304 +119,137 @@ fn start_metrics_server() -> tokio::task::JoinHandle<()> {
         };
 
         info!("Metrics server listening on http://{bind_addr}{METRICS_SERVER_PATH}");
-
-        // Run the server
         if let Err(e) = axum::serve(listener, app).await {
             error!("Metrics server error: {e}");
         }
     })
 }
 
-/// Create a default watcher configuration.
-///
-/// Returns a basic watcher configuration without semantic filtering.
-/// Used for controllers that need to watch all changes including status updates.
-///
-/// # Returns
-///
-/// A `Config` instance with default settings.
-#[inline]
-fn default_watcher_config() -> Config {
-    Config::default()
-}
-
-/// Run all operators without leader election, with signal handling
-async fn run_operators_without_leader_election(
-    context: Arc<Context>,
-    bind9_manager: Arc<Bind9Manager>,
-) -> Result<()> {
-    warn!("Leader election DISABLED - running without high availability");
-    info!("Starting all operators with signal handling");
-
-    // Run operators concurrently with signal handling
-    // Operators should never exit - if one fails, we log it and exit the main process
-    let shutdown_result: Result<()> = tokio::select! {
-        // Monitor for SIGINT (Ctrl+C)
-        result = tokio::signal::ctrl_c() => {
-            info!("Received SIGINT (Ctrl+C), initiating graceful shutdown...");
-            info!("Stopping all operators...");
-            result.map_err(anyhow::Error::from)
+/// Resolve on SIGINT (Ctrl+C) or SIGTERM (Kubernetes deleting the pod).
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            error!("Cannot listen for SIGINT: {e}");
+            std::future::pending::<()>().await;
         }
-
-        // Monitor for SIGTERM (Kubernetes sends this when deleting pods)
-        result = async {
-            #[cfg(unix)]
-            {
-                use tokio::signal::unix::{signal, SignalKind};
-                let mut sigterm = signal(SignalKind::terminate())?;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut sigterm) => {
                 sigterm.recv().await;
-                Ok::<(), anyhow::Error>(())
             }
-            #[cfg(not(unix))]
-            {
-                // On non-Unix platforms, just wait forever
+            Err(e) => {
+                error!("Cannot listen for SIGTERM: {e}");
                 std::future::pending::<()>().await;
-                Ok::<(), anyhow::Error>(())
             }
-        } => {
-            info!("Received SIGTERM (pod termination), initiating graceful shutdown...");
-            info!("Stopping all operators...");
-            result
-        }
-
-        // Run all operators - delegate to shared function
-        result = run_all_operators(context.clone(), bind9_manager.clone()) => {
-            result
         }
     };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
 
-    // Handle shutdown result
-    shutdown_result?;
-    info!("Graceful shutdown completed successfully");
-
-    Ok(())
-}
-
-/// Performs startup drift detection across all managed resources.
-///
-/// This function is called once on operator startup to detect configuration drift
-/// that may have occurred while the operator was down or being upgraded.
-///
-/// It checks:
-/// - `ClusterBind9Provider`: Triggers reconciliation for all providers
-/// - `Bind9Cluster`: Triggers reconciliation for all clusters
-/// - `Bind9Instance`: Checks for RNDC configuration drift and triggers reconciliation if needed
-///
-/// # Arguments
-///
-/// * `client` - Kubernetes API client
-/// * `context` - Shared operator context
-///
-/// # Errors
-///
-/// Returns error if Kubernetes API calls fail.
-async fn perform_startup_drift_detection(client: Client, context: Arc<Context>) -> Result<()> {
-    info!("Starting drift detection for ClusterBind9Provider resources...");
-    let cluster_providers_api: Api<ClusterBind9Provider> = Api::all(client.clone());
-    match list_all_paginated(&cluster_providers_api, kube::api::ListParams::default()).await {
-        Ok(providers) => {
-            info!("Found {} ClusterBind9Provider resources", providers.len());
-            for provider in providers {
-                let name = provider.name_any();
-                debug!(
-                    "Triggering reconciliation for ClusterBind9Provider: {}",
-                    name
-                );
-
-                // Call reconcile directly
-                match Box::pin(reconcile_clusterbind9provider(
-                    context.clone(),
-                    provider.clone(),
-                ))
-                .await
-                {
-                    Ok(()) => debug!("ClusterBind9Provider {} reconciled successfully", name),
-                    Err(e) => warn!("Failed to reconcile ClusterBind9Provider {}: {}", name, e),
-                }
-            }
-        }
-        Err(e) => {
-            warn!("Failed to list ClusterBind9Provider resources: {}", e);
-        }
-    }
-
-    info!("Starting drift detection for Bind9Cluster resources...");
-    let clusters_api: Api<Bind9Cluster> = Api::all(client.clone());
-    match list_all_paginated(&clusters_api, kube::api::ListParams::default()).await {
-        Ok(clusters) => {
-            info!("Found {} Bind9Cluster resources", clusters.len());
-            for cluster in clusters {
-                let name = cluster.name_any();
-                let namespace = cluster.namespace().unwrap_or_else(|| "default".to_string());
-                debug!(
-                    "Triggering reconciliation for Bind9Cluster: {}/{}",
-                    namespace, name
-                );
-
-                // Call reconcile directly
-                match Box::pin(reconcile_bind9cluster(context.clone(), cluster.clone())).await {
-                    Ok(()) => debug!(
-                        "Bind9Cluster {}/{} reconciled successfully",
-                        namespace, name
-                    ),
-                    Err(e) => warn!(
-                        "Failed to reconcile Bind9Cluster {}/{}: {}",
-                        namespace, name, e
-                    ),
-                }
-            }
-        }
-        Err(e) => {
-            warn!("Failed to list Bind9Cluster resources: {}", e);
-        }
-    }
-
-    info!("Starting drift detection for Bind9Instance resources...");
-    let instances_api: Api<Bind9Instance> = Api::all(client.clone());
-    match list_all_paginated(&instances_api, kube::api::ListParams::default()).await {
-        Ok(instances) => {
-            info!("Found {} Bind9Instance resources", instances.len());
-            for instance in instances {
-                let name = instance.name_any();
-                let namespace = instance
-                    .namespace()
-                    .unwrap_or_else(|| "default".to_string());
-                debug!(
-                    "Triggering reconciliation for Bind9Instance: {}/{}",
-                    namespace, name
-                );
-
-                // Call reconcile directly
-                match Box::pin(reconcile_bind9instance(context.clone(), instance.clone())).await {
-                    Ok(()) => debug!(
-                        "Bind9Instance {}/{} reconciled successfully",
-                        namespace, name
-                    ),
-                    Err(e) => warn!(
-                        "Failed to reconcile Bind9Instance {}/{}: {}",
-                        namespace, name, e
-                    ),
-                }
-            }
-        }
-        Err(e) => {
-            warn!("Failed to list Bind9Instance resources: {}", e);
-        }
-    }
-
-    info!("Startup drift detection completed");
-    Ok(())
-}
-
-/// Entry point for `bindy bootstrap operator` — applies namespace, CRDs, RBAC, and the operator Deployment.
-async fn bootstrap_operator_command(
-    namespace: String,
-    dry_run: bool,
-    version: String,
-    registry: Option<String>,
-) -> Result<()> {
-    initialize_logging();
-    bindy::bootstrap::run_bootstrap_operator(&namespace, dry_run, &version, registry.as_deref())
-        .await
-}
-
-/// Entry point for `bindy bootstrap scout` — applies scout RBAC and the scout Deployment.
-// Each parameter maps 1-to-1 to a CLI flag; they cannot be bundled into a struct at this layer.
-#[allow(clippy::too_many_arguments)]
-async fn bootstrap_scout_command(
-    namespace: String,
-    dry_run: bool,
-    version: String,
-    registry: Option<String>,
-    cluster_name: String,
-    default_ips: Vec<String>,
-    default_zone: Option<String>,
-    remote_secret: Option<String>,
-) -> Result<()> {
-    initialize_logging();
-    let opts = bindy::bootstrap::ScoutDeploymentOptions {
-        image_tag: &version,
-        registry: registry.as_deref(),
-        cluster_name: &cluster_name,
-        default_ips: &default_ips,
-        default_zone: default_zone.as_deref(),
-        remote_secret: remote_secret.as_deref(),
-    };
-    bindy::bootstrap::run_bootstrap_scout(&namespace, dry_run, &opts).await
-}
-
-/// Entry point for `bindy bootstrap multi-cluster` — creates or revokes SA + RBAC on the
-/// queen-ship. Without `--revoke`, writes a `bindy.firestoned.io/remote-kubeconfig` Secret
-/// manifest to stdout. With `--revoke`, deletes all resources for the given service account.
-async fn bootstrap_multi_cluster_command(
-    namespace: String,
-    service_account: String,
-    server: Option<String>,
-    revoke: bool,
-    allow_insecure: bool,
-) -> Result<()> {
-    initialize_logging();
-    if revoke {
-        bindy::bootstrap::run_revoke_multi_cluster(&namespace, &service_account).await
-    } else {
-        bindy::bootstrap::run_bootstrap_multi_cluster(
-            &namespace,
-            &service_account,
-            server.as_deref(),
-            allow_insecure,
-        )
-        .await
+    tokio::select! {
+        () = ctrl_c => info!("Received SIGINT (Ctrl+C), draining controllers"),
+        () = terminate => info!("Received SIGTERM (pod termination), draining controllers"),
     }
 }
 
-/// Entry point for `bindy scout` — watches Ingresses and creates ARecords on the bindy cluster.
-///
-/// Phase 1 (same-cluster) and Phase 2 (remote cluster) are tracked in
-/// `.github/community/12-scout-ingress-controller.md`.
-async fn scout_command(
-    cluster_name: Option<String>,
-    namespace: Option<String>,
-    default_ips: Vec<String>,
-    gateway_service: Vec<String>,
-    default_zone: Option<String>,
-    namespace_selector: Option<String>,
-    remote: bindy::scout::ScoutRemoteOverrides,
-) -> Result<()> {
-    initialize_logging();
-    info!("Starting Scout controller");
-    bindy::scout::run_scout(
-        cluster_name,
-        namespace,
-        default_ips,
-        gateway_service,
-        default_zone,
-        namespace_selector,
-        remote,
-    )
-    .await
-}
-
-async fn run_command() -> Result<()> {
-    initialize_logging();
+/// `bindy run`: the operator.
+async fn run_operator() -> Result<()> {
     info!("Starting BIND9 DNS Operator");
 
-    let (client, bind9_manager) = initialize_services().await?;
+    // Client-side rate limiting via tower middleware (ADR-0005): kube-rs has
+    // no QPS/burst fields on Config, so the limiter lives in the client stack.
+    let limits = rate_limit::RateLimitConfig::from_env();
+    let client = rate_limit::build_rate_limited_client(kube::Config::infer().await?, &limits)?;
 
-    // Initialize shared context with reflectors for all CRD types
-    let context = initialize_shared_context(client.clone()).await?;
+    // The shared context: one watch per cached kind (ADR-0009 §3) and the
+    // shutdown signal every controller drains on (§5).
+    let (trigger, shutdown) = shutdown::channel();
+    let ctx = Arc::new(Context::new(
+        client.clone(),
+        NamespaceScope::from_env(),
+        shutdown.clone(),
+    )?);
+    let _metrics_server = start_metrics_server();
 
-    // Start the metrics HTTP server
-    let _metrics_handle = start_metrics_server();
-
-    let leader_election_config = LeaderElectionConfig::from_env();
-
-    if leader_election_config.enabled {
+    let leader_election = LeaderElectionConfig::from_env();
+    let lease_lost = Arc::new(AtomicBool::new(false));
+    let _leadership = if leader_election.enabled {
         info!(
-            lease_name = %leader_election_config.lease_name,
-            lease_namespace = %leader_election_config.lease_namespace,
-            identity = %leader_election_config.identity,
-            lease_duration_secs = leader_election_config.lease_duration,
-            renew_deadline_secs = leader_election_config.renew_deadline,
-            "Leader election enabled"
+            lease_name = %leader_election.lease_name,
+            lease_namespace = %leader_election.lease_namespace,
+            identity = %leader_election.identity,
+            lease_duration_secs = leader_election.lease_duration,
+            renew_deadline_secs = leader_election.renew_deadline,
+            "Leader election enabled, waiting to acquire leadership..."
         );
-
-        // Builds the lease and blocks until this replica holds it
-        info!("Starting leader election, waiting to acquire leadership...");
-        let leadership = acquire_leadership(client.clone(), &leader_election_config).await?;
-
+        let leadership = tokio::select! {
+            leadership = acquire_leadership(client, &leader_election) => leadership?,
+            () = shutdown_signal() => return Ok(()),
+        };
         info!("🎉 Leadership acquired! Starting controllers...");
 
-        // Perform startup drift detection before starting controllers
-        info!("Performing startup drift detection across all managed resources...");
-        if let Err(e) = Box::pin(perform_startup_drift_detection(
-            client.clone(),
-            context.clone(),
-        ))
-        .await
-        {
-            warn!(
-                "Startup drift detection failed: {}. Continuing with controller startup.",
-                e
-            );
-        }
-
-        // Run operators with leader election monitoring and signal handling
-        run_operators_with_leader_election(context, bind9_manager, leadership).await?;
-    } else {
-        info!("Leader election disabled, starting controllers immediately...");
-
-        // Perform startup drift detection before starting controllers
-        info!("Performing startup drift detection across all managed resources...");
-        if let Err(e) = Box::pin(perform_startup_drift_detection(
-            client.clone(),
-            context.clone(),
-        ))
-        .await
-        {
-            warn!(
-                "Startup drift detection failed: {}. Continuing with controller startup.",
-                e
-            );
-        }
-
-        run_operators_without_leader_election(context, bind9_manager).await?;
-    }
-
-    Ok(())
-}
-
-/// Run all DNS record operators
-async fn run_all_operators(context: Arc<Context>, bind9_manager: Arc<Bind9Manager>) -> Result<()> {
-    tokio::select! {
-        result = run_bind9cluster_operator(context.clone()) => {
-            error!("CRITICAL: Bind9Cluster operator exited unexpectedly: {:?}", result);
-            result?;
-            anyhow::bail!("Bind9Cluster operator exited unexpectedly without error")
-        }
-        result = run_clusterbind9provider_operator(context.clone()) => {
-            error!("CRITICAL: ClusterBind9Provider operator exited unexpectedly: {:?}", result);
-            result?;
-            anyhow::bail!("ClusterBind9Provider operator exited unexpectedly without error")
-        }
-        result = run_bind9instance_operator(context.clone()) => {
-            error!("CRITICAL: Bind9Instance operator exited unexpectedly: {:?}", result);
-            result?;
-            anyhow::bail!("Bind9Instance operator exited unexpectedly without error")
-        }
-        result = run_dnszone_operator(context.clone(), bind9_manager.clone()) => {
-            error!("CRITICAL: DNSZone operator exited unexpectedly: {:?}", result);
-            result?;
-            anyhow::bail!("DNSZone operator exited unexpectedly without error")
-        }
-        result = run_generic_record_operator::<ARecord>(context.clone(), bind9_manager.clone()) => {
-            error!("CRITICAL: ARecord operator exited unexpectedly: {:?}", result);
-            result?;
-            anyhow::bail!("ARecord operator exited unexpectedly without error")
-        }
-        result = run_generic_record_operator::<AAAARecord>(context.clone(), bind9_manager.clone()) => {
-            error!("CRITICAL: AAAARecord operator exited unexpectedly: {:?}", result);
-            result?;
-            anyhow::bail!("AAAARecord operator exited unexpectedly without error")
-        }
-        result = run_generic_record_operator::<TXTRecord>(context.clone(), bind9_manager.clone()) => {
-            error!("CRITICAL: TXTRecord operator exited unexpectedly: {:?}", result);
-            result?;
-            anyhow::bail!("TXTRecord operator exited unexpectedly without error")
-        }
-        result = run_generic_record_operator::<CNAMERecord>(context.clone(), bind9_manager.clone()) => {
-            error!("CRITICAL: CNAMERecord operator exited unexpectedly: {:?}", result);
-            result?;
-            anyhow::bail!("CNAMERecord operator exited unexpectedly without error")
-        }
-        result = run_generic_record_operator::<MXRecord>(context.clone(), bind9_manager.clone()) => {
-            error!("CRITICAL: MXRecord operator exited unexpectedly: {:?}", result);
-            result?;
-            anyhow::bail!("MXRecord operator exited unexpectedly without error")
-        }
-        result = run_generic_record_operator::<NSRecord>(context.clone(), bind9_manager.clone()) => {
-            error!("CRITICAL: NSRecord operator exited unexpectedly: {:?}", result);
-            result?;
-            anyhow::bail!("NSRecord operator exited unexpectedly without error")
-        }
-        result = run_generic_record_operator::<SRVRecord>(context.clone(), bind9_manager.clone()) => {
-            error!("CRITICAL: SRVRecord operator exited unexpectedly: {:?}", result);
-            result?;
-            anyhow::bail!("SRVRecord operator exited unexpectedly without error")
-        }
-        result = run_generic_record_operator::<CAARecord>(context.clone(), bind9_manager.clone()) => {
-            error!("CRITICAL: CAARecord operator exited unexpectedly: {:?}", result);
-            result?;
-            anyhow::bail!("CAARecord operator exited unexpectedly without error")
-        }
-        result = run_generic_record_operator::<PTRRecord>(context.clone(), bind9_manager.clone()) => {
-            error!("CRITICAL: PTRRecord operator exited unexpectedly: {:?}", result);
-            result?;
-            anyhow::bail!("PTRRecord operator exited unexpectedly without error")
-        }
-    }
-}
-
-/// Run operators with leader election
-///
-/// This function runs all operators while monitoring leadership status and handling signals.
-/// If leadership is lost or SIGTERM/SIGINT is received, all operators are stopped and the process exits gracefully.
-async fn run_operators_with_leader_election(
-    context: Arc<Context>,
-    bind9_manager: Arc<Bind9Manager>,
-    leadership: Leadership,
-) -> Result<()> {
-    info!("Running operators with leader election and signal handling");
-
-    // Run controllers concurrently with leadership monitoring and signal handling
-    let shutdown_result: Result<()> = tokio::select! {
-        // Monitor for SIGINT (Ctrl+C)
-        result = tokio::signal::ctrl_c() => {
-            info!("Received SIGINT (Ctrl+C), initiating graceful shutdown...");
-            info!("Stopping all operators and releasing leader election lease...");
-            result.map_err(anyhow::Error::from)
-        }
-
-        // Monitor for SIGTERM (Kubernetes sends this when deleting pods)
-        result = async {
-            #[cfg(unix)]
-            {
-                use tokio::signal::unix::{signal, SignalKind};
-                let mut sigterm = signal(SignalKind::terminate())?;
-                sigterm.recv().await;
-                Ok::<(), anyhow::Error>(())
-            }
-            #[cfg(not(unix))]
-            {
-                // On non-Unix platforms, just wait forever
-                std::future::pending::<()>().await;
-                Ok::<(), anyhow::Error>(())
-            }
-        } => {
-            info!("Received SIGTERM (pod termination), initiating graceful shutdown...");
-            info!("Stopping all operators and releasing leader election lease...");
-            result
-        }
-
-        // Monitor leadership - if lost, stop all controllers
-        result = leadership_lost(leadership.leader_rx) => {
-            match result {
-                Ok(()) => {
-                    warn!("Leadership lost! Stopping all operators...");
-                    anyhow::bail!("Leadership lost - stepping down")
-                }
-                Err(e) => {
-                    error!("Leadership monitor error: {:?}", e);
-                    anyhow::bail!("Leadership monitoring failed: {e}")
-                }
-            }
-        }
-
-        // Run all operators
-        result = run_all_operators(context, bind9_manager) => {
-            result
-        }
-    };
-
-    // Handle shutdown result
-    shutdown_result?;
-    info!("Graceful shutdown completed successfully, leader election lease released");
-    Ok(())
-}
-
-/// Run the `ClusterBind9Provider` operator
-async fn run_clusterbind9provider_operator(context: Arc<Context>) -> Result<()> {
-    info!("Starting ClusterBind9Provider operator");
-
-    // ClusterBind9Provider is cluster-scoped, so the PRIMARY stream is the one
-    // cluster-wide shard. Only the owned Bind9Clusters are scoped: one owned
-    // stream per watched namespace. All of them come from the shared WatchSet.
-    let ws = context.watch.clone();
-    let mut controller = Controller::for_stream(
-        ws.subscribe::<ClusterBind9Provider>(None),
-        ws.store::<ClusterBind9Provider>(None),
-    );
-    for target in owned_targets(&context.namespace_scope) {
-        controller = controller.owns_stream(ws.subscribe::<Bind9Cluster>(target.as_deref()));
-    }
-
-    controller
-        .run(
-            reconcile_clusterbind9provider_wrapper,
-            error_policy,
-            context,
-        )
-        .for_each(|_| futures::future::ready(()))
-        .await;
-
-    Ok(())
-}
-
-/// Reconcile wrapper for `ClusterBind9Provider`
-async fn reconcile_clusterbind9provider_wrapper(
-    cluster: Arc<ClusterBind9Provider>,
-    ctx: Arc<Context>,
-) -> Result<Action, ReconcileError> {
-    use bindy::constants::KIND_CLUSTER_BIND9_PROVIDER;
-    let start = std::time::Instant::now();
-
-    debug!(
-        cluster_name = %cluster.name_any(),
-        "Reconcile wrapper called for ClusterBind9Provider"
-    );
-
-    let result = Box::pin(reconcile_clusterbind9provider(
-        ctx.clone(),
-        (*cluster).clone(),
-    ))
-    .await;
-    let duration = start.elapsed();
-
-    match result {
-        Ok(()) => {
-            info!(
-                "Successfully reconciled ClusterBind9Provider: {}",
-                cluster.name_any()
-            );
-            metrics::record_reconciliation_success(KIND_CLUSTER_BIND9_PROVIDER, duration);
-
-            // Event-Driven: Use consistent requeue interval regardless of readiness.
-            // Changes to owned Bind9Cluster resources trigger immediate reconciliation
-            // via watch events, so we don't need shorter polling intervals.
-            debug!("Cluster provider reconciled, requeueing in 5 minutes");
-            Ok(Action::requeue(Duration::from_secs(
-                bindy::record_wrappers::REQUEUE_WHEN_READY_SECS,
-            )))
-        }
-        Err(e) => {
-            error!("Failed to reconcile ClusterBind9Provider: {}", e);
-            metrics::record_reconciliation_error(KIND_CLUSTER_BIND9_PROVIDER, duration);
-            metrics::record_error(KIND_CLUSTER_BIND9_PROVIDER, "reconcile_error");
-            Err(e.into())
-        }
-    }
-}
-
-/// Run the `Bind9Cluster` operator
-async fn run_bind9cluster_operator(context: Arc<Context>) -> Result<()> {
-    info!("Starting Bind9Cluster operator");
-
-    // Bind9Cluster is namespaced, so a `Controller` can only watch one namespace.
-    // Run one controller per watched namespace, all sharing the same reconciler
-    // and context. Cluster-wide mode yields exactly one controller, unchanged.
-    let targets = owned_targets(&context.namespace_scope);
-    futures::future::join_all(
-        targets
-            .into_iter()
-            .map(|target| run_bind9cluster_controller(context.clone(), target)),
-    )
-    .await;
-
-    Ok(())
-}
-
-/// Run the Bind9Cluster controller for a single namespace target.
-///
-/// `target` is `None` for cluster-wide, or `Some(namespace)`.
-async fn run_bind9cluster_controller(context: Arc<Context>, target: Option<String>) {
-    let ws = context.watch.clone();
-    let target = target.as_deref();
-
-    Controller::for_stream(
-        ws.subscribe::<Bind9Cluster>(target),
-        ws.store::<Bind9Cluster>(target),
-    )
-    .owns_stream(ws.subscribe::<Bind9Instance>(target))
-    .run(reconcile_bind9cluster_wrapper, error_policy, context)
-    .for_each(|_| futures::future::ready(()))
-    .await;
-}
-
-/// Reconcile wrapper for `Bind9Cluster`
-async fn reconcile_bind9cluster_wrapper(
-    cluster: Arc<Bind9Cluster>,
-    ctx: Arc<Context>,
-) -> Result<Action, ReconcileError> {
-    use bindy::constants::KIND_BIND9_CLUSTER;
-    let start = std::time::Instant::now();
-
-    debug!(
-        cluster_name = %cluster.name_any(),
-        namespace = ?cluster.namespace(),
-        "Reconcile wrapper called for Bind9Cluster"
-    );
-
-    let result = Box::pin(reconcile_bind9cluster(ctx.clone(), (*cluster).clone())).await;
-    let duration = start.elapsed();
-
-    match result {
-        Ok(()) => {
-            info!(
-                "Successfully reconciled Bind9Cluster: {}",
-                cluster.name_any()
-            );
-            metrics::record_reconciliation_success(KIND_BIND9_CLUSTER, duration);
-
-            // Event-Driven: Use consistent requeue interval regardless of readiness.
-            // Changes to owned Bind9Instance resources trigger immediate reconciliation
-            // via watch events, so we don't need shorter polling intervals.
-            debug!("Cluster reconciled, requeueing in 5 minutes");
-            Ok(Action::requeue(Duration::from_secs(
-                bindy::record_wrappers::REQUEUE_WHEN_READY_SECS,
-            )))
-        }
-        Err(e) => {
-            error!("Failed to reconcile Bind9Cluster: {}", e);
-            metrics::record_reconciliation_error(KIND_BIND9_CLUSTER, duration);
-            metrics::record_error(KIND_BIND9_CLUSTER, "reconcile_error");
-            Err(e.into())
-        }
-    }
-}
-
-/// Run the `Bind9Instance` operator
-#[allow(clippy::too_many_lines)]
-async fn run_bind9instance_operator(context: Arc<Context>) -> Result<()> {
-    info!("Starting Bind9Instance operator");
-
-    // Bind9Instance is namespaced: one controller per watched namespace, all
-    // sharing the reconciler and context. Cluster-wide mode yields exactly one.
-    let targets = owned_targets(&context.namespace_scope);
-    futures::future::join_all(
-        targets
-            .into_iter()
-            .map(|target| run_bind9instance_controller(context.clone(), target)),
-    )
-    .await;
-
-    Ok(())
-}
-
-/// Run the Bind9Instance controller for a single namespace target.
-///
-/// `target` is `None` for cluster-wide, or `Some(namespace)`.
-#[allow(clippy::too_many_lines)]
-async fn run_bind9instance_controller(context: Arc<Context>, target: Option<String>) {
-    debug!(
-        namespace = target.as_deref().unwrap_or("<all>"),
-        "Starting Bind9Instance controller"
-    );
-
-    let client = context.client.clone();
-    let ws = context.watch.clone();
-    let service_account_api =
-        bindy::namespace_scope::scoped_namespaced_api::<ServiceAccount>(&client, target.as_deref());
-    let secret_api =
-        bindy::namespace_scope::scoped_namespaced_api::<Secret>(&client, target.as_deref());
-    let configmap_api =
-        bindy::namespace_scope::scoped_namespaced_api::<ConfigMap>(&client, target.as_deref());
-    let service_api =
-        bindy::namespace_scope::scoped_namespaced_api::<Service>(&client, target.as_deref());
-
-    // Clone client and stores for the watch mapper closure
-    let client_for_watch = client.clone();
-    let stores_for_watch = context.stores.clone();
-
-    // Cluster / provider watches: an instance inherits configuration that is
-    // resolved against the LIVE cluster object at reconcile time rather than
-    // copied into the instance spec (see `crate::placement::resolve_placement`).
-    // Without these watches such a change would only reach the Deployment on
-    // the next 5-minute requeue.
-    let stores_for_cluster_watch = context.stores.clone();
-    let stores_for_provider_watch = context.stores.clone();
-
-    // Build the controller. Bind9Instance, Deployment, DNSZone, Bind9Cluster
-    // and ClusterBind9Provider streams come from the shared WatchSet; the
-    // other owned kinds are watched only here and never cached, so they keep
-    // their own watches (ADR-0009 §3).
-    // Note: owning the Deployment already triggers reconciliation when pod
-    // status changes (via deployment status). This provides immediate status
-    // updates without creating a chatty pod watch that triggers on every pod
-    // event regardless of whether status actually changed.
-    Controller::for_stream(
-        ws.subscribe::<Bind9Instance>(target.as_deref()),
-        ws.store::<Bind9Instance>(target.as_deref()),
-    )
-    .owns(service_account_api, default_watcher_config())
-    .owns(secret_api, default_watcher_config())
-    .owns(configmap_api, default_watcher_config())
-    .owns_stream(ws.subscribe::<Deployment>(target.as_deref()))
-    .owns(service_api, default_watcher_config())
-    .watches_stream(ws.subscribe::<DNSZone>(target.as_deref()), move |zone| {
-        // Event-driven watcher: When DNSZone.status.bind9Instances changes,
-        // update the corresponding Bind9Instance.status.zones.
-        //
-        // This provides immediate zone reconciliation when zone selections change.
-        //
-        // CRITICAL: Returns empty vec to avoid triggering full reconciliation.
-        // The status update is done directly in the mapper via a background task.
-
-        // Extract instances that should have this zone
-        let selected_instances = zone
-            .status
-            .as_ref()
-            .map(|s| s.bind9_instances.clone())
-            .unwrap_or_default();
-
-        // Clone for the spawned task
-        let client = client_for_watch.clone();
-        let stores = stores_for_watch.clone();
-
-        // Spawn background task to update instances
+        // Losing the lease drains the controllers, then the process exits
+        // non-zero so Kubernetes restarts it as a follower.
+        let leader_rx = leadership.leader_rx.clone();
+        let (trigger, lost) = (trigger.clone(), lease_lost.clone());
         tokio::spawn(async move {
-            // Call reconcile_instance_zones() for each instance in the zone's selection
-            for instance_ref in &selected_instances {
-                let instance_api =
-                    Api::<Bind9Instance>::namespaced(client.clone(), &instance_ref.namespace);
-
-                // Fetch current instance
-                let instance = match instance_api.get(&instance_ref.name).await {
-                    Ok(inst) => inst,
-                    Err(e) => {
-                        warn!(
-                            "Failed to fetch Bind9Instance {}/{} for zone reconciliation: {}",
-                            instance_ref.namespace, instance_ref.name, e
-                        );
-                        continue;
-                    }
-                };
-
-                // Reconcile zones for this instance (status-only update)
-                if let Err(e) = bindy::reconcilers::bind9instance::reconcile_instance_zones(
-                    &client, &stores, &instance,
-                )
-                .await
-                {
-                    warn!(
-                        "Failed to reconcile zones for Bind9Instance {}/{}: {}",
-                        instance_ref.namespace, instance_ref.name, e
-                    );
-                }
+            match leadership_lost(leader_rx).await {
+                Ok(()) => warn!("Leadership lost! Draining controllers..."),
+                Err(e) => error!("Leadership monitor error: {e:?}"),
             }
+            lost.store(true, Ordering::SeqCst);
+            trigger.fire();
         });
+        Some(leadership)
+    } else {
+        warn!("Leader election DISABLED - running without high availability");
+        None
+    };
 
-        // Return empty vec to avoid triggering full reconciliation
-        vec![]
-    })
-    .watches_stream(
-        ws.subscribe::<Bind9Cluster>(target.as_deref()),
-        move |cluster| {
-            // A Bind9Cluster changed: reconcile every instance that references
-            // it, so inherited configuration (placement, image, version, ...)
-            // reaches the Deployments immediately instead of on the next
-            // requeue.
-            let cluster_name = cluster.name_any();
-            let Some(cluster_namespace) = cluster.namespace() else {
-                return vec![];
-            };
-            stores_for_cluster_watch
-                .bind9_instances
-                .state()
-                .iter()
-                .filter(|instance| {
-                    instance.spec.cluster_ref == cluster_name
-                        && instance.namespace().as_deref() == Some(cluster_namespace.as_str())
-                })
-                .map(|instance| kube::runtime::reflector::ObjectRef::from_obj(instance.as_ref()))
-                .collect::<Vec<_>>()
-        },
-    )
-    .watches_stream(
-        ws.subscribe::<ClusterBind9Provider>(None),
-        move |provider| {
-            // Same, for the cluster-scoped provider. A provider's instances can
-            // live in any namespace, so only the name is matched.
-            let provider_name = provider.name_any();
-            stores_for_provider_watch
-                .bind9_instances
-                .state()
-                .iter()
-                .filter(|instance| instance.spec.cluster_ref == provider_name)
-                .map(|instance| kube::runtime::reflector::ObjectRef::from_obj(instance.as_ref()))
-                .collect::<Vec<_>>()
-        },
-    )
-    .run(reconcile_bind9instance_wrapper, error_policy, context)
-    .for_each(|_| futures::future::ready(()))
-    .await;
-}
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        trigger.fire();
+    });
 
-/// Reconcile wrapper for `Bind9Instance`
-async fn reconcile_bind9instance_wrapper(
-    instance: Arc<Bind9Instance>,
-    ctx: Arc<Context>,
-) -> Result<Action, ReconcileError> {
-    use bindy::constants::KIND_BIND9_INSTANCE;
+    run_controllers(ctx, shutdown).await?;
 
-    let start = std::time::Instant::now();
-
-    info!("Reconciling instance {}", instance.name_any());
-    let result = Box::pin(reconcile_bind9instance(ctx.clone(), (*instance).clone())).await;
-    let duration = start.elapsed();
-
-    match result {
-        Ok(()) => {
-            info!(
-                "Successfully reconciled Bind9Instance: {}",
-                instance.name_any()
-            );
-            metrics::record_reconciliation_success(KIND_BIND9_INSTANCE, duration);
-
-            // Event-Driven: Use consistent requeue interval regardless of readiness.
-            // Changes to owned resources (Deployment, Service, etc.) trigger immediate
-            // reconciliation via watch events, so we don't need shorter polling intervals
-            // to monitor pod startup progress.
-            debug!("Instance reconciled, requeueing in 5 minutes");
-            Ok(Action::requeue(Duration::from_secs(
-                bindy::record_wrappers::REQUEUE_WHEN_READY_SECS,
-            )))
-        }
-        Err(e) => {
-            error!("Failed to reconcile Bind9Instance: {}", e);
-            metrics::record_reconciliation_error(KIND_BIND9_INSTANCE, duration);
-            metrics::record_error(KIND_BIND9_INSTANCE, "reconcile_error");
-            Err(e.into())
-        }
+    if lease_lost.load(Ordering::SeqCst) {
+        anyhow::bail!("Leadership lost - stepping down");
     }
-}
-
-/// Run the `DNSZone` operator
-#[allow(clippy::too_many_lines)]
-async fn run_dnszone_operator(
-    context: Arc<Context>,
-    bind9_manager: Arc<Bind9Manager>,
-) -> Result<()> {
-    info!("Starting DNSZone operator");
-
-    // DNSZone is namespaced: one controller per watched namespace, all sharing the
-    // reconciler, context and zone manager. Cluster-wide mode yields exactly one.
-    let targets = owned_targets(&context.namespace_scope);
-    futures::future::join_all(
-        targets
-            .into_iter()
-            .map(|target| run_dnszone_controller(context.clone(), bind9_manager.clone(), target)),
-    )
-    .await;
-
+    info!("Graceful shutdown completed successfully");
     Ok(())
 }
 
-/// Run the DNSZone controller for a single namespace target.
-///
-/// `target` is `None` for cluster-wide, or `Some(namespace)`.
-async fn run_dnszone_controller(
-    context: Arc<Context>,
-    bind9_manager: Arc<Bind9Manager>,
-    target: Option<String>,
-) {
-    debug!(
-        namespace = target.as_deref().unwrap_or("<all>"),
-        "Starting DNSZone controller"
-    );
-
-    let ws = context.watch.clone();
-    let target = target.as_deref();
-
-    // Clone context for watch closures
-    let ctx_for_a = context.clone();
-    let ctx_for_aaaa = context.clone();
-    let ctx_for_txt = context.clone();
-    let ctx_for_cname = context.clone();
-    let ctx_for_mx = context.clone();
-    let ctx_for_ns = context.clone();
-    let ctx_for_srv = context.clone();
-    let ctx_for_caa = context.clone();
-    let ctx_for_ptr = context.clone();
-    let ctx_for_instance_watch = context.clone();
-    let ctx_for_endpoints_watch = context.clone();
-
-    // Endpoints are named after the instance's Service, and they change exactly
-    // when the set of READY BIND9 pods for that instance changes - a pod being
-    // replaced, a Deployment rolled, a node drained. A replaced pod comes back
-    // with no zones (BIND9 zone data is not persisted), so this is the earliest
-    // reliable signal that a zone may need to be recreated and its records
-    // replayed. Watching Endpoints rather than Pods keeps the event rate low:
-    // it fires on readiness transitions, not on every pod status write.
-
-    // Event-Driven Architecture for DNSZone (Zone-Centric Selection):
-    // 1. Watches Bind9Instance label changes - trigger zones with matching bind9_instances_from selectors
-    // 2. Watches Endpoints - a BIND9 pod was replaced, so its zones may be gone
-    // 3. Watches Records: Record changes → zones check selectors → update status.zoneRef
-    //
-    // CRITICAL: Zone-to-Instance Selection
-    // - Zones select instances via spec.bind9_instances_from label selectors
-    // - When instance labels change, all zones with matching selectors must reconcile
-    // - Uses reflector store for efficient lookups without API calls
-    //
-    // Every stream comes from the shared WatchSet (ADR-0009 §3). Endpoints and
-    // Bind9Instance are subscribed across ALL namespace targets: a zone can be
-    // served by an instance in another namespace (cross-namespace targeting,
-    // gated by the platform-admin annotation), so this namespace's zones must
-    // hear about that instance and its pods. Refs the mappers resolve to zones
-    // in other namespaces are dropped by this controller, whose store only
-    // holds its own namespace's zones.
-    Controller::for_stream(ws.subscribe::<DNSZone>(target), ws.store::<DNSZone>(target))
-        .watches_stream(
-            ws.subscribe_all::<k8s_openapi::api::core::v1::Endpoints>(),
-            move |endpoints| {
-                // The Endpoints object shares its name with the Bind9Instance's
-                // Service, which shares its name with the Bind9Instance.
-                let Some(instance_namespace) = endpoints.namespace() else {
-                    return vec![];
-                };
-                let instance_name = endpoints.name_any();
-
-                let zones: Vec<DNSZone> = ctx_for_endpoints_watch
-                    .stores
-                    .dnszones
-                    .state()
-                    .iter()
-                    .map(|zone| (**zone).clone())
-                    .collect();
-
-                let matched = bindy::reconcilers::dnszone::discovery::zones_configured_on_instance(
-                    &zones,
-                    &instance_namespace,
-                    &instance_name,
-                );
-
-                if !matched.is_empty() {
-                    debug!(
-                        "Endpoints change for {}/{} triggers reconciliation of {} DNSZone(s)",
-                        instance_namespace,
-                        instance_name,
-                        matched.len()
-                    );
-                }
-
-                matched
-                    .into_iter()
-                    .map(|(zone_namespace, zone_name)| {
-                        kube::runtime::reflector::ObjectRef::new(&zone_name).within(&zone_namespace)
-                    })
-                    .collect()
-            },
-        )
-        .watches_stream(
-            ws.subscribe_all::<Bind9Instance>(),
-            move |instance| {
-                // When a Bind9Instance changes (labels/status/etc), find all DNSZones
-                // that might select this instance via their bind9_instances_from selectors
-
-                let Some(instance_namespace) = instance.namespace() else {
-                    return vec![];
-                };
-                let instance_name = instance.name_any();
-                let instance_labels = instance.metadata.labels.as_ref();
-
-                // Get all DNSZones and check which ones have bind9_instances_from selectors
-                // that match this instance's labels
-                let zones_to_reconcile: Vec<kube::runtime::reflector::ObjectRef<DNSZone>> =
-                    ctx_for_instance_watch
-                        .stores
-                        .dnszones
-                        .state()
-                        .iter()
-                        .filter_map(|zone| {
-                            let zone_namespace = zone.namespace()?;
-                            let zone_name = zone.name_any();
-
-                            // Check if zone has bind9_instances_from selectors
-                            let bind9_instances_from = zone.spec.bind9_instances_from.as_ref()?;
-                            if bind9_instances_from.is_empty() {
-                                return None;
-                            }
-
-                            // Check if ANY of the bind9_instances_from selectors match this instance
-                            let instance_labels = instance_labels?;
-                            let matches = bind9_instances_from.iter().any(|source| {
-                                source.selector.matches(instance_labels)
-                            });
-
-                            if matches {
-                                debug!(
-                                    "Bind9Instance {}/{} label change triggers DNSZone {}/{} reconciliation",
-                                    instance_namespace, instance_name, zone_namespace, zone_name
-                                );
-                                Some(
-                                    kube::runtime::reflector::ObjectRef::new(&zone_name)
-                                        .within(&zone_namespace),
-                                )
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-
-                zones_to_reconcile
-            },
-        )
-        .watches_stream(ws.subscribe::<ARecord>(target), move |record| {
-            // Use shared reflector store to find zones with recordsFrom matching record labels
-            let Some(namespace) = record.namespace() else {
-                return vec![];
-            };
-            let record_labels = record.labels();
-
-            ctx_for_a
-                .stores
-                .dnszones_selecting_record(record_labels, &namespace)
-                .into_iter()
-                .map(|(name, ns)| kube::runtime::reflector::ObjectRef::new(&name).within(&ns))
-                .collect::<Vec<_>>()
-        })
-        .watches_stream(ws.subscribe::<AAAARecord>(target), move |record| {
-            let Some(namespace) = record.namespace() else {
-                return vec![];
-            };
-            let record_labels = record.labels();
-
-            ctx_for_aaaa
-                .stores
-                .dnszones_selecting_record(record_labels, &namespace)
-                .into_iter()
-                .map(|(name, ns)| kube::runtime::reflector::ObjectRef::new(&name).within(&ns))
-                .collect::<Vec<_>>()
-        })
-        .watches_stream(ws.subscribe::<TXTRecord>(target), move |record| {
-            let Some(namespace) = record.namespace() else {
-                return vec![];
-            };
-            let record_labels = record.labels();
-
-            ctx_for_txt
-                .stores
-                .dnszones_selecting_record(record_labels, &namespace)
-                .into_iter()
-                .map(|(name, ns)| kube::runtime::reflector::ObjectRef::new(&name).within(&ns))
-                .collect::<Vec<_>>()
-        })
-        .watches_stream(ws.subscribe::<CNAMERecord>(target), move |record| {
-            let Some(namespace) = record.namespace() else {
-                return vec![];
-            };
-            let record_labels = record.labels();
-
-            ctx_for_cname
-                .stores
-                .dnszones_selecting_record(record_labels, &namespace)
-                .into_iter()
-                .map(|(name, ns)| kube::runtime::reflector::ObjectRef::new(&name).within(&ns))
-                .collect::<Vec<_>>()
-        })
-        .watches_stream(ws.subscribe::<MXRecord>(target), move |record| {
-            let Some(namespace) = record.namespace() else {
-                return vec![];
-            };
-            let record_labels = record.labels();
-
-            ctx_for_mx
-                .stores
-                .dnszones_selecting_record(record_labels, &namespace)
-                .into_iter()
-                .map(|(name, ns)| kube::runtime::reflector::ObjectRef::new(&name).within(&ns))
-                .collect::<Vec<_>>()
-        })
-        .watches_stream(ws.subscribe::<NSRecord>(target), move |record| {
-            let Some(namespace) = record.namespace() else {
-                return vec![];
-            };
-            let record_labels = record.labels();
-
-            ctx_for_ns
-                .stores
-                .dnszones_selecting_record(record_labels, &namespace)
-                .into_iter()
-                .map(|(name, ns)| kube::runtime::reflector::ObjectRef::new(&name).within(&ns))
-                .collect::<Vec<_>>()
-        })
-        .watches_stream(ws.subscribe::<SRVRecord>(target), move |record| {
-            let Some(namespace) = record.namespace() else {
-                return vec![];
-            };
-            let record_labels = record.labels();
-
-            ctx_for_srv
-                .stores
-                .dnszones_selecting_record(record_labels, &namespace)
-                .into_iter()
-                .map(|(name, ns)| kube::runtime::reflector::ObjectRef::new(&name).within(&ns))
-                .collect::<Vec<_>>()
-        })
-        .watches_stream(ws.subscribe::<CAARecord>(target), move |record| {
-            let Some(namespace) = record.namespace() else {
-                return vec![];
-            };
-            let record_labels = record.labels();
-
-            ctx_for_caa
-                .stores
-                .dnszones_selecting_record(record_labels, &namespace)
-                .into_iter()
-                .map(|(name, ns)| kube::runtime::reflector::ObjectRef::new(&name).within(&ns))
-                .collect::<Vec<_>>()
-        })
-        .watches_stream(ws.subscribe::<PTRRecord>(target), move |record| {
-            let Some(namespace) = record.namespace() else {
-                return vec![];
-            };
-            let record_labels = record.labels();
-
-            ctx_for_ptr
-                .stores
-                .dnszones_selecting_record(record_labels, &namespace)
-                .into_iter()
-                .map(|(name, ns)| kube::runtime::reflector::ObjectRef::new(&name).within(&ns))
-                .collect::<Vec<_>>()
-        })
-        .run(
-            reconcile_dnszone_wrapper,
-            error_policy,
-            Arc::new((context.clone(), bind9_manager)),
-        )
-        .for_each(|_| futures::future::ready(()))
-        .await;
-}
-
-/// Reconcile wrapper for `DNSZone`
-#[allow(clippy::too_many_lines)]
-async fn reconcile_dnszone_wrapper(
-    dnszone: Arc<DNSZone>,
-    ctx: Arc<(Arc<Context>, Arc<Bind9Manager>)>,
-) -> Result<Action, ReconcileError> {
-    use bindy::constants::KIND_DNS_ZONE;
-    use bindy::labels::FINALIZER_DNS_ZONE;
-    const FINALIZER_NAME: &str = FINALIZER_DNS_ZONE;
-    // Minimum interval between reconciliations to prevent tight loops
-    const MIN_RECONCILE_INTERVAL_SECS: i64 = 2;
-    let start = std::time::Instant::now();
-
-    let context = ctx.0.clone();
-    let client = context.client.clone();
-    // No shared Bind9Manager here on purpose: every bindcar call the DNSZone
-    // reconciler makes resolves a manager for the specific instance it is
-    // addressing, so it picks up that instance's TLS configuration.
-    let namespace = dnszone.namespace().unwrap_or_default();
-    let api: Api<DNSZone> = Api::namespaced(client.clone(), &namespace);
-
-    // Smart reconciliation skip logic with rate limiting (uses early returns to avoid nesting)
-
-    // Helper function to determine if we should skip reconciliation
-    let should_skip_reconciliation = || -> Option<i64> {
-        // Guard clause: No status? First reconciliation - don't skip
-        let status = dnszone.status.as_ref()?;
-
-        // Guard clause: Missing generation info? Don't skip
-        let observed_gen = status.observed_generation?;
-        let current_gen = dnszone.metadata.generation?;
-
-        // Guard clause: Generation changed? Spec changed - don't skip
-        if observed_gen != current_gen {
-            return None;
-        }
-
-        // Generation unchanged - check rate limiting to prevent tight loops
-        // Guard clause: No last reconciliation timestamp? Don't skip
-        let last_reconciled = status
-            .bind9_instances
-            .first()
-            .and_then(|inst| inst.last_reconciled_at.as_ref())?;
-
-        // Guard clause: Invalid timestamp? Don't skip
-        let last_time = chrono::DateTime::parse_from_rfc3339(last_reconciled).ok()?;
-
-        // Calculate elapsed time since last reconciliation
-        let now = chrono::Utc::now();
-        let elapsed = now.signed_duration_since(last_time.with_timezone(&chrono::Utc));
-
-        // Return elapsed seconds if we should skip (within rate limit window)
-        if elapsed.num_seconds() < MIN_RECONCILE_INTERVAL_SECS {
-            Some(elapsed.num_seconds())
-        } else {
-            None
-        }
-    };
-
-    // Check if we should skip due to rate limiting
-    if let Some(elapsed_secs) = should_skip_reconciliation() {
-        debug!(
-            "Skipping reconciliation for DNSZone {}/{} - rate limited (last reconciled {} seconds ago)",
-            namespace,
-            dnszone.name_any(),
-            elapsed_secs
-        );
-        // Re-check after interval expires
-        let remaining_secs = (MIN_RECONCILE_INTERVAL_SECS - elapsed_secs).max(0);
-        return Ok(Action::requeue(Duration::from_secs(
-            u64::try_from(remaining_secs).unwrap_or(1) + 1,
-        )));
-    }
-
-    // Handle deletion with finalizer
-    let result = finalizer(&api, FINALIZER_NAME, dnszone.clone(), |event| async {
-        match event {
-            finalizer::Event::Apply(zone) => {
-                // Create or update the zone
-                reconcile_dnszone(context.clone(), (*zone).clone())
-                    .await
-                    .map_err(ReconcileError::from)?;
-                info!("Successfully reconciled DNSZone: {}", zone.name_any());
-
-                // Re-fetch the zone to get updated status (reconcile_dnszone updates it)
-                let updated_zone = api
-                    .get(&zone.name_any())
-                    .await
-                    .map_err(|e| ReconcileError::from(anyhow::Error::from(e)))?;
-                debug!("Updated DNSZone: {}", updated_zone.name_any());
-
-                // Check if zone has degraded conditions (secondaries failed, etc.)
-                // Degraded zones should requeue faster to retry operations
-                let has_degraded = updated_zone
-                    .status
-                    .as_ref()
-                    .and_then(|status| status.conditions.iter().find(|c| c.r#type == "Degraded"))
-                    .is_some_and(|condition| condition.status == "True");
-                debug!(
-                    "DNSZone {} degraded status: {}",
-                    updated_zone.name_any(),
-                    has_degraded
-                );
-
-                // Check if zone is fully ready (no degradation)
-                let is_ready = updated_zone
-                    .status
-                    .as_ref()
-                    .and_then(|status| status.conditions.iter().find(|c| c.r#type == "Ready"))
-                    .is_some_and(|condition| condition.status == "True")
-                    && !has_degraded;
-
-                if is_ready {
-                    // Zone is fully ready with no degradation, check less frequently (5 minutes)
-                    Ok(Action::requeue(Duration::from_secs(
-                        bindy::record_wrappers::REQUEUE_WHEN_READY_SECS,
-                    )))
-                } else {
-                    // Zone is degraded or not ready, check more frequently (30 seconds) to retry
-                    Ok(Action::requeue(Duration::from_secs(
-                        bindy::record_wrappers::REQUEUE_WHEN_NOT_READY_SECS,
-                    )))
-                }
-            }
-            finalizer::Event::Cleanup(zone) => {
-                // Delete the zone
-                delete_dnszone(context.clone(), (*zone).clone())
-                    .await
-                    .map_err(ReconcileError::from)?;
-                info!(
-                    "Successfully deleted DNSZone from bindcar: {}",
-                    zone.name_any()
-                );
-                metrics::record_resource_deleted(KIND_DNS_ZONE);
-                Ok(Action::await_change())
-            }
-        }
-    })
-    .await;
-
-    let duration = start.elapsed();
-    if result.is_ok() {
-        metrics::record_reconciliation_success(KIND_DNS_ZONE, duration);
-    } else {
-        metrics::record_reconciliation_error(KIND_DNS_ZONE, duration);
-        metrics::record_error(KIND_DNS_ZONE, "reconcile_error");
-    }
-
-    result.map_err(|e: finalizer::Error<ReconcileError>| match e {
-        finalizer::Error::ApplyFailed(err) | finalizer::Error::CleanupFailed(err) => err,
-        finalizer::Error::AddFinalizer(err) | finalizer::Error::RemoveFinalizer(err) => {
-            ReconcileError::from(anyhow::anyhow!("Finalizer error: {err}"))
-        }
-        finalizer::Error::UnnamedObject => {
-            ReconcileError::from(anyhow::anyhow!("DNSZone has no name"))
-        }
-        finalizer::Error::InvalidFinalizer => {
-            ReconcileError::from(anyhow::anyhow!("Invalid finalizer name"))
-        }
-    })
+/// Run every controller crate's entry point until the shutdown signal fires
+/// and they have all drained. A controller that stops on its own, or fails,
+/// fails the whole operator (see [`supervise`]).
+async fn run_controllers(ctx: Arc<Context>, shutdown: ShutdownSignal) -> Result<()> {
+    futures::try_join!(
+        supervise(
+            "Bind9Cluster/ClusterBind9Provider",
+            bindy_controller_cluster::controller(ctx.clone()),
+            shutdown.clone(),
+        ),
+        supervise(
+            "Bind9Instance",
+            bindy_controller_instance::controller(ctx.clone()),
+            shutdown.clone(),
+        ),
+        supervise(
+            "DNSZone",
+            bindy_controller_zone::controller(ctx.clone()),
+            shutdown.clone(),
+        ),
+        supervise(
+            "DNS record",
+            bindy_controller_records::controller(ctx),
+            shutdown,
+        ),
+    )?;
+    Ok(())
 }
 
 // Tests are in main_tests.rs

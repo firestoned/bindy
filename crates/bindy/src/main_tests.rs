@@ -185,7 +185,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn test_rate_limiting_constants() {
-        use bindy::constants::{KUBE_CLIENT_BURST, KUBE_CLIENT_QPS};
+        use bindy_api::constants::{KUBE_CLIENT_BURST, KUBE_CLIENT_QPS};
 
         // Verify default QPS matches kubectl defaults
         assert_eq!(

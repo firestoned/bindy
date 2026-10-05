@@ -43,7 +43,7 @@ Full rule, applicability criteria, and checklist:
 
 ## 🚨 CRITICAL: Keep Bootstrap RBAC in Sync
 
-Any time you modify ClusterRole/Role/Binding definitions in `crates/bindy/src/bootstrap.rs`, update ALL of:
+Any time you modify ClusterRole/Role/Binding definitions in `crates/bindy-bootstrap/src/bootstrap.rs`, update ALL of:
 
 | File | What to update |
 |------|---------------|
@@ -51,10 +51,10 @@ Any time you modify ClusterRole/Role/Binding definitions in `crates/bindy/src/bo
 | `deploy/scout/clusterrolebinding.yaml` | Mirror binding changes |
 | `deploy/scout/role.yaml` | Mirror rules from `build_scout_role` |
 | `deploy/scout/rolebinding.yaml` | Mirror role binding changes |
-| `deploy/scout.yaml` | Update inline RBAC sections |
+| `deploy/scout/secrets-reader-rbac.yaml` | Mirror `build_scout_secrets_reader_role` / `_role_binding` |
 | `docs/src/guide/scout.md` | Update ClusterRole/Role YAML examples |
 
-**Verification:** `deploy/scout/clusterrole.yaml` matches `bootstrap.rs`; tests in `bootstrap_tests.rs` cover updated rules; `deploy/scout.yaml` ClusterRole matches.
+**Verification:** `cargo test -p bindy-bootstrap rbac_drift` fails when any of the static manifests or the `docs/src/guide/scout.md` examples drift from `bootstrap.rs` (roadmap 01 Phase E).
 
 **REMEMBER:** `bootstrap.rs` and the static YAML files are THREE representations of the same RBAC policy — keep them in sync.
 
@@ -161,7 +161,7 @@ Full style guide: `rules/rust-style.md`. Full testing standards: `rules/testing.
 
 Write failing tests FIRST, then implement minimum code to pass. See `tdd-workflow` skill.
 
-Test file pattern: `crates/bindy/src/foo.rs` → `#[cfg(test)] mod foo_tests;` at bottom → `crates/bindy/src/foo_tests.rs`
+Test file pattern: `crates/<crate>/src/foo.rs` → `#[cfg(test)] mod foo_tests;` at bottom → `crates/<crate>/src/foo_tests.rs`
 
 ### Dependency Management
 
@@ -235,36 +235,37 @@ See `rules/testing.md` for full standards.
 
 ## 📁 File Organization
 
-Cargo workspace (ADR-0009, roadmap 01). The split is in progress: crates
-move out of `crates/bindy` one phase at a time.
+Cargo workspace (ADR-0009, roadmap 01). Dependencies only point downward: no
+controller crate depends on another, and `bindy-bind9` depends only on the SDK
+and `bindy-api`.
 
 ```
-Cargo.toml                  ← virtual [workspace]: package metadata + every dep pinned once
+Cargo.toml                       ← virtual [workspace]: package metadata + every dep pinned once
 crates/
-├── bindy-api/              ← leaf crate, no workspace deps
-│   └── src/
-│       ├── crd.rs / crd_tests.rs, crd_docs.rs, constants.rs, labels.rs,
-│       │   selector.rs, status_reasons.rs
+├── bindy-api/                   ← leaf crate, no workspace deps
+│   └── src/ crd.rs, crd_docs.rs, constants.rs, labels.rs, selector.rs, status_reasons.rs
 │       └── bin/ (crdgen.rs, crddoc.rs)   ← need `--features crdgen`
-├── bindy-controller-sdk/   ← shared controller framework; depends on bindy-api only
-│   └── src/
-│       └── context.rs (Context, Stores, RecordKind, RECORD_KINDS), watch.rs (WatchSet),
-│           error.rs (ReconcileError, error_policy), requeue.rs, retry.rs, status.rs,
-│           pagination.rs, resources.rs, rate_limit.rs, namespace_scope.rs,
-│           http_errors.rs, metrics.rs, leader.rs (lease election)  (+ *_tests.rs siblings)
-└── bindy/                  ← the binary + everything not split out yet
-    ├── src/
-    │   ├── lib.rs          ← `pub use bindy_api::{...}` / `bindy_controller_sdk::{...}` keep old paths working
-    │   ├── main.rs / main_tests.rs
-    │   ├── bind9/          ← BIND9 module (mod.rs, rndc.rs, duration.rs, records/) + *_tests.rs siblings
-    │   ├── bind9_resources.rs / bind9_resources_tests.rs
-    │   └── reconcilers/
-    │       ├── bind9cluster/   ← modular (mod.rs, config.rs, drift.rs, instances.rs, status_helpers.rs, types.rs)
-    │       ├── bind9instance/  ← modular (mod.rs, config.rs, resources.rs, zones.rs, cluster_helpers.rs, ...)
-    │       ├── dnszone.rs / dnszone_tests.rs
-    │       └── records/        ← modular (mod.rs, status_helpers.rs, types.rs)
-    └── tests/              ← Rust integration tests (shell suites stay in the root tests/)
+├── bindy-controller-sdk/        ← shared framework; depends on bindy-api only
+│   └── src/ context.rs (Context::new, Stores, RecordKind, RECORD_KINDS), watch.rs (WatchSet,
+│       primary_predicate), shutdown.rs (trigger, supervise), leader.rs, finalizers.rs,
+│       reconcile.rs, error.rs, requeue.rs, retry.rs, status.rs, pagination.rs, resources.rs,
+│       rate_limit.rs, namespace_scope.rs, http_errors.rs, metrics.rs  (+ *_tests.rs siblings)
+├── bindy-bind9/                 ← BIND9 domain logic, no controllers, no kube::runtime
+│   └── src/ bind9/ (mod.rs, rndc.rs, zone_ops.rs, records/, ...), bind9_resources.rs,
+│       placement.rs, instances.rs, primary.rs, record_push.rs, context.rs (StoresBind9Ext), ...
+├── bindy-controller-cluster/    ← Bind9Cluster + ClusterBind9Provider (bind9cluster/, watch.rs)
+├── bindy-controller-instance/   ← Bind9Instance (bind9instance/, watch.rs)
+├── bindy-controller-zone/       ← DNSZone (dnszone.rs, dnszone/, watch.rs)
+├── bindy-controller-records/    ← the 9 record kinds (records/, record_operator.rs, record_impls.rs)
+├── bindy-scout/                 ← `bindy scout` (scout.rs; tests/scout_integration.rs)
+├── bindy-bootstrap/             ← `bindy bootstrap` (bootstrap.rs; rbac_drift tests)
+└── bindy/                       ← the binary: main.rs (<300 lines), cli.rs; tests/ (live API)
+```
 
+Each controller crate's only public item is
+`pub async fn controller(ctx: Arc<Context>) -> anyhow::Result<()>`.
+
+```
 docs/
 ├── (roadmap detail docs live in .github/community/ + root ROADMAPS.md, not under docs/)
 ├── adr/        ← Architecture Decision Records

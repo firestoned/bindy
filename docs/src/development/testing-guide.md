@@ -397,7 +397,7 @@ integration-tests:
 
 ### Writing Unit Tests
 
-Add to `crates/bindy-api/src/crd_tests.rs` or `crates/bindy/src/reconcilers/tests.rs`:
+Add to `crates/bindy-api/src/crd_tests.rs` or `crates/bindy-controller-*/src/*_tests.rs`:
 
 ```rust
 #[test]

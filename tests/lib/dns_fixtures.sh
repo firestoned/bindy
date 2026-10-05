@@ -487,7 +487,7 @@ spec:
   zoneName: ${ZONE_FQDN}
   clusterRef: ${CLUSTER_CR}
   # clusterRef alone is not enough: get_instances_from_zone() in
-  # src/reconcilers/dnszone/validation.rs selects instances *only* through
+  # crates/bindy-bind9/src/instances.rs selects instances *only* through
   # bind9InstancesFrom and fails the zone outright when it is missing.
   bind9InstancesFrom:
     - selector:

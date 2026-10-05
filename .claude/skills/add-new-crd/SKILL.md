@@ -47,16 +47,17 @@ Learned from PTRRecord (#475):
 
 - `crates/bindy-api/src/crd.rs`: `DNSRecordKind` enum + `as_str`/`all`/`to_hickory_record_type`/`TryFrom` + `UnknownDNSRecordKind` error msg + spec struct
 - `crates/bindy-controller-sdk/src/context.rs`: a `RecordRef` variant (plus its `name`/`namespace`/`record_type` arms), a `record_kind!(Type, "Kind", Variant)` line, and an `ops::<Type>()` entry in `RECORD_KINDS` (that one list drives the WatchSet registration, the store and selector matching)
-- `crates/bindy/src/record_impls.rs`, `crates/bindy-api/src/constants.rs` (`KIND_*`), `crates/bindy-api/src/labels.rs` (`FINALIZER_*`)
-- `crates/bindy/src/bind9/types.rs` (`*RecordData`), `crates/bindy/src/bind9/mod.rs` (manager method), `crates/bindy/src/bind9/records/{mod.rs,<type>.rs,<type>_tests.rs}`
-- `crates/bindy/src/reconcilers/records/{mod.rs,types.rs}`, `crates/bindy/src/reconcilers/mod.rs`, `crates/bindy/src/reconcilers/dnszone/{discovery.rs,cleanup.rs}`
-- `crates/bindy/src/main.rs`: select arm + DNSZone `.watches_stream` (registration and stores come from `RECORD_KINDS`)
-- `crates/bindy/src/bootstrap.rs` (`build_all_crds`), `crates/bindy-api/src/bin/{crdgen,crddoc}.rs`
+- `crates/bindy-api/src/constants.rs` (`KIND_*`), `crates/bindy-api/src/labels.rs` (`FINALIZER_*`)
+- `crates/bindy-bind9/src/bind9/types.rs` (`*RecordData`), `crates/bindy-bind9/src/bind9/mod.rs` (manager method), `crates/bindy-bind9/src/bind9/records/{mod.rs,<type>.rs,<type>_tests.rs}`
+- `crates/bindy-bind9/src/record_push.rs`: the `*RecordOp` struct, its `RecordOperation` impl, the type's `ReconcilableRecord` impl, and a `replay_dispatch` arm
+- `crates/bindy-controller-records/src/record_impls.rs` (`DnsRecordType` impl), `crates/bindy-controller-records/src/lib.rs` (one `run_generic_record_operator::<T>` line in `controller()`)
+- `crates/bindy-controller-zone/src/watch.rs` (one `watch_records::<T>` line), `crates/bindy-controller-zone/src/dnszone/{discovery.rs,cleanup.rs}`
+- `crates/bindy-bootstrap/src/bootstrap.rs` (`build_all_crds`), `crates/bindy-api/src/bin/{crdgen,crddoc}.rs`
 - Non-src: `deploy/operator/rbac/{role,role-admin}.yaml`, admission policies 03+13, `deploy/kind-test.sh`, `examples/`, `docs/src/**` ("all N record types" counts!), `README.md`, `calm/bindy-control-plane.architecture.json`, `docs/mkdocs.yml` nav
 
 **Gotchas:** grep tests for the new kind string BEFORE implementing — tests
 use unknown kinds as placeholders and hardcode CRD counts
-(`bootstrap_tests.rs::test_build_all_crds_returns_twelve` — bump it).
+(`crates/bindy-bootstrap/src/bootstrap_tests.rs::test_build_all_crds_returns_twelve`, bump it).
 
 ## Verification
 

@@ -24,7 +24,7 @@ Applies to: code changes, CRD changes, API changes, configuration changes, archi
 
 ## What to Update by Change Type
 
-**Controller/reconciler changes** (`crates/bindy/src/reconcilers/`):
+**Controller/reconciler changes** (`crates/bindy-controller-*/src/`):
 - Update reconciliation flow diagrams
 - Document new behaviors in user guides
 - Update troubleshooting guides
@@ -34,7 +34,7 @@ Applies to: code changes, CRD changes, API changes, configuration changes, archi
 - Update ALL examples that use the changed CRD
 - Update quickstart guides and configuration reference
 
-**Core logic changes** (`crates/bindy/src/bind9.rs`, etc.):
+**Core logic changes** (`crates/bindy-bind9/src/`, etc.):
 - Update architecture docs
 - Add examples for new public functions
 - Update troubleshooting guides

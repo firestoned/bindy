@@ -26,7 +26,7 @@ Run before committing any change. Every applicable box must pass.
 - [ ] `kubectl apply --dry-run=client -f examples/` passes (`validate-examples`)
 - [ ] `cargo run -p bindy-api --features crdgen --bin crddoc > docs/src/reference/api.md` run LAST (`regen-api-docs`)
 
-## If `crates/bindy/src/reconcilers/` was modified
+## If a controller crate (`crates/bindy-controller-*/src/`) was modified
 
 - [ ] Reconciliation flow diagrams updated in `docs/src/architecture/`
 - [ ] New behaviors documented in user guides

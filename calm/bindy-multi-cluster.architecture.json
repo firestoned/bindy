@@ -42,7 +42,7 @@
       "unique-id": "scout-a",
       "node-type": "service",
       "name": "Bindy Scout A",
-      "description": "Scout Deployment (image bindy, args=[scout]) on Child Cluster A. Watches local Ingress / LoadBalancer Service / HTTPRoute / TLSRoute and derives DNS names.",
+      "description": "Scout Deployment (image bindy, args=[scout]) on Child Cluster A. Watches local Ingress / LoadBalancer Service / HTTPRoute / TLSRoute / TCPRoute through the shared watch layer (one watch and cache per kind, ADR-0009) and derives DNS names.",
       "development-language": "Rust"
     },
     {

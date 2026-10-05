@@ -372,7 +372,7 @@ flowchart TD
 
 **Implementation Details:**
 
-1. **Secondary Discovery** - On every reconciliation (see [crates/bindy/src/reconcilers/dnszone.rs:325-373](https://github.com/firestoned/bindy/blob/main/crates/bindy/src/reconcilers/dnszone.rs)):
+1. **Secondary Discovery** - On every reconciliation (see [crates/bindy-controller-zone/src/dnszone.rs](https://github.com/firestoned/bindy/blob/main/crates/bindy-controller-zone/src/dnszone.rs)):
    ```rust
    // Step 1: Get all instances selected for this zone
    let instance_refs = get_instances_from_zone(dnszone, bind9_instances_store)?;
@@ -384,7 +384,7 @@ flowchart TD
    let secondary_ips = find_secondary_pod_ips_from_instances(&client, &secondary_instance_refs).await?;
    ```
 
-2. **Zone Transfer Configuration** - Secondary IPs are passed to primary zone creation (see [crates/bindy/src/reconcilers/dnszone.rs:1340-1360](https://github.com/firestoned/bindy/blob/main/crates/bindy/src/reconcilers/dnszone.rs)):
+2. **Zone Transfer Configuration** - Secondary IPs are passed to primary zone creation (see [crates/bindy-controller-zone/src/dnszone.rs](https://github.com/firestoned/bindy/blob/main/crates/bindy-controller-zone/src/dnszone.rs)):
    ```rust
    // Configuration includes secondary IPs for also-notify and allow-transfer
    // These are set when creating zones on PRIMARY instances
@@ -401,7 +401,7 @@ flowchart TD
    - The reconciliation loop detects changes in the list of selected instances
    - Zones are automatically reconfigured with the new secondary IP list
    - No manual intervention required when secondary pods are rescheduled
-   - See [crates/bindy/src/reconcilers/dnszone.rs:1100-1250](https://github.com/firestoned/bindy/blob/main/crates/bindy/src/reconcilers/dnszone.rs) for the full reconciliation flow
+   - See [crates/bindy-controller-zone/src/dnszone.rs](https://github.com/firestoned/bindy/blob/main/crates/bindy-controller-zone/src/dnszone.rs) for the full reconciliation flow
 
 **Why This Matters:**
 - **Self-healing**: When secondary pods are rescheduled/restarted and get new IPs, zones automatically update
@@ -475,7 +475,9 @@ How a shared watch behaves:
   advancing while objects change means that kind's cache is stale.
 
 In the default cluster-wide mode the operator holds 19 watch connections (15
-shared, 4 ordinary). In namespace-restricted mode the namespaced ones are
+shared, 4 ordinary), measured on a kind cluster against the API server's
+`apiserver_longrunning_requests` (bindy v0.7.1, before the shared watch layer:
+58). In namespace-restricted mode the namespaced ones are
 repeated per watched namespace.
 
 ### DNSZone Operator Watches
@@ -486,13 +488,38 @@ pod has lost its zones), and to every record kind (zones select records by
 label):
 
 ```rust
-Controller::for_stream(ws.subscribe::<DNSZone>(target), ws.store::<DNSZone>(target))
-    .watches_stream(ws.subscribe_all::<Endpoints>(), map_endpoints_to_zones)
-    .watches_stream(ws.subscribe_all::<Bind9Instance>(), map_instance_to_zones)
-    .watches_stream(ws.subscribe::<ARecord>(target), map_record_to_zones)
-    // ... the other 8 record kinds
+// The zone's own status writes do not retrigger it: the primary stream passes
+// generation, finalizer, label and annotation changes only (ADR-0009 §4).
+let primary = ws
+    .subscribe::<DNSZone>(target)
+    .predicate_filter(primary_predicate(), Default::default());
+
+let controller = Controller::for_stream(primary, ws.store::<DNSZone>(target))
+    .watches_stream(ws.subscribe_all::<Endpoints>(), zones_for_endpoints)
+    .watches_stream(ws.subscribe_all::<Bind9Instance>(), zones_selecting_instance);
+let controller = watch_records::<ARecord>(controller, &ctx, target);
+// ... one line for each of the other 8 record kinds
+controller
+    .graceful_shutdown_on(ctx.shutdown.wait())
     .run(reconcile_dnszone_wrapper, error_policy, ctx)
 ```
+
+The wiring lives in `crates/bindy-controller-zone/src/watch.rs`. Because the
+primary stream drops status-only writes, the zone controller no longer needs
+the 2-second rate limiter it used to carry.
+
+### Bind9Instance Operator Watches
+
+The instance controller owns its Deployment, Service, ConfigMap, Secrets and
+ServiceAccount, and watches its `Bind9Cluster`, its `ClusterBind9Provider` and
+the `DNSZone`s in its namespace. Every mapper is pure: a `DNSZone` change
+enqueues the instances the zone selected, and their reconcile refreshes
+`status.zones` with the controller's retries, backoff and metrics. The zone
+stream is filtered to changes in what `status.zones` is built from (the
+selected instances, the zone name, deletion), so the timestamps record
+reconciles write into a zone's status do not fan out into instance
+reconciles. (Before ADR-0009 the mapper
+spawned a task that patched the instances outside the controller.)
 
 ### Record Operator Watches
 
@@ -651,28 +678,31 @@ sequenceDiagram
 **Implementation:**
 
 ```rust
-// Create lease manager with configuration
-let lease_manager = LeaseManagerBuilder::new(client.clone(), &lease_name)
-    .with_namespace(&lease_namespace)
-    .with_identity(&identity)
-    .with_duration(Duration::from_secs(15))
-    .with_grace(Duration::from_secs(2))
-    .build()
-    .await?;
+// crates/bindy/src/main.rs (abridged)
+let (trigger, shutdown) = shutdown::channel();
+let ctx = Arc::new(Context::new(client.clone(), NamespaceScope::from_env(), shutdown.clone())?);
 
-// Watch leadership status
-let (leader_rx, lease_handle) = lease_manager.watch().await;
+// Blocks until this replica holds the lease (bindy_controller_sdk::leader).
+let leadership = acquire_leadership(client, &LeaderElectionConfig::from_env()).await?;
 
-// Run operators with leader monitoring
-tokio::select! {
-    result = monitor_leadership(leader_rx) => {
-        warn!("Leadership lost! Stopping all operators...");
-    }
-    result = run_all_operators() => {
-        // Normal operator execution
-    }
-}
+// Losing the lease, SIGTERM or SIGINT fire the one shutdown trigger.
+tokio::spawn(async move { leadership_lost(leader_rx).await; trigger.fire(); });
+
+// Every controller crate drains on that trigger (graceful_shutdown_on);
+// `supervise` turns a controller that stops on its own into an error.
+futures::try_join!(
+    supervise("Bind9Cluster/ClusterBind9Provider", bindy_controller_cluster::controller(ctx.clone()), shutdown.clone()),
+    supervise("Bind9Instance", bindy_controller_instance::controller(ctx.clone()), shutdown.clone()),
+    supervise("DNSZone", bindy_controller_zone::controller(ctx.clone()), shutdown.clone()),
+    supervise("DNS record", bindy_controller_records::controller(ctx), shutdown),
+)?;
 ```
+
+On SIGTERM the controllers stop taking new work, finish the reconciles in
+flight, and the process exits zero. On loss of the lease they drain the same
+way and the process exits non-zero, so Kubernetes restarts it as a follower.
+There is no separate startup pass: a watcher's initial list enqueues every
+existing object, which repairs anything that drifted while no operator ran.
 
 **Failover characteristics:**
 - **Lease duration:** 15 seconds (configurable)
