@@ -1,3 +1,30 @@
+## [2026-10-05 20:00] - Validate rendered BIND9 configuration with hornet (ADR-0013 stages 1 and 2)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0013-validate-and-render-bind9-config-with-hornet.md`: adopt hornet (`hornet-bind9`) in three stages: CI parse tests, a runtime gate, then rendering through hornet's writer (stage 3, waiting on hornet 0.3.0).
+- `hornet-bind9 = 0.2` in the workspace (`default-features = false`) and as a dependency of `bindy-bind9`. It is maintained in the same organisation, Apache-2.0, `unsafe` forbidden. It brings `winnow` and `miette` (with miette's terminal-rendering stack) and a second `thiserror` major. cargo-deny is clean.
+- `crates/bindy-bind9/src/config_check.rs`: `check_named_conf_files` parses and validates every `named.conf*` file; `find_invalid_config` finds the refusal in an error chain.
+- `crates/bindy-bind9/src/rendered_config_tests.rs`: renders through the real builders and parses the result, across the instance option matrix (16 configs), the cluster option matrix and every example.
+- `.github/community/29-hornet-config-rendering.md`, `ROADMAPS.md` row 29.
+
+### Changed
+- `build_configmap` / `build_cluster_configmap` refuse a configuration that does not parse or has an Error-severity finding, so the ConfigMap is not written and the pods keep the last published configuration.
+- The `Bind9Instance` resource-failure condition and a new `Bind9Cluster` path report `Ready=False` with reason `ConfigurationInvalid` (`Configuration not published: <file> …`).
+- `examples/bind9-cluster-with-rotation.yaml` and seven docs pages used `role: Primary` / `Secondary`, which the CRD rejects; now lowercase. The new example test caught it.
+- Docs: `operations/common-issues.md` (Configuration Not Published), `operations/status.md`.
+- `docs/src/security/threat-model.md` v1.12: full pass; new threat D4, mitigation M-44, E3 records the new dependency.
+
+### Why
+bug-177: a stray `}` from a template substitution reached `named`, which crash-looped on every pod mounting the ConfigMap. Nothing parsed the rendered configuration before `named` did.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (new operator binary; rendered configuration unchanged, so BIND9 pods do not roll)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-05 19:30] - DNSZone: record instances whose endpoints already hold the zone
 
 **Author:** Erick Bourgeois

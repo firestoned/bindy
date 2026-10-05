@@ -1,12 +1,28 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.11
+**Version:** 1.12
 **Last Updated:** 2026-10-05
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
 
-> Last full pass 2026-10-05, against ADR-0001 … ADR-0012 (ADR-0006 as amended;
-> ADR-0009 as amended 2026-10-05, fully implemented: roadmap 01 Phases A to G).
+> Last full pass 2026-10-05, against ADR-0001 … ADR-0013 (ADR-0006 as amended;
+> ADR-0009 as amended 2026-10-05, fully implemented; ADR-0013 stages 1 and 2).
+>
+> **Revision note (v1.12):** Full pass for ADR-0013 stages 1 and 2 (hornet
+> validates the BIND9 configuration the operator renders). New threat **D4**
+> (one malformed configuration takes every BIND9 pod of an instance or
+> cluster down: bug-177), mapped to new mitigation **M-44**: every rendered
+> `named.conf*` is parsed and validated in CI across the option matrix and
+> the examples, and at runtime before the ConfigMap is written, so an invalid
+> render fails the reconcile with `ConfigurationInvalid` while the pods keep
+> the last published configuration. **E3** records `hornet-bind9` as a new
+> runtime dependency: maintained in the same organisation, Apache-2.0,
+> `unsafe` forbidden, `default-features = false`, and it parses only text the
+> operator itself generated; its `miette` diagnostics stack adds transitive
+> crates (cargo-deny clean, in the SBOM). No new component, actor, asset,
+> trust boundary, RBAC grant or network path. Stage 3 (rendering through
+> hornet's writer) gets its own pass when it ships. All other sections
+> re-walked unchanged.
 >
 > **Revision note (v1.11):** Full pass for the completion of ADR-0009
 > (roadmap 01 Phases C to G). The operator is one binary built from eleven
@@ -998,6 +1014,38 @@ CR-quota admission policy lands)
 
 ---
 
+#### D4: Malformed Configuration Takes Every BIND9 Pod Down
+
+**Threat:** A configuration `named` cannot parse reaches the ConfigMap that
+every BIND9 pod of an instance or cluster mounts, through an operator bug or a
+CRD value that rendering mishandles. Each pod that (re)starts on it exits at
+startup, and the zones it serves go dark.
+
+**Impact:** HIGH (every pod sharing the ConfigMap; a cluster ConfigMap is
+shared by all of its instances)
+**Likelihood:** LOW (it happened once: bug-177, a template substitution that
+left a stray `}`)
+
+**Mitigations:**
+- ✅ CRD schema patterns and the `bind9_acl` validator constrain user values
+  before they are rendered; the ACL admission policy (M-24) rejects bad ACL
+  syntax at the API server
+- ✅ **Rendered-configuration gate** (M-44, ADR-0013, 2026-10-05): CI parses
+  every rendered `named.conf*` across the option matrix and the examples; at
+  runtime the operator parses and validates it before writing the ConfigMap
+  and, on failure, does not write it, reports `Ready=False` /
+  `ConfigurationInvalid` and retries with backoff. The pods keep the last
+  published configuration
+- ⚠️ hornet 0.2.0 checks only the braces inside `logging` and
+  `dnssec-policy` (it does not model `print-time iso8601` or `dnssec-policy`
+  yet); ADR-0013 stage 3 needs hornet 0.3.0 for both
+
+**Residual Risk:** LOW (an invalid render fails closed; a configuration
+hornet accepts but `named` rejects is still possible, and would surface as
+pods failing their rollout)
+
+---
+
 ### E - Elevation of Privilege
 
 #### E1: Container Escape to Node
@@ -1093,6 +1141,11 @@ for Scout, which is **not** covered by this residual-risk rating.
 - ✅ Remediation SLAs enforced (CRITICAL: 24h)
 - ✅ Daily scheduled scans
 - ✅ Dependency updates via Dependabot
+- ✅ **New runtime dependency `hornet-bind9`** (ADR-0013, 2026-10-05): same
+  organisation, Apache-2.0, `unsafe` forbidden, built with
+  `default-features = false`; it parses only configuration text the operator
+  generated, never network input. Its `miette` diagnostics stack adds
+  transitive crates (cargo-deny clean, listed in the SBOM)
 - ⚠️ **Dependabot auto-merge is now automated** (`dependabot-auto-merge.yaml`):
   patch/minor updates are merged automatically once the full e2e gate (integration
   + regression suites) and all required status checks pass, with no human review
@@ -1533,6 +1586,7 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-41 | **No self-triggering, pure watch mappers** (2026-10-05, ADR-0009 §4/§5): the `DNSZone` primary stream passes only generation, finalizer, label and annotation changes (`sdk::watch::primary_predicate`), so the controller's own status writes do not retrigger it and the 2-second timestamp rate limiter is gone; every watch mapper returns object references and does no I/O, so the work the `DNSZone` → `Bind9Instance` mapper used to spawn now runs as a controller reconcile (deduplicated, backed off, counted), and only when the zone's instance selection changes (`sdk::watch::changed_only`), so record timestamps written into zone status cannot fan out into instance reconciles | D2 (reconcile storm; unbounded out-of-band work) | ✅ `crates/bindy-controller-zone/src/watch.rs`, `crates/bindy-controller-instance/src/watch.rs` |
 | M-42 | **Scout RBAC drift test** (2026-10-05, ADR-0009 §6): the Scout ClusterRole, Roles and bindings that `bindy bootstrap scout` builds are compared with `deploy/scout/*.yaml` and the `docs/src/guide/scout.md` examples; any difference in rules, role references or subjects fails the build | E2, T4 (RBAC widened in one representation, unreviewed in the others) | ✅ `crates/bindy-bootstrap/src/bootstrap_tests.rs` (`rbac_drift`) |
 | M-43 | **Draining shutdown and startup recovery** (2026-10-05, ADR-0009 §5): SIGTERM, SIGINT and loss of the leader lease fire one trigger; every controller stops taking work and finishes its in-flight reconciles (`graceful_shutdown_on`), and a controller that stops on its own fails the process (`supervise`). Drift made while no operator runs is repaired from the watchers' initial lists when one starts, proven by the restart e2e suite, so the separate startup pass (cluster-wide LISTs even under M-22) is deleted | Availability, partial writes on shutdown, M-22 scope leak | ✅ `crates/bindy-controller-sdk/src/shutdown.rs`, `crates/bindy/src/main.rs`, `tests/e2e/restart_test.sh` |
+| M-44 | **Rendered-configuration gate** (2026-10-05, ADR-0013 stages 1 and 2): every `named.conf*` the operator renders is parsed and validated with hornet, in CI across the option matrix and every example, and at runtime before the ConfigMap is written; an invalid render is not published, the resource reports `Ready=False` / `ConfigurationInvalid`, and the pods keep the last published configuration | D4 (malformed config takes every BIND9 pod down) | ✅ `crates/bindy-bind9/src/config_check.rs`, `crates/bindy-bind9/src/rendered_config_tests.rs` |
 | M-25 | **Scout Secret RBAC scoped** (fixed 2026-07-19, same day as this finding's discovery): removed the cluster-wide `secrets: get` `PolicyRule` from the `bindy-scout` `ClusterRole` entirely. Replaced with a namespaced, `resourceNames`-restricted Role (`bindy-scout-secrets-reader`) scoped to exactly the one Phase 2 kubeconfig Secret, applied only when `--remote-secret` is configured. Same-cluster-only deployments (the default) now get zero Secret access. See I4/E4/Scenario 6 for the full before/after. | I4, E4, T4 (Secret-read component), Scenario 6 | ✅ RBAC — **was the highest-priority open item in v1.1; closed same-day** |
 
 ---

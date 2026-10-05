@@ -152,7 +152,7 @@ metadata:
   name: my-cluster-primary-0
   namespace: platform-dns
 spec:
-  role: Primary
+  role: primary
   clusterRef: my-cluster
   replicas: 1
 ```

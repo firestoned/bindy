@@ -69,6 +69,7 @@ Statuses were verified against `fix-idempotency` @ `648ff7a` on 2026-09-10.
 | [16](.github/community/16-audit-logging-secret-operations.md) | Audit logging for Secret operations | ⛔ | Approved 2026-03-09, never implemented — no audit-log emission in `src/`. Compliance-relevant; worth re-triaging rather than leaving to drift |
 | [17](.github/community/17-vex-documents.md) | VEX documents | ⛔ | No VEX generation step in `.github/workflows/`. Builds on the SBOM pipeline from 15 |
 | [28](.github/community/28-pqc-readiness.md) | Post-quantum cryptography (PQC) readiness | 🔶 | Phase 0 complete 2026-10-04 (ADR-0011): curated CycloneDX 1.6 CBOM per release, lockfile-stamped and PR-gated (`make cbom-stage`, `cbom` job), docs page + threat model v1.9 (M-39/M-40, accepted risk 8). Next: Phase 1 (TSIG HMAC-SHA1/224 deprecation); Phase 2 (hybrid `X25519MLKEM768`) needs a crypto-provider ADR on both bindy and bindcar ends; DNSSEC + sigstore phases are upstream watch items |
+| [29](.github/community/29-hornet-config-rendering.md) | Validate and render BIND9 configuration with hornet | 🔶 | [ADR-0013](docs/adr/0013-validate-and-render-bind9-config-with-hornet.md). Stages 1 and 2 done 2026-10-05: every rendered config is parsed in CI, and the operator refuses to publish one that does not parse (`Ready=False`, `ConfigurationInvalid`; pods keep the last good config). Stage 3 (render through hornet's writer, retire the templates) waits on hornet 0.3.0 (`print-time iso8601`, typed `dnssec-policy`) |
 
 ### Testing, operations and dependencies
 

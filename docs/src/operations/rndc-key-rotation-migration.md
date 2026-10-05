@@ -50,7 +50,7 @@ metadata:
   namespace: bindy-system
 spec:
   clusterRef: my-cluster
-  role: Primary
+  role: primary
   rndcSecretRef:  # DEPRECATED
     name: my-rndc-secret
     keyNameKey: key-name
@@ -68,7 +68,7 @@ metadata:
   namespace: bindy-system
 spec:
   clusterRef: my-cluster
-  role: Primary
+  role: primary
   rndcKey:  # NEW
     autoRotate: true
     rotateAfter: "2160h"  # 90 days
@@ -136,7 +136,7 @@ metadata:
   namespace: bindy-system
 spec:
   clusterRef: my-cluster
-  role: Primary
+  role: primary
   rndcKey:
     secretRef:  # Reference existing Secret (no rotation)
       name: my-rndc-secret
@@ -237,7 +237,7 @@ metadata:
   namespace: bindy-system
 spec:
   clusterRef: my-cluster
-  role: Secondary
+  role: secondary
   rndcKey:
     autoRotate: true
     rotateAfter: "2160h"
@@ -287,7 +287,7 @@ metadata:
   namespace: bindy-system
 spec:
   clusterRef: my-cluster
-  role: Primary
+  role: primary
   rndcSecretRef:  # Restore deprecated field
     name: my-rndc-secret
     keyNameKey: key-name

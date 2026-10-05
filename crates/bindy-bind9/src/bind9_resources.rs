@@ -1125,8 +1125,9 @@ pub fn build_pod_disruption_budget(
 ///
 /// # Errors
 /// Returns an error if any ACL, forwarder, or listen-address entry in the
-/// instance or cluster spec fails validation — see [`crate::bind9_acl`] for
-/// the accepted ACL syntax.
+/// instance or cluster spec fails validation (see [`crate::bind9_acl`] for
+/// the accepted ACL syntax), or [`crate::config_check::InvalidBind9Config`]
+/// if the rendered configuration does not parse (ADR-0013).
 pub fn build_configmap(
     name: &str,
     namespace: &str,
@@ -1176,6 +1177,13 @@ pub fn build_configmap(
 
     let owner_refs = build_owner_references(instance);
 
+    // ADR-0013: never publish a configuration `named` cannot parse. A broken
+    // render fails here, so the ConfigMap is not written and the pods keep
+    // the last configuration that was.
+    for warning in crate::config_check::check_named_conf_files(&data)? {
+        debug!("{warning}");
+    }
+
     Ok(ConfigMap {
         metadata: ObjectMeta {
             name: Some(format!("{name}-config")),
@@ -1207,7 +1215,9 @@ pub fn build_configmap(
 ///
 /// # Errors
 ///
-/// Returns an error if configuration generation fails
+/// Returns an error if configuration generation fails, or
+/// [`crate::config_check::InvalidBind9Config`] if the rendered configuration
+/// does not parse (ADR-0013).
 pub fn build_cluster_configmap(
     cluster_name: &str,
     namespace: &str,
@@ -1233,6 +1243,13 @@ pub fn build_cluster_configmap(
 
     // Build rndc.conf (references key file mounted from Secret)
     data.insert(RNDC_CONF_FILENAME.into(), RNDC_CONF_TEMPLATE.to_string());
+
+    // ADR-0013: never publish a configuration `named` cannot parse. A broken
+    // render fails here, so the ConfigMap is not written and the pods keep
+    // the last configuration that was.
+    for warning in crate::config_check::check_named_conf_files(&data)? {
+        debug!("{warning}");
+    }
 
     Ok(ConfigMap {
         metadata: ObjectMeta {
@@ -3049,3 +3066,7 @@ fn merge_service_spec(default: &mut ServiceSpec, custom: &ServiceSpec) {
     // Note: We intentionally don't merge selector as it needs to match
     // the deployment configuration to ensure traffic is routed correctly.
 }
+
+#[cfg(test)]
+#[path = "rendered_config_tests.rs"]
+mod rendered_config_tests;

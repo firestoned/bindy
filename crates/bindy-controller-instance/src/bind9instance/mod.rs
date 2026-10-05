@@ -649,12 +649,21 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
                 namespace, name, e
             );
 
-            // Update status to show error
+            // Update status to show error. A rendered configuration that does
+            // not parse was refused before the ConfigMap was written (ADR-0013):
+            // say so, so the pods still serving the last good one are explained.
+            let (reason, message) = match bindy_bind9::config_check::find_invalid_config(&e) {
+                Some(invalid) => (
+                    crate::status_reasons::REASON_CONFIGURATION_INVALID,
+                    format!("Configuration not published: {invalid}"),
+                ),
+                None => (REASON_NOT_READY, format!("Failed to create resources: {e}")),
+            };
             let error_condition = Condition {
                 r#type: CONDITION_TYPE_READY.to_string(),
                 status: "False".to_string(),
-                reason: Some(REASON_NOT_READY.to_string()),
-                message: Some(format!("Failed to create resources: {e}")),
+                reason: Some(reason.to_string()),
+                message: Some(message),
                 last_transition_time: Some(Utc::now().to_rfc3339()),
             };
             // No cluster info available on error, pass None for cluster_ref.

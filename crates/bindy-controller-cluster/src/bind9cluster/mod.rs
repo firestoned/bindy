@@ -119,8 +119,15 @@ pub async fn reconcile_bind9cluster(ctx: Arc<Context>, cluster: Bind9Cluster) ->
             );
         }
 
-        // Create or update shared cluster ConfigMap
-        create_or_update_cluster_configmap(&client, &cluster).await?;
+        // Create or update shared cluster ConfigMap. A rendered configuration
+        // that does not parse is refused before it is written (ADR-0013); the
+        // instances keep the last one, and the cluster says why.
+        if let Err(e) = create_or_update_cluster_configmap(&client, &cluster).await {
+            if let Some(invalid) = bindy_bind9::config_check::find_invalid_config(&e) {
+                report_invalid_config(&client, &cluster, &invalid.to_string()).await?;
+            }
+            return Err(e);
+        }
 
         // Cap voluntary disruption so a drain cannot take every primary at once
         reconcile_pod_disruption_budgets(&client, &cluster).await?;
@@ -225,4 +232,30 @@ async fn list_cluster_instances(
             Err(e)
         }
     }
+}
+
+/// Mark the cluster not Ready because its rendered configuration was refused,
+/// keeping the instance counts it last reported.
+async fn report_invalid_config(
+    client: &Client,
+    cluster: &Bind9Cluster,
+    detail: &str,
+) -> Result<()> {
+    let status = cluster.status.clone().unwrap_or_default();
+    let condition = crate::crd::Condition {
+        r#type: crate::status_reasons::CONDITION_TYPE_READY.to_string(),
+        status: "False".to_string(),
+        reason: Some(crate::status_reasons::REASON_CONFIGURATION_INVALID.to_string()),
+        message: Some(format!("Configuration not published: {detail}")),
+        last_transition_time: Some(chrono::Utc::now().to_rfc3339()),
+    };
+    status_helpers::update_status(
+        client,
+        cluster,
+        vec![condition],
+        status.instance_count.unwrap_or_default(),
+        status.ready_instances.unwrap_or_default(),
+        status.instances,
+    )
+    .await
 }

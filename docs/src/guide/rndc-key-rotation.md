@@ -58,7 +58,7 @@ metadata:
   namespace: bindy-system
 spec:
   clusterRef: my-cluster
-  role: Primary
+  role: primary
   rndcKey:
     autoRotate: true          # Enable automatic rotation
     rotateAfter: "2160h"      # Rotate every 90 days (default)
@@ -148,7 +148,7 @@ metadata:
   namespace: bindy-system
 spec:
   clusterRef: my-cluster
-  role: Primary
+  role: primary
   rndcKey:
     autoRotate: true
     rotateAfter: "360h"     # Override cluster: 15 days
@@ -170,7 +170,7 @@ metadata:
   name: dns-primary
 spec:
   clusterRef: my-cluster
-  role: Primary
+  role: primary
   rndcKey:
     autoRotate: true
     rotateAfter: "2160h"
@@ -202,7 +202,7 @@ metadata:
   name: dns-primary
 spec:
   clusterRef: my-cluster
-  role: Primary
+  role: primary
   rndcKey:
     secretRef:
       name: my-rndc-secret  # Reference existing Secret
@@ -235,7 +235,7 @@ metadata:
   name: dns-primary
 spec:
   clusterRef: my-cluster
-  role: Primary
+  role: primary
   rndcKey:
     autoRotate: true
     rotateAfter: "2160h"
