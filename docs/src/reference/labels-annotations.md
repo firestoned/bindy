@@ -236,7 +236,7 @@ metadata:
     contact: "platform-team@example.com"
 spec:
   clusterRef: production-dns
-  role: Primary
+  role: primary
   replicas: 1
 ```
 

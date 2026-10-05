@@ -64,6 +64,7 @@ everything after it shifts up.
 | 16 | [`16-audit-logging-secret-operations.md`](16-audit-logging-secret-operations.md) | Structured audit trail for every Secret operation |
 | 17 | [`17-vex-documents.md`](17-vex-documents.md) | VEX documents in the release pipeline |
 | 28 | [`28-pqc-readiness.md`](28-pqc-readiness.md) | Post-quantum cryptography readiness: CBOM, TSIG hygiene, hybrid PQ TLS, DNSSEC/sigstore watch items |
+| 29 | [`29-hornet-config-rendering.md`](29-hornet-config-rendering.md) | Validate and render BIND9 configuration with hornet (ADR-0013) |
 
 ### Testing, operations and dependencies
 

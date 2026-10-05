@@ -470,7 +470,7 @@ metadata:
   namespace: production
 spec:
   clusterRef: production-dns
-  role: Primary
+  role: primary
   # version: "9.20"  # Would override global version if specified
   # Uses global version "9.18" and global bindcar image
 ```

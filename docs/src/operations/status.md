@@ -68,6 +68,11 @@ status:
 - Uses `Ready` condition type
 - Status `True` when Deployment, Service, and ConfigMap are successfully created
 - Status `False` when resource creation fails
+- Status `False` with reason `ConfigurationInvalid` when the rendered BIND9
+  configuration does not parse, so the operator did not publish it (the pods
+  keep the last published configuration; see
+  [Configuration Not Published](./common-issues.md#configuration-not-published-configurationinvalid)).
+  A `Bind9Cluster` reports the same for its shared configuration
 - Additional status fields:
   - `replicas`: Total number of replicas
   - `readyReplicas`: Number of ready replicas

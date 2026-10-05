@@ -53,6 +53,36 @@ kubectl delete bind9instance primary-dns -n bindy-system
 kubectl apply -f instance.yaml
 ```
 
+### Configuration Not Published (`ConfigurationInvalid`)
+
+**Symptom:** a `Bind9Instance` or `Bind9Cluster` is `Ready=False` with reason
+`ConfigurationInvalid` and a message starting `Configuration not published:`.
+The BIND9 pods keep running.
+
+**What it means:** before writing the BIND9 ConfigMap, the operator parses the
+`named.conf` files it rendered and runs a validator over them
+([ADR-0013](https://github.com/firestoned/bindy/blob/main/docs/adr/0013-validate-and-render-bind9-config-with-hornet.md)).
+This configuration failed, so the operator did not publish it. The pods are
+still serving the last configuration that was published. Without the check,
+`named` would have refused to start on every pod that mounts the ConfigMap.
+
+**Diagnosis:**
+```bash
+kubectl get bind9instance primary-dns -n bindy-system \
+  -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}{"\n"}'
+kubectl logs -n bindy-system deployment/bindy | grep "not valid BIND9 configuration"
+```
+
+The message names the file (`named.conf` or `named.conf.options`) and the
+parser's error or the validator's findings (for example an `allow-query`
+entry naming an ACL that is not defined).
+
+**Solution:** fix the spec field the message points at (ACLs, `allowQuery`,
+`allowTransfer`, `listenOn`, `forwarders`, `rateLimit` or `dnssec`). The
+operator retries with backoff and publishes as soon as the rendered
+configuration is valid. If the message points at text you did not configure,
+it is an operator bug: report it with the message and the resource's spec.
+
 ## DNSZone Issues
 
 ### Duplicate Zone Name Error

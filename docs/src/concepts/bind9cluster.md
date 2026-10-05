@@ -249,7 +249,7 @@ metadata:
     bindy.firestoned.io/instance-index: "0"
 spec:
   clusterRef: production-dns
-  role: Primary
+  role: primary
   replicas: 1
   version: "9.18"
   # Configuration inherited from cluster's spec.global
@@ -341,7 +341,7 @@ metadata:
   name: custom-secondary
 spec:
   clusterRef: mixed-cluster
-  role: Secondary
+  role: secondary
   replicas: 1
   # Custom configuration overrides
   config:

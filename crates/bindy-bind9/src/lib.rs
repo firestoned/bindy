@@ -12,6 +12,7 @@
 //! - [`bind9_resources`] - the Deployment, Service, ConfigMap and friends built
 //!   for an instance
 //! - [`bind9_acl`] - ACL rendering for `named.conf`
+//! - [`config_check`] - refuses a rendered `named.conf` hornet cannot parse (ADR-0013)
 //! - [`placement`] - pod placement resolved from instance, cluster and provider
 //! - [`instances`] - which instances a zone targets, and their BIND9 endpoints
 //! - [`primary`] - primary instances, their pods and endpoints
@@ -28,6 +29,7 @@ pub(crate) use bindy_api::{constants, crd, labels};
 pub mod bind9;
 pub mod bind9_acl;
 pub mod bind9_resources;
+pub mod config_check;
 pub mod context;
 pub mod ddns;
 pub mod dns_errors;

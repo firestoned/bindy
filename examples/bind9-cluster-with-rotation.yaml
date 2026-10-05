@@ -79,7 +79,7 @@ metadata:
     compliance: pci-dss
 spec:
   clusterRef: production-dns-cluster
-  role: Primary
+  role: primary
   replicas: 1
 
   # Instance-level RNDC config (OVERRIDES cluster-level)
@@ -105,7 +105,7 @@ metadata:
     role: secondary
 spec:
   clusterRef: production-dns-cluster
-  role: Secondary
+  role: secondary
   replicas: 1
 
   # No instance-level rndcKeys - inherits from cluster.spec.secondary
@@ -126,7 +126,7 @@ metadata:
     role: secondary
 spec:
   clusterRef: production-dns-cluster
-  role: Secondary
+  role: secondary
   replicas: 1
 
   # No instance-level rndcKeys - inherits from cluster.spec.secondary
