@@ -135,7 +135,9 @@ pub async fn cleanup_deleted_instances(
 ///
 /// Iterates through records in zone status and removes any that no longer exist
 /// in the Kubernetes API. Also performs self-healing by deleting orphaned records
-/// from BIND9 if they were missed by finalizers.
+/// from BIND9 if they were missed by finalizers, unless another record the
+/// zone selects still declares the same name and type (a renamed record):
+/// that data is kept.
 ///
 /// # Arguments
 ///
@@ -197,6 +199,11 @@ pub async fn cleanup_stale_records(
     let mut records_to_keep: Vec<RecordReferenceWithTimestamp> = Vec::new();
     let mut stale_count = 0;
 
+    // The records the zone selects right now, listed the first time a deleted
+    // one turns up. Status alone is not enough: this cleanup runs before
+    // discovery, so a record created moments ago is not in status yet.
+    let mut live_records: Option<Vec<RecordReferenceWithTimestamp>> = None;
+
     // Check each record to see if it still exists.
     // Only a 404 means "deleted": transient API errors abort this cleanup pass
     // (via `?`). Treating a transient error on a live record as "deleted"
@@ -257,6 +264,31 @@ pub async fn cleanup_stale_records(
                 "Record {} {}/{} no longer exists in Kubernetes",
                 record_ref.kind, record_ref.namespace, record_ref.name
             );
+
+            // Another live record declares the same RRset (e.g. this record was
+            // renamed): drop the stale reference but keep the DNS data. A
+            // listing error aborts the pass (`?`) rather than risk deleting
+            // data that is still wanted.
+            if live_records.is_none() {
+                live_records =
+                    Some(super::discovery::discover_selected_records(client, dnszone).await?);
+            }
+            if let Some(claimant) = live_records
+                .as_deref()
+                .and_then(|live| super::discovery::claimed_by_live_record(&record_ref, live))
+            {
+                info!(
+                    "Keeping DNS data of deleted {} {}/{}: still declared by {} {}/{}",
+                    record_ref.kind,
+                    record_ref.namespace,
+                    record_ref.name,
+                    claimant.kind,
+                    claimant.namespace,
+                    claimant.name
+                );
+                stale_count += 1;
+                continue;
+            }
 
             // Self-healing: Check if record still exists in BIND9 and delete if found
             // This catches cases where the finalizer failed to delete
