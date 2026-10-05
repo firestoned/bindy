@@ -9,7 +9,7 @@
 use anyhow::{anyhow, Result};
 use kube::ResourceExt;
 use std::sync::Arc;
-use tracing::info;
+use tracing::debug;
 
 use crate::crd::{DNSZone, InstanceReference};
 
@@ -78,7 +78,7 @@ pub async fn configure_zone_on_instances(
     let primary_ips =
         match super::primary::find_primary_ips_from_instances(&client, instance_refs).await {
             Ok(ips) if !ips.is_empty() => {
-                info!(
+                debug!(
                     "Found {} primary server IP(s) for zone {}/{}: {:?}",
                     ips.len(),
                     namespace,

@@ -23,7 +23,7 @@ use crate::crd::{
 };
 use anyhow::{Context, Result};
 use kube::{client::Client, Api, Resource, ResourceExt};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 /// Trait for record-specific BIND9 operations.
 ///
@@ -157,6 +157,8 @@ pub trait ReconcilableRecord:
 ///
 /// * `client` - Kubernetes API client
 /// * `stores` - Context stores for creating `Bind9Manager` instances
+/// * `resolver` - Per-reconcile resolver for instance keys and endpoints
+///   (ADR-0015); share one across every write of a reconcile
 /// * `instance_refs` - Primary instance references
 /// * `zone_name` - DNS zone name
 /// * `record_name` - Record name within the zone
@@ -166,9 +168,11 @@ pub trait ReconcilableRecord:
 /// # Errors
 ///
 /// Returns an error if any dynamic DNS update fails.
+#[allow(clippy::too_many_arguments)]
 pub async fn add_record_to_instances_generic<R>(
     client: &Client,
     stores: &crate::context::Stores,
+    resolver: &crate::instances::InstanceResolver,
     instance_refs: &[crate::crd::InstanceReference],
     zone_name: &str,
     record_name: &str,
@@ -187,7 +191,7 @@ where
         .collect();
 
     let (_first, _total) = for_each_instance_endpoint(
-        client,
+        resolver,
         instance_refs,
         true,      // with_rndc_key
         "dns-tcp", // Use DNS TCP port for dynamic updates
@@ -195,11 +199,12 @@ where
             let zone_name = zone_name.to_string();
             let record_name = record_name.to_string();
 
-            // Get namespace for this instance
+            // Get namespace for this instance (always present: the
+            // instance name came from `instance_refs`)
             let instance_namespace = instance_map
                 .get(&instance_name)
-                .expect("Instance should be in map")
-                .clone();
+                .cloned()
+                .unwrap_or_default();
 
             // Create Bind9Manager for this specific instance with deployment-aware auth
             let zone_manager =
@@ -213,7 +218,8 @@ where
             let record_op_clone = record_op.clone();
 
             async move {
-                let key_data = rndc_key.expect("RNDC key should be loaded");
+                let key_data = rndc_key
+                    .ok_or_else(|| anyhow::anyhow!("RNDC key was not loaded for {instance_name}"))?;
 
                 record_op_clone
                     .add_to_bind9(&zone_manager, &zone_name, &record_name, ttl, &pod_endpoint, &key_data)
@@ -871,6 +877,8 @@ impl ReconcilableRecord for PTRRecord {
 ///
 /// * `client` - Kubernetes API client
 /// * `stores` - Context stores for creating `Bind9Manager` instances
+/// * `resolver` - Per-reconcile resolver for instance keys and endpoints
+///   (ADR-0015); share one across every write of a reconcile
 /// * `primary_refs` - Primary instance references to delete the record from
 /// * `zone_name` - DNS zone name (e.g., "example.com")
 /// * `record_name` - Record name within the zone (e.g., "www")
@@ -883,9 +891,11 @@ impl ReconcilableRecord for PTRRecord {
 ///
 /// Returns an error if endpoint resolution fails, or if a DNS deletion fails
 /// and `fail_on_error` is `true`.
+#[allow(clippy::too_many_arguments)]
 pub async fn delete_record_from_primaries(
     client: &Client,
     stores: &crate::context::Stores,
+    resolver: &crate::instances::InstanceResolver,
     primary_refs: &[crate::crd::InstanceReference],
     zone_name: &str,
     record_name: &str,
@@ -917,7 +927,7 @@ pub async fn delete_record_from_primaries(
 
     let (_first_endpoint, _total_endpoints) =
         crate::instances::for_each_instance_endpoint_with_policy(
-            client,
+            resolver,
             primary_refs,
             true,      // with_rndc_key
             "dns-tcp", // Use DNS TCP port for dynamic updates
@@ -927,8 +937,8 @@ pub async fn delete_record_from_primaries(
                 let record_name_str = record_name.to_string();
                 let instance_namespace = instance_map
                     .get(&instance_name)
-                    .expect("Instance should be in map")
-                    .clone();
+                    .cloned()
+                    .unwrap_or_default();
                 let failures = std::sync::Arc::clone(&failures);
 
                 // Create Bind9Manager for this specific instance with deployment-aware auth
@@ -940,21 +950,24 @@ pub async fn delete_record_from_primaries(
                 );
 
                 async move {
-                    let key_data = rndc_key.expect("RNDC key should be loaded");
-
-                    let delete_result = zone_manager
-                        .delete_record(
-                            &zone_name,
-                            &record_name_str,
-                            record_type_hickory,
-                            &pod_endpoint,
-                            &key_data,
-                        )
-                        .await;
+                    let delete_result = match rndc_key {
+                        Some(key_data) => {
+                            zone_manager
+                                .delete_record(
+                                    &zone_name,
+                                    &record_name_str,
+                                    record_type_hickory,
+                                    &pod_endpoint,
+                                    &key_data,
+                                )
+                                .await
+                        }
+                        None => Err(anyhow::anyhow!("RNDC key was not loaded")),
+                    };
 
                     match delete_result {
                         Ok(()) => {
-                            info!(
+                            debug!(
                                 "Successfully deleted {} record {}.{} from endpoint {} (instance: {})",
                                 record_type_hickory, record_name_str, zone_name, pod_endpoint, instance_name
                             );
@@ -966,7 +979,7 @@ pub async fn delete_record_from_primaries(
                             );
                             failures
                                 .lock()
-                                .expect("delete failures mutex should not be poisoned")
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .push(format!(
                                     "endpoint {pod_endpoint} (instance: {instance_name}): {e}"
                                 ));
@@ -981,7 +994,7 @@ pub async fn delete_record_from_primaries(
 
     let failures = failures
         .lock()
-        .expect("delete failures mutex should not be poisoned");
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     if fail_on_error && !failures.is_empty() {
         return Err(anyhow::anyhow!(
@@ -1021,6 +1034,10 @@ pub struct RecordReplayOutcome {
     pub attempted: usize,
     /// Number of record references pushed to every primary endpoint successfully.
     pub succeeded: usize,
+    /// Number of record references not replayed because the record no longer
+    /// exists or is being deleted: replaying those would re-publish data the
+    /// record's finalizer is removing.
+    pub skipped: usize,
     /// Human-readable description of every record that could not be pushed.
     pub failures: Vec<String>,
 }
@@ -1038,13 +1055,14 @@ impl RecordReplayOutcome {
         if self.is_complete() {
             return format!(
                 "Replayed {}/{} record(s) into zone {zone_name}",
-                self.succeeded, self.attempted
+                self.succeeded + self.skipped,
+                self.attempted
             );
         }
 
         format!(
             "Replayed {}/{} record(s) into zone {zone_name}; {} failed: {}",
-            self.succeeded,
+            self.succeeded + self.skipped,
             self.attempted,
             self.failures.len(),
             self.failures.join("; ")
@@ -1052,41 +1070,80 @@ impl RecordReplayOutcome {
     }
 }
 
+/// Whether a record CR is still meant to be in DNS and may be replayed.
+///
+/// A record with `deletionTimestamp` set is being removed by its finalizer.
+/// Replaying it would race that finalizer and could re-publish the RRset
+/// after the finalizer deleted it, leaving it served with no record CR left
+/// to clean it up.
+#[must_use]
+pub fn should_replay(meta: &k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta) -> bool {
+    meta.deletion_timestamp.is_none()
+}
+
+/// What replaying one record did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplayAction {
+    /// The record was pushed to every primary endpoint.
+    Pushed,
+    /// The record is gone or terminating and was deliberately not pushed.
+    Skipped,
+}
+
 /// Push a single record CR of a known type to every primary endpoint.
 ///
 /// Fetches the record from the API server (the reflector store may lag behind a
 /// just-created zone) and reuses the same BIND9 write path as the record
 /// controller, so a replayed record is byte-for-byte what a normal reconcile
-/// would have written.
+/// would have written. A record that no longer exists or is being deleted is
+/// skipped (see [`should_replay`]).
 async fn replay_single_record<T>(
     client: &Client,
     stores: &crate::context::Stores,
+    resolver: &crate::instances::InstanceResolver,
     zone_name: &str,
     namespace: &str,
     name: &str,
     primary_refs: &[crate::crd::InstanceReference],
-) -> Result<()>
+) -> Result<ReplayAction>
 where
     T: ReconcilableRecord,
 {
     let api: Api<T> = Api::namespaced(client.clone(), namespace);
-    let record = api
-        .get(name)
+    let Some(record) = api
+        .get_opt(name)
         .await
-        .with_context(|| format!("Failed to get {} {namespace}/{name}", T::record_type_name()))?;
+        .with_context(|| format!("Failed to get {} {namespace}/{name}", T::record_type_name()))?
+    else {
+        debug!(
+            "Not replaying {} {namespace}/{name}: it no longer exists",
+            T::record_type_name()
+        );
+        return Ok(ReplayAction::Skipped);
+    };
+
+    if !should_replay(record.meta()) {
+        debug!(
+            "Not replaying {} {namespace}/{name}: it is being deleted",
+            T::record_type_name()
+        );
+        return Ok(ReplayAction::Skipped);
+    }
 
     let spec = record.get_spec();
 
     add_record_to_instances_generic(
         client,
         stores,
+        resolver,
         primary_refs,
         zone_name,
         T::get_record_name(spec),
         T::get_ttl(spec),
         T::create_operation(spec),
     )
-    .await
+    .await?;
+    Ok(ReplayAction::Pushed)
 }
 
 /// Re-push every record CR selected by a zone into that zone on BIND9.
@@ -1136,6 +1193,10 @@ pub async fn replay_zone_records(
         return outcome;
     }
 
+    // One resolver for the whole replay: each primary's RNDC key and
+    // endpoints are read once, not once per record (ADR-0015).
+    let resolver = crate::instances::InstanceResolver::for_kube(client, stores);
+
     for record_ref in record_refs {
         outcome.attempted += 1;
 
@@ -1145,6 +1206,7 @@ pub async fn replay_zone_records(
         let result = match replay_dispatch(
             client,
             stores,
+            &resolver,
             zone_name,
             &record_ref.kind,
             namespace,
@@ -1168,7 +1230,10 @@ pub async fn replay_zone_records(
         };
 
         match result {
-            Ok(()) => {
+            Ok(ReplayAction::Skipped) => {
+                outcome.skipped += 1;
+            }
+            Ok(ReplayAction::Pushed) => {
                 outcome.succeeded += 1;
                 debug!(
                     "Replayed {} {}/{} into zone {}",
@@ -1196,15 +1261,17 @@ pub async fn replay_zone_records(
 /// always [`crate::crd::DNSRecordKind::as_str`]. Returns `None` when it names a
 /// kind this operator does not manage, so the caller can distinguish "unknown
 /// kind" from "push failed".
+#[allow(clippy::too_many_arguments)]
 async fn replay_dispatch(
     client: &Client,
     stores: &crate::context::Stores,
+    resolver: &crate::instances::InstanceResolver,
     zone_name: &str,
     kind: &str,
     namespace: &str,
     name: &str,
     primary_refs: &[crate::crd::InstanceReference],
-) -> Option<Result<()>> {
+) -> Option<Result<ReplayAction>> {
     use crate::crd::DNSRecordKind;
 
     let kind = DNSRecordKind::try_from(kind).ok()?;
@@ -1215,6 +1282,7 @@ async fn replay_dispatch(
                 replay_single_record::<$record_type>(
                     client,
                     stores,
+                    resolver,
                     zone_name,
                     namespace,
                     name,

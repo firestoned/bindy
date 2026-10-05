@@ -175,3 +175,74 @@ mod tests {
         assert_ne!(ref1, ref3);
     }
 }
+
+/// Primary-role lookups from the `Bind9Instance` reflector store (ADR-0015):
+/// the record write path no longer GETs every instance to learn its role.
+#[cfg(test)]
+mod store_role_tests {
+    use crate::crd::{Bind9Instance, InstanceReference};
+    use crate::primary::primary_role_in_store;
+    use kube::runtime::{reflector, watcher};
+    use serde_json::json;
+
+    fn instance(name: &str, role: &str) -> Bind9Instance {
+        serde_json::from_value(json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "Bind9Instance",
+            "metadata": {"name": name, "namespace": "dns"},
+            "spec": {"clusterRef": "c", "role": role},
+        }))
+        .expect("valid Bind9Instance fixture")
+    }
+
+    fn reference(name: &str, namespace: &str) -> InstanceReference {
+        InstanceReference {
+            api_version: "bindy.firestoned.io/v1beta1".to_string(),
+            kind: "Bind9Instance".to_string(),
+            name: name.to_string(),
+            namespace: namespace.to_string(),
+            last_reconciled_at: None,
+        }
+    }
+
+    fn store(instances: Vec<Bind9Instance>) -> crate::context::MultiStore<Bind9Instance> {
+        let (store, mut writer) = reflector::store();
+        writer.apply_watcher_event(&watcher::Event::Init);
+        for i in instances {
+            writer.apply_watcher_event(&watcher::Event::InitApply(i));
+        }
+        writer.apply_watcher_event(&watcher::Event::InitDone);
+        crate::context::MultiStore::new(vec![store])
+    }
+
+    #[test]
+    fn primary_instance_in_store_is_primary() {
+        let store = store(vec![instance("p0", "primary"), instance("s0", "secondary")]);
+
+        assert_eq!(
+            primary_role_in_store(&store, &reference("p0", "dns")),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn secondary_instance_in_store_is_not_primary() {
+        let store = store(vec![instance("p0", "primary"), instance("s0", "secondary")]);
+
+        assert_eq!(
+            primary_role_in_store(&store, &reference("s0", "dns")),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn instance_missing_from_store_is_unknown() {
+        let store = store(vec![instance("p0", "primary")]);
+
+        assert_eq!(primary_role_in_store(&store, &reference("p1", "dns")), None);
+        assert_eq!(
+            primary_role_in_store(&store, &reference("p0", "other")),
+            None
+        );
+    }
+}

@@ -196,6 +196,7 @@ bindy run
 |---|---|---|
 | `BINDY_KUBE_QPS` | `20.0` | Sustained API server request rate (queries per second), enforced client-side |
 | `BINDY_KUBE_BURST` | `30` | Requests allowed to burst above the sustained rate |
+| `BINDY_KUBE_REQUEST_TIMEOUT_SECS` | `30` | Deadline in seconds for each non-watch API request (watches exempt); a timed-out request is retried with backoff |
 
 #### Leader election
 

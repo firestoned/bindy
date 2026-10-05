@@ -13,7 +13,7 @@ use hickory_net::client::ClientHandle;
 use hickory_proto::op::ResponseCode;
 use hickory_proto::rr::{rdata, DNSClass, Name, RData, Record, RecordType};
 use std::str::FromStr;
-use tracing::info;
+use tracing::debug;
 
 /// Compare existing DNS `RRset` with the desired SRV fields and TTL.
 ///
@@ -130,7 +130,7 @@ pub async fn add_srv_record(
 
     match response.metadata.response_code {
         ResponseCode::NoError => {
-            info!(
+            debug!(
                 "Successfully added SRV record: {} -> {}:{} (priority: {}, weight: {}, TTL: {})",
                 fqdn, srv_data.target, srv_data.port, srv_data.priority, srv_data.weight, ttl_value
             );

@@ -17,4 +17,4 @@ pub use kube::{
     Api, Resource, ResourceExt,
 };
 pub use serde_json::json;
-pub use tracing::{info, warn};
+pub use tracing::{debug, warn};

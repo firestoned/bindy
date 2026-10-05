@@ -483,6 +483,7 @@ dependencies = [
  "chrono",
  "futures",
  "http",
+ "http-body",
  "json-patch",
  "k8s-openapi",
  "kube",

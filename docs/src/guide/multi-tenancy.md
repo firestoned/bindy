@@ -296,6 +296,12 @@ metadata:
     environment: development
 ```
 
+!!! note "Grant the operator access to the team namespace"
+    Instances in `dev-team-alpha` run outside the operator namespace, so the
+    namespace needs the `bindy-secrets-writer` Role and RoleBinding and a
+    `bindcar-tokenreview` binding for its `bind9` ServiceAccount before the
+    first instance is created. See [Operands in Other Namespaces](../operations/multi-namespace.md).
+
 ### Step 2: Create Role for Full DNS Management
 
 ```yaml

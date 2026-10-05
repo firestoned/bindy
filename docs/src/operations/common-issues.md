@@ -33,6 +33,29 @@ kubectl auth can-i create deployments \
   --as=system:serviceaccount:bindy-system:bindy
 ```
 
+### No Pods in a Namespace Other Than `bindy-system`
+
+**Symptom:** a Bind9Instance outside the operator namespace never gets a
+Deployment. Its `Ready` condition is `False` with reason `NotReady` and a
+message starting `Failed to create resources: ApiError: secrets is forbidden:
+User "system:serviceaccount:bindy-system:bindy" cannot create resource "secrets"`.
+
+**Cause:** the operator may write Secrets only in namespaces that carry the
+`bindy-secrets-writer` Role and RoleBinding (B-5 hardening); the default install
+creates them in `bindy-system` only. The operator needs them to create the
+instance's `<instance>-rndc-key` Secret.
+
+**Diagnosis:**
+```bash
+kubectl auth can-i create secrets -n <operand-ns> \
+  --as=system:serviceaccount:bindy-system:bindy
+# no = the Role/RoleBinding is missing
+```
+
+**Solution:** grant the namespace, including the matching `bindcar-tokenreview`
+binding its pods will need next. See
+[Operands in Other Namespaces](multi-namespace.md).
+
 ### ConfigMap Not Created
 
 **Symptom:** ConfigMap missing for Bind9Instance
@@ -621,6 +644,30 @@ spec:
 
 3. **Enable caching** (if appropriate for your use case)
 
+### Operator logs "Kubernetes API request timed out"
+
+**Symptom:** The operator logs `Retryable Kubernetes API error, will retry`
+with `Kubernetes API request timed out after 30s (client-side request
+deadline)`, and `bindy_firestoned_io_kube_api_requests_total{status="error"}`
+rises.
+
+**Cause:** A non-watch request got no complete response within
+`BINDY_KUBE_REQUEST_TIMEOUT_SECS` (default 30 s). Usually one stalled
+connection between the operator and the API server; the deadline drops it and
+the request is retried with backoff on a fresh connection (ADR-0014). Before
+this deadline existed, such a request hung for about five minutes.
+
+**What to do:**
+
+1. Occasional timeouts that succeed on retry need no action.
+2. If they persist, check the network path to the API server (node network,
+   load balancer in front of the API server, `kubectl get --raw /readyz`).
+3. If the API server is healthy but slow admission webhooks on bindy's
+   resources make legitimate writes take longer than the deadline, raise
+   `BINDY_KUBE_REQUEST_TIMEOUT_SECS` on the operator Deployment.
+
+Watch streams are never cut by this deadline.
+
 ## RBAC Issues
 
 ### Forbidden Errors in Logs
@@ -681,6 +728,7 @@ kubectl get deploy/bindy -n bindy-system -o jsonpath='{.spec.template.spec.volum
 
 **Common causes & fixes:**
 - **Missing tokenreview RBAC** → `kubectl apply -f deploy/operator/rbac/tokenreview-clusterrole.yaml -f deploy/operator/rbac/tokenreview-clusterrolebinding.yaml` (add a subject per operand namespace).
+- **Operand outside `bindy-system`** → the shipped binding names only `system:serviceaccount:bindy-system:bind9`. Re-run the `can-i` check with `--as=system:serviceaccount:<operand-ns>:bind9`, and bind that namespace's SA as described in [Operands in Other Namespaces](multi-namespace.md).
 - **Audience mismatch** → the operator's projected token audience must equal the sidecar's `BIND_TOKEN_AUDIENCES` (`bindcar`).
 - **Wrong allow-list** → `BIND_ALLOWED_SERVICE_ACCOUNTS` must name the **operator** SA (`system:serviceaccount:<ns>:bindy`), not the operand `bind9` SA.
 

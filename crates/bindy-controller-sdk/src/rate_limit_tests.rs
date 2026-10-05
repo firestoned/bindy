@@ -236,7 +236,11 @@ mod tests {
         // is issued, so a dummy endpoint proves the middleware stack builds.
         let kube_config = kube::Config::new("http://127.0.0.1:9".parse().unwrap());
         let limits = RateLimitConfig::default();
-        let client = build_rate_limited_client(kube_config, &limits);
+        let client = build_rate_limited_client(
+            kube_config,
+            &limits,
+            crate::request_timeout::request_timeout_from_value(None),
+        );
         assert!(client.is_ok());
     }
 }

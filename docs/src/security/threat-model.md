@@ -1,12 +1,46 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.12
+**Version:** 1.14
 **Last Updated:** 2026-10-05
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
 
-> Last full pass 2026-10-05, against ADR-0001 … ADR-0013 (ADR-0006 as amended;
-> ADR-0009 as amended 2026-10-05, fully implemented; ADR-0013 stages 1 and 2).
+> Last full pass 2026-10-05, against ADR-0001 ... ADR-0015 (ADR-0006 as amended;
+> ADR-0009 as amended 2026-10-05, fully implemented; ADR-0013 stages 1 and 2;
+> ADR-0014 and ADR-0015 implemented).
+>
+> **Revision note (v1.14):** Full pass for ADR-0015 (bounded Kubernetes API
+> cost of record and zone writes), prompted by the v0.8.0-rc.2 load test
+> (300 records: 25,582 API requests, half the records unserved after 600 s,
+> 30 still served after their deletion). **D2** gains **M-46**: a write
+> resolves each instance's RNDC key and endpoints once per reconcile,
+> endpoints and instance roles come from the existing reflector stores, the
+> record controller no longer rewrites its zone's `status.records` or wakes on
+> its own condition writes, and a zone reconcile no longer GETs or PATCHes
+> every record. **T1** gains the orphan fix under M-46: a deleted record stays
+> tracked in its zone until its data is confirmed gone from every primary,
+> and a zone replay no longer re-publishes a record that is being deleted.
+> **I1** records the new in-memory RNDC key cache: a key the operator already
+> reads is reused for at most 60 s (invalidated on rotation and on any failed
+> write); no new reader, RBAC grant, Secret list or watch, and the key type's
+> `Debug` redaction still applies. No new component, actor, asset, trust
+> boundary or network path. All other sections re-walked unchanged.
+>
+> **Revision note (v1.13):** Full pass for ADR-0014 (a bounded client-side
+> deadline on non-watch Kubernetes API requests, from the v0.8.0-rc.2 load
+> test). New threat **D5** (one stalled API server connection freezes the
+> reconciles that share it for about five minutes; nothing in kube-rs 4.2
+> bounds a request's wait for its response), mapped to new mitigation
+> **M-45**: every non-watch request carries a 30 s deadline
+> (`BINDY_KUBE_REQUEST_TIMEOUT_SECS`) over its headers and body, fails as a
+> retryable error and re-enters the existing backoff; watches are exempt.
+> Attack Surface 1 and the Resilience row of the controls summary cite M-45.
+> New accepted risk **12**: Scout and the bootstrap CLI build their own
+> clients without the deadline, and a legitimately slow write is now cut and
+> retried. No new component, actor, asset, trust boundary, RBAC grant or
+> network path; `http-body` becomes a direct dependency (already in the tree
+> through kube and hyper, E3 unchanged). All other sections re-walked
+> unchanged.
 >
 > **Revision note (v1.12):** Full pass for ADR-0013 stages 1 and 2 (hornet
 > validates the BIND9 configuration the operator renders). New threat **D4**
@@ -597,6 +631,11 @@ attributable, not prevented)
 - ✅ GitOps workflow (changes via pull requests, not direct kubectl)
 - ✅ Audit logging in Kubernetes (all CR modifications logged)
 - ❌ **MISSING**: Webhook validation for DNS records (prevent obviously malicious changes)
+- ✅ **Deleted records are not left served** (M-46, ADR-0015, 2026-10-05): a
+  deleted record stays in its zone's `status.records` until its data is
+  confirmed gone from every primary endpoint, so a failed finalizer cleanup is
+  retried instead of forgotten; and a zone replay skips a record that is gone
+  or being deleted, so it cannot re-publish data the finalizer just removed
 - ✅ **DNSSEC signing** (M-14, opt-in, roadmap 07 complete 2026-09-27): zones signed via
   BIND9 `dnssec-policy`; DS records auto-published in `DNSZone.status.dnssec`
   (ADR-0006) so the chain of trust can actually be completed in the parent zone.
@@ -779,6 +818,14 @@ exists to constrain that further)
 - ✅ Log sanitization — RNDC keys and bindcar bearer tokens are redacted in their
   `Debug` impls (`crates/bindy-bind9/src/bind9/types.rs`, `crates/bindy-bind9/src/bind9/mod.rs`), so a key cannot reach a log
   line through structured logging
+- ✅ **Bounded in-memory key reuse** (M-46, ADR-0015, 2026-10-05): the
+  operator keeps a loaded RNDC key in process memory for at most 60 s
+  (`RNDC_KEY_CACHE_TTL`) instead of re-reading its Secret on every record
+  write. The key was already in the same process for the duration of each
+  write; the cache changes how often the Secret is read, not who can read it
+  (no new RBAC, no Secret list or watch). An entry is dropped when the
+  operator rotates the key and after any write with it fails, and the cached
+  type keeps its redacting `Debug` impl
 - ⚠️ **PARTIAL**: RNDC key rotation is a **documented manual procedure**
   (`docs/src/security/incident-response.md`), not an automated policy. There is no
   scheduled/automatic rotation in the operator.
@@ -982,6 +1029,16 @@ remains the path, as it is for zone data.
   reconcile writes into its zone cannot fan out into records x instances
   reconciles (measured on kind before the filter: 30 instance reconciles in
   330 s for 10 records and 3 instances)
+- ✅ **Write cost independent of records x instances** (M-46, ADR-0015,
+  2026-10-05): each reconcile resolves an instance's RNDC key and endpoints
+  once (`InstanceResolver`); endpoints and instance roles come from the
+  reflector stores; the record controller no longer read-modify-writes its
+  zone's `status.records` (which raced, and woke every unreconciled record on
+  each write) and ignores its own condition writes; a zone reconcile tags only
+  untagged records, lists instead of GETting each record, and no longer GETs
+  every record to log readiness. Measured on rc.2 before the change: 300
+  records and 3 primaries drove 6,935 record reconciles and 25,582 API
+  requests at the 20 QPS client limit
 - ❌ **MISSING**: Global reconciliation-frequency limiter (M-3 layer 1 —
   API traffic is now bounded, but reconcile CPU work per CR is not)
 - ❌ **MISSING**: Admission webhook to limit number of CRs per namespace
@@ -1043,6 +1100,43 @@ left a stray `}`)
 **Residual Risk:** LOW (an invalid render fails closed; a configuration
 hornet accepts but `named` rejects is still possible, and would surface as
 pods failing their rollout)
+
+---
+
+#### D5: A Stalled API Server Connection Freezes Reconciles
+
+**Threat:** A connection between the operator and the API server stops
+delivering responses without being closed: a node network fault, a load
+balancer or proxy in the path silently dropping the flow, or an attacker with
+a foothold on that path black-holing traffic. kube-rs 4.2 sets no read
+timeout by default and its connection timers are hundreds of seconds long,
+so every non-watch request sent down that connection hangs and the
+reconciles awaiting them stall with it. The API server sees nothing slow.
+
+**Impact:** MEDIUM (DNS changes stop propagating for the duration of the
+stall; DNS serving is unaffected)
+**Likelihood:** MEDIUM (observed in the v0.8.0-rc.2 load test: five requests
+took about 290 s each on one stalled connection, freezing five reconciles for
+about five minutes)
+
+**Mitigations:**
+- ✅ **Per-request deadline on non-watch API requests** (M-45, ADR-0014,
+  2026-10-05): a tower layer in the operator's client stack bounds each
+  non-watch request to 30 s by default (`BINDY_KUBE_REQUEST_TIMEOUT_SECS`)
+  across its response headers and body; the timeout surfaces as
+  `kube::Error::Service`, which the retry helpers treat as transient, so the
+  request is retried with backoff on a fresh connection and failing
+  reconciles requeue under the per-object backoff
+- ✅ Watches are exempt and are bounded instead by the server-side
+  `timeoutSeconds` and kube-runtime's watcher idle timeout; a stalled watch
+  is covered by the shared watch layer's restart and staleness metrics (M-38)
+- ✅ Timed-out requests count as `status="error"` in
+  `bindy_firestoned_io_kube_api_requests_total`, so a persistent stall is
+  visible in Prometheus
+
+**Residual Risk:** LOW (a stall costs at most one deadline per request, then
+the backoff takes over; Scout's clients do not carry the deadline yet, see
+accepted risk 12)
 
 ---
 
@@ -1223,6 +1317,8 @@ scenario.
 - Regular Kubernetes upgrades
 - One shared watch per kind and namespace target (ADR-0009): 19 operator watch
   connections in cluster-wide mode instead of 58, client-side rate limited (M-31)
+- Every non-watch request bounded by a client-side deadline (M-45, ADR-0014),
+  so a stalled connection cannot hold reconciles for minutes
 
 **Risk:** MEDIUM
 
@@ -1587,6 +1683,8 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-42 | **Scout RBAC drift test** (2026-10-05, ADR-0009 §6): the Scout ClusterRole, Roles and bindings that `bindy bootstrap scout` builds are compared with `deploy/scout/*.yaml` and the `docs/src/guide/scout.md` examples; any difference in rules, role references or subjects fails the build | E2, T4 (RBAC widened in one representation, unreviewed in the others) | ✅ `crates/bindy-bootstrap/src/bootstrap_tests.rs` (`rbac_drift`) |
 | M-43 | **Draining shutdown and startup recovery** (2026-10-05, ADR-0009 §5): SIGTERM, SIGINT and loss of the leader lease fire one trigger; every controller stops taking work and finishes its in-flight reconciles (`graceful_shutdown_on`), and a controller that stops on its own fails the process (`supervise`). Drift made while no operator runs is repaired from the watchers' initial lists when one starts, proven by the restart e2e suite, so the separate startup pass (cluster-wide LISTs even under M-22) is deleted | Availability, partial writes on shutdown, M-22 scope leak | ✅ `crates/bindy-controller-sdk/src/shutdown.rs`, `crates/bindy/src/main.rs`, `tests/e2e/restart_test.sh` |
 | M-44 | **Rendered-configuration gate** (2026-10-05, ADR-0013 stages 1 and 2): every `named.conf*` the operator renders is parsed and validated with hornet, in CI across the option matrix and every example, and at runtime before the ConfigMap is written; an invalid render is not published, the resource reports `Ready=False` / `ConfigurationInvalid`, and the pods keep the last published configuration | D4 (malformed config takes every BIND9 pod down) | ✅ `crates/bindy-bind9/src/config_check.rs`, `crates/bindy-bind9/src/rendered_config_tests.rs` |
+| M-45 | **Per-request deadline on non-watch Kubernetes API requests** (2026-10-05, ADR-0014): a tower layer in the operator's client stack, inside the M-31 rate limiter, bounds each non-watch request to 30 s by default (`BINDY_KUBE_REQUEST_TIMEOUT_SECS`, invalid overrides fall back safely) across its response headers and body; the timeout is a retryable `kube::Error::Service`, so the existing backoff takes over. Requests with `watch=true` are exempt | D5 (stalled connection freezes reconciles) | ✅ `crates/bindy-controller-sdk/src/request_timeout.rs`, `crates/bindy-controller-sdk/src/rate_limit.rs` |
+| M-46 | **Bounded API cost of DNS writes** (2026-10-05, ADR-0015): per-reconcile `InstanceResolver` (each instance's RNDC key and endpoints read once), endpoints and instance roles from the existing reflector stores, a 60 s in-memory RNDC key cache invalidated on rotation and on any failed write, no record-side rewrite of `DNSZone.status.records`, a zoneRef-only status trigger for record reconciles, tag-once and LIST-based existence checks in zone reconciles; deleted records stay tracked until their DNS data is confirmed gone, and replays skip terminating records | D2 (API amplification: records x instances), T1 (deleted records left served), I1 (key reuse bounded) | ✅ `crates/bindy-bind9/src/instances.rs`, `crates/bindy-bind9/src/record_push.rs`, `crates/bindy-controller-records/src/record_operator.rs`, `crates/bindy-controller-zone/src/dnszone/{cleanup,discovery}.rs` |
 | M-25 | **Scout Secret RBAC scoped** (fixed 2026-07-19, same day as this finding's discovery): removed the cluster-wide `secrets: get` `PolicyRule` from the `bindy-scout` `ClusterRole` entirely. Replaced with a namespaced, `resourceNames`-restricted Role (`bindy-scout-secrets-reader`) scoped to exactly the one Phase 2 kubeconfig Secret, applied only when `--remote-secret` is configured. Same-cluster-only deployments (the default) now get zero Secret access. See I4/E4/Scenario 6 for the full before/after. | I4, E4, T4 (Secret-read component), Scenario 6 | ✅ RBAC — **was the highest-priority open item in v1.1; closed same-day** |
 
 ---
@@ -1660,6 +1758,8 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 
 11. **Hand-edited `DNSZone` status waits for the requeue (ADR-0009 §4)** - The zone controller no longer reacts to status-only changes, so a status edited by hand (which needs `dnszones/status` write access, granted only to the operator) stands until the zone's next reconcile: at most 5 minutes when Ready, 30 seconds otherwise, or at once on any spec, label, annotation, record or instance change. Accepted: status is informational and rewritten by the controller; DNS data on BIND9 is unaffected. *Revisit when* any decision reads zone status as input from outside the operator.
 
+12. **API request deadline is operator-only, and cuts slow writes (ADR-0014)** - Scout (`bindy scout`, local and remote clients) and the `bindy bootstrap` CLI build their own Kubernetes clients without the M-45 deadline, so a stalled connection can still hold a Scout reconcile for minutes. And a legitimate operator request slower than the deadline (for example behind slow admission webhooks) is now cut and retried rather than completing. Accepted: Scout's write volume is small and its reconciles are independent, the bootstrap CLI is interactive, every operator write is a patch or server-side apply (a retry after a write that did land is idempotent), and the deadline is tunable per deployment. *Revisit when* Scout is load-tested at scale, or timed-out requests appear on a healthy API server.
+
 ---
 
 ## Security Architecture
@@ -1729,7 +1829,7 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 | **Data Protection** | Secrets encrypted, AXFR restricted, DNSSEC zone signing (opt-in, M-14/ADR-0006) | TSIG for AXFR; DNSSEC-by-default | MEDIUM |
 | **Supply Chain** | Signed commits/images, SLSA Build L3 provenance for all release artifacts (M-33), NTIA-gated SBOM attestations (M-34), anchored signer identity (M-35), gated per-release crypto inventory (M-39), `--locked` release builds, vuln scanning | Required approving reviews (M-36); operand image digest pinning (M-15); reproducibility check (M-37); hybrid PQ key exchange (M-40); revisit Dependabot auto-merge human-review gap (M-29) | LOW-MEDIUM (no required review on `main`, see S3; automated auto-merge removed a manual checkpoint, see E3; classical key exchange is HNDL-exposed, see accepted risk 8) |
 | **Monitoring** | Kubernetes audit logs, vuln scanning | Audit retention policy, secret access trail | MEDIUM |
-| **Resilience** | Rate limiting, resource limits | Edge DDoS protection, HPA | MEDIUM |
+| **Resilience** | Rate limiting, per-request API deadline (M-45), resource limits | Edge DDoS protection, HPA | MEDIUM |
 | **Container Security** | Non-root, read-only FS, Pod Security Standards, unprivileged DNS port + zero added capabilities (M-23) | Network policies (reference manifest exists, not auto-applied — M-17) | LOW |
 
 ---

@@ -16,6 +16,7 @@ The operator includes configurable rate limiting for Kubernetes API requests to 
 
 - `BINDY_KUBE_QPS` - Sustained queries per second (default: `20.0`)
 - `BINDY_KUBE_BURST` - Maximum burst requests (default: `30`)
+- `BINDY_KUBE_REQUEST_TIMEOUT_SECS` - Deadline in seconds for each non-watch request (default: `30`). Watch streams are exempt. A request on a stalled connection fails after this long and is retried with exponential backoff instead of hanging for minutes (ADR-0014). Raise it only if admission webhooks on bindy's resources are slow.
 
 **Default Values:**
 

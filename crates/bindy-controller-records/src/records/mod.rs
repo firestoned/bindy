@@ -25,14 +25,8 @@ pub use bindy_bind9::record_push::{
 // Removed ANNOTATION_ZONE_OWNER - using status.zoneRef instead (event-driven architecture)
 use crate::crd::DNSZone;
 use anyhow::{Context, Result};
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 
-use kube::{
-    api::{Patch, PatchParams},
-    client::Client,
-    Api, Resource, ResourceExt,
-};
-use serde_json::json;
+use kube::{client::Client, Api, Resource, ResourceExt};
 use tracing::{debug, info, warn};
 
 /// Gets the `DNSZone` reference from the record's status.
@@ -224,32 +218,38 @@ where
             }
         };
 
-    // Filter to PRIMARY instances only
-    let primary_refs =
-        match bindy_bind9::primary::filter_primary_instances(client, &instance_refs).await {
-            Ok(refs) => refs,
-            Err(e) => {
-                warn!(
-                    "Failed to filter primary instances for {} record {}/{}: {}",
-                    record_type, namespace, name, e
-                );
-                update_record_status(
-                    client,
-                    record,
-                    "Ready",
-                    "False",
-                    "InstanceFilterError",
-                    &format!("Failed to filter primary instances: {e}"),
-                    current_generation,
-                    None, // record_hash
-                    None, // last_updated
-                    None, // addresses
-                    None, // published_name
-                )
-                .await?;
-                return Ok(None);
-            }
-        };
+    // Filter to PRIMARY instances only, reading roles from the reflector
+    // store rather than one GET per instance (ADR-0015)
+    let primary_refs = match bindy_bind9::primary::filter_primary_instances_cached(
+        client,
+        bind9_instances_store,
+        &instance_refs,
+    )
+    .await
+    {
+        Ok(refs) => refs,
+        Err(e) => {
+            warn!(
+                "Failed to filter primary instances for {} record {}/{}: {}",
+                record_type, namespace, name, e
+            );
+            update_record_status(
+                client,
+                record,
+                "Ready",
+                "False",
+                "InstanceFilterError",
+                &format!("Failed to filter primary instances: {e}"),
+                current_generation,
+                None, // record_hash
+                None, // last_updated
+                None, // addresses
+                None, // published_name
+            )
+            .await?;
+            return Ok(None);
+        }
+    };
 
     if primary_refs.is_empty() {
         warn!(
@@ -324,7 +324,7 @@ where
     let namespace = record.namespace().unwrap_or_default();
     let name = record.name_any();
 
-    info!(
+    debug!(
         "Reconciling {}Record: {}/{}",
         T::record_type_name(),
         namespace,
@@ -347,6 +347,10 @@ where
         return Ok(()); // Record not selected or status already updated
     };
 
+    // One resolver for every write this reconcile makes (the rename delete and
+    // the add): each primary's RNDC key and endpoints are read once (ADR-0015).
+    let resolver = bindy_bind9::instances::InstanceResolver::for_kube(&client, &ctx.stores);
+
     // Handle renames: if the record was previously published under a different
     // DNS name (status.publishedName), delete the old FQDN from the zone first.
     // Otherwise the old name would remain orphaned in BIND9 forever.
@@ -364,6 +368,7 @@ where
         if let Err(e) = delete_record_from_primaries(
             &client,
             &ctx.stores,
+            &resolver,
             &rec_ctx.primary_refs,
             &rec_ctx.zone_ref.zone_name,
             &old_name,
@@ -421,6 +426,7 @@ where
     match add_record_to_instances_generic(
         &client,
         &ctx.stores,
+        &resolver,
         &rec_ctx.primary_refs,
         &rec_ctx.zone_ref.zone_name,
         T::get_record_name(spec),
@@ -431,7 +437,7 @@ where
     {
         Ok(()) => {
             bindy_controller_sdk::retry::clear_rejected_write(&write_key);
-            info!(
+            debug!(
                 "Successfully added {} record {}.{} via {} primary instance(s)",
                 T::record_type_name(),
                 T::get_record_name(spec),
@@ -439,16 +445,14 @@ where
                 rec_ctx.primary_refs.len()
             );
 
-            // Update lastReconciledAt timestamp in DNSZone.status.records[]
-            update_record_reconciled_timestamp(
-                &client,
-                &rec_ctx.zone_ref.namespace,
-                &rec_ctx.zone_ref.name,
-                &format!("{}Record", T::record_type_name()),
-                &name,
-                &namespace,
-            )
-            .await?;
+            // DNSZone.status.records[].lastReconciledAt is NOT written from
+            // here. It used to be, with a read-modify-write of the whole
+            // records array: concurrent record reconciles overwrote each
+            // other's stamps, every write re-woke every unstamped record via
+            // the zone watch, and each cost a GET and a PATCH. The zone
+            // controller now derives the stamp from this record's
+            // status.lastUpdated (set below) on its next reconcile, which this
+            // status write triggers (ADR-0015).
 
             // Update record status to Ready. Addresses (A/AAAA display field) and
             // publishedName are only set after a successful, selected reconcile.
@@ -572,7 +576,7 @@ where
     let namespace = record.namespace().unwrap_or_default();
     let name = record.name_any();
 
-    info!("Deleting {} record: {}/{}", record_type, namespace, name);
+    debug!("Deleting {} record: {}/{}", record_type, namespace, name);
 
     // Extract status fields generically
     let record_json = serde_json::to_value(record).ok();
@@ -618,9 +622,15 @@ where
             }
         };
 
-    // Filter to primary instances
-    let primary_refs = match bindy_bind9::primary::filter_primary_instances(client, &instance_refs)
-        .await
+    // Filter to primary instances. Roles come from the reflector store: under
+    // API pressure a failed GET here used to drop the instance and leave the
+    // record's data on it after the finalizer was removed (ADR-0015).
+    let primary_refs = match bindy_bind9::primary::filter_primary_instances_cached(
+        client,
+        &stores.bind9_instances,
+        &instance_refs,
+    )
+    .await
     {
         Ok(refs) => refs,
         Err(e) => {
@@ -660,9 +670,11 @@ where
 
     // Delete record from all primaries (best-effort: finalizer removal must
     // not be blocked by unreachable endpoints)
+    let resolver = bindy_bind9::instances::InstanceResolver::for_kube(client, stores);
     delete_record_from_primaries(
         client,
         stores,
+        &resolver,
         &primary_refs,
         &zone_ref.zone_name,
         &record_name_str,
@@ -671,106 +683,12 @@ where
     )
     .await?;
 
-    info!(
+    debug!(
         "Successfully deleted {} record {}/{} from {} primary instance(s)",
         record_type,
         namespace,
         name,
         primary_refs.len()
-    );
-
-    Ok(())
-}
-
-/// Builds the merge patch that updates `DNSZone.status.records[]`.
-///
-/// The `DNSZoneStatus` field is named `records` on the wire (camelCase of
-/// `pub records`). Using any other key (e.g., the old `selectedRecords`) is
-/// silently pruned by the CRD structural schema, so timestamps never persist.
-#[must_use]
-pub(crate) fn build_records_timestamp_patch(
-    records: &[crate::crd::RecordReferenceWithTimestamp],
-) -> serde_json::Value {
-    json!({
-        "status": {
-            "records": records
-        }
-    })
-}
-
-/// Update lastReconciledAt timestamp for a record in `DNSZone.status.records[]`.
-///
-/// This signals that the record has been successfully configured in BIND9.
-/// Future reconciliations will skip this record until the timestamp is reset.
-///
-/// # Arguments
-///
-/// * `client` - Kubernetes API client
-/// * `zone_namespace` - Namespace of the `DNSZone`
-/// * `zone_name` - Name of the `DNSZone`
-/// * `record_kind` - Kind of the record (e.g., "`ARecord`", "`CNAMERecord`")
-/// * `record_name` - Name of the record resource
-/// * `record_namespace` - Namespace of the record resource
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - `DNSZone` cannot be fetched from Kubernetes API
-/// - Status patch operation fails
-pub async fn update_record_reconciled_timestamp(
-    client: &Client,
-    zone_namespace: &str,
-    zone_name: &str,
-    record_kind: &str,
-    record_name: &str,
-    record_namespace: &str,
-) -> Result<()> {
-    let api: Api<DNSZone> = Api::namespaced(client.clone(), zone_namespace);
-
-    // Re-fetch zone to get latest status
-    let mut zone = api.get(zone_name).await?;
-
-    // Find the record reference and update its timestamp
-    let mut found = false;
-    if let Some(status) = &mut zone.status {
-        for record_ref in &mut status.records {
-            if record_ref.kind == record_kind
-                && record_ref.name == record_name
-                && record_ref.namespace == record_namespace
-            {
-                record_ref.last_reconciled_at = Some(Time(k8s_openapi::jiff::Timestamp::now()));
-                found = true;
-                break;
-            }
-        }
-    }
-
-    if !found {
-        warn!(
-            "Record {} {}/{} not found in DNSZone {}/{} status.records[] - cannot update timestamp",
-            record_kind, record_namespace, record_name, zone_namespace, zone_name
-        );
-        return Ok(());
-    }
-
-    // Patch the status with updated timestamp (key MUST be `records` - see
-    // build_records_timestamp_patch)
-    let status_patch = zone
-        .status
-        .as_ref()
-        .map(|s| build_records_timestamp_patch(&s.records))
-        .unwrap_or_else(|| build_records_timestamp_patch(&[]));
-
-    api.patch_status(
-        zone_name,
-        &PatchParams::default(),
-        &Patch::Merge(status_patch),
-    )
-    .await?;
-
-    info!(
-        "Updated lastReconciledAt for {} record {}/{} in zone {}/{}",
-        record_kind, record_namespace, record_name, zone_namespace, zone_name
     );
 
     Ok(())

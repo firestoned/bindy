@@ -23,6 +23,7 @@ kube-lease-manager.workspace = true
 k8s-openapi.workspace = true
 tower.workspace = true
 http.workspace = true
+http-body.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

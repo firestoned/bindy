@@ -14,6 +14,9 @@
 //!    rejected.
 //! 2. [`KubeApiMetricsLayer`] — counts every request, times it, and counts
 //!    server-side throttles (HTTP 429) into the Prometheus registry.
+//! 3. [`RequestTimeoutLayer`] (ADR-0014): a deadline on every non-watch
+//!    request, so a stalled connection fails fast into the retry/backoff
+//!    path instead of hanging for minutes. Watches are exempt.
 //!
 //! Defaults come from [`bindy_api::constants`] and can be overridden per
 //! deployment with the `BINDY_KUBE_QPS` / `BINDY_KUBE_BURST` environment
@@ -21,6 +24,7 @@
 //! a misconfigured limiter must never disable the operator or the limit.
 
 use crate::metrics::{record_kube_api_rate_limit_hit, record_kube_api_request};
+use crate::request_timeout::RequestTimeoutLayer;
 use anyhow::Result;
 use bindy_api::constants::{KUBE_CLIENT_BURST, KUBE_CLIENT_QPS};
 use http::{Request, Response, StatusCode};
@@ -100,7 +104,10 @@ impl RateLimitConfig {
 
 /// Parse an environment override, keeping `default` when the value is unset,
 /// unparsable, or fails `valid`.
-fn parse_override<T: FromStr + Copy + std::fmt::Display>(
+///
+/// Shared by the rate-limit variables and the request deadline
+/// ([`crate::request_timeout`]).
+pub(crate) fn parse_override<T: FromStr + Copy + std::fmt::Display>(
     raw: Option<&str>,
     var_name: &str,
     default: T,
@@ -117,27 +124,38 @@ fn parse_override<T: FromStr + Copy + std::fmt::Display>(
                 variable = var_name,
                 value = raw,
                 default = %default,
-                "Invalid rate-limit override; using default"
+                "Invalid Kubernetes client override; using default"
             );
             default
         }
     }
 }
 
-/// Build a [`Client`] whose middleware stack enforces the given rate limits
-/// and records per-request Prometheus metrics.
+/// Build a [`Client`] whose middleware stack enforces the given rate limits,
+/// bounds every non-watch request with `request_timeout`, and records
+/// per-request Prometheus metrics.
 ///
 /// # Arguments
 /// * `config` - Kubernetes client configuration (e.g., from `Config::infer()`)
 /// * `limits` - Client-side rate limits to enforce
+/// * `request_timeout` - Deadline for each non-watch request, covering the
+///   response headers and body (ADR-0014); watch requests are exempt
 ///
 /// # Errors
 /// Returns an error if the client TLS/auth stack cannot be built from `config`.
-pub fn build_rate_limited_client(config: kube::Config, limits: &RateLimitConfig) -> Result<Client> {
+pub fn build_rate_limited_client(
+    config: kube::Config,
+    limits: &RateLimitConfig,
+    request_timeout: Duration,
+) -> Result<Client> {
     let builder = ClientBuilder::try_from(config)?;
     let client = builder
-        // Innermost: metrics see the request after the limiter releases it,
-        // so recorded durations exclude client-side queueing.
+        // Innermost: the deadline starts when the limiter releases the
+        // request, so time queued for a rate-limit slot does not count.
+        .with_layer(&RequestTimeoutLayer::new(request_timeout))
+        // Metrics see the request after the limiter releases it, so recorded
+        // durations exclude client-side queueing, and they wrap the deadline,
+        // so a timed-out request is recorded as an error.
         .with_layer(&KubeApiMetricsLayer)
         .with_layer(&RateLimitLayer::new(u64::from(limits.burst), limits.period()))
         .build();
@@ -146,7 +164,8 @@ pub fn build_rate_limited_client(config: kube::Config, limits: &RateLimitConfig)
         qps = limits.qps,
         burst = limits.burst,
         period_ms = limits.period().as_millis(),
-        "Kubernetes client initialized with client-side rate limiting"
+        request_timeout_secs = request_timeout.as_secs(),
+        "Kubernetes client initialized with client-side rate limiting and request deadline"
     );
 
     Ok(client)

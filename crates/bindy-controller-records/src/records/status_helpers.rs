@@ -243,7 +243,7 @@ where
         .await
         .context("Failed to update record status")?;
 
-    info!(
+    debug!(
         "Updated status for {}/{}: {} = {}",
         namespace, name, condition_type, status
     );

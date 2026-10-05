@@ -19,7 +19,7 @@ use bindy_controller_sdk::context::Context;
 use bindy_controller_sdk::leader::{acquire_leadership, leadership_lost, LeaderElectionConfig};
 use bindy_controller_sdk::namespace_scope::NamespaceScope;
 use bindy_controller_sdk::shutdown::{self, supervise, ShutdownSignal};
-use bindy_controller_sdk::{metrics, rate_limit};
+use bindy_controller_sdk::{metrics, rate_limit, request_timeout};
 use clap::{CommandFactory, Parser};
 use cli::{Cli, Commands};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -161,8 +161,15 @@ async fn run_operator() -> Result<()> {
 
     // Client-side rate limiting via tower middleware (ADR-0005): kube-rs has
     // no QPS/burst fields on Config, so the limiter lives in the client stack.
+    // Non-watch requests also get a bounded deadline (ADR-0014), so a
+    // stalled connection fails fast into the retry/backoff path.
     let limits = rate_limit::RateLimitConfig::from_env();
-    let client = rate_limit::build_rate_limited_client(kube::Config::infer().await?, &limits)?;
+    let request_timeout = request_timeout::request_timeout_from_env();
+    let client = rate_limit::build_rate_limited_client(
+        kube::Config::infer().await?,
+        &limits,
+        request_timeout,
+    )?;
 
     // The shared context: one watch per cached kind (ADR-0009 §3) and the
     // shutdown signal every controller drains on (§5).

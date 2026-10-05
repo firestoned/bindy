@@ -13,7 +13,7 @@ use hickory_net::client::ClientHandle;
 use hickory_proto::op::ResponseCode;
 use hickory_proto::rr::{rdata, DNSClass, Name, RData, Record, RecordType};
 use std::str::FromStr;
-use tracing::info;
+use tracing::debug;
 
 /// Compare existing DNS `RRset` with the desired CNAME target and TTL.
 ///
@@ -80,7 +80,7 @@ pub async fn add_cname_record(
     );
     record.dns_class = DNSClass::IN;
 
-    info!(
+    debug!(
         "Adding CNAME record: {} -> {} (TTL: {})",
         record.name, target, ttl_value
     );
@@ -90,7 +90,7 @@ pub async fn add_cname_record(
 
     match response.metadata.response_code {
         ResponseCode::NoError => {
-            info!("Successfully added CNAME record: {} -> {}", name, target);
+            debug!("Successfully added CNAME record: {} -> {}", name, target);
             Ok(())
         }
         code => Err(anyhow::anyhow!(

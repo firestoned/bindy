@@ -15,7 +15,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::Api;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer;
-use kube::runtime::Controller;
+use kube::runtime::{Controller, Predicate, WatchStreamExt};
 use kube::ResourceExt;
 use serde::Serialize;
 use std::sync::Arc;
@@ -117,7 +117,18 @@ where
     let ws = context.watch.clone();
     let target = target.as_deref();
 
-    Controller::for_stream(ws.subscribe::<T>(target), ws.store::<T>(target))
+    // The primary stream passes spec, finalizer, label and annotation changes
+    // (`primary_predicate`) plus a change of `status.zoneRef`, which is how a
+    // DNSZone hands a record to this controller. It drops the reconciler's own
+    // condition writes, each of which used to wake the record again for a
+    // full no-op reconcile (ADR-0015).
+    let primary = ws.subscribe::<T>(target).predicate_filter(
+        bindy_controller_sdk::watch::primary_predicate::<T>()
+            .combine(zone_ref_hash::<T> as fn(&T) -> Option<u64>),
+        Default::default(),
+    );
+
+    Controller::for_stream(primary, ws.store::<T>(target))
         .watches_stream(ws.subscribe::<DNSZone>(target), |zone| {
             // When DNSZone.status.records[] changes, trigger reconciliation
             // for records that have lastReconciledAt == None (need configuration).
@@ -147,6 +158,34 @@ where
         .run(reconcile_wrapper::<T>, error_policy, context.clone())
         .for_each(|_| futures::future::ready(()))
         .await;
+}
+
+/// Hash of a record's `status.zoneRef`: the one status field another
+/// controller writes that this controller must react to.
+///
+/// Used as a `kube` predicate on the record controller's primary stream.
+/// Always returns `Some`, because a predicate returning `None` passes every
+/// event.
+///
+/// # Arguments
+///
+/// * `record` - The record whose zone assignment is hashed
+#[must_use]
+pub fn zone_ref_hash<T: DnsRecordType>(record: &T) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let zone_ref = record.status().as_ref().and_then(|s| s.zone_ref.as_ref());
+    match zone_ref {
+        Some(z) => {
+            true.hash(&mut hasher);
+            z.namespace.hash(&mut hasher);
+            z.name.hash(&mut hasher);
+            z.zone_name.hash(&mut hasher);
+        }
+        None => false.hash(&mut hasher),
+    }
+    Some(hasher.finish())
 }
 
 /// Generic reconciliation wrapper with finalizer support.

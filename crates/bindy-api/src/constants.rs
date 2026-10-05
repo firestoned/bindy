@@ -437,6 +437,17 @@ pub const KUBE_CLIENT_QPS: f32 = 20.0;
 /// Can be overridden via `BINDY_KUBE_BURST` environment variable.
 pub const KUBE_CLIENT_BURST: u32 = 30;
 
+/// Deadline, in seconds, for one non-watch Kubernetes API request (ADR-0014).
+///
+/// Covers waiting for the response headers and reading the response body.
+/// Watch requests are exempt: they are bounded by the server-side
+/// `timeoutSeconds` and the kube-runtime watcher's idle timeout. 30 seconds
+/// is the longest an admission webhook may take (the API server caps a
+/// webhook's `timeoutSeconds` at 30); ordinary bindy requests complete in
+/// well under a second, so this only fires on a stalled connection.
+/// Can be overridden via `BINDY_KUBE_REQUEST_TIMEOUT_SECS` environment variable.
+pub const KUBE_CLIENT_REQUEST_TIMEOUT_SECS: u64 = 30;
+
 /// Page size for Kubernetes API list operations
 ///
 /// Balances memory usage vs. number of API calls.

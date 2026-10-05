@@ -14,6 +14,15 @@ env:
     value: "info"  # error, warn, info, debug, trace
 ```
 
+At `info` the operator logs reconcile outcomes, state changes (a record
+selected or released by a zone, a zone created on an endpoint, a key
+rotated) and every warning and error. Per-endpoint, per-request and
+per-record-per-instance progress (`Processing endpoints for instance ...`,
+`Found N endpoint(s) ...`, each DNS UPDATE and bindcar HTTP request, each
+`Updated status for ...`) is logged at `debug` since v0.8.0-rc.3, so a burst
+of records no longer floods the log and rotates history away within minutes.
+Set `RUST_LOG=bindy=debug` (or `debug`) to see it.
+
 ### Log Format
 
 Set log output format via RUST_LOG_FORMAT environment variable:

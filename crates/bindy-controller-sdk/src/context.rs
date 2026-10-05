@@ -20,6 +20,7 @@ use bindy_api::crd::{
 };
 use bindy_api::selector::matches_selector;
 use k8s_openapi::api::apps::v1::Deployment;
+use k8s_openapi::api::core::v1::Endpoints;
 use kube::core::NamespaceResourceScope;
 use kube::{Client, Resource, ResourceExt};
 use serde::de::DeserializeOwned;
@@ -132,13 +133,13 @@ impl Context {
             (ops.register)(&mut watch, &mut records);
         }
         // Endpoints of bindy's own Services only (label-selected on the API
-        // server): the zone controller's signal that a BIND9 pod was replaced.
+        // server): the zone controller's signal that a BIND9 pod was replaced,
+        // and the cache the record and zone writes resolve a BIND9 instance's
+        // pod endpoints from instead of a GET per write (ADR-0015).
         // One watch per namespace target, like every other kind, so namespace-
         // restricted mode needs only its per-namespace `endpoints` Role.
-        let _endpoints = watch.register_selected::<k8s_openapi::api::core::v1::Endpoints>(
-            "Endpoints",
-            bindy_api::labels::BINDY_PART_OF_SELECTOR,
-        );
+        let endpoints = watch
+            .register_selected::<Endpoints>("Endpoints", bindy_api::labels::BINDY_PART_OF_SELECTOR);
 
         let http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(BINDCAR_HTTP_TIMEOUT_SECS))
@@ -153,6 +154,7 @@ impl Context {
                 bind9_clusters,
                 bind9_instances,
                 bind9_deployments,
+                endpoints,
                 dnszones,
                 records,
             },
@@ -305,6 +307,10 @@ pub struct Stores {
     pub bind9_instances: MultiStore<Bind9Instance>,
     /// Deployments owned by a `Bind9Instance`
     pub bind9_deployments: MultiStore<Deployment>,
+    /// `Endpoints` of bindy's own Services (label-selected), one per BIND9
+    /// instance: where a record or zone write finds the instance's ready pods
+    /// without a GET per write (ADR-0015)
+    pub endpoints: MultiStore<Endpoints>,
     /// DNS zones
     pub dnszones: MultiStore<DNSZone>,
     /// Every record kind (see [`RECORD_KINDS`])

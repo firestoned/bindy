@@ -246,6 +246,7 @@ nav:
           - Overview: operations/configuration.md
           - Environment Variables: operations/env-vars.md
           - RBAC: operations/rbac.md
+          - Operands in Other Namespaces: operations/multi-namespace.md
           - Resource Limits: operations/resources.md
           - High Availability: operations/operator-ha.md
       - Monitoring:

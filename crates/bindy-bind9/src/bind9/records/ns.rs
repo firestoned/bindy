@@ -13,7 +13,7 @@ use hickory_net::client::ClientHandle;
 use hickory_proto::op::ResponseCode;
 use hickory_proto::rr::{rdata, DNSClass, Name, RData, Record, RecordType};
 use std::str::FromStr;
-use tracing::info;
+use tracing::debug;
 
 /// Compare existing DNS `RRset` with the desired nameserver and TTL.
 ///
@@ -80,7 +80,7 @@ pub async fn add_ns_record(
     let mut record = Record::from_rdata(fqdn.clone(), ttl_value, RData::NS(rdata::NS(ns_name)));
     record.dns_class = DNSClass::IN;
 
-    info!(
+    debug!(
         "Adding NS record: {} -> {} (TTL: {})",
         fqdn, nameserver, ttl_value
     );
@@ -96,7 +96,7 @@ pub async fn add_ns_record(
 
     match response.metadata.response_code {
         ResponseCode::NoError => {
-            info!("Successfully added NS record: {} -> {}", name, nameserver);
+            debug!("Successfully added NS record: {} -> {}", name, nameserver);
             Ok(())
         }
         code => Err(anyhow::anyhow!(

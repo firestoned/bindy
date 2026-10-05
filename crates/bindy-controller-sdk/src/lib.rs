@@ -21,6 +21,7 @@
 //! - [`pagination`] - Paginated LIST helpers
 //! - [`resources`] - Generic create-or-update helpers
 //! - [`rate_limit`] - The client-side rate-limited Kubernetes client (ADR-0005)
+//! - [`request_timeout`] - The deadline on non-watch Kubernetes API requests (ADR-0014)
 //! - [`namespace_scope`] - Cluster-wide or per-namespace watch scope
 //! - [`leader`] - Leader election over a Kubernetes `Lease`
 //! - [`shutdown`] - The draining shutdown signal and the controller supervisor
@@ -40,6 +41,7 @@ pub mod namespace_scope;
 pub mod pagination;
 pub mod rate_limit;
 pub mod reconcile;
+pub mod request_timeout;
 pub mod requeue;
 pub mod resources;
 pub mod retry;

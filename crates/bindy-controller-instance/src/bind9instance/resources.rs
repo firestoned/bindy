@@ -792,6 +792,10 @@ async fn rotate_rndc_secret(
         .replace(secret_name, &PostParams::default(), &updated_secret)
         .await?;
 
+    // Record and zone writes reuse a loaded key for a short while (ADR-0015):
+    // drop it now so the next write reads the rotated one.
+    bindy_bind9::instances::invalidate_cached_rndc_key(namespace, &instance.name_any());
+
     info!(
         "Successfully rotated RNDC Secret {}/{} (rotation #{})",
         namespace, secret_name, new_rotation_count

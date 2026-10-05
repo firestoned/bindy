@@ -98,4 +98,54 @@ mod tests {
         let result: Result<i32, kube::Error> = Err(kube::Error::LinesCodecMaxLineLengthExceeded);
         assert!(super::super::existence_from_get_result(result).is_err());
     }
+
+    // ========================================================================
+    // Existence from one LIST per (kind, namespace) instead of one GET per
+    // record (ADR-0015)
+    // ========================================================================
+
+    fn listed(entries: &[(&str, &str, &[&str])]) -> super::super::ListedRecords {
+        entries
+            .iter()
+            .map(|(kind, ns, names)| {
+                (
+                    ((*kind).to_string(), (*ns).to_string()),
+                    names.iter().map(|n| (*n).to_string()).collect(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_record_listed_finds_a_listed_record() {
+        let existing = listed(&[("ARecord", "dns", &["www", "api"])]);
+
+        assert!(super::super::record_listed(
+            &existing, "ARecord", "dns", "api"
+        ));
+    }
+
+    #[test]
+    fn test_record_listed_is_false_for_a_deleted_record() {
+        let existing = listed(&[("ARecord", "dns", &["www"])]);
+
+        assert!(!super::super::record_listed(
+            &existing, "ARecord", "dns", "api"
+        ));
+    }
+
+    #[test]
+    fn test_record_listed_is_scoped_by_kind_and_namespace() {
+        let existing = listed(&[("ARecord", "dns", &["www"])]);
+
+        assert!(!super::super::record_listed(
+            &existing,
+            "TXTRecord",
+            "dns",
+            "www"
+        ));
+        assert!(!super::super::record_listed(
+            &existing, "ARecord", "other", "www"
+        ));
+    }
 }

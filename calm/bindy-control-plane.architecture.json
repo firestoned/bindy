@@ -123,7 +123,7 @@
     },
     {
       "unique-id": "operator-watches-api",
-      "description": "watches and patches custom resources: one shared watch per kind and namespace target, subscribed to by every controller (ADR-0009); client-side rate limited at 20 QPS / 30 burst default, paginated LISTs, retries with exponential backoff (ADR-0005)",
+      "description": "watches and patches custom resources: one shared watch per kind and namespace target, subscribed to by every controller (ADR-0009); client-side rate limited at 20 QPS / 30 burst default, paginated LISTs, retries with exponential backoff (ADR-0005); non-watch requests bounded by a 30 s client-side deadline, watches exempt (ADR-0014)",
       "protocol": "HTTPS",
       "relationship-type": {
         "connects": {
