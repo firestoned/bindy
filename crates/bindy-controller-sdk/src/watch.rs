@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use tracing::warn;
 
@@ -150,6 +150,25 @@ where
     // holding messages back (an inactive receiver gets nothing).
     _keep_open: InactiveReceiver<Arc<K>>,
     restarts: Arc<AtomicU64>,
+    listing: Listing<K>,
+}
+
+/// Objects of the list in progress, broadcast but not yet visible in the
+/// store.
+///
+/// kube's reflector store buffers `InitApply` objects and swaps them in only
+/// at `InitDone`. A controller that subscribes half way through a list would
+/// otherwise miss them: they were broadcast before its receiver existed, and
+/// its store snapshot does not show them yet. The watcher records each one
+/// here before broadcasting it and clears the list only after `InitDone` has
+/// reached the store, so [`WatchShard::subscribe`] always finds it in one of
+/// the three places.
+type Listing<K> = Arc<Mutex<Vec<Arc<K>>>>;
+
+/// Lock a [`Listing`], recovering it if a panicking thread poisoned it: it
+/// holds plain values, so a poisoned one is still consistent.
+fn lock_listing<K>(listing: &Listing<K>) -> std::sync::MutexGuard<'_, Vec<Arc<K>>> {
+    listing.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl<K> WatchShard<K>
@@ -187,6 +206,7 @@ where
         // Broadcasting with no controller subscribed must not block the watcher.
         tx.set_await_active(false);
         let restarts = Arc::new(AtomicU64::new(0));
+        let listing: Listing<K> = Arc::new(Mutex::new(Vec::new()));
 
         tokio::spawn(drive(
             kind,
@@ -197,6 +217,7 @@ where
             writer,
             tx.clone(),
             restarts.clone(),
+            listing.clone(),
         ));
 
         Self {
@@ -204,6 +225,7 @@ where
             tx,
             _keep_open: rx.deactivate(),
             restarts,
+            listing,
         }
     }
 
@@ -221,14 +243,21 @@ where
 
     /// A stream of every object this shard applies, for a controller.
     ///
-    /// Yields the store's current contents first, then every `InitApply`,
-    /// `Apply` and `Delete` object from the moment of subscription. The live
-    /// receiver is created before the snapshot is taken, so nothing falls in
-    /// between; an object can arrive twice, which a reconcile tolerates.
+    /// Yields the objects already known (those of a list in progress, then
+    /// the store's contents), then every `InitApply`, `Apply` and `Delete`
+    /// object from the moment of subscription. The live receiver is created
+    /// first, then the list in progress is read, then the store: an object
+    /// broadcast before the receiver existed is either still in the list in
+    /// progress or, once that list is cleared after `InitDone`, already in
+    /// the store, so nothing falls in between. An object can arrive twice,
+    /// which a reconcile tolerates.
     pub fn subscribe(&self) -> impl Stream<Item = Result<K, watcher::Error>> + Send + 'static {
         let live = self.tx.new_receiver();
+        // Order matters: the list in progress before the store (see Listing).
+        let listing = lock_listing(&self.listing).clone();
         let snapshot = self.store.state();
-        futures::stream::iter(snapshot)
+        futures::stream::iter(listing)
+            .chain(futures::stream::iter(snapshot))
             .chain(live)
             .map(|obj| Ok(K::clone(&obj)))
     }
@@ -246,6 +275,7 @@ async fn drive<K, P, F, S>(
     mut writer: reflector::store::Writer<K>,
     tx: Sender<Arc<K>>,
     restarts: Arc<AtomicU64>,
+    listing: Listing<K>,
 ) where
     K: Resource + Clone + Debug + Send + Sync + 'static,
     K::DynamicType: Hash + Eq + Clone + Send + Sync,
@@ -278,7 +308,7 @@ async fn drive<K, P, F, S>(
                     if !predicate(o) {
                         continue;
                     }
-                    Some(o.clone())
+                    Some(Arc::new(o.clone()))
                 }
                 watcher::Event::Init | watcher::Event::InitDone => None,
             };
@@ -289,11 +319,26 @@ async fn drive<K, P, F, S>(
             record_watch_event(kind, &namespace);
             attempt = 0;
 
+            match &event {
+                // A new list starts: forget what an interrupted one recorded.
+                watcher::Event::Init => lock_listing(&listing).clear(),
+                // Recorded before it is broadcast (see Listing).
+                watcher::Event::InitApply(_) => {
+                    if let Some(object) = &object {
+                        lock_listing(&listing).push(object.clone());
+                    }
+                }
+                // The store shows the list now; only then clear the record.
+                watcher::Event::InitDone => lock_listing(&listing).clear(),
+                watcher::Event::Apply(_) | watcher::Event::Delete(_) => {}
+            }
+
             if let Some(object) = object {
                 // An error here means no controller is subscribed yet (the
-                // event is still in the store, and a late subscriber gets it
-                // from there) or the channel is closed.
-                if tx.broadcast_direct(Arc::new(object)).await.is_err() && tx.is_closed() {
+                // object is still in the store, or in the list in progress,
+                // and a late subscriber gets it from there) or the channel is
+                // closed.
+                if tx.broadcast_direct(object).await.is_err() && tx.is_closed() {
                     // Every receiver is gone: the WatchSet was dropped.
                     return;
                 }
