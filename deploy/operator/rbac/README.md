@@ -64,7 +64,9 @@ does **not** need cluster scope (B-5 hardening).
 
 **Multi-namespace note:** If Bind9Instances live outside `bindy-system`, replicate this
 Role + RoleBinding into each target namespace (the operator creates RNDC key Secrets in the
-instance's own namespace).
+instance's own namespace). [`operand-namespace/rbac.yaml`](operand-namespace/rbac.yaml) is a
+template for this Role + RoleBinding together with the namespace's `bindcar-tokenreview`
+binding (see 1b); the full procedure is in `docs/src/operations/multi-namespace.md`.
 
 **Verify:**
 ```bash

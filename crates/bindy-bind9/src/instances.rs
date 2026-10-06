@@ -8,13 +8,29 @@
 //! with its RNDC key. Both the zone and the record controllers address BIND9
 //! this way, so it lives below them (ADR-0009 §2, amended 2026-10-05); it
 //! moved here from the zone controller's `helpers` and `validation` modules.
+//!
+//! # API budget (ADR-0015)
+//!
+//! Every write to BIND9 needs the target instance's RNDC key (a Secret) and
+//! its ready pod endpoints. Reading both from the API server for every record
+//! and every instance made a reconcile cost scale with records x instances, so
+//! a burst of records saturated the client rate limit. Writes now go through
+//! an [`InstanceResolver`], which memoizes both lookups for one reconcile, and
+//! the default [`KubeInstanceLookup`] behind it reads endpoints from the
+//! shared `Endpoints` reflector store and keys from a short-lived process-wide
+//! [`RndcKeyCache`].
 
 use crate::bind9::RndcKeyData;
 use crate::crd::DNSZone;
 use anyhow::{anyhow, Context as AnyhowContext, Result};
 use k8s_openapi::api::core::v1::{Endpoints, Pod, Secret};
 use kube::{Api, Client, ResourceExt};
-use tracing::{debug, error, info, warn};
+use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{LazyLock, Mutex, PoisonError};
+use std::time::{Duration, Instant};
+use tracing::{debug, error, warn};
 
 /// Information about a BIND9 pod discovered during reconciliation.
 #[derive(Debug, Clone)]
@@ -86,11 +102,13 @@ pub fn is_unavailable_for_deletion(err: &anyhow::Error) -> bool {
 /// Execute an operation on all endpoints for a list of instance references.
 ///
 /// This is the event-driven instance-based approach that operates on instances
-/// discovered via spec.bind9InstancesFrom selectors.
+/// discovered via spec.bind9InstancesFrom selectors. Each instance's RNDC key
+/// and endpoints come from `resolver`, so a caller that writes many records in
+/// one reconcile reads them once per instance (ADR-0015).
 ///
 /// # Arguments
 ///
-/// * `client` - Kubernetes API client
+/// * `resolver` - Per-reconcile resolver for instance keys and endpoints
 /// * `instance_refs` - List of instance references to process
 /// * `with_rndc_key` - Whether to load and pass RNDC keys for each instance
 /// * `port_name` - Port name to use for endpoints (e.g., "rndc-api", "dns-tcp")
@@ -104,7 +122,7 @@ pub fn is_unavailable_for_deletion(err: &anyhow::Error) -> bool {
 ///
 /// Returns an error if all operations fail or if critical API calls fail.
 pub async fn for_each_instance_endpoint<F, Fut>(
-    client: &Client,
+    resolver: &InstanceResolver,
     instance_refs: &[crate::crd::InstanceReference],
     with_rndc_key: bool,
     port_name: &str,
@@ -115,7 +133,7 @@ where
     Fut: std::future::Future<Output = Result<()>>,
 {
     for_each_instance_endpoint_with_policy(
-        client,
+        resolver,
         instance_refs,
         with_rndc_key,
         port_name,
@@ -134,9 +152,13 @@ where
 /// so that a missing RNDC Secret or an instance with zero ready endpoints does
 /// not block finalizer removal forever.
 ///
+/// When an operation fails on any endpoint of an instance, that instance's
+/// RNDC key is forgotten (see [`InstanceResolver::forget_rndc_key`]), so a
+/// rotated key is re-read on the next write instead of being reused.
+///
 /// # Arguments
 ///
-/// * `client` - Kubernetes API client
+/// * `resolver` - Per-reconcile resolver for instance keys and endpoints
 /// * `instance_refs` - List of instance references to process
 /// * `with_rndc_key` - Whether to load and pass RNDC keys for each instance
 /// * `port_name` - Port name to use for endpoints (e.g., "rndc-api", "dns-tcp")
@@ -152,7 +174,7 @@ where
 /// Returns an error if all operations fail, or if RNDC-key/endpoint lookups
 /// fail and the policy does not allow skipping them.
 pub async fn for_each_instance_endpoint_with_policy<F, Fut>(
-    client: &Client,
+    resolver: &InstanceResolver,
     instance_refs: &[crate::crd::InstanceReference],
     with_rndc_key: bool,
     port_name: &str,
@@ -168,14 +190,17 @@ where
     let mut errors: Vec<String> = Vec::new();
 
     for instance_ref in instance_refs {
-        info!(
+        debug!(
             "Processing endpoints for instance {}/{}",
             instance_ref.namespace, instance_ref.name
         );
 
         // Load RNDC key for this specific instance if requested
         let key_data = if with_rndc_key {
-            match load_rndc_key(client, &instance_ref.namespace, &instance_ref.name).await {
+            match resolver
+                .rndc_key(&instance_ref.namespace, &instance_ref.name)
+                .await
+            {
                 Ok(key) => Some(key),
                 Err(e)
                     if policy == EndpointFailurePolicy::SkipUnavailable
@@ -195,13 +220,9 @@ where
         };
 
         // Get all endpoints for this instance's service
-        let endpoints = match get_endpoint(
-            client,
-            &instance_ref.namespace,
-            &instance_ref.name,
-            port_name,
-        )
-        .await
+        let endpoints = match resolver
+            .endpoints(&instance_ref.namespace, &instance_ref.name, port_name)
+            .await
         {
             Ok(eps) => eps,
             Err(e)
@@ -218,13 +239,14 @@ where
             Err(e) => return Err(e),
         };
 
-        info!(
+        debug!(
             "Found {} endpoint(s) for instance {}/{}",
             endpoints.len(),
             instance_ref.namespace,
             instance_ref.name
         );
 
+        let mut instance_failed = false;
         for endpoint in &endpoints {
             let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
 
@@ -252,9 +274,16 @@ where
                     "endpoint {pod_endpoint} (instance {}/{}): {e:#}",
                     instance_ref.namespace, instance_ref.name
                 ));
+                instance_failed = true;
             } else {
                 total_endpoints += 1;
             }
+        }
+
+        // A key that was just rejected may have been rotated: re-read it on
+        // the next write rather than reuse it until the cache TTL runs out.
+        if instance_failed && with_rndc_key {
+            resolver.forget_rndc_key(&instance_ref.namespace, &instance_ref.name);
         }
     }
 
@@ -267,6 +296,368 @@ where
     }
 
     Ok((first_endpoint, total_endpoints))
+}
+
+//
+// ============================================================
+// Per-reconcile resolution of instance keys and endpoints (ADR-0015)
+// ============================================================
+//
+
+/// Seconds a loaded RNDC key is reused across reconciles before its Secret is
+/// read again.
+const RNDC_KEY_CACHE_TTL_SECS: u64 = 60;
+
+/// How long a loaded RNDC key is reused across reconciles (ADR-0015).
+///
+/// Short on purpose: the operator rotates keys itself (and invalidates the
+/// entry when it does), and a write that fails drops the entry at once, so
+/// the TTL only bounds how stale a key changed by someone else can get.
+pub const RNDC_KEY_CACHE_TTL: Duration = Duration::from_secs(RNDC_KEY_CACHE_TTL_SECS);
+
+/// Boxed future returned by the [`InstanceLookup`] methods.
+pub type LookupFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
+
+/// Where an [`InstanceResolver`] gets an instance's RNDC key and endpoints.
+///
+/// The production implementation is [`KubeInstanceLookup`]; tests substitute
+/// a counting fake to pin how many lookups a reconcile performs.
+pub trait InstanceLookup: Send + Sync {
+    /// Load the RNDC key of `instance_name` in `namespace`.
+    fn rndc_key<'a>(
+        &'a self,
+        namespace: &'a str,
+        instance_name: &'a str,
+    ) -> LookupFuture<'a, RndcKeyData>;
+
+    /// The ready endpoints of `service_name` in `namespace` for `port_name`.
+    fn endpoints<'a>(
+        &'a self,
+        namespace: &'a str,
+        service_name: &'a str,
+        port_name: &'a str,
+    ) -> LookupFuture<'a, Vec<EndpointAddress>>;
+
+    /// Drop any longer-lived copy of the instance's RNDC key. Called after a
+    /// write with that key failed. The default does nothing.
+    fn forget_rndc_key(&self, _namespace: &str, _instance_name: &str) {}
+}
+
+/// The production [`InstanceLookup`]: endpoints from the shared `Endpoints`
+/// reflector store (falling back to a GET for an object the store does not
+/// hold), RNDC keys through the process-wide [`RndcKeyCache`].
+pub struct KubeInstanceLookup {
+    client: Client,
+    endpoints: Option<crate::context::MultiStore<Endpoints>>,
+}
+
+impl KubeInstanceLookup {
+    /// Build a lookup over `client`, reading endpoints from `endpoints` when
+    /// given.
+    ///
+    /// # Arguments
+    ///
+    /// * `client` - Kubernetes API client for Secret reads and fallback GETs
+    /// * `endpoints` - The shared `Endpoints` reflector store, if available
+    #[must_use]
+    pub fn new(client: Client, endpoints: Option<crate::context::MultiStore<Endpoints>>) -> Self {
+        Self { client, endpoints }
+    }
+}
+
+impl InstanceLookup for KubeInstanceLookup {
+    fn rndc_key<'a>(
+        &'a self,
+        namespace: &'a str,
+        instance_name: &'a str,
+    ) -> LookupFuture<'a, RndcKeyData> {
+        Box::pin(load_rndc_key_cached(&self.client, namespace, instance_name))
+    }
+
+    fn endpoints<'a>(
+        &'a self,
+        namespace: &'a str,
+        service_name: &'a str,
+        port_name: &'a str,
+    ) -> LookupFuture<'a, Vec<EndpointAddress>> {
+        Box::pin(async move {
+            let cached = self
+                .endpoints
+                .as_ref()
+                .and_then(|store| cached_endpoints(store, namespace, service_name, port_name));
+            let Some(addresses) = cached else {
+                return get_endpoint(&self.client, namespace, service_name, port_name).await;
+            };
+            if addresses.is_empty() {
+                return Err(no_ready_endpoints_error(service_name, port_name));
+            }
+            Ok(addresses)
+        })
+    }
+
+    fn forget_rndc_key(&self, namespace: &str, instance_name: &str) {
+        invalidate_cached_rndc_key(namespace, instance_name);
+    }
+}
+
+/// Resolves instance RNDC keys and endpoints, memoized for one reconcile.
+///
+/// Build one per reconcile and pass it to every write that reconcile makes:
+/// each instance's key and each `(instance, port)`'s endpoints are then looked
+/// up once, however many records are written. Only successful lookups are
+/// remembered; a failed one is retried on the next call.
+pub struct InstanceResolver {
+    lookup: Box<dyn InstanceLookup>,
+    keys: Mutex<HashMap<(String, String), RndcKeyData>>,
+    endpoints: Mutex<HashMap<(String, String, String), Vec<EndpointAddress>>>,
+}
+
+impl InstanceResolver {
+    /// A resolver over an arbitrary lookup.
+    ///
+    /// # Arguments
+    ///
+    /// * `lookup` - Where keys and endpoints come from on a memo miss
+    #[must_use]
+    pub fn new(lookup: impl InstanceLookup + 'static) -> Self {
+        Self {
+            lookup: Box::new(lookup),
+            keys: Mutex::new(HashMap::new()),
+            endpoints: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The production resolver: a [`KubeInstanceLookup`] over `client` and
+    /// the shared `Endpoints` store in `stores`.
+    ///
+    /// # Arguments
+    ///
+    /// * `client` - Kubernetes API client
+    /// * `stores` - The shared reflector stores
+    #[must_use]
+    pub fn for_kube(client: &Client, stores: &crate::context::Stores) -> Self {
+        Self::new(KubeInstanceLookup::new(
+            client.clone(),
+            Some(stores.endpoints.clone()),
+        ))
+    }
+
+    /// The RNDC key of an instance, looked up at most once per resolver.
+    ///
+    /// # Errors
+    ///
+    /// Returns the lookup's error when the key is not memoized and cannot be
+    /// loaded.
+    pub async fn rndc_key(&self, namespace: &str, instance_name: &str) -> Result<RndcKeyData> {
+        let id = (namespace.to_string(), instance_name.to_string());
+        if let Some(key) = lock(&self.keys).get(&id) {
+            return Ok(key.clone());
+        }
+        let key = self.lookup.rndc_key(namespace, instance_name).await?;
+        lock(&self.keys).insert(id, key.clone());
+        Ok(key)
+    }
+
+    /// The ready endpoints of an instance's Service for one port, looked up at
+    /// most once per resolver.
+    ///
+    /// # Errors
+    ///
+    /// Returns the lookup's error when the endpoints are not memoized and
+    /// cannot be resolved (including when no pod is ready).
+    pub async fn endpoints(
+        &self,
+        namespace: &str,
+        service_name: &str,
+        port_name: &str,
+    ) -> Result<Vec<EndpointAddress>> {
+        let id = (
+            namespace.to_string(),
+            service_name.to_string(),
+            port_name.to_string(),
+        );
+        if let Some(addresses) = lock(&self.endpoints).get(&id) {
+            return Ok(addresses.clone());
+        }
+        let addresses = self
+            .lookup
+            .endpoints(namespace, service_name, port_name)
+            .await?;
+        lock(&self.endpoints).insert(id, addresses.clone());
+        Ok(addresses)
+    }
+
+    /// Forget an instance's RNDC key, here and in the lookup's longer-lived
+    /// cache, so the next write re-reads it.
+    ///
+    /// # Arguments
+    ///
+    /// * `namespace` - Namespace of the instance
+    /// * `instance_name` - Name of the instance
+    pub fn forget_rndc_key(&self, namespace: &str, instance_name: &str) {
+        lock(&self.keys).remove(&(namespace.to_string(), instance_name.to_string()));
+        self.lookup.forget_rndc_key(namespace, instance_name);
+    }
+}
+
+/// Lock a memo map, recovering the data if a panicking thread poisoned it: the
+/// maps hold plain values, so a poisoned one is still consistent.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// RNDC keys loaded from their Secrets, reused across reconciles for
+/// [`RNDC_KEY_CACHE_TTL`] (ADR-0015).
+///
+/// Keyed by instance namespace and name. The operator holds `get` on these
+/// Secrets already; caching changes how often they are read, not who can read
+/// them, and no Secret list or watch is involved.
+#[derive(Default)]
+pub struct RndcKeyCache {
+    entries: Mutex<HashMap<(String, String), (RndcKeyData, Instant)>>,
+}
+
+impl RndcKeyCache {
+    /// The cached key, if one was loaded less than [`RNDC_KEY_CACHE_TTL`]
+    /// before `now`.
+    #[must_use]
+    pub fn get_at(
+        &self,
+        namespace: &str,
+        instance_name: &str,
+        now: Instant,
+    ) -> Option<RndcKeyData> {
+        let entries = lock(&self.entries);
+        let (key, loaded_at) = entries.get(&(namespace.to_string(), instance_name.to_string()))?;
+        if now.saturating_duration_since(*loaded_at) >= RNDC_KEY_CACHE_TTL {
+            return None;
+        }
+        Some(key.clone())
+    }
+
+    /// Remember `key`, loaded at `loaded_at`.
+    pub fn insert_at(
+        &self,
+        namespace: &str,
+        instance_name: &str,
+        key: RndcKeyData,
+        loaded_at: Instant,
+    ) {
+        lock(&self.entries).insert(
+            (namespace.to_string(), instance_name.to_string()),
+            (key, loaded_at),
+        );
+    }
+
+    /// Drop the cached key of an instance.
+    pub fn invalidate(&self, namespace: &str, instance_name: &str) {
+        lock(&self.entries).remove(&(namespace.to_string(), instance_name.to_string()));
+    }
+}
+
+/// The process-wide RNDC key cache behind [`load_rndc_key_cached`].
+static RNDC_KEY_CACHE: LazyLock<RndcKeyCache> = LazyLock::new(RndcKeyCache::default);
+
+/// Load an instance's RNDC key, from the process-wide cache when a copy less
+/// than [`RNDC_KEY_CACHE_TTL`] old is held, otherwise from its Secret.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `namespace` - Namespace of the instance
+/// * `instance_name` - Name of the instance
+///
+/// # Errors
+///
+/// Returns an error if the key is not cached and the Secret is missing or
+/// cannot be parsed.
+pub async fn load_rndc_key_cached(
+    client: &Client,
+    namespace: &str,
+    instance_name: &str,
+) -> Result<RndcKeyData> {
+    if let Some(key) = RNDC_KEY_CACHE.get_at(namespace, instance_name, Instant::now()) {
+        return Ok(key);
+    }
+    let key = load_rndc_key(client, namespace, instance_name).await?;
+    RNDC_KEY_CACHE.insert_at(namespace, instance_name, key.clone(), Instant::now());
+    Ok(key)
+}
+
+/// Drop an instance's RNDC key from the process-wide cache.
+///
+/// Called when the operator rotates the key, and after a write with the key
+/// failed, so the next write reads the Secret again.
+///
+/// # Arguments
+///
+/// * `namespace` - Namespace of the instance
+/// * `instance_name` - Name of the instance
+pub fn invalidate_cached_rndc_key(namespace: &str, instance_name: &str) {
+    RNDC_KEY_CACHE.invalidate(namespace, instance_name);
+}
+
+/// The ready endpoints of a Service as recorded in the `Endpoints` store.
+///
+/// # Arguments
+///
+/// * `store` - The shared `Endpoints` reflector store
+/// * `namespace` - Namespace of the Service
+/// * `service_name` - Name of the Service (the instance name)
+/// * `port_name` - Name of the port to read
+///
+/// # Returns
+///
+/// `None` when the store does not hold the object (the caller should fall back
+/// to a GET), otherwise its ready addresses for `port_name`, possibly empty.
+#[must_use]
+pub fn cached_endpoints(
+    store: &crate::context::MultiStore<Endpoints>,
+    namespace: &str,
+    service_name: &str,
+    port_name: &str,
+) -> Option<Vec<EndpointAddress>> {
+    store
+        .state()
+        .iter()
+        .find(|ep| {
+            ep.metadata.name.as_deref() == Some(service_name)
+                && ep.metadata.namespace.as_deref() == Some(namespace)
+        })
+        .map(|ep| ready_endpoint_addresses(ep, port_name))
+}
+
+/// The ready addresses of an `Endpoints` object for the port named
+/// `port_name`.
+///
+/// Endpoints are organized into subsets. Each subset has `addresses` (ready
+/// pod IPs) and `ports` (container ports); only subsets that expose
+/// `port_name` contribute.
+#[must_use]
+pub fn ready_endpoint_addresses(endpoints: &Endpoints, port_name: &str) -> Vec<EndpointAddress> {
+    let mut result = Vec::new();
+    for subset in endpoints.subsets.iter().flatten() {
+        let Some(endpoint_port) = subset
+            .ports
+            .iter()
+            .flatten()
+            .find(|p| p.name.as_deref() == Some(port_name))
+        else {
+            continue;
+        };
+        for addr in subset.addresses.iter().flatten() {
+            result.push(EndpointAddress {
+                ip: addr.ip.clone(),
+                port: endpoint_port.port,
+            });
+        }
+    }
+    result
+}
+
+/// The error reported when a Service has no ready address on `port_name`.
+fn no_ready_endpoints_error(service_name: &str, port_name: &str) -> anyhow::Error {
+    anyhow!("No ready endpoints found for service {service_name} with port '{port_name}'")
 }
 
 /// Extract the name and IP of a pod that is Running and has an IP assigned.
@@ -382,39 +773,9 @@ pub async fn get_endpoint(
         "Failed to get endpoints for service {service_name}"
     ))?;
 
-    let mut result = Vec::new();
-
-    // Endpoints are organized into subsets. Each subset has:
-    // - addresses: List of ready pod IPs
-    // - ports: List of container ports
-    if let Some(subsets) = endpoints.subsets {
-        for subset in subsets {
-            // Find the port in this subset
-            if let Some(ports) = subset.ports {
-                if let Some(endpoint_port) = ports
-                    .iter()
-                    .find(|p| p.name.as_ref().is_some_and(|name| name == port_name))
-                {
-                    let port = endpoint_port.port;
-
-                    // Get all ready addresses for this subset
-                    if let Some(addresses) = subset.addresses {
-                        for addr in addresses {
-                            result.push(EndpointAddress {
-                                ip: addr.ip.clone(),
-                                port,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
-
+    let result = ready_endpoint_addresses(&endpoints, port_name);
     if result.is_empty() {
-        return Err(anyhow!(
-            "No ready endpoints found for service {service_name} with port '{port_name}'"
-        ));
+        return Err(no_ready_endpoints_error(service_name, port_name));
     }
 
     Ok(result)

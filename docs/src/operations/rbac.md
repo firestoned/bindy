@@ -161,7 +161,10 @@ subjects:
 Ships as `deploy/operator/rbac/tokenreview-clusterrole.yaml` and
 `tokenreview-clusterrolebinding.yaml` (applied by `make regression-test` and the
 release manifests). For operand pods in namespaces other than `bindy-system`,
-add one binding subject per namespace's `bind9` SA. See the
+add one binding subject per namespace's `bind9` SA. Operand namespaces also need
+their own copy of the `bindy-secrets-writer` Role and RoleBinding; see
+[Operands in Other Namespaces](multi-namespace.md) for both grants and the
+`deploy/operator/rbac/operand-namespace/` template. See the
 [bindcar 0.7.x migration guide](migration-guide.md) for the full Mode B setup
 (projected `audience: bindcar` token + `BIND_ALLOWED_SERVICE_ACCOUNTS`).
 

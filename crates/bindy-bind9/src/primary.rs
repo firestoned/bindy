@@ -13,7 +13,7 @@
 use anyhow::{anyhow, Result};
 use k8s_openapi::api::core::v1::Pod;
 use kube::{api::ListParams, Api, Client};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use crate::bind9::RndcKeyData;
 use crate::instances::PodInfo;
@@ -58,6 +58,85 @@ pub async fn filter_primary_instances(
                 );
             }
         }
+    }
+
+    Ok(primary_refs)
+}
+
+/// Whether the instance behind `instance_ref` is a PRIMARY, according to the
+/// `Bind9Instance` reflector store.
+///
+/// # Arguments
+///
+/// * `store` - The shared `Bind9Instance` reflector store
+/// * `instance_ref` - The instance to look up
+///
+/// # Returns
+///
+/// `Some(true)` for a primary, `Some(false)` for any other role, and `None`
+/// when the store does not hold the instance (the caller decides whether to
+/// fall back to the API server).
+#[must_use]
+pub fn primary_role_in_store(
+    store: &crate::context::MultiStore<crate::crd::Bind9Instance>,
+    instance_ref: &crate::crd::InstanceReference,
+) -> Option<bool> {
+    use kube::ResourceExt;
+    store
+        .state()
+        .iter()
+        .find(|instance| {
+            instance.name_any() == instance_ref.name
+                && instance.namespace().as_deref() == Some(instance_ref.namespace.as_str())
+        })
+        .map(|instance| instance.spec.role == crate::crd::ServerRole::Primary)
+}
+
+/// Filters instance references to PRIMARY instances, reading each role from
+/// the `Bind9Instance` reflector store (ADR-0015).
+///
+/// Same result as [`filter_primary_instances`], but an instance the store
+/// holds costs no API call, so a record write no longer spends one GET per
+/// instance. An instance the store does not hold yet (a watch that has not
+/// caught up) falls back to a GET, and is skipped with a warning if that
+/// fails, exactly as [`filter_primary_instances`] does.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client, for the fallback GET
+/// * `store` - The shared `Bind9Instance` reflector store
+/// * `instance_refs` - Instance references to filter
+///
+/// # Returns
+///
+/// The references whose instance has role=Primary.
+///
+/// # Errors
+///
+/// Does not currently fail; the `Result` keeps the signature of
+/// [`filter_primary_instances`].
+pub async fn filter_primary_instances_cached(
+    client: &Client,
+    store: &crate::context::MultiStore<crate::crd::Bind9Instance>,
+    instance_refs: &[crate::crd::InstanceReference],
+) -> Result<Vec<crate::crd::InstanceReference>> {
+    let mut primary_refs = Vec::new();
+    let mut uncached = Vec::new();
+
+    for instance_ref in instance_refs {
+        match primary_role_in_store(store, instance_ref) {
+            Some(true) => primary_refs.push(instance_ref.clone()),
+            Some(false) => {}
+            None => uncached.push(instance_ref.clone()),
+        }
+    }
+
+    if !uncached.is_empty() {
+        debug!(
+            "{} instance(s) not in the Bind9Instance store yet, reading their role from the API",
+            uncached.len()
+        );
+        primary_refs.extend(filter_primary_instances(client, &uncached).await?);
     }
 
     Ok(primary_refs)
@@ -119,7 +198,7 @@ pub async fn find_all_primary_pods(
         ));
     }
 
-    info!(
+    debug!(
         "Found {} PRIMARY instance(s) for cluster {}: {:?}",
         primary_instances.len(),
         cluster_name,
@@ -170,7 +249,7 @@ pub async fn find_all_primary_pods(
         ));
     }
 
-    info!(
+    debug!(
         "Found {} running PRIMARY pod(s) across {} instance(s) for cluster {}",
         all_pod_infos.len(),
         primary_instances.len(),
@@ -204,7 +283,7 @@ pub async fn find_primary_ips_from_instances(
     use crate::crd::{Bind9Instance, ServerRole};
     use k8s_openapi::api::core::v1::Pod;
 
-    info!(
+    debug!(
         "Finding PRIMARY pod IPs from {} instance reference(s)",
         instance_refs.len()
     );
@@ -270,7 +349,7 @@ pub async fn find_primary_ips_from_instances(
         }
     }
 
-    info!(
+    debug!(
         "Found total of {} PRIMARY pod IP(s) across all instances: {:?}",
         primary_ips.len(),
         primary_ips
@@ -329,7 +408,7 @@ where
     let primary_pods =
         find_all_primary_pods(client, namespace, cluster_ref, is_cluster_provider).await?;
 
-    info!(
+    debug!(
         "Found {} PRIMARY pod(s) for cluster {}",
         primary_pods.len(),
         cluster_ref
@@ -344,7 +423,7 @@ where
     instance_tuples.sort();
     instance_tuples.dedup();
 
-    info!(
+    debug!(
         "Found {} primary instance(s) for cluster {}: {:?}",
         instance_tuples.len(),
         cluster_ref,
@@ -359,7 +438,7 @@ where
     // Important: With EmptyDir storage (per-pod, non-shared), each primary pod maintains its own
     // zone files. We need to process ALL pods across ALL instances.
     for (instance_name, instance_namespace) in &instance_tuples {
-        info!(
+        debug!(
             "Getting endpoints for instance {}/{} in cluster {}",
             instance_namespace, instance_name, cluster_ref
         );
@@ -376,7 +455,7 @@ where
         // The Endpoints API gives us pod IPs with their container ports (not service ports)
         let endpoints = get_endpoint(client, instance_namespace, instance_name, port_name).await?;
 
-        info!(
+        debug!(
             "Found {} endpoint(s) for instance {}",
             endpoints.len(),
             instance_name

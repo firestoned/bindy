@@ -1,3 +1,84 @@
+## [2026-10-05 22:00] - Bound the Kubernetes API cost of DNS writes; quieter INFO logs (ADR-0015)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0015-bounded-api-cost-of-dns-writes.md`.
+- `crates/bindy-bind9/src/instances.rs`: `InstanceResolver` (per-reconcile memo of each instance's RNDC key and endpoints), `InstanceLookup` / `KubeInstanceLookup`, the process-wide `RndcKeyCache` (`RNDC_KEY_CACHE_TTL` = 60 s, `load_rndc_key_cached`, `invalidate_cached_rndc_key`), `cached_endpoints`, `ready_endpoint_addresses`.
+- `crates/bindy-bind9/src/primary.rs`: `primary_role_in_store`, `filter_primary_instances_cached` (roles from the `Bind9Instance` store, GET fallback).
+- `crates/bindy-controller-sdk/src/context.rs`: `Stores::endpoints`, the store of the `Endpoints` watch the `WatchSet` already ran.
+- `crates/bindy-controller-records/src/record_operator.rs`: `zone_ref_hash`, a predicate so a record wakes on `status.zoneRef` changes but not on its own condition writes.
+- Tests: `instances_tests.rs` (`resolver_tests`: 18, including `for_each_instance_endpoint_lookups_do_not_scale_with_records` pinning 3 key and 3 endpoint lookups for 300 records x 3 instances), `primary_tests.rs` (3), `record_push_tests.rs` (3), `record_operator_tests.rs` (4), `discovery_tests.rs` (5), `cleanup_tests.rs` (3).
+
+### Changed
+- `for_each_instance_endpoint*`, `add_record_to_instances_generic` and `delete_record_from_primaries` take an `InstanceResolver`; a key whose write failed is forgotten so a rotated key is re-read. `rotate_rndc_secret` invalidates the cached key.
+- Record reconcile: primaries from the store; one resolver for the rename delete and the add; no longer read-modify-writes `DNSZone.status.records` (the zone copies `lastReconciledAt` from the record's `status.lastUpdated`). `update_record_reconciled_timestamp` and `build_records_timestamp_patch` removed with their tests.
+- Zone reconcile: tags only records not already tagged with the zone; stale-record existence from one LIST per kind and namespace; no per-record readiness GETs (`check_all_records_ready` removed); one resolver per pass; replay builds one resolver and uses the store for roles.
+- `crates/bindy-api/src/crd.rs`: doc comments of `status.records[].lastReconciledAt`; regenerated `deploy/operator/crds/dnszones.crd.yaml` and `docs/src/reference/api.md`.
+- Logging (INFO to DEBUG): per-instance and per-endpoint progress in `instances.rs` and `primary.rs`; per-DNS-UPDATE lines in `bind9/records/*.rs`; bindcar HTTP request/response lines in `bind9/zone_ops.rs`; `Reconciling ...Record`, `Successfully added ... record`, `Deleting ... record`, `Updated status for ...`, `Successfully tagged ...` in the record and discovery paths; per-reconcile progress in `dnszone.rs` (`Reconciling DNSZone`, instance/endpoint/nameserver discovery, `Marked ... as configured`, NS and glue generation, secondary zone progress) and `bind9_config.rs`. Outcomes, state changes, warnings and errors stay at INFO or above.
+- Docs: `operations/troubleshooting.md` (bulk records and records served after deletion), `operations/logging.md` (what INFO covers).
+- `docs/src/security/threat-model.md` v1.14: full pass; M-46 for D2, T1, I1.
+
+### Fixed
+- Deleted records left served (rc.2: 30 of 300). The zone's stale-record pass dropped a deleted record from `status.records` even when its lookups or DNS deletes had failed; it now keeps it, and discovery keeps it, until its data is confirmed gone from every primary. A replay skips records that are gone or have a `deletionTimestamp`, so it cannot re-publish data a finalizer just removed. The record finalizer reads instance roles from the store, so API pressure no longer drops a primary from its cleanup.
+
+### Why
+v0.8.0-rc.2 load test (3 primaries, 300 records): 25,582 API requests at the 20 QPS limit, 6,935 record reconciles, 152/300 records served after 600 s, about 1,500 INFO lines a minute. A record reconcile cost `7 + 3I` requests and fanned out through the zone status; a zone reconcile cost `3R` plus `R x (1 + 2I)` on replay. Now a record reconcile costs 5, plus at most I Secret reads per minute process-wide, and a zone reconcile `O(I)` plus at most 18 LISTs.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (operator binary; no RBAC or CRD schema change, CRD descriptions only)
+
+## [2026-10-05 21:30] - Document the RBAC an operand namespace needs
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/src/operations/multi-namespace.md` (nav: Operations > Configuration > Operands in Other Namespaces): when a namespace other than the operator's runs Bind9Instances, it needs the `bindy-secrets-writer` Role + RoleBinding (operator SA, `create`/`update`/`patch`/`delete` on `secrets`) and a `bindcar-tokenreview` binding for its `bind9` ServiceAccount. Covers both modes (`BINDY_WATCH_NAMESPACES` set or unset), the YAML, the shared-binding `kubectl patch --type=json` alternative, `kubectl auth can-i` checks, the exact failure text from the instance condition and the bindcar log, and cleanup.
+- `deploy/operator/rbac/operand-namespace/rbac.yaml` + `README.md`: a `REPLACE_NAMESPACE` template with the Role, RoleBinding and a per-namespace `bindcar-tokenreview-<namespace>` ClusterRoleBinding. It sits in a subdirectory so the non-recursive `kubectl apply -f deploy/operator/rbac/` used by `make deploy-rbac` and the test scripts never applies the placeholder.
+
+### Changed
+- `docs/src/operations/common-issues.md`: new "No Pods in a Namespace Other Than `bindy-system`" entry; the bindcar 401 entry gains the operand-namespace cause.
+- `docs/src/operations/rbac.md`, `docs/src/guide/multi-tenancy.md`, `deploy/operator/rbac/README.md`, `deploy/operator/rbac/namespaced/README.md`: point to the new page and template.
+
+### Why
+A load test that put operands in their own namespace hit both gaps: instance reconcile failed with `secrets is forbidden` (B-5 confines Secret writes to namespaces carrying `bindy-secrets-writer`), and once that was granted bindcar answered every call with 401 because its `bind9` SA could not create TokenReviews. The requirement was only stated in manifest comments. The template uses a separate ClusterRoleBinding per namespace because re-applying `tokenreview-clusterrolebinding.yaml` or re-running `bindy bootstrap operator` replaces the shared binding's subject list.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (plus an opt-in RBAC template that nothing applies automatically)
+
+## [2026-10-05 21:00] - Bounded timeout for non-watch Kubernetes API requests (ADR-0014)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0014-bounded-kube-api-request-timeout.md`: a per-request deadline on non-watch Kubernetes API requests, watches exempt; follow-up to ADR-0005.
+- `crates/bindy-controller-sdk/src/request_timeout.rs`: `RequestTimeoutLayer` (tower), `DeadlineBody` (enforces the same deadline while the response body is read), `RequestTimeoutError`, `is_watch_request` (`watch=true` / `watch=1`), and `request_timeout_from_env` / `request_timeout_from_value`.
+- `crates/bindy-controller-sdk/src/request_timeout_tests.rs`: env parsing, watch detection, header-phase and body-phase timeouts, watch requests and bodies not cut, and both cases through the real client stack against a TCP server that accepts and never answers.
+- `crates/bindy-api/src/constants.rs`: `KUBE_CLIENT_REQUEST_TIMEOUT_SECS = 30`.
+- `BINDY_KUBE_REQUEST_TIMEOUT_SECS` environment variable (operator): overrides the deadline; unset, unparsable or zero values keep the default with a warning.
+- `http-body = "1"` as a direct dependency of `bindy-controller-sdk` (already in the tree through kube and hyper) for the body wrapper.
+
+### Changed
+- `crates/bindy-controller-sdk/src/rate_limit.rs`: `build_rate_limited_client` takes a `request_timeout` and installs the deadline layer innermost, inside the rate limiter (queueing time does not count) and inside the metrics layer (a timeout is recorded as an error). `parse_override` is shared with the new module; its warning now reads "Invalid Kubernetes client override; using default".
+- `crates/bindy/src/main.rs`: `bindy run` reads the deadline from the environment and passes it to the client builder.
+- `crates/bindy-controller-sdk/src/retry_tests.rs`: pins that a `RequestTimeoutError` (surfaced by kube-rs as `kube::Error::Service`) is retryable. No classification change was needed.
+- `calm/bindy-control-plane.architecture.json`: the operator to API server relationship names the deadline; `docs/src/architecture/calm-control-plane.md` regenerated.
+- Docs: `operations/env-vars.md`, `operations/configuration.md`, `reference/cli.md`, `security/rate-limiting.md`, `operations/metrics.md`, `operations/common-issues.md` (new "Operator logs Kubernetes API request timed out" entry).
+- `docs/src/security/threat-model.md` v1.13: full pass against ADR-0001 ... ADR-0014; new threat D5, mitigation M-45, accepted risk 12 (Scout and bootstrap clients lack the deadline; slow writes are cut and retried).
+
+### Why
+v0.8.0-rc.2 load test, finding 2: five non-watch API calls each took about 290 s on one stalled connection while the API server saw nothing slow, freezing five reconciles for about five minutes. kube-rs 4.2 sets no read timeout by default (`Config::read_timeout = None`), and its timeouts are connection-level timers on the pooled socket shared with watches, so setting `read_timeout` would also cut quiet watch streams. A per-request deadline that skips `watch=true` requests bounds ordinary calls without touching watches.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (new operator binary)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-05 20:00] - Validate rendered BIND9 configuration with hornet (ADR-0013 stages 1 and 2)
 
 **Author:** Erick Bourgeois

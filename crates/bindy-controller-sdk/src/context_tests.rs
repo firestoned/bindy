@@ -13,6 +13,7 @@ mod tests {
         PTRRecord,
     };
     use k8s_openapi::api::apps::v1::Deployment;
+    use k8s_openapi::api::core::v1::Endpoints;
     use kube::runtime::reflector::{self, Store};
     use kube::runtime::watcher;
     use serde::de::DeserializeOwned;
@@ -121,6 +122,7 @@ mod tests {
             bind9_clusters: view::<Bind9Cluster>(vec![]),
             bind9_instances: view::<Bind9Instance>(vec![]),
             bind9_deployments: view::<Deployment>(vec![]),
+            endpoints: view::<Endpoints>(vec![]),
             dnszones: view(zones),
             records,
         }

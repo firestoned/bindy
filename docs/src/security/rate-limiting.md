@@ -101,6 +101,14 @@ Paginated LIST operations (`reconcilers/pagination.rs`, 100 items/page) and
 exponential-backoff retries for transient 429/5xx errors
 (`reconcilers/retry.rs`) round out the client-side controls.
 
+Every non-watch request also carries a client-side deadline (ADR-0014,
+`BINDY_KUBE_REQUEST_TIMEOUT_SECS`, default 30 s) covering the response
+headers and body. A request stuck on a stalled connection fails with a
+retryable error after the deadline and is retried with backoff, instead of
+holding a reconcile for minutes. Watch streams are exempt; they are bounded
+by the server-side `timeoutSeconds` and the watcher's idle timeout. Time spent
+queued behind the rate limiter does not count against the deadline.
+
 **Configuration** (environment variables on the operator Deployment):
 
 ```yaml

@@ -12,6 +12,7 @@ Configure Bindy using environment variables. See also the [CLI Reference](../ref
 |---|---|---|
 | `BINDY_KUBE_QPS` | `20.0` | Sustained API server request rate (queries per second), enforced client-side ([ADR-0005](https://github.com/firestoned/bindy/blob/main/docs/adr/0005-client-side-kube-api-rate-limiting.md)). Requests over budget queue; they are not rejected. |
 | `BINDY_KUBE_BURST` | `30` | Requests allowed to burst above the sustained rate. Invalid or non-positive values for either variable fall back to the default with a warning. |
+| `BINDY_KUBE_REQUEST_TIMEOUT_SECS` | `30` | Deadline, in whole seconds, for each non-watch API request, covering the response headers and body ([ADR-0014](https://github.com/firestoned/bindy/blob/main/docs/adr/0014-bounded-kube-api-request-timeout.md)). A request on a stalled connection fails after this long and is retried with backoff. Watch streams are exempt. Invalid or zero values fall back to the default with a warning. |
 
 ### Namespace Scoping
 

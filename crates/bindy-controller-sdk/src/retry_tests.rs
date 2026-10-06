@@ -124,6 +124,19 @@ mod tests {
         );
     }
 
+    /// A client-side request deadline (ADR-0014) surfaces as a Service error
+    /// and must feed the retry/backoff path, not fail the call outright.
+    #[test]
+    fn test_request_timeout_is_retryable() {
+        let timeout = crate::request_timeout::RequestTimeoutError::new(Duration::from_secs(30));
+        let err = kube::Error::Service(Box::new(timeout));
+
+        assert!(
+            is_retryable_error(&err),
+            "a request deadline timeout should be retryable"
+        );
+    }
+
     /// Test backoff timing progression
     #[test]
     fn test_backoff_timing_progression() {

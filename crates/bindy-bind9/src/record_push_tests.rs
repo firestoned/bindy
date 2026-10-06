@@ -30,6 +30,7 @@ mod tests {
             let outcome = RecordReplayOutcome {
                 attempted: 3,
                 succeeded: 2,
+                skipped: 0,
                 failures: vec!["ARecord default/www: connection refused".to_string()],
             };
 
@@ -41,6 +42,7 @@ mod tests {
             let outcome = RecordReplayOutcome {
                 attempted: 4,
                 succeeded: 4,
+                skipped: 0,
                 failures: vec![],
             };
 
@@ -57,6 +59,7 @@ mod tests {
             let outcome = RecordReplayOutcome {
                 attempted: 2,
                 succeeded: 1,
+                skipped: 0,
                 failures: vec!["ARecord default/www: connection refused".to_string()],
             };
 
@@ -71,6 +74,43 @@ mod tests {
                 summary.contains("connection refused"),
                 "summary was: {summary}"
             );
+        }
+
+        #[test]
+        fn test_replay_outcome_counts_skipped_records_as_done() {
+            // A record deleted while the zone was being recreated is not
+            // missing data: it must not keep the zone Degraded.
+            let outcome = RecordReplayOutcome {
+                attempted: 3,
+                succeeded: 2,
+                skipped: 1,
+                failures: vec![],
+            };
+
+            assert!(outcome.is_complete());
+            assert!(outcome.summary("example.com").contains("3/3"));
+        }
+
+        #[test]
+        fn test_should_replay_a_live_record() {
+            let meta = k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta::default();
+
+            assert!(crate::record_push::should_replay(&meta));
+        }
+
+        #[test]
+        fn test_should_not_replay_a_terminating_record() {
+            // Replaying a record whose finalizer is running would re-publish
+            // the RRset after the finalizer deleted it (load test rc.2:
+            // records still served after deletion).
+            let meta = k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+                deletion_timestamp: Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+                    k8s_openapi::jiff::Timestamp::now(),
+                )),
+                ..Default::default()
+            };
+
+            assert!(!crate::record_push::should_replay(&meta));
         }
     }
 }

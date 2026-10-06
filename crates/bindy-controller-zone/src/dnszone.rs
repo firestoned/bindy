@@ -482,7 +482,7 @@ pub async fn reconcile_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZo
     let namespace = dnszone.namespace().unwrap_or_default();
     let name = dnszone.name_any();
 
-    info!("Reconciling DNSZone: {}/{}", namespace, name);
+    debug!("Reconciling DNSZone: {}/{}", namespace, name);
     debug!(
         namespace = %namespace,
         name = %name,
@@ -508,7 +508,7 @@ pub async fn reconcile_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZo
     // This will fail early if zone is not selected by any instance
     let instance_refs = validation::get_instances_from_zone(&dnszone, bind9_instances_store)?;
 
-    info!(
+    debug!(
         "DNSZone {}/{} is assigned to {} instance(s): {:?}",
         namespace,
         name,
@@ -606,32 +606,39 @@ pub async fn reconcile_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZo
         );
     }
 
-    info!(
+    debug!(
         "Reconciling zone {} (first_reconciliation={}, spec_changed={})",
         spec.zone_name, first_reconciliation, spec_changed
     );
 
     // Cleanup stale records from status.records[] before main reconciliation
-    // This ensures status stays in sync with actual Kubernetes resources
-    match cleanup::cleanup_stale_records(
+    // This ensures status stays in sync with actual Kubernetes resources.
+    // Deleted records whose DNS data could not be confirmed gone are retained
+    // and handed to discovery, so they stay tracked until the cleanup succeeds.
+    let retained_records = match cleanup::cleanup_stale_records(
         &client,
         &dnszone,
         &mut status_updater,
-        bind9_instances_store,
+        &ctx.stores,
     )
     .await
     {
-        Ok(stale_count) if stale_count > 0 => {
-            info!(
-                "Cleaned up {} stale record(s) from zone {}/{} status",
-                stale_count, namespace, name
-            );
-        }
-        Ok(_) => {
-            debug!(
-                "No stale records found in zone {}/{} status",
-                namespace, name
-            );
+        Ok(outcome) => {
+            if outcome.removed > 0 {
+                info!(
+                    "Cleaned up {} stale record(s) from zone {}/{} status",
+                    outcome.removed, namespace, name
+                );
+            }
+            if !outcome.retained.is_empty() {
+                warn!(
+                    "{} deleted record(s) of zone {}/{} may still be served; their DNS cleanup is retried",
+                    outcome.retained.len(),
+                    namespace,
+                    name
+                );
+            }
+            outcome.retained
         }
         Err(e) => {
             warn!(
@@ -639,8 +646,9 @@ pub async fn reconcile_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZo
                 namespace, name, e
             );
             // Don't fail reconciliation for cleanup errors
+            Vec::new()
         }
-    }
+    };
 
     // BIND9 configuration: Always ensure zones exist on all instances
     // This implements true declarative reconciliation - if a pod restarts without
@@ -662,9 +670,14 @@ pub async fn reconcile_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZo
     .await?;
 
     // Discover DNS records and update status
-    let (record_refs, records_count) =
-        discovery::discover_and_update_records(&client, &dnszone, &mut status_updater, &ctx.stores)
-            .await?;
+    let (record_refs, records_count) = discovery::discover_and_update_records(
+        &client,
+        &dnszone,
+        &mut status_updater,
+        &ctx.stores,
+        &retained_records,
+    )
+    .await?;
 
     // Replay the zone's records whenever the zone had to be (re)created on any
     // server, or a previous replay did not finish. Without this a wiped pod
@@ -680,28 +693,11 @@ pub async fn reconcile_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZo
     )
     .await?;
 
-    // Check if all discovered records are ready and trigger zone transfers if needed
-    if records_count > 0 {
-        let all_records_ready =
-            discovery::check_all_records_ready(&client, &namespace, &record_refs).await?;
+    // Record readiness is not polled here: it used to cost one GET per record
+    // per zone reconcile only to log whether every record was Ready. Each
+    // record reports its own Ready condition, and BIND9 notifies secondaries
+    // itself when a primary's serial advances (ADR-0015).
 
-        if all_records_ready {
-            info!(
-                "All {} record(s) for zone {} are ready, triggering zone transfers to secondaries",
-                records_count, spec.zone_name
-            );
-
-            // Trigger zone transfers to all secondaries
-            // Zone transfers are triggered automatically by BIND9 via NOTIFY messages
-            // No manual trigger needed in the new architecture
-            info!(
-                "Zone {} configured on instances - BIND9 will handle zone transfers via NOTIFY",
-                spec.zone_name
-            );
-        } else {
-            info!("Not all records for zone {} are ready yet", spec.zone_name);
-        }
-    }
     // Calculate expected counts and finalize status
     let (expected_primary_count, expected_secondary_count) =
         status_helpers::calculate_expected_instance_counts(&client, &instance_refs).await?;
@@ -825,7 +821,12 @@ async fn replay_records_if_zone_was_recreated(
 
     // Records are written to PRIMARY servers only; secondaries pull the zone
     // via AXFR once the primary's serial advances.
-    let primary_refs = primary::filter_primary_instances(&client, instance_refs).await?;
+    let primary_refs = bindy_bind9::primary::filter_primary_instances_cached(
+        &client,
+        &ctx.stores.bind9_instances,
+        instance_refs,
+    )
+    .await?;
 
     if primary_refs.is_empty() {
         let message = format!(
@@ -1196,12 +1197,12 @@ pub async fn add_dnszone(
     let name = dnszone.name_any();
     let spec = &dnszone.spec;
 
-    info!("Adding DNSZone {}/{}", namespace, name);
+    debug!("Adding DNSZone {}/{}", namespace, name);
 
     // PHASE 2 OPTIMIZATION: Use the filtered instance list passed by the caller
     // This ensures we only process instances that need reconciliation (lastReconciledAt == None)
 
-    info!(
+    debug!(
         "DNSZone {}/{} will be added to {} instance(s): {:?}",
         namespace,
         name,
@@ -1227,7 +1228,7 @@ pub async fn add_dnszone(
         ));
     }
 
-    info!(
+    debug!(
         "Found {} PRIMARY instance(s) for DNSZone {}/{}",
         primary_instance_refs.len(),
         namespace,
@@ -1246,7 +1247,7 @@ pub async fn add_dnszone(
             namespace, name
         );
     } else {
-        info!(
+        debug!(
             "Found {} secondary server(s) for DNSZone {}/{} - zone transfers will be configured: {:?}",
             secondary_ips.len(),
             namespace,
@@ -1261,7 +1262,7 @@ pub async fn add_dnszone(
     // Generate legacy nameserver IPs format for backward compatibility with bindcar API
     // If user didn't provide either field, auto-generate from instance IPs
     let name_server_ips = if effective_name_servers.is_none() {
-        info!(
+        debug!(
             "DNSZone {}/{} has no explicit nameServers - auto-generating from {} instance(s)",
             namespace,
             name,
@@ -1274,7 +1275,7 @@ pub async fn add_dnszone(
 
         match generate_nameserver_ips(&client, &spec.zone_name, &ordered_instances).await {
             Ok(Some(generated_ips)) => {
-                info!(
+                debug!(
                     "Auto-generated {} nameserver(s) for DNSZone {}/{}: {:?}",
                     generated_ips.len(),
                     namespace,
@@ -1316,7 +1317,7 @@ pub async fn add_dnszone(
                 HashMap::new()
             };
 
-        info!(
+        debug!(
             "Using explicit nameServers for DNSZone {}/{} ({} with IPv4 glue records)",
             namespace,
             name,
@@ -1347,7 +1348,7 @@ pub async fn add_dnszone(
         hostnames
     };
 
-    info!(
+    debug!(
         "Zone {}/{} will be configured with {} nameserver(s): {:?}",
         namespace,
         name,
@@ -1362,7 +1363,7 @@ pub async fn add_dnszone(
     let resolved_dnssec_policy = zone_dnssec_policy(&ctx, spec, &primary_instance_refs);
     let dnssec_policy = resolved_dnssec_policy.as_deref();
     if let Some(policy) = dnssec_policy {
-        info!(
+        debug!(
             "DNSSEC policy '{}' will be applied to zone {}/{}",
             policy, namespace, name
         );
@@ -1405,7 +1406,7 @@ pub async fn add_dnszone(
             let _zone_name_ref = name.clone();
 
             async move {
-                info!(
+                debug!(
                     "Processing endpoints for primary instance {}/{}",
                     instance_ref.namespace, instance_ref.name
                 );
@@ -1430,7 +1431,7 @@ pub async fn add_dnszone(
                     }
                 };
 
-                info!(
+                debug!(
                     "Found {} endpoint(s) for primary instance {}/{}",
                     endpoints.len(),
                     instance_ref.namespace,
@@ -1564,7 +1565,7 @@ pub async fn add_dnszone(
                             crate::crd::InstanceStatus::Configured,
                             Some("Zone successfully configured on primary instance".to_string()),
                         );
-                    info!(
+                    debug!(
                         "Marked primary instance {}/{} as configured for zone {}",
                         instance_ref.namespace, instance_ref.name, zone_name
                     );
@@ -1607,7 +1608,7 @@ pub async fn add_dnszone(
         ));
     }
 
-    info!(
+    debug!(
         "Successfully added zone {} to {} endpoint(s) across {}/{} fully configured primary instance(s)",
         spec.zone_name,
         total_endpoints,
@@ -1618,7 +1619,7 @@ pub async fn add_dnszone(
     // Auto-generate NS records and glue records from nameServers field
     if let Some(ref name_servers) = effective_name_servers {
         if !name_servers.is_empty() {
-            info!(
+            debug!(
                 "Auto-generating NS records for {} nameserver(s) in zone {}",
                 name_servers.len(),
                 spec.zone_name
@@ -1662,7 +1663,7 @@ pub async fn add_dnszone(
     // Notify secondaries about the new zone via the first endpoint
     // This triggers zone transfer (AXFR) from primary to secondaries
     if let Some(notify_target) = first_endpoint {
-        info!("Notifying secondaries about new zone {}", spec.zone_name);
+        debug!("Notifying secondaries about new zone {}", spec.zone_name);
         // Per instance, not the shared startup manager: only this carries the
         // instance's TLS configuration. See zone_manager_for_instance.
         let notify_manager = zone_manager_for_instance(
@@ -1743,7 +1744,7 @@ pub async fn add_dnszone_to_secondaries(
         return Ok(types::ZoneConfigOutcome::default());
     }
 
-    info!(
+    debug!(
         "Adding DNSZone {}/{} to secondary instances with primaries: {:?}",
         namespace, name, primary_ips
     );
@@ -1763,7 +1764,7 @@ pub async fn add_dnszone_to_secondaries(
         return Ok(types::ZoneConfigOutcome::default());
     }
 
-    info!(
+    debug!(
         "Found {} secondary instance(s) for DNSZone {}/{}",
         secondary_instance_refs.len(),
         namespace,
@@ -1799,7 +1800,7 @@ pub async fn add_dnszone_to_secondaries(
             let _zone_name_ref = name.clone();
 
             async move {
-                info!(
+                debug!(
                     "Processing secondary instance {}/{} for zone {}",
                     instance_ref.namespace, instance_ref.name, zone_name
                 );
@@ -1825,7 +1826,7 @@ pub async fn add_dnszone_to_secondaries(
                     }
                 };
 
-                info!(
+                debug!(
                     "Found {} endpoint(s) for secondary instance {}/{}",
                     endpoints.len(),
                     instance_ref.namespace,
@@ -1870,7 +1871,7 @@ pub async fn add_dnszone_to_secondaries(
                                 *total_endpoints.lock().await += 1;
                                 false // Zone not newly added
                             } else {
-                                info!(
+                                debug!(
                                     "Adding secondary zone {} to endpoint {} (instance: {}/{}) with primaries: {:?}",
                                     zone_name,
                                     pod_endpoint,
@@ -1902,7 +1903,7 @@ pub async fn add_dnszone_to_secondaries(
                                             );
                                             *zones_created.lock().await += 1;
                                         } else {
-                                            info!(
+                                            debug!(
                                                 "Secondary zone {} already exists on endpoint {} (instance: {}/{})",
                                                 zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
                                             );
@@ -1934,7 +1935,7 @@ pub async fn add_dnszone_to_secondaries(
                             // This ensures the zone is LOADED and SERVING queries immediately after
                             // secondary pod restart or zone creation.
                             // NOTE: We trigger transfer even if zone already existed to ensure it's up to date
-                            info!(
+                            debug!(
                                 "Triggering immediate zone transfer for {} on secondary {} to load zone data",
                                 zone_name, pod_endpoint
                             );
@@ -1948,7 +1949,7 @@ pub async fn add_dnszone_to_secondaries(
                                     zone_name, pod_endpoint, e
                                 );
                             } else {
-                                info!(
+                                debug!(
                                     "Successfully triggered zone transfer for {} on {}",
                                     zone_name, pod_endpoint
                                 );
@@ -1976,7 +1977,7 @@ pub async fn add_dnszone_to_secondaries(
                             crate::crd::InstanceStatus::Configured,
                             Some("Zone successfully configured on secondary instance".to_string()),
                         );
-                    info!(
+                    debug!(
                         "Marked secondary instance {}/{} as configured for zone {}",
                         instance_ref.namespace, instance_ref.name, zone_name
                     );
@@ -2013,7 +2014,7 @@ pub async fn add_dnszone_to_secondaries(
         ));
     }
 
-    info!(
+    debug!(
         "Successfully configured secondary zone {} on {} endpoint(s) across {}/{} fully configured secondary instance(s)",
         spec.zone_name,
         total_endpoints,
@@ -2083,8 +2084,9 @@ pub async fn delete_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZone)
     // unreachable (and lost anyway with ephemeral storage). Real API errors
     // still propagate so the next reconcile retries.
     if !primary_instance_refs.is_empty() {
+        let resolver = bindy_bind9::instances::InstanceResolver::for_kube(&client, &ctx.stores);
         let (_first_endpoint, total_endpoints) = helpers::for_each_instance_endpoint_with_policy(
-            &client,
+            &resolver,
             &primary_instance_refs,
             false, // with_rndc_key = false for zone deletion
             "http", // Use HTTP API port for zone deletion via bindcar API
@@ -2101,7 +2103,7 @@ pub async fn delete_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZone)
                     zone_manager_for_instance(&ctx, &instance_name, &instance_namespace);
 
                 async move {
-                    info!(
+                    debug!(
                         "Deleting zone {} from endpoint {} (instance: {})",
                         zone_name, pod_endpoint, instance_name
                     );
@@ -2173,7 +2175,7 @@ pub async fn delete_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZone)
             for endpoint in &endpoints {
                 let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
 
-                info!(
+                debug!(
                     "Deleting zone {} from secondary endpoint {} (instance: {}/{})",
                     spec.zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
                 );
@@ -2240,7 +2242,7 @@ async fn auto_generate_ns_records(
         return Ok(());
     }
 
-    info!(
+    debug!(
         "Auto-generating {} NS record(s) for zone {}",
         effective_name_servers.len(),
         zone_name
@@ -2248,7 +2250,7 @@ async fn auto_generate_ns_records(
 
     for nameserver in effective_name_servers {
         // Add NS record at zone apex (@)
-        info!(
+        debug!(
             "Adding NS record: {} IN NS {}",
             zone_name, nameserver.hostname
         );
@@ -2346,7 +2348,7 @@ async fn auto_generate_ns_records(
         }
     }
 
-    info!(
+    debug!(
         "Successfully auto-generated NS records and glue records for zone {}",
         zone_name
     );
@@ -2401,7 +2403,7 @@ async fn add_glue_record(
         return Ok(());
     }
 
-    info!(
+    debug!(
         "Adding {} glue record: {} IN {} {}",
         if record_type == hickory_proto::rr::RecordType::A {
             "A"

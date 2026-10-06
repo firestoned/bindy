@@ -15,7 +15,7 @@ use hickory_proto::rr::{DNSClass, Name, RData, Record, RecordType};
 use std::collections::HashSet;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
-use tracing::{error, info, warn};
+use tracing::{debug, error, warn};
 
 /// Compare existing DNS `RRset` with desired IPv4 addresses and TTL.
 ///
@@ -164,7 +164,7 @@ pub async fn add_a_record(
     let delete_record = build_delete_rrset_record(&fqdn, RecordType::A);
     let _ = client.delete_rrset(delete_record, zone.clone()).await;
 
-    info!(
+    debug!(
         "Adding A record RRset: {} -> {:?} (TTL: {}, {} addresses)",
         fqdn,
         ipv4_addresses,
@@ -187,7 +187,7 @@ pub async fn add_a_record(
 
         match response.metadata.response_code {
             ResponseCode::NoError => {
-                info!("Successfully added A record: {} -> {}", name, ip_str);
+                debug!("Successfully added A record: {} -> {}", name, ip_str);
             }
             code => {
                 error!(
@@ -255,7 +255,7 @@ pub async fn add_aaaa_record(
     let delete_record = build_delete_rrset_record(&fqdn, RecordType::AAAA);
     let _ = client.delete_rrset(delete_record, zone.clone()).await;
 
-    info!(
+    debug!(
         "Adding AAAA record RRset: {} -> {:?} (TTL: {}, {} addresses)",
         fqdn,
         ipv6_addresses,
@@ -277,7 +277,7 @@ pub async fn add_aaaa_record(
 
         match response.metadata.response_code {
             ResponseCode::NoError => {
-                info!("Successfully added AAAA record: {} -> {}", name, ip_str);
+                debug!("Successfully added AAAA record: {} -> {}", name, ip_str);
             }
             code => {
                 error!(

@@ -13,7 +13,7 @@ use hickory_net::client::ClientHandle;
 use hickory_proto::op::ResponseCode;
 use hickory_proto::rr::{rdata, DNSClass, Name, RData, Record, RecordType};
 use std::str::FromStr;
-use tracing::info;
+use tracing::debug;
 
 /// Compare existing DNS `RRset` with the desired PTR target and TTL.
 ///
@@ -102,7 +102,7 @@ pub async fn add_ptr_record(
 
     match response.metadata.response_code {
         ResponseCode::NoError => {
-            info!(
+            debug!(
                 "Successfully added PTR record: {} -> {} (TTL: {})",
                 fqdn, ptr_data.target, ttl_value
             );

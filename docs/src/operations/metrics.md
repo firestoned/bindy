@@ -170,7 +170,9 @@ Every Kubernetes API request issued by the operator's client.
 Labels:
 - `resource`: Resource plural parsed from the request path (e.g., `dnszones`)
 - `verb`: Lowercase HTTP method (`get`, `post`, `patch`, ...)
-- `status`: `success` (2xx/3xx) or `error`
+- `status`: `success` (2xx/3xx) or `error`. A request cut by the client-side
+  request deadline (ADR-0014, `BINDY_KUBE_REQUEST_TIMEOUT_SECS`) counts as
+  `error` when it timed out waiting for the response headers.
 
 **`bindy_firestoned_io_kube_api_request_duration_seconds`** (Histogram)
 Request latency from dispatch to response headers. Time queued behind the

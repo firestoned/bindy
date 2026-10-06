@@ -13,7 +13,7 @@ use hickory_net::client::ClientHandle;
 use hickory_proto::op::ResponseCode;
 use hickory_proto::rr::{rdata, DNSClass, Name, RData, Record, RecordType};
 use std::str::FromStr;
-use tracing::info;
+use tracing::debug;
 
 /// Default MX preference used when the spec priority cannot be represented as `u16`.
 const DEFAULT_MX_PREFERENCE: u16 = 10;
@@ -95,7 +95,7 @@ pub async fn add_mx_record(
     );
     record.dns_class = DNSClass::IN;
 
-    info!(
+    debug!(
         "Adding MX record: {} -> {} (priority: {}, TTL: {})",
         fqdn, mail_server, priority_u16, ttl_value
     );
@@ -111,7 +111,7 @@ pub async fn add_mx_record(
 
     match response.metadata.response_code {
         ResponseCode::NoError => {
-            info!("Successfully added MX record: {} -> {}", name, mail_server);
+            debug!("Successfully added MX record: {} -> {}", name, mail_server);
             Ok(())
         }
         code => Err(anyhow::anyhow!(

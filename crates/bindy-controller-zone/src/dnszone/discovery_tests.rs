@@ -356,4 +356,90 @@ mod tests {
 
         assert_eq!(matched.len(), 2);
     }
+
+    // ========================================================================
+    // Tagging only what is not tagged yet (ADR-0015): a zone reconcile used to
+    // PATCH status.zoneRef on every selected record, every time.
+    // ========================================================================
+
+    fn zone_reference(name: &str, namespace: &str, zone_name: &str) -> crate::crd::ZoneReference {
+        crate::crd::ZoneReference {
+            api_version: crate::constants::API_GROUP_VERSION.to_string(),
+            kind: crate::constants::KIND_DNS_ZONE.to_string(),
+            name: name.to_string(),
+            namespace: namespace.to_string(),
+            zone_name: zone_name.to_string(),
+            last_reconciled_at: None,
+        }
+    }
+
+    #[test]
+    fn test_is_tagged_with_zone_true_for_the_same_zone() {
+        use super::super::is_tagged_with_zone;
+        let zone_ref = zone_reference("example-com", "dns", "example.com");
+
+        assert!(is_tagged_with_zone(
+            Some(&zone_ref),
+            "dns",
+            "example-com",
+            "example.com"
+        ));
+    }
+
+    #[test]
+    fn test_is_tagged_with_zone_false_when_untagged() {
+        use super::super::is_tagged_with_zone;
+
+        assert!(!is_tagged_with_zone(
+            None,
+            "dns",
+            "example-com",
+            "example.com"
+        ));
+    }
+
+    #[test]
+    fn test_is_tagged_with_zone_false_for_another_zone_or_fqdn() {
+        use super::super::is_tagged_with_zone;
+        let other_zone = zone_reference("other", "dns", "example.com");
+        let other_ns = zone_reference("example-com", "elsewhere", "example.com");
+        let other_fqdn = zone_reference("example-com", "dns", "example.org");
+
+        for zone_ref in [other_zone, other_ns, other_fqdn] {
+            assert!(!is_tagged_with_zone(
+                Some(&zone_ref),
+                "dns",
+                "example-com",
+                "example.com"
+            ));
+        }
+    }
+
+    // ========================================================================
+    // Records retained by stale cleanup stay in status.records until their DNS
+    // data is confirmed gone (the rc.2 "deleted but still served" orphans).
+    // ========================================================================
+
+    #[test]
+    fn test_merge_retained_records_appends_missing_retained_refs() {
+        use super::super::merge_retained_records;
+        let mut current = vec![claim_ref("ARecord", "live", Some("live"))];
+        let retained = vec![claim_ref("ARecord", "deleted", Some("gone"))];
+
+        merge_retained_records(&mut current, &retained);
+
+        let names: Vec<&str> = current.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["live", "deleted"]);
+    }
+
+    #[test]
+    fn test_merge_retained_records_does_not_duplicate() {
+        use super::super::merge_retained_records;
+        let mut current = vec![claim_ref("ARecord", "www", Some("www"))];
+        let retained = vec![claim_ref("ARecord", "www", Some("www"))];
+
+        merge_retained_records(&mut current, &retained);
+
+        assert_eq!(current.len(), 1);
+    }
 }

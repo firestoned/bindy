@@ -13,7 +13,7 @@ use hickory_net::client::ClientHandle;
 use hickory_proto::op::ResponseCode;
 use hickory_proto::rr::{rdata, DNSClass, Name, RData, Record, RecordType};
 use std::str::FromStr;
-use tracing::info;
+use tracing::debug;
 
 /// Compare existing DNS `RRset` with the desired TXT strings and TTL.
 ///
@@ -87,7 +87,7 @@ pub async fn add_txt_record(
     );
     record.dns_class = DNSClass::IN;
 
-    info!(
+    debug!(
         "Adding TXT record: {} -> {:?} (TTL: {})",
         record.name, texts, ttl_value
     );
@@ -103,7 +103,7 @@ pub async fn add_txt_record(
 
     match response.metadata.response_code {
         ResponseCode::NoError => {
-            info!("Successfully added TXT record: {}", name);
+            debug!("Successfully added TXT record: {}", name);
             Ok(())
         }
         code => Err(anyhow::anyhow!(

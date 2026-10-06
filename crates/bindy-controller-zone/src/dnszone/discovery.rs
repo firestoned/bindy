@@ -42,6 +42,9 @@ use bindy_controller_sdk::pagination::list_all_paginated;
 /// * `client` - Kubernetes API client for querying DNS records
 /// * `dnszone` - The `DNSZone` resource with label selectors
 /// * `stores` - Context stores for resolving instances and creating `Bind9Manager`s
+/// * `retained` - Deleted records whose DNS cleanup is not confirmed yet (from
+///   `cleanup::cleanup_stale_records`): kept in `status.records` so the
+///   cleanup is retried, and not processed again here
 ///
 /// # Returns
 ///
@@ -56,6 +59,7 @@ pub async fn reconcile_zone_records(
     client: Client,
     dnszone: DNSZone,
     stores: &crate::context::Stores,
+    retained: &[crate::crd::RecordReferenceWithTimestamp],
 ) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
     let namespace = dnszone.namespace().unwrap_or_default();
     let spec = &dnszone.spec;
@@ -63,7 +67,7 @@ pub async fn reconcile_zone_records(
 
     // Early return if no label selectors are defined
     let Some(ref records_from) = spec.records_from else {
-        info!(
+        debug!(
             "No label selectors defined for zone {}, skipping record discovery",
             zone_name
         );
@@ -71,16 +75,23 @@ pub async fn reconcile_zone_records(
         return Ok(Vec::new());
     };
 
-    info!(
+    debug!(
         "Discovering DNS records for zone {} using {} label selector(s)",
         zone_name,
         records_from.len()
     );
 
     // Query all record types and filter by label selectors
-    let mut all_record_refs = discover_selected_records(&client, &dnszone).await?;
+    let discovered = discover_selected_records_detailed(&client, &dnszone).await?;
+    let already_tagged: HashSet<String> = discovered
+        .iter()
+        .filter(|d| d.tagged)
+        .map(|d| format!("{}/{}", d.reference.kind, d.reference.name))
+        .collect();
+    let mut all_record_refs: Vec<crate::crd::RecordReferenceWithTimestamp> =
+        discovered.into_iter().map(|d| d.reference).collect();
 
-    info!(
+    debug!(
         "Discovered {} DNS record(s) for zone {}",
         all_record_refs.len(),
         zone_name
@@ -104,12 +115,17 @@ pub async fn reconcile_zone_records(
         .map(|r| format!("{}/{}", r.kind, r.name))
         .collect();
 
-    // Tag all matched records to ensure status.zoneRef is set
-    // Previously we only tagged "newly matched" records, but records can exist in
-    // status.records without having status.zoneRef set (e.g., from a previous
-    // implementation or migration). Always tag to ensure consistency.
+    // Tag every matched record whose status.zoneRef does not already name this
+    // zone. The check reads the status the LIST just returned, so a record in
+    // status.records without a zoneRef (an older implementation, a migration)
+    // is still re-tagged, but an already-tagged record costs no PATCH: tagging
+    // all of them on every reconcile was one API write per record per zone
+    // reconcile (ADR-0015).
     for record_ref in &all_record_refs {
         let record_key = format!("{}/{}", record_ref.kind, record_ref.name);
+        if already_tagged.contains(&record_key) {
+            continue;
+        }
         let is_new = !previous_records.contains(&record_key);
 
         if is_new {
@@ -148,8 +164,20 @@ pub async fn reconcile_zone_records(
 
     // Lazily resolved (and cached) primary instances for this zone
     let mut primary_refs_cache: Option<Vec<crate::crd::InstanceReference>> = None;
+    // One resolver for every DNS deletion below (ADR-0015)
+    let resolver = bindy_bind9::instances::InstanceResolver::for_kube(&client, stores);
+
+    let retained_keys: HashSet<String> = retained
+        .iter()
+        .map(|r| format!("{}/{}", r.kind, r.name))
+        .collect();
 
     for record_ref in unselected_previous_records(&previous_refs, &current_records) {
+        // Already handled by the stale-record cleanup, which keeps it until
+        // its DNS data is confirmed gone.
+        if retained_keys.contains(&format!("{}/{}", record_ref.kind, record_ref.name)) {
+            continue;
+        }
         let kind = record_ref.kind.as_str();
         let name = record_ref.name.as_str();
 
@@ -168,6 +196,7 @@ pub async fn reconcile_zone_records(
         } else if let Err(e) = cleanup_unselected_record_dns(
             &client,
             stores,
+            &resolver,
             &dnszone,
             &namespace,
             &record_ref,
@@ -207,6 +236,8 @@ pub async fn reconcile_zone_records(
         // Continue regardless - the record will be removed from status.records
         // when we return all_record_refs (which doesn't include this record)
     }
+
+    merge_retained_records(&mut all_record_refs, retained);
 
     // CRITICAL: Preserve existing timestamps for records that haven't changed
     // This prevents status updates from triggering unnecessary reconciliation loops
@@ -253,6 +284,58 @@ fn unselected_previous_records(
         .collect()
 }
 
+/// Whether a record's `status.zoneRef` already names this zone.
+///
+/// # Arguments
+///
+/// * `zone_ref` - The record's `status.zoneRef`, if any
+/// * `zone_namespace` - Namespace of the `DNSZone`
+/// * `zone_resource_name` - Name of the `DNSZone` resource
+/// * `zone_fqdn` - The zone's DNS name (`spec.zoneName`)
+#[must_use]
+pub(crate) fn is_tagged_with_zone(
+    zone_ref: Option<&crate::crd::ZoneReference>,
+    zone_namespace: &str,
+    zone_resource_name: &str,
+    zone_fqdn: &str,
+) -> bool {
+    zone_ref.is_some_and(|z| {
+        z.namespace == zone_namespace && z.name == zone_resource_name && z.zone_name == zone_fqdn
+    })
+}
+
+/// Append each `retained` record reference that `current` does not already
+/// hold (matched by kind, namespace and name).
+///
+/// # Arguments
+///
+/// * `current` - The record references the zone will publish in its status
+/// * `retained` - References kept for a cleanup retry
+pub(crate) fn merge_retained_records(
+    current: &mut Vec<crate::crd::RecordReferenceWithTimestamp>,
+    retained: &[crate::crd::RecordReferenceWithTimestamp],
+) {
+    for record_ref in retained {
+        let present = current.iter().any(|r| {
+            r.kind == record_ref.kind
+                && r.namespace == record_ref.namespace
+                && r.name == record_ref.name
+        });
+        if !present {
+            current.push(record_ref.clone());
+        }
+    }
+}
+
+/// A record the zone's selectors match, and whether it is already tagged
+/// with this zone.
+pub(crate) struct DiscoveredRecord {
+    /// The reference published in `status.records`
+    pub reference: crate::crd::RecordReferenceWithTimestamp,
+    /// Whether the record's `status.zoneRef` already names this zone
+    pub tagged: bool,
+}
+
 /// Every record resource the zone's `recordsFrom` selectors match right now,
 /// of every record kind, in the zone's namespace.
 ///
@@ -272,8 +355,23 @@ pub(crate) async fn discover_selected_records(
     client: &Client,
     dnszone: &DNSZone,
 ) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
-    let namespace = dnszone.namespace().unwrap_or_default();
-    let zone_name = &dnszone.spec.zone_name;
+    Ok(discover_selected_records_detailed(client, dnszone)
+        .await?
+        .into_iter()
+        .map(|d| d.reference)
+        .collect())
+}
+
+/// As [`discover_selected_records`], also reporting which records are
+/// already tagged with this zone.
+///
+/// # Errors
+///
+/// Returns an error if listing any record kind fails.
+pub(crate) async fn discover_selected_records_detailed(
+    client: &Client,
+    dnszone: &DNSZone,
+) -> Result<Vec<DiscoveredRecord>> {
     let Some(records_from) = dnszone.spec.records_from.as_ref() else {
         return Ok(Vec::new());
     };
@@ -282,15 +380,33 @@ pub(crate) async fn discover_selected_records(
     for record_source in records_from {
         let selector = &record_source.selector;
 
-        refs.extend(discover_a_records(client, &namespace, selector, zone_name).await?);
-        refs.extend(discover_aaaa_records(client, &namespace, selector, zone_name).await?);
-        refs.extend(discover_txt_records(client, &namespace, selector, zone_name).await?);
-        refs.extend(discover_cname_records(client, &namespace, selector, zone_name).await?);
-        refs.extend(discover_mx_records(client, &namespace, selector, zone_name).await?);
-        refs.extend(discover_ns_records(client, &namespace, selector, zone_name).await?);
-        refs.extend(discover_srv_records(client, &namespace, selector, zone_name).await?);
-        refs.extend(discover_caa_records(client, &namespace, selector, zone_name).await?);
-        refs.extend(discover_ptr_records(client, &namespace, selector, zone_name).await?);
+        refs.extend(
+            discover_records_generic::<crate::crd::ARecord>(client, dnszone, selector).await?,
+        );
+        refs.extend(
+            discover_records_generic::<crate::crd::AAAARecord>(client, dnszone, selector).await?,
+        );
+        refs.extend(
+            discover_records_generic::<crate::crd::TXTRecord>(client, dnszone, selector).await?,
+        );
+        refs.extend(
+            discover_records_generic::<crate::crd::CNAMERecord>(client, dnszone, selector).await?,
+        );
+        refs.extend(
+            discover_records_generic::<crate::crd::MXRecord>(client, dnszone, selector).await?,
+        );
+        refs.extend(
+            discover_records_generic::<crate::crd::NSRecord>(client, dnszone, selector).await?,
+        );
+        refs.extend(
+            discover_records_generic::<crate::crd::SRVRecord>(client, dnszone, selector).await?,
+        );
+        refs.extend(
+            discover_records_generic::<crate::crd::CAARecord>(client, dnszone, selector).await?,
+        );
+        refs.extend(
+            discover_records_generic::<crate::crd::PTRRecord>(client, dnszone, selector).await?,
+        );
     }
     Ok(refs)
 }
@@ -393,6 +509,7 @@ fn dynamic_record_api(
 ///
 /// * `client` - Kubernetes API client
 /// * `stores` - Context stores for resolving instances and creating `Bind9Manager`s
+/// * `resolver` - Per-reconcile resolver for instance keys and endpoints
 /// * `dnszone` - The zone that previously selected this record
 /// * `namespace` - Namespace of the record
 /// * `record_ref` - Reference to the unselected record
@@ -406,6 +523,7 @@ fn dynamic_record_api(
 async fn cleanup_unselected_record_dns(
     client: &Client,
     stores: &crate::context::Stores,
+    resolver: &bindy_bind9::instances::InstanceResolver,
     dnszone: &DNSZone,
     namespace: &str,
     record_ref: &crate::crd::RecordReferenceWithTimestamp,
@@ -473,8 +591,12 @@ async fn cleanup_unselected_record_dns(
             return Ok(());
         };
 
-        let primaries =
-            crate::dnszone::primary::filter_primary_instances(client, &instance_refs).await?;
+        let primaries = bindy_bind9::primary::filter_primary_instances_cached(
+            client,
+            &stores.bind9_instances,
+            &instance_refs,
+        )
+        .await?;
         *primary_refs_cache = Some(primaries);
     }
 
@@ -504,6 +626,7 @@ async fn cleanup_unselected_record_dns(
     bindy_bind9::record_push::delete_record_from_primaries(
         client,
         stores,
+        resolver,
         primary_refs,
         &dnszone.spec.zone_name,
         record_name,
@@ -578,7 +701,7 @@ async fn tag_record_with_zone(
             format!("Failed to set status.zone and status.zoneRef on {kind} {namespace}/{name}")
         })?;
 
-    info!(
+    debug!(
         "Successfully tagged {} {}/{} with zone {} (set status.zoneRef)",
         kind, namespace, name, zone_fqdn
     );
@@ -803,29 +926,30 @@ impl DiscoverableRecord for crate::crd::PTRRecord {
 /// # Arguments
 ///
 /// * `client` - Kubernetes API client
-/// * `namespace` - Namespace to search for records
+/// * `dnszone` - The zone whose namespace is searched and whose tag is checked
 /// * `selector` - Label selector to match records against
-/// * `_zone_name` - Zone name (unused but kept for API compatibility)
 ///
 /// # Returns
 ///
-/// Vector of record references with timestamps for records that match the selector
+/// The matching records, each with whether it is already tagged with `dnszone`
 ///
 /// # Errors
 ///
 /// Returns an error if listing records from the Kubernetes API fails
 async fn discover_records_generic<T>(
     client: &Client,
-    namespace: &str,
+    dnszone: &DNSZone,
     selector: &crate::crd::LabelSelector,
-    _zone_name: &str,
-) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>>
+) -> Result<Vec<DiscoveredRecord>>
 where
     T: DiscoverableRecord,
 {
     use std::collections::BTreeMap;
 
-    let api: kube::Api<T> = kube::Api::namespaced(client.clone(), namespace);
+    let namespace = dnszone.namespace().unwrap_or_default();
+    let zone_resource_name = dnszone.name_any();
+    let zone_fqdn = &dnszone.spec.zone_name;
+    let api: kube::Api<T> = kube::Api::namespaced(client.clone(), &namespace);
     let records = list_all_paginated(&api, kube::api::ListParams::default()).await?;
 
     let mut record_refs = Vec::new();
@@ -854,230 +978,27 @@ where
                     .map(k8s_openapi::apimachinery::pkg::apis::meta::v1::Time)
             });
 
-        record_refs.push(crate::crd::RecordReferenceWithTimestamp {
-            api_version: "bindy.firestoned.io/v1beta1".to_string(),
-            kind: T::dns_record_kind().as_str().to_string(),
-            name: record.name_any(),
-            namespace: namespace.to_string(),
-            record_name: Some(record.spec_name().to_string()),
-            last_reconciled_at,
+        let tagged = is_tagged_with_zone(
+            record.record_status().and_then(|s| s.zone_ref.as_ref()),
+            &namespace,
+            &zone_resource_name,
+            zone_fqdn,
+        );
+
+        record_refs.push(DiscoveredRecord {
+            reference: crate::crd::RecordReferenceWithTimestamp {
+                api_version: "bindy.firestoned.io/v1beta1".to_string(),
+                kind: T::dns_record_kind().as_str().to_string(),
+                name: record.name_any(),
+                namespace: namespace.clone(),
+                record_name: Some(record.spec_name().to_string()),
+                last_reconciled_at,
+            },
+            tagged,
         });
     }
 
     Ok(record_refs)
-}
-
-/// Helper function to discover A records matching a label selector.
-async fn discover_a_records(
-    client: &Client,
-    namespace: &str,
-    selector: &crate::crd::LabelSelector,
-    zone_name: &str,
-) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
-    discover_records_generic::<crate::crd::ARecord>(client, namespace, selector, zone_name).await
-}
-
-/// Helper function to discover AAAA records matching a label selector.
-async fn discover_aaaa_records(
-    client: &Client,
-    namespace: &str,
-    selector: &crate::crd::LabelSelector,
-    zone_name: &str,
-) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
-    discover_records_generic::<crate::crd::AAAARecord>(client, namespace, selector, zone_name).await
-}
-
-/// Helper function to discover TXT records matching a label selector.
-async fn discover_txt_records(
-    client: &Client,
-    namespace: &str,
-    selector: &crate::crd::LabelSelector,
-    zone_name: &str,
-) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
-    discover_records_generic::<crate::crd::TXTRecord>(client, namespace, selector, zone_name).await
-}
-
-/// Helper function to discover CNAME records matching a label selector.
-async fn discover_cname_records(
-    client: &Client,
-    namespace: &str,
-    selector: &crate::crd::LabelSelector,
-    zone_name: &str,
-) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
-    discover_records_generic::<crate::crd::CNAMERecord>(client, namespace, selector, zone_name)
-        .await
-}
-
-/// Helper function to discover MX records matching a label selector.
-async fn discover_mx_records(
-    client: &Client,
-    namespace: &str,
-    selector: &crate::crd::LabelSelector,
-    zone_name: &str,
-) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
-    discover_records_generic::<crate::crd::MXRecord>(client, namespace, selector, zone_name).await
-}
-
-/// Helper function to discover NS records matching a label selector.
-async fn discover_ns_records(
-    client: &Client,
-    namespace: &str,
-    selector: &crate::crd::LabelSelector,
-    zone_name: &str,
-) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
-    discover_records_generic::<crate::crd::NSRecord>(client, namespace, selector, zone_name).await
-}
-
-/// Helper function to discover SRV records matching a label selector.
-async fn discover_srv_records(
-    client: &Client,
-    namespace: &str,
-    selector: &crate::crd::LabelSelector,
-    zone_name: &str,
-) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
-    discover_records_generic::<crate::crd::SRVRecord>(client, namespace, selector, zone_name).await
-}
-
-/// Helper function to discover CAA records matching a label selector.
-async fn discover_caa_records(
-    client: &Client,
-    namespace: &str,
-    selector: &crate::crd::LabelSelector,
-    zone_name: &str,
-) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
-    discover_records_generic::<crate::crd::CAARecord>(client, namespace, selector, zone_name).await
-}
-
-/// Helper function to discover PTR records matching a label selector.
-async fn discover_ptr_records(
-    client: &Client,
-    namespace: &str,
-    selector: &crate::crd::LabelSelector,
-    zone_name: &str,
-) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
-    discover_records_generic::<crate::crd::PTRRecord>(client, namespace, selector, zone_name).await
-}
-
-/// Checks if all DNS records are ready.
-///
-/// Iterates through all record references and verifies their readiness status.
-///
-/// # Arguments
-///
-/// * `client` - Kubernetes API client
-/// * `namespace` - Namespace to check records in
-/// * `record_refs` - List of record references to check
-///
-/// # Returns
-///
-/// `true` if all records are ready, `false` otherwise
-///
-/// # Errors
-///
-/// Returns an error if Kubernetes API calls fail
-pub async fn check_all_records_ready(
-    client: &Client,
-    namespace: &str,
-    record_refs: &[crate::crd::RecordReferenceWithTimestamp],
-) -> Result<bool> {
-    use crate::crd::{
-        AAAARecord, ARecord, CAARecord, CNAMERecord, DNSRecordKind, MXRecord, NSRecord, PTRRecord,
-        SRVRecord, TXTRecord,
-    };
-
-    for record_ref in record_refs {
-        let kind = DNSRecordKind::try_from(record_ref.kind.as_str())?;
-        let is_ready = match kind {
-            DNSRecordKind::A => {
-                let api: Api<ARecord> = Api::namespaced(client.clone(), namespace);
-                check_record_ready(&api, &record_ref.name).await?
-            }
-            DNSRecordKind::AAAA => {
-                let api: Api<AAAARecord> = Api::namespaced(client.clone(), namespace);
-                check_record_ready(&api, &record_ref.name).await?
-            }
-            DNSRecordKind::TXT => {
-                let api: Api<TXTRecord> = Api::namespaced(client.clone(), namespace);
-                check_record_ready(&api, &record_ref.name).await?
-            }
-            DNSRecordKind::CNAME => {
-                let api: Api<CNAMERecord> = Api::namespaced(client.clone(), namespace);
-                check_record_ready(&api, &record_ref.name).await?
-            }
-            DNSRecordKind::MX => {
-                let api: Api<MXRecord> = Api::namespaced(client.clone(), namespace);
-                check_record_ready(&api, &record_ref.name).await?
-            }
-            DNSRecordKind::NS => {
-                let api: Api<NSRecord> = Api::namespaced(client.clone(), namespace);
-                check_record_ready(&api, &record_ref.name).await?
-            }
-            DNSRecordKind::SRV => {
-                let api: Api<SRVRecord> = Api::namespaced(client.clone(), namespace);
-                check_record_ready(&api, &record_ref.name).await?
-            }
-            DNSRecordKind::CAA => {
-                let api: Api<CAARecord> = Api::namespaced(client.clone(), namespace);
-                check_record_ready(&api, &record_ref.name).await?
-            }
-            DNSRecordKind::PTR => {
-                let api: Api<PTRRecord> = Api::namespaced(client.clone(), namespace);
-                check_record_ready(&api, &record_ref.name).await?
-            }
-        };
-
-        if !is_ready {
-            debug!(
-                "Record {}/{} (kind: {}) is not ready yet",
-                namespace, record_ref.name, record_ref.kind
-            );
-            return Ok(false);
-        }
-    }
-
-    Ok(true)
-}
-
-/// Check if a specific record is ready by examining its status conditions.
-async fn check_record_ready<T>(api: &Api<T>, name: &str) -> Result<bool>
-where
-    T: kube::Resource<DynamicType = ()>
-        + Clone
-        + serde::de::DeserializeOwned
-        + serde::Serialize
-        + std::fmt::Debug
-        + Send
-        + Sync,
-    <T as kube::Resource>::DynamicType: Default,
-{
-    let record = match api.get(name).await {
-        Ok(r) => r,
-        Err(e) => {
-            warn!("Failed to get record {}: {}", name, e);
-            return Ok(false);
-        }
-    };
-
-    // Use serde_json to access the status field dynamically
-    let record_json = serde_json::to_value(&record)?;
-    let status = record_json.get("status");
-
-    if let Some(status_obj) = status {
-        if let Some(conditions) = status_obj.get("conditions").and_then(|c| c.as_array()) {
-            for condition in conditions {
-                if let (Some(type_val), Some(status_val)) = (
-                    condition.get("type").and_then(|t| t.as_str()),
-                    condition.get("status").and_then(|s| s.as_str()),
-                ) {
-                    if type_val == "Ready" && status_val == "True" {
-                        return Ok(true);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(false)
 }
 
 /// Discover and update DNSZone status with DNS records.
@@ -1093,6 +1014,7 @@ where
 /// * `dnszone` - The DNSZone resource being reconciled
 /// * `status_updater` - Status updater for setting conditions and records
 /// * `stores` - Context stores for resolving instances and creating `Bind9Manager`s
+/// * `retained` - Deleted records the stale cleanup keeps for a retry
 ///
 /// # Returns
 ///
@@ -1109,6 +1031,7 @@ pub async fn discover_and_update_records(
     dnszone: &crate::crd::DNSZone,
     status_updater: &mut bindy_controller_sdk::status::DNSZoneStatusUpdater,
     stores: &crate::context::Stores,
+    retained: &[crate::crd::RecordReferenceWithTimestamp],
 ) -> Result<(Vec<crate::crd::RecordReferenceWithTimestamp>, usize)> {
     let spec = &dnszone.spec;
 
@@ -1124,7 +1047,7 @@ pub async fn discover_and_update_records(
     // status.records: overwriting it with an empty list on a transient list
     // failure would break the record watch mapper until the next successful
     // discovery.
-    let record_refs = reconcile_zone_records(client.clone(), dnszone.clone(), stores)
+    let record_refs = reconcile_zone_records(client.clone(), dnszone.clone(), stores, retained)
         .await
         .map_err(|e| {
             warn!(
@@ -1137,7 +1060,7 @@ pub async fn discover_and_update_records(
             ))
         })?;
 
-    info!(
+    debug!(
         "Discovered {} DNS record(s) for zone {} via label selectors",
         record_refs.len(),
         spec.zone_name

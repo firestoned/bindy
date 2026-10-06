@@ -59,6 +59,9 @@ kube-lease-manager = "0.12"
 # Already in the tree via kube; direct dep for RateLimitLayer and Layer/Service.
 tower = { version = "0.5", features = ["limit", "util"] }
 http = "1"
+# Response-body wrapper of the non-watch request deadline (ADR-0014). Already
+# in the tree through kube and hyper.
+http-body = "1"
 # JSON Patch construction for atomic finalizer add/remove with `test` guards
 # (mirrors kube-runtime's own finalizer helper; same version kube-core uses)
 json-patch = "4.2"

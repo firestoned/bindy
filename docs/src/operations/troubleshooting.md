@@ -49,6 +49,31 @@ in `status.bind9Instances`. Fixed in v0.8.0-rc.3; on earlier versions the
 loop is harmless to DNS service but re-pushes the zone configuration about
 once a minute. Recreating the `DNSZone` CR does not help; upgrading does.
 
+### Records Publish Slowly in Bulk, or Stay Served After Deletion
+
+Before v0.8.0-rc.3, creating hundreds of records at once could keep many of
+them `NotSelected` or unpublished for minutes, with the operator pinned at
+its client-side API limit (`bindy_firestoned_io_kube_api_requests_total`
+climbing at close to `BINDY_KUBE_QPS`). Every record write re-read each
+instance's RNDC key Secret and Endpoints, and record reconciles woke each
+other through the zone's `status.records`. A deleted record could also stay
+in DNS when its finalizer's cleanup failed under that load, because the
+zone's backup cleanup gave up after one attempt.
+
+From v0.8.0-rc.3 ([ADR-0015](https://github.com/firestoned/bindy/blob/main/docs/adr/0015-bounded-api-cost-of-dns-writes.md))
+a write reads each instance's key and endpoints once per reconcile, a zone
+reconcile no longer touches every record, and a deleted record stays listed
+in its zone's `status.records` until its data is confirmed gone from every
+primary. If a deleted record is still answered, check the zone's events and
+the operator log for:
+
+```
+N deleted record(s) of zone <namespace>/<zone> may still be served; their DNS cleanup is retried
+```
+
+That warning repeats every zone reconcile until every primary endpoint is
+reachable again; the record is then removed from DNS and from the status.
+
 ## Debugging Steps
 
 See [Debugging Guide](./debugging.md) for detailed debugging procedures.

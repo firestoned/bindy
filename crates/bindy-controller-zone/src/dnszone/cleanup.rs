@@ -131,6 +131,89 @@ pub async fn cleanup_deleted_instances(
     Ok(deleted_count)
 }
 
+/// Names of the record resources that exist, keyed by `(kind, namespace)`.
+pub(super) type ListedRecords =
+    std::collections::HashMap<(String, String), std::collections::HashSet<String>>;
+
+/// Whether a record of `kind` named `name` in `namespace` was listed.
+#[must_use]
+pub(super) fn record_listed(
+    existing: &ListedRecords,
+    kind: &str,
+    namespace: &str,
+    name: &str,
+) -> bool {
+    existing
+        .get(&(kind.to_string(), namespace.to_string()))
+        .is_some_and(|names| names.contains(name))
+}
+
+/// Names of every resource of `T` in `namespace`.
+///
+/// # Errors
+///
+/// Returns an error if the LIST fails.
+async fn list_names<T>(
+    client: &Client,
+    namespace: &str,
+) -> Result<std::collections::HashSet<String>>
+where
+    T: kube::Resource<DynamicType = (), Scope = k8s_openapi::NamespaceResourceScope>
+        + Clone
+        + std::fmt::Debug
+        + serde::de::DeserializeOwned,
+{
+    use kube::ResourceExt;
+    let api: Api<T> = Api::namespaced(client.clone(), namespace);
+    let items = bindy_controller_sdk::pagination::list_all_paginated(
+        &api,
+        kube::api::ListParams::default(),
+    )
+    .await?;
+    Ok(items.iter().map(ResourceExt::name_any).collect())
+}
+
+/// Names of every record of `kind` in `namespace`, by one LIST.
+///
+/// # Errors
+///
+/// Returns an error if the kind is unknown or the LIST fails. A failed LIST
+/// must abort the stale-record pass: reading it as "nothing exists" would
+/// trigger the self-healing path and delete live DNS data.
+async fn existing_record_names(
+    client: &Client,
+    kind: &str,
+    namespace: &str,
+) -> Result<std::collections::HashSet<String>> {
+    use crate::crd::{
+        AAAARecord, ARecord, CAARecord, CNAMERecord, DNSRecordKind, MXRecord, NSRecord, PTRRecord,
+        SRVRecord, TXTRecord,
+    };
+
+    match DNSRecordKind::try_from(kind)? {
+        DNSRecordKind::A => list_names::<ARecord>(client, namespace).await,
+        DNSRecordKind::AAAA => list_names::<AAAARecord>(client, namespace).await,
+        DNSRecordKind::TXT => list_names::<TXTRecord>(client, namespace).await,
+        DNSRecordKind::CNAME => list_names::<CNAMERecord>(client, namespace).await,
+        DNSRecordKind::MX => list_names::<MXRecord>(client, namespace).await,
+        DNSRecordKind::NS => list_names::<NSRecord>(client, namespace).await,
+        DNSRecordKind::SRV => list_names::<SRVRecord>(client, namespace).await,
+        DNSRecordKind::CAA => list_names::<CAARecord>(client, namespace).await,
+        DNSRecordKind::PTR => list_names::<PTRRecord>(client, namespace).await,
+    }
+}
+
+/// What [`cleanup_stale_records`] did.
+#[derive(Debug, Default)]
+pub struct StaleRecordCleanup {
+    /// Deleted records dropped from `status.records`
+    pub removed: usize,
+    /// Deleted records whose DNS data could not be confirmed gone on every
+    /// primary endpoint. They stay in `status.records`, so the next
+    /// reconciliation retries the cleanup instead of forgetting the data.
+    pub retained: Vec<crate::crd::RecordReferenceWithTimestamp>,
+}
+
 /// Clean up stale records from zone status.
 ///
 /// Iterates through records in zone status and removes any that no longer exist
@@ -139,16 +222,26 @@ pub async fn cleanup_deleted_instances(
 /// zone selects still declares the same name and type (a renamed record):
 /// that data is kept.
 ///
+/// Existence is read with one LIST per record kind and namespace present in
+/// the status, and every self-healing write shares one
+/// [`bindy_bind9::instances::InstanceResolver`], so the API cost of this pass
+/// does not grow with the number of records (ADR-0015).
+///
+/// A deleted record is dropped from status only once its data is confirmed
+/// gone from every primary endpoint. Before, a failed lookup or DNS query was
+/// ignored and the reference dropped anyway, so a record whose finalizer had
+/// also failed stayed served with nothing left to clean it up.
+///
 /// # Arguments
 ///
 /// * `client` - Kubernetes client
 /// * `dnszone` - The DNSZone resource being reconciled
 /// * `status_updater` - Status updater for modifying zone status
-/// * `bind9_instances_store` - Reflector store for querying Bind9Instance resources
+/// * `stores` - The shared reflector stores
 ///
 /// # Returns
 ///
-/// Number of records removed from status
+/// How many records were removed, and which were retained for a retry
 ///
 /// # Errors
 ///
@@ -158,14 +251,13 @@ pub async fn cleanup_stale_records(
     client: &Client,
     dnszone: &DNSZone,
     status_updater: &mut bindy_controller_sdk::status::DNSZoneStatusUpdater,
-    bind9_instances_store: &crate::context::MultiStore<crate::crd::Bind9Instance>,
-) -> Result<usize> {
+    stores: &crate::context::Stores,
+) -> Result<StaleRecordCleanup> {
     use crate::bind9::records::query_dns_record;
-    use crate::crd::{
-        AAAARecord, ARecord, CAARecord, CNAMERecord, DNSRecordKind, MXRecord, NSRecord, PTRRecord,
-        RecordReferenceWithTimestamp, SRVRecord, TXTRecord,
-    };
-    use kube::{Api, ResourceExt};
+    use crate::crd::{DNSRecordKind, RecordReferenceWithTimestamp};
+    use kube::ResourceExt;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     let namespace = dnszone.namespace().unwrap_or_default();
     let zone_name = &dnszone.spec.zone_name;
@@ -177,236 +269,222 @@ pub async fn cleanup_stale_records(
         .map(|s| s.records.clone())
         .unwrap_or_default();
 
+    let mut outcome = StaleRecordCleanup::default();
+
     if current_records.is_empty() {
         debug!(
             "No records in status for zone {}/{} - skipping cleanup",
             namespace, zone_name
         );
-        return Ok(0);
+        return Ok(outcome);
     }
 
-    info!(
+    debug!(
         "Cleaning up stale records for zone {}/{}: checking {} record(s)",
         namespace,
         zone_name,
         current_records.len()
     );
 
+    // One LIST per (kind, namespace) present. Only a successful LIST counts:
+    // an error aborts the pass (`?`), never reads as "deleted".
+    let mut existing: ListedRecords = ListedRecords::new();
+    for record_ref in &current_records {
+        let key = (record_ref.kind.clone(), record_ref.namespace.clone());
+        if existing.contains_key(&key) {
+            continue;
+        }
+        let names = existing_record_names(client, &record_ref.kind, &record_ref.namespace).await?;
+        existing.insert(key, names);
+    }
+
     // Get instances to query DNS and delete if needed
-    let instance_refs = super::validation::get_instances_from_zone(dnszone, bind9_instances_store)?;
-    let primary_refs = super::primary::filter_primary_instances(client, &instance_refs).await?;
+    let instance_refs =
+        super::validation::get_instances_from_zone(dnszone, &stores.bind9_instances)?;
+    let primary_refs = bindy_bind9::primary::filter_primary_instances_cached(
+        client,
+        &stores.bind9_instances,
+        &instance_refs,
+    )
+    .await?;
+    let resolver = bindy_bind9::instances::InstanceResolver::for_kube(client, stores);
 
     let mut records_to_keep: Vec<RecordReferenceWithTimestamp> = Vec::new();
-    let mut stale_count = 0;
 
     // The records the zone selects right now, listed the first time a deleted
     // one turns up. Status alone is not enough: this cleanup runs before
     // discovery, so a record created moments ago is not in status yet.
     let mut live_records: Option<Vec<RecordReferenceWithTimestamp>> = None;
 
-    // Check each record to see if it still exists.
-    // Only a 404 means "deleted": transient API errors abort this cleanup pass
-    // (via `?`). Treating a transient error on a live record as "deleted"
-    // would trigger the SELF-HEALING path below and delete live DNS data from
-    // all primaries while the record CR still exists.
     for record_ref in current_records {
-        let kind = DNSRecordKind::try_from(record_ref.kind.as_str())?;
-        let record_exists = match kind {
-            DNSRecordKind::A => {
-                let api: Api<ARecord> = Api::namespaced(client.clone(), &record_ref.namespace);
-                resource_exists(&api, &record_ref.name).await?
-            }
-            DNSRecordKind::AAAA => {
-                let api: Api<AAAARecord> = Api::namespaced(client.clone(), &record_ref.namespace);
-                resource_exists(&api, &record_ref.name).await?
-            }
-            DNSRecordKind::TXT => {
-                let api: Api<TXTRecord> = Api::namespaced(client.clone(), &record_ref.namespace);
-                resource_exists(&api, &record_ref.name).await?
-            }
-            DNSRecordKind::CNAME => {
-                let api: Api<CNAMERecord> = Api::namespaced(client.clone(), &record_ref.namespace);
-                resource_exists(&api, &record_ref.name).await?
-            }
-            DNSRecordKind::MX => {
-                let api: Api<MXRecord> = Api::namespaced(client.clone(), &record_ref.namespace);
-                resource_exists(&api, &record_ref.name).await?
-            }
-            DNSRecordKind::NS => {
-                let api: Api<NSRecord> = Api::namespaced(client.clone(), &record_ref.namespace);
-                resource_exists(&api, &record_ref.name).await?
-            }
-            DNSRecordKind::SRV => {
-                let api: Api<SRVRecord> = Api::namespaced(client.clone(), &record_ref.namespace);
-                resource_exists(&api, &record_ref.name).await?
-            }
-            DNSRecordKind::CAA => {
-                let api: Api<CAARecord> = Api::namespaced(client.clone(), &record_ref.namespace);
-                resource_exists(&api, &record_ref.name).await?
-            }
-            DNSRecordKind::PTR => {
-                let api: Api<PTRRecord> = Api::namespaced(client.clone(), &record_ref.namespace);
-                resource_exists(&api, &record_ref.name).await?
-            }
-        };
-
-        if record_exists {
+        if record_listed(
+            &existing,
+            &record_ref.kind,
+            &record_ref.namespace,
+            &record_ref.name,
+        ) {
             // Record still exists in Kubernetes - keep it in status
             // The record reconciler will handle updating BIND9
-            debug!(
-                "Record {} {}/{} still exists - keeping in status",
-                record_ref.kind, record_ref.namespace, record_ref.name
-            );
             records_to_keep.push(record_ref);
-        } else {
-            // Record doesn't exist in Kubernetes - need to clean up
+            continue;
+        }
+
+        // Record doesn't exist in Kubernetes - need to clean up
+        info!(
+            "Record {} {}/{} no longer exists in Kubernetes",
+            record_ref.kind, record_ref.namespace, record_ref.name
+        );
+
+        // Another live record declares the same RRset (e.g. this record was
+        // renamed): drop the stale reference but keep the DNS data. A
+        // listing error aborts the pass (`?`) rather than risk deleting
+        // data that is still wanted.
+        if live_records.is_none() {
+            live_records =
+                Some(super::discovery::discover_selected_records(client, dnszone).await?);
+        }
+        if let Some(claimant) = live_records
+            .as_deref()
+            .and_then(|live| super::discovery::claimed_by_live_record(&record_ref, live))
+        {
             info!(
-                "Record {} {}/{} no longer exists in Kubernetes",
+                "Keeping DNS data of deleted {} {}/{}: still declared by {} {}/{}",
+                record_ref.kind,
+                record_ref.namespace,
+                record_ref.name,
+                claimant.kind,
+                claimant.namespace,
+                claimant.name
+            );
+            outcome.removed += 1;
+            continue;
+        }
+
+        // Self-healing: Check if record still exists in BIND9 and delete if found
+        // This catches cases where the finalizer failed to delete
+        let kind = DNSRecordKind::try_from(record_ref.kind.as_str())?;
+        let record_type = kind.to_hickory_record_type();
+
+        // Extract DNS record name and zone from RecordReference
+        // These fields are populated from spec.name when the record is discovered
+        let Some(dns_record_name) = record_ref.record_name.clone() else {
+            warn!(
+                "Record {} {}/{} has no recordName in status - skipping BIND9 cleanup",
                 record_ref.kind, record_ref.namespace, record_ref.name
             );
+            outcome.removed += 1;
+            continue;
+        };
 
-            // Another live record declares the same RRset (e.g. this record was
-            // renamed): drop the stale reference but keep the DNS data. A
-            // listing error aborts the pass (`?`) rather than risk deleting
-            // data that is still wanted.
-            if live_records.is_none() {
-                live_records =
-                    Some(super::discovery::discover_selected_records(client, dnszone).await?);
-            }
-            if let Some(claimant) = live_records
-                .as_deref()
-                .and_then(|live| super::discovery::claimed_by_live_record(&record_ref, live))
-            {
-                info!(
-                    "Keeping DNS data of deleted {} {}/{}: still declared by {} {}/{}",
-                    record_ref.kind,
-                    record_ref.namespace,
-                    record_ref.name,
-                    claimant.kind,
-                    claimant.namespace,
-                    claimant.name
-                );
-                stale_count += 1;
-                continue;
-            }
+        // Cleared by any endpoint where the data could not be confirmed gone
+        let verified = Arc::new(AtomicBool::new(true));
 
-            // Self-healing: Check if record still exists in BIND9 and delete if found
-            // This catches cases where the finalizer failed to delete
-            let kind = DNSRecordKind::try_from(record_ref.kind.as_str())?;
-            let record_type = kind.to_hickory_record_type();
+        // Query and potentially delete from each primary instance
+        let lookup = super::helpers::for_each_instance_endpoint(
+            &resolver,
+            &primary_refs,
+            true,      // with_rndc_key (needed for deletion)
+            "dns-tcp", // Use DNS TCP port for queries and updates
+            |pod_endpoint, _instance_name, rndc_key| {
+                let server = pod_endpoint.clone();
+                let zone = zone_name.clone();
+                let dns_name = dns_record_name.clone();
+                let r_kind = record_ref.kind.clone();
+                let r_namespace = record_ref.namespace.clone();
+                let r_name = record_ref.name.clone();
+                let verified = Arc::clone(&verified);
 
-            // Extract DNS record name and zone from RecordReference
-            // These fields are populated from spec.name when the record is discovered
-            let dns_record_name = if let Some(name) = &record_ref.record_name {
-                name.as_str()
-            } else {
-                warn!(
-                    "Record {} {}/{} has no recordName in status - skipping BIND9 cleanup",
-                    record_ref.kind, record_ref.namespace, record_ref.name
-                );
-                stale_count += 1;
-                continue;
-            };
+                async move {
+                    // Query DNS to check if record exists
+                    match query_dns_record(&zone, &dns_name, record_type, &server).await {
+                        Ok(records) if !records.is_empty() => {
+                            warn!(
+                                "SELF-HEALING: Record {} {}/{} deleted from K8s but still exists in BIND9 on {}",
+                                r_kind, r_namespace, r_name, server
+                            );
 
-            // Check BIND9 on all primary instances and delete if found
-            // Use for_each_instance_endpoint to iterate over all primary endpoints
-            let dns_record_name_clone = dns_record_name.to_string();
-            let dns_zone_name_clone = zone_name.clone();
-            let record_kind = record_ref.kind.clone();
-            let record_namespace = record_ref.namespace.clone();
-            let record_name = record_ref.name.clone();
-
-            // Query and potentially delete from each primary instance
-            let _ = super::helpers::for_each_instance_endpoint(
-                client,
-                &primary_refs,
-                true,      // with_rndc_key (needed for deletion)
-                "dns-tcp", // Use DNS TCP port for queries and updates
-                |pod_endpoint, _instance_name, rndc_key| {
-                    let server = pod_endpoint.clone();
-                    let zone = dns_zone_name_clone.clone();
-                    let dns_name = dns_record_name_clone.clone();
-                    let r_type = record_type;
-                    let r_kind = record_kind.clone();
-                    let r_namespace = record_namespace.clone();
-                    let r_name = record_name.clone();
-
-                    async move {
-                        // Query DNS to check if record exists
-                        match query_dns_record(&zone, &dns_name, r_type, &server).await {
-                            Ok(records) if !records.is_empty() => {
+                            let Some(key_data) = rndc_key else {
                                 warn!(
-                                    "SELF-HEALING: Record {} {}/{} deleted from K8s but still exists in BIND9 on {}",
-                                    r_kind, r_namespace, r_name, server
+                                    "No RNDC key available for {} - cannot delete orphaned record",
+                                    server
                                 );
-
-                                // Delete from BIND9 using the RNDC key
-                                if let Some(key_data) = rndc_key {
-                                    match crate::bind9::records::delete_dns_record(
-                                        &zone,
-                                        &dns_name,
-                                        r_type,
-                                        &server,
-                                        &key_data,
-                                    )
-                                    .await
-                                    {
-                                        Ok(()) => {
-                                            info!(
-                                                "SELF-HEALING: Successfully deleted orphaned {} record {} from BIND9 on {}",
-                                                r_kind, dns_name, server
-                                            );
-                                        }
-                                        Err(e) => {
-                                            warn!(
-                                                "SELF-HEALING: Failed to delete orphaned record from BIND9 on {}: {}",
-                                                server, e
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    warn!(
-                                        "No RNDC key available for {} - cannot delete orphaned record",
-                                        server
+                                verified.store(false, Ordering::SeqCst);
+                                return Ok(());
+                            };
+                            match crate::bind9::records::delete_dns_record(
+                                &zone,
+                                &dns_name,
+                                record_type,
+                                &server,
+                                &key_data,
+                            )
+                            .await
+                            {
+                                Ok(()) => {
+                                    info!(
+                                        "SELF-HEALING: Successfully deleted orphaned {} record {} from BIND9 on {}",
+                                        r_kind, dns_name, server
                                     );
                                 }
-                            }
-                            Ok(_) => {
-                                // Record doesn't exist in BIND9 - good, finalizer worked
-                                debug!(
-                                    "Record {} not found in BIND9 on {} - already cleaned up",
-                                    dns_name, server
-                                );
-                            }
-                            Err(e) => {
-                                debug!(
-                                    "Failed to query DNS on {} for {} (may not exist): {}",
-                                    server, dns_name, e
-                                );
+                                Err(e) => {
+                                    warn!(
+                                        "SELF-HEALING: Failed to delete orphaned record from BIND9 on {}: {}",
+                                        server, e
+                                    );
+                                    verified.store(false, Ordering::SeqCst);
+                                }
                             }
                         }
-
-                        Ok(())
+                        Ok(_) => {
+                            // Record doesn't exist in BIND9 - good, finalizer worked
+                            debug!(
+                                "Record {} not found in BIND9 on {} - already cleaned up",
+                                dns_name, server
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "SELF-HEALING: could not query {} on {} ({}); will retry",
+                                dns_name, server, e
+                            );
+                            verified.store(false, Ordering::SeqCst);
+                        }
                     }
-                },
-            )
-            .await;
 
-            // Remove from status regardless of whether we found it in BIND9
-            stale_count += 1;
+                    Ok(())
+                }
+            },
+        )
+        .await;
+
+        if let Err(e) = &lookup {
+            warn!(
+                "SELF-HEALING: could not reach every primary for deleted {} {}/{} ({e:#}); will retry",
+                record_ref.kind, record_ref.namespace, record_ref.name
+            );
         }
+
+        if lookup.is_ok() && verified.load(Ordering::SeqCst) {
+            outcome.removed += 1;
+            continue;
+        }
+
+        // Not confirmed gone everywhere: keep tracking it so the next
+        // reconciliation retries instead of orphaning the data in BIND9.
+        records_to_keep.push(record_ref.clone());
+        outcome.retained.push(record_ref);
     }
 
     // Update status with cleaned records list
-    if stale_count > 0 {
+    if outcome.removed > 0 {
         status_updater.set_records(&records_to_keep);
         info!(
             "Removed {} stale record(s) from zone {}/{} status",
-            stale_count, namespace, zone_name
+            outcome.removed, namespace, zone_name
         );
     }
 
-    Ok(stale_count)
+    Ok(outcome)
 }
 
 #[cfg(test)]

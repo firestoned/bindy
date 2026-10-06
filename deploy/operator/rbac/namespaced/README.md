@@ -54,6 +54,13 @@ kubectl delete clusterrolebinding bindy-rolebinding
 > a namespace with no Role, it crash-loops on 403s. If a Role exists for a namespace
 > the operator does not watch, that is a silent over-grant.
 
+> **Secret writes and TokenReview are separate grants.** The `role.yaml` here is read-only
+> on Secrets, like the cluster-wide role. A watched namespace that runs Bind9Instances
+> also needs the `bindy-secrets-writer` Role + RoleBinding and a `bindcar-tokenreview`
+> binding for its `bind9` ServiceAccount: apply
+> [`../operand-namespace/rbac.yaml`](../operand-namespace/rbac.yaml) for it as well. See
+> `docs/src/operations/multi-namespace.md`.
+
 ## Leader election
 
 The lease lives in `BINDY_LEASE_NAMESPACE` (default `bindy-system`), which is

@@ -600,3 +600,476 @@ mod tests {
         assert_eq!(running_pod_name_and_ip(&pod), None);
     }
 }
+
+/// Per-reconcile resolution of instance RNDC keys and endpoints (ADR-0015).
+///
+/// These pin the API-call budget of the record and zone write paths: a
+/// resolver answers every repeated lookup for an instance from memory, so the
+/// number of Secret and Endpoints reads per reconcile is bounded by the number
+/// of instances, not by records x instances.
+#[cfg(test)]
+mod resolver_tests {
+    use crate::bind9::RndcKeyData;
+    use crate::crd::{InstanceReference, RndcAlgorithm};
+    use crate::instances::*;
+    use k8s_openapi::api::core::v1::{EndpointAddress as K8sAddress, EndpointPort, EndpointSubset};
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    const PORT_DNS_TCP: &str = "dns-tcp";
+    const DNS_TCP_PORT: i32 = 53;
+    const ENDPOINTS_PER_INSTANCE: usize = 2;
+
+    /// Call counters shared between a test and its fake lookup.
+    #[derive(Default)]
+    struct Counters {
+        key_lookups: AtomicUsize,
+        endpoint_lookups: AtomicUsize,
+        keys_forgotten: AtomicUsize,
+    }
+
+    /// A lookup that counts calls instead of talking to the API server.
+    struct CountingLookup {
+        counters: Arc<Counters>,
+        fail_keys: bool,
+        fail_endpoints: bool,
+    }
+
+    impl CountingLookup {
+        fn new(counters: &Arc<Counters>) -> Self {
+            Self {
+                counters: Arc::clone(counters),
+                fail_keys: false,
+                fail_endpoints: false,
+            }
+        }
+    }
+
+    fn key_for(instance: &str) -> RndcKeyData {
+        RndcKeyData {
+            name: instance.to_string(),
+            algorithm: RndcAlgorithm::HmacSha256,
+            secret: format!("secret-of-{instance}"),
+        }
+    }
+
+    impl InstanceLookup for CountingLookup {
+        fn rndc_key<'a>(
+            &'a self,
+            _namespace: &'a str,
+            instance_name: &'a str,
+        ) -> LookupFuture<'a, RndcKeyData> {
+            self.counters.key_lookups.fetch_add(1, Ordering::SeqCst);
+            let fail = self.fail_keys;
+            Box::pin(async move {
+                if fail {
+                    return Err(anyhow::anyhow!("secret unavailable"));
+                }
+                Ok(key_for(instance_name))
+            })
+        }
+
+        fn endpoints<'a>(
+            &'a self,
+            _namespace: &'a str,
+            service_name: &'a str,
+            _port_name: &'a str,
+        ) -> LookupFuture<'a, Vec<EndpointAddress>> {
+            self.counters
+                .endpoint_lookups
+                .fetch_add(1, Ordering::SeqCst);
+            let fail = self.fail_endpoints;
+            Box::pin(async move {
+                if fail {
+                    return Err(anyhow::anyhow!("no ready endpoints for {service_name}"));
+                }
+                Ok((0..ENDPOINTS_PER_INSTANCE)
+                    .map(|i| EndpointAddress {
+                        ip: format!("10.0.0.{i}"),
+                        port: DNS_TCP_PORT,
+                    })
+                    .collect())
+            })
+        }
+
+        fn forget_rndc_key(&self, _namespace: &str, _instance_name: &str) {
+            self.counters.keys_forgotten.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn instance(name: &str) -> InstanceReference {
+        InstanceReference {
+            api_version: "bindy.firestoned.io/v1beta1".to_string(),
+            kind: "Bind9Instance".to_string(),
+            name: name.to_string(),
+            namespace: "dns".to_string(),
+            last_reconciled_at: None,
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // RndcKeyCache (process-wide, cross-reconcile)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn rndc_key_cache_hits_within_ttl() {
+        let cache = RndcKeyCache::default();
+        let loaded_at = Instant::now();
+        cache.insert_at("dns", "primary-0", key_for("primary-0"), loaded_at);
+
+        let hit = cache.get_at("dns", "primary-0", loaded_at + Duration::from_secs(1));
+
+        assert_eq!(
+            hit.map(|k| k.secret),
+            Some("secret-of-primary-0".to_string())
+        );
+    }
+
+    #[test]
+    fn rndc_key_cache_expires_after_ttl() {
+        let cache = RndcKeyCache::default();
+        let loaded_at = Instant::now();
+        cache.insert_at("dns", "primary-0", key_for("primary-0"), loaded_at);
+
+        let miss = cache.get_at("dns", "primary-0", loaded_at + RNDC_KEY_CACHE_TTL);
+
+        assert!(miss.is_none(), "an entry as old as the TTL must be re-read");
+    }
+
+    #[test]
+    fn rndc_key_cache_is_keyed_by_namespace_and_instance() {
+        let cache = RndcKeyCache::default();
+        let now = Instant::now();
+        cache.insert_at("dns", "primary-0", key_for("primary-0"), now);
+
+        assert!(cache.get_at("other", "primary-0", now).is_none());
+        assert!(cache.get_at("dns", "primary-1", now).is_none());
+    }
+
+    #[test]
+    fn rndc_key_cache_invalidate_forgets_entry() {
+        let cache = RndcKeyCache::default();
+        let now = Instant::now();
+        cache.insert_at("dns", "primary-0", key_for("primary-0"), now);
+
+        cache.invalidate("dns", "primary-0");
+
+        assert!(cache.get_at("dns", "primary-0", now).is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // Endpoints parsing and the Endpoints store
+    // ------------------------------------------------------------------
+
+    fn endpoints_object(
+        name: &str,
+        namespace: &str,
+        ips: &[&str],
+    ) -> k8s_openapi::api::core::v1::Endpoints {
+        k8s_openapi::api::core::v1::Endpoints {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                namespace: Some(namespace.to_string()),
+                ..Default::default()
+            },
+            subsets: Some(vec![EndpointSubset {
+                addresses: Some(
+                    ips.iter()
+                        .map(|ip| K8sAddress {
+                            ip: (*ip).to_string(),
+                            ..Default::default()
+                        })
+                        .collect(),
+                ),
+                ports: Some(vec![
+                    EndpointPort {
+                        name: Some(PORT_DNS_TCP.to_string()),
+                        port: DNS_TCP_PORT,
+                        ..Default::default()
+                    },
+                    EndpointPort {
+                        name: Some("http".to_string()),
+                        port: 8080,
+                        ..Default::default()
+                    },
+                ]),
+                ..Default::default()
+            }]),
+        }
+    }
+
+    #[test]
+    fn ready_endpoint_addresses_uses_the_named_port() {
+        let endpoints = endpoints_object("primary-0", "dns", &["10.1.0.1", "10.1.0.2"]);
+
+        let addresses = ready_endpoint_addresses(&endpoints, PORT_DNS_TCP);
+
+        let rendered: Vec<String> = addresses
+            .iter()
+            .map(|a| format!("{}:{}", a.ip, a.port))
+            .collect();
+        assert_eq!(rendered, vec!["10.1.0.1:53", "10.1.0.2:53"]);
+    }
+
+    #[test]
+    fn ready_endpoint_addresses_is_empty_when_port_is_missing() {
+        let endpoints = endpoints_object("primary-0", "dns", &["10.1.0.1"]);
+
+        assert!(ready_endpoint_addresses(&endpoints, "rndc-api").is_empty());
+    }
+
+    fn endpoints_store(
+        objects: Vec<k8s_openapi::api::core::v1::Endpoints>,
+    ) -> crate::context::MultiStore<k8s_openapi::api::core::v1::Endpoints> {
+        use kube::runtime::{reflector, watcher};
+        let (store, mut writer) = reflector::store();
+        writer.apply_watcher_event(&watcher::Event::Init);
+        for object in objects {
+            writer.apply_watcher_event(&watcher::Event::InitApply(object));
+        }
+        writer.apply_watcher_event(&watcher::Event::InitDone);
+        crate::context::MultiStore::new(vec![store])
+    }
+
+    #[test]
+    fn cached_endpoints_reads_the_store_without_an_api_call() {
+        let store = endpoints_store(vec![endpoints_object("primary-0", "dns", &["10.1.0.1"])]);
+
+        let cached = cached_endpoints(&store, "dns", "primary-0", PORT_DNS_TCP);
+
+        let addresses = cached.expect("Endpoints object is cached");
+        assert_eq!(addresses.len(), 1);
+        assert_eq!(addresses[0].ip, "10.1.0.1");
+    }
+
+    #[test]
+    fn cached_endpoints_is_none_when_the_object_is_not_cached() {
+        let store = endpoints_store(vec![endpoints_object("primary-0", "dns", &["10.1.0.1"])]);
+
+        assert!(cached_endpoints(&store, "other", "primary-0", PORT_DNS_TCP).is_none());
+        assert!(cached_endpoints(&store, "dns", "primary-1", PORT_DNS_TCP).is_none());
+    }
+
+    #[test]
+    fn cached_endpoints_reports_a_cached_object_with_no_ready_pods_as_empty() {
+        let store = endpoints_store(vec![endpoints_object("primary-0", "dns", &[])]);
+
+        let cached = cached_endpoints(&store, "dns", "primary-0", PORT_DNS_TCP);
+
+        assert_eq!(cached.map(|a| a.len()), Some(0));
+    }
+
+    // ------------------------------------------------------------------
+    // InstanceResolver (per-reconcile memo)
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn resolver_loads_each_instance_key_once_per_reconcile() {
+        let counters = Arc::new(Counters::default());
+        let resolver = InstanceResolver::new(CountingLookup::new(&counters));
+        const LOOKUPS_PER_INSTANCE: usize = 50;
+
+        for _ in 0..LOOKUPS_PER_INSTANCE {
+            for name in ["primary-0", "primary-1", "primary-2"] {
+                let key = resolver.rndc_key("dns", name).await.expect("key resolves");
+                assert_eq!(key.name, name);
+            }
+        }
+
+        assert_eq!(counters.key_lookups.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn resolver_resolves_endpoints_once_per_instance_and_port() {
+        let counters = Arc::new(Counters::default());
+        let resolver = InstanceResolver::new(CountingLookup::new(&counters));
+
+        for _ in 0..10 {
+            resolver
+                .endpoints("dns", "primary-0", PORT_DNS_TCP)
+                .await
+                .expect("endpoints resolve");
+            resolver
+                .endpoints("dns", "primary-0", "http")
+                .await
+                .expect("endpoints resolve");
+        }
+
+        assert_eq!(counters.endpoint_lookups.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn resolver_does_not_memoize_a_failed_lookup() {
+        let counters = Arc::new(Counters::default());
+        let mut lookup = CountingLookup::new(&counters);
+        lookup.fail_keys = true;
+        let resolver = InstanceResolver::new(lookup);
+
+        assert!(resolver.rndc_key("dns", "primary-0").await.is_err());
+        assert!(resolver.rndc_key("dns", "primary-0").await.is_err());
+
+        assert_eq!(counters.key_lookups.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn resolver_forget_rndc_key_forces_a_reload() {
+        let counters = Arc::new(Counters::default());
+        let resolver = InstanceResolver::new(CountingLookup::new(&counters));
+
+        resolver.rndc_key("dns", "primary-0").await.expect("key");
+        resolver.forget_rndc_key("dns", "primary-0");
+        resolver.rndc_key("dns", "primary-0").await.expect("key");
+
+        assert_eq!(counters.key_lookups.load(Ordering::SeqCst), 2);
+        assert_eq!(counters.keys_forgotten.load(Ordering::SeqCst), 1);
+    }
+
+    // ------------------------------------------------------------------
+    // for_each_instance_endpoint: lookups per reconcile do not scale with R
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn for_each_instance_endpoint_lookups_do_not_scale_with_records() {
+        const RECORDS: usize = 300;
+        let counters = Arc::new(Counters::default());
+        let resolver = InstanceResolver::new(CountingLookup::new(&counters));
+        let instances = vec![
+            instance("primary-0"),
+            instance("primary-1"),
+            instance("primary-2"),
+        ];
+        let operations = Arc::new(AtomicUsize::new(0));
+
+        // One reconcile writing RECORDS records to every primary.
+        for _ in 0..RECORDS {
+            let operations = Arc::clone(&operations);
+            for_each_instance_endpoint(
+                &resolver,
+                &instances,
+                true,
+                PORT_DNS_TCP,
+                move |_endpoint, _instance, key| {
+                    let operations = Arc::clone(&operations);
+                    async move {
+                        assert!(key.is_some(), "the RNDC key is passed to every operation");
+                        operations.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    }
+                },
+            )
+            .await
+            .expect("every endpoint accepts the write");
+        }
+
+        // Before ADR-0015 this was RECORDS x instances for each of the two.
+        assert_eq!(counters.key_lookups.load(Ordering::SeqCst), instances.len());
+        assert_eq!(
+            counters.endpoint_lookups.load(Ordering::SeqCst),
+            instances.len()
+        );
+        assert_eq!(
+            operations.load(Ordering::SeqCst),
+            RECORDS * instances.len() * ENDPOINTS_PER_INSTANCE
+        );
+    }
+
+    #[tokio::test]
+    async fn for_each_instance_endpoint_forgets_the_key_of_an_instance_whose_write_failed() {
+        let counters = Arc::new(Counters::default());
+        let resolver = InstanceResolver::new(CountingLookup::new(&counters));
+        let instances = vec![instance("primary-0"), instance("primary-1")];
+
+        // primary-0 rejects every write (as it would after a key rotation).
+        let result = for_each_instance_endpoint(
+            &resolver,
+            &instances,
+            true,
+            PORT_DNS_TCP,
+            |_endpoint, instance_name, _key| async move {
+                if instance_name == "primary-0" {
+                    return Err(anyhow::anyhow!("TSIG BADSIG"));
+                }
+                Ok(())
+            },
+        )
+        .await;
+        assert!(result.is_ok(), "primary-1 still succeeded");
+
+        assert_eq!(counters.keys_forgotten.load(Ordering::SeqCst), 1);
+
+        // The next write re-reads primary-0's key; primary-1 stays memoized.
+        for_each_instance_endpoint(&resolver, &instances, true, PORT_DNS_TCP, |_, _, _| async {
+            Ok(())
+        })
+        .await
+        .expect("writes succeed");
+        assert_eq!(counters.key_lookups.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn for_each_instance_endpoint_without_key_never_reads_a_secret() {
+        let counters = Arc::new(Counters::default());
+        let resolver = InstanceResolver::new(CountingLookup::new(&counters));
+        let instances = vec![instance("primary-0")];
+
+        for_each_instance_endpoint(
+            &resolver,
+            &instances,
+            false,
+            PORT_DNS_TCP,
+            |_, _, key| async move {
+                assert!(key.is_none());
+                Ok(())
+            },
+        )
+        .await
+        .expect("writes succeed");
+
+        assert_eq!(counters.key_lookups.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn skip_unavailable_policy_skips_an_instance_without_endpoints() {
+        let counters = Arc::new(Counters::default());
+        let mut lookup = CountingLookup::new(&counters);
+        lookup.fail_endpoints = true;
+        let resolver = InstanceResolver::new(lookup);
+        let instances = vec![instance("primary-0")];
+
+        let (first, total) = for_each_instance_endpoint_with_policy(
+            &resolver,
+            &instances,
+            true,
+            PORT_DNS_TCP,
+            EndpointFailurePolicy::SkipUnavailable,
+            |_, _, _| async { Err(anyhow::anyhow!("no endpoint may be addressed")) },
+        )
+        .await
+        .expect("an unavailable instance is skipped during deletion cleanup");
+
+        assert!(first.is_none());
+        assert_eq!(total, 0);
+    }
+
+    #[tokio::test]
+    async fn strict_policy_propagates_an_endpoint_lookup_failure() {
+        let counters = Arc::new(Counters::default());
+        let mut lookup = CountingLookup::new(&counters);
+        lookup.fail_endpoints = true;
+        let resolver = InstanceResolver::new(lookup);
+        let instances = vec![instance("primary-0")];
+
+        let result = for_each_instance_endpoint(
+            &resolver,
+            &instances,
+            true,
+            PORT_DNS_TCP,
+            |_, _, _| async { Ok(()) },
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
+}

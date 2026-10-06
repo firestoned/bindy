@@ -1,0 +1,83 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: Apache-2.0
+#
+# Template: the RBAC an OPERAND namespace needs, i.e. any namespace other than
+# the operator's own that runs Bind9Instances (directly, through a
+# Bind9Cluster, or through a ClusterBind9Provider).
+#
+# 1. Role + RoleBinding `bindy-secrets-writer`. The operator's ClusterRole
+#    grants only get/list/watch on Secrets (B-5 hardening). The mutating verbs
+#    it needs to create, rotate and delete each instance's `<instance>-rndc-key`
+#    Secret live in this namespaced Role, which the default install binds in
+#    the operator namespace only. Without a copy here, instance reconcile fails
+#    with a 403 on secrets and no BIND9 pods are created. Mirrors
+#    ../secrets-role.yaml and ../secrets-rolebinding.yaml; only the namespace
+#    differs.
+#
+# 2. ClusterRoleBinding `bindcar-tokenreview-<namespace>`. The bindcar sidecar
+#    runs as the `bind9` ServiceAccount of its own namespace and validates the
+#    operator's bearer token with a TokenReview. This binds the existing
+#    `bindcar-tokenreview` ClusterRole (../tokenreview-clusterrole.yaml) to that
+#    ServiceAccount. A separate binding per namespace is used instead of adding
+#    a subject to the shared `bindcar-tokenreview` ClusterRoleBinding, because
+#    re-applying ../tokenreview-clusterrolebinding.yaml (or re-running
+#    `bindy bootstrap operator`) replaces that binding's whole subjects list.
+#
+# This template lives in a subdirectory so that the non-recursive
+# `kubectl apply -f deploy/operator/rbac/` does not pick up the placeholder.
+#
+# Apply one copy per operand namespace:
+#
+#   sed "s/REPLACE_NAMESPACE/team-dns/g" rbac.yaml | kubectl apply -f -
+#
+# If the operator is not installed as ServiceAccount `bindy` in `bindy-system`,
+# change the RoleBinding subject to match.
+#
+# Full procedure: docs/src/operations/multi-namespace.md
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: bindy-secrets-writer
+  namespace: REPLACE_NAMESPACE
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/component: rbac
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bindy-secrets-writer
+  namespace: REPLACE_NAMESPACE
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: bindy-secrets-writer
+subjects:
+  - kind: ServiceAccount
+    name: bindy
+    namespace: bindy-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: bindcar-tokenreview-REPLACE_NAMESPACE
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/part-of: bindy
+    app.kubernetes.io/component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: bindcar-tokenreview
+subjects:
+  - kind: ServiceAccount
+    name: bind9
+    namespace: REPLACE_NAMESPACE

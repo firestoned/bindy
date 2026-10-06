@@ -309,7 +309,7 @@ async fn bindcar_request_internal<T: Serialize + std::fmt::Debug>(
     body: Option<&T>,
 ) -> Result<String> {
     // Log the HTTP request
-    info!(
+    debug!(
         method = %method,
         url = %url,
         body = ?body,
@@ -377,7 +377,7 @@ async fn bindcar_request_internal<T: Serialize + std::fmt::Debug>(
         .await
         .context("Failed to read response body")?;
 
-    info!(
+    debug!(
         method = %method,
         url = %url,
         status = %status,

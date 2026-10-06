@@ -686,7 +686,9 @@ pub struct RecordReferenceWithTimestamp {
     /// - `None` = Record needs reconciliation (new or spec changed)
     /// - `Some(timestamp)` = Record already configured, skip reconciliation
     ///
-    /// This field is set by the record operator after successful BIND9 update.
+    /// This field is copied by the zone controller from the record's
+    /// `status.lastUpdated`, which the record operator sets after a successful
+    /// BIND9 update.
     /// The zone controller resets it to `None` when spec changes or zone is recreated.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_reconciled_at: Option<k8s_openapi::apimachinery::pkg::apis::meta::v1::Time>,
@@ -767,7 +769,8 @@ pub struct DNSZoneStatus {
     /// - Records with `lastReconciledAt == Some(timestamp)` are already configured
     ///
     /// This field is populated by the `DNSZone` controller when evaluating `recordsFrom` selectors.
-    /// The timestamp is set by the record operator after successful BIND9 update.
+    /// The timestamp is copied from each record's `status.lastUpdated`, which the
+    /// record operator sets after a successful BIND9 update.
     ///
     /// **Single Source of Truth:**
     /// This status field is authoritative for which records belong to this zone and whether

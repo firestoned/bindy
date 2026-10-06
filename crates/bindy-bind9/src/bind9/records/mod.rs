@@ -23,7 +23,7 @@ use hickory_proto::op::ResponseCode;
 use hickory_proto::rr::{DNSClass, Name, RData, Record, RecordType};
 use std::net::SocketAddr;
 use std::str::FromStr;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 use crate::bind9::rndc::create_tsig_signer;
 use crate::bind9::types::RndcKeyData;
@@ -198,13 +198,13 @@ where
     match query_dns_record(zone_name, name, record_type, server).await {
         Ok(existing_records) if !existing_records.is_empty() => {
             if compare_fn(&existing_records) {
-                info!(
+                debug!(
                     "{} record {} already exists with correct value - no changes needed",
                     record_type_name, name
                 );
                 Ok(false)
             } else {
-                info!(
+                debug!(
                     "{} record {} exists with different value(s), updating",
                     record_type_name, name
                 );
@@ -212,7 +212,7 @@ where
             }
         }
         Ok(_) => {
-            info!(
+            debug!(
                 "{} record {} does not exist, creating",
                 record_type_name, name
             );
@@ -263,7 +263,7 @@ pub async fn delete_dns_record(
         Name::from_str(zone_name).with_context(|| format!("Invalid zone name: {zone_name}"))?;
     let fqdn = build_record_fqdn(zone_name, name)?;
 
-    info!(
+    debug!(
         "Deleting {:?} record: {} from zone {}",
         record_type, fqdn, zone_name
     );
@@ -287,7 +287,7 @@ pub async fn delete_dns_record(
     }
 
     if code == ResponseCode::NoError {
-        info!(
+        debug!(
             "Successfully deleted {:?} record: {} from zone {}",
             record_type, name, zone_name
         );

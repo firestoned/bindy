@@ -51,7 +51,7 @@ classDef highlight fill:#fdf7ec,stroke:#f0c060,stroke-width:1px,color:#000000;
     k8s-api["Kubernetes API Server"]:::node
     admission-policies["ValidatingAdmissionPolicies"]:::node
 
-    bindy-operator -->|watches and patches custom resources: one shared watch per kind and namespace target, subscribed to by every controller #40;ADR-0009#41;; client-side rate limited at 20 QPS / 30 burst default, paginated LISTs, retries with exponential backoff #40;ADR-0005#41;| k8s-api
+    bindy-operator -->|watches and patches custom resources: one shared watch per kind and namespace target, subscribed to by every controller #40;ADR-0009#41;; client-side rate limited at 20 QPS / 30 burst default, paginated LISTs, retries with exponential backoff #40;ADR-0005#41;; non-watch requests bounded by a 30 s client-side deadline, watches exempt #40;ADR-0014#41;| k8s-api
     k8s-api -->|enforces CEL policies on CR and pod admission| admission-policies
     bindy-operator -->|reconciles| crd-cluster
     bindy-operator -->|reconciles| crd-dnszone
