@@ -8,13 +8,72 @@
 //! configuration, parsed by hornet, so a template edit that leaves a stray
 //! brace or an unterminated statement (bug-177) fails here instead of
 //! crash-looping `named`.
+//!
+//! Stage 3: the files are written by hornet's writer, so each is already in
+//! hornet's canonical form and carries nothing through a raw carrier.
 
 #[cfg(test)]
 mod tests {
     use crate::bind9_resources::{build_cluster_configmap, build_configmap};
     use crate::crd::{Bind9Cluster, Bind9Instance};
+    use hornet_bind9::named_conf::{NamedConf, Statement};
     use k8s_openapi::api::core::v1::ConfigMap;
     use serde_json::{json, Value};
+
+    /// The `named.conf*` files of a ConfigMap.
+    fn named_conf_files(configmap: &ConfigMap) -> Vec<(String, String)> {
+        configmap
+            .data
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(name, _)| name.starts_with("named.conf"))
+            .collect()
+    }
+
+    /// Assert every `named.conf*` file is exactly what hornet's writer emits
+    /// for it, and that nothing in it rides a raw carrier (`Unknown`
+    /// statements, `extra` clauses), so every value is typed.
+    fn assert_written_by_hornet(label: &str, configmap: &ConfigMap) {
+        for (name, text) in named_conf_files(configmap) {
+            let conf = hornet_bind9::parse_named_conf(&text)
+                .unwrap_or_else(|e| panic!("{label}: {name} does not parse: {e}"));
+            let rewritten = hornet_bind9::write_named_conf(
+                &conf,
+                &hornet_bind9::writer::WriteOptions::default(),
+            );
+            assert_eq!(
+                text, rewritten,
+                "{label}: {name} is not hornet's canonical output"
+            );
+            assert_no_raw_carriers(&format!("{label}: {name}"), &conf);
+        }
+    }
+
+    fn assert_no_raw_carriers(label: &str, conf: &NamedConf) {
+        for statement in &conf.statements {
+            match statement {
+                Statement::Unknown { keyword, .. } => {
+                    panic!("{label}: `{keyword}` is an unmodelled raw block")
+                }
+                Statement::Options(options) => {
+                    assert!(
+                        options.extra.is_empty(),
+                        "{label}: raw options {:?}",
+                        options.extra
+                    );
+                }
+                Statement::DnssecPolicy(policy) => {
+                    assert!(
+                        policy.extra.is_empty(),
+                        "{label}: raw policy {:?}",
+                        policy.extra
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
 
     /// Parse every `named.conf*` file in a ConfigMap and fail on a parse error
     /// or an Error-severity validation finding.
@@ -133,6 +192,7 @@ mod tests {
             let configmap = build_configmap("dns", "dns-system", &instance(config), None, None)
                 .unwrap_or_else(|e| panic!("instance {label}: render failed: {e}"));
             assert_config_parses(&format!("instance {label}"), &configmap);
+            assert_written_by_hornet(&format!("instance {label}"), &configmap);
         }
     }
 
@@ -144,6 +204,7 @@ mod tests {
                 build_cluster_configmap("dns", "dns-system", &cluster(global, acls.clone()))
                     .unwrap_or_else(|e| panic!("cluster {label}: render failed: {e}"));
             assert_config_parses(&format!("cluster {label}"), &configmap);
+            assert_written_by_hornet(&format!("cluster {label}"), &configmap);
         }
     }
 
@@ -190,6 +251,7 @@ mod tests {
                 }
                 .unwrap_or_else(|e| panic!("{label}: render failed: {e}"));
                 assert_config_parses(&label, &configmap);
+                assert_written_by_hornet(&label, &configmap);
                 rendered += 1;
             }
         }
@@ -197,5 +259,36 @@ mod tests {
             rendered > 0,
             "no Bind9Instance or Bind9Cluster examples found"
         );
+    }
+
+    fn signing(ksk_lifetime: &str) -> Value {
+        json!({"dnssec": {"signing": {"enabled": true, "kskLifetime": ksk_lifetime}}})
+    }
+
+    #[test]
+    fn a_lifetime_bind_rejects_is_refused_before_publishing() {
+        // BIND has no `y` TTL unit; one year is `P1Y` or `365d`.
+        let error = build_configmap("dns", "dns-system", &instance(signing("1y")), None, None)
+            .expect_err("1y must be refused");
+        assert!(error.to_string().contains("1y"), "{error}");
+    }
+
+    #[test]
+    fn lifetimes_bind_accepts_render() {
+        for lifetime in ["P1Y", "365d", "8760h", "unlimited"] {
+            let configmap = build_configmap(
+                "dns",
+                "dns-system",
+                &instance(signing(lifetime)),
+                None,
+                None,
+            )
+            .unwrap_or_else(|e| panic!("{lifetime}: render failed: {e}"));
+            let options = &configmap.data.as_ref().expect("data")["named.conf.options"];
+            assert!(
+                options.contains(&format!("ksk lifetime {lifetime} ")),
+                "{lifetime}: {options}"
+            );
+        }
     }
 }

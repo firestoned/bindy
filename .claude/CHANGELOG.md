@@ -1,3 +1,30 @@
+## [2026-10-05 23:00] - Render BIND9 configuration through hornet's writer (ADR-0013 stage 3)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/bindy-bind9/src/bind9_resources.rs`: `named.conf` and `named.conf.options` are built as a hornet syntax tree (`OptionsBlock`, `ControlsBlock`, `LoggingBlock`, `DnssecPolicyStmt`) and written with `hornet_bind9::write_named_conf`. `generate_dnssec_policies` (text) is replaced by `dnssec_policy_statement` (typed); the `render_*` string helpers return hornet types.
+- `crates/bindy-bind9/src/bind9_acl.rs`: `build_acl_list` (joined text) is replaced by `parse_acl_entry` / `parse_acl_list`, which validate as before and return hornet `AddressMatchElement`s.
+- `templates/named.conf.tmpl` and `templates/named.conf.options.tmpl` deleted; `rndc.conf.tmpl` stays (not `named.conf` grammar).
+- `hornet-bind9` 0.2 to 0.3 (typed `dnssec-policy`, `print-time iso8601`, `allow-new-zones`, `key-directory`; library builds no longer pull miette's terminal stack).
+
+### Fixed
+- `dnssec.validation: true` rendered `dnssec-validation yes`, which needs `trust-anchors` that bindy never configures: BIND 9.18 validated nothing and BIND 9.20 refused to load the configuration (`examples/bind9-cluster-custom-service.yaml` runs 9.20 with validation on). It now renders `auto` (BIND's built-in root trust anchor). Found by running `named-checkconf` 9.18 and 9.20 over every rendered file.
+- A DNSSEC key lifetime BIND does not accept (`1y`) was written as given and `named` refused the configuration; the builder now refuses it with a message suggesting `P1Y`, `365d` or `8760h`.
+
+### Added
+- `crates/bindy-bind9/src/rendered_config_tests.rs`: every rendered file is exactly hornet's canonical output with no raw carrier (`Unknown` statements, `extra` clauses); `1y` is refused and `P1Y`, `365d`, `8760h`, `unlimited` render.
+- Docs: `operations/migration-guide.md` (one-time rollout, `auto`, lifetimes), `advanced/dnssec.md`; ADR-0013 amended (stage 3 implemented); roadmap 29 and `ROADMAPS.md` closed; threat model v1.15 (M-47, D4, T3, Scenario 2).
+
+### Why
+ADR-0013 stage 3: every value from a CRD reaches `named.conf` quoted or escaped by hornet's writer by construction, rather than by each of 34 substitutions remembering to.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (the rendered text changes, so **every BIND9 Deployment rolls once** after the upgrade, honouring PodDisruptionBudgets)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-05 22:00] - Bound the Kubernetes API cost of DNS writes; quieter INFO logs (ADR-0015)
 
 **Author:** Erick Bourgeois

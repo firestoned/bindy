@@ -22,6 +22,53 @@ mod tests {
     use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
     use std::collections::BTreeMap;
 
+    /// The `dnssec-policy` statement as hornet writes it, or an empty string
+    /// when signing is off.
+    fn generate_dnssec_policies(
+        global_config: Option<&Bind9Config>,
+        instance_config: Option<&Bind9Config>,
+    ) -> anyhow::Result<String> {
+        let Some(policy) =
+            crate::bind9_resources::dnssec_policy_statement(global_config, instance_config)?
+        else {
+            return Ok(String::new());
+        };
+        Ok(hornet_bind9::write_named_conf(
+            &hornet_bind9::named_conf::NamedConf {
+                statements: vec![hornet_bind9::named_conf::Statement::DnssecPolicy(policy)],
+            },
+            &hornet_bind9::writer::WriteOptions::default(),
+        ))
+    }
+
+    /// The parsed `options` block of a rendered `named.conf.options`.
+    fn options_block(text: &str) -> hornet_bind9::named_conf::OptionsBlock {
+        let conf = hornet_bind9::parse_named_conf(text).expect("rendered options parse");
+        conf.statements
+            .into_iter()
+            .find_map(|statement| match statement {
+                hornet_bind9::named_conf::Statement::Options(options) => Some(options),
+                _ => None,
+            })
+            .expect("an options block")
+    }
+
+    /// `responses-per-second` of the rendered `rate-limit` block, if any.
+    fn rrl_responses_per_second(text: &str) -> Option<u32> {
+        options_block(text)
+            .rate_limit
+            .and_then(|rrl| rrl.responses_per_second)
+    }
+
+    /// The rendered `forwarders`, as text.
+    fn forwarders_of(text: &str) -> Vec<String> {
+        options_block(text)
+            .forwarders
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
     // Built through serde rather than a struct literal: Bind9ClusterCommonSpec
     // has no Default derive, and adding one to production code purely for a test
     // is the wrong trade.
@@ -291,7 +338,7 @@ mod tests {
         assert!(options.contains("recursion no"));
         assert!(options.contains("allow-query { 0.0.0.0/0; }"));
         assert!(options.contains("allow-transfer { 10.0.0.0/8; }"));
-        assert!(options.contains("dnssec-validation yes"));
+        assert!(options.contains("dnssec-validation auto"));
     }
 
     #[test]
@@ -1118,7 +1165,7 @@ mod tests {
         let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
-        assert!(options.contains("rate-limit { responses-per-second 15; }"));
+        assert_eq!(rrl_responses_per_second(&options), Some(15));
     }
 
     #[test]
@@ -1131,7 +1178,7 @@ mod tests {
         let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
-        assert!(options.contains("rate-limit { responses-per-second 50; }"));
+        assert_eq!(rrl_responses_per_second(&options), Some(50));
         assert!(!options.contains("responses-per-second 15"));
     }
 
@@ -1158,7 +1205,7 @@ mod tests {
         let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
-        assert!(options.contains("rate-limit { responses-per-second 15; }"));
+        assert_eq!(rrl_responses_per_second(&options), Some(15));
     }
 
     #[test]
@@ -1174,7 +1221,7 @@ mod tests {
 
         // Should contain dnssec-validation no when disabled
         assert!(options.contains("dnssec-validation no"));
-        assert!(!options.contains("dnssec-validation yes"));
+        assert!(!options.contains("dnssec-validation auto"));
     }
 
     #[test]
@@ -1188,8 +1235,12 @@ mod tests {
         let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
-        // DNSSEC is always enabled in BIND 9.15+, only validation can be configured
-        assert!(options.contains("dnssec-validation yes"));
+        // DNSSEC is always enabled in BIND 9.15+, only validation can be
+        // configured. `auto` validates with BIND's built-in root trust anchor;
+        // `yes` would need `trust-anchors`, which bindy does not configure, so
+        // 9.18 validated nothing and 9.20 refuses to load.
+        assert!(options.contains("dnssec-validation auto"));
+        assert!(!options.contains("dnssec-validation yes"));
     }
 
     #[test]
@@ -1200,8 +1251,8 @@ mod tests {
         let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
-        // Default behavior when no DNSSEC config is provided
-        assert!(!options.contains("dnssec-validation yes"));
+        // Default behavior when no DNSSEC config is provided: no directive
+        assert!(!options.contains("dnssec-validation"));
     }
 
     #[test]
@@ -1888,8 +1939,9 @@ mod tests {
         let cm = build_configmap("test", "test-ns", &instance, None, None).unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
-        assert!(
-            options.contains("forwarders { 8.8.8.8; 8.8.4.4; };"),
+        assert_eq!(
+            forwarders_of(&options),
+            ["8.8.8.8", "8.8.4.4"],
             "forwarders block must be rendered from spec.config.forwarders, got: {options}"
         );
     }
@@ -2281,8 +2333,9 @@ mod tests {
         let cm = build_cluster_configmap("test-cluster", "test-ns", &cluster).unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
-        assert!(
-            options.contains("forwarders { 1.1.1.1; };"),
+        assert_eq!(
+            forwarders_of(&options),
+            ["1.1.1.1"],
             "cluster-level forwarders must be rendered, got: {options}"
         );
         assert!(
@@ -2375,8 +2428,9 @@ mod tests {
         let cm = build_cluster_configmap("test-cluster", "test-ns", &cluster).unwrap();
         let options = cm.data.unwrap().get("named.conf.options").unwrap().clone();
 
-        assert!(
-            options.contains("rate-limit { responses-per-second 15; };"),
+        assert_eq!(
+            rrl_responses_per_second(&options),
+            Some(15),
             "cluster default RRL must be rendered, got: {options}"
         );
         assert!(
@@ -2700,8 +2754,6 @@ mod tests {
 
     #[test]
     fn test_dnssec_policies_disabled() {
-        use crate::bind9_resources::generate_dnssec_policies;
-
         // No DNSSEC config at all
         let result = generate_dnssec_policies(None, None).expect("valid DNSSEC config must render");
         assert_eq!(
@@ -2770,8 +2822,6 @@ mod tests {
 
     #[test]
     fn test_dnssec_policies_enabled_with_defaults() {
-        use crate::bind9_resources::generate_dnssec_policies;
-
         // DNSSEC signing enabled with minimal config (all defaults)
         let config = Bind9Config {
             rate_limit: None,
@@ -2828,8 +2878,6 @@ mod tests {
 
     #[test]
     fn test_dnssec_policies_enabled_with_custom_values() {
-        use crate::bind9_resources::generate_dnssec_policies;
-
         // DNSSEC signing enabled with custom values
         let config = Bind9Config {
             rate_limit: None,
@@ -2888,8 +2936,6 @@ mod tests {
 
     #[test]
     fn test_dnssec_policies_falls_back_to_global_when_instance_has_no_dnssec() {
-        use crate::bind9_resources::generate_dnssec_policies;
-
         // Global config enables signing.
         let global_config = Bind9Config {
             rate_limit: None,
@@ -2945,8 +2991,6 @@ mod tests {
 
     #[test]
     fn test_dnssec_policies_with_nsec3() {
-        use crate::bind9_resources::generate_dnssec_policies;
-
         // DNSSEC signing enabled with NSEC3
         let config = Bind9Config {
             rate_limit: None,
@@ -2996,8 +3040,6 @@ mod tests {
 
     #[test]
     fn test_dnssec_policies_instance_overrides_global() {
-        use crate::bind9_resources::generate_dnssec_policies;
-
         // Global config with DNSSEC signing
         let global_config = Bind9Config {
             rate_limit: None,
@@ -3386,8 +3428,6 @@ mod tests {
 
     #[test]
     fn test_shared_keys_refuse_rolling_lifetimes() {
-        use crate::bind9_resources::generate_dnssec_policies;
-
         for (ksk, zsk) in [
             (None, None),
             (Some("unlimited"), None),
@@ -3984,8 +4024,6 @@ mod tests {
     /// to load its configuration at all, taking every server down.
     #[test]
     fn test_dnssec_policy_rejects_bind_builtin_policy_names() {
-        use crate::bind9_resources::generate_dnssec_policies;
-
         for reserved in ["default", "insecure", "none", "Default", "NONE"] {
             let config = dnssec_signing_config(Some(reserved), None, None, None);
             let err = generate_dnssec_policies(Some(&config), None)
@@ -3999,8 +4037,6 @@ mod tests {
 
     #[test]
     fn test_dnssec_policy_accepts_a_custom_policy_name() {
-        use crate::bind9_resources::generate_dnssec_policies;
-
         let config = dnssec_signing_config(Some("core-dns"), None, None, None);
         let rendered =
             generate_dnssec_policies(Some(&config), None).expect("a custom name must render");
@@ -4102,8 +4138,6 @@ mod tests {
 
     #[test]
     fn test_generate_dnssec_policies_accepts_valid_params() {
-        use crate::bind9_resources::generate_dnssec_policies;
-
         let config = dnssec_signing_config(
             Some("high-security"),
             Some("ECDSAP384SHA384"),
@@ -4118,8 +4152,6 @@ mod tests {
 
     #[test]
     fn test_generate_dnssec_policies_defaults_are_valid() {
-        use crate::bind9_resources::generate_dnssec_policies;
-
         // All four unset -> the built-in defaults must themselves pass the whitelist.
         let config = dnssec_signing_config(None, None, None, None);
         let result = generate_dnssec_policies(Some(&config), None)
@@ -4130,8 +4162,6 @@ mod tests {
 
     #[test]
     fn test_generate_dnssec_policies_rejects_policy_name_injection() {
-        use crate::bind9_resources::generate_dnssec_policies;
-
         // Closing the block and appending a directive is the canonical escape.
         let config = dnssec_signing_config(
             Some("evil\"; }; zone \"attacker.com\" { type master; file \"/etc/passwd\"; };"),
@@ -4149,8 +4179,6 @@ mod tests {
 
     #[test]
     fn test_generate_dnssec_policies_rejects_algorithm_injection() {
-        use crate::bind9_resources::generate_dnssec_policies;
-
         let config = dnssec_signing_config(None, Some("ECDSAP256SHA256; };"), None, None);
         let err = generate_dnssec_policies(Some(&config), None)
             .expect_err("algorithm with metacharacters must be rejected");
@@ -4162,8 +4190,6 @@ mod tests {
 
     #[test]
     fn test_generate_dnssec_policies_rejects_ksk_lifetime_injection() {
-        use crate::bind9_resources::generate_dnssec_policies;
-
         let config = dnssec_signing_config(None, None, Some("365d; };"), None);
         let err = generate_dnssec_policies(Some(&config), None)
             .expect_err("ksk lifetime with metacharacters must be rejected");
@@ -4175,8 +4201,6 @@ mod tests {
 
     #[test]
     fn test_generate_dnssec_policies_rejects_zsk_lifetime_injection() {
-        use crate::bind9_resources::generate_dnssec_policies;
-
         let config = dnssec_signing_config(None, None, None, Some("90d\n    key-directory \"/\";"));
         let err = generate_dnssec_policies(Some(&config), None)
             .expect_err("zsk lifetime with metacharacters must be rejected");
@@ -4188,8 +4212,6 @@ mod tests {
 
     #[test]
     fn test_generate_dnssec_policies_rejects_overlong_and_empty_values() {
-        use crate::bind9_resources::generate_dnssec_policies;
-
         // Empty string is not a valid identifier (pattern requires >= 1 char).
         let empty = dnssec_signing_config(Some(""), None, None, None);
         assert!(generate_dnssec_policies(Some(&empty), None).is_err());
@@ -4206,8 +4228,6 @@ mod tests {
 
     #[test]
     fn test_generate_dnssec_policies_disabled_returns_empty_ok() {
-        use crate::bind9_resources::generate_dnssec_policies;
-
         // Signing not enabled anywhere -> Ok(empty), never an error.
         let result = generate_dnssec_policies(None, None)
             .expect("absent DNSSEC config must not be an error");

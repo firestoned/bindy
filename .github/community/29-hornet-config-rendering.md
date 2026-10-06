@@ -11,7 +11,7 @@
 > `ConfigurationInvalid` (stage 2); `named.conf` and `named.conf.options` are
 > written by hornet's writer and their templates are deleted (stage 3).
 
-**Status:** 🔶 Stages 1 and 2 done 2026-10-05; stage 3 waits on hornet 0.3.0.
+**Status:** ✅ Done 2026-10-05 (stages 1 and 2 on hornet 0.2.0, stage 3 on hornet 0.3.0).
 **Owner:** Erick Bourgeois
 
 ## Why
@@ -45,21 +45,30 @@ before `named` did.
 
 ## Stage 3: render through hornet's writer
 
-Blocked on hornet 0.3.0, which must:
+Needed hornet 0.3.0 (hornet ADR-0004, released 2026-10-05), which:
 
-- [ ] accept `print-time iso8601`, `iso8601-utc` and `local` (0.2.0 falls
+- [x] accepts `print-time iso8601`, `iso8601-utc` and `local` (0.2.0 falls
       back to a raw block for bindy's `logging`);
-- [ ] model `dnssec-policy` as a typed statement (keys with role, lifetime
+- [x] models `dnssec-policy` as a typed statement (keys with role, lifetime
       and algorithm; the timing options bindy sets);
-- [ ] model `allow-new-zones` and `key-directory` as typed options;
-- [ ] keep `miette`'s `fancy` terminal rendering out of library builds
+- [x] models `allow-new-zones` and `key-directory` as typed options;
+- [x] keeps `miette`'s `fancy` terminal rendering out of library builds
       (only the CLI needs it).
 
 Then in bindy:
 
-- [ ] Build `named.conf` / `named.conf.options` as a hornet tree and write it
+- [x] Build `named.conf` / `named.conf.options` as a hornet tree and write it
       with hornet's writer; delete `templates/named.conf.tmpl` and
-      `templates/named.conf.options.tmpl` (`rndc.conf.tmpl` stays).
-- [ ] Release note: the rendered text changes, so every BIND9 Deployment
-      rolls once after the upgrade (PodDisruptionBudgets honoured).
-- [ ] Threat model pass (new injection control).
+      `templates/named.conf.options.tmpl` (`rndc.conf.tmpl` stays). ACL
+      entries parse into typed elements (`bind9_acl::parse_acl_list`); a
+      test asserts every rendered file is hornet's canonical output with no
+      raw carrier.
+- [x] Every rendered file of the option matrix and the examples passes
+      `named-checkconf` on BIND 9.18 and 9.20. *Found and fixed:
+      `validation: true` rendered `dnssec-validation yes`, which needs
+      `trust-anchors` (9.18 validated nothing, 9.20 refuses to load); it now
+      renders `auto`. A lifetime like `1y` is refused at render.*
+- [x] Release note (`operations/migration-guide.md`): the rendered text
+      changes, so every BIND9 Deployment rolls once after the upgrade
+      (PodDisruptionBudgets honoured).
+- [x] Threat model pass (new injection control, M-47).
