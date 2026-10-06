@@ -2,6 +2,35 @@
 
 This document collects the breaking-change migrations for Bindy, newest first.
 
+## BIND9 configuration written by hornet (ADR-0013 stage 3)
+
+`named.conf` and `named.conf.options` are now written by
+[hornet](https://github.com/firestoned/hornet)'s writer instead of text
+templates
+([ADR-0013](https://github.com/firestoned/bindy/blob/main/docs/adr/0013-validate-and-render-bind9-config-with-hornet.md)).
+
+**Every BIND9 Deployment rolls once after the upgrade.** The rendered text
+changes (layout, and the explanatory comments are gone), so each ConfigMap's
+content hash changes and its Deployment rolls, honouring the instance's
+PodDisruptionBudget. Plan the upgrade as you would any operand rollout.
+
+**`dnssec.validation: true` now renders `dnssec-validation auto`** (was
+`yes`). `yes` needs `trust-anchors`, which bindy does not configure: on BIND
+9.18 the server validated nothing, and BIND 9.20 refused to load the
+configuration at all. `auto` validates with BIND's built-in root trust
+anchor, which is what the field documents.
+
+- *How to detect:* `kubectl get bind9instances,bind9clusters,clusterbind9providers -A -o yaml | grep -B3 'validation: true'`.
+  On 9.18 those servers start validating after the upgrade; recursive
+  answers for zones with a broken DNSSEC chain become `SERVFAIL`.
+- *Remediation:* none needed for correct chains. To keep the old effective
+  behaviour (no validation), set `validation: false`.
+
+**A DNSSEC key lifetime BIND does not accept is refused.** `kskLifetime: 1y`
+(there is no `y` unit) used to reach `named`, which then refused the whole
+configuration. The operator now refuses to render it and the resource
+reports the error; use `P1Y`, `365d` or `8760h`.
+
 ## Migrating to bindcar 0.9.0
 
 Bindy now provisions **bindcar 0.9.0** (`ghcr.io/firestoned/bindcar:v0.9.0`).

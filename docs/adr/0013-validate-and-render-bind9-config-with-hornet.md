@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-05
 - **Deciders:** Erick Bourgeois
+- **Amended:** 2026-10-05 (stage 3 implemented on hornet 0.3.0; `validation: true` now renders `dnssec-validation auto`, see stage 3)
 - **Related:** Extends [ADR-0007](0007-uniform-options-rendering-deny-by-default.md) (options rendering); prompted by bug-177
 
 ## Context
@@ -106,6 +107,25 @@ release (0.3.0) that:
 
 Until that release, stages 1 and 2 ship on hornet 0.2.0.
 
+**Implemented 2026-10-05 on hornet 0.3.0.** Every value now reaches the
+file through a typed hornet field: ACL entries are parsed into
+`AddressMatchElement`s (`bind9_acl::parse_acl_list`), forwarders into
+addresses, and the policy into a `DnssecPolicyStmt`; nothing goes through a
+raw carrier, and a test asserts each rendered file is exactly hornet's
+canonical output. Every rendered file of the option matrix and the examples
+was also checked with `named-checkconf` from BIND 9.18 and 9.20. That check
+found two things the templates had always done wrong, both fixed here:
+
+- `validation: true` rendered `dnssec-validation yes`. `yes` needs
+  `trust-anchors`, which bindy never configures, so BIND 9.18 validated
+  nothing and BIND 9.20 refuses to load the configuration. It now renders
+  `auto`, which validates with BIND's built-in root trust anchor; that is
+  what the field documents. `validation: false` still renders `no`.
+- A key lifetime BIND does not accept (`1y`: there is no `y` TTL unit) was
+  written as given, and `named` refused the configuration. The builder now
+  refuses it with a message that suggests `P1Y`, `365d` or `8760h`, so the
+  reconcile fails and the pods keep their configuration.
+
 ## Consequences
 
 **Good**
@@ -132,8 +152,8 @@ Until that release, stages 1 and 2 ship on hornet 0.2.0.
 - Stage 2 can block a configuration BIND9 would accept, if hornet is stricter
   than `named` about something. That fails closed (old config keeps serving)
   and shows on the resource; the fix is in hornet, or a hornet bump.
-- A stage that is still waiting on hornet (stage 3) leaves `logging` and
-  `dnssec-policy` brace-checked only, in stages 1 and 2.
+- Until stage 3, `logging` and `dnssec-policy` were brace-checked only.
+  Stage 3 removes that gap.
 
 **Follow-ups**
 

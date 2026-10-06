@@ -6,7 +6,7 @@
 //! This module provides functions to build Kubernetes resources (`Deployment`, `ConfigMap`, `Service`)
 //! for BIND9 instances. All functions are pure and easily testable.
 
-use crate::bind9_acl::build_acl_list;
+use crate::bind9_acl::parse_acl_list;
 use crate::constants::{
     API_GROUP_VERSION, BIND9_MALLOC_CONF, BIND9_NONROOT_UID, BIND9_PRESTOP_DRAIN_SECS,
     BIND9_SERVICE_ACCOUNT, BIND9_TERMINATION_GRACE_PERIOD_SECS, CONTAINER_NAME_BIND9,
@@ -26,6 +26,13 @@ use crate::labels::{
     ROLE_SECONDARY,
 };
 use anyhow::Context;
+use hornet_bind9::named_conf::{
+    AddressMatchElement, AddressMatchList, ControlsBlock, DnssecKeyLifetime, DnssecKeyRole,
+    DnssecPolicyKey, DnssecPolicyStmt, DnssecValidation, InetControl, ListenOn, LogCategory,
+    LogChannel, LogDestination, LogSeverity, LoggingBlock, NamedConf, Nsec3Param, OptionsBlock,
+    PrintTime, RateLimit, Statement,
+};
+use hornet_bind9::writer::WriteOptions;
 use k8s_openapi::api::{
     apps::v1::{Deployment, DeploymentSpec},
     core::v1::{
@@ -42,38 +49,59 @@ use k8s_openapi::apimachinery::pkg::{
 };
 use kube::ResourceExt;
 use std::collections::BTreeMap;
+use std::net::{IpAddr, Ipv4Addr};
 use tracing::{debug, warn};
 
-// Embed configuration templates at compile time
-const NAMED_CONF_TEMPLATE: &str = include_str!("../../../templates/named.conf.tmpl");
-const NAMED_CONF_OPTIONS_TEMPLATE: &str =
-    include_str!("../../../templates/named.conf.options.tmpl");
+// rndc.conf is the rndc client's file, not named.conf grammar, so it stays a
+// template; named.conf and named.conf.options are written by hornet (ADR-0013).
 const RNDC_CONF_TEMPLATE: &str = include_str!("../../../templates/rndc.conf.tmpl");
 
-// DNSSEC policy template for zone signing
-const DNSSEC_POLICY_TEMPLATE: &str = r#"
-dnssec-policy "{{POLICY_NAME}}" {
-    // Key configuration
-    keys {
-        ksk lifetime {{KSK_LIFETIME}} algorithm {{ALGORITHM}};
-        zsk lifetime {{ZSK_LIFETIME}} algorithm {{ALGORITHM}};
-    };
-{{NSEC_CONFIG}}
-    // Signature validity periods
-    signatures-refresh 5d;
-    signatures-validity 30d;
-    signatures-validity-dnskey 30d;
+/// Name of the RNDC key `named` accepts on its control channel. The key file
+/// ([`RNDC_KEY_FILENAME`] in [`BIND_KEYS_PATH`]) is mounted from the RNDC Secret.
+const RNDC_KEY_NAME: &str = "bindy-operator";
+/// File name of the RNDC key inside [`BIND_KEYS_PATH`].
+const RNDC_KEY_FILENAME: &str = "rndc.key";
 
-    // Zone propagation delay (time for zone updates to reach all servers)
-    zone-propagation-delay 300;  // 5 minutes
+// Files `named` writes in its working directory (`BIND_CACHE_PATH`).
+const NAMED_PID_FILENAME: &str = "named.pid";
+const NAMED_SESSION_KEY_FILENAME: &str = "session.key";
+const NAMED_DUMP_FILENAME: &str = "cache_dump.db";
+const NAMED_STATISTICS_FILENAME: &str = "named_stats.txt";
+const NAMED_MEMSTATISTICS_FILENAME: &str = "named_mem_stats.txt";
 
-    // Parent propagation delay (time for DS updates in parent zone)
-    parent-propagation-delay 3600;  // 1 hour
+// Logging: every channel goes to stderr, where the kubelet collects it.
+const LOG_CHANNEL_DEFAULT: &str = "default_stderr";
+const LOG_CHANNEL_QUERIES: &str = "queries_stderr";
+const LOG_CHANNEL_SECURITY: &str = "security_stderr";
+/// Number of logging categories bindy routes.
+const LOG_CATEGORY_COUNT: usize = 12;
+/// Each logging category and the channel it is routed to.
+const LOG_CATEGORIES: [(&str, &str); LOG_CATEGORY_COUNT] = [
+    ("default", LOG_CHANNEL_DEFAULT),
+    ("general", LOG_CHANNEL_DEFAULT),
+    ("config", LOG_CHANNEL_DEFAULT),
+    ("network", LOG_CHANNEL_DEFAULT),
+    ("queries", LOG_CHANNEL_QUERIES),
+    ("security", LOG_CHANNEL_SECURITY),
+    ("dnssec", LOG_CHANNEL_SECURITY),
+    ("xfer-in", LOG_CHANNEL_DEFAULT),
+    ("xfer-out", LOG_CHANNEL_DEFAULT),
+    ("notify", LOG_CHANNEL_DEFAULT),
+    ("update", LOG_CHANNEL_DEFAULT),
+    ("update-security", LOG_CHANNEL_SECURITY),
+];
 
-    // Maximum zone TTL (affects key rollover timing)
-    max-zone-ttl 86400;  // 24 hours
-};
-"#;
+// Timing clauses of the DNSSEC policy bindy defines.
+const DNSSEC_SIGNATURES_REFRESH: &str = "5d";
+const DNSSEC_SIGNATURES_VALIDITY: &str = "30d";
+const DNSSEC_SIGNATURES_VALIDITY_DNSKEY: &str = "30d";
+/// Time for zone updates to reach all servers: 5 minutes, in seconds.
+const DNSSEC_ZONE_PROPAGATION_DELAY: &str = "300";
+/// Time for DS updates to reach the parent zone: 1 hour, in seconds.
+const DNSSEC_PARENT_PROPAGATION_DELAY: &str = "3600";
+/// Maximum TTL in a signed zone, which bounds key rollover timing: 24 hours,
+/// in seconds.
+const DNSSEC_MAX_ZONE_TTL: &str = "86400";
 
 // BIND configuration file paths and mount points
 const BIND_ZONES_PATH: &str = "/etc/bind/zones";
@@ -161,8 +189,6 @@ const VOLUME_TMP: &str = "tmp";
 // named.conf.options directive names for listen addresses
 const LISTEN_ON_DIRECTIVE: &str = "listen-on";
 const LISTEN_ON_V6_DIRECTIVE: &str = "listen-on-v6";
-/// Default listen address match list when `listenOn` / `listenOnV6` are unset.
-const LISTEN_ON_DEFAULT: &str = "any";
 
 // Default DNSSEC signing parameters
 /// Name of the policy bindy defines when the cluster names none. Not
@@ -258,7 +284,7 @@ fn validate_dnssec_token(field: &str, value: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Generate DNSSEC policy configuration from cluster or instance config
+/// The `dnssec-policy` statement bindy defines, from cluster or instance config
 ///
 /// Checks both instance and global configuration for DNSSEC signing settings.
 /// Instance config takes precedence over global config.
@@ -270,25 +296,24 @@ fn validate_dnssec_token(field: &str, value: &str) -> anyhow::Result<()> {
 ///
 /// # Returns
 ///
-/// A string containing DNSSEC policy definitions, or an empty string if signing
-/// is not enabled anywhere (which is not an error).
+/// The policy statement, or `None` if signing is not enabled anywhere (which
+/// is not an error).
 ///
 /// # Errors
 ///
-/// Returns an error if any signing parameter that is interpolated into
-/// `named.conf` (`policy`, `algorithm`, `kskLifetime`, `zskLifetime`) fails the
-/// runtime whitelist — see [`validate_dnssec_policy_name`] and
-/// [`validate_dnssec_token`] (audit finding P2-5).
-pub(crate) fn generate_dnssec_policies(
+/// Returns an error if `policy`, `algorithm`, `kskLifetime` or `zskLifetime`
+/// fails the runtime whitelist (see [`validate_dnssec_policy_name`] and
+/// [`validate_dnssec_token`], audit finding P2-5), or if a lifetime is not a
+/// duration BIND accepts (see [`policy_key_lifetime`]).
+pub(crate) fn dnssec_policy_statement(
     global_config: Option<&crate::crd::Bind9Config>,
     instance_config: Option<&crate::crd::Bind9Config>,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<Option<DnssecPolicyStmt>> {
     // Resolve the signing config with the same precedence/fallback semantics
     // as get_dnssec_signing_config: instance config wins when it enables
-    // signing, otherwise fall back to the global config. Returns None when
-    // signing is not enabled anywhere.
+    // signing, otherwise fall back to the global config.
     let Some(signing) = get_dnssec_signing_config(global_config, instance_config) else {
-        return Ok(String::new());
+        return Ok(None);
     };
 
     // Extract policy parameters with defaults
@@ -309,21 +334,8 @@ pub(crate) fn generate_dnssec_policies(
         .as_deref()
         .unwrap_or(DEFAULT_ZSK_LIFETIME);
 
-    // Configure NSEC/NSEC3. BIND 9.18 dnssec-policy grammar has an
-    // `nsec3param` statement but NO `nsec` keyword: NSEC is selected by
-    // omitting `nsec3param`, so the NSEC case renders nothing at all.
-    let nsec_config = if signing.nsec3.unwrap_or(false) {
-        let iterations = signing.nsec3_iterations.unwrap_or(0);
-        let salt_length = DEFAULT_NSEC3_SALT_LENGTH;
-        format!(
-            "\n    // Authenticated denial of existence (NSEC3)\n    nsec3param iterations {iterations} optout no salt-length {salt_length};\n"
-        )
-    } else {
-        String::new()
-    };
-
-    // P2-5: every value below is interpolated UNQUOTED into named.conf. Validate
-    // before templating so a malformed value can never reach the rendered config.
+    // P2-5: the algorithm and lifetimes are written unquoted. hornet's writer
+    // emits them as given, so they are still held to the CRD's grammar here.
     validate_dnssec_policy_name(policy_name)?;
     validate_dnssec_token("dnssec algorithm", algorithm)?;
     validate_dnssec_token("dnssec ksk lifetime", ksk_lifetime)?;
@@ -333,13 +345,66 @@ pub(crate) fn generate_dnssec_policies(
         require_unlimited_lifetime("zskLifetime", zsk_lifetime)?;
     }
 
-    // Substitute template variables
-    Ok(DNSSEC_POLICY_TEMPLATE
-        .replace("{{POLICY_NAME}}", policy_name)
-        .replace("{{ALGORITHM}}", algorithm)
-        .replace("{{KSK_LIFETIME}}", ksk_lifetime)
-        .replace("{{ZSK_LIFETIME}}", zsk_lifetime)
-        .replace("{{NSEC_CONFIG}}", &nsec_config))
+    let key = |role, lifetime| DnssecPolicyKey {
+        role,
+        storage: None,
+        lifetime,
+        algorithm: algorithm.to_string(),
+        tag_range: None,
+        bits: None,
+    };
+    let keys = vec![
+        key(
+            DnssecKeyRole::Ksk,
+            policy_key_lifetime("kskLifetime", ksk_lifetime)?,
+        ),
+        key(
+            DnssecKeyRole::Zsk,
+            policy_key_lifetime("zskLifetime", zsk_lifetime)?,
+        ),
+    ];
+
+    // NSEC is selected by having no `nsec3param` clause.
+    let nsec3param = signing.nsec3.unwrap_or(false).then(|| Nsec3Param {
+        iterations: Some(signing.nsec3_iterations.unwrap_or(0)),
+        optout: Some(false),
+        salt_length: Some(u32::from(DEFAULT_NSEC3_SALT_LENGTH)),
+    });
+
+    Ok(Some(DnssecPolicyStmt {
+        name: policy_name.to_string(),
+        keys: Some(keys),
+        nsec3param,
+        signatures_refresh: Some(DNSSEC_SIGNATURES_REFRESH.to_string()),
+        signatures_validity: Some(DNSSEC_SIGNATURES_VALIDITY.to_string()),
+        signatures_validity_dnskey: Some(DNSSEC_SIGNATURES_VALIDITY_DNSKEY.to_string()),
+        zone_propagation_delay: Some(DNSSEC_ZONE_PROPAGATION_DELAY.to_string()),
+        parent_propagation_delay: Some(DNSSEC_PARENT_PROPAGATION_DELAY.to_string()),
+        max_zone_ttl: Some(DNSSEC_MAX_ZONE_TTL.to_string()),
+        ..Default::default()
+    }))
+}
+
+/// A policy key lifetime: `unlimited`, or a duration BIND accepts.
+///
+/// BIND has no `y` TTL unit, so `1y` makes `named` refuse the whole
+/// configuration; one year is `P1Y`, `365d` or `8760h`.
+///
+/// # Errors
+/// Returns an error naming `field` when `value` is neither `unlimited` nor a
+/// BIND duration.
+fn policy_key_lifetime(field: &str, value: &str) -> anyhow::Result<DnssecKeyLifetime> {
+    if value.eq_ignore_ascii_case(DNSSEC_LIFETIME_UNLIMITED) {
+        return Ok(DnssecKeyLifetime::Unlimited);
+    }
+    if !hornet_bind9::named_conf::is_duration(value) {
+        anyhow::bail!(
+            "invalid dnssec {field} {value:?}: not a duration BIND accepts; use a TTL value \
+             such as 365d or 8760h, an ISO 8601 duration such as P1Y, or \
+             {DNSSEC_LIFETIME_UNLIMITED:?}"
+        );
+    }
+    Ok(DnssecKeyLifetime::Duration(value.to_string()))
 }
 
 /// Refuse a finite key lifetime for keys supplied from a Secret (ADR-0012).
@@ -376,7 +441,7 @@ fn dnssec_key_secret(
 /// An explicit `spec.dnssecPolicy` on the zone always wins, including BIND's
 /// built-in `insecure` and `none`, which a zone names to unsign itself.
 /// Otherwise a zone inherits the signing policy of the instance that serves
-/// it (instance config over cluster `global`, as `generate_dnssec_policies`
+/// it (instance config over cluster `global`, as `dnssec_policy_statement`
 /// renders it): its `policy`, or `DEFAULT_DNSSEC_POLICY_NAME` when unnamed.
 /// With signing off everywhere, the zone is unsigned.
 ///
@@ -406,8 +471,8 @@ pub fn resolve_zone_dnssec_policy(
     )
 }
 
-/// The `key-directory` statement for `named.conf.options`: the DNSSEC key
-/// mount ([`BIND_DNSSEC_KEYS_PATH`]) when signing is enabled, else nothing.
+/// The `key-directory` for `named.conf.options`: the DNSSEC key mount
+/// ([`BIND_DNSSEC_KEYS_PATH`]) when signing is enabled, else none.
 ///
 /// Without it BIND keeps `dnssec-policy` keys in its working directory, a
 /// scratch volume, so keys from `keysFrom` are never read and generated keys
@@ -417,18 +482,12 @@ pub fn resolve_zone_dnssec_policy(
 ///
 /// * `global_config` - Optional global cluster configuration
 /// * `instance_config` - Optional instance-specific configuration
-///
-/// # Returns
-///
-/// The statement, or an empty string when signing is off.
-pub(crate) fn render_key_directory(
+fn key_directory(
     global_config: Option<&crate::crd::Bind9Config>,
     instance_config: Option<&crate::crd::Bind9Config>,
-) -> String {
-    if get_dnssec_signing_config(global_config, instance_config).is_none() {
-        return String::new();
-    }
-    format!("key-directory \"{BIND_DNSSEC_KEYS_PATH}\";")
+) -> Option<String> {
+    get_dnssec_signing_config(global_config, instance_config)
+        .map(|_| BIND_DNSSEC_KEYS_PATH.to_string())
 }
 
 /// Check if DNSSEC signing is enabled in either instance or global config
@@ -1263,10 +1322,18 @@ pub fn build_cluster_configmap(
     })
 }
 
-/// Build the main named.conf configuration from template
+/// Write statements as BIND9 configuration text with hornet's writer
+/// (ADR-0013 stage 3): every value is quoted or escaped for its position by
+/// the writer, not by each caller.
+fn write_conf(statements: Vec<Statement>) -> String {
+    hornet_bind9::write_named_conf(&NamedConf { statements }, &WriteOptions::default())
+}
+
+/// Build the main named.conf for an instance
 ///
-/// Generates the main BIND9 configuration file with conditional zones include.
-/// The zones include directive is only added if the user provides a `namedConfZones` `ConfigMap`.
+/// Includes `named.conf.options`, the zones file when the user provides a
+/// `namedConfZones` `ConfigMap`, and the RNDC key; then the control channel
+/// and logging.
 ///
 /// # Arguments
 ///
@@ -1277,63 +1344,140 @@ pub fn build_cluster_configmap(
 ///
 /// A string containing the complete named.conf configuration
 fn build_named_conf(instance: &Bind9Instance, cluster: Option<&Bind9Cluster>) -> String {
-    // Check if user provided a custom zones ConfigMap
     let config_map_refs = instance
         .spec
         .config_map_refs
         .as_ref()
         .or_else(|| cluster.and_then(|c| c.spec.common.config_map_refs.as_ref()));
-
-    let zones_include = if let Some(refs) = config_map_refs {
-        if refs.named_conf_zones.is_some() {
-            // User provided custom zones file, include it from custom ConfigMap location
-            "\n// Include zones file from user-provided ConfigMap\ninclude \"/etc/bind/named.conf.zones\";\n".to_string()
-        } else {
-            // No zones ConfigMap provided, don't include zones file
-            String::new()
-        }
-    } else {
-        // No config refs at all, don't include zones file
-        String::new()
-    };
-
-    // Build RNDC key includes and key names for controls block
-    // For now, we support a single key per instance (bindy-operator)
-    // Future enhancement: support multiple keys from spec
-    let rndc_key_includes = "include \"/etc/bind/keys/rndc.key\";";
-    let rndc_key_names = "\"bindy-operator\"";
-
-    NAMED_CONF_TEMPLATE
-        .replace("{{ZONES_INCLUDE}}", &zones_include)
-        .replace("{{RNDC_KEY_INCLUDES}}", rndc_key_includes)
-        .replace("{{RNDC_KEY_NAMES}}", rndc_key_names)
+    render_named_conf(includes_zones_file(config_map_refs))
 }
 
-/// Default `allow-transfer` directive emitted at the options level when no
-/// explicit transfer ACL is configured anywhere (no instance, role, or global
+/// Build the main named.conf for a cluster
+///
+/// # Arguments
+///
+/// * `cluster` - `Bind9Cluster` spec (checked for config refs)
+///
+/// # Returns
+///
+/// A string containing the complete named.conf configuration
+fn build_cluster_named_conf(cluster: &Bind9Cluster) -> String {
+    render_named_conf(includes_zones_file(
+        cluster.spec.common.config_map_refs.as_ref(),
+    ))
+}
+
+/// Whether the user supplies a `namedConfZones` `ConfigMap` to include.
+fn includes_zones_file(config_map_refs: Option<&ConfigMapRefs>) -> bool {
+    config_map_refs.is_some_and(|refs| refs.named_conf_zones.is_some())
+}
+
+/// Render named.conf.
+///
+/// # Arguments
+///
+/// * `include_zones` - Include the user-provided zones file
+fn render_named_conf(include_zones: bool) -> String {
+    let mut statements = vec![Statement::Include(BIND_NAMED_CONF_OPTIONS_PATH.to_string())];
+    if include_zones {
+        statements.push(Statement::Include(BIND_NAMED_CONF_ZONES_PATH.to_string()));
+    }
+    statements.push(Statement::Include(format!(
+        "{BIND_KEYS_PATH}/{RNDC_KEY_FILENAME}"
+    )));
+    statements.push(Statement::Controls(rndc_controls()));
+    statements.push(Statement::Logging(logging()));
+    write_conf(statements)
+}
+
+/// The RNDC control channel: localhost only, with the operator's key. The
+/// bindcar sidecar handles access from outside the pod.
+fn rndc_controls() -> ControlsBlock {
+    ControlsBlock {
+        inet: vec![InetControl {
+            address: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            port: RNDC_PORT,
+            allow: vec![AddressMatchElement::Localhost],
+            keys: vec![RNDC_KEY_NAME.to_string()],
+            read_only: None,
+        }],
+        unix: Vec::new(),
+    }
+}
+
+/// Logging: three stderr channels, ISO 8601 timestamps, and the
+/// [`LOG_CATEGORIES`] routing.
+fn logging() -> LoggingBlock {
+    let channel = |name: &str, severity| LogChannel {
+        name: name.to_string(),
+        destination: LogDestination::Stderr,
+        severity: Some(severity),
+        print_time: Some(PrintTime::Iso8601),
+        print_severity: Some(true),
+        print_category: Some(true),
+        buffered: None,
+    };
+    LoggingBlock {
+        channels: vec![
+            channel(LOG_CHANNEL_DEFAULT, LogSeverity::Info),
+            channel(LOG_CHANNEL_QUERIES, LogSeverity::Info),
+            channel(LOG_CHANNEL_SECURITY, LogSeverity::Warning),
+        ],
+        categories: LOG_CATEGORIES
+            .iter()
+            .map(|(name, channel)| LogCategory {
+                name: (*name).to_string(),
+                channels: vec![(*channel).to_string()],
+            })
+            .collect(),
+    }
+}
+
+/// The `options` fields every rendered configuration has: `named`'s working
+/// files under [`BIND_CACHE_PATH`], and `allow-new-zones` for bindcar's
+/// `rndc addzone`.
+fn base_options() -> OptionsBlock {
+    OptionsBlock {
+        directory: Some(BIND_CACHE_PATH.to_string()),
+        pid_file: Some(format!("{BIND_CACHE_PATH}/{NAMED_PID_FILENAME}")),
+        session_keyfile: Some(format!("{BIND_CACHE_PATH}/{NAMED_SESSION_KEY_FILENAME}")),
+        dump_file: Some(format!("{BIND_CACHE_PATH}/{NAMED_DUMP_FILENAME}")),
+        statistics_file: Some(format!("{BIND_CACHE_PATH}/{NAMED_STATISTICS_FILENAME}")),
+        memstatistics_file: Some(format!("{BIND_CACHE_PATH}/{NAMED_MEMSTATISTICS_FILENAME}")),
+        allow_new_zones: Some(true),
+        ..Default::default()
+    }
+}
+
+/// Render named.conf.options: the `options` block, then the DNSSEC policy it
+/// signs with, if any.
+fn render_options_conf(options: OptionsBlock, policy: Option<DnssecPolicyStmt>) -> String {
+    let mut statements = vec![Statement::Options(options)];
+    statements.extend(policy.map(Statement::DnssecPolicy));
+    write_conf(statements)
+}
+
+/// `allow-transfer { none; }`: emitted at the options level when no explicit
+/// transfer ACL is configured anywhere (no instance, role, or global
 /// `allow_transfer`).
 ///
 /// BIND9's built-in default is `allow-transfer { any; }`, which would expose
-/// every zone served by the instance to AXFR from any client — bulk zone
+/// every zone served by the instance to AXFR from any client: bulk zone
 /// enumeration (threat model I2) and an amplification vector (D3). We deny by
 /// default instead. Zones that legitimately need transfers get a **zone-level**
 /// `allow-transfer` ACL scoped to their secondary IPs (see
 /// `bind9::zone_ops`), and a zone-level ACL overrides this options-level
-/// default in BIND9 — so replication is unaffected by this hardening.
-const DEFAULT_ALLOW_TRANSFER_NONE: &str = "allow-transfer { none; };";
+/// default in BIND9, so replication is unaffected by this hardening.
+fn deny_all_transfers() -> AddressMatchList {
+    vec![AddressMatchElement::None]
+}
 
 /// Default `responses-per-second` for BIND9 Response Rate Limiting (RRL) when
 /// `spec.config.rateLimit` is not set. RRL is on by default (threat model
-/// D1/D3 — DNS amplification/reflection); a per-source-prefix cap of 15/s is
+/// D1/D3, DNS amplification/reflection); a per-source-prefix cap of 15/s is
 /// ISC's recommended conservative starting point and rarely affects legitimate
 /// clients. Set `rateLimit.responsesPerSecond: 0` in the CRD to disable.
 const DEFAULT_RATE_LIMIT_RESPONSES_PER_SECOND: u32 = 15;
-
-/// Directive name for query ACLs in named.conf.options.
-const ALLOW_QUERY_DIRECTIVE: &str = "allow-query";
-
-/// Directive name for zone-transfer ACLs in named.conf.options.
-const ALLOW_TRANSFER_DIRECTIVE: &str = "allow-transfer";
 
 /// Error-context name for the cluster-level `allow_query` field, shared by the
 /// instance-level (global fallback) and cluster-level options builders.
@@ -1343,7 +1487,7 @@ const SOURCE_GLOBAL_ALLOW_QUERY: &str = "cluster spec.global.allow_query";
 /// the instance-level (global fallback) and cluster-level options builders.
 const SOURCE_GLOBAL_ALLOW_TRANSFER: &str = "cluster spec.global.allow_transfer";
 
-/// Build the named.conf.options configuration from template
+/// Build the named.conf.options configuration for an instance
 ///
 /// Generates the BIND9 options configuration file from the instance's config spec.
 /// Includes settings for recursion, ACLs (allow-query, allow-transfer), DNSSEC,
@@ -1364,6 +1508,11 @@ const SOURCE_GLOBAL_ALLOW_TRANSFER: &str = "cluster spec.global.allow_transfer";
 /// # Returns
 ///
 /// A string containing the complete named.conf.options configuration
+///
+/// # Errors
+///
+/// Returns an error if an ACL, forwarder, listen address or DNSSEC signing
+/// value fails validation.
 fn build_options_conf(
     instance: &Bind9Instance,
     cluster: Option<&Bind9Cluster>,
@@ -1372,96 +1521,82 @@ fn build_options_conf(
     let instance_cfg = instance.spec.config.as_ref();
     let global_config = cluster.and_then(|c| c.spec.common.global.as_ref());
 
-    // Recursion - instance overrides global; off when neither sets it.
-    let recursion = render_recursion(
-        instance_cfg
-            .and_then(|c| c.recursion)
-            .or_else(|| global_config.and_then(|g| g.recursion))
-            .unwrap_or(false),
-    );
-
-    // Allow-query ACL - the first configured level wins (instance, then
+    // Allow-query ACL: the first configured level wins (instance, then
     // global); an explicitly empty list renders no directive.
     let allow_query = if let Some(acls) = instance_cfg.and_then(|c| c.allow_query.as_ref()) {
-        render_acl_directive(
-            ALLOW_QUERY_DIRECTIVE,
-            Some(acls),
-            "instance spec.config.allow_query",
-        )?
+        acl_list(Some(acls), "instance spec.config.allow_query")?
     } else {
-        render_acl_directive(
-            ALLOW_QUERY_DIRECTIVE,
+        acl_list(
             global_config.and_then(|g| g.allow_query.as_ref()),
             SOURCE_GLOBAL_ALLOW_QUERY,
         )?
     };
 
-    // Allow-transfer ACL - priority: instance config > role-specific > global.
+    // Allow-transfer ACL: priority instance config > role-specific > global.
     // An explicitly empty list at any level means `none`; with no explicit ACL
-    // anywhere, deny by default (see const doc).
+    // anywhere, deny by default (see `deny_all_transfers`).
     let allow_transfer = if let Some(acls) = instance_cfg.and_then(|c| c.allow_transfer.as_ref()) {
-        render_allow_transfer(acls, "instance spec.config.allow_transfer")?
+        transfer_acl(acls, "instance spec.config.allow_transfer")?
     } else if let Some(role_acls) = role_allow_transfer {
-        render_allow_transfer(role_acls, "cluster role-specific allow_transfer")?
+        transfer_acl(role_acls, "cluster role-specific allow_transfer")?
     } else if let Some(global_acls) = global_config.and_then(|g| g.allow_transfer.as_ref()) {
-        render_allow_transfer(global_acls, SOURCE_GLOBAL_ALLOW_TRANSFER)?
+        transfer_acl(global_acls, SOURCE_GLOBAL_ALLOW_TRANSFER)?
     } else {
-        DEFAULT_ALLOW_TRANSFER_NONE.to_string()
+        deny_all_transfers()
     };
 
-    // DNSSEC validation - instance overrides global. dnssec-enable was removed
-    // in BIND 9.15+ (DNSSEC is always enabled); only validation is configurable.
-    let dnssec_validate = resolve_dnssec_validation(instance_cfg, global_config);
+    // Every other option: instance overrides global, per field.
+    let options = OptionsBlock {
+        listen_on: vec![listen_on(
+            LISTEN_ON_DIRECTIVE,
+            instance_cfg
+                .and_then(|c| c.listen_on.as_ref())
+                .or_else(|| global_config.and_then(|g| g.listen_on.as_ref())),
+        )?],
+        listen_on_v6: vec![listen_on(
+            LISTEN_ON_V6_DIRECTIVE,
+            instance_cfg
+                .and_then(|c| c.listen_on_v6.as_ref())
+                .or_else(|| global_config.and_then(|g| g.listen_on_v6.as_ref())),
+        )?],
+        // Recursion is off when neither level sets it.
+        recursion: Some(
+            instance_cfg
+                .and_then(|c| c.recursion)
+                .or_else(|| global_config.and_then(|g| g.recursion))
+                .unwrap_or(false),
+        ),
+        forwarders: forwarders(
+            instance_cfg
+                .and_then(|c| c.forwarders.as_ref())
+                .or_else(|| global_config.and_then(|g| g.forwarders.as_ref())),
+        )?,
+        allow_query,
+        allow_transfer: Some(allow_transfer),
+        // Response Rate Limiting is on by default.
+        rate_limit: rate_limit(
+            instance_cfg
+                .and_then(|c| c.rate_limit.as_ref())
+                .or_else(|| global_config.and_then(|g| g.rate_limit.as_ref())),
+        ),
+        // dnssec-enable was removed in BIND 9.15+ (DNSSEC is always enabled);
+        // only validation is configurable.
+        dnssec_validation: resolve_dnssec_validation(instance_cfg, global_config),
+        key_directory: key_directory(global_config, instance_cfg),
+        ..base_options()
+    };
 
-    // Generate DNSSEC policies (instance config overrides global)
-    let dnssec_policies = generate_dnssec_policies(global_config, instance_cfg)?;
-    let key_directory = render_key_directory(global_config, instance_cfg);
-
-    // Forwarders and listen addresses - instance overrides global, per field
-    let forwarders = render_forwarders(
-        instance_cfg
-            .and_then(|c| c.forwarders.as_ref())
-            .or_else(|| global_config.and_then(|g| g.forwarders.as_ref())),
-    )?;
-    let listen_on = render_listen_on(
-        LISTEN_ON_DIRECTIVE,
-        instance_cfg
-            .and_then(|c| c.listen_on.as_ref())
-            .or_else(|| global_config.and_then(|g| g.listen_on.as_ref())),
-    )?;
-    let listen_on_v6 = render_listen_on(
-        LISTEN_ON_V6_DIRECTIVE,
-        instance_cfg
-            .and_then(|c| c.listen_on_v6.as_ref())
-            .or_else(|| global_config.and_then(|g| g.listen_on_v6.as_ref())),
-    )?;
-
-    // Response Rate Limiting - instance overrides global; on by default.
-    let rate_limit = render_rate_limit(
-        instance_cfg
-            .and_then(|c| c.rate_limit.as_ref())
-            .or_else(|| global_config.and_then(|g| g.rate_limit.as_ref())),
-    );
-
-    // Perform template substitutions
-    Ok(NAMED_CONF_OPTIONS_TEMPLATE
-        .replace("{{LISTEN_ON}}", &listen_on)
-        .replace("{{LISTEN_ON_V6}}", &listen_on_v6)
-        .replace("{{RECURSION}}", &recursion)
-        .replace("{{FORWARDERS}}", &forwarders)
-        .replace("{{ALLOW_QUERY}}", &allow_query)
-        .replace("{{ALLOW_TRANSFER}}", &allow_transfer)
-        .replace("{{RATE_LIMIT}}", &rate_limit)
-        .replace("{{DNSSEC_VALIDATE}}", &dnssec_validate)
-        .replace("{{KEY_DIRECTORY}}", &key_directory)
-        .replace("{{DNSSEC_POLICIES}}", &dnssec_policies))
+    Ok(render_options_conf(
+        options,
+        dnssec_policy_statement(global_config, instance_cfg)?,
+    ))
 }
 
-/// Render the `forwarders { …; };` block for named.conf.options.
+/// The `forwarders` list for named.conf.options.
 ///
 /// Emits only the `forwarders` block (no `forward` mode statement), matching
-/// BIND defaults. Returns an empty string when `forwarders` is `None` or
-/// empty so no directive is rendered.
+/// BIND defaults. Empty when `forwarders` is `None` or empty, so no directive
+/// is rendered.
 ///
 /// # Arguments
 ///
@@ -1469,99 +1604,93 @@ fn build_options_conf(
 ///
 /// # Errors
 ///
-/// Returns an error if any entry is not a plain IPv4 or IPv6 address —
-/// CRD-supplied values flow directly into named.conf, so anything else is
-/// rejected to prevent configuration injection.
-fn render_forwarders(forwarders: Option<&Vec<String>>) -> anyhow::Result<String> {
-    let Some(list) = forwarders else {
-        return Ok(String::new());
-    };
-    if list.is_empty() {
-        return Ok(String::new());
-    }
-
-    for entry in list {
-        let trimmed = entry.trim();
-        if trimmed.parse::<std::net::IpAddr>().is_err() {
-            anyhow::bail!("invalid forwarder {trimmed:?}: must be a plain IPv4 or IPv6 address");
-        }
-    }
-
-    let joined = list
-        .iter()
-        .map(|entry| entry.trim().to_string())
-        .collect::<Vec<_>>()
-        .join("; ");
-    Ok(format!("forwarders {{ {joined}; }};"))
+/// Returns an error if any entry is not a plain IPv4 or IPv6 address.
+fn forwarders(forwarders: Option<&Vec<String>>) -> anyhow::Result<Vec<IpAddr>> {
+    forwarders
+        .into_iter()
+        .flatten()
+        .map(|entry| {
+            let trimmed = entry.trim();
+            trimmed.parse().map_err(|_| {
+                anyhow::anyhow!(
+                    "invalid forwarder {trimmed:?}: must be a plain IPv4 or IPv6 address"
+                )
+            })
+        })
+        .collect()
 }
 
-/// Render the `rate-limit { responses-per-second N; };` block for
-/// named.conf.options.
+/// The `rate-limit { responses-per-second N; }` block for named.conf.options.
 ///
 /// Response Rate Limiting (RRL) is **on by default**: when `rate_limit` is
 /// `None`, or its `responses_per_second` is `None`, the conservative default
 /// [`DEFAULT_RATE_LIMIT_RESPONSES_PER_SECOND`] is used. An explicit value of
-/// `0` disables RRL — an empty string is returned so no directive is emitted.
+/// `0` disables RRL: no block is emitted.
 ///
 /// # Arguments
 ///
 /// * `rate_limit` - Optional RRL config (instance value takes priority over the
 ///   cluster `global` value; resolve that before calling).
-fn render_rate_limit(rate_limit: Option<&crate::crd::RateLimitConfig>) -> String {
+fn rate_limit(rate_limit: Option<&crate::crd::RateLimitConfig>) -> Option<RateLimit> {
     let rps = rate_limit
         .and_then(|r| r.responses_per_second)
         .unwrap_or(DEFAULT_RATE_LIMIT_RESPONSES_PER_SECOND);
     if rps == 0 {
-        // Explicitly disabled — emit nothing.
-        return String::new();
+        return None;
     }
-    format!("rate-limit {{ responses-per-second {rps}; }};")
+    Some(RateLimit {
+        responses_per_second: Some(rps),
+        ..Default::default()
+    })
 }
 
-/// Render a `listen-on` / `listen-on-v6` directive for named.conf.options.
+/// A `listen-on` / `listen-on-v6` directive for named.conf.options.
 ///
-/// Defaults to `{directive} port 5353 {{ any; }};` when `addresses` is `None`
-/// or empty. The port is [`DNS_CONTAINER_PORT`] — the port `named` actually binds
-/// inside the pod — not the client-facing service port [`DNS_PORT`].
+/// Defaults to `{ any; }` when `addresses` is `None` or empty. The port is
+/// [`DNS_CONTAINER_PORT`] (the unprivileged port `named` binds inside the pod;
+/// the DNS Service exposes [`DNS_PORT`] to clients and forwards to it), not
+/// the client-facing port.
 ///
 /// # Arguments
 ///
-/// * `directive` - Either [`LISTEN_ON_DIRECTIVE`] or [`LISTEN_ON_V6_DIRECTIVE`]
+/// * `directive` - Either [`LISTEN_ON_DIRECTIVE`] or [`LISTEN_ON_V6_DIRECTIVE`],
+///   for error context
 /// * `addresses` - Optional address match list from the CRD
 ///
 /// # Errors
 ///
-/// Returns an error if any entry fails address-match-list validation — see
+/// Returns an error if any entry fails address-match-list validation; see
 /// [`crate::bind9_acl`] for the accepted syntax.
-fn render_listen_on(directive: &str, addresses: Option<&Vec<String>>) -> anyhow::Result<String> {
-    let list = match addresses {
-        Some(addrs) if !addrs.is_empty() => build_acl_list(addrs)
+fn listen_on(directive: &str, addresses: Option<&Vec<String>>) -> anyhow::Result<ListenOn> {
+    let addresses = match addresses {
+        Some(addrs) if !addrs.is_empty() => parse_acl_list(addrs)
             .with_context(|| format!("invalid entry in {directive} address list"))?,
-        _ => LISTEN_ON_DEFAULT.to_string(),
+        _ => vec![AddressMatchElement::Any],
     };
-    Ok(format!(
-        "{directive} port {DNS_CONTAINER_PORT} {{ {list}; }};"
-    ))
+    Ok(ListenOn {
+        port: Some(DNS_CONTAINER_PORT),
+        addresses,
+    })
 }
 
-/// Render the `recursion yes;` / `recursion no;` directive.
-fn render_recursion(enabled: bool) -> String {
-    let value = if enabled { "yes" } else { "no" };
-    format!("recursion {value};")
+/// `dnssec-validation auto` or `no`.
+///
+/// Enabled is `auto`, which validates with BIND's built-in root trust anchor.
+/// `yes` needs `trust-anchors` configured, which bindy does not do: BIND 9.18
+/// then validates nothing, and BIND 9.20 refuses to load the configuration.
+fn dnssec_validation(enabled: bool) -> DnssecValidation {
+    if enabled {
+        return DnssecValidation::Auto;
+    }
+    DnssecValidation::No
 }
 
-/// Render the `dnssec-validation yes;` / `dnssec-validation no;` directive.
-fn render_dnssec_validation(enabled: bool) -> String {
-    let value = if enabled { "yes" } else { "no" };
-    format!("dnssec-validation {value};")
-}
-
-/// Resolve the `dnssec-validation` directive for the instance-level options
-/// builder - the instance config overrides the cluster global config.
+/// Resolve `dnssec-validation` for the instance-level options builder: the
+/// instance config overrides the cluster global config.
 ///
 /// Whichever level configures `dnssec` first (instance, then global) renders
 /// an explicit directive, regardless of whether the instance has a `config`
-/// block at all (ADR-0007 — an absent directive means `auto` to `named`,
+/// block at all (ADR-0007: an absent directive means `auto` to `named`,
 /// which would silently re-enable validation a user explicitly disabled).
 /// When neither level configures `dnssec`, no directive is emitted and
 /// `named`'s own default applies.
@@ -1573,98 +1702,49 @@ fn render_dnssec_validation(enabled: bool) -> String {
 fn resolve_dnssec_validation(
     instance_config: Option<&Bind9Config>,
     global_config: Option<&Bind9Config>,
-) -> String {
-    // Instance-level dnssec wins outright.
-    if let Some(dnssec) = instance_config.and_then(|c| c.dnssec.as_ref()) {
-        return render_dnssec_validation(dnssec.validation.unwrap_or(false));
-    }
-
-    global_config
-        .and_then(|g| g.dnssec.as_ref())
-        .map_or_else(String::new, |dnssec| {
-            render_dnssec_validation(dnssec.validation.unwrap_or(false))
-        })
+) -> Option<DnssecValidation> {
+    instance_config
+        .and_then(|c| c.dnssec.as_ref())
+        .or_else(|| global_config.and_then(|g| g.dnssec.as_ref()))
+        .map(|dnssec| dnssec_validation(dnssec.validation.unwrap_or(false)))
 }
 
-/// Render an ACL directive (`allow-query` / `allow-transfer`), or nothing.
+/// An ACL directive's address match list (`allow-query`), or none.
 ///
-/// Returns an empty string when `acls` is `None` or empty, so no directive is
-/// emitted. `source` names the originating CRD field for error context.
+/// `None` when `acls` is `None` or empty, so no directive is emitted.
+/// `source` names the originating CRD field for error context.
 ///
 /// # Errors
 ///
-/// Returns an error if any entry fails address-match-list validation — see
+/// Returns an error if any entry fails address-match-list validation; see
 /// [`crate::bind9_acl`] for the accepted syntax.
-fn render_acl_directive(
-    directive: &str,
-    acls: Option<&Vec<String>>,
-    source: &str,
-) -> anyhow::Result<String> {
+fn acl_list(acls: Option<&Vec<String>>, source: &str) -> anyhow::Result<Option<AddressMatchList>> {
     let Some(acls) = acls else {
-        return Ok(String::new());
+        return Ok(None);
     };
     if acls.is_empty() {
-        return Ok(String::new());
+        return Ok(None);
     }
-    let acl_list = build_acl_list(acls).with_context(|| format!("invalid entry in {source}"))?;
-    Ok(format!("{directive} {{ {acl_list}; }};"))
+    Ok(Some(
+        parse_acl_list(acls).with_context(|| format!("invalid entry in {source}"))?,
+    ))
 }
 
-/// Render `allow-transfer` for the instance-level options builder, where an
-/// explicitly **empty** list means `none` (deny) rather than "not configured".
+/// The `allow-transfer` list, where an explicitly **empty** list means `none`
+/// (deny) rather than "not configured".
 ///
 /// # Errors
 ///
-/// Returns an error if any entry fails address-match-list validation — see
+/// Returns an error if any entry fails address-match-list validation; see
 /// [`crate::bind9_acl`] for the accepted syntax.
-fn render_allow_transfer(acls: &[String], source: &str) -> anyhow::Result<String> {
+fn transfer_acl(acls: &[String], source: &str) -> anyhow::Result<AddressMatchList> {
     if acls.is_empty() {
-        return Ok(DEFAULT_ALLOW_TRANSFER_NONE.to_string());
+        return Ok(deny_all_transfers());
     }
-    let acl_list = build_acl_list(acls).with_context(|| format!("invalid entry in {source}"))?;
-    Ok(format!("{ALLOW_TRANSFER_DIRECTIVE} {{ {acl_list}; }};"))
+    parse_acl_list(acls).with_context(|| format!("invalid entry in {source}"))
 }
 
-/// Build the main named.conf configuration for a cluster from template
-///
-/// Generates the main BIND9 configuration file with conditional zones include.
-/// The zones include directive is only added if the user provides a `namedConfZones` `ConfigMap`.
-///
-/// # Arguments
-///
-/// * `cluster` - `Bind9Cluster` spec (checked for config refs)
-///
-/// # Returns
-///
-/// A string containing the complete named.conf configuration
-fn build_cluster_named_conf(cluster: &Bind9Cluster) -> String {
-    // Check if user provided a custom zones ConfigMap
-    let zones_include = if let Some(refs) = &cluster.spec.common.config_map_refs {
-        if refs.named_conf_zones.is_some() {
-            // User provided custom zones file, include it from custom ConfigMap location
-            "\n// Include zones file from user-provided ConfigMap\ninclude \"/etc/bind/named.conf.zones\";\n".to_string()
-        } else {
-            // No zones ConfigMap provided, don't include zones file
-            String::new()
-        }
-    } else {
-        // No config refs at all, don't include zones file
-        String::new()
-    };
-
-    // Build RNDC key includes and key names for controls block
-    // For now, we support a single key per instance (bindy-operator)
-    // Future enhancement: support multiple keys from spec
-    let rndc_key_includes = "include \"/etc/bind/keys/rndc.key\";";
-    let rndc_key_names = "\"bindy-operator\"";
-
-    NAMED_CONF_TEMPLATE
-        .replace("{{ZONES_INCLUDE}}", &zones_include)
-        .replace("{{RNDC_KEY_INCLUDES}}", rndc_key_includes)
-        .replace("{{RNDC_KEY_NAMES}}", rndc_key_names)
-}
-
-/// Build the named.conf.options configuration for a cluster from template
+/// Build the named.conf.options configuration for a cluster
 ///
 /// Generates the BIND9 options configuration file from the cluster's `spec.global` config.
 /// Includes settings for recursion, ACLs (allow-query, allow-transfer), DNSSEC,
@@ -1677,65 +1757,51 @@ fn build_cluster_named_conf(cluster: &Bind9Cluster) -> String {
 /// # Returns
 ///
 /// A string containing the complete named.conf.options configuration
+///
+/// # Errors
+///
+/// Returns an error if an ACL, forwarder, listen address or DNSSEC signing
+/// value fails validation.
 fn build_cluster_options_conf(cluster: &Bind9Cluster) -> anyhow::Result<String> {
     let global = cluster.spec.common.global.as_ref();
 
-    // Recursion - off unless the global config enables it.
-    let recursion = render_recursion(global.and_then(|g| g.recursion).unwrap_or(false));
-
-    // allow-query ACL
-    let allow_query = render_acl_directive(
-        ALLOW_QUERY_DIRECTIVE,
-        global.and_then(|g| g.allow_query.as_ref()),
-        SOURCE_GLOBAL_ALLOW_QUERY,
-    )?;
-
-    // allow-transfer ACL - same deny-by-default as the instance-level builder
+    // allow-transfer: same deny-by-default as the instance-level builder
     // (ADR-0007, closes the #466 gap): an explicit ACL renders it, an
     // explicitly empty list renders `none`, and no ACL at all denies AXFR
     // (BIND 9.18's own default is to allow transfers to ANY host).
-    let allow_transfer = if let Some(global_acls) = global.and_then(|g| g.allow_transfer.as_ref()) {
-        render_allow_transfer(global_acls, SOURCE_GLOBAL_ALLOW_TRANSFER)?
-    } else {
-        DEFAULT_ALLOW_TRANSFER_NONE.to_string()
+    let allow_transfer = match global.and_then(|g| g.allow_transfer.as_ref()) {
+        Some(acls) => transfer_acl(acls, SOURCE_GLOBAL_ALLOW_TRANSFER)?,
+        None => deny_all_transfers(),
     };
 
-    // DNSSEC validation - emitted only when the global config sets `dnssec`.
-    let dnssec_validate = global
-        .and_then(|g| g.dnssec.as_ref())
-        .map_or_else(String::new, |dnssec| {
-            render_dnssec_validation(dnssec.validation.unwrap_or(false))
-        });
+    let options = OptionsBlock {
+        listen_on: vec![listen_on(
+            LISTEN_ON_DIRECTIVE,
+            global.and_then(|g| g.listen_on.as_ref()),
+        )?],
+        listen_on_v6: vec![listen_on(
+            LISTEN_ON_V6_DIRECTIVE,
+            global.and_then(|g| g.listen_on_v6.as_ref()),
+        )?],
+        // Recursion is off unless the global config enables it.
+        recursion: Some(global.and_then(|g| g.recursion).unwrap_or(false)),
+        forwarders: forwarders(global.and_then(|g| g.forwarders.as_ref()))?,
+        allow_query: acl_list(
+            global.and_then(|g| g.allow_query.as_ref()),
+            SOURCE_GLOBAL_ALLOW_QUERY,
+        )?,
+        allow_transfer: Some(allow_transfer),
+        rate_limit: rate_limit(global.and_then(|g| g.rate_limit.as_ref())),
+        // Emitted only when the global config sets `dnssec`.
+        dnssec_validation: resolve_dnssec_validation(None, global),
+        key_directory: key_directory(global, None),
+        ..base_options()
+    };
 
-    // Generate DNSSEC policies from global config
-    let dnssec_policies = generate_dnssec_policies(global, None)?;
-    let key_directory = render_key_directory(global, None);
-
-    // Forwarders and listen addresses from global config
-    let forwarders = render_forwarders(global.and_then(|g| g.forwarders.as_ref()))?;
-    let listen_on = render_listen_on(
-        LISTEN_ON_DIRECTIVE,
-        global.and_then(|g| g.listen_on.as_ref()),
-    )?;
-    let listen_on_v6 = render_listen_on(
-        LISTEN_ON_V6_DIRECTIVE,
-        global.and_then(|g| g.listen_on_v6.as_ref()),
-    )?;
-
-    // Response Rate Limiting from global config; on by default.
-    let rate_limit = render_rate_limit(global.and_then(|g| g.rate_limit.as_ref()));
-
-    Ok(NAMED_CONF_OPTIONS_TEMPLATE
-        .replace("{{LISTEN_ON}}", &listen_on)
-        .replace("{{LISTEN_ON_V6}}", &listen_on_v6)
-        .replace("{{RECURSION}}", &recursion)
-        .replace("{{FORWARDERS}}", &forwarders)
-        .replace("{{ALLOW_QUERY}}", &allow_query)
-        .replace("{{ALLOW_TRANSFER}}", &allow_transfer)
-        .replace("{{RATE_LIMIT}}", &rate_limit)
-        .replace("{{DNSSEC_VALIDATE}}", &dnssec_validate)
-        .replace("{{KEY_DIRECTORY}}", &key_directory)
-        .replace("{{DNSSEC_POLICIES}}", &dnssec_policies))
+    Ok(render_options_conf(
+        options,
+        dnssec_policy_statement(global, None)?,
+    ))
 }
 
 /// Builds a Kubernetes Deployment for running BIND9 pods.

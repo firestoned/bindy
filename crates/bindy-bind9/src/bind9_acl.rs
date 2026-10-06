@@ -16,7 +16,12 @@
 //! - IPv4 address with optional `/prefix` (0..=32)
 //! - IPv6 address with optional `/prefix` (0..=128)
 //! - `key <name>` where `<name>` matches `[A-Za-z0-9._-]{1,253}`
+//!
+//! A validated entry is parsed into hornet's typed
+//! [`AddressMatchElement`], and hornet's writer renders it (ADR-0013 stage 3),
+//! so the text in `named.conf` never comes from the CRD string itself.
 
+use hornet_bind9::named_conf::{AddressMatchElement, AddressMatchList};
 use std::net::IpAddr;
 use thiserror::Error;
 
@@ -88,19 +93,63 @@ pub fn validate_acl_entry(entry: &str) -> Result<(), AclError> {
     Err(AclError::InvalidToken(trimmed.to_string()))
 }
 
-/// Validate each entry in `entries` and return the `; `-joined payload that
-/// goes between the `{ }` of an `allow-query` / `allow-transfer` block.
+/// Validate an `address_match_list` entry and parse it into hornet's typed
+/// element.
+///
+/// # Arguments
+/// * `entry` - One CRD-supplied entry, e.g. `10.0.0.0/8`, `!localhost` or
+///   `key bindy-operator`
 ///
 /// # Errors
-/// Returns [`AclError`] on the first invalid entry; the index is encoded in
-/// the message via the entry itself so operators can fix the offending CRD.
-pub fn build_acl_list(entries: &[String]) -> Result<String, AclError> {
-    let mut pieces = Vec::with_capacity(entries.len());
-    for entry in entries {
-        validate_acl_entry(entry)?;
-        pieces.push(entry.trim().to_string());
+/// Returns [`AclError`] for anything [`validate_acl_entry`] rejects.
+pub fn parse_acl_entry(entry: &str) -> Result<AddressMatchElement, AclError> {
+    validate_acl_entry(entry)?;
+    let trimmed = entry.trim();
+    if let Some(negated) = trimmed.strip_prefix('!') {
+        return Ok(AddressMatchElement::Negated(Box::new(parse_positive(
+            negated.trim_start(),
+        )?)));
     }
-    Ok(pieces.join("; "))
+    parse_positive(trimmed)
+}
+
+/// Parse an already-validated entry with no leading `!`.
+fn parse_positive(core: &str) -> Result<AddressMatchElement, AclError> {
+    match core {
+        "any" => return Ok(AddressMatchElement::Any),
+        "none" => return Ok(AddressMatchElement::None),
+        "localhost" => return Ok(AddressMatchElement::Localhost),
+        "localnets" => return Ok(AddressMatchElement::Localnets),
+        _ => {}
+    }
+    if let Some(key_name) = core.strip_prefix("key ") {
+        let name = key_name.trim();
+        let unquoted = name
+            .strip_prefix('"')
+            .and_then(|n| n.strip_suffix('"'))
+            .unwrap_or(name);
+        return Ok(AddressMatchElement::Key(unquoted.to_string()));
+    }
+    let invalid = || AclError::InvalidToken(core.to_string());
+    let Some((addr, prefix)) = core.split_once('/') else {
+        return core
+            .parse()
+            .map(AddressMatchElement::Ip)
+            .map_err(|_| invalid());
+    };
+    Ok(AddressMatchElement::Cidr {
+        addr: addr.parse().map_err(|_| invalid())?,
+        prefix_len: prefix.parse().map_err(|_| invalid())?,
+    })
+}
+
+/// Validate and parse every entry in `entries`, keeping their order.
+///
+/// # Errors
+/// Returns [`AclError`] on the first invalid entry; the message carries the
+/// entry itself so operators can fix the offending CRD.
+pub fn parse_acl_list(entries: &[String]) -> Result<AddressMatchList, AclError> {
+    entries.iter().map(|entry| parse_acl_entry(entry)).collect()
 }
 
 fn is_valid_key_name(name: &str) -> bool {

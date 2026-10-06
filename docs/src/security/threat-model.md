@@ -1,13 +1,28 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.14
+**Version:** 1.15
 **Last Updated:** 2026-10-05
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
 
 > Last full pass 2026-10-05, against ADR-0001 ... ADR-0015 (ADR-0006 as amended;
-> ADR-0009 as amended 2026-10-05, fully implemented; ADR-0013 stages 1 and 2;
+> ADR-0009 as amended 2026-10-05, fully implemented; ADR-0013 stages 1 to 3,
 > ADR-0014 and ADR-0015 implemented).
+>
+> **Revision note (v1.15):** Full pass for ADR-0013 stage 3: `named.conf` and
+> `named.conf.options` are written by hornet 0.3.0's writer from typed values
+> (ACL entries as address-match elements, forwarders as addresses, the
+> DNSSEC policy as a typed statement), and the templates are retired. New
+> mitigation **M-47** (configuration written by construction) closes the
+> remaining D4 gap (hornet 0.2.0 only brace-checked `logging` and
+> `dnssec-policy`) and adds a second layer behind the input validators
+> against configuration injected through a CRD value (T3, D4). Checking every rendered file
+> with `named-checkconf` 9.18 and 9.20 found that `validation: true` rendered
+> `dnssec-validation yes` without `trust-anchors`: on 9.18 a recursive
+> operand validated nothing (Scenario 2, cache poisoning), on 9.20 it did not
+> start (D4). It now renders `auto`. No new component, actor, asset, trust
+> boundary or dependency (hornet was added in v1.12); all other sections
+> re-walked, no further changes.
 >
 > **Revision note (v1.14):** Full pass for ADR-0015 (bounded Kubernetes API
 > cost of record and zone writes), prompted by the v0.8.0-rc.2 load test
@@ -696,6 +711,12 @@ verification, but nothing enforces that verification at admission by default)
   (`bindy-secrets-writer`) bound **only in the operator's own namespace**. A
   compromised operator can no longer create/modify/delete Secrets in other
   namespaces such as `kube-system`.
+- ✅ **Configuration written by construction** (M-47, ADR-0013 stage 3,
+  2026-10-05): a CRD value cannot close a block and add directives to the
+  generated configuration. Values are validated (CRD patterns, `bind9_acl`,
+  M-24), parsed into typed hornet fields, and written by hornet's writer,
+  which quotes and escapes each for its position; the rendered result is
+  parsed again before the ConfigMap is written (M-44)
 - ❌ **MISSING**: Immutable ConfigMaps — `build_configmap` / `build_cluster_configmap`
   (`crates/bindy-bind9/src/bind9_resources.rs`) do not set `immutable: true`, so a generated ConfigMap can
   be edited in place by anyone holding namespace write access (audit finding P2-2)
@@ -1093,13 +1114,18 @@ left a stray `}`)
   and, on failure, does not write it, reports `Ready=False` /
   `ConfigurationInvalid` and retries with backoff. The pods keep the last
   published configuration
-- ⚠️ hornet 0.2.0 checks only the braces inside `logging` and
-  `dnssec-policy` (it does not model `print-time iso8601` or `dnssec-policy`
-  yet); ADR-0013 stage 3 needs hornet 0.3.0 for both
+- ✅ **Configuration written by construction** (M-47, ADR-0013 stage 3,
+  2026-10-05): hornet 0.3.0's writer produces `named.conf` and
+  `named.conf.options` from typed values, quoting and escaping each for its
+  position; nothing reaches the file through a raw carrier, `logging` and
+  `dnssec-policy` are fully modelled, and every rendered file of the option
+  matrix and the examples passes `named-checkconf` on BIND 9.18 and 9.20. A
+  key lifetime BIND rejects (`1y`) is refused at render
 
 **Residual Risk:** LOW (an invalid render fails closed; a configuration
 hornet accepts but `named` rejects is still possible, and would surface as
-pods failing their rollout)
+pods failing their rollout. The `named-checkconf` run is a manual check at
+this release, not yet a CI gate)
 
 ---
 
@@ -1521,7 +1547,11 @@ see T4, [Trust Boundary 6](#boundary-6-scout-controller))
 **Mitigations:**
 - DNSSEC signing (opt-in, M-14, ADR-0006) - cryptographically signs DNS responses;
   DS records surfaced in `DNSZone.status.dnssec` for parent-zone publication
-- BIND9 is authoritative-only (not vulnerable to cache poisoning)
+- BIND9 is authoritative-only by default (`recursion` is off unless the CRD
+  enables it); when recursion is enabled, `validation: true` renders
+  `dnssec-validation auto` (built-in root trust anchor). Before ADR-0013
+  stage 3 it rendered `yes` without `trust-anchors`, which validated nothing
+  on BIND 9.18
 - Recursive resolvers outside our control (client responsibility)
 
 **Residual Risk:** LOW for signed zones with DS published; MEDIUM otherwise
@@ -1685,6 +1715,7 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-44 | **Rendered-configuration gate** (2026-10-05, ADR-0013 stages 1 and 2): every `named.conf*` the operator renders is parsed and validated with hornet, in CI across the option matrix and every example, and at runtime before the ConfigMap is written; an invalid render is not published, the resource reports `Ready=False` / `ConfigurationInvalid`, and the pods keep the last published configuration | D4 (malformed config takes every BIND9 pod down) | ✅ `crates/bindy-bind9/src/config_check.rs`, `crates/bindy-bind9/src/rendered_config_tests.rs` |
 | M-45 | **Per-request deadline on non-watch Kubernetes API requests** (2026-10-05, ADR-0014): a tower layer in the operator's client stack, inside the M-31 rate limiter, bounds each non-watch request to 30 s by default (`BINDY_KUBE_REQUEST_TIMEOUT_SECS`, invalid overrides fall back safely) across its response headers and body; the timeout is a retryable `kube::Error::Service`, so the existing backoff takes over. Requests with `watch=true` are exempt | D5 (stalled connection freezes reconciles) | ✅ `crates/bindy-controller-sdk/src/request_timeout.rs`, `crates/bindy-controller-sdk/src/rate_limit.rs` |
 | M-46 | **Bounded API cost of DNS writes** (2026-10-05, ADR-0015): per-reconcile `InstanceResolver` (each instance's RNDC key and endpoints read once), endpoints and instance roles from the existing reflector stores, a 60 s in-memory RNDC key cache invalidated on rotation and on any failed write, no record-side rewrite of `DNSZone.status.records`, a zoneRef-only status trigger for record reconciles, tag-once and LIST-based existence checks in zone reconciles; deleted records stay tracked until their DNS data is confirmed gone, and replays skip terminating records | D2 (API amplification: records x instances), T1 (deleted records left served), I1 (key reuse bounded) | ✅ `crates/bindy-bind9/src/instances.rs`, `crates/bindy-bind9/src/record_push.rs`, `crates/bindy-controller-records/src/record_operator.rs`, `crates/bindy-controller-zone/src/dnszone/{cleanup,discovery}.rs` |
+| M-47 | **Configuration written by construction** (2026-10-05, ADR-0013 stage 3): `named.conf` and `named.conf.options` are built as a hornet syntax tree from typed values (ACL entries parsed into address-match elements, forwarders into addresses, the DNSSEC policy into a typed statement) and written by hornet's writer, which quotes and escapes each value for its position; the text templates are retired, a test asserts every rendered file is hornet's canonical output with no raw carrier, and the option matrix and examples pass `named-checkconf` 9.18 and 9.20 | D4 (malformed config), T3 (configuration injected through a CRD value; second layer behind the CRD patterns, `bind9_acl` and M-24) | ✅ `crates/bindy-bind9/src/bind9_resources.rs`, `crates/bindy-bind9/src/bind9_acl.rs`, `crates/bindy-bind9/src/rendered_config_tests.rs` |
 | M-25 | **Scout Secret RBAC scoped** (fixed 2026-07-19, same day as this finding's discovery): removed the cluster-wide `secrets: get` `PolicyRule` from the `bindy-scout` `ClusterRole` entirely. Replaced with a namespaced, `resourceNames`-restricted Role (`bindy-scout-secrets-reader`) scoped to exactly the one Phase 2 kubeconfig Secret, applied only when `--remote-secret` is configured. Same-cluster-only deployments (the default) now get zero Secret access. See I4/E4/Scenario 6 for the full before/after. | I4, E4, T4 (Secret-read component), Scenario 6 | ✅ RBAC — **was the highest-priority open item in v1.1; closed same-day** |
 
 ---

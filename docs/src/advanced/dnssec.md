@@ -41,6 +41,11 @@ spec:
       validation: true  # Enable DNSSEC validation of upstream responses
 ```
 
+`validation: true` renders `dnssec-validation auto;`: BIND validates with
+its built-in root trust anchor. (`yes` would require a `trust-anchors`
+block, which bindy does not render.) `validation: false` renders
+`dnssec-validation no;`.
+
 Or override per-instance in `Bind9Instance`:
 
 ```yaml
