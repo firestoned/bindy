@@ -48,7 +48,10 @@ use bindy_controller_sdk::pagination::list_all_paginated;
 ///
 /// # Returns
 ///
-/// * `Ok(Vec<RecordReference>)` - List of currently matched DNS records
+/// * `Ok((records, cleanup_pending))` - The currently matched DNS records, and
+///   whether the DNS deletion of an unselected record failed and must be
+///   retried (with no periodic resync the zone schedules that retry itself,
+///   ADR-0016)
 /// * `Err(_)` - If record discovery or tagging fails
 ///
 /// # Errors
@@ -60,7 +63,7 @@ pub async fn reconcile_zone_records(
     dnszone: DNSZone,
     stores: &crate::context::Stores,
     retained: &[crate::crd::RecordReferenceWithTimestamp],
-) -> Result<Vec<crate::crd::RecordReferenceWithTimestamp>> {
+) -> Result<(Vec<crate::crd::RecordReferenceWithTimestamp>, bool)> {
     let namespace = dnszone.namespace().unwrap_or_default();
     let spec = &dnszone.spec;
     let zone_name = &spec.zone_name;
@@ -72,7 +75,7 @@ pub async fn reconcile_zone_records(
             zone_name
         );
         // If no selectors, untag ALL previously matched records
-        return Ok(Vec::new());
+        return Ok((Vec::new(), false));
     };
 
     debug!(
@@ -167,6 +170,9 @@ pub async fn reconcile_zone_records(
     // One resolver for every DNS deletion below (ADR-0015)
     let resolver = bindy_bind9::instances::InstanceResolver::for_kube(&client, stores);
 
+    // Whether an unselected record's DNS deletion failed below
+    let mut cleanup_pending = false;
+
     let retained_keys: HashSet<String> = retained
         .iter()
         .map(|r| format!("{}/{}", r.kind, r.name))
@@ -213,6 +219,7 @@ pub async fn reconcile_zone_records(
                 kind, namespace, name, zone_name, e
             );
             all_record_refs.push(record_ref.clone());
+            cleanup_pending = true;
             continue;
         }
 
@@ -261,7 +268,7 @@ pub async fn reconcile_zone_records(
         }
     }
 
-    Ok(all_record_refs)
+    Ok((all_record_refs, cleanup_pending))
 }
 
 /// HTTP status code returned by the Kubernetes API when a resource does not exist.
@@ -1018,7 +1025,9 @@ where
 ///
 /// # Returns
 ///
-/// Tuple of (record_refs, records_count) - the discovered record references and their count
+/// Tuple of `(record_refs, records_count, cleanup_pending)`: the discovered
+/// record references, their count, and whether an unselected record's DNS
+/// deletion failed and must be retried (ADR-0016)
 ///
 /// # Errors
 ///
@@ -1032,7 +1041,7 @@ pub async fn discover_and_update_records(
     status_updater: &mut bindy_controller_sdk::status::DNSZoneStatusUpdater,
     stores: &crate::context::Stores,
     retained: &[crate::crd::RecordReferenceWithTimestamp],
-) -> Result<(Vec<crate::crd::RecordReferenceWithTimestamp>, usize)> {
+) -> Result<(Vec<crate::crd::RecordReferenceWithTimestamp>, usize, bool)> {
     let spec = &dnszone.spec;
 
     // Set progressing status
@@ -1047,7 +1056,8 @@ pub async fn discover_and_update_records(
     // status.records: overwriting it with an empty list on a transient list
     // failure would break the record watch mapper until the next successful
     // discovery.
-    let record_refs = reconcile_zone_records(client.clone(), dnszone.clone(), stores, retained)
+    let (record_refs, cleanup_pending) =
+        reconcile_zone_records(client.clone(), dnszone.clone(), stores, retained)
         .await
         .map_err(|e| {
             warn!(
@@ -1071,7 +1081,7 @@ pub async fn discover_and_update_records(
     // Update DNSZone status with discovered records (in-memory)
     status_updater.set_records(&record_refs);
 
-    Ok((record_refs, records_count))
+    Ok((record_refs, records_count, cleanup_pending))
 }
 
 #[cfg(test)]

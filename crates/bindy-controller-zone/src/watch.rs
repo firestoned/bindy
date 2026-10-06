@@ -9,7 +9,14 @@
 //! - a `Bind9Instance` its `bind9InstancesFrom` selectors match changes;
 //! - the `Endpoints` of an instance it is configured on change, which is the
 //!   earliest signal that a BIND9 pod was replaced and came back empty;
-//! - a record its `recordsFrom` selectors match changes.
+//! - a record its `recordsFrom` selectors match changes;
+//! - another zone claiming the same zone name changes or is deleted, which
+//!   is what a `DuplicateZone` loser waits on.
+//!
+//! There is no periodic resync (ADR-0016): a converged or waiting zone is
+//! reconciled again only on one of these events, a degraded one retries with
+//! the per-object backoff, and a signed zone schedules one wake at its next
+//! KSK rollover.
 //!
 //! `Bind9Instance` and `Endpoints` are subscribed across every namespace
 //! target: a zone can be served by an instance in another namespace. Refs
@@ -21,23 +28,110 @@ use crate::crd::{
     AAAARecord, ARecord, Bind9Instance, CAARecord, CNAMERecord, DNSZone, MXRecord, NSRecord,
     PTRRecord, SRVRecord, TXTRecord,
 };
+use crate::dnszone::types::{ZoneOutcome, REASON_DUPLICATE_ZONE};
 use crate::dnszone::{delete_dnszone, discovery::zones_configured_on_instance, reconcile_dnszone};
 use crate::labels::FINALIZER_DNS_ZONE;
 use bindy_controller_sdk::context::{Context, RecordKind};
-use bindy_controller_sdk::error::{error_policy, ReconcileError};
+use bindy_controller_sdk::error::{converged_action, error_policy, retry_action, ReconcileError};
 use bindy_controller_sdk::metrics;
 use bindy_controller_sdk::namespace_scope::owned_targets;
-use bindy_controller_sdk::reconcile::finalizer_error;
-use bindy_controller_sdk::requeue::{REQUEUE_WHEN_NOT_READY_SECS, REQUEUE_WHEN_READY_SECS};
-use bindy_controller_sdk::watch::primary_predicate;
+use bindy_controller_sdk::reconcile::{finalizer_error, scheduled_action};
+use bindy_controller_sdk::watch::{changed_only, primary_predicate};
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::Endpoints;
 use kube::runtime::reflector::ObjectRef;
 use kube::runtime::{controller::Action, finalizer, Controller, WatchStreamExt};
 use kube::{Api, ResourceExt};
 use std::sync::Arc;
-use std::time::Duration;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+
+/// The `Ready` condition type on a `DNSZone`.
+const CONDITION_TYPE_READY: &str = "Ready";
+
+/// The part of a zone the duplicate-zone mapper reads: its zone name and
+/// whether it is being deleted. Zone status writes leave it unchanged, so
+/// they do not wake the zones in conflict with it.
+fn zone_name_key(zone: &DNSZone) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    zone.spec.zone_name.hash(&mut hasher);
+    zone.metadata.deletion_timestamp.is_some().hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Whether a zone reports it lost a zone-name conflict.
+fn reports_duplicate(zone: &DNSZone) -> bool {
+    zone.status
+        .as_ref()
+        .and_then(|status| {
+            status
+                .conditions
+                .iter()
+                .find(|condition| condition.r#type == CONDITION_TYPE_READY)
+        })
+        .is_some_and(|condition| condition.reason.as_deref() == Some(REASON_DUPLICATE_ZONE))
+}
+
+/// The zones a change or deletion of `changed` must wake: every other zone
+/// claiming the same zone name, and every zone reporting `DuplicateZone`.
+///
+/// This is the event a `DuplicateZone` loser waits on (ADR-0016): when the
+/// winning zone is deleted or renamed, the loser re-runs its duplicate check.
+/// A zone that changed its own name is only seen with the new name, so the
+/// zones it blocked are found by their `DuplicateZone` condition instead.
+/// Pure: no I/O (ADR-0009 §5).
+///
+/// # Arguments
+///
+/// * `zones` - Every zone in the store
+/// * `changed` - The zone that changed or was deleted
+///
+/// # Returns
+///
+/// References to the zones to reconcile, `changed` itself excluded.
+pub(crate) fn zones_contending_for_name(
+    zones: &[Arc<DNSZone>],
+    changed: &DNSZone,
+) -> Vec<ObjectRef<DNSZone>> {
+    let changed_namespace = changed.namespace();
+    let changed_name = changed.name_any();
+    zones
+        .iter()
+        .filter(|zone| !(zone.namespace() == changed_namespace && zone.name_any() == changed_name))
+        .filter(|zone| zone.spec.zone_name == changed.spec.zone_name || reports_duplicate(zone))
+        .filter_map(|zone| {
+            let namespace = zone.namespace()?;
+            Some(ObjectRef::new(&zone.name_any()).within(&namespace))
+        })
+        .collect()
+}
+
+/// The controller `Action` for a zone reconcile's outcome (ADR-0016).
+///
+/// # Arguments
+///
+/// * `zone` - The zone that was reconciled (keys the backoff)
+/// * `outcome` - How the reconcile ended
+///
+/// # Returns
+///
+/// `await_change` for a converged zone (clearing its backoff) or a waiting
+/// one; a capped scheduled wake for a converged zone with a pending KSK
+/// rollover; a backing-off requeue for a retry.
+#[must_use]
+pub(crate) fn action_for_zone_outcome(zone: &DNSZone, outcome: &ZoneOutcome) -> Action {
+    match outcome {
+        ZoneOutcome::Converged { next_wake: None } => converged_action(zone),
+        ZoneOutcome::Converged {
+            next_wake: Some(delay),
+        } => {
+            let _ = converged_action(zone);
+            scheduled_action(*delay)
+        }
+        ZoneOutcome::Waiting { .. } => Action::await_change(),
+        ZoneOutcome::Retry { .. } => retry_action(zone),
+    }
+}
 
 /// The zones whose `bind9InstancesFrom` selectors match `instance`'s labels.
 pub(crate) fn zones_selecting_instance(
@@ -126,6 +220,8 @@ async fn run_dnszone_controller(ctx: Arc<Context>, target: Option<String>) {
     let target = target.as_deref();
     let stores_for_endpoints = ctx.stores.clone();
     let stores_for_instances = ctx.stores.clone();
+    let stores_for_duplicates = ctx.stores.clone();
+    let stores_for_duplicates_cached = ctx.stores.clone();
 
     // The controller's own status writes do not retrigger it: the primary
     // stream passes generation, finalizer, label and annotation changes only.
@@ -141,7 +237,22 @@ async fn run_dnszone_controller(ctx: Arc<Context>, target: Option<String>) {
         })
         .watches_stream(ws.subscribe_all::<Bind9Instance>(), move |instance| {
             zones_selecting_instance(&stores_for_instances.dnszones.state(), &instance)
-        });
+        })
+        // A DuplicateZone loser waits for the winner to go away or rename
+        // (ADR-0016). Filtered on the zone name and deletion, so ordinary
+        // status writes do not wake anything.
+        .watches_stream(
+            changed_only(
+                ws.subscribe_all::<DNSZone>(),
+                zone_name_key,
+                move |zone: &DNSZone| {
+                    stores_for_duplicates_cached
+                        .get_dnszone(&zone.name_any(), &zone.namespace().unwrap_or_default())
+                        .is_some()
+                },
+            ),
+            move |zone| zones_contending_for_name(&stores_for_duplicates.dnszones.state(), &zone),
+        );
     let controller = watch_records::<ARecord>(controller, &ctx, target);
     let controller = watch_records::<AAAARecord>(controller, &ctx, target);
     let controller = watch_records::<TXTRecord>(controller, &ctx, target);
@@ -159,17 +270,6 @@ async fn run_dnszone_controller(ctx: Arc<Context>, target: Option<String>) {
         .await;
 }
 
-/// Whether a zone's status says it is Ready and not Degraded.
-fn zone_is_ready(zone: &DNSZone) -> bool {
-    let condition_true = |kind: &str| {
-        zone.status
-            .as_ref()
-            .and_then(|status| status.conditions.iter().find(|c| c.r#type == kind))
-            .is_some_and(|condition| condition.status == "True")
-    };
-    condition_true("Ready") && !condition_true("Degraded")
-}
-
 async fn reconcile_dnszone_wrapper(
     dnszone: Arc<DNSZone>,
     ctx: Arc<Context>,
@@ -184,27 +284,35 @@ async fn reconcile_dnszone_wrapper(
     let result = finalizer(&api, FINALIZER_DNS_ZONE, dnszone, |event| async {
         match event {
             finalizer::Event::Apply(zone) => {
-                reconcile_dnszone(ctx.clone(), (*zone).clone())
+                // The outcome comes from the status this reconcile built; the
+                // zone is not re-read to pick the action (ADR-0016).
+                let outcome = reconcile_dnszone(ctx.clone(), (*zone).clone())
                     .await
                     .map_err(ReconcileError::from)?;
-                info!("Successfully reconciled DNSZone: {}", zone.name_any());
-
-                // Re-fetch for the status reconcile_dnszone just wrote: a zone
-                // that is degraded or not ready yet is checked again sooner.
-                let updated_zone = api
-                    .get(&zone.name_any())
-                    .await
-                    .map_err(|e| ReconcileError::from(anyhow::Error::from(e)))?;
-                let requeue_secs = if zone_is_ready(&updated_zone) {
-                    REQUEUE_WHEN_READY_SECS
-                } else {
-                    REQUEUE_WHEN_NOT_READY_SECS
-                };
-                debug!(
-                    "DNSZone {} requeues in {requeue_secs}s",
-                    updated_zone.name_any()
-                );
-                Ok(Action::requeue(Duration::from_secs(requeue_secs)))
+                match outcome {
+                    ZoneOutcome::Converged { next_wake } => {
+                        info!("Successfully reconciled DNSZone: {}", zone.name_any());
+                        if let Some(delay) = next_wake {
+                            debug!(
+                                "DNSZone {} wakes at its next KSK rollover in {delay:?}",
+                                zone.name_any()
+                            );
+                        }
+                    }
+                    ZoneOutcome::Waiting { reason } => {
+                        info!(
+                            "DNSZone {} is waiting ({reason}); a watch event resumes it",
+                            zone.name_any()
+                        );
+                    }
+                    ZoneOutcome::Retry { reason } => {
+                        warn!(
+                            "DNSZone {} is not converged ({reason}); retrying with backoff",
+                            zone.name_any()
+                        );
+                    }
+                }
+                Ok(action_for_zone_outcome(zone.as_ref(), &outcome))
             }
             finalizer::Event::Cleanup(zone) => {
                 delete_dnszone(ctx.clone(), (*zone).clone())

@@ -183,3 +183,127 @@ mod tests {
         assert_ne!(zone_selection_key(&zone), zone_selection_key(&deleting));
     }
 }
+
+/// The ConfigMap mapper (ADR-0016): a cluster-level ConfigMap has no owner,
+/// so `.owns` never mapped it, and its deletion or edit was only repaired by
+/// the 5-minute timer. It now wakes the instances of its cluster.
+#[cfg(test)]
+mod configmap_wake_tests {
+    use super::super::instances_for_configmap;
+    use crate::crd::Bind9Instance;
+    use crate::labels::{
+        COMPONENT_DNS_CLUSTER, K8S_COMPONENT, K8S_INSTANCE, K8S_MANAGED_BY,
+        MANAGED_BY_BIND9_CLUSTER,
+    };
+    use k8s_openapi::api::core::v1::ConfigMap;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
+    use kube::api::ObjectMeta;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    fn instance(namespace: &str, name: &str, cluster_ref: &str) -> Arc<Bind9Instance> {
+        Arc::new(
+            serde_json::from_value(serde_json::json!({
+                "apiVersion": "bindy.firestoned.io/v1beta1",
+                "kind": "Bind9Instance",
+                "metadata": {"name": name, "namespace": namespace},
+                "spec": {"clusterRef": cluster_ref, "role": "primary"}
+            }))
+            .expect("valid Bind9Instance"),
+        )
+    }
+
+    fn configmap(
+        namespace: &str,
+        name: &str,
+        labels: &[(&str, &str)],
+        owner: Option<(&str, &str)>,
+    ) -> ConfigMap {
+        let labels: BTreeMap<String, String> = labels
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        ConfigMap {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                namespace: Some(namespace.to_string()),
+                labels: Some(labels),
+                owner_references: owner.map(|(kind, owner_name)| {
+                    vec![OwnerReference {
+                        api_version: "bindy.firestoned.io/v1beta1".to_string(),
+                        kind: kind.to_string(),
+                        name: owner_name.to_string(),
+                        uid: "uid".to_string(),
+                        controller: Some(true),
+                        block_owner_deletion: Some(true),
+                    }]
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn names(refs: Vec<kube::runtime::reflector::ObjectRef<Bind9Instance>>) -> Vec<String> {
+        let mut names: Vec<String> = refs
+            .into_iter()
+            .map(|r| format!("{}/{}", r.namespace.unwrap_or_default(), r.name))
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_cluster_configmap_wakes_every_instance_of_its_cluster() {
+        let instances = vec![
+            instance("dns", "prod-primary-0", "prod"),
+            instance("dns", "prod-secondary-0", "prod"),
+            instance("dns", "staging-primary-0", "staging"),
+            instance("other", "prod-primary-0", "prod"),
+        ];
+        let cm = configmap(
+            "dns",
+            "prod-config",
+            &[
+                (K8S_COMPONENT, COMPONENT_DNS_CLUSTER),
+                (K8S_MANAGED_BY, MANAGED_BY_BIND9_CLUSTER),
+                (K8S_INSTANCE, "prod"),
+            ],
+            None,
+        );
+
+        assert_eq!(
+            names(instances_for_configmap(&instances, &cm)),
+            vec![
+                "dns/prod-primary-0".to_string(),
+                "dns/prod-secondary-0".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn an_owned_configmap_wakes_its_owner_like_owns_did() {
+        let instances = vec![instance("dns", "standalone", "")];
+        let cm = configmap(
+            "dns",
+            "standalone-config",
+            &[],
+            Some(("Bind9Instance", "standalone")),
+        );
+
+        assert_eq!(
+            names(instances_for_configmap(&instances, &cm)),
+            vec!["dns/standalone".to_string()]
+        );
+    }
+
+    #[test]
+    fn an_unrelated_configmap_wakes_nothing() {
+        let instances = vec![instance("dns", "prod-primary-0", "prod")];
+        let foreign_owner = configmap("dns", "x", &[], Some(("Deployment", "x")));
+        let unlabelled = configmap("dns", "prod-config", &[], None);
+
+        assert!(instances_for_configmap(&instances, &foreign_owner).is_empty());
+        assert!(instances_for_configmap(&instances, &unlabelled).is_empty());
+    }
+}

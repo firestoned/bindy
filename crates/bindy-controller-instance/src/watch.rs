@@ -9,14 +9,22 @@
 //! the instances the zone selected, and their reconcile refreshes
 //! `status.zones` with the controller's retries, backoff and metrics. Only a
 //! change to what `status.zones` is built from does so ([`zone_selection_key`]).
+//!
+//! There is no periodic resync (ADR-0016): an instance is reconciled on a
+//! change to itself, to anything it owns, to the cluster-level ConfigMap its
+//! pods mount ([`instances_for_configmap`]), to its cluster or provider, or to
+//! the zones that select it; and once more when its RNDC key falls due.
 
 use crate::bind9instance::reconcile_bind9instance;
 use crate::constants::KIND_BIND9_INSTANCE;
 use crate::crd::{Bind9Cluster, Bind9Instance, ClusterBind9Provider, DNSZone};
+use crate::labels::{
+    COMPONENT_DNS_CLUSTER, K8S_COMPONENT, K8S_INSTANCE, K8S_MANAGED_BY, MANAGED_BY_BIND9_CLUSTER,
+};
 use bindy_controller_sdk::context::Context;
 use bindy_controller_sdk::error::{error_policy, ReconcileError};
 use bindy_controller_sdk::namespace_scope::{owned_targets, scoped_namespaced_api};
-use bindy_controller_sdk::reconcile::instrumented;
+use bindy_controller_sdk::reconcile::instrumented_scheduled;
 use bindy_controller_sdk::watch::changed_only;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{ConfigMap, Secret, Service, ServiceAccount};
@@ -75,8 +83,8 @@ pub(crate) fn instances_selected_by_zone(
 /// The instances that reference `cluster` (same namespace, by `clusterRef`).
 ///
 /// An instance inherits configuration resolved against the live cluster at
-/// reconcile time, so a cluster change must reach those instances now rather
-/// than on their next requeue.
+/// reconcile time, so a cluster change must reach those instances now: there
+/// is no later requeue to pick it up (ADR-0016).
 pub(crate) fn instances_of_cluster(
     instances: &[Arc<Bind9Instance>],
     cluster: &Bind9Cluster,
@@ -93,6 +101,60 @@ pub(crate) fn instances_of_cluster(
         })
         .map(|instance| ObjectRef::from_obj(instance.as_ref()))
         .collect()
+}
+
+/// The instances a change to `configmap` must wake.
+///
+/// An instance's own ConfigMap carries an owner reference to it, which is
+/// what `.owns` mapped. A managed instance mounts its cluster's shared
+/// ConfigMap instead, which has no owner (several instances share it), so
+/// `.owns` never mapped it and only the 5-minute requeue noticed it deleted
+/// or edited. With no periodic resync (ADR-0016) a cluster-level ConfigMap
+/// (component `dns-cluster`, managed by `Bind9Cluster`) maps to every
+/// instance in its namespace whose `clusterRef` names that cluster. Pure: no
+/// I/O (ADR-0009 §5).
+///
+/// # Arguments
+///
+/// * `instances` - Every instance in the store
+/// * `configmap` - The ConfigMap that changed or was deleted
+///
+/// # Returns
+///
+/// References to the instances to reconcile.
+pub(crate) fn instances_for_configmap(
+    instances: &[Arc<Bind9Instance>],
+    configmap: &ConfigMap,
+) -> Vec<ObjectRef<Bind9Instance>> {
+    let Some(namespace) = configmap.namespace() else {
+        return vec![];
+    };
+
+    let mut wake: Vec<ObjectRef<Bind9Instance>> = configmap
+        .owner_references()
+        .iter()
+        .filter(|owner| owner.kind == KIND_BIND9_INSTANCE)
+        .map(|owner| ObjectRef::new(&owner.name).within(&namespace))
+        .collect();
+
+    let labels = configmap.labels();
+    let is_cluster_config = labels.get(K8S_COMPONENT).map(String::as_str)
+        == Some(COMPONENT_DNS_CLUSTER)
+        && labels.get(K8S_MANAGED_BY).map(String::as_str) == Some(MANAGED_BY_BIND9_CLUSTER);
+    let cluster_name = labels.get(K8S_INSTANCE);
+    if let (true, Some(cluster_name)) = (is_cluster_config, cluster_name) {
+        wake.extend(
+            instances
+                .iter()
+                .filter(|instance| {
+                    instance.spec.cluster_ref == *cluster_name
+                        && instance.namespace().as_deref() == Some(namespace.as_str())
+                })
+                .map(|instance| ObjectRef::from_obj(instance.as_ref())),
+        );
+    }
+
+    wake
 }
 
 /// The instances that reference the cluster-scoped `provider`. A provider's
@@ -134,6 +196,7 @@ async fn run_bind9instance_controller(ctx: Arc<Context>, target: Option<String>)
     let target_ns = target.clone();
     let stores_for_cluster_watch = ctx.stores.clone();
     let stores_for_provider_watch = ctx.stores.clone();
+    let stores_for_configmap_watch = ctx.stores.clone();
 
     // An instance's status.zones lists the zones in its own namespace that
     // selected it, so only this namespace's zones matter, and only when the
@@ -166,9 +229,17 @@ async fn run_bind9instance_controller(ctx: Arc<Context>, target: Option<String>)
         scoped_namespaced_api::<Secret>(&client, target.as_deref()),
         watcher::Config::default(),
     )
-    .owns(
+    // The same ConfigMap watch `.owns` ran, with a mapper that also wakes
+    // the instances mounting a cluster-level ConfigMap (ADR-0016).
+    .watches(
         scoped_namespaced_api::<ConfigMap>(&client, target.as_deref()),
         watcher::Config::default(),
+        move |configmap| {
+            instances_for_configmap(
+                &stores_for_configmap_watch.bind9_instances.state(),
+                &configmap,
+            )
+        },
     )
     .owns_stream(ws.subscribe::<k8s_openapi::api::apps::v1::Deployment>(target.as_deref()))
     .owns(
@@ -205,7 +276,9 @@ async fn reconcile_bind9instance_wrapper(
 ) -> Result<Action, ReconcileError> {
     let name = instance.name_any();
     info!("Reconciling instance {name}");
-    instrumented(
+    // Success awaits the next change, except for a scheduled wake when the
+    // instance's RNDC key falls due (ADR-0016).
+    instrumented_scheduled(
         KIND_BIND9_INSTANCE,
         &name,
         Box::pin(reconcile_bind9instance(ctx, (*instance).clone())),

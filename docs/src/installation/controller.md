@@ -95,7 +95,10 @@ Configure the operator via environment variables:
 |----------|---------|-------------|
 | `RUST_LOG` | `info` | Log level (error, warn, info, debug, trace) |
 | `BIND9_ZONES_DIR` | `/etc/bind/zones` | Directory for zone files |
-| `RECONCILE_INTERVAL` | `300` | Reconciliation interval in seconds |
+
+There is no reconciliation interval to configure: every controller is
+event-driven and never resyncs on a timer (ADR-0016). See
+[No periodic resync](../concepts/architecture.md#no-periodic-resync-adr-0016).
 
 Edit the deployment to customize:
 

@@ -17,7 +17,6 @@ use tracing::{debug, error, warn};
 
 use crate::bind9::RndcKeyData;
 use crate::instances::PodInfo;
-use crate::instances::{get_endpoint, load_rndc_key};
 
 /// Filters a list of instance references to only PRIMARY instances.
 ///
@@ -63,6 +62,34 @@ pub async fn filter_primary_instances(
     Ok(primary_refs)
 }
 
+/// The role of the instance behind `instance_ref`, according to the
+/// `Bind9Instance` reflector store.
+///
+/// # Arguments
+///
+/// * `store` - The shared `Bind9Instance` reflector store
+/// * `instance_ref` - The instance to look up
+///
+/// # Returns
+///
+/// The instance's `spec.role`, or `None` when the store does not hold the
+/// instance (the caller decides whether to fall back to the API server).
+#[must_use]
+pub fn instance_role_in_store(
+    store: &crate::context::MultiStore<crate::crd::Bind9Instance>,
+    instance_ref: &crate::crd::InstanceReference,
+) -> Option<crate::crd::ServerRole> {
+    use kube::ResourceExt;
+    store
+        .state()
+        .iter()
+        .find(|instance| {
+            instance.name_any() == instance_ref.name
+                && instance.namespace().as_deref() == Some(instance_ref.namespace.as_str())
+        })
+        .map(|instance| instance.spec.role)
+}
+
 /// Whether the instance behind `instance_ref` is a PRIMARY, according to the
 /// `Bind9Instance` reflector store.
 ///
@@ -81,15 +108,77 @@ pub fn primary_role_in_store(
     store: &crate::context::MultiStore<crate::crd::Bind9Instance>,
     instance_ref: &crate::crd::InstanceReference,
 ) -> Option<bool> {
-    use kube::ResourceExt;
-    store
-        .state()
-        .iter()
-        .find(|instance| {
-            instance.name_any() == instance_ref.name
-                && instance.namespace().as_deref() == Some(instance_ref.namespace.as_str())
-        })
-        .map(|instance| instance.spec.role == crate::crd::ServerRole::Primary)
+    instance_role_in_store(store, instance_ref).map(|role| role == crate::crd::ServerRole::Primary)
+}
+
+/// The role of an instance: from the reflector store, or with a GET for an
+/// instance the store does not hold yet.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client, for the fallback GET
+/// * `store` - The shared `Bind9Instance` reflector store
+/// * `instance_ref` - The instance to look up
+///
+/// # Returns
+///
+/// The instance's role, or `None` (with a warning) when it is neither cached
+/// nor readable.
+pub async fn instance_role_cached(
+    client: &Client,
+    store: &crate::context::MultiStore<crate::crd::Bind9Instance>,
+    instance_ref: &crate::crd::InstanceReference,
+) -> Option<crate::crd::ServerRole> {
+    if let Some(role) = instance_role_in_store(store, instance_ref) {
+        return Some(role);
+    }
+    let api: Api<crate::crd::Bind9Instance> =
+        Api::namespaced(client.clone(), &instance_ref.namespace);
+    match api.get(&instance_ref.name).await {
+        Ok(instance) => Some(instance.spec.role),
+        Err(e) => {
+            warn!(
+                "Failed to get instance {}/{}: {}. Skipping.",
+                instance_ref.namespace, instance_ref.name, e
+            );
+            None
+        }
+    }
+}
+
+/// Filters instance references to those with `role`, reading each role from
+/// the `Bind9Instance` reflector store (ADR-0015, ADR-0016).
+///
+/// An instance the store holds costs no API call; one it does not hold yet
+/// is read with a GET and skipped, with a warning, if that fails.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client, for the fallback GET
+/// * `store` - The shared `Bind9Instance` reflector store
+/// * `instance_refs` - Instance references to filter
+/// * `role` - The role to keep
+///
+/// # Returns
+///
+/// The references whose instance has `role`, in input order.
+pub async fn filter_instances_by_role_cached(
+    client: &Client,
+    store: &crate::context::MultiStore<crate::crd::Bind9Instance>,
+    instance_refs: &[crate::crd::InstanceReference],
+    role: &crate::crd::ServerRole,
+) -> Vec<crate::crd::InstanceReference> {
+    let mut matching = Vec::new();
+    for instance_ref in instance_refs {
+        if instance_role_cached(client, store, instance_ref)
+            .await
+            .as_ref()
+            == Some(role)
+        {
+            matching.push(instance_ref.clone());
+        }
+    }
+    matching
 }
 
 /// Filters instance references to PRIMARY instances, reading each role from
@@ -278,9 +367,10 @@ pub async fn find_all_primary_pods(
 /// Returns an error if Kubernetes API calls fail or no primary pods are found
 pub async fn find_primary_ips_from_instances(
     client: &Client,
+    store: &crate::context::MultiStore<crate::crd::Bind9Instance>,
     instance_refs: &[crate::crd::InstanceReference],
 ) -> Result<Vec<String>> {
-    use crate::crd::{Bind9Instance, ServerRole};
+    use crate::crd::ServerRole;
     use k8s_openapi::api::core::v1::Pod;
 
     debug!(
@@ -291,23 +381,9 @@ pub async fn find_primary_ips_from_instances(
     let mut primary_ips = Vec::new();
 
     for instance_ref in instance_refs {
-        // Get the Bind9Instance to check its role
-        let instance_api: Api<Bind9Instance> =
-            Api::namespaced(client.clone(), &instance_ref.namespace);
-
-        let instance = match instance_api.get(&instance_ref.name).await {
-            Ok(inst) => inst,
-            Err(e) => {
-                warn!(
-                    "Failed to get instance {}/{}: {}",
-                    instance_ref.namespace, instance_ref.name, e
-                );
-                continue;
-            }
-        };
-
-        // Skip if not a PRIMARY instance
-        if instance.spec.role != ServerRole::Primary {
+        // The role comes from the Bind9Instance store, with a GET only for an
+        // instance it does not hold yet (ADR-0016)
+        if instance_role_cached(client, store, instance_ref).await != Some(ServerRole::Primary) {
             continue;
         }
 
@@ -369,6 +445,9 @@ pub async fn find_primary_ips_from_instances(
 /// # Arguments
 ///
 /// * `client` - Kubernetes API client
+/// * `resolver` - Per-reconcile resolver for instance RNDC keys and endpoints
+///   (ADR-0015): each instance's key and endpoints are read once, endpoints
+///   from the shared store
 /// * `namespace` - Namespace of the cluster
 /// * `cluster_ref` - Name of the `Bind9Cluster` or `ClusterBind9Provider`
 /// * `is_cluster_provider` - Whether this is a cluster provider (cluster-scoped)
@@ -391,8 +470,10 @@ pub async fn find_primary_ips_from_instances(
 /// - Failed to load RNDC key (if requested)
 /// - Failed to get endpoints for any instance
 /// - The operation closure returns an error for any endpoint
+#[allow(clippy::too_many_arguments)]
 pub async fn for_each_primary_endpoint<F, Fut>(
     client: &Client,
+    resolver: &crate::instances::InstanceResolver,
     namespace: &str,
     cluster_ref: &str,
     is_cluster_provider: bool,
@@ -446,14 +527,16 @@ where
         // Load RNDC key for this specific instance if requested
         // Each instance has its own RNDC secret for security isolation
         let key_data = if with_rndc_key {
-            Some(load_rndc_key(client, instance_namespace, instance_name).await?)
+            Some(resolver.rndc_key(instance_namespace, instance_name).await?)
         } else {
             None
         };
 
         // Get all endpoints for this instance's service
         // The Endpoints API gives us pod IPs with their container ports (not service ports)
-        let endpoints = get_endpoint(client, instance_namespace, instance_name, port_name).await?;
+        let endpoints = resolver
+            .endpoints(instance_namespace, instance_name, port_name)
+            .await?;
 
         debug!(
             "Found {} endpoint(s) for instance {}",

@@ -452,21 +452,23 @@ fn detect_instance_changes(
 ///
 /// # Returns
 ///
-/// * `Ok(())` - If zone was created/updated successfully
-/// * `Err(_)` - If zone creation failed or configuration is invalid
+/// * `Ok(outcome)` - How the reconcile ended ([`types::ZoneOutcome`]):
+///   converged, waiting on another object, or to be retried with backoff.
+///   Decided from the status this reconcile built, so the controller does
+///   not re-read the zone to pick its `Action` (ADR-0016).
+/// * `Err(_)` - If zone creation failed or a Kubernetes API call failed
 ///
 /// # Example
 ///
 /// ```rust,no_run,ignore
 /// use bindy::reconcilers::reconcile_dnszone;
 /// use bindy::crd::DNSZone;
-/// use bindy::bind9::Bind9Manager;
 /// use bindy::context::Context;
 /// use std::sync::Arc;
 ///
 /// async fn handle_zone(ctx: Arc<Context>, zone: DNSZone) -> anyhow::Result<()> {
-///     let manager = Bind9Manager::new();
-///     reconcile_dnszone(ctx, zone).await?;
+///     let outcome = reconcile_dnszone(ctx, zone).await?;
+///     println!("{outcome:?}");
 ///     Ok(())
 /// }
 /// ```
@@ -475,7 +477,10 @@ fn detect_instance_changes(
 ///
 /// Returns an error if Kubernetes API operations fail or BIND9 zone operations fail.
 #[allow(clippy::too_many_lines)]
-pub async fn reconcile_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZone) -> Result<()> {
+pub async fn reconcile_dnszone(
+    ctx: Arc<crate::context::Context>,
+    dnszone: DNSZone,
+) -> Result<types::ZoneOutcome> {
     let client = ctx.client.clone();
     let bind9_instances_store = &ctx.stores.bind9_instances;
 
@@ -504,9 +509,22 @@ pub async fn reconcile_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZo
     // Extract spec
     let spec = &dnszone.spec;
 
-    // Validate that zone has instances assigned (via spec.bind9Instances or status.bind9Instances)
-    // This will fail early if zone is not selected by any instance
-    let instance_refs = validation::get_instances_from_zone(&dnszone, bind9_instances_store)?;
+    // Validate that zone has instances assigned (via its bind9InstancesFrom
+    // selectors). With none, the zone waits: a Bind9Instance whose labels
+    // match wakes it through the instance mapper (`zones_selecting_instance`),
+    // and a spec change through the primary stream (ADR-0016).
+    let instance_refs = match validation::get_instances_from_zone(&dnszone, bind9_instances_store) {
+        Ok(refs) => refs,
+        Err(e) => {
+            warn!(
+                "DNSZone {}/{} is waiting for instances: {}",
+                namespace, name, e
+            );
+            return Ok(types::ZoneOutcome::Waiting {
+                reason: types::REASON_NO_INSTANCES,
+            });
+        }
+    };
 
     debug!(
         "DNSZone {}/{} is assigned to {} instance(s): {:?}",
@@ -529,7 +547,11 @@ pub async fn reconcile_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZo
             &mut status_updater,
         )
         .await?;
-        return Ok(());
+        // The winning zone's change or deletion wakes this one through the
+        // DNSZone mapper (`zones_contending_for_name`), not a timer (ADR-0016).
+        return Ok(types::ZoneOutcome::Waiting {
+            reason: types::REASON_DUPLICATE_ZONE,
+        });
     }
 
     // Determine if this is the first reconciliation or if spec has changed
@@ -568,6 +590,11 @@ pub async fn reconcile_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZo
         );
     }
 
+    // Whether a cleanup pass below left work to retry. The passes only run
+    // inside a reconcile, so with no periodic resync the zone must ask for the
+    // retry itself (ADR-0016).
+    let mut cleanup_incomplete = false;
+
     // CRITICAL: Cleanup deleted instances BEFORE early return check
     // If we skip reconciliation due to no changes, we still need to remove deleted instances from status
     match cleanup::cleanup_deleted_instances(&client, &dnszone, &mut status_updater).await {
@@ -588,7 +615,8 @@ pub async fn reconcile_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZo
                 "Failed to cleanup deleted instances for zone {}/{}: {} (continuing with reconciliation)",
                 namespace, name, e
             );
-            // Don't fail reconciliation for cleanup errors
+            // Don't fail reconciliation for cleanup errors; retry it
+            cleanup_incomplete = true;
         }
     }
 
@@ -631,6 +659,7 @@ pub async fn reconcile_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZo
                 );
             }
             if !outcome.retained.is_empty() {
+                cleanup_incomplete = true;
                 warn!(
                     "{} deleted record(s) of zone {}/{} may still be served; their DNS cleanup is retried",
                     outcome.retained.len(),
@@ -645,7 +674,8 @@ pub async fn reconcile_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZo
                 "Failed to cleanup stale records for zone {}/{}: {} (continuing with reconciliation)",
                 namespace, name, e
             );
-            // Don't fail reconciliation for cleanup errors
+            // Don't fail reconciliation for cleanup errors; retry it
+            cleanup_incomplete = true;
             Vec::new()
         }
     };
@@ -670,14 +700,16 @@ pub async fn reconcile_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZo
     .await?;
 
     // Discover DNS records and update status
-    let (record_refs, records_count) = discovery::discover_and_update_records(
-        &client,
-        &dnszone,
-        &mut status_updater,
-        &ctx.stores,
-        &retained_records,
-    )
-    .await?;
+    let (record_refs, records_count, unselected_cleanup_pending) =
+        discovery::discover_and_update_records(
+            &client,
+            &dnszone,
+            &mut status_updater,
+            &ctx.stores,
+            &retained_records,
+        )
+        .await?;
+    cleanup_incomplete |= unselected_cleanup_pending;
 
     // Replay the zone's records whenever the zone had to be (re)created on any
     // server, or a previous replay did not finish. Without this a wiped pod
@@ -700,7 +732,12 @@ pub async fn reconcile_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZo
 
     // Calculate expected counts and finalize status
     let (expected_primary_count, expected_secondary_count) =
-        status_helpers::calculate_expected_instance_counts(&client, &instance_refs).await?;
+        status_helpers::calculate_expected_instance_counts(
+            &client,
+            bind9_instances_store,
+            &instance_refs,
+        )
+        .await?;
 
     status_helpers::finalize_zone_status(
         &mut status_updater,
@@ -717,7 +754,12 @@ pub async fn reconcile_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZo
     )
     .await?;
 
-    Ok(())
+    Ok(status_helpers::zone_outcome(
+        status_updater.has_degraded_condition(),
+        cleanup_incomplete,
+        status_updater.dnssec(),
+        k8s_openapi::jiff::Timestamp::now(),
+    ))
 }
 
 /// Replay all of a zone's records into BIND9 when the zone was (re)created.
@@ -930,7 +972,7 @@ const DNSSEC_POLICY_NONE: &str = "none";
 /// - Policy explicitly `"none"` → no status at all (signing disabled), even
 ///   if stale DNSKEYs are still being served.
 /// - A per-zone policy but no DNSKEYs yet → `signed: false` (keys are still
-///   generating; the requeue refreshes this).
+///   generating; the zone retries with backoff until they appear, ADR-0016).
 /// - No policy and no DNSKEYs → no status.
 ///
 /// # Arguments
@@ -1213,8 +1255,14 @@ pub async fn add_dnszone(
             .collect::<Vec<_>>()
     );
 
-    // Filter to only PRIMARY instances
-    let primary_instance_refs = primary::filter_primary_instances(&client, instance_refs).await?;
+    // Filter to only PRIMARY instances, roles from the Bind9Instance store
+    // (ADR-0016)
+    let primary_instance_refs = primary::filter_primary_instances_cached(
+        &client,
+        &ctx.stores.bind9_instances,
+        instance_refs,
+    )
+    .await?;
 
     if primary_instance_refs.is_empty() {
         return Err(anyhow!(
@@ -1237,9 +1285,20 @@ pub async fn add_dnszone(
 
     // Find all secondary instances for zone transfer configuration
     let secondary_instance_refs =
-        secondary::filter_secondary_instances(&client, instance_refs).await?;
-    let secondary_ips =
-        secondary::find_secondary_pod_ips_from_instances(&client, &secondary_instance_refs).await?;
+        secondary::filter_secondary_instances(&client, &ctx.stores.bind9_instances, instance_refs)
+            .await?;
+    let secondary_ips = secondary::find_secondary_pod_ips_from_instances(
+        &client,
+        &ctx.stores.bind9_instances,
+        &secondary_instance_refs,
+    )
+    .await?;
+
+    // One resolver for every BIND9 write this function makes: each primary's
+    // RNDC key and endpoints are read once, endpoints from the shared store
+    // (ADR-0015, ADR-0016).
+    let resolver = bindy_bind9::instances::InstanceResolver::for_kube(&client, &ctx.stores);
+    let resolver = &resolver;
 
     if secondary_ips.is_empty() {
         warn!(
@@ -1386,7 +1445,6 @@ pub async fn add_dnszone(
     // per-INSTANCE success signal used for readiness computation.
     let instance_results = stream::iter(primary_instance_refs.iter())
         .then(|instance_ref| {
-            let client = client.clone();
             // Per instance, not the shared startup manager: only this carries the
             // instance's TLS configuration. See zone_manager_for_instance.
             let zone_manager =
@@ -1412,7 +1470,7 @@ pub async fn add_dnszone(
                 );
 
                 // Load RNDC key for this specific instance
-                let key_data = match helpers::load_rndc_key(&client, &instance_ref.namespace, &instance_ref.name).await {
+                let key_data = match resolver.rndc_key(&instance_ref.namespace, &instance_ref.name).await {
                     Ok(key) => key,
                     Err(e) => {
                         let err_msg = format!("instance {}/{}: failed to load RNDC key: {e}", instance_ref.namespace, instance_ref.name);
@@ -1422,7 +1480,7 @@ pub async fn add_dnszone(
                 };
 
                 // Get all endpoints for this instance
-                let endpoints = match helpers::get_endpoint(&client, &instance_ref.namespace, &instance_ref.name, "http").await {
+                let endpoints = match resolver.endpoints(&instance_ref.namespace, &instance_ref.name, "http").await {
                     Ok(eps) => eps,
                     Err(e) => {
                         let err_msg = format!("instance {}/{}: failed to get endpoints: {e}", instance_ref.namespace, instance_ref.name);
@@ -1626,7 +1684,7 @@ pub async fn add_dnszone(
             );
 
             if let Err(e) = auto_generate_ns_records(
-                &client,
+                resolver,
                 name_servers,
                 &spec.zone_name,
                 spec.ttl,
@@ -1752,9 +1810,14 @@ pub async fn add_dnszone_to_secondaries(
     // PHASE 2 OPTIMIZATION: Use the filtered instance list passed by the caller
     // This ensures we only process instances that need reconciliation (lastReconciledAt == None)
 
-    // Filter to only SECONDARY instances
+    // Filter to only SECONDARY instances, roles from the Bind9Instance store
     let secondary_instance_refs =
-        secondary::filter_secondary_instances(&client, instance_refs).await?;
+        secondary::filter_secondary_instances(&client, &ctx.stores.bind9_instances, instance_refs)
+            .await?;
+
+    // One resolver for every secondary's RNDC key and endpoints (ADR-0016)
+    let resolver = bindy_bind9::instances::InstanceResolver::for_kube(&client, &ctx.stores);
+    let resolver = &resolver;
 
     if secondary_instance_refs.is_empty() {
         info!(
@@ -1786,7 +1849,6 @@ pub async fn add_dnszone_to_secondaries(
     // per-INSTANCE success signal used for readiness computation.
     let instance_results = stream::iter(secondary_instance_refs.iter())
         .then(|instance_ref| {
-            let client = client.clone();
             let zone_manager =
                 zone_manager_for_instance(&ctx, &instance_ref.name, &instance_ref.namespace);
             let zone_name = spec.zone_name.clone();
@@ -1807,7 +1869,7 @@ pub async fn add_dnszone_to_secondaries(
 
                 // Load RNDC key for this specific instance
                 // Each instance has its own RNDC secret for security isolation
-                let key_data = match helpers::load_rndc_key(&client, &instance_ref.namespace, &instance_ref.name).await {
+                let key_data = match resolver.rndc_key(&instance_ref.namespace, &instance_ref.name).await {
                     Ok(key) => key,
                     Err(e) => {
                         let err_msg = format!("instance {}/{}: failed to load RNDC key: {e}", instance_ref.namespace, instance_ref.name);
@@ -1817,7 +1879,7 @@ pub async fn add_dnszone_to_secondaries(
                 };
 
                 // Get all endpoints for this secondary instance
-                let endpoints = match helpers::get_endpoint(&client, &instance_ref.namespace, &instance_ref.name, "http").await {
+                let endpoints = match resolver.endpoints(&instance_ref.namespace, &instance_ref.name, "http").await {
                     Ok(eps) => eps,
                     Err(e) => {
                         let err_msg = format!("instance {}/{}: failed to get endpoints: {e}", instance_ref.namespace, instance_ref.name);
@@ -2067,10 +2129,17 @@ pub async fn delete_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZone)
         }
     };
 
-    // Filter to primary and secondary instances
-    let primary_instance_refs = primary::filter_primary_instances(&client, &instance_refs).await?;
+    // Filter to primary and secondary instances, roles from the
+    // Bind9Instance store (ADR-0016)
+    let primary_instance_refs =
+        primary::filter_primary_instances_cached(&client, bind9_instances_store, &instance_refs)
+            .await?;
     let secondary_instance_refs =
-        secondary::filter_secondary_instances(&client, &instance_refs).await?;
+        secondary::filter_secondary_instances(&client, bind9_instances_store, &instance_refs)
+            .await?;
+
+    // One resolver for every endpoint this deletion addresses (ADR-0015)
+    let resolver = bindy_bind9::instances::InstanceResolver::for_kube(&client, &ctx.stores);
 
     // Namespace per instance name, for the deletion callbacks below.
     let primary_ns_by_name: std::collections::HashMap<String, String> = primary_instance_refs
@@ -2084,7 +2153,6 @@ pub async fn delete_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZone)
     // unreachable (and lost anyway with ephemeral storage). Real API errors
     // still propagate so the next reconcile retries.
     if !primary_instance_refs.is_empty() {
-        let resolver = bindy_bind9::instances::InstanceResolver::for_kube(&client, &ctx.stores);
         let (_first_endpoint, total_endpoints) = helpers::for_each_instance_endpoint_with_policy(
             &resolver,
             &primary_instance_refs,
@@ -2152,13 +2220,9 @@ pub async fn delete_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZone)
             // Deletion cleanup: skip secondary instances with no reachable
             // endpoints instead of blocking finalizer removal forever. Real
             // (potentially transient) API errors still propagate for retry.
-            let endpoints = match helpers::get_endpoint(
-                &client,
-                &instance_ref.namespace,
-                &instance_ref.name,
-                "http",
-            )
-            .await
+            let endpoints = match resolver
+                .endpoints(&instance_ref.namespace, &instance_ref.name, "http")
+                .await
             {
                 Ok(eps) => eps,
                 Err(e) if helpers::is_unavailable_for_deletion(&e) => {
@@ -2219,7 +2283,7 @@ pub async fn delete_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZone)
 /// by bindcar during zone initialization (from SOA).
 ///
 /// # Arguments
-/// * `client` - Kubernetes client for loading RNDC keys and getting endpoints
+/// * `resolver` - Per-reconcile resolver for instance RNDC keys and endpoints
 /// * `effective_name_servers` - List of nameservers from `nameServers` field
 /// * `zone_name` - The DNS zone name
 /// * `ttl` - TTL for the NS and glue records
@@ -2232,7 +2296,7 @@ pub async fn delete_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZone)
 /// Returns error if NS record or glue record addition fails
 #[allow(clippy::too_many_lines)]
 async fn auto_generate_ns_records(
-    client: &kube::Client,
+    resolver: &bindy_bind9::instances::InstanceResolver,
     effective_name_servers: &[crate::crd::NameServer],
     zone_name: &str,
     ttl: Option<i32>,
@@ -2257,12 +2321,9 @@ async fn auto_generate_ns_records(
 
         for instance_ref in primary_instance_refs {
             // Load RNDC key for this instance
-            let key_data = match helpers::load_rndc_key(
-                client,
-                &instance_ref.namespace,
-                &instance_ref.name,
-            )
-            .await
+            let key_data = match resolver
+                .rndc_key(&instance_ref.namespace, &instance_ref.name)
+                .await
             {
                 Ok(key) => key,
                 Err(e) => {
@@ -2275,13 +2336,9 @@ async fn auto_generate_ns_records(
             };
 
             // Get endpoints for this instance
-            let endpoints = match helpers::get_endpoint(
-                client,
-                &instance_ref.namespace,
-                &instance_ref.name,
-                "dns-tcp",
-            )
-            .await
+            let endpoints = match resolver
+                .endpoints(&instance_ref.namespace, &instance_ref.name, "dns-tcp")
+                .await
             {
                 Ok(eps) => eps,
                 Err(e) => {
@@ -2323,7 +2380,7 @@ async fn auto_generate_ns_records(
         // Add glue records if IPs provided (for in-zone nameservers)
         if let Some(ref ipv4) = nameserver.ipv4_address {
             add_glue_record(
-                client,
+                resolver,
                 zone_name,
                 &nameserver.hostname,
                 ipv4,
@@ -2336,7 +2393,7 @@ async fn auto_generate_ns_records(
 
         if let Some(ref ipv6) = nameserver.ipv6_address {
             add_glue_record(
-                client,
+                resolver,
                 zone_name,
                 &nameserver.hostname,
                 ipv6,
@@ -2362,7 +2419,7 @@ async fn auto_generate_ns_records(
 /// This is necessary to avoid circular dependencies when resolving the nameserver itself.
 ///
 /// # Arguments
-/// * `client` - Kubernetes client for loading RNDC keys and getting endpoints
+/// * `resolver` - Per-reconcile resolver for instance RNDC keys and endpoints
 /// * `zone_name` - The DNS zone name
 /// * `hostname` - Full nameserver hostname (e.g., "ns2.example.com.")
 /// * `ip_address` - IP address (IPv4 or IPv6)
@@ -2377,7 +2434,7 @@ async fn auto_generate_ns_records(
 /// Returns error if glue record addition fails on all instances
 #[allow(clippy::too_many_lines)]
 async fn add_glue_record(
-    client: &kube::Client,
+    resolver: &bindy_bind9::instances::InstanceResolver,
     zone_name: &str,
     hostname: &str,
     ip_address: &str,
@@ -2424,12 +2481,9 @@ async fn add_glue_record(
 
     for instance_ref in primary_instance_refs {
         // Load RNDC key for this instance
-        let key_data = match helpers::load_rndc_key(
-            client,
-            &instance_ref.namespace,
-            &instance_ref.name,
-        )
-        .await
+        let key_data = match resolver
+            .rndc_key(&instance_ref.namespace, &instance_ref.name)
+            .await
         {
             Ok(key) => key,
             Err(e) => {
@@ -2442,13 +2496,9 @@ async fn add_glue_record(
         };
 
         // Get endpoints for this instance
-        let endpoints = match helpers::get_endpoint(
-            client,
-            &instance_ref.namespace,
-            &instance_ref.name,
-            "dns-tcp",
-        )
-        .await
+        let endpoints = match resolver
+            .endpoints(&instance_ref.namespace, &instance_ref.name, "dns-tcp")
+            .await
         {
             Ok(eps) => eps,
             Err(e) => {

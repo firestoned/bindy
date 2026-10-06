@@ -10,9 +10,6 @@ use crate::crd::RecordStatus;
 use kube::runtime::controller::Action;
 use std::time::Duration;
 
-// The requeue policy is shared by every controller (bindy-controller-sdk).
-pub use bindy_controller_sdk::requeue::{REQUEUE_WHEN_NOT_READY_SECS, REQUEUE_WHEN_READY_SECS};
-
 /// Condition type for resource readiness
 pub const CONDITION_TYPE_READY: &str = "Ready";
 
@@ -90,21 +87,106 @@ pub fn ready_state(status: &Option<RecordStatus>) -> ReadyState<'_> {
     }
 }
 
-/// Determine requeue action based on readiness status.
+/// Status reason: no `DNSZone` selects the record (no `status.zoneRef`).
+pub const REASON_NOT_SELECTED: &str = "NotSelected";
+
+/// Status reason: the zone named by `status.zoneRef` does not exist.
+pub const REASON_ZONE_NOT_FOUND: &str = "ZoneNotFound";
+
+/// Status reason: the zone selects no `Bind9Instance`.
+pub const REASON_ZONE_NOT_CONFIGURED: &str = "ZoneNotConfigured";
+
+/// Status reason: the zone has instances but none is a primary.
+pub const REASON_NO_PRIMARY_INSTANCES: &str = "NoPrimaryInstances";
+
+/// Status reason: the primary instances could not be determined.
+pub const REASON_INSTANCE_FILTER_ERROR: &str = "InstanceFilterError";
+
+/// Status reason: a BIND9 write (or the rename delete before it) failed.
+pub const REASON_RECONCILE_FAILED: &str = "ReconcileFailed";
+
+/// Status reason: the record is published to every primary.
+pub const REASON_RECONCILE_SUCCEEDED: &str = "ReconcileSucceeded";
+
+/// How one record reconcile ended, returned to the controller wrapper so it
+/// can log and pick its `Action` without re-reading the record (ADR-0016).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordOutcome {
+    /// Published to every primary; the record is Ready.
+    Published,
+    /// Not Ready, waiting on another object whose event wakes the record:
+    /// a zone tagging it, the zone appearing, the zone gaining (primary)
+    /// instances.
+    Waiting {
+        /// The status reason, e.g. [`REASON_NOT_SELECTED`].
+        reason: &'static str,
+    },
+    /// Not Ready because a lookup failed; retried with backoff.
+    Failed {
+        /// The status reason, e.g. [`REASON_INSTANCE_FILTER_ERROR`].
+        reason: &'static str,
+    },
+    /// BIND9 rejected the write or could not be reached; retried with
+    /// backoff, never inside the rejected-write cooldown.
+    WriteRejected,
+    /// The identical spec was rejected moments ago; the write is skipped
+    /// until the cooldown ends.
+    CoolingDown {
+        /// Time left in the cooldown.
+        remaining: Duration,
+    },
+}
+
+impl RecordOutcome {
+    /// Whether the record is published and Ready.
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        matches!(self, Self::Published)
+    }
+
+    /// A short description for the controller's log line.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Published => REASON_RECONCILE_SUCCEEDED.to_string(),
+            Self::Waiting { reason } => format!("{reason} (waiting for an event)"),
+            Self::Failed { reason } => format!("{reason} (retrying with backoff)"),
+            Self::WriteRejected => format!("{REASON_RECONCILE_FAILED} (retrying with backoff)"),
+            Self::CoolingDown { remaining } => {
+                format!(
+                    "{REASON_RECONCILE_FAILED} (rejected write cooling down, {remaining:?} left)"
+                )
+            }
+        }
+    }
+}
+
+/// The controller `Action` for a record reconcile's outcome (ADR-0016).
+///
+/// There is no periodic resync: a published record, and a record waiting on
+/// another object, wait for the next watch event. A failure retries on the
+/// per-object backoff; a rejected write never sooner than
+/// [`bindy_controller_sdk::retry::REJECTED_WRITE_COOLDOWN`].
 ///
 /// # Arguments
 ///
-/// * `is_ready` - Whether the resource is ready
+/// * `record` - The record that was reconciled (keys the backoff)
+/// * `outcome` - How the reconcile ended
 ///
 /// # Returns
 ///
-/// * `Action::requeue(5 minutes)` if ready
-/// * `Action::requeue(30 seconds)` if not ready
+/// `await_change` for [`RecordOutcome::Published`] (clearing the backoff) and
+/// [`RecordOutcome::Waiting`]; a backing-off requeue otherwise.
 #[must_use]
-pub fn requeue_based_on_readiness(is_ready: bool) -> Action {
-    if is_ready {
-        Action::requeue(Duration::from_secs(REQUEUE_WHEN_READY_SECS))
-    } else {
-        Action::requeue(Duration::from_secs(REQUEUE_WHEN_NOT_READY_SECS))
+pub fn action_for_outcome<T: kube::ResourceExt>(record: &T, outcome: &RecordOutcome) -> Action {
+    match outcome {
+        RecordOutcome::Published => bindy_controller_sdk::error::converged_action(record),
+        RecordOutcome::Waiting { .. } => Action::await_change(),
+        RecordOutcome::Failed { .. } => bindy_controller_sdk::error::retry_action(record),
+        RecordOutcome::WriteRejected => bindy_controller_sdk::error::retry_action_at_least(
+            record,
+            bindy_controller_sdk::retry::REJECTED_WRITE_COOLDOWN,
+        ),
+        RecordOutcome::CoolingDown { remaining } => Action::requeue(*remaining),
     }
 }

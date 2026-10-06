@@ -229,8 +229,8 @@ mod tests {
 mod reconcile_backoff_tests {
     use super::super::{
         clear_rejected_write, note_rejected_write, reconcile_error_backoff,
-        reset_reconcile_backoff, write_in_cooldown, write_in_cooldown_at, RECONCILE_BACKOFF_MAX,
-        REJECTED_WRITE_COOLDOWN,
+        reset_reconcile_backoff, write_cooldown_remaining_at, write_in_cooldown,
+        write_in_cooldown_at, RECONCILE_BACKOFF_MAX, REJECTED_WRITE_COOLDOWN,
     };
     use std::time::{Duration, Instant};
 
@@ -334,7 +334,7 @@ mod reconcile_backoff_tests {
                 "hash-a",
                 Instant::now() + REJECTED_WRITE_COOLDOWN + Duration::from_secs(1)
             ),
-            "once the cooldown expires the timed requeue must attempt it again"
+            "once the cooldown expires the scheduled retry must attempt it again"
         );
     }
 
@@ -362,12 +362,30 @@ mod reconcile_backoff_tests {
         );
     }
 
+    /// A reconcile woken inside the cooldown must schedule the retry itself:
+    /// with no periodic resync (ADR-0016) nothing else would re-attempt it.
     #[test]
-    fn test_cooldown_matches_the_not_ready_requeue_interval() {
+    fn test_cooldown_remaining_is_reported_until_it_expires() {
+        let key = "ns/remaining";
+        clear_rejected_write(key);
+        note_rejected_write(key, "hash-a");
+        let now = Instant::now();
+
+        let remaining = write_cooldown_remaining_at(key, "hash-a", now)
+            .expect("a just-rejected write is cooling down");
+        assert!(remaining <= REJECTED_WRITE_COOLDOWN);
+        assert!(remaining > Duration::ZERO);
+
         assert_eq!(
-            REJECTED_WRITE_COOLDOWN,
-            Duration::from_secs(crate::requeue::REQUEUE_WHEN_NOT_READY_SECS),
-            "the cooldown exists to let the timed requeue drive retries, so it must not outlast it"
+            write_cooldown_remaining_at(key, "hash-a", now + REJECTED_WRITE_COOLDOWN),
+            None,
+            "an expired cooldown reports nothing"
         );
+        assert_eq!(
+            write_cooldown_remaining_at(key, "hash-b", now),
+            None,
+            "a changed spec is never held back"
+        );
+        clear_rejected_write(key);
     }
 }

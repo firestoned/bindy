@@ -2,6 +2,30 @@
 
 This document collects the breaking-change migrations for Bindy, newest first.
 
+## No periodic resync: out-of-band BIND9 changes are no longer reverted (ADR-0016)
+
+Every controller (records, `DNSZone`, `Bind9Instance`, `Bind9Cluster`,
+`ClusterBind9Provider`) used to requeue itself after every successful
+reconcile: every 5 minutes when Ready, every 30 seconds when not. That timer
+is gone ([ADR-0016](https://github.com/firestoned/bindy/blob/main/docs/adr/0016-event-driven-reconciliation.md)).
+No CRD, flag or RBAC change; the behaviour change is:
+
+- **A change made directly inside a running BIND9 pod stands** until the
+  next event for the resource that owns the data (spec, label or annotation
+  change, pod restart, operator restart). It used to be reverted within
+  5 minutes. If you relied on that, force the repair by annotating the
+  resource: `kubectl annotate <kind> <name> bindy.firestoned.io/reconcile-trigger="$(date +%s)" --overwrite`.
+  See [Troubleshooting](troubleshooting.md#a-record-or-zone-changed-inside-bind9-is-not-put-back).
+- **A resource stuck on a failure retries with backoff**, from 2 s up to
+  60 s (a record write BIND9 rejected: never sooner than 30 s), instead of a
+  flat 30 s.
+- **At rest the operator makes no reconciles and no API calls** beyond its
+  watches. Dashboards that expected a steady reconcile rate per object
+  (`bindy_firestoned_io_reconciliations_total`) will show it drop to zero
+  between changes.
+- **RNDC key rotation** wakes the instance at the instant its key falls due
+  instead of being noticed by the next 5-minute pass.
+
 ## BIND9 configuration written by hornet (ADR-0013 stage 3)
 
 `named.conf` and `named.conf.options` are now written by

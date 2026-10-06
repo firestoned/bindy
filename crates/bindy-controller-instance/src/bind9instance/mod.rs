@@ -35,86 +35,67 @@ use zones::reconcile_instance_zones as reconcile_zones_internal;
 
 use bindy_controller_sdk::finalizers::{ensure_finalizer, handle_deletion};
 
-/// Calculate the requeue duration for the next reconciliation based on RNDC rotation schedule.
+/// Re-check delay for a rotation that is already due.
 ///
-/// If auto-rotation is enabled and a rotation time is scheduled, this function calculates
-/// the duration until that rotation time. If the rotation is overdue, it returns a minimal
-/// duration to trigger immediate reconciliation.
+/// The reconcile that sees an overdue key rotates it, and the new Secret's
+/// watch event schedules the next wake. This short re-check only matters if
+/// that event is lost.
+pub const ROTATION_OVERDUE_RECHECK: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Margin past the instant a key falls due, so the wake never lands a moment
+/// before it and finds nothing to do.
+pub const ROTATION_DUE_MARGIN: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Milliseconds per second, for rounding the wake up to whole seconds.
+const MILLIS_PER_SECOND: i64 = 1000;
+
+/// When this instance must next be reconciled for its RNDC key rotation.
+///
+/// With no periodic resync (ADR-0016) nothing else would notice that a key
+/// has fallen due: the Secret does not change until it is rotated. The key is
+/// due at `rotate-at`, but never sooner than
+/// `MIN_TIME_BETWEEN_ROTATIONS_HOURS` after it was created (the rate limit
+/// `should_rotate_secret` enforces), so the wake is set for the later of the
+/// two plus [`ROTATION_DUE_MARGIN`].
 ///
 /// # Arguments
 ///
 /// * `config` - RNDC configuration with rotation settings
 /// * `secret` - The RNDC Secret with rotation annotations
+/// * `now` - The current time
 ///
 /// # Returns
 ///
-/// Duration until next reconciliation. Returns `None` if rotation is disabled or Secret
-/// has no rotation annotations.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use bindy::crd::RndcKeyConfig;
-/// use k8s_openapi::api::core::v1::Secret;
-/// use bindy::reconcilers::bind9instance::calculate_requeue_duration;
-///
-/// let config = RndcKeyConfig {
-///     auto_rotate: true,
-///     rotate_after: "720h".to_string(),
-///     ..Default::default()
-/// };
-///
-/// // Create a secret with rotation annotations
-/// let secret = Secret {
-///     metadata: ObjectMeta {
-///         annotations: Some(BTreeMap::from([
-///             ("bindy.firestoned.io/rotation-created-at".to_string(), "2025-01-01T00:00:00Z".to_string()),
-///             ("bindy.firestoned.io/rotation-rotate-at".to_string(), "2025-02-01T00:00:00Z".to_string()),
-///         ])),
-///         ..Default::default()
-///     },
-///     ..Default::default()
-/// };
-///
-/// // Returns duration until rotate_at timestamp
-/// let duration = calculate_requeue_duration(&config, &secret);
-/// ```
-#[allow(dead_code)] // Will be used when requeue logic is integrated
-fn calculate_requeue_duration(
+/// The delay until the key falls due, [`ROTATION_OVERDUE_RECHECK`] when it
+/// already has, or `None` when auto-rotation is off or no rotation is
+/// scheduled.
+#[must_use]
+pub fn calculate_requeue_duration(
     config: &crate::crd::RndcKeyConfig,
     secret: &Secret,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> Option<std::time::Duration> {
-    use chrono::Utc;
-
-    // Only calculate requeue if auto-rotation is enabled
     if !config.auto_rotate {
         return None;
     }
 
-    // Extract rotation annotations from Secret
     let annotations = secret.metadata.annotations.as_ref()?;
-    let (_created_at, rotate_at, _rotation_count) =
+    let (created_at, rotate_at, _rotation_count) =
         crate::bind9::rndc::parse_rotation_annotations(annotations).ok()?;
-
-    // If no rotation scheduled, no need for specific requeue
     let rotate_at = rotate_at?;
 
-    let now = Utc::now();
-    let time_until_rotation = rotate_at.signed_duration_since(now);
+    let earliest_allowed =
+        created_at + chrono::Duration::hours(crate::constants::MIN_TIME_BETWEEN_ROTATIONS_HOURS);
+    let due_at = rotate_at.max(earliest_allowed);
 
-    // If rotation is overdue or very soon, reconcile quickly (30 seconds)
-    if time_until_rotation.num_seconds() <= 0 {
-        return Some(std::time::Duration::from_secs(30));
+    let millis_until_due = due_at.signed_duration_since(now).num_milliseconds();
+    if millis_until_due <= 0 {
+        return Some(ROTATION_OVERDUE_RECHECK);
     }
 
-    // Otherwise, schedule reconciliation slightly before rotation time (5 minutes early)
-    let requeue_secs = time_until_rotation
-        .num_seconds()
-        .saturating_sub(300) // 5 minutes early
-        .max(30); // At least 30 seconds
-
-    #[allow(clippy::cast_sign_loss)] // Value is guaranteed non-negative by max(30)
-    Some(std::time::Duration::from_secs(requeue_secs as u64))
+    let secs_until_due = (millis_until_due + MILLIS_PER_SECOND - 1) / MILLIS_PER_SECOND;
+    let secs_until_due = u64::try_from(secs_until_due).ok()?;
+    Some(std::time::Duration::from_secs(secs_until_due) + ROTATION_DUE_MARGIN)
 }
 
 /// Detects whether the parent cluster's configuration changed since it was last observed.
@@ -274,7 +255,10 @@ async fn cleanup_bind9instance(resource: &Bind9Instance, client: &Client) -> Res
 ///
 /// # Returns
 ///
-/// * `Ok(())` - If reconciliation succeeded
+/// * `Ok(next_wake)` - Reconciliation succeeded. `next_wake` is the delay
+///   until the instance's RNDC key falls due for rotation, when auto-rotation
+///   is on ([`calculate_requeue_duration`]); `None` otherwise. There is no
+///   periodic resync: every other change arrives as a watch event (ADR-0016).
 /// * `Err(_)` - If resource creation/update failed
 ///
 /// # Example
@@ -286,7 +270,7 @@ async fn cleanup_bind9instance(resource: &Bind9Instance, client: &Client) -> Res
 /// use std::sync::Arc;
 ///
 /// async fn handle_instance(ctx: Arc<Context>, instance: Bind9Instance) -> anyhow::Result<()> {
-///     reconcile_bind9instance(ctx, instance).await?;
+///     let _next_wake = reconcile_bind9instance(ctx, instance).await?;
 ///     Ok(())
 /// }
 /// ```
@@ -295,7 +279,10 @@ async fn cleanup_bind9instance(resource: &Bind9Instance, client: &Client) -> Res
 ///
 /// Returns an error if Kubernetes API operations fail or resource creation/update fails.
 #[allow(clippy::too_many_lines)]
-pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance) -> Result<()> {
+pub async fn reconcile_bind9instance(
+    ctx: Arc<Context>,
+    instance: Bind9Instance,
+) -> Result<Option<std::time::Duration>> {
     let client = ctx.client.clone();
     let namespace = instance.namespace().unwrap_or_default();
     let name = instance.name_any();
@@ -310,10 +297,11 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
 
     // Check if the instance is being deleted
     if instance.metadata.deletion_timestamp.is_some() {
-        return handle_deletion(&client, &instance, FINALIZER_BIND9_INSTANCE, || {
+        handle_deletion(&client, &instance, FINALIZER_BIND9_INSTANCE, || {
             cleanup_bind9instance(&instance, &client)
         })
-        .await;
+        .await?;
+        return Ok(None);
     }
 
     // Add finalizer if not present
@@ -392,7 +380,13 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
     }
 
     // Check if ALL required resources actually exist AND match desired state (drift detection)
-    let (all_resources_exist, deployment_labels_match, rotation_needed, config_drifted) = {
+    let (
+        all_resources_exist,
+        deployment_labels_match,
+        rotation_needed,
+        config_drifted,
+        rotation_wake,
+    ) = {
         let deployment_api: Api<Deployment> = Api::namespaced(client.clone(), &namespace);
         let service_api: Api<Service> = Api::namespaced(client.clone(), &namespace);
         let configmap_api: Api<ConfigMap> = Api::namespaced(client.clone(), &namespace);
@@ -455,33 +449,45 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
 
         // Check Secret existence AND rotation status
         let secret_name = format!("{name}-rndc-key");
-        let (secret_exists, needs_rotation) = match secret_api.get(&secret_name).await {
-            Ok(secret) => {
-                // Resolve RNDC config to check if rotation is due
-                let rndc_config = resources::resolve_full_rndc_config(
-                    &instance,
-                    cluster.as_ref(),
-                    cluster_provider.as_ref(),
-                );
-
-                // Check if rotation is needed using the existing function
-                let needs_rotation =
-                    resources::should_rotate_secret(&secret, &rndc_config).unwrap_or(false);
-
-                if needs_rotation {
-                    debug!(
-                        "RNDC Secret {}/{} rotation is due, will trigger reconciliation",
-                        namespace, secret_name
+        let (secret_exists, needs_rotation, rotation_wake) =
+            match secret_api.get(&secret_name).await {
+                Ok(secret) => {
+                    // Resolve RNDC config to check if rotation is due
+                    let rndc_config = resources::resolve_full_rndc_config(
+                        &instance,
+                        cluster.as_ref(),
+                        cluster_provider.as_ref(),
                     );
-                }
 
-                (true, needs_rotation)
-            }
-            Err(_) => (false, false),
-        };
+                    // Check if rotation is needed using the existing function
+                    let needs_rotation =
+                        resources::should_rotate_secret(&secret, &rndc_config).unwrap_or(false);
+
+                    if needs_rotation {
+                        debug!(
+                            "RNDC Secret {}/{} rotation is due, will trigger reconciliation",
+                            namespace, secret_name
+                        );
+                    }
+
+                    // Nothing announces that a key has fallen due, so the instance
+                    // schedules its own wake for that instant (ADR-0016).
+                    let rotation_wake =
+                        calculate_requeue_duration(&rndc_config, &secret, chrono::Utc::now());
+
+                    (true, needs_rotation, rotation_wake)
+                }
+                Err(_) => (false, false, None),
+            };
 
         let all_exist = deployment_exists && service_exists && configmap_exists && secret_exists;
-        (all_exist, labels_match, needs_rotation, config_drifted)
+        (
+            all_exist,
+            labels_match,
+            needs_rotation,
+            config_drifted,
+            rotation_wake,
+        )
     };
     let cluster_ref = build_cluster_reference(cluster.as_ref(), cluster_provider.as_ref());
 
@@ -537,7 +543,7 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
         // Reconcile zones after status update
         reconcile_zones_internal(&client, &ctx.stores, &instance).await?;
 
-        return Ok(());
+        return Ok(rotation_wake);
     }
 
     // If we reach here, reconciliation is needed because:
@@ -587,6 +593,7 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
     );
 
     // Create or update resources
+    let mut next_wake = rotation_wake;
     match create_or_update_resources(&client, &namespace, &name, &instance).await {
         Ok((cluster, cluster_provider, secret)) => {
             info!(
@@ -638,6 +645,10 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
                     );
                     // Non-fatal error, continue reconciliation
                 }
+
+                // The Secret as written now (it may just have been rotated)
+                // decides the next rotation wake.
+                next_wake = calculate_requeue_duration(&rndc_config, secret, chrono::Utc::now());
             }
 
             // Reconcile zones after deployment creation/update
@@ -682,7 +693,7 @@ pub async fn reconcile_bind9instance(ctx: Arc<Context>, instance: Bind9Instance)
         }
     }
 
-    Ok(())
+    Ok(next_wake)
 }
 
 /// Whether a Deployment already carries every label the operator manages.

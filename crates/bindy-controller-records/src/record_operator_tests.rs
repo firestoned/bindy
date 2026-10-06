@@ -156,3 +156,110 @@ mod zone_ref_trigger_tests {
         assert!(zone_ref_hash(&a_record(json!({}))).is_some());
     }
 }
+
+/// The record controller's `DNSZone` mapper (ADR-0016 decision 2): with no
+/// periodic resync, a record waiting on its zone (`ZoneNotFound`,
+/// `ZoneNotConfigured`, `NoPrimaryInstances`, a failed write) must be woken
+/// by the zone's next status change, not only a record the zone has never
+/// stamped.
+#[cfg(test)]
+mod zone_wake_tests {
+    use crate::crd::{ARecord, DNSZone};
+    use crate::record_operator::records_to_wake_for_zone;
+    use kube::runtime::reflector::ObjectRef;
+    use serde_json::json;
+
+    const STAMP: &str = "2026-10-06T00:00:00Z";
+
+    fn zone(records: serde_json::Value) -> DNSZone {
+        serde_json::from_value(json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "DNSZone",
+            "metadata": {"name": "example-com", "namespace": "dns"},
+            "spec": {
+                "zoneName": "example.com",
+                "soaRecord": {
+                    "primaryNs": "ns1.example.com.",
+                    "adminEmail": "admin.example.com.",
+                    "serial": 1,
+                    "refresh": 3600,
+                    "retry": 600,
+                    "expire": 604_800,
+                    "negativeTtl": 86400
+                }
+            },
+            "status": {"records": records}
+        }))
+        .expect("valid DNSZone fixture")
+    }
+
+    fn entry(kind: &str, name: &str, namespace: &str, stamped: bool) -> serde_json::Value {
+        let mut entry = json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": kind,
+            "name": name,
+            "namespace": namespace,
+        });
+        if stamped {
+            entry["lastReconciledAt"] = json!(STAMP);
+        }
+        entry
+    }
+
+    fn names(refs: &[ObjectRef<ARecord>]) -> Vec<String> {
+        let mut names: Vec<String> = refs.iter().map(|r| r.name.clone()).collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn an_unstamped_record_is_woken() {
+        let zone = zone(json!([entry("ARecord", "new", "dns", false)]));
+
+        let woken = records_to_wake_for_zone::<ARecord>(&zone, |_| true);
+
+        assert_eq!(names(&woken), vec!["new".to_string()]);
+    }
+
+    #[test]
+    fn a_stamped_record_that_is_ready_is_left_alone() {
+        let zone = zone(json!([entry("ARecord", "served", "dns", true)]));
+
+        let woken = records_to_wake_for_zone::<ARecord>(&zone, |_| true);
+
+        assert!(
+            woken.is_empty(),
+            "zone status writes must not fan out into Ready records"
+        );
+    }
+
+    #[test]
+    fn a_stamped_record_that_is_not_ready_is_woken() {
+        let zone = zone(json!([
+            entry("ARecord", "waiting", "dns", true),
+            entry("ARecord", "served", "dns", true),
+        ]));
+
+        let woken = records_to_wake_for_zone::<ARecord>(&zone, |r| r.name == "served");
+
+        assert_eq!(names(&woken), vec!["waiting".to_string()]);
+    }
+
+    #[test]
+    fn other_kinds_and_other_namespaces_are_not_woken() {
+        let zone = zone(json!([
+            entry("TXTRecord", "txt", "dns", false),
+            entry("ARecord", "elsewhere", "other", false),
+        ]));
+
+        assert!(records_to_wake_for_zone::<ARecord>(&zone, |_| false).is_empty());
+    }
+
+    #[test]
+    fn a_zone_without_status_wakes_nothing() {
+        let mut zone = zone(json!([]));
+        zone.status = None;
+
+        assert!(records_to_wake_for_zone::<ARecord>(&zone, |_| false).is_empty());
+    }
+}

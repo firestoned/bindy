@@ -8,13 +8,14 @@
 
 use crate::context::Context;
 use crate::crd::{DNSZone, RecordStatus};
-use crate::record_wrappers::ReadyState;
+use crate::record_wrappers::{action_for_outcome, ready_state, ReadyState, RecordOutcome};
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::Api;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer;
+use kube::runtime::reflector::ObjectRef;
 use kube::runtime::{Controller, Predicate, WatchStreamExt};
 use kube::ResourceExt;
 use serde::Serialize;
@@ -49,11 +50,12 @@ pub trait DnsRecordType:
     /// Every kind goes through the one generic path
     /// ([`crate::records::reconcile_record`]), so this default is the only
     /// implementation; the nine per-kind `reconcile_*_record` wrappers that used
-    /// to sit in front of it are gone (roadmap 01 Phase D).
+    /// to sit in front of it are gone (roadmap 01 Phase D). Returns how the
+    /// reconcile ended, so the wrapper does not re-read the record (ADR-0016).
     fn reconcile_record(
         context: Arc<Context>,
         record: Self,
-    ) -> impl std::future::Future<Output = Result<(), ReconcileError>> + Send {
+    ) -> impl std::future::Future<Output = Result<RecordOutcome, ReconcileError>> + Send {
         async move {
             crate::records::reconcile_record(context, record)
                 .await
@@ -128,36 +130,65 @@ where
         Default::default(),
     );
 
+    // The DNSZone mapper wakes the records a zone lists that still need
+    // work: never stamped, or not Ready in the record store. A record waiting
+    // on its zone (ZoneNotFound, ZoneNotConfigured, NoPrimaryInstances) is
+    // woken by the zone's next status change; there is no timer (ADR-0016).
+    let record_store = ws.store::<T>(target);
     Controller::for_stream(primary, ws.store::<T>(target))
-        .watches_stream(ws.subscribe::<DNSZone>(target), |zone| {
-            // When DNSZone.status.records[] changes, trigger reconciliation
-            // for records that have lastReconciledAt == None (need configuration).
-            let Some(namespace) = zone.namespace() else {
-                return vec![];
-            };
-
-            // Get records from zone.status.records[] that need reconciliation
-            let empty_vec = Vec::new();
-            let records = zone.status.as_ref().map_or(&empty_vec, |s| &s.records);
-
-            records
-                .iter()
-                .filter(|record_ref| {
-                    // Only reconcile records of this type with lastReconciledAt == None
-                    record_ref.kind == T::KIND
-                        && record_ref.last_reconciled_at.is_none()
-                        && record_ref.namespace == namespace
-                })
-                .map(|record_ref| {
-                    kube::runtime::reflector::ObjectRef::new(&record_ref.name)
-                        .within(&record_ref.namespace)
-                })
-                .collect::<Vec<_>>()
+        .watches_stream(ws.subscribe::<DNSZone>(target), move |zone| {
+            records_to_wake_for_zone::<T>(&zone, |record_ref| {
+                record_store
+                    .get(record_ref)
+                    .is_some_and(|record| matches!(ready_state(record.status()), ReadyState::Ready))
+            })
         })
         .graceful_shutdown_on(context.shutdown.wait())
         .run(reconcile_wrapper::<T>, error_policy, context.clone())
         .for_each(|_| futures::future::ready(()))
         .await;
+}
+
+/// The records of kind `T` a change of `zone` must wake.
+///
+/// A record listed in `zone.status.records` is woken when the zone has not
+/// stamped it yet (`lastReconciledAt` is unset: it was never published) or
+/// when `is_ready` says its cached status is not Ready. The second case is
+/// what replaced the 30 s not-Ready requeue: a record waiting on its zone
+/// gaining instances or primaries is woken by the zone's status write, and a
+/// Ready record is left alone so zone status writes do not fan out. Pure: no
+/// I/O (ADR-0009 §5).
+///
+/// # Arguments
+///
+/// * `zone` - The zone that changed
+/// * `is_ready` - Whether the record store holds the record as Ready
+///
+/// # Returns
+///
+/// References to the records to reconcile.
+#[must_use]
+pub fn records_to_wake_for_zone<T: DnsRecordType>(
+    zone: &DNSZone,
+    is_ready: impl Fn(&ObjectRef<T>) -> bool,
+) -> Vec<ObjectRef<T>> {
+    let Some(namespace) = zone.namespace() else {
+        return vec![];
+    };
+    let Some(status) = zone.status.as_ref() else {
+        return vec![];
+    };
+
+    status
+        .records
+        .iter()
+        .filter(|record_ref| record_ref.kind == T::KIND && record_ref.namespace == namespace)
+        .filter_map(|record_ref| {
+            let object_ref = ObjectRef::new(&record_ref.name).within(&record_ref.namespace);
+            let needs_work = record_ref.last_reconciled_at.is_none() || !is_ready(&object_ref);
+            needs_work.then_some(object_ref)
+        })
+        .collect()
 }
 
 /// Hash of a record's `status.zoneRef`: the one status field another
@@ -216,44 +247,23 @@ where
     let result = finalizer(&api, T::FINALIZER, record.clone(), |event| async {
         match event {
             finalizer::Event::Apply(rec) => {
-                // Create or update the record
-                T::reconcile_record(context.clone(), (*rec).clone()).await?;
-
-                // Re-fetch to get updated status
-                let updated_record = api
-                    .get(&rec.name_any())
-                    .await
-                    .map_err(|e| ReconcileError::from(anyhow::Error::from(e)))?;
-
-                // A failed BIND9 write is reported through the record's own
-                // conditions, not through the return value above: the reconcile
-                // swallows it so the status can be written. The outcome therefore
-                // has to be read back before this can claim the record was
-                // published, or the log contradicts the status it just set.
-                let state = crate::record_wrappers::ready_state(updated_record.status());
-                match state {
-                    ReadyState::Ready => {
-                        info!("Successfully reconciled {}: {}", T::KIND, rec.name_any());
-                    }
-                    ReadyState::NotReady { reason, message } => {
-                        warn!(
-                            "Reconciled {} {} but it is not Ready — {reason}: {message}",
-                            T::KIND,
-                            rec.name_any()
-                        );
-                    }
-                    ReadyState::Unknown => {
-                        warn!(
-                            "Reconciled {} {} but it reports no Ready condition",
-                            T::KIND,
-                            rec.name_any()
-                        );
-                    }
+                // Create or update the record. The outcome is returned, not
+                // re-read with a GET (ADR-0016): a failed BIND9 write is
+                // reported through the record's own conditions and through
+                // the outcome, so the log below cannot contradict the status.
+                let outcome = T::reconcile_record(context.clone(), (*rec).clone()).await?;
+                if outcome.is_ready() {
+                    info!("Successfully reconciled {}: {}", T::KIND, rec.name_any());
+                } else {
+                    warn!(
+                        "Reconciled {} {} but it is not Ready: {}",
+                        T::KIND,
+                        rec.name_any(),
+                        outcome.describe()
+                    );
                 }
 
-                Ok(crate::record_wrappers::requeue_based_on_readiness(
-                    matches!(state, ReadyState::Ready),
-                ))
+                Ok(action_for_outcome(rec.as_ref(), &outcome))
             }
             finalizer::Event::Cleanup(rec) => {
                 // Delete the record from BIND9

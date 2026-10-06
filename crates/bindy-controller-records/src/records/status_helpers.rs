@@ -53,42 +53,189 @@ where
     }
 }
 
+/// What one reconcile wants a record's `Ready` condition and status to say.
+///
+/// `None` in an optional field means "leave the stored value alone": the
+/// field is omitted from the merge patch, so the API server keeps it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecordStatusUpdate<'a> {
+    /// `Ready` condition status: `"True"` or `"False"`
+    pub status: &'a str,
+    /// `CamelCase` reason, e.g. `ReconcileSucceeded`, `ZoneNotFound`
+    pub reason: &'a str,
+    /// Human-readable message
+    pub message: &'a str,
+    /// Generation to record as observed (defaults to the record's own)
+    pub observed_generation: Option<i64>,
+    /// Hash of the published spec, set on success
+    pub record_hash: Option<String>,
+    /// When the record was last published, set on success
+    pub last_updated: Option<String>,
+    /// Display addresses (A/AAAA), set on success
+    pub addresses: Option<String>,
+    /// DNS name just published (rename detection), set on success
+    pub published_name: Option<String>,
+}
+
+impl<'a> RecordStatusUpdate<'a> {
+    /// A `Ready=False` update that leaves every other status field alone.
+    ///
+    /// # Arguments
+    ///
+    /// * `reason` - `CamelCase` reason
+    /// * `message` - Human-readable message
+    /// * `observed_generation` - Generation to record as observed
+    #[must_use]
+    pub(crate) fn not_ready(
+        reason: &'a str,
+        message: &'a str,
+        observed_generation: Option<i64>,
+    ) -> Self {
+        Self {
+            status: CONDITION_FALSE,
+            reason,
+            message,
+            observed_generation,
+            record_hash: None,
+            last_updated: None,
+            addresses: None,
+            published_name: None,
+        }
+    }
+}
+
+/// The record's `Ready` condition type.
+const CONDITION_TYPE_READY: &str = "Ready";
+
+/// Condition status for a satisfied condition.
+const CONDITION_TRUE: &str = "True";
+
+/// Condition status for an unsatisfied condition.
+const CONDITION_FALSE: &str = "False";
+
+/// Event type for a record that reached `Ready=True`.
+const EVENT_TYPE_NORMAL: &str = "Normal";
+
+/// Event type for any other outcome.
+const EVENT_TYPE_WARNING: &str = "Warning";
+
+/// The status of a record as the reconcile received it (the watch cache).
+///
+/// # Arguments
+///
+/// * `record` - The record being reconciled
+///
+/// # Returns
+///
+/// The parsed `status`, or `None` when the record has none (or it does not
+/// parse as a [`RecordStatus`]).
+#[must_use]
+pub(crate) fn cached_record_status<T: serde::Serialize>(record: &T) -> Option<RecordStatus> {
+    let json = serde_json::to_value(record).ok()?;
+    let status = json.get("status")?.clone();
+    serde_json::from_value(status).ok()
+}
+
+/// Build the status merge patch for `update`, or `None` when the stored status
+/// already says it.
+///
+/// Decides from `current`, the status the reconcile already holds, never from
+/// a fresh GET (ADR-0016). The patch carries the `Ready` condition, the
+/// observed generation and only the optional fields `update` sets. It never
+/// carries `zone` or `zoneRef`: the `DNSZone` controller owns those, and a
+/// merge patch that omits them cannot overwrite them.
+///
+/// The update is skipped when `current` was observed at `record_generation`
+/// and its `Ready` condition already has the same status, reason and message.
+/// The condition's `lastTransitionTime` is kept while its status value holds
+/// and set to `now` when it flips.
+///
+/// # Arguments
+///
+/// * `current` - The cached status, if any
+/// * `record_generation` - The record's `metadata.generation`
+/// * `update` - What the reconcile wants the status to say
+/// * `now` - RFC 3339 timestamp for a new transition
+///
+/// # Returns
+///
+/// `Some(patch)` to send, or `None` when nothing would change.
+#[must_use]
+pub(crate) fn record_status_patch(
+    current: Option<&RecordStatus>,
+    record_generation: Option<i64>,
+    update: &RecordStatusUpdate<'_>,
+    now: &str,
+) -> Option<serde_json::Value> {
+    let existing = current.and_then(|status| {
+        status
+            .conditions
+            .iter()
+            .find(|condition| condition.r#type == CONDITION_TYPE_READY)
+    });
+
+    let observed_current = current.and_then(|status| status.observed_generation);
+    let unchanged = observed_current.is_some()
+        && observed_current == record_generation
+        && existing.is_some_and(|condition| {
+            condition.status == update.status
+                && condition.reason.as_deref() == Some(update.reason)
+                && condition.message.as_deref() == Some(update.message)
+        });
+    if unchanged {
+        return None;
+    }
+
+    let last_transition_time = existing
+        .filter(|condition| condition.status == update.status)
+        .and_then(|condition| condition.last_transition_time.clone())
+        .unwrap_or_else(|| now.to_string());
+
+    let condition = Condition {
+        r#type: CONDITION_TYPE_READY.to_string(),
+        status: update.status.to_string(),
+        reason: Some(update.reason.to_string()),
+        message: Some(update.message.to_string()),
+        last_transition_time: Some(last_transition_time),
+    };
+
+    // zone and zoneRef stay None, so they are not serialized: the patch can
+    // never clobber what the DNSZone controller wrote.
+    #[allow(deprecated)] // the deprecated `zone` field is deliberately left out
+    let status = RecordStatus {
+        conditions: vec![condition],
+        observed_generation: update.observed_generation.or(record_generation),
+        zone: None,
+        zone_ref: None,
+        record_hash: update.record_hash.clone(),
+        last_updated: update.last_updated.clone(),
+        addresses: update.addresses.clone(),
+        published_name: update.published_name.clone(),
+    };
+
+    Some(json!({ "status": status }))
+}
+
 /// Updates the status of a DNS record resource.
 ///
-/// Updates the status subresource with appropriate conditions following
-/// Kubernetes conventions. Also creates a Kubernetes Event for visibility.
+/// Builds the patch with [`record_status_patch`] from the record the
+/// reconcile already holds (no GET), sends it as a merge patch to the status
+/// subresource when something changed, and records a Kubernetes Event for the
+/// new condition.
 ///
 /// # Arguments
 ///
 /// * `client` - Kubernetes API client
-/// * `record` - The DNS record resource to update
-/// * `condition_type` - Type of condition (e.g., "Ready", "Failed")
-/// * `status` - Status value (e.g., "True", "False", "Unknown")
-/// * `reason` - Short reason code (e.g., "`ReconcileSucceeded`", "`ZoneNotFound`")
-/// * `message` - Human-readable message describing the status
-/// * `observed_generation` - Optional generation to set in status (defaults to record's current generation)
-/// * `record_hash` - Optional hash of the record spec for change detection
-/// * `last_updated` - Optional timestamp of last update
-/// * `addresses` - Optional display addresses; `None` preserves any existing value
-/// * `published_name` - DNS name just published to BIND9 (used for rename
-///   detection); `None` preserves any existing value
+/// * `record` - The DNS record resource, as the reconcile received it
+/// * `update` - What the status should say
 ///
 /// # Errors
 ///
-/// Returns an error if the status update fails.
-#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
-pub(super) async fn update_record_status<T>(
+/// Returns an error if the status patch fails.
+pub(crate) async fn update_record_status<T>(
     client: &Client,
     record: &T,
-    condition_type: &str,
-    status: &str,
-    reason: &str,
-    message: &str,
-    observed_generation: Option<i64>,
-    record_hash: Option<String>,
-    last_updated: Option<String>,
-    addresses: Option<String>,
-    published_name: Option<String>,
+    update: &RecordStatusUpdate<'_>,
 ) -> Result<()>
 where
     T: Resource<DynamicType = (), Scope = k8s_openapi::NamespaceResourceScope>
@@ -98,163 +245,39 @@ where
         + serde::Serialize
         + for<'de> serde::Deserialize<'de>,
 {
+    let current = cached_record_status(record);
+    let Some(status_patch) = record_status_patch(
+        current.as_ref(),
+        record.meta().generation,
+        update,
+        &Utc::now().to_rfc3339(),
+    ) else {
+        // Status is already correct; skip the write so it cannot wake anything.
+        return Ok(());
+    };
+
     let namespace = record.namespace().unwrap_or_default();
     let name = record.name_any();
     let api: Api<T> = Api::namespaced(client.clone(), &namespace);
-
-    // Fetch current resource to check existing status
-    let current = api
-        .get(&name)
-        .await
-        .context("Failed to fetch current resource")?;
-
-    // Check if we need to update
-    // Extract status from the current resource using json
-    let current_json = serde_json::to_value(&current)?;
-    let needs_update = if let Some(current_status) = current_json.get("status") {
-        if let Some(observed_gen) = current_status.get("observedGeneration") {
-            // If observed generation matches current generation and condition hasn't changed, skip update
-            if observed_gen == &json!(record.meta().generation) {
-                if let Some(conditions) =
-                    current_status.get("conditions").and_then(|c| c.as_array())
-                {
-                    // Find the condition with matching type (not just first condition)
-                    let matching_condition = conditions.iter().find(|cond| {
-                        cond.get("type").and_then(|t| t.as_str()) == Some(condition_type)
-                    });
-
-                    if let Some(cond) = matching_condition {
-                        let status_matches =
-                            cond.get("status").and_then(|s| s.as_str()) == Some(status);
-                        let reason_matches =
-                            cond.get("reason").and_then(|r| r.as_str()) == Some(reason);
-                        let message_matches =
-                            cond.get("message").and_then(|m| m.as_str()) == Some(message);
-                        // Only update if any field has changed
-                        !(status_matches && reason_matches && message_matches)
-                    } else {
-                        true // Condition type not found, need to add it
-                    }
-                } else {
-                    true // No conditions array, need to update
-                }
-            } else {
-                true // Generation changed, need to update
-            }
-        } else {
-            true // No observed generation, need to update
-        }
-    } else {
-        true // No status, need to update
-    };
-
-    if !needs_update {
-        // Status is already correct, skip update to avoid reconciliation loop
-        return Ok(());
-    }
-
-    // Determine last_transition_time
-    let last_transition_time = if let Some(current_status) = current_json.get("status") {
-        if let Some(conditions) = current_status.get("conditions").and_then(|c| c.as_array()) {
-            // Find the condition with matching type (same as above)
-            let matching_condition = conditions
-                .iter()
-                .find(|cond| cond.get("type").and_then(|t| t.as_str()) == Some(condition_type));
-
-            if let Some(cond) = matching_condition {
-                let status_changed = cond.get("status").and_then(|s| s.as_str()) != Some(status);
-                if status_changed {
-                    // Status changed, use current time
-                    Utc::now().to_rfc3339()
-                } else {
-                    // Status unchanged, preserve existing timestamp
-                    cond.get("lastTransitionTime")
-                        .and_then(|t| t.as_str())
-                        .unwrap_or(&Utc::now().to_rfc3339())
-                        .to_string()
-                }
-            } else {
-                // Condition type not found, use current time
-                Utc::now().to_rfc3339()
-            }
-        } else {
-            Utc::now().to_rfc3339()
-        }
-    } else {
-        Utc::now().to_rfc3339()
-    };
-
-    let condition = Condition {
-        r#type: condition_type.to_string(),
-        status: status.to_string(),
-        reason: Some(reason.to_string()),
-        message: Some(message.to_string()),
-        last_transition_time: Some(last_transition_time),
-    };
-
-    // Preserve existing zone field if it exists (set by DNSZone controller)
-    let zone = current_json
-        .get("status")
-        .and_then(|s| s.get("zone"))
-        .and_then(|z| z.as_str())
-        .map(ToString::to_string);
-
-    // Preserve existing zone_ref field if it exists (set by DNSZone controller)
-    let zone_ref = current_json
-        .get("status")
-        .and_then(|s| s.get("zoneRef"))
-        .and_then(|z| serde_json::from_value::<crate::crd::ZoneReference>(z.clone()).ok());
-
-    // Use provided addresses if available, otherwise preserve existing
-    let status_addresses = addresses.or_else(|| {
-        current_json
-            .get("status")
-            .and_then(|s| s.get("addresses"))
-            .and_then(|a| a.as_str())
-            .map(ToString::to_string)
-    });
-
-    // Use provided published name if available, otherwise preserve existing
-    let status_published_name = published_name.or_else(|| {
-        current_json
-            .get("status")
-            .and_then(|s| s.get("publishedName"))
-            .and_then(|p| p.as_str())
-            .map(ToString::to_string)
-    });
-
-    #[allow(deprecated)] // Maintain backward compatibility with deprecated zone field
-    let record_status = RecordStatus {
-        conditions: vec![condition],
-        observed_generation: observed_generation.or(record.meta().generation),
-        zone,
-        zone_ref, // Preserved from existing status (set by DNSZone controller)
-        record_hash,
-        last_updated,
-        addresses: status_addresses, // Set by A/AAAA record reconcilers or preserved from existing
-        published_name: status_published_name, // Set on success by reconcile_record or preserved
-    };
-
-    let status_patch = json!({
-        "status": record_status
-    });
-
     api.patch_status(&name, &PatchParams::default(), &Patch::Merge(&status_patch))
         .await
         .context("Failed to update record status")?;
 
     debug!(
         "Updated status for {}/{}: {} = {}",
-        namespace, name, condition_type, status
+        namespace, name, CONDITION_TYPE_READY, update.status
     );
 
-    // Create event for visibility
-    let event_type = if status == "True" {
-        "Normal"
+    let event_type = if update.status == CONDITION_TRUE {
+        EVENT_TYPE_NORMAL
     } else {
-        "Warning"
+        EVENT_TYPE_WARNING
     };
-    create_event(client, record, event_type, reason, message).await?;
+    create_event(client, record, event_type, update.reason, update.message).await?;
 
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "status_helpers_tests.rs"]
+mod status_helpers_tests;

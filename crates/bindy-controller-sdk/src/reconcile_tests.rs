@@ -6,14 +6,15 @@
 #[cfg(test)]
 mod tests {
     use crate::metrics::{ERRORS_TOTAL, RECONCILIATION_TOTAL};
-    use crate::reconcile::{finalizer_error, instrumented};
-    use crate::requeue::REQUEUE_WHEN_READY_SECS;
+    use crate::reconcile::{
+        finalizer_error, instrumented, instrumented_scheduled, scheduled_action, MAX_SCHEDULED_WAKE,
+    };
     use kube::runtime::controller::Action;
     use kube::runtime::finalizer;
     use std::time::Duration;
 
     #[tokio::test]
-    async fn a_successful_reconcile_requeues_on_the_ready_interval_and_counts_success() {
+    async fn a_successful_reconcile_awaits_the_next_change_and_counts_success() {
         // A kind label used by no other test, so the counter delta is ours.
         const KIND: &str = "InstrumentedOkTest";
         let before = RECONCILIATION_TOTAL
@@ -24,10 +25,8 @@ mod tests {
             .await
             .expect("success passes through");
 
-        assert_eq!(
-            action,
-            Action::requeue(Duration::from_secs(REQUEUE_WHEN_READY_SECS))
-        );
+        // ADR-0016: no periodic resync. The next reconcile comes from a watch event.
+        assert_eq!(action, Action::await_change());
         let after = RECONCILIATION_TOTAL
             .with_label_values(&[KIND, "success"])
             .get();
@@ -52,6 +51,55 @@ mod tests {
             .with_label_values(&[KIND, "reconcile_error"])
             .get();
         assert!((errors_after - errors_before - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn a_scheduled_wake_requeues_for_exactly_that_delay() {
+        const KIND: &str = "InstrumentedScheduledTest";
+        let wake = Duration::from_secs(3600);
+
+        let action = instrumented_scheduled(KIND, "obj", async move { Ok(Some(wake)) })
+            .await
+            .expect("success passes through");
+
+        assert_eq!(action, Action::requeue(wake));
+    }
+
+    #[tokio::test]
+    async fn no_scheduled_wake_awaits_the_next_change() {
+        const KIND: &str = "InstrumentedUnscheduledTest";
+
+        let action = instrumented_scheduled(KIND, "obj", async { Ok(None) })
+            .await
+            .expect("success passes through");
+
+        assert_eq!(action, Action::await_change());
+    }
+
+    #[tokio::test]
+    async fn a_failed_scheduled_reconcile_is_returned_as_an_error() {
+        const KIND: &str = "InstrumentedScheduledErrTest";
+
+        let result = instrumented_scheduled(KIND, "obj", async {
+            Err::<Option<Duration>, _>(anyhow::anyhow!("rotation broke"))
+        })
+        .await;
+
+        assert!(result.unwrap_err().to_string().contains("rotation broke"));
+    }
+
+    #[test]
+    fn a_far_off_wake_is_capped_so_the_delay_queue_cannot_overflow() {
+        let a_year = Duration::from_secs(365 * 24 * 3600);
+
+        assert_eq!(
+            scheduled_action(a_year),
+            Action::requeue(MAX_SCHEDULED_WAKE)
+        );
+        assert_eq!(
+            scheduled_action(Duration::from_secs(60)),
+            Action::requeue(Duration::from_secs(60))
+        );
     }
 
     #[test]

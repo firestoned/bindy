@@ -304,3 +304,113 @@ mod tests {
         assert_eq!(find_condition(conditions, "Progressing").status, "False");
     }
 }
+
+/// What a finished zone reconcile asks the controller for (ADR-0016): no
+/// periodic resync, a retry with backoff for a failure against BIND9, and a
+/// scheduled wake only for a KSK rollover the sidecar announced.
+#[cfg(test)]
+mod zone_outcome_tests {
+    use super::super::{parse_rollover_instant, zone_outcome};
+    use crate::crd::DNSSECStatus;
+    use crate::dnszone::types::{
+        ZoneOutcome, REASON_CLEANUP_PENDING, REASON_DEGRADED, REASON_DNSSEC_KEYS_PENDING,
+    };
+    use k8s_openapi::jiff::Timestamp;
+    use std::time::Duration;
+
+    const NOW: &str = "2026-10-06T00:00:00Z";
+    const SECONDS_PER_DAY: u64 = 86_400;
+
+    fn now() -> Timestamp {
+        NOW.parse().expect("valid timestamp")
+    }
+
+    fn dnssec(signed: bool, next_key_rollover: Option<&str>) -> DNSSECStatus {
+        DNSSECStatus {
+            signed,
+            ds_records: Vec::new(),
+            key_tag: None,
+            algorithm: None,
+            next_key_rollover: next_key_rollover.map(str::to_string),
+            last_key_rollover: None,
+        }
+    }
+
+    #[test]
+    fn a_converged_zone_awaits_the_next_change() {
+        assert_eq!(
+            zone_outcome(false, false, None, now()),
+            ZoneOutcome::Converged { next_wake: None }
+        );
+    }
+
+    #[test]
+    fn a_degraded_zone_retries() {
+        assert_eq!(
+            zone_outcome(true, false, None, now()),
+            ZoneOutcome::Retry {
+                reason: REASON_DEGRADED
+            }
+        );
+    }
+
+    /// ADR-0015 keeps a deleted record tracked until its DNS data is
+    /// confirmed gone and retries the cleanup "every reconcile"; with no
+    /// periodic resync the zone must schedule that retry itself.
+    #[test]
+    fn an_incomplete_cleanup_retries() {
+        assert_eq!(
+            zone_outcome(false, true, None, now()),
+            ZoneOutcome::Retry {
+                reason: REASON_CLEANUP_PENDING
+            }
+        );
+    }
+
+    #[test]
+    fn dnssec_keys_still_generating_retry_because_no_event_announces_them() {
+        assert_eq!(
+            zone_outcome(false, false, Some(&dnssec(false, None)), now()),
+            ZoneOutcome::Retry {
+                reason: REASON_DNSSEC_KEYS_PENDING
+            }
+        );
+    }
+
+    #[test]
+    fn a_signed_zone_wakes_at_its_next_ksk_rollover() {
+        let outcome = zone_outcome(
+            false,
+            false,
+            Some(&dnssec(true, Some("2026-10-08T00:00:00"))),
+            now(),
+        );
+
+        assert_eq!(
+            outcome,
+            ZoneOutcome::Converged {
+                next_wake: Some(Duration::from_secs(2 * SECONDS_PER_DAY))
+            }
+        );
+    }
+
+    #[test]
+    fn a_rollover_in_the_past_or_unknown_schedules_nothing() {
+        for next in [Some("2026-10-01T00:00:00Z"), Some("not a time"), None] {
+            assert_eq!(
+                zone_outcome(false, false, Some(&dnssec(true, next)), now()),
+                ZoneOutcome::Converged { next_wake: None },
+                "{next:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rollover_instants_parse_with_or_without_an_offset() {
+        let with_offset = parse_rollover_instant("2027-09-27T00:00:00Z").expect("RFC 3339");
+        let civil = parse_rollover_instant("2027-09-27T00:00:00").expect("bindcar civil time");
+
+        assert_eq!(with_offset, civil, "a civil time is read as UTC");
+        assert!(parse_rollover_instant("tomorrow").is_none());
+    }
+}

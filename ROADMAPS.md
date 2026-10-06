@@ -75,7 +75,7 @@ Statuses were verified against `fix-idempotency` @ `648ff7a` on 2026-09-10.
 
 | # | Roadmap | Status | Notes |
 |---|---|---|---|
-| [18](.github/community/18-load-testing-framework.md) | Load testing framework | ⛔ | Target `crates/loadtest/` does not exist — the repo has no `crates/` directory, so this lands after the workspace conversion in 01. Merged from two external docs on migration |
+| [18](.github/community/18-load-testing-framework.md) | Load testing framework | ⛔ | `crates/` exists since 01, `crates/loadtest/` does not. Manual rc.2/rc.3 load tests drove ADR-0014, ADR-0015 and ADR-0016 (no periodic resync, 2026-10-06); the burst milestone should assert their measurements. Audited 2026-10-06 |
 | [19](.github/community/19-integration-testing.md) | Integration testing | ✅ | Superseded by the shipped harness: `tests/integration_test.sh`, `tests/multi_tenancy_integration.rs`, `make kind-integration-test` |
 | [20](.github/community/20-hickory-client-migration-target.md) | Hickory client migration target | ⛔ | A scheduled revisit, not a build. `Cargo.toml` pins hickory 0.26; re-evaluate in Q3 2026 |
 | [21](.github/community/21-bindcar-migration-v0-7-0.md) | bindcar upgrade — v0.7.0 | 📄 | Superseded by 24. Absorbed 2026-07-01/02 (Mode B / TokenReview) |

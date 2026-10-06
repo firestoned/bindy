@@ -35,7 +35,8 @@ The operator currently uses `kube-rs` default reconciliation behavior:
 - No global rate limit across all resources
 
 **Problem:**
-- 1,000 DNS zones × reconcile every 5 minutes = 3.3 reconciliations/second
+- Before ADR-0016: 1,000 DNS zones × reconcile every 5 minutes = 3.3 reconciliations/second
+  (the periodic resync is gone: at rest there are no reconciles at all)
 - If all zones fail simultaneously → 1,000 immediate retries → API server overload
 
 ### Proposed Solution

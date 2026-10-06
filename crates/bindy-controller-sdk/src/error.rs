@@ -1,11 +1,13 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: Apache-2.0
 
-//! The reconcile error type and error policy every controller shares.
+//! The reconcile error type and error policy every controller shares, and
+//! the retry and convergence actions a reconcile returns itself (ADR-0016).
 
 use kube::runtime::controller::Action;
 use std::fmt::Debug;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::error;
 
 /// Reconciliation error wrapper: any [`anyhow::Error`] a reconciler returns.
@@ -44,13 +46,7 @@ pub fn error_policy<T, C>(resource: Arc<T>, err: &ReconcileError, _ctx: Arc<C>) 
 where
     T: Debug + kube::ResourceExt,
 {
-    let key = format!(
-        "{}/{}/{}",
-        std::any::type_name::<T>(),
-        resource.namespace().unwrap_or_default(),
-        resource.name_any()
-    );
-    let delay = crate::retry::reconcile_error_backoff(&key);
+    let delay = crate::retry::reconcile_error_backoff(&backoff_key(resource.as_ref()));
 
     error!(
         error = %err,
@@ -59,6 +55,74 @@ where
         delay
     );
     Action::requeue(delay)
+}
+
+/// The per-object backoff key: the resource's type, namespace and name.
+///
+/// Two different kinds can share a namespaced name, and they must not share a
+/// failure counter. [`error_policy`], [`retry_action`] and
+/// [`converged_action`] all use this key, so a failure reported as `Err` and
+/// one reported from an `Ok` outcome advance the same counter.
+///
+/// # Arguments
+///
+/// * `resource` - The object being reconciled
+#[must_use]
+pub fn backoff_key<T: kube::ResourceExt>(resource: &T) -> String {
+    format!(
+        "{}/{}/{}",
+        std::any::type_name::<T>(),
+        resource.namespace().unwrap_or_default(),
+        resource.name_any()
+    )
+}
+
+/// Retry this object after its per-object backoff.
+///
+/// For a reconcile that finished `Ok` (its status already says what went
+/// wrong) but failed against BIND9 or bindcar: a degraded zone, a record write
+/// that could not reach a primary. The delay is the same capped exponential
+/// backoff [`error_policy`] uses, so a failure is a retry, never a
+/// fixed-interval resync (ADR-0016).
+///
+/// # Arguments
+///
+/// * `resource` - The object whose reconcile failed
+#[must_use]
+pub fn retry_action<T: kube::ResourceExt>(resource: &T) -> Action {
+    Action::requeue(crate::retry::reconcile_error_backoff(&backoff_key(
+        resource,
+    )))
+}
+
+/// [`retry_action`], but never sooner than `floor`.
+///
+/// A record write BIND9 rejected must not be re-issued inside its cooldown
+/// ([`crate::retry::REJECTED_WRITE_COOLDOWN`]); the retry is scheduled for
+/// whichever is later, the backoff or the floor.
+///
+/// # Arguments
+///
+/// * `resource` - The object whose reconcile failed
+/// * `floor` - The shortest acceptable delay
+#[must_use]
+pub fn retry_action_at_least<T: kube::ResourceExt>(resource: &T, floor: Duration) -> Action {
+    let delay = crate::retry::reconcile_error_backoff(&backoff_key(resource));
+    Action::requeue(delay.max(floor))
+}
+
+/// The object converged: clear its backoff and wait for the next change.
+///
+/// Clearing the counter makes the next failure start from the fast initial
+/// interval rather than wherever an earlier run of failures left it.
+///
+/// # Arguments
+///
+/// * `resource` - The object that converged
+#[must_use]
+pub fn converged_action<T: kube::ResourceExt>(resource: &T) -> Action {
+    crate::retry::reset_reconcile_backoff(&backoff_key(resource));
+    Action::await_change()
 }
 
 #[cfg(test)]

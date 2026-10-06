@@ -6,7 +6,7 @@
 //! # bindy-controller-sdk: the shared controller framework
 //!
 //! What every bindy controller needs and none of them owns (ADR-0009):
-//! error handling and requeue policy, status helpers, retry and
+//! error handling and retry policy, status helpers, retry and
 //! backoff, paginated LISTs, the rate-limited client, namespace scoping and
 //! Prometheus metrics. It depends only on `bindy-api`; no controller crate
 //! and no BIND9 code.
@@ -14,8 +14,8 @@
 //! ## Modules
 //!
 //! - [`context`] - The shared `Context`, `Stores` and the record-kind registry
-//! - [`error`] - [`error::ReconcileError`] and [`error::error_policy`]
-//! - [`requeue`] - Requeue intervals for ready and not-ready resources
+//! - [`error`] - [`error::ReconcileError`], [`error::error_policy`] and the
+//!   retry and convergence actions a reconcile returns (ADR-0016)
 //! - [`retry`] - Kubernetes and HTTP retry, reconcile backoff
 //! - [`status`] - Status condition helpers
 //! - [`pagination`] - Paginated LIST helpers
@@ -25,7 +25,8 @@
 //! - [`namespace_scope`] - Cluster-wide or per-namespace watch scope
 //! - [`leader`] - Leader election over a Kubernetes `Lease`
 //! - [`shutdown`] - The draining shutdown signal and the controller supervisor
-//! - [`reconcile`] - Timing, metrics and requeue around one reconcile
+//! - [`reconcile`] - Timing and metrics around one reconcile; success awaits
+//!   the next change, a scheduled wake is capped (ADR-0016)
 //! - [`finalizers`] - Adding, removing and honouring finalizers
 //! - [`http_errors`] - HTTP error mapping to status reasons
 //! - [`metrics`] - Prometheus metrics
@@ -42,7 +43,6 @@ pub mod pagination;
 pub mod rate_limit;
 pub mod reconcile;
 pub mod request_timeout;
-pub mod requeue;
 pub mod resources;
 pub mod retry;
 pub mod shutdown;

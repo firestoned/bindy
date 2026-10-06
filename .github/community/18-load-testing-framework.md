@@ -1,6 +1,8 @@
 # Bindy Load Testing Framework - Claude Code Roadmap
 
-> **Status:** ⛔ Not started — the target layout (`crates/loadtest/`) does not exist; the repo has no `crates/` directory at all, so this lands **after** the workspace conversion in [01](01-controller-crate-split.md).
+> **Status:** ⛔ Not started. The workspace conversion in [01](01-controller-crate-split.md) is done, so `crates/` exists, but `crates/loadtest/` does not. Audited 2026-10-06.
+>
+> **Manual load tests in the meantime.** The v0.8.0-rc.2 and rc.3 runs (300 `ARecord`s, 3 primaries) were driven by hand, and their findings landed as [ADR-0014](../../docs/adr/0014-bounded-kube-api-request-timeout.md) (request deadline), [ADR-0015](../../docs/adr/0015-bounded-api-cost-of-dns-writes.md) (API cost of DNS writes) and [ADR-0016](../../docs/adr/0016-event-driven-reconciliation.md) (no periodic resync). The burst scenario in Milestone 4.1 should assert what those runs measured by hand: reconciles per record, API requests per record, and zero reconciles at rest.
 >
 > *Migrated 2026-09-10 from the external roadmap set. Status verified against `fix-idempotency` @ `648ff7a`.*
 

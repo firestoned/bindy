@@ -12,7 +12,12 @@ pub mod status_helpers;
 pub mod types;
 
 // Internal imports
-use status_helpers::update_record_status;
+use crate::record_wrappers::{
+    RecordOutcome, REASON_INSTANCE_FILTER_ERROR, REASON_NOT_SELECTED, REASON_NO_PRIMARY_INSTANCES,
+    REASON_RECONCILE_FAILED, REASON_RECONCILE_SUCCEEDED, REASON_ZONE_NOT_CONFIGURED,
+    REASON_ZONE_NOT_FOUND,
+};
+use status_helpers::{update_record_status, RecordStatusUpdate};
 
 // The BIND9 write path moved to `bindy-bind9` (ADR-0009 §2, amended
 // 2026-10-05), so the zone controller can replay and delete records without
@@ -27,35 +32,81 @@ use crate::crd::DNSZone;
 use anyhow::{Context, Result};
 
 use kube::{client::Client, Api, Resource, ResourceExt};
+use std::future::Future;
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 
-/// Gets the `DNSZone` reference from the record's status.
+/// An object from a reflector store, or from the API when the store does not
+/// hold it.
 ///
-/// The `DNSZone` controller sets `status.zoneRef` when the zone's `recordsFrom` selector
-/// matches this record's labels. This field contains the complete Kubernetes object reference.
+/// The store is the normal source (ADR-0016): a watch delivers every change,
+/// so re-reading an object the store holds costs a GET and tells nothing new.
+/// An object the store does not hold yet (a watch that has not caught up)
+/// falls back to `fetch`, as `filter_primary_instances_cached` does for
+/// instances.
 ///
 /// # Arguments
 ///
-/// * `client` - Kubernetes API client
-/// * `zone_ref` - Zone reference from record status
+/// * `cached` - The object from the store, if it holds one
+/// * `fetch` - The fallback read; `Ok(None)` when the object does not exist
 ///
 /// # Returns
 ///
-/// The `DNSZone` resource
+/// The object, or `None` when neither the store nor the API has it.
 ///
 /// # Errors
 ///
-/// Returns an error if the `DNSZone` resource cannot be found or queried.
+/// Returns the fallback's error (an API failure other than not-found).
+pub(crate) async fn cached_or_fetched<K, F, Fut>(
+    cached: Option<Arc<K>>,
+    fetch: F,
+) -> Result<Option<K>>
+where
+    K: Clone,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<Option<K>>>,
+{
+    if let Some(object) = cached {
+        return Ok(Some((*object).clone()));
+    }
+    fetch().await
+}
+
+/// The `DNSZone` named by a record's `status.zoneRef`.
+///
+/// The `DNSZone` controller sets `status.zoneRef` when the zone's
+/// `recordsFrom` selector matches the record. The zone is read from the
+/// shared `DNSZone` store, with a GET only for a zone the store does not hold
+/// yet (ADR-0016).
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client, for the fallback GET
+/// * `stores` - The shared reflector stores
+/// * `zone_ref` - Zone reference from the record status
+///
+/// # Returns
+///
+/// The `DNSZone`, or `None` when it does not exist.
+///
+/// # Errors
+///
+/// Returns an error if the fallback GET fails for a reason other than
+/// not-found.
 async fn get_zone_from_ref(
     client: &Client,
+    stores: &crate::context::Stores,
     zone_ref: &crate::crd::ZoneReference,
-) -> Result<DNSZone> {
-    let dns_zones_api: Api<DNSZone> = Api::namespaced(client.clone(), &zone_ref.namespace);
-
-    dns_zones_api.get(&zone_ref.name).await.context(format!(
-        "Failed to get DNSZone {}/{}",
-        zone_ref.namespace, zone_ref.name
-    ))
+) -> Result<Option<DNSZone>> {
+    let cached = stores.get_dnszone(&zone_ref.name, &zone_ref.namespace);
+    cached_or_fetched(cached, || async {
+        let api: Api<DNSZone> = Api::namespaced(client.clone(), &zone_ref.namespace);
+        api.get_opt(&zone_ref.name).await.context(format!(
+            "Failed to get DNSZone {}/{}",
+            zone_ref.namespace, zone_ref.name
+        ))
+    })
+    .await
 }
 
 /// Generic result type for record reconciliation helper.
@@ -70,11 +121,19 @@ struct RecordReconciliationContext {
     current_hash: String,
 }
 
+/// What preparing a record reconciliation decided.
+enum Prepared {
+    /// The record is selected and has primaries: write it.
+    Write(RecordReconciliationContext),
+    /// Stop here; the status already says why.
+    Stop(RecordOutcome),
+}
+
 /// Generic helper function for record reconciliation.
 ///
 /// This function handles the common logic for all record types:
 /// 1. Check if record has status.zoneRef (set by `DNSZone` controller)
-/// 2. Look up the `DNSZone` resource
+/// 2. Look up the `DNSZone` (from the store)
 /// 3. Get instances from the zone
 /// 4. Filter to primary instances only
 /// 5. Return context for adding record to BIND9
@@ -82,27 +141,28 @@ struct RecordReconciliationContext {
 /// # Arguments
 ///
 /// * `client` - Kubernetes API client
-/// * `record` - The DNS record resource
+/// * `stores` - The shared reflector stores
+/// * `record` - The DNS record resource, as the reconcile received it
 /// * `record_type` - Human-readable record type name (e.g., "A", "TXT", "AAAA")
 /// * `spec_hashable` - The record spec to hash for change detection
 ///
 /// # Returns
 ///
-/// * `Ok(Some(context))` - Record is selected and ready to be added to BIND9
-/// * `Ok(None)` - Record is not selected or generation unchanged (status already updated)
-/// * `Err(_)` - Fatal error occurred
+/// * `Ok(Prepared::Write(context))` - Record is selected and ready to be added to BIND9
+/// * `Ok(Prepared::Stop(outcome))` - The record waits on another object, or a
+///   lookup failed; its status already says which
 ///
 /// # Errors
 ///
-/// Returns an error if status updates fail or critical Kubernetes API errors occur.
+/// Returns an error if a status update fails.
 #[allow(clippy::too_many_lines)]
 async fn prepare_record_reconciliation<T, S>(
     client: &Client,
+    stores: &crate::context::Stores,
     record: &T,
     record_type: &str,
     spec_hashable: &S,
-    bind9_instances_store: &crate::context::MultiStore<crate::crd::Bind9Instance>,
-) -> Result<Option<RecordReconciliationContext>>
+) -> Result<Prepared>
 where
     T: Resource<DynamicType = (), Scope = k8s_openapi::NamespaceResourceScope>
         + ResourceExt
@@ -114,30 +174,13 @@ where
 {
     let namespace = record.namespace().unwrap_or_default();
     let name = record.name_any();
-
-    // Extract status fields generically
-    let record_json = serde_json::to_value(record)?;
-    let status = record_json.get("status");
-
-    let zone_ref = status
-        .and_then(|s| s.get("zoneRef"))
-        .and_then(|z| serde_json::from_value::<crate::crd::ZoneReference>(z.clone()).ok());
-
-    let observed_generation = status
-        .and_then(|s| s.get("observedGeneration"))
-        .and_then(serde_json::Value::as_i64);
-
     let current_generation = record.meta().generation;
+    let zone_ref = status_helpers::cached_record_status(record).and_then(|s| s.zone_ref);
 
-    // Check if record has zoneRef (set by DNSZone controller)
+    // Check if record has zoneRef (set by DNSZone controller). The record's
+    // primary stream passes a change of status.zoneRef, so being tagged wakes
+    // it: no timer needed (ADR-0016).
     let Some(zone_ref) = zone_ref else {
-        // Only skip reconciliation if generation hasn't changed AND already marked as NotSelected
-        if !bindy_controller_sdk::status::should_reconcile(current_generation, observed_generation)
-        {
-            debug!("Spec unchanged and no zoneRef, skipping reconciliation");
-            return Ok(None);
-        }
-
         info!(
             "{} record {}/{} not selected by any DNSZone (no zoneRef in status)",
             record_type, namespace, name
@@ -145,26 +188,46 @@ where
         update_record_status(
             client,
             record,
-            "Ready",
-            "False",
-            "NotSelected",
-            "Record not selected by any DNSZone recordsFrom selector",
-            current_generation,
-            None, // record_hash
-            None, // last_updated
-            None, // addresses
-            None, // published_name
+            &RecordStatusUpdate::not_ready(
+                REASON_NOT_SELECTED,
+                "Record not selected by any DNSZone recordsFrom selector",
+                current_generation,
+            ),
         )
         .await?;
-        return Ok(None);
+        return Ok(Prepared::Stop(RecordOutcome::Waiting {
+            reason: REASON_NOT_SELECTED,
+        }));
     };
 
     // Calculate hash of current spec to detect actual data changes
     let current_hash = crate::ddns::calculate_record_hash(spec_hashable);
 
-    // Get the DNSZone resource via zoneRef
-    let dnszone = match get_zone_from_ref(client, &zone_ref).await {
-        Ok(zone) => zone,
+    // Get the DNSZone via zoneRef, from the store (ADR-0016)
+    let dnszone = match get_zone_from_ref(client, stores, &zone_ref).await {
+        Ok(Some(zone)) => zone,
+        Ok(None) => {
+            warn!(
+                "DNSZone {}/{} for {} record {}/{} does not exist",
+                zone_ref.namespace, zone_ref.name, record_type, namespace, name
+            );
+            update_record_status(
+                client,
+                record,
+                &RecordStatusUpdate::not_ready(
+                    REASON_ZONE_NOT_FOUND,
+                    &format!(
+                        "Referenced DNSZone {}/{} not found",
+                        zone_ref.namespace, zone_ref.name
+                    ),
+                    current_generation,
+                ),
+            )
+            .await?;
+            return Ok(Prepared::Stop(RecordOutcome::Waiting {
+                reason: REASON_ZONE_NOT_FOUND,
+            }));
+        }
         Err(e) => {
             warn!(
                 "Failed to get DNSZone {}/{} for {} record {}/{}: {}",
@@ -173,27 +236,25 @@ where
             update_record_status(
                 client,
                 record,
-                "Ready",
-                "False",
-                "ZoneNotFound",
-                &format!(
-                    "Referenced DNSZone {}/{} not found: {e}",
-                    zone_ref.namespace, zone_ref.name
+                &RecordStatusUpdate::not_ready(
+                    REASON_ZONE_NOT_FOUND,
+                    &format!(
+                        "Referenced DNSZone {}/{} could not be read: {e}",
+                        zone_ref.namespace, zone_ref.name
+                    ),
+                    current_generation,
                 ),
-                current_generation,
-                None, // record_hash
-                None, // last_updated
-                None, // addresses
-                None, // published_name
             )
             .await?;
-            return Ok(None);
+            return Ok(Prepared::Stop(RecordOutcome::Failed {
+                reason: REASON_ZONE_NOT_FOUND,
+            }));
         }
     };
 
     // Get instances from the DNSZone
     let instance_refs =
-        match bindy_bind9::instances::get_instances_from_zone(&dnszone, bind9_instances_store) {
+        match bindy_bind9::instances::get_instances_from_zone(&dnszone, &stores.bind9_instances) {
             Ok(refs) => refs,
             Err(e) => {
                 warn!(
@@ -203,18 +264,16 @@ where
                 update_record_status(
                     client,
                     record,
-                    "Ready",
-                    "False",
-                    "ZoneNotConfigured",
-                    &format!("DNSZone has no instances: {e}"),
-                    current_generation,
-                    None, // record_hash
-                    None, // last_updated
-                    None, // addresses
-                    None, // published_name
+                    &RecordStatusUpdate::not_ready(
+                        REASON_ZONE_NOT_CONFIGURED,
+                        &format!("DNSZone has no instances: {e}"),
+                        current_generation,
+                    ),
                 )
                 .await?;
-                return Ok(None);
+                return Ok(Prepared::Stop(RecordOutcome::Waiting {
+                    reason: REASON_ZONE_NOT_CONFIGURED,
+                }));
             }
         };
 
@@ -222,7 +281,7 @@ where
     // store rather than one GET per instance (ADR-0015)
     let primary_refs = match bindy_bind9::primary::filter_primary_instances_cached(
         client,
-        bind9_instances_store,
+        &stores.bind9_instances,
         &instance_refs,
     )
     .await
@@ -236,18 +295,16 @@ where
             update_record_status(
                 client,
                 record,
-                "Ready",
-                "False",
-                "InstanceFilterError",
-                &format!("Failed to filter primary instances: {e}"),
-                current_generation,
-                None, // record_hash
-                None, // last_updated
-                None, // addresses
-                None, // published_name
+                &RecordStatusUpdate::not_ready(
+                    REASON_INSTANCE_FILTER_ERROR,
+                    &format!("Failed to filter primary instances: {e}"),
+                    current_generation,
+                ),
             )
             .await?;
-            return Ok(None);
+            return Ok(Prepared::Stop(RecordOutcome::Failed {
+                reason: REASON_INSTANCE_FILTER_ERROR,
+            }));
         }
     };
 
@@ -259,21 +316,19 @@ where
         update_record_status(
             client,
             record,
-            "Ready",
-            "False",
-            "NoPrimaryInstances",
-            "DNSZone has no primary instances configured",
-            current_generation,
-            None, // record_hash
-            None, // last_updated
-            None, // addresses
-            None, // published_name
+            &RecordStatusUpdate::not_ready(
+                REASON_NO_PRIMARY_INSTANCES,
+                "DNSZone has no primary instances configured",
+                current_generation,
+            ),
         )
         .await?;
-        return Ok(None);
+        return Ok(Prepared::Stop(RecordOutcome::Waiting {
+            reason: REASON_NO_PRIMARY_INSTANCES,
+        }));
     }
 
-    Ok(Some(RecordReconciliationContext {
+    Ok(Prepared::Write(RecordReconciliationContext {
         zone_ref,
         primary_refs,
         current_hash,
@@ -288,7 +343,7 @@ where
 ///
 /// The function:
 /// 1. Checks if the record is selected by a `DNSZone` (via status.zoneRef)
-/// 2. Looks up the `DNSZone` and gets primary instances
+/// 2. Looks up the `DNSZone` (from the store) and gets primary instances
 /// 3. Deletes the previously published name from BIND9 if `spec.name` changed
 ///    (rename detection via `status.publishedName`)
 /// 4. Adds the record to BIND9 primaries using dynamic DNS updates
@@ -306,21 +361,22 @@ where
 ///
 /// # Returns
 ///
-/// * `Ok(())` - If reconciliation succeeded or record is not selected
-/// * `Err(_)` - If a fatal error occurred
+/// The [`RecordOutcome`]: published, waiting on another object, or failed
+/// (to be retried with backoff). The controller picks its `Action` from it
+/// without re-reading the record (ADR-0016).
 ///
 /// # Errors
 ///
-/// Returns an error if status updates fail or BIND9 record creation fails.
+/// Returns an error if a status update fails.
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn reconcile_record<T>(
     ctx: std::sync::Arc<crate::context::Context>,
     record: T,
-) -> Result<()>
+) -> Result<RecordOutcome>
 where
     T: ReconcilableRecord,
 {
     let client = ctx.client.clone();
-    let bind9_instances_store = &ctx.stores.bind9_instances;
     let namespace = record.namespace().unwrap_or_default();
     let name = record.name_any();
 
@@ -335,16 +391,17 @@ where
     let current_generation = record.meta().generation;
 
     // Use generic helper to get zone and instances
-    let Some(rec_ctx) = prepare_record_reconciliation(
+    let rec_ctx = match prepare_record_reconciliation(
         &client,
+        &ctx.stores,
         &record,
         T::record_type_name(),
         spec,
-        bind9_instances_store,
     )
     .await?
-    else {
-        return Ok(()); // Record not selected or status already updated
+    {
+        Prepared::Write(rec_ctx) => rec_ctx,
+        Prepared::Stop(outcome) => return Ok(outcome),
     };
 
     // One resolver for every write this reconcile makes (the rename delete and
@@ -384,39 +441,40 @@ where
                 rec_ctx.zone_ref.zone_name,
                 e
             );
+            // published_name stays as it is, so the deletion is retried
             update_record_status(
                 &client,
                 &record,
-                "Ready",
-                "False",
-                "ReconcileFailed",
-                &format!("Failed to delete renamed record '{old_name}' from zone: {e}"),
-                current_generation,
-                None, // record_hash
-                None, // last_updated
-                None, // addresses
-                None, // published_name (preserve old name so deletion is retried)
+                &RecordStatusUpdate::not_ready(
+                    REASON_RECONCILE_FAILED,
+                    &format!("Failed to delete renamed record '{old_name}' from zone: {e}"),
+                    current_generation,
+                ),
             )
             .await?;
-            return Ok(());
+            return Ok(RecordOutcome::WriteRejected);
         }
     }
 
-    // A write BIND9 rejected is re-attempted on this record's own timed requeue
-    // and on nothing else. The reconciler is woken by every status patch on the
-    // owning zone and on each primary instance, so without this a permanently
-    // rejected record (an MX whose exchange has no address record, say) drives a
-    // sustained delete/add storm against named. See `REJECTED_WRITE_COOLDOWN`.
+    // A write BIND9 rejected is re-attempted no sooner than its cooldown. The
+    // reconciler is woken by status writes on the owning zone, so without this
+    // a permanently rejected record (an MX whose exchange has no address
+    // record, say) drives a sustained delete/add storm against named. With no
+    // periodic resync the retry is scheduled for when the cooldown ends
+    // (ADR-0016). See `REJECTED_WRITE_COOLDOWN`.
     let write_key = format!("{}Record/{namespace}/{name}", T::record_type_name());
-    if bindy_controller_sdk::retry::write_in_cooldown(&write_key, &rec_ctx.current_hash) {
+    if let Some(remaining) =
+        bindy_controller_sdk::retry::write_cooldown_remaining(&write_key, &rec_ctx.current_hash)
+    {
         debug!(
-            "Skipping {} record {}.{}: the identical spec was rejected less than {:?} ago",
+            "Skipping {} record {}.{}: the identical spec was rejected less than {:?} ago, retrying in {:?}",
             T::record_type_name(),
             T::get_record_name(spec),
             rec_ctx.zone_ref.zone_name,
-            bindy_controller_sdk::retry::REJECTED_WRITE_COOLDOWN
+            bindy_controller_sdk::retry::REJECTED_WRITE_COOLDOWN,
+            remaining
         );
-        return Ok(());
+        return Ok(RecordOutcome::CoolingDown { remaining });
     }
 
     // Create type-specific operation from spec
@@ -446,34 +504,33 @@ where
             );
 
             // DNSZone.status.records[].lastReconciledAt is NOT written from
-            // here. It used to be, with a read-modify-write of the whole
-            // records array: concurrent record reconciles overwrote each
-            // other's stamps, every write re-woke every unstamped record via
-            // the zone watch, and each cost a GET and a PATCH. The zone
-            // controller now derives the stamp from this record's
+            // here. The zone controller derives the stamp from this record's
             // status.lastUpdated (set below) on its next reconcile, which this
             // status write triggers (ADR-0015).
 
             // Update record status to Ready. Addresses (A/AAAA display field) and
             // publishedName are only set after a successful, selected reconcile.
+            let message = format!(
+                "{} record added to zone {}",
+                T::record_type_name(),
+                rec_ctx.zone_ref.zone_name
+            );
             update_record_status(
                 &client,
                 &record,
-                "Ready",
-                "True",
-                "ReconcileSucceeded",
-                &format!(
-                    "{} record added to zone {}",
-                    T::record_type_name(),
-                    rec_ctx.zone_ref.zone_name
-                ),
-                current_generation,
-                Some(rec_ctx.current_hash),
-                Some(chrono::Utc::now().to_rfc3339()),
-                T::get_display_addresses(spec),
-                Some(T::get_record_name(spec).to_string()),
+                &RecordStatusUpdate {
+                    status: "True",
+                    reason: REASON_RECONCILE_SUCCEEDED,
+                    message: &message,
+                    observed_generation: current_generation,
+                    record_hash: Some(rec_ctx.current_hash),
+                    last_updated: Some(chrono::Utc::now().to_rfc3339()),
+                    addresses: T::get_display_addresses(spec),
+                    published_name: Some(T::get_record_name(spec).to_string()),
+                },
             )
             .await?;
+            Ok(RecordOutcome::Published)
         }
         Err(e) => {
             bindy_controller_sdk::retry::note_rejected_write(&write_key, &rec_ctx.current_hash);
@@ -486,21 +543,16 @@ where
             update_record_status(
                 &client,
                 &record,
-                "Ready",
-                "False",
-                "ReconcileFailed",
-                &format!("Failed to add record to zone: {e:#}"),
-                current_generation,
-                None, // record_hash
-                None, // last_updated
-                None, // addresses
-                None, // published_name
+                &RecordStatusUpdate::not_ready(
+                    REASON_RECONCILE_FAILED,
+                    &format!("Failed to add record to zone: {e:#}"),
+                    current_generation,
+                ),
             )
             .await?;
+            Ok(RecordOutcome::WriteRejected)
         }
     }
-
-    Ok(())
 }
 
 /// Detects whether a record was renamed since it was last published to BIND9.
@@ -597,9 +649,16 @@ where
         return Ok(());
     };
 
-    // Get the DNSZone
-    let dnszone = match get_zone_from_ref(client, &zone_ref).await {
-        Ok(zone) => zone,
+    // Get the DNSZone (from the store, ADR-0016)
+    let dnszone = match get_zone_from_ref(client, stores, &zone_ref).await {
+        Ok(Some(zone)) => zone,
+        Ok(None) => {
+            warn!(
+                "DNSZone {}/{} not found for {} record {}/{}. Allowing deletion anyway.",
+                zone_ref.namespace, zone_ref.name, record_type, namespace, name
+            );
+            return Ok(());
+        }
         Err(e) => {
             warn!(
                 "DNSZone {}/{} not found for {} record {}/{}: {}. Allowing deletion anyway.",
@@ -693,3 +752,7 @@ where
 
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod mod_tests;

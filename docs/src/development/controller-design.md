@@ -20,16 +20,25 @@ loop {
     // Reconcile
     match reconcile(resource).await {
         Ok(_) => {
-            // Success - requeue with normal delay
-            queue.requeue(resource, Duration::from_secs(300));
+            // Success - wait for the next watch event, no periodic resync
+            // (ADR-0016). A reconcile that knows of a future instant (an RNDC
+            // key falling due) schedules one wake for it instead.
         }
         Err(e) => {
-            // Error - retry with backoff
+            // Error - retry with per-object capped backoff
             queue.requeue_with_backoff(resource, e);
         }
     }
 }
 ```
+
+The real controllers express this through `kube::runtime::Controller`: a
+reconcile returns `Action::await_change()` on success and on a wait for
+another object, `sdk::error::retry_action` (per-object backoff) when it
+finished but failed against BIND9, and `sdk::reconcile::scheduled_action`
+for a known future instant. `REQUEUE_WHEN_READY_SECS` and
+`REQUEUE_WHEN_NOT_READY_SECS` no longer exist. Every wait must name the watch
+that ends it; ADR-0016 has the table.
 
 ## State Management
 

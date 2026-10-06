@@ -62,7 +62,6 @@ metadata:
   namespace: bindy-system-prod
 data:
   RUST_LOG: "info"
-  RECONCILE_INTERVAL: "300"
 
 ---
 # Primary Bind9Instance

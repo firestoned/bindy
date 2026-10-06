@@ -1,3 +1,45 @@
+## [2026-10-06 12:00] - Event-driven reconciliation, no periodic resync (ADR-0016)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0016-event-driven-reconciliation.md`.
+- `crates/bindy-controller-sdk/src/reconcile.rs`: `instrumented_scheduled`, `scheduled_action`, `MAX_SCHEDULED_WAKE` (30 days).
+- `crates/bindy-controller-sdk/src/error.rs`: `backoff_key`, `retry_action`, `retry_action_at_least`, `converged_action` (an `Ok` outcome that failed against BIND9 retries on the same per-object backoff as `error_policy`).
+- `crates/bindy-controller-sdk/src/retry.rs`: `write_cooldown_remaining(_at)`; `REJECTED_WRITE_COOLDOWN` keeps 30 s as its own constant.
+- `crates/bindy-controller-records/src/record_wrappers.rs`: `RecordOutcome` and `action_for_outcome`, plus the record status reason constants.
+- `crates/bindy-controller-records/src/record_operator.rs`: `records_to_wake_for_zone` (the `DNSZone` mapper now also wakes stamped records whose cached status is not Ready).
+- `crates/bindy-controller-records/src/records/status_helpers.rs`: `RecordStatusUpdate`, `cached_record_status`, `record_status_patch` (pure).
+- `crates/bindy-controller-records/src/records/mod.rs`: `cached_or_fetched` (store first, GET fallback).
+- `crates/bindy-controller-zone/src/dnszone/types.rs`: `ZoneOutcome` and reason constants; `status_helpers.rs`: `zone_outcome`, `parse_rollover_instant`.
+- `crates/bindy-controller-zone/src/watch.rs`: `action_for_zone_outcome`, `zones_contending_for_name` and a `changed_only` `DNSZone` stream that wakes `DuplicateZone` losers.
+- `crates/bindy-controller-instance/src/watch.rs`: `instances_for_configmap` (a cluster-level ConfigMap wakes its cluster's instances) on the ConfigMap watch `.owns` already ran.
+- `crates/bindy-bind9/src/primary.rs`: `instance_role_in_store`, `instance_role_cached`, `filter_instances_by_role_cached`.
+- Tests (60 new, 9 removed): SDK `reconcile_tests.rs` (4), `error_tests.rs` (4), `retry_tests.rs` (1, replaces the cooldown-equals-requeue test); records `record_wrappers_tests.rs` (7, replace 3 requeue tests), `records/status_helpers_tests.rs` (9, new file), `records/mod_tests.rs` (4, new file), `record_operator_tests.rs` (5); zone `dnszone/status_helpers_tests.rs` (7), `watch_tests.rs` (7); instance `bind9instance/mod_tests.rs` (6, replace 5), `watch_tests.rs` (3); bind9 `primary_tests.rs` (3).
+
+### Changed
+- Every controller returns `Action::await_change()` on success (records, `DNSZone`, `Bind9Instance`, `Bind9Cluster`, `ClusterBind9Provider`); waits on another object return it too. Failures retry with capped per-object backoff (2 s to 60 s). Scout unchanged.
+- Records: `update_record_status` decides from the cached object (no GET) and its merge patch never carries `zone`/`zoneRef`; `addresses`/`publishedName` only when set. `reconcile_record` returns a `RecordOutcome`, so the wrapper no longer re-GETs the record. `get_zone_from_ref` reads the `DNSZone` store. A rejected write retries no sooner than the cooldown; a reconcile inside the cooldown requeues for the remainder.
+- `DNSZone`: `reconcile_dnszone` returns a `ZoneOutcome` (no re-GET in the wrapper). No instances and `DuplicateZone` wait for an event; `Degraded`, an incomplete cleanup (deleted or unselected record not confirmed gone) and DNSSEC keys still generating retry with backoff; a signed zone wakes at its next KSK rollover. Instance roles (primaries and secondaries), RNDC keys and endpoints come from the stores and one `InstanceResolver` per reconcile (`add_dnszone`, `add_dnszone_to_secondaries`, `delete_dnszone`, NS and glue records, expected-count calculation, primary and secondary pod IP lookups).
+- `Bind9Instance`: `reconcile_bind9instance` returns the delay until its RNDC key falls due (`calculate_requeue_duration` is now wired, wakes at `rotate-at` honouring the 1-hour minimum, not 5 minutes early).
+- Signatures: `for_each_primary_endpoint` takes a resolver; `find_primary_ips_from_instances`, `filter_secondary_instances`, `find_secondary_pod_ips_from_instances`, `calculate_expected_instance_counts` take the `Bind9Instance` store; `reconcile_zone_records`/`discover_and_update_records` report a pending cleanup; `DnsRecordType::reconcile_record` returns `RecordOutcome`.
+- `calm/bindy-control-plane.architecture.json`: operator description records event-driven reconciliation with no periodic resync (`make calm-validate` clean; `make calm-docs` output unchanged).
+- Docs: `concepts/architecture.md` (No periodic resync: what is repaired and by which event, the force annotation), `operations/troubleshooting.md` (a change inside BIND9 is not put back; `bindy.firestoned.io/reconcile-trigger`), `operations/migration-guide.md`, `guide/creating-zones.md`, `development/controller-design.md`, `security/rate-limiting.md`; removed the never-implemented `RECONCILE_INTERVAL` from `installation/controller.md`, `reference/examples.md`, `reference/examples-production.md`.
+- `docs/src/security/threat-model.md` v1.16 (v1.15/M-47 reserved for ADR-0013 stage 3): full pass; M-48 (D2, T3), new accepted risk 13 (out-of-band BIND9 changes not reverted on a timer), accepted risk 11 revised, T1, T3, Boundary 4, Attack Surfaces 1 and 3, residual risks and controls summary updated.
+- `.github/community/18-load-testing-framework.md`, `ROADMAPS.md`: row 18 audited against the tree.
+
+### Removed
+- `crates/bindy-controller-sdk/src/requeue.rs` (`REQUEUE_WHEN_READY_SECS`, `REQUEUE_WHEN_NOT_READY_SECS`), `requeue_based_on_readiness`, the zone wrapper's `zone_is_ready` re-GET, the uncached `load_rndc_key`/`get_endpoint` re-exports in the zone helpers.
+
+### Why
+v0.8.0-rc.3 load test (300 `ARecord`s, 3 primaries): 2,668 record reconciles (about 9 per record), 3,595 GETs of `arecords`, 1,681 of `dnszones`, 1,190 of `bind9instances`, 1,116 of `secrets`, 650 of `endpoints`. Records and zones requeued every 300 s when Ready and 30 s when not; 969 reconciles were `NotSelected` records waiting on a timer for an event the controller already watches. A steady-state record reconcile now makes 0 API reads (was 3) and a zone reconcile with 3 primaries no instance, Endpoints or uncached Secret GETs (was about 25). Trade-off: a change made inside a running BIND9 pod is no longer reverted within 5 minutes (accepted risk 13; force with the annotation).
+
+### Impact
+- [ ] Breaking change (behaviour change documented in the migration guide; no CRD, RBAC or flag change)
+- [x] Requires cluster rollout (operator binary)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-05 23:00] - Render BIND9 configuration through hornet's writer (ADR-0013 stage 3)
 
 **Author:** Erick Bourgeois
